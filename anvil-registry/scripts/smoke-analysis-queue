@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REGISTRY_URL="${ANVIL_REGISTRY_URL:-http://localhost:4873}"
+ADMIN_URL="${ANVIL_ADMIN_URL:-http://localhost:3000}"
+ADMIN_TOKEN="${ANVIL_ADMIN_TOKEN:-${ADMIN_TOKEN:-local-dev-token}}"
+PACKAGE_TARGET="${ANVIL_ANALYSIS_SMOKE_PACKAGE:-is-number@7.0.0}"
+PACKAGE_NAME="${PACKAGE_TARGET%@*}"
+PACKAGE_VERSION="${PACKAGE_TARGET##*@}"
+REQUESTED_BY="anvil-analysis-smoke-$(date +%s)"
+STARTED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+if [[ "$PACKAGE_NAME" == "$PACKAGE_VERSION" ]]; then
+  echo "[anvil] ANVIL_ANALYSIS_SMOKE_PACKAGE must include an explicit version, for example is-number@7.0.0" >&2
+  exit 1
+fi
+if [[ -z "$PACKAGE_NAME" || -z "$PACKAGE_VERSION" ]]; then
+  echo "[anvil] ANVIL_ANALYSIS_SMOKE_PACKAGE must include a package name and explicit version, for example @scope/pkg@1.0.0" >&2
+  exit 1
+fi
+
+echo "[anvil] Queueing analysis for $PACKAGE_TARGET"
+node - "$REGISTRY_URL" "$ADMIN_TOKEN" "$PACKAGE_NAME" "$PACKAGE_VERSION" "$REQUESTED_BY" <<'NODE'
+const [registryUrl, adminToken, packageName, version, requestedBy] = process.argv.slice(2);
+const response = await fetch(`${registryUrl.replace(/\/+$/, "")}/-/anvil/analyze`, {
+  method: "POST",
+  headers: {
+    "content-type": "application/json",
+    authorization: `Bearer ${adminToken}`
+  },
+  body: JSON.stringify({
+    packageName,
+    version,
+    requestedBy,
+    reason: "manual_review",
+    priority: "high"
+  })
+});
+
+if (!response.ok) {
+  throw new Error(`[anvil] Failed to queue analysis: ${response.status} ${await response.text()}`);
+}
+
+const body = await response.json();
+if (body.queued !== 1) throw new Error(`[anvil] Expected one queued job, got ${JSON.stringify(body)}`);
+console.log(`[anvil] Queued analysis job as ${requestedBy}`);
+NODE
+
+node - "$ADMIN_URL" "$ADMIN_TOKEN" "$PACKAGE_NAME" "$PACKAGE_VERSION" "$STARTED_AT" <<'NODE'
+const [adminUrl, adminToken, packageName, version, startedAt] = process.argv.slice(2);
+const started = Date.parse(startedAt) - 1_000;
+const endpoint = `${adminUrl.replace(/\/+$/, "")}/api/reports?limit=100`;
+const deadline = Date.now() + 180_000;
+let lastBody;
+
+while (Date.now() < deadline) {
+  const response = await fetch(endpoint, { headers: { authorization: `Bearer ${adminToken}` } });
+  if (response.ok) {
+    const body = await response.json();
+    lastBody = summarizeReports(body);
+    const report = (body.reports ?? []).find(
+      (candidate) =>
+        candidate.packageName === packageName &&
+        candidate.version === version &&
+        Date.parse(candidate.createdAt ?? "") >= started
+    );
+    if (report) {
+      console.log(`[anvil] Admin API found fresh analysis report for ${packageName}@${version}`);
+      console.log(`[anvil] ${report.analyserVersion}: ${report.report.signals.length} signals`);
+      process.exit(0);
+    }
+  } else {
+    lastBody = { status: response.status, body: await response.text() };
+  }
+  await new Promise((resolve) => setTimeout(resolve, 3_000));
+}
+
+console.error(`[anvil] Timed out waiting for fresh analysis report for ${packageName}@${version}`);
+console.error(JSON.stringify(lastBody, null, 2));
+process.exit(1);
+
+function summarizeReports(body) {
+  const reports = body.reports ?? [];
+  return {
+    reportCount: reports.length,
+    newest: reports.slice(0, 10).map((report) => ({
+      packageName: report.packageName,
+      version: report.version,
+      analyserVersion: report.analyserVersion,
+      createdAt: report.createdAt
+    }))
+  };
+}
+NODE
+
+echo "[anvil] Analysis queue smoke passed."

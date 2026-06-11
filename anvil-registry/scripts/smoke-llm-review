@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+COMPOSE_FILE="$ROOT_DIR/infra/docker/docker-compose.yml"
+REGISTRY_URL="${ANVIL_REGISTRY_URL:-http://localhost:4873}"
+ADMIN_URL="${ANVIL_ADMIN_URL:-http://localhost:3000}"
+ADMIN_TOKEN="${ANVIL_ADMIN_TOKEN:-${ADMIN_TOKEN:-local-dev-token}}"
+PACKAGE_TARGET="${ANVIL_LLM_SMOKE_PACKAGE:-is-number@7.0.0}"
+PACKAGE_NAME="${PACKAGE_TARGET%@*}"
+PACKAGE_VERSION="${PACKAGE_TARGET##*@}"
+MODEL="anvil-smoke-$(date +%s)"
+
+if [[ "$PACKAGE_NAME" == "$PACKAGE_VERSION" ]]; then
+  echo "[anvil] ANVIL_LLM_SMOKE_PACKAGE must include an explicit version, for example is-number@7.0.0" >&2
+  exit 1
+fi
+if [[ -z "$PACKAGE_NAME" || -z "$PACKAGE_VERSION" ]]; then
+  echo "[anvil] ANVIL_LLM_SMOKE_PACKAGE must include a package name and explicit version, for example @scope/pkg@1.0.0" >&2
+  exit 1
+fi
+
+echo "[anvil] Starting local stack with mock LLM review provider ($MODEL)"
+LLM_REVIEW_ENABLED=true \
+LLM_REVIEW_PROVIDER=mock \
+LLM_REVIEW_MODEL="$MODEL" \
+LLM_REVIEW_ENDPOINT=http://llm-review-mock:8787/review \
+  docker compose -f "$COMPOSE_FILE" --profile llm-review up -d --build llm-review-mock gateway worker admin
+
+node - "$REGISTRY_URL" "$ADMIN_URL" <<'NODE'
+const [registryUrl, adminUrl] = process.argv.slice(2).map((value) => value.replace(/\/+$/, ""));
+await waitFor(`${registryUrl}/-/ready`, "gateway readiness");
+await waitFor(`${adminUrl}/-/health`, "admin health");
+
+async function waitFor(url, label) {
+  const deadline = Date.now() + 120_000;
+  let lastError;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(url);
+      if (response.ok) return;
+      lastError = `${response.status} ${response.statusText}`;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+  throw new Error(`[anvil] Timed out waiting for ${label}: ${lastError ?? "no response"}`);
+}
+NODE
+
+docker compose -f "$COMPOSE_FILE" --profile llm-review exec -T worker node - "http://llm-review-mock:8787/-/health" <<'NODE'
+const [healthUrl] = process.argv.slice(2);
+const deadline = Date.now() + 60_000;
+let lastError;
+
+while (Date.now() < deadline) {
+  try {
+    const response = await fetch(healthUrl);
+    if (response.ok) process.exit(0);
+    lastError = `${response.status} ${response.statusText}`;
+  } catch (error) {
+    lastError = error instanceof Error ? error.message : String(error);
+  }
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
+}
+
+throw new Error(`[anvil] Timed out waiting for worker-to-LLM-mock connectivity: ${lastError ?? "no response"}`);
+NODE
+
+echo "[anvil] Queueing forced LLM review for $PACKAGE_TARGET"
+ANVIL_REGISTRY_URL="$REGISTRY_URL" \
+ANVIL_ADMIN_TOKEN="$ADMIN_TOKEN" \
+  pnpm --dir "$ROOT_DIR" --filter @anvilstack/cli dev -- llm-review "$PACKAGE_TARGET" --requested-by anvil-llm-smoke --priority high
+
+node - "$ADMIN_URL" "$ADMIN_TOKEN" "$PACKAGE_NAME" "$PACKAGE_VERSION" "$MODEL" <<'NODE'
+const [adminUrl, adminToken, packageName, version, model] = process.argv.slice(2);
+const endpoint = `${adminUrl.replace(/\/+$/, "")}/api/packages/${encodeURIComponent(packageName)}/${encodeURIComponent(version)}/review`;
+const deadline = Date.now() + 180_000;
+let lastBody;
+
+while (Date.now() < deadline) {
+  const response = await fetch(endpoint, { headers: { authorization: `Bearer ${adminToken}` } });
+  if (response.ok) {
+    const body = await response.json();
+    lastBody = body;
+    const review = body.review?.llmRiskReviews?.find((candidate) => candidate.provider === "mock" && candidate.model === model);
+    if (review) {
+      console.log(`[anvil] Admin API found LLM review for ${packageName}@${version}`);
+      console.log(`[anvil] ${review.review.riskLevel}: ${review.review.summary}`);
+      process.exit(0);
+    }
+  } else {
+    lastBody = await response.text();
+  }
+  await new Promise((resolve) => setTimeout(resolve, 3_000));
+}
+
+console.error(`[anvil] Timed out waiting for persisted LLM review for ${packageName}@${version}`);
+console.error(JSON.stringify(lastBody, null, 2));
+process.exit(1);
+NODE
+
+echo "[anvil] LLM review smoke passed."

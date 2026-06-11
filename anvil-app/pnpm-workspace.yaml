@@ -1,0 +1,12 @@
+packages:
+  - mobile
+
+allowBuilds:
+  better-sqlite3: true
+  electron: true
+  electron-winstaller: true
+  esbuild: true
+  node-pty: true
+  sharp: true
+  unrs-resolver: true
+nodeLinker: hoisted

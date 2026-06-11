@@ -1,0 +1,27 @@
+{
+  "name": "anvil-sizzle-video",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "studio": "remotion studio",
+    "render": "remotion render AnvilSizzle out/anvil-sizzle.mp4",
+    "render:splash": "remotion render AnvilLogoSplash out/anvil-logo-splash.mp4",
+    "render:gif": "remotion render AnvilSizzle out/anvil-sizzle.gif"
+  },
+  "dependencies": {
+    "@remotion/cli": "^4.0.462",
+    "@remotion/google-fonts": "^4.0.462",
+    "@remotion/transitions": "^4.0.462",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "remotion": "^4.0.462"
+  },
+  "overrides": {
+    "ws": "8.20.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.9.0"
+  }
+}

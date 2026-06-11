@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+IMAGE_TAG="${ANVIL_NODE_BASE_SMOKE_IMAGE:-anvil-node-base-smoke:local}"
+
+if [[ -n "${ANVIL_NODE_BASE_SMOKE_IMAGE:-}" ]] && docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
+  echo "[anvil] Reusing existing Node Base image ($IMAGE_TAG)"
+else
+  echo "[anvil] Building Node Base image ($IMAGE_TAG)"
+  docker build -t "$IMAGE_TAG" -f "$ROOT_DIR/devcontainer-base/Dockerfile" "$ROOT_DIR/devcontainer-base"
+fi
+
+echo "[anvil] Verifying Node Base image defaults"
+docker run --rm "$IMAGE_TAG" bash -lc '
+set -euo pipefail
+
+test "$(id -un)" = "node"
+test "${ANVIL_SECURITY_MODE:-}" = "safe"
+test "${ANVIL_REPORT_DIR:-}" = "/workspaces/.anvil/reports"
+test "${NPM_CONFIG_FOREGROUND_SCRIPTS:-}" = "true"
+test "$(npm config get ignore-scripts)" = "true"
+test "$(npm config get foreground-scripts)" = "true"
+test "$(npm config get fund)" = "false"
+test "$(npm config get audit)" = "true"
+test "$(npm config get save-exact)" = "true"
+test -d /workspaces/.anvil/reports
+test -w /workspaces/.anvil/reports
+
+for command in jq rg lsof strace python3; do
+  command -v "$command" >/dev/null
+done
+
+for command in \
+  anvil-npm-ci-safe \
+  anvil-npm-ci-observed \
+  anvil-dep-report \
+  anvil-scan-lifecycle-scripts \
+  anvil-scan-install-logs \
+  anvil-network-monitor \
+  anvil-risk-gate \
+  anvil-use-registry \
+  anvil-submit-report \
+  anvil-submit-report-if-configured
+do
+  command -v "$command" >/dev/null
+done
+'
+
+echo "[anvil] Node Base image smoke passed."

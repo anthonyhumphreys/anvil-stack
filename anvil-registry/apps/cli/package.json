@@ -1,0 +1,25 @@
+{
+  "name": "@anvilstack/cli",
+  "version": "0.1.0",
+  "description": "Command-line client for Anvil Registry package decisions, lockfile scans, reports, and overrides.",
+  "private": false,
+  "type": "module",
+  "bin": {
+    "anvil": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "dev": "tsx src/index.ts",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "prepublishOnly": "pnpm run build && pnpm run test",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
+}

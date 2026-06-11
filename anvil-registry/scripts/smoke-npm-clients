@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REGISTRY_URL="${ANVIL_REGISTRY_URL:-http://localhost:4873}"
+WORK_DIR="$(mktemp -d)"
+NPM_AUDIT="${ANVIL_CLIENT_SMOKE_NPM_AUDIT:-true}"
+
+trap 'rm -rf "$WORK_DIR"' EXIT
+
+if [[ -n "${ANVIL_CLIENT_SMOKE_PACKAGE:-}" ]]; then
+  PACKAGE_TARGETS=("$ANVIL_CLIENT_SMOKE_PACKAGE")
+elif [[ -n "${ANVIL_CLIENT_SMOKE_PACKAGES:-}" ]]; then
+  read -r -a PACKAGE_TARGETS <<< "$ANVIL_CLIENT_SMOKE_PACKAGES"
+else
+  PACKAGE_TARGETS=("is-number@7.0.0" "@colors/colors@1.6.0")
+fi
+
+for target in "${PACKAGE_TARGETS[@]}"; do
+  package_name="${target%@*}"
+  package_version="${target##*@}"
+  if [[ "$package_name" == "$package_version" ]]; then
+    echo "[anvil] Client smoke packages must include explicit versions, for example is-number@7.0.0" >&2
+    exit 1
+  fi
+  if [[ -z "$package_name" || -z "$package_version" ]]; then
+    echo "[anvil] Client smoke packages must include package names and explicit versions, for example @scope/pkg@1.0.0" >&2
+    exit 1
+  fi
+done
+
+echo "[anvil] Client smoke packages: ${PACKAGE_TARGETS[*]}"
+echo "[anvil] npm audit smoke: $NPM_AUDIT"
+node - "$REGISTRY_URL" <<'NODE'
+const [registryUrl] = process.argv.slice(2);
+const response = await fetch(`${registryUrl.replace(/\/+$/, "")}/-/ready`);
+if (!response.ok) {
+  throw new Error(`[anvil] Gateway is not ready: ${response.status} ${response.statusText}`);
+}
+NODE
+
+smoke_npm() {
+  local dir="$WORK_DIR/npm"
+  mkdir -p "$dir"
+  write_package_json "$dir" "npm-client-smoke"
+  echo "[anvil] npm install through Anvil"
+  (
+    cd "$dir"
+    if [[ "$NPM_AUDIT" == "true" ]]; then
+      NO_UPDATE_NOTIFIER=1 npm_config_update_notifier=false npm_config_cache="$WORK_DIR/npm-cache" npm install \
+        --ignore-scripts \
+        --registry="$REGISTRY_URL" \
+        --fund=false \
+        "${PACKAGE_TARGETS[@]}" >/dev/null
+    else
+      NO_UPDATE_NOTIFIER=1 npm_config_update_notifier=false npm_config_cache="$WORK_DIR/npm-cache" npm install \
+        --ignore-scripts \
+        --registry="$REGISTRY_URL" \
+        --package-lock=false \
+        --no-audit \
+        --fund=false \
+        "${PACKAGE_TARGETS[@]}" >/dev/null
+    fi
+    verify_targets
+    if [[ "$NPM_AUDIT" == "true" ]]; then
+      echo "[anvil] npm audit through Anvil"
+      NO_UPDATE_NOTIFIER=1 npm_config_update_notifier=false npm_config_cache="$WORK_DIR/npm-cache" npm audit \
+        --ignore-scripts \
+        --registry="$REGISTRY_URL" \
+        --audit-level=none \
+        --fund=false >/dev/null
+    fi
+  )
+}
+
+smoke_pnpm() {
+  local dir="$WORK_DIR/pnpm"
+  mkdir -p "$dir"
+  write_package_json "$dir" "pnpm-client-smoke"
+  echo "[anvil] pnpm add through Anvil"
+  (
+    cd "$dir"
+    pnpm add \
+      --ignore-scripts \
+      --config.registry="$REGISTRY_URL" \
+      "${PACKAGE_TARGETS[@]}" >/dev/null
+    verify_targets
+  )
+}
+
+smoke_yarn() {
+  local dir="$WORK_DIR/yarn"
+  mkdir -p "$dir"
+  write_package_json "$dir" "yarn-client-smoke"
+  echo "[anvil] yarn add through Anvil"
+  (
+    cd "$dir"
+    COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack yarn@1.22.22 add \
+      --ignore-scripts \
+      --registry "$REGISTRY_URL" \
+      --non-interactive \
+      "${PACKAGE_TARGETS[@]}" >/dev/null
+    verify_targets
+  )
+}
+
+write_package_json() {
+  local dir="$1"
+  local package_name="$2"
+  cat > "$dir/package.json" <<JSON
+{
+  "name": "$package_name",
+  "version": "0.0.0",
+  "private": true
+}
+JSON
+}
+
+verify_targets() {
+  for target in "${PACKAGE_TARGETS[@]}"; do
+    local package_name="${target%@*}"
+    local expected_version="${target##*@}"
+    verify_package "$package_name" "$expected_version"
+  done
+}
+
+verify_package() {
+  local package_name="$1"
+  local expected_version="$2"
+  node - "$package_name" "$expected_version" <<'NODE'
+const [packageName, expectedVersion] = process.argv.slice(2);
+const packageJson = require(`${process.cwd()}/node_modules/${packageName}/package.json`);
+if (packageJson.version !== expectedVersion) {
+  throw new Error(`[anvil] Expected ${packageName}@${expectedVersion}, installed ${packageJson.version}`);
+}
+NODE
+}
+
+smoke_npm
+smoke_pnpm
+smoke_yarn
+
+echo "[anvil] npm, pnpm, and yarn client smokes passed."

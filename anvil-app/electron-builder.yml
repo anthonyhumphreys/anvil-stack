@@ -1,0 +1,34 @@
+appId: dev.anthonyhumphreys.anvil
+productName: Anvil
+copyright: AnthonyHumphreys.dev
+
+directories:
+  output: dist
+  buildResources: resources
+
+files:
+  - 'out/**/*'
+  - 'prompts/**/*'
+  - 'scripts/**/*'
+  - 'node_modules/**/*'
+  - '!node_modules/**/test*'
+
+extraResources:
+  - from: resources/anvil.png
+    to: anvil.png
+  - from: resources/apple-foundation-models-helper.swift
+    to: apple-foundation-models-helper.swift
+
+mac:
+  target: [dmg, zip]
+  icon: resources/anvil.icns
+  category: public.app-category.developer-tools
+
+win:
+  target: [nsis, portable]
+  icon: resources/anvil.png
+
+linux:
+  target: [AppImage, deb]
+  icon: resources/anvil.png
+  category: Development

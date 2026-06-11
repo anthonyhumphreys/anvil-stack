@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REGISTRY_URL="${1:-${ANVIL_REGISTRY_URL:-}}"
+NPMRC_PATH="${ANVIL_NPMRC_PATH:-.npmrc}"
+
+if [[ -z "$REGISTRY_URL" ]]; then
+  echo "[anvil] Missing registry URL. Set ANVIL_REGISTRY_URL or pass a URL as the first argument." >&2
+  exit 64
+fi
+
+node - "$REGISTRY_URL" "$NPMRC_PATH" <<'NODE'
+const fs = require("fs");
+const path = require("path");
+
+const rawRegistryUrl = process.argv[2];
+const npmrcPath = process.argv[3];
+let registryUrl;
+
+try {
+  registryUrl = new URL(rawRegistryUrl);
+} catch {
+  console.error(`[anvil] Invalid registry URL: ${rawRegistryUrl}`);
+  process.exit(64);
+}
+
+if (!["http:", "https:"].includes(registryUrl.protocol)) {
+  console.error("[anvil] Registry URL must use http or https.");
+  process.exit(64);
+}
+
+if (registryUrl.username || registryUrl.password) {
+  console.error("[anvil] Registry URL must not contain credentials. Put auth in a separate npm config entry if you really need it.");
+  process.exit(64);
+}
+
+registryUrl.hash = "";
+const normalizedRegistry = registryUrl.toString().replace(/\/$/, "");
+const managed = new Map([
+  ["registry", normalizedRegistry],
+  ["ignore-scripts", "true"],
+  ["fund", "false"],
+  ["audit", "true"],
+  ["save-exact", "true"],
+  ["foreground-scripts", "true"]
+]);
+const managedKeys = new Set(managed.keys());
+const preserveScopedRegistries = process.env.ANVIL_PRESERVE_SCOPED_REGISTRIES === "true";
+let removedScopedRegistries = 0;
+const existing = fs.existsSync(npmrcPath) ? fs.readFileSync(npmrcPath, "utf8").split(/\r?\n/) : [];
+const retained = existing.filter((line) => {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith(";")) return true;
+  const key = trimmed.split("=", 1)[0]?.trim();
+  if (managedKeys.has(key)) return false;
+  if (!preserveScopedRegistries && /^@[^:]+:registry$/.test(key)) {
+    removedScopedRegistries += 1;
+    return false;
+  }
+  return true;
+});
+const lines = retained.filter((line, index, all) => line !== "" || all[index - 1] !== "");
+
+if (lines.length > 0 && lines.at(-1) !== "") {
+  lines.push("");
+}
+
+lines.push("# Managed by Anvil Node Base");
+for (const [key, value] of managed) {
+  lines.push(`${key}=${value}`);
+}
+
+fs.mkdirSync(path.dirname(path.resolve(npmrcPath)), { recursive: true });
+fs.writeFileSync(npmrcPath, `${lines.join("\n")}\n`);
+
+console.log(`[anvil] Wrote npm registry config to ${npmrcPath}`);
+console.log(`[anvil] registry=${normalizedRegistry}`);
+if (removedScopedRegistries > 0) {
+  console.log(`[anvil] removed ${removedScopedRegistries} scoped registry override(s) so scoped packages route through Anvil`);
+}
+NODE

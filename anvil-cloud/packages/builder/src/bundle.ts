@@ -1,0 +1,156 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { build, type Plugin } from "esbuild";
+
+import { errorDiagnostic, type BuilderDiagnostic } from "./diagnostics.js";
+
+export type BundleOptions = {
+  rootDir: string;
+  entry: string;
+  outfile: string;
+};
+
+export async function bundleServer(
+  options: BundleOptions,
+): Promise<BuilderDiagnostic[]> {
+  return runEsbuild({
+    ...options,
+    platform: "node",
+    format: "esm",
+    sourcemap: true,
+    bundle: true,
+    target: "node20",
+  });
+}
+
+export async function bundleClient(
+  options: BundleOptions & { indexFile: string },
+): Promise<BuilderDiagnostic[]> {
+  const diagnostics = await runEsbuild({
+    ...options,
+    platform: "browser",
+    format: "esm",
+    sourcemap: true,
+    bundle: true,
+    target: "es2022",
+  });
+
+  if (diagnostics.length > 0) {
+    return diagnostics;
+  }
+
+  const scriptPath = path.relative(
+    path.dirname(options.indexFile),
+    options.outfile,
+  );
+
+  await writeFile(
+    options.indexFile,
+    [
+      "<!doctype html>",
+      '<html lang="en">',
+      "  <head>",
+      '    <meta charset="utf-8" />',
+      '    <meta name="viewport" content="width=device-width, initial-scale=1" />',
+      "    <title>Anvil Cell</title>",
+      "  </head>",
+      "  <body>",
+      '    <div id="root"></div>',
+      `    <script type="module" src="./${toPosixPath(scriptPath)}"></script>`,
+      "  </body>",
+      "</html>",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+
+  return [];
+}
+
+type EsbuildOptions = BundleOptions & {
+  platform: "browser" | "node";
+  format: "esm";
+  sourcemap: boolean;
+  bundle: boolean;
+  target: string;
+};
+
+async function runEsbuild(
+  options: EsbuildOptions,
+): Promise<BuilderDiagnostic[]> {
+  try {
+    await mkdir(path.dirname(options.outfile), { recursive: true });
+    await build({
+      entryPoints: [options.entry],
+      outfile: options.outfile,
+      bundle: options.bundle,
+      platform: options.platform,
+      format: options.format,
+      target: options.target,
+      sourcemap: options.sourcemap,
+      absWorkingDir: options.rootDir,
+      plugins: [workspacePackagePlugin()],
+      logLevel: "silent",
+    });
+
+    return [];
+  } catch (error) {
+    return [
+      errorDiagnostic({
+        code: "BUNDLE_FAILED",
+        message:
+          error instanceof Error
+            ? error.message
+            : "The Cell bundle failed to build.",
+      }),
+    ];
+  }
+}
+
+function workspacePackagePlugin(): Plugin {
+  const packageSources = resolveWorkspacePackageSources();
+
+  return {
+    name: "anvil-workspace-packages",
+    setup(buildApi) {
+      buildApi.onResolve(
+        { filter: /^@anvil-cloud\/(runtime|client)$/ },
+        (args) => {
+          const source = packageSources.get(args.path);
+
+          if (!source) {
+            return undefined;
+          }
+
+          return {
+            path: source,
+          };
+        },
+      );
+    },
+  };
+}
+
+function resolveWorkspacePackageSources(): Map<string, string> {
+  const currentFile = fileURLToPath(import.meta.url);
+  const packageRoot = path.resolve(path.dirname(currentFile), "..");
+  const packagesRoot = path.resolve(packageRoot, "..");
+  const sources = new Map<string, string>();
+
+  sources.set(
+    "@anvil-cloud/runtime",
+    path.join(packagesRoot, "runtime", "src", "index.ts"),
+  );
+  sources.set(
+    "@anvil-cloud/client",
+    path.join(packagesRoot, "client", "src", "index.ts"),
+  );
+
+  return sources;
+}
+
+function toPosixPath(value: string): string {
+  return value.split(path.sep).join("/");
+}

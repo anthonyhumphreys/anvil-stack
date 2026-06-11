@@ -1,0 +1,31 @@
+{
+  "name": "@anvilstack/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/index.ts",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@anvilstack/config": "workspace:*",
+    "@anvilstack/llm-risk-review": "workspace:*",
+    "@anvilstack/logger": "workspace:*",
+    "@anvilstack/name-squatting": "workspace:*",
+    "@anvilstack/npm-registry": "workspace:*",
+    "@anvilstack/object-store": "workspace:*",
+    "@anvilstack/package-analysis": "workspace:*",
+    "@anvilstack/persistence": "workspace:*",
+    "@anvilstack/policy-engine": "workspace:*",
+    "@anvilstack/provenance": "workspace:*",
+    "@anvilstack/queue": "workspace:*",
+    "@anvilstack/shared": "workspace:*",
+    "semver": "^7.7.2"
+  },
+  "devDependencies": {
+    "@types/semver": "^7.7.0"
+  }
+}

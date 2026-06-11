@@ -1,0 +1,12 @@
+node_modules/
+/package-lock.json
+.next/
+.open-next/
+.sst/
+dist/
+out/
+*.db
+*.db-journal
+.env
+.DS_Store
+.superpowers/

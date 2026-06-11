@@ -1,0 +1,180 @@
+import { randomUUID } from "node:crypto";
+
+import {
+  handleRuntimeRequest,
+  type AppDefinition,
+  type RuntimeHost,
+  type RuntimeResponse,
+} from "@anvil-cloud/runtime";
+
+import {
+  createAwsRuntimeHandler,
+  type AwsHttpEvent,
+  type AwsHttpResponse,
+} from "./http.js";
+
+export type AwsSqsEvent = {
+  Records: Array<{
+    messageId?: string;
+    body: string;
+    eventSource?: string;
+  }>;
+};
+
+export type AwsScheduledJobEvent = {
+  id?: string;
+  source?: string;
+  detail?: {
+    name?: unknown;
+    payload?: unknown;
+  };
+};
+
+export type AwsLambdaRuntimeEvent =
+  | AwsHttpEvent
+  | AwsSqsEvent
+  | AwsScheduledJobEvent;
+
+export type AwsLambdaRuntimeResult =
+  | AwsHttpResponse
+  | {
+      batchItemFailures: Array<{ itemIdentifier: string }>;
+    }
+  | void;
+
+export type AwsLambdaRuntimeHandler = (
+  event: AwsLambdaRuntimeEvent,
+) => Promise<AwsLambdaRuntimeResult>;
+
+export function createAwsLambdaRuntimeHandler(
+  app: AppDefinition,
+  host: RuntimeHost,
+): AwsLambdaRuntimeHandler {
+  const httpHandler = createAwsRuntimeHandler(app, host);
+
+  return async (event) => {
+    if (isSqsEvent(event)) {
+      return handleSqsEvent(app, host, event);
+    }
+
+    if (isScheduledJobEvent(event)) {
+      await runJob(app, host, {
+        name: event.detail.name,
+        payload: event.detail.payload,
+        requestId: event.id ?? randomUUID(),
+      });
+      return;
+    }
+
+    return httpHandler(event as AwsHttpEvent);
+  };
+}
+
+async function handleSqsEvent(
+  app: AppDefinition,
+  host: RuntimeHost,
+  event: AwsSqsEvent,
+): Promise<{ batchItemFailures: Array<{ itemIdentifier: string }> }> {
+  const failures: Array<{ itemIdentifier: string }> = [];
+
+  for (const record of event.Records) {
+    try {
+      const message = parseJobMessage(record.body);
+
+      await runJob(app, host, {
+        name: message.name,
+        payload: message.payload,
+        requestId: record.messageId ?? randomUUID(),
+      });
+    } catch {
+      if (record.messageId) {
+        failures.push({
+          itemIdentifier: record.messageId,
+        });
+      } else {
+        throw new Error("SQS job record failed without a message id.");
+      }
+    }
+  }
+
+  return { batchItemFailures: failures };
+}
+
+async function runJob(
+  app: AppDefinition,
+  host: RuntimeHost,
+  input: {
+    name: unknown;
+    payload: unknown;
+    requestId: string;
+  },
+): Promise<RuntimeResponse> {
+  if (typeof input.name !== "string" || input.name.length === 0) {
+    throw new Error("AWS job event is missing a string job name.");
+  }
+
+  const response = await handleRuntimeRequest(app, host, {
+    kind: "job",
+    name: input.name,
+    payload: input.payload,
+    requestId: input.requestId,
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      response.error?.message ?? `AWS job '${input.name}' failed.`,
+    );
+  }
+
+  return response;
+}
+
+function parseJobMessage(body: string): { name: unknown; payload: unknown } {
+  const parsed = JSON.parse(body) as unknown;
+
+  if (!isObject(parsed)) {
+    throw new Error("SQS job message body must be a JSON object.");
+  }
+
+  return {
+    name: parsed.name,
+    payload: "payload" in parsed ? parsed.payload : null,
+  };
+}
+
+function isSqsEvent(event: AwsLambdaRuntimeEvent): event is AwsSqsEvent {
+  if (!isObject(event)) {
+    return false;
+  }
+
+  const candidate = event as Record<string, unknown>;
+
+  if (!Array.isArray(candidate.Records)) {
+    return false;
+  }
+
+  return (candidate.Records as Array<Record<string, unknown>>).some(
+    (record) => record.eventSource === "aws:sqs",
+  );
+}
+
+function isScheduledJobEvent(
+  event: AwsLambdaRuntimeEvent,
+): event is AwsScheduledJobEvent & {
+  detail: { name: unknown; payload?: unknown };
+} {
+  if (!isObject(event)) {
+    return false;
+  }
+
+  const candidate = event as Record<string, unknown>;
+  const detail = candidate.detail;
+
+  return (
+    candidate.source === "anvil.jobs" && isObject(detail) && "name" in detail
+  );
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}

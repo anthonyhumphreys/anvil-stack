@@ -1,0 +1,41 @@
+{
+  "name": "anvil-registry",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.11.0",
+  "scripts": {
+    "build": "turbo run build",
+    "db:migrate": "pnpm --filter @anvilstack/persistence db:migrate",
+    "dev:gateway": "pnpm --filter @anvilstack/registry dev",
+    "dev:worker": "pnpm --filter @anvilstack/worker dev",
+    "lint": "turbo run lint",
+    "smoke:analysis": "./scripts/smoke-analysis-queue",
+    "smoke:clients": "./scripts/smoke-npm-clients",
+    "smoke:llm-review": "./scripts/smoke-llm-review",
+    "smoke:local": "ANVIL_REGISTRY_URL=http://localhost:4873 ANVIL_ADMIN_URL=http://localhost:3000 pnpm --filter @anvilstack/cli dev -- smoke",
+    "smoke:node-base-image": "./scripts/smoke-node-base-image",
+    "smoke:node-base-image-observed": "./scripts/smoke-node-base-image-observed",
+    "smoke:node-base-image-report": "./scripts/smoke-node-base-image-report",
+    "smoke:node-base-report": "./scripts/smoke-node-base-report",
+    "smoke:scoped-upstream": "tsx scripts/smoke-scoped-upstream.ts",
+    "sst:preflight": "pnpm --dir infra/sst deploy:preflight",
+    "sst:migrate": "pnpm --dir infra/sst sst shell -- pnpm --filter @anvilstack/infra-sst migrate:run",
+    "test:node-base": "./devcontainer-base/scripts/test-node-base-scripts",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
+    "typecheck:smokes": "tsc --noEmit --module NodeNext --moduleResolution NodeNext --target ES2022 --types node --skipLibCheck scripts/smoke-scoped-upstream.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.21",
+    "tsx": "^4.19.4",
+    "turbo": "^2.5.3",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.4"
+  },
+  "pnpm": {
+    "overrides": {
+      "postcss": "8.5.15"
+    }
+  }
+}

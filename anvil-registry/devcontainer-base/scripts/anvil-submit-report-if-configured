@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPORT_PATH="${1:-}"
+REPORT_TYPE="${2:-}"
+
+if [[ -z "$REPORT_PATH" || -z "$REPORT_TYPE" ]]; then
+  echo "[anvil] Usage: anvil-submit-report-if-configured <report-json-path> <dependency|ioc|lifecycle|network>" >&2
+  exit 64
+fi
+
+if [[ -z "${ANVIL_REGISTRY_URL:-}" ]]; then
+  exit 0
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SUBMIT_BIN="${ANVIL_SUBMIT_REPORT_BIN:-}"
+
+if [[ -z "$SUBMIT_BIN" ]]; then
+  if command -v anvil-submit-report >/dev/null 2>&1; then
+    SUBMIT_BIN="anvil-submit-report"
+  else
+    SUBMIT_BIN="$SCRIPT_DIR/anvil-submit-report"
+  fi
+fi
+
+set +e
+"$SUBMIT_BIN" "$REPORT_PATH" "$REPORT_TYPE"
+STATUS=$?
+set -e
+
+if [[ "$STATUS" -ne 0 ]]; then
+  echo "[anvil] Failed to submit $REPORT_TYPE report from $REPORT_PATH" >&2
+  if [[ "${ANVIL_REPORT_SUBMIT_STRICT:-false}" == "true" ]]; then
+    exit "$STATUS"
+  fi
+fi

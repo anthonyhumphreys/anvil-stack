@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPORT_DIR="$(mktemp -d)"
+trap 'rm -rf "$REPORT_DIR"' EXIT
+
+REGISTRY_URL="${ANVIL_REGISTRY_URL:-http://localhost:4873}"
+ADMIN_URL="${ANVIL_ADMIN_URL:-http://localhost:3000}"
+ADMIN_TOKEN="${ANVIL_ADMIN_TOKEN:-${ADMIN_TOKEN:-local-dev-token}}"
+PROJECT_NAME="anvil-smoke-$(date +%s)"
+REPORT_PATH="$REPORT_DIR/network-report.json"
+
+cat > "$REPORT_PATH" <<JSON
+{
+  "generatedAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+  "summary": {
+    "outboundConnections": 1,
+    "high": 0,
+    "medium": 1
+  },
+  "highConfidenceFindings": [],
+  "mediumConfidenceFindings": [
+    {
+      "code": "NON_STANDARD_PORT",
+      "source": "strace",
+      "line": 8,
+      "evidence": "connect to 198.51.100.10:8080"
+    }
+  ],
+  "networkSummary": {
+    "totalConnections": 1,
+    "byPort": [{ "port": 8080, "count": 1 }],
+    "byAddress": [{ "address": "198.51.100.10", "count": 1 }],
+    "connections": [
+      { "pid": "321", "family": "AF_INET", "address": "198.51.100.10", "port": 8080, "line": 8 }
+    ]
+  }
+}
+JSON
+
+echo "[anvil] Submitting Node Base network report for $PROJECT_NAME"
+ANVIL_REGISTRY_URL="$REGISTRY_URL" \
+ANVIL_ADMIN_TOKEN="$ADMIN_TOKEN" \
+ANVIL_PROJECT_NAME="$PROJECT_NAME" \
+ANVIL_REPORT_SOURCE="anvil-node-base-smoke" \
+  "$ROOT_DIR/devcontainer-base/scripts/anvil-submit-report" "$REPORT_PATH" network
+
+REPORT_ID="$(node - "$ADMIN_URL" "$ADMIN_TOKEN" "$PROJECT_NAME" <<'NODE'
+const [adminUrl, adminToken, projectName] = process.argv.slice(2);
+const endpoint = `${adminUrl.replace(/\/+$/, "")}/api/node-base/reports?reportType=network&limit=50`;
+const response = await fetch(endpoint, { headers: { authorization: `Bearer ${adminToken}` } });
+if (!response.ok) {
+  console.error(`[anvil] Failed to query Admin reports: ${response.status} ${response.statusText}`);
+  process.exit(1);
+}
+const body = await response.json();
+const report = (body.reports || []).find((candidate) => candidate.projectName === projectName && candidate.reportType === "network");
+if (!report?.id) {
+  console.error(`[anvil] Submitted report was not found in Admin API for ${projectName}`);
+  process.exit(1);
+}
+console.log(report.id);
+NODE
+)"
+
+echo "[anvil] Admin API found report $REPORT_ID"
+
+LIST_OUTPUT="$(
+  ANVIL_ADMIN_URL="$ADMIN_URL" ANVIL_ADMIN_TOKEN="$ADMIN_TOKEN" pnpm --dir "$ROOT_DIR" --filter @anvilstack/cli dev -- node-base reports --type network --limit 50
+)"
+if [[ "$LIST_OUTPUT" != *"$PROJECT_NAME"* ]]; then
+  echo "$LIST_OUTPUT"
+  echo "[anvil] CLI report list did not include $PROJECT_NAME" >&2
+  exit 1
+fi
+
+DETAIL_OUTPUT="$(
+  ANVIL_ADMIN_URL="$ADMIN_URL" ANVIL_ADMIN_TOKEN="$ADMIN_TOKEN" pnpm --dir "$ROOT_DIR" --filter @anvilstack/cli dev -- node-base report "$REPORT_ID"
+)"
+if [[ "$DETAIL_OUTPUT" != *"NON_STANDARD_PORT"* || "$DETAIL_OUTPUT" != *"198.51.100.10:8080"* ]]; then
+  echo "$DETAIL_OUTPUT"
+  echo "[anvil] CLI report detail did not include expected network finding" >&2
+  exit 1
+fi
+
+echo "$LIST_OUTPUT"
+echo "$DETAIL_OUTPUT"
+echo "[anvil] Node Base report smoke passed."

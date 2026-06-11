@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  cat <<'HELP'
+Usage: anvil-risk-gate <report-json-path> <dependency|ioc|lifecycle|network>
+
+Apply Anvil Node Base strict-mode exit policy to a generated report.
+
+Environment:
+  ANVIL_STRICT=false|true
+  ANVIL_STRICT_RISK_LEVEL=high|medium|off
+  ANVIL_STRICT_LIFECYCLE_MODE=any|risk|off
+
+Defaults preserve the original safe-mode behaviour:
+  - strict mode is disabled unless ANVIL_STRICT=true
+  - IOC/network reports fail on high-confidence findings
+  - lifecycle reports fail when any lifecycle scripts are present
+HELP
+  exit 0
+fi
+
+REPORT_PATH="${1:-}"
+REPORT_TYPE="${2:-}"
+
+if [[ -z "$REPORT_PATH" || -z "$REPORT_TYPE" ]]; then
+  echo "[anvil] Usage: anvil-risk-gate <report-json-path> <dependency|ioc|lifecycle|network>" >&2
+  exit 64
+fi
+
+if [[ ! -f "$REPORT_PATH" ]]; then
+  echo "[anvil] Risk gate report not found: $REPORT_PATH" >&2
+  exit 66
+fi
+
+if [[ "${ANVIL_STRICT:-false}" != "true" ]]; then
+  exit 0
+fi
+
+STRICT_RISK_LEVEL="${ANVIL_STRICT_RISK_LEVEL:-high}"
+STRICT_LIFECYCLE_MODE="${ANVIL_STRICT_LIFECYCLE_MODE:-any}"
+
+case "$STRICT_RISK_LEVEL" in
+  high|medium|off) ;;
+  *)
+    echo "[anvil] Invalid ANVIL_STRICT_RISK_LEVEL=$STRICT_RISK_LEVEL; expected high, medium, or off" >&2
+    exit 64
+    ;;
+esac
+
+case "$STRICT_LIFECYCLE_MODE" in
+  any|risk|off) ;;
+  *)
+    echo "[anvil] Invalid ANVIL_STRICT_LIFECYCLE_MODE=$STRICT_LIFECYCLE_MODE; expected any, risk, or off" >&2
+    exit 64
+    ;;
+esac
+
+HIGH_COUNT="$(
+  jq '[
+    (.highConfidenceFindings | if type == "array" then length else 0 end),
+    (.summary.high // 0),
+    (.summary.highConfidenceFindings // 0)
+  ] | map(select(type == "number")) | add // 0' "$REPORT_PATH"
+)"
+MEDIUM_COUNT="$(
+  jq '[
+    (.mediumConfidenceFindings | if type == "array" then length else 0 end),
+    (.summary.medium // 0),
+    (.summary.mediumConfidenceFindings // 0)
+  ] | map(select(type == "number")) | add // 0' "$REPORT_PATH"
+)"
+LIFECYCLE_COUNT="$(jq '(.summary.packagesWithLifecycleScripts // (.packages | length) // 0)' "$REPORT_PATH")"
+
+should_block_for_risk=false
+if [[ "$STRICT_RISK_LEVEL" == "high" && "$HIGH_COUNT" -gt 0 ]]; then
+  should_block_for_risk=true
+elif [[ "$STRICT_RISK_LEVEL" == "medium" && $((HIGH_COUNT + MEDIUM_COUNT)) -gt 0 ]]; then
+  should_block_for_risk=true
+fi
+
+case "$REPORT_TYPE" in
+  lifecycle)
+    if [[ "$STRICT_LIFECYCLE_MODE" == "off" ]]; then
+      exit 0
+    fi
+    if [[ "$STRICT_LIFECYCLE_MODE" == "any" && "$LIFECYCLE_COUNT" -gt 0 ]]; then
+      echo "[anvil] Strict mode: dependencies contain lifecycle scripts"
+      exit 20
+    fi
+    if [[ "$STRICT_LIFECYCLE_MODE" == "risk" && "$should_block_for_risk" == "true" ]]; then
+      echo "[anvil] Strict mode: lifecycle-script risk findings detected"
+      exit 20
+    fi
+    ;;
+  dependency)
+    if [[ "$should_block_for_risk" == "true" ]]; then
+      echo "[anvil] Strict mode: dependency report risk findings detected"
+      exit 23
+    fi
+    ;;
+  ioc)
+    if [[ "$should_block_for_risk" == "true" ]]; then
+      echo "[anvil] Strict mode: IOC findings detected"
+      exit 21
+    fi
+    ;;
+  network)
+    if [[ "$should_block_for_risk" == "true" ]]; then
+      echo "[anvil] Strict mode: network IOC findings detected"
+      exit 22
+    fi
+    ;;
+  *)
+    echo "[anvil] Unknown report type for risk gate: $REPORT_TYPE" >&2
+    exit 64
+    ;;
+esac
