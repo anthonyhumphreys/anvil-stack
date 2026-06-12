@@ -1,0 +1,682 @@
+/**
+ * Anvil Lens: the local inspection and debugging surface.
+ *
+ * A single self-contained HTML page served by the local runtime at
+ * `GET /_anvil/lens`. It talks to the existing `/_anvil/*` JSON routes on
+ * the same origin, uses no frameworks, no build step, and no external
+ * assets, so it works fully offline.
+ */
+export const lensPageHtml = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Anvil Lens</title>
+<style>
+:root {
+  --bg: #101216;
+  --panel: #171a21;
+  --panel-2: #1d212b;
+  --border: #2a2f3b;
+  --text: #d7dae2;
+  --muted: #8a90a0;
+  --accent: #e8854a;
+  --green: #4cc38a;
+  --amber: #e5b454;
+  --red: #e5645a;
+  --gray: #6f7585;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+header .brand { color: var(--accent); font-weight: 700; letter-spacing: 0.04em; }
+header .cell { font-weight: 600; }
+header .url { color: var(--muted); margin-left: auto; }
+nav {
+  display: flex;
+  gap: 2px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+nav button {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font: inherit;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+nav button:hover { color: var(--text); }
+nav button.active { color: var(--text); border-bottom-color: var(--accent); }
+main { padding: 16px; max-width: 1100px; }
+section { display: none; }
+section.active { display: block; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 18px 0 8px; }
+.panel { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 12px; margin-bottom: 12px; }
+.banner {
+  background: #2b1c1a;
+  border: 1px solid var(--red);
+  color: #f0b6b1;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  display: none;
+  white-space: pre-wrap;
+}
+.banner.show { display: block; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; }
+tr.clickable { cursor: pointer; }
+tr.clickable:hover td { background: var(--panel-2); }
+.badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  border: 1px solid var(--gray);
+  color: var(--gray);
+}
+.badge.running, .badge.starting { border-color: var(--amber); color: var(--amber); }
+.badge.completed { border-color: var(--green); color: var(--green); }
+.badge.failed, .badge.error, .badge.crashed { border-color: var(--red); color: var(--red); }
+.badge.stopped, .badge.pending { border-color: var(--gray); color: var(--gray); }
+.stat-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+.stat {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 14px;
+  min-width: 110px;
+}
+.stat .n { font-size: 20px; color: var(--accent); }
+.stat .l { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+button.act {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  border-radius: 4px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+button.act:hover { border-color: var(--accent); color: var(--accent); }
+input, select, textarea {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font: inherit;
+  border-radius: 4px;
+  padding: 4px 8px;
+}
+textarea { width: 100%; min-height: 56px; resize: vertical; }
+form.inline { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px;
+  overflow: auto;
+  margin: 6px 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.muted { color: var(--muted); }
+.toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.level-error { color: var(--red); }
+.level-warn { color: var(--amber); }
+.level-info { color: var(--text); }
+.level-debug { color: var(--muted); }
+.token-box { display: none; margin-top: 6px; }
+.token-box.show { display: block; }
+.cap { display: inline-block; background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px; margin: 2px; }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">Anvil Lens</span>
+  <span class="cell" id="hdr-cell">…</span>
+  <span class="url" id="hdr-url"></span>
+</header>
+<nav id="tabs">
+  <button data-tab="overview" class="active">Overview</button>
+  <button data-tab="logs">Logs</button>
+  <button data-tab="database">Database</button>
+  <button data-tab="auth">Auth</button>
+  <button data-tab="workflows">Workflows</button>
+  <button data-tab="services">Services</button>
+</nav>
+<main>
+  <div class="banner" id="banner"></div>
+
+  <section id="tab-overview" class="active">
+    <h2>Manifest summary</h2>
+    <div class="stat-grid" id="overview-stats"></div>
+    <h2>Capabilities</h2>
+    <div class="panel" id="overview-caps"><span class="muted">Loading…</span></div>
+  </section>
+
+  <section id="tab-logs">
+    <div class="toolbar">
+      <label>Level
+        <select id="log-level">
+          <option value="">all</option>
+          <option value="debug">debug</option>
+          <option value="info">info</option>
+          <option value="warn">warn</option>
+          <option value="error">error</option>
+        </select>
+      </label>
+      <button class="act" id="log-pause">Pause</button>
+      <span class="muted" id="log-status">auto-refresh: 5s</span>
+    </div>
+    <div class="panel"><table id="log-table">
+      <thead><tr><th>time</th><th>level</th><th>handler</th><th>message</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </section>
+
+  <section id="tab-database">
+    <h2>Tables</h2>
+    <div class="panel"><table id="db-tables">
+      <thead><tr><th>table</th><th>rows</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+    <h2 id="db-rows-title" style="display:none">Rows</h2>
+    <div class="panel" id="db-rows-panel" style="display:none"></div>
+  </section>
+
+  <section id="tab-auth">
+    <h2>Create user</h2>
+    <div class="panel">
+      <form class="inline" id="auth-form">
+        <input id="auth-userid" placeholder="userId" required>
+        <input id="auth-email" placeholder="email (optional)">
+        <input id="auth-roles" placeholder="roles, comma-separated">
+        <button class="act" type="submit">Create</button>
+      </form>
+    </div>
+    <h2>Users</h2>
+    <div class="panel"><table id="auth-users">
+      <thead><tr><th>userId</th><th>email</th><th>roles</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+    <div class="token-box panel" id="token-box">
+      <div class="muted" id="token-label"></div>
+      <pre id="token-value"></pre>
+      <button class="act" id="token-copy">Copy token</button>
+    </div>
+  </section>
+
+  <section id="tab-workflows">
+    <h2>Declared workflows</h2>
+    <div class="panel" id="wf-declared"><span class="muted">Loading…</span></div>
+    <h2>Runs</h2>
+    <div class="panel"><table id="wf-runs">
+      <thead><tr><th>runId</th><th>workflow</th><th>status</th><th>created</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+    <h2 id="wf-detail-title" style="display:none">Run detail</h2>
+    <div class="panel" id="wf-detail" style="display:none"></div>
+  </section>
+
+  <section id="tab-services">
+    <div class="panel"><table id="svc-table">
+      <thead><tr><th>service</th><th>state</th><th>restarts</th><th>actions</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </section>
+</main>
+<script>
+(function () {
+  "use strict";
+
+  var banner = document.getElementById("banner");
+
+  function showError(message) {
+    banner.textContent = message;
+    banner.classList.add("show");
+  }
+
+  function clearError() {
+    banner.classList.remove("show");
+  }
+
+  function getJson(path) {
+    return fetch(path).then(function (response) {
+      return response.json().then(function (payload) {
+        if (!response.ok && !(payload && payload.ok)) {
+          var detail = payload && payload.error && payload.error.message;
+          throw new Error(path + " failed: " + (detail || response.status));
+        }
+        return payload;
+      });
+    });
+  }
+
+  function postJson(path, body) {
+    return fetch(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body || {})
+    }).then(function (response) {
+      return response.json().then(function (payload) {
+        if (!payload || payload.ok !== true) {
+          var detail = payload && payload.error && payload.error.message;
+          throw new Error(path + " failed: " + (detail || response.status));
+        }
+        return payload;
+      });
+    });
+  }
+
+  function el(tag, attrs, children) {
+    var node = document.createElement(tag);
+    if (attrs) {
+      Object.keys(attrs).forEach(function (key) {
+        if (key === "text") {
+          node.textContent = attrs[key];
+        } else if (key === "class") {
+          node.className = attrs[key];
+        } else {
+          node.setAttribute(key, attrs[key]);
+        }
+      });
+    }
+    (children || []).forEach(function (child) { node.appendChild(child); });
+    return node;
+  }
+
+  function badge(state) {
+    return el("span", { class: "badge " + String(state), text: String(state) });
+  }
+
+  function renderValue(value) {
+    if (value === null || value === undefined) {
+      return el("span", { class: "muted", text: String(value) });
+    }
+    if (typeof value === "object") {
+      return el("pre", { text: JSON.stringify(value, null, 2) });
+    }
+    return el("span", { text: String(value) });
+  }
+
+  // Tabs
+  var tabs = document.getElementById("tabs");
+  tabs.addEventListener("click", function (event) {
+    var button = event.target.closest("button[data-tab]");
+    if (!button) return;
+    Array.prototype.forEach.call(tabs.querySelectorAll("button"), function (b) {
+      b.classList.toggle("active", b === button);
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("main section"), function (section) {
+      section.classList.toggle("active", section.id === "tab-" + button.dataset.tab);
+    });
+  });
+
+  // Header + overview
+  var manifestState = null;
+
+  function loadOverview() {
+    return getJson("/_anvil/inspect").then(function (payload) {
+      var manifest = payload.manifest || {};
+      manifestState = manifest;
+      var cell = manifest.cell || {};
+      document.getElementById("hdr-cell").textContent = cell.name || "unknown cell";
+      document.getElementById("hdr-url").textContent = payload.runtimeUrl || "";
+
+      var counts = [
+        ["queries", (manifest.queries || []).length],
+        ["mutations", (manifest.mutations || []).length],
+        ["endpoints", (manifest.endpoints || []).length],
+        ["jobs", (manifest.jobs || []).length],
+        ["workflows", (manifest.workflows || []).length],
+        ["services", (manifest.services || []).length]
+      ];
+      var stats = document.getElementById("overview-stats");
+      stats.textContent = "";
+      counts.forEach(function (pair) {
+        stats.appendChild(el("div", { class: "stat" }, [
+          el("div", { class: "n", text: String(pair[1]) }),
+          el("div", { class: "l", text: pair[0] })
+        ]));
+      });
+
+      var caps = document.getElementById("overview-caps");
+      caps.textContent = "";
+      var capabilities = manifest.capabilities || {};
+      var names = Object.keys(capabilities);
+      if (names.length === 0) {
+        caps.appendChild(el("span", { class: "muted", text: "No capabilities declared." }));
+      } else {
+        names.forEach(function (name) {
+          var value = capabilities[name];
+          var label = value === true ? name : name + ": " + JSON.stringify(value);
+          caps.appendChild(el("span", { class: "cap", text: label }));
+        });
+      }
+      renderDeclaredWorkflows();
+    });
+  }
+
+  // Logs
+  var logsPaused = false;
+
+  function loadLogs() {
+    return getJson("/_anvil/logs").then(function (payload) {
+      var level = document.getElementById("log-level").value;
+      var entries = (payload.logs || []).filter(function (entry) {
+        return !level || entry.level === level;
+      }).slice(-100);
+      var tbody = document.querySelector("#log-table tbody");
+      tbody.textContent = "";
+      entries.reverse().forEach(function (entry) {
+        tbody.appendChild(el("tr", null, [
+          el("td", { class: "muted", text: entry.timestamp || "" }),
+          el("td", { class: "level-" + (entry.level || "info"), text: entry.level || "" }),
+          el("td", { text: entry.handler || "" }),
+          el("td", { text: entry.message || "" })
+        ]));
+      });
+      if (entries.length === 0) {
+        tbody.appendChild(el("tr", null, [
+          el("td", { class: "muted", text: "No log entries." })
+        ]));
+      }
+    });
+  }
+
+  document.getElementById("log-level").addEventListener("change", function () {
+    loadLogs().catch(function (error) { showError(error.message); });
+  });
+  document.getElementById("log-pause").addEventListener("click", function () {
+    logsPaused = !logsPaused;
+    this.textContent = logsPaused ? "Resume" : "Pause";
+    document.getElementById("log-status").textContent =
+      logsPaused ? "auto-refresh: paused" : "auto-refresh: 5s";
+  });
+  setInterval(function () {
+    if (!logsPaused) {
+      loadLogs().catch(function () { /* transient; keep last view */ });
+    }
+  }, 5000);
+
+  // Database
+  function loadTables() {
+    return getJson("/_anvil/db/tables").then(function (payload) {
+      var tables = (payload.database && payload.database.tables) || {};
+      var tbody = document.querySelector("#db-tables tbody");
+      tbody.textContent = "";
+      var names = Object.keys(tables);
+      if (names.length === 0) {
+        tbody.appendChild(el("tr", null, [
+          el("td", { class: "muted", text: "No tables with data yet." })
+        ]));
+      }
+      names.forEach(function (name) {
+        var row = el("tr", { class: "clickable" }, [
+          el("td", { text: name }),
+          el("td", { text: String(tables[name].rows) })
+        ]);
+        row.addEventListener("click", function () { loadRows(name); });
+        tbody.appendChild(row);
+      });
+    });
+  }
+
+  function loadRows(table) {
+    getJson("/_anvil/db/" + encodeURIComponent(table)).then(function (payload) {
+      var rows = payload.rows || [];
+      var title = document.getElementById("db-rows-title");
+      var panel = document.getElementById("db-rows-panel");
+      title.style.display = "block";
+      title.textContent = "Rows: " + table + " (" + rows.length + ")";
+      panel.style.display = "block";
+      panel.textContent = "";
+      if (rows.length === 0) {
+        panel.appendChild(el("span", { class: "muted", text: "Table is empty." }));
+        return;
+      }
+      var columns = [];
+      rows.forEach(function (row) {
+        Object.keys(row).forEach(function (key) {
+          if (columns.indexOf(key) === -1) columns.push(key);
+        });
+      });
+      var thead = el("thead", null, [
+        el("tr", null, columns.map(function (column) {
+          return el("th", { text: column });
+        }))
+      ]);
+      var tbody = el("tbody", null, rows.map(function (row) {
+        return el("tr", null, columns.map(function (column) {
+          return el("td", null, [renderValue(row[column])]);
+        }));
+      }));
+      panel.appendChild(el("table", null, [thead, tbody]));
+    }).catch(function (error) { showError(error.message); });
+  }
+
+  // Auth
+  function loadUsers() {
+    return getJson("/_anvil/auth/users").then(function (payload) {
+      var users = payload.users || [];
+      var tbody = document.querySelector("#auth-users tbody");
+      tbody.textContent = "";
+      if (users.length === 0) {
+        tbody.appendChild(el("tr", null, [
+          el("td", { class: "muted", text: "No local users yet." })
+        ]));
+      }
+      users.forEach(function (user) {
+        var mint = el("button", { class: "act", text: "Mint token" });
+        mint.addEventListener("click", function () {
+          postJson("/_anvil/auth/token", { userId: user.userId }).then(function (issued) {
+            document.getElementById("token-label").textContent =
+              "JWT for " + user.userId + " (expires " + (issued.expiresAt || "?") + ")";
+            document.getElementById("token-value").textContent = issued.token || "";
+            document.getElementById("token-box").classList.add("show");
+            clearError();
+          }).catch(function (error) { showError(error.message); });
+        });
+        tbody.appendChild(el("tr", null, [
+          el("td", { text: user.userId || "" }),
+          el("td", { text: user.email || "-" }),
+          el("td", { text: (user.roles || []).join(", ") }),
+          el("td", null, [mint])
+        ]));
+      });
+    });
+  }
+
+  document.getElementById("auth-form").addEventListener("submit", function (event) {
+    event.preventDefault();
+    var body = { userId: document.getElementById("auth-userid").value.trim() };
+    var email = document.getElementById("auth-email").value.trim();
+    var roles = document.getElementById("auth-roles").value.trim();
+    if (email) body.email = email;
+    if (roles) {
+      body.roles = roles.split(",").map(function (role) { return role.trim(); })
+        .filter(function (role) { return role.length > 0; });
+    }
+    postJson("/_anvil/auth/users", body).then(function () {
+      clearError();
+      document.getElementById("auth-form").reset();
+      return loadUsers();
+    }).catch(function (error) { showError(error.message); });
+  });
+
+  document.getElementById("token-copy").addEventListener("click", function () {
+    var token = document.getElementById("token-value").textContent;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(token).catch(function () {});
+    }
+  });
+
+  // Workflows
+  function renderDeclaredWorkflows() {
+    var container = document.getElementById("wf-declared");
+    container.textContent = "";
+    var declared = (manifestState && manifestState.workflows) || [];
+    var names = declared.map(function (workflow) {
+      return typeof workflow === "string" ? workflow : workflow.name;
+    }).filter(Boolean);
+    if (names.length === 0) {
+      container.appendChild(el("span", { class: "muted", text: "No workflows declared." }));
+      return;
+    }
+    names.forEach(function (name) {
+      var textarea = el("textarea", { placeholder: "{} input JSON" });
+      var run = el("button", { class: "act", text: "Run " + name });
+      run.addEventListener("click", function () {
+        var input = {};
+        var raw = textarea.value.trim();
+        if (raw) {
+          try {
+            input = JSON.parse(raw);
+          } catch (parseError) {
+            showError("Input for '" + name + "' must be valid JSON.");
+            return;
+          }
+        }
+        postJson("/_anvil/workflows/run/" + encodeURIComponent(name), { input: input })
+          .then(function () {
+            clearError();
+            return loadRuns();
+          })
+          .catch(function (error) { showError(error.message); });
+      });
+      container.appendChild(el("div", { style: "margin-bottom:10px" }, [
+        el("div", { text: name }),
+        textarea,
+        run
+      ]));
+    });
+  }
+
+  function loadRuns() {
+    return getJson("/_anvil/workflows").then(function (payload) {
+      var runs = payload.runs || [];
+      var tbody = document.querySelector("#wf-runs tbody");
+      tbody.textContent = "";
+      if (runs.length === 0) {
+        tbody.appendChild(el("tr", null, [
+          el("td", { class: "muted", text: "No workflow runs yet." })
+        ]));
+      }
+      runs.slice().reverse().forEach(function (run) {
+        var row = el("tr", { class: "clickable" }, [
+          el("td", { text: run.runId || "" }),
+          el("td", { text: run.workflow || "" }),
+          el("td", null, [badge(run.status || "unknown")]),
+          el("td", { class: "muted", text: run.createdAt || "" })
+        ]);
+        row.addEventListener("click", function () { loadRunDetail(run.runId); });
+        tbody.appendChild(row);
+      });
+    });
+  }
+
+  function loadRunDetail(runId) {
+    getJson("/_anvil/workflows/" + encodeURIComponent(runId)).then(function (payload) {
+      var run = payload.run || {};
+      var title = document.getElementById("wf-detail-title");
+      var panel = document.getElementById("wf-detail");
+      title.style.display = "block";
+      title.textContent = "Run detail: " + runId;
+      panel.style.display = "block";
+      panel.textContent = "";
+      panel.appendChild(el("div", null, [badge(run.status || "unknown")]));
+      var steps = run.steps || [];
+      if (steps.length === 0) {
+        panel.appendChild(el("pre", { text: JSON.stringify(run, null, 2) }));
+        return;
+      }
+      var thead = el("thead", null, [
+        el("tr", null, ["step", "status", "attempts", "error"].map(function (head) {
+          return el("th", { text: head });
+        }))
+      ]);
+      var tbody = el("tbody", null, steps.map(function (step) {
+        return el("tr", null, [
+          el("td", { text: step.name || step.step || "" }),
+          el("td", null, [badge(step.status || "unknown")]),
+          el("td", { text: String(step.attempts !== undefined ? step.attempts : "-") }),
+          el("td", null, [renderValue(step.error !== undefined ? step.error : null)])
+        ]);
+      }));
+      panel.appendChild(el("table", null, [thead, tbody]));
+    }).catch(function (error) { showError(error.message); });
+  }
+
+  // Services
+  function loadServices() {
+    return getJson("/_anvil/services").then(function (payload) {
+      var services = payload.services || [];
+      var tbody = document.querySelector("#svc-table tbody");
+      tbody.textContent = "";
+      if (services.length === 0) {
+        tbody.appendChild(el("tr", null, [
+          el("td", { class: "muted", text: "No services declared." })
+        ]));
+      }
+      services.forEach(function (service) {
+        var start = el("button", { class: "act", text: "Start" });
+        var stop = el("button", { class: "act", text: "Stop" });
+        start.addEventListener("click", function () { serviceAction(service.name, "start"); });
+        stop.addEventListener("click", function () { serviceAction(service.name, "stop"); });
+        var actions = el("td", null, [start, stop]);
+        actions.firstChild.style.marginRight = "6px";
+        tbody.appendChild(el("tr", null, [
+          el("td", { text: service.name || "" }),
+          el("td", null, [badge(service.state || "unknown")]),
+          el("td", { text: String(service.restarts !== undefined ? service.restarts : "-") }),
+          actions
+        ]));
+      });
+    });
+  }
+
+  function serviceAction(name, action) {
+    postJson("/_anvil/services/" + encodeURIComponent(name) + "/" + action, {})
+      .then(function () {
+        clearError();
+        return loadServices();
+      })
+      .catch(function (error) { showError(error.message); });
+  }
+
+  // Initial load
+  function refreshAll() {
+    clearError();
+    Promise.all([
+      loadOverview(),
+      loadLogs(),
+      loadTables(),
+      loadUsers(),
+      loadRuns(),
+      loadServices()
+    ]).catch(function (error) { showError(error.message); });
+  }
+
+  refreshAll();
+})();
+</script>
+</body>
+</html>
+`;

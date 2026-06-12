@@ -1,0 +1,224 @@
+services:
+  gateway:
+    build:
+      context: ../..
+      dockerfile: apps/gateway/Dockerfile
+    ports:
+      - "4873:4873"
+    environment:
+      RUNTIME_MODE: development
+      PUBLIC_BASE_URL: http://localhost:4873
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-local-dev-token}
+      DATABASE_URL: postgres://anvil:anvil@postgres:5432/anvil
+      PERSISTENCE_DRIVER: postgres
+      QUEUE_DRIVER: bullmq
+      REDIS_URL: redis://redis:6379
+      OBJECT_STORE_DRIVER: s3
+      POPULAR_PACKAGE_INDEX_OBJECT_KEY: popular-index/npm/latest.json
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: anvil-package-cache
+      S3_ACCESS_KEY_ID: minio
+      S3_SECRET_ACCESS_KEY: miniopassword
+      AWS_REGION: us-east-1
+      UPSTREAM_NPM_REGISTRY: https://registry.npmjs.org
+      UPSTREAM_NPM_REGISTRIES_JSON: ${UPSTREAM_NPM_REGISTRIES_JSON:-}
+      NPM_DOWNLOADS_API: https://api.npmjs.org/downloads
+      LLM_REVIEW_ENABLED: ${LLM_REVIEW_ENABLED:-false}
+      LLM_REVIEW_PROVIDER: ${LLM_REVIEW_PROVIDER:-}
+      LLM_REVIEW_MODEL: ${LLM_REVIEW_MODEL:-}
+      LLM_REVIEW_ENDPOINT: ${LLM_REVIEW_ENDPOINT:-}
+      LLM_REVIEW_RUN_ON_UNKNOWN_PACKAGES: ${LLM_REVIEW_RUN_ON_UNKNOWN_PACKAGES:-false}
+      LLM_REVIEW_RUN_ON_QUARANTINE: ${LLM_REVIEW_RUN_ON_QUARANTINE:-false}
+      LLM_REVIEW_INCLUDE_PRIVATE_PACKAGES: ${LLM_REVIEW_INCLUDE_PRIVATE_PACKAGES:-false}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:4873/-/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: apps/worker/Dockerfile
+    environment:
+      RUNTIME_MODE: development
+      DATABASE_URL: postgres://anvil:anvil@postgres:5432/anvil
+      PERSISTENCE_DRIVER: postgres
+      QUEUE_DRIVER: bullmq
+      REDIS_URL: redis://redis:6379
+      OBJECT_STORE_DRIVER: s3
+      POPULAR_PACKAGE_INDEX_OBJECT_KEY: popular-index/npm/latest.json
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: anvil-package-cache
+      S3_ACCESS_KEY_ID: minio
+      S3_SECRET_ACCESS_KEY: miniopassword
+      AWS_REGION: us-east-1
+      UPSTREAM_NPM_REGISTRY: https://registry.npmjs.org
+      UPSTREAM_NPM_REGISTRIES_JSON: ${UPSTREAM_NPM_REGISTRIES_JSON:-}
+      NPM_DOWNLOADS_API: https://api.npmjs.org/downloads
+      LLM_REVIEW_ENABLED: ${LLM_REVIEW_ENABLED:-false}
+      LLM_REVIEW_PROVIDER: ${LLM_REVIEW_PROVIDER:-}
+      LLM_REVIEW_MODEL: ${LLM_REVIEW_MODEL:-}
+      LLM_REVIEW_ENDPOINT: ${LLM_REVIEW_ENDPOINT:-}
+      LLM_REVIEW_API_KEY: ${LLM_REVIEW_API_KEY:-}
+      LLM_REVIEW_RUN_ON_UNKNOWN_PACKAGES: ${LLM_REVIEW_RUN_ON_UNKNOWN_PACKAGES:-false}
+      LLM_REVIEW_RUN_ON_QUARANTINE: ${LLM_REVIEW_RUN_ON_QUARANTINE:-false}
+      LLM_REVIEW_INCLUDE_PRIVATE_PACKAGES: ${LLM_REVIEW_INCLUDE_PRIVATE_PACKAGES:-false}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "apps/worker/dist/index.js", "--health-check"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  admin:
+    build:
+      context: ../..
+      dockerfile: apps/admin/Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      ANVIL_API_BASE_URL: http://gateway:4873
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-local-dev-token}
+      DATABASE_URL: postgres://anvil:anvil@postgres:5432/anvil
+      PERSISTENCE_DRIVER: postgres
+      OBJECT_STORE_DRIVER: s3
+      POPULAR_PACKAGE_INDEX_OBJECT_KEY: popular-index/npm/latest.json
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: anvil-package-cache
+      S3_ACCESS_KEY_ID: minio
+      S3_SECRET_ACCESS_KEY: miniopassword
+      AWS_REGION: us-east-1
+      LLM_REVIEW_ENABLED: ${LLM_REVIEW_ENABLED:-false}
+      LLM_REVIEW_PROVIDER: ${LLM_REVIEW_PROVIDER:-}
+      LLM_REVIEW_MODEL: ${LLM_REVIEW_MODEL:-}
+      LLM_REVIEW_ENDPOINT: ${LLM_REVIEW_ENDPOINT:-}
+      LLM_REVIEW_RUN_ON_UNKNOWN_PACKAGES: ${LLM_REVIEW_RUN_ON_UNKNOWN_PACKAGES:-false}
+      LLM_REVIEW_RUN_ON_QUARANTINE: ${LLM_REVIEW_RUN_ON_QUARANTINE:-false}
+      LLM_REVIEW_INCLUDE_PRIVATE_PACKAGES: ${LLM_REVIEW_INCLUDE_PRIVATE_PACKAGES:-false}
+    depends_on:
+      gateway:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/-/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  llm-review-mock:
+    image: node:22-alpine
+    profiles: ["llm-review"]
+    working_dir: /app
+    command: ["node", "/app/llm-review-mock.mjs"]
+    environment:
+      PORT: 8787
+    volumes:
+      - ./llm-review-mock.mjs:/app/llm-review-mock.mjs:ro
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8787/-/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  migrate:
+    build:
+      context: ../..
+      dockerfile: packages/persistence/Dockerfile
+    environment:
+      DATABASE_URL: postgres://anvil:anvil@postgres:5432/anvil
+      DATABASE_READY_ATTEMPTS: 60
+      DATABASE_READY_DELAY_MS: 1000
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: anvil
+      POSTGRES_USER: anvil
+      POSTGRES_PASSWORD: anvil
+    ports:
+      - "5432:5432"
+    volumes:
+      - anvil-postgres:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U anvil -d anvil"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: miniopassword
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - anvil-minio:/data
+
+  minio-init:
+    image: minio/mc
+    depends_on:
+      - minio
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        until mc alias set local http://minio:9000 minio miniopassword; do sleep 1; done
+        mc mb --ignore-existing local/anvil-package-cache
+        mc anonymous set none local/anvil-package-cache
+
+volumes:
+  anvil-postgres:
+  anvil-minio:

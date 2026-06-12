@@ -1,0 +1,277 @@
+import type { RepoInfo, RepoSummary } from '../../../shared/types';
+import { ArchitectureDiagram } from './ArchitectureDiagram';
+import { ModuleSummaryCard } from './ModuleSummary';
+import {
+  GitBranch,
+  Clock,
+  FileCode,
+  Tag,
+  Shield,
+  GitFork,
+  ExternalLink,
+  AlertTriangle,
+} from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { useWorkspace } from '../../contexts/WorkspaceContext';
+import { buildEditorUrl } from '../../utils/editor-link';
+
+interface RepoDetailProps {
+  repo: RepoInfo;
+  summary: RepoSummary | null;
+  isIndexing: boolean;
+  indexProgress: {
+    message: string;
+    percent: number;
+    detail?: string;
+    history: string[];
+  } | null;
+}
+
+export function RepoDetail({ repo, summary, isIndexing, indexProgress }: RepoDetailProps) {
+  const navigate = useNavigate();
+  const { activeWorkspace } = useWorkspace();
+  const indexMode = summary?.indexMode ?? repo.indexMode;
+  const indexWarnings = summary?.indexWarnings ?? repo.indexWarnings ?? [];
+  const showDeepBadge = indexMode === 'deep';
+  const showIndexWarnings = indexWarnings.length > 0;
+
+  if (!summary && !isIndexing) {
+    return (
+      <div className="rounded-lg border border-border-subtle bg-bg-secondary p-8 text-center">
+        <p className="text-sm text-text-secondary">
+          This repo hasn't been indexed yet. Click "Index" to generate an architecture analysis.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {(isIndexing || (repo.status === 'error' && indexProgress)) && (
+        <IndexingProgressPanel
+          title={isIndexing ? 'Indexing repository...' : 'Last indexing attempt failed'}
+          progress={indexProgress}
+        />
+      )}
+
+      {/* Header */}
+      <div>
+        <h2 className="text-2xl font-semibold tracking-tight text-text-primary">{repo.name}</h2>
+        <p className="mt-2 text-sm text-text-secondary font-mono">{repo.path}</p>
+        <div className="mt-4 flex flex-wrap items-center gap-3 text-sm text-text-secondary">
+          <span className="flex items-center gap-1">
+            <FileCode size={14} /> {repo.fileCount} files
+          </span>
+          <span className="flex items-center gap-1">
+            <GitBranch size={14} /> {repo.branchCount} branches
+          </span>
+          {repo.lastCommitDate && (
+            <span className="flex items-center gap-1">
+              <Clock size={14} /> Last commit: {new Date(repo.lastCommitDate).toLocaleDateString()}
+            </span>
+          )}
+          {showDeepBadge && (
+            <span className="rounded-full bg-success/15 px-2 py-0.5 text-sm font-medium text-success">
+              Deep index
+            </span>
+          )}
+        </div>
+
+        {/* Framework badges */}
+        {summary?.frameworks.length ? (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {summary.frameworks.map((fw) => (
+              <span
+                key={fw}
+                className="flex items-center gap-1 rounded-md bg-bg-elevated px-2.5 py-1 text-sm text-text-secondary"
+              >
+                <Tag size={12} className="text-accent" />
+                {fw}
+              </span>
+            ))}
+          </div>
+        ) : null}
+
+        {/* Quick actions */}
+        <div className="mt-3 flex gap-2">
+          <button
+            onClick={() =>
+              navigate(
+                buildEditorUrl({
+                  workspaceId: activeWorkspace?.id,
+                  repoId: repo.id,
+                  repoName: repo.name,
+                  source: 'repos',
+                  title: `${repo.name} repository`,
+                }),
+              )
+            }
+            className="flex items-center gap-2 rounded-lg border border-info/30 bg-info/10 px-3.5 py-2 text-sm font-medium text-text-primary transition-colors hover:bg-info/15"
+          >
+            <FileCode size={16} className="text-info" />
+            Open in Editor
+          </button>
+          <button
+            onClick={() => window.anvil.repo.openInVSCode(repo.path)}
+            className="flex items-center gap-2 rounded-lg border border-accent/30 bg-accent/10 px-3.5 py-2 text-sm font-medium text-text-primary transition-colors hover:bg-accent/15"
+          >
+            <ExternalLink size={16} className="text-accent" />
+            Open in VS Code
+          </button>
+          <button
+            onClick={() => navigate(`/security/${repo.id}`)}
+            className="flex items-center gap-2 rounded-lg border border-error/30 bg-error/10 px-3.5 py-2 text-sm font-medium text-text-primary transition-colors hover:bg-error/15"
+          >
+            <Shield size={16} className="text-error" />
+            Security Audit
+          </button>
+        </div>
+      </div>
+
+      {!summary ? (
+        <div className="rounded-lg border border-border-subtle bg-bg-secondary p-8 text-center">
+          <p className="text-sm text-text-secondary">
+            {isIndexing
+              ? 'Indexing is in progress. Progress details will appear here shortly.'
+              : 'No repository summary is available yet.'}
+          </p>
+        </div>
+      ) : (
+        <>
+          {showIndexWarnings && (
+            <section className="rounded-lg border border-warning/30 bg-warning/10 p-4">
+              <div className="flex items-start gap-3">
+                <AlertTriangle size={16} className="mt-0.5 shrink-0 text-warning" />
+                <div>
+                  <h3 className="text-sm font-semibold text-text-primary">Indexing note</h3>
+                  <div className="mt-2 space-y-1 text-sm text-text-secondary">
+                    {indexWarnings.map((warning) => (
+                      <p key={warning}>{warning}</p>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {/* Overview */}
+          <section className="rounded-lg border border-border bg-bg-secondary p-4">
+            <h3 className="mb-2 text-base font-semibold text-text-primary">Overview</h3>
+            <p className="whitespace-pre-line text-base leading-relaxed text-text-secondary">
+              {summary.overview}
+            </p>
+          </section>
+
+          {/* Architecture Diagram */}
+          <section>
+            <h3 className="mb-2 text-base font-semibold text-text-primary">Architecture</h3>
+            <ArchitectureDiagram mermaidSource={summary.mermaidDiagram} />
+          </section>
+
+          {/* Diagrams */}
+          <section>
+            <button
+              onClick={() => navigate(`/diagrams/${repo.id}`)}
+              className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+            >
+              <GitFork size={14} className="text-accent" />
+              View Diagrams
+            </button>
+          </section>
+
+          {/* Detected Patterns */}
+          {summary.patterns.length > 0 && (
+            <section>
+              <h3 className="mb-2 text-base font-semibold text-text-primary">Detected Patterns</h3>
+              <div className="flex flex-wrap gap-1.5">
+                {summary.patterns.map((p) => (
+                  <span
+                    key={p}
+                    className="rounded-md bg-bg-elevated px-2.5 py-1 text-sm text-text-secondary"
+                  >
+                    {p}
+                  </span>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* Modules */}
+          <section>
+            <h3 className="mb-2 text-base font-semibold text-text-primary">
+              Modules ({summary.modules.length})
+            </h3>
+            <div className="space-y-1.5">
+              {summary.modules.map((mod) => (
+                <ModuleSummaryCard key={mod.path} module={mod} />
+              ))}
+            </div>
+          </section>
+
+          {/* Entry Points */}
+          {summary.entryPoints.length > 0 && (
+            <section>
+              <h3 className="mb-2 text-base font-semibold text-text-primary">Key Entry Points</h3>
+              <div className="space-y-0.5">
+                {summary.entryPoints.map((ep) => (
+                  <p key={ep} className="font-mono text-sm text-text-secondary">
+                    {ep}
+                  </p>
+                ))}
+              </div>
+            </section>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function IndexingProgressPanel({
+  title,
+  progress,
+}: {
+  title: string;
+  progress: {
+    message: string;
+    percent: number;
+    detail?: string;
+    history: string[];
+  } | null;
+}) {
+  return (
+    <section className="rounded-lg border border-info/20 bg-info/5 p-4">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h3 className="text-base font-semibold text-text-primary">{title}</h3>
+          <p className="mt-1 text-sm text-text-secondary">
+            {progress?.message ?? 'Waiting for indexing progress updates...'}
+          </p>
+        </div>
+        <span className="text-sm tabular-nums text-text-secondary">{progress?.percent ?? 0}%</span>
+      </div>
+
+      {progress?.detail && <p className="mt-2 text-sm text-text-secondary">{progress.detail}</p>}
+
+      <div className="mt-3 h-2 overflow-hidden rounded-full bg-bg-elevated">
+        <div
+          className="h-full rounded-full bg-info transition-all duration-300"
+          style={{ width: `${Math.max(4, progress?.percent ?? 0)}%` }}
+        />
+      </div>
+
+      {progress && progress.history.length > 0 && (
+        <div className="mt-4">
+          <h4 className="text-sm font-semibold uppercase tracking-wide text-text-tertiary">
+            Recent activity
+          </h4>
+          <div className="mt-2 space-y-1 text-sm text-text-secondary">
+            {progress.history.map((entry) => (
+              <p key={entry}>{entry}</p>
+            ))}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}

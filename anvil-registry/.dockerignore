@@ -1,0 +1,7 @@
+**/node_modules
+**/dist
+**/.turbo
+**/.DS_Store
+.git
+.gitignore
+infra/docker/postgres/init/*.tmp

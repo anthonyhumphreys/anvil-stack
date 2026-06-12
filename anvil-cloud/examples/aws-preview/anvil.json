@@ -1,0 +1,9 @@
+{
+  "name": "aws-preview",
+  "entrypoints": {
+    "server": "src/cell.server.ts",
+    "client": "src/cell.client.tsx"
+  },
+  "runtime": "nodejs20",
+  "region": "eu-west-2"
+}

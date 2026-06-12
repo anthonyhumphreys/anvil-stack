@@ -1,0 +1,58 @@
+name: Anvil Website CI
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/website-ci.yml"
+      - "anvil-website/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/website-ci.yml"
+      - "anvil-website/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: website-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: true
+
+defaults:
+  run:
+    working-directory: anvil-website
+
+jobs:
+  validate:
+    name: Typecheck and build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: anvil-website/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build
+        run: pnpm build

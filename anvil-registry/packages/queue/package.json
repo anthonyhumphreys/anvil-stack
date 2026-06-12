@@ -1,0 +1,25 @@
+{
+  "name": "@anvilstack/queue",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@anvilstack/config": "workspace:*",
+    "@anvilstack/shared": "workspace:*",
+    "@aws-sdk/client-sqs": "^3.1050.0",
+    "bullmq": "^5.58.5"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.4"
+  }
+}

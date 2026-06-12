@@ -1,0 +1,148 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-05-22T11:07:07Z",
+  "title": "Design System: Anvil Registry",
+  "extensions": {
+    "colorMeta": {
+      "background": {
+        "role": "neutral",
+        "displayName": "Paper White",
+        "canonical": "#fbfcfc",
+        "source": "anvil-site/app/globals.css --background: 190 20% 99%",
+        "usage": "Light theme background and card surface."
+      },
+      "foreground": {
+        "role": "primary",
+        "displayName": "Steel Ink",
+        "canonical": "#14191a",
+        "source": "anvil-site/app/globals.css --foreground: 190 14% 9%",
+        "usage": "Primary text, primary button background, active emphasis, and compact brand mark."
+      },
+      "surface-muted": {
+        "role": "neutral",
+        "displayName": "Mist Surface",
+        "canonical": "#f1f3f3",
+        "source": "anvil-site/app/globals.css --muted/--secondary: 190 8% 95%",
+        "usage": "Muted fills, secondary controls, docs table headers, toolbar backgrounds."
+      },
+      "text-muted": {
+        "role": "neutral",
+        "displayName": "Muted Steel",
+        "canonical": "#5a6568",
+        "source": "anvil-site/app/globals.css --muted-foreground: 190 7% 38%",
+        "usage": "Descriptions, support copy, secondary navigation text."
+      },
+      "border": {
+        "role": "neutral",
+        "displayName": "Fine Border",
+        "canonical": "#dde3e4",
+        "source": "anvil-site/app/globals.css --border: 190 12% 88%",
+        "usage": "One-pixel borders, dividers, inputs, tables, and outlines."
+      },
+      "accent-forge": {
+        "role": "primary",
+        "displayName": "Forge Orange",
+        "canonical": "#f48d1f",
+        "source": "anvil-site/app/globals.css --accent: 31 91% 54%",
+        "usage": "Focus rings, check icons, selected badges, security signals, and subtle terminal glow."
+      },
+      "destructive": {
+        "role": "primary",
+        "displayName": "Destructive Red",
+        "canonical": "#dc2828",
+        "source": "anvil-site/app/globals.css --destructive: 0 72% 51%",
+        "usage": "Blocking and failure states, always paired with text."
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "Hero headlines and first-viewport positioning only."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Section headings and docs page titles."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Card titles and panel headings."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Marketing body copy and documentation prose."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Navigation, buttons, badges, controls, and compact UI labels."
+      },
+      "code": {
+        "displayName": "Code",
+        "purpose": "Commands, JSON, package coordinates, hashes, and terminal output."
+      }
+    },
+    "elevation": {
+      "anvilAmbient": {
+        "value": "0 18px 55px rgba(14, 18, 22, 0.08)",
+        "source": "anvil-site/tailwind.config.ts boxShadow.anvil",
+        "usage": "Hero imagery, code panels, and important media-like surfaces."
+      },
+      "cardSoft": {
+        "value": "0 1px 2px 0 rgb(0 0 0 / 0.05)",
+        "source": "Tailwind shadow-sm in card component",
+        "usage": "Ordinary bordered cards."
+      }
+    },
+    "motion": {
+      "default": {
+        "value": "transition-colors",
+        "usage": "Buttons, nav links, badges, and hover states."
+      },
+      "scroll": {
+        "value": "scroll-behavior: smooth",
+        "usage": "Same-page navigation."
+      }
+    },
+    "components": {
+      "button": {
+        "source": "anvil-site/components/ui/button.tsx",
+        "variants": ["default", "secondary", "outline", "ghost", "link"],
+        "sizes": ["default", "sm", "lg", "icon"],
+        "notes": "Rounded 6px controls with 40px default height, focus-visible 2px ring, and lucide icon support."
+      },
+      "card": {
+        "source": "anvil-site/components/ui/card.tsx",
+        "notes": "8px radius, one-pixel border, card background, 24px padding, shadow-sm."
+      },
+      "badge": {
+        "source": "anvil-site/components/ui/badge.tsx",
+        "variants": ["default", "secondary", "outline", "destructive"],
+        "notes": "Compact 6px radius badges with semibold 12px text and optional semantic state color."
+      },
+      "siteHeader": {
+        "source": "anvil-site/components/site/header.tsx",
+        "notes": "Sticky 64px header with border, translucent background, backdrop blur, desktop nav, and mobile docs icon."
+      },
+      "codePanel": {
+        "source": "anvil-site/components/site/code-panel.tsx",
+        "notes": "Signature terminal component with toolbar, copy action, JetBrains Mono content, and code-window gradient."
+      }
+    },
+    "rules": {
+      "northStar": "The Maintainer's Forge",
+      "dos": [
+        "Lead with concrete commands, policy decisions, install flows, analysis artefacts, and audit trails.",
+        "Keep Forge Orange rare and meaningful.",
+        "Use visible one-pixel borders for structure.",
+        "Pair security states with text, iconography, and color.",
+        "Use JetBrains Mono only for actual code and command content."
+      ],
+      "donts": [
+        "Do not make Anvil feel like glossy cybersecurity vendor sludge.",
+        "Do not use generic SaaS dashboard wallpaper, hacker-terminal cosplay, or corporate DevSecOps content mulch.",
+        "Do not use inflated claims, fake urgency, black-and-neon threat theatre, vague compliance language, or heroic metrics with no receipts.",
+        "Do not use colored side-stripe borders, gradient text, decorative glassmorphism, or identical card grids as the main design answer.",
+        "Do not let color alone communicate security states."
+      ]
+    }
+  }
+}

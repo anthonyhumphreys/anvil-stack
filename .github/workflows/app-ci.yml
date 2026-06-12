@@ -1,0 +1,61 @@
+name: Anvil App CI
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/app-ci.yml"
+      - "anvil-app/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/app-ci.yml"
+      - "anvil-app/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: app-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: true
+
+defaults:
+  run:
+    working-directory: anvil-app
+
+jobs:
+  validate:
+    name: Lint, test, and build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: anvil-app/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build

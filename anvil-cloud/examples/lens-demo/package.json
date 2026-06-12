@@ -1,0 +1,9 @@
+{
+  "name": "lens-demo",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@anvil-cloud/client": "workspace:*",
+    "@anvil-cloud/runtime": "workspace:*"
+  }
+}

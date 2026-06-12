@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+COMPOSE_FILE="$ROOT_DIR/infra/docker/docker-compose.yml"
+IMAGE_TAG="${ANVIL_NODE_BASE_SMOKE_IMAGE:-anvil-node-base-smoke:local}"
+DOCKER_NETWORK="${ANVIL_NODE_BASE_SMOKE_NETWORK:-docker_default}"
+REGISTRY_URL_IN_CONTAINER="${ANVIL_NODE_BASE_CONTAINER_REGISTRY_URL:-http://gateway:4873}"
+ADMIN_URL="${ANVIL_ADMIN_URL:-http://localhost:3000}"
+ADMIN_TOKEN="${ANVIL_ADMIN_TOKEN:-${ADMIN_TOKEN:-local-dev-token}}"
+PROJECT_NAME="anvil-image-smoke-$(date +%s)"
+REPORT_DIR="$(mktemp -d)"
+REPORT_PATH="$REPORT_DIR/network-report.json"
+trap 'rm -rf "$REPORT_DIR"' EXIT
+
+# The image runs as the non-root node user. Linux bind mounts preserve the
+# mktemp directory's 0700 permissions, so make the scratch directory writable
+# before mounting it into the container.
+chmod 0777 "$REPORT_DIR"
+
+cat > "$REPORT_PATH" <<JSON
+{
+  "generatedAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+  "summary": {
+    "outboundConnections": 1,
+    "high": 0,
+    "medium": 1
+  },
+  "highConfidenceFindings": [],
+  "mediumConfidenceFindings": [
+    {
+      "code": "NON_STANDARD_PORT",
+      "source": "strace",
+      "line": 8,
+      "evidence": "connect to 198.51.100.10:8080"
+    }
+  ],
+  "networkSummary": {
+    "totalConnections": 1,
+    "byPort": [{ "port": 8080, "count": 1 }],
+    "byAddress": [{ "address": "198.51.100.10", "count": 1 }],
+    "connections": [
+      { "pid": "321", "family": "AF_INET", "address": "198.51.100.10", "port": 8080, "line": 8 }
+    ]
+  }
+}
+JSON
+
+echo "[anvil] Starting local gateway/admin stack"
+docker compose -f "$COMPOSE_FILE" up -d --build gateway admin
+
+echo "[anvil] Building Node Base image ($IMAGE_TAG)"
+docker build -t "$IMAGE_TAG" -f "$ROOT_DIR/devcontainer-base/Dockerfile" "$ROOT_DIR/devcontainer-base"
+
+echo "[anvil] Submitting Node Base report from image for $PROJECT_NAME"
+docker run --rm \
+  --network "$DOCKER_NETWORK" \
+  -e ANVIL_REGISTRY_URL="$REGISTRY_URL_IN_CONTAINER" \
+  -e ANVIL_ADMIN_TOKEN="$ADMIN_TOKEN" \
+  -e ANVIL_PROJECT_NAME="$PROJECT_NAME" \
+  -e ANVIL_REPORT_SOURCE="anvil-node-base-image-smoke" \
+  -v "$REPORT_DIR:/tmp/anvil-report" \
+  "$IMAGE_TAG" \
+  anvil-submit-report /tmp/anvil-report/network-report.json network
+
+REPORT_ID="$(node - "$ADMIN_URL" "$ADMIN_TOKEN" "$PROJECT_NAME" <<'NODE'
+const [adminUrl, adminToken, projectName] = process.argv.slice(2);
+const endpoint = `${adminUrl.replace(/\/+$/, "")}/api/node-base/reports?reportType=network&limit=50`;
+const response = await fetch(endpoint, { headers: { authorization: `Bearer ${adminToken}` } });
+if (!response.ok) {
+  console.error(`[anvil] Failed to query Admin reports: ${response.status} ${response.statusText}`);
+  process.exit(1);
+}
+const body = await response.json();
+const report = (body.reports || []).find((candidate) => candidate.projectName === projectName && candidate.reportType === "network");
+if (!report?.id) {
+  console.error(`[anvil] Submitted image report was not found in Admin API for ${projectName}`);
+  process.exit(1);
+}
+if (report.source !== "anvil-node-base-image-smoke") {
+  console.error(`[anvil] Submitted report had unexpected source: ${report.source}`);
+  process.exit(1);
+}
+console.log(report.id);
+NODE
+)"
+
+DETAIL_OUTPUT="$(
+  ANVIL_ADMIN_URL="$ADMIN_URL" ANVIL_ADMIN_TOKEN="$ADMIN_TOKEN" pnpm --dir "$ROOT_DIR" --filter @anvilstack/cli dev -- node-base report "$REPORT_ID"
+)"
+if [[ "$DETAIL_OUTPUT" != *"NON_STANDARD_PORT"* || "$DETAIL_OUTPUT" != *"198.51.100.10:8080"* ]]; then
+  echo "$DETAIL_OUTPUT"
+  echo "[anvil] CLI report detail did not include expected image-submitted network finding" >&2
+  exit 1
+fi
+
+echo "[anvil] Admin API found image-submitted report $REPORT_ID"
+echo "$DETAIL_OUTPUT"
+echo "[anvil] Node Base image report smoke passed."

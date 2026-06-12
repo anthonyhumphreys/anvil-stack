@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "jsx": "react-jsx",
+    "skipLibCheck": true,
+    "baseUrl": ".",
+    "paths": {
+      "@anvil-cloud/client": [
+        "../../packages/client/src/index.ts"
+      ],
+      "@anvil-cloud/runtime": [
+        "../../packages/runtime/src/index.ts"
+      ]
+    }
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx"
+  ]
+}

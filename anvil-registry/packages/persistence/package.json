@@ -1,0 +1,26 @@
+{
+  "name": "@anvilstack/persistence",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "db:migrate": "tsx src/migrate.ts",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@anvilstack/config": "workspace:*",
+    "@anvilstack/shared": "workspace:*",
+    "drizzle-orm": "^0.45.2",
+    "pg": "^8.16.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.15.4"
+  }
+}
