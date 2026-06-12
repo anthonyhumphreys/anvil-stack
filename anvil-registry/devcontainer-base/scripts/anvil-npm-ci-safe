@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPORT_DIR="${ANVIL_REPORT_DIR:-.anvil/reports}"
+mkdir -p "$REPORT_DIR"
+
+echo "[anvil] Running safe npm install: npm ci --ignore-scripts"
+npm ci --ignore-scripts
+
+echo "[anvil] Scanning dependency lifecycle scripts"
+anvil-scan-lifecycle-scripts > "$REPORT_DIR/lifecycle-scripts.json"
+
+echo "[anvil] Report written to $REPORT_DIR/lifecycle-scripts.json"
+anvil-submit-report-if-configured "$REPORT_DIR/lifecycle-scripts.json" lifecycle
+anvil-risk-gate "$REPORT_DIR/lifecycle-scripts.json" lifecycle

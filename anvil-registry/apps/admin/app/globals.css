@@ -1,0 +1,88 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 190 20% 99%;
+    --foreground: 190 14% 9%;
+    --card: 190 20% 99%;
+    --card-foreground: 190 14% 9%;
+    --popover: 190 20% 99%;
+    --popover-foreground: 190 14% 9%;
+    --primary: 190 14% 9%;
+    --primary-foreground: 190 20% 99%;
+    --secondary: 190 8% 95%;
+    --secondary-foreground: 190 14% 9%;
+    --muted: 190 8% 95%;
+    --muted-foreground: 190 7% 38%;
+    --accent: 31 91% 54%;
+    --accent-foreground: 190 14% 9%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 190 20% 99%;
+    --border: 190 12% 88%;
+    --input: 190 12% 88%;
+    --ring: 31 91% 54%;
+    --radius: 0.5rem;
+    color-scheme: light;
+  }
+
+  .dark {
+    --background: 190 16% 7%;
+    --foreground: 190 10% 94%;
+    --card: 190 15% 10%;
+    --card-foreground: 190 10% 94%;
+    --popover: 190 15% 10%;
+    --popover-foreground: 190 10% 94%;
+    --primary: 190 10% 94%;
+    --primary-foreground: 190 16% 7%;
+    --secondary: 190 12% 15%;
+    --secondary-foreground: 190 10% 94%;
+    --muted: 190 12% 15%;
+    --muted-foreground: 190 8% 68%;
+    --accent: 31 91% 58%;
+    --accent-foreground: 190 16% 7%;
+    --destructive: 0 70% 55%;
+    --destructive-foreground: 190 10% 94%;
+    --border: 190 11% 20%;
+    --input: 190 11% 20%;
+    --ring: 31 91% 58%;
+    color-scheme: dark;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      scroll-behavior: auto !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer components {
+  .code-window {
+    background:
+      radial-gradient(circle at 18% 10%, rgba(244, 142, 33, 0.14), transparent 30%),
+      linear-gradient(135deg, #111719 0%, #050708 100%);
+  }
+}

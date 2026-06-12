@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+node <<'NODE'
+const fs = require("fs");
+const path = require("path");
+
+const root = path.resolve("node_modules");
+const lifecycleNames = new Set(["preinstall", "install", "postinstall", "prepare", "prepublish", "prepublishOnly"]);
+const suspiciousPatterns = [
+  { severity: "high", code: "CURL_PIPE_SHELL", regex: /\b(curl|wget)\b[^|;&]+[|]\s*(bash|sh)\b/i, description: "downloads a remote script and pipes it into a shell" },
+  { severity: "high", code: "SECRET_ENV_REFERENCE", regex: /\b(NPM_TOKEN|NODE_AUTH_TOKEN|GITHUB_TOKEN|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AZURE_CLIENT_SECRET|OPENAI_API_KEY|ANTHROPIC_API_KEY|DATABASE_URL)\b/, description: "references sensitive environment variables" },
+  { severity: "high", code: "SECRET_FILE_REFERENCE", regex: /(\.npmrc|\.ssh|\.aws|\.config\/gcloud|\.azure|\.env(?:\.local)?|\.git\/config|\.git-credentials|id_rsa|id_ed25519|known_hosts)/i, description: "references credential-bearing files" },
+  { severity: "high", code: "BASE64_EXECUTION", regex: /(base64\s+-d|Buffer\.from\([^)]*base64|atob\()/i, description: "contains base64 decode behaviour often used to hide payloads" },
+  { severity: "medium", code: "CHILD_PROCESS", regex: /\b(child_process|execSync|spawnSync|execFileSync|exec\()/i, description: "uses process execution primitives" },
+  { severity: "medium", code: "NETWORK_TOOL", regex: /\b(curl|wget|nc|netcat|fetch|http\.request|https\.request|net\.connect|dns\.lookup)\b/i, description: "uses network-capable tools or APIs" },
+  { severity: "medium", code: "DIRECT_IP_URL", regex: /https?:\/\/\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b/i, description: "connects to an IP address directly" },
+  { severity: "medium", code: "GENERATED_DOMAIN_URL", regex: /https?:\/\/[a-z0-9.-]*[a-z][a-z0-9]*\d[a-z0-9-]{12,}\.[a-z]{2,}/i, description: "references a generated-looking domain" },
+  { severity: "medium", code: "RAW_OR_PASTE_SITE", regex: /(raw\.githubusercontent\.com|gist\.githubusercontent\.com|pastebin\.com|hastebin|rentry\.co|0x0\.st)/i, description: "references raw-code or paste hosting" },
+  { severity: "medium", code: "CHMOD_EXECUTION", regex: /chmod\s+\+x/i, description: "marks files executable during install" },
+  { severity: "medium", code: "BACKGROUND_PROCESS", regex: /\b(nohup|disown)\b|&\s*$/i, description: "starts or backgrounds a process" },
+  { severity: "medium", code: "HOME_DIRECTORY_ACCESS", regex: /(process\.env|os\.homedir|\/home\/|\/root)/i, description: "touches environment or home-directory state" },
+  { severity: "medium", code: "DYNAMIC_CODE_EXECUTION", regex: /\b(eval|Function)\s*\(/i, description: "uses dynamic code execution" }
+];
+const installPathJsPatterns = [
+  { severity: "high", code: "JS_SECRET_ENV_REFERENCE", regex: /\b(NPM_TOKEN|NODE_AUTH_TOKEN|GITHUB_TOKEN|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AZURE_CLIENT_SECRET|OPENAI_API_KEY|ANTHROPIC_API_KEY|DATABASE_URL)\b/, description: "install-path JavaScript references sensitive environment variables" },
+  { severity: "high", code: "JS_SECRET_FILE_REFERENCE", regex: /(\.npmrc|\.ssh|\.aws|\.config\/gcloud|\.azure|\.env(?:\.local)?|\.git\/config|\.git-credentials|id_rsa|id_ed25519|known_hosts)/i, description: "install-path JavaScript references credential-bearing files" },
+  { severity: "high", code: "JS_BASE64_EXECUTION", regex: /(Buffer\.from\([^)]*base64|atob\()/i, description: "install-path JavaScript decodes base64 content" },
+  { severity: "medium", code: "JS_USES_PROCESS_ENV", regex: /process\.env\b/, description: "install-path JavaScript reads process.env" },
+  { severity: "medium", code: "JS_CHILD_PROCESS", regex: /\b(child_process|execSync|spawnSync|execFileSync|exec\()/i, description: "install-path JavaScript uses process execution primitives" },
+  { severity: "medium", code: "JS_NETWORK_API", regex: /\b(fetch|http\.request|https\.request|net\.connect|dns\.lookup)\b/i, description: "install-path JavaScript uses network-capable APIs" },
+  { severity: "medium", code: "JS_FILESYSTEM_ACCESS", regex: /\b(fs\.readFileSync|fs\.writeFileSync|os\.homedir)\b/i, description: "install-path JavaScript reads filesystem or home-directory state" },
+  { severity: "medium", code: "JS_DYNAMIC_CODE_EXECUTION", regex: /\b(eval|Function)\s*\(/i, description: "install-path JavaScript uses dynamic code execution" }
+];
+const results = [];
+
+function scanScript(scriptName, command) {
+  return suspiciousPatterns
+    .filter((pattern) => pattern.regex.test(command))
+    .map((pattern) => ({
+      severity: pattern.severity,
+      code: pattern.code,
+      script: scriptName,
+      description: pattern.description
+    }));
+}
+
+function walk(dir) {
+  if (!fs.existsSync(dir)) return;
+
+  for (const entry of fs.readdirSync(dir)) {
+    if (entry.startsWith(".")) continue;
+    const full = path.join(dir, entry);
+    let stat;
+    try {
+      stat = fs.statSync(full);
+    } catch {
+      continue;
+    }
+    if (!stat.isDirectory()) continue;
+    if (entry.startsWith("@")) {
+      walk(full);
+      continue;
+    }
+
+    const manifestPath = path.join(full, "package.json");
+    if (fs.existsSync(manifestPath)) {
+      try {
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+        const scripts = manifest.scripts || {};
+        const lifecycleScripts = Object.fromEntries(Object.entries(scripts).filter(([name]) => lifecycleNames.has(name)));
+        if (Object.keys(lifecycleScripts).length > 0) {
+          const findings = Object.entries(lifecycleScripts).flatMap(([name, command]) => [
+            ...scanScript(name, String(command)),
+            ...scanReferencedInstallPathJs(full, name, String(command))
+          ]);
+          results.push({
+            name: manifest.name,
+            version: manifest.version,
+            path: path.relative(process.cwd(), full),
+            scripts: lifecycleScripts,
+            findings
+          });
+        }
+      } catch {}
+    }
+
+    const nested = path.join(full, "node_modules");
+    if (fs.existsSync(nested)) walk(nested);
+  }
+}
+
+function scanReferencedInstallPathJs(packageDir, scriptName, command) {
+  return referencedJsFiles(command)
+    .flatMap((relativeFile) => scanInstallPathJs(packageDir, scriptName, relativeFile))
+    .slice(0, 20);
+}
+
+function referencedJsFiles(command) {
+  const files = new Set();
+  const nodeCommandRegex = /(?:^|[;&|]\s*|\bnpx\s+|\bnode\s+)(?:--[^\s]+\s+)*([^\s"';&|]+\.m?js)\b/g;
+  for (const match of command.matchAll(nodeCommandRegex)) {
+    const candidate = match[1];
+    if (candidate && !candidate.startsWith("-")) files.add(candidate);
+  }
+  return [...files];
+}
+
+function scanInstallPathJs(packageDir, scriptName, relativeFile) {
+  const resolved = path.resolve(packageDir, relativeFile);
+  const relativeToPackage = path.relative(packageDir, resolved);
+  if (relativeToPackage.startsWith("..") || path.isAbsolute(relativeToPackage)) return [];
+  if (!fs.existsSync(resolved)) return [];
+
+  let stat;
+  try {
+    stat = fs.statSync(resolved);
+  } catch {
+    return [];
+  }
+  if (!stat.isFile() || stat.size > 256 * 1024) return [];
+
+  let text;
+  try {
+    text = fs.readFileSync(resolved, "utf8");
+  } catch {
+    return [];
+  }
+
+  return installPathJsPatterns
+    .filter((pattern) => pattern.regex.test(text))
+    .map((pattern) => ({
+      severity: pattern.severity,
+      code: pattern.code,
+      script: scriptName,
+      file: relativeToPackage,
+      description: pattern.description
+    }));
+}
+
+walk(root);
+const high = results.reduce((count, pkg) => count + pkg.findings.filter((finding) => finding.severity === "high").length, 0);
+const medium = results.reduce((count, pkg) => count + pkg.findings.filter((finding) => finding.severity === "medium").length, 0);
+
+console.log(JSON.stringify({
+  generatedAt: new Date().toISOString(),
+  root: path.relative(process.cwd(), root) || "node_modules",
+  policy: {
+    strict: strictPolicy(process.env)
+  },
+  packages: results,
+  summary: {
+    packagesWithLifecycleScripts: results.length,
+    highConfidenceFindings: high,
+    mediumConfidenceFindings: medium
+  }
+}, null, 2));
+
+function strictPolicy(env) {
+  return {
+    enabled: env.ANVIL_STRICT === "true",
+    riskLevel: env.ANVIL_STRICT_RISK_LEVEL || "high",
+    lifecycleMode: env.ANVIL_STRICT_LIFECYCLE_MODE || "any"
+  };
+}
+NODE

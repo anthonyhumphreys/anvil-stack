@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPORT_PATH="${1:-}"
+REPORT_TYPE="${2:-}"
+REGISTRY_URL="${ANVIL_REGISTRY_URL:-}"
+PROJECT_NAME="${ANVIL_PROJECT_NAME:-${PWD##*/}}"
+SOURCE="${ANVIL_REPORT_SOURCE:-anvil-node-base}"
+
+if [[ -z "$REPORT_PATH" || -z "$REPORT_TYPE" ]]; then
+  echo "[anvil] Usage: anvil-submit-report <report-json-path> <dependency|ioc|lifecycle|network>" >&2
+  exit 64
+fi
+
+if [[ -z "$REGISTRY_URL" ]]; then
+  echo "[anvil] Missing ANVIL_REGISTRY_URL." >&2
+  exit 64
+fi
+
+if [[ ! -f "$REPORT_PATH" ]]; then
+  echo "[anvil] Report file not found: $REPORT_PATH" >&2
+  exit 66
+fi
+
+PAYLOAD_PATH=""
+cleanup_payload() {
+  if [[ -n "$PAYLOAD_PATH" ]]; then
+    rm -f "$PAYLOAD_PATH"
+  fi
+}
+trap cleanup_payload EXIT
+
+PAYLOAD_PATH="$(node - "$REPORT_PATH" "$REPORT_TYPE" "$REGISTRY_URL" "$PROJECT_NAME" "$SOURCE" <<'NODE'
+const fs = require("fs");
+const path = require("path");
+
+const [reportPath, reportType, rawRegistryUrl, projectName, source] = process.argv.slice(2);
+let registryUrl;
+
+try {
+  registryUrl = new URL(rawRegistryUrl);
+} catch {
+  console.error(`[anvil] Invalid ANVIL_REGISTRY_URL: ${rawRegistryUrl}`);
+  process.exit(64);
+}
+
+registryUrl.pathname = `${registryUrl.pathname.replace(/\/$/, "")}/-/anvil/node-base/reports`;
+registryUrl.search = "";
+registryUrl.hash = "";
+
+let report;
+try {
+  report = JSON.parse(fs.readFileSync(reportPath, "utf8"));
+} catch (error) {
+  console.error(`[anvil] Failed to read JSON report ${reportPath}: ${error.message}`);
+  process.exit(65);
+}
+
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function validateBoundedString(name, value, maxLength) {
+  const normalized = String(value ?? "").trim();
+  if (normalized.length < 1 || normalized.length > maxLength) {
+    console.error(`[anvil] ${name} must be between 1 and ${maxLength} characters.`);
+    process.exit(64);
+  }
+  return normalized;
+}
+
+const normalizedSource = validateBoundedString("ANVIL_REPORT_SOURCE", source, 100);
+const normalizedProjectName = validateBoundedString("ANVIL_PROJECT_NAME", projectName, 200);
+const normalizedReportType = validateBoundedString("report type", reportType, 40);
+if (!/^[a-z][a-z0-9_-]*$/.test(normalizedReportType)) {
+  console.error("[anvil] Report type must start with a lowercase letter and contain only lowercase letters, numbers, underscores, or hyphens.");
+  process.exit(64);
+}
+
+if (!isRecord(report)) {
+  console.error("[anvil] Report JSON must be an object.");
+  process.exit(65);
+}
+
+const summary = report.summary && typeof report.summary === "object" && !Array.isArray(report.summary) ? report.summary : undefined;
+const payload = {
+  source: normalizedSource,
+  projectName: normalizedProjectName,
+  reportType: normalizedReportType,
+  summary,
+  report
+};
+
+const payloadPath = path.join(path.dirname(reportPath), ".anvil-submit-payload.json");
+fs.writeFileSync(payloadPath, `${JSON.stringify({ endpoint: registryUrl.toString(), payload }, null, 2)}\n`);
+console.log(payloadPath);
+NODE
+)"
+ENDPOINT="$(jq -r '.endpoint' "$PAYLOAD_PATH")"
+CURL_ARGS=(-fsS -X POST -H "Content-Type: application/json")
+if [[ -n "${ANVIL_ADMIN_TOKEN:-}" ]]; then
+  CURL_ARGS+=(-H "Authorization: Bearer ${ANVIL_ADMIN_TOKEN}")
+fi
+CURL_ARGS+=(--data-binary "$(jq -c '.payload' "$PAYLOAD_PATH")" "$ENDPOINT")
+
+curl "${CURL_ARGS[@]}" >/dev/null
+
+rm -f "$PAYLOAD_PATH"
+PAYLOAD_PATH=""
+trap - EXIT
+echo "[anvil] Submitted $REPORT_TYPE report to $ENDPOINT"

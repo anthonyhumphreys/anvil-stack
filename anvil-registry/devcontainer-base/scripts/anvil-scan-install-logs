@@ -1,0 +1,410 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+NPM_LOG="${1:-.anvil/reports/npm-install.log}"
+STRACE_LOG="${2:-.anvil/reports/strace.log}"
+
+node - "$NPM_LOG" "$STRACE_LOG" <<'NODE'
+const fs = require("fs");
+
+const npmLogPath = process.argv[2];
+const straceLogPath = process.argv[3];
+const npmLog = fs.existsSync(npmLogPath) ? fs.readFileSync(npmLogPath, "utf8") : "";
+const straceLog = fs.existsSync(straceLogPath) ? fs.readFileSync(straceLogPath, "utf8") : "";
+const networkPolicy = loadNetworkPolicy(process.env);
+
+const highPatterns = [
+  { code: "CURL_PIPE_SHELL", regex: /\b(curl|wget)\b[^|;&]+[|]\s*(bash|sh)\b/i },
+  { code: "SECRET_ENV_ACCESS", regex: /\b(NPM_TOKEN|NODE_AUTH_TOKEN|GITHUB_TOKEN|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AZURE_CLIENT_SECRET|OPENAI_API_KEY|ANTHROPIC_API_KEY|DATABASE_URL)\b/ },
+  { code: "SSH_KEY_ACCESS", regex: /(\.ssh|id_rsa|id_ed25519|known_hosts)/i },
+  { code: "CREDENTIAL_FILE_ACCESS", regex: /(\.npmrc|\.aws|\.config\/gcloud|\.azure|\.env(?:\.local)?|\.git\/config|\.git-credentials)/i },
+  { code: "BASE64_EXEC", regex: /(base64\s+-d|Buffer\.from\([^)]*base64|atob\()/i }
+];
+const mediumPatterns = [
+  { code: "CHILD_PROCESS", regex: /(child_process|execSync|spawnSync|execFileSync|exec\()/i },
+  { code: "NETWORK_TOOL", regex: /\b(curl|wget|nc|netcat)\b/i },
+  { code: "ENV_ENUMERATION", regex: /(process\.env|env\s*>|printenv)/i },
+  { code: "HOME_DIRECTORY_ACCESS", regex: /(\/home\/node|\/root|os\.homedir)/i },
+  { code: "CHMOD_EXECUTION", regex: /chmod\s+\+x/i },
+  { code: "BACKGROUND_PROCESS", regex: /\b(nohup|disown)\b|&\s*$/i },
+  { code: "DYNAMIC_CODE_EXECUTION", regex: /\b(eval|Function)\s*\(/i }
+];
+
+function find(patterns, text, source) {
+  const lines = text.split(/\r?\n/);
+  return patterns.flatMap((pattern) => {
+    const matches = [];
+    for (const [index, line] of lines.entries()) {
+      if (!pattern.regex.test(line)) continue;
+      matches.push({
+        code: pattern.code,
+        source,
+        line: index + 1,
+        evidence: line.length > 240 ? `${line.slice(0, 237)}...` : line
+      });
+      if (matches.length >= 5) break;
+    }
+    return matches;
+  });
+}
+
+const highConfidenceFindings = [...find(highPatterns, npmLog, "npm-log"), ...find(highPatterns, straceLog, "strace")];
+const mediumConfidenceFindings = [...find(mediumPatterns, npmLog, "npm-log"), ...find(mediumPatterns, straceLog, "strace")];
+const processSummary = summarizeProcesses(straceLog);
+const networkSummary = summarizeNetwork(straceLog);
+const filesystemSummary = summarizeFilesystem(straceLog);
+applyNetworkPolicy(networkPolicy, networkSummary, npmLog, straceLog, highConfidenceFindings, mediumConfidenceFindings);
+console.log(JSON.stringify({
+  generatedAt: new Date().toISOString(),
+  inputs: {
+    npmLog: npmLogPath,
+    straceLog: straceLogPath
+  },
+  policy: {
+    strict: {
+      enabled: process.env.ANVIL_STRICT === "true",
+      riskLevel: process.env.ANVIL_STRICT_RISK_LEVEL || "high",
+      lifecycleMode: process.env.ANVIL_STRICT_LIFECYCLE_MODE || "any"
+    },
+    network: {
+      allowedPorts: [...networkPolicy.allowedPorts].sort((left, right) => left - right),
+      allowedHosts: [...networkPolicy.allowedHosts],
+      blockedHosts: [...networkPolicy.blockedHosts],
+      suspiciousHosts: [...networkPolicy.suspiciousHosts],
+      directIpSeverity: networkPolicy.directIpSeverity,
+      nonStandardPortSeverity: networkPolicy.nonStandardPortSeverity,
+      generatedDomainSeverity: networkPolicy.generatedDomainSeverity
+    }
+  },
+  highConfidenceFindings,
+  mediumConfidenceFindings,
+  processSummary,
+  networkSummary,
+  filesystemSummary,
+  summary: {
+    high: highConfidenceFindings.length,
+    medium: mediumConfidenceFindings.length,
+    executedProcesses: processSummary.totalExecs,
+    outboundConnections: networkSummary.totalConnections,
+    sensitiveFileAccesses: filesystemSummary.sensitiveAccesses.length
+  }
+}, null, 2));
+
+function summarizeProcesses(text) {
+  const execs = [];
+  const forks = [];
+  const commandCounts = new Map();
+  const execRegex = /^(?:(\d+)\s+)?execve\("([^"]+)",\s+\[([^\]]*)\]/;
+  const forkRegex = /^(?:(\d+)\s+)?(clone3?|fork|vfork)\([^=]*(?:=|<unfinished \.\.\.>).*/;
+  const resumedForkRegex = /^(?:(\d+)\s+)?<\.\.\. (clone3?|fork|vfork) resumed>.*=\s*(\d+)/;
+
+  for (const [index, line] of text.split(/\r?\n/).entries()) {
+    const fork = parseForkLine(line, forkRegex, resumedForkRegex);
+    if (fork && forks.length < 100) forks.push({ ...fork, line: index + 1 });
+
+    const match = line.match(execRegex);
+    if (!match) continue;
+    const [, pid, path, rawArgs] = match;
+    const args = [...rawArgs.matchAll(/"((?:\\"|[^"])*)"/g)].map((argMatch) => argMatch[1].replace(/\\"/g, '"'));
+    const command = args[0] || path.split("/").pop() || path;
+    commandCounts.set(command, (commandCounts.get(command) || 0) + 1);
+    if (execs.length < 50) {
+      execs.push({
+        pid: pid || undefined,
+        path,
+        command,
+        args: args.slice(0, 8),
+        line: index + 1
+      });
+    }
+  }
+
+  return {
+    totalExecs: [...commandCounts.values()].reduce((sum, count) => sum + count, 0),
+    uniqueCommands: [...commandCounts.entries()].map(([command, count]) => ({ command, count })).sort((left, right) => right.count - left.count),
+    execs,
+    forks,
+    processTree: buildProcessTree(execs, forks)
+  };
+}
+
+function parseForkLine(line, forkRegex, resumedForkRegex) {
+  const resumed = line.match(resumedForkRegex);
+  if (resumed) {
+    const [, parentPid, syscall, childPid] = resumed;
+    if (!parentPid || !childPid || childPid === "0") return undefined;
+    return { parentPid, childPid, syscall };
+  }
+
+  const fork = line.match(forkRegex);
+  if (!fork) return undefined;
+  const [, parentPid, syscall] = fork;
+  const childPid = line.match(/=\s*(\d+)/)?.[1];
+  if (!parentPid || !childPid || childPid === "0") return undefined;
+  return { parentPid, childPid, syscall };
+}
+
+function buildProcessTree(execs, forks) {
+  const byPid = new Map();
+  for (const fork of forks) {
+    if (!byPid.has(fork.childPid)) {
+      byPid.set(fork.childPid, {
+        pid: fork.childPid,
+        parentPid: fork.parentPid,
+        spawnSyscall: fork.syscall,
+        spawnLine: fork.line
+      });
+    }
+  }
+
+  for (const exec of execs) {
+    if (!exec.pid) continue;
+    byPid.set(exec.pid, {
+      ...(byPid.get(exec.pid) || { pid: exec.pid }),
+      path: exec.path,
+      command: exec.command,
+      args: exec.args,
+      execLine: exec.line
+    });
+  }
+
+  return [...byPid.values()].sort((left, right) => Number(left.pid) - Number(right.pid)).slice(0, 100);
+}
+
+function summarizeNetwork(text) {
+  const connections = [];
+  const portCounts = new Map();
+  const addressCounts = new Map();
+  const connectRegex = /^(?:(\d+)\s+)?connect\([^,]+,\s+\{([^}]*)\}/;
+
+  for (const [index, line] of text.split(/\r?\n/).entries()) {
+    const match = line.match(connectRegex);
+    if (!match) continue;
+    const [, pid, sockaddr] = match;
+    const family = sockaddr.match(/sa_family=(AF_[A-Z0-9_]+)/)?.[1];
+    const portMatch = sockaddr.match(/sin6?_port=htons\((\d+)\)/);
+    const ipv4 = sockaddr.match(/inet_addr\("([^"]+)"\)/)?.[1];
+    const ipv6 = sockaddr.match(/inet_pton\(AF_INET6,\s+"([^"]+)"/)?.[1];
+    const address = ipv4 || ipv6;
+    const port = portMatch ? Number.parseInt(portMatch[1], 10) : undefined;
+    if (port !== undefined) portCounts.set(String(port), (portCounts.get(String(port)) || 0) + 1);
+    if (address) addressCounts.set(address, (addressCounts.get(address) || 0) + 1);
+    if (connections.length < 50) {
+      connections.push({
+        pid: pid || undefined,
+        family,
+        address,
+        port,
+        line: index + 1,
+        evidence: line.length > 240 ? `${line.slice(0, 237)}...` : line
+      });
+    }
+  }
+
+  return {
+    totalConnections: [...portCounts.values()].reduce((sum, count) => sum + count, 0),
+    byPort: [...portCounts.entries()].map(([port, count]) => ({ port: Number(port), count })).sort((left, right) => right.count - left.count),
+    byAddress: [...addressCounts.entries()].map(([address, count]) => ({ address, count })).sort((left, right) => right.count - left.count),
+    connections
+  };
+}
+
+function loadNetworkPolicy(env) {
+  return {
+    allowedPorts: parsePortSet(env.ANVIL_NETWORK_ALLOWED_PORTS || "80,443"),
+    allowedHosts: parseList(env.ANVIL_NETWORK_ALLOWED_HOSTS),
+    blockedHosts: parseList(env.ANVIL_NETWORK_BLOCKED_HOSTS),
+    suspiciousHosts: parseList(env.ANVIL_NETWORK_SUSPICIOUS_HOSTS || "raw.githubusercontent.com,gist.githubusercontent.com,pastebin.com,hastebin.com,rentry.co,0x0.st"),
+    directIpSeverity: parseSeverity(env.ANVIL_NETWORK_DIRECT_IP_SEVERITY, "medium"),
+    nonStandardPortSeverity: parseSeverity(env.ANVIL_NETWORK_NON_STANDARD_PORT_SEVERITY, "medium"),
+    generatedDomainSeverity: parseSeverity(env.ANVIL_NETWORK_GENERATED_DOMAIN_SEVERITY, "medium")
+  };
+}
+
+function parseList(value) {
+  return String(value || "")
+    .split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function parsePortSet(value) {
+  const ports = new Set();
+  for (const item of String(value || "").split(",")) {
+    const port = Number.parseInt(item.trim(), 10);
+    if (Number.isInteger(port) && port > 0 && port <= 65535) ports.add(port);
+  }
+  return ports;
+}
+
+function parseSeverity(value, fallback) {
+  return value === "high" || value === "medium" || value === "off" ? value : fallback;
+}
+
+function applyNetworkPolicy(policy, networkSummary, npmLog, straceLog, highFindings, mediumFindings) {
+  const seen = new Set();
+  const addFinding = (severity, finding) => {
+    if (severity === "off") return;
+    const key = `${severity}:${finding.code}:${finding.source}:${finding.line}:${finding.evidence}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    (severity === "high" ? highFindings : mediumFindings).push(finding);
+  };
+
+  for (const connection of networkSummary.connections || []) {
+    const address = String(connection.address || "").toLowerCase();
+    const port = connection.port;
+    if (address && hostMatches(address, policy.blockedHosts)) {
+      addFinding("high", {
+        code: "BLOCKED_NETWORK_HOST",
+        source: "strace",
+        line: connection.line,
+        evidence: connection.evidence || `${address}:${port || "unknown"}`
+      });
+      continue;
+    }
+    if (address && hostMatches(address, policy.allowedHosts)) continue;
+    if (address && isIpAddress(address)) {
+      addFinding(policy.directIpSeverity, {
+        code: "DIRECT_IP_CONNECTION",
+        source: "strace",
+        line: connection.line,
+        evidence: connection.evidence || `${address}:${port || "unknown"}`
+      });
+    }
+    if (port && !policy.allowedPorts.has(port)) {
+      addFinding(policy.nonStandardPortSeverity, {
+        code: "NON_STANDARD_PORT",
+        source: "strace",
+        line: connection.line,
+        evidence: connection.evidence || `${address || "unknown"}:${port}`
+      });
+    }
+  }
+
+  for (const urlMatch of `${npmLog}\n${straceLog}`.matchAll(/\bhttps?:\/\/[^\s"'`<>]+/gi)) {
+    const rawUrl = urlMatch[0].replace(/[),.;]+$/, "");
+    let url;
+    try {
+      url = new URL(rawUrl);
+    } catch {
+      continue;
+    }
+    const host = url.hostname.toLowerCase();
+    const line = lineNumberForIndex(`${npmLog}\n${straceLog}`, urlMatch.index || 0);
+    if (hostMatches(host, policy.blockedHosts)) {
+      addFinding("high", {
+        code: "BLOCKED_NETWORK_HOST",
+        source: "install-log",
+        line,
+        evidence: rawUrl
+      });
+      continue;
+    }
+    if (hostMatches(host, policy.allowedHosts)) continue;
+    if (hostMatches(host, policy.suspiciousHosts)) {
+      addFinding("medium", {
+        code: "RAW_OR_PASTE_SITE",
+        source: "install-log",
+        line,
+        evidence: rawUrl
+      });
+    }
+    if (isIpAddress(host)) {
+      addFinding(policy.directIpSeverity, {
+        code: "DIRECT_IP_CONNECTION",
+        source: "install-log",
+        line,
+        evidence: rawUrl
+      });
+    }
+    if (looksGeneratedDomain(host)) {
+      addFinding(policy.generatedDomainSeverity, {
+        code: "GENERATED_DOMAIN_LOOKUP",
+        source: "install-log",
+        line,
+        evidence: rawUrl
+      });
+    }
+    if (url.port && !policy.allowedPorts.has(Number.parseInt(url.port, 10))) {
+      addFinding(policy.nonStandardPortSeverity, {
+        code: "NON_STANDARD_PORT",
+        source: "install-log",
+        line,
+        evidence: rawUrl
+      });
+    }
+  }
+
+  for (const dnsMatch of `${npmLog}\n${straceLog}`.matchAll(/\b(?:dns\.lookup|dns\.resolve(?:4|6)?|getaddrinfo|gethostbyname|res_query)\(["']?([a-z0-9][a-z0-9.-]*\.[a-z]{2,})["']?/gi)) {
+    const host = dnsMatch[1].toLowerCase();
+    const line = lineNumberForIndex(`${npmLog}\n${straceLog}`, dnsMatch.index || 0);
+    if (hostMatches(host, policy.allowedHosts) || !looksGeneratedDomain(host)) continue;
+    addFinding(policy.generatedDomainSeverity, {
+      code: "GENERATED_DOMAIN_LOOKUP",
+      source: "install-log",
+      line,
+      evidence: dnsMatch[0]
+    });
+  }
+}
+
+function hostMatches(host, patterns) {
+  return patterns.some((pattern) => host === pattern || host.endsWith(`.${pattern}`));
+}
+
+function isIpAddress(host) {
+  return /^(\d{1,3}\.){3}\d{1,3}$/.test(host) || host.includes(":");
+}
+
+function looksGeneratedDomain(host) {
+  if (isIpAddress(host)) return false;
+  return host
+    .split(".")
+    .some((label) => {
+      if (label.length < 18 || !/\d/.test(label) || !/[a-z]/i.test(label)) return false;
+      const alphaNumeric = label.replace(/[^a-z0-9]/gi, "");
+      if (alphaNumeric.length < 18) return false;
+      return shannonEntropy(alphaNumeric.toLowerCase()) >= 3.35;
+    });
+}
+
+function shannonEntropy(value) {
+  const counts = new Map();
+  for (const char of value) counts.set(char, (counts.get(char) || 0) + 1);
+  let entropy = 0;
+  for (const count of counts.values()) {
+    const probability = count / value.length;
+    entropy -= probability * Math.log2(probability);
+  }
+  return entropy;
+}
+
+function lineNumberForIndex(text, index) {
+  return text.slice(0, index).split(/\r?\n/).length;
+}
+
+function summarizeFilesystem(text) {
+  const sensitiveAccesses = [];
+  const sensitivePathPattern = /"([^"]*(?:\.npmrc|\.ssh|id_rsa|id_ed25519|known_hosts|\.aws|\.config\/gcloud|\.azure|\.env(?:\.local)?|\.git\/config|\.git-credentials)[^"]*)"/i;
+  const syscallPattern = /^(?:(\d+)\s+)?(openat|open|access|statx?|lstat|newfstatat)\(/;
+
+  for (const [index, line] of text.split(/\r?\n/).entries()) {
+    const syscall = line.match(syscallPattern);
+    const path = line.match(sensitivePathPattern)?.[1];
+    if (!syscall || !path) continue;
+    if (sensitiveAccesses.length < 50) {
+      sensitiveAccesses.push({
+        pid: syscall[1] || undefined,
+        syscall: syscall[2],
+        path,
+        line: index + 1
+      });
+    }
+  }
+
+  return {
+    sensitiveAccesses
+  };
+}
+NODE

@@ -1,0 +1,6 @@
+fund=false
+audit=true
+package-lock=true
+save-exact=true
+ignore-scripts=true
+foreground-scripts=true

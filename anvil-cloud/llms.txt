@@ -1,0 +1,45 @@
+# Anvil Cloud
+
+Anvil Cloud is an experimental agent-ready application platform for AWS.
+
+## Read first
+
+- `README.md` — project overview and naming.
+- `AGENTS.md` — instructions for coding agents.
+- `docs/product/vision.md` — product thesis and boundaries.
+- `docs/specs/v0-implementation-spec.md` — v0 implementation scope.
+- `docs/specs/cell-contract.md` — Anvil Cell authoring contract.
+- `docs/specs/cli.md` — CLI command and JSON output contracts.
+- `docs/architecture/runtime.md` — runtime design.
+- `docs/architecture/builder.md` — builder/compiler design.
+- `docs/architecture/local-dev.md` — local dev design.
+- `docs/architecture/aws-adapter.md` — AWS adapter design.
+
+## Core terms
+
+- Anvil Cloud: overall platform.
+- Anvil Cell: deployable app unit.
+- Anvil Runtime: shared execution layer.
+- Anvil Builder: compiler and bundler.
+- Anvil Local: local development runtime.
+- Anvil Guard: policy and capability checks.
+- Anvil Lens: inspection and diagnostics.
+
+## Current implementation priority
+
+Implement in this order:
+
+1. Runtime DSL and test host.
+2. Local runtime server.
+3. Builder and manifest extraction.
+4. CLI with stable `--json` output.
+5. Client SDK and generated metadata.
+6. AWS preview deployment.
+
+## Hard rules
+
+- Do not use `forge` naming.
+- Do not expose direct AWS SDK usage to Anvil Cell authors.
+- Do not begin with AWS infrastructure before local runtime is proven.
+- Do not add Kubernetes, ECS, arbitrary Docker, or multi-cloud support in v0.
+- Keep docs professional and suitable for a future open-source repository.

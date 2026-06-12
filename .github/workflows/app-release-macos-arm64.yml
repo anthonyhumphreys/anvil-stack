@@ -1,0 +1,92 @@
+name: Anvil App Release macOS Apple Silicon
+
+on:
+  push:
+    tags:
+      - 'app-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to create or update, for example app-v0.1.0. Defaults to app-v<package.json version>.'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    working-directory: anvil-app
+
+jobs:
+  release-macos-arm64:
+    name: Build and release macOS arm64
+    runs-on: macos-15
+
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: anvil-app/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Resolve release tag
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          package_version="$(node -p "require('./package.json').version")"
+          expected_tag="app-v${package_version}"
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            release_tag="${GITHUB_REF_NAME}"
+          elif [[ -n "${{ inputs.tag }}" ]]; then
+            release_tag="${{ inputs.tag }}"
+          else
+            release_tag="${expected_tag}"
+          fi
+
+          if [[ "${release_tag}" != "${expected_tag}" ]]; then
+            echo "Release tag ${release_tag} does not match package.json version ${package_version} (${expected_tag})." >&2
+            exit 1
+          fi
+
+          echo "tag=${release_tag}" >> "${GITHUB_OUTPUT}"
+          echo "name=Anvil ${release_tag}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build macOS Apple Silicon artifacts
+        run: pnpm run dist:mac:arm64
+
+      - name: Create or update GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          release_tag="${{ steps.release.outputs.tag }}"
+          release_name="${{ steps.release.outputs.name }}"
+          assets=(dist/*-arm64.dmg dist/*-arm64-mac.zip)
+
+          if gh release view "${release_tag}" >/dev/null 2>&1; then
+            gh release upload "${release_tag}" "${assets[@]}" --clobber
+          else
+            gh release create "${release_tag}" "${assets[@]}" \
+              --title "${release_name}" \
+              --notes "Private macOS Apple Silicon build for ${release_tag}."
+          fi

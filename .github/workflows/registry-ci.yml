@@ -1,0 +1,148 @@
+name: Anvil Registry CI
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/registry-ci.yml"
+      - "anvil-registry/apps/**"
+      - "anvil-registry/docs/anvil-registry-spec.md"
+      - "anvil-registry/infra/docker/**"
+      - "anvil-registry/infra/sst/**"
+      - "anvil-registry/package.json"
+      - "anvil-registry/packages/**"
+      - "anvil-registry/pnpm-lock.yaml"
+      - "anvil-registry/pnpm-workspace.yaml"
+      - "anvil-registry/scripts/smoke-analysis-queue"
+      - "anvil-registry/scripts/smoke-llm-review"
+      - "anvil-registry/scripts/smoke-node-base-report"
+      - "anvil-registry/scripts/smoke-npm-clients"
+      - "anvil-registry/scripts/smoke-scoped-upstream.ts"
+      - "anvil-registry/turbo.json"
+      - "anvil-registry/tsconfig.base.json"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/registry-ci.yml"
+      - "anvil-registry/apps/**"
+      - "anvil-registry/docs/anvil-registry-spec.md"
+      - "anvil-registry/infra/docker/**"
+      - "anvil-registry/infra/sst/**"
+      - "anvil-registry/package.json"
+      - "anvil-registry/packages/**"
+      - "anvil-registry/pnpm-lock.yaml"
+      - "anvil-registry/pnpm-workspace.yaml"
+      - "anvil-registry/scripts/smoke-analysis-queue"
+      - "anvil-registry/scripts/smoke-llm-review"
+      - "anvil-registry/scripts/smoke-node-base-report"
+      - "anvil-registry/scripts/smoke-npm-clients"
+      - "anvil-registry/scripts/smoke-scoped-upstream.ts"
+      - "anvil-registry/turbo.json"
+      - "anvil-registry/tsconfig.base.json"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: registry-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: true
+
+defaults:
+  run:
+    working-directory: anvil-registry
+
+jobs:
+  validate:
+    name: Validate registry workspace
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.11.0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: anvil-registry/pnpm-lock.yaml
+
+      - name: Show tool versions
+        run: |
+          node --version
+          pnpm --version
+          docker version
+          docker compose version
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Typecheck smoke scripts
+        run: pnpm typecheck:smokes
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      - name: Validate Docker Compose config
+        run: docker compose -f infra/docker/docker-compose.yml config
+
+      - name: Start local registry stack
+        run: docker compose -f infra/docker/docker-compose.yml up -d --build gateway worker admin
+
+      - name: Smoke npm clients through gateway
+        run: pnpm smoke:clients
+
+      - name: Smoke analysis queue processing
+        run: pnpm smoke:analysis
+
+      - name: Smoke Node Base report submission
+        run: pnpm smoke:node-base-report
+
+      - name: Smoke LLM review processing
+        run: pnpm smoke:llm-review
+
+      - name: Validate SST migration command
+        run: pnpm --filter @anvilstack/infra-sst migrate:run -- --dry-run
+
+      - name: Validate SST deploy preflight
+        run: PUBLIC_BASE_URL=https://npm.anvil-ci.test pnpm sst:preflight
+
+      - name: Smoke scoped upstream routing
+        run: pnpm smoke:scoped-upstream
+
+      - name: Capture Docker Compose logs
+        if: failure()
+        run: |
+          mkdir -p .ci-artifacts
+          docker compose -f infra/docker/docker-compose.yml ps > .ci-artifacts/docker-compose-ps.txt || true
+          docker compose -f infra/docker/docker-compose.yml logs --no-color > .ci-artifacts/docker-compose.log || true
+
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: anvil-registry-ci-logs
+          path: anvil-registry/.ci-artifacts
+          if-no-files-found: ignore
+
+      - name: Stop local registry stack
+        if: always()
+        run: docker compose -f infra/docker/docker-compose.yml down --volumes --remove-orphans

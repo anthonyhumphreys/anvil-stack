@@ -1,0 +1,78 @@
+name: Publish @anvilstack/cli to npm
+
+on:
+  push:
+    tags:
+      - "cli-v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run npm publish with --dry-run instead of publishing."
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  id-token: write
+
+defaults:
+  run:
+    working-directory: anvil-registry
+
+jobs:
+  publish:
+    name: Build, verify, and publish
+    runs-on: ubuntu-latest
+
+    env:
+      CI: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.11.0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: anvil-registry/pnpm-lock.yaml
+
+      - name: Update npm for trusted publishing
+        run: npm install -g npm@latest
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Verify tag matches package version
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="$(node -p "require('./apps/cli/package.json').version")"
+          expected_tag="cli-v${package_version}"
+          if [[ "${GITHUB_REF_NAME}" != "${expected_tag}" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match @anvilstack/cli version ${package_version} (${expected_tag})." >&2
+            exit 1
+          fi
+
+      - name: Build
+        run: pnpm --filter @anvilstack/cli build
+
+      - name: Test
+        run: pnpm --filter @anvilstack/cli test
+
+      - name: Publish to npm
+        working-directory: anvil-registry/apps/cli
+        run: |
+          extra_args=""
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.dry_run }}" == "true" ]]; then
+            extra_args="--dry-run"
+          fi
+          npm publish --access public ${extra_args}

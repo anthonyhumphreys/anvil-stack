@@ -1,0 +1,72 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "dev-anthonyhumphreys-anvil-raycast",
+  "title": "Anvil",
+  "description": "Control Anvil from Raycast.",
+  "icon": "command-icon.png",
+  "author": "anthonyhumphreys",
+  "license": "MIT",
+  "commands": [
+    {
+      "name": "overview",
+      "title": "Overview",
+      "description": "Show workspace, sessions, approvals, and recent chats.",
+      "mode": "view"
+    },
+    {
+      "name": "approvals",
+      "title": "Approvals",
+      "description": "Review and resolve pending Codex approvals.",
+      "mode": "view"
+    },
+    {
+      "name": "chats",
+      "title": "Chats",
+      "description": "Send input to active Codex sessions.",
+      "mode": "view"
+    },
+    {
+      "name": "launch-workflow",
+      "title": "Launch Workflow",
+      "description": "Start one-tap or custom Anvil workflows from Raycast.",
+      "mode": "view"
+    },
+    {
+      "name": "open-desktop",
+      "title": "Open Desktop App",
+      "description": "Focus the Anvil desktop app.",
+      "mode": "no-view"
+    }
+  ],
+  "preferences": [
+    {
+      "name": "baseUrl",
+      "title": "Companion Base URL",
+      "description": "Base URL shown when creating a Raycast token in desktop app settings.",
+      "type": "textfield",
+      "required": true,
+      "placeholder": "http://127.0.0.1:47631"
+    },
+    {
+      "name": "token",
+      "title": "Companion Token",
+      "description": "Bearer token created from desktop app settings for this Raycast extension.",
+      "type": "password",
+      "required": true
+    }
+  ],
+  "scripts": {
+    "dev": "ray develop",
+    "build": "ray build --output dist",
+    "lint": "ray lint",
+    "publish": "ray publish"
+  },
+  "dependencies": {
+    "@raycast/api": "^1.90.0",
+    "@raycast/utils": "^1.17.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  }
+}
