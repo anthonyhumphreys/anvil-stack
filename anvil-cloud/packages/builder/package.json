@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "@anvil-cloud/runtime": "workspace:*",
-    "esbuild": "^0.25.5"
+    "esbuild": "^0.28.1"
   },
   "devDependencies": {}
 }
