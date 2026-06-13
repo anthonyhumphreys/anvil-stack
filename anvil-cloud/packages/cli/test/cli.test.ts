@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -19,6 +19,59 @@ describe("main", () => {
     expect(output).toContain("Anvil Cloud CLI");
     expect(output).toContain("anvil check");
     expect(output).toContain("anvil destroy --preview --app <name> --yes");
+  });
+
+  it("scaffolds a Vite React client by default", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-"));
+    const originalCwd = process.cwd();
+
+    try {
+      process.chdir(rootDir);
+      const output = await captureStdout(() =>
+        main(["new", "react-notes", "--json"]),
+      );
+      const payload = JSON.parse(output) as Record<string, unknown>;
+      const cellDir = path.join(rootDir, "react-notes");
+      const anvilConfig = JSON.parse(
+        await readFile(path.join(cellDir, "anvil.json"), "utf8"),
+      ) as { entrypoints: { client: string } };
+      const packageJson = JSON.parse(
+        await readFile(path.join(cellDir, "package.json"), "utf8"),
+      ) as {
+        dependencies: Record<string, string>;
+        devDependencies: Record<string, string>;
+      };
+
+      expect(payload).toMatchObject({
+        ok: true,
+        cell: "react-notes",
+      });
+      expect(anvilConfig.entrypoints.client).toBe("src/client/main.tsx");
+      expect(packageJson.dependencies).toMatchObject({
+        "@anvil-cloud/client": "workspace:*",
+        "@vitejs/plugin-react": expect.any(String),
+        react: expect.any(String),
+        "react-dom": expect.any(String),
+        vite: expect.any(String),
+      });
+      expect(packageJson.devDependencies).toMatchObject({
+        "@types/react": expect.any(String),
+        "@types/react-dom": expect.any(String),
+        typescript: expect.any(String),
+      });
+      await expect(
+        readFile(path.join(cellDir, "src/client/App.tsx"), "utf8"),
+      ).resolves.toContain('import { api } from "@anvil/generated/client";');
+      await expect(
+        readFile(path.join(cellDir, "vite.config.ts"), "utf8"),
+      ).resolves.toContain("@vitejs/plugin-react");
+      await expect(
+        readFile(path.join(cellDir, "index.html"), "utf8"),
+      ).resolves.toContain("/src/client/main.tsx");
+    } finally {
+      process.chdir(originalCwd);
+      await rm(rootDir, { recursive: true, force: true });
+    }
   });
 
   it("requires explicit confirmation before destroying AWS preview stacks", async () => {
@@ -297,6 +350,43 @@ describe("main", () => {
       delete process.env.ANVIL_AWS_DEPLOYMENT_METADATA_TABLE;
       process.chdir(tempDir);
       await captureStdout(() => main(["new", "notes", "--json"]));
+      await writeFile(
+        path.join(tempDir, "notes", "anvil.json"),
+        JSON.stringify(
+          {
+            name: "notes",
+            entrypoints: {
+              server: "src/cell.server.ts",
+              client: "src/cell.client.tsx",
+            },
+            runtime: "nodejs20",
+          },
+          null,
+          2,
+        ),
+        "utf8",
+      );
+      await writeFile(
+        path.join(tempDir, "notes", "src/cell.client.tsx"),
+        "console.log('deploy fixture client');\n",
+        "utf8",
+      );
+      const tsconfigPath = path.join(tempDir, "notes", "tsconfig.json");
+      const tsconfig = JSON.parse(
+        await readFile(tsconfigPath, "utf8"),
+      ) as Record<string, unknown>;
+      await writeFile(
+        tsconfigPath,
+        JSON.stringify(
+          {
+            ...tsconfig,
+            include: ["src/cell.server.ts", "src/cell.client.tsx"],
+          },
+          null,
+          2,
+        ),
+        "utf8",
+      );
       process.chdir(path.join(tempDir, "notes"));
 
       const output = await captureStdout(() =>

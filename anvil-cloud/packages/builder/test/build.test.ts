@@ -34,6 +34,12 @@ describe("buildCell", () => {
         "});",
         "",
       ].join("\n"),
+      client: [
+        'import { api } from "@anvil/generated/client";',
+        "",
+        "document.body.dataset.query = api.queries.listNotes.name;",
+        "",
+      ].join("\n"),
     });
 
     const result = await buildCell({ rootDir });
@@ -56,6 +62,9 @@ describe("buildCell", () => {
     await expect(
       readText(path.join(rootDir, ".anvil/generated/client.ts")),
     ).resolves.toContain("createNote");
+    await expect(
+      readText(path.join(rootDir, ".anvil/dist/client/assets/cell.client.js")),
+    ).resolves.toContain("listNotes");
   });
 
   it("reports forbidden imports before bundling", async () => {
@@ -308,12 +317,16 @@ describe("buildCell", () => {
   });
 });
 
-async function createCell(options: { server: string }): Promise<string> {
+async function createCell(options: {
+  server: string;
+  client?: string;
+}): Promise<string> {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cell-"));
   const repoRoot = path.resolve(process.cwd(), "../..");
 
   tempDirs.push(rootDir);
   await mkdir(path.join(rootDir, "src"), { recursive: true });
+  await mkdir(path.join(rootDir, ".anvil/generated"), { recursive: true });
   await writeFile(
     path.join(rootDir, "anvil.json"),
     JSON.stringify(
@@ -358,9 +371,10 @@ async function createCell(options: { server: string }): Promise<string> {
                 ),
               ),
             ],
+            "@anvil/generated/client": [".anvil/generated/client.ts"],
           },
         },
-        include: ["src/**/*.ts", "src/**/*.tsx"],
+        include: ["src/**/*.ts", "src/**/*.tsx", ".anvil/generated/**/*.ts"],
       },
       null,
       2,
@@ -373,8 +387,21 @@ async function createCell(options: { server: string }): Promise<string> {
     "utf8",
   );
   await writeFile(
+    path.join(rootDir, ".anvil/generated/client.ts"),
+    [
+      'import type { GeneratedAnvilApi } from "@anvil-cloud/client";',
+      "",
+      "export const api = {",
+      "  queries: {},",
+      "  mutations: {},",
+      "} as GeneratedAnvilApi;",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  await writeFile(
     path.join(rootDir, "src/cell.client.tsx"),
-    "console.log('client ready');\n",
+    options.client ?? "console.log('client ready');\n",
     "utf8",
   );
 

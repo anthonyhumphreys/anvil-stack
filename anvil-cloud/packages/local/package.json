@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@anvil-cloud/auth": "workspace:^",
-    "@anvil-cloud/runtime": "workspace:*"
+    "@anvil-cloud/runtime": "workspace:*",
+    "vite": "^5.4.21"
   }
 }

@@ -89,9 +89,11 @@ await build({
 
 ## Client bundling
 
-Use Vite in alpha.
+Use Vite + React in alpha.
 
-The client build should consume generated Anvil client metadata. Local dev should use Vite dev server with proxying to the local runtime.
+The client build should consume generated Anvil client metadata through
+`@anvil/generated/client`. Local dev should use the Vite dev server with
+proxying to the local runtime.
 
 ## Import policy
 

@@ -476,7 +476,7 @@ AWS is the first planned alpha adapter. Its concrete service mapping belongs in 
 
 ## Open decisions
 
-- React vs Preact for starter templates.
+- Additional starter templates beyond the default Vite + React Cell.
 - Zod, Valibot, or custom schema DSL.
 - Hono vs Fastify for local/runtime HTTP layer.
 - SQLite-only local DB vs optional DynamoDB Local mode.

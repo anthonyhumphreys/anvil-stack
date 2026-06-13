@@ -20,6 +20,24 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.20)
 
+  examples/aws-preview:
+    dependencies:
+      "@anvil-cloud/client":
+        specifier: workspace:*
+        version: link:../../packages/client
+      "@anvil-cloud/runtime":
+        specifier: workspace:*
+        version: link:../../packages/runtime
+
+  examples/lens-demo:
+    dependencies:
+      "@anvil-cloud/client":
+        specifier: workspace:*
+        version: link:../../packages/client
+      "@anvil-cloud/runtime":
+        specifier: workspace:*
+        version: link:../../packages/runtime
+
   packages/auth:
     dependencies:
       "@anvil-cloud/runtime":
@@ -70,6 +88,9 @@ importers:
       esbuild:
         specifier: ^0.25.5
         version: 0.25.12
+      vite:
+        specifier: ^5.4.21
+        version: 5.4.21(@types/node@22.19.20)
 
   packages/cli:
     dependencies:
@@ -116,6 +137,9 @@ importers:
       "@anvil-cloud/runtime":
         specifier: workspace:*
         version: link:../runtime
+      vite:
+        specifier: ^5.4.21
+        version: 5.4.21(@types/node@22.19.20)
 
   packages/runtime: {}
 

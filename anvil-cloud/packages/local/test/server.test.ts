@@ -151,6 +151,62 @@ describe("startLocalRuntimeServer", () => {
       await server.close();
     }
   });
+
+  it("serves a Vite client with runtime proxying", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-local-"));
+    tempDirs.push(rootDir);
+    await mkdir(path.join(rootDir, "src"), { recursive: true });
+    await writeFile(
+      path.join(rootDir, "index.html"),
+      [
+        "<!doctype html>",
+        '<div id="root">Vite Cell</div>',
+        '<script type="module" src="/src/main.ts"></script>',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await writeFile(
+      path.join(rootDir, "src/main.ts"),
+      "document.body.dataset.loaded = 'true';\n",
+      "utf8",
+    );
+
+    const cell = app({
+      queries: {
+        ping: query({
+          auth: "public",
+          handler: async () => ({ ok: true }),
+        }),
+      },
+    });
+    const server = await startLocalRuntimeServer({
+      app: cell,
+      manifest: {
+        queries: ["ping"],
+        mutations: [],
+      },
+      rootDir,
+      cellName: "vite-cell",
+      port: 0,
+      clientPort: 0,
+      clientMode: "vite",
+    });
+
+    try {
+      await expect(fetchText(server.clientUrl)).resolves.toContain("Vite Cell");
+      await expect(
+        postJson(`${server.clientUrl}/_anvil/query/ping`, { input: {} }),
+      ).resolves.toMatchObject({
+        ok: true,
+        result: {
+          ok: true,
+        },
+      });
+    } finally {
+      await server.close();
+    }
+  });
 });
 
 async function postJson(url: string, body: unknown): Promise<unknown> {

@@ -114,6 +114,8 @@ async function runBuildPipeline(
     return failed("manifest", manifestResult.diagnostics, output);
   }
 
+  await writeBuildOutputs(output, manifestResult.manifest);
+
   const clientDiagnostics = await bundleClient({
     rootDir,
     entry: loadedConfig.config.clientEntry,
@@ -124,8 +126,6 @@ async function runBuildPipeline(
   if (hasErrors(clientDiagnostics)) {
     return failed("client-bundle", clientDiagnostics, output);
   }
-
-  await writeBuildOutputs(output, manifestResult.manifest);
 
   return {
     ok: true,

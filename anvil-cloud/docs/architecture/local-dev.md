@@ -30,10 +30,10 @@ Anvil local runtime server  http://localhost:8787
 Anvil client server         http://localhost:5173
 ```
 
-The current alpha implementation serves the built client output from
-`.anvil/dist/client` and proxies runtime requests to Anvil Local. A Vite-backed
-hot-reload client server can replace this static server once the client
-framework decision is settled.
+The alpha implementation runs a Vite-backed React client server during
+`anvil dev` and proxies runtime requests to Anvil Local. Production builds still
+emit static client assets under `.anvil/dist/client` so deployment adapters have
+a boring artifact shape. Boring is a feature here.
 
 ```txt
 /_anvil/* → http://localhost:8787

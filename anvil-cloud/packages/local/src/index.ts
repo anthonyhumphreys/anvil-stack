@@ -40,6 +40,7 @@ import {
   type WorkflowAdapter,
   type WorkflowRun,
 } from "@anvil-cloud/runtime";
+import { createServer as createViteServer, type ViteDevServer } from "vite";
 
 import { lensPageHtml } from "./lens.js";
 
@@ -66,6 +67,7 @@ export type LocalRuntimeServerOptions = {
   port?: number;
   clientPort?: number;
   clientDistDir?: string;
+  clientMode?: "static" | "vite";
   env?: Record<string, string>;
 };
 
@@ -118,6 +120,7 @@ export async function startLocalRuntimeServer(
   );
   const port = options.port ?? 8787;
   const clientPort = options.clientPort ?? 5173;
+  const clientMode = options.clientMode ?? "static";
   let runtimeUrl = `http://localhost:${port}`;
   let clientUrl = `http://localhost:${clientPort}`;
   const hostOptions: {
@@ -171,24 +174,37 @@ export async function startLocalRuntimeServer(
     runtimeUrl = `http://localhost:${address.port}`;
   }
 
-  const clientServer = http.createServer((request, response) => {
-    void handleClientRequest({
-      clientDistDir,
-      runtimeUrl,
-      request,
-      response,
-    });
-  });
+  let clientServer: Server | undefined;
+  let viteServer: ViteDevServer | undefined;
 
   try {
-    await listen(clientServer, clientPort);
+    if (clientMode === "vite") {
+      viteServer = await startViteClientServer({
+        rootDir,
+        runtimeUrl,
+        port: clientPort,
+      });
+      clientUrl =
+        trimTrailingSlash(viteServer.resolvedUrls?.local[0]) ??
+        urlFromServerAddress(viteServer.httpServer?.address(), clientUrl);
+    } else {
+      clientServer = http.createServer((request, response) => {
+        void handleClientRequest({
+          clientDistDir,
+          runtimeUrl,
+          request,
+          response,
+        });
+      });
+      await listen(clientServer, clientPort);
+    }
   } catch (error) {
     await services.stopAll();
     await close(server);
     throw error;
   }
 
-  const clientAddress = clientServer.address();
+  const clientAddress = clientServer?.address();
 
   if (typeof clientAddress === "object" && clientAddress !== null) {
     clientUrl = `http://localhost:${clientAddress.port}`;
@@ -201,10 +217,62 @@ export async function startLocalRuntimeServer(
     clientUrl,
     close: async () => {
       await services.stopAll();
-      await close(clientServer);
+      if (viteServer) {
+        await viteServer.close();
+      }
+      if (clientServer) {
+        await close(clientServer);
+      }
       await close(server);
     },
   };
+}
+
+function urlFromServerAddress(
+  address: ReturnType<Server["address"]> | null | undefined,
+  fallback: string,
+): string {
+  if (typeof address === "object" && address !== null) {
+    return `http://localhost:${address.port}`;
+  }
+
+  return fallback;
+}
+
+function trimTrailingSlash(value: string | undefined): string | undefined {
+  return value?.endsWith("/") ? value.slice(0, -1) : value;
+}
+
+async function startViteClientServer(options: {
+  rootDir: string;
+  runtimeUrl: string;
+  port: number;
+}): Promise<ViteDevServer> {
+  const server = await createViteServer({
+    root: options.rootDir,
+    logLevel: "silent",
+    server: {
+      host: "127.0.0.1",
+      port: options.port,
+      strictPort: false,
+      proxy: {
+        "/_anvil": options.runtimeUrl,
+        "/api": options.runtimeUrl,
+      },
+    },
+    resolve: {
+      alias: {
+        "@anvil/generated/client": path.resolve(
+          options.rootDir,
+          ".anvil/generated/client.ts",
+        ),
+      },
+    },
+  });
+
+  await server.listen();
+
+  return server;
 }
 
 async function writeServicesSnapshot(

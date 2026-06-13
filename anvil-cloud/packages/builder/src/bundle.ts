@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { build, type Plugin } from "esbuild";
+import { build as viteBuild, type InlineConfig } from "vite";
 
 import { errorDiagnostic, type BuilderDiagnostic } from "./diagnostics.js";
 
@@ -28,19 +29,57 @@ export async function bundleServer(
 export async function bundleClient(
   options: BundleOptions & { indexFile: string },
 ): Promise<BuilderDiagnostic[]> {
-  const diagnostics = await runEsbuild({
-    ...options,
-    platform: "browser",
-    format: "esm",
-    sourcemap: true,
-    bundle: true,
-    target: "es2022",
-  });
+  try {
+    await mkdir(path.dirname(options.outfile), { recursive: true });
+    await viteBuild(createClientBuildConfig(options));
+    await writeClientIndex(options);
 
-  if (diagnostics.length > 0) {
-    return diagnostics;
+    return [];
+  } catch (error) {
+    return [
+      errorDiagnostic({
+        code: "BUNDLE_FAILED",
+        message:
+          error instanceof Error
+            ? error.message
+            : "The Cell client bundle failed to build.",
+      }),
+    ];
   }
+}
 
+function createClientBuildConfig(
+  options: BundleOptions & { indexFile: string },
+): InlineConfig {
+  return {
+    root: options.rootDir,
+    configFile: false,
+    logLevel: "silent",
+    resolve: {
+      alias: workspacePackageAliases(options.rootDir),
+    },
+    build: {
+      outDir: path.dirname(options.indexFile),
+      emptyOutDir: false,
+      sourcemap: true,
+      target: "es2022",
+      rollupOptions: {
+        input: options.entry,
+        output: {
+          entryFileNames: toPosixPath(
+            path.relative(path.dirname(options.indexFile), options.outfile),
+          ),
+          chunkFileNames: "assets/[name]-[hash].js",
+          assetFileNames: "assets/[name]-[hash][extname]",
+        },
+      },
+    },
+  };
+}
+
+async function writeClientIndex(
+  options: BundleOptions & { indexFile: string },
+): Promise<void> {
   const scriptPath = path.relative(
     path.dirname(options.indexFile),
     options.outfile,
@@ -65,8 +104,6 @@ export async function bundleClient(
     ].join("\n"),
     "utf8",
   );
-
-  return [];
 }
 
 type EsbuildOptions = BundleOptions & {
@@ -149,6 +186,16 @@ function resolveWorkspacePackageSources(): Map<string, string> {
   );
 
   return sources;
+}
+
+function workspacePackageAliases(rootDir: string): Record<string, string> {
+  return Object.fromEntries([
+    ...resolveWorkspacePackageSources(),
+    [
+      "@anvil/generated/client",
+      path.resolve(rootDir, ".anvil/generated/client.ts"),
+    ],
+  ]);
 }
 
 function toPosixPath(value: string): string {
