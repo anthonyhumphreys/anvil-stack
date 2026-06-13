@@ -9,7 +9,7 @@
     "render:gif": "remotion render AnvilSizzle out/anvil-sizzle.gif"
   },
   "dependencies": {
-    "@remotion/cli": "^4.0.462",
+    "@remotion/cli": "^4.0.477",
     "@remotion/google-fonts": "^4.0.462",
     "@remotion/transitions": "^4.0.462",
     "react": "^19.2.6",
