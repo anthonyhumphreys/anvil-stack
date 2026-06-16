@@ -16,6 +16,16 @@ node ../../packages/cli/dist/index.js check --json
 node ../../packages/cli/dist/index.js build --json
 ```
 
+Or run the repeatable local smoke verifier from the `anvil-cloud` workspace:
+
+```bash
+pnpm verify:notes-local
+```
+
+It starts `anvil dev` on ephemeral ports, creates a local user, mints a real
+JWT, calls authenticated note mutation/query routes, checks inspect/logs, and
+then shuts the dev server down.
+
 Run it locally:
 
 ```bash
