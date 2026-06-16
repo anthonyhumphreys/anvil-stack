@@ -126,6 +126,7 @@ export class AwsRemoteReader {
         ...(outputs.CellJobDeadLetterQueueUrl
           ? { jobDeadLetterQueue: outputs.CellJobDeadLetterQueueUrl }
           : {}),
+        ...workflowStateMachineResources(manifest, outputs),
         deploymentMetadataTable: this.options.deploymentMetadataTable,
       },
     };
@@ -190,9 +191,9 @@ export class AwsRemoteReader {
       adapter: "aws",
       cell: input.cell,
       environment: input.environment,
-      logs: events.slice(0, limit).map((event) =>
-        parseLogEvent(event.timestamp, event.message ?? ""),
-      ),
+      logs: events
+        .slice(0, limit)
+        .map((event) => parseLogEvent(event.timestamp, event.message ?? "")),
     };
   }
 
@@ -367,4 +368,31 @@ function optionalStringAttribute(attribute: unknown): string | undefined {
   }
 
   return undefined;
+}
+
+function workflowStateMachineResources(
+  manifest: CellManifest,
+  outputs: Record<string, string>,
+): Record<string, string> {
+  return Object.fromEntries(
+    (manifest.workflows ?? [])
+      .map((workflow) => {
+        const value =
+          outputs[`Workflow${logicalIdPart(workflow.name)}StateMachineArn`];
+
+        return value ? [`workflow:${workflow.name}`, value] : null;
+      })
+      .filter((entry): entry is [string, string] => entry !== null),
+  );
+}
+
+function logicalIdPart(value: string): string {
+  const normalized = value
+    .replace(/[^a-zA-Z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
+    .join("");
+
+  return normalized.length > 0 ? normalized : "Workflow";
 }

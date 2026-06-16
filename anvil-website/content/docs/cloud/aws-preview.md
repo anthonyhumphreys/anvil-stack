@@ -170,8 +170,9 @@ verifier still attempts preview cleanup before exiting.
 Remote inspect reads the latest deployment record from the metadata table and
 returns the manifest, deployment id, update timestamp when present, runtime URL,
 and resource ids including runtime, assets, logs, database, files, EventBridge,
-SQS, and deployment metadata when present. New deployment records also include
-the artifact summary, including the Lambda bundle key and SHA-256 digest.
+SQS, workflow state machines, and deployment metadata when present. New
+deployment records also include the artifact summary, including the Lambda
+bundle key and SHA-256 digest.
 Missing or malformed records return stable `AWS_DEPLOYMENT_METADATA_NOT_FOUND`
 or `AWS_DEPLOYMENT_METADATA_INVALID` errors. DynamoDB or CloudWatch read
 failures return `AWS_REMOTE_READ_FAILED` with the failed operation and provider

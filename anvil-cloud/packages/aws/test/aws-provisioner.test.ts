@@ -48,6 +48,11 @@ describe("AwsSdkPreviewProvisioner", () => {
                 OutputKey: "CellJobDeadLetterQueueUrl",
                 OutputValue: "https://sqs.example.test/jobs-dlq",
               },
+              {
+                OutputKey: "WorkflowSyncNotesStateMachineArn",
+                OutputValue:
+                  "arn:aws:states:eu-west-2:123456789012:stateMachine:syncNotes",
+              },
             ],
           },
         ],
@@ -76,6 +81,8 @@ describe("AwsSdkPreviewProvisioner", () => {
         events: "events-bus",
         jobs: "https://sqs.example.test/jobs",
         jobDeadLetterQueue: "https://sqs.example.test/jobs-dlq",
+        "workflow:syncNotes":
+          "arn:aws:states:eu-west-2:123456789012:stateMachine:syncNotes",
       },
     });
     expect(s3.commandNames()).toEqual([
@@ -951,7 +958,7 @@ function createInput(): AwsPreviewProvisionerInput {
       mutations: [],
       endpoints: [],
       jobs: [],
-      workflows: [],
+      workflows: [{ name: "syncNotes", steps: ["fetch", "store"] }],
       services: [],
       capabilities: {
         database: true,

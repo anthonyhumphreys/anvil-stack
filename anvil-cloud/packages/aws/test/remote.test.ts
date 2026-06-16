@@ -50,6 +50,8 @@ describe("AwsRemoteReader", () => {
         events: "events-bus",
         jobs: "https://sqs.example.test/jobs",
         jobDeadLetterQueue: "https://sqs.example.test/jobs-dlq",
+        "workflow:syncNotes":
+          "arn:aws:states:eu-west-2:123456789012:stateMachine:syncNotes",
         deploymentMetadataTable: "deployments",
       },
     });
@@ -436,6 +438,8 @@ function deploymentItem() {
         mutations: [],
         endpoints: [],
         jobs: [],
+        workflows: [{ name: "syncNotes", steps: ["fetch", "store"] }],
+        services: [],
         capabilities: {},
       }),
     },
@@ -447,6 +451,8 @@ function deploymentItem() {
         CellEventBusName: "events-bus",
         CellJobQueueUrl: "https://sqs.example.test/jobs",
         CellJobDeadLetterQueueUrl: "https://sqs.example.test/jobs-dlq",
+        WorkflowSyncNotesStateMachineArn:
+          "arn:aws:states:eu-west-2:123456789012:stateMachine:syncNotes",
       }),
     },
     artifacts: {

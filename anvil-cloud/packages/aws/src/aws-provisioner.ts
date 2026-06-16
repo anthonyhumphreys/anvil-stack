@@ -249,6 +249,7 @@ export class AwsSdkPreviewProvisioner implements AwsPreviewProvisioner {
         ...(outputs.CellJobDeadLetterQueueUrl
           ? { jobDeadLetterQueue: outputs.CellJobDeadLetterQueueUrl }
           : {}),
+        ...workflowStateMachineResources(input.manifest, outputs),
       },
     };
   }
@@ -931,6 +932,33 @@ function requiredStackOutput(
   }
 
   return value;
+}
+
+function workflowStateMachineResources(
+  manifest: AwsPreviewProvisionerInput["manifest"],
+  outputs: Record<string, string>,
+): Record<string, string> {
+  return Object.fromEntries(
+    (manifest.workflows ?? [])
+      .map((workflow) => {
+        const value =
+          outputs[`Workflow${logicalIdPart(workflow.name)}StateMachineArn`];
+
+        return value ? [`workflow:${workflow.name}`, value] : null;
+      })
+      .filter((entry): entry is [string, string] => entry !== null),
+  );
+}
+
+function logicalIdPart(value: string): string {
+  const normalized = value
+    .replace(/[^a-zA-Z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
+    .join("");
+
+  return normalized.length > 0 ? normalized : "Workflow";
 }
 
 function isAlreadyExistsError(error: unknown): boolean {
