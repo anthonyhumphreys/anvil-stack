@@ -124,6 +124,9 @@ describe("startLocalRuntimeServer", () => {
       expect(lensResponse.status).toBe(200);
       expect(lensResponse.headers.get("content-type")).toContain("text/html");
       await expect(lensResponse.text()).resolves.toContain("Anvil Lens");
+      await expect(
+        fetchText(`${server.runtimeUrl}/_anvil/lens`),
+      ).resolves.toContain("Diagnostics");
 
       await expect(
         postJson(`${server.clientUrl}/_anvil/mutation/createNote`, {

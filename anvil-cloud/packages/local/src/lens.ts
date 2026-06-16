@@ -145,6 +145,8 @@ pre {
 .token-box { display: none; margin-top: 6px; }
 .token-box.show { display: block; }
 .cap { display: inline-block; background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px; margin: 2px; }
+.kv { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 6px 12px; }
+.kv div:nth-child(odd) { color: var(--muted); }
 </style>
 </head>
 <body>
@@ -160,6 +162,7 @@ pre {
   <button data-tab="auth">Auth</button>
   <button data-tab="workflows">Workflows</button>
   <button data-tab="services">Services</button>
+  <button data-tab="diagnostics">Diagnostics</button>
 </nav>
 <main>
   <div class="banner" id="banner"></div>
@@ -240,6 +243,22 @@ pre {
       <thead><tr><th>service</th><th>state</th><th>restarts</th><th>actions</th></tr></thead>
       <tbody></tbody>
     </table></div>
+  </section>
+
+  <section id="tab-diagnostics">
+    <h2>Trust gateway</h2>
+    <div class="panel">
+      <pre>anvil check --json
+anvil build --json
+anvil inspect --local --json
+anvil logs --local --json</pre>
+    </div>
+    <h2>Runtime state</h2>
+    <div class="panel kv" id="diag-state"></div>
+    <h2>Recent errors</h2>
+    <div class="panel" id="diag-errors"><span class="muted">Loading…</span></div>
+    <h2>Manifest</h2>
+    <div class="panel" id="diag-manifest"><span class="muted">Loading…</span></div>
   </section>
 </main>
 <script>
@@ -371,7 +390,40 @@ pre {
         });
       }
       renderDeclaredWorkflows();
+      renderDiagnostics(payload);
     });
+  }
+
+  function renderDiagnostics(payload) {
+    var state = document.getElementById("diag-state");
+    var manifest = payload.manifest || {};
+    var database = (payload.database && payload.database.tables) || {};
+    var tableNames = Object.keys(database);
+    state.textContent = "";
+    [
+      ["status", payload.status || "unknown"],
+      ["cell", (manifest.cell && manifest.cell.name) || "unknown"],
+      ["runtime", payload.runtimeUrl || window.location.origin],
+      ["current user", (payload.auth && payload.auth.currentUser) || "none"],
+      ["tables", tableNames.length ? tableNames.join(", ") : "none"],
+      ["recent errors", String((payload.recentErrors || []).length)]
+    ].forEach(function (pair) {
+      state.appendChild(el("div", { text: pair[0] }));
+      state.appendChild(el("div", { text: pair[1] }));
+    });
+
+    var errors = document.getElementById("diag-errors");
+    errors.textContent = "";
+    var recentErrors = payload.recentErrors || [];
+    if (recentErrors.length === 0) {
+      errors.appendChild(el("span", { class: "muted", text: "No recent runtime errors." }));
+    } else {
+      errors.appendChild(el("pre", { text: JSON.stringify(recentErrors, null, 2) }));
+    }
+
+    var manifestPanel = document.getElementById("diag-manifest");
+    manifestPanel.textContent = "";
+    manifestPanel.appendChild(el("pre", { text: JSON.stringify(manifest, null, 2) }));
   }
 
   // Logs

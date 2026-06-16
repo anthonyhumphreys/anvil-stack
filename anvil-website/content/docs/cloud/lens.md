@@ -55,6 +55,7 @@ The client dev server proxies `/_anvil/*` to the runtime, so the page is also re
 | Auth | Local identity provider users, a create-user form, and per-user JWT minting with a copyable token box. |
 | Workflows | Run list with status badges, per-step detail including attempts and errors, and a run form for each declared workflow. |
 | Services | Supervised service states with start and stop actions. |
+| Diagnostics | Trust-gateway commands, runtime state, current auth user, table summary, recent errors, and raw manifest JSON. |
 
 Everything Lens renders comes from routes you can also hit with `curl`: `GET /_anvil/inspect`, `GET /_anvil/logs`, `GET /_anvil/db/tables`, `GET /_anvil/auth/users`, `GET /_anvil/workflows`, `GET /_anvil/services`, and the corresponding action routes. Lens is a viewer, not a separate source of truth.
 
