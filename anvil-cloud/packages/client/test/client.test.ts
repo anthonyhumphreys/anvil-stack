@@ -8,6 +8,7 @@ import { app, mutation, query, table, text } from "@anvil-cloud/runtime";
 import { startLocalRuntimeServer } from "@anvil-cloud/local";
 
 import {
+  AnvilClientError,
   createAnvilHooks,
   createClient,
   type HookRuntime,
@@ -72,6 +73,63 @@ describe("AnvilClient", () => {
         },
       },
     ]);
+  });
+
+  it("throws structured runtime errors", async () => {
+    const client = createClient({
+      runtimeUrl: "http://runtime.local",
+      fetch: async () =>
+        Response.json(
+          {
+            ok: false,
+            error: {
+              code: "AUTH_REQUIRED",
+              message: "A signed-in user is required.",
+              details: {
+                auth: "required",
+              },
+            },
+          },
+          { status: 401 },
+        ),
+    });
+
+    await expect(
+      client.query({ kind: "query", name: "listNotes" }, {}),
+    ).rejects.toMatchObject({
+      name: "AnvilClientError",
+      status: 401,
+      code: "AUTH_REQUIRED",
+      message: "A signed-in user is required.",
+      details: {
+        auth: "required",
+      },
+    });
+  });
+
+  it("normalizes non-runtime HTTP failures", async () => {
+    const client = createClient({
+      runtimeUrl: "http://runtime.local",
+      fetch: async () =>
+        Response.json(
+          {
+            ok: true,
+            result: null,
+          },
+          { status: 502 },
+        ),
+    });
+
+    await expect(
+      client.query({ kind: "query", name: "listNotes" }, {}),
+    ).rejects.toBeInstanceOf(AnvilClientError);
+    await expect(
+      client.query({ kind: "query", name: "listNotes" }, {}),
+    ).rejects.toMatchObject({
+      status: 502,
+      code: "HTTP_ERROR",
+      message: "Runtime request failed with 502.",
+    });
   });
 
   it("runs generated-style useQuery and useMutation hooks against local runtime", async () => {

@@ -26,5 +26,9 @@ await createNote.mutate({ title: "Ship the demo" });
 await notes.refetch();
 ```
 
+Runtime failures throw `AnvilClientError`, which includes the HTTP `status`,
+runtime `code`, message, and optional diagnostic `details` from the runtime
+payload.
+
 The hook runtime is injected so the same client package can support React first
 while keeping the runtime boundary small.

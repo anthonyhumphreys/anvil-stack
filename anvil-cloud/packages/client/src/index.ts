@@ -36,6 +36,25 @@ export type QueryResult<TResult = unknown> = QueryState<TResult> & {
   refetch: () => Promise<TResult>;
 };
 
+export class AnvilClientError extends Error {
+  readonly status: number;
+  readonly code: string;
+  readonly details: unknown;
+
+  constructor(options: {
+    status: number;
+    code: string;
+    message: string;
+    details?: unknown;
+  }) {
+    super(options.message);
+    this.name = "AnvilClientError";
+    this.status = options.status;
+    this.code = options.code;
+    this.details = options.details;
+  }
+}
+
 export type HookRuntime = {
   useCallback<T extends (...args: any[]) => unknown>(
     callback: T,
@@ -116,16 +135,11 @@ export class AnvilClient {
     const payload = (await response.json()) as RuntimePayload<TResult>;
 
     if (!response.ok) {
-      throw new Error(
-        payload.ok
-          ? `Runtime request failed with ${response.status}.`
-          : (payload.error?.message ??
-              `Runtime request failed with ${response.status}.`),
-      );
+      throw errorFromPayload(response.status, payload);
     }
 
     if (!payload.ok) {
-      throw new Error(payload.error?.message ?? "Runtime request failed.");
+      throw errorFromPayload(response.status, payload);
     }
 
     return payload.result as TResult;
@@ -283,8 +297,23 @@ type RuntimePayload<TResult> =
       error?: {
         code: string;
         message: string;
+        details?: unknown;
       };
     };
+
+function errorFromPayload(
+  status: number,
+  payload: RuntimePayload<unknown>,
+): AnvilClientError {
+  return new AnvilClientError({
+    status,
+    code: payload.ok ? "HTTP_ERROR" : (payload.error?.code ?? "RUNTIME_ERROR"),
+    message: payload.ok
+      ? `Runtime request failed with ${status}.`
+      : (payload.error?.message ?? "Runtime request failed."),
+    details: payload.ok ? undefined : payload.error?.details,
+  });
+}
 
 function trimTrailingSlash(value: string): string {
   return value.endsWith("/") ? value.slice(0, -1) : value;
