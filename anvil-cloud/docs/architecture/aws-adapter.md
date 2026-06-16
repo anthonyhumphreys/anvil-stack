@@ -295,7 +295,10 @@ The AWS runtime host currently supports:
   runtime;
 - Lambda environment values through `ctx.env`;
 - request-provided auth identity with no provider-specific auth lookup yet;
-- structured JSON logs written to CloudWatch through Lambda logging.
+- structured JSON logs written to CloudWatch through Lambda logging;
+- Step Functions templates for declared workflows, Lambda environment mapping
+  for workflow state machine ARNs, and `ctx.workflows.start` against configured
+  state machines.
 
 Remote inspection and logs use deployment metadata plus CloudWatch Logs. The CLI
 remote reader requires `ANVIL_AWS_DEPLOYMENT_METADATA_TABLE` so it can find the
@@ -311,11 +314,14 @@ events until the requested limit is reached or CloudWatch has no more pages.
 DynamoDB and CloudWatch SDK failures return `AWS_REMOTE_READ_FAILED` with the
 failed operation and provider error cause.
 
-Services, workflows, and outbound fetch are local-only in alpha. Deploying a
-Cell that declares any of those capabilities fails before provisioning with an
-`AWS_PREVIEW_UNSUPPORTED_FEATURE` diagnostic so authors do not discover the
-limit from a Lambda runtime failure. Live AWS execution still needs real account
-verification before the preview adapter is used for production workloads.
+Services, workflows, and outbound fetch are still gated from AWS preview deploys
+in alpha. Deploying a Cell that declares any of those capabilities fails before
+provisioning with an `AWS_PREVIEW_UNSUPPORTED_FEATURE` diagnostic so authors do
+not discover the limit from a Lambda runtime failure. Workflow synthesis,
+configured `ctx.workflows.start`, and individual workflow step Lambda events are
+implemented in the AWS package, but remote run-state persistence and CLI
+inspection still need live account verification before the preview support gate
+is removed. Production workloads can wait their turn like adults.
 If an AWS runtime is invoked without the expected environment values for a
 declared capability, the host returns `CAPABILITY_NOT_DECLARED` diagnostics that
 name the missing adapter variable, such as `ANVIL_EVENT_BUS_NAME` for events.

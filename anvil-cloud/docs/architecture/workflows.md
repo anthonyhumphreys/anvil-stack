@@ -69,17 +69,32 @@ Local HTTP routes:
 
 CLI: `anvil workflows list`, `anvil workflows show <runId>`, and `anvil workflows run <name> [--input '<json>']`, all with `--json`.
 
-## AWS mapping (design only, not implemented)
+## AWS mapping (partially implemented)
 
-The AWS preview runtime currently rejects `ctx.workflows.start` with a 501 `ADAPTER_ERROR`. The planned implementation maps workflows onto AWS Step Functions:
+The AWS package maps workflow manifests onto AWS Step Functions, but AWS
+preview deploys still reject workflow-bearing Cells before provisioning until
+the full remote run-state and inspection path is verified. The implemented
+pieces are:
 
 - **One state machine per workflow.** The deployment adapter synthesizes a Step Functions state machine for each entry in the manifest's `workflows` list, named `anvil-<cell>-<environment>-<workflow>`. The state machine definition is derived from the manifest topology at deploy time, so Cell code never authors ASL.
 - **Task states invoke the shared runtime Lambda.** Each step becomes an ASL `Task` state that invokes the existing per-Cell Lambda with a payload identifying the workflow, step, run id, and accumulated state. The Lambda routes the invocation to the matching step handler through the shared runtime, exactly as it routes HTTP and SQS events today.
+- **Starts use configured state machines.** The CloudFormation template writes
+  `ANVIL_WORKFLOW_STATE_MACHINES` into the Lambda environment, mapping workflow
+  names to state machine ARNs. The AWS runtime host uses that mapping for
+  `ctx.workflows.start`.
 - **Retries map to ASL `Retry`.** A step's `retries` becomes a `Retry` policy on its Task state (`MaxAttempts: retries`, small `IntervalSeconds` with backoff). The executor's attempt accounting is reported back into run state from the Lambda.
 - **Timeouts map to `TimeoutSeconds`.** A step's `timeoutMs` becomes the Task state's `TimeoutSeconds` (rounded up), so the platform enforces the bound even if the handler hangs.
-- **Run state lives in the deployment metadata table.** The Lambda writes the same `WorkflowRun` shape into the existing deployment metadata DynamoDB table after every step transition, keyed by cell, environment, and run id. `anvil workflows list/show --app <cell>` reads through the existing remote reader, mirroring `anvil logs --app`.
 - **Failure semantics.** When a Task state exhausts its retries, a `Catch` route marks the run `failed` in the metadata table and ends the execution; subsequent steps never run, matching local semantics.
-- **IAM.** Declaring `capabilities.workflows` adds least-privilege grants: the deploy role may create/update the state machines; the state machine role may invoke the Cell Lambda; the Lambda role may write run state to the metadata table.
+- **IAM.** Declaring `capabilities.workflows` adds least-privilege grants: the deploy role may create/update the state machines, and the state machine role may invoke the Cell Lambda.
+
+Remaining AWS workflow work:
+
+- persist the same `WorkflowRun` shape into deployment metadata after every
+  remote step transition;
+- add remote `anvil workflows list/show --app <cell>` support through the
+  existing remote reader, mirroring `anvil logs --app`;
+- verify live account provisioning, execution, failure paths, and cleanup before
+  removing the preview support gate.
 
 This design keeps the workflow contract provider-neutral: Cell code, the manifest shape, run state shape, and CLI commands are identical across local and AWS execution.
 
