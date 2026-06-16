@@ -58,8 +58,11 @@ import { api } from "../.anvil/generated/client";
 const client = createClient();
 const { useQuery, useMutation } = createAnvilHooks(client, React);
 
-useQuery(api.queries.listTodos, {});
-useMutation(api.mutations.addTodo);
+const todos = useQuery(api.queries.listTodos, {});
+const addTodo = useMutation(api.mutations.addTodo);
+
+await addTodo.mutate({ text: "Write docs" });
+await todos.refetch();
 ```
 
 ## Runtime target

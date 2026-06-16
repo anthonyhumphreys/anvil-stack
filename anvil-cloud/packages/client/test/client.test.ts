@@ -152,7 +152,9 @@ describe("AnvilClient", () => {
 
       const queryRuntime = new TestHookRuntime();
       const queryHooks = createAnvilHooks(client, queryRuntime);
-      queryRuntime.render(() => queryHooks.useQuery(api.queries.listNotes, {}));
+      const query = queryRuntime.render(() =>
+        queryHooks.useQuery(api.queries.listNotes, {}),
+      );
 
       await waitFor(() => {
         expect(queryRuntime.stateAt(0)).toMatchObject({
@@ -164,6 +166,21 @@ describe("AnvilClient", () => {
             },
           ],
         });
+      });
+
+      await mutation.mutate({ text: "Refetched note" });
+
+      await expect(query.refetch()).resolves.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ text: "Hook note" }),
+          expect.objectContaining({ text: "Refetched note" }),
+        ]),
+      );
+      expect(queryRuntime.stateAt(0)).toMatchObject({
+        status: "success",
+        data: expect.arrayContaining([
+          expect.objectContaining({ text: "Refetched note" }),
+        ]),
       });
     } finally {
       await server.close();

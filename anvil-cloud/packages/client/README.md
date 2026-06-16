@@ -13,15 +13,18 @@ Initial framework-neutral API:
 
 ```ts
 import { createAnvilHooks, createClient } from "@anvil-cloud/client";
-import { api } from "../.anvil/generated/client";
+import { api } from "@anvil/generated/client";
 import * as React from "react";
 
 const client = createClient();
 const { useQuery, useMutation } = createAnvilHooks(client, React);
 
-useQuery(api.queries.listTodos, {});
-useMutation(api.mutations.addTodo);
+const notes = useQuery(api.queries.listNotes, {});
+const createNote = useMutation(api.mutations.createNote);
+
+await createNote.mutate({ title: "Ship the demo" });
+await notes.refetch();
 ```
 
-The hook runtime is injected so the same client package can support React or
-Preact while that alpha framework choice remains open.
+The hook runtime is injected so the same client package can support React first
+while keeping the runtime boundary small.

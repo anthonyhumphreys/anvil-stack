@@ -32,6 +32,10 @@ export type QueryState<TResult = unknown> = {
   error: Error | null;
 };
 
+export type QueryResult<TResult = unknown> = QueryState<TResult> & {
+  refetch: () => Promise<TResult>;
+};
+
 export type HookRuntime = {
   useCallback<T extends (...args: any[]) => unknown>(
     callback: T,
@@ -137,13 +141,44 @@ export function createAnvilHooks(client: AnvilClient, hooks: HookRuntime) {
     useQuery<TInput = unknown, TResult = unknown>(
       definition: ApiQuery,
       input: TInput,
-    ): QueryState<TResult> {
+    ): QueryResult<TResult> {
       const [state, setState] = hooks.useState<QueryState<TResult>>({
         status: "loading",
         data: null,
         error: null,
       });
       const stableInput = hooks.useMemo(() => input, [JSON.stringify(input)]);
+      const refetch = hooks.useCallback(async () => {
+        setState({
+          status: "loading",
+          data: null,
+          error: null,
+        });
+
+        try {
+          const data = await client.query<TInput, TResult>(
+            definition,
+            stableInput,
+          );
+
+          setState({
+            status: "success",
+            data,
+            error: null,
+          });
+
+          return data;
+        } catch (error) {
+          const normalized = toError(error);
+
+          setState({
+            status: "error",
+            data: null,
+            error: normalized,
+          });
+          throw normalized;
+        }
+      }, [definition.name, stableInput]);
 
       hooks.useEffect(() => {
         let active = true;
@@ -179,7 +214,10 @@ export function createAnvilHooks(client: AnvilClient, hooks: HookRuntime) {
         };
       }, [definition.name, stableInput]);
 
-      return state;
+      return {
+        ...state,
+        refetch,
+      };
     },
 
     useMutation<TInput = unknown, TResult = unknown>(
