@@ -119,6 +119,47 @@ describe("createAwsPreviewDeploymentPlan", () => {
       },
     });
   });
+
+  it("reports workflow resources in the preview plan without enabling deploy support", () => {
+    const plan = createAwsPreviewDeploymentPlan({
+      ...manifest,
+      workflows: [{ name: "syncNotes", steps: ["fetch", "store"] }],
+      capabilities: {
+        ...manifest.capabilities,
+        workflows: true,
+      },
+    });
+
+    expect(plan.changes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          concept: "workflows",
+          details: {
+            service: "step-functions",
+            workflows: [
+              {
+                name: "syncNotes",
+                steps: ["fetch", "store"],
+              },
+            ],
+          },
+        }),
+      ]),
+    );
+    expect(plan.operations.cost.drivers).toEqual(
+      expect.arrayContaining(["Step Functions state transitions"]),
+    );
+    expect(
+      checkAwsPreviewSupport({
+        ...manifest,
+        workflows: [{ name: "syncNotes", steps: ["fetch", "store"] }],
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        feature: "workflows",
+      }),
+    ]);
+  });
 });
 
 describe("checkAwsPreviewSupport", () => {

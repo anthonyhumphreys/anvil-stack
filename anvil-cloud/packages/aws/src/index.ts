@@ -96,7 +96,8 @@ export type DeploymentPlanChange = {
     | "http-ingress"
     | "jobs"
     | "logs"
-    | "runtime";
+    | "runtime"
+    | "workflows";
   name: string;
   details?: Record<string, unknown>;
 };
@@ -446,6 +447,21 @@ export function createAwsPreviewDeploymentPlan(
     });
   }
 
+  if (manifest.workflows.length > 0) {
+    changes.push({
+      kind: "create",
+      concept: "workflows",
+      name: `${manifest.cell.name}-${environment}`,
+      details: {
+        service: "step-functions",
+        workflows: manifest.workflows.map((workflow) => ({
+          name: workflow.name,
+          steps: workflow.steps,
+        })),
+      },
+    });
+  }
+
   return {
     schemaVersion: "0.1",
     adapter: "aws",
@@ -516,6 +532,10 @@ function createCostDrivers(manifest: CellManifest): string[] {
 
   if (manifest.jobs.length > 0) {
     drivers.push("SQS queue requests and retained messages");
+  }
+
+  if (manifest.workflows.length > 0) {
+    drivers.push("Step Functions state transitions");
   }
 
   return drivers;

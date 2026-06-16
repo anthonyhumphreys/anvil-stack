@@ -61,6 +61,11 @@ calculator. It tells you which AWS surfaces can produce usage-based charges and
 how to back out of a preview deploy while rollback commands are still future
 work.
 
+For workflow-bearing manifests, the plan reports a `workflows` change with
+Step Functions topology and includes Step Functions state transitions in cost
+drivers. Preview deploy still rejects those Cells until provisioning and remote
+run-state support land.
+
 Generated S3 buckets for client assets and Cell files use CloudFormation
 generated names to avoid global bucket-name collisions, and the adapter reads
 the physical names from stack outputs. They block public access and use
