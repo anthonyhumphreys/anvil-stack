@@ -47,7 +47,7 @@ Safety comes from a smaller contract: declared capabilities, import restrictions
 | Limit | Impact |
 | --- | --- |
 | Auth lifecycle is provider-owned | Token verification is real locally and on AWS (local IdP + OIDC config), but session/refresh management and login UI belong to your provider. See [Auth](/docs/cloud/auth). |
-| Packaging is private | Packages are currently private workspace packages. From the `anvil-cloud` workspace, use `pnpm anvil ...` after `pnpm build`; inside examples, use `node ../../packages/cli/dist/index.js ...`. |
+| Packaging is private | Packages are currently private workspace packages. There is no supported `npm install -g`, `pnpm dlx`, or `npx` path yet. From the `anvil-cloud` workspace, use `pnpm anvil ...` after `pnpm build`; inside examples, use `node ../../packages/cli/dist/index.js ...`. |
 | Generated client is early | The browser client and hook helpers exist, but framework integration is still being shaped. |
 | AWS preview is alpha, not production hosting | Preview provisioning exists for the checked-in smoke Cell, including deploy, public runtime checks, remote inspect/logs, and destroy. Plans include cleanup commands and cost drivers, but authenticated mutation/query checks require an OIDC-backed token setup, and production use still needs wider rollback, auth, and cost-hardening work. |
 | No hosted control plane | A local Lens UI (`/_anvil/lens`) and the `ControlPlaneApi` contract exist, but inspect and logs still depend on local state or AWS deployment metadata. A hosted plane would be a future adapter behind the same contract. See [Anvil Lens](/docs/cloud/lens). |

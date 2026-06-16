@@ -11,7 +11,11 @@ order: 110
 
 Use this flow to create an Anvil Cell and inspect its output before deployment.
 
-Anvil Cloud is alpha and the packages are currently private inside the `anvil-cloud` workspace. The stable command contract is `anvil ...`; from a local checkout you can run the CLI package directly while packaging settles.
+Anvil Cloud is alpha and the packages are currently private inside the
+`anvil-cloud` workspace. There is no supported `npm install -g`, `pnpm dlx`, or
+`npx` path yet. The stable command contract is `anvil ...`; from a local
+checkout you run that contract through `pnpm anvil` or the built CLI entrypoint
+while packaging settles.
 
 ## 1) Prepare the checkout
 
@@ -28,13 +32,6 @@ package output used by the CLI. `pnpm anvil` runs the built CLI entrypoint from
 the workspace root.
 
 ## 2) Create a Cell
-
-With a linked or installed `anvil` binary:
-
-```bash
-anvil new notes
-cd notes
-```
 
 From the workspace root during alpha development:
 

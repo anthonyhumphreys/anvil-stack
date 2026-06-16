@@ -6,8 +6,9 @@ The CLI binary should be `anvil`.
 
 ## Alpha workspace usage
 
-Packages are private while the alpha contract settles. From a checkout, build
-the workspace and run the CLI through the root script:
+Packages are private while the alpha contract settles. There is no supported
+`npm install -g`, `pnpm dlx`, or `npx` path for Anvil Cloud yet. From a
+checkout, build the workspace and run the CLI through the root script:
 
 ```bash
 cd anvil-cloud
@@ -24,8 +25,9 @@ node ../../packages/cli/dist/index.js check --json
 ```
 
 The public install path will become the default once package publishing is
-enabled. Until then, the command contract is stable; the distribution packaging
-is the bit still wearing an alpha badge.
+enabled for the Cloud workspace packages. Until then, treat this as a
+contributor-only CLI: the command contract is stable, but distribution
+packaging is deliberately not pretending to be done.
 
 Initial commands:
 

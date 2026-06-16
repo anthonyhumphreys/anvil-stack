@@ -11,7 +11,12 @@ order: 140
 
 The Anvil Cloud CLI binary is `anvil`.
 
-In alpha, the package exists as `@anvil-cloud/cli` inside the `anvil-cloud` workspace. The command contract is the important part: human output can be friendly, but automation output must be stable.
+In alpha, the package exists as `@anvil-cloud/cli` inside the `anvil-cloud`
+workspace and is contributor-only. There is no supported `npm install -g`,
+`pnpm dlx`, or `npx` path yet. From a checkout, run the command contract through
+`pnpm anvil ...` at the workspace root, or through `node
+../../packages/cli/dist/index.js ...` inside checked-in examples. Human output
+can be friendly, but automation output must be stable.
 
 ## Commands
 
