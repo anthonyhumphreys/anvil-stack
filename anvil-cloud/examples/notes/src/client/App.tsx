@@ -1,4 +1,4 @@
-import { createClient } from "@anvil-cloud/client";
+import { createAnvilHooks, createClient } from "@anvil-cloud/client";
 import { api } from "@anvil/generated/client";
 import * as React from "react";
 
@@ -8,16 +8,14 @@ type Note = {
   body: string;
 };
 
-type LoadState = "loading" | "ready" | "error";
 type SubmitState = "idle" | "saving";
 
 const client = createClient({
   getToken: () => localStorage.getItem("anvil_notes_token"),
 });
+const { useMutation, useQuery } = createAnvilHooks(client, React);
 
 export function App() {
-  const [notes, setNotes] = React.useState<Note[]>([]);
-  const [loadState, setLoadState] = React.useState<LoadState>("loading");
   const [submitState, setSubmitState] = React.useState<SubmitState>("idle");
   const [token, setToken] = React.useState(
     () => localStorage.getItem("anvil_notes_token") ?? "",
@@ -25,28 +23,16 @@ export function App() {
   const [title, setTitle] = React.useState("");
   const [body, setBody] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
-
-  const loadNotes = React.useCallback(async () => {
-    setLoadState("loading");
-    setError(null);
-
-    try {
-      const result = await client.query<unknown, Note[]>(
-        api.queries.listNotes,
-        {},
-      );
-
-      setNotes(result);
-      setLoadState("ready");
-    } catch (unknownError) {
-      setError(toMessage(unknownError, "Failed to load notes."));
-      setLoadState("error");
-    }
-  }, []);
-
-  React.useEffect(() => {
-    void loadNotes();
-  }, [loadNotes]);
+  const notesQuery = useQuery<unknown, Note[]>(api.queries.listNotes, {});
+  const createNote = useMutation<{ title: string; body?: string }, Note>(
+    api.mutations.createNote,
+  );
+  const archiveNoteMutation = useMutation<
+    { noteId: string },
+    { archived: boolean }
+  >(api.mutations.archiveNote);
+  const notes = notesQuery.data ?? [];
+  const visibleError = error ?? notesQuery.error?.message ?? null;
 
   function saveToken(nextToken: string) {
     setToken(nextToken);
@@ -70,18 +56,14 @@ export function App() {
     setError(null);
 
     try {
-      const created = await client.mutation<
-        { title: string; body?: string },
-        Note
-      >(api.mutations.createNote, {
+      await createNote.mutate({
         title: nextTitle,
         body,
       });
+      await notesQuery.refetch();
 
-      setNotes((current) => [created, ...current]);
       setTitle("");
       setBody("");
-      setLoadState("ready");
     } catch (unknownError) {
       setError(toMessage(unknownError, "Failed to create note."));
     } finally {
@@ -97,13 +79,10 @@ export function App() {
     setError(null);
 
     try {
-      const result = await client.mutation<
-        { noteId: string },
-        { archived: boolean }
-      >(api.mutations.archiveNote, { noteId });
+      const result = await archiveNoteMutation.mutate({ noteId });
 
       if (result.archived) {
-        setNotes((current) => current.filter((note) => note.id !== noteId));
+        await notesQuery.refetch();
       }
     } catch (unknownError) {
       setError(toMessage(unknownError, "Failed to archive note."));
@@ -127,7 +106,7 @@ export function App() {
             placeholder="Paste anvil auth token output"
           />
         </label>
-        <button type="button" onClick={() => void loadNotes()}>
+        <button type="button" onClick={() => void notesQuery.refetch()}>
           Refresh
         </button>
       </section>
@@ -157,10 +136,10 @@ export function App() {
         <div className="notesPanel">
           <div className="panelHeader">
             <h2>Your notes</h2>
-            <span>{loadState}</span>
+            <span>{notesQuery.status}</span>
           </div>
 
-          {error ? <p className="error">{error}</p> : null}
+          {visibleError ? <p className="error">{visibleError}</p> : null}
 
           {notes.length > 0 ? (
             <ul className="notesList">
@@ -181,7 +160,7 @@ export function App() {
             </ul>
           ) : (
             <p className="empty">
-              {loadState === "loading"
+              {notesQuery.status === "loading"
                 ? "Loading notes..."
                 : "No notes yet. Suspiciously clean slate."}
             </p>
