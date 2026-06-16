@@ -228,6 +228,64 @@ describe("buildCell", () => {
     expect(result.ok).toBe(true);
   });
 
+  it("reports undeclared jobs capability before bundling", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, mutation } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  mutations: {",
+        "    createNote: mutation({",
+        "      handler: async (ctx) => {",
+        "        await ctx.jobs.enqueue('summarizeNote', {});",
+        "        return { ok: true };",
+        "      },",
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await checkCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "import-policy",
+      diagnostics: [
+        {
+          code: "CAPABILITY_NOT_DECLARED",
+          message: "ctx.jobs requires capabilities.jobs to be declared.",
+        },
+      ],
+    });
+  });
+
+  it("accepts ctx.jobs with the jobs capability declared", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, mutation } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  capabilities: { jobs: true },",
+        "  mutations: {",
+        "    createNote: mutation({",
+        "      handler: async (ctx) => {",
+        "        await ctx.jobs.enqueue('summarizeNote', {});",
+        "        return { ok: true };",
+        "      },",
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await checkCell({ rootDir });
+
+    expect(result.ok).toBe(true);
+  });
+
   it("reports undeclared workflow capability before bundling", async () => {
     const rootDir = await createCell({
       server: [

@@ -113,6 +113,7 @@ Capability checks currently reject straightforward handler usage of:
 
 - `ctx.db` without `capabilities.database`;
 - `ctx.files` without `capabilities.files`;
+- `ctx.jobs` without `capabilities.jobs`;
 - global `fetch()` without `capabilities.outboundFetch`;
 - `job({ schedule })` without `capabilities.scheduledJobs`.
 

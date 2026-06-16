@@ -375,6 +375,7 @@ Initial capability diagnostics should catch common static cases before bundling:
 
 - `ctx.db` requires `capabilities.database`;
 - `ctx.files` requires `capabilities.files`;
+- `ctx.jobs` requires `capabilities.jobs`;
 - global `fetch()` requires `capabilities.outboundFetch`;
 - `job({ schedule })` requires `capabilities.scheduledJobs`.
 

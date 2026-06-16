@@ -174,6 +174,7 @@ capabilities: {
   outboundFetch: {
     allow: ["api.openai.com"]
   },
+  jobs: true,
   scheduledJobs: true
 }
 ```

@@ -474,6 +474,19 @@ function inspectContextCapabilityUse(
         policyContext,
       );
       return;
+    case "jobs":
+      inspectCapabilityUse(
+        "jobs",
+        "ctx.jobs",
+        "ctx.jobs requires capabilities.jobs to be declared.",
+        "Declare capabilities.jobs: true before enqueuing jobs.",
+        sourceFile,
+        relativeFile,
+        node,
+        diagnostics,
+        policyContext,
+      );
+      return;
   }
 }
 

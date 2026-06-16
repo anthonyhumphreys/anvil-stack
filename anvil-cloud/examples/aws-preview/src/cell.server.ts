@@ -27,6 +27,7 @@ export default app({
     files: {
       publicRead: false,
     },
+    jobs: true,
   },
   queries: {
     status: query({
