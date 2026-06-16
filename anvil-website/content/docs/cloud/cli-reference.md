@@ -120,6 +120,14 @@ Failure shape:
 {
   "ok": false,
   "phase": "import-policy",
+  "diagnostics": [
+    {
+      "code": "FORBIDDEN_IMPORT",
+      "severity": "error",
+      "message": "Import '@aws-sdk/client-s3' is not allowed in Cell server code.",
+      "hint": "Use declared Anvil capabilities such as ctx.db or ctx.files."
+    }
+  ],
   "errors": [
     {
       "code": "FORBIDDEN_IMPORT",
@@ -130,6 +138,9 @@ Failure shape:
   ]
 }
 ```
+
+`errors` is kept as a compatibility alias for older automation; new agent flows
+should read `diagnostics`.
 
 ## `anvil build`
 

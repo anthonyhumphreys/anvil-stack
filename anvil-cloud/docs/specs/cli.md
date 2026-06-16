@@ -59,7 +59,7 @@ Checks:
 - project config;
 - TypeScript typecheck;
 - forbidden imports;
-- capability-scoped `ctx.db`, `ctx.files`, `fetch`, and scheduled job usage;
+- capability-scoped `ctx.db`, `ctx.files`, `ctx.jobs`, `fetch`, and scheduled job usage;
 - manifest extraction safety;
 - declared capabilities.
 
@@ -203,6 +203,14 @@ Failed command:
 ```json
 {
   "ok": false,
+  "phase": "import-policy",
+  "diagnostics": [
+    {
+      "code": "FORBIDDEN_IMPORT",
+      "message": "Import '@aws-sdk/client-s3' is not allowed.",
+      "hint": "Use ctx.files instead."
+    }
+  ],
   "errors": [
     {
       "code": "FORBIDDEN_IMPORT",

@@ -1254,6 +1254,7 @@ function writeBuildResult(
     {
       ok: false,
       phase: result.phase,
+      diagnostics: result.diagnostics,
       errors: result.diagnostics,
     },
     formatDiagnostics(result.diagnostics),

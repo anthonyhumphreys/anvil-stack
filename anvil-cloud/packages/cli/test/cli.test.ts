@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -70,6 +70,74 @@ describe("main", () => {
       ).resolves.toContain("/src/client/main.tsx");
     } finally {
       process.chdir(originalCwd);
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("prints check diagnostics as stable JSON", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-"));
+    const originalCwd = process.cwd();
+    const originalExitCode = process.exitCode;
+
+    try {
+      process.exitCode = undefined;
+      process.chdir(rootDir);
+      await writeFile(
+        path.join(rootDir, "anvil.json"),
+        JSON.stringify({
+          name: "bad-cell",
+          runtime: "nodejs20",
+          entrypoints: {
+            server: "src/cell.server.ts",
+            client: "src/client/main.tsx",
+          },
+        }),
+        "utf8",
+      );
+      await mkdir(path.join(rootDir, "src"), { recursive: true });
+      await mkdir(path.join(rootDir, "src/client"), { recursive: true });
+      await writeFile(
+        path.join(rootDir, "src/cell.server.ts"),
+        [
+          'import { readFileSync } from "node:fs";',
+          'import { app } from "@anvil-cloud/runtime";',
+          "",
+          "void readFileSync;",
+          "export default app({});",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      await writeFile(
+        path.join(rootDir, "src/client/main.tsx"),
+        "document.body.textContent = 'bad cell';\n",
+        "utf8",
+      );
+
+      const output = await captureStdout(() => main(["check", "--json"]));
+      const payload = JSON.parse(output) as Record<string, unknown>;
+
+      expect(payload).toMatchObject({
+        ok: false,
+        phase: "import-policy",
+        diagnostics: [
+          {
+            code: "FORBIDDEN_IMPORT",
+            file: "src/cell.server.ts",
+            hint: "Use ctx.files for Cell-owned file storage.",
+          },
+        ],
+        errors: [
+          {
+            code: "FORBIDDEN_IMPORT",
+          },
+        ],
+      });
+      expect(payload.diagnostics).toEqual(payload.errors);
+      expect(process.exitCode).toBe(3);
+    } finally {
+      process.chdir(originalCwd);
+      process.exitCode = originalExitCode;
       await rm(rootDir, { recursive: true, force: true });
     }
   });
