@@ -44,6 +44,7 @@ export function createAwsPreviewCloudFormationTemplate(
   const serverBucketParameter =
     options.serverBucketParameter ?? "ServerBundleBucket";
   const serverKeyParameter = options.serverKeyParameter ?? "ServerBundleKey";
+  const workflows = manifest.workflows ?? [];
   const runtimeEnvironmentVariables: Record<string, unknown> = {
     ANVIL_CELL: manifest.cell.name,
     ANVIL_ENV: environment,
@@ -329,6 +330,68 @@ export function createAwsPreviewCloudFormationTemplate(
     }
   }
 
+  if (workflows.length > 0) {
+    resources.WorkflowStateMachineRole = {
+      Type: "AWS::IAM::Role",
+      Properties: {
+        RoleName: names.workflowStateMachineRole,
+        AssumeRolePolicyDocument: {
+          Version: "2012-10-17",
+          Statement: [
+            {
+              Effect: "Allow",
+              Principal: {
+                Service: "states.amazonaws.com",
+              },
+              Action: "sts:AssumeRole",
+            },
+          ],
+        },
+        Policies: [
+          {
+            PolicyName: `${names.base}-workflows`,
+            PolicyDocument: {
+              Version: "2012-10-17",
+              Statement: [
+                {
+                  Effect: "Allow",
+                  Action: ["lambda:InvokeFunction"],
+                  Resource: { "Fn::GetAtt": ["RuntimeFunction", "Arn"] },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    };
+
+    for (const workflow of workflows) {
+      const logicalName = logicalIdPart(workflow.name);
+      const stateMachineId = `Workflow${logicalName}StateMachine`;
+
+      resources[stateMachineId] = {
+        Type: "AWS::StepFunctions::StateMachine",
+        Properties: {
+          StateMachineName: withSuffix(
+            names.base,
+            sanitizeName(`workflow-${workflow.name}`, 24) || "workflow",
+            80,
+          ),
+          RoleArn: { "Fn::GetAtt": ["WorkflowStateMachineRole", "Arn"] },
+          DefinitionString: {
+            "Fn::Sub": JSON.stringify(
+              createWorkflowStateMachineDefinition(workflow),
+            ),
+          },
+        },
+      };
+      outputs[`Workflow${logicalName}StateMachineArn`] = {
+        Description: `Step Functions state machine ARN for workflow '${workflow.name}'.`,
+        Value: { Ref: stateMachineId },
+      };
+    }
+  }
+
   return {
     AWSTemplateFormatVersion: "2010-09-09",
     Description: `Anvil Cloud preview deployment for ${manifest.cell.name}.`,
@@ -359,6 +422,7 @@ export type AwsResourceNames = {
   jobQueue: string;
   jobDeadLetterQueue: string;
   eventBus: string;
+  workflowStateMachineRole: string;
 };
 
 export function createAwsResourceNames(
@@ -378,6 +442,48 @@ export function createAwsResourceNames(
     jobQueue: withSuffix(base, "jobs", 80),
     jobDeadLetterQueue: withSuffix(base, "jobs-dlq", 80),
     eventBus: withSuffix(base, "events", 80),
+    workflowStateMachineRole: `${base}-workflow-role`,
+  };
+}
+
+function createWorkflowStateMachineDefinition(workflow: {
+  name: string;
+  steps: string[];
+}): Record<string, unknown> {
+  const states: Record<string, unknown> = {};
+
+  workflow.steps.forEach((step, index) => {
+    const nextStep = workflow.steps[index + 1];
+
+    states[step] = {
+      Type: "Task",
+      Resource: "${RuntimeFunction.Arn}",
+      Parameters: {
+        source: "anvil.workflows",
+        detail: {
+          workflow: workflow.name,
+          step,
+          "runId.$": "$.runId",
+          "input.$": "$.input",
+          "steps.$": "$.steps",
+        },
+      },
+      ResultPath: "$",
+      ...(nextStep ? { Next: nextStep } : { End: true }),
+    };
+  });
+
+  return {
+    Comment: `Anvil workflow ${workflow.name}.`,
+    StartAt: workflow.steps[0] ?? "Complete",
+    States:
+      workflow.steps.length > 0
+        ? states
+        : {
+            Complete: {
+              Type: "Succeed",
+            },
+          },
   };
 }
 

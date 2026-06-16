@@ -350,6 +350,111 @@ describe("createAwsPreviewCloudFormationTemplate", () => {
       },
     });
   });
+
+  it("maps declared workflows to Step Functions resources", () => {
+    const template = createAwsPreviewCloudFormationTemplate({
+      schemaVersion: "0.1",
+      cell: {
+        name: "workflow-cell",
+        runtime: "nodejs20",
+        target: "preview",
+      },
+      entrypoints: {
+        server: "dist/server/index.mjs",
+        client: "dist/client/index.html",
+      },
+      schema: {
+        tables: {},
+      },
+      queries: [],
+      mutations: [],
+      endpoints: [],
+      jobs: [],
+      workflows: [
+        {
+          name: "syncNotes",
+          steps: ["fetch", "store"],
+        },
+      ],
+      services: [],
+      capabilities: {
+        workflows: true,
+      },
+    });
+
+    expect(template.Resources.WorkflowStateMachineRole).toMatchObject({
+      Type: "AWS::IAM::Role",
+      Properties: {
+        AssumeRolePolicyDocument: {
+          Statement: [
+            expect.objectContaining({
+              Principal: {
+                Service: "states.amazonaws.com",
+              },
+            }),
+          ],
+        },
+        Policies: [
+          {
+            PolicyDocument: {
+              Statement: [
+                {
+                  Effect: "Allow",
+                  Action: ["lambda:InvokeFunction"],
+                  Resource: { "Fn::GetAtt": ["RuntimeFunction", "Arn"] },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    });
+    expect(template.Resources.WorkflowSyncNotesStateMachine).toMatchObject({
+      Type: "AWS::StepFunctions::StateMachine",
+      Properties: {
+        RoleArn: { "Fn::GetAtt": ["WorkflowStateMachineRole", "Arn"] },
+        DefinitionString: {
+          "Fn::Sub": expect.any(String),
+        },
+      },
+    });
+
+    const definition = JSON.parse(
+      template.Resources.WorkflowSyncNotesStateMachine.Properties
+        .DefinitionString["Fn::Sub"] as string,
+    ) as Record<string, any>;
+
+    expect(definition).toMatchObject({
+      StartAt: "fetch",
+      States: {
+        fetch: {
+          Type: "Task",
+          Resource: "${RuntimeFunction.Arn}",
+          Next: "store",
+          Parameters: {
+            source: "anvil.workflows",
+            detail: {
+              workflow: "syncNotes",
+              step: "fetch",
+              "runId.$": "$.runId",
+              "input.$": "$.input",
+              "steps.$": "$.steps",
+            },
+          },
+        },
+        store: {
+          Type: "Task",
+          Resource: "${RuntimeFunction.Arn}",
+          End: true,
+        },
+      },
+    });
+    expect(template.Outputs.WorkflowSyncNotesStateMachineArn).toMatchObject({
+      Value: {
+        Ref: "WorkflowSyncNotesStateMachine",
+      },
+    });
+  });
 });
 
 describe("createAwsResourceNames", () => {
@@ -362,6 +467,7 @@ describe("createAwsResourceNames", () => {
     expect(names.jobQueue.length).toBeLessThanOrEqual(80);
     expect(names.jobDeadLetterQueue.length).toBeLessThanOrEqual(80);
     expect(names.eventBus.length).toBeLessThanOrEqual(80);
+    expect(names.workflowStateMachineRole.length).toBeLessThanOrEqual(64);
     expect(names.jobQueue).toMatch(/^[a-z0-9-]+$/);
   });
 });
