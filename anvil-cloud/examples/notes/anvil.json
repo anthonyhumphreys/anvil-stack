@@ -1,0 +1,9 @@
+{
+  "name": "notes",
+  "entrypoints": {
+    "server": "src/cell.server.ts",
+    "client": "src/client/main.tsx"
+  },
+  "runtime": "nodejs20",
+  "region": "eu-west-2"
+}

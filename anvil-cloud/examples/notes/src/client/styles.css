@@ -1,0 +1,196 @@
+:root {
+  color: #1d211c;
+  background: #f4f1ea;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-width: 320px;
+  min-height: 100vh;
+  margin: 0;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+button {
+  min-height: 40px;
+  border: 0;
+  border-radius: 6px;
+  background: #1d211c;
+  color: #ffffff;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.shell {
+  width: min(1120px, calc(100vw - 32px));
+  margin: 0 auto;
+  padding: 40px 0;
+}
+
+.intro {
+  margin-bottom: 24px;
+}
+
+.intro p {
+  margin: 0 0 8px;
+  color: #687162;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+}
+
+h1 {
+  font-size: 4rem;
+  line-height: 1;
+}
+
+.toolbar,
+.composer,
+.notesPanel {
+  border: 1px solid #d7d0c2;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 16px;
+  padding: 16px;
+}
+
+label {
+  display: grid;
+  gap: 6px;
+  color: #596254;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+input,
+textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #c8c1b3;
+  border-radius: 6px;
+  padding: 10px 12px;
+  color: #1d211c;
+  background: #fffdf8;
+}
+
+textarea {
+  resize: vertical;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.8fr) minmax(0, 1.2fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.composer {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+
+.notesPanel {
+  min-height: 280px;
+  padding: 16px;
+}
+
+.panelHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.panelHeader span {
+  color: #687162;
+  font-size: 0.86rem;
+}
+
+.notesList {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.notesList li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+  border: 1px solid #ebe5d8;
+  border-radius: 6px;
+  padding: 12px;
+}
+
+.notesList h3 {
+  font-size: 1rem;
+}
+
+.notesList p,
+.empty,
+.error {
+  margin: 8px 0 0;
+}
+
+.notesList p,
+.empty {
+  color: #596254;
+  line-height: 1.5;
+}
+
+.error {
+  color: #a23428;
+}
+
+.notesList button,
+.toolbar button,
+.composer button {
+  padding: 0 14px;
+}
+
+@media (max-width: 760px) {
+  .toolbar,
+  .workspace,
+  .notesList li {
+    grid-template-columns: 1fr;
+  }
+
+  h1 {
+    font-size: 3rem;
+  }
+}

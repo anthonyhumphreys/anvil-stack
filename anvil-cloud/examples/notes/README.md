@@ -1,13 +1,54 @@
 # Notes Cell Example
 
-This example will become the first end-to-end Anvil Cell.
+This is the canonical local-first Anvil Cell demo. It exercises:
 
-Target alpha behaviour:
+- a `notes` table;
+- authenticated `listNotes`, `createNote`, and `archiveNote` handlers;
+- a public status query and `/api/health` endpoint;
+- generated client metadata consumed by a React/Vite client;
+- local auth, database, jobs, workflows, logs, and Lens inspection.
 
-- define a `notes` table;
-- list notes owned by the current user;
-- create notes through a mutation;
-- run locally with `anvil dev`;
-- inspect local database state with `anvil db dump notes --local --json`.
+Build and check it from the workspace:
 
-Implementation should wait until the runtime DSL and local runtime are available.
+```bash
+cd anvil-cloud/examples/notes
+node ../../packages/cli/dist/index.js check --json
+node ../../packages/cli/dist/index.js build --json
+```
+
+Run it locally:
+
+```bash
+node ../../packages/cli/dist/index.js dev --port 8787 --client-port 5173
+```
+
+In another terminal, create a local user and token:
+
+```bash
+node ../../packages/cli/dist/index.js auth add-user local_demo --email demo@example.test --roles admin --json
+node ../../packages/cli/dist/index.js auth token local_demo --json
+```
+
+Paste the token into the client UI, or call the runtime directly:
+
+```bash
+TOKEN=$(node ../../packages/cli/dist/index.js auth token local_demo --json | jq -r .token)
+curl -H "Authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"input":{"title":"First note","body":"Created through Anvil Runtime."}}' \
+  http://localhost:8787/_anvil/mutation/createNote
+```
+
+Useful inspection commands:
+
+```bash
+node ../../packages/cli/dist/index.js lens --json
+node ../../packages/cli/dist/index.js inspect --local --json
+node ../../packages/cli/dist/index.js logs --local --json
+node ../../packages/cli/dist/index.js db dump notes --local --json
+node ../../packages/cli/dist/index.js workflows run onboardUser --input '{}' --json
+```
+
+This demo intentionally includes a workflow, so it is not currently the AWS
+preview smoke Cell. Use `examples/aws-preview` for adapter verification until
+cloud workflow execution exists.

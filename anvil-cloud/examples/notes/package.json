@@ -1,0 +1,23 @@
+{
+  "name": "notes",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node ../../packages/cli/dist/index.js check --json",
+    "build": "node ../../packages/cli/dist/index.js build --json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@anvil-cloud/client": "workspace:*",
+    "@anvil-cloud/runtime": "workspace:*",
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^5.4.21",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "typescript": "^5.7.2"
+  }
+}
