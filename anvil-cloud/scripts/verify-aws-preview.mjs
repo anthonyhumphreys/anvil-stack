@@ -77,6 +77,14 @@ async function main() {
         `status query returned unexpected cell: ${payload.result?.cell}`,
       );
     });
+    await assertRuntimePostRejected(
+      deployedUrl,
+      "query",
+      "listNotes",
+      {},
+      401,
+      "AUTH_REQUIRED",
+    );
 
     const token = process.env.ANVIL_AWS_SMOKE_TOKEN;
 
@@ -159,6 +167,42 @@ async function assertJsonGet(url, validate) {
 
   assert(response.ok, `${url} returned HTTP ${response.status}`);
   validate(payload);
+}
+
+async function assertRuntimePostRejected(
+  runtimeUrl,
+  kind,
+  name,
+  input,
+  expectedStatus,
+  expectedCode,
+) {
+  const response = await fetch(
+    runtimePath(runtimeUrl, `/_anvil/${kind}/${name}`),
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ input }),
+    },
+  );
+  const payload = await response.json();
+
+  assert(
+    response.status === expectedStatus,
+    `${kind} ${name} returned HTTP ${response.status}, expected ${expectedStatus}: ${JSON.stringify(
+      payload,
+    )}`,
+  );
+  assert(
+    payload.ok === false,
+    `${kind} ${name} rejection did not return ok: false`,
+  );
+  assert(
+    payload.error?.code === expectedCode,
+    `${kind} ${name} returned error ${payload.error?.code}, expected ${expectedCode}`,
+  );
 }
 
 async function assertRuntimePost(

@@ -36,6 +36,7 @@ pnpm verify:aws-preview
 ```
 
 Set `ANVIL_AWS_SMOKE_TOKEN` to exercise authenticated `createNote` and
-`listNotes` calls against an OIDC-configured runtime. Set
+`listNotes` calls against an OIDC-configured runtime. The verifier always checks
+that anonymous `listNotes` requests are rejected with `AUTH_REQUIRED`. Set
 `ANVIL_AWS_SMOKE_KEEP_STACK=1` to leave the preview stack running for manual
 inspection.
