@@ -45,6 +45,18 @@ const forbiddenImports = [
     code: "FORBIDDEN_IMPORT",
     hint: "Provider tooling belongs inside deployment adapters.",
   },
+  {
+    match: (specifier: string) =>
+      specifier === "cdktf" || specifier.startsWith("@cdktf/"),
+    code: "FORBIDDEN_IMPORT",
+    hint: "Terraform/CDKTF authoring belongs inside deployment adapters.",
+  },
+  {
+    match: (specifier: string) =>
+      specifier === "pulumi" || specifier.startsWith("@pulumi/"),
+    code: "FORBIDDEN_IMPORT",
+    hint: "Provider infrastructure belongs inside deployment adapters.",
+  },
 ];
 
 export type ImportPolicyOptions = {

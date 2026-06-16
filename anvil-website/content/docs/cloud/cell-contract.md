@@ -156,6 +156,6 @@ Adapters should consume the manifest rather than crawling arbitrary source.
 - Direct `process.env` access is forbidden. Use `ctx.env`.
 - `fs` and `node:fs` are forbidden. Use `ctx.files`.
 - `child_process` is forbidden. Move background work into declared jobs.
-- `@aws-sdk/*`, `aws-cdk-lib`, and `sst` are forbidden in Cell server code.
+- `@aws-sdk/*`, `aws-cdk-lib`, `sst`, `cdktf`, and `pulumi` are forbidden in Cell server code.
 
 The restrictions are not there to be fancy. They keep the app contract small enough for people and agents to reason about.

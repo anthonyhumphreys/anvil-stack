@@ -102,6 +102,8 @@ Forbidden by default in Cell server source:
 - `@aws-sdk/*`
 - `aws-cdk-lib`
 - `sst`
+- `cdktf`, `@cdktf/*`
+- `pulumi`, `@pulumi/*`
 - `fs`
 - `node:fs`
 - `child_process`

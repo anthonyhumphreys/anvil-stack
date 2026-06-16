@@ -22,6 +22,8 @@ Anvil Guard rejects imports that bypass the Cell contract. The diagnostic includ
 | `@aws-sdk/*` | Cells must not call providers directly | Use declared capabilities such as `ctx.db` or `ctx.files` |
 | `aws-cdk-lib` | Cell code must not author infrastructure | Provider infrastructure belongs in deployment adapters |
 | `sst` | Same boundary as above | Provider tooling belongs inside deployment adapters |
+| `cdktf`, `@cdktf/*` | Cell code must not author Terraform/CDKTF infrastructure | Provider infrastructure belongs in deployment adapters |
+| `pulumi`, `@pulumi/*` | Cell code must not author provider infrastructure | Provider infrastructure belongs in deployment adapters |
 
 If you genuinely need a capability that does not exist yet, that is a platform gap, not something to work around with a direct provider import. Open an issue instead.
 

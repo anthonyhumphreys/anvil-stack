@@ -70,6 +70,8 @@ Cell server code must stay statically inspectable. Current forbidden imports inc
 | `@aws-sdk/*` | Provider access belongs in the AWS adapter. |
 | `aws-cdk-lib` | Cell code must not author provider infrastructure directly. |
 | `sst`, `sst/*` | Provider tooling belongs inside deployment adapters. |
+| `cdktf`, `@cdktf/*` | Terraform/CDKTF authoring belongs inside deployment adapters. |
+| `pulumi`, `@pulumi/*` | Provider infrastructure belongs inside deployment adapters. |
 
 Dynamic import is also forbidden in Cell server code.
 

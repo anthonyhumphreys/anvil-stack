@@ -92,6 +92,40 @@ describe("buildCell", () => {
     });
   });
 
+  it("reports provider infrastructure imports before bundling", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { TerraformStack } from "cdktf";',
+        'import * as aws from "@pulumi/aws";',
+        'import { app } from "@anvil-cloud/runtime";',
+        "",
+        "void TerraformStack;",
+        "void aws;",
+        "export default app({});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await checkCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "import-policy",
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({
+          code: "FORBIDDEN_IMPORT",
+          message: "Import 'cdktf' is not allowed in Cell server code.",
+          hint: "Terraform/CDKTF authoring belongs inside deployment adapters.",
+        }),
+        expect.objectContaining({
+          code: "FORBIDDEN_IMPORT",
+          message: "Import '@pulumi/aws' is not allowed in Cell server code.",
+          hint: "Provider infrastructure belongs inside deployment adapters.",
+        }),
+      ]),
+    });
+  });
+
   it("reports undeclared runtime capabilities before bundling", async () => {
     const rootDir = await createCell({
       server: [
