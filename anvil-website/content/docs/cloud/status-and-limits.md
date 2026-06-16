@@ -49,7 +49,7 @@ Safety comes from a smaller contract: declared capabilities, import restrictions
 | Auth lifecycle is provider-owned | Token verification is real locally and on AWS (local IdP + OIDC config), but session/refresh management and login UI belong to your provider. See [Auth](/docs/cloud/auth). |
 | Packaging is private | Packages are currently private workspace packages. From the `anvil-cloud` workspace, use `pnpm anvil ...` after `pnpm build`; inside examples, use `node ../../packages/cli/dist/index.js ...`. |
 | Generated client is early | The browser client and hook helpers exist, but framework integration is still being shaped. |
-| AWS preview is alpha, not production hosting | Preview provisioning exists for the checked-in smoke Cell, including deploy, public runtime checks, remote inspect/logs, and destroy. Authenticated mutation/query checks require an OIDC-backed token setup, and production use still needs wider rollback, auth, and cost-hardening work. |
+| AWS preview is alpha, not production hosting | Preview provisioning exists for the checked-in smoke Cell, including deploy, public runtime checks, remote inspect/logs, and destroy. Plans include cleanup commands and cost drivers, but authenticated mutation/query checks require an OIDC-backed token setup, and production use still needs wider rollback, auth, and cost-hardening work. |
 | No hosted control plane | A local Lens UI (`/_anvil/lens`) and the `ControlPlaneApi` contract exist, but inspect and logs still depend on local state or AWS deployment metadata. A hosted plane would be a future adapter behind the same contract. See [Anvil Lens](/docs/cloud/lens). |
 | Services run locally only | The `service` primitive is supervised by the local runtime. There is no cloud execution path yet; an ECS/Fargate adapter is designed but not implemented. See [Services](/docs/cloud/services). |
 | Outbound fetch runs locally only | The builder accepts `capabilities.outboundFetch`, but AWS preview rejects it until outbound network policy can be enforced. |
@@ -102,9 +102,9 @@ Useful next work includes:
 - auth provider integration
 - richer Guard capability checks
 - generated client ergonomics
-- rollback commands
+- rollback commands beyond preview redeploy/destroy guidance
 - custom domain support
-- cost and usage hints
+- cost and usage reporting beyond preview plan cost drivers
 - clearer package publishing path
 
 Keep the contract small. The first version should be understandable, not omniscient.

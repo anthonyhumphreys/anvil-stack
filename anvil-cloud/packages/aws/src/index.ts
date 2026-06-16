@@ -106,6 +106,25 @@ export type DeploymentPlan = {
   cell: string;
   changes: DeploymentPlanChange[];
   warnings: string[];
+  operations: DeploymentPlanOperations;
+};
+
+export type DeploymentPlanOperations = {
+  rollback: {
+    supported: boolean;
+    strategy: "redeploy-previous-artifact" | "manual";
+    commands: string[];
+    notes: string[];
+  };
+  cost: {
+    billingMode: "usage-based-preview";
+    drivers: string[];
+    notes: string[];
+  };
+  cleanup: {
+    commands: string[];
+    notes: string[];
+  };
 };
 
 export type AwsPreviewSupportDiagnostic = {
@@ -432,7 +451,72 @@ export function createAwsPreviewDeploymentPlan(
     cell: manifest.cell.name,
     changes,
     warnings: createWarnings(manifest),
+    operations: createOperations(manifest, environment),
   };
+}
+
+function createOperations(
+  manifest: CellManifest,
+  environment: DeploymentEnvironment,
+): DeploymentPlanOperations {
+  return {
+    rollback: {
+      supported: false,
+      strategy: "manual",
+      commands: [
+        "anvil deploy --preview --json",
+        `anvil destroy --preview --app ${manifest.cell.name} --yes --json`,
+      ],
+      notes: [
+        "Preview rollback commands are not implemented yet.",
+        "Until artifact rollback lands, redeploy a known-good checkout or destroy the preview stack.",
+      ],
+    },
+    cost: {
+      billingMode: "usage-based-preview",
+      drivers: createCostDrivers(manifest),
+      notes: [
+        `Environment '${environment}' uses AWS on-demand resources.`,
+        "Destroy preview stacks that are not actively being inspected.",
+      ],
+    },
+    cleanup: {
+      commands: [
+        `anvil destroy --preview --app ${manifest.cell.name} --yes --json`,
+      ],
+      notes: [
+        "Destroy empties stack-owned buckets and removes deployment metadata when configured.",
+      ],
+    },
+  };
+}
+
+function createCostDrivers(manifest: CellManifest): string[] {
+  const drivers = [
+    "Lambda requests and duration",
+    "Lambda function URL traffic",
+    "CloudWatch log ingestion and retention",
+    "S3 client asset storage",
+    "DynamoDB deployment metadata table reads and writes",
+  ];
+
+  if (manifest.capabilities.database === true) {
+    drivers.push("DynamoDB Cell data table reads and writes");
+  }
+
+  if (manifest.capabilities.files) {
+    drivers.push("S3 Cell file storage and requests");
+  }
+
+  if (manifest.capabilities.events) {
+    drivers.push("EventBridge event bus events");
+  }
+
+  if (manifest.jobs.length > 0) {
+    drivers.push("SQS queue requests and retained messages");
+  }
+
+  return drivers;
 }
 
 export function checkAwsPreviewSupport(

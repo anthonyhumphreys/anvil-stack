@@ -96,6 +96,28 @@ describe("createAwsPreviewDeploymentPlan", () => {
         }),
       ]),
     );
+    expect(plan.operations).toMatchObject({
+      rollback: {
+        supported: false,
+        commands: expect.arrayContaining([
+          "anvil deploy --preview --json",
+          "anvil destroy --preview --app notes --yes --json",
+        ]),
+      },
+      cleanup: {
+        commands: ["anvil destroy --preview --app notes --yes --json"],
+      },
+      cost: {
+        billingMode: "usage-based-preview",
+        drivers: expect.arrayContaining([
+          "Lambda requests and duration",
+          "DynamoDB Cell data table reads and writes",
+          "S3 Cell file storage and requests",
+          "EventBridge event bus events",
+          "SQS queue requests and retained messages",
+        ]),
+      },
+    });
   });
 });
 
@@ -214,6 +236,11 @@ describe("AwsPreviewDeploymentAdapter", () => {
       code: "AWS_PROVISIONER_NOT_CONFIGURED",
       plan: {
         cell: "notes",
+        operations: {
+          cleanup: {
+            commands: ["anvil destroy --preview --app notes --yes --json"],
+          },
+        },
       },
       template: {
         Resources: {

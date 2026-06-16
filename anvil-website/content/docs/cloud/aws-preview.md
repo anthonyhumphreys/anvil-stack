@@ -53,6 +53,12 @@ Deployment plans include an `events` change when `capabilities.events` is
 declared, so `anvil deploy --preview --json` reports the EventBridge resource
 before provisioning.
 
+Deployment plans also include an `operations` block with preview rollback
+guidance, cleanup commands, and cost drivers. This is intentionally not a cost
+calculator. It tells you which AWS surfaces can produce usage-based charges and
+how to back out of a preview deploy while rollback commands are still future
+work.
+
 Generated S3 buckets for client assets and Cell files use CloudFormation
 generated names to avoid global bucket-name collisions, and the adapter reads
 the physical names from stack outputs. They block public access and use
@@ -206,7 +212,7 @@ correlation. Malformed JSON query or mutation bodies return a stable
 - CloudFormation stack failures return `AWS_STACK_FAILED` with recent failing stack events. Stack polling timeouts return `AWS_STACK_TIMEOUT` with the last observed status. Missing required stack outputs return `AWS_STACK_OUTPUT_MISSING`. AWS SDK provisioning failures return `AWS_PROVISIONING_OPERATION_FAILED` with the failed operation and provider error cause.
 - If a deployed runtime is missing adapter environment values for a declared capability, it returns `CAPABILITY_NOT_DECLARED` diagnostics naming the missing variable, such as `ANVIL_EVENT_BUS_NAME` for events.
 - Auth provider lookup is alpha-scoped. Current preview verifies bearer tokens through OIDC when `ANVIL_AUTH_ISSUER` is configured; otherwise authenticated handlers require a future auth integration or a smoke token setup.
-- Multi-region, custom domains, hosted control plane, marketplace, production policy packs, rollback, signed artifacts, and cost reporting are future work.
+- Multi-region, custom domains, hosted control plane, marketplace, production policy packs, rollback commands, signed artifacts, and real cost reporting are future work.
 
 ## Safety posture
 

@@ -199,6 +199,11 @@ If provisioning is not configured, the adapter returns:
 
 That is useful. It means deploy planning can be reviewed without mutating an AWS account.
 
+The deployment plan includes an `operations` block with rollback notes, cleanup
+commands, and cost drivers for the generated preview resources. Treat these as
+operator hints, not billing estimates. Actual rollback commands and real cost
+reporting are still future work.
+
 If CloudFormation reaches a failed terminal state during provisioning, deploy
 returns `ok: false` with `code: "AWS_STACK_FAILED"` and structured stack event
 details so CI and agents can report the failing resource directly.
