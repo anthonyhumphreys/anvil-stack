@@ -55,6 +55,10 @@ export class AnvilClientError extends Error {
   }
 }
 
+export function isAnvilClientError(error: unknown): error is AnvilClientError {
+  return error instanceof AnvilClientError;
+}
+
 export type HookRuntime = {
   useCallback<T extends (...args: any[]) => unknown>(
     callback: T,

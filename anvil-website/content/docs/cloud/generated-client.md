@@ -71,6 +71,23 @@ Client code should not assume the runtime URL by hand. Local and deployed runtim
 
 Hard-coded URLs are easy. They are also how preview, local, and deployed environments slowly become three different products.
 
+## Errors
+
+Runtime failures throw `AnvilClientError`. It carries the HTTP `status`, runtime
+`code`, message, and optional diagnostic `details` from the runtime payload.
+
+```ts
+import { isAnvilClientError } from "@anvil-cloud/client";
+
+try {
+  await client.query(api.queries.listTodos, {});
+} catch (error) {
+  if (isAnvilClientError(error) && error.code === "AUTH_REQUIRED") {
+    // Ask the auth provider for a fresh session or token.
+  }
+}
+```
+
 ## Status
 
 Generated client output is part of the alpha builder path. The framework integration is intentionally early, and the package keeps the hook runtime injectable while React and Preact support are still being shaped.

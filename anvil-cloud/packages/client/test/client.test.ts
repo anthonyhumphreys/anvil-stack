@@ -11,6 +11,7 @@ import {
   AnvilClientError,
   createAnvilHooks,
   createClient,
+  isAnvilClientError,
   type HookRuntime,
 } from "../src/index.js";
 
@@ -105,6 +106,20 @@ describe("AnvilClient", () => {
         auth: "required",
       },
     });
+  });
+
+  it("detects structured client errors", () => {
+    expect(
+      isAnvilClientError(
+        new AnvilClientError({
+          status: 401,
+          code: "AUTH_REQUIRED",
+          message: "A signed-in user is required.",
+        }),
+      ),
+    ).toBe(true);
+    expect(isAnvilClientError(new Error("plain"))).toBe(false);
+    expect(isAnvilClientError(null)).toBe(false);
   });
 
   it("normalizes non-runtime HTTP failures", async () => {
