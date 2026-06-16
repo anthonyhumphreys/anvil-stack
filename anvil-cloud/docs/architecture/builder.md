@@ -117,6 +117,7 @@ Capability checks currently reject straightforward handler usage of:
 - `ctx.files` without `capabilities.files`;
 - `ctx.jobs` without `capabilities.jobs`;
 - global `fetch()` without `capabilities.outboundFetch`;
+- `fetch()` targets that are not static absolute `http` or `https` URL literals;
 - `job({ schedule })` without `capabilities.scheduledJobs`.
 
 Preferred replacements:

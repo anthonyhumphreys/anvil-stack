@@ -81,6 +81,8 @@ Guard can detect some undeclared effects:
 
 - global `fetch` requires `capabilities.outboundFetch`
 - literal `fetch("https://...")` hosts must match `capabilities.outboundFetch.allow`
+- fetch targets must be static absolute `http` or `https` URL literals so Guard
+  can check the host
 - scheduled jobs require `capabilities.scheduledJobs`
 - direct `process.env` is rejected, use `ctx.env`
 - handler use of capabilities should match declared Cell capabilities where alpha can inspect it

@@ -377,6 +377,7 @@ Initial capability diagnostics should catch common static cases before bundling:
 - `ctx.files` requires `capabilities.files`;
 - `ctx.jobs` requires `capabilities.jobs`;
 - global `fetch()` requires `capabilities.outboundFetch`;
+- `fetch()` targets must be static absolute `http` or `https` URL literals;
 - `job({ schedule })` requires `capabilities.scheduledJobs`.
 
 Allowed:

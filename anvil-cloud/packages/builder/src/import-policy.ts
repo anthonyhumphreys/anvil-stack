@@ -531,9 +531,21 @@ function inspectOutboundFetchCall(
   const [target] = node.arguments;
   const host = target ? fetchHostFromLiteral(target) : null;
 
+  if (!target || !host) {
+    diagnostics.push(
+      diagnosticAt(
+        "OUTBOUND_FETCH_TARGET_NOT_STATIC",
+        "Fetch target must be a static absolute http(s) URL in Cell server code.",
+        "Use a literal URL whose host appears in capabilities.outboundFetch.allow.",
+        sourceFile,
+        relativeFile,
+        node.expression,
+      ),
+    );
+    return;
+  }
+
   if (
-    !target ||
-    !host ||
     !policyContext.outboundFetchAllowList ||
     policyContext.outboundFetchAllowList.includes(host)
   ) {

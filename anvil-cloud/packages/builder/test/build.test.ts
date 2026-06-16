@@ -235,6 +235,51 @@ describe("buildCell", () => {
     });
   });
 
+  it("reports outbound fetch targets that cannot be checked statically", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, mutation } from "@anvil-cloud/runtime";',
+        "",
+        "const target = 'https://api.example.test/notes';",
+        "",
+        "export default app({",
+        "  capabilities: {",
+        "    outboundFetch: { allow: ['api.example.test'] },",
+        "  },",
+        "  mutations: {",
+        "    syncNote: mutation({",
+        "      handler: async () => {",
+        "        await fetch(target);",
+        "        await fetch('/internal');",
+        "        return { ok: true };",
+        "      },",
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await checkCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "import-policy",
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({
+          code: "OUTBOUND_FETCH_TARGET_NOT_STATIC",
+          message:
+            "Fetch target must be a static absolute http(s) URL in Cell server code.",
+        }),
+      ]),
+    });
+    expect(
+      result.diagnostics.filter(
+        (diagnostic) => diagnostic.code === "OUTBOUND_FETCH_TARGET_NOT_STATIC",
+      ),
+    ).toHaveLength(2);
+  });
+
   it("accepts outbound fetch hosts inside the declared allow list", async () => {
     const rootDir = await createCell({
       server: [

@@ -32,6 +32,10 @@ If you genuinely need a capability that does not exist yet, that is a platform g
 If Cell server code calls `fetch("https://host/...")`, the host must appear in
 `capabilities.outboundFetch.allow`.
 
+Guard intentionally rejects `fetch(url)` variables and relative fetch targets in
+Cell server code because the allow-list check cannot prove which host will be
+called. Use a literal absolute `http` or `https` URL.
+
 ```ts
 export default app({
   capabilities: {
