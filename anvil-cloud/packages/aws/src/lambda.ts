@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  createRuntimeContext,
   handleRuntimeRequest,
   type AppDefinition,
   type RuntimeHost,
   type RuntimeResponse,
+  type WorkflowState,
 } from "@anvil-cloud/runtime";
 
 import {
@@ -30,13 +32,35 @@ export type AwsScheduledJobEvent = {
   };
 };
 
+export type AwsWorkflowStepEvent = {
+  source?: string;
+  detail?: {
+    workflow?: unknown;
+    step?: unknown;
+    runId?: unknown;
+    input?: unknown;
+    steps?: unknown;
+  };
+};
+
+export type AwsWorkflowStepResult = {
+  workflow: string;
+  step: string;
+  runId: string;
+  input: unknown;
+  steps: Record<string, unknown>;
+  result: unknown;
+};
+
 export type AwsLambdaRuntimeEvent =
   | AwsHttpEvent
   | AwsSqsEvent
-  | AwsScheduledJobEvent;
+  | AwsScheduledJobEvent
+  | AwsWorkflowStepEvent;
 
 export type AwsLambdaRuntimeResult =
   | AwsHttpResponse
+  | AwsWorkflowStepResult
   | {
       batchItemFailures: Array<{ itemIdentifier: string }>;
     }
@@ -68,7 +92,80 @@ export function createAwsLambdaRuntimeHandler(
       return;
     }
 
+    if (isWorkflowStepEvent(event)) {
+      return runWorkflowStep(app, host, event.detail);
+    }
+
     return httpHandler(event as AwsHttpEvent);
+  };
+}
+
+async function runWorkflowStep(
+  app: AppDefinition,
+  host: RuntimeHost,
+  detail: {
+    workflow: unknown;
+    step: unknown;
+    runId: unknown;
+    input?: unknown;
+    steps?: unknown;
+  },
+): Promise<AwsWorkflowStepResult> {
+  if (typeof detail.workflow !== "string" || detail.workflow.length === 0) {
+    throw new Error("AWS workflow event is missing a string workflow name.");
+  }
+
+  if (typeof detail.step !== "string" || detail.step.length === 0) {
+    throw new Error("AWS workflow event is missing a string step name.");
+  }
+
+  if (typeof detail.runId !== "string" || detail.runId.length === 0) {
+    throw new Error("AWS workflow event is missing a string run id.");
+  }
+
+  const workflow = app.workflows?.[detail.workflow];
+
+  if (!workflow) {
+    throw new Error(`AWS workflow '${detail.workflow}' was not found.`);
+  }
+
+  const step = workflow.steps.find((candidate) => {
+    return candidate.name === detail.step;
+  });
+
+  if (!step) {
+    throw new Error(
+      `AWS workflow '${detail.workflow}' step '${detail.step}' was not found.`,
+    );
+  }
+
+  const priorSteps = isRecord(detail.steps) ? detail.steps : {};
+  const state: WorkflowState = {
+    input: detail.input,
+    steps: priorSteps,
+  };
+  const ctx = await createRuntimeContext(
+    host,
+    {
+      kind: "workflow",
+      name: detail.workflow,
+      input: detail.input,
+      requestId: `${detail.runId}:${detail.step}`,
+    },
+    `${detail.workflow}.${detail.step}`,
+  );
+  const result = await Promise.resolve(step.handler(ctx, state));
+
+  return {
+    workflow: detail.workflow,
+    step: detail.step,
+    runId: detail.runId,
+    input: detail.input,
+    steps: {
+      ...priorSteps,
+      [detail.step]: result,
+    },
+    result,
   };
 }
 
@@ -175,6 +272,37 @@ function isScheduledJobEvent(
   return (
     candidate.source === "anvil.jobs" && isObject(detail) && "name" in detail
   );
+}
+
+function isWorkflowStepEvent(
+  event: AwsLambdaRuntimeEvent,
+): event is AwsWorkflowStepEvent & {
+  detail: {
+    workflow: unknown;
+    step: unknown;
+    runId: unknown;
+    input?: unknown;
+    steps?: unknown;
+  };
+} {
+  if (!isObject(event)) {
+    return false;
+  }
+
+  const candidate = event as Record<string, unknown>;
+  const detail = candidate.detail;
+
+  return (
+    candidate.source === "anvil.workflows" &&
+    isObject(detail) &&
+    "workflow" in detail &&
+    "step" in detail &&
+    "runId" in detail
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return isObject(value) && !Array.isArray(value);
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

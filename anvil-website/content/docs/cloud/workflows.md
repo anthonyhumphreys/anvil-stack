@@ -108,6 +108,15 @@ A run record looks like:
 
 ## Current limits
 
-Workflows execute on the local runtime only. The AWS preview runtime rejects `ctx.workflows.start` with a 501 `ADAPTER_ERROR`. A Step Functions adapter is designed (one state machine per workflow, Task states invoking the shared runtime Lambda, `retries`/`timeoutMs` mapped to ASL `Retry`/`TimeoutSeconds`, run state in the deployment metadata table) but not implemented. See `docs/architecture/workflows.md` in the anvil-cloud repository for the design.
+Workflows execute end-to-end on the local runtime. AWS preview has the first
+Lambda-side bridge for Step Functions-style workflow step events: a task event
+can invoke one workflow step through the shared runtime context and return the
+updated accumulated step state.
+
+The AWS preview deployment adapter still rejects Cells that declare workflows,
+because state machine synthesis/provisioning, `ctx.workflows.start`, remote
+run-state persistence, and remote CLI inspection are not wired yet. The adapter
+work is moving in that order rather than pretending one Lambda event is a
+durable workflow platform. Refreshingly unglamorous, but much less haunted.
 
 Steps are a linear sequence: no branching, no parallelism, and no cross-Cell workflows in alpha.

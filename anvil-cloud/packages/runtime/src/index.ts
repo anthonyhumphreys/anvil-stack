@@ -48,6 +48,7 @@ export {
   type AuthPolicyInspection,
 } from "./auth-policy.js";
 export {
+  createRuntimeContext,
   type AuthContext,
   type EnvClient,
   type EventClient,

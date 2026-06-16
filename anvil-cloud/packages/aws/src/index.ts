@@ -63,6 +63,8 @@ export {
   type AwsLambdaRuntimeResult,
   type AwsScheduledJobEvent,
   type AwsSqsEvent,
+  type AwsWorkflowStepEvent,
+  type AwsWorkflowStepResult,
 } from "./lambda.js";
 export {
   type AwsPreviewProvisioner,
