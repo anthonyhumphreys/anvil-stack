@@ -12,6 +12,7 @@
     "lint": "pnpm -r lint",
     "test": "pnpm build && pnpm -r test",
     "typecheck": "pnpm -r typecheck",
+    "anvil": "node packages/cli/dist/index.js",
     "verify:aws-preview": "node scripts/verify-aws-preview.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check ."

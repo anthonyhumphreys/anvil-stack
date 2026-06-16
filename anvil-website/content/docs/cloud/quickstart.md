@@ -20,9 +20,12 @@ From `anvil-cloud`:
 ```bash
 pnpm install --ignore-scripts
 pnpm build
+pnpm anvil --help
 ```
 
-If dependencies are already installed, `pnpm build` is enough to refresh the package output used by the CLI.
+If dependencies are already installed, `pnpm build` is enough to refresh the
+package output used by the CLI. `pnpm anvil` runs the built CLI entrypoint from
+the workspace root.
 
 ## 2) Create a Cell
 
@@ -33,11 +36,18 @@ anvil new notes
 cd notes
 ```
 
-From the workspace during alpha development:
+From the workspace root during alpha development:
 
 ```bash
-node packages/cli/dist/index.js new notes
+pnpm anvil new notes
 cd notes
+```
+
+Inside a checked-in example such as `examples/notes`, use the relative built
+entrypoint:
+
+```bash
+node ../../packages/cli/dist/index.js check --json
 ```
 
 The scaffold creates:
