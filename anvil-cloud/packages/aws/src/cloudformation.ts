@@ -331,6 +331,16 @@ export function createAwsPreviewCloudFormationTemplate(
   }
 
   if (workflows.length > 0) {
+    runtimeEnvironmentVariables.ANVIL_WORKFLOW_STATE_MACHINES = {
+      "Fn::Sub": JSON.stringify(
+        Object.fromEntries(
+          workflows.map((workflow) => [
+            workflow.name,
+            `\${Workflow${logicalIdPart(workflow.name)}StateMachine}`,
+          ]),
+        ),
+      ),
+    };
     resources.WorkflowStateMachineRole = {
       Type: "AWS::IAM::Role",
       Properties: {

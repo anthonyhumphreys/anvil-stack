@@ -131,6 +131,64 @@ describe("createAwsRuntimeHostFromEnv", () => {
     });
   });
 
+  it("starts workflows through the Step Functions adapter", async () => {
+    const stepfunctions = new FakeStepFunctionsClient();
+    const host = createAwsRuntimeHostFromEnv({
+      dynamodb: new FakeDynamoDbClient(),
+      s3: new FakeS3Client(),
+      sqs: new FakeSqsClient(),
+      stepfunctions,
+      env: {
+        ANVIL_WORKFLOW_STATE_MACHINES: JSON.stringify({
+          syncNotes:
+            "arn:aws:states:eu-west-2:123456789012:stateMachine:syncNotes",
+        }),
+      },
+    });
+
+    await expect(
+      host.workflows.start("syncNotes", { userId: "user_1" }),
+    ).resolves.toEqual({
+      runId: expect.stringMatching(/^run_/),
+    });
+
+    expect(stepfunctions.commands[0]?.input).toMatchObject({
+      stateMachineArn:
+        "arn:aws:states:eu-west-2:123456789012:stateMachine:syncNotes",
+    });
+    expect(
+      JSON.parse(
+        String(
+          (stepfunctions.commands[0]?.input as Record<string, unknown>).input,
+        ),
+      ),
+    ).toMatchObject({
+      runId: expect.stringMatching(/^run_/),
+      input: {
+        userId: "user_1",
+      },
+      steps: {},
+    });
+  });
+
+  it("fails clearly when workflow state machines are not configured", async () => {
+    const host = createAwsRuntimeHostFromEnv({
+      dynamodb: new FakeDynamoDbClient(),
+      s3: new FakeS3Client(),
+      sqs: new FakeSqsClient(),
+      stepfunctions: new FakeStepFunctionsClient(),
+      env: {},
+    });
+
+    await expect(host.workflows.start("syncNotes", {})).rejects.toMatchObject({
+      code: "CAPABILITY_NOT_DECLARED",
+      details: {
+        env: "ANVIL_WORKFLOW_STATE_MACHINES",
+        workflow: "syncNotes",
+      },
+    });
+  });
+
   it("writes structured logs to the supplied logger", async () => {
     const messages: string[] = [];
     const host = createAwsRuntimeHostFromEnv({
@@ -269,6 +327,25 @@ class FakeSqsClient {
 
     return {
       MessageId: `msg_${this.commands.length}`,
+    };
+  }
+}
+
+class FakeStepFunctionsClient {
+  readonly commands: Array<{ name: string; input: unknown }> = [];
+
+  async send(command: { input: unknown; constructor: { name: string } }) {
+    this.commands.push({
+      name: command.constructor.name,
+      input: command.input,
+    });
+
+    if (command.constructor.name !== "StartExecutionCommand") {
+      throw new Error(`Unhandled command ${command.constructor.name}`);
+    }
+
+    return {
+      executionArn: `arn:aws:states:eu-west-2:123456789012:execution:syncNotes:${this.commands.length}`,
     };
   }
 }

@@ -20,6 +20,7 @@ import {
   EventBridgeClient,
   PutEventsCommand,
 } from "@aws-sdk/client-eventbridge";
+import { SFNClient, StartExecutionCommand } from "@aws-sdk/client-sfn";
 import { SendMessageCommand, SQSClient } from "@aws-sdk/client-sqs";
 import {
   OidcTokenVerifier,
@@ -51,6 +52,7 @@ type DynamoDbSender = Pick<DynamoDBClient, "send">;
 type S3Sender = Pick<S3Client, "send">;
 type SqsSender = Pick<SQSClient, "send">;
 type EventBridgeSender = Pick<EventBridgeClient, "send">;
+type StepFunctionsSender = Pick<SFNClient, "send">;
 type AwsRuntimeLogger = Pick<Console, "debug" | "error" | "info" | "warn">;
 type DynamoDbItem = Record<string, AttributeValue>;
 
@@ -59,6 +61,7 @@ export type AwsRuntimeHostOptions = {
   s3?: S3Sender;
   sqs?: SqsSender;
   eventbridge?: EventBridgeSender;
+  stepfunctions?: StepFunctionsSender;
   env?: Record<string, string | undefined>;
   logger?: AwsRuntimeLogger;
 };
@@ -91,7 +94,12 @@ export function createAwsRuntimeHostFromEnv(
       client: options.sqs ?? new SQSClient({}),
       queueUrl: env.ANVIL_JOB_QUEUE_URL,
     }),
-    workflows: new UnsupportedAwsWorkflowAdapter(),
+    workflows: new AwsStepFunctionsWorkflowAdapter({
+      client: options.stepfunctions ?? new SFNClient({}),
+      stateMachines: parseWorkflowStateMachines(
+        env.ANVIL_WORKFLOW_STATE_MACHINES,
+      ),
+    }),
   };
 }
 
@@ -539,10 +547,65 @@ class UnconfiguredAwsEventAdapter implements EventAdapter {
   }
 }
 
-class UnsupportedAwsWorkflowAdapter implements WorkflowAdapter {
+class AwsStepFunctionsWorkflowAdapter implements WorkflowAdapter {
+  constructor(
+    private readonly options: {
+      client: StepFunctionsSender;
+      stateMachines: Record<string, string>;
+    },
+  ) {}
+
   async start(name: string, input: unknown): Promise<{ runId: string }> {
-    void input;
-    throw unsupportedAdapterError("Workflow execution", name);
+    const stateMachineArn = this.options.stateMachines[name];
+
+    if (!stateMachineArn) {
+      throw new RuntimeError(
+        "CAPABILITY_NOT_DECLARED",
+        `Workflow '${name}' is not configured for this AWS runtime.`,
+        403,
+        {
+          env: "ANVIL_WORKFLOW_STATE_MACHINES",
+          workflow: name,
+        },
+      );
+    }
+
+    const runId = `run_${randomUUID()}`;
+    await this.options.client.send(
+      new StartExecutionCommand({
+        stateMachineArn,
+        name: runId,
+        input: JSON.stringify({
+          runId,
+          input,
+          steps: {},
+        }),
+      }),
+    );
+
+    return {
+      runId,
+    };
+  }
+}
+
+function parseWorkflowStateMachines(
+  raw: string | undefined,
+): Record<string, string> {
+  if (!raw) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+
+    if (!isRecordOfStrings(parsed)) {
+      return {};
+    }
+
+    return parsed;
+  } catch {
+    return {};
   }
 }
 
@@ -718,15 +781,6 @@ function compare(
   }
 }
 
-function unsupportedAdapterError(action: string, name: string): RuntimeError {
-  return new RuntimeError(
-    "ADAPTER_ERROR",
-    `${action} is not implemented by the AWS preview runtime yet.`,
-    501,
-    { name },
-  );
-}
-
 function isMissingAwsObject(error: unknown): boolean {
   const metadata = isObject(error) ? error.$metadata : undefined;
 
@@ -740,6 +794,13 @@ function isMissingAwsObject(error: unknown): boolean {
 
 function isRecord(value: unknown): value is DatabaseRecord {
   return isObject(value) && !Array.isArray(value);
+}
+
+function isRecordOfStrings(value: unknown): value is Record<string, string> {
+  return (
+    isObject(value) &&
+    Object.values(value).every((entry) => typeof entry === "string")
+  );
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

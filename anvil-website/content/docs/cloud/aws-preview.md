@@ -215,7 +215,7 @@ correlation. Malformed JSON query or mutation bodies return a stable
 
 ## Current limits
 
-- Services, workflows, and outbound fetch are local-only in alpha. AWS preview rejects Cells that declare them before provisioning with an `AWS_PREVIEW_UNSUPPORTED_FEATURE` diagnostic. The AWS package can synthesize Step Functions state machine templates and execute individual workflow step events through Lambda, but state machine provisioning, `ctx.workflows.start`, and remote run inspection are not wired yet.
+- Services, workflows, and outbound fetch are local-only in alpha. AWS preview rejects Cells that declare them before provisioning with an `AWS_PREVIEW_UNSUPPORTED_FEATURE` diagnostic. The AWS package can synthesize Step Functions state machine templates, configure Lambda with workflow state machine ARNs, start configured executions through `ctx.workflows.start`, and execute individual workflow step events through Lambda; preview provisioning and remote run inspection are still gated.
 - Production use needs wider operational validation beyond the preview verifier.
 - CloudFormation stack failures return `AWS_STACK_FAILED` with recent failing stack events. Stack polling timeouts return `AWS_STACK_TIMEOUT` with the last observed status. Missing required stack outputs return `AWS_STACK_OUTPUT_MISSING`. AWS SDK provisioning failures return `AWS_PROVISIONING_OPERATION_FAILED` with the failed operation and provider error cause.
 - If a deployed runtime is missing adapter environment values for a declared capability, it returns `CAPABILITY_NOT_DECLARED` diagnostics naming the missing variable, such as `ANVIL_EVENT_BUS_NAME` for events.

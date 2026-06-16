@@ -418,6 +418,19 @@ describe("createAwsPreviewCloudFormationTemplate", () => {
         },
       },
     });
+    expect(template.Resources.RuntimeFunction).toMatchObject({
+      Properties: {
+        Environment: {
+          Variables: {
+            ANVIL_WORKFLOW_STATE_MACHINES: {
+              "Fn::Sub": JSON.stringify({
+                syncNotes: "${WorkflowSyncNotesStateMachine}",
+              }),
+            },
+          },
+        },
+      },
+    });
 
     const definition = JSON.parse(
       template.Resources.WorkflowSyncNotesStateMachine.Properties

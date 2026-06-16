@@ -114,11 +114,16 @@ describe one state machine per declared workflow, and the Lambda runtime can
 execute one workflow step event through the shared runtime context and return
 the updated accumulated step state.
 
+The AWS runtime host can start configured Step Functions executions for
+`ctx.workflows.start` when `ANVIL_WORKFLOW_STATE_MACHINES` maps workflow names
+to state machine ARNs. The generated CloudFormation template now writes that
+mapping into the Lambda environment for workflow-bearing manifests.
+
 The AWS preview deployment adapter still rejects Cells that declare workflows,
-because state machine provisioning, `ctx.workflows.start`, remote run-state
-persistence, and remote CLI inspection are not wired yet. The adapter work is
-moving in that order rather than pretending one Lambda event and one template
-are a durable workflow platform. Refreshingly unglamorous, but much less
-haunted.
+because provisioning is not enabled through the preview support gate and remote
+run-state persistence plus remote CLI inspection are not wired yet. The adapter
+work is moving in that order rather than pretending one Lambda event and one
+template are a durable workflow platform. Refreshingly unglamorous, but much
+less haunted.
 
 Steps are a linear sequence: no branching, no parallelism, and no cross-Cell workflows in alpha.
