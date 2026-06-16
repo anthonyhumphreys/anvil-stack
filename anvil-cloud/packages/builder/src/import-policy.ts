@@ -54,6 +54,7 @@ export type ImportPolicyOptions = {
 
 type PolicyContext = {
   declaredCapabilities: Set<string>;
+  outboundFetchAllowList: string[] | null;
   dynamicCapabilities: boolean;
 };
 
@@ -64,6 +65,7 @@ export async function checkImportPolicy(
   const visited = new Set<string>();
   const policyContext: PolicyContext = {
     declaredCapabilities: new Set(),
+    outboundFetchAllowList: null,
     dynamicCapabilities: false,
   };
 
@@ -158,14 +160,10 @@ async function visitModule(
         ),
       );
     } else if (isGlobalFetchCall(node)) {
-      inspectCapabilityUse(
-        "outboundFetch",
-        "fetch",
-        "Global fetch requires capabilities.outboundFetch to be declared.",
-        "Declare capabilities.outboundFetch with an allow list for external domains.",
+      inspectOutboundFetchCall(
+        node,
         sourceFile,
         relativeFile,
-        node.expression,
         diagnostics,
         policyContext,
       );
@@ -333,8 +331,39 @@ function collectCapabilitiesFromAppDefinition(
 
     if (isCapabilityEnabled(property.initializer)) {
       policyContext.declaredCapabilities.add(name);
+
+      if (name === "outboundFetch") {
+        policyContext.outboundFetchAllowList = collectOutboundFetchAllowList(
+          property.initializer,
+        );
+      }
     }
   }
+}
+
+function collectOutboundFetchAllowList(node: ts.Expression): string[] | null {
+  if (!ts.isObjectLiteralExpression(node)) {
+    return null;
+  }
+
+  const allow = node.properties.find((property) => {
+    return (
+      ts.isPropertyAssignment(property) &&
+      propertyNameText(property.name) === "allow"
+    );
+  });
+
+  if (!allow || !ts.isPropertyAssignment(allow)) {
+    return null;
+  }
+
+  if (!ts.isArrayLiteralExpression(allow.initializer)) {
+    return null;
+  }
+
+  return allow.initializer.elements
+    .filter(ts.isStringLiteral)
+    .map((element) => element.text);
 }
 
 function inspectHandlerCapabilities(
@@ -448,6 +477,56 @@ function inspectContextCapabilityUse(
   }
 }
 
+function inspectOutboundFetchCall(
+  node: ts.CallExpression,
+  sourceFile: ts.SourceFile,
+  relativeFile: string,
+  diagnostics: BuilderDiagnostic[],
+  policyContext: PolicyContext,
+): void {
+  inspectCapabilityUse(
+    "outboundFetch",
+    "fetch",
+    "Global fetch requires capabilities.outboundFetch to be declared.",
+    "Declare capabilities.outboundFetch with an allow list for external domains.",
+    sourceFile,
+    relativeFile,
+    node.expression,
+    diagnostics,
+    policyContext,
+  );
+
+  if (
+    policyContext.dynamicCapabilities ||
+    !policyContext.declaredCapabilities.has("outboundFetch")
+  ) {
+    return;
+  }
+
+  const [target] = node.arguments;
+  const host = target ? fetchHostFromLiteral(target) : null;
+
+  if (
+    !target ||
+    !host ||
+    !policyContext.outboundFetchAllowList ||
+    policyContext.outboundFetchAllowList.includes(host)
+  ) {
+    return;
+  }
+
+  diagnostics.push(
+    diagnosticAt(
+      "OUTBOUND_FETCH_NOT_ALLOWED",
+      `Fetch host '${host}' is not declared in capabilities.outboundFetch.allow.`,
+      "Add the host to capabilities.outboundFetch.allow or route the call through a declared platform capability.",
+      sourceFile,
+      relativeFile,
+      target,
+    ),
+  );
+}
+
 function inspectCapabilityUse(
   capability: string,
   subject: string,
@@ -491,6 +570,22 @@ function isGlobalFetchCall(node: ts.Node): node is ts.CallExpression {
   return (
     ts.isCallExpression(node) && isIdentifierNamed(node.expression, "fetch")
   );
+}
+
+function fetchHostFromLiteral(node: ts.Expression): string | null {
+  if (!ts.isStringLiteral(node) && !ts.isNoSubstitutionTemplateLiteral(node)) {
+    return null;
+  }
+
+  try {
+    const url = new URL(node.text);
+
+    return url.protocol === "http:" || url.protocol === "https:"
+      ? url.host
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function isWorkflowDeclaration(node: ts.Node): node is ts.CallExpression {

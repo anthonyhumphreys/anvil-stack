@@ -25,6 +25,23 @@ Anvil Guard rejects imports that bypass the Cell contract. The diagnostic includ
 
 If you genuinely need a capability that does not exist yet, that is a platform gap, not something to work around with a direct provider import. Open an issue instead.
 
+## Outbound fetch mismatch (`OUTBOUND_FETCH_NOT_ALLOWED`)
+
+If Cell server code calls `fetch("https://host/...")`, the host must appear in
+`capabilities.outboundFetch.allow`.
+
+```ts
+export default app({
+  capabilities: {
+    outboundFetch: { allow: ["api.example.test"] },
+  },
+});
+```
+
+Dynamic fetch targets are not fully inspectable in alpha. Prefer a small helper
+that keeps the external host visible in code, because hiding network access in
+string plumbing is how tiny demos grow a trench coat.
+
 ## Build pipeline failures
 
 The builder runs stages in order: config load, import policy, typecheck, server/client bundle, manifest extraction. The first failing stage stops the run, so fix errors top-down.

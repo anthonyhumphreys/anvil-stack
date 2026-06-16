@@ -164,6 +164,70 @@ describe("buildCell", () => {
     expect(result.ok).toBe(true);
   });
 
+  it("reports outbound fetch hosts outside the declared allow list", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, mutation } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  capabilities: {",
+        "    outboundFetch: { allow: ['api.example.test'] },",
+        "  },",
+        "  mutations: {",
+        "    syncNote: mutation({",
+        "      handler: async () => {",
+        "        await fetch('https://billing.example.test/notes');",
+        "        return { ok: true };",
+        "      },",
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await checkCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "import-policy",
+      diagnostics: [
+        {
+          code: "OUTBOUND_FETCH_NOT_ALLOWED",
+          message:
+            "Fetch host 'billing.example.test' is not declared in capabilities.outboundFetch.allow.",
+        },
+      ],
+    });
+  });
+
+  it("accepts outbound fetch hosts inside the declared allow list", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, mutation } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  capabilities: {",
+        "    outboundFetch: { allow: ['api.example.test'] },",
+        "  },",
+        "  mutations: {",
+        "    syncNote: mutation({",
+        "      handler: async () => {",
+        "        await fetch('https://api.example.test/notes');",
+        "        return { ok: true };",
+        "      },",
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await checkCell({ rootDir });
+
+    expect(result.ok).toBe(true);
+  });
+
   it("reports undeclared workflow capability before bundling", async () => {
     const rootDir = await createCell({
       server: [
