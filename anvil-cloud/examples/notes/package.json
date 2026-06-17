@@ -11,7 +11,7 @@
     "@anvil-cloud/client": "workspace:*",
     "@anvil-cloud/runtime": "workspace:*",
     "@vitejs/plugin-react": "^4.3.4",
-    "vite": "^5.4.21",
+    "vite": "^6.4.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
