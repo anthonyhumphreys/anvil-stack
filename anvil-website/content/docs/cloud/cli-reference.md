@@ -163,7 +163,7 @@ Successful output includes build paths, manifest, and diagnostics.
 anvil inspect --local --json
 anvil logs --local --json
 anvil db list --local --json
-anvil db dump todos --local --json
+anvil db dump notes --local --json
 anvil services list --json
 ```
 

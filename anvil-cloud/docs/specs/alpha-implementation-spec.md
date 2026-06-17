@@ -461,8 +461,11 @@ AWS is the first planned alpha adapter. Its concrete service mapping belongs in 
 
 ### Milestone 4: client SDK
 
-- Generated client definitions are consumable by a React/Preact client.
+- Generated client definitions are consumable by the default React/Vite Cell
+  client.
 - `useQuery` and `useMutation` work against local runtime.
+- Token lookup, structured runtime errors, and manual query refetch are
+  documented around the canonical Notes demo.
 
 ### Milestone 5: deployment adapter contract
 

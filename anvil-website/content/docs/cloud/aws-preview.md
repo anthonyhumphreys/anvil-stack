@@ -186,6 +186,33 @@ advertising a runtime after preview cleanup. Delete failures return
 AWS SDK cleanup failures return `AWS_DESTROY_OPERATION_FAILED` with the failed
 operation and provider error cause.
 
+## Authenticated smoke path
+
+The AWS verifier always checks that anonymous `listNotes` calls are rejected
+with `401 AUTH_REQUIRED`. To also exercise authenticated mutation/query calls,
+configure the deployed runtime with OIDC verification and pass a token from that
+issuer:
+
+```bash
+ANVIL_AUTH_ISSUER=https://issuer.example.test \
+ANVIL_AUTH_AUDIENCE=anvil-preview \
+ANVIL_AUTH_JWKS_URI=https://issuer.example.test/.well-known/jwks.json \
+ANVIL_AWS_SMOKE_TOKEN=<bearer-token-from-that-issuer> \
+ANVIL_AWS_ARTIFACT_BUCKET=<artifact-bucket> \
+AWS_REGION=eu-west-2 \
+pnpm verify:aws-preview
+```
+
+`ANVIL_AUTH_JWKS_URI` is optional when the issuer supports OIDC discovery at
+`/.well-known/openid-configuration`. Use the claim mapping variables from
+[Authentication](/docs/cloud/auth) when your provider uses non-default claim
+names for user id, email, or roles.
+
+The smoke token should be short-lived and scoped to the preview app. The
+verifier does not create provider users or run a hosted login flow; it only
+proves that the deployed runtime can verify a bearer token and enforce handler
+auth policy.
+
 ## Runtime Lambda flow
 
 ```txt

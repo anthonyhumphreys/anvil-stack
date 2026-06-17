@@ -21,9 +21,14 @@ notes/
   anvil.json
   package.json
   tsconfig.json
+  index.html
+  vite.config.ts
   src/
     cell.server.ts
-    cell.client.tsx
+    client/
+      App.tsx
+      main.tsx
+      styles.css
 ```
 
 `anvil.json` points at the server and client entrypoints:
@@ -33,7 +38,7 @@ notes/
   "name": "notes",
   "entrypoints": {
     "server": "src/cell.server.ts",
-    "client": "src/cell.client.tsx"
+    "client": "src/client/main.tsx"
   },
   "runtime": "nodejs20",
   "region": "eu-west-2"
@@ -89,13 +94,15 @@ export default app({
 
 | Definition | Purpose |
 | --- | --- |
-| `app` | Root Cell definition containing schema, capabilities, handlers, endpoints, and jobs. |
+| `app` | Root Cell definition containing schema, capabilities, handlers, endpoints, jobs, workflows, and services. |
 | `table` | Declares a table in the Cell schema. |
 | `text`, `boolean`, `userId` | Current field builders. |
 | `query` | Read-oriented named server function. |
 | `mutation` | Write-oriented named server function. |
 | `endpoint` | Declared HTTP route with method, path, optional auth mode, and handler. |
 | `job` | Named background handler, optionally scheduled. |
+| `workflow` | Durable ordered steps with retries, timeouts, and persisted run state. |
+| `service` | Supervised long-running local handler with restart policy. |
 
 ## Capabilities
 
@@ -106,16 +113,20 @@ Current examples include:
 ```ts
 capabilities: {
   database: true,
-  files: true,
+  files: { publicRead: false },
   outboundFetch: {
-    allowedHosts: ["api.example.com"]
+    allow: ["api.example.com"]
   },
   scheduledJobs: true,
-  events: true
+  jobs: true,
+  events: true,
+  workflows: true,
+  services: true
 }
 ```
 
-Guard checks use these declarations to reject direct provider access and undeclared effects where alpha can detect them.
+Guard checks use these declarations to reject direct provider access and
+undeclared effects where alpha can detect them.
 
 ## Manifest output
 
@@ -140,6 +151,8 @@ The builder imports the server bundle and extracts a manifest.
   "mutations": ["addTodo"],
   "endpoints": [],
   "jobs": [],
+  "workflows": [],
+  "services": [],
   "capabilities": {
     "database": true
   }
@@ -157,5 +170,9 @@ Adapters should consume the manifest rather than crawling arbitrary source.
 - `fs` and `node:fs` are forbidden. Use `ctx.files`.
 - `child_process` is forbidden. Move background work into declared jobs.
 - `@aws-sdk/*`, `aws-cdk-lib`, `sst`, `cdktf`, and `pulumi` are forbidden in Cell server code.
+- Global `fetch` requires `capabilities.outboundFetch`, and static absolute
+  URL hosts must be listed in `capabilities.outboundFetch.allow`.
+- Handler use of `ctx.db`, `ctx.files`, `ctx.events`, `ctx.jobs`, and
+  `ctx.workflows` must match declared capabilities where Guard can inspect it.
 
 The restrictions are not there to be fancy. They keep the app contract small enough for people and agents to reason about.

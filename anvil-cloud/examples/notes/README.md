@@ -56,9 +56,10 @@ node ../../packages/cli/dist/index.js lens --json
 node ../../packages/cli/dist/index.js inspect --local --json
 node ../../packages/cli/dist/index.js logs --local --json
 node ../../packages/cli/dist/index.js db dump notes --local --json
-node ../../packages/cli/dist/index.js workflows run onboardUser --input '{}' --json
 ```
 
 This demo intentionally includes a workflow, so it is not currently the AWS
-preview smoke Cell. Use `examples/aws-preview` for adapter verification until
-cloud workflow execution exists.
+preview smoke Cell. AWS has Step Functions synthesis and runtime bridge pieces,
+but preview deploy still gates workflow-bearing Cells until remote run state,
+inspection, live-account verification, and cleanup are proven. Use
+`examples/aws-preview` for adapter verification.

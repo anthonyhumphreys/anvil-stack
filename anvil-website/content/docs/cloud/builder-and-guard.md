@@ -9,7 +9,10 @@ order: 130
 
 # Builder and Guard
 
-The Anvil Builder turns a Cell project into inspectable output. Guard checks keep server code inside the Cell contract.
+The Anvil Builder turns a Cell project into inspectable output. Anvil Guard is
+the trust gateway before local runtime or preview deploy: it checks that Cell
+server code stays inside the declared contract instead of quietly reaching for
+provider APIs, process globals, or effects the manifest cannot explain.
 
 ## Build pipeline
 
@@ -59,6 +62,36 @@ Diagnostics include:
 
 CLI JSON output keeps these shapes stable enough for scripts and agents.
 
+Example:
+
+```json
+{
+  "ok": false,
+  "phase": "import-policy",
+  "diagnostics": [
+    {
+      "code": "FORBIDDEN_IMPORT",
+      "severity": "error",
+      "message": "Import '@aws-sdk/client-s3' is not allowed in Cell server code.",
+      "file": "src/cell.server.ts",
+      "line": 1,
+      "column": 26,
+      "hint": "Use declared Anvil capabilities such as ctx.db or ctx.files."
+    }
+  ],
+  "errors": [
+    {
+      "code": "FORBIDDEN_IMPORT",
+      "severity": "error",
+      "message": "Import '@aws-sdk/client-s3' is not allowed in Cell server code."
+    }
+  ]
+}
+```
+
+`errors` is a compatibility alias for older automation. New code should read
+`diagnostics`.
+
 ## Import policy
 
 Cell server code must stay statically inspectable. Current forbidden imports include:
@@ -84,10 +117,55 @@ Guard can detect some undeclared effects:
 - fetch targets must be static absolute `http` or `https` URL literals so Guard
   can check the host
 - scheduled jobs require `capabilities.scheduledJobs`
-- direct `process.env` is rejected, use `ctx.env`
-- handler use of capabilities should match declared Cell capabilities where alpha can inspect it
+- `ctx.db` requires `capabilities.database`
+- `ctx.files` requires `capabilities.files`
+- `ctx.events` requires `capabilities.events`
+- `ctx.jobs` requires `capabilities.jobs`
+- `ctx.workflows` and `workflow(...)` require `capabilities.workflows`
+- `service(...)` requires `capabilities.services`
+- direct `process.env` is rejected; use `ctx.env.get()` or `ctx.env.require()`
+- handler use of capabilities should match declared Cell capabilities where
+  alpha can inspect it
 
-This is not a perfect sandbox. It is a practical alpha control that narrows the contract and catches common ways app code escapes into provider-specific behavior.
+Current direct environment checks catch straightforward static forms such as
+`process.env` and `process["env"]`. Guard is not a perfect JavaScript sandbox;
+it is a policy check for normal Cell code and a clear signal to reviewers.
+
+This is not a perfect sandbox. It is a practical alpha control that narrows the
+contract and catches common ways app code escapes into provider-specific
+behavior.
+
+## Outbound fetch policy
+
+Declare outbound fetch explicitly:
+
+```ts
+export default app({
+  capabilities: {
+    outboundFetch: { allow: ["api.example.test"] }
+  },
+  mutations: {
+    sync: mutation({
+      handler: async () => {
+        await fetch("https://api.example.test/sync");
+        return { ok: true };
+      }
+    })
+  }
+});
+```
+
+For now, Guard requires literal absolute `http` or `https` URL strings so it can
+check the host. These are rejected:
+
+```ts
+const target = "https://api.example.test/sync";
+await fetch(target);
+await fetch("/internal");
+```
+
+That is intentionally boring. Dynamic network targets make preview policy
+review vague, and vague deploy plans are how infrastructure starts doing improv.
 
 ## Typecheck
 
@@ -116,6 +194,20 @@ If manifest extraction fails, the builder returns `SERVER_EXPORT_INVALID` or `MA
 The builder emits generated client metadata under `.anvil/generated` so browser code can call queries and mutations through stable names instead of hand-written string paths.
 
 Read [Generated client](/docs/cloud/generated-client) for client-side usage.
+
+## What to trust before deploy
+
+Before preview deploy, inspect:
+
+- `anvil check --json` diagnostics
+- `anvil build --json` output
+- `.anvil/dist/manifest.json`
+- `.anvil/generated/client.ts`
+- `.anvil/dist/build-meta.json`
+- deployment plan and CloudFormation template from `anvil deploy --preview --json`
+
+If these disagree, stop and fix the contract first. A preview deploy should be
+the boring part.
 
 ## Practical rule
 

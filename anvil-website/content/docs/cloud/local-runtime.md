@@ -11,7 +11,9 @@ order: 125
 
 Anvil Local runs a built Cell without a cloud provider.
 
-It uses the same `handleRuntimeRequest` boundary as deployment adapters, then provides local implementations for database, files, env, auth, logs, events, and jobs.
+It uses the same `handleRuntimeRequest` boundary as deployment adapters, then
+provides local implementations for database, files, env, auth, logs, events,
+jobs, workflows, and supervised services.
 
 ## What starts with `anvil dev`
 
@@ -26,6 +28,8 @@ It uses the same `handleRuntimeRequest` boundary as deployment adapters, then pr
 - local log adapter
 - local event adapter
 - local job adapter
+- local workflow adapter
+- local service supervisor
 
 Default ports:
 
@@ -53,6 +57,13 @@ ANY  /api/*
 GET  /_anvil/health
 GET  /_anvil/manifest
 GET  /_anvil/inspect
+GET  /_anvil/lens
+POST /_anvil/workflows/run/:name
+GET  /_anvil/workflows
+GET  /_anvil/workflows/:runId
+GET  /_anvil/services
+POST /_anvil/services/:name/start
+POST /_anvil/services/:name/stop
 ```
 
 Endpoint requests under `/api/*` are translated into endpoint runtime requests and matched against declared Cell endpoints.
@@ -69,6 +80,8 @@ Local state lives in `.anvil/local` by default:
   files/
   jobs.json
   logs.ndjson
+  services.json
+  workflows.json
 ```
 
 The current database adapter stores JSON records in `dev.db`. It is intentionally simple, inspectable, and suited to alpha local development.
@@ -90,7 +103,7 @@ Inspection commands:
 
 ```bash
 anvil db list --local --json
-anvil db dump todos --local --json
+anvil db dump notes --local --json
 ```
 
 ## Files
@@ -123,6 +136,32 @@ anvil logs --local --json
 
 Runtime errors include request id, handler kind, handler name, message, and error metadata.
 
+## Workflows
+
+Local workflows persist state to `.anvil/local/workflows.json`. The runtime
+records each step transition so a `running` workflow can resume when the local
+server starts again.
+
+Useful commands:
+
+```bash
+anvil workflows list --json
+anvil workflows show <runId> --json
+anvil workflows run <name> --input '{"example":true}' --json
+```
+
+## Services
+
+Local services run under the runtime service supervisor. Service state snapshots
+are written to `.anvil/local/services.json`.
+
+```bash
+anvil services list --json
+```
+
+For live state while the dev server is running, use the local Lens UI or
+`GET /_anvil/services`.
+
 ## Inspection
 
 Use:
@@ -138,5 +177,7 @@ The local inspection payload includes:
 - current auth user
 - table row counts
 - recent runtime errors
+- declared workflows and recent run state
+- service state when recorded
 
 The value of local runtime is not that it perfectly mimics a provider. The value is that the app contract can be executed and inspected before adapter behavior enters the conversation.

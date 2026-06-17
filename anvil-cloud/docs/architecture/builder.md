@@ -108,16 +108,22 @@ Forbidden by default in Cell server source:
 - `node:fs`
 - `child_process`
 - `node:child_process`
-- `process.env` direct access
+- `process.env` direct access, including straightforward static forms such as
+  `process.env` and `process["env"]`
 - native addons
 
 Capability checks currently reject straightforward handler usage of:
 
 - `ctx.db` without `capabilities.database`;
 - `ctx.files` without `capabilities.files`;
+- `ctx.events` without `capabilities.events`;
 - `ctx.jobs` without `capabilities.jobs`;
+- `ctx.workflows` without `capabilities.workflows`;
+- `workflow(...)` without `capabilities.workflows`;
+- `service(...)` without `capabilities.services`;
 - global `fetch()` without `capabilities.outboundFetch`;
 - `fetch()` targets that are not static absolute `http` or `https` URL literals;
+- `fetch()` hosts outside `capabilities.outboundFetch.allow`;
 - `job({ schedule })` without `capabilities.scheduledJobs`.
 
 Preferred replacements:
@@ -164,6 +170,17 @@ Example JSON output:
 {
   "ok": false,
   "phase": "import-policy",
+  "diagnostics": [
+    {
+      "code": "CAPABILITY_NOT_DECLARED",
+      "severity": "error",
+      "message": "ctx.files requires capabilities.files to be declared.",
+      "file": "src/cell.server.ts",
+      "line": 12,
+      "column": 23,
+      "hint": "Declare capabilities.files before using ctx.files. ctx.files is capability-scoped Cell code."
+    }
+  ],
   "errors": [
     {
       "code": "CAPABILITY_NOT_DECLARED",
@@ -178,6 +195,9 @@ Example JSON output:
 }
 ```
 
+`errors` is kept as a compatibility alias. New automation should read
+`diagnostics`.
+
 ## Generated client metadata
 
 The builder should generate a stable metadata object for client code:
@@ -185,10 +205,10 @@ The builder should generate a stable metadata object for client code:
 ```ts
 export const api = {
   queries: {
-    listTodos: { kind: "query", name: "listTodos" },
+    listNotes: { kind: "query", name: "listNotes" },
   },
   mutations: {
-    addTodo: { kind: "mutation", name: "addTodo" },
+    createNote: { kind: "mutation", name: "createNote" },
   },
 } as const;
 ```

@@ -9,9 +9,14 @@ order: 160
 
 # Status and limits
 
-Anvil Cloud is alpha software with real implementation across the runtime, builder, local server, client, CLI, and AWS preview adapter.
+Anvil Cloud is alpha software with real implementation across the runtime,
+builder, local server, React/Vite client path, CLI, Lens, and AWS preview
+adapter.
 
-Use it for inspection, local development, adapter design, demos, tests, and contribution work. Treat hosted production claims as out of scope until the adapter, operations, and account-verification paths have been hardened.
+Use it for inspection, local development, adapter design, demos, tests, and
+contribution work. Do not treat it as production hosting. The useful question is
+not "is it done?" It is "which parts are implemented, which parts are gated, and
+what evidence should I inspect before trusting a Cell?"
 
 ## Implemented surfaces
 
@@ -23,8 +28,10 @@ Use it for inspection, local development, adapter design, demos, tests, and cont
 | Builder | Config, import policy, typecheck, server/client bundle, manifest extraction, generated client, and build metadata exist. |
 | Local runtime | Local HTTP server, JSON database, files, auth, logs, events, jobs, workflows, supervised services, manifest, and inspection state exist. |
 | CLI | `new`, `dev`, `check`, `build`, `inspect`, `logs`, `db`, `workflows`, `services list`, and `deploy --preview` exist. |
-| Client | Browser client and hook helper shape exist, with generated metadata support. |
-| AWS preview | Plan, CloudFormation synthesis, artifacts, optional provisioner, Lambda bridge, DynamoDB, S3, SQS, EventBridge schedules, CloudWatch logs, remote inspect, and remote logs exist. |
+| Client | React/Vite is the current paved road. The browser client supports generated query/mutation metadata, token lookup, structured runtime errors, hook helpers, and manual `refetch`. |
+| Lens | Local Lens is served at `/_anvil/lens` and reads the same local runtime truth as CLI JSON: manifest, capabilities, auth users, logs, database state, workflows, services, and diagnostics. |
+| Examples | `examples/notes` is the canonical local demo. `examples/aws-preview` is the AWS-compatible smoke Cell while workflows remain gated from preview deploy. |
+| AWS preview | Plan, CloudFormation synthesis, artifacts, optional provisioner, Lambda bridge, DynamoDB, S3, SQS, EventBridge events and schedules, CloudWatch logs, remote inspect, remote logs, preview destroy, cost-driver hints, and cleanup hints exist. |
 
 ## Non-goals for alpha
 
@@ -48,9 +55,10 @@ Safety comes from a smaller contract: declared capabilities, import restrictions
 | --- | --- |
 | Auth lifecycle is provider-owned | Token verification is real locally and on AWS (local IdP + OIDC config), but session/refresh management and login UI belong to your provider. See [Auth](/docs/cloud/auth). |
 | Packaging is private | Packages are currently private workspace packages. There is no supported `npm install -g`, `pnpm dlx`, or `npx` path yet. From the `anvil-cloud` workspace, use `pnpm anvil ...` after `pnpm build`; inside examples, use `node ../../packages/cli/dist/index.js ...`. |
-| Generated client is early | The browser client and hook helpers exist, but framework integration is still being shaped. |
+| Generated client is early | React/Vite is the default UI path and hook helpers exist, but invalidation is manual, there is no cache policy layer, and the generated surface is query/mutation metadata rather than a full SDK. |
 | AWS preview is alpha, not production hosting | Preview provisioning exists for the checked-in smoke Cell, including deploy, public runtime checks, remote inspect/logs, and destroy. Plans include cleanup commands and cost drivers, but authenticated mutation/query checks require an OIDC-backed token setup, and production use still needs wider rollback, auth, and cost-hardening work. |
 | No hosted control plane | A local Lens UI (`/_anvil/lens`) and the `ControlPlaneApi` contract exist, but inspect and logs still depend on local state or AWS deployment metadata. A hosted plane would be a future adapter behind the same contract. See [Anvil Lens](/docs/cloud/lens). |
+| Workflows are local-first | Local workflows have durable run state, retries, timeouts, resume behavior, CLI commands, and Lens inspection. AWS has Step Functions synthesis and runtime bridge pieces, but preview deploy still rejects workflow-bearing Cells until remote run state, inspection, live-account verification, and cleanup are done. |
 | Services run locally only | The `service` primitive is supervised by the local runtime. There is no cloud execution path yet; an ECS/Fargate adapter is designed but not implemented. See [Services](/docs/cloud/services). |
 | Outbound fetch runs locally only | The builder accepts `capabilities.outboundFetch`, but AWS preview rejects it until outbound network policy can be enforced. |
 
@@ -71,9 +79,11 @@ Before preview deploy, inspect:
 - declared capabilities
 - generated client output
 - import policy diagnostics
+- typecheck diagnostics
 - deployment plan
 - CloudFormation template
 - artifact summary, including the Lambda bundle hash and content-addressed key
+- rollback, cleanup, and cost-driver hints in the deployment plan
 
 ## What to verify before trusting AWS preview
 
@@ -87,24 +97,27 @@ Before treating AWS preview as more than a local deploy experiment, verify:
 - DynamoDB table shape
 - S3 asset and file behavior
 - SQS and scheduled job behavior
+- EventBridge event and scheduled-job behavior
 - CloudWatch logs
 - deployment metadata table
 - remote `inspect` and `logs`
 - preview cleanup through `anvil destroy --preview --app <name> --yes`
-- rollback path
+- rollback path or the current manual fallback: redeploy a known-good checkout or destroy the preview stack
 
 ## Contribution priorities
 
 Useful next work includes:
 
-- widening `pnpm verify:aws-preview` to cover authenticated OIDC smoke checks
-- cloud execution paths for workflows and services
-- auth provider integration
+- documenting a complete OIDC setup flow for `ANVIL_AWS_SMOKE_TOKEN`
+- adding negative auth tests and cleanup assertions to `pnpm verify:aws-preview`
+- removing the workflow AWS preview gate after remote run-state persistence, remote CLI/Lens inspection, live account verification, and cleanup are proven
+- cloud execution paths for services
+- auth provider integration examples
 - richer Guard capability checks
-- generated client ergonomics
+- generated client ergonomics: loading/error examples, token handling, invalidation patterns, and typed examples around `examples/notes`
 - rollback commands beyond preview redeploy/destroy guidance
-- custom domain support
 - cost and usage reporting beyond preview plan cost drivers
 - clearer package publishing path
+- custom domain support
 
 Keep the contract small. The first version should be understandable, not omniscient.

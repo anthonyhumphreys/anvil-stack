@@ -9,52 +9,125 @@ order: 112
 
 # Examples
 
-The `anvil-cloud` repository includes an example Cell under `examples/notes`. It demonstrates a CRUD app with schema, queries, mutations, and local runtime.
+The `anvil-cloud` repository includes two examples that serve different jobs:
+
+| Example | Use it for |
+| --- | --- |
+| `examples/notes` | Canonical local-first demo: React/Vite UI, auth, database, query, mutation, endpoint, job, workflow, generated client, local Lens, and CLI JSON. |
+| `examples/aws-preview` | AWS-compatible smoke Cell for preview deploy, inspect, logs, auth rejection, and destroy. It avoids local-only workflow/service/outbound-fetch declarations. |
+
+Start with `examples/notes` when learning the Cell model. Use
+`examples/aws-preview` when validating AWS preview behavior.
 
 ## Notes example
 
 The notes Cell defines:
 
-- A `notes` table with `title`, `body`, and `ownerId`.
-- A `listNotes` query that returns notes owned by the current user.
-- An `addNote` mutation that creates a note.
+- a `notes` table with `title`, `body`, `archived`, and `ownerId`
+- a public `status` query
+- an authenticated `listNotes` query
+- authenticated `createNote` and `archiveNote` mutations
+- a public `/api/health` endpoint
+- a `summarizeNote` job
+- an `onboardUser` workflow
+- a React/Vite client that uses generated query/mutation metadata
 
 ```ts
-import { app, mutation, query, table, text, userId } from "@anvil-cloud/runtime";
+import {
+  app,
+  boolean,
+  endpoint,
+  job,
+  mutation,
+  query,
+  table,
+  text,
+  userId,
+  workflow,
+} from "@anvil-cloud/runtime";
 
 export default app({
   schema: {
     notes: table({
-      title: text().min(1).max(200),
-      body: text().min(1).max(5000),
-      ownerId: userId()
+      title: text().min(1).max(120),
+      body: text().max(2000).optional(),
+      archived: boolean().default(false),
+      ownerId: userId(),
     })
   },
   capabilities: {
-    database: true
+    database: true,
+    jobs: true,
+    workflows: true,
   },
   queries: {
+    status: query({
+      auth: "public",
+      handler: async () => ({ ok: true, cell: "notes" }),
+    }),
     listNotes: query({
+      auth: "required",
       handler: async (ctx) => {
         return ctx.db.notes
           .where("ownerId", "=", ctx.auth.requireUser())
           .all();
-      }
-    })
+      },
+    }),
   },
   mutations: {
-    addNote: mutation<{ title: string; body: string }>({
+    createNote: mutation<{ title: string; body?: string }>({
+      auth: "required",
       handler: async (ctx, input) => {
-        return ctx.db.notes.insert({
+        const note = await ctx.db.notes.insert({
           title: input.title,
-          body: input.body,
-          ownerId: ctx.auth.requireUser()
+          body: input.body ?? "",
+          archived: false,
+          ownerId: ctx.auth.requireUser(),
         });
-      }
-    })
-  }
+
+        await ctx.jobs.enqueue("summarizeNote", { noteId: note.id });
+        return note;
+      },
+    }),
+  },
+  endpoints: {
+    health: endpoint({
+      method: "GET",
+      path: "/api/health",
+      auth: "none",
+      handler: async () => ({ ok: true, cell: "notes" }),
+    }),
+  },
+  jobs: {
+    summarizeNote: job({
+      handler: async (ctx, payload) => {
+        await ctx.log.info("Summarize note job received", payload);
+        return { summarized: true };
+      },
+    }),
+  },
+  workflows: {
+    onboardUser: workflow({
+      steps: [
+        {
+          name: "seedWelcomeNote",
+          handler: async (ctx) => {
+            return ctx.db.notes.insert({
+              title: "Welcome to Anvil Notes",
+              body: "This note was created by a local workflow.",
+              archived: false,
+              ownerId: ctx.auth.requireUser(),
+            });
+          },
+        },
+      ],
+    }),
+  },
 });
 ```
+
+The full source lives in `examples/notes/src/cell.server.ts`. The client source
+is in `examples/notes/src/client`.
 
 ## Common patterns
 
@@ -104,7 +177,7 @@ Logs are written to `.anvil/local/logs.ndjson` locally and CloudWatch in AWS pre
 
 ```ts
 capabilities: {
-  files: true
+  files: { publicRead: false }
 }
 
 // in a mutation or endpoint
@@ -117,7 +190,7 @@ const file = await ctx.files.get("uploads/avatar.png");
 ```ts
 capabilities: {
   outboundFetch: {
-    allowedHosts: ["api.stripe.com"]
+    allow: ["api.stripe.com"]
   }
 }
 
@@ -130,19 +203,50 @@ const res = await fetch("https://api.stripe.com/v1/customers");
 ```bash
 cd anvil-cloud/examples/notes
 node ../../packages/cli/dist/index.js check --json
-node ../../packages/cli/dist/index.js dev
+node ../../packages/cli/dist/index.js dev --port 8787 --client-port 5173
 ```
 
-Then:
+Create a local user and token:
 
 ```bash
-curl -X POST http://localhost:8787/_anvil/mutation/addNote \
+node ../../packages/cli/dist/index.js auth add-user local_demo \
+  --email demo@example.test \
+  --roles admin \
+  --json
+
+TOKEN=$(node ../../packages/cli/dist/index.js auth token local_demo --json | jq -r .token)
+```
+
+Call the runtime directly:
+
+```bash
+curl -X POST http://localhost:8787/_anvil/mutation/createNote \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"title":"Hello","body":"World"}'
+  -d '{"input":{"title":"Hello","body":"World"}}'
 
 curl -X POST http://localhost:8787/_anvil/query/listNotes \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{}'
+  -d '{"input":{}}'
+```
+
+Or run the repeatable smoke verifier:
+
+```bash
+cd anvil-cloud
+pnpm verify:notes-local
+```
+
+## Inspecting the example
+
+While `anvil dev` is running:
+
+```bash
+node ../../packages/cli/dist/index.js lens --json
+node ../../packages/cli/dist/index.js inspect --local --json
+node ../../packages/cli/dist/index.js logs --local --json
+node ../../packages/cli/dist/index.js db dump notes --local --json
 ```
 
 ## Read next

@@ -9,7 +9,8 @@ order: 100
 
 # Anvil Cloud
 
-Anvil Cloud is the product in `anvil-cloud`: a local-first TypeScript platform for small app units called Anvil Cells.
+Anvil Cloud is the project in `anvil-cloud`: a local-first TypeScript platform
+for small app units called Anvil Cells.
 
 A Cell declares app behavior, data shape, and required capabilities. Anvil runs it locally through the same request boundary used by deployment adapters, then emits manifests, generated client metadata, and deploy artifacts that can be inspected before anything reaches a provider.
 
@@ -26,7 +27,7 @@ The goal is not to make AWS easier to spray around. The goal is to give develope
 | `@anvil-cloud/auth` | Provider-neutral token verification: OIDC discovery/JWKS verification plus a local identity provider that signs real JWTs. |
 | `@anvil-cloud/cli` | `anvil new`, `dev`, `check`, `build`, `inspect`, `logs`, `db`, `auth`, `workflows`, `services`, `lens`, and `deploy --preview`. |
 | `@anvil-cloud/control-plane` | The `ControlPlaneApi` contract behind Anvil Lens, implemented over the local runtime routes today and swappable for a hosted plane later. |
-| `@anvil-cloud/aws` | AWS preview adapter, CloudFormation synthesis, Lambda runtime bridge, AWS-backed host adapters, artifact packaging, provisioning, remote inspect, and remote logs. |
+| `@anvil-cloud/aws` | AWS preview adapter, CloudFormation synthesis, Lambda runtime bridge, AWS-backed host adapters, artifact packaging, provisioning, remote inspect, remote logs, and preview cleanup. |
 
 ## Core terms
 
@@ -36,7 +37,7 @@ The goal is not to make AWS easier to spray around. The goal is to give develope
 - **Anvil Builder**: compiler and bundler that emits server bundle, client bundle, manifest, generated client output, and build metadata.
 - **Anvil Local**: local runtime server and state adapters.
 - **Anvil Guard**: import policy, capability checks, and safety validation.
-- **Anvil Lens**: inspection surface for manifest, runtime status, local auth, logs, database state, and diagnostics.
+- **Anvil Lens**: inspection surface for manifest, runtime status, local auth, logs, database state, workflows, services, and diagnostics.
 
 ## What works now
 
@@ -55,16 +56,19 @@ The alpha implementation includes:
 - typecheck, bundle, manifest extraction, generated client output, and build metadata
 - CLI commands with JSON output for automation, including `anvil auth token` for agent-friendly authenticated sessions
 - AWS preview plan and CloudFormation synthesis
-- AWS-backed runtime host adapters for DynamoDB, S3, SQS, EventBridge events and scheduled jobs, Lambda env, OIDC token verification, and structured logs
+- AWS-backed runtime host adapters for DynamoDB, S3, SQS, EventBridge events and scheduled jobs, Lambda env, OIDC token verification, workflow Step Functions starts when configured, and structured logs
 - optional AWS provisioning when required environment variables are configured
 - remote inspect and logs through deployment metadata and CloudWatch Logs
+- preview destroy that empties stack-owned buckets and removes deployment metadata when configured
 
 ## Alpha boundaries
 
 Current alpha limits include:
 
 - AWS is the first adapter, not the application contract.
-- Workflows and services execute locally today; the Step Functions and ECS/Fargate mappings are designed but not implemented.
+- Workflows execute end-to-end locally. AWS has Step Functions synthesis and runtime bridge pieces, but preview deploy still rejects workflow-bearing Cells until remote run state, inspection, live-account verification, and cleanup are proven.
+- Services execute locally today; the ECS/Fargate mapping is designed but not implemented.
+- Outbound fetch policy is checked by Guard, but AWS preview rejects outbound-fetch Cells until provider network policy enforcement exists.
 - Production use needs wider operational validation beyond the preview verifier.
 - Auth token verification is real locally and on AWS, but session/refresh lifecycle and login UI belong to your provider.
 - Anvil Lens is local-first; there is no hosted control plane, marketplace, or multi-region deployment.
