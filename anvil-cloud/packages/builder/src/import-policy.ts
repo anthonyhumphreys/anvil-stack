@@ -595,11 +595,21 @@ function inspectCapabilityUse(
 }
 
 function isProcessEnvAccess(node: ts.Node): boolean {
-  return (
+  if (
     ts.isPropertyAccessExpression(node) &&
     node.name.text === "env" &&
     ts.isIdentifier(node.expression) &&
     node.expression.text === "process"
+  ) {
+    return true;
+  }
+
+  return (
+    ts.isElementAccessExpression(node) &&
+    ts.isIdentifier(node.expression) &&
+    node.expression.text === "process" &&
+    ts.isStringLiteral(node.argumentExpression) &&
+    node.argumentExpression.text === "env"
   );
 }
 
