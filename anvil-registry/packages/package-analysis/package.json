@@ -19,6 +19,6 @@
   },
   "devDependencies": {
     "@types/semver": "^7.7.0",
-    "vitest": "^3.2.6"
+    "vitest": "^4.1.9"
   }
 }

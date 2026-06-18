@@ -13,7 +13,7 @@
   "dependencies": {
     "@anvil-cloud/runtime": "workspace:*",
     "esbuild": "^0.28.1",
-    "vite": "^6.4.3"
+    "vite": "^8.0.16"
   },
   "devDependencies": {}
 }
