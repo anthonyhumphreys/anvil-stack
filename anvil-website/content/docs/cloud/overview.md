@@ -20,14 +20,14 @@ The goal is not to make AWS easier to spray around. The goal is to give develope
 
 | Package | Role |
 | --- | --- |
-| `@anvil-cloud/runtime` | Cell DSL, `RuntimeRequest`, `RuntimeResponse`, `RuntimeHost`, `RuntimeContext`, and `handleRuntimeRequest`. |
+| `@anvil-cloud/runtime` | Cell DSL, Agent definitions, provider-neutral agent runtime contracts, `RuntimeRequest`, `RuntimeResponse`, `RuntimeHost`, `RuntimeContext`, and `handleRuntimeRequest`. |
 | `@anvil-cloud/builder` | Config loading, import policy, typecheck, server/client bundle, manifest extraction, build metadata, and generated client files. |
 | `@anvil-cloud/local` | Local runtime server, JSON database adapter, local files, auth, logs, events, jobs, and inspection state. |
 | `@anvil-cloud/client` | Browser client and framework hook helpers for generated query and mutation metadata. |
 | `@anvil-cloud/auth` | Provider-neutral token verification: OIDC discovery/JWKS verification plus a local identity provider that signs real JWTs. |
-| `@anvil-cloud/cli` | `anvil new`, `dev`, `check`, `build`, `inspect`, `logs`, `db`, `auth`, `workflows`, `services`, `lens`, and `deploy --preview`. |
+| `@anvil-cloud/cli` | `anvil new`, `dev`, `check`, `build`, `agents`, `inspect`, `logs`, `db`, `auth`, `workflows`, `services`, `lens`, and `deploy --preview`. |
 | `@anvil-cloud/control-plane` | The `ControlPlaneApi` contract behind Anvil Lens, implemented over the local runtime routes today and swappable for a hosted plane later. |
-| `@anvil-cloud/aws` | AWS preview adapter, CloudFormation synthesis, Lambda runtime bridge, AWS-backed host adapters, artifact packaging, provisioning, remote inspect, remote logs, and preview cleanup. |
+| `@anvil-cloud/aws` | AWS preview adapter, CloudFormation synthesis, Lambda runtime bridge, AWS-backed host adapters, Bedrock inference provider, agent compatibility checks, artifact packaging, provisioning, remote inspect, remote logs, and preview cleanup. |
 
 ## Core terms
 
@@ -38,23 +38,25 @@ The goal is not to make AWS easier to spray around. The goal is to give develope
 - **Anvil Local**: local runtime server and state adapters.
 - **Anvil Guard**: import policy, capability checks, and safety validation.
 - **Anvil Lens**: inspection surface for manifest, runtime status, local auth, logs, database state, workflows, services, and diagnostics.
+- **Anvil Agent**: a portable, inspectable runtime unit with explicit capabilities, approval-gated actions, model configuration, and a provider-neutral manifest.
 
 ## What works now
 
 The alpha implementation includes:
 
 - object-based Cell DSL for `app`, `query`, `mutation`, `endpoint`, `job`, `workflow`, `service`, `table`, and field builders
+- contract-first [Anvil Agents](/docs/cloud/agents): `defineAgent`, provider-neutral agent manifests, mounted Cell Agents, local stub inference, provider registry, approval gates, tool capability checks, and AWS Bedrock provider support
 - shared runtime request handling for query, mutation, endpoint, job, and workflow triggers
 - [real authentication](/docs/cloud/auth): declarative per-handler access control enforced by the runtime, a local identity provider signing real JWTs, and OIDC verification for any compliant provider via configuration
 - [durable workflows](/docs/cloud/workflows): ordered typed steps with retries and timeouts, state persisted per transition, resumable after interruption
 - [supervised services](/docs/cloud/services): long-running handlers with restart policies and clean shutdown
 - [Anvil Lens](/docs/cloud/lens): a local management UI over manifest, logs, database, auth users, workflow runs, and services
 - in-memory and local runtime host adapters
-- local HTTP runtime routes for queries, mutations, endpoints, auth, workflows, services, health, manifest, and inspection
+- local HTTP runtime routes for queries, mutations, endpoints, mounted agents, auth, workflows, services, health, manifest, and inspection
 - local JSON database, files, events, jobs, and NDJSON logs
 - builder checks for config, forbidden imports, direct `process.env`, undeclared fetch, scheduled jobs, and capability use (database, files, outboundFetch, events, workflows, services)
 - typecheck, bundle, manifest extraction, generated client output, and build metadata
-- CLI commands with JSON output for automation, including `anvil auth token` for agent-friendly authenticated sessions
+- CLI commands with JSON output for automation, including `anvil agents validate`, `anvil agents manifest`, `anvil agents invoke`, and `anvil auth token` for agent-friendly authenticated sessions
 - AWS preview plan and CloudFormation synthesis
 - AWS-backed runtime host adapters for DynamoDB, S3, SQS, EventBridge events and scheduled jobs, Lambda env, OIDC token verification, workflow Step Functions starts when configured, and structured logs
 - optional AWS provisioning when required environment variables are configured
@@ -70,6 +72,7 @@ Current alpha limits include:
 - Services execute locally today; the ECS/Fargate mapping is designed but not implemented.
 - Outbound fetch policy is checked by Guard, but AWS preview rejects outbound-fetch Cells until provider network policy enforcement exists.
 - Production use needs wider operational validation beyond the preview verifier.
+- Agents are a contract/runtime foundation, not a hosted agent platform. Project-agent discovery, production approval UI, durable multi-step orchestration, hosted memory, and sandbox execution are future work.
 - Auth token verification is real locally and on AWS, but session/refresh lifecycle and login UI belong to your provider.
 - Anvil Lens is local-first; there is no hosted control plane, marketplace, or multi-region deployment.
 - No arbitrary provider-resource authoring or raw container/Kubernetes definitions in Cell code.
@@ -80,6 +83,7 @@ Current alpha limits include:
 - [Quickstart](/docs/cloud/quickstart)
 - [Cell contract](/docs/cloud/cell-contract)
 - [Auth](/docs/cloud/auth)
+- [Anvil Agents](/docs/cloud/agents)
 - [Workflows](/docs/cloud/workflows)
 - [Services](/docs/cloud/services)
 - [Runtime model](/docs/cloud/architecture)

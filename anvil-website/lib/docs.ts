@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import matter from "gray-matter";
+import { load as loadYaml } from "js-yaml";
 import { marked } from "marked";
 
 const docsDirectory = path.join(process.cwd(), "content", "docs");
@@ -33,6 +33,30 @@ marked.use({
   breaks: false
 });
 
+type FrontmatterData = Record<string, unknown>;
+
+function parseFrontmatter(source: string): { content: string; data: FrontmatterData } {
+  if (!source.startsWith("---\n")) {
+    return { content: source, data: {} };
+  }
+
+  const endIndex = source.indexOf("\n---", 4);
+  if (endIndex === -1) {
+    return { content: source, data: {} };
+  }
+
+  const frontmatter = source.slice(4, endIndex);
+  const contentStart =
+    source[endIndex + 4] === "\r" && source[endIndex + 5] === "\n"
+      ? endIndex + 6
+      : endIndex + 5;
+  const data = loadYaml(frontmatter);
+  return {
+    content: source.slice(contentStart),
+    data: data && typeof data === "object" && !Array.isArray(data) ? (data as FrontmatterData) : {}
+  };
+}
+
 async function getMarkdownFiles(directory: string): Promise<string[]> {
   const entries = await fs.readdir(directory, { withFileTypes: true });
   const files = await Promise.all(
@@ -49,7 +73,7 @@ function slugFromPath(filePath: string) {
   return path.relative(docsDirectory, filePath).replace(/\.md$/, "").split(path.sep).join("/");
 }
 
-function readMeta(slug: string, data: matter.GrayMatterFile<string>["data"]): DocMeta & { slug: string; segments: string[] } {
+function readMeta(slug: string, data: FrontmatterData): DocMeta & { slug: string; segments: string[] } {
   const segments = slug.split("/");
   const title = String(data.title ?? segments.at(-1) ?? slug);
   return {
@@ -70,7 +94,7 @@ export async function getDocs(): Promise<Array<DocMeta & { slug: string; segment
     files.map(async (filePath) => {
       const slug = slugFromPath(filePath);
       const source = await fs.readFile(filePath, "utf8");
-      const { data } = matter(source);
+      const { data } = parseFrontmatter(source);
       return readMeta(slug, data);
     })
   );
@@ -97,7 +121,7 @@ export async function getDocs(): Promise<Array<DocMeta & { slug: string; segment
 export async function getDoc(slug: string): Promise<DocPage | undefined> {
   try {
     const source = await fs.readFile(path.join(docsDirectory, `${slug}.md`), "utf8");
-    const { content, data } = matter(source);
+    const { content, data } = parseFrontmatter(source);
     return {
       ...readMeta(slug, data),
       contentHtml: await marked.parse(content)

@@ -26,6 +26,9 @@ can be friendly, but automation output must be stable.
 | `anvil dev` | Build and start the local runtime and client server. |
 | `anvil check` | Validate config, import policy, capabilities, and TypeScript without writing build output. |
 | `anvil build` | Build server and client artifacts, manifest, generated client, generated types, and metadata. |
+| `anvil agents validate` | Validate mounted agents and compile their contracts without calling a model provider. |
+| `anvil agents manifest` | Emit provider-neutral agent manifests from the current Cell build. |
+| `anvil agents invoke <name>` | Invoke a mounted agent locally through the registered provider (`--input <text>`). |
 | `anvil inspect --local` | Inspect local manifest, auth, database counts, and recent errors. |
 | `anvil lens` | Verify the local runtime is reachable and print the Anvil Lens URL. |
 | `anvil logs --local` | Read local NDJSON logs. |
@@ -146,6 +149,37 @@ Failure shape:
 
 `errors` is kept as a compatibility alias for older automation; new agent flows
 should read `diagnostics`.
+
+## `anvil agents`
+
+Agent commands build the current Cell and use the same manifest extraction path
+as `anvil build`.
+
+Contract validation:
+
+```bash
+anvil agents validate --json
+```
+
+Manifest output:
+
+```bash
+anvil agents manifest --json
+```
+
+Local invocation:
+
+```bash
+anvil agents invoke support --input "Review this Cell" --json
+```
+
+`validate` and `manifest` do not call a model provider. `invoke` resolves the
+agent model provider through the runtime provider registry. The local stub
+provider is deterministic and does not make external calls. Provider mode can
+use a registered provider such as `aws-bedrock` while still enforcing the Anvil
+agent contract locally.
+
+See [Anvil Agents](/docs/cloud/agents).
 
 ## `anvil build`
 

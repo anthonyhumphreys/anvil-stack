@@ -19,6 +19,11 @@ The `anvil-cloud` repository includes two examples that serve different jobs:
 Start with `examples/notes` when learning the Cell model. Use
 `examples/aws-preview` when validating AWS preview behavior.
 
+The Cloud repository also includes agent contract examples under
+`docs/examples/agents`: a local Project Agent, a local Agent Cell, an AWS
+Bedrock Agent Cell, and provider registration. These are contract examples, not
+separate runnable workspaces.
+
 ## Notes example
 
 The notes Cell defines:
@@ -130,6 +135,47 @@ The full source lives in `examples/notes/src/cell.server.ts`. The client source
 is in `examples/notes/src/client`.
 
 ## Common patterns
+
+### Mounting a Cell Agent
+
+```ts
+import { app, defineAgent, endpoint } from "@anvil-cloud/runtime";
+
+const support = defineAgent({
+  name: "support",
+  instructions: "./agents/support/instructions.md",
+  model: { provider: "local", model: "stub" },
+  capabilities: {
+    cells: ["read"],
+    filesystem: "none",
+    secrets: "none",
+  },
+  approvals: {
+    requiredFor: ["email.sendExternal"],
+  },
+});
+
+export default app({
+  agents: { support },
+  endpoints: {
+    chat: endpoint({
+      method: "POST",
+      path: "/api/chat",
+      auth: "required",
+      agent: "support",
+      handler: async () => ({ ok: true }),
+    }),
+  },
+});
+```
+
+Validate and invoke it locally:
+
+```bash
+anvil agents validate --json
+anvil agents manifest --json
+anvil agents invoke support --input "Review this Cell" --json
+```
 
 ### Filtering with where clauses
 
