@@ -29,3 +29,18 @@ Remaining responsibilities:
 - harden preview deployment for production use.
 
 See `docs/architecture/aws-adapter.md` for the implementation design.
+
+## AWS Pulumi deployment adapter
+
+The AWS cloud adapter consumes Anvil's provider-neutral Cell graph and realises it on AWS. Pulumi is used internally by this adapter layer only; Cell authors continue to declare Anvil capabilities rather than Pulumi or AWS resources.
+
+Supported vertical slice:
+
+- HTTP routes are mapped to an AWS HTTP entrypoint.
+- Runtime handlers are mapped to Lambda functions.
+- Tables are mapped to DynamoDB.
+- Secrets are mapped to SSM Parameter Store references.
+- Function access to tables and secrets is mapped to generated IAM policies.
+- Resource names use deterministic app/stage prefixes.
+
+Use `anvil plan --stage dev --adapter aws` for Anvil-first preview output. Add `--verbose` only when you need to inspect underlying Pulumi resource mappings.

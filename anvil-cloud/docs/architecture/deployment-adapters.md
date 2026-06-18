@@ -1,86 +1,39 @@
-# Deployment Adapter Architecture
+# Deployment adapters
 
-## Purpose
+Anvil defines app capabilities. Deployment adapters realise those capabilities on a target platform. The AWS adapter currently uses Pulumi internally for planning and deployment, but Pulumi is not part of the Cell authoring contract.
 
-Deployment adapters map the provider-neutral Anvil Cell contract to a concrete hosting environment.
+## Layers
 
-The core runtime, builder, manifest, client SDK, and CLI must not depend on a specific cloud provider. They should describe capabilities such as compute, database, files, logs, environment values, HTTP ingress, and jobs. Adapters translate those capabilities into provider resources.
+1. **Authoring layer**: Anvil Cells declare routes, handlers, tables, secrets, jobs, policies, workflows, and other application intent. Normal Cell definitions import Anvil packages only; they do not import Pulumi, AWS SDKs, Terraform, CDK, Kubernetes, or raw infrastructure resources.
+2. **Cell graph layer**: Anvil Builder compiles a Cell manifest into a provider-neutral `AnvilCellGraph`. The graph is stable, serialisable, inspectable, and contains Anvil concepts such as HTTP routes, functions, tables, secrets, and permissions.
+3. **Adapter layer**: deployment adapters consume the graph through an `AnvilDeployAdapter`-style contract with `plan`, `deploy`, and `remove` operations. Local runtime code stays Pulumi-free. Cloud adapters may choose an engine internally.
+4. **Engine layer**: the AWS adapter currently uses Pulumi as its realisation engine. Pulumi resource mappings are implementation details and are only shown by explicit verbose/debug output.
 
-AWS is the first planned deployment adapter for alpha. That should prove the adapter contract, not turn AWS into the Cell authoring model.
+## Current vertical slice
 
-## Goals
+The AWS adapter maps the provider-neutral graph as follows:
 
-- Keep Cell code portable across local and deployed runtimes.
-- Define a stable adapter boundary for deployment planning, provisioning, runtime hosting, logs, and inspection.
-- Keep provider-specific resource names and deployment mechanics out of core specs.
-- Let `anvil deploy --preview --json` return stable JSON regardless of adapter.
-- Allow future adapters without changing Cell handler code.
+- HTTP route → API Gateway HTTP entrypoint.
+- Function/runtime handler → Lambda.
+- Table/storage → DynamoDB.
+- Secret → SSM Parameter Store parameter.
+- Logs → CloudWatch.
+- Permissions → generated IAM role policies.
+- Stage naming → deterministic `<app>-<stage>` resource prefixes.
+- Outputs → Anvil-level endpoint, function names, table names, and secret references.
+
+The CLI shape is app-first:
+
+```sh
+anvil dev
+anvil inspect
+anvil plan --stage dev --adapter aws
+anvil deploy --stage dev --adapter aws
+anvil remove --stage dev --adapter aws
+```
+
+Human-readable plan output lists Anvil concepts first, for example cells, HTTP routes, functions, tables, secrets, and permissions. Use `--verbose` or `--debug` to include underlying Pulumi resource mappings while diagnosing adapter behaviour.
 
 ## Non-goals
 
-- Implementing more than one production cloud adapter during alpha.
-- Abstracting every cloud provider feature.
-- Supporting arbitrary containers, Kubernetes, or enterprise networking during alpha.
-- Hiding meaningful provider differences behind vague names.
-
-## Adapter contract
-
-A deployment adapter should provide:
-
-- a runtime host implementation;
-- trigger translation into `RuntimeRequest`;
-- `RuntimeResponse` translation back to the provider;
-- deployment plan generation;
-- artefact upload;
-- capability-to-resource mapping;
-- logs and inspection readers;
-- policy inputs for Anvil Guard.
-
-## Provider-neutral capability mapping
-
-Core Anvil concept names should stay provider-neutral:
-
-| Anvil concept      | Adapter responsibility                         |
-| ------------------ | ---------------------------------------------- |
-| Cell runtime       | Execute server handlers                        |
-| Query/mutation API | Expose runtime RPC routes                      |
-| Custom endpoints   | Expose declared HTTP routes                    |
-| Client bundle      | Serve static client assets                     |
-| Database           | Store Cell table data                          |
-| Files              | Store Cell-owned objects                       |
-| Environment        | Provide config and secrets                     |
-| Logs               | Store structured runtime logs                  |
-| Scheduled jobs     | Invoke named jobs on schedules                 |
-| Queued jobs        | Persist and invoke queued work                 |
-| Deploy metadata    | Store deployment state and manifest references |
-| Audit events       | Store deploy and policy events                 |
-
-## Deployment plan shape
-
-Adapters should emit a provider-neutral deployment plan before provisioning:
-
-```json
-{
-  "schemaVersion": "0.1",
-  "adapter": "aws",
-  "environment": "preview",
-  "cell": "notes",
-  "changes": [
-    {
-      "kind": "create",
-      "concept": "database",
-      "name": "notes"
-    }
-  ],
-  "warnings": []
-}
-```
-
-Provider resource identifiers belong in adapter-specific detail fields or deployment results, not in the core manifest.
-
-## Implementation order
-
-1. Prove the local runtime and builder.
-2. Define the deployment adapter contract.
-3. Implement the AWS preview adapter against that contract.
-4. Add further adapters only after alpha validates the contract.
+Anvil is not a Pulumi authoring surface. Users should not write Pulumi components for Cells, and generated manifests should not require Pulumi concepts. Future adapters may use Terraform/OpenTofu, CDK, Kubernetes, direct provider APIs, or another engine without changing Cell authoring.

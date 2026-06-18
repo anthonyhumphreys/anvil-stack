@@ -15,3 +15,5 @@ export {
   type ImportPolicyOptions,
 } from "./import-policy.js";
 export { createCellManifest, type CellManifest } from "./manifest.js";
+
+export { createAnvilCellGraph, validateAnvilCellGraph, type AnvilCellGraph, type GraphValidationDiagnostic } from "./graph.js";
