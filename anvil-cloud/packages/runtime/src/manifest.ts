@@ -1,4 +1,5 @@
 import type { AppDefinition, FieldDefinition } from "./app.js";
+import { createAgentManifest, type AgentManifest } from "./agent.js";
 import {
   normaliseAuthRequirement,
   type AuthPolicyInspection,
@@ -9,6 +10,7 @@ export type EndpointInspection = {
   method: string;
   path: string;
   auth: AuthPolicyInspection;
+  agent?: string;
 };
 
 export type JobInspection = {
@@ -19,6 +21,8 @@ export type JobInspection = {
 export type WorkflowInspection = {
   name: string;
   steps: string[];
+  agent?: string;
+  trigger?: string;
 };
 
 export type ServiceInspection = {
@@ -49,6 +53,7 @@ export type AppInspection = {
   jobs: JobInspection[];
   workflows: WorkflowInspection[];
   services: ServiceInspection[];
+  agents: Record<string, AgentManifest>;
   authPolicies: {
     queries: Record<string, AuthPolicyInspection>;
     mutations: Record<string, AuthPolicyInspection>;
@@ -67,14 +72,20 @@ export function inspectAppDefinition(app: AppDefinition): AppInspection {
     capabilities: app.capabilities ?? {},
     queries: Object.keys(app.queries ?? {}),
     mutations: Object.keys(app.mutations ?? {}),
-    endpoints: Object.entries(app.endpoints ?? {}).map(
-      ([name, definition]) => ({
+    endpoints: Object.entries(app.endpoints ?? {}).map(([name, definition]) => {
+      const inspected: EndpointInspection = {
         name,
         method: definition.method,
         path: definition.path,
         auth: normaliseAuthRequirement(definition.auth, "required"),
-      }),
-    ),
+      };
+
+      if (definition.agent !== undefined) {
+        inspected.agent = definition.agent;
+      }
+
+      return inspected;
+    }),
     authPolicies: {
       queries: Object.fromEntries(
         Object.entries(app.queries ?? {}).map(([name, definition]) => [
@@ -98,17 +109,33 @@ export function inspectAppDefinition(app: AppDefinition): AppInspection {
 
       return inspected;
     }),
-    workflows: Object.entries(app.workflows ?? {}).map(
-      ([name, definition]) => ({
+    workflows: Object.entries(app.workflows ?? {}).map(([name, definition]) => {
+      const inspected: WorkflowInspection = {
         name,
         steps: definition.steps.map((step) => step.name),
-      }),
-    ),
+      };
+
+      if (definition.agent !== undefined) {
+        inspected.agent = definition.agent;
+      }
+
+      if (definition.trigger !== undefined) {
+        inspected.trigger = definition.trigger;
+      }
+
+      return inspected;
+    }),
     services: Object.entries(app.services ?? {}).map(([name, definition]) => ({
       name,
       restart: definition.restart ?? "on-failure",
       maxRestarts: definition.maxRestarts ?? 5,
     })),
+    agents: Object.fromEntries(
+      Object.entries(app.agents ?? {}).map(([mount, agent]) => [
+        mount,
+        createAgentManifest(agent, "cell"),
+      ]),
+    ),
   };
 }
 

@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import os from "node:os";
 import path from "node:path";
 
@@ -138,6 +139,73 @@ describe("main", () => {
     } finally {
       process.chdir(originalCwd);
       process.exitCode = originalExitCode;
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("validates, emits, and invokes mounted agents", async () => {
+    const rootDir = await createAgentCell();
+    const originalCwd = process.cwd();
+
+    try {
+      process.chdir(rootDir);
+
+      const validateOutput = await captureStdout(() =>
+        main(["agents", "validate", "--json"]),
+      );
+      const validatePayload = JSON.parse(validateOutput) as Record<
+        string,
+        unknown
+      >;
+
+      expect(validatePayload).toMatchObject({
+        ok: true,
+        agents: ["support"],
+        providers: ["local"],
+      });
+
+      const manifestOutput = await captureStdout(() =>
+        main(["agents", "manifest", "--json"]),
+      );
+      const manifestPayload = JSON.parse(manifestOutput) as Record<
+        string,
+        unknown
+      >;
+
+      expect(manifestPayload).toMatchObject({
+        ok: true,
+        agents: {
+          support: {
+            kind: "anvil.agent",
+            name: "support",
+          },
+        },
+      });
+
+      const invokeOutput = await captureStdout(() =>
+        main([
+          "agents",
+          "invoke",
+          "support",
+          "--input",
+          "Review this Cell",
+          "--json",
+        ]),
+      );
+      const invokePayload = JSON.parse(invokeOutput) as Record<string, unknown>;
+
+      expect(invokePayload).toMatchObject({
+        ok: true,
+        result: {
+          agentName: "support",
+          response: {
+            role: "assistant",
+            content: "Local stub response from Anvil Agent: Review this Cell",
+          },
+        },
+      });
+    } finally {
+      process.chdir(originalCwd);
       await rm(rootDir, { recursive: true, force: true });
     }
   });
@@ -597,6 +665,110 @@ function restoreEnv(name: string, value: string | undefined): void {
   } else {
     process.env[name] = value;
   }
+}
+
+async function createAgentCell(): Promise<string> {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-agent-"));
+  const repoRoot = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "../../..",
+  );
+
+  await mkdir(path.join(rootDir, "src"), { recursive: true });
+  await mkdir(path.join(rootDir, ".anvil/generated"), { recursive: true });
+  await writeFile(
+    path.join(rootDir, "anvil.json"),
+    JSON.stringify(
+      {
+        name: "agent-cell",
+        runtime: "nodejs20",
+        entrypoints: {
+          server: "src/cell.server.ts",
+          client: "src/cell.client.tsx",
+        },
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+  await writeFile(
+    path.join(rootDir, "tsconfig.json"),
+    JSON.stringify(
+      {
+        compilerOptions: {
+          target: "ES2022",
+          module: "NodeNext",
+          moduleResolution: "NodeNext",
+          strict: true,
+          jsx: "react-jsx",
+          baseUrl: ".",
+          paths: {
+            "@anvil-cloud/runtime": [
+              toPosixPath(path.join(repoRoot, "packages/runtime/src/index.ts")),
+            ],
+            "@anvil-cloud/client": [
+              toPosixPath(path.join(repoRoot, "packages/client/src/index.ts")),
+            ],
+            "@anvil/generated/client": [".anvil/generated/client.ts"],
+          },
+        },
+        include: ["src/**/*.ts", "src/**/*.tsx", ".anvil/generated/**/*.ts"],
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+  await writeFile(
+    path.join(rootDir, "src/cell.server.ts"),
+    [
+      'import { app, defineAgent, endpoint } from "@anvil-cloud/runtime";',
+      "",
+      "export default app({",
+      "  agents: {",
+      "    support: defineAgent({",
+      "      name: 'support',",
+      "      instructions: 'Stay inside declared support capabilities.',",
+      "      model: { provider: 'local', model: 'stub' },",
+      "      capabilities: { cells: ['read'], filesystem: 'none', secrets: 'none' },",
+      "    }),",
+      "  },",
+      "  endpoints: {",
+      "    chat: endpoint({",
+      "      method: 'POST',",
+      "      path: '/api/chat',",
+      "      auth: 'public',",
+      "      agent: 'support',",
+      "      handler: async () => ({ ok: true }),",
+      "    }),",
+      "  },",
+      "});",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  await writeFile(
+    path.join(rootDir, "src/cell.client.tsx"),
+    "document.body.textContent = 'agent cell';\n",
+    "utf8",
+  );
+  await writeFile(
+    path.join(rootDir, ".anvil/generated/client.ts"),
+    [
+      'import type { GeneratedAnvilApi } from "@anvil-cloud/client";',
+      "",
+      "export const api = { queries: {}, mutations: {} } as GeneratedAnvilApi;",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+
+  return rootDir;
+}
+
+function toPosixPath(value: string): string {
+  return value.split(path.sep).join("/");
 }
 
 async function captureStdout(run: () => Promise<void>): Promise<string> {

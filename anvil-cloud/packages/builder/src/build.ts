@@ -20,6 +20,7 @@ import { checkImportPolicy } from "./import-policy.js";
 import {
   createCellManifest,
   isAppDefinition,
+  validateCellAgents,
   type CellManifest,
 } from "./manifest.js";
 import { typecheckCell } from "./typecheck.js";
@@ -163,9 +164,31 @@ async function extractManifest(
       };
     }
 
+    const agentIssues = await validateCellAgents({
+      app: imported.default,
+      rootDir: config.rootDir,
+    });
+    const diagnostics: BuilderDiagnostic[] = agentIssues.map((issue) => {
+      const diagnostic: BuilderDiagnostic = {
+        code: issue.code,
+        severity: issue.severity,
+        message: issue.message,
+      };
+
+      if (issue.path !== undefined) {
+        diagnostic.file = issue.path;
+      }
+
+      return diagnostic;
+    });
+
+    if (diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
+      return { diagnostics };
+    }
+
     return {
       manifest: createCellManifest(imported.default, config.config, target),
-      diagnostics: [],
+      diagnostics,
     };
   } catch (error) {
     return {

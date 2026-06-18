@@ -301,6 +301,7 @@ describe("inspectAppDefinition", () => {
       ],
       workflows: [],
       services: [],
+      agents: {},
     });
     expect(handlerExecutions).toBe(0);
   });

@@ -4,7 +4,14 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { app, mutation, query, table, text } from "@anvil-cloud/runtime";
+import {
+  app,
+  defineAgent,
+  mutation,
+  query,
+  table,
+  text,
+} from "@anvil-cloud/runtime";
 
 import { startLocalRuntimeServer } from "../src/index.js";
 
@@ -204,6 +211,76 @@ describe("startLocalRuntimeServer", () => {
         ok: true,
         result: {
           ok: true,
+        },
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("runs mounted agents through the local stub provider", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-local-"));
+    const clientDistDir = path.join(rootDir, ".anvil/dist/client");
+    tempDirs.push(rootDir);
+    await mkdir(clientDistDir, { recursive: true });
+    await writeFile(
+      path.join(clientDistDir, "index.html"),
+      "<!doctype html><h1>Anvil Cell</h1>",
+      "utf8",
+    );
+    await writeFile(
+      path.join(rootDir, "instructions.md"),
+      "Stay inside the support Cell contract.",
+      "utf8",
+    );
+
+    const cell = app({
+      agents: {
+        support: defineAgent({
+          name: "support",
+          instructions: "./instructions.md",
+          model: { provider: "local", model: "stub" },
+          capabilities: {
+            cells: ["read"],
+            filesystem: "none",
+            secrets: "none",
+          },
+        }),
+      },
+    });
+    const server = await startLocalRuntimeServer({
+      app: cell,
+      manifest: {
+        agents: {
+          support: { kind: "anvil.agent", name: "support" },
+        },
+      },
+      rootDir,
+      cellName: "support",
+      port: 0,
+      clientPort: 0,
+    });
+
+    try {
+      await expect(
+        fetchJson(`${server.runtimeUrl}/_anvil/agents`),
+      ).resolves.toMatchObject({
+        ok: true,
+        agents: ["support"],
+        providers: ["local"],
+      });
+      await expect(
+        postJson(`${server.runtimeUrl}/_anvil/agents/support`, {
+          input: "Triage ticket A-123",
+        }),
+      ).resolves.toMatchObject({
+        ok: true,
+        result: {
+          agentName: "support",
+          response: {
+            role: "assistant",
+            content: "Local stub response from Anvil Agent.",
+          },
         },
       });
     } finally {

@@ -10,6 +10,7 @@ import {
   createAwsSdkPreviewDestroyerFromEnv,
   createAwsRemoteReaderFromEnv,
   createAwsSdkPreviewProvisionerFromEnv,
+  BedrockInferenceProvider,
 } from "@anvil-cloud/aws";
 import {
   buildCell,
@@ -27,10 +28,13 @@ import {
   createLocalRuntimeHost,
   startLocalRuntimeServer,
 } from "@anvil-cloud/local";
-import type {
-  AppDefinition,
+import {
+  AgentProviderRegistry,
+  AgentRuntime,
+  LocalStubInferenceProvider,
+  type AppDefinition,
   AuthIdentity,
-  WorkflowRun,
+  type WorkflowRun,
 } from "@anvil-cloud/runtime";
 
 type CliContext = {
@@ -118,6 +122,9 @@ export async function main(argv: string[]): Promise<void> {
     case "auth":
       await commandAuth(context, subcommand, maybeArg);
       return;
+    case "agents":
+      await commandAgents(context, subcommand, maybeArg);
+      return;
     case "workflows":
       await commandWorkflows(context, subcommand, maybeArg);
       return;
@@ -140,6 +147,176 @@ export async function main(argv: string[]): Promise<void> {
       );
       process.exitCode = 2;
   }
+}
+
+async function commandAgents(
+  context: CliContext,
+  subcommand: string | undefined,
+  maybeArg: string | undefined,
+): Promise<void> {
+  switch (subcommand) {
+    case "validate":
+      await commandAgentsValidate(context);
+      return;
+    case "manifest":
+      await commandAgentsManifest(context);
+      return;
+    case "invoke":
+      await commandAgentsInvoke(context, maybeArg);
+      return;
+    default:
+      writeJsonOrHuman(
+        context,
+        {
+          ok: false,
+          errors: [
+            {
+              code: "INVALID_USAGE",
+              message:
+                "Usage: anvil agents <validate|manifest|invoke> [agent] --input <text>",
+            },
+          ],
+        },
+        "Usage: anvil agents <validate|manifest|invoke> [agent] --input <text>",
+      );
+      process.exitCode = 2;
+  }
+}
+
+async function commandAgentsValidate(context: CliContext): Promise<void> {
+  const result = await buildCell({ rootDir: context.cwd });
+
+  if (!result.ok || !result.manifest) {
+    writeBuildResult(context, result, "Agent validation failed.");
+    process.exitCode = 4;
+    return;
+  }
+
+  const manifest = result.manifest as CellManifest;
+  const agents = manifest.agents ?? {};
+  const warnings = Object.values(agents)
+    .flatMap((agent) => agent.requires.humanApproval)
+    .map((action) => ({
+      code: "AGENT_APPROVAL_REQUIRED",
+      message: `Approval is required for ${action}.`,
+      severity: "warning" as const,
+    }));
+
+  writeJsonOrHuman(
+    context,
+    {
+      ok: true,
+      agents: Object.keys(agents),
+      providers: unique(
+        Object.values(agents).map((agent) => agent.model.provider),
+      ),
+      warnings,
+    },
+    [
+      "Agent validation passed.",
+      ...Object.keys(agents).map((name) => `  ✓ ${name}`),
+      ...warnings.map((warning) => `  ⚠ ${warning.message}`),
+    ].join("\n"),
+  );
+}
+
+async function commandAgentsManifest(context: CliContext): Promise<void> {
+  const result = await buildCell({ rootDir: context.cwd });
+
+  if (!result.ok || !result.manifest) {
+    writeBuildResult(context, result, "Agent manifest failed.");
+    process.exitCode = 4;
+    return;
+  }
+
+  const payload = {
+    ok: true,
+    agents: (result.manifest as CellManifest).agents ?? {},
+  };
+
+  writeJsonOrHuman(context, payload, JSON.stringify(payload, null, 2));
+}
+
+async function commandAgentsInvoke(
+  context: CliContext,
+  name: string | undefined,
+): Promise<void> {
+  if (!name) {
+    writeJsonOrHuman(
+      context,
+      {
+        ok: false,
+        errors: [
+          {
+            code: "INVALID_USAGE",
+            message: "Usage: anvil agents invoke <name> --input <text>",
+          },
+        ],
+      },
+      "Usage: anvil agents invoke <name> --input <text>",
+    );
+    process.exitCode = 2;
+    return;
+  }
+
+  const input = context.values.get("input");
+
+  if (!input) {
+    writeJsonOrHuman(
+      context,
+      {
+        ok: false,
+        errors: [
+          {
+            code: "INVALID_USAGE",
+            message: "Agent invocation requires --input <text>.",
+          },
+        ],
+      },
+      "Agent invocation requires --input <text>.",
+    );
+    process.exitCode = 2;
+    return;
+  }
+
+  const result = await buildCell({ rootDir: context.cwd });
+
+  if (!result.ok || !result.output || !result.manifest) {
+    writeBuildResult(context, result, "Agent invocation build failed.");
+    process.exitCode = 4;
+    return;
+  }
+
+  const app = await importApp(result.output.serverBundle);
+  const agent = app.agents?.[name];
+
+  if (!agent) {
+    writeJsonOrHuman(
+      context,
+      {
+        ok: false,
+        errors: [
+          {
+            code: "AGENT_NOT_FOUND",
+            message: `No mounted agent '${name}' is defined.`,
+          },
+        ],
+      },
+      `No mounted agent '${name}' is defined.`,
+    );
+    process.exitCode = 4;
+    return;
+  }
+
+  const providers = createAgentProviderRegistry();
+  const runtime = new AgentRuntime({
+    providers,
+    baseDir: context.cwd,
+  });
+  const invocation = await runtime.invoke(agent, { input });
+  const payload = { ok: true, result: invocation };
+
+  writeJsonOrHuman(context, payload, JSON.stringify(payload, null, 2));
 }
 
 async function commandNew(
@@ -1881,6 +2058,24 @@ function readNumberOption(
   const parsed = Number(value);
 
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function createAgentProviderRegistry(): AgentProviderRegistry {
+  const registry = new AgentProviderRegistry([
+    new LocalStubInferenceProvider({ echoInput: true }),
+  ]);
+
+  const region = process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION;
+
+  registry.register(
+    new BedrockInferenceProvider(region === undefined ? {} : { region }),
+  );
+
+  return registry;
+}
+
+function unique(values: string[]): string[] {
+  return [...new Set(values)].sort();
 }
 
 export function parsePositiveNumberOption(value: string): number | undefined {

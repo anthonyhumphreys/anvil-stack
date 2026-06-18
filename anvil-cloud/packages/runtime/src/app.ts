@@ -1,5 +1,6 @@
 import type { RuntimeContext } from "./context.js";
 import type { EndpointRuntimeRequest } from "./request.js";
+import type { AgentDefinition } from "./agent.js";
 
 export type MaybePromise<T> = T | Promise<T>;
 
@@ -74,6 +75,7 @@ export type EndpointDefinition<TResult = unknown> = {
   method: string;
   path: string;
   auth?: "none" | AuthRequirement;
+  agent?: string;
   handler: EndpointHandler<TResult>;
 };
 
@@ -93,6 +95,8 @@ export type WorkflowStepDefinition<TResult = unknown> = {
 export type WorkflowDefinition = {
   kind: "workflow";
   steps: Array<WorkflowStepDefinition<any>>;
+  agent?: string;
+  trigger?: string;
 };
 
 export type ServiceRestartPolicy = "always" | "on-failure" | "never";
@@ -138,6 +142,7 @@ export type FieldBuilder = FieldDefinition & {
 export type AppDefinition = {
   schema?: Record<string, TableDefinition>;
   capabilities?: Record<string, unknown>;
+  agents?: Record<string, AgentDefinition>;
   queries?: Record<string, AnyQueryDefinition>;
   mutations?: Record<string, AnyMutationDefinition>;
   endpoints?: Record<string, AnyEndpointDefinition>;
@@ -149,6 +154,7 @@ export type AppDefinition = {
 export type AppDefinitionInput = {
   schema?: Record<string, TableDefinition>;
   capabilities?: Record<string, unknown>;
+  agents?: Record<string, AgentDefinition>;
   queries?: Record<string, AnyQueryDefinition>;
   mutations?: Record<string, AnyMutationDefinition>;
   endpoints?: Record<string, AnyEndpointDefinition>;
@@ -161,6 +167,7 @@ export function app(definition: AppDefinitionInput): AppDefinition {
   return {
     schema: definition.schema ?? {},
     capabilities: definition.capabilities ?? {},
+    agents: definition.agents ?? {},
     queries: definition.queries ?? {},
     mutations: definition.mutations ?? {},
     endpoints: definition.endpoints ?? {},

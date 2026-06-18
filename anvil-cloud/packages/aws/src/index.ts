@@ -26,6 +26,12 @@ import {
 import type { AwsPreviewProvisioner } from "./provisioner.js";
 
 export {
+  BedrockInferenceProvider,
+  checkAwsAgentCompatibility,
+  type AwsAgentCompatibilityResult,
+  type BedrockInferenceProviderOptions,
+} from "./agent.js";
+export {
   createAwsPreviewDeployArtifacts,
   summarizeAwsPreviewDeployArtifacts,
   type AwsDeployArtifact,

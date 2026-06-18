@@ -14,6 +14,9 @@ import {
 } from "@anvil-cloud/auth";
 import {
   createWorkflowRun,
+  AgentProviderRegistry,
+  AgentRuntime,
+  LocalStubInferenceProvider,
   executeWorkflowRun,
   handleRuntimeRequest,
   RuntimeError,
@@ -39,6 +42,7 @@ import {
   type RuntimeResponse,
   type WorkflowAdapter,
   type WorkflowRun,
+  type AgentApprovalProvider,
 } from "@anvil-cloud/runtime";
 import { createServer as createViteServer, type ViteDevServer } from "vite";
 
@@ -69,6 +73,8 @@ export type LocalRuntimeServerOptions = {
   clientDistDir?: string;
   clientMode?: "static" | "vite";
   env?: Record<string, string>;
+  agentProviders?: AgentProviderRegistry;
+  agentApprovalProvider?: AgentApprovalProvider;
 };
 
 export type LocalRuntimeServer = {
@@ -137,6 +143,11 @@ export async function startLocalRuntimeServer(
   }
 
   const host = await createLocalRuntimeHost(hostOptions);
+  const agentProviders = options.agentProviders ?? new AgentProviderRegistry();
+
+  if (!agentProviders.has("local")) {
+    agentProviders.register(new LocalStubInferenceProvider());
+  }
 
   host.workflows.bind(options.app, host);
   void host.workflows.resumeInterrupted().catch(() => {
@@ -159,6 +170,14 @@ export async function startLocalRuntimeServer(
       app: options.app,
       manifest: options.manifest,
       host,
+      agentRuntime: new AgentRuntime({
+        providers: agentProviders,
+        baseDir: rootDir,
+        ...(options.agentApprovalProvider === undefined
+          ? {}
+          : { approvalProvider: options.agentApprovalProvider }),
+      }),
+      agentProviders,
       services,
       runtimeUrl,
       clientUrl,
@@ -736,6 +755,8 @@ type LocalRequestOptions = {
   app: AppDefinition;
   manifest: unknown;
   host: LocalRuntimeHost;
+  agentRuntime: AgentRuntime;
+  agentProviders: AgentProviderRegistry;
   services: ServiceSupervisor;
   runtimeUrl: string;
   clientUrl: string;
@@ -767,6 +788,58 @@ async function handleLocalRequest(options: LocalRequestOptions): Promise<void> {
       await sendJson(options.response, 200, {
         ok: true,
         manifest: options.manifest,
+      });
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/_anvil/agents") {
+      await sendJson(options.response, 200, {
+        ok: true,
+        agents: Object.keys(options.app.agents ?? {}),
+        providers: options.agentProviders.list(),
+      });
+      return;
+    }
+
+    if (method === "POST" && url.pathname.startsWith("/_anvil/agents/")) {
+      const name = decodeURIComponent(
+        url.pathname.slice("/_anvil/agents/".length),
+      );
+      const agent = options.app.agents?.[name];
+
+      if (!agent) {
+        await sendJson(options.response, 404, {
+          ok: false,
+          error: {
+            code: "AGENT_NOT_FOUND",
+            message: `No mounted agent '${name}' is defined.`,
+          },
+        });
+        return;
+      }
+
+      const body = await readJsonRequest(options.request);
+
+      if (!isObject(body) || typeof body.input !== "string") {
+        await sendJson(options.response, 400, {
+          ok: false,
+          error: {
+            code: "AGENT_INPUT_INVALID",
+            message: "Agent invocation requires a string 'input'.",
+          },
+        });
+        return;
+      }
+
+      const invocationInput = {
+        input: body.input,
+        ...(isObject(body.context) ? { context: body.context } : {}),
+      };
+      const result = await options.agentRuntime.invoke(agent, invocationInput);
+
+      await sendJson(options.response, 200, {
+        ok: true,
+        result,
       });
       return;
     }

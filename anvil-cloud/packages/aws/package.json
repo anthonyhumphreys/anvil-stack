@@ -14,6 +14,7 @@
     "@anvil-cloud/auth": "workspace:^",
     "@anvil-cloud/builder": "workspace:*",
     "@anvil-cloud/runtime": "workspace:*",
+    "@aws-sdk/client-bedrock-runtime": "^3.1063.0",
     "@aws-sdk/client-cloudformation": "^3.1063.0",
     "@aws-sdk/client-cloudwatch-logs": "^3.1063.0",
     "@aws-sdk/client-dynamodb": "^3.1063.0",

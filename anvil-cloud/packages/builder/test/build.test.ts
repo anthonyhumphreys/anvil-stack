@@ -516,6 +516,90 @@ describe("buildCell", () => {
       services: [{ name: "heartbeat", restart: "always", maxRestarts: 3 }],
     });
   });
+
+  it("compiles Cell-mounted agents into the manifest", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, defineAgent, endpoint } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  agents: {",
+        "    support: defineAgent({",
+        '      name: "support",',
+        '      instructions: "Answer support questions using Cell context.",',
+        "      model: { provider: 'local', model: 'stub' },",
+        "      capabilities: { filesystem: 'none', secrets: 'none' },",
+        "      approvals: { requiredFor: ['email.sendExternal'] },",
+        "    }),",
+        "  },",
+        "  endpoints: {",
+        "    chat: endpoint({",
+        "      method: 'POST',",
+        "      path: '/api/chat',",
+        "      auth: 'public',",
+        "      agent: 'support',",
+        "      handler: async () => ({ ok: true }),",
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await buildCell({ rootDir });
+
+    expect(result.ok).toBe(true);
+    expect(result.manifest).toMatchObject({
+      agents: {
+        support: {
+          kind: "anvil.agent",
+          model: { provider: "local", model: "stub" },
+          requires: {
+            humanApproval: ["email.sendExternal"],
+          },
+        },
+      },
+      endpoints: [
+        expect.objectContaining({
+          name: "chat",
+          agent: "support",
+        }),
+      ],
+    });
+  });
+
+  it("fails validation when endpoints reference missing mounted agents", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, endpoint } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  endpoints: {",
+        "    chat: endpoint({",
+        "      method: 'POST',",
+        "      path: '/api/chat',",
+        "      auth: 'public',",
+        "      agent: 'missing',",
+        "      handler: async () => ({ ok: true }),",
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await buildCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "manifest",
+      diagnostics: [
+        expect.objectContaining({
+          code: "AGENT_ENDPOINT_REFERENCE_MISSING",
+        }),
+      ],
+    });
+  });
 });
 
 async function createCell(options: {
