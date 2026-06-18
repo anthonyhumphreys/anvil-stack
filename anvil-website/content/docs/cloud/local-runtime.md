@@ -21,6 +21,7 @@ jobs, workflows, and supervised services.
 
 - local runtime HTTP server
 - local client asset server
+- local agent runtime with the deterministic stub provider registered by default
 - JSON database adapter
 - local file adapter
 - local environment adapter
@@ -58,6 +59,8 @@ GET  /_anvil/health
 GET  /_anvil/manifest
 GET  /_anvil/inspect
 GET  /_anvil/lens
+GET  /_anvil/agents
+POST /_anvil/agents/:name
 POST /_anvil/workflows/run/:name
 GET  /_anvil/workflows
 GET  /_anvil/workflows/:runId
@@ -67,6 +70,10 @@ POST /_anvil/services/:name/stop
 ```
 
 Endpoint requests under `/api/*` are translated into endpoint runtime requests and matched against declared Cell endpoints.
+
+Agent requests under `/_anvil/agents/:name` invoke mounted Cell Agents through
+the same provider-neutral `AgentRuntime` used by tests and provider mode. The
+local stub inference provider is registered automatically for `provider: "local"`.
 
 ## Local state
 

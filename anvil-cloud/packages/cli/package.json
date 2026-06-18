@@ -22,6 +22,6 @@
     "@anvil-cloud/runtime": "workspace:*"
   },
   "devDependencies": {
-    "tsx": "^4.19.4"
+    "tsx": "^4.22.4"
   }
 }

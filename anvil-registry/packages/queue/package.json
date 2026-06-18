@@ -20,6 +20,6 @@
     "bullmq": "^5.58.5"
   },
   "devDependencies": {
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.6"
   }
 }

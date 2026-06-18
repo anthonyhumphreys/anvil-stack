@@ -97,6 +97,31 @@ export interface RuntimeHost {
 
 Local runtime, test hosts, and AWS preview hosts all provide this shape. That keeps app code out of provider SDKs.
 
+## Agent runtime contract
+
+Anvil Agents use a parallel provider-neutral runtime boundary:
+
+```txt
+Agent Definition
+  -> Provider-neutral Agent Manifest
+  -> Anvil Runtime Interfaces
+  -> Inference Provider
+  -> Adapter-specific Runtime Implementation
+```
+
+Core runtime code knows about agent definitions, model provider ids, messages,
+tool calls, tool results, token usage, approval gates, capability checks,
+provider registries, and manifest validation. Provider SDK imports and provider
+resource shapes stay in provider or adapter packages.
+
+Mounted Cell Agents are declared on the Cell definition and compiled into the
+Cell manifest. Endpoint and workflow references are validated during build so a
+Cell cannot quietly point at a missing agent and hope nobody notices. That hope
+is not a deployment strategy.
+
+Read [Anvil Agents](/docs/cloud/agents) for the current contract, local stub
+mode, provider mode, and AWS Bedrock provider support.
+
 ## RuntimeContext
 
 Cell handlers receive `ctx`:

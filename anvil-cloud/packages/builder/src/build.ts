@@ -1,4 +1,5 @@
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { copyFile, mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -145,10 +146,13 @@ async function extractManifest(
   config: LoadedCellConfig,
   target: string,
 ): Promise<{ manifest?: CellManifest; diagnostics: BuilderDiagnostic[] }> {
+  const analysisBundle = createAnalysisBundlePath(serverBundle);
+
   try {
-    const imported = (await import(
-      `${pathToFileURL(serverBundle).href}?analysis=${Date.now()}`
-    )) as { default?: unknown };
+    await copyFile(serverBundle, analysisBundle);
+    const imported = (await import(pathToFileURL(analysisBundle).href)) as {
+      default?: unknown;
+    };
 
     if (!isAppDefinition(imported.default)) {
       return {
@@ -204,7 +208,18 @@ async function extractManifest(
         },
       ],
     };
+  } finally {
+    await rm(analysisBundle, { force: true });
   }
+}
+
+function createAnalysisBundlePath(serverBundle: string): string {
+  const extension = path.extname(serverBundle);
+  const basename = path.basename(serverBundle, extension);
+  return path.join(
+    path.dirname(serverBundle),
+    `${basename}.analysis-${Date.now()}-${process.pid}-${randomUUID()}${extension}`,
+  );
 }
 
 async function writeBuildOutputs(

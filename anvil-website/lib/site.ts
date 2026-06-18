@@ -102,9 +102,11 @@ export const productLines = [
     repoName: "anvil-cloud/",
     eyebrow: "Inspectable app runtime",
     description:
-      "A local-first TypeScript platform for Anvil Cells: small deployable app units with explicit capabilities, shared runtime request contracts, generated manifests, local inspection, and adapter-driven deployment.",
-    boundary: "Owns the Cell contract, runtime, auth, builder, local server, Lens, generated client, CLI, and deployment adapter boundary.",
-    status: "Alpha implementation spans runtime, auth, workflows, services, Lens, builder, local, client, CLI, and AWS preview packages.",
+      "A local-first TypeScript platform for Anvil Cells and contract-first Agents: small runtime units with explicit capabilities, generated manifests, local inspection, approval gates, and adapter-driven deployment.",
+    boundary:
+      "Owns the Cell contract, Agent contract, runtime, auth, builder, local server, Lens, generated client, CLI, and deployment adapter boundary.",
+    status:
+      "Alpha implementation spans runtime, agents, auth, workflows, services, Lens, builder, local, client, CLI, and AWS preview packages.",
     icon: Cloud,
     image: "/hero-anvil.png",
     imageAlt: "Anvil Cloud concept showing runtime, manifest, and adapter boundaries.",
@@ -112,16 +114,17 @@ export const productLines = [
     repoHref: cloudRepositoryUrl,
     command: "anvil check --json",
     points: [
-      "Cell DSL for queries, mutations, endpoints, jobs, durable workflows, and supervised services",
+      "Cell DSL for queries, mutations, endpoints, jobs, durable workflows, supervised services, and mounted agents",
+      "Contract-first Anvil Agents with capabilities, approvals, provider-neutral manifests, local stub inference, and AWS Bedrock provider support",
       "Real auth: declarative per-handler access control, a local IdP signing real JWTs, OIDC providers by config",
-      "Builder pipeline for import policy, typecheck, bundle, manifest, and generated client output",
+      "Builder pipeline for import policy, typecheck, bundle, manifest, generated client output, and agent validation",
       "Anvil Lens local management UI plus an AWS preview adapter with CloudFormation synthesis"
     ],
     links: [
       { label: "Cell contract", href: "/docs/cloud/cell-contract" },
+      { label: "Agents", href: "/docs/cloud/agents" },
       { label: "Auth", href: "/docs/cloud/auth" },
-      { label: "Workflows", href: "/docs/cloud/workflows" },
-      { label: "Lens", href: "/docs/cloud/lens" }
+      { label: "Workflows", href: "/docs/cloud/workflows" }
     ]
   },
   {
@@ -174,7 +177,8 @@ export const repoComparison = [
     product: "Anvil Cloud",
     owns: "Cell runtime contracts and adapter deployment",
     firstFiles: "packages/runtime, packages/builder, packages/local, packages/client, packages/cli, packages/aws",
-    usefulWhen: "A small app should be authorable locally, inspectable by agents, and deployable through an adapter boundary."
+    usefulWhen:
+      "A small app or capability-bound agent should be authorable locally, inspectable before deployment, and deployable through an adapter boundary."
   }
 ];
 
@@ -194,7 +198,7 @@ export const proofPoints = [
   {
     title: "Runtime contracts stay small",
     description:
-      "Cloud Cells use a constrained app contract. Provider SDKs and infrastructure authoring belong in adapters, not app code.",
+      "Cloud Cells and Agents use constrained contracts. Provider SDKs and infrastructure authoring belong in adapters, not app code.",
     icon: Braces
   },
   {
@@ -226,12 +230,18 @@ export const registryWorkflow = [
 ];
 
 export const cloudWorkflow = [
-  { title: "Define a Cell", body: "Use app, query, mutation, endpoint, job, and table definitions with declared capabilities." },
+  {
+    title: "Define a Cell or Agent",
+    body: "Use app, query, mutation, endpoint, job, table, and defineAgent definitions with declared capabilities."
+  },
   {
     title: "Run locally",
-    body: "Start Anvil Local, then inspect manifest, auth, logs, and local database state before deployment."
+    body: "Start Anvil Local, then inspect manifest, agents, auth, logs, and local database state before deployment."
   },
-  { title: "Validate and build", body: "Run import policy, typecheck, bundle, manifest extraction, and generated client output through the builder." },
+  {
+    title: "Validate and build",
+    body: "Run import policy, typecheck, bundle, manifest extraction, agent validation, and generated client output through the builder."
+  },
   {
     title: "Preview through adapters",
     body: "Use AWS preview to synthesize a plan and CloudFormation template, and provision only when the required environment is configured."
@@ -273,12 +283,12 @@ export const docsProductGuides = [
     icon: Cloud,
     href: "/docs/cloud/overview",
     description:
-      "Cell contract, auth, durable workflows, supervised services, local runtime, Anvil Lens, builder, Guard checks, CLI, generated client, AWS preview adapter, and alpha limits.",
+      "Cell contract, Anvil Agents, auth, durable workflows, supervised services, local runtime, Anvil Lens, builder, Guard checks, CLI, generated client, AWS preview adapter, and alpha limits.",
     links: [
       { label: "Quickstart", href: "/docs/cloud/quickstart" },
+      { label: "Agents", href: "/docs/cloud/agents" },
       { label: "Auth", href: "/docs/cloud/auth" },
-      { label: "Workflows", href: "/docs/cloud/workflows" },
-      { label: "Anvil Lens", href: "/docs/cloud/lens" }
+      { label: "Workflows", href: "/docs/cloud/workflows" }
     ]
   },
   {
@@ -341,6 +351,12 @@ export const docsHighlights = [
     description: "Understand app, schema, query, mutation, endpoint, job, capability, and generated manifest shapes."
   },
   {
+    label: "Cloud Agents",
+    href: "/docs/cloud/agents",
+    icon: MessageSquareText,
+    description: "Define capability-bound agents, mount them in Cells, compile manifests, and run local stub or provider mode."
+  },
+  {
     label: "Cloud CLI",
     href: "/docs/cloud/cli-reference",
     icon: Route,
@@ -380,7 +396,7 @@ export const codeTabs = [
   {
     label: "Cloud",
     command: "$ anvil check --json",
-    output: ["Config: valid", "Import policy: pass", "Typecheck: pass", "Manifest extraction: pass", "Build-ready: true"]
+    output: ["Config: valid", "Import policy: pass", "Typecheck: pass", "Agent manifests: valid", "Build-ready: true"]
   },
   {
     label: "Node Base",
