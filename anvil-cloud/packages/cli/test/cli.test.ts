@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import os from "node:os";
 import path from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import {
   main,
@@ -12,6 +12,12 @@ import {
   parseSinceOption,
   waitForRemoteRuntime,
 } from "../src/index.js";
+
+const testCwd = process.cwd();
+
+afterEach(() => {
+  process.chdir(testCwd);
+});
 
 describe("main", () => {
   it("prints help output", async () => {
@@ -208,7 +214,7 @@ describe("main", () => {
       process.chdir(originalCwd);
       await rm(rootDir, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 
   it("requires explicit confirmation before destroying AWS preview stacks", async () => {
     const originalExitCode = process.exitCode;
