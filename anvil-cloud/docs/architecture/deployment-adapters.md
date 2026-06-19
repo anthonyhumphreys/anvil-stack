@@ -34,6 +34,19 @@ anvil remove --stage dev --adapter aws
 
 Human-readable plan output lists Anvil concepts first, for example cells, HTTP routes, functions, tables, secrets, and permissions. Use `--verbose` or `--debug` to include underlying Pulumi resource mappings while diagnosing adapter behaviour.
 
+## Effect usage
+
+Effect is used inside Anvil Cloud orchestration code where retries, timeouts,
+typed provider failures, resource cleanup, or multi-step async control flow are
+part of the platform contract. The AWS preview provisioner, remote reader, CLI
+deploy flow, workflow executor, and guarded agent tool runtime are valid Effect
+surfaces.
+
+Effect is not part of the Cell authoring contract. Cell code should continue to
+use the normal Anvil Runtime APIs and ordinary async TypeScript; deployment
+adapters translate those provider-neutral contracts into Effect-backed platform
+operations internally.
+
 ## Non-goals
 
 Anvil is not a Pulumi authoring surface. Users should not write Pulumi components for Cells, and generated manifests should not require Pulumi concepts. Future adapters may use Terraform/OpenTofu, CDK, Kubernetes, direct provider APIs, or another engine without changing Cell authoring.

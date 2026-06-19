@@ -19,7 +19,8 @@
     "@anvil-cloud/aws": "workspace:*",
     "@anvil-cloud/builder": "workspace:*",
     "@anvil-cloud/local": "workspace:*",
-    "@anvil-cloud/runtime": "workspace:*"
+    "@anvil-cloud/runtime": "workspace:*",
+    "effect": "^3.21.4"
   },
   "devDependencies": {
     "tsx": "^4.22.4"

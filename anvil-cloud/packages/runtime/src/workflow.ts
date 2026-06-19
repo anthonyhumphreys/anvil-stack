@@ -2,6 +2,7 @@ import type { AnyWorkflowDefinition, WorkflowState } from "./app.js";
 import { createRuntimeContext } from "./context.js";
 import { normaliseRuntimeError, RuntimeError } from "./errors.js";
 import type { RuntimeHost, WorkflowRun, WorkflowStepRun } from "./host.js";
+import { Effect, Either, Schedule } from "effect";
 
 export type ExecuteWorkflowRunOptions = {
   workflow: AnyWorkflowDefinition;
@@ -58,51 +59,41 @@ export async function executeWorkflowRun(
       continue;
     }
 
-    // Attempts already recorded on a resumed run keep counting up, but a
-    // resumed step always gets a fresh attempt budget.
-    const maxAttempts =
-      stepRun.attempts + 1 + Math.max(0, definition.retries ?? 0);
     let lastError: RuntimeError | null = null;
 
     stepRun.status = "running";
     stepRun.startedAt = new Date().toISOString();
     await persist(run, save);
 
-    while (stepRun.attempts < maxAttempts) {
-      stepRun.attempts += 1;
-      await persist(run, save);
+    try {
+      const stepResult = await Effect.runPromise(
+        Effect.either(
+          executeWorkflowStepAttempt({
+            definition,
+            host,
+            run,
+            save,
+            state,
+            stepRun,
+          }).pipe(
+            Effect.retry(
+              retrySchedule(Math.max(0, definition.retries ?? 0), retryDelayMs),
+            ),
+          ),
+        ),
+      );
 
-      try {
-        const ctx = await createRuntimeContext(
-          host,
-          {
-            kind: "workflow",
-            name: run.workflow,
-            input: run.input,
-            requestId: `${run.runId}:${stepRun.name}:${stepRun.attempts}`,
-          },
-          `${run.workflow}.${stepRun.name}`,
-        );
-        const result = await withTimeout(
-          Promise.resolve(definition.handler(ctx, state)),
-          definition.timeoutMs,
-          stepRun.name,
-        );
-
+      if (Either.isLeft(stepResult)) {
+        lastError = stepResult.left;
+      } else {
         stepRun.status = "completed";
-        stepRun.result = result;
+        stepRun.result = stepResult.right;
         stepRun.completedAt = new Date().toISOString();
-        state.steps[stepRun.name] = result;
-        lastError = null;
+        state.steps[stepRun.name] = stepResult.right;
         await persist(run, save);
-        break;
-      } catch (error) {
-        lastError = normaliseRuntimeError(error);
-
-        if (stepRun.attempts < maxAttempts) {
-          await delay(retryDelayMs);
-        }
       }
+    } catch (error) {
+      lastError = normaliseRuntimeError(error);
     }
 
     if (lastError) {
@@ -124,6 +115,93 @@ export async function executeWorkflowRun(
   await persist(run, save);
 
   return run;
+}
+
+type WorkflowStepAttemptOptions = {
+  definition: AnyWorkflowDefinition["steps"][number];
+  host: RuntimeHost;
+  run: WorkflowRun;
+  save: (run: WorkflowRun) => Promise<void>;
+  state: WorkflowState;
+  stepRun: WorkflowStepRun;
+};
+
+function executeWorkflowStepAttempt(
+  options: WorkflowStepAttemptOptions,
+): Effect.Effect<unknown, RuntimeError> {
+  const { definition, host, run, save, state, stepRun } = options;
+
+  return Effect.gen(function* () {
+    stepRun.attempts += 1;
+    yield* persistEffect(run, save);
+
+    const ctx = yield* Effect.tryPromise({
+      try: () =>
+        createRuntimeContext(
+          host,
+          {
+            kind: "workflow",
+            name: run.workflow,
+            input: run.input,
+            requestId: `${run.runId}:${stepRun.name}:${stepRun.attempts}`,
+          },
+          `${run.workflow}.${stepRun.name}`,
+        ),
+      catch: normaliseRuntimeError,
+    });
+
+    return yield* withStepTimeout(
+      Effect.tryPromise({
+        try: () => Promise.resolve(definition.handler(ctx, state)),
+        catch: normaliseRuntimeError,
+      }),
+      definition.timeoutMs,
+      stepRun.name,
+    );
+  });
+}
+
+function persistEffect(
+  run: WorkflowRun,
+  save: (run: WorkflowRun) => Promise<void>,
+): Effect.Effect<void, RuntimeError> {
+  return Effect.tryPromise({
+    try: () => persist(run, save),
+    catch: normaliseRuntimeError,
+  });
+}
+
+function withStepTimeout<A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+  timeoutMs: number | undefined,
+  stepName: string,
+): Effect.Effect<A, E | RuntimeError, R> {
+  if (timeoutMs === undefined) {
+    return effect;
+  }
+
+  return effect.pipe(
+    Effect.timeoutFail({
+      duration: `${timeoutMs} millis`,
+      onTimeout: () =>
+        new RuntimeError(
+          "INTERNAL_ERROR",
+          `Workflow step '${stepName}' timed out after ${timeoutMs}ms.`,
+          500,
+          { step: stepName, timeoutMs },
+        ),
+    }),
+  );
+}
+
+function retrySchedule(retries: number, retryDelayMs: number) {
+  const retryLimit = Schedule.recurs(retries);
+
+  if (retryDelayMs <= 0) {
+    return retryLimit;
+  }
+
+  return retryLimit.pipe(Schedule.addDelay(() => `${retryDelayMs} millis`));
 }
 
 function ensureStepRun(run: WorkflowRun, name: string): WorkflowStepRun {
@@ -152,40 +230,6 @@ async function persist(
   await save(run);
 }
 
-async function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number | undefined,
-  stepName: string,
-): Promise<T> {
-  if (timeoutMs === undefined) {
-    return promise;
-  }
-
-  let timer: ReturnType<typeof setTimeout> | undefined;
-
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => {
-          reject(
-            new RuntimeError(
-              "INTERNAL_ERROR",
-              `Workflow step '${stepName}' timed out after ${timeoutMs}ms.`,
-              500,
-              { step: stepName, timeoutMs },
-            ),
-          );
-        }, timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timer !== undefined) {
-      clearTimeout(timer);
-    }
-  }
-}
-
 async function writeWorkflowErrorLog(
   host: RuntimeHost,
   run: WorkflowRun,
@@ -206,8 +250,4 @@ async function writeWorkflowErrorLog(
       attempts: stepRun.attempts,
     },
   });
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

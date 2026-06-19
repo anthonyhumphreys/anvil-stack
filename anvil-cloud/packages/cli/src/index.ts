@@ -2,6 +2,7 @@
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { Effect, Either } from "effect";
 
 import {
   AwsPreviewDeploymentAdapter,
@@ -1157,11 +1158,13 @@ async function commandDb(
   process.exitCode = 2;
 }
 
-
 async function commandPlan(context: CliContext): Promise<void> {
   const adapterName = context.values.get("adapter") ?? "aws";
   if (adapterName !== "aws") {
-    writeInvalidUsage(context, "Only --adapter aws is supported for cloud plans in alpha.");
+    writeInvalidUsage(
+      context,
+      "Only --adapter aws is supported for cloud plans in alpha.",
+    );
     return;
   }
   const stage = context.values.get("stage") ?? "dev";
@@ -1174,19 +1177,37 @@ async function commandPlan(context: CliContext): Promise<void> {
   const cellGraph = createAnvilCellGraph(result.manifest as CellManifest);
   const diagnostics = validateAnvilCellGraph(cellGraph);
   if (diagnostics.length > 0) {
-    writeJsonOrHuman(context, { ok: false, errors: diagnostics }, "Cell graph validation failed.");
+    writeJsonOrHuman(
+      context,
+      { ok: false, errors: diagnostics },
+      "Cell graph validation failed.",
+    );
     process.exitCode = 4;
     return;
   }
   const adapter = new AwsPulumiDeployAdapter();
-  const plan = await adapter.plan({ appName: cellGraph.appName, stage, cellGraph });
-  writeJsonOrHuman(context, { ok: true, graph: cellGraph, plan }, formatAnvilPlan(plan, context.flags.has("verbose") || context.flags.has("debug")));
+  const plan = await adapter.plan({
+    appName: cellGraph.appName,
+    stage,
+    cellGraph,
+  });
+  writeJsonOrHuman(
+    context,
+    { ok: true, graph: cellGraph, plan },
+    formatAnvilPlan(
+      plan,
+      context.flags.has("verbose") || context.flags.has("debug"),
+    ),
+  );
 }
 
 async function commandRemove(context: CliContext): Promise<void> {
   const adapterName = context.values.get("adapter") ?? "aws";
   if (adapterName !== "aws") {
-    writeInvalidUsage(context, "Only --adapter aws is supported for cloud removes in alpha.");
+    writeInvalidUsage(
+      context,
+      "Only --adapter aws is supported for cloud removes in alpha.",
+    );
     return;
   }
   const stage = context.values.get("stage") ?? "dev";
@@ -1198,15 +1219,29 @@ async function commandRemove(context: CliContext): Promise<void> {
   }
   const cellGraph = createAnvilCellGraph(result.manifest as CellManifest);
   const adapter = new AwsPulumiDeployAdapter();
-  const removeResult = await adapter.remove({ appName: cellGraph.appName, stage, cellGraph });
-  writeJsonOrHuman(context, removeResult, formatAnvilPlan(removeResult.plan, context.flags.has("verbose") || context.flags.has("debug")));
+  const removeResult = await adapter.remove({
+    appName: cellGraph.appName,
+    stage,
+    cellGraph,
+  });
+  writeJsonOrHuman(
+    context,
+    removeResult,
+    formatAnvilPlan(
+      removeResult.plan,
+      context.flags.has("verbose") || context.flags.has("debug"),
+    ),
+  );
 }
 
 async function commandDeploy(context: CliContext): Promise<void> {
   if (context.values.has("adapter") || context.values.has("stage")) {
     const adapterName = context.values.get("adapter") ?? "aws";
     if (adapterName !== "aws") {
-      writeInvalidUsage(context, "Only --adapter aws is supported for cloud deploys in alpha.");
+      writeInvalidUsage(
+        context,
+        "Only --adapter aws is supported for cloud deploys in alpha.",
+      );
       return;
     }
     const stage = context.values.get("stage") ?? "dev";
@@ -1218,8 +1253,19 @@ async function commandDeploy(context: CliContext): Promise<void> {
     }
     const cellGraph = createAnvilCellGraph(result.manifest as CellManifest);
     const adapter = new AwsPulumiDeployAdapter();
-    const deployResult = await adapter.deploy({ appName: cellGraph.appName, stage, cellGraph });
-    writeJsonOrHuman(context, deployResult, formatAnvilPlan(deployResult.plan, context.flags.has("verbose") || context.flags.has("debug")));
+    const deployResult = await adapter.deploy({
+      appName: cellGraph.appName,
+      stage,
+      cellGraph,
+    });
+    writeJsonOrHuman(
+      context,
+      deployResult,
+      formatAnvilPlan(
+        deployResult.plan,
+        context.flags.has("verbose") || context.flags.has("debug"),
+      ),
+    );
     return;
   }
 
@@ -1255,54 +1301,125 @@ async function commandDeploy(context: CliContext): Promise<void> {
     return;
   }
 
-  const result = await buildCell({ rootDir: context.cwd, target: "preview" });
+  const previewResult = await runCliEffect(
+    commandDeployPreviewEffect(context, waitTimeoutSeconds ?? 60),
+  );
 
-  if (!result.ok || !result.manifest || !result.output) {
-    writeBuildResult(context, result, "Build failed.");
+  if (previewResult.kind === "build-failed") {
+    writeBuildResult(context, previewResult.result, "Build failed.");
     process.exitCode = 4;
     return;
   }
 
-  const provisioner = createAwsSdkPreviewProvisionerFromEnv();
-  const adapter = new AwsPreviewDeploymentAdapter(
-    provisioner ? { provisioner } : {},
+  writeJsonOrHuman(
+    context,
+    previewResult.output,
+    JSON.stringify(previewResult.output, null, 2),
   );
-  const deployResult = await adapter.deploy({
-    manifest: result.manifest as CellManifest,
-    buildOutput: result.output,
-    environment: "preview",
-  });
-  let output: unknown = deployResult;
 
-  if (deployResult.ok && context.flags.has("wait")) {
-    const timeoutSeconds = waitTimeoutSeconds ?? 60;
-    const verification = await waitForRemoteRuntime(deployResult.url, {
-      timeoutMs: timeoutSeconds * 1000,
+  if (!previewResult.ok) {
+    process.exitCode = 6;
+  }
+}
+
+type PreviewDeployCommandResult =
+  | {
+      kind: "build-failed";
+      result: BuildResult;
+    }
+  | {
+      kind: "completed";
+      ok: boolean;
+      output: unknown;
+    };
+
+function commandDeployPreviewEffect(
+  context: CliContext,
+  waitTimeoutSeconds: number,
+): Effect.Effect<PreviewDeployCommandResult, Error> {
+  return Effect.gen(function* () {
+    const result = yield* Effect.tryPromise({
+      try: () => buildCell({ rootDir: context.cwd, target: "preview" }),
+      catch: toCliEffectError,
+    });
+
+    if (!result.ok || !result.manifest || !result.output) {
+      return {
+        kind: "build-failed" as const,
+        result,
+      };
+    }
+
+    const manifest = result.manifest as CellManifest;
+    const buildOutput = result.output;
+    const provisioner = createAwsSdkPreviewProvisionerFromEnv();
+    const adapter = new AwsPreviewDeploymentAdapter(
+      provisioner ? { provisioner } : {},
+    );
+    const deployResult = yield* Effect.tryPromise({
+      try: () =>
+        adapter.deploy({
+          manifest,
+          buildOutput,
+          environment: "preview",
+        }),
+      catch: toCliEffectError,
+    });
+
+    if (!deployResult.ok || !context.flags.has("wait")) {
+      return {
+        kind: "completed" as const,
+        ok: deployResult.ok,
+        output: deployResult,
+      };
+    }
+
+    const verification = yield* Effect.tryPromise({
+      try: () =>
+        waitForRemoteRuntime(deployResult.url, {
+          timeoutMs: waitTimeoutSeconds * 1000,
+        }),
+      catch: toCliEffectError,
     });
 
     if (verification.ok) {
-      output = {
-        ...deployResult,
-        verification,
+      return {
+        kind: "completed" as const,
+        ok: true,
+        output: {
+          ...deployResult,
+          verification,
+        },
       };
-    } else {
-      output = {
+    }
+
+    return {
+      kind: "completed" as const,
+      ok: false,
+      output: {
         ok: false,
         code: verification.code,
         message: verification.message,
         hint: "Inspect the deployed Lambda logs and CloudFormation outputs, then rerun anvil deploy --preview --wait.",
         deployment: deployResult,
         verification,
-      };
-      process.exitCode = 6;
-    }
+      },
+    };
+  });
+}
+
+async function runCliEffect<T>(effect: Effect.Effect<T, Error>): Promise<T> {
+  const result = await Effect.runPromise(Effect.either(effect));
+
+  if (Either.isLeft(result)) {
+    throw result.left;
   }
 
-  writeJsonOrHuman(context, output, JSON.stringify(output, null, 2));
+  return result.right;
+}
 
-  if (!deployResult.ok) {
-    process.exitCode = 6;
-  }
+function toCliEffectError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 async function commandDestroy(context: CliContext): Promise<void> {
@@ -1405,12 +1522,27 @@ async function commandDestroy(context: CliContext): Promise<void> {
   );
 }
 
-
-function formatAnvilPlan(plan: { changes: Array<{ kind: string; concept: string; name: string }>; pulumi?: Array<{ type: string; name: string }> }, verbose: boolean): string {
-  const verb = plan.changes.some((change) => change.kind === "delete") ? "Will remove:" : "Will create:";
-  const lines = [verb, "", ...plan.changes.map((change) => `* ${change.concept}: ${change.name}`)];
+function formatAnvilPlan(
+  plan: {
+    changes: Array<{ kind: string; concept: string; name: string }>;
+    pulumi?: Array<{ type: string; name: string }>;
+  },
+  verbose: boolean,
+): string {
+  const verb = plan.changes.some((change) => change.kind === "delete")
+    ? "Will remove:"
+    : "Will create:";
+  const lines = [
+    verb,
+    "",
+    ...plan.changes.map((change) => `* ${change.concept}: ${change.name}`),
+  ];
   if (verbose && plan.pulumi && plan.pulumi.length > 0) {
-    lines.push("", "Pulumi resources (debug):", ...plan.pulumi.map((resource) => `* ${resource.type}: ${resource.name}`));
+    lines.push(
+      "",
+      "Pulumi resources (debug):",
+      ...plan.pulumi.map((resource) => `* ${resource.type}: ${resource.name}`),
+    );
   }
   return lines.join("\n");
 }

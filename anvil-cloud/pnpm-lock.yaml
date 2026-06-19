@@ -117,6 +117,9 @@ importers:
       '@aws-sdk/client-sqs':
         specifier: ^3.1063.0
         version: 3.1063.0
+      effect:
+        specifier: ^3.21.4
+        version: 3.21.4
       esbuild:
         specifier: 0.28.1
         version: 0.28.1
@@ -150,6 +153,9 @@ importers:
       '@anvil-cloud/runtime':
         specifier: workspace:*
         version: link:../runtime
+      effect:
+        specifier: ^3.21.4
+        version: 3.21.4
     devDependencies:
       tsx:
         specifier: ^4.22.4
@@ -182,7 +188,11 @@ importers:
         specifier: ^6.4.3
         version: 6.4.3(@types/node@22.19.20)(tsx@4.22.4)
 
-  packages/runtime: {}
+  packages/runtime:
+    dependencies:
+      effect:
+        specifier: ^3.21.4
+        version: 3.21.4
 
 packages:
 
@@ -1035,6 +1045,9 @@ packages:
       supports-color:
         optional: true
 
+  effect@3.21.4:
+    resolution: {integrity: sha512-B89v/xSgPbl1J2Ai2u18jxq3odpFauU1rC6/eSs4FeNHi72kwKdJp12VGigvRV2lK+kRnx+OOz41XV8guZd4gQ==}
+
   electron-to-chromium@1.5.375:
     resolution: {integrity: sha512-ZWP5eB4BVPW/ZYo9252hQZHZ5XavtsTgpbhcmMmRwymavC5AsLWQWBPaKMeNd2LW0KGby5HPXvj7+sr4ta5j/Q==}
 
@@ -1056,6 +1069,10 @@ packages:
   expect-type@1.3.0:
     resolution: {integrity: sha512-knvyeauYhqjOYvQ66MznSMs83wmHrCycNEN6Ao+2AeYEfxUIkuiVxdEa1qlGEPK+We3n0THiDciYSsCcgW/DoA==}
     engines: {node: '>=12.0.0'}
+
+  fast-check@3.23.2:
+    resolution: {integrity: sha512-h5+1OzzfCC3Ef7VbtKdcv7zsstUQwUDlYpUTvjeUsJAssPgLn7QzbboPtL5ro04Mq0rPOsMzl7q5hIbRs2wD1A==}
+    engines: {node: '>=8.0.0'}
 
   fast-xml-builder@1.2.0:
     resolution: {integrity: sha512-00aAWieqff+ZJhsXA4g1g7M8k+7AYoMUUHF+/zFb5U6Uv/P0Vl4QZo84/IcufzYalLuEj9928bXN9PbbFzMF0Q==}
@@ -1152,6 +1169,9 @@ packages:
     resolution: {integrity: sha512-N2MylSdi48+5N/6S5j+maeHbUSIzzZ5uOcX5Hm4QpV8Dkb1HFjfAKTKX6yNPJQD9AhcT3ifHNB66tWTTJDi11Q==}
     engines: {node: '>=14'}
     hasBin: true
+
+  pure-rand@6.1.0:
+    resolution: {integrity: sha512-bVWawvoZoBYpp6yIoQtQXHZjmz35RSVHnUOTefl8Vcjr8snTPY1wnpSPMWekcFwbxI6gtmT7rSYPFvz71ldiOA==}
 
   react-dom@18.3.1:
     resolution: {integrity: sha512-5m4nQKp+rZRb09LNH59GM4BxTh9251/ylbKIbpe7TpGxfJ+9kv6BLkLBXIjjspbgbnIBNqlI23tRnTWT0snUIw==}
@@ -2555,6 +2575,11 @@ snapshots:
     dependencies:
       ms: 2.1.3
 
+  effect@3.21.4:
+    dependencies:
+      '@standard-schema/spec': 1.1.0
+      fast-check: 3.23.2
+
   electron-to-chromium@1.5.375: {}
 
   es-module-lexer@2.1.0: {}
@@ -2595,6 +2620,10 @@ snapshots:
       '@types/estree': 1.0.9
 
   expect-type@1.3.0: {}
+
+  fast-check@3.23.2:
+    dependencies:
+      pure-rand: 6.1.0
 
   fast-xml-builder@1.2.0:
     dependencies:
@@ -2666,6 +2695,8 @@ snapshots:
       source-map-js: 1.2.1
 
   prettier@3.8.4: {}
+
+  pure-rand@6.1.0: {}
 
   react-dom@18.3.1(react@18.3.1):
     dependencies:

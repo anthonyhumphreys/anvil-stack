@@ -4,6 +4,7 @@ import {
   type FilterLogEventsCommandOutput,
 } from "@aws-sdk/client-cloudwatch-logs";
 import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
+import { Effect, Either } from "effect";
 
 import type { CellManifest } from "@anvil-cloud/builder";
 import type { AwsPreviewDeployArtifactSummary } from "./artifacts.js";
@@ -81,63 +82,7 @@ export class AwsRemoteReader {
     cell: string;
     environment: DeploymentEnvironment;
   }): Promise<AwsRemoteInspectResult> {
-    const item = await this.readDeploymentItem(input);
-    const manifest = parseJsonAttribute<CellManifest>(
-      item.manifest,
-      "manifest",
-    );
-    const outputs = parseJsonAttribute<Record<string, string>>(
-      item.outputs,
-      "outputs",
-    );
-    const artifacts = optionalJsonAttribute<AwsPreviewDeployArtifactSummary>(
-      item.artifacts,
-      "artifacts",
-    );
-
-    const result: AwsRemoteInspectResult = {
-      ok: true,
-      adapter: "aws",
-      cell: input.cell,
-      environment: input.environment,
-      deploymentId: stringAttribute(item.deploymentId, "deploymentId"),
-      runtimeUrl: stringAttribute(item.runtimeUrl, "runtimeUrl"),
-      manifest,
-      ...(artifacts ? { artifacts } : {}),
-      resources: {
-        stack: stringAttribute(item.stackName, "stackName"),
-        runtimeUrl: stringAttribute(item.runtimeUrl, "runtimeUrl"),
-        ...(outputs.ClientAssetsBucketName
-          ? { assetsBucket: outputs.ClientAssetsBucketName }
-          : {}),
-        ...(outputs.RuntimeLogGroupName
-          ? { logs: outputs.RuntimeLogGroupName }
-          : {}),
-        ...(outputs.CellDataTableName
-          ? { database: outputs.CellDataTableName }
-          : {}),
-        ...(outputs.CellFilesBucketName
-          ? { files: outputs.CellFilesBucketName }
-          : {}),
-        ...(outputs.CellEventBusName
-          ? { events: outputs.CellEventBusName }
-          : {}),
-        ...(outputs.CellJobQueueUrl ? { jobs: outputs.CellJobQueueUrl } : {}),
-        ...(outputs.CellJobDeadLetterQueueUrl
-          ? { jobDeadLetterQueue: outputs.CellJobDeadLetterQueueUrl }
-          : {}),
-        ...workflowStateMachineResources(manifest, outputs),
-        deploymentMetadataTable: this.options.deploymentMetadataTable,
-      },
-    };
-
-    const updatedAt = optionalStringAttribute(item.updatedAt);
-
-    if (updatedAt !== undefined) {
-      result.updatedAt = updatedAt;
-    }
-
-    return result;
+    return runAwsRemoteEffect(this.inspectEffect(input));
   }
 
   async readLogs(input: {
@@ -146,119 +91,219 @@ export class AwsRemoteReader {
     sinceMs?: number;
     limit?: number;
   }): Promise<AwsRemoteLogsResult> {
-    const inspected = await this.inspect(input);
-    const logGroupName = inspected.resources.logs;
-    const limit = input.limit ?? 50;
+    return runAwsRemoteEffect(this.readLogsEffect(input));
+  }
 
-    if (!logGroupName) {
-      return {
+  private inspectEffect(input: {
+    cell: string;
+    environment: DeploymentEnvironment;
+  }): Effect.Effect<AwsRemoteInspectResult, AwsRemoteReaderError> {
+    return Effect.gen(this, function* () {
+      const item = yield* this.readDeploymentItemEffect(input);
+      const manifest = yield* parseJsonAttributeEffect<CellManifest>(
+        item.manifest,
+        "manifest",
+      );
+      const outputs = yield* parseJsonAttributeEffect<Record<string, string>>(
+        item.outputs,
+        "outputs",
+      );
+      const artifacts =
+        yield* optionalJsonAttributeEffect<AwsPreviewDeployArtifactSummary>(
+          item.artifacts,
+          "artifacts",
+        );
+
+      const runtimeUrl = yield* stringAttributeEffect(
+        item.runtimeUrl,
+        "runtimeUrl",
+      );
+      const result: AwsRemoteInspectResult = {
         ok: true,
         adapter: "aws",
         cell: input.cell,
         environment: input.environment,
-        logs: [],
-      };
-    }
-
-    const events = [];
-    let nextToken: string | undefined;
-
-    do {
-      const response: FilterLogEventsCommandOutput = await readAwsRemote(
-        "cloudwatch-logs:FilterLogEvents",
-        {
-          cell: input.cell,
-          environment: input.environment,
-          logGroupName,
+        deploymentId: yield* stringAttributeEffect(
+          item.deploymentId,
+          "deploymentId",
+        ),
+        runtimeUrl,
+        manifest,
+        ...(artifacts ? { artifacts } : {}),
+        resources: {
+          stack: yield* stringAttributeEffect(item.stackName, "stackName"),
+          runtimeUrl,
+          ...(outputs.ClientAssetsBucketName
+            ? { assetsBucket: outputs.ClientAssetsBucketName }
+            : {}),
+          ...(outputs.RuntimeLogGroupName
+            ? { logs: outputs.RuntimeLogGroupName }
+            : {}),
+          ...(outputs.CellDataTableName
+            ? { database: outputs.CellDataTableName }
+            : {}),
+          ...(outputs.CellFilesBucketName
+            ? { files: outputs.CellFilesBucketName }
+            : {}),
+          ...(outputs.CellEventBusName
+            ? { events: outputs.CellEventBusName }
+            : {}),
+          ...(outputs.CellJobQueueUrl ? { jobs: outputs.CellJobQueueUrl } : {}),
+          ...(outputs.CellJobDeadLetterQueueUrl
+            ? { jobDeadLetterQueue: outputs.CellJobDeadLetterQueueUrl }
+            : {}),
+          ...workflowStateMachineResources(manifest, outputs),
+          deploymentMetadataTable: this.options.deploymentMetadataTable,
         },
-        () =>
-          this.logs.send(
-            new FilterLogEventsCommand({
-              logGroupName,
-              startTime: input.sinceMs,
-              limit: Math.max(1, limit - events.length),
-              nextToken,
-            }),
-          ),
-      );
+      };
 
-      events.push(...(response.events ?? []));
-      nextToken = response.nextToken;
-    } while (nextToken !== undefined && events.length < limit);
+      const updatedAt = optionalStringAttribute(item.updatedAt);
 
-    return {
-      ok: true,
-      adapter: "aws",
-      cell: input.cell,
-      environment: input.environment,
-      logs: events
-        .slice(0, limit)
-        .map((event) => parseLogEvent(event.timestamp, event.message ?? "")),
-    };
+      if (updatedAt !== undefined) {
+        result.updatedAt = updatedAt;
+      }
+
+      return result;
+    });
   }
 
-  private async readDeploymentItem(input: {
+  private readLogsEffect(input: {
+    cell: string;
+    environment: DeploymentEnvironment;
+    sinceMs?: number;
+    limit?: number;
+  }): Effect.Effect<AwsRemoteLogsResult, AwsRemoteReaderError> {
+    return Effect.gen(this, function* () {
+      const inspected = yield* this.inspectEffect(input);
+      const logGroupName = inspected.resources.logs;
+      const limit = input.limit ?? 50;
+
+      if (!logGroupName) {
+        return {
+          ok: true,
+          adapter: "aws" as const,
+          cell: input.cell,
+          environment: input.environment,
+          logs: [],
+        };
+      }
+
+      const events: NonNullable<FilterLogEventsCommandOutput["events"]> = [];
+      let nextToken: string | undefined;
+
+      do {
+        const response = yield* readAwsRemoteEffect(
+          "cloudwatch-logs:FilterLogEvents",
+          {
+            cell: input.cell,
+            environment: input.environment,
+            logGroupName,
+          },
+          () =>
+            this.logs.send(
+              new FilterLogEventsCommand({
+                logGroupName,
+                startTime: input.sinceMs,
+                limit: Math.max(1, limit - events.length),
+                nextToken,
+              }),
+            ),
+        );
+
+        events.push(...(response.events ?? []));
+        nextToken = response.nextToken;
+      } while (nextToken !== undefined && events.length < limit);
+
+      return {
+        ok: true,
+        adapter: "aws" as const,
+        cell: input.cell,
+        environment: input.environment,
+        logs: events
+          .slice(0, limit)
+          .map((event) => parseLogEvent(event.timestamp, event.message ?? "")),
+      };
+    });
+  }
+
+  private readDeploymentItemEffect(input: {
     cell: string;
     environment: DeploymentEnvironment;
   }) {
-    const response = await readAwsRemote(
-      "dynamodb:GetItem",
-      {
-        cell: input.cell,
-        environment: input.environment,
-        table: this.options.deploymentMetadataTable,
-      },
-      () =>
-        this.dynamodb.send(
-          new GetItemCommand({
-            TableName: this.options.deploymentMetadataTable,
-            Key: {
-              pk: { S: `deployment#${input.cell}#${input.environment}` },
-            },
-          }),
-        ),
-    );
-
-    if (!response.Item) {
-      throw new AwsRemoteReaderError(
-        "AWS_DEPLOYMENT_METADATA_NOT_FOUND",
-        `No AWS deployment metadata found for ${input.cell}/${input.environment}.`,
+    return Effect.gen(this, function* () {
+      const response = yield* readAwsRemoteEffect(
+        "dynamodb:GetItem",
         {
           cell: input.cell,
           environment: input.environment,
           table: this.options.deploymentMetadataTable,
         },
+        () =>
+          this.dynamodb.send(
+            new GetItemCommand({
+              TableName: this.options.deploymentMetadataTable,
+              Key: {
+                pk: { S: `deployment#${input.cell}#${input.environment}` },
+              },
+            }),
+          ),
       );
-    }
 
-    return response.Item;
+      if (!response.Item) {
+        return yield* Effect.fail(
+          new AwsRemoteReaderError(
+            "AWS_DEPLOYMENT_METADATA_NOT_FOUND",
+            `No AWS deployment metadata found for ${input.cell}/${input.environment}.`,
+            {
+              cell: input.cell,
+              environment: input.environment,
+              table: this.options.deploymentMetadataTable,
+            },
+          ),
+        );
+      }
+
+      return response.Item;
+    });
   }
 }
 
-async function readAwsRemote<T>(
+async function runAwsRemoteEffect<T>(
+  effect: Effect.Effect<T, AwsRemoteReaderError>,
+): Promise<T> {
+  const result = await Effect.runPromise(Effect.either(effect));
+
+  if (Either.isLeft(result)) {
+    throw result.left;
+  }
+
+  return result.right;
+}
+
+function readAwsRemoteEffect<T>(
   operation: string,
   details: Record<string, unknown>,
   read: () => Promise<T>,
-): Promise<T> {
-  try {
-    return await read();
-  } catch (error) {
-    throw new AwsRemoteReaderError(
-      "AWS_REMOTE_READ_FAILED",
-      `AWS remote read failed during ${operation}.`,
-      {
-        ...details,
-        operation,
-        cause:
-          error instanceof Error
-            ? {
-                name: error.name,
-                message: error.message,
-              }
-            : String(error),
-      },
-    );
-  }
+): Effect.Effect<T, AwsRemoteReaderError> {
+  return Effect.tryPromise({
+    try: read,
+    catch: (error) =>
+      new AwsRemoteReaderError(
+        "AWS_REMOTE_READ_FAILED",
+        `AWS remote read failed during ${operation}.`,
+        {
+          ...details,
+          operation,
+          cause:
+            error instanceof Error
+              ? {
+                  name: error.name,
+                  message: error.message,
+                }
+              : String(error),
+        },
+      ),
+  });
 }
 
 export function createAwsRemoteReaderFromEnv(
@@ -329,6 +374,16 @@ function parseJsonAttribute<T>(attribute: unknown, name: string): T {
   }
 }
 
+function parseJsonAttributeEffect<T>(
+  attribute: unknown,
+  name: string,
+): Effect.Effect<T, AwsRemoteReaderError> {
+  return Effect.try({
+    try: () => parseJsonAttribute<T>(attribute, name),
+    catch: toAwsRemoteReaderError,
+  });
+}
+
 function optionalJsonAttribute<T>(
   attribute: unknown,
   name: string,
@@ -338,6 +393,16 @@ function optionalJsonAttribute<T>(
   }
 
   return parseJsonAttribute<T>(attribute, name);
+}
+
+function optionalJsonAttributeEffect<T>(
+  attribute: unknown,
+  name: string,
+): Effect.Effect<T | undefined, AwsRemoteReaderError> {
+  return Effect.try({
+    try: () => optionalJsonAttribute<T>(attribute, name),
+    catch: toAwsRemoteReaderError,
+  });
 }
 
 function stringAttribute(attribute: unknown, name: string): string {
@@ -354,6 +419,30 @@ function stringAttribute(attribute: unknown, name: string): string {
     "AWS_DEPLOYMENT_METADATA_INVALID",
     `Deployment metadata attribute '${name}' is required.`,
     { attribute: name },
+  );
+}
+
+function stringAttributeEffect(
+  attribute: unknown,
+  name: string,
+): Effect.Effect<string, AwsRemoteReaderError> {
+  return Effect.try({
+    try: () => stringAttribute(attribute, name),
+    catch: toAwsRemoteReaderError,
+  });
+}
+
+function toAwsRemoteReaderError(error: unknown): AwsRemoteReaderError {
+  if (error instanceof AwsRemoteReaderError) {
+    return error;
+  }
+
+  return new AwsRemoteReaderError(
+    "AWS_DEPLOYMENT_METADATA_INVALID",
+    "Deployment metadata could not be parsed.",
+    {
+      cause: error instanceof Error ? error.message : String(error),
+    },
   );
 }
 

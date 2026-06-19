@@ -53,6 +53,11 @@ interface WorkflowAdapter {
 
 Handlers can start runs through `ctx.workflows.start(name, input)`. The shared executor in `@anvil-cloud/runtime` (`executeWorkflowRun`) owns step sequencing, retries, timeouts, and state threading; adapters own persistence and scheduling.
 
+The executor uses Effect internally for step attempts, retry policy, and
+timeouts. This is an implementation detail of the Anvil Runtime: Cell workflow
+handlers still use ordinary async TypeScript, and adapters still receive the
+same `WorkflowRun` persistence contract.
+
 ### Manifest
 
 `AppInspection` and the Cell manifest list workflows as `{ name, steps: string[] }` so the CLI, inspector, and deployment adapters can see workflow topology without executing handlers.
