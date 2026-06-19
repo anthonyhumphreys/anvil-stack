@@ -15,6 +15,7 @@ import {
 } from "./diagnostics.js";
 import {
   renderGeneratedClient,
+  renderGeneratedClientTypecheckStub,
   renderGeneratedTypes,
 } from "./generated-client.js";
 import { checkImportPolicy } from "./import-policy.js";
@@ -71,7 +72,18 @@ async function runBuildPipeline(
     return failed("import-policy", importDiagnostics);
   }
 
-  const typecheckDiagnostics = await typecheckCell(rootDir);
+  const output = createOutputPaths(rootDir, options);
+
+  if (options.write) {
+    await rm(output.distDir, { recursive: true, force: true });
+    await rm(output.generatedDir, { recursive: true, force: true });
+  }
+
+  const typecheckDiagnostics = await typecheckCell(rootDir, {
+    virtualFiles: {
+      [output.generatedClient]: renderGeneratedClientTypecheckStub(),
+    },
+  });
 
   if (hasErrors(typecheckDiagnostics)) {
     return failed("typecheck", typecheckDiagnostics);
@@ -88,10 +100,6 @@ async function runBuildPipeline(
     };
   }
 
-  const output = createOutputPaths(rootDir, options);
-
-  await rm(output.distDir, { recursive: true, force: true });
-  await rm(output.generatedDir, { recursive: true, force: true });
   await mkdir(path.dirname(output.serverBundle), { recursive: true });
   await mkdir(path.dirname(output.clientIndex), { recursive: true });
   await mkdir(output.generatedDir, { recursive: true });
@@ -117,6 +125,12 @@ async function runBuildPipeline(
   }
 
   await writeBuildOutputs(output, manifestResult.manifest);
+
+  const generatedTypecheckDiagnostics = await typecheckCell(rootDir);
+
+  if (hasErrors(generatedTypecheckDiagnostics)) {
+    return failed("typecheck", generatedTypecheckDiagnostics, output);
+  }
 
   const clientDiagnostics = await bundleClient({
     rootDir,
