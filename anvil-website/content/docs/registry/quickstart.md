@@ -98,7 +98,7 @@ Use real `package-lock.json`, `pnpm-lock.yaml`, or `yarn.lock` files from high-t
 Use Node Base when you want the install itself to happen inside a safer container:
 
 ```bash
-docker run --rm -it -v "$PWD:/workspace" -w /workspace ghcr.io/<owner>/anvil-node-base:22 anvil-npm-ci-safe
+docker run --rm -it -v "$PWD:/workspace" -w /workspace ghcr.io/<owner>/<repo>/anvil-node-base:22 anvil-npm-ci-safe
 ```
 
 Safe mode runs `npm ci --ignore-scripts`, scans installed package manifests, and writes reports under `.anvil/reports` or `ANVIL_REPORT_DIR`.
@@ -106,7 +106,7 @@ Safe mode runs `npm ci --ignore-scripts`, scans installed package manifests, and
 Observed mode is explicit:
 
 ```bash
-docker run --rm -it -v "$PWD:/workspace" -w /workspace ghcr.io/<owner>/anvil-node-base:22 anvil-npm-ci-observed
+docker run --rm -it -v "$PWD:/workspace" -w /workspace ghcr.io/<owner>/<repo>/anvil-node-base:22 anvil-npm-ci-observed
 ```
 
 Use observed mode only when dependency lifecycle scripts must run and you want process, network, filesystem, lifecycle, and environment evidence.

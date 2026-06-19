@@ -43,7 +43,7 @@ The image should:
 Personal/internal image name:
 
 ```text
-ghcr.io/anthonyhumphreys/anvil-node-base:22
+ghcr.io/anthonyhumphreys/anvil-stack/anvil-node-base:22
 ```
 
 ---
@@ -661,7 +661,7 @@ Example `.devcontainer/devcontainer.json`:
 ```json
 {
   "name": "Node with Anvil Base",
-  "image": "ghcr.io/anthonyhumphreys/anvil-node-base:22",
+  "image": "ghcr.io/anthonyhumphreys/anvil-stack/anvil-node-base:22",
   "remoteUser": "node",
   "containerEnv": {
     "ANVIL_SECURITY_MODE": "safe",
@@ -805,4 +805,4 @@ save-exact=true
   - `22-bookworm`
   - `latest`
 
-The repository workflow `.github/workflows/node-base-image.yml` builds and validates the Node Base image for pull requests and publishes to `ghcr.io/<owner>/anvil-node-base` from `main` or `node-base-v*` tags.
+The repository workflow `.github/workflows/registry-node-base-image.yml` builds and validates the Node Base image for pull requests and publishes to `ghcr.io/<owner>/<repo>/anvil-node-base` from `main` or `node-base-v*` tags.

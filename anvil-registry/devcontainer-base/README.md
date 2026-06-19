@@ -32,7 +32,7 @@ pnpm smoke:node-base-image-report
 
 ## Publishing
 
-`.github/workflows/node-base-image.yml` builds and validates the image on pull requests. Pushes to `main` publish `ghcr.io/<owner>/anvil-node-base:latest`, `:22`, `:22-bookworm`, and a `sha-...` tag. `node-base-v*` tags publish the matching release tag. Pull requests validate without pushing.
+`.github/workflows/registry-node-base-image.yml` builds and validates the image on pull requests. Pushes to `main` publish `ghcr.io/<owner>/<repo>/anvil-node-base:latest`, `:22`, `:22-bookworm`, and a `sha-...` tag. `node-base-v*` tags publish the matching release tag. Pull requests validate without pushing.
 
 ## Network Policy
 

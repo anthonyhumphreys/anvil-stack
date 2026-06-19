@@ -72,7 +72,7 @@ pnpm smoke:node-base-image-report
 Publish the image under your chosen container registry namespace, for example:
 
 ```text
-ghcr.io/<owner>/anvil-node-base:22
+ghcr.io/<owner>/<repo>/anvil-node-base:22
 ```
 
 Use immutable tags for CI rollouts when you need repeatability, and keep a major Node tag such as `22` for routine upgrades.
