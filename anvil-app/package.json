@@ -4,6 +4,11 @@
   "description": "Anvil developer mission control",
   "main": "out/main/index.js",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/anthonyhumphreys/anvil-stack.git",
+    "directory": "anvil-app"
+  },
   "packageManager": "pnpm@10.32.1",
   "scripts": {
     "predev": "pnpm run rebuild:native:electron",
