@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   AwsPreviewDeploymentAdapter,
+  AwsPulumiDeployAdapter,
   AwsPreviewDestroyError,
   AwsRemoteReaderError,
   createAwsSdkPreviewDestroyerFromEnv,
@@ -15,6 +16,8 @@ import {
 import {
   buildCell,
   checkCell,
+  createAnvilCellGraph,
+  validateAnvilCellGraph,
   type BuilderDiagnostic,
   type BuildResult,
   type CellManifest,
@@ -113,8 +116,14 @@ export async function main(argv: string[]): Promise<void> {
     case "db":
       await commandDb(context, subcommand, maybeArg);
       return;
+    case "plan":
+      await commandPlan(context);
+      return;
     case "deploy":
       await commandDeploy(context);
+      return;
+    case "remove":
+      await commandRemove(context);
       return;
     case "destroy":
       await commandDestroy(context);
@@ -1148,7 +1157,72 @@ async function commandDb(
   process.exitCode = 2;
 }
 
+
+async function commandPlan(context: CliContext): Promise<void> {
+  const adapterName = context.values.get("adapter") ?? "aws";
+  if (adapterName !== "aws") {
+    writeInvalidUsage(context, "Only --adapter aws is supported for cloud plans in alpha.");
+    return;
+  }
+  const stage = context.values.get("stage") ?? "dev";
+  const result = await buildCell({ rootDir: context.cwd, target: stage });
+  if (!result.ok || !result.manifest) {
+    writeBuildResult(context, result, "Build failed.");
+    process.exitCode = 4;
+    return;
+  }
+  const cellGraph = createAnvilCellGraph(result.manifest as CellManifest);
+  const diagnostics = validateAnvilCellGraph(cellGraph);
+  if (diagnostics.length > 0) {
+    writeJsonOrHuman(context, { ok: false, errors: diagnostics }, "Cell graph validation failed.");
+    process.exitCode = 4;
+    return;
+  }
+  const adapter = new AwsPulumiDeployAdapter();
+  const plan = await adapter.plan({ appName: cellGraph.appName, stage, cellGraph });
+  writeJsonOrHuman(context, { ok: true, graph: cellGraph, plan }, formatAnvilPlan(plan, context.flags.has("verbose") || context.flags.has("debug")));
+}
+
+async function commandRemove(context: CliContext): Promise<void> {
+  const adapterName = context.values.get("adapter") ?? "aws";
+  if (adapterName !== "aws") {
+    writeInvalidUsage(context, "Only --adapter aws is supported for cloud removes in alpha.");
+    return;
+  }
+  const stage = context.values.get("stage") ?? "dev";
+  const result = await buildCell({ rootDir: context.cwd, target: stage });
+  if (!result.ok || !result.manifest) {
+    writeBuildResult(context, result, "Build failed.");
+    process.exitCode = 4;
+    return;
+  }
+  const cellGraph = createAnvilCellGraph(result.manifest as CellManifest);
+  const adapter = new AwsPulumiDeployAdapter();
+  const removeResult = await adapter.remove({ appName: cellGraph.appName, stage, cellGraph });
+  writeJsonOrHuman(context, removeResult, formatAnvilPlan(removeResult.plan, context.flags.has("verbose") || context.flags.has("debug")));
+}
+
 async function commandDeploy(context: CliContext): Promise<void> {
+  if (context.values.has("adapter") || context.values.has("stage")) {
+    const adapterName = context.values.get("adapter") ?? "aws";
+    if (adapterName !== "aws") {
+      writeInvalidUsage(context, "Only --adapter aws is supported for cloud deploys in alpha.");
+      return;
+    }
+    const stage = context.values.get("stage") ?? "dev";
+    const result = await buildCell({ rootDir: context.cwd, target: stage });
+    if (!result.ok || !result.manifest) {
+      writeBuildResult(context, result, "Build failed.");
+      process.exitCode = 4;
+      return;
+    }
+    const cellGraph = createAnvilCellGraph(result.manifest as CellManifest);
+    const adapter = new AwsPulumiDeployAdapter();
+    const deployResult = await adapter.deploy({ appName: cellGraph.appName, stage, cellGraph });
+    writeJsonOrHuman(context, deployResult, formatAnvilPlan(deployResult.plan, context.flags.has("verbose") || context.flags.has("debug")));
+    return;
+  }
+
   if (!context.flags.has("preview")) {
     writeJsonOrHuman(
       context,
@@ -1329,6 +1403,16 @@ async function commandDestroy(context: CliContext): Promise<void> {
       ? `Deleted AWS preview stack '${result.stackName}'.`
       : `AWS preview stack '${result.stackName}' was already absent.`,
   );
+}
+
+
+function formatAnvilPlan(plan: { changes: Array<{ kind: string; concept: string; name: string }>; pulumi?: Array<{ type: string; name: string }> }, verbose: boolean): string {
+  const verb = plan.changes.some((change) => change.kind === "delete") ? "Will remove:" : "Will create:";
+  const lines = [verb, "", ...plan.changes.map((change) => `* ${change.concept}: ${change.name}`)];
+  if (verbose && plan.pulumi && plan.pulumi.length > 0) {
+    lines.push("", "Pulumi resources (debug):", ...plan.pulumi.map((resource) => `* ${resource.type}: ${resource.name}`));
+  }
+  return lines.join("\n");
 }
 
 export async function waitForRemoteRuntime(
@@ -1944,6 +2028,9 @@ function writeHelp(): void {
       "  anvil logs --app <name> --env preview [--since 10m] [--limit 50] [--json]",
       "  anvil db list --local [--json]",
       "  anvil db dump <table> --local [--json]",
+      "  anvil plan --stage dev --adapter aws [--verbose] [--json]",
+      "  anvil deploy --stage dev --adapter aws [--verbose] [--json]",
+      "  anvil remove --stage dev --adapter aws [--verbose] [--json]",
       "  anvil deploy --preview [--wait] [--wait-timeout 60] [--json]",
       "  anvil destroy --preview --app <name> --yes [--json]",
       "  anvil auth users [--json]",

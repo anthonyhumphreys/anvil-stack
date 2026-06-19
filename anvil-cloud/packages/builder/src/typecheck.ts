@@ -4,8 +4,13 @@ import ts from "typescript";
 
 import { errorDiagnostic, type BuilderDiagnostic } from "./diagnostics.js";
 
+export type TypecheckCellOptions = {
+  virtualFiles?: Record<string, string>;
+};
+
 export async function typecheckCell(
   rootDir: string,
+  options: TypecheckCellOptions = {},
 ): Promise<BuilderDiagnostic[]> {
   const configPath = ts.findConfigFile(
     rootDir,
@@ -45,14 +50,67 @@ export async function typecheckCell(
     );
   }
 
+  const host = createCompilerHost(parsed.options, options.virtualFiles ?? {});
   const program = ts.createProgram({
     rootNames: parsed.fileNames,
     options: parsed.options,
+    host,
   });
 
   return ts
     .getPreEmitDiagnostics(program)
     .map((diagnostic) => diagnosticFromTs(rootDir, diagnostic));
+}
+
+function createCompilerHost(
+  options: ts.CompilerOptions,
+  virtualFiles: Record<string, string>,
+): ts.CompilerHost {
+  const host = ts.createCompilerHost(options);
+  const normalizedVirtualFiles = new Map(
+    Object.entries(virtualFiles).map(([fileName, source]) => [
+      normalizePath(fileName),
+      source,
+    ]),
+  );
+  const readFile = host.readFile.bind(host);
+  const fileExists = host.fileExists.bind(host);
+  const getSourceFile = host.getSourceFile.bind(host);
+
+  host.fileExists = (fileName) =>
+    normalizedVirtualFiles.has(normalizePath(fileName)) || fileExists(fileName);
+  host.readFile = (fileName) =>
+    normalizedVirtualFiles.get(normalizePath(fileName)) ?? readFile(fileName);
+  host.getSourceFile = (
+    fileName,
+    languageVersionOrOptions,
+    onError,
+    shouldCreateNewSourceFile,
+  ) => {
+    const virtualSource = normalizedVirtualFiles.get(normalizePath(fileName));
+
+    if (virtualSource !== undefined) {
+      return ts.createSourceFile(
+        fileName,
+        virtualSource,
+        languageVersionOrOptions,
+        true,
+      );
+    }
+
+    return getSourceFile(
+      fileName,
+      languageVersionOrOptions,
+      onError,
+      shouldCreateNewSourceFile,
+    );
+  };
+
+  return host;
+}
+
+function normalizePath(fileName: string): string {
+  return path.resolve(fileName);
 }
 
 function diagnosticFromTs(

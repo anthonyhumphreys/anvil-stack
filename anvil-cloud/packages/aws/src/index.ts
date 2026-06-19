@@ -617,3 +617,5 @@ function outboundFetchAllowList(capability: unknown): string[] {
     return typeof entry === "string";
   });
 }
+
+export { AwsPulumiDeployAdapter, createAwsPulumiPlan, createPulumiMappings, deterministicName, type AnvilDeployAdapter, type DeployInput, type DeployPlan, type DeployResult, type RemoveInput, type RemoveResult } from "./pulumi-adapter.js";

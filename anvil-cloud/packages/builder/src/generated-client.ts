@@ -44,6 +44,18 @@ export function renderGeneratedTypes(manifest: CellManifest): string {
   ].join("\n");
 }
 
+export function renderGeneratedClientTypecheckStub(): string {
+  return [
+    'import type { GeneratedAnvilApi } from "@anvil-cloud/client";',
+    "",
+    "export const api = {",
+    "  queries: {},",
+    "  mutations: {},",
+    "} as GeneratedAnvilApi;",
+    "",
+  ].join("\n");
+}
+
 function propertyName(name: string): string {
   if (/^[A-Za-z_$][\w$]*$/.test(name)) {
     return name;

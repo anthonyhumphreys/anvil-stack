@@ -67,6 +67,35 @@ describe("buildCell", () => {
     ).resolves.toContain("listNotes");
   });
 
+  it("builds a clean Cell whose client imports generated metadata", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, query } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  queries: {",
+        "    listNotes: query({ handler: async () => [] }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+      client: [
+        'import { api } from "@anvil/generated/client";',
+        "",
+        "document.body.dataset.query = api.queries.listNotes.name;",
+        "",
+      ].join("\n"),
+    });
+    await rm(path.join(rootDir, ".anvil"), { recursive: true, force: true });
+
+    const result = await buildCell({ rootDir });
+
+    expect(result.ok).toBe(true);
+    await expect(
+      readText(path.join(rootDir, ".anvil/generated/client.ts")),
+    ).resolves.toContain("listNotes");
+  });
+
   it("reports forbidden imports before bundling", async () => {
     const rootDir = await createCell({
       server: [
