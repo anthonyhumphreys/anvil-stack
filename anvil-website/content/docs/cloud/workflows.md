@@ -46,7 +46,7 @@ Workflows run in the background with no request auth context. `ctx.auth.identity
 
 ## Capability requirement
 
-Declaring a workflow, or calling `ctx.workflows.start` from a handler, requires `capabilities.workflows`. Anvil Guard reports `CAPABILITY_NOT_DECLARED` during `anvil check` and `anvil build` if it is missing.
+Declaring a workflow, or calling `ctx.workflows.start` from a handler, requires `capabilities.workflows`. Anvil Guard reports `CAPABILITY_NOT_DECLARED` during `anvil-cloud check` and `anvil-cloud build` if it is missing.
 
 ## Durability semantics
 
@@ -82,12 +82,12 @@ The run starts asynchronously; poll the detail route for status.
 ## CLI
 
 ```bash
-anvil workflows list --json
-anvil workflows show <runId> --json
-anvil workflows run syncNotes --input '{"full":true}' --json
+anvil-cloud workflows list --json
+anvil-cloud workflows show <runId> --json
+anvil-cloud workflows run syncNotes --input '{"full":true}' --json
 ```
 
-`anvil workflows run` builds the Cell, executes the workflow against local state without needing a running dev server, waits for completion, and prints the final run. The exit code is non-zero when the run fails.
+`anvil-cloud workflows run` builds the Cell, executes the workflow against local state without needing a running dev server, waits for completion, and prints the final run. The exit code is non-zero when the run fails.
 
 A run record looks like:
 

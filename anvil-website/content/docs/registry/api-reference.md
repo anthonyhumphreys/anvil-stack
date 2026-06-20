@@ -103,7 +103,7 @@ Example payload:
 Use the CLI for the normal path:
 
 ```bash
-ANVIL_REGISTRY_URL=http://localhost:4873 anvil explain react@latest
+ANVIL_REGISTRY_URL=http://localhost:4873 anvil-registry explain react@latest
 ```
 
 Explain output should include the decision action, policy version, triggering signals, analysis state, override state, and any review context that is enabled.
@@ -119,7 +119,7 @@ Returns the active policy view for operators and CI tools. Use this to confirm t
 CLI example:
 
 ```bash
-ANVIL_REGISTRY_URL=http://localhost:4873 anvil policy
+ANVIL_REGISTRY_URL=http://localhost:4873 anvil-registry policy
 ```
 
 ## LLM review
@@ -148,7 +148,7 @@ CLI example:
 ```bash
 ANVIL_REGISTRY_URL=http://localhost:4873 \
 ANVIL_ADMIN_TOKEN=local-dev-token \
-  anvil llm-review react@18.3.1 --requested-by security-review --priority high
+  anvil-registry llm-review react@18.3.1 --requested-by security-review --priority high
 ```
 
 See [LLM integration](/docs/registry/llm-integration) for provider setup, schema expectations, and privacy controls.
@@ -197,7 +197,7 @@ CLI example:
 ```bash
 ANVIL_ADMIN_URL=http://localhost:3000 \
 ANVIL_ADMIN_TOKEN=local-dev-token \
-  anvil reports react@18.3.1
+  anvil-registry reports react@18.3.1
 ```
 
 Node Base reports can be submitted to Admin so reviewers can inspect local install evidence with registry decisions.
@@ -230,14 +230,14 @@ Examples:
 ```bash
 ANVIL_REGISTRY_URL=http://localhost:4873 \
 ANVIL_ADMIN_TOKEN=local-dev-token \
-  anvil queue status
+  anvil-registry queue status
 
 ANVIL_REGISTRY_URL=http://localhost:4873 \
 ANVIL_ADMIN_TOKEN=local-dev-token \
-  anvil warm ./pnpm-lock.yaml
+  anvil-registry warm ./pnpm-lock.yaml
 ```
 
-`anvil warm` queues exact package versions from lockfiles and records the reason as `lockfile_scan`.
+`anvil-registry warm` queues exact package versions from lockfiles and records the reason as `lockfile_scan`.
 
 ## Authentication model
 

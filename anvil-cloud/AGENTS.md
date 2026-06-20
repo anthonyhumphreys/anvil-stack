@@ -147,4 +147,4 @@ For CLI/runtime changes, include example `--json` output in docs or tests.
 - Implement in-memory database adapter for tests.
 - Implement local Hono/Fastify runtime server.
 - Implement manifest extraction from a declarative app definition.
-- Implement `anvil check --json` with at least one forbidden-import diagnostic.
+- Implement `anvil-cloud check --json` with at least one forbidden-import diagnostic.

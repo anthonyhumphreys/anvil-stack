@@ -36,7 +36,7 @@ export async function loadCellConfig(
           code: "CONFIG_NOT_FOUND",
           message: "Could not find anvil.json.",
           file: path.relative(rootDir, configPath),
-          hint: "Run anvil new <name> or create an anvil.json file.",
+          hint: "Run anvil-cloud new <name> or create an anvil.json file.",
         }),
       ],
     };

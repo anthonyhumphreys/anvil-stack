@@ -62,11 +62,11 @@ Anvil then provides:
 Build a local-only vertical slice:
 
 ```sh
-anvil new notes
+anvil-cloud new notes
 cd notes
-anvil dev
-anvil check --json
-anvil inspect --local --json
+anvil-cloud dev
+anvil-cloud check --json
+anvil-cloud inspect --local --json
 ```
 
 The alpha supports or is building toward:

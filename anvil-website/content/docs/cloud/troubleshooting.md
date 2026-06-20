@@ -9,7 +9,7 @@ order: 145
 
 # Troubleshooting
 
-`anvil check --json` and `anvil build --json` are the primary diagnostic tools. Every failure they report carries a stable code; this page maps the common ones to fixes.
+`anvil-cloud check --json` and `anvil-cloud build --json` are the primary diagnostic tools. Every failure they report carries a stable code; this page maps the common ones to fixes.
 
 ## Import policy violations (`FORBIDDEN_IMPORT`)
 
@@ -58,9 +58,9 @@ The builder runs stages in order: config load, import policy, typecheck, server/
 
 ## Local runtime
 
-- **Port already in use**: another `anvil dev` instance (or anything else) holds the port. Stop it or pass a different port.
+- **Port already in use**: another `anvil-cloud dev` instance (or anything else) holds the port. Stop it or pass a different port.
 - **Stale behavior after edits**: from a workspace checkout, the CLI runs against built package output; rerun `pnpm build` in `anvil-cloud` after changing platform packages. Cell code itself is rebuilt by the dev loop.
-- **Database state surprises**: the local JSON database adapter persists per project. Inspect it with `anvil db` and the local inspector rather than guessing.
+- **Database state surprises**: the local JSON database adapter persists per project. Inspect it with `anvil-cloud db` and the local inspector rather than guessing.
 
 ## AWS preview adapter
 
@@ -73,8 +73,8 @@ The builder runs stages in order: config load, import policy, typecheck, server/
 Every CLI command supports `--json` with stable shapes. When filing an issue at [anvil-stack](https://github.com/anthonyhumphreys/anvil-stack/issues), include:
 
 ```bash
-anvil check --json
-anvil build --json
+anvil-cloud check --json
+anvil-cloud build --json
 ```
 
 plus the Cell definition if you can share it. JSON output is the contract; screenshots of terminal text are harder to act on.

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { realpathSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -182,11 +183,11 @@ async function commandAgents(
             {
               code: "INVALID_USAGE",
               message:
-                "Usage: anvil agents <validate|manifest|invoke> [agent] --input <text>",
+                "Usage: anvil-cloud agents <validate|manifest|invoke> [agent] --input <text>",
             },
           ],
         },
-        "Usage: anvil agents <validate|manifest|invoke> [agent] --input <text>",
+        "Usage: anvil-cloud agents <validate|manifest|invoke> [agent] --input <text>",
       );
       process.exitCode = 2;
   }
@@ -258,11 +259,11 @@ async function commandAgentsInvoke(
         errors: [
           {
             code: "INVALID_USAGE",
-            message: "Usage: anvil agents invoke <name> --input <text>",
+            message: "Usage: anvil-cloud agents invoke <name> --input <text>",
           },
         ],
       },
-      "Usage: anvil agents invoke <name> --input <text>",
+      "Usage: anvil-cloud agents invoke <name> --input <text>",
     );
     process.exitCode = 2;
     return;
@@ -340,11 +341,11 @@ async function commandNew(
         errors: [
           {
             code: "INVALID_USAGE",
-            message: "Usage: anvil new <name>",
+            message: "Usage: anvil-cloud new <name>",
           },
         ],
       },
-      "Usage: anvil new <name>",
+      "Usage: anvil-cloud new <name>",
     );
     process.exitCode = 2;
     return;
@@ -805,14 +806,14 @@ async function commandNew(
       ok: true,
       cell: name,
       path: `./${name}`,
-      next: [`cd ${name}`, "anvil dev"],
+      next: [`cd ${name}`, "anvil-cloud dev"],
     },
     [
       `Created Anvil Cell ${name}`,
       "",
       "Next steps:",
       `  cd ${name}`,
-      "  anvil dev",
+      "  anvil-cloud dev",
     ].join("\n"),
   );
 }
@@ -980,11 +981,11 @@ async function commandLens(context: CliContext): Promise<void> {
         errors: [
           {
             code: "LENS_SERVER_NOT_RUNNING",
-            message: `No local runtime is reachable at ${runtimeUrl}. Start one with \`anvil dev\` first.`,
+            message: `No local runtime is reachable at ${runtimeUrl}. Start one with \`anvil-cloud dev\` first.`,
           },
         ],
       },
-      `No local runtime is reachable at ${runtimeUrl}. Start one with \`anvil dev\` first.`,
+      `No local runtime is reachable at ${runtimeUrl}. Start one with \`anvil-cloud dev\` first.`,
     );
     process.exitCode = 5;
     return;
@@ -1148,11 +1149,11 @@ async function commandDb(
         {
           code: "INVALID_USAGE",
           message:
-            "Usage: anvil db list --local or anvil db dump <table> --local",
+            "Usage: anvil-cloud db list --local or anvil-cloud db dump <table> --local",
         },
       ],
     },
-    "Usage: anvil db list --local or anvil db dump <table> --local",
+    "Usage: anvil-cloud db list --local or anvil-cloud db dump <table> --local",
   );
   process.exitCode = 2;
 }
@@ -1231,11 +1232,11 @@ async function commandDeploy(context: CliContext): Promise<void> {
         errors: [
           {
             code: "INVALID_USAGE",
-            message: "Only anvil deploy --preview is supported in alpha.",
+            message: "Only anvil-cloud deploy --preview is supported in alpha.",
           },
         ],
       },
-      "Only anvil deploy --preview is supported in alpha.",
+      "Only anvil-cloud deploy --preview is supported in alpha.",
     );
     process.exitCode = 2;
     return;
@@ -1290,7 +1291,7 @@ async function commandDeploy(context: CliContext): Promise<void> {
         ok: false,
         code: verification.code,
         message: verification.message,
-        hint: "Inspect the deployed Lambda logs and CloudFormation outputs, then rerun anvil deploy --preview --wait.",
+        hint: "Inspect the deployed Lambda logs and CloudFormation outputs, then rerun anvil-cloud deploy --preview --wait.",
         deployment: deployResult,
         verification,
       };
@@ -1314,11 +1315,11 @@ async function commandDestroy(context: CliContext): Promise<void> {
         errors: [
           {
             code: "INVALID_USAGE",
-            message: "Only anvil destroy --preview is supported in alpha.",
+            message: "Only anvil-cloud destroy --preview is supported in alpha.",
           },
         ],
       },
-      "Only anvil destroy --preview is supported in alpha.",
+      "Only anvil-cloud destroy --preview is supported in alpha.",
     );
     process.exitCode = 2;
     return;
@@ -1334,11 +1335,11 @@ async function commandDestroy(context: CliContext): Promise<void> {
         errors: [
           {
             code: "INVALID_USAGE",
-            message: "Usage: anvil destroy --preview --app <name> --yes",
+            message: "Usage: anvil-cloud destroy --preview --app <name> --yes",
           },
         ],
       },
-      "Usage: anvil destroy --preview --app <name> --yes",
+      "Usage: anvil-cloud destroy --preview --app <name> --yes",
     );
     process.exitCode = 2;
     return;
@@ -1384,7 +1385,7 @@ async function commandDestroy(context: CliContext): Promise<void> {
           ok: false,
           code: error.code,
           message: error.message,
-          hint: "Inspect the CloudFormation stack status and any retained S3 buckets, then rerun anvil destroy --preview --app <name> --yes.",
+          hint: "Inspect the CloudFormation stack status and any retained S3 buckets, then rerun anvil-cloud destroy --preview --app <name> --yes.",
           details: error.details,
         },
         error.message,
@@ -1556,7 +1557,7 @@ async function commandAuth(
           context,
           { ok: true, users },
           users.length === 0
-            ? "No local users. Create one with `anvil auth add-user <id>`."
+            ? "No local users. Create one with `anvil-cloud auth add-user <id>`."
             : users
                 .map(
                   (user) =>
@@ -1683,7 +1684,7 @@ async function commandAuth(
           { ok: true, identity },
           identity
             ? `Signed in as '${String(identity.userId)}'.`
-            : "Not signed in. Use `anvil auth login <id>`.",
+            : "Not signed in. Use `anvil-cloud auth login <id>`.",
         );
         return;
       }
@@ -1696,11 +1697,11 @@ async function commandAuth(
               {
                 code: "INVALID_USAGE",
                 message:
-                  "Usage: anvil auth <users|add-user|remove-user|login|token|whoami>",
+                  "Usage: anvil-cloud auth <users|add-user|remove-user|login|token|whoami>",
               },
             ],
           },
-          "Usage: anvil auth <users|add-user|remove-user|login|token|whoami>",
+          "Usage: anvil-cloud auth <users|add-user|remove-user|login|token|whoami>",
         );
         process.exitCode = 2;
     }
@@ -1729,7 +1730,7 @@ async function commandWorkflows(
       context,
       { ok: true, runs },
       runs.length === 0
-        ? "No local workflow runs. Start one with `anvil workflows run <name>`."
+        ? "No local workflow runs. Start one with `anvil-cloud workflows run <name>`."
         : runs
             .map((run) => `${run.runId}  ${run.workflow}  ${run.status}`)
             .join("\n"),
@@ -1856,11 +1857,11 @@ async function commandServices(
         errors: [
           {
             code: "INVALID_USAGE",
-            message: "Usage: anvil services list [--json]",
+            message: "Usage: anvil-cloud services list [--json]",
           },
         ],
       },
-      "Usage: anvil services list [--json]",
+      "Usage: anvil-cloud services list [--json]",
     );
     process.exitCode = 2;
     return;
@@ -1905,11 +1906,11 @@ function writeWorkflowsUsage(context: CliContext): void {
         {
           code: "INVALID_USAGE",
           message:
-            "Usage: anvil workflows <list|show <runId>|run <name> [--input '<json>']>",
+            "Usage: anvil-cloud workflows <list|show <runId>|run <name> [--input '<json>']>",
         },
       ],
     },
-    "Usage: anvil workflows <list|show <runId>|run <name> [--input '<json>']>",
+    "Usage: anvil-cloud workflows <list|show <runId>|run <name> [--input '<json>']>",
   );
   process.exitCode = 2;
 }
@@ -2018,31 +2019,31 @@ function writeHelp(): void {
       "Anvil Cloud CLI",
       "",
       "Commands:",
-      "  anvil new <name>",
-      "  anvil dev [--json] [--agent] [--port 8787] [--client-port 5173]",
-      "  anvil check [--json]",
-      "  anvil build [--json]",
-      "  anvil inspect --local [--json]",
-      "  anvil lens [--port 8787] [--json]",
-      "  anvil logs --local [--json]",
-      "  anvil logs --app <name> --env preview [--since 10m] [--limit 50] [--json]",
-      "  anvil db list --local [--json]",
-      "  anvil db dump <table> --local [--json]",
-      "  anvil plan --stage dev --adapter aws [--verbose] [--json]",
-      "  anvil deploy --stage dev --adapter aws [--verbose] [--json]",
-      "  anvil remove --stage dev --adapter aws [--verbose] [--json]",
-      "  anvil deploy --preview [--wait] [--wait-timeout 60] [--json]",
-      "  anvil destroy --preview --app <name> --yes [--json]",
-      "  anvil auth users [--json]",
-      "  anvil auth add-user <id> [--email x@y] [--roles admin,editor] [--json]",
-      "  anvil auth remove-user <id> [--json]",
-      "  anvil auth login <id> [--json]",
-      "  anvil auth token <id> [--ttl 3600] [--json]",
-      "  anvil auth whoami [--json]",
-      "  anvil workflows list [--json]",
-      "  anvil workflows show <runId> [--json]",
-      "  anvil workflows run <name> [--input '<json>'] [--json]",
-      "  anvil services list [--json]",
+      "  anvil-cloud new <name>",
+      "  anvil-cloud dev [--json] [--agent] [--port 8787] [--client-port 5173]",
+      "  anvil-cloud check [--json]",
+      "  anvil-cloud build [--json]",
+      "  anvil-cloud inspect --local [--json]",
+      "  anvil-cloud lens [--port 8787] [--json]",
+      "  anvil-cloud logs --local [--json]",
+      "  anvil-cloud logs --app <name> --env preview [--since 10m] [--limit 50] [--json]",
+      "  anvil-cloud db list --local [--json]",
+      "  anvil-cloud db dump <table> --local [--json]",
+      "  anvil-cloud plan --stage dev --adapter aws [--verbose] [--json]",
+      "  anvil-cloud deploy --stage dev --adapter aws [--verbose] [--json]",
+      "  anvil-cloud remove --stage dev --adapter aws [--verbose] [--json]",
+      "  anvil-cloud deploy --preview [--wait] [--wait-timeout 60] [--json]",
+      "  anvil-cloud destroy --preview --app <name> --yes [--json]",
+      "  anvil-cloud auth users [--json]",
+      "  anvil-cloud auth add-user <id> [--email x@y] [--roles admin,editor] [--json]",
+      "  anvil-cloud auth remove-user <id> [--json]",
+      "  anvil-cloud auth login <id> [--json]",
+      "  anvil-cloud auth token <id> [--ttl 3600] [--json]",
+      "  anvil-cloud auth whoami [--json]",
+      "  anvil-cloud workflows list [--json]",
+      "  anvil-cloud workflows show <runId> [--json]",
+      "  anvil-cloud workflows run <name> [--input '<json>'] [--json]",
+      "  anvil-cloud services list [--json]",
       "",
     ].join("\n"),
   );
@@ -2365,5 +2366,13 @@ function toPosixPath(value: string): string {
 function isDirectCliEntry(): boolean {
   const entry = process.argv[1];
 
-  return entry ? pathToFileURL(entry).href === import.meta.url : false;
+  if (!entry) return false;
+
+  if (pathToFileURL(entry).href === import.meta.url) return true;
+
+  try {
+    return pathToFileURL(realpathSync(entry)).href === import.meta.url;
+  } catch {
+    return false;
+  }
 }

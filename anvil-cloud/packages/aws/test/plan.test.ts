@@ -100,12 +100,12 @@ describe("createAwsPreviewDeploymentPlan", () => {
       rollback: {
         supported: false,
         commands: expect.arrayContaining([
-          "anvil deploy --preview --json",
-          "anvil destroy --preview --app notes --yes --json",
+          "anvil-cloud deploy --preview --json",
+          "anvil-cloud destroy --preview --app notes --yes --json",
         ]),
       },
       cleanup: {
-        commands: ["anvil destroy --preview --app notes --yes --json"],
+        commands: ["anvil-cloud destroy --preview --app notes --yes --json"],
       },
       cost: {
         billingMode: "usage-based-preview",
@@ -279,7 +279,7 @@ describe("AwsPreviewDeploymentAdapter", () => {
         cell: "notes",
         operations: {
           cleanup: {
-            commands: ["anvil destroy --preview --app notes --yes --json"],
+            commands: ["anvil-cloud destroy --preview --app notes --yes --json"],
           },
         },
       },

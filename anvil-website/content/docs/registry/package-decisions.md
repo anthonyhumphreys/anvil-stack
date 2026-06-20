@@ -26,7 +26,7 @@ Anvil Registry turns package evidence into a decision. The useful part is not ju
 Use explain before approving a dependency bump:
 
 ```bash
-anvil explain left-pad@1.3.0
+anvil-registry explain left-pad@1.3.0
 ```
 
 Useful explain output includes:
@@ -80,7 +80,7 @@ LLM review is not the enforcement authority. It can recommend caution; it cannot
 Use overrides when a human reviewer has inspected the evidence and wants to change the outcome:
 
 ```bash
-anvil approve @internal/build-tool@2.4.1 --reason "internal package, reviewed by platform security"
+anvil-registry approve @internal/build-tool@2.4.1 --reason "internal package, reviewed by platform security"
 ```
 
 Prefer version-specific overrides. Include:

@@ -163,7 +163,7 @@ function startDevServer() {
       settled = true;
       readyReject(
         new Error(
-          `anvil dev exited before ready (${code}).\n${stderr}\n${stdout}`,
+          `anvil-cloud dev exited before ready (${code}).\n${stderr}\n${stdout}`,
         ),
       );
     }

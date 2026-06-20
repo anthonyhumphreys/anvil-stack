@@ -1,21 +1,32 @@
-# @anvil-cloud/cli
+# @anvilstack/cloud-cli
 
 CLI package for Anvil Cloud.
 
-The CLI binary should be `anvil`.
+The CLI binary is `anvil-cloud`.
 
-## Alpha workspace usage
+## Install
 
-Packages are private while the alpha contract settles. There is no supported
-`npm install -g`, `pnpm dlx`, or `npx` path for Anvil Cloud yet. From a
-checkout, build the workspace and run the CLI through the root script:
+```bash
+npm install --global @anvilstack/cloud-cli
+```
+
+or run through the umbrella wrapper:
+
+```bash
+npm install --global @anvilstack/cli
+anvil cloud check --json
+```
+
+## Workspace usage
+
+From a checkout, build the workspace and run the CLI through the root script:
 
 ```bash
 cd anvil-cloud
 pnpm install --ignore-scripts
 pnpm build
-pnpm anvil --help
-pnpm anvil new notes
+pnpm anvil-cloud --help
+pnpm anvil-cloud new notes
 ```
 
 Inside an example Cell, use the built entrypoint directly:
@@ -24,22 +35,17 @@ Inside an example Cell, use the built entrypoint directly:
 node ../../packages/cli/dist/index.js check --json
 ```
 
-The public install path will become the default once package publishing is
-enabled for the Cloud workspace packages. Until then, treat this as a
-contributor-only CLI: the command contract is stable, but distribution
-packaging is deliberately not pretending to be done.
-
 Initial commands:
 
-- `anvil new <name>`
-- `anvil dev`
-- `anvil check`
-- `anvil build`
-- `anvil inspect`
-- `anvil logs`
-- `anvil db list`
-- `anvil db dump <table>`
-- `anvil deploy --preview`
+- `anvil-cloud new <name>`
+- `anvil-cloud dev`
+- `anvil-cloud check`
+- `anvil-cloud build`
+- `anvil-cloud inspect`
+- `anvil-cloud logs`
+- `anvil-cloud db list`
+- `anvil-cloud db dump <table>`
+- `anvil-cloud deploy --preview`
 
 Every automation-oriented command must support `--json`.
 

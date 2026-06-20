@@ -112,7 +112,7 @@ export const productLines = [
     imageAlt: "Anvil Cloud concept showing runtime, manifest, and adapter boundaries.",
     href: "/docs/cloud/overview",
     repoHref: cloudRepositoryUrl,
-    command: "anvil check --json",
+    command: "anvil-cloud check --json",
     points: [
       "Cell DSL for queries, mutations, endpoints, jobs, durable workflows, supervised services, and mounted agents",
       "Contract-first Anvil Agents with capabilities, approvals, provider-neutral manifests, local stub inference, and AWS Bedrock provider support",
@@ -360,7 +360,7 @@ export const docsHighlights = [
     label: "Cloud CLI",
     href: "/docs/cloud/cli-reference",
     icon: Route,
-    description: "Use anvil new, dev, check, build, inspect, logs, db, and deploy preview with stable JSON output."
+    description: "Use anvil-cloud new, dev, check, build, inspect, logs, db, and deploy preview with stable JSON output."
   },
   {
     label: "Node Base reports",
@@ -390,12 +390,12 @@ export const codeTabs = [
   },
   {
     label: "Registry",
-    command: "$ anvil explain left-pad@1.3.0",
+    command: "$ anvil-registry explain left-pad@1.3.0",
     output: ["Decision: allow", "Policy: default@2026-05", "Provenance: verified", "Signals: no high-confidence findings", "Cache identity: sha512-Qw8...Yjm"]
   },
   {
     label: "Cloud",
-    command: "$ anvil check --json",
+    command: "$ anvil-cloud check --json",
     output: ["Config: valid", "Import policy: pass", "Typecheck: pass", "Agent manifests: valid", "Build-ready: true"]
   },
   {

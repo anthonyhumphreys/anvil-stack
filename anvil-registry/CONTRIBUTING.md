@@ -11,7 +11,7 @@ The repo contains:
 - `apps/gateway`: Fastify npm registry proxy and operator routes.
 - `apps/worker`: background package analysis worker.
 - `apps/admin`: Next.js Admin UI and route-handler JSON API.
-- `apps/cli`: `anvil` command-line client.
+- `apps/cli`: `anvil-registry` command-line client.
 - `packages/*`: shared TypeScript packages for policy, analysis, persistence, storage, queueing, config, logging, and registry access.
 - `devcontainer-base`: hardened Node 22 base image and install/report helper scripts.
 - `infra/docker`: local Docker Compose stack.

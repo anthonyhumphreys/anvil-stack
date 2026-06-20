@@ -55,7 +55,7 @@ Safety comes from a smaller contract: declared capabilities, import restrictions
 | Limit | Impact |
 | --- | --- |
 | Auth lifecycle is provider-owned | Token verification is real locally and on AWS (local IdP + OIDC config), but session/refresh management and login UI belong to your provider. See [Auth](/docs/cloud/auth). |
-| Packaging is private | Packages are currently private workspace packages. There is no supported `npm install -g`, `pnpm dlx`, or `npx` path yet. From the `anvil-cloud` workspace, use `pnpm anvil ...` after `pnpm build`; inside examples, use `node ../../packages/cli/dist/index.js ...`. |
+| CLI packaging is alpha | The Cloud CLI package is `@anvilstack/cloud-cli` and exposes `anvil-cloud`. From the `anvil-cloud` workspace, use `pnpm anvil-cloud ...` after `pnpm build`; inside examples, use `node ../../packages/cli/dist/index.js ...`. |
 | Generated client is early | React/Vite is the default UI path and hook helpers exist, but invalidation is manual, there is no cache policy layer, and the generated surface is query/mutation metadata rather than a full SDK. |
 | AWS preview is alpha, not production hosting | Preview provisioning exists for the checked-in smoke Cell, including deploy, public runtime checks, remote inspect/logs, and destroy. Plans include cleanup commands and cost drivers, but authenticated mutation/query checks require an OIDC-backed token setup, and production use still needs wider rollback, auth, and cost-hardening work. |
 | No hosted control plane | A local Lens UI (`/_anvil/lens`) and the `ControlPlaneApi` contract exist, but inspect and logs still depend on local state or AWS deployment metadata. A hosted plane would be a future adapter behind the same contract. See [Anvil Lens](/docs/cloud/lens). |
@@ -69,10 +69,10 @@ Safety comes from a smaller contract: declared capabilities, import restrictions
 Run:
 
 ```bash
-anvil check --json
-anvil build --json
-anvil inspect --local --json
-anvil logs --local --json
+anvil-cloud check --json
+anvil-cloud build --json
+anvil-cloud inspect --local --json
+anvil-cloud logs --local --json
 ```
 
 Before preview deploy, inspect:
@@ -103,7 +103,7 @@ Before treating AWS preview as more than a local deploy experiment, verify:
 - CloudWatch logs
 - deployment metadata table
 - remote `inspect` and `logs`
-- preview cleanup through `anvil destroy --preview --app <name> --yes`
+- preview cleanup through `anvil-cloud destroy --preview --app <name> --yes`
 - rollback path or the current manual fallback: redeploy a known-good checkout or destroy the preview stack
 
 ## Contribution priorities

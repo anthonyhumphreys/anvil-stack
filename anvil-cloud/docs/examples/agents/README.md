@@ -10,9 +10,9 @@ These examples show the first-pass Anvil Agents contract model:
 Run contract checks from a Cell project with:
 
 ```sh
-anvil agents validate
-anvil agents manifest --json
-anvil agents invoke support --input "Review this Cell"
+anvil-cloud agents validate
+anvil-cloud agents manifest --json
+anvil-cloud agents invoke support --input "Review this Cell"
 ```
 
 Local stub mode does not call external APIs. Provider mode uses the same Anvil runtime contract with a registered provider.

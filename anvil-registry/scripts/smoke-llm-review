@@ -71,7 +71,7 @@ NODE
 echo "[anvil] Queueing forced LLM review for $PACKAGE_TARGET"
 ANVIL_REGISTRY_URL="$REGISTRY_URL" \
 ANVIL_ADMIN_TOKEN="$ADMIN_TOKEN" \
-  pnpm --dir "$ROOT_DIR" --filter @anvilstack/cli dev -- llm-review "$PACKAGE_TARGET" --requested-by anvil-llm-smoke --priority high
+  pnpm --dir "$ROOT_DIR" --filter @anvilstack/registry-cli dev -- llm-review "$PACKAGE_TARGET" --requested-by anvil-llm-smoke --priority high
 
 node - "$ADMIN_URL" "$ADMIN_TOKEN" "$PACKAGE_NAME" "$PACKAGE_VERSION" "$MODEL" <<'NODE'
 const [adminUrl, adminToken, packageName, version, model] = process.argv.slice(2);

@@ -275,7 +275,7 @@ export class AwsPreviewDeploymentAdapter implements DeploymentAdapter {
         code: "AWS_BUILD_OUTPUT_REQUIRED",
         message:
           "AWS preview provisioning requires builder output so deploy artifacts can be uploaded.",
-        hint: "Run anvil build before invoking the AWS preview provisioner.",
+        hint: "Run anvil-cloud build before invoking the AWS preview provisioner.",
         plan: synthesis.plan,
         template: synthesis.template,
       };
@@ -297,7 +297,7 @@ export class AwsPreviewDeploymentAdapter implements DeploymentAdapter {
           ok: false,
           code: error.code,
           message: error.message,
-          hint: "Inspect the CloudFormation failure details, fix the generated plan or AWS account configuration, then rerun anvil deploy --preview.",
+          hint: "Inspect the CloudFormation failure details, fix the generated plan or AWS account configuration, then rerun anvil-cloud deploy --preview.",
           plan: synthesis.plan,
           template: synthesis.template,
           artifacts: artifactSummary,
@@ -315,8 +315,8 @@ export class AwsPreviewDeploymentAdapter implements DeploymentAdapter {
       url: provisioned.url,
       resources: provisioned.resources,
       next: [
-        `anvil inspect --app ${deployInput.manifest.cell.name} --env ${deployInput.environment ?? "preview"} --json`,
-        `anvil logs --app ${deployInput.manifest.cell.name} --env ${deployInput.environment ?? "preview"} --json`,
+        `anvil-cloud inspect --app ${deployInput.manifest.cell.name} --env ${deployInput.environment ?? "preview"} --json`,
+        `anvil-cloud logs --app ${deployInput.manifest.cell.name} --env ${deployInput.environment ?? "preview"} --json`,
       ],
       plan: synthesis.plan,
       template: synthesis.template,
@@ -488,8 +488,8 @@ function createOperations(
       supported: false,
       strategy: "manual",
       commands: [
-        "anvil deploy --preview --json",
-        `anvil destroy --preview --app ${manifest.cell.name} --yes --json`,
+        "anvil-cloud deploy --preview --json",
+        `anvil-cloud destroy --preview --app ${manifest.cell.name} --yes --json`,
       ],
       notes: [
         "Preview rollback commands are not implemented yet.",
@@ -506,7 +506,7 @@ function createOperations(
     },
     cleanup: {
       commands: [
-        `anvil destroy --preview --app ${manifest.cell.name} --yes --json`,
+        `anvil-cloud destroy --preview --app ${manifest.cell.name} --yes --json`,
       ],
       notes: [
         "Destroy empties stack-owned buckets and removes deployment metadata when configured.",

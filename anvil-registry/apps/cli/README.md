@@ -1,4 +1,4 @@
-# Anvil CLI
+# Anvil Registry CLI
 
 Command-line client for Anvil Registry package decisions, lockfile scans, reports, overrides, and operator checks.
 
@@ -7,13 +7,13 @@ The CLI is a client. It does not run the registry gateway by itself. You need a 
 ## Install
 
 ```bash
-npm install --global @anvilstack/cli
+npm install --global @anvilstack/registry-cli
 ```
 
 or run without a global install:
 
 ```bash
-npx @anvilstack/cli doctor
+npx @anvilstack/registry-cli doctor
 ```
 
 ## Configure
@@ -44,19 +44,19 @@ docker compose -f infra/docker/docker-compose.yml up -d --build gateway worker a
 Then check it:
 
 ```bash
-anvil doctor
+anvil-registry doctor
 ```
 
 ## Common commands
 
 ```bash
-anvil explain react@latest
-anvil scan package-lock.json --queue-analysis
-anvil warm package-lock.json
-anvil queue status
-anvil approve package@1.2.3 --reason "reviewed dependency" --approved-by security-review
-anvil reports package@1.2.3
-anvil node-base reports --limit 20
+anvil-registry explain react@latest
+anvil-registry scan package-lock.json --queue-analysis
+anvil-registry warm package-lock.json
+anvil-registry queue status
+anvil-registry approve package@1.2.3 --reason "reviewed dependency" --approved-by security-review
+anvil-registry reports package@1.2.3
+anvil-registry node-base reports --limit 20
 ```
 
 ## Documentation

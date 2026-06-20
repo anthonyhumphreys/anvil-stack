@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import { Buffer } from 'node:buffer';
 import { mkdirSync, createWriteStream, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { BrowserWindow, dialog } from 'electron';
-import archiver from 'archiver';
+import { ZipFile } from 'yazl';
 import { getDb } from '../db/database.js';
 import { getItem, getGateTemplates, listGateDecisions } from './lifecycle.service.js';
 import { listAnalyses } from './impact-analysis.service.js';
@@ -478,10 +479,13 @@ export async function generatePack(lifecycleItemId: string): Promise<HandoverPac
 
   await new Promise<void>((resolve, reject) => {
     const output = createWriteStream(zipPath);
-    const archive = archiver('zip', { zlib: { level: 9 } });
-    archive.on('error', reject);
+    const zipFile = new ZipFile();
+
+    zipFile.on('error', reject);
     output.on('close', resolve);
-    archive.pipe(output);
+    output.on('error', reject);
+    zipFile.outputStream.on('error', reject);
+    zipFile.outputStream.pipe(output);
 
     for (let i = 0; i < sectionGenerators.length; i++) {
       const gen = sectionGenerators[i];
@@ -493,7 +497,7 @@ export async function generatePack(lifecycleItemId: string): Promise<HandoverPac
       });
 
       const { content, available } = gen.generate();
-      archive.append(content, { name: gen.fileName });
+      zipFile.addBuffer(Buffer.from(content, 'utf-8'), gen.fileName, { compressionLevel: 9 });
       sections.push({
         name: gen.name,
         sourceType: gen.sourceType,
@@ -502,7 +506,7 @@ export async function generatePack(lifecycleItemId: string): Promise<HandoverPac
       });
     }
 
-    archive.finalize();
+    zipFile.end();
   });
 
   db.prepare(

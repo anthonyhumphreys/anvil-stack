@@ -43,4 +43,4 @@ Supported vertical slice:
 - Function access to tables and secrets is mapped to generated IAM policies.
 - Resource names use deterministic app/stage prefixes.
 
-Use `anvil plan --stage dev --adapter aws` for Anvil-first preview output. Add `--verbose` only when you need to inspect underlying Pulumi resource mappings.
+Use `anvil-cloud plan --stage dev --adapter aws` for Anvil-first preview output. Add `--verbose` only when you need to inspect underlying Pulumi resource mappings.

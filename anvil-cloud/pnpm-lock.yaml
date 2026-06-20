@@ -135,6 +135,40 @@ importers:
 
   packages/cli:
     dependencies:
+      '@aws-sdk/client-bedrock-runtime':
+        specifier: ^3.1063.0
+        version: 3.1071.0
+      '@aws-sdk/client-cloudformation':
+        specifier: ^3.1063.0
+        version: 3.1063.0
+      '@aws-sdk/client-cloudwatch-logs':
+        specifier: ^3.1063.0
+        version: 3.1063.0
+      '@aws-sdk/client-dynamodb':
+        specifier: ^3.1063.0
+        version: 3.1063.0
+      '@aws-sdk/client-eventbridge':
+        specifier: ^3.1066.0
+        version: 3.1066.0
+      '@aws-sdk/client-s3':
+        specifier: ^3.1063.0
+        version: 3.1063.0
+      '@aws-sdk/client-sfn':
+        specifier: ^3.1063.0
+        version: 3.1070.0
+      '@aws-sdk/client-sqs':
+        specifier: ^3.1063.0
+        version: 3.1063.0
+      esbuild:
+        specifier: 0.28.1
+        version: 0.28.1
+      jose:
+        specifier: ^6.2.3
+        version: 6.2.3
+      vite:
+        specifier: ^6.4.3
+        version: 6.4.3(@types/node@22.19.20)(tsx@4.22.4)
+    devDependencies:
       '@anvil-cloud/auth':
         specifier: workspace:^
         version: link:../auth
@@ -150,7 +184,6 @@ importers:
       '@anvil-cloud/runtime':
         specifier: workspace:*
         version: link:../runtime
-    devDependencies:
       tsx:
         specifier: ^4.22.4
         version: 4.22.4

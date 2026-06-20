@@ -1,9 +1,9 @@
-name: Publish @anvilstack/cli to npm
+name: Publish @anvilstack/cloud-cli to npm
 
 on:
   push:
     tags:
-      - "cli-v*"
+      - "cloud-cli-v*"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -18,7 +18,7 @@ permissions:
 
 defaults:
   run:
-    working-directory: anvil-registry
+    working-directory: anvil-cloud
 
 jobs:
   publish:
@@ -35,41 +35,44 @@ jobs:
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 10.11.0
+          version: 9.15.0
 
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: anvil-registry/pnpm-lock.yaml
+          cache-dependency-path: anvil-cloud/pnpm-lock.yaml
 
       - name: Update npm for trusted publishing
         run: npm install -g npm@latest
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile --ignore-scripts
+        run: pnpm install --frozen-lockfile
 
       - name: Verify tag matches package version
         if: github.ref_type == 'tag'
         shell: bash
         run: |
           set -euo pipefail
-          package_version="$(node -p "require('./apps/cli-wrapper/package.json').version")"
-          expected_tag="cli-v${package_version}"
+          package_version="$(node -p "require('./packages/cli/package.json').version")"
+          expected_tag="cloud-cli-v${package_version}"
           if [[ "${GITHUB_REF_NAME}" != "${expected_tag}" ]]; then
-            echo "Tag ${GITHUB_REF_NAME} does not match @anvilstack/cli version ${package_version} (${expected_tag})." >&2
+            echo "Tag ${GITHUB_REF_NAME} does not match @anvilstack/cloud-cli version ${package_version} (${expected_tag})." >&2
             exit 1
           fi
 
-      - name: Build
-        run: pnpm --filter @anvilstack/cli build
+      - name: Typecheck
+        run: pnpm --filter @anvilstack/cloud-cli typecheck
 
       - name: Test
-        run: pnpm --filter @anvilstack/cli test
+        run: pnpm --filter @anvilstack/cloud-cli test
+
+      - name: Build
+        run: pnpm --filter @anvilstack/cloud-cli build
 
       - name: Publish to npm
-        working-directory: anvil-registry/apps/cli-wrapper
+        working-directory: anvil-cloud/packages/cli
         run: |
           extra_args=""
           if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.dry_run }}" == "true" ]]; then

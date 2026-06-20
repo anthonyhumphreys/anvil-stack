@@ -134,8 +134,8 @@ Project-agent discovery from `agents/*/agent.ts` is still early. Mounted Cell Ag
 Contract mode validates and compiles without calling a model provider or executing tools:
 
 ```bash
-anvil agents validate
-anvil agents manifest --json
+anvil-cloud agents validate
+anvil-cloud agents manifest --json
 ```
 
 This checks mounted agents, model config, instructions files, capabilities, approval rules, endpoint/workflow references, and generated provider-neutral manifests.
@@ -156,7 +156,7 @@ The local stub provider implements the generic inference provider interface, ret
 Invoke a mounted agent:
 
 ```bash
-anvil agents invoke support --input "Review this Cell" --json
+anvil-cloud agents invoke support --input "Review this Cell" --json
 ```
 
 Anvil Local also exposes:

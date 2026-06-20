@@ -76,8 +76,8 @@ Local runtime work still discovers Cells, validates mounted agents, resolves ins
 Contract mode validates and compiles definitions without calling a model provider or executing tools.
 
 ```sh
-anvil agents validate
-anvil agents manifest --json
+anvil-cloud agents validate
+anvil-cloud agents manifest --json
 ```
 
 This mode reports project and Cell agent manifests, capability declarations, model configuration, approval-gated actions, and adapter compatibility warnings where available.

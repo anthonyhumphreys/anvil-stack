@@ -1,6 +1,8 @@
 #!/usr/bin/env node
+import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
+import { pathToFileURL } from "node:url";
 
 type ReadTextFile = (path: string) => Promise<string>;
 
@@ -327,7 +329,7 @@ async function doctor(dependencies: CliDependencies): Promise<number> {
 
 async function explain(args: string[], dependencies: CliDependencies): Promise<number> {
   const targetArg = args[0];
-  if (!targetArg) throw new Error("Usage: anvil explain package@version");
+  if (!targetArg) throw new Error("Usage: anvil-registry explain package@version");
   const result = await explainTarget(parseTarget(targetArg), dependencies);
   printDecision(result, dependencies);
   return result.decision.action === "block" ? 1 : 0;
@@ -335,7 +337,7 @@ async function explain(args: string[], dependencies: CliDependencies): Promise<n
 
 async function scan(args: string[], dependencies: CliDependencies): Promise<number> {
   const path = firstPositionalArg(args);
-  if (!path) throw new Error("Usage: anvil scan package-lock.json|pnpm-lock.yaml|yarn.lock [--queue-analysis]");
+  if (!path) throw new Error("Usage: anvil-registry scan package-lock.json|pnpm-lock.yaml|yarn.lock [--queue-analysis]");
   const shouldQueueAnalysis = hasFlag(args, "--queue-analysis");
   const targets = await parseLockfile(path, dependencies.readFile);
   const results = await Promise.all(targets.map((target) => explainTarget(target, dependencies)));
@@ -360,7 +362,7 @@ async function scan(args: string[], dependencies: CliDependencies): Promise<numb
 
 async function warm(args: string[], dependencies: CliDependencies): Promise<number> {
   const path = args[0];
-  if (!path) throw new Error("Usage: anvil warm package-lock.json|pnpm-lock.yaml|yarn.lock");
+  if (!path) throw new Error("Usage: anvil-registry warm package-lock.json|pnpm-lock.yaml|yarn.lock");
   const targets = await parseLockfile(path, dependencies.readFile);
   const packages = [...new Set(targets.map((target) => target.packageName))].sort();
   const registryUrl = registryBaseUrl(dependencies.env);
@@ -411,11 +413,11 @@ async function smoke(args: string[], dependencies: CliDependencies): Promise<num
 
 async function approve(args: string[], dependencies: CliDependencies): Promise<number> {
   const targetArg = args[0];
-  if (!targetArg) throw new Error('Usage: anvil approve package@version --reason "intentional dependency" [--approved-by reviewer] [--expires-at 2026-06-20T00:00:00Z]');
+  if (!targetArg) throw new Error('Usage: anvil-registry approve package@version --reason "intentional dependency" [--approved-by reviewer] [--expires-at 2027-06-20T00:00:00Z]');
   const reason = readFlag(args, "--reason");
   if (!reason) throw new Error("Approval requires --reason.");
   const action = readFlag(args, "--action") as "allow" | "warn" | "quarantine" | "block" | undefined;
-  const approvedBy = readFlag(args, "--approved-by") ?? "anvil-cli";
+  const approvedBy = readFlag(args, "--approved-by") ?? "anvil-registry-cli";
   const expiresAt = readFlag(args, "--expires-at");
   const target = parseTarget(targetArg);
   const registryUrl = registryBaseUrl(dependencies.env);
@@ -434,8 +436,8 @@ async function approve(args: string[], dependencies: CliDependencies): Promise<n
 
 async function revoke(args: string[], dependencies: CliDependencies): Promise<number> {
   const targetArg = args[0];
-  if (!targetArg) throw new Error("Usage: anvil revoke package@version [--revoked-by reviewer]");
-  const revokedBy = readFlag(args, "--revoked-by") ?? "anvil-cli";
+  if (!targetArg) throw new Error("Usage: anvil-registry revoke package@version [--revoked-by reviewer]");
+  const revokedBy = readFlag(args, "--revoked-by") ?? "anvil-registry-cli";
   const target = parseTarget(targetArg);
   const registryUrl = registryBaseUrl(dependencies.env);
 
@@ -453,9 +455,9 @@ async function revoke(args: string[], dependencies: CliDependencies): Promise<nu
 
 async function llmReview(args: string[], dependencies: CliDependencies): Promise<number> {
   const targetArg = args[0];
-  if (!targetArg) throw new Error("Usage: anvil llm-review package@version [--requested-by reviewer] [--priority high]");
+  if (!targetArg) throw new Error("Usage: anvil-registry llm-review package@version [--requested-by reviewer] [--priority high]");
   const target = parseTarget(targetArg);
-  const requestedBy = readFlag(args, "--requested-by") ?? "anvil-cli";
+  const requestedBy = readFlag(args, "--requested-by") ?? "anvil-registry-cli";
   const priority = readFlag(args, "--priority");
   const registryUrl = registryBaseUrl(dependencies.env);
   const result = await requestJson<{ queued: number; jobs: Array<{ packageName: string; version: string }> }>(dependencies, `${registryUrl}/-/anvil/llm-review`, {
@@ -533,9 +535,9 @@ async function popularIndexShow(_args: string[], dependencies: CliDependencies):
 
 async function popularIndexUpload(args: string[], dependencies: CliDependencies): Promise<number> {
   const path = args[0];
-  if (!path) throw new Error("Usage: anvil popular-index upload popular-index.json [--generated-at 2026-05-20T00:00:00Z]");
+  if (!path) throw new Error("Usage: anvil-registry popular-index upload popular-index.json [--generated-at 2026-05-20T00:00:00Z]");
   const generatedAt = readFlag(args, "--generated-at");
-  const uploadedBy = readFlag(args, "--uploaded-by") ?? "anvil-cli";
+  const uploadedBy = readFlag(args, "--uploaded-by") ?? "anvil-registry-cli";
   const index = parsePopularPackageIndex(JSON.parse(await dependencies.readFile(path)) as unknown, path);
   const adminUrl = adminBaseUrl(dependencies.env);
   const result = await requestJson<{ activeKey: string; datedKey: string; index: PopularPackageIndex }>(dependencies, `${adminUrl}/api/popular-package-index`, {
@@ -575,7 +577,7 @@ async function policyTest(args: string[], dependencies: CliDependencies): Promis
 
 async function analysisReport(args: string[], dependencies: CliDependencies): Promise<number> {
   const targetArg = firstPositionalArg(args);
-  if (!targetArg) throw new Error("Usage: anvil reports package@version [--integrity sha512-...] [--shasum ...] [--analyser static-v1]");
+  if (!targetArg) throw new Error("Usage: anvil-registry reports package@version [--integrity sha512-...] [--shasum ...] [--analyser static-v1]");
   const target = parseTarget(targetArg);
   const adminUrl = adminBaseUrl(dependencies.env);
   const params = new URLSearchParams();
@@ -597,7 +599,7 @@ async function analysisReportCompare(args: string[], dependencies: CliDependenci
   const targetArg = firstPositionalArg(args);
   if (!targetArg) {
     throw new Error(
-      "Usage: anvil reports compare package@version [--left-integrity sha512-old] [--right-integrity sha512-new] [--left-shasum ...] [--right-shasum ...] [--left-analyser static-v1] [--right-analyser static-v1]"
+      "Usage: anvil-registry reports compare package@version [--left-integrity sha512-old] [--right-integrity sha512-new] [--left-shasum ...] [--right-shasum ...] [--left-analyser static-v1] [--right-analyser static-v1]"
     );
   }
   const target = parseTarget(targetArg);
@@ -649,7 +651,7 @@ async function nodeBaseReports(args: string[], dependencies: CliDependencies): P
 
 async function nodeBaseReport(args: string[], dependencies: CliDependencies): Promise<number> {
   const id = args[0];
-  if (!id) throw new Error("Usage: anvil node-base report <id>");
+  if (!id) throw new Error("Usage: anvil-registry node-base report <id>");
   const adminUrl = adminBaseUrl(dependencies.env);
   const result = await requestJson<{ report: NodeBaseReportRecord }>(dependencies, `${adminUrl}/api/node-base/reports/${encodeURIComponent(id)}`, {
     headers: adminAuthHeader(dependencies.env)
@@ -675,7 +677,7 @@ async function enqueueAnalysisTargets(targets: PackageTarget[], dependencies: Cl
       "content-type": "application/json",
       ...adminAuthHeader(dependencies.env)
     },
-    body: JSON.stringify({ targets, reason: "lockfile_scan", priority: "normal", requestedBy: "anvil-cli" })
+    body: JSON.stringify({ targets, reason: "lockfile_scan", priority: "normal", requestedBy: "anvil-registry-cli" })
   });
   return result.queued ?? targets.length;
 }
@@ -699,7 +701,7 @@ function printDecision(result: ExplainResult, dependencies: CliDependencies) {
     dependencies.stdout.write(`- ${result.override.action}: ${result.override.reason}\n`);
   }
   if (result.decision.action === "block" || result.decision.action === "quarantine") {
-    dependencies.stdout.write(`Override:\n- anvil approve ${result.packageName}@${result.version} --reason "intentional dependency"\n`);
+    dependencies.stdout.write(`Override:\n- anvil-registry approve ${result.packageName}@${result.version} --reason "intentional dependency"\n`);
   }
 }
 
@@ -1215,27 +1217,27 @@ function compareTargets(a: PackageTarget, b: PackageTarget) {
 
 function usage() {
   return `Usage:
-  anvil doctor
-  anvil explain package@version
-  anvil scan package-lock.json [--queue-analysis]
-  anvil scan pnpm-lock.yaml [--queue-analysis]
-  anvil scan yarn.lock [--queue-analysis]
-  anvil warm package-lock.json
-  anvil warm yarn.lock
-  anvil smoke [package]
-  anvil approve package@version --reason "intentional dependency" [--approved-by reviewer] [--expires-at 2026-06-20T00:00:00Z]
-  anvil revoke package@version [--revoked-by reviewer]
-  anvil llm-review package@version [--requested-by reviewer] [--priority high]
-  anvil queue status
-  anvil overrides [--target package@version] [--package package] [--version version] [--limit 20]
-  anvil audit-events [--target package@version] [--limit 20]
-  anvil popular-index show
-  anvil popular-index upload popular-index.json [--generated-at 2026-05-20T00:00:00Z]
-  anvil reports package@version [--integrity sha512-...] [--shasum ...] [--analyser static-v1]
-  anvil reports compare package@version [--left-integrity sha512-old] [--right-integrity sha512-new]
-  anvil node-base reports [--type dependency|lifecycle|ioc|network] [--risk risky|high|medium] [--limit 20]
-  anvil node-base report <id>
-  anvil policy test package.json
+  anvil-registry doctor
+  anvil-registry explain package@version
+  anvil-registry scan package-lock.json [--queue-analysis]
+  anvil-registry scan pnpm-lock.yaml [--queue-analysis]
+  anvil-registry scan yarn.lock [--queue-analysis]
+  anvil-registry warm package-lock.json
+  anvil-registry warm yarn.lock
+  anvil-registry smoke [package]
+  anvil-registry approve package@version --reason "intentional dependency" [--approved-by reviewer] [--expires-at 2027-06-20T00:00:00Z]
+  anvil-registry revoke package@version [--revoked-by reviewer]
+  anvil-registry llm-review package@version [--requested-by reviewer] [--priority high]
+  anvil-registry queue status
+  anvil-registry overrides [--target package@version] [--package package] [--version version] [--limit 20]
+  anvil-registry audit-events [--target package@version] [--limit 20]
+  anvil-registry popular-index show
+  anvil-registry popular-index upload popular-index.json [--generated-at 2026-05-20T00:00:00Z]
+  anvil-registry reports package@version [--integrity sha512-...] [--shasum ...] [--analyser static-v1]
+  anvil-registry reports compare package@version [--left-integrity sha512-old] [--right-integrity sha512-new]
+  anvil-registry node-base reports [--type dependency|lifecycle|ioc|network] [--risk risky|high|medium] [--limit 20]
+  anvil-registry node-base report <id>
+  anvil-registry policy test package.json
 
 Admin-gated commands read ANVIL_ADMIN_TOKEN, falling back to ADMIN_TOKEN.
 `;
@@ -1251,6 +1253,19 @@ function defaultDependencies(): CliDependencies {
   };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isDirectCliEntry()) {
   process.exitCode = await run(process.argv.slice(2));
+}
+
+function isDirectCliEntry(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+
+  if (pathToFileURL(entry).href === import.meta.url) return true;
+
+  try {
+    return pathToFileURL(realpathSync(entry)).href === import.meta.url;
+  } catch {
+    return false;
+  }
 }

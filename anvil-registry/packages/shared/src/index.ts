@@ -436,6 +436,6 @@ export function buildAnvilError(packageName: string, version: string, decision: 
         package: String(reason.evidence?.candidate),
         reason: "Popular package with a similar name."
       })),
-    overrideHint: `Run: anvil approve ${packageIdentity(packageName, version)} --reason "intentional"`
+    overrideHint: `Run: anvil-registry approve ${packageIdentity(packageName, version)} --reason "intentional"`
   };
 }

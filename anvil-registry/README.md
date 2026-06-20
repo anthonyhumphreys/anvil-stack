@@ -19,7 +19,7 @@ The source-of-truth specs and public docs live in:
 - `apps/gateway`: Fastify npm registry proxy and operator routes.
 - `apps/worker`: queue consumer for static package analysis and optional LLM risk review.
 - `apps/admin`: Next.js Admin UI and route-handler JSON API for package reviews, policy, overrides, reports, popular package index operations, and Node Base reports.
-- `apps/cli`: `anvil` command-line client for explain, scan, warm, smoke, queue, LLM review, reports, overrides, policy tests, and Node Base report views.
+- `apps/cli`: `anvil-registry` command-line client for explain, scan, warm, smoke, queue, LLM review, reports, overrides, policy tests, and Node Base report views.
 - `packages/*`: shared config, logging, npm registry client, policy engine, package analysis, name-squatting, LLM review, persistence, object store, queue, provenance, and shared types.
 - `infra/docker`: local Docker Compose stack.
 - `infra/sst`: AWS/SST infrastructure.
@@ -106,7 +106,7 @@ Then install as usual. Scoped packages, tarballs, and npm audit requests should 
 Install the published CLI:
 
 ```bash
-npm install --global @anvilstack/cli
+npm install --global @anvilstack/registry-cli
 ```
 
 The CLI is a client. It requires a running gateway for package decision commands, and Admin plus `ANVIL_ADMIN_TOKEN` for protected operations.
@@ -114,14 +114,14 @@ The CLI is a client. It requires a running gateway for package decision commands
 Common commands:
 
 ```bash
-ANVIL_REGISTRY_URL=http://localhost:4873 anvil explain is-number@7.0.0
-ANVIL_REGISTRY_URL=http://localhost:4873 anvil scan pnpm-lock.yaml --queue-analysis
-ANVIL_REGISTRY_URL=http://localhost:4873 anvil scan yarn.lock --queue-analysis
-ANVIL_REGISTRY_URL=http://localhost:4873 anvil warm package-lock.json
-ANVIL_REGISTRY_URL=http://localhost:4873 ANVIL_ADMIN_TOKEN=local-dev-token anvil queue status
-ANVIL_ADMIN_URL=http://localhost:3000 anvil reports is-number@7.0.0
-ANVIL_ADMIN_URL=http://localhost:3000 anvil reports compare is-number@7.0.0
-ANVIL_ADMIN_URL=http://localhost:3000 anvil node-base reports --limit 20
+ANVIL_REGISTRY_URL=http://localhost:4873 anvil-registry explain is-number@7.0.0
+ANVIL_REGISTRY_URL=http://localhost:4873 anvil-registry scan pnpm-lock.yaml --queue-analysis
+ANVIL_REGISTRY_URL=http://localhost:4873 anvil-registry scan yarn.lock --queue-analysis
+ANVIL_REGISTRY_URL=http://localhost:4873 anvil-registry warm package-lock.json
+ANVIL_REGISTRY_URL=http://localhost:4873 ANVIL_ADMIN_TOKEN=local-dev-token anvil-registry queue status
+ANVIL_ADMIN_URL=http://localhost:3000 anvil-registry reports is-number@7.0.0
+ANVIL_ADMIN_URL=http://localhost:3000 anvil-registry reports compare is-number@7.0.0
+ANVIL_ADMIN_URL=http://localhost:3000 anvil-registry node-base reports --limit 20
 ```
 
 Admin-gated mutations read `ANVIL_ADMIN_TOKEN`, falling back to `ADMIN_TOKEN`.

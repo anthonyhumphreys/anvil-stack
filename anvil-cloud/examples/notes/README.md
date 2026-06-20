@@ -22,7 +22,7 @@ Or run the repeatable local smoke verifier from the `anvil-cloud` workspace:
 pnpm verify:notes-local
 ```
 
-It starts `anvil dev` on ephemeral ports, creates a local user, mints a real
+It starts `anvil-cloud dev` on ephemeral ports, creates a local user, mints a real
 JWT, calls authenticated note mutation/query routes, checks inspect/logs, and
 then shuts the dev server down.
 

@@ -103,7 +103,7 @@ export function App() {
             spellCheck={false}
             value={token}
             onChange={(event) => saveToken(event.currentTarget.value)}
-            placeholder="Paste anvil auth token output"
+            placeholder="Paste anvil-cloud auth token output"
           />
         </label>
         <button type="button" onClick={() => void notesQuery.refetch()}>

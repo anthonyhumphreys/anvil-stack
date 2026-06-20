@@ -24,8 +24,8 @@ describe("main", () => {
     const output = await captureStdout(() => main(["help"]));
 
     expect(output).toContain("Anvil Cloud CLI");
-    expect(output).toContain("anvil check");
-    expect(output).toContain("anvil destroy --preview --app <name> --yes");
+    expect(output).toContain("anvil-cloud check");
+    expect(output).toContain("anvil-cloud destroy --preview --app <name> --yes");
   });
 
   it("scaffolds a Vite React client by default", async () => {

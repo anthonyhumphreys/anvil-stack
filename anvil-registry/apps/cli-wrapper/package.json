@@ -1,13 +1,15 @@
 {
-  "name": "@anvilstack/registry-cli",
-  "version": "0.1.0",
+  "name": "@anvilstack/cli",
+  "version": "0.2.0",
   "license": "MIT",
-  "description": "Command-line client for Anvil Registry package decisions, lockfile scans, reports, and overrides.",
+  "description": "Umbrella command dispatcher for Anvil product CLIs.",
   "private": false,
   "type": "module",
   "bin": {
-    "anvil-registry": "dist/index.js"
+    "anvil": "dist/index.js"
   },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "files": [
     "dist/index.d.ts",
     "dist/index.js",
@@ -21,7 +23,10 @@
     "dev": "tsx src/index.ts",
     "lint": "tsc -p tsconfig.json --noEmit",
     "prepublishOnly": "pnpm run build && pnpm run test",
-    "test": "vitest run --passWithNoTests",
+    "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "tsx": "^4.22.4"
   }
 }

@@ -79,14 +79,14 @@ Inspection surface for logs, database state, manifest, runtime status, and diagn
 ```sh
 pnpm create anvil-cloud notes
 cd notes
-anvil dev
-anvil check --json
-anvil inspect --local --json
-anvil build
-anvil deploy --preview --json
+anvil-cloud dev
+anvil-cloud check --json
+anvil-cloud inspect --local --json
+anvil-cloud build
+anvil-cloud deploy --preview --json
 ```
 
-The initial implementation may use `anvil new notes` before a package initializer exists.
+The initial implementation may use `anvil-cloud new notes` before a package initializer exists.
 
 ## Cell project structure
 
@@ -237,7 +237,7 @@ This function is the core execution boundary and should be shared by local dev, 
 
 ## Builder output
 
-`anvil build` writes:
+`anvil-cloud build` writes:
 
 ```txt
 .anvil/
@@ -282,7 +282,7 @@ This function is the core execution boundary and should be shared by local dev, 
 
 ## Local dev requirements
 
-`anvil dev` starts:
+`anvil-cloud dev` starts:
 
 - local runtime server;
 - client dev server;
@@ -329,15 +329,15 @@ Production inspection routes must not be exposed publicly. Remote inspection sho
 ## Alpha CLI commands
 
 ```txt
-anvil new <name>
-anvil dev [--json] [--agent]
-anvil check [--json]
-anvil build [--json]
-anvil inspect [--local] [--json]
-anvil logs [--local] [--json]
-anvil db list [--local] [--json]
-anvil db dump <table> [--local] [--json]
-anvil deploy --preview [--json]
+anvil-cloud new <name>
+anvil-cloud dev [--json] [--agent]
+anvil-cloud check [--json]
+anvil-cloud build [--json]
+anvil-cloud inspect [--local] [--json]
+anvil-cloud logs [--local] [--json]
+anvil-cloud db list [--local] [--json]
+anvil-cloud db dump <table> [--local] [--json]
+anvil-cloud deploy --preview [--json]
 ```
 
 Every automation-oriented command must support `--json`.
@@ -409,7 +409,7 @@ capabilities: {
 
 ## Deployment adapter contract
 
-The core manifest and runtime contract must remain provider-neutral. Deployment adapters map Anvil concepts to provider resources after `anvil build` has produced artefacts.
+The core manifest and runtime contract must remain provider-neutral. Deployment adapters map Anvil concepts to provider resources after `anvil-cloud build` has produced artefacts.
 
 The adapter contract should cover:
 
@@ -447,7 +447,7 @@ AWS is the first planned alpha adapter. Its concrete service mapping belongs in 
 
 ### Milestone 2: local runtime
 
-- `anvil dev` runs a local server.
+- `anvil-cloud dev` runs a local server.
 - Queries and mutations are callable over HTTP.
 - Local auth can switch users.
 - Local logs are written as NDJSON.
@@ -455,7 +455,7 @@ AWS is the first planned alpha adapter. Its concrete service mapping belongs in 
 
 ### Milestone 3: builder
 
-- `anvil build` emits server bundle, client bundle, manifest, generated client metadata, and build metadata.
+- `anvil-cloud build` emits server bundle, client bundle, manifest, generated client metadata, and build metadata.
 - Forbidden import checks run before bundle output.
 - Manifest includes schema, queries, mutations, endpoints, jobs, and capabilities.
 
@@ -475,7 +475,7 @@ AWS is the first planned alpha adapter. Its concrete service mapping belongs in 
 
 ### Milestone 6: AWS preview adapter
 
-- `anvil deploy --preview --json` deploys one Cell through the AWS adapter.
+- `anvil-cloud deploy --preview --json` deploys one Cell through the AWS adapter.
 - Deployed Cell can serve client assets and query/mutation endpoints.
 - Remote logs and manifest can be inspected through CLI.
 

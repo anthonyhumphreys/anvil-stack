@@ -25,11 +25,11 @@ The AWS adapter maps the provider-neutral graph as follows:
 The CLI shape is app-first:
 
 ```sh
-anvil dev
-anvil inspect
-anvil plan --stage dev --adapter aws
-anvil deploy --stage dev --adapter aws
-anvil remove --stage dev --adapter aws
+anvil-cloud dev
+anvil-cloud inspect
+anvil-cloud plan --stage dev --adapter aws
+anvil-cloud deploy --stage dev --adapter aws
+anvil-cloud remove --stage dev --adapter aws
 ```
 
 Human-readable plan output lists Anvil concepts first, for example cells, HTTP routes, functions, tables, secrets, and permissions. Use `--verbose` or `--debug` to include underlying Pulumi resource mappings while diagnosing adapter behaviour.

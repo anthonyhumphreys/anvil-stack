@@ -8,12 +8,12 @@ Every command intended for automation must support `--json`. Agent-facing comman
 
 ## Commands
 
-### `anvil new <name>`
+### `anvil-cloud new <name>`
 
 Creates a new Anvil Cell project.
 
 ```sh
-anvil new notes
+anvil-cloud new notes
 ```
 
 Expected output:
@@ -23,7 +23,7 @@ Created Anvil Cell notes
 
 Next steps:
   cd notes
-  anvil dev
+  anvil-cloud dev
 ```
 
 JSON output:
@@ -33,11 +33,11 @@ JSON output:
   "ok": true,
   "cell": "notes",
   "path": "./notes",
-  "next": ["cd notes", "anvil dev"]
+  "next": ["cd notes", "anvil-cloud dev"]
 }
 ```
 
-### `anvil dev`
+### `anvil-cloud dev`
 
 Starts local runtime and client dev server.
 
@@ -50,7 +50,7 @@ Options:
 --client-port client port, default 5173
 ```
 
-### `anvil check`
+### `anvil-cloud check`
 
 Runs validation without building deploy artefacts.
 
@@ -63,17 +63,17 @@ Checks:
 - manifest extraction safety;
 - declared capabilities.
 
-### `anvil build`
+### `anvil-cloud build`
 
 Builds local artefacts into `.anvil/dist` and `.anvil/generated`.
 
-### `anvil inspect`
+### `anvil-cloud inspect`
 
 Inspects local or remote runtime state.
 
 ```sh
-anvil inspect --local --json
-anvil inspect --app notes --env preview --json
+anvil-cloud inspect --local --json
+anvil-cloud inspect --app notes --env preview --json
 ```
 
 Remote AWS inspect returns stable JSON errors for missing or malformed
@@ -87,13 +87,13 @@ returns the Lambda bundle key and SHA-256 digest from the latest preview deploy.
 Remote AWS commands only accept `--env preview` during alpha. Any other
 environment returns `INVALID_USAGE`.
 
-### `anvil logs`
+### `anvil-cloud logs`
 
 Reads local or remote structured logs.
 
 ```sh
-anvil logs --local --json
-anvil logs --app notes --env preview --since 10m --json
+anvil-cloud logs --local --json
+anvil-cloud logs --app notes --env preview --since 10m --json
 ```
 
 Remote AWS logs use the same deployment metadata lookup as inspect, so metadata
@@ -106,31 +106,31 @@ error cause.
 The AWS log reader follows CloudWatch pagination until the requested limit is
 reached or there are no more pages.
 
-### `anvil db list`
+### `anvil-cloud db list`
 
 Lists known database tables.
 
 ```sh
-anvil db list --local --json
+anvil-cloud db list --local --json
 ```
 
-### `anvil db dump <table>`
+### `anvil-cloud db dump <table>`
 
 Dumps table rows for local or remote inspection.
 
 ```sh
-anvil db dump todos --local --json
+anvil-cloud db dump todos --local --json
 ```
 
 Remote database dump should require explicit environment and future confirmation/policy rules.
 
-### `anvil deploy --preview`
+### `anvil-cloud deploy --preview`
 
 Deploys a Cell to a preview environment through the configured deployment adapter. AWS is the first planned alpha adapter.
 
 In alpha, deploy may be implemented after local runtime, builder, manifest, and the deployment adapter contract are stable.
 
-`anvil deploy --preview --wait --json` polls the deployed runtime
+`anvil-cloud deploy --preview --wait --json` polls the deployed runtime
 `/_anvil/health` endpoint after successful provisioning. Use
 `--wait-timeout <seconds>` to adjust the default 60 second timeout; the value
 must be positive. If the runtime does not become healthy, the JSON result uses
@@ -147,7 +147,7 @@ publishing deployment metadata, deploy returns
 `AWS_PROVISIONING_OPERATION_FAILED` with the failed operation and provider
 error cause.
 
-### `anvil destroy --preview --app <name> --yes`
+### `anvil-cloud destroy --preview --app <name> --yes`
 
 Deletes the AWS preview stack for a Cell. The command is intentionally explicit:
 alpha cleanup requires `--preview`, `--app`, and `--yes` so a typo does not
@@ -223,7 +223,7 @@ Failed command:
 
 ## Agent mode
 
-`anvil dev --agent --json` emits JSONL events:
+`anvil-cloud dev --agent --json` emits JSONL events:
 
 ```jsonl
 {"type":"ready","runtimeUrl":"http://localhost:8787","clientUrl":"http://localhost:5173"}

@@ -89,6 +89,12 @@ importers:
 
   apps/cli: {}
 
+  apps/cli-wrapper:
+    devDependencies:
+      tsx:
+        specifier: ^4.22.4
+        version: 4.22.4
+
   apps/gateway:
     dependencies:
       '@anvilstack/config':

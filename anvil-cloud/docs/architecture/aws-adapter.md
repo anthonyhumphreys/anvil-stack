@@ -85,7 +85,7 @@ Anvil Runtime. It maps:
 - `POST /_anvil/mutation/:name` to mutation runtime requests;
 - `/api/*` to declared endpoint runtime requests.
 - `GET /_anvil/health` to a lightweight runtime health response used by
-  `anvil deploy --preview --wait`.
+  `anvil-cloud deploy --preview --wait`.
 
 The bridge responds to `OPTIONS` preflight requests and adds CORS headers to
 runtime responses so generated browser clients can call the preview runtime. It
@@ -205,9 +205,9 @@ Cloud logs should be structured JSON and include:
 - message;
 - metadata.
 
-`anvil logs --app <name> --json` should query CloudWatch logs and return stable JSON.
+`anvil-cloud logs --app <name> --json` should query CloudWatch logs and return stable JSON.
 
-`anvil inspect --app <name> --json` should return:
+`anvil-cloud inspect --app <name> --json` should return:
 
 - active manifest;
 - deployment id;
@@ -221,11 +221,11 @@ Cloud logs should be structured JSON and include:
 
 ## Deploy pipeline
 
-`anvil deploy --preview --json` should:
+`anvil-cloud deploy --preview --json` should:
 
 ```txt
-1. Run anvil check
-2. Run anvil build
+1. Run anvil-cloud check
+2. Run anvil-cloud build
 3. Read manifest
 4. Compare capabilities with previous deployment
 5. Produce provider-neutral deployment plan with AWS-specific detail fields where needed
@@ -236,7 +236,7 @@ Cloud logs should be structured JSON and include:
 10. Return deployed URL and inspection commands
 ```
 
-`anvil destroy --preview --app <name> --yes` deletes the computed AWS preview
+`anvil-cloud destroy --preview --app <name> --yes` deletes the computed AWS preview
 CloudFormation stack for the Cell. It does not implement rollback or historical
 release promotion; it is the alpha cleanup path for preview resources. Before
 deleting the stack, destroy empties stack-owned S3 buckets from CloudFormation
@@ -302,8 +302,8 @@ The AWS runtime host currently supports:
 
 Remote inspection and logs use deployment metadata plus CloudWatch Logs. The CLI
 remote reader requires `ANVIL_AWS_DEPLOYMENT_METADATA_TABLE` so it can find the
-latest deployment record for `anvil inspect --app <name> --env preview --json`
-and `anvil logs --app <name> --env preview --json`. Inspect reports runtime,
+latest deployment record for `anvil-cloud inspect --app <name> --env preview --json`
+and `anvil-cloud logs --app <name> --env preview --json`. Inspect reports runtime,
 assets, logs, database, files, EventBridge, SQS, SQS dead-letter queue, and
 deployment metadata resource ids when the corresponding CloudFormation outputs
 are present. New
@@ -340,8 +340,8 @@ name the missing adapter variable, such as `ANVIL_EVENT_BUS_NAME` for events.
     "assetsBucket": "anvil-cell-assets-notes-preview"
   },
   "next": [
-    "anvil inspect --app notes --env preview --json",
-    "anvil logs --app notes --env preview --json"
+    "anvil-cloud inspect --app notes --env preview --json",
+    "anvil-cloud logs --app notes --env preview --json"
   ]
 }
 ```

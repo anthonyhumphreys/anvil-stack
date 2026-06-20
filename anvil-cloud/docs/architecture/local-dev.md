@@ -23,7 +23,7 @@ Local development is the first-class alpha experience.
 
 ## Local process model
 
-`anvil dev` starts two local processes:
+`anvil-cloud dev` starts two local processes:
 
 ```txt
 Anvil local runtime server  http://localhost:8787
@@ -31,7 +31,7 @@ Anvil client server         http://localhost:5173
 ```
 
 The alpha implementation runs a Vite-backed React client server during
-`anvil dev` and proxies runtime requests to Anvil Local. Production builds still
+`anvil-cloud dev` and proxies runtime requests to Anvil Local. Production builds still
 emit static client assets under `.anvil/dist/client` so deployment adapters have
 a boring artifact shape. Boring is a feature here.
 
@@ -84,9 +84,9 @@ The database API should remain constrained so a future DynamoDB Local mode can b
 Recommended CLI commands:
 
 ```sh
-anvil db list --local --json
-anvil db dump todos --local --json
-anvil db reset --local
+anvil-cloud db list --local --json
+anvil-cloud db dump todos --local --json
+anvil-cloud db reset --local
 ```
 
 ## Local auth
@@ -109,9 +109,9 @@ Example `auth.json`:
 Useful commands:
 
 ```sh
-anvil auth as local_anth
-anvil auth current --json
-anvil auth create-user anth@example.local --role admin
+anvil-cloud auth as local_anth
+anvil-cloud auth current --json
+anvil-cloud auth create-user anth@example.local --role admin
 ```
 
 Auth commands may be implemented after the core local runtime, but the runtime should be designed for them.
@@ -166,7 +166,7 @@ Each event should include:
 
 ## Inspector
 
-`GET /_anvil/inspect` and `anvil inspect --local --json` should return:
+`GET /_anvil/inspect` and `anvil-cloud inspect --local --json` should return:
 
 ```json
 {
@@ -194,7 +194,7 @@ Each event should include:
 
 ## Agent mode
 
-`anvil dev --agent --json` should emit JSONL lifecycle events instead of rich terminal UI.
+`anvil-cloud dev --agent --json` should emit JSONL lifecycle events instead of rich terminal UI.
 
 Example:
 

@@ -90,7 +90,7 @@ For a smoother first rollout, seed Anvil with lockfiles from popular repositorie
 ```bash
 ANVIL_REGISTRY_URL=http://localhost:4873 \
 ANVIL_ADMIN_TOKEN=local-dev-token \
-  anvil warm ./seed-lockfiles/package-lock.api.json
+  anvil-registry warm ./seed-lockfiles/package-lock.api.json
 ```
 
 Use representative `package-lock.json`, `pnpm-lock.yaml`, and `yarn.lock` files from high-traffic apps, shared packages, and production builds. This warms metadata and tarball cache paths and queues analysis for exact resolved versions. It does not approve anything by itself; policy decisions still come from the normal deterministic pipeline.

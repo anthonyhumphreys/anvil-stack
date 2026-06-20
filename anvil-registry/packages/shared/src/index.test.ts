@@ -52,7 +52,7 @@ describe("buildPolicyDecisionAuditEvent", () => {
 
 describe("resolveOverrideExpiry", () => {
   it("normalizes explicit expiry timestamps", () => {
-    expect(resolveOverrideExpiry("2026-06-20T00:00:00Z", 30)).toBe("2026-06-20T00:00:00.000Z");
+    expect(resolveOverrideExpiry("2027-06-20T00:00:00Z", 30)).toBe("2027-06-20T00:00:00.000Z");
   });
 
   it("applies the configured default expiry when no explicit timestamp is provided", () => {
