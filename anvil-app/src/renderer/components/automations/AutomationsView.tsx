@@ -6,6 +6,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock3,
+  GitBranch,
   Loader2,
   Play,
   RefreshCw,
@@ -17,6 +18,7 @@ import type {
   AutomationDaemonStatus,
   AutomationDefinition,
   AutomationDefinitionInput,
+  AutomationLoopConfig,
   AutomationRun,
   AutomationRunEvent,
   Persona,
@@ -33,6 +35,16 @@ import { buildAutomationDisplayEntries } from '../../utils/automation-run-events
 
 const DEFAULT_CRON = '0 9 * * 1-5';
 
+const DEFAULT_LOOP_CONFIG: AutomationLoopConfig = {
+  enabled: false,
+  mode: 'sequence',
+  memberPersonaIds: ['coder', 'reviewer'],
+  separateThreads: true,
+  maxIterations: 4,
+  stopCondition:
+    'Stop when the work is complete, blocked, reviewed cleanly, or ready for human approval.',
+};
+
 function emptyDraft(repoIds: string[]): AutomationDefinitionInput {
   return {
     name: '',
@@ -44,6 +56,22 @@ function emptyDraft(repoIds: string[]): AutomationDefinitionInput {
     enabled: true,
     allowRepoWrite: true,
     allowCommandRun: true,
+    loopConfig: DEFAULT_LOOP_CONFIG,
+  };
+}
+
+function automationToDraft(automation: AutomationDefinition): AutomationDefinitionInput {
+  return {
+    name: automation.name,
+    personaId: automation.personaId,
+    prompt: automation.prompt,
+    repoIds: automation.repoIds,
+    scheduleCron: automation.scheduleCron,
+    timezone: automation.timezone,
+    enabled: automation.enabled,
+    allowRepoWrite: automation.allowRepoWrite,
+    allowCommandRun: automation.allowCommandRun,
+    loopConfig: automation.loopConfig ?? DEFAULT_LOOP_CONFIG,
   };
 }
 
@@ -65,6 +93,10 @@ function formatTimestamp(value?: string): string {
   if (!value) return 'Never';
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function isLoopAutomation(automation: AutomationDefinition): boolean {
+  return automation.loopConfig?.enabled === true;
 }
 
 export function AutomationsView() {
@@ -103,21 +135,25 @@ export function AutomationsView() {
   );
   const displayEntries = useMemo(() => buildAutomationDisplayEntries(runEvents), [runEvents]);
 
-  const loadRuns = useCallback(async (automationId: string | null) => {
-    if (!automationId) {
-      setRuns([]);
-      setSelectedRunId(null);
-      setRunEvents([]);
-      return;
-    }
+  const loadRuns = useCallback(
+    async (automationId: string | null) => {
+      if (!automationId) {
+        setRuns([]);
+        setSelectedRunId(null);
+        setRunEvents([]);
+        return;
+      }
 
-    const nextRuns = await window.anvil.automations.listRuns(automationId);
-    setRuns(nextRuns);
-    const fallbackRunId = selectedRunId && nextRuns.some((run) => run.id === selectedRunId)
-      ? selectedRunId
-      : nextRuns[0]?.id ?? null;
-    setSelectedRunId(fallbackRunId);
-  }, [selectedRunId]);
+      const nextRuns = await window.anvil.automations.listRuns(automationId);
+      setRuns(nextRuns);
+      const fallbackRunId =
+        selectedRunId && nextRuns.some((run) => run.id === selectedRunId)
+          ? selectedRunId
+          : (nextRuns[0]?.id ?? null);
+      setSelectedRunId(fallbackRunId);
+    },
+    [selectedRunId],
+  );
 
   const loadEvents = useCallback(async (runId: string | null) => {
     if (!runId) {
@@ -144,9 +180,10 @@ export function AutomationsView() {
       setDaemonStatus(nextDaemonStatus);
 
       const nextSelectedAutomationId =
-        selectedAutomationId && nextAutomations.some((automation) => automation.id === selectedAutomationId)
+        selectedAutomationId &&
+        nextAutomations.some((automation) => automation.id === selectedAutomationId)
           ? selectedAutomationId
-          : nextAutomations[0]?.id ?? null;
+          : (nextAutomations[0]?.id ?? null);
       setSelectedAutomationId(nextSelectedAutomationId);
 
       if (!nextSelectedAutomationId) {
@@ -156,17 +193,7 @@ export function AutomationsView() {
         setRunEvents([]);
       } else {
         const automation = nextAutomations.find((item) => item.id === nextSelectedAutomationId)!;
-        setDraft({
-          name: automation.name,
-          personaId: automation.personaId,
-          prompt: automation.prompt,
-          repoIds: automation.repoIds,
-          scheduleCron: automation.scheduleCron,
-          timezone: automation.timezone,
-          enabled: automation.enabled,
-          allowRepoWrite: automation.allowRepoWrite,
-          allowCommandRun: automation.allowCommandRun,
-        });
+        setDraft(automationToDraft(automation));
         await loadRuns(nextSelectedAutomationId);
       }
     } catch (err) {
@@ -199,17 +226,7 @@ export function AutomationsView() {
 
   const handleSelectAutomation = (automation: AutomationDefinition) => {
     setSelectedAutomationId(automation.id);
-    setDraft({
-      name: automation.name,
-      personaId: automation.personaId,
-      prompt: automation.prompt,
-      repoIds: automation.repoIds,
-      scheduleCron: automation.scheduleCron,
-      timezone: automation.timezone,
-      enabled: automation.enabled,
-      allowRepoWrite: automation.allowRepoWrite,
-      allowCommandRun: automation.allowCommandRun,
-    });
+    setDraft(automationToDraft(automation));
   };
 
   const handleNewAutomation = () => {
@@ -347,14 +364,14 @@ export function AutomationsView() {
                 <div className="text-xs font-semibold uppercase tracking-wide text-text-tertiary">
                   Saved automations
                 </div>
-                <div className="mt-1 text-xs text-text-secondary">
-                  {automations.length} saved
-                </div>
+                <div className="mt-1 text-xs text-text-secondary">{automations.length} saved</div>
               </div>
             )}
             <button
               type="button"
-              title={automationsCollapsed ? 'Expand saved automations' : 'Collapse saved automations'}
+              title={
+                automationsCollapsed ? 'Expand saved automations' : 'Collapse saved automations'
+              }
               onClick={toggleAutomationsCollapsed}
               className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
             >
@@ -413,7 +430,15 @@ export function AutomationsView() {
                         {automation.lastRunStatus ?? (automation.enabled ? 'ready' : 'disabled')}
                       </span>
                     </div>
-                    <div className="mt-1 text-xs text-text-secondary">{automation.scheduleCron}</div>
+                    <div className="mt-1 text-xs text-text-secondary">
+                      {automation.scheduleCron}
+                    </div>
+                    {isLoopAutomation(automation) && (
+                      <div className="mt-2 inline-flex items-center gap-1 rounded-full border border-accent/30 bg-accent/10 px-2 py-0.5 text-xs text-accent">
+                        <GitBranch size={11} />
+                        Loop: {automation.loopConfig?.mode}
+                      </div>
+                    )}
                     <div className="mt-2 text-xs text-text-tertiary">
                       Next: {formatTimestamp(automation.nextRunAt)}
                     </div>
@@ -442,7 +467,9 @@ export function AutomationsView() {
                 <span className="text-sm font-medium text-text-secondary">Name</span>
                 <input
                   value={draft.name}
-                  onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))}
+                  onChange={(event) =>
+                    setDraft((current) => ({ ...current, name: event.target.value }))
+                  }
                   className="rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary"
                   placeholder="Weekday repo triage"
                 />
@@ -479,6 +506,173 @@ export function AutomationsView() {
                 </label>
               </div>
 
+              <div className="rounded-lg border border-border-subtle bg-bg-primary p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2 text-sm font-semibold text-text-primary">
+                      <GitBranch size={15} className="text-accent" />
+                      Loop
+                    </div>
+                    <p className="mt-1 text-xs text-text-secondary">
+                      Run persona threads from a heartbeat, with handoff context between turns.
+                    </p>
+                  </div>
+                  <label className="flex items-center gap-2 text-sm text-text-primary">
+                    <input
+                      type="checkbox"
+                      checked={draft.loopConfig?.enabled === true}
+                      onChange={(event) =>
+                        setDraft((current) => ({
+                          ...current,
+                          loopConfig: {
+                            ...(current.loopConfig ?? DEFAULT_LOOP_CONFIG),
+                            enabled: event.target.checked,
+                          },
+                        }))
+                      }
+                    />
+                    Enabled
+                  </label>
+                </div>
+
+                {draft.loopConfig?.enabled && (
+                  <div className="mt-4 grid gap-4">
+                    <div className="grid gap-2 md:grid-cols-2">
+                      <div>
+                        <div className="text-sm font-medium text-text-secondary">Routing</div>
+                        <div className="mt-2 grid grid-cols-2 rounded-md border border-border-subtle bg-bg-secondary p-1">
+                          {(['sequence', 'dynamic'] as const).map((mode) => (
+                            <button
+                              key={mode}
+                              type="button"
+                              onClick={() =>
+                                setDraft((current) => ({
+                                  ...current,
+                                  loopConfig: {
+                                    ...(current.loopConfig ?? DEFAULT_LOOP_CONFIG),
+                                    mode,
+                                  },
+                                }))
+                              }
+                              className={`rounded px-3 py-1.5 text-sm capitalize transition-colors ${
+                                draft.loopConfig?.mode === mode
+                                  ? 'bg-accent text-white'
+                                  : 'text-text-secondary hover:text-text-primary'
+                              }`}
+                            >
+                              {mode}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <label className="grid gap-1">
+                        <span className="text-sm font-medium text-text-secondary">
+                          Max thread turns
+                        </span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={8}
+                          value={
+                            draft.loopConfig?.maxIterations ?? DEFAULT_LOOP_CONFIG.maxIterations
+                          }
+                          onChange={(event) =>
+                            setDraft((current) => ({
+                              ...current,
+                              loopConfig: {
+                                ...(current.loopConfig ?? DEFAULT_LOOP_CONFIG),
+                                maxIterations: Number(event.target.value),
+                              },
+                            }))
+                          }
+                          className="rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary"
+                        />
+                      </label>
+                    </div>
+
+                    <div>
+                      <div className="text-sm font-medium text-text-secondary">
+                        {draft.loopConfig?.mode === 'dynamic'
+                          ? 'Eligible specialist personas'
+                          : 'Sequence members'}
+                      </div>
+                      {draft.loopConfig?.mode === 'dynamic' && (
+                        <p className="mt-1 text-xs text-text-tertiary">
+                          The primary persona starts as orchestrator, then specialist threads use
+                          its plan.
+                        </p>
+                      )}
+                      <div className="mt-2 grid gap-2 md:grid-cols-2">
+                        {personas.map((persona) => {
+                          const selected =
+                            draft.loopConfig?.memberPersonaIds.includes(persona.id) ?? false;
+                          return (
+                            <button
+                              key={persona.id}
+                              type="button"
+                              onClick={() =>
+                                setDraft((current) => {
+                                  const loopConfig = current.loopConfig ?? DEFAULT_LOOP_CONFIG;
+                                  const memberPersonaIds = selected
+                                    ? loopConfig.memberPersonaIds.filter((id) => id !== persona.id)
+                                    : [...loopConfig.memberPersonaIds, persona.id];
+                                  return {
+                                    ...current,
+                                    loopConfig: {
+                                      ...loopConfig,
+                                      memberPersonaIds,
+                                    },
+                                  };
+                                })
+                              }
+                              className={`flex items-start gap-2 rounded-md border px-3 py-2 text-left transition-colors ${
+                                selected
+                                  ? 'border-accent bg-accent/10'
+                                  : 'border-border-subtle bg-bg-secondary hover:border-border'
+                              }`}
+                            >
+                              <span
+                                className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full"
+                                style={{ backgroundColor: persona.colour }}
+                              />
+                              <span className="min-w-0">
+                                <span className="block text-sm font-medium text-text-primary">
+                                  {persona.name}
+                                </span>
+                                <span className="line-clamp-2 text-xs text-text-secondary">
+                                  {persona.description}
+                                </span>
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <label className="grid gap-1">
+                      <span className="text-sm font-medium text-text-secondary">
+                        Stop condition
+                      </span>
+                      <input
+                        value={draft.loopConfig?.stopCondition ?? ''}
+                        onChange={(event) =>
+                          setDraft((current) => ({
+                            ...current,
+                            loopConfig: {
+                              ...(current.loopConfig ?? DEFAULT_LOOP_CONFIG),
+                              stopCondition: event.target.value,
+                            },
+                          }))
+                        }
+                        className="rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary"
+                        placeholder="Stop when review is clean or a blocker needs a human."
+                      />
+                    </label>
+                  </div>
+                )}
+              </div>
+
               <label className="grid gap-1">
                 <span className="text-sm font-medium text-text-secondary">Schedule (cron)</span>
                 <input
@@ -498,7 +692,9 @@ export function AutomationsView() {
                 <span className="text-sm font-medium text-text-secondary">Prompt</span>
                 <textarea
                   value={draft.prompt}
-                  onChange={(event) => setDraft((current) => ({ ...current, prompt: event.target.value }))}
+                  onChange={(event) =>
+                    setDraft((current) => ({ ...current, prompt: event.target.value }))
+                  }
                   className="min-h-[200px] rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary"
                   placeholder="Review the attached repos for failed builds, TODOs, and risky changes. Summarise the top actions."
                 />
@@ -579,7 +775,11 @@ export function AutomationsView() {
                       disabled={running}
                       className="flex items-center gap-1 rounded-md border border-border px-3 py-2 text-sm text-text-secondary hover:text-text-primary disabled:opacity-60"
                     >
-                      {running ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
+                      {running ? (
+                        <Loader2 size={14} className="animate-spin" />
+                      ) : (
+                        <Play size={14} />
+                      )}
                       Run now
                     </button>
                     <button
@@ -706,7 +906,9 @@ export function AutomationsView() {
                                 Open worktree
                               </button>
                             ) : (
-                              <span className="shrink-0 text-xs text-text-tertiary">Cleaned up</span>
+                              <span className="shrink-0 text-xs text-text-tertiary">
+                                Cleaned up
+                              </span>
                             )}
                           </div>
                         ))}
@@ -726,20 +928,23 @@ export function AutomationsView() {
                     <div className="space-y-2">
                       {displayEntries.map((entry, index) => {
                         if (entry.kind === 'assistant') {
-                          return <AssistantMessage key={`assistant-${index}`} content={entry.content} />;
+                          return (
+                            <AssistantMessage key={`assistant-${index}`} content={entry.content} />
+                          );
                         }
                         if (entry.kind === 'thinking') {
-                          return <ThinkingMessage key={`thinking-${index}`} content={entry.content} />;
+                          return (
+                            <ThinkingMessage key={`thinking-${index}`} content={entry.content} />
+                          );
                         }
                         if (entry.kind === 'system') {
-                          return <SystemRunMessage key={`system-${index}`} content={entry.content} />;
+                          return (
+                            <SystemRunMessage key={`system-${index}`} content={entry.content} />
+                          );
                         }
                         if (entry.kind === 'activity') {
                           return (
-                            <ActivityGroupMessage
-                              key={`activity-${index}`}
-                              events={entry.events}
-                            />
+                            <ActivityGroupMessage key={`activity-${index}`} events={entry.events} />
                           );
                         }
                         return <ChatEventRenderer key={`event-${index}`} event={entry.event} />;

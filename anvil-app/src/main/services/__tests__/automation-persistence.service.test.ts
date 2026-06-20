@@ -100,6 +100,67 @@ describe('automation persistence', () => {
     expect(updated?.nextRunAt).toBeUndefined();
   });
 
+  it('persists automation loop configuration', () => {
+    const created = createAutomationRecord(
+      'ws-1',
+      {
+        name: 'Review loop',
+        personaId: 'coder',
+        prompt: 'Implement and review the next ready task.',
+        repoIds: ['repo-1'],
+        scheduleCron: '0 9 * * 1-5',
+        timezone: 'Europe/London',
+        enabled: true,
+        allowRepoWrite: true,
+        allowCommandRun: true,
+        loopConfig: {
+          enabled: true,
+          mode: 'sequence',
+          memberPersonaIds: ['coder', 'reviewer', 'security'],
+          separateThreads: true,
+          maxIterations: 3,
+          stopCondition: 'Stop after reviewer finds no actionable issues.',
+        },
+      },
+      '2026-04-29T08:00:00.000Z',
+    );
+
+    expect(created.loopConfig).toEqual({
+      enabled: true,
+      mode: 'sequence',
+      memberPersonaIds: ['coder', 'reviewer', 'security'],
+      separateThreads: true,
+      maxIterations: 3,
+      stopCondition: 'Stop after reviewer finds no actionable issues.',
+    });
+
+    const updated = updateAutomationRecord(
+      created.id,
+      {
+        name: 'Review loop',
+        personaId: 'coder',
+        prompt: 'Implement and review the next ready task.',
+        repoIds: ['repo-1'],
+        scheduleCron: '0 9 * * 1-5',
+        timezone: 'Europe/London',
+        enabled: true,
+        allowRepoWrite: true,
+        allowCommandRun: true,
+        loopConfig: {
+          enabled: false,
+          mode: 'dynamic',
+          memberPersonaIds: ['coder'],
+          separateThreads: true,
+          maxIterations: 1,
+          stopCondition: '',
+        },
+      },
+      '2026-04-29T08:00:00.000Z',
+    );
+
+    expect(updated?.loopConfig).toBeUndefined();
+  });
+
   it('persists run lifecycle, retained worktrees, and events', () => {
     const automation = createAutomationRecord(
       'ws-1',

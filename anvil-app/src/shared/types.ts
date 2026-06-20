@@ -962,6 +962,7 @@ export interface WorkspaceScaffoldMaybeCompleteResult {
 export type AutomationExecutionMode = 'disposable-worktree';
 export type AutomationRunTrigger = 'manual' | 'schedule';
 export type AutomationRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type AutomationLoopMode = 'sequence' | 'dynamic';
 export type AutomationEventType =
   | 'status'
   | 'text'
@@ -971,6 +972,15 @@ export type AutomationEventType =
   | 'tool_call'
   | 'error'
   | 'system';
+
+export interface AutomationLoopConfig {
+  enabled: boolean;
+  mode: AutomationLoopMode;
+  memberPersonaIds: string[];
+  separateThreads: boolean;
+  maxIterations: number;
+  stopCondition: string;
+}
 
 export interface AutomationDefinitionInput {
   name: string;
@@ -982,6 +992,7 @@ export interface AutomationDefinitionInput {
   enabled: boolean;
   allowRepoWrite: boolean;
   allowCommandRun: boolean;
+  loopConfig?: AutomationLoopConfig;
 }
 
 export interface AutomationDefinition extends AutomationDefinitionInput {
