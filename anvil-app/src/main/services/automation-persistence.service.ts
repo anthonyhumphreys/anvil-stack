@@ -3,6 +3,7 @@ import type {
   AutomationDefinition,
   AutomationDefinitionInput,
   AutomationEventType,
+  AutomationLoopConfig,
   AutomationRun,
   AutomationRunEvent,
   AutomationRunStatus,
@@ -23,6 +24,7 @@ interface AutomationDefinitionRow {
   enabled: number;
   allow_repo_write: number;
   allow_command_run: number;
+  loop_config_json: string | null;
   execution_mode: string;
   last_run_at: string | null;
   next_run_at: string | null;
@@ -74,6 +76,44 @@ function parseMetadata(value: string | null | undefined): Record<string, unknown
   }
 }
 
+function parseLoopConfig(value: string | null | undefined): AutomationLoopConfig | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as Partial<AutomationLoopConfig>;
+    if (!parsed || typeof parsed !== 'object') return undefined;
+    const memberPersonaIds = Array.isArray(parsed.memberPersonaIds)
+      ? parsed.memberPersonaIds.filter(
+          (id): id is string => typeof id === 'string' && id.length > 0,
+        )
+      : [];
+    return {
+      enabled: parsed.enabled === true,
+      mode: parsed.mode === 'dynamic' ? 'dynamic' : 'sequence',
+      memberPersonaIds,
+      separateThreads: parsed.separateThreads !== false,
+      maxIterations:
+        typeof parsed.maxIterations === 'number' && Number.isFinite(parsed.maxIterations)
+          ? parsed.maxIterations
+          : 1,
+      stopCondition: typeof parsed.stopCondition === 'string' ? parsed.stopCondition : '',
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function serialiseLoopConfig(config: AutomationLoopConfig | undefined): string | null {
+  if (!config?.enabled) return null;
+  return JSON.stringify({
+    enabled: true,
+    mode: config.mode,
+    memberPersonaIds: config.memberPersonaIds,
+    separateThreads: config.separateThreads,
+    maxIterations: config.maxIterations,
+    stopCondition: config.stopCondition.trim(),
+  });
+}
+
 function mapAutomationDefinition(row: AutomationDefinitionRow): AutomationDefinition {
   return {
     id: row.id,
@@ -87,6 +127,7 @@ function mapAutomationDefinition(row: AutomationDefinitionRow): AutomationDefini
     enabled: row.enabled === 1,
     allowRepoWrite: row.allow_repo_write === 1,
     allowCommandRun: row.allow_command_run === 1,
+    loopConfig: parseLoopConfig(row.loop_config_json),
     executionMode: row.execution_mode as AutomationDefinition['executionMode'],
     lastRunAt: row.last_run_at ?? undefined,
     nextRunAt: row.next_run_at ?? undefined,
@@ -138,9 +179,9 @@ export function listAutomations(workspaceId: string): AutomationDefinition[] {
 
 export function getAutomation(automationId: string): AutomationDefinition | null {
   const db = getDb();
-  const row = db
-    .prepare('SELECT * FROM automation_definitions WHERE id = ?')
-    .get(automationId) as AutomationDefinitionRow | undefined;
+  const row = db.prepare('SELECT * FROM automation_definitions WHERE id = ?').get(automationId) as
+    | AutomationDefinitionRow
+    | undefined;
   return row ? mapAutomationDefinition(row) : null;
 }
 
@@ -166,11 +207,12 @@ export function createAutomationRecord(
        enabled,
        allow_repo_write,
        allow_command_run,
+       loop_config_json,
        execution_mode,
        next_run_at,
        created_at,
        updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'disposable-worktree', ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'disposable-worktree', ?, ?, ?)`,
   ).run(
     id,
     workspaceId,
@@ -183,6 +225,7 @@ export function createAutomationRecord(
     input.enabled ? 1 : 0,
     input.allowRepoWrite ? 1 : 0,
     input.allowCommandRun ? 1 : 0,
+    serialiseLoopConfig(input.loopConfig),
     nextRunAt,
     now,
     now,
@@ -209,6 +252,7 @@ export function updateAutomationRecord(
        enabled = ?,
        allow_repo_write = ?,
        allow_command_run = ?,
+       loop_config_json = ?,
        next_run_at = ?,
        updated_at = ?
      WHERE id = ?`,
@@ -222,6 +266,7 @@ export function updateAutomationRecord(
     input.enabled ? 1 : 0,
     input.allowRepoWrite ? 1 : 0,
     input.allowCommandRun ? 1 : 0,
+    serialiseLoopConfig(input.loopConfig),
     nextRunAt,
     new Date().toISOString(),
     automationId,
@@ -301,9 +346,9 @@ export function listAutomationRuns(automationId: string): AutomationRun[] {
 
 export function getAutomationRun(runId: string): AutomationRun | null {
   const db = getDb();
-  const row = db
-    .prepare('SELECT * FROM automation_runs WHERE id = ?')
-    .get(runId) as AutomationRunRow | undefined;
+  const row = db.prepare('SELECT * FROM automation_runs WHERE id = ?').get(runId) as
+    | AutomationRunRow
+    | undefined;
   return row ? mapAutomationRun(row) : null;
 }
 
@@ -448,11 +493,7 @@ export function appendAutomationRunEvent(
       )
       .get(runId) as AutomationRunEventRow | undefined;
 
-    if (
-      previous &&
-      previous.type === type &&
-      (previous.metadata_json ?? null) === metadataJson
-    ) {
+    if (previous && previous.type === type && (previous.metadata_json ?? null) === metadataJson) {
       const mergedContent = `${previous.content}${content}`;
       db.prepare('UPDATE automation_run_events SET content = ? WHERE id = ?').run(
         mergedContent,

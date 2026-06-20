@@ -6,6 +6,7 @@ import type {
   AutomationDaemonStatus,
   AutomationDefinition,
   AutomationDefinitionInput,
+  AutomationLoopConfig,
   AutomationRun,
   AutomationRunEvent,
   AutomationRunWorktree,
@@ -38,7 +39,11 @@ import {
   isAutomationDaemonMode,
   uninstallAutomationDaemon,
 } from './automation-daemon.service.js';
-import { commonParentDir, handleCodexServerLine, sendCodexJsonRpc } from './codex-protocol.service.js';
+import {
+  commonParentDir,
+  handleCodexServerLine,
+  sendCodexJsonRpc,
+} from './codex-protocol.service.js';
 import { addWorktree, getFullStatus, removeWorktree } from './git.service.js';
 import { notifyIfUnfocused } from './notification.service.js';
 import { buildSystemPrompt, getPersonaById } from './persona.service.js';
@@ -77,17 +82,46 @@ function validateAutomationInput(input: AutomationDefinitionInput): void {
   if (!getPersonaById(input.personaId)) {
     throw new Error(`Unknown persona: ${input.personaId}`);
   }
+  if (input.loopConfig?.enabled) {
+    const members = input.loopConfig.memberPersonaIds;
+    if (members.length === 0) {
+      throw new Error('Select at least one loop member.');
+    }
+    for (const memberPersonaId of members) {
+      if (!getPersonaById(memberPersonaId)) {
+        throw new Error(`Unknown loop persona: ${memberPersonaId}`);
+      }
+    }
+    if (!Number.isInteger(input.loopConfig.maxIterations) || input.loopConfig.maxIterations < 1) {
+      throw new Error('Loop max iterations must be at least 1.');
+    }
+    if (input.loopConfig.maxIterations > 8) {
+      throw new Error('Loop max iterations cannot exceed 8.');
+    }
+  }
   if (input.repoIds.length === 0) {
     throw new Error('Select at least one repository for this automation.');
   }
   validateAutomationCron(input.scheduleCron, input.timezone);
 }
 
+function getActiveLoopConfig(automation: AutomationDefinition): AutomationLoopConfig | null {
+  if (!automation.loopConfig?.enabled) return null;
+  if (automation.loopConfig.memberPersonaIds.length === 0) return null;
+  return {
+    ...automation.loopConfig,
+    separateThreads: true,
+    maxIterations: Math.min(Math.max(automation.loopConfig.maxIterations, 1), 8),
+  };
+}
+
 function buildAutomationInstructions(
   automation: AutomationDefinition,
   worktrees: PreparedWorktree[],
 ): string {
-  const repoLines = worktrees.map((worktree) => `- ${worktree.repoName}: ${worktree.path}`).join('\n');
+  const repoLines = worktrees
+    .map((worktree) => `- ${worktree.repoName}: ${worktree.path}`)
+    .join('\n');
   const repoWriteLine = automation.allowRepoWrite
     ? '- You may edit files inside the disposable worktree paths only.'
     : '- Do not edit files. Treat this as a read-only automation run.';
@@ -107,6 +141,87 @@ function buildAutomationInstructions(
     '### Worktree Paths',
     repoLines,
   ].join('\n');
+}
+
+function buildLoopMemberPrompt(
+  automation: AutomationDefinition,
+  loopConfig: AutomationLoopConfig,
+  personaId: string,
+  iteration: number,
+  previousOutputs: string[],
+): string {
+  const persona = getPersonaById(personaId);
+  const loopLines = [
+    `Loop mode: ${loopConfig.mode}.`,
+    `Loop member: ${persona?.name ?? personaId} (${personaId}).`,
+    `Iteration: ${iteration + 1} of ${loopConfig.maxIterations}.`,
+    `Stop condition: ${loopConfig.stopCondition.trim() || 'Stop when the requested automation outcome is complete or blocked.'}`,
+    'This persona turn is intentionally running in its own Codex thread.',
+  ];
+
+  if (loopConfig.mode === 'sequence') {
+    loopLines.push(
+      'Act as the next member in the configured sequence. Use previous member notes as handoff context.',
+    );
+  } else {
+    loopLines.push(
+      'Use the orchestrator plan and previous thread notes to decide whether your persona is needed for this turn. If not, say so briefly and do not make changes.',
+      'If you do act, explain why this persona was needed before doing the work.',
+    );
+  }
+
+  const handoff =
+    previousOutputs.length > 0
+      ? previousOutputs
+          .map((output, index) => `### Previous thread ${index + 1}\n${output}`)
+          .join('\n\n')
+      : 'No previous loop thread output yet.';
+
+  return [
+    '## Loop Run',
+    ...loopLines.map((line) => `- ${line}`),
+    '',
+    '## Automation Goal',
+    automation.prompt,
+    '',
+    '## Previous Thread Handoff',
+    handoff,
+  ].join('\n');
+}
+
+function buildLoopOrchestratorPrompt(
+  automation: AutomationDefinition,
+  loopConfig: AutomationLoopConfig,
+): string {
+  const memberLines = loopConfig.memberPersonaIds.map((personaId) => {
+    const persona = getPersonaById(personaId);
+    return `- ${persona?.name ?? personaId} (${personaId}): ${persona?.description ?? 'No description available.'}`;
+  });
+
+  return [
+    '## Dynamic Loop Orchestrator',
+    'You are designing the thread loop for this automation run before specialist persona threads execute.',
+    'Do not edit files in this orchestrator turn.',
+    'Create a concise execution plan shaped around the actual work, not a generic checklist.',
+    'Call out which specialist personas are likely needed, what each should inspect or change, and when the loop should stop.',
+    'Prefer fewer thread turns when the work is small. Token bonfires are not a personality.',
+    '',
+    '## Automation Goal',
+    automation.prompt,
+    '',
+    '## Eligible Specialist Personas',
+    memberLines.join('\n') || '- No specialist personas selected.',
+    '',
+    '## Stop Condition',
+    loopConfig.stopCondition.trim() ||
+      'Stop when the requested automation outcome is complete or blocked.',
+  ].join('\n');
+}
+
+function getLoopMemberForTurn(loopConfig: AutomationLoopConfig, turnIndex: number): string {
+  const memberIndex =
+    loopConfig.mode === 'sequence' ? turnIndex % loopConfig.memberPersonaIds.length : turnIndex;
+  return loopConfig.memberPersonaIds[memberIndex];
 }
 
 function sanitiseBranchName(name: string): string {
@@ -174,13 +289,9 @@ async function getChangedFileCount(worktrees: PreparedWorktree[]): Promise<numbe
 function serialiseEvent(runId: string, event: CodexEvent): AutomationRunEvent | null {
   switch (event.type) {
     case 'text':
-      return event.text
-        ? appendAutomationRunEvent(runId, 'text', event.text)
-        : null;
+      return event.text ? appendAutomationRunEvent(runId, 'text', event.text) : null;
     case 'thinking':
-      return event.text
-        ? appendAutomationRunEvent(runId, 'thinking', event.text)
-        : null;
+      return event.text ? appendAutomationRunEvent(runId, 'thinking', event.text) : null;
     case 'file_edit':
       return appendAutomationRunEvent(
         runId,
@@ -200,9 +311,7 @@ function serialiseEvent(runId: string, event: CodexEvent): AutomationRunEvent | 
     case 'error':
       return appendAutomationRunEvent(runId, 'error', event.errorMessage || 'Unknown error');
     case 'status':
-      return event.status
-        ? appendAutomationRunEvent(runId, 'status', event.status)
-        : null;
+      return event.status ? appendAutomationRunEvent(runId, 'status', event.status) : null;
     default:
       return null;
   }
@@ -212,6 +321,12 @@ async function runCodexAutomation(
   automation: AutomationDefinition,
   runId: string,
   worktrees: PreparedWorktree[],
+  options?: {
+    personaId?: string;
+    prompt?: string;
+    extraInstructions?: string;
+    eventMetadata?: Record<string, unknown>;
+  },
 ): Promise<{ assistantMessage: string }> {
   const codexStatus = await detectCodexCli();
   if (!codexStatus.installed) {
@@ -219,11 +334,27 @@ async function runCodexAutomation(
   }
 
   const settings = getSettings();
-  const pathOverrides = Object.fromEntries(worktrees.map((worktree) => [worktree.repoId, worktree.path]));
+  const pathOverrides = Object.fromEntries(
+    worktrees.map((worktree) => [worktree.repoId, worktree.path]),
+  );
+  const personaId = options?.personaId ?? automation.personaId;
   const systemPrompt = [
-    buildSystemPrompt(automation.personaId, automation.repoIds, automation.workspaceId, pathOverrides),
+    buildSystemPrompt(personaId, automation.repoIds, automation.workspaceId, pathOverrides),
     buildAutomationInstructions(automation, worktrees),
-  ].join('\n\n');
+    options?.extraInstructions,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+  const prompt = options?.prompt ?? automation.prompt;
+
+  if (options?.eventMetadata) {
+    appendAutomationRunEvent(
+      runId,
+      'system',
+      `Starting ${personaId} loop thread.`,
+      options.eventMetadata,
+    );
+  }
 
   const cwd = commonParentDir(worktrees.map((worktree) => worktree.path));
   const env: Record<string, string> = { ...(process.env as Record<string, string>) };
@@ -272,7 +403,7 @@ async function runCodexAutomation(
             threadReady = true;
             sendCodexJsonRpc(proc, 'turn/start', {
               threadId: state.threadId,
-              input: [{ type: 'text', text: automation.prompt }],
+              input: [{ type: 'text', text: prompt }],
             });
           },
           onTurnCompleted: () => {
@@ -323,6 +454,104 @@ async function runCodexAutomation(
   });
 }
 
+async function runLoopAutomation(
+  automation: AutomationDefinition,
+  runId: string,
+  worktrees: PreparedWorktree[],
+  loopConfig: AutomationLoopConfig,
+): Promise<{ assistantMessage: string }> {
+  const previousOutputs: string[] = [];
+  const summaries: string[] = [];
+  const maxTurns = Math.min(loopConfig.maxIterations, 8);
+  const memberTurns =
+    loopConfig.mode === 'sequence'
+      ? maxTurns
+      : Math.max(0, Math.min(loopConfig.memberPersonaIds.length, maxTurns - 1));
+
+  appendAutomationRunEvent(
+    runId,
+    'system',
+    `Starting ${loopConfig.mode} loop with up to ${maxTurns} thread turn${maxTurns === 1 ? '' : 's'}.`,
+    {
+      loopMode: loopConfig.mode,
+      memberPersonaIds: loopConfig.memberPersonaIds,
+      maxTurns,
+    },
+  );
+
+  if (loopConfig.mode === 'dynamic') {
+    const orchestratorPersona = getPersonaById(automation.personaId);
+    const { assistantMessage } = await runCodexAutomation(automation, runId, worktrees, {
+      personaId: automation.personaId,
+      prompt: buildLoopOrchestratorPrompt(automation, loopConfig),
+      eventMetadata: {
+        loopMode: loopConfig.mode,
+        loopMemberIndex: 0,
+        personaId: automation.personaId,
+        role: 'orchestrator',
+      },
+      extraInstructions: [
+        '## Orchestrator Thread Discipline',
+        '- Shape the loop for the current work and hand off clear instructions to specialist threads.',
+        '- Do not perform implementation in this thread.',
+        '- Keep the plan compact enough for the next threads to use.',
+      ].join('\n'),
+    });
+
+    const label = `${orchestratorPersona?.name ?? automation.personaId} Orchestrator`;
+    const summary = assistantMessage || `${label} completed without a final message.`;
+    previousOutputs.push(`Persona: ${label}\n${summary}`);
+    summaries.push(`## ${label}\n${summary}`);
+    appendAutomationRunEvent(runId, 'system', `Completed ${label} loop thread.`, {
+      loopMode: loopConfig.mode,
+      loopMemberIndex: 0,
+      personaId: automation.personaId,
+      role: 'orchestrator',
+    });
+  }
+
+  for (let index = 0; index < memberTurns; index += 1) {
+    const personaId = getLoopMemberForTurn(loopConfig, index);
+    const persona = getPersonaById(personaId);
+    const turnIndex = loopConfig.mode === 'dynamic' ? index + 1 : index;
+    const prompt = buildLoopMemberPrompt(
+      automation,
+      loopConfig,
+      personaId,
+      turnIndex,
+      previousOutputs,
+    );
+    const metadata = {
+      loopMode: loopConfig.mode,
+      loopMemberIndex: turnIndex,
+      personaId,
+      role: 'member',
+    };
+
+    const { assistantMessage } = await runCodexAutomation(automation, runId, worktrees, {
+      personaId,
+      prompt,
+      eventMetadata: metadata,
+      extraInstructions: [
+        '## Loop Thread Discipline',
+        '- Treat this as one member turn in a larger automation loop.',
+        '- Keep your final response concise enough for the next persona to use as handoff context.',
+        '- Do not ask the user for input during a loop run; stop with a clear blocker instead.',
+      ].join('\n'),
+    });
+
+    const label = persona?.name ?? personaId;
+    const summary = assistantMessage || `${label} completed without a final message.`;
+    previousOutputs.push(`Persona: ${label}\n${summary}`);
+    summaries.push(`## ${label}\n${summary}`);
+    appendAutomationRunEvent(runId, 'system', `Completed ${label} loop thread.`, metadata);
+  }
+
+  return {
+    assistantMessage: summaries.join('\n\n') || 'Loop automation completed.',
+  };
+}
+
 async function executeAutomationRun(run: AutomationRun): Promise<void> {
   const automation = getAutomation(run.automationId);
   if (!automation) {
@@ -359,7 +588,10 @@ async function executeAutomationRun(run: AutomationRun): Promise<void> {
       })),
     );
 
-    const { assistantMessage } = await runCodexAutomation(automation, run.id, preparedWorktrees);
+    const loopConfig = getActiveLoopConfig(automation);
+    const { assistantMessage } = loopConfig
+      ? await runLoopAutomation(automation, run.id, preparedWorktrees, loopConfig)
+      : await runCodexAutomation(automation, run.id, preparedWorktrees);
     const changedFileCount = await getChangedFileCount(preparedWorktrees);
     const keepWorktrees = changedFileCount > 0;
 

@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 36;
+export const SCHEMA_VERSION = 37;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -417,6 +417,7 @@ CREATE TABLE IF NOT EXISTS automation_definitions (
   enabled INTEGER NOT NULL DEFAULT 0,
   allow_repo_write INTEGER NOT NULL DEFAULT 0,
   allow_command_run INTEGER NOT NULL DEFAULT 0,
+  loop_config_json TEXT,
   execution_mode TEXT NOT NULL DEFAULT 'disposable-worktree',
   last_run_at TEXT,
   next_run_at TEXT,
@@ -1289,5 +1290,8 @@ export const MIGRATIONS: Record<number, string> = {
       datetime('now'),
       datetime('now')
     FROM workspaces;
+  `,
+  37: `
+    ALTER TABLE automation_definitions ADD COLUMN loop_config_json TEXT;
   `,
 };
