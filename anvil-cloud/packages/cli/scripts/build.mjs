@@ -1,4 +1,4 @@
-import { rm } from "node:fs/promises";
+import { cp, rm } from "node:fs/promises";
 
 import { build } from "esbuild";
 
@@ -11,7 +11,14 @@ await build({
   platform: "node",
   format: "esm",
   target: "node20",
-  external: ["@aws-sdk/*", "@pulumi/*", "esbuild", "jose", "vite"],
+  external: [
+    "@aws-sdk/*",
+    "@pulumi/*",
+    "esbuild",
+    "jose",
+    "typescript",
+    "vite",
+  ],
   banner: {
     js: [
       "import { createRequire as __anvilCreateRequire } from 'node:module';",
@@ -23,3 +30,8 @@ await build({
     ].join(" "),
   },
 });
+
+await Promise.all([
+  cp("../runtime/src", "dist/packages/runtime/src", { recursive: true }),
+  cp("../client/src", "dist/packages/client/src", { recursive: true }),
+]);

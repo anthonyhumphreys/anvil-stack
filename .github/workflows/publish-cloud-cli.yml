@@ -62,6 +62,9 @@ jobs:
             exit 1
           fi
 
+      - name: Build workspace
+        run: pnpm build
+
       - name: Typecheck
         run: pnpm --filter @anvilstack/cloud-cli typecheck
 

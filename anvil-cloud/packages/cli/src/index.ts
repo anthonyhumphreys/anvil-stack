@@ -2324,29 +2324,40 @@ async function createStarterTsconfig(
 async function detectLocalPackagePaths(
   cellDir: string,
 ): Promise<Record<string, string[]>> {
-  const packagesRoot = path.resolve(
-    path.dirname(fileURLToPath(import.meta.url)),
-    "..",
-    "..",
-  );
+  const currentDir = path.dirname(fileURLToPath(import.meta.url));
+  const workspacePackagesRoot = path.resolve(currentDir, "..", "..");
+  const packedPackagesRoot = path.resolve(currentDir, "packages");
   const candidates = {
-    "@anvil-cloud/client": path.join(packagesRoot, "client", "src", "index.ts"),
-    "@anvil-cloud/runtime": path.join(
-      packagesRoot,
-      "runtime",
-      "src",
-      "index.ts",
-    ),
+    "@anvil-cloud/client": [
+      path.join(workspacePackagesRoot, "client", "src", "index.ts"),
+      path.join(packedPackagesRoot, "client", "src", "index.ts"),
+    ],
+    "@anvil-cloud/runtime": [
+      path.join(workspacePackagesRoot, "runtime", "src", "index.ts"),
+      path.join(packedPackagesRoot, "runtime", "src", "index.ts"),
+    ],
   };
   const paths: Record<string, string[]> = {};
 
-  for (const [specifier, source] of Object.entries(candidates)) {
-    if (await exists(source)) {
+  for (const [specifier, sources] of Object.entries(candidates)) {
+    const source = await firstExistingPath(sources);
+
+    if (source) {
       paths[specifier] = [toPosixPath(path.relative(cellDir, source))];
     }
   }
 
   return paths;
+}
+
+async function firstExistingPath(candidates: string[]): Promise<string | null> {
+  for (const candidate of candidates) {
+    if (await exists(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
 }
 
 async function exists(filePath: string): Promise<boolean> {
