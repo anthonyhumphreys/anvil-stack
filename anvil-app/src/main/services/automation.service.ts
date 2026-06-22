@@ -9,6 +9,7 @@ import type {
   AutomationLoopConfig,
   AutomationRun,
   AutomationRunEvent,
+  AutomationTriageItem,
   AutomationRunWorktree,
   CodexEvent,
 } from '../../shared/types.js';
@@ -25,6 +26,7 @@ import {
   getAutomationRun,
   listAutomationRunEvents,
   listAutomationRuns,
+  listAutomationTriageItems,
   listAutomations,
   listDueAutomations,
   markStaleAutomationRunsFailed,
@@ -745,6 +747,10 @@ export function getAutomationRunById(runId: string): AutomationRun | null {
 
 export function listRunEventsForRun(runId: string): AutomationRunEvent[] {
   return listAutomationRunEvents(runId);
+}
+
+export function listWorkspaceAutomationTriage(workspaceId: string): AutomationTriageItem[] {
+  return listAutomationTriageItems(workspaceId);
 }
 
 export function getAutomationDaemonRuntimeStatus(): AutomationDaemonStatus {

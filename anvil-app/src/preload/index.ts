@@ -6,6 +6,7 @@ import type {
   AutomationDefinitionInput,
   AutomationRun,
   AutomationRunEvent,
+  AutomationTriageItem,
   ChatAttachment,
   ChatAttachmentInput,
   ChatFileMentionSearchInput,
@@ -19,6 +20,7 @@ import type {
   ComplianceDocType,
   DevServerTarget,
   EmbeddedEditorTarget,
+  SimulatorPreviewStartOptions,
   GateId,
   GateTemplateUpdate,
   RepoIndexProgress,
@@ -129,6 +131,10 @@ const api: AnvilAPI = {
     },
     stopSession: (sessionId: string) => ipcRenderer.invoke('chat:stop-session', sessionId),
     interrupt: (sessionId: string) => ipcRenderer.invoke('chat:interrupt', sessionId),
+    steer: (sessionId: string, message: string, attachments?: ChatAttachment[]) =>
+      ipcRenderer.invoke('chat:steer', sessionId, message, attachments),
+    forkProviderThread: (sourceThreadId: string, targetThreadId: string) =>
+      ipcRenderer.invoke('chat:fork-provider-thread', sourceThreadId, targetThreadId),
     resolveApproval: (
       sessionId: string,
       requestId: string | number,
@@ -230,6 +236,8 @@ const api: AnvilAPI = {
       ipcRenderer.invoke('automations:remove', automationId) as Promise<void>,
     runNow: (automationId: string) =>
       ipcRenderer.invoke('automations:run-now', automationId) as Promise<AutomationRun>,
+    triage: (workspaceId: string) =>
+      ipcRenderer.invoke('automations:triage', workspaceId) as Promise<AutomationTriageItem[]>,
     listRuns: (automationId: string) =>
       ipcRenderer.invoke('automations:list-runs', automationId) as Promise<AutomationRun[]>,
     getRun: (runId: string) =>
@@ -240,6 +248,11 @@ const api: AnvilAPI = {
       ipcRenderer.invoke('automations:daemon-status') as Promise<AutomationDaemonStatus>,
     reconcileDaemon: () =>
       ipcRenderer.invoke('automations:reconcile-daemon') as Promise<AutomationDaemonStatus>,
+  },
+
+  agentRuns: {
+    list: (workspaceId: string, limit?: number) =>
+      ipcRenderer.invoke('agent-runs:list', workspaceId, limit),
   },
 
   onboard: {
@@ -706,6 +719,13 @@ const api: AnvilAPI = {
       ipcRenderer.on('browser:target-detected', handler);
       return () => ipcRenderer.removeListener('browser:target-detected', handler);
     },
+  },
+
+  simulatorPreview: {
+    getStatus: () => ipcRenderer.invoke('simulator-preview:get-status'),
+    start: (options?: SimulatorPreviewStartOptions) =>
+      ipcRenderer.invoke('simulator-preview:start', options),
+    stop: () => ipcRenderer.invoke('simulator-preview:stop'),
   },
 
   editor: {

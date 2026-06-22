@@ -9,6 +9,7 @@ import {
   listRunEventsForRun,
   listRunsForAutomation,
   listWorkspaceAutomations,
+  listWorkspaceAutomationTriage,
   reconcileAutomationDaemon,
   runAutomationNow,
   updateWorkspaceAutomation,
@@ -30,9 +31,12 @@ export function registerAutomationHandlers(): void {
     },
   );
 
-  ipcMain.handle('automations:update', (_event, automationId: string, input: AutomationDefinitionInput) => {
-    return updateWorkspaceAutomation(automationId, input);
-  });
+  ipcMain.handle(
+    'automations:update',
+    (_event, automationId: string, input: AutomationDefinitionInput) => {
+      return updateWorkspaceAutomation(automationId, input);
+    },
+  );
 
   ipcMain.handle('automations:remove', (_event, automationId: string) => {
     deleteWorkspaceAutomation(automationId);
@@ -44,6 +48,10 @@ export function registerAutomationHandlers(): void {
 
   ipcMain.handle('automations:list-runs', (_event, automationId: string) => {
     return listRunsForAutomation(automationId);
+  });
+
+  ipcMain.handle('automations:triage', (_event, workspaceId: string) => {
+    return listWorkspaceAutomationTriage(workspaceId);
   });
 
   ipcMain.handle('automations:get-run', (_event, runId: string) => {

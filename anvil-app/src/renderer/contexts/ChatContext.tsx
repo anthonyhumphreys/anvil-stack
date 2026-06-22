@@ -63,6 +63,7 @@ interface ChatContextValue {
   setActiveRepos: (repos: RepoInfo[]) => void;
   setSelectedGovernanceDocs: (docs: GovernanceDocument[]) => void;
   send: (message: string, attachments?: ChatAttachment[]) => Promise<void>;
+  steer: (message: string, attachments?: ChatAttachment[]) => Promise<void>;
   switchPersona: (persona: Persona) => Promise<void>;
   interrupt: () => Promise<void>;
   startNewSession: () => Promise<void>;
@@ -1488,6 +1489,47 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     ],
   );
 
+  const steer = useCallback(
+    async (message: string, attachments: ChatAttachment[] = []) => {
+      const currentSession = sessionRef.current;
+      if (!currentSession) return;
+
+      const displayMessage = normaliseOutgoingMessage(message, attachments);
+      const modelMessage = buildAttachmentPrompt(displayMessage, attachments);
+      const enriched = buildEnrichedMessage(modelMessage);
+      const threadId = findThreadIdForSession(currentSession.id) ?? currentSession.appThreadId;
+
+      if (threadId) {
+        const timestamp = new Date().toISOString();
+        const userEntry: ChatEntry = {
+          kind: 'user',
+          content: `[steer] ${displayMessage}`,
+          attachments,
+          id: generateId(),
+        };
+        setEntries((prev) => [...prev, userEntry]);
+        await window.anvil.chat.saveEntry(
+          threadId,
+          currentSession.repoId ?? null,
+          currentSession.id,
+          {
+            id: userEntry.id!,
+            role: 'user',
+            content: `[steer] ${displayMessage}`,
+            timestamp,
+            personaId: currentSession.personaId,
+            threadId,
+            attachments,
+          },
+        );
+        bumpThreadSummary(threadId, `[steer] ${displayMessage}`, timestamp);
+      }
+
+      await window.anvil.chat.steer(currentSession.id, enriched, attachments);
+    },
+    [buildEnrichedMessage, bumpThreadSummary, findThreadIdForSession],
+  );
+
   const switchPersona = useCallback(
     async (persona: Persona) => {
       if (scaffoldModeActive) return;
@@ -1636,6 +1678,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         ),
       });
       if (!forkedThread) return;
+      const sourceThreadId = activeThreadRef.current?.id;
 
       const primaryRepo = activeRepoState ?? activeReposState[0] ?? null;
       const forkTimestampBase = Date.now();
@@ -1659,6 +1702,15 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           messageCount: ancestorEntries.length,
           lastMessageAt: new Date(forkTimestampBase + ancestorEntries.length - 1).toISOString(),
         });
+      }
+
+      if (sourceThreadId) {
+        window.anvil.chat
+          .forkProviderThread(sourceThreadId, forkedThread.id)
+          .then((providerForkedThread) => {
+            if (providerForkedThread) applyThreadState(providerForkedThread);
+          })
+          .catch(console.error);
       }
 
       setEntries(ancestorEntries.map((entry) => ({ ...entry })));
@@ -1872,6 +1924,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         setActiveRepos,
         setSelectedGovernanceDocs,
         send,
+        steer,
         switchPersona,
         interrupt,
         startNewSession,

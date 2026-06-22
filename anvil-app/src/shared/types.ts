@@ -327,6 +327,7 @@ export interface ChatThread {
   lastMessageAt?: string;
   preview?: string;
   messageCount: number;
+  providerThreadId?: string;
   activePlan?: ChatPlanSnapshot;
   activeGoal?: ChatGoalSnapshot;
 }
@@ -398,6 +399,43 @@ export interface ChatTurnSummary {
   evidence: TurnEvidenceItem[];
 }
 
+export type AgentRunSource = 'chat' | 'automation' | 'code_review';
+export type AgentRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+
+export interface AgentRunSummary {
+  id: string;
+  source: AgentRunSource;
+  title: string;
+  status: AgentRunStatus;
+  workspaceId?: string;
+  repoIds: string[];
+  threadId?: string;
+  sessionId?: string;
+  automationId?: string;
+  reviewId?: string;
+  startedAt: string;
+  completedAt?: string;
+  summary?: string;
+  changedFileCount: number;
+  evidenceCount: number;
+}
+
+export interface AutomationTriageItem {
+  id: string;
+  automationId: string;
+  automationName: string;
+  status: AutomationRunStatus;
+  trigger: AutomationRunTrigger;
+  startedAt: string;
+  completedAt?: string;
+  changedFileCount: number;
+  summary?: string;
+  errorMessage?: string;
+  retainedWorktreeCount: number;
+  worktrees: AutomationRunWorktree[];
+  attention: 'blocked' | 'changes' | 'running';
+}
+
 export type JsonRpcRequestId = string | number;
 
 export interface CodexEvent {
@@ -459,6 +497,9 @@ export interface CodexSession {
   status: 'starting' | 'ready' | 'busy' | 'error';
   startedAt: string;
   mode?: CodexMode;
+  providerThreadId?: string;
+  currentTurnId?: string;
+  resumable?: boolean;
 }
 
 export type CodexMode = 'read-only' | 'on-request' | 'workspace-auto' | 'full-access';
@@ -1532,6 +1573,36 @@ export interface BrowserBridgeStatus {
   running: boolean;
   port?: number;
   connectedUrl?: string;
+}
+
+export interface BrowserAnnotation {
+  id: string;
+  url: string;
+  title?: string;
+  note: string;
+  selectedText?: string;
+  viewport: {
+    width: number;
+    height: number;
+  };
+  createdAt: string;
+}
+
+export interface SimulatorPreviewStatus {
+  running: boolean;
+  url?: string;
+  metroUrl?: string;
+  pid?: number;
+  cwd?: string;
+  command?: string;
+  startedAt?: string;
+  lastOutput?: string;
+  lastError?: string;
+}
+
+export interface SimulatorPreviewStartOptions {
+  cwd?: string;
+  port?: number;
 }
 
 // ---------------------------------------------------------------------------

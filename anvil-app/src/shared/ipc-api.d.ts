@@ -8,11 +8,13 @@ import type {
 import type { RunCommand, RunStatus } from './run-types';
 import type {
   Iteration,
+  AgentRunSummary,
   AutomationDaemonStatus,
   AutomationDefinition,
   AutomationDefinitionInput,
   AutomationRun,
   AutomationRunEvent,
+  AutomationTriageItem,
   AppSettings,
   BaFinding,
   BaFindingStatus,
@@ -113,6 +115,8 @@ import type {
   ImpactAnalysis,
   HandoverPack,
   SbomFormat,
+  SimulatorPreviewStartOptions,
+  SimulatorPreviewStatus,
 } from './types';
 import type { Brand } from './branding';
 
@@ -185,6 +189,11 @@ export interface AnvilAPI {
     onEvent: (callback: (event: CodexEvent) => void) => () => void;
     stopSession: (sessionId: string) => Promise<void>;
     interrupt: (sessionId: string) => Promise<void>;
+    steer: (sessionId: string, message: string, attachments?: ChatAttachment[]) => Promise<void>;
+    forkProviderThread: (
+      sourceThreadId: string,
+      targetThreadId: string,
+    ) => Promise<ChatThread | null>;
     resolveApproval: (
       sessionId: string,
       requestId: string | number,
@@ -273,11 +282,16 @@ export interface AnvilAPI {
     ) => Promise<AutomationDefinition | null>;
     remove: (automationId: string) => Promise<void>;
     runNow: (automationId: string) => Promise<AutomationRun>;
+    triage: (workspaceId: string) => Promise<AutomationTriageItem[]>;
     listRuns: (automationId: string) => Promise<AutomationRun[]>;
     getRun: (runId: string) => Promise<AutomationRun | null>;
     listRunEvents: (runId: string) => Promise<AutomationRunEvent[]>;
     getDaemonStatus: () => Promise<AutomationDaemonStatus>;
     reconcileDaemon: () => Promise<AutomationDaemonStatus>;
+  };
+
+  agentRuns: {
+    list: (workspaceId: string, limit?: number) => Promise<AgentRunSummary[]>;
   };
 
   onboard: {
@@ -539,6 +553,12 @@ export interface AnvilAPI {
     setUrl(url: string): Promise<void>;
     registerMcp(): Promise<{ success: boolean; error?: string }>;
     onTargetDetected(callback: (target: DevServerTarget) => void): () => void;
+  };
+
+  simulatorPreview: {
+    getStatus(): Promise<SimulatorPreviewStatus>;
+    start(options?: SimulatorPreviewStartOptions): Promise<SimulatorPreviewStatus>;
+    stop(): Promise<void>;
   };
 
   editor: {

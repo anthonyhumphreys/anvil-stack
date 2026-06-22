@@ -9,6 +9,7 @@ import type {
   AutomationRunStatus,
   AutomationRunTrigger,
   AutomationRunWorktree,
+  AutomationTriageItem,
 } from '../../shared/types.js';
 import { getDb } from '../db/database.js';
 
@@ -342,6 +343,61 @@ export function listAutomationRuns(automationId: string): AutomationRun[] {
     )
     .all(automationId) as AutomationRunRow[];
   return rows.map(mapAutomationRun);
+}
+
+export function listAutomationTriageItems(workspaceId: string): AutomationTriageItem[] {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT
+         r.*,
+         d.name AS automation_name
+       FROM automation_runs r
+       JOIN automation_definitions d ON d.id = r.automation_id
+       WHERE r.workspace_id = ?
+         AND (
+           r.status IN ('queued', 'running', 'failed')
+           OR r.changed_file_count > 0
+           OR r.worktrees_json <> '[]'
+         )
+       ORDER BY r.started_at DESC
+       LIMIT 40`,
+    )
+    .all(workspaceId) as Array<AutomationRunRow & { automation_name: string }>;
+
+  return rows
+    .map((row) => {
+      const run = mapAutomationRun(row);
+      const retainedWorktreeCount = run.worktrees.filter(
+        (worktree) => worktree.kept && worktree.path,
+      ).length;
+      const attention: AutomationTriageItem['attention'] =
+        run.status === 'failed'
+          ? 'blocked'
+          : run.status === 'running' || run.status === 'queued'
+            ? 'running'
+            : 'changes';
+
+      return {
+        id: run.id,
+        automationId: run.automationId,
+        automationName: row.automation_name,
+        status: run.status,
+        trigger: run.trigger,
+        startedAt: run.startedAt,
+        completedAt: run.completedAt,
+        changedFileCount: run.changedFileCount,
+        summary: run.assistantMessage,
+        errorMessage: run.errorMessage,
+        retainedWorktreeCount,
+        worktrees: run.worktrees,
+        attention,
+      };
+    })
+    .filter(
+      (item) =>
+        item.attention !== 'changes' || item.changedFileCount > 0 || item.retainedWorktreeCount > 0,
+    );
 }
 
 export function getAutomationRun(runId: string): AutomationRun | null {

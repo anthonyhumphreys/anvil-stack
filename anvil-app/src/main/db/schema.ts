@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 37;
+export const SCHEMA_VERSION = 38;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS chat_threads (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   last_message_at TEXT,
+  provider_thread_id TEXT,
   active_plan_json TEXT,
   active_plan_updated_at TEXT,
   active_goal_json TEXT
@@ -73,6 +74,8 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
   thread_id TEXT REFERENCES chat_threads(id),
   repo_id TEXT REFERENCES repos(id),
   persona_id TEXT,
+  provider_thread_id TEXT,
+  provider_turn_id TEXT,
   started_at TEXT DEFAULT (datetime('now')),
   ended_at TEXT
 );
@@ -101,6 +104,23 @@ CREATE INDEX IF NOT EXISTS idx_chat_threads_workspace_work_item
 
 CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_timestamp
   ON chat_messages(thread_id, timestamp ASC);
+
+CREATE INDEX IF NOT EXISTS idx_chat_threads_provider_thread
+  ON chat_threads(provider_thread_id);
+
+CREATE TABLE IF NOT EXISTS review_workspace_comments (
+  id TEXT PRIMARY KEY,
+  repo_id TEXT REFERENCES repos(id) ON DELETE CASCADE,
+  file_path TEXT NOT NULL,
+  line_number INTEGER,
+  body TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open',
+  created_at TEXT NOT NULL,
+  resolved_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_review_workspace_comments_repo_status
+  ON review_workspace_comments(repo_id, status, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS work_items_cache (
   id TEXT PRIMARY KEY,
@@ -1293,5 +1313,27 @@ export const MIGRATIONS: Record<number, string> = {
   `,
   37: `
     ALTER TABLE automation_definitions ADD COLUMN loop_config_json TEXT;
+  `,
+  38: `
+    ALTER TABLE chat_threads ADD COLUMN provider_thread_id TEXT;
+    ALTER TABLE chat_sessions ADD COLUMN provider_thread_id TEXT;
+    ALTER TABLE chat_sessions ADD COLUMN provider_turn_id TEXT;
+
+    CREATE INDEX IF NOT EXISTS idx_chat_threads_provider_thread
+      ON chat_threads(provider_thread_id);
+
+    CREATE TABLE IF NOT EXISTS review_workspace_comments (
+      id TEXT PRIMARY KEY,
+      repo_id TEXT REFERENCES repos(id) ON DELETE CASCADE,
+      file_path TEXT NOT NULL,
+      line_number INTEGER,
+      body TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open',
+      created_at TEXT NOT NULL,
+      resolved_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_review_workspace_comments_repo_status
+      ON review_workspace_comments(repo_id, status, created_at DESC);
   `,
 };

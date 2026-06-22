@@ -22,6 +22,8 @@ export interface DesignReadiness {
 
 export interface ChatStartOptions {
   threadId?: string;
+  providerThreadId?: string;
+  forkFromProviderThreadId?: string;
   designMode?: DesignMode;
   figmaContext?: string;
   workspace?: {

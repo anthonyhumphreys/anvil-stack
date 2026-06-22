@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   GitBranch,
   GitCommitHorizontal,
@@ -17,6 +18,7 @@ import {
   Trash2,
   RefreshCw,
   AlertCircle,
+  MessageSquare,
 } from 'lucide-react';
 import type {
   GitStatusResult,
@@ -31,6 +33,7 @@ import { WorkspaceGitActions } from '../shared/WorkspaceGitActions';
 type Tab = 'changes' | 'log' | 'branches';
 
 export function GitView() {
+  const navigate = useNavigate();
   const { repos } = useWorkspace();
   const indexedRepos = useMemo(() => repos.filter((r) => r.status !== 'error'), [repos]);
 
@@ -49,6 +52,7 @@ export function GitView() {
   // Diff viewer
   const [selectedDiff, setSelectedDiff] = useState<GitDiffResult | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
+  const [reviewNote, setReviewNote] = useState('');
 
   // Branch creation
   const [showNewBranch, setShowNewBranch] = useState(false);
@@ -197,6 +201,27 @@ export function GitView() {
       setDiffLoading(false);
     }
   };
+
+  const handleSendDiffToChat = useCallback(() => {
+    if (!selectedDiff) return;
+    const repo = indexedRepos.find((candidate) => candidate.id === selectedRepoId);
+    const prompt = [
+      'Review this Git diff and then make or propose the smallest useful fix.',
+      '',
+      repo ? `Repo: ${repo.name}` : null,
+      `File: ${selectedDiff.filePath}`,
+      reviewNote.trim() ? `Reviewer note:\n${reviewNote.trim()}` : null,
+      '',
+      'Diff:',
+      '```diff',
+      selectedDiff.hunks || '(no textual diff available)',
+      '```',
+    ]
+      .filter((line): line is string => Boolean(line))
+      .join('\n');
+
+    navigate(`/chat?prompt=${encodeURIComponent(prompt)}`);
+  }, [indexedRepos, navigate, reviewNote, selectedDiff, selectedRepoId]);
 
   const handleSwitchBranch = async (name: string) => {
     try {
@@ -402,6 +427,9 @@ export function GitView() {
             selectedDiff={selectedDiff}
             diffLoading={diffLoading}
             onCloseDiff={() => setSelectedDiff(null)}
+            reviewNote={reviewNote}
+            setReviewNote={setReviewNote}
+            onSendDiffToChat={handleSendDiffToChat}
           />
         )}
         {tab === 'log' && <LogTab log={log} />}
@@ -460,6 +488,9 @@ interface ChangesTabProps {
   selectedDiff: GitDiffResult | null;
   diffLoading: boolean;
   onCloseDiff: () => void;
+  reviewNote: string;
+  setReviewNote: (value: string) => void;
+  onSendDiffToChat: () => void;
 }
 
 function ChangesTab({
@@ -477,6 +508,9 @@ function ChangesTab({
   selectedDiff,
   diffLoading,
   onCloseDiff,
+  reviewNote,
+  setReviewNote,
+  onSendDiffToChat,
 }: ChangesTabProps) {
   return (
     <div className="flex flex-1 overflow-hidden">
@@ -603,6 +637,24 @@ function ChangesTab({
             </div>
             <div className="flex-1 overflow-auto">
               <DiffDisplay diff={selectedDiff} />
+            </div>
+            <div className="border-t border-border-subtle bg-bg-secondary/80 p-3">
+              <div className="flex items-center gap-2">
+                <input
+                  value={reviewNote}
+                  onChange={(event) => setReviewNote(event.target.value)}
+                  placeholder="Optional review note for Codex..."
+                  className="min-w-0 flex-1 rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent/50 focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={onSendDiffToChat}
+                  className="flex items-center gap-1.5 rounded-lg border border-accent/30 bg-accent/10 px-3 py-2 text-sm font-medium text-accent transition-colors hover:bg-accent/15"
+                >
+                  <MessageSquare size={14} />
+                  Send to chat
+                </button>
+              </div>
             </div>
           </>
         )}

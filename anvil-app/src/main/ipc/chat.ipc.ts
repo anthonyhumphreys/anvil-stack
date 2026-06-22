@@ -20,6 +20,7 @@ import { getDb } from '../db/database.js';
 import {
   startSession,
   sendMessage,
+  steerTurn,
   stopSession,
   interruptTurn,
   getSessionStatus,
@@ -35,11 +36,13 @@ import {
   createChatSession,
   deleteChatThread,
   ensureWorkItemChatThread,
+  getChatThreadProviderThreadId,
   listChatThreads,
   listWorkItemChatThreads,
   saveChatEntry,
   saveChatThreadGoal,
   saveChatThreadPlan,
+  setChatThreadProviderThreadId,
   loadChatHistory,
   clearChatHistory,
   updateChatThread,
@@ -80,10 +83,23 @@ export function registerChatHandlers(): void {
       }
 
       // Use first repo's path as primary cwd; pass all paths for context
-      const codexSession = await startSession(repoPaths, repoIds, personaId, options);
+      const providerThreadId =
+        options?.providerThreadId ?? getChatThreadProviderThreadId(options?.threadId);
+      const codexSession = await startSession(repoPaths, repoIds, personaId, {
+        ...options,
+        providerThreadId: options?.forkFromProviderThreadId
+          ? undefined
+          : (providerThreadId ?? undefined),
+      });
 
       // Create persistence session — associate with first repo for history
-      createChatSession(options?.threadId ?? null, repoIds[0] ?? null, personaId, codexSession.id);
+      createChatSession(
+        options?.threadId ?? null,
+        repoIds[0] ?? null,
+        personaId,
+        codexSession.id,
+        codexSession.providerThreadId ?? null,
+      );
 
       return codexSession;
     },
@@ -106,7 +122,7 @@ export function registerChatHandlers(): void {
         scaffold: { workspaceId, rootPath },
       });
 
-      createChatSession(null, null, personaId, codexSession.id);
+      createChatSession(null, null, personaId, codexSession.id, codexSession.providerThreadId);
       return codexSession;
     },
   );
@@ -152,6 +168,58 @@ export function registerChatHandlers(): void {
   ipcMain.handle('chat:interrupt', (_event, sessionId: string): void => {
     interruptTurn(sessionId);
   });
+
+  ipcMain.handle(
+    'chat:steer',
+    (_event, sessionId: string, message: string, attachments?: ChatAttachment[]): Promise<void> => {
+      return steerTurn(sessionId, message, attachments);
+    },
+  );
+
+  ipcMain.handle(
+    'chat:fork-provider-thread',
+    async (_event, sourceThreadId: string, targetThreadId: string): Promise<ChatThread | null> => {
+      const sourceProviderThreadId = getChatThreadProviderThreadId(sourceThreadId);
+      if (!sourceProviderThreadId) return null;
+
+      const targetThread = updateChatThread(targetThreadId, {});
+      if (!targetThread) return null;
+
+      const db = getDb();
+      const repoPaths: string[] = [];
+      for (const rid of targetThread.repoIds) {
+        const row = db.prepare('SELECT path FROM repos WHERE id = ?').get(rid) as
+          | { path: string }
+          | undefined;
+        if (row) repoPaths.push(row.path);
+      }
+
+      const codexSession = await startSession(
+        repoPaths,
+        targetThread.repoIds,
+        targetThread.personaId,
+        {
+          threadId: targetThreadId,
+          workspace: targetThread.workspaceId
+            ? { workspaceId: targetThread.workspaceId }
+            : undefined,
+          forkFromProviderThreadId: sourceProviderThreadId,
+        },
+      );
+      createChatSession(
+        targetThreadId,
+        targetThread.repoIds[0] ?? null,
+        targetThread.personaId,
+        codexSession.id,
+        codexSession.providerThreadId ?? null,
+      );
+      stopSession(codexSession.id);
+      if (codexSession.providerThreadId) {
+        setChatThreadProviderThreadId(targetThreadId, codexSession.providerThreadId);
+      }
+      return updateChatThread(targetThreadId, {});
+    },
+  );
 
   ipcMain.handle(
     'chat:resolve-approval',

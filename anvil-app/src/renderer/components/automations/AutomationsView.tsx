@@ -21,6 +21,7 @@ import type {
   AutomationLoopConfig,
   AutomationRun,
   AutomationRunEvent,
+  AutomationTriageItem,
   Persona,
 } from '../../../shared/types';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
@@ -109,6 +110,7 @@ export function AutomationsView() {
   const [selectedAutomationId, setSelectedAutomationId] = useState<string | null>(null);
   const [draft, setDraft] = useState<AutomationDefinitionInput>(() => emptyDraft([]));
   const [runs, setRuns] = useState<AutomationRun[]>([]);
+  const [triageItems, setTriageItems] = useState<AutomationTriageItem[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [runEvents, setRunEvents] = useState<AutomationRunEvent[]>([]);
   const [daemonStatus, setDaemonStatus] = useState<AutomationDaemonStatus | null>(null);
@@ -169,15 +171,17 @@ export function AutomationsView() {
     setLoading(true);
     setError(null);
     try {
-      const [nextAutomations, nextPersonas, nextDaemonStatus] = await Promise.all([
+      const [nextAutomations, nextPersonas, nextDaemonStatus, nextTriageItems] = await Promise.all([
         window.anvil.automations.list(workspaceId),
         window.anvil.chat.getPersonas(),
         window.anvil.automations.getDaemonStatus(),
+        window.anvil.automations.triage(workspaceId),
       ]);
 
       setAutomations(nextAutomations);
       setPersonas(nextPersonas);
       setDaemonStatus(nextDaemonStatus);
+      setTriageItems(nextTriageItems);
 
       const nextSelectedAutomationId =
         selectedAutomationId &&
@@ -297,6 +301,18 @@ export function AutomationsView() {
     }
   };
 
+  const handleSelectTriageItem = async (item: AutomationTriageItem) => {
+    const automation = automations.find((candidate) => candidate.id === item.automationId);
+    if (automation) {
+      setSelectedAutomationId(automation.id);
+      setDraft(automationToDraft(automation));
+    }
+    setSelectedRunId(item.id);
+    await loadRuns(item.automationId);
+    setSelectedRunId(item.id);
+    await loadEvents(item.id);
+  };
+
   if (!workspaceId) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -350,6 +366,58 @@ export function AutomationsView() {
       {error && (
         <div className="border-b border-error/30 bg-error/10 px-4 py-2 text-sm text-error">
           {error}
+        </div>
+      )}
+
+      {triageItems.length > 0 && (
+        <div className="border-b border-border-subtle bg-bg-primary px-4 py-3">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 text-sm font-semibold text-text-primary">
+              <AlertTriangle size={15} className="text-warning" />
+              Triage
+              <span className="rounded-full bg-warning/10 px-2 py-0.5 text-xs text-warning">
+                {triageItems.length}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => void loadData()}
+              className="text-xs text-text-tertiary hover:text-text-primary"
+            >
+              Refresh
+            </button>
+          </div>
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {triageItems.slice(0, 12).map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => void handleSelectTriageItem(item)}
+                className={`min-w-[260px] rounded-lg border px-3 py-2 text-left transition-colors hover:bg-bg-tertiary ${
+                  item.attention === 'blocked'
+                    ? 'border-error/30 bg-error/5'
+                    : item.attention === 'running'
+                      ? 'border-accent/30 bg-accent/5'
+                      : 'border-warning/30 bg-warning/5'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="truncate text-sm font-medium text-text-primary">
+                    {item.automationName}
+                  </span>
+                  <span className={`text-xs ${statusTone(item.status)}`}>{item.status}</span>
+                </div>
+                <div className="mt-1 text-xs text-text-secondary">
+                  {item.changedFileCount} file{item.changedFileCount === 1 ? '' : 's'} ·{' '}
+                  {item.retainedWorktreeCount} worktree
+                  {item.retainedWorktreeCount === 1 ? '' : 's'}
+                </div>
+                <div className="mt-1 truncate text-xs text-text-tertiary">
+                  {item.errorMessage ?? item.summary ?? formatTimestamp(item.startedAt)}
+                </div>
+              </button>
+            ))}
+          </div>
         </div>
       )}
 
