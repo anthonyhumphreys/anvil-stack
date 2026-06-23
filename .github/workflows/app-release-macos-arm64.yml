@@ -10,6 +10,11 @@ on:
         description: 'Release tag to create or update, for example app-v0.1.0. Defaults to app-v<package.json version>.'
         required: false
         type: string
+      notarize:
+        description: 'Build signed and notarized artifacts. Requires Apple Developer ID and notary secrets.'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -24,8 +29,12 @@ jobs:
     runs-on: macos-15
 
     env:
-      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
       GH_TOKEN: ${{ github.token }}
+      CSC_LINK: ${{ secrets.CSC_LINK }}
+      CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+      APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
 
     steps:
       - name: Check out repository
@@ -71,8 +80,15 @@ jobs:
           echo "tag=${release_tag}" >> "${GITHUB_OUTPUT}"
           echo "name=Anvil ${release_tag}" >> "${GITHUB_OUTPUT}"
 
-      - name: Build macOS Apple Silicon artifacts
+      - name: Build unsigned macOS Apple Silicon artifacts
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.notarize }}
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: pnpm run dist:mac:arm64
+
+      - name: Build signed and notarized macOS Apple Silicon artifacts
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.notarize }}
+        run: pnpm run dist:mac:arm64:anvil:notarized
 
       - name: Create or update GitHub Release
         shell: bash
@@ -81,12 +97,31 @@ jobs:
 
           release_tag="${{ steps.release.outputs.tag }}"
           release_name="${{ steps.release.outputs.name }}"
+          notarized_release="${{ github.event_name == 'workflow_dispatch' && inputs.notarize }}"
           assets=(dist/*-arm64.dmg dist/*-arm64-mac.zip)
+          notes_file="$(mktemp)"
+
+          if [[ "${notarized_release}" == "true" ]]; then
+            printf '%s\n' \
+              'Signed and notarized macOS Apple Silicon build.' \
+              > "${notes_file}"
+          else
+            printf '%s\n' \
+              'Unsigned internal macOS Apple Silicon build.' \
+              '' \
+              'This build is not notarized. macOS Gatekeeper may report that the app is damaged after download. For private testing, install it and remove the quarantine attribute:' \
+              '' \
+              '```bash' \
+              'xattr -dr com.apple.quarantine /Applications/Anvil.app' \
+              '```' \
+              > "${notes_file}"
+          fi
 
           if gh release view "${release_tag}" >/dev/null 2>&1; then
             gh release upload "${release_tag}" "${assets[@]}" --clobber
+            gh release edit "${release_tag}" --notes-file "${notes_file}"
           else
             gh release create "${release_tag}" "${assets[@]}" \
               --title "${release_name}" \
-              --notes "Private macOS Apple Silicon build for ${release_tag}."
+              --notes-file "${notes_file}"
           fi

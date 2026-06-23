@@ -1,0 +1,90 @@
+<mxGraphModel dx="1600" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="900" math="0" shadow="0">
+  <root>
+    <mxCell id="0"/>
+    <mxCell id="1" parent="0"/>
+    <mxCell id="title" value="Anvil Runtime Request Flow" style="text;html=1;strokeColor=none;fillColor=none;fontColor=#f8fafc;fontSize=28;fontStyle=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+      <mxGeometry x="60" y="30" width="560" height="50" as="geometry"/>
+    </mxCell>
+    <mxCell id="subtitle" value="Local servers, Lambda bridges, tests, jobs, and workflows all normalize triggers before Cell code runs." style="text;html=1;strokeColor=none;fillColor=none;fontColor=#cbd5e1;fontSize=14;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+      <mxGeometry x="62" y="75" width="940" height="34" as="geometry"/>
+    </mxCell>
+    <mxCell id="caller" value="Client, CLI, job, or workflow trigger" style="rounded=1;whiteSpace=wrap;html=1;arcSize=12;fillColor=#0f172a;strokeColor=#38bdf8;fontColor=#e5e7eb;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
+      <mxGeometry x="60" y="180" width="210" height="80" as="geometry"/>
+    </mxCell>
+    <mxCell id="adapter" value="Runtime adapter&lt;br&gt;Local HTTP bridge or AWS Lambda bridge" style="rounded=1;whiteSpace=wrap;html=1;arcSize=12;fillColor=#2a2414;strokeColor=#fbbf24;fontColor=#fffbeb;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
+      <mxGeometry x="340" y="170" width="230" height="100" as="geometry"/>
+    </mxCell>
+    <mxCell id="request" value="RuntimeRequest&lt;br&gt;query, mutation, endpoint, job" style="rounded=1;whiteSpace=wrap;html=1;arcSize=12;fillColor=#1e293b;strokeColor=#a78bfa;fontColor=#f8fafc;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
+      <mxGeometry x="640" y="180" width="220" height="80" as="geometry"/>
+    </mxCell>
+    <mxCell id="runtime" value="handleRuntimeRequest&lt;br&gt;validate, authorize, execute, normalize" style="rounded=1;whiteSpace=wrap;html=1;arcSize=12;fillColor=#18202f;strokeColor=#60a5fa;fontColor=#f8fafc;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
+      <mxGeometry x="930" y="170" width="240" height="100" as="geometry"/>
+    </mxCell>
+    <mxCell id="handler" value="Cell handler&lt;br&gt;query, mutation, endpoint, job step" style="rounded=1;whiteSpace=wrap;html=1;arcSize=12;fillColor=#102a24;strokeColor=#34d399;fontColor=#ecfdf5;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
+      <mxGeometry x="930" y="380" width="240" height="90" as="geometry"/>
+    </mxCell>
+    <mxCell id="ctx" value="RuntimeContext&lt;br&gt;ctx.auth, ctx.db, ctx.files, ctx.env, ctx.log, ctx.jobs" style="rounded=1;whiteSpace=wrap;html=1;arcSize=12;fillColor=#172554;strokeColor=#818cf8;fontColor=#eef2ff;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
+      <mxGeometry x="640" y="370" width="230" height="110" as="geometry"/>
+    </mxCell>
+    <mxCell id="host" value="RuntimeHost&lt;br&gt;environment adapters" style="rounded=1;whiteSpace=wrap;html=1;arcSize=12;fillColor=#27272a;strokeColor=#a1a1aa;fontColor=#f4f4f5;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
+      <mxGeometry x="340" y="380" width="230" height="80" as="geometry"/>
+    </mxCell>
+    <mxCell id="db" value="Database" style="shape=mxgraph.flowchart.database;whiteSpace=wrap;html=1;fillColor=#292524;strokeColor=#fbbf24;fontColor=#fffbeb;strokeWidth=2;fontStyle=1;" vertex="1" parent="1">
+      <mxGeometry x="80" y="360" width="140" height="70" as="geometry"/>
+    </mxCell>
+    <mxCell id="files" value="Files" style="shape=mxgraph.flowchart.database;whiteSpace=wrap;html=1;fillColor=#292524;strokeColor=#fbbf24;fontColor=#fffbeb;strokeWidth=2;fontStyle=1;" vertex="1" parent="1">
+      <mxGeometry x="80" y="450" width="140" height="70" as="geometry"/>
+    </mxCell>
+    <mxCell id="auth" value="Auth and env" style="rounded=1;whiteSpace=wrap;html=1;arcSize=12;fillColor=#292524;strokeColor=#fbbf24;fontColor=#fffbeb;strokeWidth=2;fontStyle=1;" vertex="1" parent="1">
+      <mxGeometry x="80" y="540" width="140" height="70" as="geometry"/>
+    </mxCell>
+    <mxCell id="logs" value="Logs, events, jobs" style="rounded=1;whiteSpace=wrap;html=1;arcSize=12;fillColor=#292524;strokeColor=#fbbf24;fontColor=#fffbeb;strokeWidth=2;fontStyle=1;" vertex="1" parent="1">
+      <mxGeometry x="80" y="630" width="140" height="70" as="geometry"/>
+    </mxCell>
+    <mxCell id="response" value="RuntimeResponse&lt;br&gt;ok/status/body/error/diagnostics" style="rounded=1;whiteSpace=wrap;html=1;arcSize=12;fillColor=#1e293b;strokeColor=#a78bfa;fontColor=#f8fafc;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
+      <mxGeometry x="930" y="640" width="240" height="90" as="geometry"/>
+    </mxCell>
+    <mxCell id="envresponse" value="Environment response&lt;br&gt;HTTP response, Lambda result, CLI JSON" style="rounded=1;whiteSpace=wrap;html=1;arcSize=12;fillColor=#0f172a;strokeColor=#38bdf8;fontColor=#e5e7eb;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
+      <mxGeometry x="640" y="640" width="230" height="90" as="geometry"/>
+    </mxCell>
+    <mxCell id="e1" value="trigger" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#7dd3fc;fontColor=#cbd5e1;endArrow=block;endFill=1;" edge="1" parent="1" source="caller" target="adapter">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e2" value="normalize" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#fbbf24;fontColor=#fde68a;endArrow=block;endFill=1;" edge="1" parent="1" source="adapter" target="request">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e3" value="execute" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#93c5fd;fontColor=#cbd5e1;endArrow=block;endFill=1;" edge="1" parent="1" source="request" target="runtime">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e4" value="creates scoped ctx" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#818cf8;fontColor=#c7d2fe;endArrow=block;endFill=1;" edge="1" parent="1" source="runtime" target="ctx">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e5" value="calls" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#34d399;fontColor=#bbf7d0;endArrow=block;endFill=1;" edge="1" parent="1" source="runtime" target="handler">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e6" value="uses ctx" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#34d399;fontColor=#bbf7d0;endArrow=block;endFill=1;" edge="1" parent="1" source="handler" target="ctx">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e7" value="wraps" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#a1a1aa;fontColor=#e4e4e7;endArrow=block;endFill=1;" edge="1" parent="1" source="ctx" target="host">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e8" value="adapter IO" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#fbbf24;fontColor=#fde68a;endArrow=block;endFill=1;" edge="1" parent="1" source="host" target="db">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e9" value="adapter IO" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#fbbf24;fontColor=#fde68a;endArrow=block;endFill=1;" edge="1" parent="1" source="host" target="files">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e10" value="adapter IO" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#fbbf24;fontColor=#fde68a;endArrow=block;endFill=1;" edge="1" parent="1" source="host" target="auth">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e11" value="adapter IO" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#fbbf24;fontColor=#fde68a;endArrow=block;endFill=1;" edge="1" parent="1" source="host" target="logs">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e12" value="result or error" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#93c5fd;fontColor=#cbd5e1;endArrow=block;endFill=1;" edge="1" parent="1" source="handler" target="response">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e13" value="translate" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#7dd3fc;fontColor=#cbd5e1;endArrow=block;endFill=1;" edge="1" parent="1" source="response" target="envresponse">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+  </root>
+</mxGraphModel>

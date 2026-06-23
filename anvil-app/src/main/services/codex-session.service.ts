@@ -53,6 +53,12 @@ type CodexUserInput =
   | { type: 'localImage'; path: string }
   | { type: 'mention'; name: string; path: string };
 
+export interface CodexTurnSteerParams {
+  threadId: string;
+  expectedTurnId: string;
+  input: CodexUserInput[];
+}
+
 const sessions = new Map<string, ManagedSession>();
 const pendingApprovals = new Map<string, string>();
 const pendingApprovalDetails = new Map<string, MobileApprovalRequest>();
@@ -255,11 +261,11 @@ export async function steerTurn(
     throw new Error('No active Codex turn to steer.');
   }
 
-  sendCodexJsonRpc(session.process, 'turn/steer', {
-    threadId: session.threadId,
-    turnId: session.turnId,
-    input: buildUserInput(message, attachments),
-  });
+  sendCodexJsonRpc(
+    session.process,
+    'turn/steer',
+    buildTurnSteerParams(session.threadId, session.turnId, message, attachments),
+  );
 }
 
 function buildUserInput(message: string, attachments: ChatAttachment[]): CodexUserInput[] {
@@ -274,6 +280,19 @@ function buildUserInput(message: string, attachments: ChatAttachment[]): CodexUs
   }
 
   return input;
+}
+
+export function buildTurnSteerParams(
+  threadId: string,
+  turnId: string,
+  message: string,
+  attachments: ChatAttachment[] = [],
+): CodexTurnSteerParams {
+  return {
+    threadId,
+    expectedTurnId: turnId,
+    input: buildUserInput(message, attachments),
+  };
 }
 
 export function interruptTurn(sessionId: string): void {

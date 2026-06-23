@@ -57,6 +57,11 @@ Anvil then provides:
 └── tsconfig.base.json
 ```
 
+Architecture diagrams:
+
+- Mermaid overview: [`docs/architecture/diagrams.md`](docs/architecture/diagrams.md)
+- Editable draw.io sources: [`docs/diagrams/`](docs/diagrams/)
+
 ## Alpha path
 
 Build a local-only vertical slice:
