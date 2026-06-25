@@ -10,14 +10,19 @@ The contract must be small enough for agents to work inside safely and explicit 
 
 ```txt
 src/cell.server.ts
-src/client/main.tsx
-src/client/App.tsx
-index.html
-vite.config.ts
 anvil.json
 package.json
 tsconfig.json
 AGENTS.md
+```
+
+The default `vite-react` client target also includes:
+
+```txt
+src/client/main.tsx
+src/client/App.tsx
+index.html
+vite.config.ts
 ```
 
 ## Optional files
@@ -34,6 +39,9 @@ public/*
 ```json
 {
   "name": "notes",
+  "client": {
+    "kind": "vite-react"
+  },
   "entrypoints": {
     "server": "src/cell.server.ts",
     "client": "src/client/main.tsx"
@@ -62,16 +70,55 @@ export default app({
 
 ## Client entrypoint
 
-The default Cell UI stack is Vite + React. The client entrypoint should render
+`client.kind` declares the client target. It is part of the authoring/build
+contract, not a deployment adapter. Valid alpha values are:
+
+| Kind          | Meaning                                              |
+| ------------- | ---------------------------------------------------- |
+| `vite-react`  | Browser client bundled by Anvil Builder through Vite |
+| `expo-router` | Expo Router app that calls the Anvil runtime         |
+| `headless`    | Generated client metadata only, no bundled UI        |
+
+The default Cell UI stack is `vite-react`. Its client entrypoint should render
 a React app from `src/client/main.tsx`, with `index.html` providing the browser
-mount point.
+mount point. `expo-router` Cells use an `app/index.tsx` entrypoint and run the
+native client through Expo; Anvil Builder still emits the server bundle,
+manifest, generated client metadata, and build metadata, but does not bundle an
+Expo app.
+
+Expo Router clients should read the runtime URL from
+`EXPO_PUBLIC_ANVIL_RUNTIME_URL`. Generated scaffolds use local fallbacks for the
+common simulator paths: `http://localhost:8787` outside Android and
+`http://10.0.2.2:8787` on Android emulators. The scaffold types that public
+runtime variable in `src/expo-env.d.ts`; Expo remains a client target, not a
+deployment adapter.
 
 The client should use `@anvil-cloud/client` instead of manually constructing runtime URLs.
-Generated API metadata should be imported through the stable Vite alias:
+Generated API metadata should be imported through the stable alias:
 
 ```ts
 import { api } from "@anvil/generated/client";
 ```
+
+Cells can type generated routes by adding a local declaration file, commonly
+`src/anvil-api.d.ts`, that augments the generated route maps:
+
+```ts
+declare module "@anvil/generated/client" {
+  interface QueryTypes {
+    listNotes: {
+      input: unknown;
+      result: Note[];
+    };
+  }
+}
+```
+
+The metadata object remains the runtime contract; the route maps are TypeScript
+only and are consumed by `createApiClient` and `createAnvilHooks`. Generated
+clients also include `api.meta` with schema version `0.1` plus stable query and
+mutation name arrays so tooling can compare generated metadata with the built
+manifest without scraping route definitions.
 
 Other browser frameworks can still work if they produce static assets and call
 the Anvil runtime through `@anvil-cloud/client`, but React is the paved-road
@@ -183,9 +230,13 @@ capabilities: {
 
 - Direct AWS SDK imports.
 - Direct cloud infrastructure authoring.
-- Direct `process.env` access.
-- Raw filesystem writes for persistent app data.
+- Direct `process.env` access, including `globalThis.process`, aliased
+  `process`, or destructured `env` access.
+- Direct file-system imports for persistent app data, including `fs/promises`,
+  `node:fs/promises`, and CommonJS `require()` forms.
 - Background work outside declared jobs.
+- Direct network client imports such as `http`, `https`, `node:net`, `undici`,
+  or `axios`; use `fetch()` with `capabilities.outboundFetch.allow` instead.
 - Network access to undeclared outbound domains.
 - Top-level runtime side effects in app definition modules.
 

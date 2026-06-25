@@ -9,7 +9,7 @@ Local development is the first-class alpha experience.
 ## Goals
 
 - Run server handlers locally through the same runtime contract used in cloud adapters.
-- Run client UI through Vite with proxying to the local runtime.
+- Run the default Vite client UI with proxying to the local runtime.
 - Provide local database, auth, files, jobs, logs, and inspector support.
 - Persist local state in `.anvil/local/`.
 - Provide stable JSON output for agent workflows.
@@ -23,17 +23,20 @@ Local development is the first-class alpha experience.
 
 ## Local process model
 
-`anvil-cloud dev` starts two local processes:
+For `vite-react` Cells, `anvil-cloud dev` starts two local processes:
 
 ```txt
 Anvil local runtime server  http://localhost:8787
 Anvil client server         http://localhost:5173
 ```
 
-The alpha implementation runs a Vite-backed React client server during
-`anvil-cloud dev` and proxies runtime requests to Anvil Local. Production builds still
-emit static client assets under `.anvil/dist/client` so deployment adapters have
-a boring artifact shape. Boring is a feature here.
+The alpha implementation runs a Vite-backed React client server for
+`vite-react` Cells during `anvil-cloud dev` and proxies runtime requests to
+Anvil Local. `expo-router` and `headless` Cells run the local runtime only;
+native clients should start through Expo and use the runtime URL explicitly.
+Production builds still emit static client assets under `.anvil/dist/client`
+for `vite-react` so deployment adapters have a boring artifact shape. Boring is
+a feature here.
 
 ```txt
 /_anvil/* → http://localhost:8787
@@ -44,11 +47,15 @@ a boring artifact shape. Boring is a feature here.
 
 ```txt
 .anvil/local/
-├── auth.json
+├── auth/
+│   ├── keys.json
+│   └── users.json
 ├── dev.db
 ├── files/
 ├── jobs.json
-└── logs.ndjson
+├── logs.ndjson
+├── services.json
+└── workflows.json
 ```
 
 ## Local runtime routes

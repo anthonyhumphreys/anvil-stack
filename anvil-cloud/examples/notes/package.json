@@ -5,7 +5,13 @@
   "scripts": {
     "check": "node ../../packages/cli/dist/index.js check --json",
     "build": "node ../../packages/cli/dist/index.js build --json",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "dev": "node ../../packages/cli/dist/index.js dev --json",
+    "inspect:local": "node ../../packages/cli/dist/index.js inspect --local --json",
+    "logs:local": "node ../../packages/cli/dist/index.js logs --local --json",
+    "deploy:preview:gate": "node scripts/verify-preview-gate.mjs",
+    "destroy:preview:dry-run": "node ../../packages/cli/dist/index.js destroy --preview --app notes --yes --dry-run --json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "verify:local": "node ../../scripts/verify-notes-local.mjs"
   },
   "dependencies": {
     "@anvil-cloud/client": "workspace:*",

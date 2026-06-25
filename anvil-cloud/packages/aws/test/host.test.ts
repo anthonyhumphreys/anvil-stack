@@ -1,7 +1,14 @@
+import { createServer, type Server } from "node:http";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
 import { describe, expect, it } from "vitest";
 
+import { LocalIdentityProvider } from "@anvil-cloud/auth";
 import { RuntimeError } from "@anvil-cloud/runtime";
 import { createAwsRuntimeHostFromEnv } from "../src/index.js";
+import { AwsOidcAuthAdapter } from "../src/host.js";
 
 describe("createAwsRuntimeHostFromEnv", () => {
   it("persists database records through the DynamoDB adapter", async () => {
@@ -102,6 +109,131 @@ describe("createAwsRuntimeHostFromEnv", () => {
         },
       },
     );
+  });
+
+  it("verifies OIDC bearer tokens only when auth env is configured", async () => {
+    const stateDir = await mkdtemp(path.join(tmpdir(), "anvil-aws-auth-"));
+    const provider = new LocalIdentityProvider({
+      stateDir,
+      issuer: "https://issuer.example.test/",
+      audience: "preview-smoke",
+    });
+    const { jwksUri, server } = await startJwksServer(provider);
+
+    try {
+      await provider.createUser({
+        userId: "user_1",
+        email: "user@example.test",
+        roles: ["admin"],
+      });
+
+      const issued = await provider.issueToken("user_1");
+      const unconfigured = new AwsOidcAuthAdapter({});
+
+      await expect(unconfigured.verifyToken(issued.token)).resolves.toBeNull();
+
+      const configured = new AwsOidcAuthAdapter({
+        ANVIL_AUTH_ISSUER: "https://issuer.example.test/",
+        ANVIL_AUTH_AUDIENCE: "preview-smoke",
+        ANVIL_AUTH_JWKS_URI: jwksUri,
+      });
+
+      await expect(configured.verifyToken(issued.token)).resolves.toMatchObject(
+        {
+          userId: "user_1",
+          email: "user@example.test",
+          roles: ["admin"],
+        },
+      );
+
+      const wrongAudience = new AwsOidcAuthAdapter({
+        ANVIL_AUTH_ISSUER: "https://issuer.example.test/",
+        ANVIL_AUTH_AUDIENCE: "production",
+        ANVIL_AUTH_JWKS_URI: jwksUri,
+      });
+
+      await expect(
+        wrongAudience.verifyToken(issued.token),
+      ).rejects.toMatchObject({
+        code: "AUDIENCE_MISMATCH",
+      });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("maps OIDC identity claims from AWS auth environment configuration", async () => {
+    const stateDir = await mkdtemp(path.join(tmpdir(), "anvil-aws-auth-"));
+    const provider = new LocalIdentityProvider({
+      stateDir,
+      issuer: "https://issuer.example.test/",
+      audience: "preview-smoke",
+    });
+    const { jwksUri, server } = await startJwksServer(provider);
+
+    try {
+      await provider.createUser({
+        userId: "subject_1",
+        claims: {
+          uid: "user_1",
+          mail: "user@example.test",
+          scp: "admin editor",
+        },
+      });
+
+      const issued = await provider.issueToken("subject_1");
+      const configured = new AwsOidcAuthAdapter({
+        ANVIL_AUTH_ISSUER: "https://issuer.example.test/",
+        ANVIL_AUTH_AUDIENCE: "preview-smoke",
+        ANVIL_AUTH_JWKS_URI: jwksUri,
+        ANVIL_AUTH_USER_ID_CLAIM: "uid",
+        ANVIL_AUTH_EMAIL_CLAIM: "mail",
+        ANVIL_AUTH_ROLES_CLAIM: "scp",
+      });
+
+      await expect(configured.verifyToken(issued.token)).resolves.toMatchObject(
+        {
+          userId: "user_1",
+          email: "user@example.test",
+          roles: ["admin", "editor"],
+        },
+      );
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects expired OIDC tokens through the AWS auth adapter", async () => {
+    const stateDir = await mkdtemp(path.join(tmpdir(), "anvil-aws-auth-"));
+    const provider = new LocalIdentityProvider({
+      stateDir,
+      issuer: "https://issuer.example.test/",
+      audience: "preview-smoke",
+    });
+    const { jwksUri, server } = await startJwksServer(provider);
+
+    try {
+      await provider.createUser({
+        userId: "user_1",
+        email: "user@example.test",
+      });
+
+      const issued = await provider.issueToken("user_1", { ttlSeconds: -60 });
+      const configured = new AwsOidcAuthAdapter({
+        ANVIL_AUTH_ISSUER: "https://issuer.example.test/",
+        ANVIL_AUTH_AUDIENCE: "preview-smoke",
+        ANVIL_AUTH_JWKS_URI: jwksUri,
+      });
+
+      await expect(configured.verifyToken(issued.token)).rejects.toMatchObject({
+        code: "TOKEN_EXPIRED",
+      });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(stateDir, { recursive: true, force: true });
+    }
   });
 
   it("enqueues jobs through the SQS adapter", async () => {
@@ -371,4 +503,23 @@ function keyFromParts(key: DynamoDbKeyParts): string {
 
 function cloneItem(item: DynamoDbItem): DynamoDbItem {
   return structuredClone(item) as DynamoDbItem;
+}
+
+async function startJwksServer(
+  provider: LocalIdentityProvider,
+): Promise<{ jwksUri: string; server: Server }> {
+  const server = createServer(async (_request, response) => {
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify(await provider.publicJwks()));
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+
+  return {
+    jwksUri: `http://127.0.0.1:${port}/jwks`,
+    server,
+  };
 }

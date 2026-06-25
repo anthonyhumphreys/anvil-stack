@@ -5,10 +5,17 @@ import {
   AwsPreviewProvisioningError,
   AwsSdkPreviewDestroyer,
   AwsSdkPreviewProvisioner,
+  awsPreviewStackNameFor,
 } from "../src/index.js";
 import type { AwsPreviewProvisionerInput } from "../src/index.js";
 
 describe("AwsSdkPreviewProvisioner", () => {
+  it("derives stable preview stack names", () => {
+    expect(awsPreviewStackNameFor("Notes App", "Preview", "Anvil_Dev")).toBe(
+      "anvil-dev-notes-app-preview",
+    );
+  });
+
   it("uploads artifacts, applies the stack, uploads client assets, and publishes metadata", async () => {
     const s3 = new FakeAwsClient();
     const cloudFormation = new FakeAwsClient({
@@ -77,6 +84,7 @@ describe("AwsSdkPreviewProvisioner", () => {
         runtimeUrl: "https://runtime.example.test",
         assetsBucket: "assets-bucket",
         deploymentMetadataTable: "deployments-table",
+        deploymentMetadataKey: "deployment#notes#preview",
         database: "data-table",
         events: "events-bus",
         jobs: "https://sqs.example.test/jobs",

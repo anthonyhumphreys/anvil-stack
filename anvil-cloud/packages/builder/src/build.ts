@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { copyFile, mkdir, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -73,6 +73,9 @@ async function runBuildPipeline(
   }
 
   const output = createOutputPaths(rootDir, options);
+  const previousManifest = options.write
+    ? await readPreviousManifest(output.manifest)
+    : null;
 
   if (options.write) {
     await rm(output.distDir, { recursive: true, force: true });
@@ -124,6 +127,15 @@ async function runBuildPipeline(
     return failed("manifest", manifestResult.diagnostics, output);
   }
 
+  const manifestGuardDiagnostics = compareManifestSafety(
+    previousManifest,
+    manifestResult.manifest,
+  );
+
+  if (hasErrors(manifestGuardDiagnostics)) {
+    return failed("manifest", manifestGuardDiagnostics, output);
+  }
+
   await writeBuildOutputs(output, manifestResult.manifest);
 
   const generatedTypecheckDiagnostics = await typecheckCell(rootDir);
@@ -132,12 +144,20 @@ async function runBuildPipeline(
     return failed("typecheck", generatedTypecheckDiagnostics, output);
   }
 
-  const clientDiagnostics = await bundleClient({
-    rootDir,
-    entry: loadedConfig.config.clientEntry,
-    outfile: path.join(output.distDir, "client", "assets", "cell.client.js"),
-    indexFile: output.clientIndex,
-  });
+  const clientDiagnostics =
+    loadedConfig.config.config.client.kind === "vite-react"
+      ? await bundleClient({
+          rootDir,
+          entry: loadedConfig.config.clientEntry,
+          outfile: path.join(
+            output.distDir,
+            "client",
+            "assets",
+            "cell.client.js",
+          ),
+          indexFile: output.clientIndex,
+        })
+      : [];
 
   if (hasErrors(clientDiagnostics)) {
     return failed("client-bundle", clientDiagnostics, output);
@@ -291,6 +311,136 @@ function createBuildMeta(): Record<string, unknown> {
     builderVersion: "0.0.0",
     nodeVersion: process.version,
   };
+}
+
+async function readPreviousManifest(
+  manifestPath: string,
+): Promise<CellManifest | null> {
+  try {
+    const parsed = JSON.parse(await readFile(manifestPath, "utf8")) as unknown;
+    return isCellManifestLike(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function compareManifestSafety(
+  previous: CellManifest | null,
+  next: CellManifest,
+): BuilderDiagnostic[] {
+  if (!previous) {
+    return [];
+  }
+
+  return [
+    ...comparePublicFileAccess(previous, next),
+    ...compareSchemaSafety(previous, next),
+  ];
+}
+
+function comparePublicFileAccess(
+  previous: CellManifest,
+  next: CellManifest,
+): BuilderDiagnostic[] {
+  const previousPublic = filesPublicRead(previous.capabilities.files);
+  const nextPublic = filesPublicRead(next.capabilities.files);
+
+  if (previousPublic || !nextPublic) {
+    return [];
+  }
+
+  return [
+    {
+      code: "PUBLIC_FILE_ACCESS_CHANGED",
+      severity: "error",
+      message:
+        "capabilities.files.publicRead changed from false to true compared with the previous build.",
+      hint: "Review public file exposure before enabling public reads. Delete .anvil/dist/manifest.json only if this is an intentional local baseline reset.",
+    },
+  ];
+}
+
+function compareSchemaSafety(
+  previous: CellManifest,
+  next: CellManifest,
+): BuilderDiagnostic[] {
+  const diagnostics: BuilderDiagnostic[] = [];
+
+  for (const [tableName, previousTable] of Object.entries(
+    previous.schema.tables,
+  )) {
+    const nextTable = next.schema.tables[tableName];
+
+    if (!nextTable) {
+      diagnostics.push({
+        code: "DESTRUCTIVE_SCHEMA_CHANGE",
+        severity: "error",
+        message: `Schema table '${tableName}' was removed compared with the previous build.`,
+        hint: "Add an explicit migration plan before removing Cell-owned data tables.",
+      });
+      continue;
+    }
+
+    for (const [fieldName, previousField] of Object.entries(
+      previousTable.fields,
+    )) {
+      const nextField = nextTable.fields[fieldName];
+
+      if (!nextField) {
+        diagnostics.push({
+          code: "DESTRUCTIVE_SCHEMA_CHANGE",
+          severity: "error",
+          message: `Schema field '${tableName}.${fieldName}' was removed compared with the previous build.`,
+          hint: "Add an explicit migration plan before removing Cell-owned data fields.",
+        });
+        continue;
+      }
+
+      if (fieldType(previousField) !== fieldType(nextField)) {
+        diagnostics.push({
+          code: "DESTRUCTIVE_SCHEMA_CHANGE",
+          severity: "error",
+          message: `Schema field '${tableName}.${fieldName}' changed type from '${fieldType(previousField)}' to '${fieldType(nextField)}'.`,
+          hint: "Add an explicit migration plan before changing Cell-owned data field types.",
+        });
+      }
+    }
+  }
+
+  return diagnostics;
+}
+
+function filesPublicRead(capability: unknown): boolean {
+  return (
+    typeof capability === "object" &&
+    capability !== null &&
+    "publicRead" in capability &&
+    capability.publicRead === true
+  );
+}
+
+function fieldType(field: unknown): string {
+  if (
+    typeof field === "object" &&
+    field !== null &&
+    "type" in field &&
+    typeof field.type === "string"
+  ) {
+    return field.type;
+  }
+
+  return "unknown";
+}
+
+function isCellManifestLike(value: unknown): value is CellManifest {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "schemaVersion" in value &&
+    "cell" in value &&
+    "schema" in value &&
+    "capabilities" in value
+  );
 }
 
 function failed(

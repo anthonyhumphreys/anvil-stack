@@ -143,8 +143,15 @@ export default app({
       steps: [
         {
           name: "seedWelcomeNote",
-          handler: async (ctx) => {
-            const ownerId = ctx.auth.requireUser();
+          handler: async (ctx, state) => {
+            const input =
+              typeof state.input === "object" && state.input !== null
+                ? (state.input as { userId?: unknown })
+                : {};
+            const ownerId =
+              typeof input.userId === "string" && input.userId.length > 0
+                ? input.userId
+                : "workflow";
 
             return ctx.db.notes.insert({
               title: "Welcome to Anvil Notes",

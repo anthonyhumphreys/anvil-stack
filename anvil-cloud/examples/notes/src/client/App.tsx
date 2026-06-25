@@ -23,14 +23,17 @@ export function App() {
   const [title, setTitle] = React.useState("");
   const [body, setBody] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
-  const notesQuery = useQuery<unknown, Note[]>(api.queries.listNotes, {});
-  const createNote = useMutation<{ title: string; body?: string }, Note>(
-    api.mutations.createNote,
-  );
-  const archiveNoteMutation = useMutation<
-    { noteId: string },
-    { archived: boolean }
-  >(api.mutations.archiveNote);
+  const notesQuery = useQuery(api.queries.listNotes, {});
+  const createNote = useMutation(api.mutations.createNote, {
+    refetch: notesQuery,
+  });
+  const archiveNoteMutation = useMutation(api.mutations.archiveNote, {
+    onSuccess: async (result) => {
+      if (result.archived) {
+        await notesQuery.refetch();
+      }
+    },
+  });
   const notes = notesQuery.data ?? [];
   const visibleError = error ?? notesQuery.error?.message ?? null;
 
@@ -60,7 +63,6 @@ export function App() {
         title: nextTitle,
         body,
       });
-      await notesQuery.refetch();
 
       setTitle("");
       setBody("");
@@ -79,11 +81,7 @@ export function App() {
     setError(null);
 
     try {
-      const result = await archiveNoteMutation.mutate({ noteId });
-
-      if (result.archived) {
-        await notesQuery.refetch();
-      }
+      await archiveNoteMutation.mutate({ noteId });
     } catch (unknownError) {
       setError(toMessage(unknownError, "Failed to archive note."));
     }

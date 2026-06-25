@@ -12,24 +12,32 @@ Build and check it from the workspace:
 
 ```bash
 cd anvil-cloud/examples/notes
-node ../../packages/cli/dist/index.js check --json
-node ../../packages/cli/dist/index.js build --json
+pnpm check
+pnpm build
 ```
 
 Or run the repeatable local smoke verifier from the `anvil-cloud` workspace:
 
 ```bash
-pnpm verify:notes-local
+pnpm verify:notes-golden-path
 ```
 
 It starts `anvil-cloud dev` on ephemeral ports, creates a local user, mints a real
 JWT, calls authenticated note mutation/query routes, checks inspect/logs, and
-then shuts the dev server down.
+then runs the local `onboardUser` workflow through `workflows run/list/show`.
+It also dumps the `notes` table as JSON to prove the authenticated mutation and
+workflow-created row are both visible through local state inspection. After that
+it runs `doctor --json` against the live runtime before confirming the AWS
+preview workflow gate and destroy dry-run lifecycle. The verifier uses this
+example's package scripts for `dev`, `check`, `build`, `inspect:local`,
+`logs:local`, `deploy:preview:gate`, and
+`destroy:preview:dry-run` so script drift breaks loudly. Very dignified.
+`pnpm verify:notes-local` remains as a compatibility alias.
 
 Run it locally:
 
 ```bash
-node ../../packages/cli/dist/index.js dev --port 8787 --client-port 5173
+pnpm dev -- --port 8787 --client-port 5173
 ```
 
 In another terminal, create a local user and token:
@@ -53,9 +61,16 @@ Useful inspection commands:
 
 ```bash
 node ../../packages/cli/dist/index.js lens --json
-node ../../packages/cli/dist/index.js inspect --local --json
-node ../../packages/cli/dist/index.js logs --local --json
+pnpm inspect:local
+pnpm logs:local
 node ../../packages/cli/dist/index.js db dump notes --local --json
+```
+
+Preview lifecycle checks:
+
+```bash
+pnpm deploy:preview:gate
+pnpm destroy:preview:dry-run
 ```
 
 This demo intentionally includes a workflow, so it is not currently the AWS

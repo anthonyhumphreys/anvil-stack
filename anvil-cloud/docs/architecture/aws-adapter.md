@@ -236,9 +236,12 @@ Cloud logs should be structured JSON and include:
 10. Return deployed URL and inspection commands
 ```
 
-`anvil-cloud destroy --preview --app <name> --yes` deletes the computed AWS preview
-CloudFormation stack for the Cell. It does not implement rollback or historical
-release promotion; it is the alpha cleanup path for preview resources. Before
+`anvil-cloud destroy --preview --app <name> --yes` deletes the computed AWS
+preview CloudFormation stack for the Cell. It does not implement rollback or
+historical release promotion; it is the alpha cleanup path for preview
+resources. `--dry-run` returns the same computed stack name, bucket cleanup
+intent, optional deployment metadata key, and real destroy command without
+calling AWS, which lets local contract tests cover cleanup intent safely. Before
 deleting the stack, destroy empties stack-owned S3 buckets from CloudFormation
 outputs so uploaded client assets or Cell files do not block stack deletion.
 When `ANVIL_AWS_DEPLOYMENT_METADATA_TABLE` is configured, destroy also removes
@@ -314,6 +317,12 @@ events until the requested limit is reached or CloudWatch has no more pages.
 DynamoDB and CloudWatch SDK failures return `AWS_REMOTE_READ_FAILED` with the
 failed operation and provider error cause.
 
+The `verify:aws-preview` smoke treats that metadata path as part of the preview
+contract: deploy output must include the deployment metadata table/key, remote
+inspect must echo the manifest, runtime URL, resources, and Lambda artifact
+digest, remote logs must return the stable AWS log payload, and destroy must
+delete deployment metadata when the metadata table is configured.
+
 Services, workflows, and outbound fetch are still gated from AWS preview deploys
 in alpha. Deploying a Cell that declares any of those capabilities fails before
 provisioning with an `AWS_PREVIEW_UNSUPPORTED_FEATURE` diagnostic so authors do
@@ -327,6 +336,13 @@ declared capability, the host returns `CAPABILITY_NOT_DECLARED` diagnostics that
 name the missing adapter variable, such as `ANVIL_EVENT_BUS_NAME` for events.
 
 ## Deployment result shape
+
+Preview deploy results include a stable deployment plan before provisioning
+state. `plan.review` carries diffable `changeSet` ids, capability diffs,
+structured cost-driver hints, rollback notes, cleanup commands/notes, and
+approval gates. Unsupported alpha features such as services, workflows, and
+outbound fetch produce a blocking `aws-preview-support-gate` before any AWS
+resources are created.
 
 ```json
 {

@@ -4,6 +4,11 @@ CLI package for Anvil Cloud.
 
 The CLI binary is `anvil-cloud`.
 
+This is the only public Anvil Cloud npm package during alpha. Runtime, client,
+builder, local, auth, control-plane, and AWS workspace packages are private
+implementation details until their external API contracts are deliberately
+stabilized.
+
 ## Install
 
 ```bash

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createAnvilCellGraph, validateAnvilCellGraph, type CellManifest } from "../src/index.js";
+import { createAnvilCellGraph, validateAnvilCellGraph, type AnvilCellGraph, type CellManifest } from "../src/index.js";
 
 const manifest: CellManifest = {
   schemaVersion: "0.1",
@@ -41,5 +41,35 @@ describe("Anvil Cell graph", () => {
     expect(validateAnvilCellGraph(graph)).toEqual([
       expect.objectContaining({ code: "GRAPH_ROUTE_HANDLER_MISSING" }),
     ]);
+  });
+
+  it("rejects provider-specific fields in the Cell graph", () => {
+    const graph = createAnvilCellGraph(manifest) as AnvilCellGraph & {
+      awsLambdaArn?: string;
+      runtimeAdapter?: { provider: string };
+      clientTarget?: { framework: string };
+    };
+
+    graph.awsLambdaArn =
+      "arn:aws:lambda:eu-west-2:123456789012:function:todo-api";
+    graph.runtimeAdapter = { provider: "pulumi" };
+    graph.clientTarget = { framework: "expo-router" };
+
+    expect(validateAnvilCellGraph(graph)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "GRAPH_PROVIDER_LEAK",
+          path: "graph.awsLambdaArn",
+        }),
+        expect.objectContaining({
+          code: "GRAPH_PROVIDER_LEAK",
+          path: "graph.runtimeAdapter.provider",
+        }),
+        expect.objectContaining({
+          code: "GRAPH_PROVIDER_LEAK",
+          path: "graph.clientTarget.framework",
+        }),
+      ]),
+    );
   });
 });

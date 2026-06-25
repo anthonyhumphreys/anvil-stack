@@ -14,7 +14,25 @@ Creates a new Anvil Cell project.
 
 ```sh
 anvil-cloud new notes
+anvil-cloud new native-notes --client expo-router
 ```
+
+Options:
+
+```txt
+--client vite-react|expo-router|headless
+```
+
+`vite-react` is the default. `expo-router` scaffolds an Expo Router client
+target with `app/index.tsx` and `app/_layout.tsx`; it still uses the Anvil
+runtime through `@anvil-cloud/client`. `headless` writes generated client
+metadata without a browser UI.
+
+Expo Router scaffolds read `EXPO_PUBLIC_ANVIL_RUNTIME_URL` when it is set. For
+local development they fall back to `http://localhost:8787`, except Android
+emulators use `http://10.0.2.2:8787` so the native app can reach the host
+runtime. The scaffold includes `src/expo-env.d.ts` so the public runtime URL is
+typed without adding Node globals to Cell authoring.
 
 Expected output:
 
@@ -32,6 +50,9 @@ JSON output:
 {
   "ok": true,
   "cell": "notes",
+  "client": {
+    "kind": "vite-react"
+  },
   "path": "./notes",
   "next": ["cd notes", "anvil-cloud dev"]
 }
@@ -39,7 +60,9 @@ JSON output:
 
 ### `anvil-cloud dev`
 
-Starts local runtime and client dev server.
+Starts the local runtime. For `vite-react` Cells it also starts the Vite client
+dev server. For `expo-router` and `headless` Cells, the CLI runs the runtime
+only; start the native client separately and point it at the runtime URL.
 
 Options:
 
@@ -60,12 +83,82 @@ Checks:
 - TypeScript typecheck;
 - forbidden imports;
 - capability-scoped `ctx.db`, `ctx.files`, `ctx.jobs`, `fetch`, and scheduled job usage;
+- public file-read escalation against the previous local manifest when building;
+- destructive schema removals or field type changes against the previous local
+  manifest when building;
 - manifest extraction safety;
 - declared capabilities.
 
 ### `anvil-cloud build`
 
 Builds local artefacts into `.anvil/dist` and `.anvil/generated`.
+
+### `anvil-cloud doctor`
+
+Checks the local Anvil Cloud toolchain and common runtime/deploy prerequisites.
+
+```sh
+anvil-cloud doctor --json
+anvil-cloud doctor --port 8787 --client-port 5173 --json
+```
+
+Doctor is read-only. It reports stable check ids with `ok`, `warning`, or
+`error` status. Warnings explain optional or situational setup, such as AWS
+preview environment variables, without failing local development. Errors are
+reserved for local blockers such as an unsupported Node version.
+
+Initial checks include:
+
+- Node and pnpm availability/version requirements;
+- built CLI entrypoint;
+- package publishing boundary: `@anvilstack/cloud-cli` public, internal
+  workspace packages private, runtime/client tracked as candidate public APIs,
+  and no public `workspace:` dependencies;
+- Cell config and build manifest;
+- generated client metadata presence and consistency with the built manifest;
+- local `.anvil/local` state, including auth, database, logs, jobs, workflows,
+  and service snapshots;
+- local runtime health and runtime/client port availability;
+- Notes golden-path verification runs doctor against the live local runtime and
+  expects `project.build`, `project.generatedClient`, `local.state`, and
+  `local.runtime` to report `ok`;
+- AWS region, artifact bucket, and deployment metadata table env;
+- OIDC token verification env for authenticated AWS preview smoke tests;
+  `auth.oidc.details.claims` reports the effective user id, email, and roles
+  claim names plus whether each was explicitly configured;
+- `ANVIL_AWS_SMOKE_TOKEN` presence for authenticated preview query/mutation
+  smoke coverage;
+- optional `ANVIL_AWS_EXPIRED_SMOKE_TOKEN` presence for expired-token rejection
+  smoke coverage;
+- optional `ANVIL_AWS_WRONG_ISSUER_SMOKE_TOKEN` and
+  `ANVIL_AWS_WRONG_AUDIENCE_SMOKE_TOKEN` presence for issuer/audience rejection
+  smoke coverage.
+
+`local.runtime` includes `details.reason` on warnings so automation can
+distinguish `invalid-json`, `not-anvil-health`, `http-status`, and connection
+errors when a port is occupied by the wrong process or the local runtime is not
+ready.
+
+JSON output:
+
+```json
+{
+  "ok": true,
+  "checks": [
+    {
+      "id": "node.version",
+      "status": "ok",
+      "message": "Node 20.11.0 satisfies >=20.11.0."
+    }
+  ],
+  "summary": {
+    "ok": 1,
+    "info": 0,
+    "warnings": 0,
+    "errors": 0
+  }
+}
+```
 
 ### `anvil-cloud inspect`
 
@@ -124,6 +217,36 @@ anvil-cloud db dump todos --local --json
 
 Remote database dump should require explicit environment and future confirmation/policy rules.
 
+### `anvil-cloud plan --stage <stage> --adapter aws`
+
+Builds the Cell, compiles the provider-neutral Cell graph, and asks the adapter
+for an Anvil-first deployment plan.
+
+```sh
+anvil-cloud plan --stage dev --adapter aws --json
+```
+
+JSON output includes:
+
+- `graph`: provider-neutral Cell graph, with no Pulumi or AWS authoring surface;
+- `plan.changes`: stable Anvil concepts such as cells, routes, functions,
+  tables, secrets, and permissions;
+- `plan.review.changeSet`: diffable change ids for review tooling;
+- `plan.review.capabilityDiffs`: added, removed, or unchanged Cell graph
+  capabilities compared with a previous graph when available;
+- `plan.review.cost.drivers`: cost-driver hints, not price estimates;
+- `plan.review.rollback`: current rollback support and manual recovery notes;
+- `plan.review.cleanup`: cleanup commands and notes reviewers should confirm
+  before applying preview changes;
+- `plan.review.approvalSummary`: compact counts over review gates, including
+  whether any gate blocks provisioning;
+- `plan.review.approvalGates`: required review gates for destructive changes,
+  new data resources, permissions/secrets, and public ingress.
+
+Human output shows Anvil concepts first, followed by review gates, cost drivers,
+and rollback notes. `--verbose` or `--debug` may include underlying Pulumi
+resource mappings for adapter debugging only.
+
 ### `anvil-cloud deploy --preview`
 
 Deploys a Cell to a preview environment through the configured deployment adapter. AWS is the first planned alpha adapter.
@@ -137,6 +260,17 @@ must be positive. If the runtime does not become healthy, the JSON result uses
 `AWS_RUNTIME_UNHEALTHY` and includes the deployment result plus verification
 details.
 
+Preview deploy JSON includes review-oriented plan metadata: stable
+`plan.review.changeSet` ids, `plan.review.changeSummary` concept counts,
+structured `plan.review.cost.drivers`, rollback/cleanup notes, and
+`plan.review.approvalSummary` / `plan.review.approvalGates`. Successful AWS
+preview deploys include
+`resources.deploymentMetadataTable` and `resources.deploymentMetadataKey` so
+automation can connect deploy output to remote inspect, logs, and destroy
+cleanup state. During alpha, Cells with services, workflows, or outbound fetch
+include an `aws-preview-support-gate` approval gate with `severity: "block"` and
+fail before provisioning with `AWS_PREVIEW_UNSUPPORTED_FEATURE`.
+
 If CloudFormation does not reach a terminal stack status within the provisioner
 polling limit, deploy returns `AWS_STACK_TIMEOUT` with the last observed stack
 status and polling details.
@@ -147,13 +281,18 @@ publishing deployment metadata, deploy returns
 `AWS_PROVISIONING_OPERATION_FAILED` with the failed operation and provider
 error cause.
 
-### `anvil-cloud destroy --preview --app <name> --yes`
+### `anvil-cloud destroy --preview --app <name> --yes [--dry-run]`
 
 Deletes the AWS preview stack for a Cell. The command is intentionally explicit:
 alpha cleanup requires `--preview`, `--app`, and `--yes` so a typo does not
 become infrastructure archaeology with billing.
 Only `--env preview` is accepted during alpha; other environments return
 `INVALID_USAGE`.
+
+`--dry-run` validates the same command shape and returns the computed stack name,
+bucket cleanup intent, deployment metadata key, and real destroy command without
+calling AWS. It exists so local contract tests can cover the full lifecycle
+without pretending every laptop is a cloud control plane.
 
 When `ANVIL_AWS_DEPLOYMENT_METADATA_TABLE` is configured, successful destroy
 also deletes the matching deployment metadata record. The JSON result includes

@@ -18,9 +18,15 @@ pnpm typecheck
 pnpm test
 pnpm lint
 pnpm build
+pnpm verify:notes-golden-path
 ```
 
-These commands are placeholders until package implementations are added.
+`verify:notes-golden-path` is the local platform contract test. It first checks
+that `anvil-cloud new` scaffolds the expected package-script and generated-client
+contract, then runs the canonical Notes example through local dev, JSON
+check/build/inspect/logs, local workflow run/list/show persistence, `db dump`
+state inspection, `doctor --json` against the live local runtime, the AWS
+preview workflow support gate, and preview destroy dry-run.
 
 ## Implementation order
 
@@ -78,3 +84,8 @@ Before making the repository public:
 - add `SECURITY.md`;
 - review docs for private/internal references;
 - confirm package names are available and acceptable.
+
+Package publishing boundaries are tracked in
+[`docs/contributing/package-publishing.md`](package-publishing.md). In alpha,
+`@anvilstack/cloud-cli` is the only public npm package; workspace internals stay
+private until their API contracts are intentionally stabilized.

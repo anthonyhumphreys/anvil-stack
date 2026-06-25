@@ -118,6 +118,88 @@ describe("createAwsPreviewDeploymentPlan", () => {
         ]),
       },
     });
+    expect(plan.review).toMatchObject({
+      stableId: "aws-preview:notes:preview:deploy",
+      operation: "deploy",
+      summary: {
+        creates: plan.changes.length,
+        updates: 0,
+        reuses: 0,
+        total: plan.changes.length,
+      },
+      changeSummary: expect.arrayContaining([
+        {
+          concept: "database",
+          creates: 1,
+          updates: 0,
+          reuses: 0,
+          total: 1,
+          changeIds: ["create:database:notes-preview"],
+        },
+        {
+          concept: "jobs",
+          creates: 1,
+          updates: 0,
+          reuses: 0,
+          total: 1,
+          changeIds: ["create:jobs:notes-preview"],
+        },
+      ]),
+      changeSet: expect.arrayContaining([
+        expect.objectContaining({
+          id: "create:database:notes-preview",
+          action: "create",
+          concept: "database",
+        }),
+      ]),
+      capabilityDiffs: expect.arrayContaining([
+        expect.objectContaining({
+          id: "database:notes-preview",
+          action: "add",
+          capability: "database",
+        }),
+      ]),
+      cost: {
+        drivers: expect.arrayContaining([
+          expect.objectContaining({
+            id: "dynamodb-data",
+            label: "DynamoDB Cell data table reads and writes",
+          }),
+          expect.objectContaining({
+            id: "sqs-jobs",
+            label: "SQS queue requests and retained messages",
+          }),
+        ]),
+        notes: plan.operations.cost.notes,
+      },
+      rollback: plan.operations.rollback,
+      cleanup: {
+        commands: ["anvil-cloud destroy --preview --app notes --yes --json"],
+        notes: [
+          "Destroy empties stack-owned buckets and removes deployment metadata when configured.",
+        ],
+      },
+      approvalSummary: {
+        required: 2,
+        info: 0,
+        review: 2,
+        block: 0,
+        hasBlockingGate: false,
+      },
+      approvalGates: expect.arrayContaining([
+        expect.objectContaining({
+          id: "data-resource-review",
+          required: true,
+          severity: "review",
+          changeIds: ["create:database:notes-preview"],
+        }),
+        expect.objectContaining({
+          id: "async-capability-review",
+          required: true,
+          severity: "review",
+        }),
+      ]),
+    });
   });
 
   it("reports workflow resources in the preview plan without enabling deploy support", () => {
@@ -149,6 +231,31 @@ describe("createAwsPreviewDeploymentPlan", () => {
     expect(plan.operations.cost.drivers).toEqual(
       expect.arrayContaining(["Step Functions state transitions"]),
     );
+    expect(plan.review.cost.drivers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "step-functions",
+          label: "Step Functions state transitions",
+        }),
+      ]),
+    );
+    expect(plan.review.approvalGates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "aws-preview-support-gate",
+          required: true,
+          severity: "block",
+          changeIds: ["create:workflows:notes-preview"],
+        }),
+      ]),
+    );
+    expect(plan.review.approvalSummary).toEqual({
+      required: 3,
+      info: 0,
+      review: 2,
+      block: 1,
+      hasBlockingGate: true,
+    });
     expect(
       checkAwsPreviewSupport({
         ...manifest,

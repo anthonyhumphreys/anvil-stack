@@ -13,6 +13,17 @@ export type AnvilCellGraph = {
 
 export type GraphValidationDiagnostic = { code: string; message: string; path: string };
 
+const providerLeakTerms = ["aws", "pulumi", "vite", "expo", "bedrock"];
+const providerLeakValueKeys = new Set([
+  "adapter",
+  "clientKind",
+  "engine",
+  "framework",
+  "provider",
+  "resourceType",
+  "type",
+]);
+
 export function createAnvilCellGraph(manifest: CellManifest): AnvilCellGraph {
   const cellName = manifest.cell.name;
   const functions = new Map<string, { cell: string; name: string; runtime: string; handler: string }>();
@@ -44,7 +55,58 @@ export function validateAnvilCellGraph(graph: AnvilCellGraph): GraphValidationDi
     if (!functions.has(permission.from)) diagnostics.push({ code: "GRAPH_PERMISSION_SOURCE_MISSING", message: `Permission source function '${permission.from}' is missing.`, path: `permissions.${permission.from}` });
     if (!targets.has(permission.to)) diagnostics.push({ code: "GRAPH_PERMISSION_TARGET_MISSING", message: `Permission target '${permission.to}' is missing.`, path: `permissions.${permission.to}` });
   }
+  inspectProviderNeutralGraph(graph, "graph", diagnostics);
   return diagnostics;
+}
+
+function inspectProviderNeutralGraph(
+  value: unknown,
+  path: string,
+  diagnostics: GraphValidationDiagnostic[],
+): void {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => {
+      inspectProviderNeutralGraph(item, `${path}.${index}`, diagnostics);
+    });
+    return;
+  }
+
+  if (!value || typeof value !== "object") {
+    return;
+  }
+
+  for (const [key, child] of Object.entries(value)) {
+    const childPath = `${path}.${key}`;
+    const keyTerm = providerLeakTerm(key);
+
+    if (keyTerm) {
+      diagnostics.push({
+        code: "GRAPH_PROVIDER_LEAK",
+        message: `Cell graph field '${childPath}' leaks provider-specific '${keyTerm}' terminology.`,
+        path: childPath,
+      });
+    }
+
+    if (providerLeakValueKeys.has(key) && typeof child === "string") {
+      const valueTerm = providerLeakTerm(child);
+
+      if (valueTerm) {
+        diagnostics.push({
+          code: "GRAPH_PROVIDER_LEAK",
+          message: `Cell graph field '${childPath}' leaks provider-specific '${valueTerm}' terminology.`,
+          path: childPath,
+        });
+      }
+    }
+
+    inspectProviderNeutralGraph(child, childPath, diagnostics);
+  }
+}
+
+function providerLeakTerm(value: string): string | null {
+  const normalized = value.toLowerCase();
+
+  return providerLeakTerms.find((term) => normalized.includes(term)) ?? null;
 }
 
 function readSecretNames(capabilities: Record<string, unknown>): string[] {

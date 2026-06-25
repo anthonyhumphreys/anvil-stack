@@ -269,6 +269,9 @@ This function is the core execution boundary and should be shared by local dev, 
     "server": "dist/server/index.mjs",
     "client": "dist/client/index.html"
   },
+  "client": {
+    "kind": "vite-react"
+  },
   "schema": {
     "tables": {}
   },
@@ -285,7 +288,7 @@ This function is the core execution boundary and should be shared by local dev, 
 `anvil-cloud dev` starts:
 
 - local runtime server;
-- client dev server;
+- Vite client dev server for `vite-react` Cells;
 - local database adapter;
 - local auth emulator;
 - local file adapter;
@@ -364,10 +367,13 @@ Every automation-oriented command must support `--json`.
 Forbidden in Cell server code by default:
 
 - direct cloud provider SDK imports;
-- `fs`;
+- direct file-system imports, including `fs`, `fs/promises`, `node:fs/*`, and
+  CommonJS `require()` forms;
 - `child_process`;
-- arbitrary network clients where capability is not declared;
-- direct `process.env` access;
+- direct network client imports such as `http`, `https`, `node:net`, `undici`,
+  `axios`, or CommonJS `require()` forms;
+- direct `process.env` access, including `globalThis.process`, aliased
+  `process`, or destructured `env` access;
 - dynamic import for runtime-sensitive code;
 - native addons.
 
@@ -376,9 +382,35 @@ Initial capability diagnostics should catch common static cases before bundling:
 - `ctx.db` requires `capabilities.database`;
 - `ctx.files` requires `capabilities.files`;
 - `ctx.jobs` requires `capabilities.jobs`;
-- global `fetch()` requires `capabilities.outboundFetch`;
+- static bracket notation such as `ctx["db"]` and `ctx["env"]` follows the
+  same capability and env declaration rules;
+- destructuring such as `const { db, env } = ctx` or `handler: ({ db }) =>`
+  follows the same capability and env declaration rules;
+- aliases and static bracket calls such as `ctx.env["get"]` and
+  `ctx.env["require"]` follow the same env declaration rules;
+- dynamic `ctx.env` method access such as `ctx.env[input.method]("NAME")` is
+  rejected;
+- computed `ctx.env` method destructuring such as
+  `const { [input.method]: readEnv } = ctx.env` is rejected;
+- non-static context destructuring such as `const { ...scoped } = ctx` is
+  rejected;
+- dynamic context capability access such as `ctx[input.capability]` is rejected;
+- global `fetch()`, `globalThis.fetch()`, and static fetch aliases require
+  `capabilities.outboundFetch`;
 - `fetch()` targets must be static absolute `http` or `https` URL literals;
+- `fetch()` hosts must appear in `capabilities.outboundFetch.allow`;
 - `job({ schedule })` requires `capabilities.scheduledJobs`.
+
+Build-time manifest diagnostics should compare against the previous local
+`.anvil/dist/manifest.json` when present and reject:
+
+- `PUBLIC_FILE_ACCESS_CHANGED` when `capabilities.files.publicRead` escalates to
+  `true`;
+- `DESTRUCTIVE_SCHEMA_CHANGE` when a table is removed, a field is removed, or a
+  field type changes.
+
+These checks are conservative local Guard rails. They do not replace an
+approved migration workflow or remote deployment history.
 
 Allowed:
 
@@ -455,7 +487,10 @@ AWS is the first planned alpha adapter. Its concrete service mapping belongs in 
 
 ### Milestone 3: builder
 
-- `anvil-cloud build` emits server bundle, client bundle, manifest, generated client metadata, and build metadata.
+- `anvil-cloud build` emits server bundle, manifest, generated client metadata,
+  and build metadata. It emits a client bundle for `vite-react`; `expo-router`
+  and `headless` targets keep the generated client contract without producing
+  Vite assets.
 - Forbidden import checks run before bundle output.
 - Manifest includes schema, queries, mutations, endpoints, jobs, and capabilities.
 

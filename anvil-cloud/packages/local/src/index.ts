@@ -71,7 +71,7 @@ export type LocalRuntimeServerOptions = {
   port?: number;
   clientPort?: number;
   clientDistDir?: string;
-  clientMode?: "static" | "vite";
+  clientMode?: "none" | "static" | "vite";
   env?: Record<string, string>;
   agentProviders?: AgentProviderRegistry;
   agentApprovalProvider?: AgentApprovalProvider;
@@ -197,7 +197,9 @@ export async function startLocalRuntimeServer(
   let viteServer: ViteDevServer | undefined;
 
   try {
-    if (clientMode === "vite") {
+    if (clientMode === "none") {
+      clientUrl = runtimeUrl;
+    } else if (clientMode === "vite") {
       viteServer = await startViteClientServer({
         rootDir,
         runtimeUrl,
