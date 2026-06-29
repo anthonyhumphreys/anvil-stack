@@ -127,7 +127,9 @@ Builder validation catches endpoint or workflow references to missing mounted ag
 | Cell Agent | Runtime behavior inside a Cell: endpoint, job, workflow, mutation, or internal app behavior. |
 | Agent Cell | A Cell whose primary product surface is an agent-powered experience. The Cell remains the boundary for auth, capabilities, approvals, validation, local runtime, and deployment adapters. |
 
-Project-agent discovery from `agents/*/agent.ts` is still early. Mounted Cell Agents are wired through the current Cell build and local runtime path.
+Project-agent discovery currently reports instruction files under
+`agents/**/instructions.md`. Mounted Cell Agents are wired through the current
+Cell build and local runtime path.
 
 ## Contract mode
 
@@ -136,9 +138,15 @@ Contract mode validates and compiles without calling a model provider or executi
 ```bash
 anvil-cloud agents validate
 anvil-cloud agents manifest --json
+anvil-cloud agents discover --json
+anvil-cloud agents guardian --json
 ```
 
-This checks mounted agents, model config, instructions files, capabilities, approval rules, endpoint/workflow references, and generated provider-neutral manifests.
+This checks mounted agents, model config, instructions files, capabilities,
+approval rules, endpoint/workflow references, generated provider-neutral
+manifests, project instruction files, and deterministic Guardian review
+findings. Guardian uses the same trust report as `anvil-cloud review`; it does
+not call a model provider.
 
 ## Stub mode
 
@@ -274,7 +282,8 @@ The manifest may name provider ids such as `local` or `aws-bedrock`. It must not
 
 ## Current limits
 
-- Project-agent discovery is not yet a full standalone build path.
+- Project-agent discovery is instruction-file based; standalone project-agent
+  TypeScript manifests are future work.
 - There is no hosted production agent orchestration.
 - There is no chat UI.
 - There is no production approval UI.

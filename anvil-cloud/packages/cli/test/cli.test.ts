@@ -1047,6 +1047,146 @@ describe("main", () => {
     }
   });
 
+  it("aggregates Guard and preview plan review into a trust report", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-"));
+    const originalCwd = process.cwd();
+    const originalExitCode = process.exitCode;
+
+    try {
+      process.exitCode = undefined;
+      process.chdir(rootDir);
+      await captureStdout(() =>
+        main(["new", "review-notes", "--client", "headless", "--json"]),
+      );
+      process.chdir(path.join(rootDir, "review-notes"));
+
+      const output = await captureStdout(() =>
+        main(["review", "--adapter", "aws", "--env", "preview", "--json"]),
+      );
+      const payload = JSON.parse(output) as Record<string, unknown>;
+
+      expect(payload).toMatchObject({
+        ok: true,
+        schemaVersion: "0.1",
+        command: "review",
+        status: "review",
+        target: {
+          adapter: "aws",
+          environment: "preview",
+          cell: "review-notes",
+        },
+        summary: {
+          guardErrors: 0,
+          approvalRequired: 1,
+          reviewGates: 1,
+          blockingGates: 0,
+          rollbackSupported: false,
+        },
+        guard: {
+          ok: true,
+          diagnostics: [],
+        },
+        manifest: {
+          capabilities: {
+            database: true,
+          },
+        },
+        review: {
+          stableId: "aws-preview:review-notes:preview:deploy",
+          approvalGates: [
+            expect.objectContaining({
+              id: "data-resource-review",
+              required: true,
+              severity: "review",
+            }),
+          ],
+          capabilityDiffs: expect.arrayContaining([
+            expect.objectContaining({
+              id: "database:review-notes-preview",
+              action: "add",
+            }),
+          ]),
+        },
+      });
+      expect(process.exitCode).toBeUndefined();
+    } finally {
+      process.chdir(originalCwd);
+      process.exitCode = originalExitCode;
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks review reports when Guard diagnostics fail", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-"));
+    const originalCwd = process.cwd();
+    const originalExitCode = process.exitCode;
+
+    try {
+      process.exitCode = undefined;
+      process.chdir(rootDir);
+      await writeFile(
+        path.join(rootDir, "anvil.json"),
+        JSON.stringify({
+          name: "bad-review-cell",
+          runtime: "nodejs20",
+          entrypoints: {
+            server: "src/cell.server.ts",
+            client: "src/client/main.tsx",
+          },
+        }),
+        "utf8",
+      );
+      await mkdir(path.join(rootDir, "src/client"), { recursive: true });
+      await writeFile(
+        path.join(rootDir, "src/cell.server.ts"),
+        [
+          'import { readFileSync } from "node:fs";',
+          'import { app } from "@anvil-cloud/runtime";',
+          "",
+          "void readFileSync;",
+          "export default app({});",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      await writeFile(
+        path.join(rootDir, "src/client/main.tsx"),
+        "document.body.textContent = 'bad review cell';\n",
+        "utf8",
+      );
+
+      const output = await captureStdout(() => main(["review", "--json"]));
+      const payload = JSON.parse(output) as Record<string, unknown>;
+
+      expect(payload).toMatchObject({
+        ok: false,
+        command: "review",
+        status: "block",
+        summary: {
+          guardErrors: 1,
+          blockingGates: 1,
+        },
+        guard: {
+          ok: false,
+          phase: "import-policy",
+          diagnostics: [
+            expect.objectContaining({
+              code: "FORBIDDEN_IMPORT",
+              file: "src/cell.server.ts",
+            }),
+          ],
+        },
+        manifest: null,
+        review: null,
+      });
+      expect(process.exitCode).toBe(3);
+    } finally {
+      process.chdir(originalCwd);
+      process.exitCode = originalExitCode;
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("validates, emits, and invokes mounted agents", async () => {
     const rootDir = await createAgentCell();
     const originalCwd = process.cwd();
@@ -1086,6 +1226,63 @@ describe("main", () => {
         },
       });
 
+      await mkdir(path.join(rootDir, "agents", "guardian"), {
+        recursive: true,
+      });
+      await writeFile(
+        path.join(rootDir, "agents", "guardian", "instructions.md"),
+        "Review Cell trust reports before deploy.\n",
+        "utf8",
+      );
+
+      const discoverOutput = await captureStdout(() =>
+        main(["agents", "discover", "--json"]),
+      );
+      const discoverPayload = JSON.parse(discoverOutput) as Record<
+        string,
+        unknown
+      >;
+
+      expect(discoverPayload).toMatchObject({
+        ok: true,
+        projectAgents: [
+          {
+            name: "guardian",
+            path: "agents/guardian/instructions.md",
+          },
+        ],
+        mountedAgents: [
+          expect.objectContaining({
+            name: "support",
+            exposure: "cell",
+          }),
+        ],
+      });
+
+      const guardianOutput = await captureStdout(() =>
+        main(["agents", "guardian", "--json"]),
+      );
+      const guardianPayload = JSON.parse(guardianOutput) as Record<
+        string,
+        unknown
+      >;
+
+      expect(guardianPayload).toMatchObject({
+        ok: true,
+        agent: {
+          name: "guardian",
+          exposure: "project",
+        },
+        report: {
+          command: "review",
+        },
+        findings: expect.arrayContaining([
+          expect.objectContaining({
+            code: "ROLLBACK_MANUAL",
+          }),
+        ]),
+      });
+
       const invokeOutput = await captureStdout(() =>
         main([
           "agents",
@@ -1114,6 +1311,54 @@ describe("main", () => {
     }
   }, 15_000);
 
+  it("emits lightweight AWS preview usage visibility", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-"));
+    const originalCwd = process.cwd();
+    const originalExitCode = process.exitCode;
+
+    try {
+      process.exitCode = undefined;
+      process.chdir(rootDir);
+      await captureStdout(() =>
+        main(["new", "usage-notes", "--client", "headless", "--json"]),
+      );
+      process.chdir(path.join(rootDir, "usage-notes"));
+
+      const output = await captureStdout(() =>
+        main(["usage", "--preview", "--json"]),
+      );
+      const payload = JSON.parse(output) as Record<string, unknown>;
+
+      expect(payload).toMatchObject({
+        ok: true,
+        schemaVersion: "0.1",
+        target: {
+          adapter: "aws",
+          environment: "preview",
+          cell: "usage-notes",
+        },
+        usage: {
+          mode: "declared-preview",
+          resources: {
+            tables: 1,
+          },
+          cost: {
+            billingMode: "usage-based-preview",
+            drivers: expect.arrayContaining([
+              "Lambda requests and duration",
+              "DynamoDB Cell data table reads and writes",
+            ]),
+          },
+        },
+      });
+      expect(process.exitCode).toBeUndefined();
+    } finally {
+      process.chdir(originalCwd);
+      process.exitCode = originalExitCode;
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("requires explicit confirmation before destroying AWS preview stacks", async () => {
     const originalExitCode = process.exitCode;
 
@@ -1133,6 +1378,51 @@ describe("main", () => {
         ],
       });
       expect(process.exitCode).toBe(2);
+    } finally {
+      process.exitCode = originalExitCode;
+    }
+  });
+
+  it("emits AWS preview rollback dry-run intent JSON", async () => {
+    const originalExitCode = process.exitCode;
+
+    try {
+      process.exitCode = undefined;
+      const output = await captureStdout(() =>
+        main([
+          "rollback",
+          "--preview",
+          "--app",
+          "notes",
+          "--to-deployment",
+          "dep_previous",
+          "--dry-run",
+          "--json",
+        ]),
+      );
+      const payload = JSON.parse(output) as Record<string, unknown>;
+
+      expect(payload).toMatchObject({
+        ok: true,
+        schemaVersion: "0.1",
+        target: {
+          adapter: "aws",
+          environment: "preview",
+          cell: "notes",
+          deploymentId: "dep_previous",
+        },
+        rollback: {
+          mode: "dry-run",
+          strategy: "redeploy-previous-artifact",
+          supported: false,
+          commands: [
+            "anvil-cloud inspect --app notes --env preview --json",
+            "anvil-cloud logs --app notes --env preview --since 10m --json",
+            "anvil-cloud deploy --preview --json",
+          ],
+        },
+      });
+      expect(process.exitCode).toBeUndefined();
     } finally {
       process.exitCode = originalExitCode;
     }
@@ -1432,7 +1722,7 @@ describe("main", () => {
     }
   });
 
-  it("keeps AWS preview deploy gated for workflow-bearing Cells", async () => {
+  it("emits AWS preview workflow review gates for workflow-bearing Cells", async () => {
     const originalCwd = process.cwd();
     const originalExitCode = process.exitCode;
     const originalArtifactBucket = process.env.ANVIL_AWS_ARTIFACT_BUCKET;
@@ -1479,14 +1769,17 @@ describe("main", () => {
 
       expect(payload).toMatchObject({
         ok: false,
-        code: "AWS_PREVIEW_UNSUPPORTED_FEATURE",
-        diagnostics: [
-          {
-            code: "AWS_PREVIEW_UNSUPPORTED_FEATURE",
-            feature: "workflows",
-            names: ["syncNotes"],
+        code: "AWS_PROVISIONER_NOT_CONFIGURED",
+        plan: {
+          review: {
+            approvalGates: expect.arrayContaining([
+              expect.objectContaining({
+                id: "workflow-preview-review",
+                severity: "review",
+              }),
+            ]),
           },
-        ],
+        },
       });
       expect(process.exitCode).toBe(6);
     } finally {

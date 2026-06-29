@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import {
   createRuntimeContext,
   handleRuntimeRequest,
+  RuntimeError,
   type AppDefinition,
   type RuntimeHost,
   type RuntimeResponse,
@@ -74,6 +75,7 @@ export function createAwsLambdaRuntimeHandler(
   app: AppDefinition,
   host: RuntimeHost,
 ): AwsLambdaRuntimeHandler {
+  installOutboundFetchPolicy(process.env.ANVIL_OUTBOUND_FETCH_ALLOW);
   const httpHandler = createAwsRuntimeHandler(app, host, {
     allowBodyIdentity: process.env.ANVIL_AUTH_ALLOW_BODY_IDENTITY === "true",
   });
@@ -98,6 +100,71 @@ export function createAwsLambdaRuntimeHandler(
 
     return httpHandler(event as AwsHttpEvent);
   };
+}
+
+export function installOutboundFetchPolicy(rawAllowList: string | undefined) {
+  const allowList = parseOutboundFetchAllowList(rawAllowList);
+
+  if (allowList.length === 0) {
+    return;
+  }
+
+  const currentFetch = globalThis.fetch as
+    | (typeof fetch & { __anvilOriginalFetch?: typeof fetch })
+    | undefined;
+  const originalFetch = currentFetch?.__anvilOriginalFetch ?? currentFetch;
+
+  if (!originalFetch) {
+    return;
+  }
+
+  const allowedHosts = new Set(allowList);
+
+  const guardedFetch = (async (input, init) => {
+    const host = hostForFetchInput(input);
+
+    if (!host || !allowedHosts.has(host)) {
+      throw new RuntimeError(
+        "OUTBOUND_FETCH_NOT_ALLOWED",
+        host
+          ? `Fetch host '${host}' is not declared in capabilities.outboundFetch.allow.`
+          : "Fetch target could not be resolved against capabilities.outboundFetch.allow.",
+        403,
+        {
+          host,
+          allowedHosts: Array.from(allowedHosts).sort(),
+        },
+      );
+    }
+
+    return originalFetch(input, init);
+  }) as typeof fetch & { __anvilOriginalFetch?: typeof fetch };
+
+  guardedFetch.__anvilOriginalFetch = originalFetch;
+  globalThis.fetch = guardedFetch;
+}
+
+function parseOutboundFetchAllowList(raw: string | undefined): string[] {
+  if (!raw) {
+    return [];
+  }
+
+  return raw
+    .split(",")
+    .map((host) => host.trim())
+    .filter((host) => host.length > 0);
+}
+
+function hostForFetchInput(input: Parameters<typeof fetch>[0]): string | null {
+  try {
+    if (typeof input === "string" || input instanceof URL) {
+      return new URL(input).host;
+    }
+
+    return new URL(input.url).host;
+  } catch {
+    return null;
+  }
 }
 
 async function runWorkflowStep(

@@ -28,11 +28,11 @@ what evidence should I inspect before trusting a Cell?"
 | Runtime host | Host adapter interfaces exist for db, files, env, auth, logs, events, and jobs. |
 | Builder | Config, import policy, typecheck, server/client bundle, manifest extraction, generated client, and build metadata exist. |
 | Local runtime | Local HTTP server, JSON database, files, auth, logs, events, jobs, workflows, supervised services, manifest, and inspection state exist. |
-| CLI | `new`, `dev`, `check`, `build`, `inspect`, `logs`, `db`, `workflows`, `services list`, and `deploy --preview` exist. |
+| CLI | `new`, `dev`, `check`, `review`, `build`, `agents`, `inspect`, `logs`, `usage`, `db`, `workflows`, `services list`, `deploy --preview`, `rollback --preview --dry-run`, and `destroy --preview` exist. |
 | Client | React/Vite is the current paved road. The browser client supports generated query/mutation metadata, token lookup, structured runtime errors, hook helpers, and manual `refetch`. |
 | Lens | Local Lens is served at `/_anvil/lens` and reads the same local runtime truth as CLI JSON: manifest, capabilities, auth users, logs, database state, workflows, services, and diagnostics. |
-| Examples | `examples/notes` is the canonical local demo. `examples/aws-preview` is the AWS-compatible smoke Cell while workflows remain gated from preview deploy. |
-| AWS preview | Plan, CloudFormation synthesis, artifacts, optional provisioner, Lambda bridge, DynamoDB, S3, SQS, EventBridge events and schedules, CloudWatch logs, remote inspect, remote logs, preview destroy, cost-driver hints, and cleanup hints exist. |
+| Examples | `examples/notes` is the canonical local demo. `examples/aws-preview` is the AWS-compatible smoke Cell. |
+| AWS preview | Plan, review aggregation, CloudFormation synthesis, artifacts, optional provisioner, Lambda bridge, DynamoDB, S3, SQS, EventBridge events and schedules, Step Functions workflows, outbound fetch guard, ECS/Fargate service resource synthesis, CloudWatch logs, remote inspect, remote logs, usage visibility, rollback dry-run intent, preview destroy, cost-driver hints, and cleanup hints exist. |
 
 ## Non-goals for alpha
 
@@ -59,10 +59,10 @@ Safety comes from a smaller contract: declared capabilities, import restrictions
 | Generated client is early | React/Vite is the default UI path and hook helpers exist, but invalidation is manual, there is no cache policy layer, and the generated surface is query/mutation metadata rather than a full SDK. |
 | AWS preview is alpha, not production hosting | Preview provisioning exists for the checked-in smoke Cell, including deploy, public runtime checks, remote inspect/logs, and destroy. Plans include cleanup commands and cost drivers, but authenticated mutation/query checks require an OIDC-backed token setup, and production use still needs wider rollback, auth, and cost-hardening work. |
 | No hosted control plane | A local Lens UI (`/_anvil/lens`) and the `ControlPlaneApi` contract exist, but inspect and logs still depend on local state or AWS deployment metadata. A hosted plane would be a future adapter behind the same contract. See [Anvil Lens](/docs/cloud/lens). |
-| Workflows are local-first | Local workflows have durable run state, retries, timeouts, resume behavior, CLI commands, and Lens inspection. AWS has Step Functions synthesis and runtime bridge pieces, but preview deploy still rejects workflow-bearing Cells until remote run state, inspection, live-account verification, and cleanup are done. |
-| Services run locally only | The `service` primitive is supervised by the local runtime. There is no cloud execution path yet; an ECS/Fargate adapter is designed but not implemented. See [Services](/docs/cloud/services). |
-| Outbound fetch runs locally only | The builder accepts `capabilities.outboundFetch`, but AWS preview rejects it until outbound network policy can be enforced. |
-| Agents are foundation-level | Mounted Cell Agents run locally and compile to manifests. Project-agent discovery, hosted orchestration, production approval UI, durable multi-step tool execution, hosted memory, sandbox execution, and full AWS agent infrastructure generation are not implemented yet. See [Anvil Agents](/docs/cloud/agents). |
+| Workflows need deeper remote inspection | Local workflows have durable run state, retries, timeouts, resume behavior, CLI commands, and Lens inspection. AWS preview maps workflows to Step Functions, but remote `workflows list/show --app` is not wired yet. |
+| Services are preview-resource support | The `service` primitive is supervised by the local runtime. AWS preview synthesizes ECS/Fargate service resources for review and cleanup evidence, but exact Cell service-handler execution inside Fargate is still a hardening step. See [Services](/docs/cloud/services). |
+| Usage is visibility, not billing | `anvil-cloud usage --preview` reports declared resource counts and cost-driver hints. It does not query AWS billing or produce prices. |
+| Agents are foundation-level | Mounted Cell Agents run locally and compile to manifests. Project-agent discovery and deterministic Guardian review exist; hosted orchestration, production approval UI, durable multi-step tool execution, hosted memory, sandbox execution, and full AWS agent infrastructure generation are not implemented yet. See [Anvil Agents](/docs/cloud/agents). |
 
 ## What to verify before trusting a Cell
 
@@ -104,7 +104,7 @@ Before treating AWS preview as more than a local deploy experiment, verify:
 - deployment metadata table
 - remote `inspect` and `logs`
 - preview cleanup through `anvil-cloud destroy --preview --app <name> --yes`
-- rollback path or the current manual fallback: redeploy a known-good checkout or destroy the preview stack
+- rollback dry-run intent plus the current manual fallback: redeploy a known-good checkout or destroy the preview stack
 
 ## Contribution priorities
 
@@ -112,16 +112,16 @@ Useful next work includes:
 
 - documenting a complete OIDC setup flow for `ANVIL_AWS_SMOKE_TOKEN`
 - adding negative auth tests and cleanup assertions to `pnpm verify:aws-preview`
-- removing the workflow AWS preview gate after remote run-state persistence, remote CLI/Lens inspection, live account verification, and cleanup are proven
-- cloud execution paths for services
+- remote workflow run-state persistence and remote CLI/Lens inspection
+- exact Cell service-handler execution inside the Fargate preview task path
 - auth provider integration examples
 - richer Guard capability checks
-- generated client ergonomics: loading/error examples, token handling, invalidation patterns, and typed examples around `examples/notes`
-- project-agent discovery and standalone agent manifest generation
+- generated client examples: loading/error examples, token handling, invalidation patterns, and typed examples around `examples/notes`
+- standalone project-agent manifest generation beyond instruction discovery
 - provider-mode examples for AWS Bedrock with local contract checks
 - production approval, memory, sandbox, and durable orchestration adapter work for agents
-- rollback commands beyond preview redeploy/destroy guidance
-- cost and usage reporting beyond preview plan cost drivers
+- automated artifact rollback beyond dry-run intent
+- real cost reporting beyond declared usage visibility and preview plan cost drivers
 - clearer package publishing path
 - custom domain support
 

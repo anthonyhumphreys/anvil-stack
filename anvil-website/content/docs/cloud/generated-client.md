@@ -42,16 +42,31 @@ Current responsibilities:
 
 ```ts
 import { createClient } from "@anvil-cloud/client";
+import { api, createAnvilApiClient } from "@anvil/generated/client";
+
+const generated = createAnvilApiClient({
+  getToken: () => localStorage.getItem("anvil_token")
+});
+
+await generated.queries.listNotes({});
+await generated.mutations.createNote({
+  title: "Write docs"
+});
+```
+
+The generated helper is the paved road. Use the lower-level client when you need
+to pass generated definitions around explicitly:
+
+```ts
+import { createApiClient, createClient } from "@anvil-cloud/client";
 import { api } from "@anvil/generated/client";
 
 const client = createClient({
   getToken: () => localStorage.getItem("anvil_token")
 });
+const generated = createApiClient(client, api);
 
-await client.query(api.queries.listNotes, {});
-await client.mutation(api.mutations.createNote, {
-  title: "Write docs"
-});
+await generated.queries.listNotes({});
 ```
 
 By default the runtime URL is the same origin. Pass `runtimeUrl` when a client

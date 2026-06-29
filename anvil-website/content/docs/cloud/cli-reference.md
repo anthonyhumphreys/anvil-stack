@@ -22,9 +22,12 @@ can be friendly, but automation output must be stable.
 | `anvil-cloud new <name>` | Create a new Cell project. |
 | `anvil-cloud dev` | Build and start the local runtime and client server. |
 | `anvil-cloud check` | Validate config, import policy, capabilities, and TypeScript without writing build output. |
+| `anvil-cloud review` | Aggregate Guard diagnostics and AWS preview approval gates into one trust report. |
 | `anvil-cloud build` | Build server and client artifacts, manifest, generated client, generated types, and metadata. |
 | `anvil-cloud agents validate` | Validate mounted agents and compile their contracts without calling a model provider. |
 | `anvil-cloud agents manifest` | Emit provider-neutral agent manifests from the current Cell build. |
+| `anvil-cloud agents discover` | Discover project agent instruction files and mounted Cell agents. |
+| `anvil-cloud agents guardian` | Run the deterministic Guardian review over the Cell trust report. |
 | `anvil-cloud agents invoke <name>` | Invoke a mounted agent locally through the registered provider (`--input <text>`). |
 | `anvil-cloud inspect --local` | Inspect local manifest, auth, database counts, and recent errors. |
 | `anvil-cloud lens` | Verify the local runtime is reachable and print the Anvil Lens URL. |
@@ -32,6 +35,8 @@ can be friendly, but automation output must be stable.
 | `anvil-cloud db list --local` | List local database tables. |
 | `anvil-cloud db dump <table> --local` | Dump local table rows. |
 | `anvil-cloud deploy --preview` | Build and synthesize AWS preview deployment output, with provisioning when configured. |
+| `anvil-cloud usage --preview` | Report declared preview resource counts, cost-driver hints, and cleanup commands. |
+| `anvil-cloud rollback --preview --dry-run` | Emit dry-run rollback intent for a previous preview deployment. |
 | `anvil-cloud auth users` | List local identity provider users. |
 | `anvil-cloud auth add-user <id>` | Create a local user (`--email`, `--roles a,b`). |
 | `anvil-cloud auth remove-user <id>` | Delete a local user. |
@@ -164,17 +169,33 @@ Manifest output:
 anvil-cloud agents manifest --json
 ```
 
+Project discovery:
+
+```bash
+anvil-cloud agents discover --json
+```
+
+Guardian review:
+
+```bash
+anvil-cloud agents guardian --json
+```
+
 Local invocation:
 
 ```bash
 anvil-cloud agents invoke support --input "Review this Cell" --json
 ```
 
-`validate` and `manifest` do not call a model provider. `invoke` resolves the
-agent model provider through the runtime provider registry. The local stub
-provider is deterministic and does not make external calls. Provider mode can
-use a registered provider such as `aws-bedrock` while still enforcing the Anvil
-agent contract locally.
+`validate`, `manifest`, `discover`, and `guardian` do not call a model provider.
+`discover` reports `agents/**/instructions.md` files plus mounted Cell agents
+from the manifest. `guardian` runs the same trust aggregation as
+`anvil-cloud review` and emits deterministic findings for Guard errors, approval
+gates, rollback posture, and cleanup evidence. `invoke` resolves the agent model
+provider through the runtime provider registry. The local stub provider is
+deterministic and does not make external calls. Provider mode can use a
+registered provider such as `aws-bedrock` while still enforcing the Anvil agent
+contract locally.
 
 See [Anvil Agents](/docs/cloud/agents).
 
@@ -248,8 +269,26 @@ That is useful. It means deploy planning can be reviewed without mutating an AWS
 
 The deployment plan includes an `operations` block with rollback notes, cleanup
 commands, and cost drivers for the generated preview resources. Treat these as
-operator hints, not billing estimates. Actual rollback commands and real cost
-reporting are still future work.
+operator hints, not billing estimates.
+
+## `anvil-cloud usage --preview`
+
+```bash
+anvil-cloud usage --preview --json
+```
+
+Builds the Cell and reports declared preview resource counts plus AWS preview
+cost-driver hints and cleanup commands. It does not query AWS and is not a bill.
+
+## `anvil-cloud rollback --preview`
+
+```bash
+anvil-cloud rollback --preview --app notes --to-deployment dep_previous --dry-run --json
+```
+
+Returns stable dry-run rollback intent: target deployment id, inspection/log
+commands, and redeploy guidance. It does not mutate AWS. Automated artifact
+promotion is still future work.
 
 If CloudFormation reaches a failed terminal state during provisioning, deploy
 returns `ok: false` with `code: "AWS_STACK_FAILED"` and structured stack event

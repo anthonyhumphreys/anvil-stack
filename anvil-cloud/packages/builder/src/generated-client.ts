@@ -2,7 +2,8 @@ import type { CellManifest } from "./manifest.js";
 
 export function renderGeneratedClient(manifest: CellManifest): string {
   return [
-    'import type { ApiMutation, ApiQuery, GeneratedAnvilApi } from "@anvil-cloud/client";',
+    'import { createApiClient, createClient } from "@anvil-cloud/client";',
+    'import type { AnvilClientOptions, ApiMutation, ApiQuery, GeneratedAnvilApi } from "@anvil-cloud/client";',
     "",
     "export interface QueryTypes {}",
     "export interface MutationTypes {}",
@@ -27,6 +28,10 @@ export function renderGeneratedClient(manifest: CellManifest): string {
     "  },",
     "} as const satisfies GeneratedAnvilApi;",
     "",
+    "export function createAnvilApiClient(options: AnvilClientOptions = {}) {",
+    "  return createApiClient(createClient(options), api);",
+    "}",
+    "",
     "type TypedQuery<TName extends string> = TName extends keyof QueryTypes",
     "  ? QueryTypes[TName] extends { input: infer TInput; result: infer TResult }",
     "    ? ApiQuery<TName, TInput, TResult>",
@@ -44,7 +49,7 @@ export function renderGeneratedClient(manifest: CellManifest): string {
 
 export function renderGeneratedTypes(manifest: CellManifest): string {
   return [
-    'import type { ApiMutation, ApiQuery } from "@anvil-cloud/client";',
+    'import type { AnvilClientOptions, ApiMutation, ApiQuery, GeneratedAnvilApiClient } from "@anvil-cloud/client";',
     "",
     "export interface QueryTypes {}",
     "export interface MutationTypes {}",
@@ -69,6 +74,10 @@ export function renderGeneratedTypes(manifest: CellManifest): string {
     "  };",
     "};",
     "",
+    "export declare function createAnvilApiClient(",
+    "  options?: AnvilClientOptions,",
+    "): GeneratedAnvilApiClient<typeof api>;",
+    "",
     "type TypedQuery<TName extends string> = TName extends keyof QueryTypes",
     "  ? QueryTypes[TName] extends { input: infer TInput; result: infer TResult }",
     "    ? ApiQuery<TName, TInput, TResult>",
@@ -86,7 +95,7 @@ export function renderGeneratedTypes(manifest: CellManifest): string {
 
 export function renderGeneratedClientTypecheckStub(): string {
   return [
-    'import type { ApiMutation, ApiQuery, GeneratedAnvilApi } from "@anvil-cloud/client";',
+    'import type { AnvilClientOptions, ApiMutation, ApiQuery, GeneratedAnvilApi, GeneratedAnvilApiClient } from "@anvil-cloud/client";',
     "",
     "export interface QueryTypes {}",
     "export interface MutationTypes {}",
@@ -104,6 +113,12 @@ export function renderGeneratedClientTypecheckStub(): string {
     "  mutations: {} as GeneratedMutations,",
     '  meta: { schemaVersion: "0.1", queries: [], mutations: [] },',
     "};",
+    "",
+    "export function createAnvilApiClient(",
+    "  _options: AnvilClientOptions = {},",
+    "): GeneratedAnvilApiClient<typeof api> {",
+    "  throw new Error('Generated Anvil client is only available after anvil-cloud build.');",
+    "}",
     "",
     "type GeneratedQueries = {",
     "  readonly [TName in keyof QueryTypes]: TName extends string ? TypedQuery<TName> : never;",

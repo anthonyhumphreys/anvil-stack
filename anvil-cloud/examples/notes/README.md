@@ -73,8 +73,7 @@ pnpm deploy:preview:gate
 pnpm destroy:preview:dry-run
 ```
 
-This demo intentionally includes a workflow, so it is not currently the AWS
-preview smoke Cell. AWS has Step Functions synthesis and runtime bridge pieces,
-but preview deploy still gates workflow-bearing Cells until remote run state,
-inspection, live-account verification, and cleanup are proven. Use
-`examples/aws-preview` for adapter verification.
+This demo intentionally includes a workflow and a broader local UI surface, so
+it is not the smallest AWS preview smoke Cell. AWS preview maps workflows to
+Step Functions, but use `examples/aws-preview` when you want adapter
+verification with fewer moving parts.

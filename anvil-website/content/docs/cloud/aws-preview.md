@@ -27,8 +27,10 @@ The `@anvil-cloud/aws` package currently includes:
 - S3-backed file adapter
 - SQS-backed `ctx.jobs.enqueue`
 - EventBridge scheduled job rules invoking the shared Lambda runtime
-- Lambda-side workflow step execution for the planned Step Functions adapter
+- Lambda-side workflow step execution through Step Functions task events
 - Step Functions state machine template synthesis for declared workflow topology
+- Lambda runtime enforcement for `capabilities.outboundFetch.allow`
+- adapter-owned ECS/Fargate preview service resource synthesis
 - Lambda environment values through `ctx.env`
 - OIDC bearer token verification when auth environment is configured
 - structured JSON logs through Lambda and CloudWatch
@@ -47,6 +49,9 @@ The `@anvil-cloud/aws` package currently includes:
 | Queued jobs | SQS |
 | Scheduled jobs | EventBridge rules |
 | Events | A dedicated EventBridge bus when `capabilities.events` is declared; `ctx.events.publish` maps to `PutEvents` and reports structured EventBridge failure details |
+| Workflows | Step Functions state machines invoking the shared Lambda runtime |
+| Services | ECS/Fargate preview service resources with adapter-owned task definitions |
+| Outbound fetch | Lambda runtime allow-list guard from `capabilities.outboundFetch.allow` |
 | Environment | Lambda environment values for alpha |
 | Logs | CloudWatch Logs |
 | Deployment metadata | DynamoDB |
@@ -62,9 +67,19 @@ how to back out of a preview deploy while rollback commands are still future
 work.
 
 For workflow-bearing manifests, the plan reports a `workflows` change with
-Step Functions topology and includes Step Functions state transitions in cost
-drivers. Preview deploy still rejects those Cells until provisioning and remote
-run-state support land.
+Step Functions topology, includes Step Functions state transitions in cost
+drivers, and adds a `workflow-preview-review` approval gate. Preview deploy no
+longer blocks workflows before provisioning.
+
+For service-bearing manifests, the plan reports a `services` change, includes
+ECS/Fargate service task cost drivers, and adds a `service-preview-review`
+approval gate. The CloudFormation template requires `ServiceSubnetIds`; Cell
+authors still do not write subnet, task, cluster, or container definitions.
+
+For outbound fetch, Guard still fails closed for undeclared or dynamic targets,
+and AWS preview writes the declared allow-list into the generated Lambda runtime.
+Calls to hosts outside `capabilities.outboundFetch.allow` fail with
+`OUTBOUND_FETCH_NOT_ALLOWED`.
 
 Generated S3 buckets for client assets and Cell files use CloudFormation
 generated names to avoid global bucket-name collisions, and the adapter reads
@@ -242,12 +257,16 @@ correlation. Malformed JSON query or mutation bodies return a stable
 
 ## Current limits
 
-- Services, workflows, and outbound fetch are local-only in alpha. AWS preview rejects Cells that declare them before provisioning with an `AWS_PREVIEW_UNSUPPORTED_FEATURE` diagnostic. The AWS package can synthesize Step Functions state machine templates, configure Lambda with workflow state machine ARNs, start configured executions through `ctx.workflows.start`, and execute individual workflow step events through Lambda; preview provisioning and remote run inspection are still gated.
+- Service preview support currently provisions adapter-owned Fargate resources
+  for review and hardening. Running the exact Cell service handler inside the
+  Fargate task remains a hardening step.
+- Remote workflow run inspection is not yet mirrored through
+  `anvil-cloud workflows list/show --app`.
 - Production use needs wider operational validation beyond the preview verifier.
 - CloudFormation stack failures return `AWS_STACK_FAILED` with recent failing stack events. Stack polling timeouts return `AWS_STACK_TIMEOUT` with the last observed status. Missing required stack outputs return `AWS_STACK_OUTPUT_MISSING`. AWS SDK provisioning failures return `AWS_PROVISIONING_OPERATION_FAILED` with the failed operation and provider error cause.
 - If a deployed runtime is missing adapter environment values for a declared capability, it returns `CAPABILITY_NOT_DECLARED` diagnostics naming the missing variable, such as `ANVIL_EVENT_BUS_NAME` for events.
 - Auth provider lookup is alpha-scoped. Current preview verifies bearer tokens through OIDC when `ANVIL_AUTH_ISSUER` is configured; otherwise authenticated handlers require a future auth integration or a smoke token setup.
-- Multi-region, custom domains, hosted control plane, marketplace, production policy packs, rollback commands, signed artifacts, and real cost reporting are future work.
+- Multi-region, custom domains, hosted control plane, marketplace, production policy packs, automated artifact rollback, signed artifacts, and real cost reporting are future work.
 
 ## Safety posture
 

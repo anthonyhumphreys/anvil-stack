@@ -5,6 +5,8 @@ import type { DeploymentEnvironment } from "./index.js";
 const runtimeTimeoutSeconds = 30;
 const runtimeMemoryMb = 256;
 const jobQueueVisibilityTimeoutSeconds = runtimeTimeoutSeconds * 2;
+const serviceCpu = "256";
+const serviceMemoryMb = "512";
 
 export type CloudFormationTemplate = {
   AWSTemplateFormatVersion: "2010-09-09";
@@ -45,6 +47,7 @@ export function createAwsPreviewCloudFormationTemplate(
     options.serverBucketParameter ?? "ServerBundleBucket";
   const serverKeyParameter = options.serverKeyParameter ?? "ServerBundleKey";
   const workflows = manifest.workflows ?? [];
+  const services = manifest.services ?? [];
   const runtimeEnvironmentVariables: Record<string, unknown> = {
     ANVIL_CELL: manifest.cell.name,
     ANVIL_ENV: environment,
@@ -52,6 +55,15 @@ export function createAwsPreviewCloudFormationTemplate(
       Ref: "DeploymentMetadataTable",
     },
   };
+  const outboundFetchAllowList = outboundFetchAllowListFor(
+    manifest.capabilities.outboundFetch,
+  );
+
+  if (outboundFetchAllowList.length > 0) {
+    runtimeEnvironmentVariables.ANVIL_OUTBOUND_FETCH_ALLOW =
+      outboundFetchAllowList.join(",");
+  }
+
   const resources: Record<string, CloudFormationResource> = {
     RuntimeRole: {
       Type: "AWS::IAM::Role",
@@ -402,20 +414,143 @@ export function createAwsPreviewCloudFormationTemplate(
     }
   }
 
+  if (services.length > 0) {
+    resources.ServiceCluster = {
+      Type: "AWS::ECS::Cluster",
+      Properties: {
+        ClusterName: names.serviceCluster,
+      },
+    };
+    resources.ServiceTaskExecutionRole = {
+      Type: "AWS::IAM::Role",
+      Properties: {
+        RoleName: names.serviceTaskExecutionRole,
+        AssumeRolePolicyDocument: {
+          Version: "2012-10-17",
+          Statement: [
+            {
+              Effect: "Allow",
+              Principal: {
+                Service: "ecs-tasks.amazonaws.com",
+              },
+              Action: "sts:AssumeRole",
+            },
+          ],
+        },
+        ManagedPolicyArns: [
+          "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy",
+        ],
+      },
+    };
+    resources.ServiceLogGroup = {
+      Type: "AWS::Logs::LogGroup",
+      Properties: {
+        LogGroupName: `/ecs/${names.base}-services`,
+        RetentionInDays: 14,
+      },
+    };
+
+    services.forEach((service) => {
+      const logicalName = logicalIdPart(service.name);
+      const taskId = `Service${logicalName}TaskDefinition`;
+      const serviceId = `Service${logicalName}`;
+
+      resources[taskId] = {
+        Type: "AWS::ECS::TaskDefinition",
+        Properties: {
+          Family: withSuffix(
+            names.base,
+            sanitizeName(`service-${service.name}`, 24) || "service",
+            255,
+          ),
+          Cpu: serviceCpu,
+          Memory: serviceMemoryMb,
+          NetworkMode: "awsvpc",
+          RequiresCompatibilities: ["FARGATE"],
+          ExecutionRoleArn: {
+            "Fn::GetAtt": ["ServiceTaskExecutionRole", "Arn"],
+          },
+          ContainerDefinitions: [
+            {
+              Name: sanitizeName(service.name, 64) || "service",
+              Image: "public.ecr.aws/docker/library/node:20-alpine",
+              Essential: true,
+              Command: [
+                "node",
+                "-e",
+                `console.log(${JSON.stringify(`Anvil preview service '${service.name}' is provisioned by the adapter.`)}); setInterval(() => {}, 60000);`,
+              ],
+              Environment: [
+                { Name: "ANVIL_CELL", Value: manifest.cell.name },
+                { Name: "ANVIL_ENV", Value: environment },
+                { Name: "ANVIL_SERVICE", Value: service.name },
+              ],
+              LogConfiguration: {
+                LogDriver: "awslogs",
+                Options: {
+                  "awslogs-group": { Ref: "ServiceLogGroup" },
+                  "awslogs-region": { Ref: "AWS::Region" },
+                  "awslogs-stream-prefix": "anvil-service",
+                },
+              },
+            },
+          ],
+        },
+      };
+      resources[serviceId] = {
+        Type: "AWS::ECS::Service",
+        Properties: {
+          Cluster: { Ref: "ServiceCluster" },
+          DesiredCount: 1,
+          LaunchType: "FARGATE",
+          TaskDefinition: { Ref: taskId },
+          NetworkConfiguration: {
+            AwsvpcConfiguration: {
+              AssignPublicIp: "ENABLED",
+              Subnets: { Ref: "ServiceSubnetIds" },
+            },
+          },
+        },
+      };
+      outputs[`Service${logicalName}Name`] = {
+        Description: `ECS service name for Cell service '${service.name}'.`,
+        Value: { "Fn::GetAtt": [serviceId, "Name"] },
+      };
+    });
+
+    outputs.ServiceClusterName = {
+      Description: "ECS cluster for preview service handlers.",
+      Value: { Ref: "ServiceCluster" },
+    };
+    outputs.ServiceLogGroupName = {
+      Description: "CloudWatch log group for preview service handlers.",
+      Value: { Ref: "ServiceLogGroup" },
+    };
+  }
+
+  const parameters: Record<string, CloudFormationParameter> = {
+    [serverBucketParameter]: {
+      Type: "String",
+      Description: "S3 bucket containing the bundled Lambda runtime artifact.",
+    },
+    [serverKeyParameter]: {
+      Type: "String",
+      Description: "S3 key for the bundled Lambda runtime artifact.",
+    },
+  };
+
+  if (services.length > 0) {
+    parameters.ServiceSubnetIds = {
+      Type: "List<AWS::EC2::Subnet::Id>",
+      Description:
+        "Subnet ids used by adapter-owned ECS/Fargate preview services.",
+    };
+  }
+
   return {
     AWSTemplateFormatVersion: "2010-09-09",
     Description: `Anvil Cloud preview deployment for ${manifest.cell.name}.`,
-    Parameters: {
-      [serverBucketParameter]: {
-        Type: "String",
-        Description:
-          "S3 bucket containing the bundled Lambda runtime artifact.",
-      },
-      [serverKeyParameter]: {
-        Type: "String",
-        Description: "S3 key for the bundled Lambda runtime artifact.",
-      },
-    },
+    Parameters: parameters,
     Resources: resources,
     Outputs: outputs,
   };
@@ -433,6 +568,8 @@ export type AwsResourceNames = {
   jobDeadLetterQueue: string;
   eventBus: string;
   workflowStateMachineRole: string;
+  serviceCluster: string;
+  serviceTaskExecutionRole: string;
 };
 
 export function createAwsResourceNames(
@@ -453,6 +590,8 @@ export function createAwsResourceNames(
     jobDeadLetterQueue: withSuffix(base, "jobs-dlq", 80),
     eventBus: withSuffix(base, "events", 80),
     workflowStateMachineRole: `${base}-workflow-role`,
+    serviceCluster: withSuffix(base, "services", 255),
+    serviceTaskExecutionRole: `${base}-service-task-role`,
   };
 }
 
@@ -616,4 +755,18 @@ function logicalIdPart(value: string): string {
     .join("");
 
   return normalized.length > 0 ? normalized : "Job";
+}
+
+function outboundFetchAllowListFor(capability: unknown): string[] {
+  if (!capability || typeof capability !== "object") {
+    return [];
+  }
+
+  const allow = (capability as { allow?: unknown }).allow;
+
+  if (!Array.isArray(allow)) {
+    return [];
+  }
+
+  return allow.filter((value): value is string => typeof value === "string");
 }

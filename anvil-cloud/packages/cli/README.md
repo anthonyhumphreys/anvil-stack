@@ -45,12 +45,17 @@ Initial commands:
 - `anvil-cloud new <name>`
 - `anvil-cloud dev`
 - `anvil-cloud check`
+- `anvil-cloud review`
 - `anvil-cloud build`
+- `anvil-cloud agents discover`
+- `anvil-cloud agents guardian`
 - `anvil-cloud inspect`
 - `anvil-cloud logs`
+- `anvil-cloud usage --preview`
 - `anvil-cloud db list`
 - `anvil-cloud db dump <table>`
 - `anvil-cloud deploy --preview`
+- `anvil-cloud rollback --preview --dry-run`
 
 Every automation-oriented command must support `--json`.
 

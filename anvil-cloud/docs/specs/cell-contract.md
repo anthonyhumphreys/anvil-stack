@@ -97,7 +97,9 @@ The client should use `@anvil-cloud/client` instead of manually constructing run
 Generated API metadata should be imported through the stable alias:
 
 ```ts
-import { api } from "@anvil/generated/client";
+import { api, createAnvilApiClient } from "@anvil/generated/client";
+
+const client = createAnvilApiClient();
 ```
 
 Cells can type generated routes by adding a local declaration file, commonly
@@ -115,10 +117,10 @@ declare module "@anvil/generated/client" {
 ```
 
 The metadata object remains the runtime contract; the route maps are TypeScript
-only and are consumed by `createApiClient` and `createAnvilHooks`. Generated
-clients also include `api.meta` with schema version `0.1` plus stable query and
-mutation name arrays so tooling can compare generated metadata with the built
-manifest without scraping route definitions.
+only and are consumed by `createAnvilApiClient`, `createApiClient`, and
+`createAnvilHooks`. Generated clients also include `api.meta` with schema
+version `0.1` plus stable query and mutation name arrays so tooling can compare
+generated metadata with the built manifest without scraping route definitions.
 
 Other browser frameworks can still work if they produce static assets and call
 the Anvil runtime through `@anvil-cloud/client`, but React is the paved-road

@@ -25,7 +25,7 @@ The goal is not to make AWS easier to spray around. The goal is to give develope
 | `@anvil-cloud/local` | Local runtime server, JSON database adapter, local files, auth, logs, events, jobs, and inspection state. |
 | `@anvil-cloud/client` | Browser client and framework hook helpers for generated query and mutation metadata. |
 | `@anvil-cloud/auth` | Provider-neutral token verification: OIDC discovery/JWKS verification plus a local identity provider that signs real JWTs. |
-| `@anvilstack/cloud-cli` | `anvil-cloud new`, `dev`, `check`, `build`, `agents`, `inspect`, `logs`, `db`, `auth`, `workflows`, `services`, `lens`, and `deploy --preview`. |
+| `@anvilstack/cloud-cli` | `anvil-cloud new`, `dev`, `check`, `review`, `build`, `agents`, `inspect`, `logs`, `usage`, `db`, `auth`, `workflows`, `services`, `lens`, `deploy --preview`, and rollback/destroy preview commands. |
 | `@anvil-cloud/control-plane` | The `ControlPlaneApi` contract behind Anvil Lens, implemented over the local runtime routes today and swappable for a hosted plane later. |
 | `@anvil-cloud/aws` | AWS preview adapter, CloudFormation synthesis, Lambda runtime bridge, AWS-backed host adapters, Bedrock inference provider, agent compatibility checks, artifact packaging, provisioning, remote inspect, remote logs, and preview cleanup. |
 
@@ -68,11 +68,11 @@ The alpha implementation includes:
 Current alpha limits include:
 
 - AWS is the first adapter, not the application contract.
-- Workflows execute end-to-end locally. AWS has Step Functions synthesis and runtime bridge pieces, but preview deploy still rejects workflow-bearing Cells until remote run state, inspection, live-account verification, and cleanup are proven.
-- Services execute locally today; the ECS/Fargate mapping is designed but not implemented.
-- Outbound fetch policy is checked by Guard, but AWS preview rejects outbound-fetch Cells until provider network policy enforcement exists.
+- Workflows execute end-to-end locally and map to Step Functions in AWS preview, but remote workflow run inspection is still maturing.
+- Services execute fully locally; AWS preview synthesizes ECS/Fargate service resources, but exact Cell service-handler execution inside Fargate is still a hardening step.
+- Outbound fetch policy is checked by Guard and enforced by the AWS Lambda runtime allow-list guard.
 - Production use needs wider operational validation beyond the preview verifier.
-- Agents are a contract/runtime foundation, not a hosted agent platform. Project-agent discovery, production approval UI, durable multi-step orchestration, hosted memory, and sandbox execution are future work.
+- Agents are a contract/runtime foundation, not a hosted agent platform. Project-agent discovery and deterministic Guardian review exist; production approval UI, durable multi-step orchestration, hosted memory, and sandbox execution are future work.
 - Auth token verification is real locally and on AWS, but session/refresh lifecycle and login UI belong to your provider.
 - Anvil Lens is local-first; there is no hosted control plane, marketplace, or multi-region deployment.
 - No arbitrary provider-resource authoring or raw container/Kubernetes definitions in Cell code.

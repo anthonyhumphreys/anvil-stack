@@ -14,7 +14,7 @@ The `anvil-cloud` repository includes two examples that serve different jobs:
 | Example | Use it for |
 | --- | --- |
 | `examples/notes` | Canonical local-first demo: React/Vite UI, auth, database, query, mutation, endpoint, job, workflow, generated client, local Lens, and CLI JSON. |
-| `examples/aws-preview` | AWS-compatible smoke Cell for preview deploy, inspect, logs, auth rejection, and destroy. It avoids local-only workflow/service/outbound-fetch declarations. |
+| `examples/aws-preview` | AWS-compatible smoke Cell for preview deploy, inspect, logs, auth rejection, and destroy. It stays small so preview smoke failures point at the adapter, not a sprawling demo. |
 
 Start with `examples/notes` when learning the Cell model. Use
 `examples/aws-preview` when validating AWS preview behavior.

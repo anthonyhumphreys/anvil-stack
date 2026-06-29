@@ -50,6 +50,11 @@ export {
   type CloudFormationTemplate,
 } from "./cloudformation.js";
 export {
+  runPreviewAdapterConformance,
+  type AdapterConformanceDiagnostic,
+  type AdapterConformanceResult,
+} from "./conformance.js";
+export {
   awsHttpEventToRuntimeRequest,
   createAwsRuntimeHandler,
   runtimeResponseToAwsHttpResponse,
@@ -65,6 +70,7 @@ export {
 } from "./host.js";
 export {
   createAwsLambdaRuntimeHandler,
+  installOutboundFetchPolicy,
   type AwsLambdaRuntimeEvent,
   type AwsLambdaRuntimeHandler,
   type AwsLambdaRuntimeResult,
@@ -104,6 +110,7 @@ export type DeploymentPlanChange = {
     | "jobs"
     | "logs"
     | "runtime"
+    | "services"
     | "workflows";
   name: string;
   details?: Record<string, unknown>;
@@ -209,7 +216,7 @@ export type DeploymentPlanOperations = {
 
 export type AwsPreviewSupportDiagnostic = {
   code: "AWS_PREVIEW_UNSUPPORTED_FEATURE";
-  feature: "outboundFetch" | "services" | "workflows";
+  feature: string;
   message: string;
   hint: string;
   names: string[];
@@ -539,6 +546,22 @@ export function createAwsPreviewDeploymentPlan(
     });
   }
 
+  if (manifest.services.length > 0) {
+    changes.push({
+      kind: "create",
+      concept: "services",
+      name: `${manifest.cell.name}-${environment}`,
+      details: {
+        service: "ecs-fargate",
+        services: manifest.services.map((service) => ({
+          name: service.name,
+          restart: service.restart,
+          maxRestarts: service.maxRestarts,
+        })),
+      },
+    });
+  }
+
   const operations = createOperations(manifest, environment);
 
   return {
@@ -564,8 +587,8 @@ function createDeploymentPlanReview(
   changes: DeploymentPlanChange[],
   operations: DeploymentPlanOperations,
 ): DeploymentPlanReview {
-  const changeSet = changes.map(toReviewPlanChange);
-  const capabilityDiffs = changes.map(toCapabilityDiff);
+  const changeSet = changes.map(toReviewPlanChange).sort(compareById);
+  const capabilityDiffs = changes.map(toCapabilityDiff).sort(compareById);
   const approvalGates = createPreviewApprovalGates(
     manifest,
     changeSet,
@@ -593,6 +616,10 @@ function createDeploymentPlanReview(
     approvalSummary: createApprovalSummary(approvalGates),
     approvalGates,
   };
+}
+
+function compareById(left: { id: string }, right: { id: string }): number {
+  return left.id.localeCompare(right.id);
 }
 
 function createChangeSummary(
@@ -717,21 +744,6 @@ function createPreviewApprovalGates(
   capabilityDiffs: DeploymentPlanCapabilityDiff[],
 ): DeploymentPlanApprovalGate[] {
   const gates: DeploymentPlanApprovalGate[] = [];
-  const unsupported = checkAwsPreviewSupport(manifest);
-
-  if (unsupported.length > 0) {
-    gates.push({
-      id: "aws-preview-support-gate",
-      required: true,
-      severity: "block",
-      reason:
-        "AWS preview cannot execute every declared Cell feature yet. Deploy is gated before provisioning.",
-      changeIds: unsupported.flatMap((diagnostic) =>
-        idsForConcepts(changeSet, [diagnostic.feature]),
-      ),
-    });
-  }
-
   if (manifest.capabilities.database === true) {
     gates.push({
       id: "data-resource-review",
@@ -767,6 +779,32 @@ function createPreviewApprovalGates(
       reason:
         "Events or jobs add asynchronous runtime resources that should be inspected during preview cleanup.",
       changeIds: asyncCapabilityIds,
+    });
+  }
+
+  const workflowCapabilityIds = idsForConcepts(changeSet, ["workflows"]);
+
+  if (workflowCapabilityIds.length > 0) {
+    gates.push({
+      id: "workflow-preview-review",
+      required: true,
+      severity: "review",
+      reason:
+        "Workflows create Step Functions preview resources and invoke the shared runtime for each step.",
+      changeIds: workflowCapabilityIds,
+    });
+  }
+
+  const serviceCapabilityIds = idsForConcepts(changeSet, ["services"]);
+
+  if (serviceCapabilityIds.length > 0) {
+    gates.push({
+      id: "service-preview-review",
+      required: true,
+      severity: "review",
+      reason:
+        "Services create adapter-owned ECS/Fargate preview resources. Confirm subnet selection and cleanup expectations.",
+      changeIds: serviceCapabilityIds,
     });
   }
 
@@ -875,7 +913,15 @@ function createStructuredCostDrivers(
     drivers.push({
       id: "step-functions",
       label: "Step Functions state transitions",
-      reason: `${manifest.workflows.length} workflow definition(s) map to state machine resources once AWS preview support lands.`,
+      reason: `${manifest.workflows.length} workflow definition(s) map to Step Functions preview resources.`,
+    });
+  }
+
+  if (manifest.services.length > 0) {
+    drivers.push({
+      id: "ecs-fargate-services",
+      label: "ECS/Fargate preview service tasks",
+      reason: "Declared services run as adapter-owned preview service tasks.",
     });
   }
 
@@ -911,48 +957,19 @@ function createCostDrivers(manifest: CellManifest): string[] {
     drivers.push("Step Functions state transitions");
   }
 
+  if (manifest.services.length > 0) {
+    drivers.push("ECS/Fargate service task vCPU and memory");
+  }
+
   return drivers;
 }
 
 export function checkAwsPreviewSupport(
   manifest: CellManifest,
 ): AwsPreviewSupportDiagnostic[] {
-  const diagnostics: AwsPreviewSupportDiagnostic[] = [];
+  void manifest;
 
-  if (manifest.services.length > 0) {
-    diagnostics.push({
-      code: "AWS_PREVIEW_UNSUPPORTED_FEATURE",
-      feature: "services",
-      message:
-        "AWS preview does not support service execution yet. Services run under the local supervisor during alpha.",
-      hint: "Remove declared services for AWS preview, or run this Cell locally until the container-backed service adapter lands.",
-      names: manifest.services.map((service) => service.name),
-    });
-  }
-
-  if (manifest.workflows.length > 0) {
-    diagnostics.push({
-      code: "AWS_PREVIEW_UNSUPPORTED_FEATURE",
-      feature: "workflows",
-      message:
-        "AWS preview does not support workflow execution yet. Workflows run on the local runtime during alpha.",
-      hint: "Remove declared workflows for AWS preview, or run this Cell locally until the Step Functions workflow adapter lands.",
-      names: manifest.workflows.map((workflow) => workflow.name),
-    });
-  }
-
-  if (manifest.capabilities.outboundFetch) {
-    diagnostics.push({
-      code: "AWS_PREVIEW_UNSUPPORTED_FEATURE",
-      feature: "outboundFetch",
-      message:
-        "AWS preview does not support outbound fetch policy enforcement yet.",
-      hint: "Remove capabilities.outboundFetch for AWS preview, or keep this Cell local until outbound network policy is implemented.",
-      names: outboundFetchAllowList(manifest.capabilities.outboundFetch),
-    });
-  }
-
-  return diagnostics;
+  return [];
 }
 
 function createWarnings(manifest: CellManifest): string[] {
@@ -983,16 +1000,6 @@ function slug(value: string): string {
       .replace(/^-+|-+$/g, "")
       .slice(0, 48) || "anvil"
   );
-}
-
-function outboundFetchAllowList(capability: unknown): string[] {
-  if (!isObject(capability) || !Array.isArray(capability.allow)) {
-    return [];
-  }
-
-  return capability.allow.filter((entry): entry is string => {
-    return typeof entry === "string";
-  });
 }
 
 export {

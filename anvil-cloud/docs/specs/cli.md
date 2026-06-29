@@ -93,6 +93,29 @@ Checks:
 
 Builds local artefacts into `.anvil/dist` and `.anvil/generated`.
 
+### `anvil-cloud review`
+
+Aggregates Guard diagnostics and AWS preview deployment review into one trust
+report.
+
+```sh
+anvil-cloud review --json
+anvil-cloud review --adapter aws --env preview --json
+```
+
+JSON output includes:
+
+- `summary.guardErrors` and `summary.guardWarnings`;
+- the built manifest capabilities and handler lists;
+- `review.changeSet`, `review.capabilityDiffs`, cost drivers, cleanup notes,
+  rollback notes, and approval gates from the AWS preview plan;
+- `status: "pass" | "review" | "block"`;
+- stable next-step commands.
+
+Guard failures block the report before deploy planning. Blocking adapter gates
+return `ok: false`; review-only gates return `ok: true` with
+`status: "review"` so humans and agents can decide before provisioning.
+
 ### `anvil-cloud doctor`
 
 Checks the local Anvil Cloud toolchain and common runtime/deploy prerequisites.
@@ -199,6 +222,19 @@ error cause.
 The AWS log reader follows CloudWatch pagination until the requested limit is
 reached or there are no more pages.
 
+### `anvil-cloud usage --preview`
+
+Builds the Cell and emits lightweight usage visibility from the AWS preview
+plan.
+
+```sh
+anvil-cloud usage --preview --json
+```
+
+The report includes declared resource counts for tables, files, events, jobs,
+workflows, services, and agents, plus cost-driver hints and cleanup commands.
+It is not a bill and does not query AWS.
+
 ### `anvil-cloud db list`
 
 Lists known database tables.
@@ -268,8 +304,9 @@ preview deploys include
 `resources.deploymentMetadataTable` and `resources.deploymentMetadataKey` so
 automation can connect deploy output to remote inspect, logs, and destroy
 cleanup state. During alpha, Cells with services, workflows, or outbound fetch
-include an `aws-preview-support-gate` approval gate with `severity: "block"` and
-fail before provisioning with `AWS_PREVIEW_UNSUPPORTED_FEATURE`.
+are reviewable before provisioning: workflows add `workflow-preview-review`,
+services add `service-preview-review`, and outbound fetch allow-lists are
+written into the generated AWS runtime guard.
 
 If CloudFormation does not reach a terminal stack status within the provisioner
 polling limit, deploy returns `AWS_STACK_TIMEOUT` with the last observed stack
@@ -280,6 +317,18 @@ If an AWS SDK operation fails while uploading artifacts, applying the stack, or
 publishing deployment metadata, deploy returns
 `AWS_PROVISIONING_OPERATION_FAILED` with the failed operation and provider
 error cause.
+
+### `anvil-cloud rollback --preview`
+
+Returns dry-run rollback intent for a previous preview deployment.
+
+```sh
+anvil-cloud rollback --preview --app notes --to-deployment dep_123 --dry-run --json
+```
+
+The command is intentionally dry-run only in alpha. It returns the target
+deployment id, inspection/log commands, and redeploy guidance. Artifact
+promotion is not automated yet.
 
 ### `anvil-cloud destroy --preview --app <name> --yes [--dry-run]`
 

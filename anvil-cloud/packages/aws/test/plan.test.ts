@@ -12,6 +12,7 @@ import {
   AwsPreviewProvisioningError,
   checkAwsPreviewSupport,
   createAwsPreviewDeploymentPlan,
+  runPreviewAdapterConformance,
   synthesizeAwsPreviewDeployment,
 } from "../src/index.js";
 
@@ -242,9 +243,9 @@ describe("createAwsPreviewDeploymentPlan", () => {
     expect(plan.review.approvalGates).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          id: "aws-preview-support-gate",
+          id: "workflow-preview-review",
           required: true,
-          severity: "block",
+          severity: "review",
           changeIds: ["create:workflows:notes-preview"],
         }),
       ]),
@@ -252,55 +253,39 @@ describe("createAwsPreviewDeploymentPlan", () => {
     expect(plan.review.approvalSummary).toEqual({
       required: 3,
       info: 0,
-      review: 2,
-      block: 1,
-      hasBlockingGate: true,
+      review: 3,
+      block: 0,
+      hasBlockingGate: false,
     });
     expect(
       checkAwsPreviewSupport({
         ...manifest,
         workflows: [{ name: "syncNotes", steps: ["fetch", "store"] }],
       }),
-    ).toEqual([
-      expect.objectContaining({
-        feature: "workflows",
-      }),
-    ]);
+    ).toEqual([]);
   });
 });
 
 describe("checkAwsPreviewSupport", () => {
-  it("flags service declarations because AWS preview cannot execute them yet", () => {
+  it("does not block service declarations because AWS preview maps them to Fargate", () => {
     const diagnostics = checkAwsPreviewSupport({
       ...manifest,
       services: [{ name: "heartbeat", restart: "always", maxRestarts: 3 }],
     });
 
-    expect(diagnostics).toEqual([
-      expect.objectContaining({
-        code: "AWS_PREVIEW_UNSUPPORTED_FEATURE",
-        feature: "services",
-        names: ["heartbeat"],
-      }),
-    ]);
+    expect(diagnostics).toEqual([]);
   });
 
-  it("flags workflow declarations because AWS preview cannot execute them yet", () => {
+  it("does not block workflow declarations because AWS preview maps them to Step Functions", () => {
     const diagnostics = checkAwsPreviewSupport({
       ...manifest,
       workflows: [{ name: "syncNotes", steps: ["fetch", "store"] }],
     });
 
-    expect(diagnostics).toEqual([
-      expect.objectContaining({
-        code: "AWS_PREVIEW_UNSUPPORTED_FEATURE",
-        feature: "workflows",
-        names: ["syncNotes"],
-      }),
-    ]);
+    expect(diagnostics).toEqual([]);
   });
 
-  it("flags outbound fetch because AWS preview cannot enforce its allow list yet", () => {
+  it("does not block outbound fetch because AWS preview enforces the allow list in the runtime", () => {
     const diagnostics = checkAwsPreviewSupport({
       ...manifest,
       capabilities: {
@@ -309,13 +294,27 @@ describe("checkAwsPreviewSupport", () => {
       },
     });
 
-    expect(diagnostics).toEqual([
-      expect.objectContaining({
-        code: "AWS_PREVIEW_UNSUPPORTED_FEATURE",
-        feature: "outboundFetch",
-        names: ["api.example.test"],
-      }),
-    ]);
+    expect(diagnostics).toEqual([]);
+  });
+});
+
+describe("runPreviewAdapterConformance", () => {
+  it("validates stable review metadata for the AWS preview adapter", () => {
+    const result = runPreviewAdapterConformance({
+      adapter: new AwsPreviewDeploymentAdapter(),
+      manifest: {
+        ...manifest,
+        workflows: [{ name: "syncNotes", steps: ["fetch", "store"] }],
+        services: [{ name: "heartbeat", restart: "always", maxRestarts: 3 }],
+      },
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      adapter: "aws",
+      environment: "preview",
+      diagnostics: [],
+    });
   });
 });
 
@@ -386,7 +385,9 @@ describe("AwsPreviewDeploymentAdapter", () => {
         cell: "notes",
         operations: {
           cleanup: {
-            commands: ["anvil-cloud destroy --preview --app notes --yes --json"],
+            commands: [
+              "anvil-cloud destroy --preview --app notes --yes --json",
+            ],
           },
         },
       },
@@ -400,7 +401,7 @@ describe("AwsPreviewDeploymentAdapter", () => {
     });
   });
 
-  it("fails before provisioning when the manifest uses unsupported AWS preview features", async () => {
+  it("continues to provisioning when services are declared", async () => {
     const adapter = new AwsPreviewDeploymentAdapter({
       provisioner: {
         async provision() {
@@ -414,31 +415,25 @@ describe("AwsPreviewDeploymentAdapter", () => {
         services: [{ name: "heartbeat", restart: "always", maxRestarts: 3 }],
       },
       environment: "preview",
-      buildOutput: {
-        distDir: "/tmp/missing",
-        generatedDir: "/tmp/missing",
-        serverBundle: "/tmp/missing/server.mjs",
-        clientIndex: "/tmp/missing/index.html",
-        manifest: "/tmp/missing/manifest.json",
-        buildMeta: "/tmp/missing/build-meta.json",
-        generatedClient: "/tmp/missing/client.ts",
-        generatedTypes: "/tmp/missing/api.d.ts",
-      },
     });
 
     expect(result).toMatchObject({
       ok: false,
-      code: "AWS_PREVIEW_UNSUPPORTED_FEATURE",
-      diagnostics: [
-        {
-          feature: "services",
-          names: ["heartbeat"],
+      code: "AWS_BUILD_OUTPUT_REQUIRED",
+      plan: {
+        review: {
+          approvalGates: expect.arrayContaining([
+            expect.objectContaining({
+              id: "service-preview-review",
+              severity: "review",
+            }),
+          ]),
         },
-      ],
+      },
     });
   });
 
-  it("fails before provisioning when outbound fetch is declared", async () => {
+  it("continues to deploy planning when outbound fetch is declared", async () => {
     const adapter = new AwsPreviewDeploymentAdapter({
       provisioner: {
         async provision() {
@@ -459,13 +454,20 @@ describe("AwsPreviewDeploymentAdapter", () => {
 
     expect(result).toMatchObject({
       ok: false,
-      code: "AWS_PREVIEW_UNSUPPORTED_FEATURE",
-      diagnostics: [
-        {
-          feature: "outboundFetch",
-          names: ["api.example.test"],
+      code: "AWS_BUILD_OUTPUT_REQUIRED",
+      template: {
+        Resources: {
+          RuntimeFunction: {
+            Properties: {
+              Environment: {
+                Variables: {
+                  ANVIL_OUTBOUND_FETCH_ALLOW: "api.example.test",
+                },
+              },
+            },
+          },
         },
-      ],
+      },
     });
   });
 
