@@ -27,6 +27,10 @@ The alpha product is a local-first TypeScript platform where a developer or codi
 - No enterprise networking/VPC support.
 - No production marketplace or hosted control plane during alpha.
 - No perfect JavaScript sandbox. Safety comes from capability scoping, adapter-generated provider policy, runtime adapters, import restrictions, and deployment isolation.
+- No full hosted Agent Sandbox service during alpha. The provider-neutral
+  sandbox contract and AWS Lambda MicroVM provider exist, but policy brokering,
+  streamed tools, workspace snapshots, Lens views, and remote inspect are still
+  follow-on work. Sandboxes are not a Cell authoring surface.
 
 ## Product concepts
 
@@ -73,6 +77,13 @@ Capability, import, policy, and deploy safety checks.
 ### Anvil Lens
 
 Inspection surface for logs, database state, manifest, runtime status, and diagnostic summaries.
+
+### Agent Sandbox
+
+An isolated, inspectable, sessionful execution workspace for an Anvil Agent.
+Sandboxes are adapter-backed and capability-bound. On AWS, `@anvil-cloud/aws`
+provides a Lambda MicroVM-backed sandbox provider when a MicroVM image is
+configured.
 
 ## Alpha golden path
 

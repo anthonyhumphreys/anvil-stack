@@ -74,8 +74,7 @@ describe("main", () => {
       process.env.ANVIL_AWS_SMOKE_TOKEN = "test-token";
       process.env.ANVIL_AWS_EXPIRED_SMOKE_TOKEN = "expired-test-token";
       process.env.ANVIL_AWS_WRONG_ISSUER_SMOKE_TOKEN = "wrong-issuer-token";
-      process.env.ANVIL_AWS_WRONG_AUDIENCE_SMOKE_TOKEN =
-        "wrong-audience-token";
+      process.env.ANVIL_AWS_WRONG_AUDIENCE_SMOKE_TOKEN = "wrong-audience-token";
       delete process.env.AWS_DEFAULT_REGION;
       delete process.env.ANVIL_AUTH_JWKS_URI;
 
@@ -134,10 +133,7 @@ describe("main", () => {
         status: "ok",
         details: {
           publicPackages: ["@anvilstack/cloud-cli"],
-          candidatePublicApis: [
-            "@anvil-cloud/runtime",
-            "@anvil-cloud/client",
-          ],
+          candidatePublicApis: ["@anvil-cloud/runtime", "@anvil-cloud/client"],
           violations: [],
         },
       });
@@ -1114,6 +1110,71 @@ describe("main", () => {
     }
   }, 15_000);
 
+  it("reports AWS Lambda MicroVM sandbox readiness for sandbox agents", async () => {
+    const rootDir = await createAgentCell({
+      modelProvider: "aws-bedrock",
+      sandbox: "required",
+    });
+    const originalCwd = process.cwd();
+    const env = snapshotEnv(["ANVIL_AWS_AGENT_SANDBOX_IMAGE"]);
+
+    try {
+      delete process.env.ANVIL_AWS_AGENT_SANDBOX_IMAGE;
+      process.chdir(rootDir);
+
+      const missingImageOutput = await captureStdout(() =>
+        main(["agents", "sandboxes", "--json"]),
+      );
+      const missingImagePayload = JSON.parse(missingImageOutput) as Record<
+        string,
+        unknown
+      >;
+
+      expect(missingImagePayload).toMatchObject({
+        ok: true,
+        provider: "aws-lambda-microvm",
+        imageConfigured: false,
+        sandboxes: [
+          {
+            mount: "support",
+            agent: "support",
+            supported: false,
+            imageConfigured: false,
+          },
+        ],
+        warnings: [
+          {
+            code: "AWS_AGENT_SANDBOX_IMAGE_REQUIRED",
+          },
+        ],
+      });
+
+      process.env.ANVIL_AWS_AGENT_SANDBOX_IMAGE =
+        "arn:aws:lambda-microvms:eu-west-1:123:image/anvil";
+      const configuredOutput = await captureStdout(() =>
+        main(["agents", "validate", "--json"]),
+      );
+      const configuredPayload = JSON.parse(configuredOutput) as Record<
+        string,
+        unknown
+      >;
+
+      expect(configuredPayload).toMatchObject({
+        ok: true,
+        aws: {
+          support: {
+            supported: true,
+            sandboxProvider: "aws-lambda-microvm",
+          },
+        },
+      });
+    } finally {
+      process.chdir(originalCwd);
+      restoreEnvSnapshot(env);
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  }, 15_000);
+
   it("requires explicit confirmation before destroying AWS preview stacks", async () => {
     const originalExitCode = process.exitCode;
 
@@ -1702,7 +1763,12 @@ function restoreEnvSnapshot(snapshot: Map<string, string | undefined>): void {
   }
 }
 
-async function createAgentCell(): Promise<string> {
+async function createAgentCell(
+  options: {
+    modelProvider?: "aws-bedrock" | "local";
+    sandbox?: "optional" | "required";
+  } = {},
+): Promise<string> {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-agent-"));
   const repoRoot = path.resolve(
     path.dirname(fileURLToPath(import.meta.url)),
@@ -1765,8 +1831,11 @@ async function createAgentCell(): Promise<string> {
       "    support: defineAgent({",
       "      name: 'support',",
       "      instructions: 'Stay inside declared support capabilities.',",
-      "      model: { provider: 'local', model: 'stub' },",
+      `      model: { provider: '${options.modelProvider ?? "local"}', model: 'stub' },`,
       "      capabilities: { cells: ['read'], filesystem: 'none', secrets: 'none' },",
+      ...(options.sandbox === undefined
+        ? []
+        : [`      runtime: { sandbox: '${options.sandbox}' },`]),
       "    }),",
       "  },",
       "  endpoints: {",

@@ -16,6 +16,7 @@ import {
   createAwsRemoteReaderFromEnv,
   createAwsSdkPreviewProvisionerFromEnv,
   BedrockInferenceProvider,
+  checkAwsAgentCompatibility,
 } from "@anvil-cloud/aws";
 import {
   buildCell,
@@ -198,6 +199,9 @@ async function commandAgents(
     case "invoke":
       await commandAgentsInvoke(context, maybeArg);
       return;
+    case "sandboxes":
+      await commandAgentsSandboxes(context);
+      return;
     default:
       writeJsonOrHuman(
         context,
@@ -207,11 +211,11 @@ async function commandAgents(
             {
               code: "INVALID_USAGE",
               message:
-                "Usage: anvil-cloud agents <validate|manifest|invoke> [agent] --input <text>",
+                "Usage: anvil-cloud agents <validate|manifest|invoke|sandboxes> [agent] --input <text>",
             },
           ],
         },
-        "Usage: anvil-cloud agents <validate|manifest|invoke> [agent] --input <text>",
+        "Usage: anvil-cloud agents <validate|manifest|invoke|sandboxes> [agent] --input <text>",
       );
       process.exitCode = 2;
   }
@@ -228,6 +232,15 @@ async function commandAgentsValidate(context: CliContext): Promise<void> {
 
   const manifest = result.manifest as CellManifest;
   const agents = manifest.agents ?? {};
+  const agentSandboxesEnabled =
+    typeof process.env.ANVIL_AWS_AGENT_SANDBOX_IMAGE === "string" &&
+    process.env.ANVIL_AWS_AGENT_SANDBOX_IMAGE.length > 0;
+  const aws = Object.fromEntries(
+    Object.entries(agents).map(([name, agent]) => [
+      name,
+      checkAwsAgentCompatibility(agent, { agentSandboxesEnabled }),
+    ]),
+  );
   const warnings = Object.values(agents)
     .flatMap((agent) => agent.requires.humanApproval)
     .map((action) => ({
@@ -244,6 +257,7 @@ async function commandAgentsValidate(context: CliContext): Promise<void> {
       providers: unique(
         Object.values(agents).map((agent) => agent.model.provider),
       ),
+      aws,
       warnings,
     },
     [
@@ -251,6 +265,62 @@ async function commandAgentsValidate(context: CliContext): Promise<void> {
       ...Object.keys(agents).map((name) => `  ✓ ${name}`),
       ...warnings.map((warning) => `  ⚠ ${warning.message}`),
     ].join("\n"),
+  );
+}
+
+async function commandAgentsSandboxes(context: CliContext): Promise<void> {
+  const result = await buildCell({ rootDir: context.cwd });
+
+  if (!result.ok || !result.manifest) {
+    writeBuildResult(context, result, "Agent sandbox inspection failed.");
+    process.exitCode = 4;
+    return;
+  }
+
+  const manifest = result.manifest as CellManifest;
+  const agents = manifest.agents ?? {};
+  const image = process.env.ANVIL_AWS_AGENT_SANDBOX_IMAGE;
+  const agentSandboxesEnabled = typeof image === "string" && image.length > 0;
+  const sandboxes = Object.entries(agents)
+    .filter(([, agent]) => agent.requires.sandbox)
+    .map(([mount, agent]) => ({
+      mount,
+      agent: agent.name,
+      provider: "aws-lambda-microvm",
+      required: agent.requires.sandbox,
+      supported: checkAwsAgentCompatibility(agent, {
+        agentSandboxesEnabled,
+      }).supported,
+      imageConfigured: agentSandboxesEnabled,
+      approvals: agent.requires.humanApproval,
+      capabilities: agent.capabilities,
+    }));
+
+  const payload = {
+    ok: true,
+    provider: "aws-lambda-microvm",
+    imageConfigured: agentSandboxesEnabled,
+    sandboxes,
+    warnings: agentSandboxesEnabled
+      ? []
+      : sandboxes.map((sandbox) => ({
+          code: "AWS_AGENT_SANDBOX_IMAGE_REQUIRED",
+          message: `Agent '${sandbox.agent}' requires a sandbox but ANVIL_AWS_AGENT_SANDBOX_IMAGE is not configured.`,
+        })),
+  };
+
+  writeJsonOrHuman(
+    context,
+    payload,
+    sandboxes.length === 0
+      ? "No mounted agents require Agent Sandboxes."
+      : [
+          "Agent Sandboxes:",
+          ...sandboxes.map(
+            (sandbox) =>
+              `  ${sandbox.imageConfigured ? "✓" : "⚠"} ${sandbox.mount} -> ${sandbox.provider}`,
+          ),
+        ].join("\n"),
   );
 }
 

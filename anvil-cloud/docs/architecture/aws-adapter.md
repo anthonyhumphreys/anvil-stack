@@ -46,20 +46,22 @@ Shared runtime optimisation can be explored later.
 
 This mapping is adapter-specific. Core Anvil specs should use provider-neutral concept names and link here for AWS details.
 
-| Anvil concept      | AWS backing                                       |
-| ------------------ | ------------------------------------------------- |
-| Cell runtime       | Lambda Node.js 20/22                              |
-| Query/mutation API | Lambda Function URL or API Gateway                |
-| Custom endpoints   | API Gateway routes or Lambda Function URL routing |
-| Client bundle      | S3 + CloudFront                                   |
-| Database           | DynamoDB                                          |
-| Files              | S3                                                |
-| Environment        | SSM Parameter Store or Secrets Manager            |
-| Logs               | CloudWatch Logs                                   |
-| Scheduled jobs     | EventBridge Scheduler                             |
-| Queued jobs        | SQS + Lambda                                      |
-| Deploy metadata    | DynamoDB or manifest in S3                        |
-| Audit events       | DynamoDB                                          |
+| Anvil concept      | AWS backing                                        |
+| ------------------ | -------------------------------------------------- |
+| Cell runtime       | Lambda Node.js 20/22                               |
+| Query/mutation API | Lambda Function URL or API Gateway                 |
+| Custom endpoints   | API Gateway routes or Lambda Function URL routing  |
+| Client bundle      | S3 + CloudFront                                    |
+| Database           | DynamoDB                                           |
+| Files              | S3                                                 |
+| Environment        | SSM Parameter Store or Secrets Manager             |
+| Logs               | CloudWatch Logs                                    |
+| Scheduled jobs     | EventBridge Scheduler                              |
+| Queued jobs        | SQS + Lambda                                       |
+| Agent inference    | Bedrock through `@anvil-cloud/aws` provider        |
+| Agent sandboxes     | Lambda MicroVM sessions through `@anvil-cloud/aws` |
+| Deploy metadata    | DynamoDB or manifest in S3                         |
+| Audit events       | DynamoDB                                           |
 
 ## Runtime Lambda flow
 
@@ -179,6 +181,116 @@ item failure before the message becomes visible again. The generated main queue
 also redrives messages to a Cell-owned dead-letter queue after three failed
 receives; the DLQ retains messages for 14 days so alpha operators have evidence
 to inspect instead of an endlessly retrying poison job.
+
+## Agent sandbox target
+
+The AWS adapter keeps the normal Cell runtime on Lambda and uses Lambda
+MicroVMs as the backing for Agent Sandboxes when a sandbox image is configured.
+
+Lambda remains the right boundary for query, mutation, endpoint, and job
+traffic:
+
+- request-shaped lifecycle;
+- simple IAM and logs;
+- stable Function URL/API Gateway bridge;
+- predictable preview deployment and cleanup.
+
+MicroVMs fit a different shape: sessionful agent workspaces that need stronger
+isolation and state between turns.
+
+```txt
+Browser or CLI
+  ↓
+Cell Lambda runtime
+  ↓
+Anvil approval and capability broker
+  ↓
+Agent session manager
+  ↓
+Lambda MicroVM Agent Sandbox
+```
+
+`AwsLambdaMicroVmSandboxProvider` creates, inspects, resumes, suspends,
+terminates, and creates auth tokens for MicroVM sessions from provider-neutral
+agent manifests. The Cell author does not write Dockerfiles, CloudFormation,
+IAM policy, Lambda MicroVM calls, or provider SDK code.
+
+### Sandbox responsibilities
+
+An AWS-backed Agent Sandbox provider now provides:
+
+- VM-isolated execution for generated code, shell commands, package installs,
+  test runs, browser automation, scanners, and MCP/tool processes;
+- a workspace filesystem with session state for the configured lifetime;
+- a dedicated session endpoint for streamed interaction;
+- AWS SDK lifecycle calls for run, inspect, suspend, resume, terminate, and
+  auth-token creation;
+- lifecycle metadata: started, active, waiting for approval, suspended,
+  resumed, terminated, expired.
+
+The policy broker, streamed command transport, workspace snapshot store,
+sandbox-aware Lens view, and artifact/diff capture are still follow-on work.
+
+### Compatibility mapping
+
+`runtime.sandbox: "required"` should become an AWS-supported requirement only
+when the MicroVM sandbox adapter is enabled in a supported region.
+
+In the current implementation, "enabled" means `ANVIL_AWS_AGENT_SANDBOX_IMAGE`
+or provider `imageIdentifier` is configured. Without that, AWS preview support
+returns an `AWS_PREVIEW_UNSUPPORTED_FEATURE` diagnostic for `agentSandboxes`.
+
+`runtime.durability: "required"` should remain unsupported until Anvil has
+durable orchestration, persisted run state, replay/retry semantics, and
+inspection for resumed runs. MicroVM suspend/resume helps session continuity; it
+is not durable workflow execution by itself.
+
+`memory.retention: "session"` can map to sandbox-local state plus explicit
+Anvil-managed summaries or artifacts. `memory.retention: "persistent"` still
+needs an Anvil memory store and retention policy.
+
+`approvals.requiredFor` must be enforced by Anvil before the sandbox executes
+protected tools. VM isolation is useful, but it is not an approval system. Very
+clever boxes still need locks on the doors.
+
+### Prebuilt sandbox images
+
+The high-leverage AWS path is a set of Anvil-owned sandbox images or snapshots:
+
+- `anvil/node-agent-base` for TypeScript repo work;
+- `anvil/web-reviewer` for browser and Playwright checks;
+- `anvil/cloud-deployer` for preview deployment preparation;
+- `anvil/registry-auditor` for dependency and package analysis;
+- `anvil/docs-maintainer` for docs and release-note work.
+
+These images should be adapter implementation details. The manifest should name
+the agent contract and capabilities, not the underlying image.
+
+### Inspection surface
+
+The local AWS plan and `anvil-cloud agents sandboxes --json` report sandbox
+readiness today. Remote inspect should eventually report live sandbox state
+alongside the Cell runtime:
+
+```json
+{
+  "agents": {
+    "release-engineer": {
+      "sandbox": "aws-lambda-microvm",
+      "session": "active",
+      "region": "eu-west-1",
+      "startedAt": "2026-06-30T10:00:00.000Z",
+      "expiresAt": "2026-06-30T18:00:00.000Z",
+      "lastAction": "pnpm test",
+      "approvals": ["deploy.preview"],
+      "artifacts": ["diff.patch", "test-output.ndjson"]
+    }
+  }
+}
+```
+
+Until remote sandbox inspect exists, AWS compatibility reporting and deploy
+plans are the source of truth for sandbox readiness.
 
 ## Environment and secrets
 
