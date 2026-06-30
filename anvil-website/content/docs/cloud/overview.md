@@ -39,6 +39,7 @@ The goal is not to make AWS easier to spray around. The goal is to give develope
 - **Anvil Guard**: import policy, capability checks, and safety validation.
 - **Anvil Lens**: inspection surface for manifest, runtime status, local auth, logs, database state, workflows, services, and diagnostics.
 - **Anvil Agent**: a portable, inspectable runtime unit with explicit capabilities, approval-gated actions, model configuration, and a provider-neutral manifest.
+- **Agent Sandbox**: an isolated, sessionful, inspectable workspace for agents that need sandboxed tool execution. On AWS, `@anvil-cloud/aws` provides a Lambda MicroVM-backed sandbox provider.
 
 ## What works now
 
@@ -46,6 +47,7 @@ The alpha implementation includes:
 
 - object-based Cell DSL for `app`, `query`, `mutation`, `endpoint`, `job`, `workflow`, `service`, `table`, and field builders
 - contract-first [Anvil Agents](/docs/cloud/agents): `defineAgent`, provider-neutral agent manifests, mounted Cell Agents, local stub inference, provider registry, approval gates, tool capability checks, and AWS Bedrock provider support
+- [Agent Sandbox](/docs/cloud/agent-sandboxes) contract and AWS Lambda MicroVM provider for sandbox-required agent workspaces
 - shared runtime request handling for query, mutation, endpoint, job, and workflow triggers
 - [real authentication](/docs/cloud/auth): declarative per-handler access control enforced by the runtime, a local identity provider signing real JWTs, and OIDC verification for any compliant provider via configuration
 - [durable workflows](/docs/cloud/workflows): ordered typed steps with retries and timeouts, state persisted per transition, resumable after interruption
@@ -72,7 +74,7 @@ Current alpha limits include:
 - Services execute locally today; the ECS/Fargate mapping is designed but not implemented.
 - Outbound fetch policy is checked by Guard, but AWS preview rejects outbound-fetch Cells until provider network policy enforcement exists.
 - Production use needs wider operational validation beyond the preview verifier.
-- Agents are a contract/runtime foundation, not a hosted agent platform. Project-agent discovery, production approval UI, durable multi-step orchestration, hosted memory, and sandbox execution are future work.
+- Agents are a contract/runtime foundation, not a hosted agent platform. Project-agent discovery, production approval UI, durable multi-step orchestration, hosted memory, streamed sandbox tools, workspace snapshots, and sandbox-aware Lens views are future work.
 - Auth token verification is real locally and on AWS, but session/refresh lifecycle and login UI belong to your provider.
 - Anvil Lens is local-first; there is no hosted control plane, marketplace, or multi-region deployment.
 - No arbitrary provider-resource authoring or raw container/Kubernetes definitions in Cell code.
@@ -84,6 +86,7 @@ Current alpha limits include:
 - [Cell contract](/docs/cloud/cell-contract)
 - [Auth](/docs/cloud/auth)
 - [Anvil Agents](/docs/cloud/agents)
+- [Agent Sandboxes](/docs/cloud/agent-sandboxes)
 - [Workflows](/docs/cloud/workflows)
 - [Services](/docs/cloud/services)
 - [Runtime model](/docs/cloud/architecture)

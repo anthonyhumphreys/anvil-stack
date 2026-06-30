@@ -24,7 +24,7 @@ what evidence should I inspect before trusting a Cell?"
 | --- | --- |
 | Runtime DSL | `app`, `query`, `mutation`, `endpoint`, `job`, `workflow`, `service`, `table`, and field builders exist. |
 | Runtime execution | `handleRuntimeRequest` supports query, mutation, endpoint, job, and workflow handlers. Services run through the runtime `ServiceSupervisor`, not per-request invocation. |
-| Agents | `defineAgent`, agent capabilities, approval contracts, provider-neutral manifests, provider registry, deterministic local stub inference, mounted Cell Agents, local invocation routes, CLI contract commands, and AWS Bedrock inference provider support exist. |
+| Agents | `defineAgent`, agent capabilities, approval contracts, provider-neutral manifests, provider registry, deterministic local stub inference, mounted Cell Agents, local invocation routes, CLI contract commands, AWS Bedrock inference provider support, and the Agent Sandbox target architecture exist. |
 | Runtime host | Host adapter interfaces exist for db, files, env, auth, logs, events, and jobs. |
 | Builder | Config, import policy, typecheck, server/client bundle, manifest extraction, generated client, and build metadata exist. |
 | Local runtime | Local HTTP server, JSON database, files, auth, logs, events, jobs, workflows, supervised services, manifest, and inspection state exist. |
@@ -62,7 +62,8 @@ Safety comes from a smaller contract: declared capabilities, import restrictions
 | Workflows are local-first | Local workflows have durable run state, retries, timeouts, resume behavior, CLI commands, and Lens inspection. AWS has Step Functions synthesis and runtime bridge pieces, but preview deploy still rejects workflow-bearing Cells until remote run state, inspection, live-account verification, and cleanup are done. |
 | Services run locally only | The `service` primitive is supervised by the local runtime. There is no cloud execution path yet; an ECS/Fargate adapter is designed but not implemented. See [Services](/docs/cloud/services). |
 | Outbound fetch runs locally only | The builder accepts `capabilities.outboundFetch`, but AWS preview rejects it until outbound network policy can be enforced. |
-| Agents are foundation-level | Mounted Cell Agents run locally and compile to manifests. Project-agent discovery, hosted orchestration, production approval UI, durable multi-step tool execution, hosted memory, sandbox execution, and full AWS agent infrastructure generation are not implemented yet. See [Anvil Agents](/docs/cloud/agents). |
+| Agents are foundation-level | Mounted Cell Agents run locally and compile to manifests. Project-agent discovery, hosted orchestration, production approval UI, durable multi-step tool execution, and hosted memory are not implemented yet. See [Anvil Agents](/docs/cloud/agents). |
+| Agent Sandboxes are first-slice implemented | Runtime sandbox types, the AWS Lambda MicroVM sandbox provider, deploy-plan entries, compatibility gates, cost/review reporting, and CLI readiness output exist. Hosted policy brokering, session streaming, workspace snapshots, sandbox-aware Lens views, and remote inspect/logs are not implemented. See [Agent Sandboxes](/docs/cloud/agent-sandboxes). |
 
 ## What to verify before trusting a Cell
 
@@ -120,6 +121,7 @@ Useful next work includes:
 - project-agent discovery and standalone agent manifest generation
 - provider-mode examples for AWS Bedrock with local contract checks
 - production approval, memory, sandbox, and durable orchestration adapter work for agents
+- AWS Lambda MicroVM-backed Agent Sandboxes for sandbox-required agents
 - rollback commands beyond preview redeploy/destroy guidance
 - cost and usage reporting beyond preview plan cost drivers
 - clearer package publishing path

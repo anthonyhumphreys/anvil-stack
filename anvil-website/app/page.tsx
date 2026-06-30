@@ -1,6 +1,6 @@
 import Image from "next/image";
 import Link from "next/link";
-import { ArrowRight, Check, Github } from "lucide-react";
+import { ArrowRight, Check, Download, Github } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CodePanel } from "@/components/site/code-panel";
@@ -10,6 +10,7 @@ import {
   codeTabs,
   docsHighlights,
   githubRepositoryUrl,
+  latestDesktopDmgUrl,
   productLines,
   proofPoints,
   repoComparison
@@ -52,6 +53,12 @@ function HeroSection() {
               <Link href="/docs">
                 Read the docs
                 <ArrowRight data-icon="inline-end" aria-hidden="true" />
+              </Link>
+            </Button>
+            <Button asChild size="lg" variant="outline">
+              <Link href={latestDesktopDmgUrl}>
+                <Download data-icon="inline-start" aria-hidden="true" />
+                Download macOS Apple Silicon
               </Link>
             </Button>
             <Button asChild size="lg" variant="outline">
@@ -234,6 +241,14 @@ function ProductDetails({ product }: { product: (typeof productLines)[number] })
         <Button asChild size="sm" variant="outline">
           <Link href={product.repoHref}>Repository</Link>
         </Button>
+        {"downloadHref" in product && product.downloadHref ? (
+          <Button asChild size="sm" variant="outline">
+            <Link href={product.downloadHref}>
+              <Download data-icon="inline-start" aria-hidden="true" />
+              {product.downloadLabel}
+            </Link>
+          </Button>
+        ) : null}
         {product.links.map((link) => (
           <Button key={link.href} asChild size="sm" variant="ghost">
             <Link href={link.href}>{link.label}</Link>
