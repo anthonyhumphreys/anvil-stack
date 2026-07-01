@@ -1,6 +1,6 @@
 {
   "name": "@anvilstack/registry-cli",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "license": "MIT",
   "description": "Command-line client for Anvil Registry package decisions, lockfile scans, reports, and overrides.",
   "private": false,

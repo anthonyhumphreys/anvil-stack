@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn as spawnChildProcess } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { access } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -64,6 +64,11 @@ export async function run(
     return 0;
   }
 
+  if (command === "version" || command === "--version" || command === "-v") {
+    dependencies.stdout.write(`${await readWrapperVersion()}\n`);
+    return 0;
+  }
+
   if (command === "cloud" || command === "registry") {
     return dependencies.spawnProduct(command, args);
   }
@@ -80,12 +85,19 @@ export async function run(
   return 1;
 }
 
+async function readWrapperVersion(): Promise<string> {
+  const packageJsonUrl = new URL("../package.json", import.meta.url);
+  const packageJson = JSON.parse(await readFile(packageJsonUrl, "utf8")) as { version?: unknown };
+  return typeof packageJson.version === "string" ? packageJson.version : "unknown";
+}
+
 function usage(): string {
   return `Anvil CLI
 
 Usage:
   anvil cloud <command> [...args]
   anvil registry <command> [...args]
+  anvil --version
 
 Direct product binaries:
   anvil-cloud <command> [...args]
