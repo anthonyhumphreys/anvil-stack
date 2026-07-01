@@ -181,6 +181,13 @@ export const repoComparison = [
     usefulWhen: "Installs need policy, caching, analysis, quarantine, overrides, reports, or safer container execution."
   },
   {
+    repo: "anvil-registry/devcontainer-base/",
+    product: "Anvil Node Base",
+    owns: "Safer Node dependency installation",
+    firstFiles: "Dockerfile, scripts, README.md",
+    usefulWhen: "An unknown repo needs npm installs with lifecycle scripts disabled or observed inside a container."
+  },
+  {
     repo: "anvil-cloud/",
     product: "Anvil Cloud",
     owns: "Cell runtime contracts and adapter deployment",

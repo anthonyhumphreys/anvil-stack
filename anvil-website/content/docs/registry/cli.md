@@ -1,5 +1,6 @@
 ---
 title: Registry CLI
+navTitle: CLI
 description: Install and use the Anvil Registry command-line client for package decisions, lockfile scans, reports, overrides, and operations.
 product: Anvil Registry
 section: Getting started

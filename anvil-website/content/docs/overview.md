@@ -9,7 +9,7 @@ order: 10
 
 # Anvil docs
 
-Anvil is an open source family of developer tools for work that needs evidence before trust.
+Anvil is an open source family of developer tools for work that needs evidence before trust. The docs are written for people who want to clone the repo, run the tools, review the architecture, and decide what is ready for their workflow today.
 
 The public site covers three main repositories:
 
@@ -18,6 +18,17 @@ The public site covers three main repositories:
 - **anvil-cloud**: Anvil Cloud, a local-first TypeScript platform for Anvil Cells, shared runtime contracts, builder output, local inspection, generated clients, and adapter-driven deployment.
 
 The tools are separate because they own different risk boundaries. Desktop owns local delivery context. Registry owns dependency ingress. Cloud owns the app runtime contract. Node Base owns install execution inside a safer container.
+
+## First run paths
+
+| Tool | Local path |
+| --- | --- |
+| Anvil Desktop | `cd anvil-app && pnpm install && pnpm dev` |
+| Anvil Registry | `cd anvil-registry && pnpm install --ignore-scripts && docker compose -f infra/docker/docker-compose.yml up --build` |
+| Anvil Node Base | `docker run --rm -it -v "$PWD:/workspace" -w /workspace ghcr.io/anthonyhumphreys/anvil-stack/anvil-node-base:22 anvil-npm-ci-safe` |
+| Anvil Cloud | `cd anvil-cloud && pnpm install --ignore-scripts && pnpm build && pnpm anvil-cloud --help` |
+
+Each workspace has its own lockfile and tooling. Do not run dependency installs at the monorepo root unless a project document explicitly says to.
 
 ## Start by job
 
@@ -39,6 +50,8 @@ The tools are separate because they own different risk boundaries. Desktop owns 
 | Use the hardened Node image | [Node Base overview](/docs/node-base/overview) |
 | Build an Anvil Cell | [Cloud quickstart](/docs/cloud/quickstart) |
 | Understand the Cell contract | [Cloud Cell contract](/docs/cloud/cell-contract) |
+| Define capability-bound agents | [Anvil Agents](/docs/cloud/agents) |
+| Inspect sandbox-required agent workspaces | [Agent Sandboxes](/docs/cloud/agent-sandboxes) |
 | Add authentication to a Cell | [Cloud auth](/docs/cloud/auth) |
 | Run durable multi-step workflows | [Cloud workflows](/docs/cloud/workflows) |
 | Run long-lived supervised services | [Cloud services](/docs/cloud/services) |
@@ -112,6 +125,8 @@ Read these when you want the alpha app contract and adapter path:
 - [Quickstart](/docs/cloud/quickstart)
 - [Examples](/docs/cloud/examples)
 - [Cell contract](/docs/cloud/cell-contract)
+- [Anvil Agents](/docs/cloud/agents)
+- [Agent Sandboxes](/docs/cloud/agent-sandboxes)
 - [Auth](/docs/cloud/auth)
 - [Workflows](/docs/cloud/workflows)
 - [Services](/docs/cloud/services)
