@@ -1,6 +1,7 @@
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Code,
+  Cloud,
   Database,
   MessageSquare,
   Compass,
@@ -124,6 +125,13 @@ const navItems: NavItem[] = [
     feature: 'cicd',
     requiresRepoFeature: true,
   },
+  {
+    path: '/cloud',
+    label: 'Cloud',
+    icon: <Cloud size={20} />,
+    feature: 'cloud',
+    requiresRepoFeature: true,
+  },
   { path: '/docs', label: 'Documentation', icon: <FileText size={20} />, feature: 'docs' },
   {
     path: '/adrs',
@@ -170,10 +178,16 @@ interface SidebarProps {
     confluence: boolean | null;
   };
   userRole: UserRole;
+  cloudFeaturesEnabled: boolean;
   reserveTitlebarSpace?: boolean;
 }
 
-export function Sidebar({ connectionStatus, userRole, reserveTitlebarSpace = true }: SidebarProps) {
+export function Sidebar({
+  connectionStatus,
+  userRole,
+  cloudFeaturesEnabled,
+  reserveTitlebarSpace = true,
+}: SidebarProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const brand = useBrand();
@@ -302,7 +316,11 @@ export function Sidebar({ connectionStatus, userRole, reserveTitlebarSpace = tru
           <nav className="h-full overflow-y-auto pr-1">
             <div className="flex flex-col gap-1">
               {navItems
-                .filter((item) => ROLE_FEATURES[userRole].includes(item.feature))
+                .filter(
+                  (item) =>
+                    ROLE_FEATURES[userRole].includes(item.feature) &&
+                    (item.feature !== 'cloud' || cloudFeaturesEnabled),
+                )
                 .map((item) => {
                   const active = location.pathname.startsWith(item.path);
                   const disabled = item.requiresChat

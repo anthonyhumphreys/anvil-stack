@@ -1228,6 +1228,7 @@ export interface AppSettings {
   activeWorkspaceId?: string;
   githubPat?: string;
   githubUsername?: string;
+  cloudFeaturesEnabled: boolean;
   theme: AppTheme;
   userRole?: UserRole;
 }
@@ -1303,6 +1304,60 @@ export interface CodexSkillInstallInput {
   source: string;
   skillName?: string;
   global?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Anvil Cloud
+// ---------------------------------------------------------------------------
+
+export type AnvilCloudCommandId =
+  | 'doctor'
+  | 'check'
+  | 'build'
+  | 'inspect-local'
+  | 'lens'
+  | 'logs-local'
+  | 'db-list'
+  | 'workflows-list'
+  | 'services-list'
+  | 'agents-validate'
+  | 'agents-manifest'
+  | 'agents-sandboxes';
+
+export interface AnvilCloudCliStatus {
+  available: boolean;
+  command: string;
+  version?: string;
+  source: 'workspace' | 'path';
+  cloudWorkspacePath?: string;
+  error?: string;
+}
+
+export interface AnvilCloudCommandDefinition {
+  id: AnvilCloudCommandId;
+  label: string;
+  description: string;
+  command: string;
+  category: 'health' | 'build' | 'runtime' | 'agents';
+}
+
+export interface AnvilCloudCommandResult {
+  ok: boolean;
+  commandId: AnvilCloudCommandId;
+  command: string;
+  cwd: string;
+  stdout: string;
+  stderr: string;
+  parsed?: unknown;
+  exitCode?: number;
+  durationMs: number;
+  completedAt: string;
+  error?: string;
+}
+
+export interface AnvilCloudWorkbenchSnapshot {
+  status: AnvilCloudCliStatus;
+  commands: AnvilCloudCommandDefinition[];
 }
 
 export interface CodexRegistryActionResult {
@@ -1424,6 +1479,7 @@ export type Feature =
   | 'browser'
   | 'git'
   | 'compliance'
+  | 'cloud'
   | 'meeting-notes'
   | 'workspace-notes';
 
@@ -1447,6 +1503,7 @@ export const ROLE_FEATURES: Record<UserRole, readonly Feature[]> = {
     'browser',
     'git',
     'compliance',
+    'cloud',
     'meeting-notes',
     'workspace-notes',
   ],
@@ -1463,6 +1520,7 @@ export const ROLE_FEATURES: Record<UserRole, readonly Feature[]> = {
     'diagrams',
     'governance',
     'compliance',
+    'cloud',
     'meeting-notes',
     'workspace-notes',
   ],
@@ -1474,6 +1532,7 @@ export const ROLE_FEATURES: Record<UserRole, readonly Feature[]> = {
     'diagrams',
     'governance',
     'compliance',
+    'cloud',
     'meeting-notes',
     'workspace-notes',
   ],

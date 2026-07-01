@@ -6,6 +6,7 @@ import {
   CheckCircle,
   ClipboardCheck,
   Code2,
+  Cloud,
   FolderGit2,
   Loader2,
   MonitorSmartphone,
@@ -192,9 +193,22 @@ export function SettingsView({
     refreshMobileCompanion().catch(console.error);
   }, []);
 
-  const update = (key: keyof AppSettings, value: string) => {
+  const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
     setSettings((prev) => ({ ...prev, [key]: value }));
     setSaved(false);
+  };
+
+  const updateCloudFeatures = async (enabled: boolean) => {
+    setSettings((prev) => ({ ...prev, cloudFeaturesEnabled: enabled }));
+    setSaved(false);
+    try {
+      await window.anvil.settings.update({ cloudFeaturesEnabled: enabled });
+      window.dispatchEvent(new CustomEvent('anvil:cloud-feature-changed', { detail: { enabled } }));
+      setSaved(true);
+      onSettingsSaved?.();
+    } catch (err) {
+      setTestError(err instanceof Error ? err.message : 'Failed to update Anvil Cloud access');
+    }
   };
 
   const updateTheme = async (theme: AppTheme) => {
@@ -477,6 +491,7 @@ export function SettingsView({
                 <SummaryChip label="Theme" value={selectedThemeLabel} />
                 <SummaryChip label="Chat" value={selectedChatLayoutLabel} />
                 <SummaryChip label="AI" value={aiProviderLabel} />
+                <SummaryChip label="Cloud" value={settings.cloudFeaturesEnabled ? 'On' : 'Off'} />
                 <SummaryChip label="Mobile" value={mobileStatus?.enabled ? 'Enabled' : 'Off'} />
               </div>
             </div>
@@ -869,6 +884,31 @@ export function SettingsView({
                   <Puzzle size={14} />
                   Manage Skills & MCPs
                 </button>
+              </SettingsPanel>
+
+              <SettingsPanel
+                title="Anvil Cloud"
+                description="Expose Cell checks, local runtime inspection, and Lens from inside the app."
+              >
+                <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border bg-bg-primary p-4 transition-colors hover:bg-bg-tertiary">
+                  <input
+                    type="checkbox"
+                    checked={settings.cloudFeaturesEnabled ?? false}
+                    onChange={(event) => void updateCloudFeatures(event.target.checked)}
+                    className="mt-1 h-4 w-4 accent-accent"
+                  />
+                  <span className="min-w-0">
+                    <span className="flex items-center gap-2 text-sm font-medium text-text-primary">
+                      <Cloud size={15} className="text-accent" />
+                      Enable Cloud workbench
+                    </span>
+                    <span className="mt-1 block text-sm leading-relaxed text-text-secondary">
+                      Adds a workspace tool for Anvil Cloud CLI diagnostics, local Cell artifacts,
+                      workflows, services, agents, logs, and Anvil Lens. Nothing is enabled until
+                      this box is checked.
+                    </span>
+                  </span>
+                </label>
               </SettingsPanel>
             </SettingsCategory>
 

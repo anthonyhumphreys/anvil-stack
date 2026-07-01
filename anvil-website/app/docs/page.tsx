@@ -8,7 +8,7 @@ import { docsProductGuides } from "@/lib/site";
 
 export const metadata = {
   title: "Docs | Anvil",
-  description: "Documentation for Anvil Desktop, Anvil Registry, Anvil Node Base, and Anvil Cloud."
+  description: "Open source developer documentation for Anvil Desktop, Anvil Registry, Anvil Node Base, and Anvil Cloud."
 };
 
 export default async function DocsIndexPage() {
@@ -29,7 +29,7 @@ export default async function DocsIndexPage() {
             </div>
             <div className="max-w-3xl self-end">
               <p className="text-lg leading-8 text-muted-foreground">
-                These docs are written for developers and maintainers. They explain what each repo owns, how to run it locally, where policy and runtime boundaries sit, and what is still alpha.
+                These docs are written for developers, operators, and maintainers. They explain what each repo owns, how to run it locally, where policy and runtime boundaries sit, how to contribute, and what is still alpha.
               </p>
               <div className="mt-6 flex flex-wrap gap-3">
                 <Button asChild>

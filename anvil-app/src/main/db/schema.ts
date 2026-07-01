@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 38;
+export const SCHEMA_VERSION = 39;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -174,6 +174,7 @@ CREATE TABLE IF NOT EXISTS settings (
   theme TEXT DEFAULT 'system',
   user_role TEXT,
   active_workspace_id TEXT,
+  cloud_features_enabled INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -1335,5 +1336,8 @@ export const MIGRATIONS: Record<number, string> = {
 
     CREATE INDEX IF NOT EXISTS idx_review_workspace_comments_repo_status
       ON review_workspace_comments(repo_id, status, created_at DESC);
+  `,
+  39: `
+    ALTER TABLE settings ADD COLUMN cloud_features_enabled INTEGER NOT NULL DEFAULT 0;
   `,
 };

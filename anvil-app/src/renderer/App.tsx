@@ -22,6 +22,7 @@ import { GitView } from './components/git/GitView';
 import { ComplianceView } from './components/compliance/ComplianceView';
 import { DependenciesView } from './components/dependencies/DependenciesView';
 import { DiagnosticsView } from './components/diagnostics/DiagnosticsView';
+import { AnvilCloudView } from './components/cloud/AnvilCloudView';
 import { SettingsView } from './components/settings/SettingsView';
 import { CodexRegistryView } from './components/settings/CodexRegistryView';
 import { OpenInAnvilView } from './components/launch/OpenInAnvilView';
@@ -105,6 +106,7 @@ export function App() {
 
   const [userRole, setUserRole] = useState<UserRole | null>(null);
   const [appTheme, setAppTheme] = useState<AppTheme>(fallbackBrand.defaultTheme);
+  const [cloudFeaturesEnabled, setCloudFeaturesEnabled] = useState(false);
   const [roleLoaded, setRoleLoaded] = useState(false);
   const [connectorsConfigured, setConnectorsConfigured] = useState(false);
   const [startupSplashElapsed, setStartupSplashElapsed] = useState(false);
@@ -116,6 +118,7 @@ export function App() {
       const pendingLaunchIntent = await window.anvil.launch.getPendingIntent();
 
       setAppTheme(settings.theme ?? brand.defaultTheme);
+      setCloudFeaturesEnabled(settings.cloudFeaturesEnabled);
       if (settings.userRole) {
         setUserRole(settings.userRole);
       }
@@ -179,6 +182,17 @@ export function App() {
   }, [checkConnections]);
 
   useEffect(() => {
+    const handleCloudFeatureChanged = (event: Event) => {
+      const customEvent = event as CustomEvent<{ enabled: boolean }>;
+      setCloudFeaturesEnabled(customEvent.detail.enabled);
+    };
+
+    window.addEventListener('anvil:cloud-feature-changed', handleCloudFeatureChanged);
+    return () =>
+      window.removeEventListener('anvil:cloud-feature-changed', handleCloudFeatureChanged);
+  }, []);
+
+  useEffect(() => {
     const timer = window.setTimeout(() => {
       setStartupSplashElapsed(true);
     }, STARTUP_SPLASH_MIN_DURATION_MS);
@@ -234,7 +248,15 @@ export function App() {
           <HashRouter>
             <LaunchIntentRouter />
             <Routes>
-              <Route element={<Shell connectionStatus={connectionStatus} userRole={userRole} />}>
+              <Route
+                element={
+                  <Shell
+                    connectionStatus={connectionStatus}
+                    userRole={userRole}
+                    cloudFeaturesEnabled={cloudFeaturesEnabled}
+                  />
+                }
+              >
                 <Route
                   path="/repos"
                   element={
@@ -396,6 +418,23 @@ export function App() {
                       </ErrorBoundary>
                     </WorkspaceGate>,
                   )}
+                />
+                <Route
+                  path="/cloud"
+                  element={
+                    cloudFeaturesEnabled ? (
+                      guard(
+                        'cloud',
+                        <WorkspaceGate>
+                          <ErrorBoundary>
+                            <AnvilCloudView />
+                          </ErrorBoundary>
+                        </WorkspaceGate>,
+                      )
+                    ) : (
+                      <Navigate to="/settings" replace />
+                    )
+                  }
                 />
                 <Route
                   path="/automations"

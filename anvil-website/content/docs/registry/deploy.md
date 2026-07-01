@@ -69,10 +69,10 @@ pnpm smoke:node-base-image-observed
 pnpm smoke:node-base-image-report
 ```
 
-Publish the image under your chosen container registry namespace, for example:
+The public Anvil image path is:
 
 ```text
-ghcr.io/<owner>/<repo>/anvil-node-base:22
+ghcr.io/anthonyhumphreys/anvil-stack/anvil-node-base:22
 ```
 
-Use immutable tags for CI rollouts when you need repeatability, and keep a major Node tag such as `22` for routine upgrades.
+Use immutable tags for CI rollouts when you need repeatability, and keep a major Node tag such as `22` for routine upgrades. Forks can publish the same image under their own GHCR namespace.

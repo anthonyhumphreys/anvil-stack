@@ -7,6 +7,7 @@ import path from 'node:path';
 import { initDatabase } from './db/database.js';
 import { registerSettingsHandlers } from './ipc/settings.ipc.js';
 import { registerCodexRegistryHandlers } from './ipc/codex-registry.ipc.js';
+import { registerAnvilCloudHandlers } from './ipc/anvil-cloud.ipc.js';
 import { registerDiagnosticsHandlers } from './ipc/diagnostics.ipc.js';
 import { registerMobileCompanionHandlers } from './ipc/mobile-companion.ipc.js';
 import { registerRepoHandlers, handleStaleIndexingRepos } from './ipc/repo.ipc.js';
@@ -282,6 +283,7 @@ app.whenReady().then(() => {
   registerSettingsHandlers();
   registerMobileCompanionHandlers();
   registerCodexRegistryHandlers();
+  registerAnvilCloudHandlers();
   registerDiagnosticsHandlers();
   registerRepoHandlers();
   registerChatHandlers();

@@ -84,4 +84,4 @@ The important rule is that Cell code uses the runtime contract. Provider-specifi
 
 ## Contribution posture
 
-When you update behavior, update docs in the same change — they live in the same repo now, so there is no excuse. This is especially important for Registry policy, Desktop IPC/service boundaries, and Cloud command output. Public docs that drift from implementation are not documentation, they are a scavenger hunt with better typography.
+When you update behavior, update docs in the same change. This is especially important for Registry policy, Desktop IPC/service boundaries, and Cloud command output. Public docs that drift from implementation are not documentation; they are a scavenger hunt with better typography.
