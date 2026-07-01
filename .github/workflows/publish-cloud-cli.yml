@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Run npm publish with --dry-run instead of publishing."
+        description: "Run npm stage publish with --dry-run instead of staging."
         required: false
         type: boolean
         default: true
@@ -74,11 +74,11 @@ jobs:
       - name: Build
         run: pnpm --filter @anvilstack/cloud-cli build
 
-      - name: Publish to npm
+      - name: Stage package on npm
         working-directory: anvil-cloud/packages/cli
         run: |
           extra_args=""
           if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.dry_run }}" == "true" ]]; then
             extra_args="--dry-run"
           fi
-          npm publish --access public ${extra_args}
+          npm stage publish --access public ${extra_args}

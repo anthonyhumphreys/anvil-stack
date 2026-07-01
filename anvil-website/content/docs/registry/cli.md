@@ -383,13 +383,15 @@ npx @anvilstack/registry-cli scan package-lock.json --queue-analysis
 
 Use `npm ci --ignore-scripts` or Anvil Node Base safe mode for the actual install. The CLI reviews and warms dependency decisions; it is not a replacement package manager.
 
-## Publish the CLI
+## Stage the CLI for publishing
 
 The npm package is `@anvilstack/registry-cli` and exposes the `anvil-registry` binary. Publishing requires access to the `@anvilstack` npm scope.
 
 Release publishing is handled by `.github/workflows/publish-registry-cli.yml`
-through trusted publishing. The workflow runs on `registry-cli-v*` tags and also
-supports a manual dry run.
+through trusted publishing and npm staged publishing. The workflow runs on
+`registry-cli-v*` tags and also supports a manual dry run. It stages the package
+with `npm stage publish`; a maintainer must review and approve the staged
+package on npm before it becomes publicly available.
 
 From the repository, verify the package before tagging:
 
