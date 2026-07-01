@@ -1228,6 +1228,7 @@ export interface AppSettings {
   activeWorkspaceId?: string;
   githubPat?: string;
   githubUsername?: string;
+  cloudFeaturesEnabled: boolean;
   theme: AppTheme;
   userRole?: UserRole;
 }
@@ -1424,6 +1425,7 @@ export type Feature =
   | 'browser'
   | 'git'
   | 'compliance'
+  | 'cloud'
   | 'meeting-notes'
   | 'workspace-notes';
 
@@ -1447,6 +1449,7 @@ export const ROLE_FEATURES: Record<UserRole, readonly Feature[]> = {
     'browser',
     'git',
     'compliance',
+    'cloud',
     'meeting-notes',
     'workspace-notes',
   ],
@@ -1463,6 +1466,7 @@ export const ROLE_FEATURES: Record<UserRole, readonly Feature[]> = {
     'diagrams',
     'governance',
     'compliance',
+    'cloud',
     'meeting-notes',
     'workspace-notes',
   ],
@@ -1474,6 +1478,7 @@ export const ROLE_FEATURES: Record<UserRole, readonly Feature[]> = {
     'diagrams',
     'governance',
     'compliance',
+    'cloud',
     'meeting-notes',
     'workspace-notes',
   ],
