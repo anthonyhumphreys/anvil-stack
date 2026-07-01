@@ -4,6 +4,10 @@
   "license": "MIT",
   "description": "Umbrella command dispatcher for Anvil product CLIs.",
   "private": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anthonyhumphreys/anvil-stack.git"
+  },
   "type": "module",
   "bin": {
     "anvil": "dist/index.js"
