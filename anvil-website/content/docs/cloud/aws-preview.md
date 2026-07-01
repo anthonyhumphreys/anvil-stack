@@ -54,7 +54,7 @@ The `@anvil-cloud/aws` package currently includes:
 | Deployment metadata | DynamoDB |
 
 Deployment plans include an `events` change when `capabilities.events` is
-declared, so `anvil-cloud deploy --preview --json` reports the EventBridge resource
+declared, so `anvil cloud deploy --preview --json` reports the EventBridge resource
 before provisioning.
 
 Deployment plans also include an `operations` block with preview rollback
@@ -117,7 +117,7 @@ execution.
 
 ## Deploy flow
 
-`anvil-cloud deploy --preview --json`:
+`anvil cloud deploy --preview --json`:
 
 1. builds the Cell with preview target
 2. reads the generated manifest
@@ -172,10 +172,10 @@ ANVIL_AWS_DEPLOYMENT_METADATA_TABLE=<metadata-table-name>
 Then:
 
 ```bash
-anvil-cloud deploy --preview --json
-anvil-cloud inspect --app notes --env preview --json
-anvil-cloud logs --app notes --env preview --json
-anvil-cloud destroy --preview --app notes --yes --json
+anvil cloud deploy --preview --json
+anvil cloud inspect --app notes --env preview --json
+anvil cloud logs --app notes --env preview --json
+anvil cloud destroy --preview --app notes --yes --json
 ```
 
 For the checked-in AWS-compatible smoke Cell, run the repeatable verifier from
@@ -260,7 +260,7 @@ The adapter maps:
 - `POST /_anvil/mutation/:name` to mutation runtime requests
 - `/api/*` to declared endpoint runtime requests
 - `GET /_anvil/health` to a runtime health response used by
-  `anvil-cloud deploy --preview --wait`
+  `anvil cloud deploy --preview --wait`
 
 The AWS bridge handles `OPTIONS` preflight requests and adds CORS headers to
 runtime responses so generated browser clients can call the preview runtime.

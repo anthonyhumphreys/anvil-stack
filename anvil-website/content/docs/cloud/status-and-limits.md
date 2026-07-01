@@ -70,10 +70,10 @@ Safety comes from a smaller contract: declared capabilities, import restrictions
 Run:
 
 ```bash
-anvil-cloud check --json
-anvil-cloud build --json
-anvil-cloud inspect --local --json
-anvil-cloud logs --local --json
+anvil cloud check --json
+anvil cloud build --json
+anvil cloud inspect --local --json
+anvil cloud logs --local --json
 ```
 
 Before preview deploy, inspect:
@@ -104,7 +104,7 @@ Before treating AWS preview as more than a local deploy experiment, verify:
 - CloudWatch logs
 - deployment metadata table
 - remote `inspect` and `logs`
-- preview cleanup through `anvil-cloud destroy --preview --app <name> --yes`
+- preview cleanup through `anvil cloud destroy --preview --app <name> --yes`
 - rollback path or the current manual fallback: redeploy a known-good checkout or destroy the preview stack
 
 ## Contribution priorities

@@ -52,17 +52,17 @@ Inside handlers, `ctx.auth` is unchanged: `identity`, `userId`, `requireUser()`,
 Anvil Local runs an actual identity provider, not a mock. It generates an ES256 keypair under `.anvil/local/auth/`, keeps a user store, and signs real JWTs that are verified on every request. Forged or expired tokens are rejected locally exactly as they would be in production.
 
 ```bash
-anvil-cloud auth add-user dev_1 --email dev@example.test --roles admin
-anvil-cloud auth login dev_1          # sets ambient identity + prints a token
-anvil-cloud auth token dev_1 --ttl 3600   # mints a JWT (perfect for agents and curl)
-anvil-cloud auth users
-anvil-cloud auth whoami
+anvil cloud auth add-user dev_1 --email dev@example.test --roles admin
+anvil cloud auth login dev_1          # sets ambient identity + prints a token
+anvil cloud auth token dev_1 --ttl 3600   # mints a JWT (perfect for agents and curl)
+anvil cloud auth users
+anvil cloud auth whoami
 ```
 
 All commands support `--json`. An agent that needs an authenticated session is two commands away:
 
 ```bash
-TOKEN=$(anvil-cloud auth token dev_1 --json | jq -r .token)
+TOKEN=$(anvil cloud auth token dev_1 --json | jq -r .token)
 curl -H "Authorization: Bearer $TOKEN" \
   -d '{"input":{}}' http://localhost:8787/_anvil/query/myNotes
 ```

@@ -98,6 +98,7 @@ Examples:
   anvil registry explain react@latest
 
 Install the product CLI you want to use:
+  npm install --global @anvilstack/cli
   npm install --global @anvilstack/cloud-cli
   npm install --global @anvilstack/registry-cli
 `;

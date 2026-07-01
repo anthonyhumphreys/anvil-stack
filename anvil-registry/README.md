@@ -103,9 +103,10 @@ Then install as usual. Scoped packages, tarballs, and npm audit requests should 
 
 ## CLI
 
-Install the published CLI:
+Install the published Anvil CLI and Registry product CLI:
 
 ```bash
+npm install --global @anvilstack/cli
 npm install --global @anvilstack/registry-cli
 ```
 
@@ -114,14 +115,14 @@ The CLI is a client. It requires a running gateway for package decision commands
 Common commands:
 
 ```bash
-ANVIL_REGISTRY_URL=http://localhost:4873 anvil-registry explain is-number@7.0.0
-ANVIL_REGISTRY_URL=http://localhost:4873 anvil-registry scan pnpm-lock.yaml --queue-analysis
-ANVIL_REGISTRY_URL=http://localhost:4873 anvil-registry scan yarn.lock --queue-analysis
-ANVIL_REGISTRY_URL=http://localhost:4873 anvil-registry warm package-lock.json
-ANVIL_REGISTRY_URL=http://localhost:4873 ANVIL_ADMIN_TOKEN=local-dev-token anvil-registry queue status
-ANVIL_ADMIN_URL=http://localhost:3000 anvil-registry reports is-number@7.0.0
-ANVIL_ADMIN_URL=http://localhost:3000 anvil-registry reports compare is-number@7.0.0
-ANVIL_ADMIN_URL=http://localhost:3000 anvil-registry node-base reports --limit 20
+ANVIL_REGISTRY_URL=http://localhost:4873 anvil registry explain is-number@7.0.0
+ANVIL_REGISTRY_URL=http://localhost:4873 anvil registry scan pnpm-lock.yaml --queue-analysis
+ANVIL_REGISTRY_URL=http://localhost:4873 anvil registry scan yarn.lock --queue-analysis
+ANVIL_REGISTRY_URL=http://localhost:4873 anvil registry warm package-lock.json
+ANVIL_REGISTRY_URL=http://localhost:4873 ANVIL_ADMIN_TOKEN=local-dev-token anvil registry queue status
+ANVIL_ADMIN_URL=http://localhost:3000 anvil registry reports is-number@7.0.0
+ANVIL_ADMIN_URL=http://localhost:3000 anvil registry reports compare is-number@7.0.0
+ANVIL_ADMIN_URL=http://localhost:3000 anvil registry node-base reports --limit 20
 ```
 
 Admin-gated mutations read `ANVIL_ADMIN_TOKEN`, falling back to `ADMIN_TOKEN`.

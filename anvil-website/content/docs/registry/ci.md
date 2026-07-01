@@ -53,7 +53,7 @@ jobs:
           ANVIL_REGISTRY_URL: https://npm.example.com
 
       - name: Explain lockfile changes
-        run: anvil-registry scan package-lock.json --queue-analysis
+        run: anvil registry scan package-lock.json --queue-analysis
         env:
           ANVIL_REGISTRY_URL: https://npm.example.com
           ANVIL_ADMIN_TOKEN: ${{ secrets.ANVIL_ADMIN_TOKEN }}

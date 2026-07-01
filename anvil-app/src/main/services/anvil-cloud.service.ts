@@ -25,21 +25,21 @@ const COMMAND_DEFINITIONS: AnvilCloudCommandDefinition[] = [
     label: 'Doctor',
     description:
       'Check local runtime, ports, build artifacts, generated client, and AWS preview env.',
-    command: 'anvil-cloud doctor --json',
+    command: 'anvil cloud doctor --json',
     category: 'health',
   },
   {
     id: 'check',
     label: 'Guard Check',
     description: 'Run Anvil Guard and TypeScript diagnostics without writing build artifacts.',
-    command: 'anvil-cloud check --json',
+    command: 'anvil cloud check --json',
     category: 'build',
   },
   {
     id: 'build',
     label: 'Build Cell',
     description: 'Compile the Cell and refresh generated client and manifest artifacts.',
-    command: 'anvil-cloud build --json',
+    command: 'anvil cloud build --json',
     category: 'build',
   },
   {
@@ -47,63 +47,63 @@ const COMMAND_DEFINITIONS: AnvilCloudCommandDefinition[] = [
     label: 'Inspect Local',
     description:
       'Read the local manifest, auth state, database snapshot, logs, and runtime metadata.',
-    command: 'anvil-cloud inspect --local --json',
+    command: 'anvil cloud inspect --local --json',
     category: 'runtime',
   },
   {
     id: 'lens',
     label: 'Lens URL',
     description: 'Check the local runtime and return the Anvil Lens URL.',
-    command: 'anvil-cloud lens --json',
+    command: 'anvil cloud lens --json',
     category: 'runtime',
   },
   {
     id: 'logs-local',
     label: 'Local Logs',
     description: 'Read recent local runtime log events.',
-    command: 'anvil-cloud logs --local --json',
+    command: 'anvil cloud logs --local --json',
     category: 'runtime',
   },
   {
     id: 'db-list',
     label: 'Local DB',
     description: 'List local database tables and row counts.',
-    command: 'anvil-cloud db list --local --json',
+    command: 'anvil cloud db list --local --json',
     category: 'runtime',
   },
   {
     id: 'workflows-list',
     label: 'Workflows',
     description: 'List local workflow runs recorded by Anvil Local.',
-    command: 'anvil-cloud workflows list --json',
+    command: 'anvil cloud workflows list --json',
     category: 'runtime',
   },
   {
     id: 'services-list',
     label: 'Services',
     description: 'Show the last recorded local service state snapshot.',
-    command: 'anvil-cloud services list --json',
+    command: 'anvil cloud services list --json',
     category: 'runtime',
   },
   {
     id: 'agents-validate',
     label: 'Validate Agents',
     description: 'Validate mounted agents and AWS preview compatibility.',
-    command: 'anvil-cloud agents validate --json',
+    command: 'anvil cloud agents validate --json',
     category: 'agents',
   },
   {
     id: 'agents-manifest',
     label: 'Agent Manifest',
     description: 'Read the Cell agent manifest.',
-    command: 'anvil-cloud agents manifest --json',
+    command: 'anvil cloud agents manifest --json',
     category: 'agents',
   },
   {
     id: 'agents-sandboxes',
     label: 'Agent Sandboxes',
     description: 'Inspect sandbox requirements for mounted agents.',
-    command: 'anvil-cloud agents sandboxes --json',
+    command: 'anvil cloud agents sandboxes --json',
     category: 'agents',
   },
 ];
@@ -209,7 +209,7 @@ async function detectAnvilCloudCli(): Promise<AnvilCloudCliStatus> {
   } catch (err) {
     return {
       available: false,
-      command: 'anvil-cloud',
+      command: 'anvil cloud',
       source: 'path',
       error: err instanceof Error ? err.message : String(err),
     };
@@ -230,6 +230,17 @@ async function resolveCloudCliInvocation(): Promise<{
   }
 
   const whichCmd = process.platform === 'win32' ? 'where' : 'which';
+  try {
+    await execFileBuffered(whichCmd, ['anvil'], { timeout: 5_000 });
+    return {
+      command: 'anvil',
+      prefixArgs: ['cloud'],
+      source: 'wrapper',
+    };
+  } catch {
+    // Fall back to the direct product binary for existing installs.
+  }
+
   await execFileBuffered(whichCmd, ['anvil-cloud'], { timeout: 5_000 });
   return {
     command: 'anvil-cloud',

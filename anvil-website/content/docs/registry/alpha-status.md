@@ -67,7 +67,7 @@ This alpha does not promise:
 
 1. Start locally with Docker Compose.
 2. Run the smoke checks relevant to your workflow.
-3. Seed the registry with representative lockfiles using `anvil-registry warm`.
+3. Seed the registry with representative lockfiles using `anvil registry warm`.
 4. Route one low-risk repository through the gateway.
 5. Run installs with lifecycle scripts disabled.
 6. Review package decisions and Node Base reports.

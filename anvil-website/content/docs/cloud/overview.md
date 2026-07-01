@@ -25,7 +25,7 @@ The goal is not to make AWS easier to spray around. The goal is to give develope
 | `@anvil-cloud/local` | Local runtime server, JSON database adapter, local files, auth, logs, events, jobs, and inspection state. |
 | `@anvil-cloud/client` | Browser client and framework hook helpers for generated query and mutation metadata. |
 | `@anvil-cloud/auth` | Provider-neutral token verification: OIDC discovery/JWKS verification plus a local identity provider that signs real JWTs. |
-| `@anvilstack/cloud-cli` | `anvil-cloud new`, `dev`, `check`, `build`, `agents`, `inspect`, `logs`, `db`, `auth`, `workflows`, `services`, `lens`, and `deploy --preview`. |
+| `@anvilstack/cloud-cli` | `anvil cloud new`, `dev`, `check`, `build`, `agents`, `inspect`, `logs`, `db`, `auth`, `workflows`, `services`, `lens`, and `deploy --preview`. |
 | `@anvil-cloud/control-plane` | The `ControlPlaneApi` contract behind Anvil Lens, implemented over the local runtime routes today and swappable for a hosted plane later. |
 | `@anvil-cloud/aws` | AWS preview adapter, CloudFormation synthesis, Lambda runtime bridge, AWS-backed host adapters, Bedrock inference provider, agent compatibility checks, artifact packaging, provisioning, remote inspect, remote logs, and preview cleanup. |
 
@@ -58,7 +58,7 @@ The alpha implementation includes:
 - local JSON database, files, events, jobs, and NDJSON logs
 - builder checks for config, forbidden imports, direct `process.env`, undeclared fetch, scheduled jobs, and capability use (database, files, outboundFetch, events, workflows, services)
 - typecheck, bundle, manifest extraction, generated client output, and build metadata
-- CLI commands with JSON output for automation, including `anvil-cloud agents validate`, `anvil-cloud agents manifest`, `anvil-cloud agents invoke`, and `anvil-cloud auth token` for agent-friendly authenticated sessions
+- CLI commands with JSON output for automation, including `anvil cloud agents validate`, `anvil cloud agents manifest`, `anvil cloud agents invoke`, and `anvil cloud auth token` for agent-friendly authenticated sessions
 - AWS preview plan and CloudFormation synthesis
 - AWS-backed runtime host adapters for DynamoDB, S3, SQS, EventBridge events and scheduled jobs, Lambda env, OIDC token verification, workflow Step Functions starts when configured, and structured logs
 - optional AWS provisioning when required environment variables are configured

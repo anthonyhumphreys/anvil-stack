@@ -30,11 +30,23 @@ The tools are separate because they own different risk boundaries. Desktop owns 
 
 Each workspace has its own lockfile and tooling. Do not run dependency installs at the monorepo root unless a project document explicitly says to.
 
+For published command-line usage, start with the umbrella [Anvil CLI](/docs/cli):
+
+```bash
+npm install --global @anvilstack/cli
+npm install --global @anvilstack/cloud-cli
+npm install --global @anvilstack/registry-cli
+
+anvil cloud check --json
+anvil registry doctor
+```
+
 ## Start by job
 
 | Job | Start here |
 | --- | --- |
 | Understand the monorepo layout | [Monorepo map](/docs/project/repositories) |
+| Use the command line | [Anvil CLI](/docs/cli) |
 | Understand the desktop app | [Desktop overview](/docs/desktop/overview) |
 | Follow Electron process boundaries | [Desktop architecture](/docs/desktop/architecture) |
 | Run repo-aware agent sessions | [Agent workflows](/docs/desktop/agent-workflows) |

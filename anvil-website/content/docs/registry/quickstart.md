@@ -70,8 +70,9 @@ The gateway rewrites tarball URLs so package bytes continue through Anvil Regist
 Install the CLI from npm:
 
 ```bash
+npm install --global @anvilstack/cli
 npm install --global @anvilstack/registry-cli
-ANVIL_REGISTRY_URL=http://localhost:4873 anvil-registry explain react@latest
+ANVIL_REGISTRY_URL=http://localhost:4873 anvil registry explain react@latest
 ```
 
 Or run it without a global install:
@@ -87,7 +88,7 @@ The explain route resolves dist-tags, evaluates policy, and returns the current 
 ## Queue analysis
 
 ```bash
-anvil-registry scan pnpm-lock.yaml --queue-analysis
+anvil registry scan pnpm-lock.yaml --queue-analysis
 ```
 
 Lockfile warming uses `reason: "lockfile_scan"` so worker output can be traced back to preinstall review rather than request-path enforcement.
@@ -99,7 +100,7 @@ Before routing a team through Anvil Registry, warm it with lockfiles from repres
 ```bash
 ANVIL_REGISTRY_URL=http://localhost:4873 \
 ANVIL_ADMIN_TOKEN=local-dev-token \
-  anvil-registry warm ./seed-lockfiles/package-lock.web.json
+  anvil registry warm ./seed-lockfiles/package-lock.web.json
 ```
 
 Use real `package-lock.json`, `pnpm-lock.yaml`, or `yarn.lock` files from high-traffic repos. Seeding uses the same warm and analysis queue path as normal lockfile review; it just does the work before someone is waiting on `npm install`. See [Registry seeding](/docs/registry/registry-seeding) for the full rollout flow.

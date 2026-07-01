@@ -189,7 +189,7 @@ The MicroVM contains the work. Anvil decides what work is allowed.
 The CLI exposes sandbox readiness today:
 
 ```bash
-anvil-cloud agents sandboxes --json
+anvil cloud agents sandboxes --json
 ```
 
 Anvil Lens and remote inspect should eventually expose:
@@ -239,7 +239,7 @@ Implemented today:
 - `AwsLambdaMicroVmSandboxProvider` in `@anvil-cloud/aws`
 - `ANVIL_AWS_AGENT_SANDBOX_IMAGE`-gated AWS support for sandbox-required agents
 - AWS preview plan changes, review gates, and cost drivers for `agent-sandboxes`
-- `anvil-cloud agents sandboxes --json`
+- `anvil cloud agents sandboxes --json`
 
 Not implemented yet:
 

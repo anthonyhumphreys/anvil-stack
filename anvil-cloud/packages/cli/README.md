@@ -12,14 +12,19 @@ stabilized.
 ## Install
 
 ```bash
+npm install --global @anvilstack/cli
 npm install --global @anvilstack/cloud-cli
+anvil cloud check --json
 ```
 
-or run through the umbrella wrapper:
+The umbrella `anvil` command is the intended user-facing entrypoint. It
+dispatches to the installed Cloud product CLI.
+
+Use the direct binary when testing this package itself or debugging wrapper
+dispatch:
 
 ```bash
-npm install --global @anvilstack/cli
-anvil cloud check --json
+anvil-cloud check --json
 ```
 
 ## Workspace usage

@@ -16,7 +16,7 @@ Anvil Lens is the inspection and debugging surface for a running Cell. In alpha 
 Start the dev server, then open the Lens URL it prints:
 
 ```bash
-anvil-cloud dev
+anvil cloud dev
 # Anvil Local runtime  http://localhost:8787
 # Anvil client         http://localhost:5173
 # Anvil Lens           http://localhost:8787/_anvil/lens
@@ -25,11 +25,11 @@ anvil-cloud dev
 Or ask the CLI for the URL of an already running server:
 
 ```bash
-anvil-cloud lens
-anvil-cloud lens --json
+anvil cloud lens
+anvil cloud lens --json
 ```
 
-If no local runtime is reachable, `anvil-cloud lens --json` returns:
+If no local runtime is reachable, `anvil cloud lens --json` returns:
 
 ```json
 {
@@ -37,7 +37,7 @@ If no local runtime is reachable, `anvil-cloud lens --json` returns:
   "errors": [
     {
       "code": "LENS_SERVER_NOT_RUNNING",
-      "message": "No local runtime is reachable at http://localhost:8787. Start one with `anvil-cloud dev` first."
+      "message": "No local runtime is reachable at http://localhost:8787. Start one with `anvil cloud dev` first."
     }
   ]
 }

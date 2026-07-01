@@ -1328,7 +1328,7 @@ export interface AnvilCloudCliStatus {
   available: boolean;
   command: string;
   version?: string;
-  source: 'workspace' | 'path';
+  source: 'workspace' | 'wrapper' | 'path';
   cloudWorkspacePath?: string;
   error?: string;
 }
