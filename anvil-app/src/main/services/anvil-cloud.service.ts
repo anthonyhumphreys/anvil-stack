@@ -25,7 +25,8 @@ const COMMAND_DEFINITIONS: AnvilCloudCommandDefinition[] = [
   {
     id: 'doctor',
     label: 'Doctor',
-    description: 'Check local runtime, ports, build artifacts, generated client, and AWS preview env.',
+    description:
+      'Check local runtime, ports, build artifacts, generated client, and AWS preview env.',
     command: 'anvil-cloud doctor --json',
     category: 'health',
   },
@@ -46,7 +47,8 @@ const COMMAND_DEFINITIONS: AnvilCloudCommandDefinition[] = [
   {
     id: 'inspect-local',
     label: 'Inspect Local',
-    description: 'Read the local manifest, auth state, database snapshot, logs, and runtime metadata.',
+    description:
+      'Read the local manifest, auth state, database snapshot, logs, and runtime metadata.',
     command: 'anvil-cloud inspect --local --json',
     category: 'runtime',
   },

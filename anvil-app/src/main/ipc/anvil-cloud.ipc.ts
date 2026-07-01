@@ -8,12 +8,9 @@ import {
 export function registerAnvilCloudHandlers(): void {
   ipcMain.handle('anvil-cloud:snapshot', async () => getAnvilCloudWorkbenchSnapshot());
 
-  ipcMain.handle(
-    'anvil-cloud:run',
-    async (_event, commandId: AnvilCloudCommandId, cwd: string) => {
-      return runAnvilCloudCommand(commandId, cwd);
-    },
-  );
+  ipcMain.handle('anvil-cloud:run', async (_event, commandId: AnvilCloudCommandId, cwd: string) => {
+    return runAnvilCloudCommand(commandId, cwd);
+  });
 
   ipcMain.handle('anvil-cloud:open-lens', async (_event, cwd: string) => {
     const result = await runAnvilCloudCommand('lens', cwd);

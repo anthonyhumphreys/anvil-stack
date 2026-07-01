@@ -19,9 +19,10 @@ interface ShellProps {
     confluence: boolean | null;
   };
   userRole: UserRole;
+  cloudFeaturesEnabled: boolean;
 }
 
-export function Shell({ connectionStatus, userRole }: ShellProps) {
+export function Shell({ connectionStatus, userRole, cloudFeaturesEnabled }: ShellProps) {
   const {
     workspaces,
     activeWorkspace,
@@ -131,6 +132,7 @@ export function Shell({ connectionStatus, userRole }: ShellProps) {
         <Sidebar
           connectionStatus={connectionStatus}
           userRole={userRole}
+          cloudFeaturesEnabled={cloudFeaturesEnabled}
           reserveTitlebarSpace={reserveTitlebarSpace}
         />
         <main className="relative flex flex-1 flex-col overflow-hidden bg-bg-primary">

@@ -477,7 +477,12 @@ export interface AnvilAPI {
     run: (commandId: AnvilCloudCommandId, cwd: string) => Promise<AnvilCloudCommandResult>;
     openLens: (
       cwd: string,
-    ) => Promise<{ success: boolean; url?: string; result: AnvilCloudCommandResult; error?: string }>;
+    ) => Promise<{
+      success: boolean;
+      url?: string;
+      result: AnvilCloudCommandResult;
+      error?: string;
+    }>;
   };
 
   diagrams: {
