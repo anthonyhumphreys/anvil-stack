@@ -119,10 +119,18 @@ export function AnvilCloudView() {
 
   async function copyResult() {
     if (!lastResult) return;
-    const text = JSON.stringify(lastResult.parsed ?? lastResult.stdout, null, 2);
-    await navigator.clipboard.writeText(text);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1200);
+    const text =
+      lastResult.parsed === undefined
+        ? (lastResult.stdout || lastResult.stderr || lastResult.error || '').trim()
+        : JSON.stringify(lastResult.parsed, null, 2);
+
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to copy result');
+    }
   }
 
   if (repos.length === 0) {
