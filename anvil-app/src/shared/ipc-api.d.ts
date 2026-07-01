@@ -9,6 +9,9 @@ import type { RunCommand, RunStatus } from './run-types';
 import type {
   Iteration,
   AgentRunSummary,
+  AnvilCloudCommandId,
+  AnvilCloudCommandResult,
+  AnvilCloudWorkbenchSnapshot,
   AutomationDaemonStatus,
   AutomationDefinition,
   AutomationDefinitionInput,
@@ -467,6 +470,14 @@ export interface AnvilAPI {
     searchSkills: (query: string) => Promise<CodexSkillSearchResult[]>;
     installSkill: (input: CodexSkillInstallInput) => Promise<CodexRegistryActionResult>;
     registerMcp: (input: CodexMcpRegisterInput) => Promise<CodexRegistryActionResult>;
+  };
+
+  anvilCloud: {
+    snapshot: () => Promise<AnvilCloudWorkbenchSnapshot>;
+    run: (commandId: AnvilCloudCommandId, cwd: string) => Promise<AnvilCloudCommandResult>;
+    openLens: (
+      cwd: string,
+    ) => Promise<{ success: boolean; url?: string; result: AnvilCloudCommandResult; error?: string }>;
   };
 
   diagrams: {

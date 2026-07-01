@@ -504,6 +504,12 @@ const api: AnvilAPI = {
     registerMcp: (input) => ipcRenderer.invoke('codex-registry:register-mcp', input),
   },
 
+  anvilCloud: {
+    snapshot: () => ipcRenderer.invoke('anvil-cloud:snapshot'),
+    run: (commandId, cwd) => ipcRenderer.invoke('anvil-cloud:run', commandId, cwd),
+    openLens: (cwd) => ipcRenderer.invoke('anvil-cloud:open-lens', cwd),
+  },
+
   diagrams: {
     list: (repoId: string) => ipcRenderer.invoke('diagram:list', repoId),
     read: (repoId: string, filename: string) =>
