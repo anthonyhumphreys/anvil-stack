@@ -2,7 +2,6 @@ import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
 import type {
   AnvilCloudCliStatus,
   AnvilCloudCommandDefinition,
@@ -11,7 +10,6 @@ import type {
   AnvilCloudWorkbenchSnapshot,
 } from '../../shared/types.js';
 
-const execFileAsync = promisify(execFile);
 const MAX_OUTPUT_BUFFER = 1024 * 1024 * 8;
 const COMMAND_TIMEOUT_MS = 120_000;
 
@@ -146,7 +144,7 @@ export async function runAnvilCloudCommand(
   const command = formatCommand([cli.command, ...cli.prefixArgs, ...args]);
 
   try {
-    const { stdout, stderr } = await execFileAsync(cli.command, [...cli.prefixArgs, ...args], {
+    const { stdout, stderr } = await execFileBuffered(cli.command, [...cli.prefixArgs, ...args], {
       cwd,
       timeout: COMMAND_TIMEOUT_MS,
       maxBuffer: MAX_OUTPUT_BUFFER,
@@ -192,7 +190,7 @@ async function detectAnvilCloudCli(): Promise<AnvilCloudCliStatus> {
     const cli = await resolveCloudCliInvocation();
     let version: string | undefined;
     try {
-      const { stdout } = await execFileAsync(cli.command, [...cli.prefixArgs, '--version'], {
+      const { stdout } = await execFileBuffered(cli.command, [...cli.prefixArgs, '--version'], {
         timeout: 10_000,
         maxBuffer: MAX_OUTPUT_BUFFER,
       });
@@ -232,7 +230,7 @@ async function resolveCloudCliInvocation(): Promise<{
   }
 
   const whichCmd = process.platform === 'win32' ? 'where' : 'which';
-  await execFileAsync(whichCmd, ['anvil-cloud'], { timeout: 5_000 });
+  await execFileBuffered(whichCmd, ['anvil-cloud'], { timeout: 5_000 });
   return {
     command: 'anvil-cloud',
     prefixArgs: [],
@@ -249,6 +247,27 @@ function parseJson(stdout: string): unknown | undefined {
   } catch {
     return undefined;
   }
+}
+
+function execFileBuffered(
+  command: string,
+  args: string[],
+  options: Parameters<typeof execFile>[2],
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolveExec, rejectExec) => {
+    execFile(command, args, options, (error, stdout, stderr) => {
+      if (error) {
+        Object.assign(error, { stdout, stderr });
+        rejectExec(error);
+        return;
+      }
+
+      resolveExec({
+        stdout: String(stdout),
+        stderr: String(stderr),
+      });
+    });
+  });
 }
 
 function getExecOutput(err: unknown): { stdout: string; stderr: string } {
