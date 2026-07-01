@@ -1,6 +1,6 @@
 {
   "name": "anvil",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Anvil developer mission control",
   "main": "out/main/index.js",
   "type": "module",
@@ -38,6 +38,8 @@
   "license": "MIT",
   "private": true,
   "dependencies": {
+    "@anvilstack/cloud-cli": "^0.1.1",
+    "@anvilstack/registry-cli": "^0.1.1",
     "@shikijs/langs": "^4.0.2",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.12.0",

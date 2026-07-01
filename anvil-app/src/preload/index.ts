@@ -24,6 +24,7 @@ import type {
   SimulatorPreviewStartOptions,
   GateId,
   GateTemplateUpdate,
+  CodexUsageSnapshot,
   RepoIndexProgress,
   WorkItemProvider,
   WorkspaceCreateOptions,
@@ -505,6 +506,10 @@ const api: AnvilAPI = {
     searchSkills: (query: string) => ipcRenderer.invoke('codex-registry:search-skills', query),
     installSkill: (input) => ipcRenderer.invoke('codex-registry:install-skill', input),
     registerMcp: (input) => ipcRenderer.invoke('codex-registry:register-mcp', input),
+  },
+
+  codexUsage: {
+    snapshot: () => ipcRenderer.invoke('codex-usage:snapshot') as Promise<CodexUsageSnapshot>,
   },
 
   anvilCloud: {

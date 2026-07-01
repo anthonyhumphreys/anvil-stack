@@ -54,6 +54,7 @@ import type {
   CodexRegistrySnapshot,
   CodexSkillInstallInput,
   CodexSkillSearchResult,
+  CodexUsageSnapshot,
   CodexEvent,
   CodexSession,
   DocPage,
@@ -474,6 +475,10 @@ export interface AnvilAPI {
     searchSkills: (query: string) => Promise<CodexSkillSearchResult[]>;
     installSkill: (input: CodexSkillInstallInput) => Promise<CodexRegistryActionResult>;
     registerMcp: (input: CodexMcpRegisterInput) => Promise<CodexRegistryActionResult>;
+  };
+
+  codexUsage: {
+    snapshot: () => Promise<CodexUsageSnapshot>;
   };
 
   anvilCloud: {

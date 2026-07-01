@@ -1313,6 +1313,61 @@ export interface CodexRegistrySnapshot {
   refreshedAt: string;
 }
 
+// ---------------------------------------------------------------------------
+// Codex usage
+// ---------------------------------------------------------------------------
+
+export interface CodexUsageRateLimitWindow {
+  usedPercent: number;
+  remainingPercent: number;
+  windowDurationMins: number | null;
+  resetsAt: string | null;
+}
+
+export interface CodexUsageCreditsSnapshot {
+  hasCredits: boolean;
+  unlimited: boolean;
+  balance: string | null;
+}
+
+export interface CodexUsageLimitSnapshot {
+  id: string;
+  label: string;
+  planType: string | null;
+  rateLimitReachedType: string | null;
+  primary: CodexUsageRateLimitWindow | null;
+  secondary: CodexUsageRateLimitWindow | null;
+  credits: CodexUsageCreditsSnapshot | null;
+}
+
+export interface CodexUsageDailyBucket {
+  startDate: string;
+  tokens: number;
+}
+
+export interface CodexUsageTokenSummary {
+  lifetimeTokens: number | null;
+  peakDailyTokens: number | null;
+  longestRunningTurnSec: number | null;
+  currentStreakDays: number | null;
+  longestStreakDays: number | null;
+  recentDailyBuckets: CodexUsageDailyBucket[];
+}
+
+export interface CodexUsageSnapshot {
+  status: 'available' | 'unavailable';
+  refreshedAt: string;
+  cliInstalled: boolean;
+  cliVersion?: string;
+  codexHome?: string;
+  appServerUserAgent?: string;
+  defaultLimit: CodexUsageLimitSnapshot | null;
+  limits: CodexUsageLimitSnapshot[];
+  tokenUsage: CodexUsageTokenSummary | null;
+  resetCreditsAvailable: number | null;
+  error?: string;
+}
+
 export interface CodexSkillSearchResult {
   id: string;
   name: string;
