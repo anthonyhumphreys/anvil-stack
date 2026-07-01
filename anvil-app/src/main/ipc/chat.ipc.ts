@@ -1,6 +1,8 @@
 import { ipcMain } from 'electron';
 import type {
   ChatMessage,
+  ChatArtifact,
+  ChatArtifactInput,
   ChatAttachment,
   ChatAttachmentInput,
   ChatFileMentionSearchInput,
@@ -53,6 +55,7 @@ import {
 } from '../services/chat-attachment.service.js';
 import { listChatTurnSummaries, saveChatEvent } from '../services/chat-evidence.service.js';
 import { searchChatFileMentions } from '../services/chat-file-mention.service.js';
+import { listChatArtifacts, upsertChatArtifact } from '../services/chat-artifact.service.js';
 
 export function registerChatHandlers(): void {
   ipcMain.handle(
@@ -339,6 +342,14 @@ export function registerChatHandlers(): void {
 
   ipcMain.handle('chat:list-turn-summaries', (_event, threadId: string): ChatTurnSummary[] => {
     return listChatTurnSummaries(threadId);
+  });
+
+  ipcMain.handle('chat:list-artifacts', (_event, threadId: string): ChatArtifact[] => {
+    return listChatArtifacts(threadId);
+  });
+
+  ipcMain.handle('chat:upsert-artifact', (_event, input: ChatArtifactInput): ChatArtifact => {
+    return upsertChatArtifact(input);
   });
 
   ipcMain.handle('chat:detect-codex', async () => {

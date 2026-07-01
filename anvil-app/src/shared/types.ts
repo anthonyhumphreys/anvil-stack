@@ -274,6 +274,33 @@ export interface ChatMessage {
   attachments?: ChatAttachment[];
 }
 
+export type ChatArtifactKind = 'markdown' | 'code' | 'html' | 'diagram' | 'data' | 'text';
+
+export interface ChatArtifact {
+  id: string;
+  threadId: string;
+  repoId?: string;
+  sourceMessageId?: string;
+  title: string;
+  kind: ChatArtifactKind;
+  relativePath: string;
+  filePath?: string;
+  content: string;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ChatArtifactInput {
+  threadId: string;
+  repoId?: string | null;
+  sourceMessageId?: string;
+  title: string;
+  kind: ChatArtifactKind;
+  relativePath: string;
+  content: string;
+}
+
 export interface ChatAttachment {
   id: string;
   name: string;

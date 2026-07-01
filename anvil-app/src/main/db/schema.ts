@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 39;
+export const SCHEMA_VERSION = 40;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -107,6 +107,25 @@ CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_timestamp
 
 CREATE INDEX IF NOT EXISTS idx_chat_threads_provider_thread
   ON chat_threads(provider_thread_id);
+
+CREATE TABLE IF NOT EXISTS chat_artifacts (
+  id TEXT PRIMARY KEY,
+  thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+  repo_id TEXT REFERENCES repos(id) ON DELETE SET NULL,
+  source_message_id TEXT,
+  title TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  relative_path TEXT NOT NULL,
+  file_path TEXT,
+  content TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(thread_id, relative_path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_artifacts_thread_updated
+  ON chat_artifacts(thread_id, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS review_workspace_comments (
   id TEXT PRIMARY KEY,
@@ -1339,5 +1358,25 @@ export const MIGRATIONS: Record<number, string> = {
   `,
   39: `
     ALTER TABLE settings ADD COLUMN cloud_features_enabled INTEGER NOT NULL DEFAULT 0;
+  `,
+  40: `
+    CREATE TABLE IF NOT EXISTS chat_artifacts (
+      id TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+      repo_id TEXT REFERENCES repos(id) ON DELETE SET NULL,
+      source_message_id TEXT,
+      title TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      relative_path TEXT NOT NULL,
+      file_path TEXT,
+      content TEXT NOT NULL,
+      version INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(thread_id, relative_path)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_artifacts_thread_updated
+      ON chat_artifacts(thread_id, updated_at DESC);
   `,
 };

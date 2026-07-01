@@ -27,6 +27,8 @@ import type {
   BaSession,
   ChatAttachment,
   ChatAttachmentInput,
+  ChatArtifact,
+  ChatArtifactInput,
   ChatFileMentionSearchInput,
   ChatFileMentionSearchResult,
   ChatGoalSnapshot,
@@ -207,6 +209,8 @@ export interface AnvilAPI {
     getSessionStatus: (sessionId: string) => Promise<CodexSession['status']>;
     listActiveSessions: () => Promise<CodexSession[]>;
     listTurnSummaries: (threadId: string) => Promise<ChatTurnSummary[]>;
+    listArtifacts: (threadId: string) => Promise<ChatArtifact[]>;
+    upsertArtifact: (input: ChatArtifactInput) => Promise<ChatArtifact>;
     listThreads: (workspaceId: string | null, personaId: string) => Promise<ChatThread[]>;
     listWorkItemThreads: (workspaceId: string | null) => Promise<ChatThread[]>;
     createThread: (input: {
@@ -475,9 +479,7 @@ export interface AnvilAPI {
   anvilCloud: {
     snapshot: () => Promise<AnvilCloudWorkbenchSnapshot>;
     run: (commandId: AnvilCloudCommandId, cwd: string) => Promise<AnvilCloudCommandResult>;
-    openLens: (
-      cwd: string,
-    ) => Promise<{
+    openLens: (cwd: string) => Promise<{
       success: boolean;
       url?: string;
       result: AnvilCloudCommandResult;
