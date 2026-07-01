@@ -173,7 +173,7 @@ export function AnvilCloudView() {
             </button>
             <button
               onClick={() => void openLens()}
-              disabled={openingLens}
+              disabled={openingLens || !snapshot?.status.available || runningCommand !== null}
               className="inline-flex items-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent/90 disabled:opacity-60"
             >
               {openingLens ? (
