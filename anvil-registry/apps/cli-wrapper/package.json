@@ -1,6 +1,6 @@
 {
   "name": "@anvilstack/cli",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "license": "MIT",
   "description": "Umbrella command dispatcher for Anvil product CLIs.",
   "private": false,
