@@ -36,6 +36,7 @@ import { registerDesignHandlers } from './ipc/design.ipc.js';
 import { registerAdrHandlers } from './ipc/adr.ipc.js';
 import { registerBrowserHandlers, cleanupBrowser } from './ipc/browser.ipc.js';
 import { registerSimulatorPreviewHandlers } from './ipc/simulator-preview.ipc.js';
+import { registerArgentHandlers } from './ipc/argent.ipc.js';
 import { registerEditorHandlers, cleanupEmbeddedEditor } from './ipc/editor.ipc.js';
 import { registerGitHandlers } from './ipc/git.ipc.js';
 import { registerCicdHandlers } from './ipc/cicd.ipc.js';
@@ -316,6 +317,7 @@ app.whenReady().then(() => {
   registerAdrHandlers();
   registerBrowserHandlers();
   registerSimulatorPreviewHandlers();
+  registerArgentHandlers();
   registerEditorHandlers();
   registerGitHandlers();
   registerCicdHandlers();

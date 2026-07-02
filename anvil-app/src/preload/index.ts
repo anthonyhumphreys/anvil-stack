@@ -7,6 +7,7 @@ import type {
   AutomationRun,
   AutomationRunEvent,
   AutomationTriageItem,
+  ArgentCommandId,
   ChatArtifactInput,
   ChatAttachment,
   ChatAttachmentInput,
@@ -740,6 +741,13 @@ const api: AnvilAPI = {
     start: (options?: SimulatorPreviewStartOptions) =>
       ipcRenderer.invoke('simulator-preview:start', options),
     stop: () => ipcRenderer.invoke('simulator-preview:stop'),
+  },
+
+  argent: {
+    getSnapshot: () => ipcRenderer.invoke('argent:get-snapshot'),
+    runCommand: (commandId: ArgentCommandId) =>
+      ipcRenderer.invoke('argent:run-command', commandId),
+    startSimulatorPreview: () => ipcRenderer.invoke('argent:start-simulator-preview'),
   },
 
   editor: {

@@ -9,6 +9,9 @@ import type { RunCommand, RunStatus } from './run-types';
 import type {
   Iteration,
   AgentRunSummary,
+  ArgentCommandId,
+  ArgentCommandResult,
+  ArgentWorkbenchSnapshot,
   AnvilCloudCommandId,
   AnvilCloudCommandResult,
   AnvilCloudWorkbenchSnapshot,
@@ -582,6 +585,12 @@ export interface AnvilAPI {
     getStatus(): Promise<SimulatorPreviewStatus>;
     start(options?: SimulatorPreviewStartOptions): Promise<SimulatorPreviewStatus>;
     stop(): Promise<void>;
+  };
+
+  argent: {
+    getSnapshot(): Promise<ArgentWorkbenchSnapshot>;
+    runCommand(commandId: ArgentCommandId): Promise<ArgentCommandResult>;
+    startSimulatorPreview(): Promise<SimulatorPreviewStatus>;
   };
 
   editor: {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Globe,
   ArrowLeft,
@@ -28,6 +28,7 @@ type PreviewMode = 'browser' | 'simulator';
 
 export function BrowserPanel() {
   const routerNavigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [webviewEl, setWebviewEl] = useState<Electron.WebviewTag | null>(null);
   const [previewMode, setPreviewMode] = useState<PreviewMode>('browser');
 
@@ -125,6 +126,15 @@ export function BrowserPanel() {
       webviewEl.removeEventListener('dom-ready', onDomReady);
     };
   }, [previewMode, webviewEl]);
+
+  useEffect(() => {
+    if (searchParams.get('mode') !== 'simulator') return;
+
+    setPreviewMode('simulator');
+    const next = new URLSearchParams(searchParams);
+    next.delete('mode');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
 
   const navigate = useCallback((url: string) => {
     let normalized = url.trim();

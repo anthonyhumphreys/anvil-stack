@@ -18,6 +18,7 @@ import { AdrsView } from './components/adrs/AdrsView';
 import { DiagramsView } from './components/diagrams/DiagramsView';
 import { GovernanceView } from './components/governance/GovernanceView';
 import { BrowserPanel } from './components/browser/BrowserPanel';
+import { ArgentView } from './components/argent/ArgentView';
 import { GitView } from './components/git/GitView';
 import { ComplianceView } from './components/compliance/ComplianceView';
 import { DependenciesView } from './components/dependencies/DependenciesView';
@@ -498,6 +499,17 @@ export function App() {
                     <WorkspaceGate>
                       <ErrorBoundary>
                         <BrowserPanel />
+                      </ErrorBoundary>
+                    </WorkspaceGate>,
+                  )}
+                />
+                <Route
+                  path="/argent"
+                  element={guard(
+                    'argent',
+                    <WorkspaceGate>
+                      <ErrorBoundary>
+                        <ArgentView />
                       </ErrorBoundary>
                     </WorkspaceGate>,
                   )}

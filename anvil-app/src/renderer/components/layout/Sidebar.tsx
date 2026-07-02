@@ -25,6 +25,7 @@ import {
   Workflow,
   NotebookPen,
   StickyNote,
+  MonitorSmartphone,
 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useBrand } from '../../contexts/BrandContext';
@@ -154,6 +155,12 @@ const navItems: NavItem[] = [
     icon: <Globe size={20} />,
     feature: 'browser',
     requiresRepoFeature: true,
+  },
+  {
+    path: '/argent',
+    label: 'Argent',
+    icon: <MonitorSmartphone size={20} />,
+    feature: 'argent',
   },
   {
     path: '/git',
