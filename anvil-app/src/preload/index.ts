@@ -499,6 +499,9 @@ const api: AnvilAPI = {
     startNotionOAuthFlow: () => ipcRenderer.invoke('settings:notion-oauth-start'),
     exchangeNotionOAuthCode: (code: string) =>
       ipcRenderer.invoke('settings:notion-oauth-exchange', code),
+    getCodexAgentsFile: () => ipcRenderer.invoke('settings:codex-agents:get'),
+    saveCodexAgentsFile: (content: string) =>
+      ipcRenderer.invoke('settings:codex-agents:save', content),
     resetOnboarding: () => ipcRenderer.invoke('settings:reset-onboarding'),
   },
 
@@ -745,8 +748,7 @@ const api: AnvilAPI = {
 
   argent: {
     getSnapshot: () => ipcRenderer.invoke('argent:get-snapshot'),
-    runCommand: (commandId: ArgentCommandId) =>
-      ipcRenderer.invoke('argent:run-command', commandId),
+    runCommand: (commandId: ArgentCommandId) => ipcRenderer.invoke('argent:run-command', commandId),
     startSimulatorPreview: () => ipcRenderer.invoke('argent:start-simulator-preview'),
   },
 

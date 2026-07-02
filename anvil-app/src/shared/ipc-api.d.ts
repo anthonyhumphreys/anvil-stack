@@ -470,6 +470,17 @@ export interface AnvilAPI {
     installNotionMcp: () => Promise<{ success: boolean; error?: string }>;
     startNotionOAuthFlow: () => Promise<{ authUrl: string; state: string; error?: string }>;
     exchangeNotionOAuthCode: (code: string) => Promise<{ success: boolean; error?: string }>;
+    getCodexAgentsFile: () => Promise<{
+      path: string;
+      content: string;
+      exists: boolean;
+      updatedAt?: string;
+    }>;
+    saveCodexAgentsFile: (content: string) => Promise<{
+      path: string;
+      savedAt: string;
+      bytes: number;
+    }>;
     resetOnboarding: () => Promise<{ success: boolean; error?: string }>;
   };
 

@@ -73,6 +73,16 @@ const PERSONAS: Persona[] = [
     capabilities: { canWriteFiles: true, canRunCommands: true, canReadFiles: true },
   },
   {
+    id: 'workshop-planner',
+    name: 'Workshop Planner',
+    icon: 'Presentation',
+    colour: '#f97316',
+    description:
+      'Plans discovery sessions, stakeholder workshops, agendas, decision framing, and facilitation outputs.',
+    systemPromptTemplate: 'personas/workshop-planner.md',
+    capabilities: { canWriteFiles: true, canRunCommands: false, canReadFiles: true },
+  },
+  {
     id: 'design',
     name: 'Design Companion',
     icon: 'Palette',

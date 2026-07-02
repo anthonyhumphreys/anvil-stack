@@ -48,6 +48,7 @@ export function GitView() {
   // Commit form
   const [commitMsg, setCommitMsg] = useState('');
   const [committing, setCommitting] = useState(false);
+  const [generatingMessage, setGeneratingMessage] = useState(false);
 
   // Diff viewer
   const [selectedDiff, setSelectedDiff] = useState<GitDiffResult | null>(null);
@@ -122,26 +123,38 @@ export function GitView() {
   };
 
   const handleCommit = async () => {
-    if (!commitMsg.trim()) return;
+    if (!selectedRepoId) return;
     setCommitting(true);
+    setError(null);
     try {
-      await window.anvil.git.commit(selectedRepoId, commitMsg.trim());
+      let message = commitMsg.trim();
+      if (!message) {
+        setGeneratingMessage(true);
+        message = await window.anvil.git.generateCommitMessage(selectedRepoId);
+        setCommitMsg(message);
+      }
+      await window.anvil.git.commit(selectedRepoId, message);
       setCommitMsg('');
       refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
+      setGeneratingMessage(false);
       setCommitting(false);
     }
   };
 
   const handleGenerateCommitMessage = async () => {
     if (!selectedRepoId) return;
+    setGeneratingMessage(true);
+    setError(null);
     try {
       const message = await window.anvil.git.generateCommitMessage(selectedRepoId);
       setCommitMsg(message);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGeneratingMessage(false);
     }
   };
 
@@ -418,6 +431,7 @@ export function GitView() {
             commitMsg={commitMsg}
             setCommitMsg={setCommitMsg}
             committing={committing}
+            generatingMessage={generatingMessage}
             onCommit={handleCommit}
             onGenerateCommitMessage={handleGenerateCommitMessage}
             onStage={handleStage}
@@ -479,6 +493,7 @@ interface ChangesTabProps {
   commitMsg: string;
   setCommitMsg: (v: string) => void;
   committing: boolean;
+  generatingMessage: boolean;
   onCommit: () => void;
   onGenerateCommitMessage: () => void;
   onStage: (paths: string[]) => void;
@@ -499,6 +514,7 @@ function ChangesTab({
   commitMsg,
   setCommitMsg,
   committing,
+  generatingMessage,
   onCommit,
   onGenerateCommitMessage,
   onStage,
@@ -596,19 +612,26 @@ function ChangesTab({
           />
           <button
             onClick={onGenerateCommitMessage}
-            disabled={staged.length === 0 && unstaged.length === 0}
+            disabled={
+              generatingMessage || committing || (staged.length === 0 && unstaged.length === 0)
+            }
             className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-border px-4 py-2 text-sm font-medium text-text-secondary transition-colors hover:bg-bg-tertiary disabled:opacity-40"
           >
-            <GitCommitHorizontal size={14} />
-            Generate conventional message
+            {generatingMessage ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : (
+              <GitCommitHorizontal size={14} />
+            )}
+            {generatingMessage ? 'Generating message...' : 'Generate conventional message'}
           </button>
           <button
             onClick={onCommit}
-            disabled={!commitMsg.trim() || staged.length === 0 || committing}
+            disabled={staged.length === 0 || committing || generatingMessage}
             className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent/80 disabled:opacity-40"
           >
             {committing ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
-            Commit ({staged.length} file{staged.length !== 1 ? 's' : ''})
+            {commitMsg.trim() ? 'Commit' : 'Generate & commit'} ({staged.length} file
+            {staged.length !== 1 ? 's' : ''})
           </button>
           <div className="mt-1 text-center text-[10px] text-text-tertiary">
             {navigator.platform.includes('Mac') ? '\u2318' : 'Ctrl'}+Enter to commit

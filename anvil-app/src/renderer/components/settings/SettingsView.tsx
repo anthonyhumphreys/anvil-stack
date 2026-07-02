@@ -41,6 +41,7 @@ import { useBrand } from '../../contexts/BrandContext';
 
 type TestStatus = 'idle' | 'testing' | 'ok' | 'error';
 type SettingsCategoryId = 'profile' | 'ai' | 'delivery' | 'review' | 'devices' | 'danger';
+type CodexAgentsStatus = { tone: 'success' | 'error'; message: string };
 
 const SETTINGS_CATEGORIES: Array<{
   id: SettingsCategoryId;
@@ -176,6 +177,13 @@ export function SettingsView({
   const [mobileBusy, setMobileBusy] = useState(false);
   const [codexUsage, setCodexUsage] = useState<CodexUsageSnapshot | null>(null);
   const [codexUsageLoading, setCodexUsageLoading] = useState(false);
+  const [codexAgentsContent, setCodexAgentsContent] = useState('');
+  const [codexAgentsPath, setCodexAgentsPath] = useState('~/.codex/AGENTS.md');
+  const [codexAgentsExists, setCodexAgentsExists] = useState(false);
+  const [codexAgentsUpdatedAt, setCodexAgentsUpdatedAt] = useState<string | null>(null);
+  const [codexAgentsLoading, setCodexAgentsLoading] = useState(false);
+  const [codexAgentsSaving, setCodexAgentsSaving] = useState(false);
+  const [codexAgentsStatus, setCodexAgentsStatus] = useState<CodexAgentsStatus | null>(null);
 
   useEffect(() => {
     window.anvil.settings.get().then((s) => {
@@ -200,6 +208,7 @@ export function SettingsView({
     });
     refreshMobileCompanion().catch(console.error);
     refreshCodexUsage().catch(console.error);
+    refreshCodexAgentsFile().catch(console.error);
   }, []);
 
   const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
@@ -269,6 +278,47 @@ export function SettingsView({
       setCodexUsage(await window.anvil.codexUsage.snapshot());
     } finally {
       setCodexUsageLoading(false);
+    }
+  };
+
+  const refreshCodexAgentsFile = async () => {
+    setCodexAgentsLoading(true);
+    setCodexAgentsStatus(null);
+    try {
+      const file = await window.anvil.settings.getCodexAgentsFile();
+      setCodexAgentsContent(file.content);
+      setCodexAgentsPath(file.path);
+      setCodexAgentsExists(file.exists);
+      setCodexAgentsUpdatedAt(file.updatedAt ?? null);
+    } catch (err) {
+      setCodexAgentsStatus({
+        tone: 'error',
+        message: err instanceof Error ? err.message : 'Failed to read Codex AGENTS.md',
+      });
+    } finally {
+      setCodexAgentsLoading(false);
+    }
+  };
+
+  const saveCodexAgentsFile = async () => {
+    setCodexAgentsSaving(true);
+    setCodexAgentsStatus(null);
+    try {
+      const result = await window.anvil.settings.saveCodexAgentsFile(codexAgentsContent);
+      setCodexAgentsPath(result.path);
+      setCodexAgentsExists(true);
+      setCodexAgentsUpdatedAt(result.savedAt);
+      setCodexAgentsStatus({
+        tone: 'success',
+        message: `Saved ${new Intl.NumberFormat().format(result.bytes)} bytes.`,
+      });
+    } catch (err) {
+      setCodexAgentsStatus({
+        tone: 'error',
+        message: err instanceof Error ? err.message : 'Failed to save Codex AGENTS.md',
+      });
+    } finally {
+      setCodexAgentsSaving(false);
     }
   };
 
@@ -913,6 +963,75 @@ export function SettingsView({
                   loading={codexUsageLoading}
                   onRefresh={refreshCodexUsage}
                 />
+              </SettingsPanel>
+
+              <SettingsPanel
+                title="Personal Codex instructions"
+                description="Edit the global AGENTS.md that Codex reads from your home configuration."
+              >
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-start justify-between gap-3 rounded-md border border-border bg-bg-primary p-3">
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
+                        <Code2 size={15} className="text-accent" />
+                        <span className="truncate font-mono text-xs">{codexAgentsPath}</span>
+                      </div>
+                      <p className="text-xs text-text-tertiary">
+                        {codexAgentsExists
+                          ? codexAgentsUpdatedAt
+                            ? `Last saved ${new Date(codexAgentsUpdatedAt).toLocaleString()}`
+                            : 'Existing personal instructions file.'
+                          : 'File does not exist yet. Saving here will create it.'}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 flex-wrap gap-2">
+                      <button
+                        onClick={refreshCodexAgentsFile}
+                        disabled={codexAgentsLoading || codexAgentsSaving}
+                        className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:border-text-tertiary hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
+                      >
+                        {codexAgentsLoading ? (
+                          <Loader2 size={13} className="animate-spin" />
+                        ) : (
+                          <RefreshCcw size={13} />
+                        )}
+                        Reload
+                      </button>
+                      <button
+                        onClick={saveCodexAgentsFile}
+                        disabled={codexAgentsLoading || codexAgentsSaving}
+                        className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
+                      >
+                        {codexAgentsSaving ? (
+                          <Loader2 size={13} className="animate-spin" />
+                        ) : (
+                          <Save size={13} />
+                        )}
+                        Save
+                      </button>
+                    </div>
+                  </div>
+                  <textarea
+                    value={codexAgentsContent}
+                    onChange={(event) => {
+                      setCodexAgentsContent(event.target.value);
+                      setCodexAgentsStatus(null);
+                    }}
+                    disabled={codexAgentsLoading}
+                    placeholder="# Personal Codex Instructions"
+                    rows={12}
+                    className="min-h-72 w-full resize-y rounded-md border border-border bg-bg-primary px-3 py-2 font-mono text-sm leading-relaxed text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none disabled:opacity-60"
+                  />
+                  {codexAgentsStatus && (
+                    <p
+                      className={`text-sm ${
+                        codexAgentsStatus.tone === 'success' ? 'text-success' : 'text-error'
+                      }`}
+                    >
+                      {codexAgentsStatus.message}
+                    </p>
+                  )}
+                </div>
               </SettingsPanel>
 
               <SettingsPanel
