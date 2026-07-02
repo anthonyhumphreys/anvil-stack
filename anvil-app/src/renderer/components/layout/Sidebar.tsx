@@ -35,6 +35,11 @@ import { AnvilLogo } from '../brand/AnvilLogo';
 import type { UserRole, Feature } from '../../../shared/types';
 import { ROLE_FEATURES } from '../../../shared/types';
 import { useStoredPanelState } from '../../hooks/useStoredPanelState';
+import {
+  SidebarActivityBadge,
+  SidebarActivityCenter,
+  useSidebarActivity,
+} from './SidebarActivityCenter';
 
 interface NavItem {
   path: string;
@@ -199,6 +204,7 @@ export function Sidebar({
   const navigate = useNavigate();
   const brand = useBrand();
   const { activeWorkspace, featureAvailability } = useWorkspace();
+  const { items: activityItems, indicators: activityIndicators, activeCount } = useSidebarActivity();
   const { width, setWidth, collapsed, toggleCollapsed } = useStoredPanelState({
     storageKey: 'layout:main-sidebar:v2',
     defaultWidth: 252,
@@ -342,7 +348,7 @@ export function Sidebar({
                         if (!disabled) navigate(item.path);
                       }}
                       disabled={disabled}
-                      className={`titlebar-no-drag flex w-full items-center rounded-lg border py-3 text-base font-medium transition-colors ${
+                      className={`titlebar-no-drag relative flex w-full items-center rounded-lg border py-3 text-base font-medium transition-colors ${
                         active
                           ? 'border-accent/35 bg-accent/12 text-text-primary shadow-[0_0_0_1px_var(--color-accent-glow)]'
                           : disabled
@@ -354,6 +360,10 @@ export function Sidebar({
                     >
                       {item.icon}
                       {!collapsed && <span className="truncate">{item.label}</span>}
+                      <SidebarActivityBadge
+                        indicator={activityIndicators[item.feature]}
+                        collapsed={collapsed}
+                      />
                     </button>
                   );
                 })}
@@ -363,6 +373,11 @@ export function Sidebar({
 
         {/* Footer — connection status + settings */}
         <div className="shrink-0 border-t border-border-subtle p-4">
+          <SidebarActivityCenter
+            items={activityItems}
+            activeCount={activeCount}
+            collapsed={collapsed}
+          />
           <div className={`${collapsed ? 'space-y-3' : 'space-y-2'} text-sm`}>
             <StatusDot label="Foundry" status={connectionStatus.foundry} compact={collapsed} />
             <StatusDot label="ADO" status={connectionStatus.ado} compact={collapsed} />

@@ -1,6 +1,6 @@
 {
   "name": "anvil",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Anvil developer mission control",
   "main": "out/main/index.js",
   "type": "module",
