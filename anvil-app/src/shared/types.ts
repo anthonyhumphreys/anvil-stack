@@ -223,6 +223,7 @@ export interface BaSession {
   repoId: string;
   spikeBranch: string;
   originBranch: string;
+  worktreePath?: string;
   stashRef?: string;
   status: BaSessionStatus;
   startedAt: string;

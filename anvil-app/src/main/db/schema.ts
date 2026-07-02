@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 40;
+export const SCHEMA_VERSION = 41;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -260,6 +260,7 @@ CREATE TABLE IF NOT EXISTS ba_sessions (
   repo_id         TEXT NOT NULL,
   spike_branch    TEXT NOT NULL,
   origin_branch   TEXT NOT NULL,
+  worktree_path   TEXT,
   stash_ref       TEXT,
   status          TEXT NOT NULL DEFAULT 'active',
   started_at      TEXT NOT NULL,
@@ -1378,5 +1379,8 @@ export const MIGRATIONS: Record<number, string> = {
 
     CREATE INDEX IF NOT EXISTS idx_chat_artifacts_thread_updated
       ON chat_artifacts(thread_id, updated_at DESC);
+  `,
+  41: `
+    ALTER TABLE ba_sessions ADD COLUMN worktree_path TEXT;
   `,
 };

@@ -6,6 +6,7 @@ import {
   popStash,
   hasUncommittedChanges,
   autoCommit,
+  addWorktree,
 } from './git.service.js';
 
 // ---------------------------------------------------------------------------
@@ -16,6 +17,7 @@ export interface SpikeState {
   workItemId: string;
   spikeBranch: string;
   originBranch: string;
+  worktreePath?: string;
   stashRef: string | null;
   intervalId: ReturnType<typeof setInterval>;
 }
@@ -52,6 +54,21 @@ export function sanitizeBranchName(workItemId: string): string {
   return `spike/${sanitized}`;
 }
 
+function sanitizeBranchSuffix(suffix: string): string {
+  return (
+    suffix
+      .replace(/[^a-zA-Z0-9._-]+/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 32) || 'run'
+  );
+}
+
+export function buildSpikeBranchName(workItemId: string, suffix?: string): string {
+  const baseBranch = sanitizeBranchName(workItemId);
+  return suffix ? `${baseBranch}-${sanitizeBranchSuffix(suffix)}` : baseBranch;
+}
+
 // ---------------------------------------------------------------------------
 // setupSpikeBranch
 // ---------------------------------------------------------------------------
@@ -72,7 +89,7 @@ export async function setupSpikeBranch(
   onDrift: () => void,
 ): Promise<SpikeState> {
   const originBranch = await getCurrentBranch(repoPath);
-  const spikeBranch = sanitizeBranchName(workItemId);
+  const spikeBranch = buildSpikeBranchName(workItemId);
 
   // Stash uncommitted changes before switching branches
   const stashRef = await stashChanges(repoPath);
@@ -91,6 +108,43 @@ export async function setupSpikeBranch(
 
   const state: SpikeState = { workItemId, spikeBranch, originBranch, stashRef, intervalId };
   activeSpikeStates.set(repoPath, state);
+  return state;
+}
+
+/**
+ * Prepares an isolated retained worktree for a BA spike session.
+ *
+ * Unlike the legacy branch setup, this does not stash or checkout the user's
+ * main working copy. Codex runs inside the returned worktree path.
+ */
+export async function setupSpikeWorktree(
+  repoPath: string,
+  worktreePath: string,
+  workItemId: string,
+  onDrift: () => void,
+  branchSuffix?: string,
+): Promise<SpikeState> {
+  const originBranch = await getCurrentBranch(repoPath);
+  const spikeBranch = buildSpikeBranchName(workItemId, branchSuffix);
+
+  await addWorktree(repoPath, worktreePath, spikeBranch, originBranch || 'HEAD');
+
+  const intervalId = setInterval(async () => {
+    const current = await getCurrentBranch(worktreePath);
+    if (current !== spikeBranch) {
+      onDrift();
+    }
+  }, DRIFT_CHECK_INTERVAL_MS);
+
+  const state: SpikeState = {
+    workItemId,
+    spikeBranch,
+    originBranch,
+    worktreePath,
+    stashRef: null,
+    intervalId,
+  };
+  activeSpikeStates.set(worktreePath, state);
   return state;
 }
 
@@ -126,6 +180,24 @@ export async function teardownSpikeBranch(repoPath: string, _workItemId: string)
 
   // Remove the tracked state
   activeSpikeStates.delete(repoPath);
+}
+
+/**
+ * Ends tracking for a worktree-backed spike and commits any remaining WIP inside
+ * the worktree. The worktree is intentionally retained for review/continuation.
+ */
+export async function teardownSpikeWorktree(worktreePath: string): Promise<void> {
+  const state = activeSpikeStates.get(worktreePath);
+  if (!state) return;
+
+  clearInterval(state.intervalId);
+
+  const dirty = await hasUncommittedChanges(worktreePath);
+  if (dirty) {
+    await autoCommit(worktreePath, `WIP: BA spike session auto-commit [${state.workItemId}]`);
+  }
+
+  activeSpikeStates.delete(worktreePath);
 }
 
 // ---------------------------------------------------------------------------
