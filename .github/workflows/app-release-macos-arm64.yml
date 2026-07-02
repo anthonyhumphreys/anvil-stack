@@ -161,9 +161,35 @@ jobs:
 
           release_tag="${{ steps.release.outputs.tag }}"
           release_name="${{ steps.release.outputs.name }}"
+          release_url="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${release_tag}"
           notarized_release="${{ github.event_name == 'workflow_dispatch' && inputs.notarize }}"
           assets=(dist/Anvil-[0-9]*-arm64.dmg dist/Anvil-latest-arm64.dmg dist/*-arm64-mac.zip)
           notes_file="$(mktemp)"
+          changelog_file="$(mktemp)"
+          share_file="$(mktemp)"
+          previous_tag="$(
+            git -C "${GITHUB_WORKSPACE}" tag --list 'app-v*' --sort=-v:refname \
+              | grep -v -F -- "${release_tag}" \
+              | head -n 1 || true
+          )"
+
+          notes_args=(
+            -f "tag_name=${release_tag}"
+            -f "target_commitish=${GITHUB_SHA}"
+          )
+          if [[ -n "${previous_tag}" ]]; then
+            notes_args+=(-f "previous_tag_name=${previous_tag}")
+          fi
+
+          if ! gh api \
+            --method POST \
+            "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            "${notes_args[@]}" \
+            --jq '.body' > "${changelog_file}"; then
+            printf '%s\n' \
+              "GitHub could not generate release notes automatically. Compare ${previous_tag:-the previous app release} to ${release_tag} before publishing externally." \
+              > "${changelog_file}"
+          fi
 
           if [[ "${notarized_release}" == "true" ]]; then
             printf '%s\n' \
@@ -180,6 +206,23 @@ jobs:
               '```' \
               > "${notes_file}"
           fi
+
+          printf '\n## Changelog\n\n' >> "${notes_file}"
+          cat "${changelog_file}" >> "${notes_file}"
+
+          node "${GITHUB_WORKSPACE}/.github/scripts/create-x-release-intent.mjs" \
+            "${notes_file}" \
+            "${release_name}" \
+            "${release_url}" \
+            "${share_file}"
+
+          printf '\n' >> "${notes_file}"
+          cat "${share_file}" >> "${notes_file}"
+
+          {
+            printf '## %s\n\n' "${release_name}"
+            cat "${share_file}"
+          } >> "${GITHUB_STEP_SUMMARY}"
 
           if gh release view "${release_tag}" >/dev/null 2>&1; then
             gh release upload "${release_tag}" "${assets[@]}" --clobber
