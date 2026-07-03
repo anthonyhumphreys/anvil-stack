@@ -1275,8 +1275,8 @@ function resolveSessionWorkspace(
   activeWorkspace: MobileOverview['activeWorkspace'],
 ): MobileOverview['activeWorkspace'] {
   if (!session?.workspaceId) return activeWorkspace;
-  return activeWorkspace?.id === session.workspaceId ? activeWorkspace : activeWorkspace;
-}
+  if (activeWorkspace?.id === session.workspaceId) return activeWorkspace;
+  return safeGetWorkspace(session.workspaceId);
 
 function buildWorkflowCounts(
   pendingApprovals: number,
