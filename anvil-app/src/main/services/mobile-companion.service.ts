@@ -347,8 +347,8 @@ function getPairedDeviceCount(): number {
 function selectPairingBaseUrl(settings: MobileCompanionSettingsRow): string {
   const addresses = getAdvertisedAddresses(settings.port);
   return (
-    addresses.find((address) => address.kind === 'tailscale')?.url ??
     addresses.find((address) => address.kind === 'lan')?.url ??
+    addresses.find((address) => address.kind === 'tailscale')?.url ??
     `http://127.0.0.1:${settings.port}`
   );
 }
@@ -1277,6 +1277,7 @@ function resolveSessionWorkspace(
   if (!session?.workspaceId) return activeWorkspace;
   if (activeWorkspace?.id === session.workspaceId) return activeWorkspace;
   return safeGetWorkspace(session.workspaceId);
+}
 
 function buildWorkflowCounts(
   pendingApprovals: number,
