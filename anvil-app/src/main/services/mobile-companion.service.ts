@@ -1032,7 +1032,7 @@ function enrichMobileApprovalRequests(
       workspaceId: workspace?.id,
       workspaceName: workspace?.name,
       repoId: repo?.id ?? session?.repoId,
-      repoName: repo?.name ?? repo?.path,
+      repoName: repo?.name ?? repo?.path ?? approval.repoName,
       policy: buildApprovalPolicy(approval),
     };
   });
