@@ -1242,7 +1242,7 @@ export function buildWorkflowDigest(
 function approvalPriority(risk: MobileWorkQueueItem['risk']): MobileWorkQueueItem['priority'] {
   if (risk === 'destructive' || risk === 'high') return 'critical';
   if (risk === 'medium') return 'high';
-  return 'high';
+  return 'normal';
 }
 
 function sessionStatusLabel(status: MobileOverview['activeSessions'][number]['status']): string {
