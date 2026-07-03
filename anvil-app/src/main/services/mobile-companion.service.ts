@@ -20,6 +20,7 @@ import type {
   MobilePairingTicket,
   MobileStartChatInput,
   MobileStartChatResult,
+  MobileWorkQueueItem,
   MobileWorkflowDigest,
   RaycastCompanionToken,
 } from '../../shared/types.js';
@@ -708,7 +709,11 @@ export function getMobileOverview(): MobileOverview {
     ? safeGetWorkspace(settings.activeWorkspaceId)
     : undefined;
   const activeSessions = listActiveCodexSessions();
-  const pendingApprovals = listPendingApprovalRequests();
+  const pendingApprovals = enrichMobileApprovalRequests(
+    listPendingApprovalRequests(),
+    activeWorkspace,
+    activeSessions,
+  );
   const threads = listMobileChatThreads();
 
   return {
@@ -718,6 +723,7 @@ export function getMobileOverview(): MobileOverview {
     activeSessions,
     pendingApprovals,
     threads,
+    workQueue: buildMobileWorkQueue(activeWorkspace, activeSessions, pendingApprovals, threads),
     workflow: buildWorkflowDigest(activeWorkspace, activeSessions, pendingApprovals, threads),
     quickActions: listMobileQuickActions(),
     companion: buildStatus(ensureMobileCompanionSettings()),
@@ -793,7 +799,7 @@ export function listCarPlayApprovalRequests(): CarPlayApprovalRequest[] {
       title: approval.kind === 'command' ? 'Command approval' : 'File change approval',
       workspaceId: workspace?.id,
       workspaceName: workspace?.name,
-      repo: repo?.name ?? repo?.path,
+      repo: repo?.name ?? repo?.path ?? approval.repoName,
       summary: policy.summary,
       requestedAction: policy.requestedAction,
       risk: policy.risk,
@@ -988,7 +994,7 @@ export async function startMobileWorkflow(
     sessionId: session.id,
     threadId: thread.id,
   });
-  await sendMessage(session.id, message);
+  await sendMessage(session.id, message, [], { collaborationMode: input.collaborationMode });
   pushCompanionNotification(
     'sessions',
     'Workflow started',
@@ -1007,6 +1013,138 @@ export async function startMobileWorkflow(
     session,
     queuedMessage: message,
   };
+}
+
+function enrichMobileApprovalRequests(
+  approvals: MobileOverview['pendingApprovals'],
+  activeWorkspace: MobileOverview['activeWorkspace'],
+  activeSessions: MobileOverview['activeSessions'],
+): MobileOverview['pendingApprovals'] {
+  return approvals.map((approval) => {
+    const session = activeSessions.find((candidate) => candidate.id === approval.sessionId);
+    const workspace = resolveSessionWorkspace(session, activeWorkspace);
+    const repo = session?.repoId
+      ? workspace?.repos.find((candidate) => candidate.id === session.repoId)
+      : undefined;
+
+    return {
+      ...approval,
+      workspaceId: workspace?.id,
+      workspaceName: workspace?.name,
+      repoId: repo?.id ?? session?.repoId,
+      repoName: repo?.name ?? repo?.path,
+      policy: buildApprovalPolicy(approval),
+    };
+  });
+}
+
+export function buildMobileWorkQueue(
+  activeWorkspace: MobileOverview['activeWorkspace'],
+  activeSessions: MobileOverview['activeSessions'],
+  pendingApprovals: MobileOverview['pendingApprovals'],
+  threads: MobileOverview['threads'],
+): MobileWorkQueueItem[] {
+  const approvalItems = pendingApprovals.map((approval): MobileWorkQueueItem => {
+    const policy = approval.policy ?? buildApprovalPolicy(approval);
+    return {
+      id: `approval:${approval.sessionId}:${approval.requestKey}`,
+      kind: 'approval',
+      priority: approvalPriority(policy.risk),
+      title: policy.summary,
+      detail: approval.reason ?? policy.requestedAction,
+      statusLabel: policy.requiresFullReview ? 'Desktop review' : 'Needs approval',
+      updatedAt: approval.createdAt,
+      workspaceId: approval.workspaceId,
+      workspaceName: approval.workspaceName,
+      repoId: approval.repoId,
+      repoName: approval.repoName,
+      sessionId: approval.sessionId,
+      requestKey: approval.requestKey,
+      risk: policy.risk,
+      requiresDesktopReview: policy.requiresFullReview,
+      actionLabel: policy.requiresFullReview ? 'Open Mac' : 'Decide',
+    };
+  });
+
+  const sessionItems = activeSessions.map((session): MobileWorkQueueItem => {
+    const thread = threads.find((candidate) => candidate.activeSessionId === session.id);
+    const approvalCount = pendingApprovals.filter(
+      (approval) => approval.sessionId === session.id,
+    ).length;
+    const workspace = resolveSessionWorkspace(session, activeWorkspace);
+    const repo = session.repoId
+      ? workspace?.repos.find((candidate) => candidate.id === session.repoId)
+      : undefined;
+
+    return {
+      id: `session:${session.id}`,
+      kind: 'session',
+      priority:
+        session.status === 'error'
+          ? 'critical'
+          : approvalCount > 0
+            ? 'high'
+            : session.status === 'busy' || session.status === 'starting'
+              ? 'normal'
+              : 'low',
+      title: thread?.title ?? `${session.personaId} session`,
+      detail:
+        approvalCount > 0
+          ? `${approvalCount} approval${approvalCount === 1 ? '' : 's'} blocking this run.`
+          : session.status === 'busy'
+            ? 'Agent is working on the desktop host.'
+            : session.status === 'starting'
+              ? 'Starting the local Codex process.'
+              : session.status === 'error'
+                ? 'Session hit an error and needs attention.'
+                : 'Session is ready for steering or handoff.',
+      statusLabel: approvalCount > 0 ? 'Blocked' : sessionStatusLabel(session.status),
+      updatedAt: thread?.updatedAt ?? session.startedAt,
+      workspaceId: workspace?.id,
+      workspaceName: workspace?.name,
+      repoId: repo?.id ?? session.repoId,
+      repoName: repo?.name ?? repo?.path,
+      sessionId: session.id,
+      threadId: thread?.id ?? session.appThreadId,
+      actionLabel:
+        session.status === 'busy' || session.status === 'starting' ? 'Interrupt' : 'Open thread',
+    };
+  });
+
+  const activeThreadIds = new Set(
+    sessionItems
+      .map((item) => item.threadId)
+      .filter((threadId): threadId is string => Boolean(threadId)),
+  );
+  const recentThreadItems = threads
+    .filter((thread) => !activeThreadIds.has(thread.id) && thread.pendingApprovalCount === 0)
+    .slice(0, 4)
+    .map((thread): MobileWorkQueueItem => {
+      const repo = activeWorkspace?.repos[0];
+      return {
+        id: `thread:${thread.id}`,
+        kind: 'thread',
+        priority: 'low',
+        title: thread.title,
+        detail: thread.preview ?? `${thread.personaId} thread`,
+        statusLabel: 'Recent',
+        updatedAt: thread.updatedAt,
+        workspaceId: thread.workspaceId,
+        workspaceName:
+          thread.workspaceId && thread.workspaceId === activeWorkspace?.id
+            ? activeWorkspace.name
+            : undefined,
+        repoId: repo?.id,
+        repoName: repo?.name ?? repo?.path,
+        threadId: thread.id,
+        sessionId: thread.activeSessionId,
+        actionLabel: 'Continue',
+      };
+    });
+
+  return [...approvalItems, ...sessionItems, ...recentThreadItems]
+    .sort(compareWorkQueueItems)
+    .slice(0, 12);
 }
 
 export function buildWorkflowDigest(
@@ -1099,6 +1237,45 @@ export function buildWorkflowDigest(
       workspaceRepos,
     ),
   };
+}
+
+function approvalPriority(risk: MobileWorkQueueItem['risk']): MobileWorkQueueItem['priority'] {
+  if (risk === 'destructive' || risk === 'high') return 'critical';
+  if (risk === 'medium') return 'high';
+  return 'high';
+}
+
+function sessionStatusLabel(status: MobileOverview['activeSessions'][number]['status']): string {
+  switch (status) {
+    case 'busy':
+      return 'Working';
+    case 'starting':
+      return 'Starting';
+    case 'error':
+      return 'Error';
+    case 'ready':
+      return 'Ready';
+  }
+}
+
+function compareWorkQueueItems(a: MobileWorkQueueItem, b: MobileWorkQueueItem): number {
+  const priorityOrder: Record<MobileWorkQueueItem['priority'], number> = {
+    critical: 0,
+    high: 1,
+    normal: 2,
+    low: 3,
+  };
+  const priorityDelta = priorityOrder[a.priority] - priorityOrder[b.priority];
+  if (priorityDelta !== 0) return priorityDelta;
+  return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+}
+
+function resolveSessionWorkspace(
+  session: MobileOverview['activeSessions'][number] | undefined,
+  activeWorkspace: MobileOverview['activeWorkspace'],
+): MobileOverview['activeWorkspace'] {
+  if (!session?.workspaceId) return activeWorkspace;
+  return activeWorkspace?.id === session.workspaceId ? activeWorkspace : activeWorkspace;
 }
 
 function buildWorkflowCounts(

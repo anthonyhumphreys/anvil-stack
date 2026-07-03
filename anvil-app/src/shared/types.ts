@@ -594,6 +594,11 @@ export interface MobileApprovalRequest {
   command?: string;
   cwd?: string;
   grantRoot?: string;
+  workspaceId?: string;
+  workspaceName?: string;
+  repoId?: string;
+  repoName?: string;
+  policy?: CompanionApprovalPolicy;
   createdAt: string;
 }
 
@@ -725,6 +730,29 @@ export interface MobileWorkflowDigest {
   };
 }
 
+export type MobileWorkQueueItemKind = 'approval' | 'session' | 'thread';
+export type MobileWorkQueueItemPriority = 'critical' | 'high' | 'normal' | 'low';
+
+export interface MobileWorkQueueItem {
+  id: string;
+  kind: MobileWorkQueueItemKind;
+  priority: MobileWorkQueueItemPriority;
+  title: string;
+  detail: string;
+  statusLabel: string;
+  updatedAt: string;
+  workspaceId?: string;
+  workspaceName?: string;
+  repoId?: string;
+  repoName?: string;
+  sessionId?: string;
+  threadId?: string;
+  requestKey?: string;
+  risk?: CompanionApprovalRisk;
+  requiresDesktopReview?: boolean;
+  actionLabel?: string;
+}
+
 export interface MobileQuickAction {
   id: string;
   title: string;
@@ -742,6 +770,7 @@ export interface MobileStartChatInput {
   personaId?: string;
   workspaceId?: string;
   repoIds?: string[];
+  collaborationMode?: ChatCollaborationMode;
 }
 
 export interface MobileStartChatResult {
@@ -757,6 +786,7 @@ export interface MobileOverview {
   activeSessions: CodexSession[];
   pendingApprovals: MobileApprovalRequest[];
   threads: MobileChatThreadSummary[];
+  workQueue: MobileWorkQueueItem[];
   workflow: MobileWorkflowDigest;
   quickActions: MobileQuickAction[];
   companion: MobileCompanionStatus;

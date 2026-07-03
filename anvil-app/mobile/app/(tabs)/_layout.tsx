@@ -20,8 +20,8 @@ export default function TabLayout() {
       <Tabs.Screen
         name="index"
         options={{
-          title: 'Command',
-          tabBarIcon: ({ color }) => <MaterialIcons size={24} name="dashboard" color={color} />,
+          title: 'Work',
+          tabBarIcon: ({ color }) => <MaterialIcons size={24} name="workspaces" color={color} />,
         }}
       />
       <Tabs.Screen
