@@ -468,6 +468,113 @@ describe("createAwsPreviewCloudFormationTemplate", () => {
       },
     });
   });
+
+  it("passes outbound fetch allow lists to the AWS runtime", () => {
+    const template = createAwsPreviewCloudFormationTemplate({
+      schemaVersion: "0.1",
+      cell: {
+        name: "fetch-cell",
+        runtime: "nodejs20",
+        target: "preview",
+      },
+      entrypoints: {
+        server: "dist/server/index.mjs",
+        client: "dist/client/index.html",
+      },
+      schema: {
+        tables: {},
+      },
+      queries: [],
+      mutations: [],
+      endpoints: [],
+      jobs: [],
+      workflows: [],
+      services: [],
+      capabilities: {
+        outboundFetch: {
+          allow: ["api.example.test", "status.example.test"],
+        },
+      },
+    });
+
+    expect(template.Resources.RuntimeFunction).toMatchObject({
+      Properties: {
+        Environment: {
+          Variables: {
+            ANVIL_OUTBOUND_FETCH_ALLOW: "api.example.test,status.example.test",
+          },
+        },
+      },
+    });
+  });
+
+  it("maps declared services to adapter-owned Fargate resources", () => {
+    const template = createAwsPreviewCloudFormationTemplate({
+      schemaVersion: "0.1",
+      cell: {
+        name: "service-cell",
+        runtime: "nodejs20",
+        target: "preview",
+      },
+      entrypoints: {
+        server: "dist/server/index.mjs",
+        client: "dist/client/index.html",
+      },
+      schema: {
+        tables: {},
+      },
+      queries: [],
+      mutations: [],
+      endpoints: [],
+      jobs: [],
+      workflows: [],
+      services: [
+        {
+          name: "heartbeat",
+          restart: "always",
+          maxRestarts: 3,
+        },
+      ],
+      capabilities: {
+        services: true,
+      },
+    });
+
+    expect(template.Parameters.ServiceSubnetIds).toMatchObject({
+      Type: "List<AWS::EC2::Subnet::Id>",
+    });
+    expect(template.Resources.ServiceCluster).toMatchObject({
+      Type: "AWS::ECS::Cluster",
+    });
+    expect(template.Resources.ServiceHeartbeatTaskDefinition).toMatchObject({
+      Type: "AWS::ECS::TaskDefinition",
+      Properties: {
+        RequiresCompatibilities: ["FARGATE"],
+        NetworkMode: "awsvpc",
+        ContainerDefinitions: [
+          expect.objectContaining({
+            Name: "heartbeat",
+            Image: "public.ecr.aws/docker/library/node:20-alpine",
+          }),
+        ],
+      },
+    });
+    expect(template.Resources.ServiceHeartbeat).toMatchObject({
+      Type: "AWS::ECS::Service",
+      Properties: {
+        LaunchType: "FARGATE",
+        NetworkConfiguration: {
+          AwsvpcConfiguration: {
+            AssignPublicIp: "ENABLED",
+            Subnets: { Ref: "ServiceSubnetIds" },
+          },
+        },
+      },
+    });
+    expect(template.Outputs.ServiceHeartbeatName).toMatchObject({
+      Value: { "Fn::GetAtt": ["ServiceHeartbeat", "Name"] },
+    });
+  });
 });
 
 describe("createAwsResourceNames", () => {

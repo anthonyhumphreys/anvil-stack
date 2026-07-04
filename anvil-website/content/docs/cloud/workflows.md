@@ -108,22 +108,17 @@ A run record looks like:
 
 ## Current limits
 
-Workflows execute end-to-end on the local runtime. AWS preview has the first
-adapter pieces for Step Functions-style execution: template synthesis can
-describe one state machine per declared workflow, and the Lambda runtime can
-execute one workflow step event through the shared runtime context and return
-the updated accumulated step state.
+Workflows execute end-to-end on the local runtime. AWS preview also maps
+declared workflows to Step Functions state machines whose task states invoke the
+shared runtime Lambda.
 
 The AWS runtime host can start configured Step Functions executions for
 `ctx.workflows.start` when `ANVIL_WORKFLOW_STATE_MACHINES` maps workflow names
 to state machine ARNs. The generated CloudFormation template now writes that
 mapping into the Lambda environment for workflow-bearing manifests.
 
-The AWS preview deployment adapter still rejects Cells that declare workflows,
-because provisioning is not enabled through the preview support gate and remote
-run-state persistence plus remote CLI inspection are not wired yet. The adapter
-work is moving in that order rather than pretending one Lambda event and one
-template are a durable workflow platform. Refreshingly unglamorous, but much
-less haunted.
+AWS preview deployment plans include a `workflow-preview-review` approval gate
+and Step Functions cost-driver hints. Remote workflow run inspection is not yet
+mirrored through `anvil-cloud workflows list/show --app`.
 
 Steps are a linear sequence: no branching, no parallelism, and no cross-Cell workflows in alpha.

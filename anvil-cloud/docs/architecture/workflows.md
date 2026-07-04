@@ -82,12 +82,11 @@ Local HTTP routes:
 
 CLI: `anvil-cloud workflows list`, `anvil-cloud workflows show <runId>`, and `anvil-cloud workflows run <name> [--input '<json>']`, all with `--json`.
 
-## AWS mapping (partially implemented)
+## AWS mapping (preview implemented)
 
-The AWS package maps workflow manifests onto AWS Step Functions, but AWS
-preview deploys still reject workflow-bearing Cells before provisioning until
-the full remote run-state and inspection path is verified. The implemented
-pieces are:
+The AWS package maps workflow manifests onto AWS Step Functions in preview. The
+adapter owns the state machine definition; Cell code still declares only
+`workflow({ steps })` and `capabilities.workflows`.
 
 - **One state machine per workflow.** The deployment adapter synthesizes a Step Functions state machine for each entry in the manifest's `workflows` list, named `anvil-<cell>-<environment>-<workflow>`. The state machine definition is derived from the manifest topology at deploy time, so Cell code never authors ASL.
 - **Task states invoke the shared runtime Lambda.** Each step becomes an ASL `Task` state that invokes the existing per-Cell Lambda with a payload identifying the workflow, step, run id, and accumulated state. The Lambda routes the invocation to the matching step handler through the shared runtime, exactly as it routes HTTP and SQS events today.
@@ -95,19 +94,16 @@ pieces are:
   `ANVIL_WORKFLOW_STATE_MACHINES` into the Lambda environment, mapping workflow
   names to state machine ARNs. The AWS runtime host uses that mapping for
   `ctx.workflows.start`.
-- **Retries map to ASL `Retry`.** A step's `retries` becomes a `Retry` policy on its Task state (`MaxAttempts: retries`, small `IntervalSeconds` with backoff). The executor's attempt accounting is reported back into run state from the Lambda.
-- **Timeouts map to `TimeoutSeconds`.** A step's `timeoutMs` becomes the Task state's `TimeoutSeconds` (rounded up), so the platform enforces the bound even if the handler hangs.
-- **Failure semantics.** When a Task state exhausts its retries, a `Catch` route marks the run `failed` in the metadata table and ends the execution; subsequent steps never run, matching local semantics.
-- **IAM.** Declaring `capabilities.workflows` adds least-privilege grants: the deploy role may create/update the state machines, and the state machine role may invoke the Cell Lambda.
+- **Review gate.** Deployment plans add `workflow-preview-review` so humans and
+  agents explicitly review Step Functions resources before preview mutation.
+- **IAM.** The state machine role may invoke the Cell Lambda. Cell authors do
+  not write IAM or ASL directly.
 
 Remaining AWS workflow work:
 
-- persist the same `WorkflowRun` shape into deployment metadata after every
-  remote step transition;
 - add remote `anvil-cloud workflows list/show --app <cell>` support through the
   existing remote reader, mirroring `anvil-cloud logs --app`;
-- verify live account provisioning, execution, failure paths, and cleanup before
-  removing the preview support gate.
+- deepen live account verification for failure paths and cleanup evidence.
 
 This design keeps the workflow contract provider-neutral: Cell code, the manifest shape, run state shape, and CLI commands are identical across local and AWS execution.
 

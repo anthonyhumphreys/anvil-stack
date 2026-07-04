@@ -56,6 +56,11 @@ export {
   type CloudFormationTemplate,
 } from "./cloudformation.js";
 export {
+  runPreviewAdapterConformance,
+  type AdapterConformanceDiagnostic,
+  type AdapterConformanceResult,
+} from "./conformance.js";
+export {
   awsHttpEventToRuntimeRequest,
   createAwsRuntimeHandler,
   runtimeResponseToAwsHttpResponse,
@@ -71,6 +76,7 @@ export {
 } from "./host.js";
 export {
   createAwsLambdaRuntimeHandler,
+  installOutboundFetchPolicy,
   type AwsLambdaRuntimeEvent,
   type AwsLambdaRuntimeHandler,
   type AwsLambdaRuntimeResult,
@@ -111,6 +117,7 @@ export type DeploymentPlanChange = {
     | "jobs"
     | "logs"
     | "runtime"
+    | "services"
     | "workflows";
   name: string;
   details?: Record<string, unknown>;
@@ -566,6 +573,22 @@ export function createAwsPreviewDeploymentPlan(
     });
   }
 
+  if (manifest.services.length > 0) {
+    changes.push({
+      kind: "create",
+      concept: "services",
+      name: `${manifest.cell.name}-${environment}`,
+      details: {
+        service: "ecs-fargate",
+        services: manifest.services.map((service) => ({
+          name: service.name,
+          restart: service.restart,
+          maxRestarts: service.maxRestarts,
+        })),
+      },
+    });
+  }
+
   const operations = createOperations(manifest, environment);
 
   return {
@@ -591,8 +614,8 @@ function createDeploymentPlanReview(
   changes: DeploymentPlanChange[],
   operations: DeploymentPlanOperations,
 ): DeploymentPlanReview {
-  const changeSet = changes.map(toReviewPlanChange);
-  const capabilityDiffs = changes.map(toCapabilityDiff);
+  const changeSet = changes.map(toReviewPlanChange).sort(compareById);
+  const capabilityDiffs = changes.map(toCapabilityDiff).sort(compareById);
   const approvalGates = createPreviewApprovalGates(
     manifest,
     changeSet,
@@ -620,6 +643,10 @@ function createDeploymentPlanReview(
     approvalSummary: createApprovalSummary(approvalGates),
     approvalGates,
   };
+}
+
+function compareById(left: { id: string }, right: { id: string }): number {
+  return left.id.localeCompare(right.id);
 }
 
 function createChangeSummary(
@@ -799,6 +826,32 @@ function createPreviewApprovalGates(
     });
   }
 
+  const workflowCapabilityIds = idsForConcepts(changeSet, ["workflows"]);
+
+  if (workflowCapabilityIds.length > 0) {
+    gates.push({
+      id: "workflow-preview-review",
+      required: true,
+      severity: "review",
+      reason:
+        "Workflows create Step Functions preview resources and invoke the shared runtime for each step.",
+      changeIds: workflowCapabilityIds,
+    });
+  }
+
+  const serviceCapabilityIds = idsForConcepts(changeSet, ["services"]);
+
+  if (serviceCapabilityIds.length > 0) {
+    gates.push({
+      id: "service-preview-review",
+      required: true,
+      severity: "review",
+      reason:
+        "Services create adapter-owned ECS/Fargate preview resources. Confirm subnet selection and cleanup expectations.",
+      changeIds: serviceCapabilityIds,
+    });
+  }
+
   const agentSandboxIds = idsForConcepts(changeSet, ["agent-sandboxes"]);
 
   if (agentSandboxIds.length > 0) {
@@ -923,7 +976,15 @@ function createStructuredCostDrivers(
     drivers.push({
       id: "step-functions",
       label: "Step Functions state transitions",
-      reason: `${manifest.workflows.length} workflow definition(s) map to state machine resources once AWS preview support lands.`,
+      reason: `${manifest.workflows.length} workflow definition(s) map to Step Functions preview resources.`,
+    });
+  }
+
+  if (manifest.services.length > 0) {
+    drivers.push({
+      id: "ecs-fargate-services",
+      label: "ECS/Fargate preview service tasks",
+      reason: "Declared services run as adapter-owned preview service tasks.",
     });
   }
 
@@ -968,6 +1029,10 @@ function createCostDrivers(manifest: CellManifest): string[] {
     drivers.push("Step Functions state transitions");
   }
 
+  if (manifest.services.length > 0) {
+    drivers.push("ECS/Fargate service task vCPU and memory");
+  }
+
   if (sandboxRequiredAgents(manifest).length > 0) {
     drivers.push("Lambda MicroVM agent sandbox sessions");
   }
@@ -989,39 +1054,6 @@ export function checkAwsPreviewSupport(
         "AWS preview requires a Lambda MicroVM image before it can run sandbox-required agents.",
       hint: "Set ANVIL_AWS_AGENT_SANDBOX_IMAGE to a Lambda MicroVM image ARN or remove runtime.sandbox: 'required' from mounted agents for this preview deploy.",
       names: sandboxAgents.map((agent) => agent.name),
-    });
-  }
-
-  if (manifest.services.length > 0) {
-    diagnostics.push({
-      code: "AWS_PREVIEW_UNSUPPORTED_FEATURE",
-      feature: "services",
-      message:
-        "AWS preview does not support service execution yet. Services run under the local supervisor during alpha.",
-      hint: "Remove declared services for AWS preview, or run this Cell locally until the container-backed service adapter lands.",
-      names: manifest.services.map((service) => service.name),
-    });
-  }
-
-  if (manifest.workflows.length > 0) {
-    diagnostics.push({
-      code: "AWS_PREVIEW_UNSUPPORTED_FEATURE",
-      feature: "workflows",
-      message:
-        "AWS preview does not support workflow execution yet. Workflows run on the local runtime during alpha.",
-      hint: "Remove declared workflows for AWS preview, or run this Cell locally until the Step Functions workflow adapter lands.",
-      names: manifest.workflows.map((workflow) => workflow.name),
-    });
-  }
-
-  if (manifest.capabilities.outboundFetch) {
-    diagnostics.push({
-      code: "AWS_PREVIEW_UNSUPPORTED_FEATURE",
-      feature: "outboundFetch",
-      message:
-        "AWS preview does not support outbound fetch policy enforcement yet.",
-      hint: "Remove capabilities.outboundFetch for AWS preview, or keep this Cell local until outbound network policy is implemented.",
-      names: outboundFetchAllowList(manifest.capabilities.outboundFetch),
     });
   }
 
@@ -1062,23 +1094,21 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 function slug(value: string): string {
-  return (
-    value
-      .toLowerCase()
-      .replace(/[^a-z0-9-]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 48) || "anvil"
-  );
-}
+  const normalized = value.toLowerCase().replace(/[^a-z0-9-]+/g, "-");
+  // Trim leading/trailing dashes without regex to avoid polynomial backtracking
+  // on adversarial inputs (CodeQL js/polynomial-redos).
+  let start = 0;
+  let end = normalized.length;
 
-function outboundFetchAllowList(capability: unknown): string[] {
-  if (!isObject(capability) || !Array.isArray(capability.allow)) {
-    return [];
+  while (start < end && normalized[start] === "-") {
+    start += 1;
   }
 
-  return capability.allow.filter((entry): entry is string => {
-    return typeof entry === "string";
-  });
+  while (end > start && normalized[end - 1] === "-") {
+    end -= 1;
+  }
+
+  return normalized.slice(start, end).slice(0, 48) || "anvil";
 }
 
 export {

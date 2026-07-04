@@ -250,9 +250,8 @@ deployment plan, CloudFormation template, and deploy artifact summary rather
 than mutating an AWS account.
 
 Use `examples/aws-preview` for the current AWS smoke path. The canonical Notes
-Cell intentionally includes workflows, which are fully local today but still
-gated from AWS preview deployment until remote run-state persistence and
-inspection are verified.
+Cell intentionally includes workflows. They run locally and map to AWS preview
+Step Functions resources, but remote workflow run inspection is still maturing.
 
 To provision preview infrastructure, configure the AWS adapter environment described in [AWS preview](/docs/cloud/aws-preview).
 

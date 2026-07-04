@@ -78,6 +78,8 @@ Contract mode validates and compiles definitions without calling a model provide
 ```sh
 anvil-cloud agents validate
 anvil-cloud agents manifest --json
+anvil-cloud agents discover --json
+anvil-cloud agents guardian --json
 ```
 
 This mode reports project and Cell agent manifests, capability declarations, model configuration, approval-gated actions, and adapter compatibility warnings where available.
@@ -114,6 +116,14 @@ Contracts, approvals, and capability checks are still enforced locally. The prov
 Project Agents help inspect, review, govern, deploy, or operate an Anvil workspace. They are not user-facing by default.
 
 Typical uses include Cell manifest review, capability change inspection, release note drafting, preview deployment preparation, blast-radius explanation, policy checks, test planning, and migration proposals.
+
+`anvil-cloud agents discover --json` reports project-level agent instruction
+files under `agents/**/instructions.md` and mounted Cell agents from the built
+manifest. `anvil-cloud agents guardian --json` is a deterministic project
+reviewer: it runs the same review aggregation used by `anvil-cloud review` and
+returns findings for Guard failures, approval gates, rollback posture, and
+cleanup evidence. It does not pretend to be a hosted model; it is a stable
+inspection surface for humans and other agents.
 
 ## Cell Agents
 

@@ -90,6 +90,14 @@ This reads the `.anvil/local/services.json` snapshot — the last recorded state
 
 ## Current limits
 
-Services execute on the local runtime only. There is no cloud execution path yet: Lambda is invocation-shaped (bounded duration, no supervised always-on processes) and is deliberately not used for services. A container-backed ECS/Fargate adapter is designed (one task definition per service synthesized by the deployment adapter, restart policy layered over the ECS scheduler, logs to CloudWatch, no container or provider primitives in Cell code) but not implemented. See `docs/architecture/services.md` in the anvil-cloud repository for the design.
+Services execute fully on the local runtime. AWS preview now synthesizes
+adapter-owned ECS/Fargate resources for service-bearing manifests: a Cell
+cluster, one task definition and ECS service per declared service, and a
+CloudWatch log group. The template requires `ServiceSubnetIds`; Cell code still
+does not author containers, tasks, clusters, or provider networking.
+
+Running the exact Cell service handler inside the Fargate task is still a
+hardening step. Current AWS preview support is useful for review, resource
+shape, and cleanup evidence, not production service hosting.
 
 Single instance per service: no horizontal scaling, leader election, or distributed coordination in alpha.

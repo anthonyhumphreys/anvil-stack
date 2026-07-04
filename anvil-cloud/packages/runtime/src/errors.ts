@@ -5,6 +5,7 @@ export type RuntimeErrorCode =
   | "NOT_FOUND"
   | "HANDLER_NOT_FOUND"
   | "CAPABILITY_NOT_DECLARED"
+  | "OUTBOUND_FETCH_NOT_ALLOWED"
   | "ADAPTER_ERROR"
   | "INTERNAL_ERROR";
 

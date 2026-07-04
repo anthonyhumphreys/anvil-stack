@@ -122,6 +122,9 @@ export async function main(argv: string[]): Promise<void> {
     case "check":
       await commandCheck(context);
       return;
+    case "review":
+      await commandReview(context);
+      return;
     case "build":
       await commandBuild(context);
       return;
@@ -140,6 +143,9 @@ export async function main(argv: string[]): Promise<void> {
     case "logs":
       await commandLogs(context);
       return;
+    case "usage":
+      await commandUsage(context);
+      return;
     case "db":
       await commandDb(context, subcommand, maybeArg);
       return;
@@ -151,6 +157,9 @@ export async function main(argv: string[]): Promise<void> {
       return;
     case "remove":
       await commandRemove(context);
+      return;
+    case "rollback":
+      await commandRollback(context);
       return;
     case "destroy":
       await commandDestroy(context);
@@ -197,6 +206,12 @@ async function commandAgents(
     case "manifest":
       await commandAgentsManifest(context);
       return;
+    case "discover":
+      await commandAgentsDiscover(context);
+      return;
+    case "guardian":
+      await commandAgentsGuardian(context);
+      return;
     case "invoke":
       await commandAgentsInvoke(context, maybeArg);
       return;
@@ -212,11 +227,11 @@ async function commandAgents(
             {
               code: "INVALID_USAGE",
               message:
-                "Usage: anvil-cloud agents <validate|manifest|invoke|sandboxes> [agent] --input <text>",
+                "Usage: anvil-cloud agents <validate|manifest|discover|guardian|invoke|sandboxes> [agent] --input <text>",
             },
           ],
         },
-        "Usage: anvil-cloud agents <validate|manifest|invoke|sandboxes> [agent] --input <text>",
+        "Usage: anvil-cloud agents <validate|manifest|discover|guardian|invoke|sandboxes> [agent] --input <text>",
       );
       process.exitCode = 2;
   }
@@ -340,6 +355,79 @@ async function commandAgentsManifest(context: CliContext): Promise<void> {
   };
 
   writeJsonOrHuman(context, payload, JSON.stringify(payload, null, 2));
+}
+
+async function commandAgentsDiscover(context: CliContext): Promise<void> {
+  const result = await buildCell({ rootDir: context.cwd });
+  const projectAgents = await discoverProjectAgents(context.cwd);
+  const mountedAgents =
+    result.ok && result.manifest
+      ? Object.values((result.manifest as CellManifest).agents ?? {}).map(
+          (agent) => ({
+            name: agent.name,
+            exposure: agent.exposure,
+            provider: agent.model.provider,
+            model: agent.model.model,
+            capabilities: agent.capabilities,
+            approvals: agent.requires.humanApproval,
+          }),
+        )
+      : [];
+  const payload = {
+    ok: result.ok,
+    projectAgents,
+    mountedAgents,
+    diagnostics: result.diagnostics,
+  };
+
+  writeJsonOrHuman(
+    context,
+    payload,
+    [
+      "Project agents:",
+      ...projectAgents.map((agent) => `  ${agent.name} (${agent.path})`),
+      "Mounted agents:",
+      ...mountedAgents.map(
+        (agent) => `  ${agent.name} (${agent.provider}/${agent.model})`,
+      ),
+    ].join("\n"),
+  );
+
+  if (!result.ok) {
+    process.exitCode = 3;
+  }
+}
+
+async function commandAgentsGuardian(context: CliContext): Promise<void> {
+  const report = await createReviewReport(context);
+  const findings = createGuardianFindings(report);
+  const payload = {
+    ok: report.ok,
+    agent: {
+      name: "guardian",
+      exposure: "project",
+      purpose:
+        "Review Cell trust, capability, deploy, rollback, and cleanup evidence before preview deployment.",
+    },
+    report,
+    findings,
+  };
+
+  writeJsonOrHuman(
+    context,
+    payload,
+    [
+      `Guardian Agent: ${report.status}`,
+      ...findings.map(
+        (finding) =>
+          `  ${finding.severity} ${finding.code}: ${finding.message}`,
+      ),
+    ].join("\n"),
+  );
+
+  if (!report.ok) {
+    process.exitCode = report.status === "block" ? 6 : 3;
+  }
 }
 
 async function commandAgentsInvoke(
@@ -1218,6 +1306,91 @@ async function commandBuild(context: CliContext): Promise<void> {
   writeBuildResult(context, result, "Build complete.");
 }
 
+async function commandReview(context: CliContext): Promise<void> {
+  const report = await createReviewReport(context);
+
+  writeJsonOrHuman(context, report, formatReviewReport(report));
+
+  if (!report.ok) {
+    process.exitCode = reviewReportExitCode(report);
+  }
+}
+
+async function createReviewReport(context: CliContext) {
+  const adapterName = context.values.get("adapter") ?? "aws";
+
+  if (adapterName !== "aws") {
+    return createInvalidReviewReport(
+      "INVALID_USAGE",
+      "Only --adapter aws is supported for review reports in alpha.",
+    );
+  }
+
+  const environment = context.values.get("env") ?? "preview";
+
+  if (environment !== "preview") {
+    return createInvalidReviewReport(
+      "INVALID_USAGE",
+      "Only --env preview is supported for review reports in alpha.",
+    );
+  }
+
+  const result = await buildCell({ rootDir: context.cwd, target: "preview" });
+
+  if (!result.ok || !result.manifest) {
+    return createBlockedReviewReportFromBuildResult(result);
+  }
+
+  const manifest = result.manifest as CellManifest;
+  const adapter = new AwsPreviewDeploymentAdapter();
+  const plan = adapter.plan(manifest, "preview");
+  const guardSummary = summarizeBuilderDiagnostics(result.diagnostics);
+  const blocking = plan.review.approvalSummary.hasBlockingGate;
+  const requiredReview = plan.review.approvalSummary.required > 0;
+  const status = blocking ? "block" : requiredReview ? "review" : "pass";
+  const report = {
+    ok: !blocking,
+    schemaVersion: "0.1",
+    command: "review",
+    target: {
+      adapter: "aws",
+      environment: "preview",
+      cell: manifest.cell.name,
+    },
+    status,
+    summary: {
+      guardErrors: guardSummary.errors,
+      guardWarnings: guardSummary.warnings,
+      approvalRequired: plan.review.approvalSummary.required,
+      reviewGates: plan.review.approvalSummary.review,
+      blockingGates: plan.review.approvalSummary.block,
+      capabilityChanges: plan.review.capabilityDiffs.length,
+      costDrivers: plan.review.cost.drivers.length,
+      rollbackSupported: plan.review.rollback.supported,
+    },
+    guard: {
+      ok: guardSummary.errors === 0,
+      diagnostics: result.diagnostics,
+      summary: guardSummary,
+    },
+    manifest: {
+      cell: manifest.cell,
+      capabilities: manifest.capabilities,
+      queries: manifest.queries,
+      mutations: manifest.mutations,
+      endpoints: manifest.endpoints,
+      jobs: manifest.jobs,
+      workflows: manifest.workflows,
+      services: manifest.services,
+    },
+    review: plan.review,
+    warnings: plan.warnings,
+    next: createReviewNextSteps(manifest.cell.name, status),
+  };
+
+  return report;
+}
+
 async function commandDoctor(context: CliContext): Promise<void> {
   const checks = await runDoctorChecks(context);
   const summary = summarizeDoctorChecks(checks);
@@ -1515,6 +1688,62 @@ async function commandLogs(context: CliContext): Promise<void> {
   );
 }
 
+async function commandUsage(context: CliContext): Promise<void> {
+  if (!context.flags.has("preview")) {
+    writeInvalidUsage(
+      context,
+      "Only anvil-cloud usage --preview is supported in alpha.",
+    );
+    return;
+  }
+
+  const result = await buildCell({ rootDir: context.cwd, target: "preview" });
+
+  if (!result.ok || !result.manifest) {
+    writeBuildResult(context, result, "Usage report failed.");
+    process.exitCode = 4;
+    return;
+  }
+
+  const manifest = result.manifest as CellManifest;
+  const plan = new AwsPreviewDeploymentAdapter().plan(manifest, "preview");
+  const payload = {
+    ok: true,
+    schemaVersion: "0.1",
+    target: {
+      adapter: "aws",
+      environment: "preview",
+      cell: manifest.cell.name,
+    },
+    usage: {
+      mode: "declared-preview",
+      resources: {
+        tables: Object.keys(manifest.schema.tables).length,
+        files: manifest.capabilities.files ? 1 : 0,
+        events: manifest.capabilities.events ? 1 : 0,
+        jobs: manifest.jobs.length,
+        workflows: manifest.workflows.length,
+        services: manifest.services.length,
+        agents: Object.keys(manifest.agents ?? {}).length,
+      },
+      cost: plan.operations.cost,
+      cleanup: plan.operations.cleanup,
+    },
+  };
+
+  writeJsonOrHuman(
+    context,
+    payload,
+    [
+      `Usage visibility for ${manifest.cell.name} (aws/preview)`,
+      ...plan.operations.cost.drivers.map((driver) => `  ${driver}`),
+      "",
+      "Cleanup:",
+      ...plan.operations.cleanup.commands.map((command) => `  ${command}`),
+    ].join("\n"),
+  );
+}
+
 async function commandDb(
   context: CliContext,
   subcommand: string | undefined,
@@ -1640,6 +1869,81 @@ async function commandRemove(context: CliContext): Promise<void> {
       removeResult.plan,
       context.flags.has("verbose") || context.flags.has("debug"),
     ),
+  );
+}
+
+async function commandRollback(context: CliContext): Promise<void> {
+  if (!context.flags.has("preview")) {
+    writeInvalidUsage(
+      context,
+      "Only anvil-cloud rollback --preview is supported in alpha.",
+    );
+    return;
+  }
+
+  const appName = context.values.get("app");
+  const deploymentId = context.values.get("to-deployment");
+
+  if (!appName || !deploymentId) {
+    writeInvalidUsage(
+      context,
+      "Usage: anvil-cloud rollback --preview --app <name> --to-deployment <deploymentId> --dry-run",
+    );
+    return;
+  }
+
+  if (!context.flags.has("dry-run")) {
+    writeJsonOrHuman(
+      context,
+      {
+        ok: false,
+        errors: [
+          {
+            code: "ROLLBACK_REQUIRES_DRY_RUN",
+            message:
+              "Preview rollback is currently exposed as dry-run intent only.",
+            hint: "Use --dry-run to inspect the rollback target and redeploy commands before artifact rollback automation lands.",
+          },
+        ],
+      },
+      "Preview rollback is currently exposed as dry-run intent only.",
+    );
+    process.exitCode = 2;
+    return;
+  }
+
+  const payload = {
+    ok: true,
+    schemaVersion: "0.1",
+    target: {
+      adapter: "aws",
+      environment: "preview",
+      cell: appName,
+      deploymentId,
+    },
+    rollback: {
+      mode: "dry-run",
+      strategy: "redeploy-previous-artifact",
+      supported: false,
+      commands: [
+        `anvil-cloud inspect --app ${appName} --env preview --json`,
+        `anvil-cloud logs --app ${appName} --env preview --since 10m --json`,
+        "anvil-cloud deploy --preview --json",
+      ],
+      notes: [
+        "Artifact rollback promotion is not automated in alpha.",
+        "Use this dry-run output to confirm the target deployment, then redeploy the known-good checkout or artifact.",
+      ],
+    },
+  };
+
+  writeJsonOrHuman(
+    context,
+    payload,
+    [
+      `Rollback dry-run for ${appName} -> ${deploymentId}`,
+      ...payload.rollback.commands.map((command) => `  ${command}`),
+    ].join("\n"),
   );
 }
 
@@ -2151,6 +2455,323 @@ function writeBuildResult(
   );
   process.exitCode =
     result.phase === "typecheck" || result.phase === "import-policy" ? 3 : 1;
+}
+
+function createBlockedReviewReportFromBuildResult(result: BuildResult) {
+  const guardSummary = summarizeBuilderDiagnostics(result.diagnostics);
+
+  return {
+    ok: false,
+    schemaVersion: "0.1",
+    command: "review",
+    target: {
+      adapter: "aws",
+      environment: "preview",
+      cell: null,
+    },
+    status: "block",
+    summary: {
+      guardErrors: guardSummary.errors,
+      guardWarnings: guardSummary.warnings,
+      approvalRequired: 0,
+      reviewGates: 0,
+      blockingGates: 1,
+      capabilityChanges: 0,
+      costDrivers: 0,
+      rollbackSupported: false,
+    },
+    guard: {
+      ok: false,
+      phase: result.phase,
+      diagnostics: result.diagnostics,
+      summary: guardSummary,
+    },
+    manifest: null,
+    review: null,
+    warnings: [],
+    next: [
+      "Fix Anvil Guard diagnostics, then rerun anvil-cloud review --json.",
+    ],
+  };
+}
+
+function createInvalidReviewReport(code: string, message: string) {
+  return {
+    ok: false,
+    schemaVersion: "0.1",
+    command: "review",
+    target: {
+      adapter: "aws",
+      environment: "preview",
+      cell: null,
+    },
+    status: "block",
+    summary: {
+      guardErrors: 1,
+      guardWarnings: 0,
+      approvalRequired: 0,
+      reviewGates: 0,
+      blockingGates: 1,
+      capabilityChanges: 0,
+      costDrivers: 0,
+      rollbackSupported: false,
+    },
+    guard: {
+      ok: false,
+      diagnostics: [
+        {
+          code,
+          severity: "error" as const,
+          message,
+        },
+      ],
+      summary: {
+        errors: 1,
+        warnings: 0,
+        info: 0,
+      },
+    },
+    manifest: null,
+    review: null,
+    warnings: [],
+    next: ["Fix the invalid review command options, then rerun review."],
+  };
+}
+
+function reviewReportExitCode(report: {
+  status: string;
+  guard: Record<string, unknown>;
+}): number {
+  const phase = report.guard.phase;
+
+  if (phase === "typecheck" || phase === "import-policy") {
+    return 3;
+  }
+
+  return report.status === "block" ? 6 : 3;
+}
+
+function summarizeBuilderDiagnostics(diagnostics: BuilderDiagnostic[]): {
+  errors: number;
+  warnings: number;
+  info: number;
+} {
+  return {
+    errors: diagnostics.filter((diagnostic) => diagnostic.severity === "error")
+      .length,
+    warnings: diagnostics.filter(
+      (diagnostic) => diagnostic.severity === "warning",
+    ).length,
+    info: 0,
+  };
+}
+
+function createReviewNextSteps(cell: string, status: string): string[] {
+  if (status === "block") {
+    return [
+      "Resolve blocking review gates before deploying.",
+      "anvil-cloud review --json",
+    ];
+  }
+
+  if (status === "review") {
+    return [
+      "Review required approval gates before deploying.",
+      "anvil-cloud deploy --preview --json",
+      `anvil-cloud destroy --preview --app ${cell} --yes --json`,
+    ];
+  }
+
+  return [
+    "No required review gates were detected.",
+    "anvil-cloud deploy --preview --json",
+  ];
+}
+
+function formatReviewReport(report: {
+  status: string;
+  summary: {
+    guardErrors: number;
+    guardWarnings: number;
+    approvalRequired: number;
+    reviewGates: number;
+    blockingGates: number;
+    capabilityChanges: number;
+    costDrivers: number;
+    rollbackSupported: boolean;
+  };
+  target: {
+    cell: string | null;
+    adapter: string;
+    environment: string;
+  };
+  guard: {
+    diagnostics: BuilderDiagnostic[];
+  };
+  review: {
+    approvalGates: Array<{
+      id: string;
+      severity: string;
+      required: boolean;
+      reason: string;
+    }>;
+  } | null;
+  next: string[];
+}): string {
+  const lines = [
+    `Anvil Cloud review: ${report.status}`,
+    `Cell: ${report.target.cell ?? "unknown"} (${report.target.adapter}/${report.target.environment})`,
+    `Guard: ${report.summary.guardErrors} error(s), ${report.summary.guardWarnings} warning(s)`,
+    `Capabilities: ${report.summary.capabilityChanges} change(s), ${report.summary.costDrivers} cost driver(s)`,
+    `Approval: ${report.summary.approvalRequired} required, ${report.summary.blockingGates} blocking`,
+    `Rollback: ${report.summary.rollbackSupported ? "supported" : "manual"}`,
+  ];
+
+  if (report.guard.diagnostics.length > 0) {
+    lines.push("", "Guard diagnostics:");
+    lines.push(...formatDiagnostics(report.guard.diagnostics).split("\n"));
+  }
+
+  if (report.review && report.review.approvalGates.length > 0) {
+    lines.push("", "Approval gates:");
+    lines.push(
+      ...report.review.approvalGates.map(
+        (gate) =>
+          `  ${gate.severity}${gate.required ? " required" : ""} ${gate.id}: ${gate.reason}`,
+      ),
+    );
+  }
+
+  lines.push("", "Next:");
+  lines.push(...report.next.map((step) => `  ${step}`));
+
+  return lines.join("\n");
+}
+
+async function discoverProjectAgents(rootDir: string): Promise<
+  Array<{
+    name: string;
+    path: string;
+    kind: "instructions";
+  }>
+> {
+  const agentsDir = path.join(rootDir, "agents");
+  const discovered: Array<{
+    name: string;
+    path: string;
+    kind: "instructions";
+  }> = [];
+
+  if (!(await pathExists(agentsDir))) {
+    return discovered;
+  }
+
+  for (const file of await walkFiles(agentsDir)) {
+    if (path.basename(file) !== "instructions.md") {
+      continue;
+    }
+
+    const relativePath = path.relative(rootDir, file);
+    const name = path.basename(path.dirname(file));
+
+    discovered.push({
+      name,
+      path: relativePath,
+      kind: "instructions",
+    });
+  }
+
+  return discovered.sort((left, right) => left.path.localeCompare(right.path));
+}
+
+async function walkFiles(rootDir: string): Promise<string[]> {
+  const entries = await readdir(rootDir, { withFileTypes: true });
+  const files: string[] = [];
+
+  for (const entry of entries) {
+    const entryPath = path.join(rootDir, entry.name);
+
+    if (entry.isDirectory()) {
+      files.push(...(await walkFiles(entryPath)));
+    } else if (entry.isFile()) {
+      files.push(entryPath);
+    }
+  }
+
+  return files;
+}
+
+async function pathExists(target: string): Promise<boolean> {
+  try {
+    await stat(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function createGuardianFindings(report: {
+  ok: boolean;
+  status: string;
+  summary: {
+    guardErrors: number;
+    guardWarnings: number;
+    approvalRequired: number;
+    blockingGates: number;
+    rollbackSupported: boolean;
+  };
+  review: {
+    approvalGates: Array<{
+      id: string;
+      severity: string;
+      reason: string;
+    }>;
+  } | null;
+}): Array<{
+  severity: "info" | "review" | "block";
+  code: string;
+  message: string;
+}> {
+  const findings: Array<{
+    severity: "info" | "review" | "block";
+    code: string;
+    message: string;
+  }> = [];
+
+  if (report.summary.guardErrors > 0) {
+    findings.push({
+      severity: "block",
+      code: "GUARD_ERRORS",
+      message: `${report.summary.guardErrors} Guard error(s) must be fixed before deploy.`,
+    });
+  }
+
+  for (const gate of report.review?.approvalGates ?? []) {
+    findings.push({
+      severity: gate.severity as "info" | "review" | "block",
+      code: `APPROVAL_${gate.id.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}`,
+      message: gate.reason,
+    });
+  }
+
+  if (!report.summary.rollbackSupported) {
+    findings.push({
+      severity: "info",
+      code: "ROLLBACK_MANUAL",
+      message:
+        "Preview rollback is manual; keep the previous checkout or deployment artifact available before mutating preview resources.",
+    });
+  }
+
+  if (findings.length === 0) {
+    findings.push({
+      severity: "info",
+      code: "NO_FINDINGS",
+      message: "No Guardian findings were produced.",
+    });
+  }
+
+  return findings;
 }
 
 async function importApp(serverBundle: string): Promise<AppDefinition> {
@@ -2665,17 +3286,20 @@ function writeHelp(): void {
       "  anvil-cloud dev [--json] [--agent] [--port 8787] [--client-port 5173]",
       "  anvil-cloud doctor [--json] [--port 8787] [--client-port 5173]",
       "  anvil-cloud check [--json]",
+      "  anvil-cloud review [--adapter aws] [--env preview] [--json]",
       "  anvil-cloud build [--json]",
       "  anvil-cloud inspect --local [--json]",
       "  anvil-cloud lens [--port 8787] [--json]",
       "  anvil-cloud logs --local [--json]",
       "  anvil-cloud logs --app <name> --env preview [--since 10m] [--limit 50] [--json]",
+      "  anvil-cloud usage --preview [--json]",
       "  anvil-cloud db list --local [--json]",
       "  anvil-cloud db dump <table> --local [--json]",
       "  anvil-cloud plan --stage dev --adapter aws [--verbose] [--json]",
       "  anvil-cloud deploy --stage dev --adapter aws [--verbose] [--json]",
       "  anvil-cloud remove --stage dev --adapter aws [--verbose] [--json]",
       "  anvil-cloud deploy --preview [--wait] [--wait-timeout 60] [--json]",
+      "  anvil-cloud rollback --preview --app <name> --to-deployment <id> --dry-run [--json]",
       "  anvil-cloud destroy --preview --app <name> --yes [--dry-run] [--json]",
       "  anvil-cloud auth users [--json]",
       "  anvil-cloud auth add-user <id> [--email x@y] [--roles admin,editor] [--json]",
@@ -2683,6 +3307,8 @@ function writeHelp(): void {
       "  anvil-cloud auth login <id> [--json]",
       "  anvil-cloud auth token <id> [--ttl 3600] [--json]",
       "  anvil-cloud auth whoami [--json]",
+      "  anvil-cloud agents discover [--json]",
+      "  anvil-cloud agents guardian [--json]",
       "  anvil-cloud workflows list [--json]",
       "  anvil-cloud workflows show <runId> [--json]",
       "  anvil-cloud workflows run <name> [--input '<json>'] [--json]",

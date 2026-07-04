@@ -10,7 +10,11 @@ Current implementation:
 - synthesize preview CloudFormation templates from Cell manifests;
 - map Cell capabilities to AWS resources;
 - provide AWS-backed runtime host adapters for DynamoDB tables, S3 files, env,
-  EventBridge events, queued jobs, auth passthrough, and structured Lambda logs;
+  EventBridge events, queued jobs, Step Functions workflows, auth passthrough,
+  and structured Lambda logs;
+- enforce `capabilities.outboundFetch.allow` in the generated Lambda runtime;
+- synthesize adapter-owned ECS/Fargate preview service resources;
+- expose a preview adapter conformance testkit for stable review metadata;
 - package deploy artifacts for preview deployments, including a bundled Lambda
   runtime entrypoint with a content-addressed S3 key;
 - provision preview stacks when `ANVIL_AWS_ARTIFACT_BUCKET` is configured;
@@ -25,7 +29,7 @@ Current implementation:
 Remaining responsibilities:
 
 - harden live AWS account verification and rollback paths;
-- add cloud execution paths for workflows and services after the local alpha contract settles;
+- run exact Cell service handlers inside the Fargate preview task path;
 - harden preview deployment for production use.
 
 See `docs/architecture/aws-adapter.md` for the implementation design.

@@ -7,9 +7,42 @@ import {
   workflow,
 } from "@anvil-cloud/runtime";
 
-import { createAwsLambdaRuntimeHandler } from "../src/index.js";
+import {
+  createAwsLambdaRuntimeHandler,
+  installOutboundFetchPolicy,
+} from "../src/index.js";
 
 describe("createAwsLambdaRuntimeHandler", () => {
+  it("enforces outbound fetch allow lists in the AWS runtime", async () => {
+    const originalFetch = globalThis.fetch;
+    const calls: string[] = [];
+
+    try {
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        calls.push(String(input));
+        return new Response("ok");
+      }) as typeof fetch;
+
+      installOutboundFetchPolicy("api.example.test");
+
+      await expect(fetch("https://api.example.test/v1")).resolves.toMatchObject(
+        {
+          status: 200,
+        },
+      );
+      await expect(fetch("https://bad.example.test/v1")).rejects.toMatchObject({
+        code: "OUTBOUND_FETCH_NOT_ALLOWED",
+        details: {
+          host: "bad.example.test",
+          allowedHosts: ["api.example.test"],
+        },
+      });
+      expect(calls).toEqual(["https://api.example.test/v1"]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("runs SQS job records through the shared runtime", async () => {
     const host = createInMemoryRuntimeHost();
     const cell = app({

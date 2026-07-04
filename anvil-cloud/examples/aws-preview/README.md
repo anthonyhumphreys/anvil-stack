@@ -1,7 +1,7 @@
 # AWS preview smoke Cell
 
-Small Anvil Cell for exercising the AWS preview adapter without local-only
-features.
+Small Anvil Cell for exercising the AWS preview adapter without turning the
+smoke path into a sprawling demo.
 
 It uses:
 

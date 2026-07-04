@@ -68,6 +68,14 @@ describe("buildCell", () => {
     await expect(
       readText(path.join(rootDir, ".anvil/generated/client.ts")),
     ).resolves.toContain(
+      'import { createApiClient, createClient } from "@anvil-cloud/client";',
+    );
+    await expect(
+      readText(path.join(rootDir, ".anvil/generated/client.ts")),
+    ).resolves.toContain("export function createAnvilApiClient");
+    await expect(
+      readText(path.join(rootDir, ".anvil/generated/client.ts")),
+    ).resolves.toContain(
       'listNotes: { kind: "query", name: "listNotes" } as TypedQuery<"listNotes">',
     );
     await expect(
@@ -877,7 +885,8 @@ describe("buildCell", () => {
       diagnostics: expect.arrayContaining([
         expect.objectContaining({
           code: "CAPABILITY_NOT_DECLARED",
-          message: "Global fetch requires capabilities.outboundFetch to be declared.",
+          message:
+            "Global fetch requires capabilities.outboundFetch to be declared.",
         }),
       ]),
     });

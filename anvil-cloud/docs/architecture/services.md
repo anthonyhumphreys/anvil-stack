@@ -64,18 +64,35 @@ CLI: `anvil-cloud services list [--json]` reads the snapshot file and notes that
 
 ## Why Lambda is unsuitable
 
-The AWS preview adapter executes handlers on Lambda, which is invocation-shaped: bounded execution time (15 minutes maximum), no supervised always-on processes, frozen execution between invocations, and per-invocation billing that is hostile to idle loops. A service is the opposite shape — an always-on, supervised process. Emulating one by chaining invocations would re-implement a scheduler badly and break the `AbortSignal` stop semantics. Services therefore have no Lambda execution path; deploying a Cell with services to the AWS preview adapter is unsupported until the container-backed adapter below exists.
+The AWS preview adapter executes request, job, and workflow handlers on Lambda,
+which is invocation-shaped: bounded execution time (15 minutes maximum), no
+supervised always-on processes, frozen execution between invocations, and
+per-invocation billing that is hostile to idle loops. A service is the opposite
+shape: an always-on, supervised process. Emulating one by chaining invocations
+would re-implement a scheduler badly and break the `AbortSignal` stop
+semantics. Services therefore use the ECS/Fargate preview resource path below
+instead of Lambda.
 
-## ECS/Fargate mapping (design only, not implemented)
+## ECS/Fargate mapping (preview implemented)
 
-The planned mapping runs services on ECS with Fargate, synthesized entirely by the deployment adapter from the manifest's `services` list:
+AWS preview synthesizes ECS/Fargate resources entirely from the manifest's
+`services` list:
 
-- **One task definition per service**, named `anvil-<cell>-<environment>-<service>`, wrapping the same server bundle with an entrypoint that runs `ServiceSupervisor.start(<name>)` for exactly one service. Cell code never authors task definitions, images, or cluster configuration.
-- **One ECS service per Anvil service** with `desiredCount: 1`. The ECS scheduler provides the outer restart loop; the in-process supervisor provides fast restarts with backoff, and `maxRestarts` exhaustion exits the task so ECS-level policy (deployment circuit breaker, alarms) takes over. `restart: "never"` maps to a task that exits without replacement beyond the scheduler minimum.
-- **Stop semantics** map to ECS task stop: SIGTERM triggers the supervisor's `stopAll()` (abort + bounded wait) within the `stopTimeout` grace period before SIGKILL.
-- **Logs** flow to CloudWatch Logs through the existing log adapter shape (`kind: "service"`), under the same log group conventions as Lambda handlers, so `anvil-cloud logs --app` works unchanged.
-- **Status** is persisted to the deployment metadata table on transitions, mirroring the local snapshot file, so `anvil-cloud services list --app <cell>` can read remote state through the existing remote reader.
-- **IAM and capabilities.** Declaring `capabilities.services` adds least-privilege grants: the deploy role may register task definitions and create/update ECS services; the task role receives exactly the grants implied by the Cell's other declared capabilities (database, files, events), identical to the Lambda role derivation.
+- **One ECS cluster per preview Cell** when services are declared.
+- **One Fargate task definition and ECS service per Anvil service** with
+  `desiredCount: 1`.
+- **Adapter-owned parameters.** The template adds `ServiceSubnetIds` for the
+  subnets used by preview tasks. Cell authors do not write VPC, subnet, task,
+  image, or cluster definitions.
+- **Logs.** Service tasks write to a Cell-owned CloudWatch log group.
+- **Review gate.** Deployment plans add `service-preview-review` so subnet and
+  cleanup expectations are reviewed before provisioning.
+
+The current preview task definition is an adapter-owned scaffold for service
+resource provisioning and operational review. Running the exact Cell service
+handler inside the Fargate task is the next hardening step. That limitation is
+intentional in the docs because pretending the adapter is done would be
+decorative infrastructure, which is the least useful kind.
 
 This keeps the service contract provider-neutral: Cell code, the manifest shape, `ServiceStatus`, and CLI commands are identical across local and future container-backed execution. ECS remains invisible to Cell authors — it is an adapter implementation detail, consistent with the "no provider primitives in Cell code" constraint.
 
@@ -83,5 +100,6 @@ This keeps the service contract provider-neutral: Cell code, the manifest shape,
 
 - Container, Kubernetes, or Docker authoring in Cell code.
 - Horizontal scaling (`desiredCount > 1`), leader election, or distributed coordination.
-- Cloud execution of services; only the local supervised runner is implemented.
+- Production-grade cloud execution of service handlers; AWS preview currently
+  provisions adapter-owned Fargate service resources for review and hardening.
 - Health-check probes beyond handler exit/failure observation.

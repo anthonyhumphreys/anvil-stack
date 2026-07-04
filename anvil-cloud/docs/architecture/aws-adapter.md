@@ -58,8 +58,11 @@ This mapping is adapter-specific. Core Anvil specs should use provider-neutral c
 | Logs               | CloudWatch Logs                                    |
 | Scheduled jobs     | EventBridge Scheduler                              |
 | Queued jobs        | SQS + Lambda                                       |
+| Workflows          | Step Functions + Lambda task states                |
+| Services           | ECS/Fargate preview service resources              |
 | Agent inference    | Bedrock through `@anvil-cloud/aws` provider        |
-| Agent sandboxes     | Lambda MicroVM sessions through `@anvil-cloud/aws` |
+| Agent sandboxes    | Lambda MicroVM sessions through `@anvil-cloud/aws` |
+| Outbound fetch     | Lambda runtime allow-list guard                    |
 | Deploy metadata    | DynamoDB or manifest in S3                         |
 | Audit events       | DynamoDB                                           |
 
@@ -100,7 +103,22 @@ return a stable `400 INVALID_JSON` response instead of escaping as a Lambda
 handler failure.
 
 The generated Lambda entrypoint creates an AWS-backed `RuntimeHost` from
-environment variables supplied by the CloudFormation template.
+environment variables supplied by the CloudFormation template. When
+`capabilities.outboundFetch.allow` is declared, the template writes the
+allow-list into `ANVIL_OUTBOUND_FETCH_ALLOW` and the generated Lambda entrypoint
+installs a runtime fetch guard. Calls to hosts outside that list fail with
+`OUTBOUND_FETCH_NOT_ALLOWED`.
+
+Workflow-bearing Cells synthesize one Step Functions state machine per workflow.
+Each state invokes the shared runtime Lambda with an `anvil.workflows` event for
+the current step, run id, input, and accumulated step state. Deployment plans add
+`workflow-preview-review` so this mutation is visible before provisioning.
+
+Service-bearing Cells synthesize adapter-owned ECS/Fargate preview resources:
+one cluster for the Cell, one task definition and ECS service per declared
+service, and a CloudWatch log group. The template requires `ServiceSubnetIds`.
+This is preview support for adapter resource shape and review; full execution of
+the exact Cell service handler inside Fargate remains a hardening step.
 
 ## Static asset flow
 
@@ -348,10 +366,17 @@ Cloud logs should be structured JSON and include:
 10. Return deployed URL and inspection commands
 ```
 
+`anvil-cloud rollback --preview --app <name> --to-deployment <id> --dry-run`
+returns stable rollback intent JSON for redeploying a known-good checkout or
+artifact. It does not mutate AWS; artifact promotion is not automated in alpha.
+
+`anvil-cloud usage --preview --json` returns declared preview resource counts,
+cost-driver hints, and cleanup commands from the built manifest and AWS preview
+plan. It is visibility, not billing.
+
 `anvil-cloud destroy --preview --app <name> --yes` deletes the computed AWS
-preview CloudFormation stack for the Cell. It does not implement rollback or
-historical release promotion; it is the alpha cleanup path for preview
-resources. `--dry-run` returns the same computed stack name, bucket cleanup
+preview CloudFormation stack for the Cell. `--dry-run` returns the same computed
+stack name, bucket cleanup
 intent, optional deployment metadata key, and real destroy command without
 calling AWS, which lets local contract tests cover cleanup intent safely. Before
 deleting the stack, destroy empties stack-owned S3 buckets from CloudFormation
@@ -435,14 +460,11 @@ inspect must echo the manifest, runtime URL, resources, and Lambda artifact
 digest, remote logs must return the stable AWS log payload, and destroy must
 delete deployment metadata when the metadata table is configured.
 
-Services, workflows, and outbound fetch are still gated from AWS preview deploys
-in alpha. Deploying a Cell that declares any of those capabilities fails before
-provisioning with an `AWS_PREVIEW_UNSUPPORTED_FEATURE` diagnostic so authors do
-not discover the limit from a Lambda runtime failure. Workflow synthesis,
-configured `ctx.workflows.start`, and individual workflow step Lambda events are
-implemented in the AWS package, but remote run-state persistence and CLI
-inspection still need live account verification before the preview support gate
-is removed. Production workloads can wait their turn like adults.
+Workflows and outbound fetch now have AWS preview execution paths: workflows map
+to Step Functions and outbound fetch is enforced by the generated Lambda runtime
+guard. Services synthesize ECS/Fargate preview resources for review and cleanup
+evidence, but running the exact Cell service handler inside the Fargate task is
+still a hardening step. Production workloads can wait their turn like adults.
 If an AWS runtime is invoked without the expected environment values for a
 declared capability, the host returns `CAPABILITY_NOT_DECLARED` diagnostics that
 name the missing adapter variable, such as `ANVIL_EVENT_BUS_NAME` for events.
@@ -452,9 +474,8 @@ name the missing adapter variable, such as `ANVIL_EVENT_BUS_NAME` for events.
 Preview deploy results include a stable deployment plan before provisioning
 state. `plan.review` carries diffable `changeSet` ids, capability diffs,
 structured cost-driver hints, rollback notes, cleanup commands/notes, and
-approval gates. Unsupported alpha features such as services, workflows, and
-outbound fetch produce a blocking `aws-preview-support-gate` before any AWS
-resources are created.
+approval gates. Workflow and service capability changes produce review gates
+before any AWS resources are created.
 
 ```json
 {
