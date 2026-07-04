@@ -543,7 +543,7 @@ export function createAwsPreviewCloudFormationTemplate(
     parameters.ServiceSubnetIds = {
       Type: "List<AWS::EC2::Subnet::Id>",
       Description:
-        "Subnet ids used by adapter-owned ECS/Fargate preview services.",
+        "Subnet ids (typically public subnets with internet egress) used by adapter-owned ECS/Fargate preview services.",
     };
   }
 
