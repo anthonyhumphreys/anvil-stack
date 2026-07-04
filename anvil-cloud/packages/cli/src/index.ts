@@ -5,6 +5,7 @@ import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { Cause, Effect, Exit } from "effect";
 
 import {
   AwsPreviewDeploymentAdapter,
@@ -1709,54 +1710,128 @@ async function commandDeploy(context: CliContext): Promise<void> {
     return;
   }
 
-  const result = await buildCell({ rootDir: context.cwd, target: "preview" });
+  const previewResult = await runCliEffect(
+    commandDeployPreviewEffect(context, waitTimeoutSeconds ?? 60),
+  );
 
-  if (!result.ok || !result.manifest || !result.output) {
-    writeBuildResult(context, result, "Build failed.");
+  if (previewResult.kind === "build-failed") {
+    writeBuildResult(context, previewResult.result, "Build failed.");
     process.exitCode = 4;
     return;
   }
 
-  const provisioner = createAwsSdkPreviewProvisionerFromEnv();
-  const adapter = new AwsPreviewDeploymentAdapter(
-    provisioner ? { provisioner } : {},
+  writeJsonOrHuman(
+    context,
+    previewResult.output,
+    JSON.stringify(previewResult.output, null, 2),
   );
-  const deployResult = await adapter.deploy({
-    manifest: result.manifest as CellManifest,
-    buildOutput: result.output,
-    environment: "preview",
-  });
-  let output: unknown = deployResult;
 
-  if (deployResult.ok && context.flags.has("wait")) {
-    const timeoutSeconds = waitTimeoutSeconds ?? 60;
-    const verification = await waitForRemoteRuntime(deployResult.url, {
-      timeoutMs: timeoutSeconds * 1000,
+  if (!previewResult.ok) {
+    process.exitCode = 6;
+  }
+}
+
+type PreviewDeployCommandResult =
+  | {
+      kind: "build-failed";
+      result: BuildResult;
+    }
+  | {
+      kind: "completed";
+      ok: boolean;
+      output: unknown;
+    };
+
+function commandDeployPreviewEffect(
+  context: CliContext,
+  waitTimeoutSeconds: number,
+): Effect.Effect<PreviewDeployCommandResult, Error> {
+  return Effect.gen(function* () {
+    const result = yield* Effect.tryPromise({
+      try: () => buildCell({ rootDir: context.cwd, target: "preview" }),
+      catch: toCliEffectError,
+    });
+
+    if (!result.ok || !result.manifest || !result.output) {
+      return {
+        kind: "build-failed" as const,
+        result,
+      };
+    }
+
+    const manifest = result.manifest as CellManifest;
+    const buildOutput = result.output;
+    const provisioner = createAwsSdkPreviewProvisionerFromEnv();
+    const adapter = new AwsPreviewDeploymentAdapter(
+      provisioner ? { provisioner } : {},
+    );
+    const deployResult = yield* Effect.tryPromise({
+      try: () =>
+        adapter.deploy({
+          manifest,
+          buildOutput,
+          environment: "preview",
+        }),
+      catch: toCliEffectError,
+    });
+
+    if (!deployResult.ok || !context.flags.has("wait")) {
+      return {
+        kind: "completed" as const,
+        ok: deployResult.ok,
+        output: deployResult,
+      };
+    }
+
+    const verification = yield* Effect.tryPromise({
+      try: () =>
+        waitForRemoteRuntime(deployResult.url, {
+          timeoutMs: waitTimeoutSeconds * 1000,
+        }),
+      catch: toCliEffectError,
     });
 
     if (verification.ok) {
-      output = {
-        ...deployResult,
-        verification,
+      return {
+        kind: "completed" as const,
+        ok: true,
+        output: {
+          ...deployResult,
+          verification,
+        },
       };
-    } else {
-      output = {
+    }
+
+    return {
+      kind: "completed" as const,
+      ok: false,
+      output: {
         ok: false,
         code: verification.code,
         message: verification.message,
         hint: "Inspect the deployed Lambda logs and CloudFormation outputs, then rerun anvil-cloud deploy --preview --wait.",
         deployment: deployResult,
         verification,
-      };
-      process.exitCode = 6;
-    }
+      },
+    };
+  });
+}
+
+// Runs a CLI effect at the Promise boundary. Typed failures and defects are
+// both rethrown as their original values so callers keep the pre-Effect
+// error contract.
+async function runCliEffect<T>(effect: Effect.Effect<T, Error>): Promise<T> {
+  const exit = await Effect.runPromiseExit(effect);
+
+  if (Exit.isSuccess(exit)) {
+    return exit.value;
   }
 
-  writeJsonOrHuman(context, output, JSON.stringify(output, null, 2));
+  throw Cause.squash(exit.cause);
+}
 
-  if (!deployResult.ok) {
-    process.exitCode = 6;
-  }
+function toCliEffectError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 async function commandDestroy(context: CliContext): Promise<void> {

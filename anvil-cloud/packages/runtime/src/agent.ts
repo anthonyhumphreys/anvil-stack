@@ -1,4 +1,5 @@
 import { RuntimeError } from "./errors.js";
+import { Cause, Effect, Exit } from "effect";
 
 export type AgentModelConfig = {
   provider: string;
@@ -509,78 +510,100 @@ export class AgentRuntime {
     agent: AgentDefinition,
     input: AgentRuntimeInvokeInput,
   ): Promise<AgentRuntimeInvokeResult> {
+    return runAgentRuntimeEffect(this.invokeEffect(agent, input));
+  }
+
+  private invokeEffect(
+    agent: AgentDefinition,
+    input: AgentRuntimeInvokeInput,
+  ): Effect.Effect<AgentRuntimeInvokeResult, RuntimeError> {
     const validationOptions =
       this.baseDir === undefined ? {} : { baseDir: this.baseDir };
-    const issues = await validateAgentDefinition(agent, validationOptions);
-    const errors = issues.filter((issue) => issue.severity === "error");
 
-    if (errors.length > 0) {
-      throw new RuntimeError(
-        "VALIDATION_ERROR",
-        `Agent '${agent.name}' is not valid.`,
-        400,
-        { issues: errors },
+    return Effect.gen(this, function* () {
+      const issues = yield* runtimeEffectFromPromise(() =>
+        validateAgentDefinition(agent, validationOptions),
       );
-    }
+      const errors = issues.filter((issue) => issue.severity === "error");
 
-    const provider = this.providers.get(agent.model.provider);
-    const instructions = await resolveInstructions(agent, this.baseDir);
-    const messages: AgentMessage[] = [];
+      if (errors.length > 0) {
+        return yield* Effect.fail(
+          new RuntimeError(
+            "VALIDATION_ERROR",
+            `Agent '${agent.name}' is not valid.`,
+            400,
+            { issues: errors },
+          ),
+        );
+      }
 
-    if (instructions.length > 0) {
+      const provider = yield* runtimeEffectFromSync(() =>
+        this.providers.get(agent.model.provider),
+      );
+      const instructions = yield* runtimeEffectFromPromise(() =>
+        resolveInstructions(agent, this.baseDir),
+      );
+      const messages: AgentMessage[] = [];
+
+      if (instructions.length > 0) {
+        messages.push({
+          role: "system",
+          content: instructions,
+        });
+      }
+
+      messages.push(...(input.messages ?? []));
       messages.push({
-        role: "system",
-        content: instructions,
+        role: "user",
+        content: input.input,
       });
-    }
 
-    messages.push(...(input.messages ?? []));
-    messages.push({
-      role: "user",
-      content: input.input,
-    });
+      const request: AgentInferenceRequest = {
+        agentName: agent.name,
+        model: agent.model,
+        messages,
+      };
 
-    const request: AgentInferenceRequest = {
-      agentName: agent.name,
-      model: agent.model,
-      messages,
-    };
+      if (input.tools !== undefined) {
+        request.tools = input.tools.map((tool) => tool.definition);
+      }
 
-    if (input.tools !== undefined) {
-      request.tools = input.tools.map((tool) => tool.definition);
-    }
+      if (input.context !== undefined) {
+        request.metadata = input.context;
+      }
 
-    if (input.context !== undefined) {
-      request.metadata = input.context;
-    }
-
-    const response = await provider.invoke(request);
-    const toolCalls = response.toolCalls ?? [];
-    const approvalsRequired: AgentApprovalRequest[] = [];
-
-    for (const call of toolCalls) {
-      const tool = input.tools?.find(
-        (candidate) => candidate.definition.name === call.name,
+      const response = yield* runtimeEffectFromPromise(() =>
+        provider.invoke(request),
       );
+      const toolCalls = response.toolCalls ?? [];
+      const approvalsRequired: AgentApprovalRequest[] = [];
 
-      if (!tool) {
-        continue;
+      for (const call of toolCalls) {
+        const tool = input.tools?.find(
+          (candidate) => candidate.definition.name === call.name,
+        );
+
+        if (!tool) {
+          continue;
+        }
+
+        const approval = yield* runtimeEffectFromPromise(() =>
+          this.prepareToolExecution(agent, tool.definition),
+        );
+
+        if (approval) {
+          approvalsRequired.push(approval);
+        }
       }
 
-      const approval = await this.prepareToolExecution(agent, tool.definition);
-
-      if (approval) {
-        approvalsRequired.push(approval);
-      }
-    }
-
-    return {
-      agentName: agent.name,
-      response: response.message,
-      toolCalls,
-      approvalsRequired,
-      usage: response.usage ?? {},
-    };
+      return {
+        agentName: agent.name,
+        response: response.message,
+        toolCalls,
+        approvalsRequired,
+        usage: response.usage ?? {},
+      };
+    });
   }
 
   async executeTool(
@@ -589,33 +612,52 @@ export class AgentRuntime {
     input: unknown,
     metadata?: Record<string, unknown>,
   ): Promise<AgentToolResult> {
-    const approval = await this.prepareToolExecution(agent, tool.definition);
+    return runAgentRuntimeEffect(
+      this.executeToolEffect(agent, tool, input, metadata),
+    );
+  }
 
-    if (approval) {
-      const decision = await this.approvalProvider.requestApproval(approval);
+  private executeToolEffect(
+    agent: AgentDefinition,
+    tool: AgentToolExecutor,
+    input: unknown,
+    metadata?: Record<string, unknown>,
+  ): Effect.Effect<AgentToolResult, RuntimeError> {
+    return Effect.gen(this, function* () {
+      const approval = yield* runtimeEffectFromPromise(() =>
+        this.prepareToolExecution(agent, tool.definition),
+      );
 
-      if (decision.status !== "approved") {
-        return {
-          ok: false,
-          approval: decision,
-          error: {
-            code: "AGENT_APPROVAL_REQUIRED",
-            message: `Action '${approval.action}' requires approval before execution.`,
-          },
-        };
+      if (approval) {
+        const decision = yield* runtimeEffectFromPromise(() =>
+          this.approvalProvider.requestApproval(approval),
+        );
+
+        if (decision.status !== "approved") {
+          return {
+            ok: false,
+            approval: decision,
+            error: {
+              code: "AGENT_APPROVAL_REQUIRED",
+              message: `Action '${approval.action}' requires approval before execution.`,
+            },
+          };
+        }
       }
-    }
 
-    const context: AgentToolContext = {
-      agentName: agent.name,
-      capabilities: normalizeAgentCapabilities(agent.capabilities),
-    };
+      const context: AgentToolContext = {
+        agentName: agent.name,
+        capabilities: normalizeAgentCapabilities(agent.capabilities),
+      };
 
-    if (metadata !== undefined) {
-      context.metadata = metadata;
-    }
+      if (metadata !== undefined) {
+        context.metadata = metadata;
+      }
 
-    return tool.execute(input, context);
+      return yield* runtimeEffectFromPromise(() =>
+        tool.execute(input, context),
+      );
+    });
   }
 
   private async prepareToolExecution(
@@ -648,6 +690,46 @@ export class AgentRuntime {
 
     return null;
   }
+}
+
+// Runs an agent-runtime effect at the Promise boundary. Expected failures
+// (RuntimeError) and defects (anything else thrown inside the effect) are both
+// rethrown as their original values so callers keep the pre-Effect contract.
+async function runAgentRuntimeEffect<T>(
+  effect: Effect.Effect<T, RuntimeError>,
+): Promise<T> {
+  const exit = await Effect.runPromiseExit(effect);
+
+  if (Exit.isSuccess(exit)) {
+    return exit.value;
+  }
+
+  throw Cause.squash(exit.cause);
+}
+
+// RuntimeError is the agent runtime's expected failure channel. Anything else
+// (provider/tool errors of unknown shape) is treated as a defect and preserved
+// as-is by runAgentRuntimeEffect.
+function runtimeEffectFromPromise<T>(
+  run: () => Promise<T> | T,
+): Effect.Effect<T, RuntimeError> {
+  return Effect.tryPromise({
+    try: async () => run(),
+    catch: (error) => error,
+  }).pipe(Effect.catchAll(failOrDie));
+}
+
+function runtimeEffectFromSync<T>(
+  run: () => T,
+): Effect.Effect<T, RuntimeError> {
+  return Effect.try({
+    try: run,
+    catch: (error) => error,
+  }).pipe(Effect.catchAll(failOrDie));
+}
+
+function failOrDie(error: unknown): Effect.Effect<never, RuntimeError> {
+  return error instanceof RuntimeError ? Effect.fail(error) : Effect.die(error);
 }
 
 export async function resolveInstructions(

@@ -120,6 +120,36 @@ capabilities as additions. That is conservative for first deploys and keeps the
 review surface honest instead of pretending the adapter knows remote state it
 has not inspected.
 
+## Effect usage
+
+Effect is used inside Anvil Cloud orchestration code where retries, timeouts,
+typed provider failures, resource cleanup, or multi-step async control flow are
+part of the platform contract. The AWS preview provisioner and destroyer,
+remote reader, CLI deploy flow, workflow executor, and guarded agent tool
+runtime are valid Effect surfaces.
+
+Effect is not part of the Cell authoring contract. Cell code should continue to
+use the normal Anvil Runtime APIs and ordinary async TypeScript; deployment
+adapters translate those provider-neutral contracts into Effect-backed platform
+operations internally.
+
+Effect surfaces follow a shared boundary contract:
+
+- Public APIs stay Promise-based. Effect programs are run at the boundary with
+  `Effect.runPromiseExit`, and both typed failures and defects are rethrown as
+  their original error values, so callers see the same error shapes as before
+  Effect adoption (`RuntimeError`, `AwsPreviewProvisioningError`,
+  `AwsPreviewDestroyError`, `AwsRemoteReaderError`).
+- Error channels are typed. Each surface declares its expected failure type in
+  the Effect error channel; unexpected errors are defects, not silently widened
+  `unknown` failures.
+- Polling and retry use `Schedule` (`Schedule.spaced`, `Schedule.recurs`,
+  `Schedule.addDelay`) rather than hand-rolled loops, with attempt budgets that
+  match the documented adapter options (`stackPollDelayMs`,
+  `stackMaxPollAttempts`, workflow `retries`).
+- Fan-out work (for example client asset uploads) uses `Effect.all` with a
+  bounded concurrency, because input sizes are not bounded by the platform.
+
 ## Non-goals
 
 Anvil is not a Pulumi authoring surface. Users should not write Pulumi components for Cells, and generated manifests should not require Pulumi concepts. Future adapters may use Terraform/OpenTofu, CDK, Kubernetes, direct provider APIs, or another engine without changing Cell authoring.
