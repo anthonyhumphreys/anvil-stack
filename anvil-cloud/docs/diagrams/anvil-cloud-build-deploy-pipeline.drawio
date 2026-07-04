@@ -1,0 +1,100 @@
+<mxGraphModel dx="1600" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1500" pageHeight="900" math="0" shadow="0">
+  <root>
+    <mxCell id="0"/>
+    <mxCell id="1" parent="0"/>
+    <mxCell id="title" value="Anvil Cloud Build And Deploy Pipeline" style="text;html=1;strokeColor=none;fillColor=none;fontColor=#f8fafc;fontSize=28;fontStyle=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+      <mxGeometry x="60" y="30" width="700" height="50" as="geometry"/>
+    </mxCell>
+    <mxCell id="subtitle" value="The delivery loop stays app-first: diagnostics, artifacts, graph, adapter plan, provider realization, runtime evidence." style="text;html=1;strokeColor=none;fillColor=none;fontColor=#cbd5e1;fontSize=14;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+      <mxGeometry x="62" y="75" width="1040" height="34" as="geometry"/>
+    </mxCell>
+    <mxCell id="source" value="Cell source" style="rounded=1;whiteSpace=wrap;html=1;arcSize=12;fillColor=#1e293b;strokeColor=#a78bfa;fontColor=#f8fafc;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
+      <mxGeometry x="60" y="190" width="150" height="70" as="geometry"/>
+    </mxCell>
+    <mxCell id="check" value="check&lt;br&gt;JSON diagnostics" style="rounded=1;whiteSpace=wrap;html=1;arcSize=12;fillColor=#18202f;strokeColor=#60a5fa;fontColor=#f8fafc;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
+      <mxGeometry x="270" y="190" width="160" height="70" as="geometry"/>
+    </mxCell>
+    <mxCell id="build" value="build&lt;br&gt;typecheck and bundle" style="rounded=1;whiteSpace=wrap;html=1;arcSize=12;fillColor=#18202f;strokeColor=#60a5fa;fontColor=#f8fafc;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
+      <mxGeometry x="490" y="190" width="170" height="70" as="geometry"/>
+    </mxCell>
+    <mxCell id="graph" value="manifest and Cell graph&lt;br&gt;provider-neutral" style="shape=folder;tabWidth=70;tabHeight=18;whiteSpace=wrap;html=1;fillColor=#1f2937;strokeColor=#93c5fd;fontColor=#f8fafc;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
+      <mxGeometry x="720" y="180" width="190" height="90" as="geometry"/>
+    </mxCell>
+    <mxCell id="plan" value="plan&lt;br&gt;adapter diff" style="rounded=1;whiteSpace=wrap;html=1;arcSize=12;fillColor=#2a2414;strokeColor=#fbbf24;fontColor=#fffbeb;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
+      <mxGeometry x="970" y="190" width="160" height="70" as="geometry"/>
+    </mxCell>
+    <mxCell id="approval" value="review risky changes&lt;br&gt;capabilities and policy" style="rounded=1;whiteSpace=wrap;html=1;arcSize=12;fillColor=#311c24;strokeColor=#fb7185;fontColor=#ffe4e6;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
+      <mxGeometry x="1190" y="180" width="200" height="90" as="geometry"/>
+    </mxCell>
+    <mxCell id="upload" value="upload artifacts&lt;br&gt;server and client" style="rounded=1;whiteSpace=wrap;html=1;arcSize=12;fillColor=#2a2414;strokeColor=#fbbf24;fontColor=#fffbeb;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
+      <mxGeometry x="270" y="480" width="170" height="80" as="geometry"/>
+    </mxCell>
+    <mxCell id="provision" value="provision resources&lt;br&gt;AWS preview adapter" style="rounded=1;whiteSpace=wrap;html=1;arcSize=12;fillColor=#33220a;strokeColor=#f59e0b;fontColor=#fffbeb;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
+      <mxGeometry x="520" y="480" width="190" height="80" as="geometry"/>
+    </mxCell>
+    <mxCell id="runtime" value="runtime evidence&lt;br&gt;inspect, logs, Lens" style="rounded=1;whiteSpace=wrap;html=1;arcSize=12;fillColor=#102a24;strokeColor=#34d399;fontColor=#ecfdf5;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
+      <mxGeometry x="790" y="480" width="190" height="80" as="geometry"/>
+    </mxCell>
+    <mxCell id="feedback" value="feedback into source&lt;br&gt;fix diagnostics, policy, handlers" style="rounded=1;whiteSpace=wrap;html=1;arcSize=12;fillColor=#0f172a;strokeColor=#38bdf8;fontColor=#e5e7eb;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
+      <mxGeometry x="1060" y="480" width="220" height="80" as="geometry"/>
+    </mxCell>
+    <mxCell id="guard" value="Anvil Guard&lt;br&gt;fails closed before artifacts" style="rounded=1;whiteSpace=wrap;html=1;arcSize=12;fillColor=#450a0a;strokeColor=#f87171;fontColor=#fee2e2;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
+      <mxGeometry x="350" y="330" width="230" height="80" as="geometry"/>
+    </mxCell>
+    <mxCell id="outputs" value=".anvil output&lt;br&gt;dist/server, dist/client, manifest.json, generated client" style="shape=folder;tabWidth=70;tabHeight=18;whiteSpace=wrap;html=1;fillColor=#1f2937;strokeColor=#93c5fd;fontColor=#f8fafc;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
+      <mxGeometry x="700" y="330" width="280" height="90" as="geometry"/>
+    </mxCell>
+    <mxCell id="e1" value="source" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#7dd3fc;fontColor=#cbd5e1;endArrow=block;endFill=1;" edge="1" parent="1" source="source" target="check">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e2" value="passes" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#93c5fd;fontColor=#cbd5e1;endArrow=block;endFill=1;" edge="1" parent="1" source="check" target="build">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e3" value="emits" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#93c5fd;fontColor=#cbd5e1;endArrow=block;endFill=1;" edge="1" parent="1" source="build" target="graph">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e4" value="adapter input" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#fbbf24;fontColor=#fde68a;endArrow=block;endFill=1;" edge="1" parent="1" source="graph" target="plan">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e5" value="risk gate" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#fb7185;fontColor=#fecdd3;endArrow=block;endFill=1;" edge="1" parent="1" source="plan" target="approval">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e6" value="approved" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#fbbf24;fontColor=#fde68a;endArrow=block;endFill=1;" edge="1" parent="1" source="approval" target="upload">
+      <mxGeometry relative="1" as="geometry">
+        <Array as="points">
+          <mxPoint x="1290" y="430"/>
+          <mxPoint x="355" y="430"/>
+        </Array>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="e7" value="deploy" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#fbbf24;fontColor=#fde68a;endArrow=block;endFill=1;" edge="1" parent="1" source="upload" target="provision">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e8" value="observe" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#34d399;fontColor=#bbf7d0;endArrow=block;endFill=1;" edge="1" parent="1" source="provision" target="runtime">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e9" value="learn" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#7dd3fc;fontColor=#cbd5e1;endArrow=block;endFill=1;" edge="1" parent="1" source="runtime" target="feedback">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e10" value="edit" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#7dd3fc;fontColor=#cbd5e1;endArrow=block;endFill=1;" edge="1" parent="1" source="feedback" target="source">
+      <mxGeometry relative="1" as="geometry">
+        <Array as="points">
+          <mxPoint x="1170" y="660"/>
+          <mxPoint x="135" y="660"/>
+        </Array>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="e11" value="checks" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#fb7185;fontColor=#fecdd3;dashed=1;endArrow=block;endFill=1;" edge="1" parent="1" source="guard" target="check">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e12" value="blocks unsafe output" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#fb7185;fontColor=#fecdd3;dashed=1;endArrow=block;endFill=1;" edge="1" parent="1" source="guard" target="build">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e13" value="writes" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#93c5fd;fontColor=#cbd5e1;dashed=1;endArrow=block;endFill=1;" edge="1" parent="1" source="build" target="outputs">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e14" value="includes graph" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#93c5fd;fontColor=#cbd5e1;dashed=1;endArrow=block;endFill=1;" edge="1" parent="1" source="outputs" target="graph">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+  </root>
+</mxGraphModel>

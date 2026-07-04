@@ -11,12 +11,16 @@ vi.mock('../git.service.js', () => ({
   popStash: vi.fn(),
   hasUncommittedChanges: vi.fn(),
   autoCommit: vi.fn(),
+  addWorktree: vi.fn(),
 }));
 
 import {
+  buildSpikeBranchName,
   sanitizeBranchName,
   setupSpikeBranch,
+  setupSpikeWorktree,
   teardownSpikeBranch,
+  teardownSpikeWorktree,
   isOnSpikeBranch,
   getActiveSpikeState,
   cleanupAllSpikes,
@@ -30,6 +34,7 @@ import {
   popStash,
   hasUncommittedChanges,
   autoCommit,
+  addWorktree,
 } from '../git.service.js';
 
 // ---------------------------------------------------------------------------
@@ -86,11 +91,18 @@ describe('sanitizeBranchName', () => {
   });
 });
 
+describe('buildSpikeBranchName', () => {
+  it('adds a sanitized run suffix when provided', () => {
+    expect(buildSpikeBranchName('TASK-123', 'abc 123')).toBe('spike/TASK-123-abc-123');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Lifecycle tests
 // ---------------------------------------------------------------------------
 
 const REPO = '/repo/test';
+const WORKTREE = '/tmp/anvil-ba-spike/TASK-11/repo-abc123';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -175,6 +187,35 @@ describe('setupSpikeBranch', () => {
   });
 });
 
+describe('setupSpikeWorktree', () => {
+  it('creates a retained worktree from the origin branch', async () => {
+    vi.mocked(getCurrentBranch).mockResolvedValue('main');
+    vi.mocked(addWorktree).mockResolvedValue(undefined);
+
+    const state = await setupSpikeWorktree(REPO, WORKTREE, 'TASK-11', vi.fn(), 'abc123');
+
+    expect(addWorktree).toHaveBeenCalledWith(REPO, WORKTREE, 'spike/TASK-11-abc123', 'main');
+    expect(state.worktreePath).toBe(WORKTREE);
+    expect(state.stashRef).toBeNull();
+    expect(getActiveSpikeState(WORKTREE)?.spikeBranch).toBe('spike/TASK-11-abc123');
+  });
+
+  it('detects drift inside the retained worktree', async () => {
+    vi.useFakeTimers();
+    vi.mocked(getCurrentBranch).mockResolvedValueOnce('main').mockResolvedValue('main');
+    vi.mocked(addWorktree).mockResolvedValue(undefined);
+
+    const onDrift = vi.fn();
+    await setupSpikeWorktree(REPO, WORKTREE, 'TASK-12', onDrift, 'def456');
+
+    vi.mocked(getCurrentBranch).mockResolvedValue('main');
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(getCurrentBranch).toHaveBeenLastCalledWith(WORKTREE);
+    expect(onDrift).toHaveBeenCalled();
+  });
+});
+
 describe('teardownSpikeBranch', () => {
   it('auto-commits WIP, checks out origin branch, and pops stash', async () => {
     // Setup first
@@ -229,6 +270,25 @@ describe('teardownSpikeBranch', () => {
     await teardownSpikeBranch(REPO, 'TASK-8');
 
     expect(getActiveSpikeState(REPO)).toBeNull();
+  });
+});
+
+describe('teardownSpikeWorktree', () => {
+  it('auto-commits WIP in the worktree and leaves the main checkout alone', async () => {
+    vi.mocked(getCurrentBranch).mockResolvedValue('main');
+    vi.mocked(addWorktree).mockResolvedValue(undefined);
+    await setupSpikeWorktree(REPO, WORKTREE, 'TASK-13', vi.fn(), 'ghi789');
+
+    vi.mocked(hasUncommittedChanges).mockResolvedValue(true);
+    vi.mocked(autoCommit).mockResolvedValue(undefined);
+
+    await teardownSpikeWorktree(WORKTREE);
+
+    expect(hasUncommittedChanges).toHaveBeenCalledWith(WORKTREE);
+    expect(autoCommit).toHaveBeenCalledWith(WORKTREE, expect.stringContaining('[TASK-13]'));
+    expect(checkoutBranch).not.toHaveBeenCalledWith(REPO, 'main');
+    expect(popStash).not.toHaveBeenCalled();
+    expect(getActiveSpikeState(WORKTREE)).toBeNull();
   });
 });
 

@@ -43,7 +43,7 @@ jobs:
 
       - run: corepack enable
 
-      - run: npm install --global @anvilstack/cli
+      - run: npm install --global @anvilstack/registry-cli
 
       - name: Install through Anvil Registry
         run: |
@@ -53,13 +53,18 @@ jobs:
           ANVIL_REGISTRY_URL: https://npm.example.com
 
       - name: Explain lockfile changes
-        run: anvil scan package-lock.json --queue-analysis
+        run: anvil registry scan package-lock.json --queue-analysis
         env:
           ANVIL_REGISTRY_URL: https://npm.example.com
           ANVIL_ADMIN_TOKEN: ${{ secrets.ANVIL_ADMIN_TOKEN }}
 
       - name: Run Node Base safe mode
-        run: anvil-npm-ci-safe
+        run: |
+          docker run --rm \
+            -v "$PWD:/workspace" \
+            -w /workspace \
+            ghcr.io/anthonyhumphreys/anvil-stack/anvil-node-base:22 \
+            anvil-npm-ci-safe
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -68,7 +73,7 @@ jobs:
           path: .anvil/reports
 ```
 
-Adapt this to your container strategy. If your job already runs inside Anvil Node Base, call the helper scripts directly. If not, run the image with the repository mounted.
+Adapt this to your container strategy. If your job already runs inside Anvil Node Base, call the helper scripts directly. If not, run the image with the repository mounted as shown above.
 
 The CLI needs `ANVIL_REGISTRY_URL` for gateway calls and `ANVIL_ADMIN_TOKEN` for queueing analysis or other protected operations. See [CLI](/docs/registry/cli) for installation and command usage.
 

@@ -11,7 +11,16 @@ import {
 import { resetLlmClient } from '../services/llm.service.js';
 import { testAppleFoundationModels } from '../services/apple-foundation-models.service.js';
 import { getActiveProvider } from '../services/workitem-provider.js';
-import { isNotionMcpInstalled, installNotionMcp, startNotionOAuthFlow, exchangeNotionOAuthCode } from '../services/notion.service.js';
+import {
+  readCodexAgentsFile,
+  writeCodexAgentsFile,
+} from '../services/codex-agents-file.service.js';
+import {
+  isNotionMcpInstalled,
+  installNotionMcp,
+  startNotionOAuthFlow,
+  exchangeNotionOAuthCode,
+} from '../services/notion.service.js';
 
 export function registerSettingsHandlers(): void {
   ipcMain.handle('settings:get', () => {
@@ -152,6 +161,24 @@ export function registerSettingsHandlers(): void {
       return await exchangeNotionOAuthCode(code);
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle('settings:codex-agents:get', async () => {
+    try {
+      return await readCodexAgentsFile();
+    } catch (err) {
+      console.error('[Settings IPC] Error reading Codex AGENTS.md:', err);
+      throw err;
+    }
+  });
+
+  ipcMain.handle('settings:codex-agents:save', async (_event, content: string) => {
+    try {
+      return await writeCodexAgentsFile(content);
+    } catch (err) {
+      console.error('[Settings IPC] Error saving Codex AGENTS.md:', err);
+      throw err;
     }
   });
 

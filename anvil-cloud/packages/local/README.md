@@ -9,6 +9,6 @@ Responsibilities:
 - provide local database adapters;
 - provide local auth, files, jobs, and logs adapters;
 - expose local inspection routes;
-- support `anvil dev` and `anvil inspect --local`.
+- support `anvil-cloud dev` and `anvil-cloud inspect --local`.
 
 See `docs/architecture/local-dev.md` for the implementation design.

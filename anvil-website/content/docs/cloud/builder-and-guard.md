@@ -16,7 +16,7 @@ provider APIs, process globals, or effects the manifest cannot explain.
 
 ## Build pipeline
 
-`anvil check` and `anvil build` share the same pipeline. `check` runs it without writing artifacts; `build` writes output.
+`anvil cloud check` and `anvil cloud build` share the same pipeline. `check` runs it without writing artifacts; `build` writes output.
 
 Pipeline:
 
@@ -174,13 +174,13 @@ The builder runs TypeScript against the Cell project. This catches app-code mist
 Use:
 
 ```bash
-anvil check --json
+anvil cloud check --json
 ```
 
 before:
 
 ```bash
-anvil build --json
+anvil cloud build --json
 ```
 
 ## Manifest extraction
@@ -199,12 +199,12 @@ Read [Generated client](/docs/cloud/generated-client) for client-side usage.
 
 Before preview deploy, inspect:
 
-- `anvil check --json` diagnostics
-- `anvil build --json` output
+- `anvil cloud check --json` diagnostics
+- `anvil cloud build --json` output
 - `.anvil/dist/manifest.json`
 - `.anvil/generated/client.ts`
 - `.anvil/dist/build-meta.json`
-- deployment plan and CloudFormation template from `anvil deploy --preview --json`
+- deployment plan and CloudFormation template from `anvil cloud deploy --preview --json`
 
 If these disagree, stop and fix the contract first. A preview deploy should be
 the boring part.

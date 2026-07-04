@@ -22,6 +22,7 @@ export type CellManifest = {
     server: string;
     client: string;
   };
+  client: CellConfig["client"];
   schema: {
     tables: Record<
       string,
@@ -56,8 +57,12 @@ export function createCellManifest(
     },
     entrypoints: {
       server: "dist/server/index.mjs",
-      client: "dist/client/index.html",
+      client:
+        config.client.kind === "vite-react"
+          ? "dist/client/index.html"
+          : config.entrypoints.client,
     },
+    client: config.client,
     schema: {
       tables: Object.fromEntries(
         inspection.schema.tables.map((table) => [

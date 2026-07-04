@@ -63,6 +63,25 @@ describe("buildCell", () => {
       readText(path.join(rootDir, ".anvil/generated/client.ts")),
     ).resolves.toContain("createNote");
     await expect(
+      readText(path.join(rootDir, ".anvil/generated/client.ts")),
+    ).resolves.toContain("export interface QueryTypes {}");
+    await expect(
+      readText(path.join(rootDir, ".anvil/generated/client.ts")),
+    ).resolves.toContain(
+      'listNotes: { kind: "query", name: "listNotes" } as TypedQuery<"listNotes">',
+    );
+    await expect(
+      readText(path.join(rootDir, ".anvil/generated/client.ts")),
+    ).resolves.toContain(
+      [
+        "  meta: {",
+        '    schemaVersion: "0.1",',
+        '    queries: ["listNotes"],',
+        '    mutations: ["createNote"],',
+        "  },",
+      ].join("\n"),
+    );
+    await expect(
       readText(path.join(rootDir, ".anvil/dist/client/assets/cell.client.js")),
     ).resolves.toContain("listNotes");
   });
@@ -94,6 +113,243 @@ describe("buildCell", () => {
     await expect(
       readText(path.join(rootDir, ".anvil/generated/client.ts")),
     ).resolves.toContain("listNotes");
+  });
+
+  it("builds Expo Router client targets without emitting a Vite bundle", async () => {
+    const rootDir = await createCell({
+      clientKind: "expo-router",
+      clientEntry: "app/index.tsx",
+      server: [
+        'import { app, query } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  queries: {",
+        "    listNotes: query({ handler: async () => [] }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+      client: [
+        'import { createApiClient, createClient } from "@anvil-cloud/client";',
+        'import { api } from "@anvil/generated/client";',
+        "",
+        "const client = createApiClient(createClient(), api);",
+        "void client.queries.listNotes({});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await buildCell({ rootDir });
+
+    expect(result.ok).toBe(true);
+    expect(result.manifest).toMatchObject({
+      client: {
+        kind: "expo-router",
+      },
+      entrypoints: {
+        client: "app/index.tsx",
+      },
+      queries: ["listNotes"],
+    });
+    await expect(
+      readText(path.join(rootDir, ".anvil/generated/client.ts")),
+    ).resolves.toContain("listNotes");
+    await expect(
+      fileExists(path.join(rootDir, ".anvil/dist/client/index.html")),
+    ).resolves.toBe(false);
+  });
+
+  it("blocks public file access escalation compared with the previous build", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  capabilities: {",
+        "    files: { publicRead: false },",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    await expect(buildCell({ rootDir })).resolves.toMatchObject({ ok: true });
+    await writeFile(
+      path.join(rootDir, "src/cell.server.ts"),
+      [
+        'import { app } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  capabilities: {",
+        "    files: { publicRead: true },",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = await buildCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "manifest",
+      diagnostics: [
+        {
+          code: "PUBLIC_FILE_ACCESS_CHANGED",
+          message:
+            "capabilities.files.publicRead changed from false to true compared with the previous build.",
+        },
+      ],
+    });
+  });
+
+  it("blocks destructive schema removals compared with the previous build", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, table, text } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  schema: {",
+        "    notes: table({",
+        "      title: text(),",
+        "      body: text(),",
+        "    }),",
+        "  },",
+        "  capabilities: { database: true },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    await expect(buildCell({ rootDir })).resolves.toMatchObject({ ok: true });
+    await writeFile(
+      path.join(rootDir, "src/cell.server.ts"),
+      [
+        'import { app, table, text } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  schema: {",
+        "    notes: table({",
+        "      title: text(),",
+        "    }),",
+        "  },",
+        "  capabilities: { database: true },",
+        "});",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = await buildCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "manifest",
+      diagnostics: [
+        {
+          code: "DESTRUCTIVE_SCHEMA_CHANGE",
+          message:
+            "Schema field 'notes.body' was removed compared with the previous build.",
+        },
+      ],
+    });
+  });
+
+  it("blocks destructive schema table removals compared with the previous build", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, table, text } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  schema: {",
+        "    notes: table({ title: text() }),",
+        "  },",
+        "  capabilities: { database: true },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    await expect(buildCell({ rootDir })).resolves.toMatchObject({ ok: true });
+    await writeFile(
+      path.join(rootDir, "src/cell.server.ts"),
+      [
+        'import { app } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  schema: {},",
+        "  capabilities: { database: true },",
+        "});",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = await buildCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "manifest",
+      diagnostics: [
+        {
+          code: "DESTRUCTIVE_SCHEMA_CHANGE",
+          message:
+            "Schema table 'notes' was removed compared with the previous build.",
+        },
+      ],
+    });
+  });
+
+  it("blocks destructive schema type changes compared with the previous build", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, table, text } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  schema: {",
+        "    notes: table({",
+        "      title: text(),",
+        "    }),",
+        "  },",
+        "  capabilities: { database: true },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    await expect(buildCell({ rootDir })).resolves.toMatchObject({ ok: true });
+    await writeFile(
+      path.join(rootDir, "src/cell.server.ts"),
+      [
+        'import { app, boolean, table } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  schema: {",
+        "    notes: table({",
+        "      title: boolean(),",
+        "    }),",
+        "  },",
+        "  capabilities: { database: true },",
+        "});",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = await buildCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "manifest",
+      diagnostics: [
+        {
+          code: "DESTRUCTIVE_SCHEMA_CHANGE",
+          message:
+            "Schema field 'notes.title' changed type from 'text' to 'boolean'.",
+        },
+      ],
+    });
   });
 
   it("reports forbidden imports before bundling", async () => {
@@ -155,6 +411,168 @@ describe("buildCell", () => {
     });
   });
 
+  it("reports file-system imports before bundling", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { readFile } from "node:fs/promises";',
+        'import { createWriteStream } from "fs";',
+        'import { app } from "@anvil-cloud/runtime";',
+        "",
+        "void readFile;",
+        "void createWriteStream;",
+        "export default app({});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await checkCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "import-policy",
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({
+          code: "FORBIDDEN_IMPORT",
+          message:
+            "Import 'node:fs/promises' is not allowed in Cell server code.",
+          hint: "Use ctx.files for Cell-owned file storage.",
+        }),
+        expect.objectContaining({
+          code: "FORBIDDEN_IMPORT",
+          message: "Import 'fs' is not allowed in Cell server code.",
+          hint: "Use ctx.files for Cell-owned file storage.",
+        }),
+      ]),
+    });
+  });
+
+  it("reports direct network client imports before bundling", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { request } from "node:https";',
+        'import axios from "axios";',
+        'import { app } from "@anvil-cloud/runtime";',
+        "",
+        "void request;",
+        "void axios;",
+        "export default app({});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await checkCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "import-policy",
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({
+          code: "FORBIDDEN_NETWORK_IMPORT",
+          message: "Import 'node:https' is not allowed in Cell server code.",
+          hint: "Use global fetch with capabilities.outboundFetch so outbound domains stay declarative.",
+        }),
+        expect.objectContaining({
+          code: "FORBIDDEN_NETWORK_IMPORT",
+          message: "Import 'axios' is not allowed in Cell server code.",
+          hint: "Use global fetch with capabilities.outboundFetch so outbound domains stay declarative.",
+        }),
+      ]),
+    });
+  });
+
+  it("reports CommonJS require bypasses before bundling", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { createRequire } from "node:module";',
+        'import { app } from "@anvil-cloud/runtime";',
+        "",
+        "const require = createRequire(import.meta.url);",
+        'const fs = require("fs/promises");',
+        'const s3 = require("@aws-sdk/client-s3");',
+        'const https = require("https");',
+        "",
+        "void fs;",
+        "void s3;",
+        "void https;",
+        "export default app({});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await checkCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "import-policy",
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({
+          code: "CREATE_REQUIRE_FORBIDDEN",
+          message: "createRequire() is not allowed in Cell server code.",
+        }),
+        expect.objectContaining({
+          code: "FORBIDDEN_IMPORT",
+          message: "Import 'fs/promises' is not allowed in Cell server code.",
+          hint: "Use ctx.files for Cell-owned file storage.",
+        }),
+        expect.objectContaining({
+          code: "FORBIDDEN_IMPORT",
+          message:
+            "Import '@aws-sdk/client-s3' is not allowed in Cell server code.",
+          hint: "Use declared Anvil capabilities such as ctx.db or ctx.files.",
+        }),
+        expect.objectContaining({
+          code: "FORBIDDEN_NETWORK_IMPORT",
+          message: "Import 'https' is not allowed in Cell server code.",
+          hint: "Use global fetch with capabilities.outboundFetch so outbound domains stay declarative.",
+        }),
+      ]),
+    });
+  });
+
+  it("reports aliased process.env access before bundling", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, query } from "@anvil-cloud/runtime";',
+        "",
+        "const runtimeProcess = globalThis.process;",
+        "const { env: runtimeEnv } = runtimeProcess;",
+        'const globalProcess = globalThis["process"];',
+        "",
+        "export default app({",
+        "  queries: {",
+        "    config: query({",
+        "      handler: async () => ({",
+        "        region: runtimeProcess.env.AWS_REGION,",
+        "        token: runtimeEnv.API_TOKEN,",
+        "        mode: globalProcess.env.NODE_ENV,",
+        "      }),",
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await checkCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "import-policy",
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({
+          code: "DIRECT_PROCESS_ENV",
+          message:
+            "Direct process.env access is not allowed in Cell server code.",
+        }),
+      ]),
+    });
+    expect(
+      result.diagnostics.filter(
+        (diagnostic) => diagnostic.code === "DIRECT_PROCESS_ENV",
+      ).length,
+    ).toBeGreaterThanOrEqual(2);
+  });
+
   it("reports undeclared runtime capabilities before bundling", async () => {
     const rootDir = await createCell({
       server: [
@@ -180,6 +598,168 @@ describe("buildCell", () => {
         {
           code: "CAPABILITY_NOT_DECLARED",
           message: "ctx.db requires capabilities.database to be declared.",
+        },
+      ],
+    });
+  });
+
+  it("reports computed ctx capability access before bundling", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, query } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  queries: {",
+        "    listNotes: query({",
+        '      handler: async (ctx) => ctx["db"].notes.all(),',
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await checkCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "import-policy",
+      diagnostics: [
+        {
+          code: "CAPABILITY_NOT_DECLARED",
+          message: "ctx.db requires capabilities.database to be declared.",
+        },
+      ],
+    });
+  });
+
+  it("reports destructured ctx capability access before bundling", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, query } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  queries: {",
+        "    listNotes: query({",
+        "      handler: async (ctx) => {",
+        "        const { db: database } = ctx;",
+        "        return database.notes.all();",
+        "      },",
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await checkCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "import-policy",
+      diagnostics: [
+        {
+          code: "CAPABILITY_NOT_DECLARED",
+          message: "ctx.db requires capabilities.database to be declared.",
+        },
+      ],
+    });
+  });
+
+  it("reports dynamic ctx capability property access before bundling", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, query } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  capabilities: { database: true },",
+        "  queries: {",
+        "    listNotes: query({",
+        "      handler: async (ctx, input: { capability: string }) => {",
+        "        const scoped = ctx[input.capability];",
+        "        return scoped.notes.all();",
+        "      },",
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await checkCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "import-policy",
+      diagnostics: [
+        {
+          code: "CTX_PROPERTY_NOT_STATIC",
+          message:
+            "Context capability access must use a static property name in Cell server code.",
+        },
+      ],
+    });
+  });
+
+  it("reports destructured handler context parameters before bundling", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, query } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  queries: {",
+        "    listNotes: query({",
+        "      handler: async ({ db: database }) => database.notes.all(),",
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await checkCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "import-policy",
+      diagnostics: [
+        {
+          code: "CAPABILITY_NOT_DECLARED",
+          message: "ctx.db requires capabilities.database to be declared.",
+        },
+      ],
+    });
+  });
+
+  it("reports non-static ctx destructuring before bundling", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, query } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  queries: {",
+        "    listNotes: query({",
+        "      handler: async (ctx) => {",
+        "        const { ...scoped } = ctx;",
+        "        return scoped.db.notes.all();",
+        "      },",
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await checkCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "import-policy",
+      diagnostics: [
+        {
+          code: "CTX_BINDING_NOT_STATIC",
+          message:
+            "Context destructuring must use static named properties in Cell server code.",
         },
       ],
     });
@@ -240,6 +820,130 @@ describe("buildCell", () => {
         "    syncNote: mutation({",
         "      handler: async () => {",
         "        await fetch('https://billing.example.test/notes');",
+        "        return { ok: true };",
+        "      },",
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await checkCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "import-policy",
+      diagnostics: [
+        {
+          code: "OUTBOUND_FETCH_NOT_ALLOWED",
+          message:
+            "Fetch host 'billing.example.test' is not declared in capabilities.outboundFetch.allow.",
+        },
+      ],
+    });
+  });
+
+  it("reports aliased outbound fetch without the outbound capability", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, mutation } from "@anvil-cloud/runtime";',
+        "",
+        "const runtimeFetch = fetch;",
+        "const globalFetch = globalThis.fetch;",
+        "const { fetch: destructuredFetch } = globalThis;",
+        "",
+        "export default app({",
+        "  mutations: {",
+        "    syncNote: mutation({",
+        "      handler: async () => {",
+        "        await runtimeFetch('https://api.example.test/notes');",
+        "        await globalFetch('https://api.example.test/notes');",
+        "        await destructuredFetch('https://api.example.test/notes');",
+        "        return { ok: true };",
+        "      },",
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await checkCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "import-policy",
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({
+          code: "CAPABILITY_NOT_DECLARED",
+          message: "Global fetch requires capabilities.outboundFetch to be declared.",
+        }),
+      ]),
+    });
+    expect(
+      result.diagnostics.filter(
+        (diagnostic) => diagnostic.code === "CAPABILITY_NOT_DECLARED",
+      ).length,
+    ).toBeGreaterThanOrEqual(3);
+  });
+
+  it("reports globalThis fetch hosts outside the declared allow list", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, mutation } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  capabilities: {",
+        "    outboundFetch: { allow: ['api.example.test'] },",
+        "  },",
+        "  mutations: {",
+        "    syncNote: mutation({",
+        "      handler: async () => {",
+        "        await globalThis.fetch('https://billing.example.test/notes');",
+        "        await globalThis['fetch']('https://billing.example.test/notes');",
+        "        return { ok: true };",
+        "      },",
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await checkCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "import-policy",
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({
+          code: "OUTBOUND_FETCH_NOT_ALLOWED",
+          message:
+            "Fetch host 'billing.example.test' is not declared in capabilities.outboundFetch.allow.",
+        }),
+      ]),
+    });
+    expect(
+      result.diagnostics.filter(
+        (diagnostic) => diagnostic.code === "OUTBOUND_FETCH_NOT_ALLOWED",
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("reports outbound fetch URL objects outside the declared allow list", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, mutation } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  capabilities: {",
+        "    outboundFetch: { allow: ['api.example.test'] },",
+        "  },",
+        "  mutations: {",
+        "    syncNote: mutation({",
+        "      handler: async () => {",
+        "        await fetch(new URL('https://billing.example.test/notes'));",
         "        return { ok: true };",
         "      },",
         "    }),",
@@ -336,6 +1040,62 @@ describe("buildCell", () => {
     expect(result.ok).toBe(true);
   });
 
+  it("accepts aliased outbound fetch hosts inside the declared allow list", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, mutation } from "@anvil-cloud/runtime";',
+        "",
+        "const runtimeFetch = globalThis.fetch;",
+        "",
+        "export default app({",
+        "  capabilities: {",
+        "    outboundFetch: { allow: ['api.example.test'] },",
+        "  },",
+        "  mutations: {",
+        "    syncNote: mutation({",
+        "      handler: async () => {",
+        "        await runtimeFetch('https://api.example.test/notes');",
+        "        return { ok: true };",
+        "      },",
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await checkCell({ rootDir });
+
+    expect(result.ok).toBe(true);
+  });
+
+  it("accepts outbound fetch URL objects inside the declared allow list", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, mutation } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  capabilities: {",
+        "    outboundFetch: { allow: ['api.example.test'] },",
+        "  },",
+        "  mutations: {",
+        "    syncNote: mutation({",
+        "      handler: async () => {",
+        "        await fetch(new URL('https://api.example.test/notes'));",
+        "        return { ok: true };",
+        "      },",
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await checkCell({ rootDir });
+
+    expect(result.ok).toBe(true);
+  });
+
   it("reports undeclared jobs capability before bundling", async () => {
     const rootDir = await createCell({
       server: [
@@ -382,6 +1142,473 @@ describe("buildCell", () => {
         "        await ctx.jobs.enqueue('summarizeNote', {});",
         "        return { ok: true };",
         "      },",
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await checkCell({ rootDir });
+
+    expect(result.ok).toBe(true);
+  });
+
+  it("reports ctx.env reads without env declarations before bundling", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, query } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  queries: {",
+        "    config: query({",
+        "      handler: async (ctx) => ({",
+        "        apiToken: ctx.env.require('API_TOKEN'),",
+        "        region: ctx.env.get('AWS_REGION'),",
+        "      }),",
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await checkCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "import-policy",
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({
+          code: "ENV_NOT_DECLARED",
+          message:
+            "ctx.env.require('API_TOKEN') requires 'API_TOKEN' to be declared in capabilities.env or capabilities.secrets.",
+        }),
+        expect.objectContaining({
+          code: "ENV_NOT_DECLARED",
+          message:
+            "ctx.env.get('AWS_REGION') requires 'AWS_REGION' to be declared in capabilities.env or capabilities.secrets.",
+        }),
+      ]),
+    });
+  });
+
+  it("reports computed ctx.env reads without env declarations before bundling", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, query } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  queries: {",
+        "    config: query({",
+        '      handler: async (ctx) => ctx["env"].require("API_TOKEN"),',
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await checkCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "import-policy",
+      diagnostics: [
+        {
+          code: "ENV_NOT_DECLARED",
+          message:
+            "ctx.env.require('API_TOKEN') requires 'API_TOKEN' to be declared in capabilities.env or capabilities.secrets.",
+        },
+      ],
+    });
+  });
+
+  it("reports aliased ctx.env reads without env declarations before bundling", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, query } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  queries: {",
+        "    config: query({",
+        "      handler: async (ctx) => {",
+        "        const envFromProperty = ctx.env;",
+        "        const { env: envFromDestructure } = ctx;",
+        "        return {",
+        "          apiToken: envFromProperty.require('API_TOKEN'),",
+        "          region: envFromDestructure.get('AWS_REGION'),",
+        "        };",
+        "      },",
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await checkCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "import-policy",
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({
+          code: "ENV_NOT_DECLARED",
+          message:
+            "ctx.env.require('API_TOKEN') requires 'API_TOKEN' to be declared in capabilities.env or capabilities.secrets.",
+        }),
+        expect.objectContaining({
+          code: "ENV_NOT_DECLARED",
+          message:
+            "ctx.env.get('AWS_REGION') requires 'AWS_REGION' to be declared in capabilities.env or capabilities.secrets.",
+        }),
+      ]),
+    });
+  });
+
+  it("reports destructured handler context env parameters before bundling", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, query } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  queries: {",
+        "    config: query({",
+        "      handler: async ({ env }) => env.require('API_TOKEN'),",
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await checkCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "import-policy",
+      diagnostics: [
+        {
+          code: "ENV_NOT_DECLARED",
+          message:
+            "ctx.env.require('API_TOKEN') requires 'API_TOKEN' to be declared in capabilities.env or capabilities.secrets.",
+        },
+      ],
+    });
+  });
+
+  it("reports dynamic ctx.env names when declarations are static", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, query } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  capabilities: { env: ['AWS_REGION'] },",
+        "  queries: {",
+        "    config: query({",
+        "      handler: async (ctx, input: { name: string }) => ctx.env.get(input.name),",
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await checkCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "import-policy",
+      diagnostics: [
+        {
+          code: "ENV_NAME_NOT_STATIC",
+          message:
+            "ctx.env names must be static string literals in Cell server code.",
+        },
+      ],
+    });
+  });
+
+  it("reports dynamic ctx.env methods before bundling", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, query } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  capabilities: { env: ['AWS_REGION'] },",
+        "  queries: {",
+        "    config: query({",
+        "      handler: async (ctx, input: { method: 'get' | 'require' }) => ctx.env[input.method]('AWS_REGION'),",
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await checkCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "import-policy",
+      diagnostics: [
+        {
+          code: "ENV_METHOD_NOT_STATIC",
+          message:
+            "ctx.env method access must use get or require statically in Cell server code.",
+        },
+      ],
+    });
+  });
+
+  it("reports aliased dynamic ctx.env methods before bundling", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, query } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  capabilities: { secrets: ['API_TOKEN'] },",
+        "  queries: {",
+        "    config: query({",
+        "      handler: async (ctx, input: { method: 'get' | 'require' }) => {",
+        "        const env = ctx.env;",
+        "        const readEnv = env[input.method];",
+        "        return readEnv('API_TOKEN');",
+        "      },",
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await checkCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "import-policy",
+      diagnostics: [
+        {
+          code: "ENV_METHOD_NOT_STATIC",
+          message:
+            "ctx.env method access must use get or require statically in Cell server code.",
+        },
+      ],
+    });
+  });
+
+  it("reports computed ctx.env method destructuring before bundling", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, query } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  capabilities: { secrets: ['API_TOKEN'] },",
+        "  queries: {",
+        "    config: query({",
+        "      handler: async (ctx, input: { method: 'get' | 'require' }) => {",
+        "        const { [input.method]: readEnv } = ctx.env;",
+        "        return readEnv('API_TOKEN');",
+        "      },",
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await checkCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "import-policy",
+      diagnostics: [
+        {
+          code: "ENV_METHOD_NOT_STATIC",
+          message:
+            "ctx.env method destructuring must use get or require statically in Cell server code.",
+        },
+      ],
+    });
+  });
+
+  it("reports aliased ctx.env method reads without env declarations before bundling", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, query } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  queries: {",
+        "    config: query({",
+        "      handler: async (ctx) => {",
+        "        const requireEnv = ctx.env.require;",
+        "        const env = ctx.env;",
+        "        const { get: getEnv } = env;",
+        "        return {",
+        "          token: requireEnv('API_TOKEN'),",
+        "          region: getEnv('AWS_REGION'),",
+        "        };",
+        "      },",
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await checkCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "import-policy",
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({
+          code: "ENV_NOT_DECLARED",
+          message:
+            "ctx.env.require('API_TOKEN') requires 'API_TOKEN' to be declared in capabilities.env or capabilities.secrets.",
+        }),
+        expect.objectContaining({
+          code: "ENV_NOT_DECLARED",
+          message:
+            "ctx.env.get('AWS_REGION') requires 'AWS_REGION' to be declared in capabilities.env or capabilities.secrets.",
+        }),
+      ]),
+    });
+  });
+
+  it("reports bracket ctx.env method reads without env declarations before bundling", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, query } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  queries: {",
+        "    config: query({",
+        "      handler: async (ctx) => {",
+        "        const requireEnv = ctx.env['require'];",
+        "        const env = ctx['env'];",
+        "        const getEnv = env['get'];",
+        "        return {",
+        "          token: requireEnv('API_TOKEN'),",
+        "          region: ctx.env['get']('AWS_REGION'),",
+        "          mode: getEnv('NODE_ENV'),",
+        "        };",
+        "      },",
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await checkCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "import-policy",
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({
+          code: "ENV_NOT_DECLARED",
+          message:
+            "ctx.env.require('API_TOKEN') requires 'API_TOKEN' to be declared in capabilities.env or capabilities.secrets.",
+        }),
+        expect.objectContaining({
+          code: "ENV_NOT_DECLARED",
+          message:
+            "ctx.env.get('AWS_REGION') requires 'AWS_REGION' to be declared in capabilities.env or capabilities.secrets.",
+        }),
+        expect.objectContaining({
+          code: "ENV_NOT_DECLARED",
+          message:
+            "ctx.env.get('NODE_ENV') requires 'NODE_ENV' to be declared in capabilities.env or capabilities.secrets.",
+        }),
+      ]),
+    });
+  });
+
+  it("accepts aliased ctx.env method reads when env names are declared", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, query } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  capabilities: {",
+        "    env: ['AWS_REGION'],",
+        "    secrets: ['API_TOKEN'],",
+        "  },",
+        "  queries: {",
+        "    config: query({",
+        "      handler: async (ctx) => {",
+        "        const requireEnv = ctx.env.require;",
+        "        const { get: getEnv } = ctx.env;",
+        "        return {",
+        "          token: requireEnv('API_TOKEN'),",
+        "          region: getEnv('AWS_REGION'),",
+        "        };",
+        "      },",
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await checkCell({ rootDir });
+
+    expect(result.ok).toBe(true);
+  });
+
+  it("accepts bracket ctx.env method reads when env names are declared", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, query } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  capabilities: {",
+        "    env: ['AWS_REGION', 'NODE_ENV'],",
+        "    secrets: ['API_TOKEN'],",
+        "  },",
+        "  queries: {",
+        "    config: query({",
+        "      handler: async (ctx) => {",
+        "        const requireEnv = ctx.env['require'];",
+        "        const env = ctx['env'];",
+        "        const getEnv = env['get'];",
+        "        return {",
+        "          token: requireEnv('API_TOKEN'),",
+        "          region: ctx.env['get']('AWS_REGION'),",
+        "          mode: getEnv('NODE_ENV'),",
+        "        };",
+        "      },",
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await checkCell({ rootDir });
+
+    expect(result.ok).toBe(true);
+  });
+
+  it("accepts ctx.env reads declared as env config or secrets", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, query } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  capabilities: {",
+        "    env: ['AWS_REGION'],",
+        "    secrets: { API_TOKEN: true },",
+        "  },",
+        "  queries: {",
+        "    config: query({",
+        "      handler: async (ctx) => ({",
+        "        apiToken: ctx.env.require('API_TOKEN'),",
+        "        region: ctx.env.get('AWS_REGION'),",
+        "      }),",
         "    }),",
         "  },",
         "});",
@@ -634,21 +1861,28 @@ describe("buildCell", () => {
 async function createCell(options: {
   server: string;
   client?: string;
+  clientEntry?: string;
+  clientKind?: "vite-react" | "expo-router" | "headless";
 }): Promise<string> {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cell-"));
   const repoRoot = path.resolve(process.cwd(), "../..");
 
   tempDirs.push(rootDir);
   await mkdir(path.join(rootDir, "src"), { recursive: true });
+  await mkdir(path.join(rootDir, "app"), { recursive: true });
   await mkdir(path.join(rootDir, ".anvil/generated"), { recursive: true });
+  const clientEntry = options.clientEntry ?? "src/cell.client.tsx";
   await writeFile(
     path.join(rootDir, "anvil.json"),
     JSON.stringify(
       {
         name: "notes",
+        client: {
+          kind: options.clientKind ?? "vite-react",
+        },
         entrypoints: {
           server: "src/cell.server.ts",
-          client: "src/cell.client.tsx",
+          client: clientEntry,
         },
         runtime: "nodejs20",
       },
@@ -713,13 +1947,25 @@ async function createCell(options: {
     ].join("\n"),
     "utf8",
   );
+  await mkdir(path.dirname(path.join(rootDir, clientEntry)), {
+    recursive: true,
+  });
   await writeFile(
-    path.join(rootDir, "src/cell.client.tsx"),
+    path.join(rootDir, clientEntry),
     options.client ?? "console.log('client ready');\n",
     "utf8",
   );
 
   return rootDir;
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await readText(filePath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function toPosixPath(value: string): string {

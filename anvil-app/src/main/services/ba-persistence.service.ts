@@ -20,6 +20,7 @@ interface BaSessionRow {
   repo_id: string;
   spike_branch: string;
   origin_branch: string;
+  worktree_path: string | null;
   stash_ref: string | null;
   status: string;
   started_at: string;
@@ -69,6 +70,7 @@ function mapSession(row: BaSessionRow): BaSession {
     repoId: row.repo_id,
     spikeBranch: row.spike_branch,
     originBranch: row.origin_branch,
+    worktreePath: row.worktree_path ?? undefined,
     stashRef: row.stash_ref ?? undefined,
     status: row.status as BaSession['status'],
     startedAt: row.started_at,
@@ -124,6 +126,7 @@ export interface CreateBaSessionInput {
   repoId: string;
   spikeBranch: string;
   originBranch: string;
+  worktreePath?: string;
   stashRef?: string;
 }
 
@@ -136,14 +139,15 @@ export function createBaSession(input: CreateBaSessionInput): string {
   const now = new Date().toISOString();
   db.prepare(
     `INSERT INTO ba_sessions
-     (id, work_item_id, repo_id, spike_branch, origin_branch, stash_ref, status, started_at)
-     VALUES (?, ?, ?, ?, ?, ?, 'active', ?)`,
+     (id, work_item_id, repo_id, spike_branch, origin_branch, worktree_path, stash_ref, status, started_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
   ).run(
     id,
     input.workItemId,
     input.repoId,
     input.spikeBranch,
     input.originBranch,
+    input.worktreePath ?? null,
     input.stashRef ?? null,
     now,
   );
@@ -342,16 +346,11 @@ export function linkBaFindingToWorkItem(
          follow_up_work_item_url = ?,
          updated_at = ?
      WHERE id = ?`,
-  ).run(
-    workItem.id,
-    workItem.provider,
-    workItem.title,
-    workItem.url ?? null,
-    now,
-    findingId,
-  );
+  ).run(workItem.id, workItem.provider, workItem.title, workItem.url ?? null, now, findingId);
 
-  return mapFinding(db.prepare('SELECT * FROM ba_findings WHERE id = ?').get(findingId) as BaFindingRow);
+  return mapFinding(
+    db.prepare('SELECT * FROM ba_findings WHERE id = ?').get(findingId) as BaFindingRow,
+  );
 }
 
 // ---------------------------------------------------------------------------

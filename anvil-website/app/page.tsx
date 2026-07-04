@@ -1,15 +1,14 @@
 import Image from "next/image";
 import Link from "next/link";
-import { ArrowRight, Check, Github } from "lucide-react";
+import { ArrowRight, Check, Download, Github, Terminal } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { CodePanel } from "@/components/site/code-panel";
 import { SiteFooter } from "@/components/site/footer";
 import { SiteHeader } from "@/components/site/header";
 import {
-  codeTabs,
   docsHighlights,
   githubRepositoryUrl,
+  latestDesktopDmgUrl,
   productLines,
   proofPoints,
   repoComparison
@@ -55,6 +54,12 @@ function HeroSection() {
               </Link>
             </Button>
             <Button asChild size="lg" variant="outline">
+              <Link href={latestDesktopDmgUrl}>
+                <Download data-icon="inline-start" aria-hidden="true" />
+                Download macOS Apple Silicon
+              </Link>
+            </Button>
+            <Button asChild size="lg" variant="outline">
               <Link href="/docs/project/repositories">Monorepo map</Link>
             </Button>
             <Button asChild size="lg" variant="outline">
@@ -67,6 +72,12 @@ function HeroSection() {
         </div>
         <div className="hero-proof">
           <div className="hero-proof-main">
+            <div className="hero-window-bar" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+              <p>Anvil Desktop</p>
+            </div>
             <Image
               src="/anvil-app-homepage.png"
               alt="Anvil Desktop showing repository navigation and an agent chat workspace."
@@ -76,8 +87,24 @@ function HeroSection() {
               sizes="(min-width: 1024px) 680px, 100vw"
             />
           </div>
-          <div className="hero-proof-command">
-            <CodePanel title="Inspectable command output" command={codeTabs[2].command} output={codeTabs[2].output} />
+          <div className="hero-proof-command" aria-label="Example Anvil Cloud check output">
+            <div className="flex items-center gap-2 border-b px-4 py-3 text-sm font-medium">
+              <Terminal className="size-4 text-accent" aria-hidden="true" />
+              <span>anvil-cloud check --json</span>
+            </div>
+            <dl className="grid gap-2 px-4 py-4 text-sm sm:grid-cols-2">
+              {[
+                ["Config", "valid"],
+                ["Import policy", "pass"],
+                ["Typecheck", "pass"],
+                ["Build-ready", "true"]
+              ].map(([label, value]) => (
+                <div key={label} className="flex items-center justify-between gap-4 rounded-md border bg-background/70 px-3 py-2">
+                  <dt className="text-muted-foreground">{label}</dt>
+                  <dd className="font-mono text-xs text-foreground">{value}</dd>
+                </div>
+              ))}
+            </dl>
           </div>
         </div>
       </div>
@@ -90,8 +117,8 @@ function RepoMapSection() {
     <section id="products" className="border-b bg-muted/20 py-14">
       <div className="mx-auto grid max-w-7xl gap-8 px-4 sm:px-6 lg:grid-cols-[0.58fr_1.42fr] lg:px-8">
         <SectionHeading
-          title="One repo, three boundaries"
-          description="Everything lives in the anvil-stack monorepo, but the split is intentional. Desktop coordinates local work, Registry controls dependency ingress, and Cloud constrains app runtime contracts."
+          title="One repo, four tools"
+          description="Everything lives in the anvil-stack monorepo, but the split is intentional. Desktop coordinates local work, Registry controls dependency ingress, Node Base constrains install execution, and Cloud constrains app runtime contracts."
         />
         <div className="grid gap-3">
           {repoComparison.map((item) => (
@@ -234,6 +261,14 @@ function ProductDetails({ product }: { product: (typeof productLines)[number] })
         <Button asChild size="sm" variant="outline">
           <Link href={product.repoHref}>Repository</Link>
         </Button>
+        {"downloadHref" in product && product.downloadHref ? (
+          <Button asChild size="sm" variant="outline">
+            <Link href={product.downloadHref}>
+              <Download data-icon="inline-start" aria-hidden="true" />
+              {product.downloadLabel}
+            </Link>
+          </Button>
+        ) : null}
         {product.links.map((link) => (
           <Button key={link.href} asChild size="sm" variant="ghost">
             <Link href={link.href}>{link.label}</Link>
@@ -274,8 +309,8 @@ function DocsSection() {
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         <div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
           <SectionHeading
-            title="Docs meant for maintainers"
-            description="Start with the public docs, then follow the links into commands, architecture, status notes, and the repo boundaries that matter."
+            title="Docs for builders"
+            description="Start with the public docs, then follow the links into commands, architecture, status notes, contribution paths, and the repo boundaries that matter."
           />
           <div className="flex flex-wrap gap-2">
             <Button asChild variant="outline">

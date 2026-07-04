@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Run npm publish with --dry-run instead of publishing."
+        description: "Run npm stage publish with --dry-run instead of staging."
         required: false
         type: boolean
         default: true
@@ -55,7 +55,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          package_version="$(node -p "require('./apps/cli/package.json').version")"
+          package_version="$(node -p "require('./apps/cli-wrapper/package.json').version")"
           expected_tag="cli-v${package_version}"
           if [[ "${GITHUB_REF_NAME}" != "${expected_tag}" ]]; then
             echo "Tag ${GITHUB_REF_NAME} does not match @anvilstack/cli version ${package_version} (${expected_tag})." >&2
@@ -68,11 +68,11 @@ jobs:
       - name: Test
         run: pnpm --filter @anvilstack/cli test
 
-      - name: Publish to npm
-        working-directory: anvil-registry/apps/cli
+      - name: Stage package on npm
+        working-directory: anvil-registry/apps/cli-wrapper
         run: |
           extra_args=""
           if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.dry_run }}" == "true" ]]; then
             extra_args="--dry-run"
           fi
-          npm publish --access public ${extra_args}
+          npm stage publish --access public ${extra_args}

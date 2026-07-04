@@ -5,12 +5,17 @@ import { errorDiagnostic, type BuilderDiagnostic } from "./diagnostics.js";
 
 export type CellConfig = {
   name: string;
+  client: ClientConfig;
   entrypoints: {
     server: string;
     client: string;
   };
   runtime: string;
   region?: string;
+};
+
+export type ClientConfig = {
+  kind: "vite-react" | "expo-router" | "headless";
 };
 
 export type LoadedCellConfig = {
@@ -36,7 +41,7 @@ export async function loadCellConfig(
           code: "CONFIG_NOT_FOUND",
           message: "Could not find anvil.json.",
           file: path.relative(rootDir, configPath),
-          hint: "Run anvil new <name> or create an anvil.json file.",
+          hint: "Run anvil-cloud new <name> or create an anvil.json file.",
         }),
       ],
     };
@@ -145,17 +150,21 @@ function validateCellConfig(config: unknown): {
     typeof config.runtime === "string" && config.runtime.length > 0
       ? config.runtime
       : "nodejs20";
+  const clientKind = readClientKind(config, diagnostics);
   const region =
     typeof config.region === "string" && config.region.length > 0
       ? config.region
       : undefined;
 
-  if (diagnostics.length > 0 || !name || !server || !client) {
+  if (diagnostics.length > 0 || !name || !server || !client || !clientKind) {
     return { diagnostics };
   }
 
   const validConfig: CellConfig = {
     name,
+    client: {
+      kind: clientKind,
+    },
     entrypoints: {
       server,
       client,
@@ -171,6 +180,43 @@ function validateCellConfig(config: unknown): {
     config: validConfig,
     diagnostics,
   };
+}
+
+function readClientKind(
+  config: Record<string, unknown>,
+  diagnostics: BuilderDiagnostic[],
+): ClientConfig["kind"] | undefined {
+  if (config.client === undefined) {
+    return "vite-react";
+  }
+
+  if (!isObject(config.client)) {
+    diagnostics.push(
+      errorDiagnostic({
+        code: "CONFIG_INVALID",
+        message: "anvil.json client must be an object when provided.",
+        file: "anvil.json",
+      }),
+    );
+    return undefined;
+  }
+
+  const kind = config.client.kind;
+
+  if (kind === "vite-react" || kind === "expo-router" || kind === "headless") {
+    return kind;
+  }
+
+  diagnostics.push(
+    errorDiagnostic({
+      code: "CONFIG_INVALID",
+      message:
+        "anvil.json client.kind must be one of 'vite-react', 'expo-router', or 'headless'.",
+      file: "anvil.json",
+    }),
+  );
+
+  return undefined;
 }
 
 async function requireFile(

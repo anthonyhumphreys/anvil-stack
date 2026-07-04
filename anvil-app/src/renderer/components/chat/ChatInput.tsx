@@ -1,6 +1,8 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import {
   AlertCircle,
+  Check,
+  ChevronDown,
   ChevronRight,
   File as FileIcon,
   Image as ImageIcon,
@@ -17,6 +19,7 @@ import type {
   ChatAttachmentInput,
   ChatFileMentionSearchResult,
   CodexRegisteredSkill,
+  ReasoningEffort,
 } from '../../../shared/types';
 import { VoiceInputButton } from './VoiceInputButton';
 import { slugForDomId } from '../../utils/dom-id';
@@ -68,8 +71,8 @@ interface ChatInputProps {
   disabled: boolean;
   busy?: boolean;
   personaColour: string;
-  reasoningLevel?: 'low' | 'medium' | 'high';
-  onReasoningChange?: (level: 'low' | 'medium' | 'high') => void;
+  reasoningLevel?: ReasoningEffort;
+  onReasoningChange?: (level: ReasoningEffort) => void;
   prefill?: { id: string; text: string } | null;
   draftKey?: string;
   mentionRepoIds?: string[];
@@ -811,23 +814,7 @@ export function ChatInput({
 
           <div className="absolute bottom-2.5 right-2.5 flex items-center gap-1.5">
             {onReasoningChange && !busy && (
-              <div className="flex items-center rounded-lg border border-border-subtle bg-bg-secondary/80 px-1 py-0.5">
-                <ReasoningToggle
-                  level="low"
-                  active={reasoningLevel === 'low'}
-                  onClick={onReasoningChange}
-                />
-                <ReasoningToggle
-                  level="medium"
-                  active={reasoningLevel === 'medium'}
-                  onClick={onReasoningChange}
-                />
-                <ReasoningToggle
-                  level="high"
-                  active={reasoningLevel === 'high'}
-                  onClick={onReasoningChange}
-                />
-              </div>
+              <ReasoningEffortDropdown level={reasoningLevel} onChange={onReasoningChange} />
             )}
 
             <VoiceInputButton
@@ -1432,31 +1419,142 @@ function scopeLabel(scope: CodexRegisteredSkill['scope']): string {
   }
 }
 
-function ReasoningToggle({
+const REASONING_EFFORT_MENU_ID = 'chat-reasoning-effort-menu';
+
+const REASONING_EFFORT_OPTIONS: { level: ReasoningEffort; description: string }[] = [
+  { level: 'none', description: 'Fastest — no extended reasoning' },
+  { level: 'minimal', description: 'Very light reasoning for trivial tasks' },
+  { level: 'low', description: 'Light reasoning, quick responses' },
+  { level: 'medium', description: 'Balanced default for everyday work' },
+  { level: 'high', description: 'Deeper reasoning for complex tasks' },
+  { level: 'xhigh', description: 'Deepest reasoning — slowest, highest quality' },
+];
+
+function ReasoningEffortDropdown({
   level,
-  active,
-  onClick,
+  onChange,
 }: {
-  level: 'low' | 'medium' | 'high';
-  active: boolean;
-  onClick: (level: 'low' | 'medium' | 'high') => void;
+  level: ReasoningEffort;
+  onChange: (level: ReasoningEffort) => void;
 }) {
-  const label = level[0].toUpperCase();
-  const color = level === 'high' ? '#fd9029' : level === 'medium' ? '#79a7c6' : '#72b589';
+  const [open, setOpen] = useState(false);
+  const [highlightedIndex, setHighlightedIndex] = useState(() =>
+    Math.max(
+      0,
+      REASONING_EFFORT_OPTIONS.findIndex((option) => option.level === level),
+    ),
+  );
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!containerRef.current?.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => document.removeEventListener('mousedown', handlePointerDown);
+  }, [open]);
+
+  const openMenu = () => {
+    setHighlightedIndex(
+      Math.max(
+        0,
+        REASONING_EFFORT_OPTIONS.findIndex((option) => option.level === level),
+      ),
+    );
+    setOpen(true);
+  };
+
+  const handleKeyDown = (event: React.KeyboardEvent) => {
+    if (!open) {
+      if (event.key === 'Enter' || event.key === ' ' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        openMenu();
+      }
+      return;
+    }
+
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      setOpen(false);
+    } else if (
+      event.key === 'ArrowDown' ||
+      event.key === 'ArrowUp' ||
+      event.key === 'Home' ||
+      event.key === 'End'
+    ) {
+      event.preventDefault();
+      setHighlightedIndex(
+        (prev) => getNextListboxIndex(event.key, prev, REASONING_EFFORT_OPTIONS.length) ?? prev,
+      );
+    } else if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      const option = REASONING_EFFORT_OPTIONS[highlightedIndex];
+      if (option) {
+        onChange(option.level);
+        setOpen(false);
+      }
+    }
+  };
 
   return (
-    <button
-      onClick={() => onClick(level)}
-      className={`flex h-6 w-6 items-center justify-center rounded-md text-[10px] font-bold transition-all ${
-        active
-          ? 'text-white shadow-sm'
-          : 'text-text-tertiary hover:text-text-secondary hover:bg-bg-tertiary'
-      }`}
-      style={active ? { backgroundColor: color } : {}}
-      title={`${level} reasoning`}
-      aria-label={`${level} reasoning`}
-    >
-      {label}
-    </button>
+    <div ref={containerRef} className="relative" onKeyDown={handleKeyDown}>
+      <button
+        onClick={() => (open ? setOpen(false) : openMenu())}
+        className="flex h-7 items-center gap-1 rounded-lg border border-border-subtle bg-bg-secondary/80 px-2 text-[11px] font-medium text-text-secondary transition-all hover:bg-bg-tertiary hover:text-text-primary"
+        title="Reasoning effort"
+        aria-label={`Reasoning effort: ${level}`}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? REASONING_EFFORT_MENU_ID : undefined}
+      >
+        <Sparkles size={11} />
+        <span className="capitalize">{level}</span>
+        <ChevronDown size={11} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+
+      {open && (
+        <div
+          id={REASONING_EFFORT_MENU_ID}
+          className="absolute bottom-full right-0 z-50 mb-2 w-72 overflow-hidden rounded-xl border border-border bg-bg-elevated shadow-2xl ring-1 ring-black/20"
+          role="listbox"
+          aria-label="Reasoning effort"
+          aria-activedescendant={`reasoning-effort-option-${REASONING_EFFORT_OPTIONS[highlightedIndex]?.level}`}
+        >
+          <div className="p-1.5">
+            {REASONING_EFFORT_OPTIONS.map((option, index) => {
+              const selected = option.level === level;
+              const highlighted = index === highlightedIndex;
+              return (
+                <button
+                  key={option.level}
+                  id={`reasoning-effort-option-${option.level}`}
+                  role="option"
+                  aria-selected={selected}
+                  onClick={() => {
+                    onChange(option.level);
+                    setOpen(false);
+                  }}
+                  onMouseEnter={() => setHighlightedIndex(index)}
+                  className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left transition-colors ${
+                    highlighted ? 'bg-bg-tertiary' : ''
+                  }`}
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-medium capitalize text-text-primary">
+                      {option.level}
+                    </p>
+                    <p className="truncate text-[11px] text-text-tertiary">{option.description}</p>
+                  </div>
+                  {selected && <Check size={13} className="shrink-0 text-text-secondary" />}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

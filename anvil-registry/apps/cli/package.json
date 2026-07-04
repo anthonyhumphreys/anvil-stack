@@ -1,15 +1,20 @@
 {
-  "name": "@anvilstack/cli",
-  "version": "0.1.0",
+  "name": "@anvilstack/registry-cli",
+  "version": "0.1.2",
   "license": "MIT",
   "description": "Command-line client for Anvil Registry package decisions, lockfile scans, reports, and overrides.",
   "private": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anthonyhumphreys/anvil-stack.git"
+  },
   "type": "module",
   "bin": {
-    "anvil": "dist/index.js"
+    "anvil-registry": "dist/index.js"
   },
   "files": [
-    "dist",
+    "dist/index.d.ts",
+    "dist/index.js",
     "README.md"
   ],
   "publishConfig": {

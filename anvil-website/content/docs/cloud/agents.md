@@ -15,6 +15,12 @@ They can operate an Anvil workspace, power a Cell workflow, or become the primar
 
 This is an MVP foundation, not a hosted agent platform. Useful. Refreshingly unglamorous. Keep the contract small enough to inspect.
 
+The bigger runtime direction is [Agent Sandboxes](/docs/cloud/agent-sandboxes):
+isolated, sessionful, inspectable workspaces for agents that need to run tools,
+operate a repo, wait for approval, and resume with state. The first AWS Lambda
+MicroVM-backed provider is implemented behind the adapter boundary; the manifest
+contract starts here.
+
 ## Contract boundary
 
 ```txt
@@ -134,8 +140,8 @@ Project-agent discovery from `agents/*/agent.ts` is still early. Mounted Cell Ag
 Contract mode validates and compiles without calling a model provider or executing tools:
 
 ```bash
-anvil agents validate
-anvil agents manifest --json
+anvil cloud agents validate
+anvil cloud agents manifest --json
 ```
 
 This checks mounted agents, model config, instructions files, capabilities, approval rules, endpoint/workflow references, and generated provider-neutral manifests.
@@ -156,7 +162,7 @@ The local stub provider implements the generic inference provider interface, ret
 Invoke a mounted agent:
 
 ```bash
-anvil agents invoke support --input "Review this Cell" --json
+anvil cloud agents invoke support --input "Review this Cell" --json
 ```
 
 Anvil Local also exposes:
@@ -214,6 +220,24 @@ const runtime = new AgentRuntime({ providers: registry });
 `@anvil-cloud/aws` includes the first AWS inference provider. It implements the generic Anvil inference provider interface, uses the standard AWS credential chain, maps Anvil messages to Bedrock Runtime requests, maps responses back to Anvil messages and token usage, and keeps raw provider responses out of provider-neutral manifests.
 
 AWS compatibility reporting can say that `aws-bedrock` inference is supported while still warning about unimplemented adapter requirements such as durable agent execution, hosted memory, production approval UI, or sandbox execution.
+
+## Sandbox target
+
+`runtime.sandbox: "required"` is a real manifest requirement, not decoration.
+AWS compatibility treats it as supported when a Lambda MicroVM sandbox image is
+configured through `ANVIL_AWS_AGENT_SANDBOX_IMAGE`.
+
+That means normal Cell traffic still runs through the Lambda runtime, while
+agent-heavy work can move into an isolated session workspace:
+
+```txt
+Cell Lambda
+  -> approval and capability broker
+  -> Agent Sandbox
+  -> shell, browser, repo, tool, and generated-code execution
+```
+
+See [Agent Sandboxes](/docs/cloud/agent-sandboxes) for the target architecture.
 
 ## Tool and approval boundary
 
@@ -280,6 +304,9 @@ The manifest may name provider ids such as `local` or `aws-bedrock`. It must not
 - There is no production approval UI.
 - There is no durable multi-step tool-calling loop.
 - Memory and sandbox requirements are manifest-level contract fields, not complete hosted implementations.
-- AWS support currently covers Bedrock inference and compatibility reporting, not full agent infrastructure generation.
+- AWS support currently covers Bedrock inference, compatibility reporting,
+  Lambda MicroVM sandbox lifecycle calls, deploy-plan entries, and CLI readiness
+  output. Hosted policy brokering, streamed tools, workspace snapshots, and Lens
+  views are still future work.
 
 Read this as a contract foundation: enough to define, validate, inspect, mount, manifest, and run agents locally through the Anvil runtime model.

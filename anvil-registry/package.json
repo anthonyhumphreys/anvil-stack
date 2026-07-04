@@ -14,7 +14,7 @@
     "smoke:analysis": "./scripts/smoke-analysis-queue",
     "smoke:clients": "./scripts/smoke-npm-clients",
     "smoke:llm-review": "./scripts/smoke-llm-review",
-    "smoke:local": "ANVIL_REGISTRY_URL=http://localhost:4873 ANVIL_ADMIN_URL=http://localhost:3000 pnpm --filter @anvilstack/cli dev -- smoke",
+    "smoke:local": "ANVIL_REGISTRY_URL=http://localhost:4873 ANVIL_ADMIN_URL=http://localhost:3000 pnpm --filter @anvilstack/registry-cli dev -- smoke",
     "smoke:node-base-image": "./scripts/smoke-node-base-image",
     "smoke:node-base-image-observed": "./scripts/smoke-node-base-image-observed",
     "smoke:node-base-image-report": "./scripts/smoke-node-base-image-report",

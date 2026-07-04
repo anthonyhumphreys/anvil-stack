@@ -93,12 +93,18 @@ export type AwsAgentCompatibilityResult = {
   adapter: "aws";
   supported: boolean;
   inferenceProviders: string[];
+  sandboxProvider?: "aws-lambda-microvm";
   unsupportedRequirements: string[];
   warnings: string[];
 };
 
+export type AwsAgentCompatibilityOptions = {
+  agentSandboxesEnabled?: boolean;
+};
+
 export function checkAwsAgentCompatibility(
   manifest: AgentManifest,
+  options: AwsAgentCompatibilityOptions = {},
 ): AwsAgentCompatibilityResult {
   const unsupportedRequirements: string[] = [];
   const warnings: string[] = [];
@@ -113,9 +119,13 @@ export function checkAwsAgentCompatibility(
     unsupportedRequirements.push("durableExecution");
   }
 
-  if (manifest.requires.sandbox) {
+  if (manifest.requires.sandbox && !options.agentSandboxesEnabled) {
+    unsupportedRequirements.push("sandbox");
+  }
+
+  if (manifest.requires.sandbox && options.agentSandboxesEnabled) {
     warnings.push(
-      "AWS preview does not yet implement the agent sandbox contract.",
+      "AWS preview maps sandbox-required agents to Lambda MicroVM Agent Sandboxes. Verify sandbox image, role, network, and cleanup policy before deployment.",
     );
   }
 
@@ -129,13 +139,19 @@ export function checkAwsAgentCompatibility(
     );
   }
 
-  return {
+  const result: AwsAgentCompatibilityResult = {
     adapter: "aws",
     supported: unsupportedRequirements.length === 0,
     inferenceProviders: ["aws-bedrock"],
     unsupportedRequirements,
     warnings,
   };
+
+  if (manifest.requires.sandbox && options.agentSandboxesEnabled) {
+    result.sandboxProvider = "aws-lambda-microvm";
+  }
+
+  return result;
 }
 
 function toBedrockMessage(message: AgentMessage): Message {

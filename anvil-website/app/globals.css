@@ -82,34 +82,79 @@
 @layer components {
   .hero-proof {
     position: relative;
-    min-height: 560px;
+    display: grid;
+    gap: 1rem;
   }
 
   .hero-proof::before {
     position: absolute;
-    inset: 9% -8% 7% 18%;
+    inset: 8% -5% 18% 14%;
     border: 1px solid oklch(var(--border));
     background:
-      linear-gradient(135deg, color-mix(in oklch, oklch(var(--accent)) 13%, transparent), transparent 42%),
-      repeating-linear-gradient(90deg, color-mix(in oklch, oklch(var(--border)) 58%, transparent) 0 1px, transparent 1px 44px);
+      linear-gradient(135deg, color-mix(in oklch, oklch(var(--accent)) 10%, transparent), transparent 44%),
+      repeating-linear-gradient(90deg, color-mix(in oklch, oklch(var(--border)) 42%, transparent) 0 1px, transparent 1px 56px);
     content: "";
+    opacity: 0.72;
+    pointer-events: none;
+    transform: translate(1rem, 1rem);
   }
 
   .hero-proof-main {
-    position: absolute;
-    inset: 0 7% 18% 0;
+    position: relative;
+    z-index: 1;
+    aspect-ratio: 16 / 10;
     overflow: hidden;
     border: 1px solid oklch(var(--border));
     border-radius: var(--radius);
-    background: oklch(var(--muted));
+    background: oklch(0.13 0.014 205);
     box-shadow: 0 18px 55px color-mix(in oklch, oklch(var(--foreground)) 11%, transparent);
   }
 
-  .hero-proof-command {
+  .hero-window-bar {
     position: absolute;
-    right: 0;
-    bottom: 0;
-    width: min(92%, 28rem);
+    inset: 0 0 auto 0;
+    z-index: 2;
+    display: flex;
+    height: 2.25rem;
+    align-items: center;
+    gap: 0.42rem;
+    border-bottom: 1px solid color-mix(in oklch, oklch(var(--border)) 72%, transparent);
+    background: color-mix(in oklch, oklch(0.11 0.014 205) 88%, transparent);
+    padding: 0 0.9rem;
+  }
+
+  .hero-window-bar span {
+    width: 0.52rem;
+    height: 0.52rem;
+    border-radius: 999px;
+    background: oklch(var(--accent));
+  }
+
+  .hero-window-bar span:nth-child(2) {
+    background: oklch(0.78 0.13 145);
+  }
+
+  .hero-window-bar span:nth-child(3) {
+    background: oklch(0.69 0.16 27);
+  }
+
+  .hero-window-bar p {
+    margin-left: 0.35rem;
+    font-size: 0.72rem;
+    color: oklch(0.8 0.018 205);
+  }
+
+  .hero-proof-command {
+    position: relative;
+    z-index: 2;
+    margin: -3.25rem clamp(1rem, 5vw, 3rem) 0 auto;
+    width: min(88%, 34rem);
+    overflow: hidden;
+    border: 1px solid oklch(var(--border));
+    border-radius: var(--radius);
+    background: color-mix(in oklch, oklch(var(--card)) 92%, transparent);
+    box-shadow: 0 18px 45px color-mix(in oklch, oklch(var(--foreground)) 12%, transparent);
+    backdrop-filter: blur(16px);
   }
 
   .product-card {
@@ -193,23 +238,16 @@
 
 @media (max-width: 1023px) {
   @layer components {
-    .hero-proof {
-      min-height: 520px;
+    .hero-proof::before {
+      inset: 12% 0 20% 18%;
     }
   }
 }
 
 @media (max-width: 640px) {
   @layer components {
-    .hero-proof {
-      min-height: 430px;
-    }
-
-    .hero-proof-main {
-      inset: 0 0 31% 0;
-    }
-
     .hero-proof-command {
+      margin: -1.25rem 0 0;
       width: 100%;
     }
   }

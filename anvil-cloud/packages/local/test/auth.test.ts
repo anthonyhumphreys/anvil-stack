@@ -161,6 +161,144 @@ describe("local auth flow", () => {
     }
   });
 
+  it("rejects valid tokens without required roles for protected mutations", async () => {
+    const server = await startTestServer();
+
+    try {
+      const createUser = await fetch(`${server.runtimeUrl}/_anvil/auth/users`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          userId: "dev_reader",
+          email: "reader@example.test",
+          roles: ["reader"],
+        }),
+      });
+
+      expect(createUser.status).toBe(201);
+
+      const tokenResponse = await fetch(
+        `${server.runtimeUrl}/_anvil/auth/token`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ userId: "dev_reader" }),
+        },
+      );
+      const issued = (await tokenResponse.json()) as {
+        ok: boolean;
+        token: string;
+      };
+
+      expect(issued.ok).toBe(true);
+
+      const denied = await fetch(
+        `${server.runtimeUrl}/_anvil/mutation/adminOnly`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${issued.token}`,
+          },
+          body: JSON.stringify({ input: {} }),
+        },
+      );
+      const deniedPayload = (await denied.json()) as {
+        ok: boolean;
+        error?: { code: string; message: string };
+      };
+
+      expect(denied.status).toBe(403);
+      expect(deniedPayload).toMatchObject({
+        ok: false,
+        error: {
+          code: "FORBIDDEN",
+          message: "One of the roles [admin] is required.",
+        },
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("returns stable errors for invalid local auth management requests", async () => {
+    const server = await startTestServer();
+
+    try {
+      const invalidCreateUser = await fetch(
+        `${server.runtimeUrl}/_anvil/auth/users`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ email: "missing-user-id@example.test" }),
+        },
+      );
+      const invalidCreatePayload = (await invalidCreateUser.json()) as {
+        ok: boolean;
+        error?: { code: string; message: string };
+      };
+
+      expect(invalidCreateUser.status).toBe(400);
+      expect(invalidCreatePayload).toMatchObject({
+        ok: false,
+        error: {
+          code: "AUTH_INVALID_USER",
+          message: "A 'userId' string is required.",
+        },
+      });
+
+      const createUser = await fetch(`${server.runtimeUrl}/_anvil/auth/users`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ userId: "dev_duplicate" }),
+      });
+
+      expect(createUser.status).toBe(201);
+
+      const duplicateUser = await fetch(
+        `${server.runtimeUrl}/_anvil/auth/users`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ userId: "dev_duplicate" }),
+        },
+      );
+      const duplicatePayload = (await duplicateUser.json()) as {
+        ok: boolean;
+        error?: { code: string };
+      };
+
+      expect(duplicateUser.status).toBe(409);
+      expect(duplicatePayload).toMatchObject({
+        ok: false,
+        error: {
+          code: "USER_EXISTS",
+        },
+      });
+
+      const invalidToken = await fetch(`${server.runtimeUrl}/_anvil/auth/token`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: "missing-user-id@example.test" }),
+      });
+      const invalidTokenPayload = (await invalidToken.json()) as {
+        ok: boolean;
+        error?: { code: string; message: string };
+      };
+
+      expect(invalidToken.status).toBe(400);
+      expect(invalidTokenPayload).toMatchObject({
+        ok: false,
+        error: {
+          code: "AUTH_INVALID_USER",
+          message: "A 'userId' string is required.",
+        },
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
   it("serves jwks and whoami endpoints", async () => {
     const server = await startTestServer();
 

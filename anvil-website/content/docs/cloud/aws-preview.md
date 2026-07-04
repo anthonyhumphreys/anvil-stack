@@ -47,12 +47,14 @@ The `@anvil-cloud/aws` package currently includes:
 | Queued jobs | SQS |
 | Scheduled jobs | EventBridge rules |
 | Events | A dedicated EventBridge bus when `capabilities.events` is declared; `ctx.events.publish` maps to `PutEvents` and reports structured EventBridge failure details |
+| Agent inference | AWS Bedrock through the `@anvil-cloud/aws` inference provider |
+| Agent sandboxes | Lambda MicroVM sessions for sandbox-required agent work when a sandbox image is configured |
 | Environment | Lambda environment values for alpha |
 | Logs | CloudWatch Logs |
 | Deployment metadata | DynamoDB |
 
 Deployment plans include an `events` change when `capabilities.events` is
-declared, so `anvil deploy --preview --json` reports the EventBridge resource
+declared, so `anvil cloud deploy --preview --json` reports the EventBridge resource
 before provisioning.
 
 Deployment plans also include an `operations` block with preview rollback
@@ -84,9 +86,38 @@ so job messages are not immediately retried while the Lambda is still running.
 The generated queue redrives messages to a Cell-owned dead-letter queue after
 three failed receives, with 14 day retention for alpha debugging.
 
+## Agent sandbox target
+
+The AWS preview adapter keeps normal Cell traffic on Lambda and can use Lambda
+MicroVMs as the backing for [Agent Sandboxes](/docs/cloud/agent-sandboxes).
+
+The split is deliberate:
+
+- Lambda handles query, mutation, endpoint, job, auth, approval, and capability
+  broker traffic.
+- MicroVM-backed sandboxes handle sessionful agent work such as repository
+  operations, shell commands, package installs, browser automation, generated
+  code execution, scanners, and long-running tool processes.
+
+Cell authors should not see a MicroVM API. They declare:
+
+```ts
+runtime: {
+  sandbox: "required",
+  durability: "optional",
+  humanApproval: "required",
+}
+```
+
+The AWS adapter maps that to `agent-sandboxes` plan entries when a mounted agent
+requires a sandbox. Set `ANVIL_AWS_AGENT_SANDBOX_IMAGE` to enable AWS support
+for those agents. `durability: "required"` remains a separate problem; MicroVM
+suspend/resume helps session continuity, but it is not durable workflow
+execution.
+
 ## Deploy flow
 
-`anvil deploy --preview --json`:
+`anvil cloud deploy --preview --json`:
 
 1. builds the Cell with preview target
 2. reads the generated manifest
@@ -141,10 +172,10 @@ ANVIL_AWS_DEPLOYMENT_METADATA_TABLE=<metadata-table-name>
 Then:
 
 ```bash
-anvil deploy --preview --json
-anvil inspect --app notes --env preview --json
-anvil logs --app notes --env preview --json
-anvil destroy --preview --app notes --yes --json
+anvil cloud deploy --preview --json
+anvil cloud inspect --app notes --env preview --json
+anvil cloud logs --app notes --env preview --json
+anvil cloud destroy --preview --app notes --yes --json
 ```
 
 For the checked-in AWS-compatible smoke Cell, run the repeatable verifier from
@@ -229,7 +260,7 @@ The adapter maps:
 - `POST /_anvil/mutation/:name` to mutation runtime requests
 - `/api/*` to declared endpoint runtime requests
 - `GET /_anvil/health` to a runtime health response used by
-  `anvil deploy --preview --wait`
+  `anvil cloud deploy --preview --wait`
 
 The AWS bridge handles `OPTIONS` preflight requests and adds CORS headers to
 runtime responses so generated browser clients can call the preview runtime.
@@ -243,6 +274,11 @@ correlation. Malformed JSON query or mutation bodies return a stable
 ## Current limits
 
 - Services, workflows, and outbound fetch are local-only in alpha. AWS preview rejects Cells that declare them before provisioning with an `AWS_PREVIEW_UNSUPPORTED_FEATURE` diagnostic. The AWS package can synthesize Step Functions state machine templates, configure Lambda with workflow state machine ARNs, start configured executions through `ctx.workflows.start`, and execute individual workflow step events through Lambda; preview provisioning and remote run inspection are still gated.
+- AWS Bedrock inference and Lambda MicroVM sandbox lifecycle calls are available
+  through provider interfaces. Preview deploys with sandbox-required agents are
+  gated until `ANVIL_AWS_AGENT_SANDBOX_IMAGE` is configured. Streamed tool
+  transport, policy brokering, workspace snapshots, sandbox-aware Lens views,
+  and remote sandbox inspect are still future work.
 - Production use needs wider operational validation beyond the preview verifier.
 - CloudFormation stack failures return `AWS_STACK_FAILED` with recent failing stack events. Stack polling timeouts return `AWS_STACK_TIMEOUT` with the last observed status. Missing required stack outputs return `AWS_STACK_OUTPUT_MISSING`. AWS SDK provisioning failures return `AWS_PROVISIONING_OPERATION_FAILED` with the failed operation and provider error cause.
 - If a deployed runtime is missing adapter environment values for a declared capability, it returns `CAPABILITY_NOT_DECLARED` diagnostics naming the missing variable, such as `ANVIL_EVENT_BUS_NAME` for events.

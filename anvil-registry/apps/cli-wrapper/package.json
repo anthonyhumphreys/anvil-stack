@@ -1,0 +1,36 @@
+{
+  "name": "@anvilstack/cli",
+  "version": "0.2.2",
+  "license": "MIT",
+  "description": "Umbrella command dispatcher for Anvil product CLIs.",
+  "private": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anthonyhumphreys/anvil-stack.git"
+  },
+  "type": "module",
+  "bin": {
+    "anvil": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist/index.d.ts",
+    "dist/index.js",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "dev": "tsx src/index.ts",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "prepublishOnly": "pnpm run build && pnpm run test",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "tsx": "^4.22.4"
+  }
+}

@@ -16,8 +16,28 @@ import type {
 } from '../../shared/types.js';
 import { parseAdoRemoteUrl, parseGitHubRemoteUrl } from './code-review-pr.service.js';
 import { getSettings } from './settings.service.js';
+import { callLlm } from './llm.service.js';
 
 const execFileAsync = promisify(execFile);
+const COMMIT_MESSAGE_DIFF_LIMIT = 18_000;
+const CONVENTIONAL_COMMIT_TYPES = new Set([
+  'feat',
+  'fix',
+  'docs',
+  'test',
+  'refactor',
+  'chore',
+  'build',
+  'ci',
+  'perf',
+  'style',
+]);
+
+type CommitStatusFile = {
+  path: string;
+  index: string;
+  working_dir: string;
+};
 
 export function isGitRepo(dirPath: string): boolean {
   return fs.existsSync(path.join(dirPath, '.git'));
@@ -193,13 +213,25 @@ export async function generateConventionalCommitMessage(repoPath: string): Promi
     throw new Error('There are no repository changes to commit.');
   }
 
-  const paths = status.files.map((file) => file.path);
-  const type = inferCommitType(paths, status.files);
-  const scope = inferCommitScope(paths);
-  const action = inferCommitAction(status.files);
-  const subject = `${action} ${scope ? scope.replace(/[-_]/g, ' ') : 'workspace changes'}`;
+  const heuristic = generateHeuristicConventionalCommitMessage(status.files);
 
-  return `${type}${scope ? `(${scope})` : ''}: ${subject}`.slice(0, 120);
+  try {
+    const context = await buildCommitMessageContext(git, status.files);
+    const response = await callLlm(buildCommitMessagePrompt(context, heuristic), 160, 0.2, 1, {
+      cwd: repoPath,
+      taskClass: 'short-summary',
+    });
+    const message = normaliseLlmCommitMessage(response);
+    if (message) return message;
+    console.warn('[Git] LLM returned an invalid commit message; using heuristic fallback.');
+  } catch (err) {
+    console.warn(
+      '[Git] Failed to generate commit message with LLM; using heuristic fallback:',
+      err,
+    );
+  }
+
+  return heuristic;
 }
 
 export async function createPullRequestFromChanges(
@@ -274,7 +306,8 @@ export async function discardFiles(repoPath: string, paths: string[]): Promise<v
 
 export async function commitChanges(repoPath: string, message: string): Promise<string> {
   const git = gitClient(repoPath);
-  const result = await git.commit(message);
+  const resolvedMessage = message.trim() || (await generateConventionalCommitMessage(repoPath));
+  const result = await git.commit(resolvedMessage);
   return result.commit;
 }
 
@@ -427,10 +460,117 @@ export async function mergeBranch(repoPath: string, branch: string): Promise<str
   return result.result ?? 'merged';
 }
 
-function inferCommitType(
-  paths: string[],
-  files: Array<{ index: string; working_dir: string }>,
-): string {
+function generateHeuristicConventionalCommitMessage(files: CommitStatusFile[]): string {
+  const paths = files.map((file) => file.path);
+  const type = inferCommitType(paths, files);
+  const scope = inferCommitScope(paths);
+  const action = inferCommitAction(files);
+  const subject = `${action} ${scope ? scope.replace(/[-_]/g, ' ') : 'workspace changes'}`;
+
+  return `${type}${scope ? `(${scope})` : ''}: ${subject}`.slice(0, 120);
+}
+
+async function buildCommitMessageContext(
+  git: SimpleGit,
+  files: CommitStatusFile[],
+): Promise<string> {
+  const stagedFiles = files.filter((file) => isStagedStatus(file));
+  const targetFiles = stagedFiles.length > 0 ? stagedFiles : files;
+  const diffArgs = stagedFiles.length > 0 ? ['diff', '--cached'] : ['diff'];
+  const [diffStat, diff] = await Promise.all([
+    git.raw([...diffArgs, '--stat']).catch(() => ''),
+    git.raw(diffArgs).catch(() => ''),
+  ]);
+  const statusLines = targetFiles
+    .map((file) => `${file.index}${file.working_dir} ${file.path}`)
+    .join('\n');
+  const mode =
+    stagedFiles.length > 0
+      ? 'Use staged changes only.'
+      : 'No staged changes were found; use the full working tree.';
+
+  return [
+    `Mode: ${mode}`,
+    '',
+    'Changed files:',
+    statusLines || '(none)',
+    '',
+    'Diff stat:',
+    diffStat.trim() || '(no diff stat available)',
+    '',
+    'Diff:',
+    truncateForPrompt(diff.trim() || '(no textual diff available)', COMMIT_MESSAGE_DIFF_LIMIT),
+  ].join('\n');
+}
+
+function buildCommitMessagePrompt(context: string, heuristic: string): string {
+  return [
+    'Generate exactly one Git conventional commit message for these repository changes.',
+    '',
+    'Rules:',
+    '- Return one line only. No markdown, no quotes, no code fence, no explanation.',
+    '- Use format: type(scope): subject',
+    '- Valid types: feat, fix, docs, test, refactor, chore, build, ci, perf, style.',
+    '- Use a short lowercase scope when a clear area exists; omit the scope if not.',
+    '- Keep the subject imperative and specific, ideally under 72 characters.',
+    '- Do not include a body, footer, issue reference, or co-author trailer.',
+    '',
+    `Heuristic fallback if unsure: ${heuristic}`,
+    '',
+    context,
+  ].join('\n');
+}
+
+function normaliseLlmCommitMessage(response: string): string | null {
+  const withoutFences = response.replace(/```[a-zA-Z0-9_-]*\n?/g, '').replace(/```/g, '');
+  const lines = withoutFences
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  for (const line of lines) {
+    const cleaned = line
+      .replace(/^[-*]\s+/, '')
+      .replace(/^["'`]+|["'`]+$/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const match = cleaned.match(/^([a-zA-Z]+)(?:\(([^)]+)\))?:\s+(.+)$/);
+    if (!match) continue;
+
+    const type = match[1].toLowerCase();
+    if (!CONVENTIONAL_COMMIT_TYPES.has(type)) continue;
+
+    const scope = match[2] ? sanitiseCommitScope(match[2]) : '';
+    const subject = match[3]
+      .replace(/(?:\s+Co-authored-by:.*)$/i, '')
+      .replace(/[.!?]+$/g, '')
+      .trim();
+    if (!subject) continue;
+
+    const message = `${type}${scope ? `(${scope})` : ''}: ${subject}`.slice(0, 120);
+    if (isValidConventionalCommitMessage(message)) return message;
+  }
+
+  return null;
+}
+
+function isValidConventionalCommitMessage(message: string): boolean {
+  if (/co-authored-by/i.test(message)) return false;
+  return /^(feat|fix|docs|test|refactor|chore|build|ci|perf|style)(\([a-z0-9._-]+\))?: .{3,100}$/.test(
+    message,
+  );
+}
+
+function isStagedStatus(file: CommitStatusFile): boolean {
+  return file.index !== ' ' && file.index !== '?' && file.index !== '!';
+}
+
+function truncateForPrompt(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, maxChars)}\n\n[diff truncated to ${maxChars} characters]`;
+}
+
+function inferCommitType(paths: string[], files: CommitStatusFile[]): string {
   if (paths.every((filePath) => /\.(md|mdx|rst|txt)$/i.test(filePath))) return 'docs';
   if (
     paths.some((filePath) =>
@@ -472,7 +612,7 @@ function inferCommitScope(paths: string[]): string {
   return '';
 }
 
-function inferCommitAction(files: Array<{ index: string; working_dir: string }>): string {
+function inferCommitAction(files: CommitStatusFile[]): string {
   if (files.every((file) => file.index === 'A' || file.working_dir === 'A' || file.index === '?')) {
     return 'add';
   }

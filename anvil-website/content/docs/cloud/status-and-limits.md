@@ -24,7 +24,7 @@ what evidence should I inspect before trusting a Cell?"
 | --- | --- |
 | Runtime DSL | `app`, `query`, `mutation`, `endpoint`, `job`, `workflow`, `service`, `table`, and field builders exist. |
 | Runtime execution | `handleRuntimeRequest` supports query, mutation, endpoint, job, and workflow handlers. Services run through the runtime `ServiceSupervisor`, not per-request invocation. |
-| Agents | `defineAgent`, agent capabilities, approval contracts, provider-neutral manifests, provider registry, deterministic local stub inference, mounted Cell Agents, local invocation routes, CLI contract commands, and AWS Bedrock inference provider support exist. |
+| Agents | `defineAgent`, agent capabilities, approval contracts, provider-neutral manifests, provider registry, deterministic local stub inference, mounted Cell Agents, local invocation routes, CLI contract commands, AWS Bedrock inference provider support, and the Agent Sandbox target architecture exist. |
 | Runtime host | Host adapter interfaces exist for db, files, env, auth, logs, events, and jobs. |
 | Builder | Config, import policy, typecheck, server/client bundle, manifest extraction, generated client, and build metadata exist. |
 | Local runtime | Local HTTP server, JSON database, files, auth, logs, events, jobs, workflows, supervised services, manifest, and inspection state exist. |
@@ -55,24 +55,25 @@ Safety comes from a smaller contract: declared capabilities, import restrictions
 | Limit | Impact |
 | --- | --- |
 | Auth lifecycle is provider-owned | Token verification is real locally and on AWS (local IdP + OIDC config), but session/refresh management and login UI belong to your provider. See [Auth](/docs/cloud/auth). |
-| Packaging is private | Packages are currently private workspace packages. There is no supported `npm install -g`, `pnpm dlx`, or `npx` path yet. From the `anvil-cloud` workspace, use `pnpm anvil ...` after `pnpm build`; inside examples, use `node ../../packages/cli/dist/index.js ...`. |
+| CLI packaging is alpha | The Cloud CLI package is `@anvilstack/cloud-cli` and exposes `anvil-cloud`. From the `anvil-cloud` workspace, use `pnpm anvil-cloud ...` after `pnpm build`; inside examples, use `node ../../packages/cli/dist/index.js ...`. |
 | Generated client is early | React/Vite is the default UI path and hook helpers exist, but invalidation is manual, there is no cache policy layer, and the generated surface is query/mutation metadata rather than a full SDK. |
 | AWS preview is alpha, not production hosting | Preview provisioning exists for the checked-in smoke Cell, including deploy, public runtime checks, remote inspect/logs, and destroy. Plans include cleanup commands and cost drivers, but authenticated mutation/query checks require an OIDC-backed token setup, and production use still needs wider rollback, auth, and cost-hardening work. |
 | No hosted control plane | A local Lens UI (`/_anvil/lens`) and the `ControlPlaneApi` contract exist, but inspect and logs still depend on local state or AWS deployment metadata. A hosted plane would be a future adapter behind the same contract. See [Anvil Lens](/docs/cloud/lens). |
 | Workflows are local-first | Local workflows have durable run state, retries, timeouts, resume behavior, CLI commands, and Lens inspection. AWS has Step Functions synthesis and runtime bridge pieces, but preview deploy still rejects workflow-bearing Cells until remote run state, inspection, live-account verification, and cleanup are done. |
 | Services run locally only | The `service` primitive is supervised by the local runtime. There is no cloud execution path yet; an ECS/Fargate adapter is designed but not implemented. See [Services](/docs/cloud/services). |
 | Outbound fetch runs locally only | The builder accepts `capabilities.outboundFetch`, but AWS preview rejects it until outbound network policy can be enforced. |
-| Agents are foundation-level | Mounted Cell Agents run locally and compile to manifests. Project-agent discovery, hosted orchestration, production approval UI, durable multi-step tool execution, hosted memory, sandbox execution, and full AWS agent infrastructure generation are not implemented yet. See [Anvil Agents](/docs/cloud/agents). |
+| Agents are foundation-level | Mounted Cell Agents run locally and compile to manifests. Project-agent discovery, hosted orchestration, production approval UI, durable multi-step tool execution, and hosted memory are not implemented yet. See [Anvil Agents](/docs/cloud/agents). |
+| Agent Sandboxes are first-slice implemented | Runtime sandbox types, the AWS Lambda MicroVM sandbox provider, deploy-plan entries, compatibility gates, cost/review reporting, and CLI readiness output exist. Hosted policy brokering, session streaming, workspace snapshots, sandbox-aware Lens views, and remote inspect/logs are not implemented. See [Agent Sandboxes](/docs/cloud/agent-sandboxes). |
 
 ## What to verify before trusting a Cell
 
 Run:
 
 ```bash
-anvil check --json
-anvil build --json
-anvil inspect --local --json
-anvil logs --local --json
+anvil cloud check --json
+anvil cloud build --json
+anvil cloud inspect --local --json
+anvil cloud logs --local --json
 ```
 
 Before preview deploy, inspect:
@@ -103,7 +104,7 @@ Before treating AWS preview as more than a local deploy experiment, verify:
 - CloudWatch logs
 - deployment metadata table
 - remote `inspect` and `logs`
-- preview cleanup through `anvil destroy --preview --app <name> --yes`
+- preview cleanup through `anvil cloud destroy --preview --app <name> --yes`
 - rollback path or the current manual fallback: redeploy a known-good checkout or destroy the preview stack
 
 ## Contribution priorities
@@ -120,6 +121,7 @@ Useful next work includes:
 - project-agent discovery and standalone agent manifest generation
 - provider-mode examples for AWS Bedrock with local contract checks
 - production approval, memory, sandbox, and durable orchestration adapter work for agents
+- AWS Lambda MicroVM-backed Agent Sandboxes for sandbox-required agents
 - rollback commands beyond preview redeploy/destroy guidance
 - cost and usage reporting beyond preview plan cost drivers
 - clearer package publishing path

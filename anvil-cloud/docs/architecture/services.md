@@ -60,7 +60,7 @@ Local HTTP routes:
 - `GET /_anvil/services` returns `{ ok, services: ServiceStatus[] }`.
 - `POST /_anvil/services/<name>/stop` and `POST /_anvil/services/<name>/start` control an individual service and return `{ ok, service }`.
 
-CLI: `anvil services list [--json]` reads the snapshot file and notes that live state requires the dev server routes.
+CLI: `anvil-cloud services list [--json]` reads the snapshot file and notes that live state requires the dev server routes.
 
 ## Why Lambda is unsuitable
 
@@ -73,8 +73,8 @@ The planned mapping runs services on ECS with Fargate, synthesized entirely by t
 - **One task definition per service**, named `anvil-<cell>-<environment>-<service>`, wrapping the same server bundle with an entrypoint that runs `ServiceSupervisor.start(<name>)` for exactly one service. Cell code never authors task definitions, images, or cluster configuration.
 - **One ECS service per Anvil service** with `desiredCount: 1`. The ECS scheduler provides the outer restart loop; the in-process supervisor provides fast restarts with backoff, and `maxRestarts` exhaustion exits the task so ECS-level policy (deployment circuit breaker, alarms) takes over. `restart: "never"` maps to a task that exits without replacement beyond the scheduler minimum.
 - **Stop semantics** map to ECS task stop: SIGTERM triggers the supervisor's `stopAll()` (abort + bounded wait) within the `stopTimeout` grace period before SIGKILL.
-- **Logs** flow to CloudWatch Logs through the existing log adapter shape (`kind: "service"`), under the same log group conventions as Lambda handlers, so `anvil logs --app` works unchanged.
-- **Status** is persisted to the deployment metadata table on transitions, mirroring the local snapshot file, so `anvil services list --app <cell>` can read remote state through the existing remote reader.
+- **Logs** flow to CloudWatch Logs through the existing log adapter shape (`kind: "service"`), under the same log group conventions as Lambda handlers, so `anvil-cloud logs --app` works unchanged.
+- **Status** is persisted to the deployment metadata table on transitions, mirroring the local snapshot file, so `anvil-cloud services list --app <cell>` can read remote state through the existing remote reader.
 - **IAM and capabilities.** Declaring `capabilities.services` adds least-privilege grants: the deploy role may register task definitions and create/update ECS services; the task role receives exactly the grants implied by the Cell's other declared capabilities (database, files, events), identical to the Lambda role derivation.
 
 This keeps the service contract provider-neutral: Cell code, the manifest shape, `ServiceStatus`, and CLI commands are identical across local and future container-backed execution. ECS remains invisible to Cell authors — it is an adapter implementation detail, consistent with the "no provider primitives in Cell code" constraint.

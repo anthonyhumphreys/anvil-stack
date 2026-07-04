@@ -248,10 +248,10 @@ pre {
   <section id="tab-diagnostics">
     <h2>Trust gateway</h2>
     <div class="panel">
-      <pre>anvil check --json
-anvil build --json
-anvil inspect --local --json
-anvil logs --local --json</pre>
+      <pre>anvil-cloud check --json
+anvil-cloud build --json
+anvil-cloud inspect --local --json
+anvil-cloud logs --local --json</pre>
     </div>
     <h2>Runtime state</h2>
     <div class="panel kv" id="diag-state"></div>

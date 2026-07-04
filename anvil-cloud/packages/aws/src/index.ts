@@ -10,6 +10,7 @@ export {
   AwsPreviewDestroyError,
   AwsSdkPreviewDestroyer,
   AwsSdkPreviewProvisioner,
+  awsPreviewStackNameFor,
   createAwsSdkPreviewDestroyerFromEnv,
   createAwsSdkPreviewProvisionerFromEnv,
   type AwsPreviewDestroyErrorCode,
@@ -25,6 +26,12 @@ import {
 } from "./cloudformation.js";
 import type { AwsPreviewProvisioner } from "./provisioner.js";
 
+export {
+  AwsLambdaMicroVmSandboxError,
+  AwsLambdaMicroVmSandboxProvider,
+  createAwsLambdaMicroVmSandboxProviderFromEnv,
+  type AwsLambdaMicroVmSandboxProviderOptions,
+} from "./sandbox.js";
 export {
   BedrockInferenceProvider,
   checkAwsAgentCompatibility,
@@ -100,6 +107,7 @@ export type DeploymentPlanChange = {
     | "events"
     | "files"
     | "http-ingress"
+    | "agent-sandboxes"
     | "jobs"
     | "logs"
     | "runtime"
@@ -114,8 +122,78 @@ export type DeploymentPlan = {
   environment: DeploymentEnvironment;
   cell: string;
   changes: DeploymentPlanChange[];
+  review: DeploymentPlanReview;
   warnings: string[];
   operations: DeploymentPlanOperations;
+};
+
+export type DeploymentPlanReview = {
+  stableId: string;
+  operation: "deploy";
+  summary: {
+    creates: number;
+    updates: number;
+    reuses: number;
+    total: number;
+  };
+  changeSummary: DeploymentPlanReviewConceptSummary[];
+  changeSet: DeploymentPlanReviewChange[];
+  capabilityDiffs: DeploymentPlanCapabilityDiff[];
+  cost: {
+    drivers: DeploymentPlanCostDriver[];
+    notes: string[];
+  };
+  rollback: DeploymentPlanOperations["rollback"];
+  cleanup: DeploymentPlanOperations["cleanup"];
+  approvalSummary: DeploymentPlanApprovalSummary;
+  approvalGates: DeploymentPlanApprovalGate[];
+};
+
+export type DeploymentPlanReviewConceptSummary = {
+  concept: DeploymentPlanChange["concept"];
+  creates: number;
+  updates: number;
+  reuses: number;
+  total: number;
+  changeIds: string[];
+};
+
+export type DeploymentPlanReviewChange = {
+  id: string;
+  action: DeploymentPlanChange["kind"];
+  concept: DeploymentPlanChange["concept"];
+  name: string;
+  details?: Record<string, unknown>;
+};
+
+export type DeploymentPlanCapabilityDiff = {
+  id: string;
+  action: "add" | "update" | "unchanged";
+  capability: DeploymentPlanChange["concept"];
+  name: string;
+  details?: Record<string, unknown>;
+};
+
+export type DeploymentPlanCostDriver = {
+  id: string;
+  label: string;
+  reason: string;
+};
+
+export type DeploymentPlanApprovalGate = {
+  id: string;
+  required: boolean;
+  severity: "info" | "review" | "block";
+  reason: string;
+  changeIds: string[];
+};
+
+export type DeploymentPlanApprovalSummary = {
+  required: number;
+  info: number;
+  review: number;
+  block: number;
+  hasBlockingGate: boolean;
 };
 
 export type DeploymentPlanOperations = {
@@ -138,7 +216,7 @@ export type DeploymentPlanOperations = {
 
 export type AwsPreviewSupportDiagnostic = {
   code: "AWS_PREVIEW_UNSUPPORTED_FEATURE";
-  feature: "outboundFetch" | "services" | "workflows";
+  feature: "agentSandboxes" | "outboundFetch" | "services" | "workflows";
   message: string;
   hint: string;
   names: string[];
@@ -275,7 +353,7 @@ export class AwsPreviewDeploymentAdapter implements DeploymentAdapter {
         code: "AWS_BUILD_OUTPUT_REQUIRED",
         message:
           "AWS preview provisioning requires builder output so deploy artifacts can be uploaded.",
-        hint: "Run anvil build before invoking the AWS preview provisioner.",
+        hint: "Run anvil-cloud build before invoking the AWS preview provisioner.",
         plan: synthesis.plan,
         template: synthesis.template,
       };
@@ -297,7 +375,7 @@ export class AwsPreviewDeploymentAdapter implements DeploymentAdapter {
           ok: false,
           code: error.code,
           message: error.message,
-          hint: "Inspect the CloudFormation failure details, fix the generated plan or AWS account configuration, then rerun anvil deploy --preview.",
+          hint: "Inspect the CloudFormation failure details, fix the generated plan or AWS account configuration, then rerun anvil-cloud deploy --preview.",
           plan: synthesis.plan,
           template: synthesis.template,
           artifacts: artifactSummary,
@@ -315,8 +393,8 @@ export class AwsPreviewDeploymentAdapter implements DeploymentAdapter {
       url: provisioned.url,
       resources: provisioned.resources,
       next: [
-        `anvil inspect --app ${deployInput.manifest.cell.name} --env ${deployInput.environment ?? "preview"} --json`,
-        `anvil logs --app ${deployInput.manifest.cell.name} --env ${deployInput.environment ?? "preview"} --json`,
+        `anvil-cloud inspect --app ${deployInput.manifest.cell.name} --env ${deployInput.environment ?? "preview"} --json`,
+        `anvil-cloud logs --app ${deployInput.manifest.cell.name} --env ${deployInput.environment ?? "preview"} --json`,
       ],
       plan: synthesis.plan,
       template: synthesis.template,
@@ -468,15 +546,160 @@ export function createAwsPreviewDeploymentPlan(
     });
   }
 
+  const sandboxAgents = sandboxRequiredAgents(manifest);
+
+  if (sandboxAgents.length > 0) {
+    changes.push({
+      kind: "create",
+      concept: "agent-sandboxes",
+      name: `${manifest.cell.name}-${environment}`,
+      details: {
+        service: "lambda-microvms",
+        agents: sandboxAgents.map((agent) => ({
+          name: agent.name,
+          provider: agent.model.provider,
+          approvals: agent.requires.humanApproval,
+          durability: agent.runtime.durability,
+        })),
+        imageConfigured: isAgentSandboxImageConfigured(),
+      },
+    });
+  }
+
+  const operations = createOperations(manifest, environment);
+
   return {
     schemaVersion: "0.1",
     adapter: "aws",
     environment,
     cell: manifest.cell.name,
     changes,
+    review: createDeploymentPlanReview(
+      manifest,
+      environment,
+      changes,
+      operations,
+    ),
     warnings: createWarnings(manifest),
-    operations: createOperations(manifest, environment),
+    operations,
   };
+}
+
+function createDeploymentPlanReview(
+  manifest: CellManifest,
+  environment: DeploymentEnvironment,
+  changes: DeploymentPlanChange[],
+  operations: DeploymentPlanOperations,
+): DeploymentPlanReview {
+  const changeSet = changes.map(toReviewPlanChange);
+  const capabilityDiffs = changes.map(toCapabilityDiff);
+  const approvalGates = createPreviewApprovalGates(
+    manifest,
+    changeSet,
+    capabilityDiffs,
+  );
+
+  return {
+    stableId: `aws-preview:${slug(manifest.cell.name)}:${environment}:deploy`,
+    operation: "deploy",
+    summary: {
+      creates: changes.filter((change) => change.kind === "create").length,
+      updates: changes.filter((change) => change.kind === "update").length,
+      reuses: changes.filter((change) => change.kind === "reuse").length,
+      total: changes.length,
+    },
+    changeSummary: createChangeSummary(changeSet),
+    changeSet,
+    capabilityDiffs,
+    cost: {
+      drivers: createStructuredCostDrivers(manifest),
+      notes: operations.cost.notes,
+    },
+    rollback: operations.rollback,
+    cleanup: operations.cleanup,
+    approvalSummary: createApprovalSummary(approvalGates),
+    approvalGates,
+  };
+}
+
+function createChangeSummary(
+  changeSet: DeploymentPlanReviewChange[],
+): DeploymentPlanReviewConceptSummary[] {
+  const summaries = new Map<
+    DeploymentPlanChange["concept"],
+    DeploymentPlanReviewConceptSummary
+  >();
+
+  for (const change of changeSet) {
+    const existing =
+      summaries.get(change.concept) ??
+      ({
+        concept: change.concept,
+        creates: 0,
+        updates: 0,
+        reuses: 0,
+        total: 0,
+        changeIds: [],
+      } satisfies DeploymentPlanReviewConceptSummary);
+
+    if (change.action === "create") {
+      existing.creates += 1;
+    } else if (change.action === "update") {
+      existing.updates += 1;
+    } else {
+      existing.reuses += 1;
+    }
+
+    existing.total += 1;
+    existing.changeIds.push(change.id);
+    summaries.set(change.concept, existing);
+  }
+
+  return Array.from(summaries.values())
+    .map((summary) => ({
+      ...summary,
+      changeIds: summary.changeIds.sort(),
+    }))
+    .sort((left, right) => left.concept.localeCompare(right.concept));
+}
+
+function toReviewPlanChange(
+  change: DeploymentPlanChange,
+): DeploymentPlanReviewChange {
+  const reviewChange: DeploymentPlanReviewChange = {
+    id: [change.kind, slug(change.concept), slug(change.name)].join(":"),
+    action: change.kind,
+    concept: change.concept,
+    name: change.name,
+  };
+
+  if (change.details !== undefined) {
+    reviewChange.details = change.details;
+  }
+
+  return reviewChange;
+}
+
+function toCapabilityDiff(
+  change: DeploymentPlanChange,
+): DeploymentPlanCapabilityDiff {
+  const diff: DeploymentPlanCapabilityDiff = {
+    id: `${slug(change.concept)}:${slug(change.name)}`,
+    action:
+      change.kind === "create"
+        ? "add"
+        : change.kind === "update"
+          ? "update"
+          : "unchanged",
+    capability: change.concept,
+    name: change.name,
+  };
+
+  if (change.details !== undefined) {
+    diff.details = change.details;
+  }
+
+  return diff;
 }
 
 function createOperations(
@@ -488,8 +711,8 @@ function createOperations(
       supported: false,
       strategy: "manual",
       commands: [
-        "anvil deploy --preview --json",
-        `anvil destroy --preview --app ${manifest.cell.name} --yes --json`,
+        "anvil-cloud deploy --preview --json",
+        `anvil-cloud destroy --preview --app ${manifest.cell.name} --yes --json`,
       ],
       notes: [
         "Preview rollback commands are not implemented yet.",
@@ -506,13 +729,214 @@ function createOperations(
     },
     cleanup: {
       commands: [
-        `anvil destroy --preview --app ${manifest.cell.name} --yes --json`,
+        `anvil-cloud destroy --preview --app ${manifest.cell.name} --yes --json`,
       ],
       notes: [
         "Destroy empties stack-owned buckets and removes deployment metadata when configured.",
       ],
     },
   };
+}
+
+function createPreviewApprovalGates(
+  manifest: CellManifest,
+  changeSet: DeploymentPlanReviewChange[],
+  capabilityDiffs: DeploymentPlanCapabilityDiff[],
+): DeploymentPlanApprovalGate[] {
+  const gates: DeploymentPlanApprovalGate[] = [];
+  const unsupported = checkAwsPreviewSupport(manifest);
+
+  if (unsupported.length > 0) {
+    gates.push({
+      id: "aws-preview-support-gate",
+      required: true,
+      severity: "block",
+      reason:
+        "AWS preview cannot execute every declared Cell feature yet. Deploy is gated before provisioning.",
+      changeIds: unsupported.flatMap((diagnostic) =>
+        idsForConcepts(changeSet, [
+          conceptForUnsupportedFeature(diagnostic.feature),
+        ]),
+      ),
+    });
+  }
+
+  if (manifest.capabilities.database === true) {
+    gates.push({
+      id: "data-resource-review",
+      required: true,
+      severity: "review",
+      reason:
+        "Database capability creates persistent preview data resources. Confirm retention and cleanup expectations.",
+      changeIds: idsForConcepts(changeSet, ["database"]),
+    });
+  }
+
+  if (
+    isObject(manifest.capabilities.files) &&
+    manifest.capabilities.files.publicRead === true
+  ) {
+    gates.push({
+      id: "public-file-access-review",
+      required: true,
+      severity: "review",
+      reason:
+        "Files are configured for public reads. Confirm object exposure before preview deployment.",
+      changeIds: idsForConcepts(changeSet, ["files"]),
+    });
+  }
+
+  const asyncCapabilityIds = idsForConcepts(changeSet, ["events", "jobs"]);
+
+  if (asyncCapabilityIds.length > 0) {
+    gates.push({
+      id: "async-capability-review",
+      required: true,
+      severity: "review",
+      reason:
+        "Events or jobs add asynchronous runtime resources that should be inspected during preview cleanup.",
+      changeIds: asyncCapabilityIds,
+    });
+  }
+
+  const agentSandboxIds = idsForConcepts(changeSet, ["agent-sandboxes"]);
+
+  if (agentSandboxIds.length > 0) {
+    gates.push({
+      id: "agent-sandbox-review",
+      required: true,
+      severity: "review",
+      reason:
+        "Sandbox-required agents create Lambda MicroVM sandbox sessions. Confirm image, IAM role, network, approval, TTL, and cleanup policy.",
+      changeIds: agentSandboxIds,
+    });
+  }
+
+  if (gates.length === 0) {
+    gates.push({
+      id: "standard-review",
+      required: false,
+      severity: "info",
+      reason: "No high-risk AWS preview capability changes were detected.",
+      changeIds: capabilityDiffs.map((diff) => diff.id),
+    });
+  }
+
+  return gates;
+}
+
+function createApprovalSummary(
+  gates: DeploymentPlanApprovalGate[],
+): DeploymentPlanApprovalSummary {
+  return {
+    required: gates.filter((gate) => gate.required).length,
+    info: gates.filter((gate) => gate.severity === "info").length,
+    review: gates.filter((gate) => gate.severity === "review").length,
+    block: gates.filter((gate) => gate.severity === "block").length,
+    hasBlockingGate: gates.some((gate) => gate.severity === "block"),
+  };
+}
+
+function idsForConcepts(
+  changeSet: DeploymentPlanReviewChange[],
+  concepts: string[],
+): string[] {
+  const wanted = new Set(concepts);
+
+  return changeSet
+    .filter((change) => wanted.has(change.concept))
+    .map((change) => change.id)
+    .sort();
+}
+
+function conceptForUnsupportedFeature(
+  feature: AwsPreviewSupportDiagnostic["feature"],
+): string {
+  return feature === "agentSandboxes" ? "agent-sandboxes" : feature;
+}
+
+function createStructuredCostDrivers(
+  manifest: CellManifest,
+): DeploymentPlanCostDriver[] {
+  const drivers: DeploymentPlanCostDriver[] = [
+    {
+      id: "lambda",
+      label: "Lambda requests and duration",
+      reason: "The Cell runtime executes in Lambda for AWS preview.",
+    },
+    {
+      id: "lambda-function-url",
+      label: "Lambda function URL traffic",
+      reason: "Preview HTTP ingress is exposed through the runtime URL.",
+    },
+    {
+      id: "cloudwatch",
+      label: "CloudWatch log ingestion and retention",
+      reason: "Runtime logs are retained for inspect and logs commands.",
+    },
+    {
+      id: "client-assets",
+      label: "S3 client asset storage",
+      reason: "Built client assets are uploaded for preview hosting.",
+    },
+    {
+      id: "deployment-metadata",
+      label: "DynamoDB deployment metadata table reads and writes",
+      reason:
+        "Preview deploy, inspect, logs, and destroy use deployment metadata when configured.",
+    },
+  ];
+
+  if (manifest.capabilities.database === true) {
+    drivers.push({
+      id: "dynamodb-data",
+      label: "DynamoDB Cell data table reads and writes",
+      reason: "Database capability maps Cell tables to DynamoDB resources.",
+    });
+  }
+
+  if (manifest.capabilities.files) {
+    drivers.push({
+      id: "s3-files",
+      label: "S3 Cell file storage and requests",
+      reason: "Files capability stores Cell-owned objects in S3.",
+    });
+  }
+
+  if (manifest.capabilities.events) {
+    drivers.push({
+      id: "eventbridge",
+      label: "EventBridge event bus events",
+      reason: "Events capability publishes through EventBridge.",
+    });
+  }
+
+  if (manifest.jobs.length > 0) {
+    drivers.push({
+      id: "sqs-jobs",
+      label: "SQS queue requests and retained messages",
+      reason: `${manifest.jobs.length} job definition(s) require queue resources.`,
+    });
+  }
+
+  if (manifest.workflows.length > 0) {
+    drivers.push({
+      id: "step-functions",
+      label: "Step Functions state transitions",
+      reason: `${manifest.workflows.length} workflow definition(s) map to state machine resources once AWS preview support lands.`,
+    });
+  }
+
+  if (sandboxRequiredAgents(manifest).length > 0) {
+    drivers.push({
+      id: "lambda-microvms-agent-sandboxes",
+      label: "Lambda MicroVM agent sandbox sessions",
+      reason:
+        "Sandbox-required mounted agents can run in sessionful Lambda MicroVM sandboxes.",
+    });
+  }
+
+  return drivers;
 }
 
 function createCostDrivers(manifest: CellManifest): string[] {
@@ -544,6 +968,10 @@ function createCostDrivers(manifest: CellManifest): string[] {
     drivers.push("Step Functions state transitions");
   }
 
+  if (sandboxRequiredAgents(manifest).length > 0) {
+    drivers.push("Lambda MicroVM agent sandbox sessions");
+  }
+
   return drivers;
 }
 
@@ -551,6 +979,18 @@ export function checkAwsPreviewSupport(
   manifest: CellManifest,
 ): AwsPreviewSupportDiagnostic[] {
   const diagnostics: AwsPreviewSupportDiagnostic[] = [];
+  const sandboxAgents = sandboxRequiredAgents(manifest);
+
+  if (sandboxAgents.length > 0 && !isAgentSandboxImageConfigured()) {
+    diagnostics.push({
+      code: "AWS_PREVIEW_UNSUPPORTED_FEATURE",
+      feature: "agentSandboxes",
+      message:
+        "AWS preview requires a Lambda MicroVM image before it can run sandbox-required agents.",
+      hint: "Set ANVIL_AWS_AGENT_SANDBOX_IMAGE to a Lambda MicroVM image ARN or remove runtime.sandbox: 'required' from mounted agents for this preview deploy.",
+      names: sandboxAgents.map((agent) => agent.name),
+    });
+  }
 
   if (manifest.services.length > 0) {
     diagnostics.push({
@@ -588,6 +1028,19 @@ export function checkAwsPreviewSupport(
   return diagnostics;
 }
 
+function sandboxRequiredAgents(manifest: CellManifest) {
+  return Object.values(manifest.agents ?? {}).filter(
+    (agent) => agent.requires.sandbox,
+  );
+}
+
+function isAgentSandboxImageConfigured(): boolean {
+  return (
+    typeof process.env.ANVIL_AWS_AGENT_SANDBOX_IMAGE === "string" &&
+    process.env.ANVIL_AWS_AGENT_SANDBOX_IMAGE.length > 0
+  );
+}
+
 function createWarnings(manifest: CellManifest): string[] {
   const warnings: string[] = [];
 
@@ -608,6 +1061,16 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function slug(value: string): string {
+  return (
+    value
+      .toLowerCase()
+      .replace(/[^a-z0-9-]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 48) || "anvil"
+  );
+}
+
 function outboundFetchAllowList(capability: unknown): string[] {
   if (!isObject(capability) || !Array.isArray(capability.allow)) {
     return [];
@@ -618,4 +1081,15 @@ function outboundFetchAllowList(capability: unknown): string[] {
   });
 }
 
-export { AwsPulumiDeployAdapter, createAwsPulumiPlan, createPulumiMappings, deterministicName, type AnvilDeployAdapter, type DeployInput, type DeployPlan, type DeployResult, type RemoveInput, type RemoveResult } from "./pulumi-adapter.js";
+export {
+  AwsPulumiDeployAdapter,
+  createAwsPulumiPlan,
+  createPulumiMappings,
+  deterministicName,
+  type AnvilDeployAdapter,
+  type DeployInput,
+  type DeployPlan,
+  type DeployResult,
+  type RemoveInput,
+  type RemoveResult,
+} from "./pulumi-adapter.js";

@@ -18,14 +18,16 @@ import type {
   MobileStartChatResult,
 } from '../../src/shared/types';
 import {
+  activateConnection,
   clearConnection,
   fetchOverview,
   fetchThreadHistory,
   interruptSession,
-  loadConnection,
+  loadConnectionState,
   openDesktop,
   pairWithDesktop,
   parsePairingPayload,
+  removeConnection,
   resolveApproval,
   resolveApprovalByKey,
   saveConnection,
@@ -45,6 +47,7 @@ import { publishDriveModeState } from '@/lib/drive-mode-bridge';
 
 interface CompanionContextValue {
   connection: CompanionConnection | null;
+  connections: CompanionConnection[];
   overview: MobileOverview | null;
   threads: MobileChatThreadSummary[];
   selectedThreadId: string | null;
@@ -54,7 +57,12 @@ interface CompanionContextValue {
   lastUpdatedAt: string | null;
   error: string | null;
   pairFromQr: (rawQrPayload: string, deviceName: string) => Promise<void>;
-  setManualConnection: (connection: CompanionConnection) => Promise<void>;
+  setManualConnection: (
+    connection: Pick<CompanionConnection, 'baseUrl' | 'token' | 'deviceName'> &
+      Partial<CompanionConnection>,
+  ) => Promise<void>;
+  selectHost: (connectionId: string) => Promise<void>;
+  forgetHost: (connectionId: string) => Promise<void>;
   disconnect: () => Promise<void>;
   refresh: () => Promise<void>;
   selectThread: (threadId: string) => Promise<void>;
@@ -72,6 +80,7 @@ const CompanionContext = createContext<CompanionContextValue | null>(null);
 
 export function CompanionProvider({ children }: { children: ReactNode }) {
   const [connection, setConnection] = useState<CompanionConnection | null>(null);
+  const [connections, setConnections] = useState<CompanionConnection[]>([]);
   const [overview, setOverview] = useState<MobileOverview | null>(null);
   const [threads, setThreads] = useState<MobileChatThreadSummary[]>([]);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
@@ -116,12 +125,16 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
-    loadConnection()
-      .then((saved) => {
-        if (!cancelled) setConnection(saved);
+    loadConnectionState()
+      .then((state) => {
+        if (cancelled) return;
+        setConnections(state.connections);
+        setConnection(
+          state.connections.find((candidate) => candidate.id === state.activeConnectionId) ?? null,
+        );
       })
       .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load pairing.');
+        if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load pairings.');
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -153,6 +166,8 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
     try {
       const payload = parsePairingPayload(rawQrPayload);
       const nextConnection = await pairWithDesktop(payload, deviceName);
+      const state = await loadConnectionState();
+      setConnections(state.connections);
       setConnection(nextConnection);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Pairing failed.');
@@ -162,14 +177,22 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const setManualConnection = useCallback(async (nextConnection: CompanionConnection) => {
-    await saveConnection(nextConnection);
-    setConnection(nextConnection);
-  }, []);
+  const setManualConnection = useCallback(
+    async (
+      nextConnection: Pick<CompanionConnection, 'baseUrl' | 'token' | 'deviceName'> &
+        Partial<CompanionConnection>,
+    ) => {
+      await saveConnection(nextConnection);
+      const state = await loadConnectionState();
+      const activeConnection =
+        state.connections.find((candidate) => candidate.id === state.activeConnectionId) ?? null;
+      setConnections(state.connections);
+      setConnection(activeConnection);
+    },
+    [],
+  );
 
-  const disconnect = useCallback(async () => {
-    await clearConnection();
-    setConnection(null);
+  const resetHostState = useCallback(async () => {
     overviewRef.current = null;
     setOverview(null);
     setThreads([]);
@@ -180,6 +203,40 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
     await clearWidgetSnapshot();
     await publishDriveModeState(null);
   }, []);
+
+  const selectHost = useCallback(
+    async (connectionId: string) => {
+      const nextConnection = await activateConnection(connectionId);
+      const state = await loadConnectionState();
+      setConnections(state.connections);
+      setConnection(nextConnection);
+      await resetHostState();
+    },
+    [resetHostState],
+  );
+
+  const forgetHost = useCallback(
+    async (connectionId: string) => {
+      const nextState = await removeConnection(connectionId);
+      const activeConnection =
+        nextState.connections.find((candidate) => candidate.id === nextState.activeConnectionId) ??
+        null;
+      setConnections(nextState.connections);
+      setConnection(activeConnection);
+      if (connection?.id === connectionId) await resetHostState();
+    },
+    [connection?.id, resetHostState],
+  );
+
+  const disconnect = useCallback(async () => {
+    await clearConnection();
+    const state = await loadConnectionState();
+    const activeConnection =
+      state.connections.find((candidate) => candidate.id === state.activeConnectionId) ?? null;
+    setConnections(state.connections);
+    setConnection(activeConnection);
+    await resetHostState();
+  }, [resetHostState]);
 
   const selectThread = useCallback(
     async (threadId: string) => {
@@ -333,6 +390,7 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
   const value = useMemo(
     () => ({
       connection,
+      connections,
       overview,
       threads,
       selectedThreadId,
@@ -343,6 +401,8 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
       error,
       pairFromQr,
       setManualConnection,
+      selectHost,
+      forgetHost,
       disconnect,
       refresh,
       selectThread,
@@ -354,6 +414,7 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
     }),
     [
       connection,
+      connections,
       disconnect,
       error,
       interrupt,
@@ -365,7 +426,9 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
       pairFromQr,
       refresh,
       resolve,
+      forgetHost,
       selectThread,
+      selectHost,
       selectedThreadHistory,
       selectedThreadId,
       sendMessage,

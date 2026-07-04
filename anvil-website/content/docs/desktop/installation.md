@@ -15,7 +15,7 @@ Anvil Desktop is an Electron app. You can run a packaged release build or build 
 
 Release builds are attached to GitHub releases tagged `app-v*` in the [anvil-stack repository](https://github.com/anthonyhumphreys/anvil-stack/releases).
 
-1. Download the `.dmg` (or `.zip`) for macOS arm64 from the latest `app-v*` release.
+1. Download the latest [macOS Apple Silicon DMG](https://github.com/anthonyhumphreys/anvil-stack/releases/latest/download/Anvil-latest-arm64.dmg), or open the latest `app-v*` release and choose the `.dmg` or `.zip` asset manually.
 2. Open the disk image and drag Anvil into Applications.
 3. Launch it. If the build is not notarized, macOS Gatekeeper may require right-click → Open on first launch.
 
@@ -54,9 +54,10 @@ Artifacts land in `dist/`.
 
 On first launch the app walks you through connector setup:
 
-1. **LLM provider**: add an Azure AI Foundry or OpenAI key in Settings. Credentials are encrypted before being stored in the local SQLite database; no `.env` file is involved.
-2. **Repositories**: connect local checkouts or clone from GitHub/Azure DevOps, then let indexing run.
-3. **Optional connectors**: Azure DevOps PAT, Linear API key, or Jira token for work items; a Confluence PAT for documentation features.
+1. **LLM provider**: authenticate the Codex CLI for agentic chat sessions, add an OpenAI key in Settings, or configure Azure AI Foundry through `~/.codex/config.toml` plus the referenced API-key environment variable. OpenAI credentials entered in Settings are encrypted before being stored in the local SQLite database.
+2. **Optional Apple Foundation Models route**: on macOS 26 or later, with Apple Intelligence available and enabled, set Apple Foundation Models to **Prefer simple** and run **Test Apple Models** from Settings. This only routes short, self-contained helper prompts to the on-device model; repo-aware work still uses the configured backend.
+3. **Repositories**: connect local checkouts or clone from GitHub/Azure DevOps, then let indexing run.
+4. **Optional connectors**: Azure DevOps PAT, Linear API key, or Jira token for work items; a Confluence PAT for documentation features.
 
 Everything is stored locally. There is no hosted backend; deleting the app's data directory resets it completely.
 
@@ -68,5 +69,5 @@ Everything is stored locally. There is no hosted backend; deleting the app's dat
 ## Read next
 
 - [Operating guide](/docs/desktop/operating-guide) for the day-to-day working loop.
-- [Chat personas and LLM providers](/docs/desktop/chat-personas-and-llm) to configure models.
+- [Chat personas, reasoning, and LLM providers](/docs/desktop/chat-personas-and-llm) to configure models.
 - [Troubleshooting](/docs/desktop/troubleshooting) if something refuses to start.

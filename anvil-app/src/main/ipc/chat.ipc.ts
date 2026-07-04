@@ -1,6 +1,8 @@
 import { ipcMain } from 'electron';
 import type {
   ChatMessage,
+  ChatArtifact,
+  ChatArtifactInput,
   ChatAttachment,
   ChatAttachmentInput,
   ChatFileMentionSearchInput,
@@ -20,14 +22,22 @@ import { getDb } from '../db/database.js';
 import {
   startSession,
   sendMessage,
+  steerTurn,
   stopSession,
   interruptTurn,
+  emitLocalAssistantTurn,
   getSessionStatus,
   stopAllSessions,
   getSessionForRepo,
   listActiveCodexSessions,
   resolveApproval,
 } from '../services/codex-session.service.js';
+import {
+  callAppleFoundationModel,
+  classifyPromptForOnDeviceModel,
+  isLikelyAppleFoundationModelsRefusal,
+} from '../services/apple-foundation-models.service.js';
+import { getSettings } from '../services/settings.service.js';
 import { getPersonas } from '../services/persona.service.js';
 import { detectCodexCli, getCodexInstallInstructions } from '../services/codex-bridge.service.js';
 import {
@@ -35,11 +45,13 @@ import {
   createChatSession,
   deleteChatThread,
   ensureWorkItemChatThread,
+  getChatThreadProviderThreadId,
   listChatThreads,
   listWorkItemChatThreads,
   saveChatEntry,
   saveChatThreadGoal,
   saveChatThreadPlan,
+  setChatThreadProviderThreadId,
   loadChatHistory,
   clearChatHistory,
   updateChatThread,
@@ -50,6 +62,36 @@ import {
 } from '../services/chat-attachment.service.js';
 import { listChatTurnSummaries, saveChatEvent } from '../services/chat-evidence.service.js';
 import { searchChatFileMentions } from '../services/chat-file-mention.service.js';
+import { listChatArtifacts, upsertChatArtifact } from '../services/chat-artifact.service.js';
+
+const APPLE_FOUNDATION_CHAT_MAX_PROMPT_CHARS = 8_000;
+
+/**
+ * When the on-device Apple model opt-in is enabled, classify the prompt and —
+ * if it is simple enough — answer it locally instead of starting a Codex turn.
+ * Returns true when the message was fully handled on-device.
+ */
+async function tryAppleFoundationModelChatReply(
+  sessionId: string,
+  message: string,
+): Promise<boolean> {
+  if (getSettings().appleFoundationModelsMode !== 'prefer-simple') return false;
+  if (message.length > APPLE_FOUNDATION_CHAT_MAX_PROMPT_CHARS) return false;
+
+  const route = await classifyPromptForOnDeviceModel(message);
+  if (route !== 'local') return false;
+
+  const result = await callAppleFoundationModel(message);
+  const content = result.ok ? (result.content?.trim() ?? '') : '';
+  if (!content || isLikelyAppleFoundationModelsRefusal(content)) {
+    console.warn('[Chat] Apple Foundation Models reply unusable; falling back to Codex');
+    return false;
+  }
+
+  console.log(`[Chat] Answered on-device via Apple Foundation Models (${content.length} chars)`);
+  emitLocalAssistantTurn(sessionId, content);
+  return true;
+}
 
 export function registerChatHandlers(): void {
   ipcMain.handle(
@@ -80,10 +122,23 @@ export function registerChatHandlers(): void {
       }
 
       // Use first repo's path as primary cwd; pass all paths for context
-      const codexSession = await startSession(repoPaths, repoIds, personaId, options);
+      const providerThreadId =
+        options?.providerThreadId ?? getChatThreadProviderThreadId(options?.threadId);
+      const codexSession = await startSession(repoPaths, repoIds, personaId, {
+        ...options,
+        providerThreadId: options?.forkFromProviderThreadId
+          ? undefined
+          : (providerThreadId ?? undefined),
+      });
 
       // Create persistence session — associate with first repo for history
-      createChatSession(options?.threadId ?? null, repoIds[0] ?? null, personaId, codexSession.id);
+      createChatSession(
+        options?.threadId ?? null,
+        repoIds[0] ?? null,
+        personaId,
+        codexSession.id,
+        codexSession.providerThreadId ?? null,
+      );
 
       return codexSession;
     },
@@ -106,7 +161,7 @@ export function registerChatHandlers(): void {
         scaffold: { workspaceId, rootPath },
       });
 
-      createChatSession(null, null, personaId, codexSession.id);
+      createChatSession(null, null, personaId, codexSession.id, codexSession.providerThreadId);
       return codexSession;
     },
   );
@@ -141,6 +196,12 @@ export function registerChatHandlers(): void {
         enrichedMessage = `[Work Item ${parsed.workItemId}] ${parsed.command}: ${message}`;
       }
 
+      // Plain messages without attachments may be answerable on-device.
+      if (!parsed.command && (!attachments || attachments.length === 0)) {
+        const handledLocally = await tryAppleFoundationModelChatReply(sessionId, enrichedMessage);
+        if (handledLocally) return;
+      }
+
       await sendMessage(sessionId, enrichedMessage, attachments, options);
     },
   );
@@ -152,6 +213,58 @@ export function registerChatHandlers(): void {
   ipcMain.handle('chat:interrupt', (_event, sessionId: string): void => {
     interruptTurn(sessionId);
   });
+
+  ipcMain.handle(
+    'chat:steer',
+    (_event, sessionId: string, message: string, attachments?: ChatAttachment[]): Promise<void> => {
+      return steerTurn(sessionId, message, attachments);
+    },
+  );
+
+  ipcMain.handle(
+    'chat:fork-provider-thread',
+    async (_event, sourceThreadId: string, targetThreadId: string): Promise<ChatThread | null> => {
+      const sourceProviderThreadId = getChatThreadProviderThreadId(sourceThreadId);
+      if (!sourceProviderThreadId) return null;
+
+      const targetThread = updateChatThread(targetThreadId, {});
+      if (!targetThread) return null;
+
+      const db = getDb();
+      const repoPaths: string[] = [];
+      for (const rid of targetThread.repoIds) {
+        const row = db.prepare('SELECT path FROM repos WHERE id = ?').get(rid) as
+          | { path: string }
+          | undefined;
+        if (row) repoPaths.push(row.path);
+      }
+
+      const codexSession = await startSession(
+        repoPaths,
+        targetThread.repoIds,
+        targetThread.personaId,
+        {
+          threadId: targetThreadId,
+          workspace: targetThread.workspaceId
+            ? { workspaceId: targetThread.workspaceId }
+            : undefined,
+          forkFromProviderThreadId: sourceProviderThreadId,
+        },
+      );
+      createChatSession(
+        targetThreadId,
+        targetThread.repoIds[0] ?? null,
+        targetThread.personaId,
+        codexSession.id,
+        codexSession.providerThreadId ?? null,
+      );
+      stopSession(codexSession.id);
+      if (codexSession.providerThreadId) {
+        setChatThreadProviderThreadId(targetThreadId, codexSession.providerThreadId);
+      }
+      return updateChatThread(targetThreadId, {});
+    },
+  );
 
   ipcMain.handle(
     'chat:resolve-approval',
@@ -271,6 +384,14 @@ export function registerChatHandlers(): void {
 
   ipcMain.handle('chat:list-turn-summaries', (_event, threadId: string): ChatTurnSummary[] => {
     return listChatTurnSummaries(threadId);
+  });
+
+  ipcMain.handle('chat:list-artifacts', (_event, threadId: string): ChatArtifact[] => {
+    return listChatArtifacts(threadId);
+  });
+
+  ipcMain.handle('chat:upsert-artifact', (_event, input: ChatArtifactInput): ChatArtifact => {
+    return upsertChatArtifact(input);
   });
 
   ipcMain.handle('chat:detect-codex', async () => {

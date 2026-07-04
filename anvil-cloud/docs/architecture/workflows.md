@@ -72,7 +72,7 @@ Local HTTP routes:
 - `GET /_anvil/workflows` lists runs.
 - `GET /_anvil/workflows/<runId>` returns run detail.
 
-CLI: `anvil workflows list`, `anvil workflows show <runId>`, and `anvil workflows run <name> [--input '<json>']`, all with `--json`.
+CLI: `anvil-cloud workflows list`, `anvil-cloud workflows show <runId>`, and `anvil-cloud workflows run <name> [--input '<json>']`, all with `--json`.
 
 ## AWS mapping (partially implemented)
 
@@ -96,8 +96,8 @@ Remaining AWS workflow work:
 
 - persist the same `WorkflowRun` shape into deployment metadata after every
   remote step transition;
-- add remote `anvil workflows list/show --app <cell>` support through the
-  existing remote reader, mirroring `anvil logs --app`;
+- add remote `anvil-cloud workflows list/show --app <cell>` support through the
+  existing remote reader, mirroring `anvil-cloud logs --app`;
 - verify live account provisioning, execution, failure paths, and cleanup before
   removing the preview support gate.
 

@@ -185,7 +185,7 @@ export class AwsSdkPreviewProvisioner implements AwsPreviewProvisioner {
   private provisionEffect(
     input: AwsPreviewProvisionerInput,
   ): Effect.Effect<AwsPreviewProvisionerResult, AwsPreviewProvisioningError> {
-    const stackName = stackNameFor(
+    const stackName = awsPreviewStackNameFor(
       input.plan.cell,
       input.environment,
       this.options.stackNamePrefix,
@@ -225,9 +225,14 @@ export class AwsSdkPreviewProvisioner implements AwsPreviewProvisioner {
         "DeploymentMetadataTableName",
         stackName,
       );
+      const deploymentMetadataKey = deploymentMetadataRecordKey(
+        input.plan.cell,
+        input.environment,
+      );
 
       yield* this.publishDeploymentMetadataEffect({
         tableName: metadataTable,
+        key: deploymentMetadataKey,
         deploymentId,
         input,
         stackName,
@@ -256,6 +261,7 @@ export class AwsSdkPreviewProvisioner implements AwsPreviewProvisioner {
           assetsBucket: clientAssetsBucket,
           logs,
           deploymentMetadataTable: metadataTable,
+          deploymentMetadataKey,
           ...(outputs.CellDataTableName
             ? { database: outputs.CellDataTableName }
             : {}),
@@ -498,6 +504,7 @@ export class AwsSdkPreviewProvisioner implements AwsPreviewProvisioner {
 
   private async publishDeploymentMetadata(input: {
     tableName: string;
+    key: string;
     deploymentId: string;
     input: AwsPreviewProvisionerInput;
     stackName: string;
@@ -512,7 +519,7 @@ export class AwsSdkPreviewProvisioner implements AwsPreviewProvisioner {
             TableName: input.tableName,
             Item: {
               pk: {
-                S: `deployment#${input.input.plan.cell}#${input.input.environment}`,
+                S: input.key,
               },
               deploymentId: { S: input.deploymentId },
               cell: { S: input.input.plan.cell },
@@ -552,6 +559,7 @@ export class AwsSdkPreviewProvisioner implements AwsPreviewProvisioner {
 
   private publishDeploymentMetadataEffect(input: {
     tableName: string;
+    key: string;
     deploymentId: string;
     input: AwsPreviewProvisionerInput;
     stackName: string;
@@ -582,7 +590,7 @@ export class AwsSdkPreviewDestroyer {
   async destroy(
     input: AwsPreviewDestroyInput,
   ): Promise<AwsPreviewDestroyResult> {
-    const stackName = stackNameFor(
+    const stackName = awsPreviewStackNameFor(
       input.cell,
       input.environment,
       this.options.stackNamePrefix,
@@ -787,7 +795,12 @@ export class AwsSdkPreviewDestroyer {
             new DeleteItemCommand({
               TableName: tableName,
               Key: {
-                pk: { S: `deployment#${input.cell}#${input.environment}` },
+                pk: {
+                  S: deploymentMetadataRecordKey(
+                    input.cell,
+                    input.environment,
+                  ),
+                },
               },
             }),
           ),
@@ -802,6 +815,10 @@ export class AwsSdkPreviewDestroyer {
 
     return true;
   }
+}
+
+function deploymentMetadataRecordKey(cell: string, environment: string): string {
+  return `deployment#${cell}#${environment}`;
 }
 
 type AwsSdkErrorCause = {
@@ -999,7 +1016,7 @@ async function describeStack(
   return stack;
 }
 
-function stackNameFor(
+export function awsPreviewStackNameFor(
   cell: string,
   environment: string,
   prefix = "anvil",

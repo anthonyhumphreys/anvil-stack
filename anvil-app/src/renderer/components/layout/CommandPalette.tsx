@@ -24,6 +24,7 @@ import {
   Scale,
   FolderOpen,
   Wrench,
+  MonitorSmartphone,
 } from 'lucide-react';
 import type { ChatLayout, Feature, UserRole } from '../../../shared/types';
 import { ROLE_FEATURES } from '../../../shared/types';
@@ -329,6 +330,16 @@ export function CommandPalette({
         action: () => go('/browser'),
       },
       {
+        id: 'nav-argent',
+        label: 'Go to Argent',
+        description: 'Set up and operate Argent against the Expo companion app.',
+        section: 'Navigation',
+        icon: <MonitorSmartphone size={16} />,
+        feature: 'argent',
+        keywords: ['argent', 'expo', 'mobile', 'simulator', 'emulator', 'mcp'],
+        action: () => go('/argent'),
+      },
+      {
         id: 'nav-git',
         label: 'Go to Git',
         description: 'Inspect branches, diffs, and repository status.',
@@ -476,6 +487,16 @@ export function CommandPalette({
         feature: 'browser',
         keywords: ['browser', 'inspect', 'localhost', 'running app'],
         action: () => go('/browser'),
+      },
+      {
+        id: 'act-open-argent',
+        label: 'Inspect Expo App With Argent',
+        description: 'Open Argent readiness, setup, and live-device prompt actions.',
+        section: 'Actions',
+        icon: <MonitorSmartphone size={16} />,
+        feature: 'argent',
+        keywords: ['argent', 'expo', 'mobile', 'simulator', 'profile', 'logs'],
+        action: () => go('/argent'),
       },
       {
         id: 'act-gate-readiness',

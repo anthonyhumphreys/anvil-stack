@@ -202,6 +202,79 @@ describe("OidcTokenVerifier", () => {
       code: "ISSUER_MISMATCH",
     });
   });
+
+  it("rejects tokens with the wrong audience", async () => {
+    const stateDir = await createStateDir();
+    const { issuer, server } = await startIssuerServer(stateDir);
+
+    cleanups.push(
+      () => new Promise<void>((resolve) => server.close(() => resolve())),
+    );
+
+    const provider = new LocalIdentityProvider({
+      stateDir,
+      issuer,
+      audience: "preview-smoke",
+    });
+
+    await provider.createUser({ userId: "user_1" });
+
+    const issued = await provider.issueToken("user_1");
+    const verifier = new OidcTokenVerifier({
+      issuer,
+      audience: "production",
+    });
+
+    await expect(verifier.verifyToken(issued.token)).rejects.toMatchObject({
+      code: "AUDIENCE_MISMATCH",
+    });
+  });
+
+  it("rejects expired OIDC tokens", async () => {
+    const stateDir = await createStateDir();
+    const { issuer, server } = await startIssuerServer(stateDir);
+
+    cleanups.push(
+      () => new Promise<void>((resolve) => server.close(() => resolve())),
+    );
+
+    const provider = new LocalIdentityProvider({ stateDir, issuer });
+
+    await provider.createUser({ userId: "user_1" });
+
+    const issued = await provider.issueToken("user_1", { ttlSeconds: -60 });
+    const verifier = new OidcTokenVerifier({ issuer });
+
+    await expect(verifier.verifyToken(issued.token)).rejects.toMatchObject({
+      code: "TOKEN_EXPIRED",
+    });
+  });
+
+  it("rejects OIDC tokens that do not map to an Anvil identity", async () => {
+    const stateDir = await createStateDir();
+    const { issuer, server } = await startIssuerServer(stateDir);
+
+    cleanups.push(
+      () => new Promise<void>((resolve) => server.close(() => resolve())),
+    );
+
+    const provider = new LocalIdentityProvider({ stateDir, issuer });
+
+    await provider.createUser({ userId: "user_1" });
+
+    const issued = await provider.issueToken("user_1");
+    const verifier = new OidcTokenVerifier({
+      issuer,
+      claims: {
+        userId: "uid",
+      },
+    });
+
+    await expect(verifier.verifyToken(issued.token)).rejects.toMatchObject({
+      code: "TOKEN_INVALID",
+      message: "Token is missing the 'uid' claim.",
+    });
+  });
 });
 
 async function startIssuerServer(

@@ -10,4 +10,4 @@ Four independent project workspaces: `anvil-app/`, `anvil-cloud/`, `anvil-regist
 
 ## CI
 
-Workflows in `.github/workflows/` are path-filtered per project. Tag schemes: `app-v*` (desktop macOS release), `cli-v*` (npm publish of @anvilstack/cli via trusted publishing), `registry-v*` and `node-base-v*` (GHCR images).
+Workflows in `.github/workflows/` are path-filtered per project. Tag schemes: `app-v*` (desktop macOS release), `cloud-cli-v*`, `registry-cli-v*`, `cli-v*` (thin npm wrapper), `registry-v*`, and `node-base-v*` (GHCR images).

@@ -44,7 +44,7 @@ Services run in the background with no request auth context: `ctx.auth.identity`
 
 ## Capability requirement
 
-Declaring a service requires `capabilities.services`. Anvil Guard reports `CAPABILITY_NOT_DECLARED` during `anvil check` and `anvil build` if it is missing. The built Cell manifest lists each service as `{ name, restart, maxRestarts }`.
+Declaring a service requires `capabilities.services`. Anvil Guard reports `CAPABILITY_NOT_DECLARED` during `anvil cloud check` and `anvil cloud build` if it is missing. The built Cell manifest lists each service as `{ name, restart, maxRestarts }`.
 
 ## Supervision semantics
 
@@ -83,7 +83,7 @@ Failed services additionally carry `lastError: { code, message }`.
 ## CLI
 
 ```bash
-anvil services list --json
+anvil cloud services list --json
 ```
 
 This reads the `.anvil/local/services.json` snapshot — the last recorded states, not necessarily live. For live state, query `GET /_anvil/services` on a running dev server.

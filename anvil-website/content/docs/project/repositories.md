@@ -62,7 +62,7 @@ Start with:
 - `apps/gateway`: Fastify npm-compatible registry proxy.
 - `apps/worker`: queued static analysis, name-squatting checks, provenance context, and optional LLM review.
 - `apps/admin`: Next.js Admin UI and JSON route handlers.
-- `apps/cli`: `anvil` command-line client.
+- `apps/cli`: `anvil-registry` command-line client.
 - `packages`: shared config, policy, npm registry, persistence, object storage, queueing, analysis, and LLM review packages.
 - `devcontainer-base`: Anvil Node Base image and helper scripts.
 - `infra/docker` and `infra/sst`: local stack and AWS deployment infrastructure.
@@ -77,11 +77,11 @@ Start with:
 - `packages/builder`: config loading, import policy, typecheck, server/client bundle, manifest extraction, and generated client output.
 - `packages/local`: local runtime server, JSON database adapter, file adapter, auth adapter, logs, jobs, and inspection state.
 - `packages/client`: browser client and framework hook helpers.
-- `packages/cli`: `anvil new`, `dev`, `check`, `build`, `inspect`, `logs`, `db`, and `deploy --preview`.
+- `packages/cli`: `anvil cloud new`, `dev`, `check`, `build`, `inspect`, `logs`, `db`, and `deploy --preview`.
 - `packages/aws`: AWS preview adapter, CloudFormation synthesis, Lambda runtime bridge, DynamoDB/S3/SQS/EventBridge host adapters, artifact packaging, and remote readers.
 
 The important rule is that Cell code uses the runtime contract. Provider-specific behavior belongs in deployment adapters.
 
 ## Contribution posture
 
-When you update behavior, update docs in the same change — they live in the same repo now, so there is no excuse. This is especially important for Registry policy, Desktop IPC/service boundaries, and Cloud command output. Public docs that drift from implementation are not documentation, they are a scavenger hunt with better typography.
+When you update behavior, update docs in the same change. This is especially important for Registry policy, Desktop IPC/service boundaries, and Cloud command output. Public docs that drift from implementation are not documentation; they are a scavenger hunt with better typography.

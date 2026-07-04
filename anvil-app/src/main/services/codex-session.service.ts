@@ -22,6 +22,7 @@ import {
   handleCodexServerLine,
   type JsonRpcRequestId,
   sendCodexJsonRpc,
+  sendCodexJsonRpcNotification,
 } from './codex-protocol.service.js';
 import { emitCompanionEvent } from './companion-events.service.js';
 
@@ -44,12 +45,19 @@ interface ManagedSession {
   /** Resolves when thread/started is received from the server */
   threadReady: Promise<void>;
   resolveThreadReady: (() => void) | null;
+  rejectThreadReady: ((err: Error) => void) | null;
 }
 
 type CodexUserInput =
   | { type: 'text'; text: string; text_elements: [] }
   | { type: 'localImage'; path: string }
   | { type: 'mention'; name: string; path: string };
+
+export interface CodexTurnSteerParams {
+  threadId: string;
+  expectedTurnId: string;
+  input: CodexUserInput[];
+}
 
 const sessions = new Map<string, ManagedSession>();
 const pendingApprovals = new Map<string, string>();
@@ -103,8 +111,10 @@ export async function startSession(
   }
 
   let resolveThreadReady: (() => void) | null = null;
-  const threadReady = new Promise<void>((resolve) => {
+  let rejectThreadReady: ((err: Error) => void) | null = null;
+  const threadReady = new Promise<void>((resolve, reject) => {
     resolveThreadReady = resolve;
+    rejectThreadReady = reject;
   });
 
   const session: ManagedSession = {
@@ -125,6 +135,7 @@ export async function startSession(
     initialized: false,
     threadReady,
     resolveThreadReady,
+    rejectThreadReady,
   };
 
   sessions.set(id, session);
@@ -151,12 +162,18 @@ export async function startSession(
   proc.on('exit', (code, signal) => {
     console.log(`[Codex:${id.slice(0, 8)}] exited with code=${code} signal=${signal}`);
     session.status = 'error';
+    session.rejectThreadReady?.(
+      new Error(`Codex app-server exited before thread was ready (code=${code}, signal=${signal})`),
+    );
+    session.rejectThreadReady = null;
     broadcastEvent(id, { type: 'status', status: 'complete' });
   });
 
   proc.on('error', (err) => {
     console.error(`[Codex:${id.slice(0, 8)}] process error:`, err);
     session.status = 'error';
+    session.rejectThreadReady?.(err);
+    session.rejectThreadReady = null;
     broadcastEvent(id, { type: 'error', errorMessage: `Codex process error: ${err.message}` });
   });
 
@@ -164,17 +181,31 @@ export async function startSession(
   sendCodexJsonRpc(proc, 'initialize', {
     clientInfo: { name: 'anvil', version: '0.1.0' },
   });
+  sendCodexJsonRpcNotification(proc, 'initialized', {});
 
-  // Step 2: Start a thread with system prompt and cwd
-  sendCodexJsonRpc(proc, 'thread/start', {
+  // Step 2: Start, resume, or fork a thread with system prompt and cwd.
+  const threadParams = {
     cwd,
     developerInstructions: systemPrompt,
     approvalPolicy: codexPolicy.approvalPolicy,
     sandbox: codexPolicy.sandbox,
-  });
+  };
+  if (options?.forkFromProviderThreadId) {
+    sendCodexJsonRpc(proc, 'thread/fork', {
+      threadId: options.forkFromProviderThreadId,
+      ...threadParams,
+    });
+  } else if (options?.providerThreadId) {
+    sendCodexJsonRpc(proc, 'thread/resume', {
+      threadId: options.providerThreadId,
+      ...threadParams,
+    });
+  } else {
+    sendCodexJsonRpc(proc, 'thread/start', threadParams);
+  }
 
   // Wait for thread/started before marking ready
-  await threadReady;
+  await waitForThreadReady(threadReady, id);
 
   session.status = 'ready';
   broadcastEvent(id, { type: 'status', status: 'executing' });
@@ -213,7 +244,29 @@ export async function sendMessage(
     input: buildUserInput(message, attachments),
     approvalPolicy: codexPolicy.approvalPolicy,
     sandboxPolicy: sandboxModeToTurnPolicy(codexPolicy.sandbox, session.cwd),
+    ...(options?.reasoningEffort ? { effort: options.reasoningEffort } : {}),
   });
+}
+
+export async function steerTurn(
+  sessionId: string,
+  message: string,
+  attachments: ChatAttachment[] = [],
+): Promise<void> {
+  const session = sessions.get(sessionId);
+  if (!session) throw new Error(`Session not found: ${sessionId}`);
+  if (!session.process.stdin?.writable) throw new Error('Session stdin not writable');
+
+  await session.threadReady;
+  if (!session.threadId || !session.turnId) {
+    throw new Error('No active Codex turn to steer.');
+  }
+
+  sendCodexJsonRpc(
+    session.process,
+    'turn/steer',
+    buildTurnSteerParams(session.threadId, session.turnId, message, attachments),
+  );
 }
 
 function buildUserInput(message: string, attachments: ChatAttachment[]): CodexUserInput[] {
@@ -228,6 +281,35 @@ function buildUserInput(message: string, attachments: ChatAttachment[]): CodexUs
   }
 
   return input;
+}
+
+export function buildTurnSteerParams(
+  threadId: string,
+  turnId: string,
+  message: string,
+  attachments: ChatAttachment[] = [],
+): CodexTurnSteerParams {
+  return {
+    threadId,
+    expectedTurnId: turnId,
+    input: buildUserInput(message, attachments),
+  };
+}
+
+/**
+ * Emit an assistant reply that was produced locally (e.g. by Apple Foundation
+ * Models) through the same event stream a Codex turn would use, so the
+ * renderer displays and persists it without a Codex round-trip.
+ */
+export function emitLocalAssistantTurn(sessionId: string, text: string): void {
+  const session = sessions.get(sessionId);
+  if (!session) throw new Error(`Session not found: ${sessionId}`);
+
+  broadcastEvent(sessionId, { type: 'status', status: 'thinking' });
+  broadcastEvent(sessionId, { type: 'text', text });
+  session.status = 'ready';
+  broadcastEvent(sessionId, { type: 'status', status: 'complete' });
+  emitCompanionEvent('sessions');
 }
 
 export function interruptTurn(sessionId: string): void {
@@ -348,12 +430,21 @@ function handleServerMessage(session: ManagedSession, line: string): void {
     onThreadReady: () => {
       session.resolveThreadReady?.();
       session.resolveThreadReady = null;
+      session.rejectThreadReady = null;
+    },
+    onThreadError: (message) => {
+      session.rejectThreadReady?.(new Error(message));
+      session.resolveThreadReady = null;
+      session.rejectThreadReady = null;
     },
     onTurnStarted: () => {
       session.status = 'busy';
     },
     onTurnCompleted: () => {
       session.status = 'ready';
+    },
+    onTurnIdChanged: (turnId) => {
+      session.turnId = turnId;
     },
     onEvent: (event) => {
       if (event.type === 'approval_request' && event.approvalRequestId) {
@@ -415,7 +506,21 @@ function sessionToPublic(session: ManagedSession): CodexSession {
     status: session.status,
     startedAt: session.startedAt,
     mode: session.mode,
+    providerThreadId: session.threadId ?? undefined,
+    currentTurnId: session.turnId ?? undefined,
+    resumable: !!session.threadId,
   };
+}
+
+function waitForThreadReady(threadReady: Promise<void>, sessionId: string): Promise<void> {
+  return Promise.race([
+    threadReady,
+    new Promise<void>((_, reject) => {
+      setTimeout(() => {
+        reject(new Error(`Timed out waiting for Codex thread to start: ${sessionId}`));
+      }, 20_000);
+    }),
+  ]);
 }
 
 function sendCodexJsonRpcResult(

@@ -6,6 +6,9 @@ import type {
   AutomationDefinitionInput,
   AutomationRun,
   AutomationRunEvent,
+  AutomationTriageItem,
+  ArgentCommandId,
+  ChatArtifactInput,
   ChatAttachment,
   ChatAttachmentInput,
   ChatFileMentionSearchInput,
@@ -19,8 +22,10 @@ import type {
   ComplianceDocType,
   DevServerTarget,
   EmbeddedEditorTarget,
+  SimulatorPreviewStartOptions,
   GateId,
   GateTemplateUpdate,
+  CodexUsageSnapshot,
   RepoIndexProgress,
   WorkItemProvider,
   WorkspaceCreateOptions,
@@ -129,6 +134,10 @@ const api: AnvilAPI = {
     },
     stopSession: (sessionId: string) => ipcRenderer.invoke('chat:stop-session', sessionId),
     interrupt: (sessionId: string) => ipcRenderer.invoke('chat:interrupt', sessionId),
+    steer: (sessionId: string, message: string, attachments?: ChatAttachment[]) =>
+      ipcRenderer.invoke('chat:steer', sessionId, message, attachments),
+    forkProviderThread: (sourceThreadId: string, targetThreadId: string) =>
+      ipcRenderer.invoke('chat:fork-provider-thread', sourceThreadId, targetThreadId),
     resolveApproval: (
       sessionId: string,
       requestId: string | number,
@@ -141,6 +150,8 @@ const api: AnvilAPI = {
     listActiveSessions: () => ipcRenderer.invoke('chat:list-active-sessions'),
     listTurnSummaries: (threadId: string) =>
       ipcRenderer.invoke('chat:list-turn-summaries', threadId),
+    listArtifacts: (threadId: string) => ipcRenderer.invoke('chat:list-artifacts', threadId),
+    upsertArtifact: (input: ChatArtifactInput) => ipcRenderer.invoke('chat:upsert-artifact', input),
     listThreads: (workspaceId: string | null, personaId: string) =>
       ipcRenderer.invoke('chat:list-threads', workspaceId, personaId),
     listWorkItemThreads: (workspaceId: string | null) =>
@@ -230,6 +241,8 @@ const api: AnvilAPI = {
       ipcRenderer.invoke('automations:remove', automationId) as Promise<void>,
     runNow: (automationId: string) =>
       ipcRenderer.invoke('automations:run-now', automationId) as Promise<AutomationRun>,
+    triage: (workspaceId: string) =>
+      ipcRenderer.invoke('automations:triage', workspaceId) as Promise<AutomationTriageItem[]>,
     listRuns: (automationId: string) =>
       ipcRenderer.invoke('automations:list-runs', automationId) as Promise<AutomationRun[]>,
     getRun: (runId: string) =>
@@ -240,6 +253,11 @@ const api: AnvilAPI = {
       ipcRenderer.invoke('automations:daemon-status') as Promise<AutomationDaemonStatus>,
     reconcileDaemon: () =>
       ipcRenderer.invoke('automations:reconcile-daemon') as Promise<AutomationDaemonStatus>,
+  },
+
+  agentRuns: {
+    list: (workspaceId: string, limit?: number) =>
+      ipcRenderer.invoke('agent-runs:list', workspaceId, limit),
   },
 
   onboard: {
@@ -481,6 +499,9 @@ const api: AnvilAPI = {
     startNotionOAuthFlow: () => ipcRenderer.invoke('settings:notion-oauth-start'),
     exchangeNotionOAuthCode: (code: string) =>
       ipcRenderer.invoke('settings:notion-oauth-exchange', code),
+    getCodexAgentsFile: () => ipcRenderer.invoke('settings:codex-agents:get'),
+    saveCodexAgentsFile: (content: string) =>
+      ipcRenderer.invoke('settings:codex-agents:save', content),
     resetOnboarding: () => ipcRenderer.invoke('settings:reset-onboarding'),
   },
 
@@ -489,6 +510,16 @@ const api: AnvilAPI = {
     searchSkills: (query: string) => ipcRenderer.invoke('codex-registry:search-skills', query),
     installSkill: (input) => ipcRenderer.invoke('codex-registry:install-skill', input),
     registerMcp: (input) => ipcRenderer.invoke('codex-registry:register-mcp', input),
+  },
+
+  codexUsage: {
+    snapshot: () => ipcRenderer.invoke('codex-usage:snapshot') as Promise<CodexUsageSnapshot>,
+  },
+
+  anvilCloud: {
+    snapshot: () => ipcRenderer.invoke('anvil-cloud:snapshot'),
+    run: (commandId, cwd) => ipcRenderer.invoke('anvil-cloud:run', commandId, cwd),
+    openLens: (cwd) => ipcRenderer.invoke('anvil-cloud:open-lens', cwd),
   },
 
   diagrams: {
@@ -706,6 +737,19 @@ const api: AnvilAPI = {
       ipcRenderer.on('browser:target-detected', handler);
       return () => ipcRenderer.removeListener('browser:target-detected', handler);
     },
+  },
+
+  simulatorPreview: {
+    getStatus: () => ipcRenderer.invoke('simulator-preview:get-status'),
+    start: (options?: SimulatorPreviewStartOptions) =>
+      ipcRenderer.invoke('simulator-preview:start', options),
+    stop: () => ipcRenderer.invoke('simulator-preview:stop'),
+  },
+
+  argent: {
+    getSnapshot: () => ipcRenderer.invoke('argent:get-snapshot'),
+    runCommand: (commandId: ArgentCommandId) => ipcRenderer.invoke('argent:run-command', commandId),
+    startSimulatorPreview: () => ipcRenderer.invoke('argent:start-simulator-preview'),
   },
 
   editor: {

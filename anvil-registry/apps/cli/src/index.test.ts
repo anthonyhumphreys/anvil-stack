@@ -342,7 +342,7 @@ alias-left-pad@npm:left-pad@^1.3.0:
           ],
           reason: "lockfile_scan",
           priority: "normal",
-          requestedBy: "anvil-cli"
+          requestedBy: "anvil-registry-cli"
         });
         return jsonResponse({ ok: true, queued: 2 });
       }
@@ -389,7 +389,7 @@ alias-left-pad@npm:left-pad@^1.3.0:
           ],
           reason: "lockfile_scan",
           priority: "normal",
-          requestedBy: "anvil-cli"
+          requestedBy: "anvil-registry-cli"
         });
         return jsonResponse({ ok: true, queued: 2 });
       }
@@ -604,7 +604,7 @@ alias-left-pad@npm:left-pad@^1.3.0:
     });
 
     const exitCode = await run(
-      ["approve", "pkg@1.0.0", "--reason", "intentional", "--approved-by", "reviewer", "--expires-at", "2026-06-20T00:00:00Z"],
+      ["approve", "pkg@1.0.0", "--reason", "intentional", "--approved-by", "reviewer", "--expires-at", "2027-06-20T00:00:00Z"],
       dependencies
     );
 
@@ -620,7 +620,7 @@ alias-left-pad@npm:left-pad@^1.3.0:
           reason: "intentional",
           action: "allow",
           approvedBy: "reviewer",
-          expiresAt: "2026-06-20T00:00:00Z"
+          expiresAt: "2027-06-20T00:00:00Z"
         })
       })
     );
@@ -639,7 +639,7 @@ alias-left-pad@npm:left-pad@^1.3.0:
       "http://anvil.test/-/anvil/override",
       expect.objectContaining({
         headers: expect.objectContaining({ authorization: "Bearer anvil-secret" }),
-        body: JSON.stringify({ packageName: "pkg", version: "1.0.0", reason: "intentional", action: "allow", approvedBy: "anvil-cli" })
+        body: JSON.stringify({ packageName: "pkg", version: "1.0.0", reason: "intentional", action: "allow", approvedBy: "anvil-registry-cli" })
       })
     );
   });
@@ -759,7 +759,7 @@ alias-left-pad@npm:left-pad@^1.3.0:
                 action: "allow",
                 reason: "intentional",
                 approvedBy: "reviewer",
-                expiresAt: "2026-06-20T00:00:00.000Z"
+                expiresAt: "2999-06-20T00:00:00.000Z"
               },
               createdAt: "2026-05-21T10:00:00.000Z"
             }

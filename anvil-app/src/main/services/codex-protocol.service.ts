@@ -23,8 +23,10 @@ interface PendingFileChange {
 
 export interface CodexProtocolCallbacks {
   onThreadReady?: () => void;
+  onThreadError?: (message: string) => void;
   onTurnStarted?: () => void;
   onTurnCompleted?: () => void;
+  onTurnIdChanged?: (turnId: string | null) => void;
   onEvent?: (event: CodexEvent) => void;
   onServerRequestResolved?: (requestId: JsonRpcRequestId) => void;
   onLog?: (message: string) => void;
@@ -61,6 +63,19 @@ export function sendCodexJsonRpc(
   proc.stdin?.write(message + '\n');
 }
 
+export function sendCodexJsonRpcNotification(
+  proc: ChildProcess,
+  method: string,
+  params: Record<string, unknown>,
+): void {
+  proc.stdin?.write(
+    JSON.stringify({
+      method,
+      params,
+    }) + '\n',
+  );
+}
+
 export function handleCodexServerLine(
   state: CodexProtocolState,
   line: string,
@@ -82,6 +97,9 @@ export function handleCodexServerLine(
   if (!method && msg.id) {
     if (msg.error) {
       const err = msg.error as { message?: string };
+      if (!state.threadId) {
+        callbacks.onThreadError?.(err.message ?? 'Codex app-server request failed');
+      }
       callbacks.onEvent?.({
         type: 'error',
         errorMessage: err.message ?? 'Unknown error',
@@ -117,6 +135,7 @@ export function handleCodexServerLine(
       const params = msg.params as Record<string, unknown>;
       const turn = params?.turn as Record<string, unknown> | undefined;
       state.turnId = (turn?.id ?? params?.turnId) as string | null;
+      callbacks.onTurnIdChanged?.(state.turnId);
       callbacks.onEvent?.({ type: 'status', status: 'thinking' });
       callbacks.onTurnStarted?.();
       break;
@@ -125,6 +144,7 @@ export function handleCodexServerLine(
     case 'turn/completed':
       flushAllPendingFileChanges(state, callbacks);
       state.turnId = null;
+      callbacks.onTurnIdChanged?.(null);
       callbacks.onEvent?.({ type: 'status', status: 'complete' });
       callbacks.onTurnCompleted?.();
       break;

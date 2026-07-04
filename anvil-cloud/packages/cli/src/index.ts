@@ -1,5 +1,8 @@
 #!/usr/bin/env node
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { realpathSync } from "node:fs";
+import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Effect, Either } from "effect";
@@ -9,10 +12,12 @@ import {
   AwsPulumiDeployAdapter,
   AwsPreviewDestroyError,
   AwsRemoteReaderError,
+  awsPreviewStackNameFor,
   createAwsSdkPreviewDestroyerFromEnv,
   createAwsRemoteReaderFromEnv,
   createAwsSdkPreviewProvisionerFromEnv,
   BedrockInferenceProvider,
+  checkAwsAgentCompatibility,
 } from "@anvil-cloud/aws";
 import {
   buildCell,
@@ -47,6 +52,24 @@ type CliContext = {
   flags: Set<string>;
   values: Map<string, string>;
 };
+
+type StarterClientKind = "vite-react" | "expo-router" | "headless";
+
+type DoctorStatus = "ok" | "info" | "warning" | "error";
+
+type DoctorCheck = {
+  id: string;
+  status: DoctorStatus;
+  message: string;
+  hint?: string | undefined;
+  details?: Record<string, unknown>;
+};
+
+const publicPackageNames = new Set(["@anvilstack/cloud-cli"]);
+const candidatePublicApiPackageNames = [
+  "@anvil-cloud/runtime",
+  "@anvil-cloud/client",
+];
 
 export type RemoteRuntimeVerification =
   | {
@@ -101,6 +124,9 @@ export async function main(argv: string[]): Promise<void> {
       return;
     case "build":
       await commandBuild(context);
+      return;
+    case "doctor":
+      await commandDoctor(context);
       return;
     case "dev":
       await commandDev(context);
@@ -174,6 +200,9 @@ async function commandAgents(
     case "invoke":
       await commandAgentsInvoke(context, maybeArg);
       return;
+    case "sandboxes":
+      await commandAgentsSandboxes(context);
+      return;
     default:
       writeJsonOrHuman(
         context,
@@ -183,11 +212,11 @@ async function commandAgents(
             {
               code: "INVALID_USAGE",
               message:
-                "Usage: anvil agents <validate|manifest|invoke> [agent] --input <text>",
+                "Usage: anvil-cloud agents <validate|manifest|invoke|sandboxes> [agent] --input <text>",
             },
           ],
         },
-        "Usage: anvil agents <validate|manifest|invoke> [agent] --input <text>",
+        "Usage: anvil-cloud agents <validate|manifest|invoke|sandboxes> [agent] --input <text>",
       );
       process.exitCode = 2;
   }
@@ -204,6 +233,15 @@ async function commandAgentsValidate(context: CliContext): Promise<void> {
 
   const manifest = result.manifest as CellManifest;
   const agents = manifest.agents ?? {};
+  const agentSandboxesEnabled =
+    typeof process.env.ANVIL_AWS_AGENT_SANDBOX_IMAGE === "string" &&
+    process.env.ANVIL_AWS_AGENT_SANDBOX_IMAGE.length > 0;
+  const aws = Object.fromEntries(
+    Object.entries(agents).map(([name, agent]) => [
+      name,
+      checkAwsAgentCompatibility(agent, { agentSandboxesEnabled }),
+    ]),
+  );
   const warnings = Object.values(agents)
     .flatMap((agent) => agent.requires.humanApproval)
     .map((action) => ({
@@ -220,6 +258,7 @@ async function commandAgentsValidate(context: CliContext): Promise<void> {
       providers: unique(
         Object.values(agents).map((agent) => agent.model.provider),
       ),
+      aws,
       warnings,
     },
     [
@@ -227,6 +266,62 @@ async function commandAgentsValidate(context: CliContext): Promise<void> {
       ...Object.keys(agents).map((name) => `  ✓ ${name}`),
       ...warnings.map((warning) => `  ⚠ ${warning.message}`),
     ].join("\n"),
+  );
+}
+
+async function commandAgentsSandboxes(context: CliContext): Promise<void> {
+  const result = await buildCell({ rootDir: context.cwd });
+
+  if (!result.ok || !result.manifest) {
+    writeBuildResult(context, result, "Agent sandbox inspection failed.");
+    process.exitCode = 4;
+    return;
+  }
+
+  const manifest = result.manifest as CellManifest;
+  const agents = manifest.agents ?? {};
+  const image = process.env.ANVIL_AWS_AGENT_SANDBOX_IMAGE;
+  const agentSandboxesEnabled = typeof image === "string" && image.length > 0;
+  const sandboxes = Object.entries(agents)
+    .filter(([, agent]) => agent.requires.sandbox)
+    .map(([mount, agent]) => ({
+      mount,
+      agent: agent.name,
+      provider: "aws-lambda-microvm",
+      required: agent.requires.sandbox,
+      supported: checkAwsAgentCompatibility(agent, {
+        agentSandboxesEnabled,
+      }).supported,
+      imageConfigured: agentSandboxesEnabled,
+      approvals: agent.requires.humanApproval,
+      capabilities: agent.capabilities,
+    }));
+
+  const payload = {
+    ok: true,
+    provider: "aws-lambda-microvm",
+    imageConfigured: agentSandboxesEnabled,
+    sandboxes,
+    warnings: agentSandboxesEnabled
+      ? []
+      : sandboxes.map((sandbox) => ({
+          code: "AWS_AGENT_SANDBOX_IMAGE_REQUIRED",
+          message: `Agent '${sandbox.agent}' requires a sandbox but ANVIL_AWS_AGENT_SANDBOX_IMAGE is not configured.`,
+        })),
+  };
+
+  writeJsonOrHuman(
+    context,
+    payload,
+    sandboxes.length === 0
+      ? "No mounted agents require Agent Sandboxes."
+      : [
+          "Agent Sandboxes:",
+          ...sandboxes.map(
+            (sandbox) =>
+              `  ${sandbox.imageConfigured ? "✓" : "⚠"} ${sandbox.mount} -> ${sandbox.provider}`,
+          ),
+        ].join("\n"),
   );
 }
 
@@ -259,11 +354,11 @@ async function commandAgentsInvoke(
         errors: [
           {
             code: "INVALID_USAGE",
-            message: "Usage: anvil agents invoke <name> --input <text>",
+            message: "Usage: anvil-cloud agents invoke <name> --input <text>",
           },
         ],
       },
-      "Usage: anvil agents invoke <name> --input <text>",
+      "Usage: anvil-cloud agents invoke <name> --input <text>",
     );
     process.exitCode = 2;
     return;
@@ -341,29 +436,65 @@ async function commandNew(
         errors: [
           {
             code: "INVALID_USAGE",
-            message: "Usage: anvil new <name>",
+            message: "Usage: anvil-cloud new <name>",
           },
         ],
       },
-      "Usage: anvil new <name>",
+      "Usage: anvil-cloud new <name>",
+    );
+    process.exitCode = 2;
+    return;
+  }
+
+  const clientKind = readStarterClientKind(context);
+
+  if (!clientKind) {
+    writeJsonOrHuman(
+      context,
+      {
+        ok: false,
+        errors: [
+          {
+            code: "INVALID_USAGE",
+            message:
+              "Usage: anvil-cloud new <name> [--client vite-react|expo-router|headless]",
+          },
+        ],
+      },
+      "Usage: anvil-cloud new <name> [--client vite-react|expo-router|headless]",
     );
     process.exitCode = 2;
     return;
   }
 
   const cellDir = path.resolve(context.cwd, name);
+  const clientEntry =
+    clientKind === "expo-router"
+      ? "app/index.tsx"
+      : clientKind === "headless"
+        ? "src/client/index.ts"
+        : "src/client/main.tsx";
 
   await mkdir(path.join(cellDir, "src"), { recursive: true });
-  await mkdir(path.join(cellDir, "src", "client"), { recursive: true });
+  if (clientKind === "expo-router") {
+    await mkdir(path.join(cellDir, "app"), { recursive: true });
+  } else if (clientKind === "headless") {
+    await mkdir(path.join(cellDir, "src", "client"), { recursive: true });
+  } else {
+    await mkdir(path.join(cellDir, "src", "client"), { recursive: true });
+  }
   await mkdir(path.join(cellDir, ".anvil", "generated"), { recursive: true });
   await writeFile(
     path.join(cellDir, "anvil.json"),
     `${JSON.stringify(
       {
         name,
+        client: {
+          kind: clientKind,
+        },
         entrypoints: {
           server: "src/cell.server.ts",
-          client: "src/client/main.tsx",
+          client: clientEntry,
         },
         runtime: "nodejs20",
         region: "eu-west-2",
@@ -380,19 +511,9 @@ async function commandNew(
         name,
         private: true,
         type: "module",
-        dependencies: {
-          "@anvil-cloud/client": "workspace:*",
-          "@anvil-cloud/runtime": "workspace:*",
-          "@vitejs/plugin-react": "^4.3.4",
-          vite: "^5.4.21",
-          react: "^18.3.1",
-          "react-dom": "^18.3.1",
-        },
-        devDependencies: {
-          "@types/react": "^18.3.12",
-          "@types/react-dom": "^18.3.1",
-          typescript: "^5.7.2",
-        },
+        scripts: createStarterScripts(name, clientKind),
+        dependencies: createStarterDependencies(clientKind),
+        devDependencies: createStarterDevDependencies(clientKind),
       },
       null,
       2,
@@ -401,7 +522,7 @@ async function commandNew(
   );
   await writeFile(
     path.join(cellDir, "tsconfig.json"),
-    `${JSON.stringify(await createStarterTsconfig(cellDir), null, 2)}\n`,
+    `${JSON.stringify(await createStarterTsconfig(cellDir, clientKind), null, 2)}\n`,
     "utf8",
   );
   await writeFile(
@@ -417,16 +538,70 @@ async function commandNew(
   await writeFile(
     path.join(cellDir, ".anvil", "generated", "client.ts"),
     [
-      'import type { GeneratedAnvilApi } from "@anvil-cloud/client";',
+      'import type { ApiMutation, ApiQuery, GeneratedAnvilApi } from "@anvil-cloud/client";',
+      "",
+      "export interface QueryTypes {}",
+      "export interface MutationTypes {}",
       "",
       "export const api = {",
       "  queries: {",
-      '    listTodos: { kind: "query", name: "listTodos" },',
+      '    listTodos: { kind: "query", name: "listTodos" } as TypedQuery<"listTodos">,',
       "  },",
       "  mutations: {",
-      '    addTodo: { kind: "mutation", name: "addTodo" },',
+      '    addTodo: { kind: "mutation", name: "addTodo" } as TypedMutation<"addTodo">,',
+      "  },",
+      "  meta: {",
+      '    schemaVersion: "0.1",',
+      '    queries: ["listTodos"],',
+      '    mutations: ["addTodo"],',
       "  },",
       "} as const satisfies GeneratedAnvilApi;",
+      "",
+      "type TypedQuery<TName extends string> = TName extends keyof QueryTypes",
+      "  ? QueryTypes[TName] extends { input: infer TInput; result: infer TResult }",
+      "    ? ApiQuery<TName, TInput, TResult>",
+      "    : ApiQuery<TName>",
+      "  : ApiQuery<TName>;",
+      "",
+      "type TypedMutation<TName extends string> = TName extends keyof MutationTypes",
+      "  ? MutationTypes[TName] extends { input: infer TInput; result: infer TResult }",
+      "    ? ApiMutation<TName, TInput, TResult>",
+      "    : ApiMutation<TName>",
+      "  : ApiMutation<TName>;",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  await writeFile(
+    path.join(cellDir, "src", "anvil-api.d.ts"),
+    [
+      'declare module "@anvil/generated/client" {',
+      "  interface QueryTypes {",
+      "    listTodos: {",
+      "      input: unknown;",
+      "      result: Array<{",
+      "        id?: string;",
+      "        text: string;",
+      "        done?: boolean;",
+      "      }>;",
+      "    };",
+      "  }",
+      "",
+      "  interface MutationTypes {",
+      "    addTodo: {",
+      "      input: {",
+      "        text: string;",
+      "      };",
+      "      result: {",
+      "        id?: string;",
+      "        text: string;",
+      "        done?: boolean;",
+      "      };",
+      "    };",
+      "  }",
+      "}",
+      "",
+      "export {};",
       "",
     ].join("\n"),
     "utf8",
@@ -470,350 +645,563 @@ async function commandNew(
     ].join("\n"),
     "utf8",
   );
-  await writeFile(
-    path.join(cellDir, "index.html"),
-    [
-      "<!doctype html>",
-      '<html lang="en">',
-      "  <head>",
-      '    <meta charset="utf-8" />',
-      '    <meta name="viewport" content="width=device-width, initial-scale=1" />',
-      `    <title>${name}</title>`,
-      "  </head>",
-      "  <body>",
-      '    <div id="root"></div>',
-      '    <script type="module" src="/src/client/main.tsx"></script>',
-      "  </body>",
-      "</html>",
-      "",
-    ].join("\n"),
-    "utf8",
-  );
-  await writeFile(
-    path.join(cellDir, "vite.config.ts"),
-    [
-      'import react from "@vitejs/plugin-react";',
-      'import { defineConfig } from "vite";',
-      "",
-      "export default defineConfig({",
-      "  plugins: [react()],",
-      "  resolve: {",
-      "    alias: {",
-      '      "@anvil/generated/client": "/.anvil/generated/client.ts",',
-      "    },",
-      "  },",
-      "});",
-      "",
-    ].join("\n"),
-    "utf8",
-  );
-  await writeFile(
-    path.join(cellDir, "src", "client", "main.tsx"),
-    [
-      'import React from "react";',
-      'import { createRoot } from "react-dom/client";',
-      "",
-      'import { App } from "./App";',
-      'import "./styles.css";',
-      "",
-      'const root = document.getElementById("root");',
-      "",
-      "if (!root) {",
-      '  throw new Error("Anvil client root element was not found.");',
-      "}",
-      "",
-      "createRoot(root).render(",
-      "  <React.StrictMode>",
-      "    <App />",
-      "  </React.StrictMode>,",
-      ");",
-      "",
-    ].join("\n"),
-    "utf8",
-  );
-  await writeFile(
-    path.join(cellDir, "src", "client", "App.tsx"),
-    [
-      'import { createClient } from "@anvil-cloud/client";',
-      'import { api } from "@anvil/generated/client";',
-      'import * as React from "react";',
-      "",
-      "type Todo = {",
-      "  id?: string;",
-      "  text: string;",
-      "  done?: boolean;",
-      "};",
-      "",
-      "const client = createClient();",
-      "",
-      "export function App() {",
-      "  const [todos, setTodos] = React.useState<Todo[]>([]);",
-      '  const [status, setStatus] = React.useState<"loading" | "ready" | "error">(',
-      '    "loading",',
-      "  );",
-      "  const [error, setError] = React.useState<string | null>(null);",
-      '  const [submitStatus, setSubmitStatus] = React.useState<"idle" | "saving">(',
-      '    "idle",',
-      "  );",
-      '  const [text, setText] = React.useState("");',
-      "",
-      "  React.useEffect(() => {",
-      "    let active = true;",
-      "",
-      "    client",
-      "      .query<unknown, Todo[]>(api.queries.listTodos, {})",
-      "      .then((result) => {",
-      "        if (active) {",
-      "          setTodos(result);",
-      '          setStatus("ready");',
-      "        }",
-      "      })",
-      "      .catch((unknownError: unknown) => {",
-      "        if (active) {",
-      "          setError(",
-      "            unknownError instanceof Error",
-      "              ? unknownError.message",
-      '              : "Failed to load todos.",',
-      "          );",
-      '          setStatus("error");',
-      "        }",
-      "      });",
-      "",
-      "    return () => {",
-      "      active = false;",
-      "    };",
-      "  }, []);",
-      "",
-      "  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {",
-      "    event.preventDefault();",
-      "    const nextText = text.trim();",
-      "",
-      '    if (!nextText || submitStatus === "saving") {',
-      "      return;",
-      "    }",
-      "",
-      '    setSubmitStatus("saving");',
-      "    setError(null);",
-      "",
-      "    try {",
-      "      const created = await client.mutation<{ text: string }, Todo>(",
-      "        api.mutations.addTodo,",
-      "        { text: nextText },",
-      "      );",
-      "",
-      "      setTodos((current) => [created, ...current]);",
-      '      setText("");',
-      '      setStatus("ready");',
-      "    } catch (unknownError) {",
-      "      setError(",
-      "        unknownError instanceof Error",
-      "          ? unknownError.message",
-      '          : "Failed to add todo.",',
-      "      );",
-      "    } finally {",
-      '      setSubmitStatus("idle");',
-      "    }",
-      "  }",
-      "",
-      "  return (",
-      '    <main className="shell">',
-      '      <section className="hero" aria-labelledby="app-title">',
-      '        <h1 id="app-title">Build the thing. Keep the runtime boring.</h1>',
-      "        <p>",
-      "          This React app talks to Anvil Runtime through generated query and",
-      "          mutation metadata. The cloud plumbing can stay outside the UI,",
-      "          where it belongs.",
-      "        </p>",
-      "      </section>",
-      "",
-      '      <section className="panel" aria-labelledby="todos-title">',
-      '        <div className="panelHeader">',
-      '          <h2 id="todos-title">Todos</h2>',
-      "          <span>{status}</span>",
-      "        </div>",
-      "",
-      '        <form className="todoForm" onSubmit={handleSubmit}>',
-      "          <input",
-      '            aria-label="New todo"',
-      '            placeholder="Add a todo"',
-      "            value={text}",
-      "            onChange={(event) => setText(event.currentTarget.value)}",
-      "          />",
-      '          <button type="submit" disabled={submitStatus === "saving"}>',
-      '            {submitStatus === "saving" ? "Adding" : "Add"}',
-      "          </button>",
-      "        </form>",
-      "",
-      "        {error ? (",
-      '          <p className="error">{error}</p>',
-      "        ) : null}",
-      "",
-      '        {status === "ready" ? (',
-      '          <ul className="todoList">',
-      "            {todos.map((todo) => (",
-      "              <li key={todo.id ?? todo.text}>{todo.text}</li>",
-      "            ))}",
-      "          </ul>",
-      "        ) : (",
-      '          <p className="muted">Loading todos...</p>',
-      "        )}",
-      "      </section>",
-      "    </main>",
-      "  );",
-      "}",
-      "",
-    ].join("\n"),
-    "utf8",
-  );
-  await writeFile(
-    path.join(cellDir, "src", "client", "styles.css"),
-    [
-      ":root {",
-      "  color: #172019;",
-      "  background: #f6f5ef;",
-      '  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;',
-      "  font-synthesis: none;",
-      "  text-rendering: optimizeLegibility;",
-      "}",
-      "",
-      "* {",
-      "  box-sizing: border-box;",
-      "}",
-      "",
-      "body {",
-      "  margin: 0;",
-      "  min-width: 320px;",
-      "  min-height: 100vh;",
-      "}",
-      "",
-      "button, input {",
-      "  font: inherit;",
-      "}",
-      "",
-      ".shell {",
-      "  width: min(960px, calc(100vw - 32px));",
-      "  margin: 0 auto;",
-      "  padding: 56px 0;",
-      "}",
-      "",
-      ".hero {",
-      "  margin-bottom: 32px;",
-      "}",
-      "",
-      "h1 {",
-      "  max-width: 760px;",
-      "  margin: 0;",
-      "  font-size: clamp(2.3rem, 7vw, 5.5rem);",
-      "  line-height: 0.96;",
-      "}",
-      "",
-      ".hero p {",
-      "  max-width: 680px;",
-      "  margin: 20px 0 0;",
-      "  color: #465349;",
-      "  font-size: 1.05rem;",
-      "  line-height: 1.7;",
-      "}",
-      "",
-      ".panel {",
-      "  border: 1px solid #d4d0c4;",
-      "  border-radius: 8px;",
-      "  background: #ffffff;",
-      "  padding: 20px;",
-      "  box-shadow: 0 18px 45px rgb(23 32 25 / 8%);",
-      "}",
-      "",
-      ".panelHeader {",
-      "  display: flex;",
-      "  align-items: center;",
-      "  justify-content: space-between;",
-      "  gap: 16px;",
-      "  margin-bottom: 16px;",
-      "}",
-      "",
-      "h2 {",
-      "  margin: 0;",
-      "  font-size: 1rem;",
-      "}",
-      "",
-      ".panelHeader span, .muted {",
-      "  color: #68746b;",
-      "}",
-      "",
-      ".todoForm {",
-      "  display: flex;",
-      "  gap: 10px;",
-      "  margin-bottom: 16px;",
-      "}",
-      "",
-      ".todoForm input {",
-      "  min-width: 0;",
-      "  flex: 1;",
-      "  border: 1px solid #c6c2b7;",
-      "  border-radius: 6px;",
-      "  padding: 11px 12px;",
-      "}",
-      "",
-      ".todoForm button {",
-      "  border: 0;",
-      "  border-radius: 6px;",
-      "  background: #172019;",
-      "  color: #ffffff;",
-      "  padding: 11px 16px;",
-      "  cursor: pointer;",
-      "}",
-      "",
-      ".todoForm button:disabled {",
-      "  cursor: wait;",
-      "  opacity: 0.7;",
-      "}",
-      "",
-      ".todoList {",
-      "  display: grid;",
-      "  gap: 8px;",
-      "  margin: 0;",
-      "  padding: 0;",
-      "  list-style: none;",
-      "}",
-      "",
-      ".todoList li {",
-      "  border: 1px solid #ece8dd;",
-      "  border-radius: 6px;",
-      "  padding: 10px 12px;",
-      "}",
-      "",
-      ".error {",
-      "  color: #9f2d20;",
-      "}",
-      "",
-      "@media (max-width: 640px) {",
-      "  .shell {",
-      "    padding: 32px 0;",
-      "  }",
-      "",
-      "  .todoForm {",
-      "    flex-direction: column;",
-      "  }",
-      "}",
-      "",
-    ].join("\n"),
-    "utf8",
-  );
+  if (clientKind === "expo-router") {
+    await writeFile(
+      path.join(cellDir, "app.json"),
+      `${JSON.stringify(
+        {
+          expo: {
+            name,
+            slug: name,
+            scheme: name,
+            plugins: ["expo-router"],
+          },
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    await writeFile(
+      path.join(cellDir, "app", "_layout.tsx"),
+      [
+        'import { Stack } from "expo-router/stack";',
+        "",
+        "export default function Layout() {",
+        "  return <Stack />;",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await writeFile(
+      path.join(cellDir, "app", "index.tsx"),
+      [
+        'import { createApiClient, createClient } from "@anvil-cloud/client";',
+        'import { api } from "@anvil/generated/client";',
+        'import * as React from "react";',
+        'import { Button, Platform, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";',
+        "",
+        "type Todo = {",
+        "  id?: string;",
+        "  text: string;",
+        "  done?: boolean;",
+        "};",
+        "",
+        'const localRuntimeUrl = Platform.OS === "android" ? "http://10.0.2.2:8787" : "http://localhost:8787";',
+        "const runtimeUrl = process.env.EXPO_PUBLIC_ANVIL_RUNTIME_URL ?? localRuntimeUrl;",
+        "const client = createApiClient(createClient({ runtimeUrl }), api);",
+        "",
+        "export default function Index() {",
+        "  const [todos, setTodos] = React.useState<Todo[]>([]);",
+        '  const [status, setStatus] = React.useState<"loading" | "ready" | "error">("loading");',
+        "  const [error, setError] = React.useState<string | null>(null);",
+        '  const [submitStatus, setSubmitStatus] = React.useState<"idle" | "saving">("idle");',
+        '  const [text, setText] = React.useState("");',
+        "",
+        "  const loadTodos = React.useCallback(async () => {",
+        '    setStatus("loading");',
+        "    setError(null);",
+        "",
+        "    try {",
+        "      setTodos(await client.queries.listTodos({}));",
+        '      setStatus("ready");',
+        "    } catch (unknownError) {",
+        "      setError(",
+        "        unknownError instanceof Error",
+        "          ? unknownError.message",
+        '          : "Failed to load todos.",',
+        "      );",
+        '      setStatus("error");',
+        "    }",
+        "  }, []);",
+        "",
+        "  React.useEffect(() => {",
+        "    void loadTodos();",
+        "  }, [loadTodos]);",
+        "",
+        "  async function handleSubmit() {",
+        "    const nextText = text.trim();",
+        "",
+        '    if (!nextText || submitStatus === "saving") {',
+        "      return;",
+        "    }",
+        "",
+        '    setSubmitStatus("saving");',
+        "    setError(null);",
+        "",
+        "    try {",
+        "      const created = await client.mutations.addTodo({ text: nextText });",
+        "      setTodos((current) => [created, ...current]);",
+        '      setText("");',
+        '      setStatus("ready");',
+        "    } catch (unknownError) {",
+        "      setError(",
+        "        unknownError instanceof Error",
+        "          ? unknownError.message",
+        '          : "Failed to add todo.",',
+        "      );",
+        "    } finally {",
+        '      setSubmitStatus("idle");',
+        "    }",
+        "  }",
+        "",
+        "  return (",
+        '    <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.screen}>',
+        "      <Text style={styles.title}>Anvil todos</Text>",
+        "      <Text style={styles.meta}>Runtime: {runtimeUrl}</Text>",
+        "",
+        "      <View style={styles.form}>",
+        "        <TextInput",
+        '          accessibilityLabel="New todo"',
+        '          placeholder="Add a todo"',
+        "          value={text}",
+        "          onChangeText={setText}",
+        "          style={styles.input}",
+        "        />",
+        "        <Button",
+        '          title={submitStatus === "saving" ? "Adding" : "Add"}',
+        '          disabled={submitStatus === "saving"}',
+        "          onPress={() => void handleSubmit()}",
+        "        />",
+        "      </View>",
+        "",
+        "      {error ? <Text style={styles.error}>{error}</Text> : null}",
+        "",
+        "      <Text style={styles.status}>Status: {status}</Text>",
+        "      {todos.map((todo) => (",
+        "        <View key={todo.id ?? todo.text} style={styles.todo}>",
+        "          <Text>{todo.text}</Text>",
+        "        </View>",
+        "      ))}",
+        "    </ScrollView>",
+        "  );",
+        "}",
+        "",
+        "const styles = StyleSheet.create({",
+        "  screen: {",
+        "    gap: 16,",
+        "    padding: 24,",
+        "  },",
+        "  title: {",
+        "    fontSize: 32,",
+        '    fontWeight: "700",',
+        "  },",
+        "  meta: {",
+        '    color: "#52605a",',
+        "  },",
+        "  form: {",
+        "    gap: 12,",
+        "  },",
+        "  input: {",
+        '    borderColor: "#c6c2b7",',
+        "    borderRadius: 6,",
+        "    borderWidth: 1,",
+        "    paddingHorizontal: 12,",
+        "    paddingVertical: 10,",
+        "  },",
+        "  status: {",
+        '    color: "#52605a",',
+        "  },",
+        "  todo: {",
+        '    borderColor: "#ece8dd",',
+        "    borderRadius: 6,",
+        "    borderWidth: 1,",
+        "    padding: 12,",
+        "  },",
+        "  error: {",
+        '    color: "#9f2d20",',
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await writeFile(
+      path.join(cellDir, "src", "expo-env.d.ts"),
+      [
+        "declare const process: {",
+        "  env: {",
+        "    EXPO_PUBLIC_ANVIL_RUNTIME_URL?: string;",
+        "  };",
+        "};",
+        "",
+        "export {};",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+  } else if (clientKind === "vite-react") {
+    await writeFile(
+      path.join(cellDir, "index.html"),
+      [
+        "<!doctype html>",
+        '<html lang="en">',
+        "  <head>",
+        '    <meta charset="utf-8" />',
+        '    <meta name="viewport" content="width=device-width, initial-scale=1" />',
+        `    <title>${name}</title>`,
+        "  </head>",
+        "  <body>",
+        '    <div id="root"></div>',
+        '    <script type="module" src="/src/client/main.tsx"></script>',
+        "  </body>",
+        "</html>",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await writeFile(
+      path.join(cellDir, "vite.config.ts"),
+      [
+        'import react from "@vitejs/plugin-react";',
+        'import { defineConfig } from "vite";',
+        "",
+        "export default defineConfig({",
+        "  plugins: [react()],",
+        "  resolve: {",
+        "    alias: {",
+        '      "@anvil/generated/client": "/.anvil/generated/client.ts",',
+        "    },",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await writeFile(
+      path.join(cellDir, "src", "client", "main.tsx"),
+      [
+        'import React from "react";',
+        'import { createRoot } from "react-dom/client";',
+        "",
+        'import { App } from "./App";',
+        'import "./styles.css";',
+        "",
+        'const root = document.getElementById("root");',
+        "",
+        "if (!root) {",
+        '  throw new Error("Anvil client root element was not found.");',
+        "}",
+        "",
+        "createRoot(root).render(",
+        "  <React.StrictMode>",
+        "    <App />",
+        "  </React.StrictMode>,",
+        ");",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await writeFile(
+      path.join(cellDir, "src", "client", "App.tsx"),
+      [
+        'import { createClient } from "@anvil-cloud/client";',
+        'import { api } from "@anvil/generated/client";',
+        'import * as React from "react";',
+        "",
+        "type Todo = {",
+        "  id?: string;",
+        "  text: string;",
+        "  done?: boolean;",
+        "};",
+        "",
+        "const client = createClient();",
+        "",
+        "export function App() {",
+        "  const [todos, setTodos] = React.useState<Todo[]>([]);",
+        '  const [status, setStatus] = React.useState<"loading" | "ready" | "error">(',
+        '    "loading",',
+        "  );",
+        "  const [error, setError] = React.useState<string | null>(null);",
+        '  const [submitStatus, setSubmitStatus] = React.useState<"idle" | "saving">(',
+        '    "idle",',
+        "  );",
+        '  const [text, setText] = React.useState("");',
+        "",
+        "  React.useEffect(() => {",
+        "    let active = true;",
+        "",
+        "    client",
+        "      .query<unknown, Todo[]>(api.queries.listTodos, {})",
+        "      .then((result) => {",
+        "        if (active) {",
+        "          setTodos(result);",
+        '          setStatus("ready");',
+        "        }",
+        "      })",
+        "      .catch((unknownError: unknown) => {",
+        "        if (active) {",
+        "          setError(",
+        "            unknownError instanceof Error",
+        "              ? unknownError.message",
+        '              : "Failed to load todos.",',
+        "          );",
+        '          setStatus("error");',
+        "        }",
+        "      });",
+        "",
+        "    return () => {",
+        "      active = false;",
+        "    };",
+        "  }, []);",
+        "",
+        "  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {",
+        "    event.preventDefault();",
+        "    const nextText = text.trim();",
+        "",
+        '    if (!nextText || submitStatus === "saving") {',
+        "      return;",
+        "    }",
+        "",
+        '    setSubmitStatus("saving");',
+        "    setError(null);",
+        "",
+        "    try {",
+        "      const created = await client.mutation<{ text: string }, Todo>(",
+        "        api.mutations.addTodo,",
+        "        { text: nextText },",
+        "      );",
+        "",
+        "      setTodos((current) => [created, ...current]);",
+        '      setText("");',
+        '      setStatus("ready");',
+        "    } catch (unknownError) {",
+        "      setError(",
+        "        unknownError instanceof Error",
+        "          ? unknownError.message",
+        '          : "Failed to add todo.",',
+        "      );",
+        "    } finally {",
+        '      setSubmitStatus("idle");',
+        "    }",
+        "  }",
+        "",
+        "  return (",
+        '    <main className="shell">',
+        '      <section className="hero" aria-labelledby="app-title">',
+        '        <h1 id="app-title">Build the thing. Keep the runtime boring.</h1>',
+        "        <p>",
+        "          This React app talks to Anvil Runtime through generated query and",
+        "          mutation metadata. The cloud plumbing can stay outside the UI,",
+        "          where it belongs.",
+        "        </p>",
+        "      </section>",
+        "",
+        '      <section className="panel" aria-labelledby="todos-title">',
+        '        <div className="panelHeader">',
+        '          <h2 id="todos-title">Todos</h2>',
+        "          <span>{status}</span>",
+        "        </div>",
+        "",
+        '        <form className="todoForm" onSubmit={handleSubmit}>',
+        "          <input",
+        '            aria-label="New todo"',
+        '            placeholder="Add a todo"',
+        "            value={text}",
+        "            onChange={(event) => setText(event.currentTarget.value)}",
+        "          />",
+        '          <button type="submit" disabled={submitStatus === "saving"}>',
+        '            {submitStatus === "saving" ? "Adding" : "Add"}',
+        "          </button>",
+        "        </form>",
+        "",
+        "        {error ? (",
+        '          <p className="error">{error}</p>',
+        "        ) : null}",
+        "",
+        '        {status === "ready" ? (',
+        '          <ul className="todoList">',
+        "            {todos.map((todo) => (",
+        "              <li key={todo.id ?? todo.text}>{todo.text}</li>",
+        "            ))}",
+        "          </ul>",
+        "        ) : (",
+        '          <p className="muted">Loading todos...</p>',
+        "        )}",
+        "      </section>",
+        "    </main>",
+        "  );",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await writeFile(
+      path.join(cellDir, "src", "client", "styles.css"),
+      [
+        ":root {",
+        "  color: #172019;",
+        "  background: #f6f5ef;",
+        '  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;',
+        "  font-synthesis: none;",
+        "  text-rendering: optimizeLegibility;",
+        "}",
+        "",
+        "* {",
+        "  box-sizing: border-box;",
+        "}",
+        "",
+        "body {",
+        "  margin: 0;",
+        "  min-width: 320px;",
+        "  min-height: 100vh;",
+        "}",
+        "",
+        "button, input {",
+        "  font: inherit;",
+        "}",
+        "",
+        ".shell {",
+        "  width: min(960px, calc(100vw - 32px));",
+        "  margin: 0 auto;",
+        "  padding: 56px 0;",
+        "}",
+        "",
+        ".hero {",
+        "  margin-bottom: 32px;",
+        "}",
+        "",
+        "h1 {",
+        "  max-width: 760px;",
+        "  margin: 0;",
+        "  font-size: clamp(2.3rem, 7vw, 5.5rem);",
+        "  line-height: 0.96;",
+        "}",
+        "",
+        ".hero p {",
+        "  max-width: 680px;",
+        "  margin: 20px 0 0;",
+        "  color: #465349;",
+        "  font-size: 1.05rem;",
+        "  line-height: 1.7;",
+        "}",
+        "",
+        ".panel {",
+        "  border: 1px solid #d4d0c4;",
+        "  border-radius: 8px;",
+        "  background: #ffffff;",
+        "  padding: 20px;",
+        "  box-shadow: 0 18px 45px rgb(23 32 25 / 8%);",
+        "}",
+        "",
+        ".panelHeader {",
+        "  display: flex;",
+        "  align-items: center;",
+        "  justify-content: space-between;",
+        "  gap: 16px;",
+        "  margin-bottom: 16px;",
+        "}",
+        "",
+        "h2 {",
+        "  margin: 0;",
+        "  font-size: 1rem;",
+        "}",
+        "",
+        ".panelHeader span, .muted {",
+        "  color: #68746b;",
+        "}",
+        "",
+        ".todoForm {",
+        "  display: flex;",
+        "  gap: 10px;",
+        "  margin-bottom: 16px;",
+        "}",
+        "",
+        ".todoForm input {",
+        "  min-width: 0;",
+        "  flex: 1;",
+        "  border: 1px solid #c6c2b7;",
+        "  border-radius: 6px;",
+        "  padding: 11px 12px;",
+        "}",
+        "",
+        ".todoForm button {",
+        "  border: 0;",
+        "  border-radius: 6px;",
+        "  background: #172019;",
+        "  color: #ffffff;",
+        "  padding: 11px 16px;",
+        "  cursor: pointer;",
+        "}",
+        "",
+        ".todoForm button:disabled {",
+        "  cursor: wait;",
+        "  opacity: 0.7;",
+        "}",
+        "",
+        ".todoList {",
+        "  display: grid;",
+        "  gap: 8px;",
+        "  margin: 0;",
+        "  padding: 0;",
+        "  list-style: none;",
+        "}",
+        "",
+        ".todoList li {",
+        "  border: 1px solid #ece8dd;",
+        "  border-radius: 6px;",
+        "  padding: 10px 12px;",
+        "}",
+        "",
+        ".error {",
+        "  color: #9f2d20;",
+        "}",
+        "",
+        "@media (max-width: 640px) {",
+        "  .shell {",
+        "    padding: 32px 0;",
+        "  }",
+        "",
+        "  .todoForm {",
+        "    flex-direction: column;",
+        "  }",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+  } else {
+    await writeFile(
+      path.join(cellDir, "src", "client", "index.ts"),
+      [
+        'import { createApiClient, createClient } from "@anvil-cloud/client";',
+        'import { api } from "@anvil/generated/client";',
+        "",
+        "export const anvil = createApiClient(createClient(), api);",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+  }
 
   writeJsonOrHuman(
     context,
     {
       ok: true,
       cell: name,
+      client: {
+        kind: clientKind,
+      },
       path: `./${name}`,
-      next: [`cd ${name}`, "anvil dev"],
+      next:
+        clientKind === "expo-router"
+          ? [
+              `cd ${name}`,
+              "anvil-cloud dev",
+              "EXPO_PUBLIC_ANVIL_RUNTIME_URL=http://localhost:8787 pnpm start",
+            ]
+          : [`cd ${name}`, "anvil-cloud dev"],
     },
     [
       `Created Anvil Cell ${name}`,
       "",
       "Next steps:",
       `  cd ${name}`,
-      "  anvil dev",
+      "  anvil-cloud dev",
+      ...(clientKind === "expo-router"
+        ? ["  EXPO_PUBLIC_ANVIL_RUNTIME_URL=http://localhost:8787 pnpm start"]
+        : []),
     ].join("\n"),
   );
 }
@@ -828,6 +1216,22 @@ async function commandBuild(context: CliContext): Promise<void> {
   const result = await buildCell({ rootDir: context.cwd });
 
   writeBuildResult(context, result, "Build complete.");
+}
+
+async function commandDoctor(context: CliContext): Promise<void> {
+  const checks = await runDoctorChecks(context);
+  const summary = summarizeDoctorChecks(checks);
+  const payload = {
+    ok: summary.errors === 0,
+    checks,
+    summary,
+  };
+
+  writeJsonOrHuman(context, payload, formatDoctorChecks(checks));
+
+  if (summary.errors > 0) {
+    process.exitCode = 5;
+  }
 }
 
 async function commandDev(context: CliContext): Promise<void> {
@@ -850,12 +1254,13 @@ async function commandDev(context: CliContext): Promise<void> {
     cellName: manifest.cell.name,
     port,
     clientPort,
-    clientMode: "vite",
+    clientMode: manifest.client.kind === "vite-react" ? "vite" : "none",
   });
   const ready = {
     type: "ready",
     runtimeUrl: server.runtimeUrl,
     clientUrl: server.clientUrl,
+    client: manifest.client,
     lensUrl: `${server.runtimeUrl}/_anvil/lens`,
     queries: manifest.queries,
     mutations: manifest.mutations,
@@ -869,7 +1274,11 @@ async function commandDev(context: CliContext): Promise<void> {
     process.stdout.write(
       [
         `Anvil Local runtime  ${server.runtimeUrl}`,
-        `Anvil client         ${server.clientUrl}`,
+        ...(manifest.client.kind === "vite-react"
+          ? [`Anvil client         ${server.clientUrl}`]
+          : [
+              `Anvil client         ${manifest.client.kind} (start separately)`,
+            ]),
         `Anvil Lens           ${server.runtimeUrl}/_anvil/lens`,
         "",
       ].join("\n"),
@@ -981,11 +1390,11 @@ async function commandLens(context: CliContext): Promise<void> {
         errors: [
           {
             code: "LENS_SERVER_NOT_RUNNING",
-            message: `No local runtime is reachable at ${runtimeUrl}. Start one with \`anvil dev\` first.`,
+            message: `No local runtime is reachable at ${runtimeUrl}. Start one with \`anvil-cloud dev\` first.`,
           },
         ],
       },
-      `No local runtime is reachable at ${runtimeUrl}. Start one with \`anvil dev\` first.`,
+      `No local runtime is reachable at ${runtimeUrl}. Start one with \`anvil-cloud dev\` first.`,
     );
     process.exitCode = 5;
     return;
@@ -1149,11 +1558,11 @@ async function commandDb(
         {
           code: "INVALID_USAGE",
           message:
-            "Usage: anvil db list --local or anvil db dump <table> --local",
+            "Usage: anvil-cloud db list --local or anvil-cloud db dump <table> --local",
         },
       ],
     },
-    "Usage: anvil db list --local or anvil db dump <table> --local",
+    "Usage: anvil-cloud db list --local or anvil-cloud db dump <table> --local",
   );
   process.exitCode = 2;
 }
@@ -1277,11 +1686,11 @@ async function commandDeploy(context: CliContext): Promise<void> {
         errors: [
           {
             code: "INVALID_USAGE",
-            message: "Only anvil deploy --preview is supported in alpha.",
+            message: "Only anvil-cloud deploy --preview is supported in alpha.",
           },
         ],
       },
-      "Only anvil deploy --preview is supported in alpha.",
+      "Only anvil-cloud deploy --preview is supported in alpha.",
     );
     process.exitCode = 2;
     return;
@@ -1400,7 +1809,7 @@ function commandDeployPreviewEffect(
         ok: false,
         code: verification.code,
         message: verification.message,
-        hint: "Inspect the deployed Lambda logs and CloudFormation outputs, then rerun anvil deploy --preview --wait.",
+        hint: "Inspect the deployed Lambda logs and CloudFormation outputs, then rerun anvil-cloud deploy --preview --wait.",
         deployment: deployResult,
         verification,
       },
@@ -1431,11 +1840,12 @@ async function commandDestroy(context: CliContext): Promise<void> {
         errors: [
           {
             code: "INVALID_USAGE",
-            message: "Only anvil destroy --preview is supported in alpha.",
+            message:
+              "Only anvil-cloud destroy --preview is supported in alpha.",
           },
         ],
       },
-      "Only anvil destroy --preview is supported in alpha.",
+      "Only anvil-cloud destroy --preview is supported in alpha.",
     );
     process.exitCode = 2;
     return;
@@ -1451,11 +1861,11 @@ async function commandDestroy(context: CliContext): Promise<void> {
         errors: [
           {
             code: "INVALID_USAGE",
-            message: "Usage: anvil destroy --preview --app <name> --yes",
+            message: "Usage: anvil-cloud destroy --preview --app <name> --yes",
           },
         ],
       },
-      "Usage: anvil destroy --preview --app <name> --yes",
+      "Usage: anvil-cloud destroy --preview --app <name> --yes",
     );
     process.exitCode = 2;
     return;
@@ -1479,9 +1889,6 @@ async function commandDestroy(context: CliContext): Promise<void> {
     return;
   }
 
-  const destroyer = createAwsSdkPreviewDestroyerFromEnv();
-  let result: Awaited<ReturnType<typeof destroyer.destroy>>;
-
   try {
     const environment = readEnvironment(context);
 
@@ -1489,10 +1896,63 @@ async function commandDestroy(context: CliContext): Promise<void> {
       return;
     }
 
+    if (context.flags.has("dry-run")) {
+      const stackName = awsPreviewStackNameFor(
+        app,
+        environment,
+        process.env.ANVIL_AWS_STACK_PREFIX,
+      );
+      const metadataTable = process.env.ANVIL_AWS_DEPLOYMENT_METADATA_TABLE;
+      const result = {
+        ok: true,
+        adapter: "aws",
+        cell: app,
+        environment,
+        dryRun: true,
+        stackName,
+        cleanup: {
+          stack: {
+            name: stackName,
+            action: "delete",
+          },
+          stackOwnedBuckets: {
+            action: "empty-before-delete",
+          },
+          deploymentMetadata:
+            metadataTable === undefined
+              ? null
+              : {
+                  action: "delete",
+                  table: metadataTable,
+                  key: `deployment#${app}#${environment}`,
+                },
+        },
+        next: [`anvil-cloud destroy --preview --app ${app} --yes --json`],
+      };
+
+      writeJsonOrHuman(
+        context,
+        result,
+        `Would delete AWS preview stack '${stackName}'.`,
+      );
+      return;
+    }
+
+    const destroyer = createAwsSdkPreviewDestroyerFromEnv();
+    let result: Awaited<ReturnType<typeof destroyer.destroy>>;
+
     result = await destroyer.destroy({
       cell: app,
       environment,
     });
+
+    writeJsonOrHuman(
+      context,
+      result,
+      result.deleted
+        ? `Deleted AWS preview stack '${result.stackName}'.`
+        : `AWS preview stack '${result.stackName}' was already absent.`,
+    );
   } catch (error) {
     if (error instanceof AwsPreviewDestroyError) {
       writeJsonOrHuman(
@@ -1501,7 +1961,7 @@ async function commandDestroy(context: CliContext): Promise<void> {
           ok: false,
           code: error.code,
           message: error.message,
-          hint: "Inspect the CloudFormation stack status and any retained S3 buckets, then rerun anvil destroy --preview --app <name> --yes.",
+          hint: "Inspect the CloudFormation stack status and any retained S3 buckets, then rerun anvil-cloud destroy --preview --app <name> --yes.",
           details: error.details,
         },
         error.message,
@@ -1512,19 +1972,26 @@ async function commandDestroy(context: CliContext): Promise<void> {
 
     throw error;
   }
-
-  writeJsonOrHuman(
-    context,
-    result,
-    result.deleted
-      ? `Deleted AWS preview stack '${result.stackName}'.`
-      : `AWS preview stack '${result.stackName}' was already absent.`,
-  );
 }
 
 function formatAnvilPlan(
   plan: {
     changes: Array<{ kind: string; concept: string; name: string }>;
+    review?: {
+      cost?: {
+        drivers?: Array<{ label: string; reason: string }>;
+      };
+      rollback?: {
+        supported: boolean;
+        notes: string[];
+      };
+      approvalGates?: Array<{
+        id: string;
+        required: boolean;
+        severity: string;
+        reason: string;
+      }>;
+    };
     pulumi?: Array<{ type: string; name: string }>;
   },
   verbose: boolean,
@@ -1537,6 +2004,33 @@ function formatAnvilPlan(
     "",
     ...plan.changes.map((change) => `* ${change.concept}: ${change.name}`),
   ];
+  const requiredGates =
+    plan.review?.approvalGates?.filter((gate) => gate.required) ?? [];
+
+  if (requiredGates.length > 0) {
+    lines.push(
+      "",
+      "Review gates:",
+      ...requiredGates.map((gate) => `* ${gate.severity}: ${gate.reason}`),
+    );
+  }
+
+  if (plan.review?.cost?.drivers && plan.review.cost.drivers.length > 0) {
+    lines.push(
+      "",
+      "Cost drivers:",
+      ...plan.review.cost.drivers.map((driver) => `* ${driver.label}`),
+    );
+  }
+
+  if (plan.review?.rollback) {
+    lines.push(
+      "",
+      `Rollback: ${plan.review.rollback.supported ? "supported" : "manual"}`,
+      ...plan.review.rollback.notes.map((note) => `* ${note}`),
+    );
+  }
+
   if (verbose && plan.pulumi && plan.pulumi.length > 0) {
     lines.push(
       "",
@@ -1688,7 +2182,7 @@ async function commandAuth(
           context,
           { ok: true, users },
           users.length === 0
-            ? "No local users. Create one with `anvil auth add-user <id>`."
+            ? "No local users. Create one with `anvil-cloud auth add-user <id>`."
             : users
                 .map(
                   (user) =>
@@ -1815,7 +2309,7 @@ async function commandAuth(
           { ok: true, identity },
           identity
             ? `Signed in as '${String(identity.userId)}'.`
-            : "Not signed in. Use `anvil auth login <id>`.",
+            : "Not signed in. Use `anvil-cloud auth login <id>`.",
         );
         return;
       }
@@ -1828,11 +2322,11 @@ async function commandAuth(
               {
                 code: "INVALID_USAGE",
                 message:
-                  "Usage: anvil auth <users|add-user|remove-user|login|token|whoami>",
+                  "Usage: anvil-cloud auth <users|add-user|remove-user|login|token|whoami>",
               },
             ],
           },
-          "Usage: anvil auth <users|add-user|remove-user|login|token|whoami>",
+          "Usage: anvil-cloud auth <users|add-user|remove-user|login|token|whoami>",
         );
         process.exitCode = 2;
     }
@@ -1861,7 +2355,7 @@ async function commandWorkflows(
       context,
       { ok: true, runs },
       runs.length === 0
-        ? "No local workflow runs. Start one with `anvil workflows run <name>`."
+        ? "No local workflow runs. Start one with `anvil-cloud workflows run <name>`."
         : runs
             .map((run) => `${run.runId}  ${run.workflow}  ${run.status}`)
             .join("\n"),
@@ -1988,11 +2482,11 @@ async function commandServices(
         errors: [
           {
             code: "INVALID_USAGE",
-            message: "Usage: anvil services list [--json]",
+            message: "Usage: anvil-cloud services list [--json]",
           },
         ],
       },
-      "Usage: anvil services list [--json]",
+      "Usage: anvil-cloud services list [--json]",
     );
     process.exitCode = 2;
     return;
@@ -2037,11 +2531,11 @@ function writeWorkflowsUsage(context: CliContext): void {
         {
           code: "INVALID_USAGE",
           message:
-            "Usage: anvil workflows <list|show <runId>|run <name> [--input '<json>']>",
+            "Usage: anvil-cloud workflows <list|show <runId>|run <name> [--input '<json>']>",
         },
       ],
     },
-    "Usage: anvil workflows <list|show <runId>|run <name> [--input '<json>']>",
+    "Usage: anvil-cloud workflows <list|show <runId>|run <name> [--input '<json>']>",
   );
   process.exitCode = 2;
 }
@@ -2144,40 +2638,801 @@ function createContext(argv: string[]): CliContext {
   };
 }
 
+function readStarterClientKind(context: CliContext): StarterClientKind | null {
+  const value = context.values.get("client") ?? "vite-react";
+
+  if (
+    value === "vite-react" ||
+    value === "expo-router" ||
+    value === "headless"
+  ) {
+    return value;
+  }
+
+  return null;
+}
+
 function writeHelp(): void {
   process.stdout.write(
     [
       "Anvil Cloud CLI",
       "",
       "Commands:",
-      "  anvil new <name>",
-      "  anvil dev [--json] [--agent] [--port 8787] [--client-port 5173]",
-      "  anvil check [--json]",
-      "  anvil build [--json]",
-      "  anvil inspect --local [--json]",
-      "  anvil lens [--port 8787] [--json]",
-      "  anvil logs --local [--json]",
-      "  anvil logs --app <name> --env preview [--since 10m] [--limit 50] [--json]",
-      "  anvil db list --local [--json]",
-      "  anvil db dump <table> --local [--json]",
-      "  anvil plan --stage dev --adapter aws [--verbose] [--json]",
-      "  anvil deploy --stage dev --adapter aws [--verbose] [--json]",
-      "  anvil remove --stage dev --adapter aws [--verbose] [--json]",
-      "  anvil deploy --preview [--wait] [--wait-timeout 60] [--json]",
-      "  anvil destroy --preview --app <name> --yes [--json]",
-      "  anvil auth users [--json]",
-      "  anvil auth add-user <id> [--email x@y] [--roles admin,editor] [--json]",
-      "  anvil auth remove-user <id> [--json]",
-      "  anvil auth login <id> [--json]",
-      "  anvil auth token <id> [--ttl 3600] [--json]",
-      "  anvil auth whoami [--json]",
-      "  anvil workflows list [--json]",
-      "  anvil workflows show <runId> [--json]",
-      "  anvil workflows run <name> [--input '<json>'] [--json]",
-      "  anvil services list [--json]",
+      "  anvil-cloud new <name> [--client vite-react|expo-router|headless]",
+      "  anvil-cloud dev [--json] [--agent] [--port 8787] [--client-port 5173]",
+      "  anvil-cloud doctor [--json] [--port 8787] [--client-port 5173]",
+      "  anvil-cloud check [--json]",
+      "  anvil-cloud build [--json]",
+      "  anvil-cloud inspect --local [--json]",
+      "  anvil-cloud lens [--port 8787] [--json]",
+      "  anvil-cloud logs --local [--json]",
+      "  anvil-cloud logs --app <name> --env preview [--since 10m] [--limit 50] [--json]",
+      "  anvil-cloud db list --local [--json]",
+      "  anvil-cloud db dump <table> --local [--json]",
+      "  anvil-cloud plan --stage dev --adapter aws [--verbose] [--json]",
+      "  anvil-cloud deploy --stage dev --adapter aws [--verbose] [--json]",
+      "  anvil-cloud remove --stage dev --adapter aws [--verbose] [--json]",
+      "  anvil-cloud deploy --preview [--wait] [--wait-timeout 60] [--json]",
+      "  anvil-cloud destroy --preview --app <name> --yes [--dry-run] [--json]",
+      "  anvil-cloud auth users [--json]",
+      "  anvil-cloud auth add-user <id> [--email x@y] [--roles admin,editor] [--json]",
+      "  anvil-cloud auth remove-user <id> [--json]",
+      "  anvil-cloud auth login <id> [--json]",
+      "  anvil-cloud auth token <id> [--ttl 3600] [--json]",
+      "  anvil-cloud auth whoami [--json]",
+      "  anvil-cloud workflows list [--json]",
+      "  anvil-cloud workflows show <runId> [--json]",
+      "  anvil-cloud workflows run <name> [--input '<json>'] [--json]",
+      "  anvil-cloud services list [--json]",
       "",
     ].join("\n"),
   );
+}
+
+async function runDoctorChecks(context: CliContext): Promise<DoctorCheck[]> {
+  const runtimePort = parseDoctorPort(context.values.get("port"), 8787);
+  const clientPort = parseDoctorPort(context.values.get("client-port"), 5173);
+  const runtimeUrl = `http://localhost:${runtimePort}`;
+  const runtimeHealth = await checkLocalRuntimeHealth(runtimeUrl);
+  const checks: DoctorCheck[] = [
+    checkNodeVersion(),
+    await checkPnpm(),
+    await checkBuiltCli(),
+    await checkPackagePublishingBoundary(),
+    await checkProjectConfig(context.cwd),
+    await checkBuildArtifacts(context.cwd),
+    await checkGeneratedClient(context.cwd),
+    await checkLocalState(context.cwd),
+    runtimeHealth,
+    await checkPort(
+      "ports.runtime",
+      runtimePort,
+      runtimeHealth.status === "ok",
+    ),
+    await checkPort("ports.client", clientPort, false),
+    checkAwsRegion(),
+    checkEnvPresence(
+      "aws.artifactBucket",
+      "ANVIL_AWS_ARTIFACT_BUCKET",
+      "AWS preview deploys require an artifact bucket.",
+      "Set ANVIL_AWS_ARTIFACT_BUCKET before running deploy --preview.",
+    ),
+    checkEnvPresence(
+      "aws.deploymentMetadataTable",
+      "ANVIL_AWS_DEPLOYMENT_METADATA_TABLE",
+      "Remote inspect/logs need deployment metadata.",
+      "Set ANVIL_AWS_DEPLOYMENT_METADATA_TABLE to enable remote inspect/logs.",
+    ),
+    checkOidcConfig(),
+    checkEnvPresence(
+      "auth.smokeToken",
+      "ANVIL_AWS_SMOKE_TOKEN",
+      "No AWS preview smoke token is configured.",
+      "Set ANVIL_AWS_SMOKE_TOKEN to exercise authenticated AWS preview query and mutation calls.",
+    ),
+    checkOptionalEnvPresence(
+      "auth.expiredSmokeToken",
+      "ANVIL_AWS_EXPIRED_SMOKE_TOKEN",
+      "No expired AWS preview smoke token is configured.",
+      "Set ANVIL_AWS_EXPIRED_SMOKE_TOKEN when you want verify:aws-preview to prove expired-token rejection.",
+    ),
+    checkOptionalEnvPresence(
+      "auth.wrongIssuerSmokeToken",
+      "ANVIL_AWS_WRONG_ISSUER_SMOKE_TOKEN",
+      "No wrong-issuer AWS preview smoke token is configured.",
+      "Set ANVIL_AWS_WRONG_ISSUER_SMOKE_TOKEN when you want verify:aws-preview to prove issuer rejection.",
+    ),
+    checkOptionalEnvPresence(
+      "auth.wrongAudienceSmokeToken",
+      "ANVIL_AWS_WRONG_AUDIENCE_SMOKE_TOKEN",
+      "No wrong-audience AWS preview smoke token is configured.",
+      "Set ANVIL_AWS_WRONG_AUDIENCE_SMOKE_TOKEN when you want verify:aws-preview to prove audience rejection.",
+    ),
+  ];
+
+  return checks;
+}
+
+function checkNodeVersion(): DoctorCheck {
+  const current = process.versions.node;
+  const ok = compareVersions(current, "20.11.0") >= 0;
+
+  return {
+    id: "node.version",
+    status: ok ? "ok" : "error",
+    message: ok
+      ? `Node ${current} satisfies >=20.11.0.`
+      : `Node ${current} is below the required >=20.11.0.`,
+    hint: ok ? undefined : "Install Node 20.11.0 or newer.",
+    details: {
+      current,
+      required: ">=20.11.0",
+    },
+  };
+}
+
+async function checkPnpm(): Promise<DoctorCheck> {
+  const result = await execFileResult("pnpm", ["--version"]);
+
+  if (result.ok) {
+    const version = result.stdout.trim();
+    const ok = isPnpmVersionSupported(version);
+
+    return {
+      id: "pnpm.version",
+      status: ok ? "ok" : "warning",
+      message: ok
+        ? `pnpm ${version} satisfies >=9.0.0.`
+        : `pnpm ${version} is below the required >=9.0.0.`,
+      hint: ok
+        ? undefined
+        : "Install pnpm 9.x before running workspace builds or example checks.",
+      details: {
+        version,
+        required: ">=9.0.0",
+      },
+    };
+  }
+
+  return {
+    id: "pnpm.version",
+    status: "warning",
+    message: "pnpm was not found on PATH.",
+    hint: "Install pnpm 9.x before running workspace builds or example checks.",
+    details: {
+      error: result.error,
+    },
+  };
+}
+
+async function checkBuiltCli(): Promise<DoctorCheck> {
+  const builtCliPath = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "../dist/index.js",
+  );
+  const exists = await fileExists(builtCliPath);
+
+  return {
+    id: "cli.built",
+    status: exists ? "ok" : "warning",
+    message: exists
+      ? "Built CLI entrypoint exists."
+      : "Built CLI entrypoint was not found.",
+    hint: exists
+      ? undefined
+      : "Run pnpm build in anvil-cloud before testing packaged CLI flows.",
+    details: {
+      path: builtCliPath,
+    },
+  };
+}
+
+async function checkPackagePublishingBoundary(): Promise<DoctorCheck> {
+  const packageRoot = packageWorkspaceRoot();
+  const packages = await readWorkspacePackageJsons(packageRoot);
+  const violations: Array<{ packageName: string; message: string }> = [];
+  const publicPackages: string[] = [];
+  const internalPackages: string[] = [];
+
+  for (const packageJson of packages) {
+    const shouldBePublic = publicPackageNames.has(packageJson.name);
+
+    if (shouldBePublic) {
+      publicPackages.push(packageJson.name);
+
+      if (packageJson.private !== false) {
+        violations.push({
+          packageName: packageJson.name,
+          message: "public package must set private: false",
+        });
+      }
+
+      if (packageJson.publishConfig?.access !== "public") {
+        violations.push({
+          packageName: packageJson.name,
+          message: "public package must set publishConfig.access: public",
+        });
+      }
+
+      for (const dependency of publishedWorkspaceDependencies(packageJson)) {
+        violations.push({
+          packageName: packageJson.name,
+          message: `public package must not publish workspace dependency ${dependency}`,
+        });
+      }
+    } else {
+      internalPackages.push(packageJson.name);
+
+      if (packageJson.private !== true) {
+        violations.push({
+          packageName: packageJson.name,
+          message: "internal workspace package must remain private",
+        });
+      }
+    }
+  }
+
+  return {
+    id: "packages.publicBoundary",
+    status: violations.length === 0 ? "ok" : "warning",
+    message:
+      violations.length === 0
+        ? "Package publishing boundary matches the alpha contract."
+        : "Package publishing boundary has drifted from the alpha contract.",
+    hint:
+      violations.length === 0
+        ? undefined
+        : "Update docs/contributing/package-publishing.md and the package-boundary test before changing public packages.",
+    details: {
+      publicPackages: publicPackages.sort(),
+      candidatePublicApis: candidatePublicApiPackageNames,
+      internalPackages: internalPackages.sort(),
+      violations,
+    },
+  };
+}
+
+async function checkProjectConfig(rootDir: string): Promise<DoctorCheck> {
+  const configPath = path.join(rootDir, "anvil.json");
+  const config = await readOptionalJson(configPath);
+
+  if (!config) {
+    return {
+      id: "project.config",
+      status: "warning",
+      message: "No anvil.json found in the current directory.",
+      hint: "Run doctor inside a Cell project when checking local runtime state.",
+      details: {
+        path: configPath,
+      },
+    };
+  }
+
+  return {
+    id: "project.config",
+    status: "ok",
+    message: "Cell config found.",
+    details: {
+      path: configPath,
+      name: isObject(config) ? config.name : undefined,
+    },
+  };
+}
+
+async function checkBuildArtifacts(rootDir: string): Promise<DoctorCheck> {
+  const manifestPath = path.join(rootDir, ".anvil/dist/manifest.json");
+  const manifest = await readOptionalJson(manifestPath);
+
+  if (!manifest) {
+    return {
+      id: "project.build",
+      status: "warning",
+      message: "No built manifest found.",
+      hint: "Run anvil-cloud build --json before deploy, inspect, or generated client checks.",
+      details: {
+        path: manifestPath,
+      },
+    };
+  }
+
+  return {
+    id: "project.build",
+    status: "ok",
+    message: "Built manifest found.",
+    details: {
+      path: manifestPath,
+      cell:
+        isObject(manifest) && isObject(manifest.cell)
+          ? manifest.cell.name
+          : undefined,
+    },
+  };
+}
+
+async function checkGeneratedClient(rootDir: string): Promise<DoctorCheck> {
+  const generatedClientPath = path.join(rootDir, ".anvil/generated/client.ts");
+  const manifestPath = path.join(rootDir, ".anvil/dist/manifest.json");
+  const exists = await fileExists(generatedClientPath);
+
+  if (!exists) {
+    return {
+      id: "project.generatedClient",
+      status: "warning",
+      message: "Generated client metadata was not found.",
+      hint: "Run anvil-cloud build --json so @anvil/generated/client imports resolve.",
+      details: {
+        path: generatedClientPath,
+      },
+    };
+  }
+
+  const manifest = await readOptionalJson(manifestPath);
+  const source = await readFile(generatedClientPath, "utf8");
+  const generatedMetadata = extractGeneratedClientMetadata(source);
+  const generatedQueries =
+    generatedMetadata?.queries ??
+    extractGeneratedClientRouteNames(source, "query");
+  const generatedMutations =
+    generatedMetadata?.mutations ??
+    extractGeneratedClientRouteNames(source, "mutation");
+  const manifestQueries = manifestRouteNames(manifest, "queries");
+  const manifestMutations = manifestRouteNames(manifest, "mutations");
+  const missingQueries = difference(manifestQueries, generatedQueries);
+  const staleQueries = difference(generatedQueries, manifestQueries);
+  const missingMutations = difference(manifestMutations, generatedMutations);
+  const staleMutations = difference(generatedMutations, manifestMutations);
+  const hasMismatch =
+    missingQueries.length > 0 ||
+    staleQueries.length > 0 ||
+    missingMutations.length > 0 ||
+    staleMutations.length > 0;
+
+  return {
+    id: "project.generatedClient",
+    status: hasMismatch ? "warning" : "ok",
+    message: hasMismatch
+      ? "Generated client metadata does not match the built manifest."
+      : "Generated client metadata matches the built manifest.",
+    hint: hasMismatch
+      ? "Run anvil-cloud build --json to refresh @anvil/generated/client."
+      : undefined,
+    details: {
+      path: generatedClientPath,
+      manifestPath,
+      queries: {
+        manifest: manifestQueries,
+        generated: generatedQueries,
+        missing: missingQueries,
+        stale: staleQueries,
+      },
+      mutations: {
+        manifest: manifestMutations,
+        generated: generatedMutations,
+        missing: missingMutations,
+        stale: staleMutations,
+      },
+    },
+  };
+}
+
+async function checkLocalState(rootDir: string): Promise<DoctorCheck> {
+  const localDir = path.join(rootDir, ".anvil/local");
+  const files = {
+    authUsers: await fileExists(path.join(localDir, "auth/users.json")),
+    authKeys: await fileExists(path.join(localDir, "auth/keys.json")),
+    database: await fileExists(path.join(localDir, "dev.db")),
+    logs: await fileExists(path.join(localDir, "logs.ndjson")),
+    jobs: await fileExists(path.join(localDir, "jobs.json")),
+    workflows: await fileExists(path.join(localDir, "workflows.json")),
+    services: await fileExists(path.join(localDir, "services.json")),
+  };
+  const hasAnyState = Object.values(files).some(Boolean);
+
+  return {
+    id: "local.state",
+    status: hasAnyState ? "ok" : "warning",
+    message: hasAnyState
+      ? "Local runtime state exists."
+      : "No local runtime state found.",
+    hint: hasAnyState
+      ? undefined
+      : "Run anvil-cloud dev or the notes verifier to create local auth, database, jobs, and logs state.",
+    details: {
+      path: localDir,
+      files,
+    },
+  };
+}
+
+function extractGeneratedClientMetadata(
+  source: string,
+): { queries: string[]; mutations: string[] } | undefined {
+  const metaMatch = source.match(/meta:\s*\{([\s\S]*?)\n\s*\}/);
+
+  if (!metaMatch?.[1]) {
+    return undefined;
+  }
+
+  const queries = extractStringArrayProperty(metaMatch[1], "queries");
+  const mutations = extractStringArrayProperty(metaMatch[1], "mutations");
+
+  if (!queries || !mutations) {
+    return undefined;
+  }
+
+  return { queries, mutations };
+}
+
+function extractGeneratedClientRouteNames(
+  source: string,
+  kind: "query" | "mutation",
+): string[] {
+  return Array.from(
+    source.matchAll(
+      new RegExp(
+        `kind:\\s*${JSON.stringify(kind)},\\s*name:\\s*"([^"]+)"`,
+        "g",
+      ),
+    ),
+    (match) => match[1],
+  )
+    .filter((name): name is string => typeof name === "string")
+    .sort();
+}
+
+function extractStringArrayProperty(
+  source: string,
+  property: "queries" | "mutations",
+): string[] | undefined {
+  const arrayMatch = source.match(
+    new RegExp(`${property}:\\s*\\[([\\s\\S]*?)\\]`),
+  );
+
+  if (!arrayMatch?.[1]) {
+    return undefined;
+  }
+
+  return Array.from(arrayMatch[1].matchAll(/"((?:\\.|[^"\\])*)"/g), (match) =>
+    parseJsonStringLiteral(match[0]),
+  )
+    .filter((name): name is string => typeof name === "string")
+    .sort();
+}
+
+function parseJsonStringLiteral(value: string): string | undefined {
+  try {
+    const parsed = JSON.parse(value);
+
+    return typeof parsed === "string" ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+type WorkspacePackageJson = {
+  name: string;
+  private?: boolean;
+  dependencies?: Record<string, string>;
+  optionalDependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
+  publishConfig?: {
+    access?: string;
+  };
+};
+
+function packageWorkspaceRoot(): string {
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+}
+
+async function readWorkspacePackageJsons(
+  rootDir: string,
+): Promise<WorkspacePackageJson[]> {
+  const packagesDir = path.join(rootDir, "packages");
+  const entries = await readdir(packagesDir, { withFileTypes: true });
+  const packageJsons: WorkspacePackageJson[] = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+
+    const packagePath = path.join(packagesDir, entry.name, "package.json");
+    const packageJson = await readPackageJson(packagePath);
+
+    if (packageJson) {
+      packageJsons.push(packageJson);
+    }
+  }
+
+  return packageJsons.sort((left, right) =>
+    left.name.localeCompare(right.name),
+  );
+}
+
+async function readPackageJson(
+  packagePath: string,
+): Promise<WorkspacePackageJson | null> {
+  const value = await readOptionalJson(packagePath);
+
+  if (!isObject(value) || typeof value.name !== "string") {
+    return null;
+  }
+
+  return value as WorkspacePackageJson;
+}
+
+function publishedWorkspaceDependencies(
+  packageJson: WorkspacePackageJson,
+): string[] {
+  const dependencies = {
+    ...packageJson.dependencies,
+    ...packageJson.optionalDependencies,
+    ...packageJson.peerDependencies,
+  };
+
+  return Object.entries(dependencies)
+    .filter(([, version]) => version.startsWith("workspace:"))
+    .map(([name]) => name)
+    .sort();
+}
+
+function manifestRouteNames(
+  manifest: unknown,
+  key: "queries" | "mutations",
+): string[] {
+  if (!isObject(manifest) || !Array.isArray(manifest[key])) {
+    return [];
+  }
+
+  return manifest[key]
+    .filter((value): value is string => typeof value === "string")
+    .sort();
+}
+
+function difference(left: string[], right: string[]): string[] {
+  const rightSet = new Set(right);
+
+  return left.filter((value) => !rightSet.has(value));
+}
+
+async function checkLocalRuntimeHealth(
+  runtimeUrl: string,
+): Promise<DoctorCheck> {
+  const healthUrl = new URL("/_anvil/health", runtimeUrl).toString();
+
+  try {
+    const response = await fetch(healthUrl);
+    const body = await response.text();
+    let payload: unknown;
+
+    try {
+      payload = body.length > 0 ? JSON.parse(body) : null;
+    } catch {
+      return {
+        id: "local.runtime",
+        status: "warning",
+        message: `Runtime health endpoint did not return JSON at ${runtimeUrl}.`,
+        hint: "Check whether another process is using the runtime port, or restart anvil-cloud dev with --port.",
+        details: {
+          url: healthUrl,
+          status: response.status,
+          reason: "invalid-json",
+          contentType: response.headers.get("content-type") ?? null,
+          body: body.slice(0, 200),
+        },
+      };
+    }
+
+    if (response.ok && isObject(payload) && payload.ok === true) {
+      return {
+        id: "local.runtime",
+        status: "ok",
+        message: `Anvil Local runtime is reachable at ${runtimeUrl}.`,
+        details: {
+          url: healthUrl,
+          status: response.status,
+        },
+      };
+    }
+
+    return {
+      id: "local.runtime",
+      status: "warning",
+      message: `Runtime health endpoint did not report ok: true at ${runtimeUrl}.`,
+      hint: "Check whether this is an Anvil Local runtime, then restart anvil-cloud dev if routes are behaving strangely.",
+      details: {
+        url: healthUrl,
+        status: response.status,
+        reason: response.ok ? "not-anvil-health" : "http-status",
+        payload,
+      },
+    };
+  } catch (error) {
+    return {
+      id: "local.runtime",
+      status: "warning",
+      message: `No Anvil Local runtime is reachable at ${runtimeUrl}.`,
+      hint: "Start one with anvil-cloud dev, or pass --port if it is running elsewhere.",
+      details: {
+        url: healthUrl,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    };
+  }
+}
+
+async function checkPort(
+  id: string,
+  port: number,
+  occupiedByExpectedRuntime: boolean,
+): Promise<DoctorCheck> {
+  const available = await isPortAvailable(port);
+
+  if (available) {
+    return {
+      id,
+      status: "ok",
+      message: `Port ${port} is available.`,
+      details: { port },
+    };
+  }
+
+  return {
+    id,
+    status: occupiedByExpectedRuntime ? "ok" : "warning",
+    message: occupiedByExpectedRuntime
+      ? `Port ${port} is in use by the Anvil Local runtime.`
+      : `Port ${port} is already in use.`,
+    hint: occupiedByExpectedRuntime
+      ? undefined
+      : "Use --port/--client-port with anvil-cloud dev, or stop the process using this port.",
+    details: { port },
+  };
+}
+
+function checkAwsRegion(): DoctorCheck {
+  const region = process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION;
+
+  return {
+    id: "aws.region",
+    status: region ? "ok" : "warning",
+    message: region
+      ? `AWS region is set to ${region}.`
+      : "No AWS region is configured.",
+    hint: region
+      ? undefined
+      : "Set AWS_REGION or AWS_DEFAULT_REGION before AWS preview verification.",
+    details: {
+      AWS_REGION: redactEnvPresence("AWS_REGION"),
+      AWS_DEFAULT_REGION: redactEnvPresence("AWS_DEFAULT_REGION"),
+    },
+  };
+}
+
+function checkOidcConfig(): DoctorCheck {
+  const issuer = process.env.ANVIL_AUTH_ISSUER;
+  const audience = process.env.ANVIL_AUTH_AUDIENCE;
+  const jwksUri = process.env.ANVIL_AUTH_JWKS_URI;
+  const claims = oidcClaimMappingDetails();
+
+  if (issuer && (audience || jwksUri)) {
+    return {
+      id: "auth.oidc",
+      status: "ok",
+      message: "OIDC token verification config is present.",
+      details: {
+        ANVIL_AUTH_ISSUER: true,
+        ANVIL_AUTH_AUDIENCE: Boolean(audience),
+        ANVIL_AUTH_JWKS_URI: Boolean(jwksUri),
+        claims,
+      },
+    };
+  }
+
+  return {
+    id: "auth.oidc",
+    status: "warning",
+    message: "OIDC token verification config is incomplete.",
+    hint: "Set ANVIL_AUTH_ISSUER plus ANVIL_AUTH_AUDIENCE or ANVIL_AUTH_JWKS_URI before authenticated AWS preview smoke tests.",
+    details: {
+      ANVIL_AUTH_ISSUER: Boolean(issuer),
+      ANVIL_AUTH_AUDIENCE: Boolean(audience),
+      ANVIL_AUTH_JWKS_URI: Boolean(jwksUri),
+      claims,
+    },
+  };
+}
+
+function oidcClaimMappingDetails(): Record<
+  "userId" | "email" | "roles",
+  { env: string; claim: string; configured: boolean }
+> {
+  return {
+    userId: oidcClaimDetail("ANVIL_AUTH_USER_ID_CLAIM", "sub"),
+    email: oidcClaimDetail("ANVIL_AUTH_EMAIL_CLAIM", "email"),
+    roles: oidcClaimDetail("ANVIL_AUTH_ROLES_CLAIM", "roles"),
+  };
+}
+
+function oidcClaimDetail(
+  envName:
+    | "ANVIL_AUTH_USER_ID_CLAIM"
+    | "ANVIL_AUTH_EMAIL_CLAIM"
+    | "ANVIL_AUTH_ROLES_CLAIM",
+  defaultClaim: string,
+): { env: string; claim: string; configured: boolean } {
+  const configuredClaim = process.env[envName];
+
+  return {
+    env: envName,
+    claim: configuredClaim ?? defaultClaim,
+    configured: configuredClaim !== undefined,
+  };
+}
+
+function checkEnvPresence(
+  id: string,
+  name: string,
+  missingMessage: string,
+  hint: string,
+): DoctorCheck {
+  const present = Boolean(process.env[name]);
+
+  return {
+    id,
+    status: present ? "ok" : "warning",
+    message: present ? `${name} is configured.` : missingMessage,
+    hint: present ? undefined : hint,
+    details: {
+      [name]: present,
+    },
+  };
+}
+
+function checkOptionalEnvPresence(
+  id: string,
+  name: string,
+  missingMessage: string,
+  hint: string,
+): DoctorCheck {
+  const present = Boolean(process.env[name]);
+
+  return {
+    id,
+    status: present ? "ok" : "info",
+    message: present ? `${name} is configured.` : missingMessage,
+    hint: present ? undefined : hint,
+    details: {
+      [name]: present,
+    },
+  };
+}
+
+function summarizeDoctorChecks(checks: DoctorCheck[]): {
+  ok: number;
+  info: number;
+  warnings: number;
+  errors: number;
+} {
+  return {
+    ok: checks.filter((check) => check.status === "ok").length,
+    info: checks.filter((check) => check.status === "info").length,
+    warnings: checks.filter((check) => check.status === "warning").length,
+    errors: checks.filter((check) => check.status === "error").length,
+  };
+}
+
+function formatDoctorChecks(checks: DoctorCheck[]): string {
+  const icons: Record<DoctorStatus, string> = {
+    ok: "ok",
+    info: "info",
+    warning: "warn",
+    error: "error",
+  };
+
+  return checks
+    .map((check) => `${icons[check.status]} ${check.id}: ${check.message}`)
+    .join("\n");
 }
 
 function writeJsonOrHuman(
@@ -2295,6 +3550,95 @@ function createAgentProviderRegistry(): AgentProviderRegistry {
 
 function unique(values: string[]): string[] {
   return [...new Set(values)].sort();
+}
+
+function parseDoctorPort(value: string | undefined, fallback: number): number {
+  if (value === undefined) {
+    return fallback;
+  }
+
+  const parsed = parsePositiveIntegerOption(value);
+
+  return parsed ?? fallback;
+}
+
+function compareVersions(current: string, required: string): number {
+  const currentParts = current.split(".").map((part) => Number(part));
+  const requiredParts = required.split(".").map((part) => Number(part));
+  const length = Math.max(currentParts.length, requiredParts.length);
+
+  for (let index = 0; index < length; index += 1) {
+    const currentPart = currentParts[index] ?? 0;
+    const requiredPart = requiredParts[index] ?? 0;
+
+    if (currentPart > requiredPart) {
+      return 1;
+    }
+
+    if (currentPart < requiredPart) {
+      return -1;
+    }
+  }
+
+  return 0;
+}
+
+export function isPnpmVersionSupported(version: string): boolean {
+  return compareVersions(version, "9.0.0") >= 0;
+}
+
+function execFileResult(
+  command: string,
+  args: string[],
+): Promise<{ ok: true; stdout: string } | { ok: false; error: string }> {
+  return new Promise((resolve) => {
+    const child = execFile(
+      command,
+      args,
+      { timeout: 3000 },
+      (error, stdout) => {
+        if (error) {
+          resolve({ ok: false, error: error.message });
+          return;
+        }
+
+        resolve({ ok: true, stdout });
+      },
+    );
+
+    child.on("error", (error) => {
+      resolve({ ok: false, error: error.message });
+    });
+  });
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await stat(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isPortAvailable(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = createServer();
+
+    server.once("error", () => {
+      resolve(false);
+    });
+    server.once("listening", () => {
+      server.close(() => {
+        resolve(true);
+      });
+    });
+    server.listen(port, "127.0.0.1");
+  });
+}
+
+function redactEnvPresence(name: string): boolean {
+  return Boolean(process.env[name]);
 }
 
 export function parsePositiveNumberOption(value: string): number | undefined {
@@ -2425,18 +3769,100 @@ function isRecordOfArrays(value: unknown): value is Record<string, unknown[]> {
   return Object.values(value).every(Array.isArray);
 }
 
+function createStarterScripts(
+  name: string,
+  clientKind: StarterClientKind,
+): Record<string, string> {
+  return {
+    check: "anvil-cloud check --json",
+    build: "anvil-cloud build --json",
+    dev: "anvil-cloud dev --json",
+    "inspect:local": "anvil-cloud inspect --local --json",
+    "logs:local": "anvil-cloud logs --local --json",
+    "deploy:preview:gate": "anvil-cloud deploy --preview --wait --json",
+    "destroy:preview:dry-run": `anvil-cloud destroy --preview --app ${name} --yes --dry-run --json`,
+    ...(clientKind === "expo-router" ? { start: "expo start" } : {}),
+  };
+}
+
+function createStarterDependencies(
+  clientKind: StarterClientKind,
+): Record<string, string> {
+  const dependencies: Record<string, string> = {
+    "@anvil-cloud/client": "workspace:*",
+    "@anvil-cloud/runtime": "workspace:*",
+  };
+
+  if (clientKind === "expo-router") {
+    return {
+      ...dependencies,
+      expo: "^56.0.12",
+      "expo-router": "^56.2.11",
+      react: "^19.2.7",
+      "react-native": "^0.86.0",
+    };
+  }
+
+  if (clientKind === "vite-react") {
+    return {
+      ...dependencies,
+      "@vitejs/plugin-react": "^4.3.4",
+      vite: "^5.4.21",
+      react: "^18.3.1",
+      "react-dom": "^18.3.1",
+    };
+  }
+
+  return dependencies;
+}
+
+function createStarterDevDependencies(
+  clientKind: StarterClientKind,
+): Record<string, string> {
+  if (clientKind === "expo-router") {
+    return {
+      "@types/react": "^19.2.17",
+      typescript: "^5.7.2",
+    };
+  }
+
+  if (clientKind === "vite-react") {
+    return {
+      "@types/react": "^18.3.12",
+      "@types/react-dom": "^18.3.1",
+      typescript: "^5.7.2",
+    };
+  }
+
+  return {
+    typescript: "^5.7.2",
+  };
+}
+
 async function createStarterTsconfig(
   cellDir: string,
+  clientKind: StarterClientKind,
 ): Promise<Record<string, unknown>> {
-  const compilerOptions: Record<string, unknown> = {
-    target: "ES2022",
-    lib: ["ES2022", "DOM", "DOM.Iterable"],
-    module: "NodeNext",
-    moduleResolution: "NodeNext",
-    strict: true,
-    jsx: "react-jsx",
-    skipLibCheck: true,
-  };
+  const compilerOptions: Record<string, unknown> =
+    clientKind === "expo-router"
+      ? {
+          target: "ES2022",
+          lib: ["ES2022"],
+          module: "ESNext",
+          moduleResolution: "Bundler",
+          strict: true,
+          jsx: "react-jsx",
+          skipLibCheck: true,
+        }
+      : {
+          target: "ES2022",
+          lib: ["ES2022", "DOM", "DOM.Iterable"],
+          module: "NodeNext",
+          moduleResolution: "NodeNext",
+          strict: true,
+          jsx: "react-jsx",
+          skipLibCheck: true,
+        };
   const localPaths = await detectLocalPackagePaths(cellDir);
   const paths = {
     ...localPaths,
@@ -2446,38 +3872,64 @@ async function createStarterTsconfig(
   compilerOptions.baseUrl = ".";
   compilerOptions.paths = paths;
 
-  return {
+  const config: Record<string, unknown> = {
     compilerOptions,
-    include: ["src/**/*.ts", "src/**/*.tsx", ".anvil/generated/**/*.ts"],
+    include:
+      clientKind === "expo-router"
+        ? [
+            "app/**/*.ts",
+            "app/**/*.tsx",
+            "src/**/*.ts",
+            "src/**/*.tsx",
+            ".anvil/generated/**/*.ts",
+          ]
+        : ["src/**/*.ts", "src/**/*.tsx", ".anvil/generated/**/*.ts"],
   };
+
+  if (clientKind === "expo-router") {
+    config.extends = "expo/tsconfig.base";
+  }
+
+  return config;
 }
 
 async function detectLocalPackagePaths(
   cellDir: string,
 ): Promise<Record<string, string[]>> {
-  const packagesRoot = path.resolve(
-    path.dirname(fileURLToPath(import.meta.url)),
-    "..",
-    "..",
-  );
+  const currentDir = path.dirname(fileURLToPath(import.meta.url));
+  const workspacePackagesRoot = path.resolve(currentDir, "..", "..");
+  const packedPackagesRoot = path.resolve(currentDir, "packages");
   const candidates = {
-    "@anvil-cloud/client": path.join(packagesRoot, "client", "src", "index.ts"),
-    "@anvil-cloud/runtime": path.join(
-      packagesRoot,
-      "runtime",
-      "src",
-      "index.ts",
-    ),
+    "@anvil-cloud/client": [
+      path.join(workspacePackagesRoot, "client", "src", "index.ts"),
+      path.join(packedPackagesRoot, "client", "src", "index.ts"),
+    ],
+    "@anvil-cloud/runtime": [
+      path.join(workspacePackagesRoot, "runtime", "src", "index.ts"),
+      path.join(packedPackagesRoot, "runtime", "src", "index.ts"),
+    ],
   };
   const paths: Record<string, string[]> = {};
 
-  for (const [specifier, source] of Object.entries(candidates)) {
-    if (await exists(source)) {
+  for (const [specifier, sources] of Object.entries(candidates)) {
+    const source = await firstExistingPath(sources);
+
+    if (source) {
       paths[specifier] = [toPosixPath(path.relative(cellDir, source))];
     }
   }
 
   return paths;
+}
+
+async function firstExistingPath(candidates: string[]): Promise<string | null> {
+  for (const candidate of candidates) {
+    if (await exists(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
 }
 
 async function exists(filePath: string): Promise<boolean> {
@@ -2497,5 +3949,13 @@ function toPosixPath(value: string): string {
 function isDirectCliEntry(): boolean {
   const entry = process.argv[1];
 
-  return entry ? pathToFileURL(entry).href === import.meta.url : false;
+  if (!entry) return false;
+
+  if (pathToFileURL(entry).href === import.meta.url) return true;
+
+  try {
+    return pathToFileURL(realpathSync(entry)).href === import.meta.url;
+  } catch {
+    return false;
+  }
 }

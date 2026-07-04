@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   getSettings: vi.fn(),
   callAppleFoundationModel: vi.fn(),
+  classifyPromptForOnDeviceModel: vi.fn(),
   completionCreate: vi.fn(),
 }));
 
@@ -12,6 +13,9 @@ vi.mock('../settings.service.js', () => ({
 
 vi.mock('../apple-foundation-models.service.js', () => ({
   callAppleFoundationModel: mocks.callAppleFoundationModel,
+  classifyPromptForOnDeviceModel: mocks.classifyPromptForOnDeviceModel,
+  isLikelyAppleFoundationModelsRefusal: (value: string) =>
+    /(?:i apologize|i'm sorry|cannot assist|can't assist|unable to assist)/i.test(value),
 }));
 
 vi.mock('openai', () => ({
@@ -52,12 +56,13 @@ describe('callLlm Apple Foundation Models routing', () => {
     vi.clearAllMocks();
     resetLlmClient();
     mocks.getSettings.mockReturnValue(openAiSettings());
+    mocks.classifyPromptForOnDeviceModel.mockResolvedValue('local');
     mocks.completionCreate.mockResolvedValue({
       choices: [{ message: { content: 'fallback response' } }],
     });
   });
 
-  it('uses Apple Foundation Models for eligible prompt drafts', async () => {
+  it('uses Apple Foundation Models when the classifier routes locally', async () => {
     mocks.callAppleFoundationModel.mockResolvedValue({
       ok: true,
       content: 'local response',
@@ -69,8 +74,33 @@ describe('callLlm Apple Foundation Models routing', () => {
     });
 
     expect(response).toBe('local response');
+    expect(mocks.classifyPromptForOnDeviceModel).toHaveBeenCalledTimes(1);
     expect(mocks.callAppleFoundationModel).toHaveBeenCalledTimes(1);
     expect(mocks.completionCreate).not.toHaveBeenCalled();
+  });
+
+  it('falls back when the classifier routes to the cloud backend', async () => {
+    mocks.classifyPromptForOnDeviceModel.mockResolvedValue('cloud');
+
+    const response = await callLlm('draft a short fix prompt', 1024, 0.3, 0, {
+      taskClass: 'prompt-draft',
+    });
+
+    expect(response).toBe('fallback response');
+    expect(mocks.callAppleFoundationModel).not.toHaveBeenCalled();
+    expect(mocks.completionCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back when classification is unavailable', async () => {
+    mocks.classifyPromptForOnDeviceModel.mockResolvedValue(null);
+
+    const response = await callLlm('draft a short fix prompt', 1024, 0.3, 0, {
+      taskClass: 'prompt-draft',
+    });
+
+    expect(response).toBe('fallback response');
+    expect(mocks.callAppleFoundationModel).not.toHaveBeenCalled();
+    expect(mocks.completionCreate).toHaveBeenCalledTimes(1);
   });
 
   it('falls back when a local JSON task returns non-JSON', async () => {
@@ -103,12 +133,22 @@ describe('callLlm Apple Foundation Models routing', () => {
     expect(mocks.completionCreate).toHaveBeenCalledTimes(1);
   });
 
-  it('does not use Apple Foundation Models for code review analysis', async () => {
-    const response = await callLlm('review this diff', 4096, 0.2, 0, {
+  it('does not attempt local routing without a task class', async () => {
+    const response = await callLlm('review this diff', 1024, 0.2, 0);
+
+    expect(response).toBe('fallback response');
+    expect(mocks.classifyPromptForOnDeviceModel).not.toHaveBeenCalled();
+    expect(mocks.callAppleFoundationModel).not.toHaveBeenCalled();
+    expect(mocks.completionCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not attempt local routing when max tokens exceed the local cap', async () => {
+    const response = await callLlm('review this diff', 8192, 0.2, 0, {
       taskClass: 'code-review',
     });
 
     expect(response).toBe('fallback response');
+    expect(mocks.classifyPromptForOnDeviceModel).not.toHaveBeenCalled();
     expect(mocks.callAppleFoundationModel).not.toHaveBeenCalled();
     expect(mocks.completionCreate).toHaveBeenCalledTimes(1);
   });

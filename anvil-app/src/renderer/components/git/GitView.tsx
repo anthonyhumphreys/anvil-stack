@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   GitBranch,
   GitCommitHorizontal,
@@ -17,6 +18,7 @@ import {
   Trash2,
   RefreshCw,
   AlertCircle,
+  MessageSquare,
 } from 'lucide-react';
 import type {
   GitStatusResult,
@@ -31,6 +33,7 @@ import { WorkspaceGitActions } from '../shared/WorkspaceGitActions';
 type Tab = 'changes' | 'log' | 'branches';
 
 export function GitView() {
+  const navigate = useNavigate();
   const { repos } = useWorkspace();
   const indexedRepos = useMemo(() => repos.filter((r) => r.status !== 'error'), [repos]);
 
@@ -45,10 +48,12 @@ export function GitView() {
   // Commit form
   const [commitMsg, setCommitMsg] = useState('');
   const [committing, setCommitting] = useState(false);
+  const [generatingMessage, setGeneratingMessage] = useState(false);
 
   // Diff viewer
   const [selectedDiff, setSelectedDiff] = useState<GitDiffResult | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
+  const [reviewNote, setReviewNote] = useState('');
 
   // Branch creation
   const [showNewBranch, setShowNewBranch] = useState(false);
@@ -118,26 +123,38 @@ export function GitView() {
   };
 
   const handleCommit = async () => {
-    if (!commitMsg.trim()) return;
+    if (!selectedRepoId) return;
     setCommitting(true);
+    setError(null);
     try {
-      await window.anvil.git.commit(selectedRepoId, commitMsg.trim());
+      let message = commitMsg.trim();
+      if (!message) {
+        setGeneratingMessage(true);
+        message = await window.anvil.git.generateCommitMessage(selectedRepoId);
+        setCommitMsg(message);
+      }
+      await window.anvil.git.commit(selectedRepoId, message);
       setCommitMsg('');
       refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
+      setGeneratingMessage(false);
       setCommitting(false);
     }
   };
 
   const handleGenerateCommitMessage = async () => {
     if (!selectedRepoId) return;
+    setGeneratingMessage(true);
+    setError(null);
     try {
       const message = await window.anvil.git.generateCommitMessage(selectedRepoId);
       setCommitMsg(message);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGeneratingMessage(false);
     }
   };
 
@@ -197,6 +214,27 @@ export function GitView() {
       setDiffLoading(false);
     }
   };
+
+  const handleSendDiffToChat = useCallback(() => {
+    if (!selectedDiff) return;
+    const repo = indexedRepos.find((candidate) => candidate.id === selectedRepoId);
+    const prompt = [
+      'Review this Git diff and then make or propose the smallest useful fix.',
+      '',
+      repo ? `Repo: ${repo.name}` : null,
+      `File: ${selectedDiff.filePath}`,
+      reviewNote.trim() ? `Reviewer note:\n${reviewNote.trim()}` : null,
+      '',
+      'Diff:',
+      '```diff',
+      selectedDiff.hunks || '(no textual diff available)',
+      '```',
+    ]
+      .filter((line): line is string => Boolean(line))
+      .join('\n');
+
+    navigate(`/chat?prompt=${encodeURIComponent(prompt)}`);
+  }, [indexedRepos, navigate, reviewNote, selectedDiff, selectedRepoId]);
 
   const handleSwitchBranch = async (name: string) => {
     try {
@@ -393,6 +431,7 @@ export function GitView() {
             commitMsg={commitMsg}
             setCommitMsg={setCommitMsg}
             committing={committing}
+            generatingMessage={generatingMessage}
             onCommit={handleCommit}
             onGenerateCommitMessage={handleGenerateCommitMessage}
             onStage={handleStage}
@@ -402,6 +441,9 @@ export function GitView() {
             selectedDiff={selectedDiff}
             diffLoading={diffLoading}
             onCloseDiff={() => setSelectedDiff(null)}
+            reviewNote={reviewNote}
+            setReviewNote={setReviewNote}
+            onSendDiffToChat={handleSendDiffToChat}
           />
         )}
         {tab === 'log' && <LogTab log={log} />}
@@ -451,6 +493,7 @@ interface ChangesTabProps {
   commitMsg: string;
   setCommitMsg: (v: string) => void;
   committing: boolean;
+  generatingMessage: boolean;
   onCommit: () => void;
   onGenerateCommitMessage: () => void;
   onStage: (paths: string[]) => void;
@@ -460,6 +503,9 @@ interface ChangesTabProps {
   selectedDiff: GitDiffResult | null;
   diffLoading: boolean;
   onCloseDiff: () => void;
+  reviewNote: string;
+  setReviewNote: (value: string) => void;
+  onSendDiffToChat: () => void;
 }
 
 function ChangesTab({
@@ -468,6 +514,7 @@ function ChangesTab({
   commitMsg,
   setCommitMsg,
   committing,
+  generatingMessage,
   onCommit,
   onGenerateCommitMessage,
   onStage,
@@ -477,6 +524,9 @@ function ChangesTab({
   selectedDiff,
   diffLoading,
   onCloseDiff,
+  reviewNote,
+  setReviewNote,
+  onSendDiffToChat,
 }: ChangesTabProps) {
   return (
     <div className="flex flex-1 overflow-hidden">
@@ -562,19 +612,26 @@ function ChangesTab({
           />
           <button
             onClick={onGenerateCommitMessage}
-            disabled={staged.length === 0 && unstaged.length === 0}
+            disabled={
+              generatingMessage || committing || (staged.length === 0 && unstaged.length === 0)
+            }
             className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-border px-4 py-2 text-sm font-medium text-text-secondary transition-colors hover:bg-bg-tertiary disabled:opacity-40"
           >
-            <GitCommitHorizontal size={14} />
-            Generate conventional message
+            {generatingMessage ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : (
+              <GitCommitHorizontal size={14} />
+            )}
+            {generatingMessage ? 'Generating message...' : 'Generate conventional message'}
           </button>
           <button
             onClick={onCommit}
-            disabled={!commitMsg.trim() || staged.length === 0 || committing}
+            disabled={staged.length === 0 || committing || generatingMessage}
             className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent/80 disabled:opacity-40"
           >
             {committing ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
-            Commit ({staged.length} file{staged.length !== 1 ? 's' : ''})
+            {commitMsg.trim() ? 'Commit' : 'Generate & commit'} ({staged.length} file
+            {staged.length !== 1 ? 's' : ''})
           </button>
           <div className="mt-1 text-center text-[10px] text-text-tertiary">
             {navigator.platform.includes('Mac') ? '\u2318' : 'Ctrl'}+Enter to commit
@@ -603,6 +660,24 @@ function ChangesTab({
             </div>
             <div className="flex-1 overflow-auto">
               <DiffDisplay diff={selectedDiff} />
+            </div>
+            <div className="border-t border-border-subtle bg-bg-secondary/80 p-3">
+              <div className="flex items-center gap-2">
+                <input
+                  value={reviewNote}
+                  onChange={(event) => setReviewNote(event.target.value)}
+                  placeholder="Optional review note for Codex..."
+                  className="min-w-0 flex-1 rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent/50 focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={onSendDiffToChat}
+                  className="flex items-center gap-1.5 rounded-lg border border-accent/30 bg-accent/10 px-3 py-2 text-sm font-medium text-accent transition-colors hover:bg-accent/15"
+                >
+                  <MessageSquare size={14} />
+                  Send to chat
+                </button>
+              </div>
             </div>
           </>
         )}

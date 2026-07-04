@@ -12,11 +12,10 @@ order: 110
 Use this flow to run the checked-in Notes Cell, inspect the generated output,
 and understand what is safe to trust before a preview deploy.
 
-Anvil Cloud is alpha and the packages are currently private inside the
-`anvil-cloud` workspace. There is no supported `npm install -g`, `pnpm dlx`, or
-`npx` path yet. The stable command contract is `anvil ...`; from a local
-checkout you run that contract through `pnpm anvil` or the built CLI entrypoint
-while packaging settles.
+Anvil Cloud is alpha. The intended published command is `anvil cloud ...`
+through the umbrella `@anvilstack/cli` wrapper. The Cloud product package is
+`@anvilstack/cloud-cli`, and from a local checkout you run the same command
+contract through `pnpm anvil-cloud` or the built CLI entrypoint.
 
 ## 1) Prepare the checkout
 
@@ -25,12 +24,12 @@ From `anvil-cloud`:
 ```bash
 pnpm install --ignore-scripts
 pnpm build
-pnpm anvil --help
+pnpm anvil-cloud --help
 ```
 
 If dependencies are already installed, `pnpm build` is enough to refresh the
-package output used by the CLI. `pnpm anvil` runs the built CLI entrypoint from
-the workspace root.
+package output used by the CLI. `pnpm anvil-cloud` runs the built CLI entrypoint
+from the workspace root.
 
 ## 2) Run the canonical Notes Cell first
 
@@ -50,16 +49,39 @@ For a repeatable smoke test, run this from the `anvil-cloud` workspace:
 pnpm verify:notes-local
 ```
 
-The verifier starts `anvil dev` on ephemeral ports, creates a local user, mints
+The verifier starts `anvil cloud dev` on ephemeral ports, creates a local user, mints
 a JWT, calls authenticated note mutation/query routes, checks local inspect and
 logs, and then shuts the dev server down.
 
-## 3) Create a new Cell
+## 3) Install the published CLI shape
+
+For normal command-line usage, install the umbrella wrapper and the Cloud
+product CLI:
+
+```bash
+npm install --global @anvilstack/cli
+npm install --global @anvilstack/cloud-cli
+
+anvil cloud check --json
+```
+
+`@anvilstack/cli` dispatches to the installed product CLI. The direct
+`anvil-cloud` binary remains available, but the docs use `anvil cloud ...` as
+the front door so the Cloud and Registry commands share one Anvil shape.
+
+## 4) Create a new Cell
 
 From the workspace root during alpha development:
 
 ```bash
-pnpm anvil new notes
+pnpm anvil cloud new notes
+cd notes
+```
+
+With the published CLI installed:
+
+```bash
+anvil cloud new notes
 cd notes
 ```
 
@@ -92,10 +114,10 @@ The generated server defines a small database-backed example. The client imports
 generated metadata from `@anvil/generated/client` and calls it through
 `@anvil-cloud/client`.
 
-## 4) Check before build
+## 5) Check before build
 
 ```bash
-anvil check --json
+anvil cloud check --json
 ```
 
 In local workspace development, when the Cell lives directly under the repo root:
@@ -120,10 +142,10 @@ node ../packages/cli/dist/index.js check --json
 Fix check failures before trying to run or deploy. Guard diagnostics are the
 first trust boundary; do not treat them as decorative lint.
 
-## 5) Build artifacts
+## 6) Build artifacts
 
 ```bash
-anvil build --json
+anvil cloud build --json
 ```
 
 The builder writes:
@@ -146,10 +168,10 @@ The builder writes:
 The manifest is the key handoff to local runtime and deployment adapters. The
 generated client output is the handoff to the browser UI.
 
-## 6) Run locally
+## 7) Run locally
 
 ```bash
-anvil dev
+anvil cloud dev
 ```
 
 Default local URLs:
@@ -177,20 +199,20 @@ ANY  /api/*
 For automation:
 
 ```bash
-anvil dev --json
-anvil dev --agent --json
+anvil cloud dev --json
+anvil cloud dev --agent --json
 ```
 
 Agent mode emits JSONL events and avoids spinners, terminal control codes, and
 unstable prose.
 
-## 7) Inspect local state
+## 8) Inspect local state
 
 ```bash
-anvil inspect --local --json
-anvil logs --local --json
-anvil db list --local --json
-anvil db dump notes --local --json
+anvil cloud inspect --local --json
+anvil cloud logs --local --json
+anvil cloud db list --local --json
+anvil cloud db dump notes --local --json
 ```
 
 Local state is stored under `.anvil/local`:
@@ -210,17 +232,17 @@ Local state is stored under `.anvil/local`:
 Open Lens while the dev server is running:
 
 ```bash
-anvil lens --json
+anvil cloud lens --json
 ```
 
 Lens is local inspection UI over the same JSON truth used by CLI commands:
 manifest, capabilities, auth users, database state, logs, workflows, services,
 and recent diagnostics.
 
-## 8) Preview deployment
+## 9) Preview deployment
 
 ```bash
-anvil deploy --preview --json
+anvil cloud deploy --preview --json
 ```
 
 Without AWS provisioning configuration, the preview adapter returns a stable

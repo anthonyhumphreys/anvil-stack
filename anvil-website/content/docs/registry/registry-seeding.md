@@ -9,7 +9,7 @@ order: 11
 
 # Registry seeding
 
-Registry seeding lets operators warm Anvil with the dependency versions an organisation already uses. Before changing developer machines or CI to point at Anvil Registry, collect lockfiles from popular and business-critical repositories, then run `anvil warm` against them.
+Registry seeding lets operators warm Anvil with the dependency versions an organisation already uses. Before changing developer machines or CI to point at Anvil Registry, collect lockfiles from popular and business-critical repositories, then run `anvil registry warm` against them.
 
 This reduces first-install latency, fills metadata and tarball caches earlier, and gives the worker time to produce policy decisions before a normal `npm install` is waiting on them. It is still the same analysis pipeline; seeding does not create a bypass or a second trust path.
 
@@ -40,25 +40,25 @@ Warm each representative lockfile:
 ```bash
 ANVIL_REGISTRY_URL=http://localhost:4873 \
 ANVIL_ADMIN_TOKEN=local-dev-token \
-  anvil warm ./seed-lockfiles/package-lock.api.json
+  anvil registry warm ./seed-lockfiles/package-lock.api.json
 
 ANVIL_REGISTRY_URL=http://localhost:4873 \
 ANVIL_ADMIN_TOKEN=local-dev-token \
-  anvil warm ./seed-lockfiles/package-lock.web.json
+  anvil registry warm ./seed-lockfiles/package-lock.web.json
 
 ANVIL_REGISTRY_URL=http://localhost:4873 \
 ANVIL_ADMIN_TOKEN=local-dev-token \
-  anvil warm ./seed-lockfiles/pnpm-lock.design-system.yaml
+  anvil registry warm ./seed-lockfiles/pnpm-lock.design-system.yaml
 ```
 
-`anvil warm` parses the lockfile, fetches package metadata through the gateway, and queues analysis for the resolved package versions. Queued jobs use `reason: "lockfile_scan"` so operators can tell pre-install review apart from install-path enforcement.
+`anvil registry warm` parses the lockfile, fetches package metadata through the gateway, and queues analysis for the resolved package versions. Queued jobs use `reason: "lockfile_scan"` so operators can tell pre-install review apart from install-path enforcement.
 
 Watch the analysis queue until it drains enough for your rollout:
 
 ```bash
 ANVIL_REGISTRY_URL=http://localhost:4873 \
 ANVIL_ADMIN_TOKEN=local-dev-token \
-  anvil queue status
+  anvil registry queue status
 ```
 
 Then route a small pilot repository through Anvil Registry and run its normal install with lifecycle scripts disabled:
@@ -77,7 +77,7 @@ Run seeding again when dependency baselines change:
 - As a scheduled job for high-traffic repos.
 - Before strict CI modes require reviewed package identities.
 
-For pull requests, use `anvil scan <lockfile> --queue-analysis` to review changed dependencies. For broader cache and analysis warm-up, use `anvil warm <lockfile>`.
+For pull requests, use `anvil registry scan <lockfile> --queue-analysis` to review changed dependencies. For broader cache and analysis warm-up, use `anvil registry warm <lockfile>`.
 
 ## Security notes
 

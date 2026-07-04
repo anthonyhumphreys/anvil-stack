@@ -8,12 +8,13 @@
   "packageManager": "pnpm@9.15.0",
   "scripts": {
     "build": "pnpm -r build",
-    "dev": "pnpm --filter @anvil-cloud/cli dev",
+    "dev": "pnpm --filter @anvilstack/cloud-cli dev",
     "lint": "pnpm -r lint",
     "test": "pnpm build && pnpm -r test",
     "typecheck": "pnpm -r typecheck",
-    "anvil": "node packages/cli/dist/index.js",
-    "verify:notes-local": "node scripts/verify-notes-local.mjs",
+    "anvil-cloud": "node packages/cli/dist/index.js",
+    "verify:notes-golden-path": "node scripts/verify-notes-local.mjs",
+    "verify:notes-local": "pnpm verify:notes-golden-path",
     "verify:aws-preview": "node scripts/verify-aws-preview.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check ."

@@ -10,7 +10,7 @@ The builder is responsible for:
 - typechecking Cell source;
 - enforcing import and capability restrictions;
 - bundling the server entrypoint;
-- bundling the client entrypoint;
+- bundling the client entrypoint when the target is `vite-react`;
 - extracting a manifest;
 - generating client API metadata;
 - writing build metadata.
@@ -49,7 +49,7 @@ packages/builder
 6. Bundle server entrypoint
 7. Load bundled app in analysis mode
 8. Extract manifest
-9. Bundle client entrypoint
+9. Bundle client entrypoint when `client.kind` is `vite-react`
 10. Generate client metadata
 11. Write build metadata
 12. Return build result
@@ -89,11 +89,19 @@ await build({
 
 ## Client bundling
 
-Use Vite + React in alpha.
+Use Vite + React for the default `vite-react` client target in alpha.
 
 The client build should consume generated Anvil client metadata through
 `@anvil/generated/client`. Local dev should use the Vite dev server with
 proxying to the local runtime.
+
+`client.kind` is a client-target selector, not a deployment adapter. Supported
+alpha values are `vite-react`, `expo-router`, and `headless`. `expo-router` and
+`headless` builds still typecheck source, emit the server bundle, manifest,
+generated client metadata, and build metadata, but they do not emit
+`.anvil/dist/client/index.html`. Expo Router projects run their native client
+with Expo and call the local or deployed Anvil runtime through
+`@anvil-cloud/client`.
 
 ## Import policy
 
@@ -109,10 +117,13 @@ Forbidden by default in Cell server source:
 - `child_process`
 - `node:child_process`
 - `process.env` direct access, including straightforward static forms such as
-  `process.env` and `process["env"]`
+  `process.env`, `process["env"]`, `globalThis.process.env`, aliased
+  `process`, and destructured `env` aliases
 - native addons
 
-Capability checks currently reject straightforward handler usage of:
+Capability checks currently reject straightforward handler usage, static bracket
+notation such as `ctx["db"]`, and destructuring such as `const { db } = ctx` or
+`handler: ({ db }) =>`, of:
 
 - `ctx.db` without `capabilities.database`;
 - `ctx.files` without `capabilities.files`;
@@ -121,10 +132,36 @@ Capability checks currently reject straightforward handler usage of:
 - `ctx.workflows` without `capabilities.workflows`;
 - `workflow(...)` without `capabilities.workflows`;
 - `service(...)` without `capabilities.services`;
-- global `fetch()` without `capabilities.outboundFetch`;
+- `ctx.env.get("NAME")` or `ctx.env.require("NAME")` when `NAME` is not
+  declared in `capabilities.env` or `capabilities.secrets`;
+- aliased or static bracket `ctx.env.get` / `ctx.env.require` calls when the
+  requested name is not declared;
+- dynamic `ctx.env` methods such as `ctx.env[input.method]("NAME")`;
+- computed `ctx.env` method destructuring such as
+  `const { [input.method]: readEnv } = ctx.env`;
+- dynamic `ctx.env` names when env declarations are static;
+- dynamic context capability properties such as `ctx[input.capability]`;
+- non-static context destructuring such as `const { ...scoped } = ctx`;
+- direct network client imports such as `http`, `https`, `node:net`,
+  `undici`, or `axios`;
+- global `fetch()`, `globalThis.fetch()`, or static fetch aliases without
+  `capabilities.outboundFetch`;
 - `fetch()` targets that are not static absolute `http` or `https` URL literals;
 - `fetch()` hosts outside `capabilities.outboundFetch.allow`;
 - `job({ schedule })` without `capabilities.scheduledJobs`.
+
+When a previous `.anvil/dist/manifest.json` exists, the build pipeline also
+compares the new manifest against that local baseline and fails before writing
+new artifacts for obviously risky changes:
+
+- `capabilities.files.publicRead` changing from `false` or absent to `true`;
+- removing a schema table;
+- removing a schema field;
+- changing a schema field type.
+
+This is a local Guard check, not a remote migration engine. It catches
+high-signal mistakes during build while deployment adapters and remote
+inspection grow the richer history needed for approved migrations.
 
 Preferred replacements:
 
@@ -195,6 +232,17 @@ Example JSON output:
 }
 ```
 
+Destructive manifest-change diagnostics use the same shape:
+
+```json
+{
+  "code": "DESTRUCTIVE_SCHEMA_CHANGE",
+  "severity": "error",
+  "message": "Schema field 'notes.body' was removed compared with the previous build.",
+  "hint": "Add an explicit migration plan before removing Cell-owned data fields."
+}
+```
+
 `errors` is kept as a compatibility alias. New automation should read
 `diagnostics`.
 
@@ -210,10 +258,37 @@ export const api = {
   mutations: {
     createNote: { kind: "mutation", name: "createNote" },
   },
+  meta: {
+    schemaVersion: "0.1",
+    queries: ["listNotes"],
+    mutations: ["createNote"],
+  },
 } as const;
 ```
 
-`@anvil-cloud/client` uses this metadata to call the runtime.
+`@anvil-cloud/client` uses the route metadata to call the runtime. Tooling such
+as `anvil-cloud doctor --json` uses `api.meta` as the stable operation summary
+when checking generated client freshness against the built manifest.
+
+Generated metadata also exports empty `QueryTypes` and `MutationTypes`
+interfaces. Cell code may augment those interfaces from source files such as
+`src/anvil-api.d.ts`:
+
+```ts
+declare module "@anvil/generated/client" {
+  interface QueryTypes {
+    listNotes: {
+      input: unknown;
+      result: Note[];
+    };
+  }
+}
+```
+
+The generated runtime object stays plain metadata, while `createApiClient` and
+`createAnvilHooks` can infer input and result types from the augmented route
+maps. That keeps the runtime contract provider-neutral and avoids making the
+builder pretend it can recover TypeScript handler generics at runtime.
 
 ## Build metadata
 

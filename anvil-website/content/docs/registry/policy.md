@@ -91,7 +91,7 @@ If the tarball or analyser changes, the cached decision no longer silently appli
 Overrides are explicit and audited:
 
 ```bash
-anvil approve suspicious-pkg@1.2.3 --reason "internal fork, reviewed by security"
+anvil registry approve suspicious-pkg@1.2.3 --reason "internal fork, reviewed by security"
 ```
 
 Package-wide overrides are possible, but version-specific overrides are easier to reason about and safer to expire.

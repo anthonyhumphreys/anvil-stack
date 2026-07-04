@@ -1,6 +1,7 @@
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Code,
+  Cloud,
   Database,
   MessageSquare,
   Compass,
@@ -24,6 +25,7 @@ import {
   Workflow,
   NotebookPen,
   StickyNote,
+  MonitorSmartphone,
 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useBrand } from '../../contexts/BrandContext';
@@ -33,6 +35,11 @@ import { AnvilLogo } from '../brand/AnvilLogo';
 import type { UserRole, Feature } from '../../../shared/types';
 import { ROLE_FEATURES } from '../../../shared/types';
 import { useStoredPanelState } from '../../hooks/useStoredPanelState';
+import {
+  SidebarActivityBadge,
+  SidebarActivityCenter,
+  useSidebarActivity,
+} from './SidebarActivityCenter';
 
 interface NavItem {
   path: string;
@@ -124,6 +131,13 @@ const navItems: NavItem[] = [
     feature: 'cicd',
     requiresRepoFeature: true,
   },
+  {
+    path: '/cloud',
+    label: 'Cloud',
+    icon: <Cloud size={20} />,
+    feature: 'cloud',
+    requiresRepoFeature: true,
+  },
   { path: '/docs', label: 'Documentation', icon: <FileText size={20} />, feature: 'docs' },
   {
     path: '/adrs',
@@ -148,6 +162,12 @@ const navItems: NavItem[] = [
     requiresRepoFeature: true,
   },
   {
+    path: '/argent',
+    label: 'Argent',
+    icon: <MonitorSmartphone size={20} />,
+    feature: 'argent',
+  },
+  {
     path: '/git',
     label: 'Git',
     icon: <GitBranch size={20} />,
@@ -170,14 +190,21 @@ interface SidebarProps {
     confluence: boolean | null;
   };
   userRole: UserRole;
+  cloudFeaturesEnabled: boolean;
   reserveTitlebarSpace?: boolean;
 }
 
-export function Sidebar({ connectionStatus, userRole, reserveTitlebarSpace = true }: SidebarProps) {
+export function Sidebar({
+  connectionStatus,
+  userRole,
+  cloudFeaturesEnabled,
+  reserveTitlebarSpace = true,
+}: SidebarProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const brand = useBrand();
   const { activeWorkspace, featureAvailability } = useWorkspace();
+  const { items: activityItems, indicators: activityIndicators, activeCount } = useSidebarActivity();
   const { width, setWidth, collapsed, toggleCollapsed } = useStoredPanelState({
     storageKey: 'layout:main-sidebar:v2',
     defaultWidth: 252,
@@ -302,7 +329,11 @@ export function Sidebar({ connectionStatus, userRole, reserveTitlebarSpace = tru
           <nav className="h-full overflow-y-auto pr-1">
             <div className="flex flex-col gap-1">
               {navItems
-                .filter((item) => ROLE_FEATURES[userRole].includes(item.feature))
+                .filter(
+                  (item) =>
+                    ROLE_FEATURES[userRole].includes(item.feature) &&
+                    (item.feature !== 'cloud' || cloudFeaturesEnabled),
+                )
                 .map((item) => {
                   const active = location.pathname.startsWith(item.path);
                   const disabled = item.requiresChat
@@ -317,7 +348,7 @@ export function Sidebar({ connectionStatus, userRole, reserveTitlebarSpace = tru
                         if (!disabled) navigate(item.path);
                       }}
                       disabled={disabled}
-                      className={`titlebar-no-drag flex w-full items-center rounded-lg border py-3 text-base font-medium transition-colors ${
+                      className={`titlebar-no-drag relative flex w-full items-center rounded-lg border py-3 text-base font-medium transition-colors ${
                         active
                           ? 'border-accent/35 bg-accent/12 text-text-primary shadow-[0_0_0_1px_var(--color-accent-glow)]'
                           : disabled
@@ -329,6 +360,10 @@ export function Sidebar({ connectionStatus, userRole, reserveTitlebarSpace = tru
                     >
                       {item.icon}
                       {!collapsed && <span className="truncate">{item.label}</span>}
+                      <SidebarActivityBadge
+                        indicator={activityIndicators[item.feature]}
+                        collapsed={collapsed}
+                      />
                     </button>
                   );
                 })}
@@ -338,6 +373,11 @@ export function Sidebar({ connectionStatus, userRole, reserveTitlebarSpace = tru
 
         {/* Footer — connection status + settings */}
         <div className="shrink-0 border-t border-border-subtle p-4">
+          <SidebarActivityCenter
+            items={activityItems}
+            activeCount={activeCount}
+            collapsed={collapsed}
+          />
           <div className={`${collapsed ? 'space-y-3' : 'space-y-2'} text-sm`}>
             <StatusDot label="Foundry" status={connectionStatus.foundry} compact={collapsed} />
             <StatusDot label="ADO" status={connectionStatus.ado} compact={collapsed} />

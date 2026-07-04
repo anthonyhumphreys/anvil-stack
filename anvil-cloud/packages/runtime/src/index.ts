@@ -1,4 +1,11 @@
 export {
+  type AgentSandboxAuthToken,
+  type AgentSandboxProvider,
+  type AgentSandboxSession,
+  type AgentSandboxStartInput,
+  type AgentSandboxStatus,
+} from "./agent-sandbox.js";
+export {
   AgentProviderRegistry,
   AgentRuntime,
   LocalStubInferenceProvider,

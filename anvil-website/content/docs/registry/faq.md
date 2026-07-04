@@ -14,7 +14,7 @@ order: 4
 The most common reason is age: by default, versions younger than the policy window (7 days, `POLICY_MINIMUM_PACKAGE_AGE_DAYS`) are quarantined until they have been public long enough for problems to surface. Ask the gateway directly:
 
 ```bash
-anvil explain <package>@<version>
+anvil registry explain <package>@<version>
 ```
 
 The decision includes machine-readable reason codes and the evidence behind them. See [Package decisions](/docs/registry/package-decisions).
@@ -24,7 +24,7 @@ The decision includes machine-readable reason codes and the evidence behind them
 Use an explicit override. Overrides are audited, reasoned, and should expire:
 
 ```bash
-anvil approve <package>@<version> \
+anvil registry approve <package>@<version> \
   --reason "Reviewed by platform team" \
   --expires-at 2026-07-01T00:00:00Z
 ```
@@ -55,7 +55,7 @@ The supported local path is Docker Compose (gateway, worker, admin, Postgres, Re
 
 Three places, in increasing depth:
 
-1. `anvil explain <package>@<version>` for a single decision.
+1. `anvil registry explain <package>@<version>` for a single decision.
 2. The Admin UI (port 3000 locally) for decisions, overrides, and audit events.
 3. The audit log itself, which records policy decisions, override changes, and analysis enqueues with their identities.
 

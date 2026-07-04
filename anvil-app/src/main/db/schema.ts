@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 36;
+export const SCHEMA_VERSION = 41;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS chat_threads (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   last_message_at TEXT,
+  provider_thread_id TEXT,
   active_plan_json TEXT,
   active_plan_updated_at TEXT,
   active_goal_json TEXT
@@ -73,6 +74,8 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
   thread_id TEXT REFERENCES chat_threads(id),
   repo_id TEXT REFERENCES repos(id),
   persona_id TEXT,
+  provider_thread_id TEXT,
+  provider_turn_id TEXT,
   started_at TEXT DEFAULT (datetime('now')),
   ended_at TEXT
 );
@@ -101,6 +104,42 @@ CREATE INDEX IF NOT EXISTS idx_chat_threads_workspace_work_item
 
 CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_timestamp
   ON chat_messages(thread_id, timestamp ASC);
+
+CREATE INDEX IF NOT EXISTS idx_chat_threads_provider_thread
+  ON chat_threads(provider_thread_id);
+
+CREATE TABLE IF NOT EXISTS chat_artifacts (
+  id TEXT PRIMARY KEY,
+  thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+  repo_id TEXT REFERENCES repos(id) ON DELETE SET NULL,
+  source_message_id TEXT,
+  title TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  relative_path TEXT NOT NULL,
+  file_path TEXT,
+  content TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(thread_id, relative_path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_artifacts_thread_updated
+  ON chat_artifacts(thread_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS review_workspace_comments (
+  id TEXT PRIMARY KEY,
+  repo_id TEXT REFERENCES repos(id) ON DELETE CASCADE,
+  file_path TEXT NOT NULL,
+  line_number INTEGER,
+  body TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open',
+  created_at TEXT NOT NULL,
+  resolved_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_review_workspace_comments_repo_status
+  ON review_workspace_comments(repo_id, status, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS work_items_cache (
   id TEXT PRIMARY KEY,
@@ -154,6 +193,7 @@ CREATE TABLE IF NOT EXISTS settings (
   theme TEXT DEFAULT 'system',
   user_role TEXT,
   active_workspace_id TEXT,
+  cloud_features_enabled INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -220,6 +260,7 @@ CREATE TABLE IF NOT EXISTS ba_sessions (
   repo_id         TEXT NOT NULL,
   spike_branch    TEXT NOT NULL,
   origin_branch   TEXT NOT NULL,
+  worktree_path   TEXT,
   stash_ref       TEXT,
   status          TEXT NOT NULL DEFAULT 'active',
   started_at      TEXT NOT NULL,
@@ -417,6 +458,7 @@ CREATE TABLE IF NOT EXISTS automation_definitions (
   enabled INTEGER NOT NULL DEFAULT 0,
   allow_repo_write INTEGER NOT NULL DEFAULT 0,
   allow_command_run INTEGER NOT NULL DEFAULT 0,
+  loop_config_json TEXT,
   execution_mode TEXT NOT NULL DEFAULT 'disposable-worktree',
   last_run_at TEXT,
   next_run_at TEXT,
@@ -1289,5 +1331,56 @@ export const MIGRATIONS: Record<number, string> = {
       datetime('now'),
       datetime('now')
     FROM workspaces;
+  `,
+  37: `
+    ALTER TABLE automation_definitions ADD COLUMN loop_config_json TEXT;
+  `,
+  38: `
+    ALTER TABLE chat_threads ADD COLUMN provider_thread_id TEXT;
+    ALTER TABLE chat_sessions ADD COLUMN provider_thread_id TEXT;
+    ALTER TABLE chat_sessions ADD COLUMN provider_turn_id TEXT;
+
+    CREATE INDEX IF NOT EXISTS idx_chat_threads_provider_thread
+      ON chat_threads(provider_thread_id);
+
+    CREATE TABLE IF NOT EXISTS review_workspace_comments (
+      id TEXT PRIMARY KEY,
+      repo_id TEXT REFERENCES repos(id) ON DELETE CASCADE,
+      file_path TEXT NOT NULL,
+      line_number INTEGER,
+      body TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open',
+      created_at TEXT NOT NULL,
+      resolved_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_review_workspace_comments_repo_status
+      ON review_workspace_comments(repo_id, status, created_at DESC);
+  `,
+  39: `
+    ALTER TABLE settings ADD COLUMN cloud_features_enabled INTEGER NOT NULL DEFAULT 0;
+  `,
+  40: `
+    CREATE TABLE IF NOT EXISTS chat_artifacts (
+      id TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+      repo_id TEXT REFERENCES repos(id) ON DELETE SET NULL,
+      source_message_id TEXT,
+      title TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      relative_path TEXT NOT NULL,
+      file_path TEXT,
+      content TEXT NOT NULL,
+      version INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(thread_id, relative_path)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_artifacts_thread_updated
+      ON chat_artifacts(thread_id, updated_at DESC);
+  `,
+  41: `
+    ALTER TABLE ba_sessions ADD COLUMN worktree_path TEXT;
   `,
 };

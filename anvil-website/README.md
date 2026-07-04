@@ -5,9 +5,9 @@ This is the standalone Next.js website for the Anvil open source projects:
 - **Anvil Desktop**, a local workspace for repo-aware agent delivery work.
 - **Anvil Registry**, an npm registry gateway for dependency policy and analysis.
 - **Anvil Node Base**, a hardened Node devcontainer image for safer installs.
-- **Anvil Cloud**, an app platform for typed Cells, local runtime, and adapter-driven deployment.
+- **Anvil Cloud**, a local-first runtime and adapter toolchain for typed Cells, Agents, generated manifests, and inspectable deployment plans.
 
-The site is markdown-first. Product documentation lives in `content/docs`, is grouped by product folder, and is rendered through the generated docs route.
+The site is markdown-first. Product documentation lives in `content/docs`, is grouped by product folder, and is rendered through the generated docs route. Write for OSS users who want to clone the repo, run the tools, inspect the boundaries, and decide whether the current alpha surface is useful.
 
 ## Local Development
 

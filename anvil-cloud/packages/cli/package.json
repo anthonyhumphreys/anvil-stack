@@ -1,28 +1,54 @@
 {
-  "name": "@anvil-cloud/cli",
-  "version": "0.0.0",
-  "private": true,
+  "name": "@anvilstack/cloud-cli",
+  "version": "0.1.2",
+  "license": "MIT",
+  "description": "Command-line tools for Anvil Cloud Cells, local runtime, inspection, and preview deployment.",
+  "private": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anthonyhumphreys/anvil-stack.git"
+  },
   "type": "module",
   "bin": {
-    "anvil": "dist/index.js"
+    "anvil-cloud": "dist/index.js"
   },
   "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node scripts/build.mjs",
     "dev": "tsx src/index.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepublishOnly": "pnpm run typecheck && pnpm run test && pnpm run build",
     "test": "vitest run"
   },
   "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.1063.0",
+    "@aws-sdk/client-cloudformation": "^3.1063.0",
+    "@aws-sdk/client-cloudwatch-logs": "^3.1063.0",
+    "@aws-sdk/client-dynamodb": "^3.1063.0",
+    "@aws-sdk/client-eventbridge": "^3.1066.0",
+    "@aws-sdk/client-lambda-microvms": "^3.1076.0",
+    "@aws-sdk/client-s3": "^3.1063.0",
+    "@aws-sdk/client-sfn": "^3.1063.0",
+    "@aws-sdk/client-sqs": "^3.1063.0",
+    "effect": "^3.21.4",
+    "esbuild": "^0.28.1",
+    "jose": "^6.2.3",
+    "typescript": "^5.7.2",
+    "vite": "^6.4.3"
+  },
+  "devDependencies": {
     "@anvil-cloud/auth": "workspace:^",
     "@anvil-cloud/aws": "workspace:*",
     "@anvil-cloud/builder": "workspace:*",
     "@anvil-cloud/local": "workspace:*",
     "@anvil-cloud/runtime": "workspace:*",
-    "effect": "^3.21.4"
-  },
-  "devDependencies": {
     "tsx": "^4.22.4"
   }
 }

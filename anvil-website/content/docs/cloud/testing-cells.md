@@ -119,7 +119,7 @@ assert(response.error?.code === "CAPABILITY_NOT_DECLARED");
 - Test capability mismatches.
 - Assert on side effects through the host adapters, not by mocking implementation details.
 - Keep tests fast: in-memory adapters are synchronous where possible.
-- Run `anvil check --json` in CI before running tests to catch import policy and type errors early.
+- Run `anvil cloud check --json` in CI before running tests to catch import policy and type errors early.
 
 ## Read next
 

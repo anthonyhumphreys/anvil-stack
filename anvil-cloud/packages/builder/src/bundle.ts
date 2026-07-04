@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -172,20 +173,33 @@ function workspacePackagePlugin(): Plugin {
 
 function resolveWorkspacePackageSources(): Map<string, string> {
   const currentFile = fileURLToPath(import.meta.url);
-  const packageRoot = path.resolve(path.dirname(currentFile), "..");
-  const packagesRoot = path.resolve(packageRoot, "..");
+  const currentDir = path.dirname(currentFile);
+  const workspacePackagesRoot = path.resolve(currentDir, "..", "..");
+  const packedPackagesRoot = path.resolve(currentDir, "packages");
   const sources = new Map<string, string>();
 
-  sources.set(
-    "@anvil-cloud/runtime",
-    path.join(packagesRoot, "runtime", "src", "index.ts"),
-  );
-  sources.set(
-    "@anvil-cloud/client",
-    path.join(packagesRoot, "client", "src", "index.ts"),
-  );
+  addFirstExistingSource(sources, "@anvil-cloud/runtime", [
+    path.join(workspacePackagesRoot, "runtime", "src", "index.ts"),
+    path.join(packedPackagesRoot, "runtime", "src", "index.ts"),
+  ]);
+  addFirstExistingSource(sources, "@anvil-cloud/client", [
+    path.join(workspacePackagesRoot, "client", "src", "index.ts"),
+    path.join(packedPackagesRoot, "client", "src", "index.ts"),
+  ]);
 
   return sources;
+}
+
+function addFirstExistingSource(
+  sources: Map<string, string>,
+  specifier: string,
+  candidates: string[],
+): void {
+  const source = candidates.find((candidate) => existsSync(candidate));
+
+  if (source) {
+    sources.set(specifier, source);
+  }
 }
 
 function workspacePackageAliases(rootDir: string): Record<string, string> {

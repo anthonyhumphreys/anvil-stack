@@ -1,0 +1,85 @@
+<mxGraphModel dx="1600" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1400" pageHeight="900" math="0" shadow="0">
+  <root>
+    <mxCell id="0"/>
+    <mxCell id="1" parent="0"/>
+    <mxCell id="title" value="Anvil Cloud System Map" style="text;html=1;strokeColor=none;fillColor=none;fontColor=#f8fafc;fontSize=28;fontStyle=1;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+      <mxGeometry x="60" y="30" width="560" height="50" as="geometry"/>
+    </mxCell>
+    <mxCell id="subtitle" value="Cells declare intent. Builder and Guard create trusted artifacts. Runtime executes through local or provider adapters." style="text;html=1;strokeColor=none;fillColor=none;fontColor=#cbd5e1;fontSize=14;align=left;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+      <mxGeometry x="62" y="75" width="920" height="34" as="geometry"/>
+    </mxCell>
+    <mxCell id="author" value="Developer or coding agent" style="rounded=1;whiteSpace=wrap;html=1;arcSize=12;fillColor=#0f172a;strokeColor=#38bdf8;fontColor=#e5e7eb;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
+      <mxGeometry x="60" y="170" width="180" height="70" as="geometry"/>
+    </mxCell>
+    <mxCell id="cell" value="Anvil Cell project&lt;br&gt;server DSL, React client, anvil.json" style="rounded=1;whiteSpace=wrap;html=1;arcSize=12;fillColor=#1e293b;strokeColor=#a78bfa;fontColor=#f8fafc;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
+      <mxGeometry x="300" y="160" width="220" height="90" as="geometry"/>
+    </mxCell>
+    <mxCell id="builder" value="Anvil Builder&lt;br&gt;typecheck, bundle, manifest" style="rounded=1;whiteSpace=wrap;html=1;arcSize=12;fillColor=#18202f;strokeColor=#60a5fa;fontColor=#f8fafc;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
+      <mxGeometry x="600" y="120" width="210" height="80" as="geometry"/>
+    </mxCell>
+    <mxCell id="guard" value="Anvil Guard&lt;br&gt;imports, capabilities, policy" style="rounded=1;whiteSpace=wrap;html=1;arcSize=12;fillColor=#311c24;strokeColor=#fb7185;fontColor=#ffe4e6;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
+      <mxGeometry x="600" y="240" width="210" height="80" as="geometry"/>
+    </mxCell>
+    <mxCell id="artifacts" value=".anvil artifacts&lt;br&gt;server bundle, client assets&lt;br&gt;manifest, generated client" style="shape=folder;tabWidth=70;tabHeight=18;whiteSpace=wrap;html=1;fillColor=#1f2937;strokeColor=#93c5fd;fontColor=#f8fafc;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
+      <mxGeometry x="890" y="155" width="230" height="110" as="geometry"/>
+    </mxCell>
+    <mxCell id="local" value="Anvil Local&lt;br&gt;runtime server, Vite client&lt;br&gt;SQLite, auth, jobs, logs" style="rounded=1;whiteSpace=wrap;html=1;arcSize=12;fillColor=#102a24;strokeColor=#34d399;fontColor=#ecfdf5;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
+      <mxGeometry x="500" y="470" width="250" height="100" as="geometry"/>
+    </mxCell>
+    <mxCell id="lens" value="Anvil Lens&lt;br&gt;manifest, logs, db, requests" style="rounded=1;whiteSpace=wrap;html=1;arcSize=12;fillColor=#06321f;strokeColor=#6ee7b7;fontColor=#ecfdf5;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
+      <mxGeometry x="820" y="470" width="230" height="90" as="geometry"/>
+    </mxCell>
+    <mxCell id="adapter" value="Deployment adapter contract&lt;br&gt;plan, deploy, remove" style="rounded=1;whiteSpace=wrap;html=1;arcSize=12;fillColor=#2a2414;strokeColor=#fbbf24;fontColor=#fffbeb;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
+      <mxGeometry x="500" y="650" width="250" height="90" as="geometry"/>
+    </mxCell>
+    <mxCell id="aws" value="AWS preview adapter&lt;br&gt;Lambda, API Gateway&lt;br&gt;S3, DynamoDB, CloudWatch" style="rounded=1;whiteSpace=wrap;html=1;arcSize=12;fillColor=#33220a;strokeColor=#f59e0b;fontColor=#fffbeb;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
+      <mxGeometry x="820" y="640" width="250" height="110" as="geometry"/>
+    </mxCell>
+    <mxCell id="remote" value="Remote inspect and logs&lt;br&gt;stable JSON evidence" style="rounded=1;whiteSpace=wrap;html=1;arcSize=12;fillColor=#18202f;strokeColor=#60a5fa;fontColor=#f8fafc;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
+      <mxGeometry x="1130" y="650" width="220" height="90" as="geometry"/>
+    </mxCell>
+    <mxCell id="note" value="AWS is an adapter behind Anvil concepts, not the Cell authoring model." style="rounded=1;whiteSpace=wrap;html=1;arcSize=10;fillColor=#111827;strokeColor=#475569;fontColor=#cbd5e1;dashed=1;spacing=12;" vertex="1" parent="1">
+      <mxGeometry x="80" y="650" width="320" height="90" as="geometry"/>
+    </mxCell>
+    <mxCell id="e1" value="authors" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#7dd3fc;fontColor=#cbd5e1;endArrow=block;endFill=1;" edge="1" parent="1" source="author" target="cell">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e2" value="compiled by" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#93c5fd;fontColor=#cbd5e1;endArrow=block;endFill=1;" edge="1" parent="1" source="cell" target="builder">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e3" value="checked by" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#fb7185;fontColor=#fecdd3;endArrow=block;endFill=1;" edge="1" parent="1" source="cell" target="guard">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e4" value="writes" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#93c5fd;fontColor=#cbd5e1;endArrow=block;endFill=1;" edge="1" parent="1" source="builder" target="artifacts">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e5" value="blocks unsafe output" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#fb7185;fontColor=#fecdd3;endArrow=block;endFill=1;" edge="1" parent="1" source="guard" target="artifacts">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e6" value="run locally" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#34d399;fontColor=#bbf7d0;endArrow=block;endFill=1;" edge="1" parent="1" source="artifacts" target="local">
+      <mxGeometry relative="1" as="geometry">
+        <Array as="points">
+          <mxPoint x="1010" y="370"/>
+          <mxPoint x="625" y="370"/>
+        </Array>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="e7" value="inspect" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#6ee7b7;fontColor=#bbf7d0;endArrow=block;endFill=1;" edge="1" parent="1" source="local" target="lens">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e8" value="provider-neutral graph" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#fbbf24;fontColor=#fde68a;endArrow=block;endFill=1;" edge="1" parent="1" source="artifacts" target="adapter">
+      <mxGeometry relative="1" as="geometry">
+        <Array as="points">
+          <mxPoint x="1010" y="610"/>
+          <mxPoint x="625" y="610"/>
+        </Array>
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="e9" value="realizes capabilities" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#fbbf24;fontColor=#fde68a;endArrow=block;endFill=1;" edge="1" parent="1" source="adapter" target="aws">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+    <mxCell id="e10" value="reports" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#93c5fd;fontColor=#cbd5e1;endArrow=block;endFill=1;" edge="1" parent="1" source="aws" target="remote">
+      <mxGeometry relative="1" as="geometry"/>
+    </mxCell>
+  </root>
+</mxGraphModel>

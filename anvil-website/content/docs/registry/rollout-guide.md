@@ -51,7 +51,7 @@ Then install in a test project. Do not start with the repository that deploys pa
 Use the CLI to explain decisions:
 
 ```bash
-ANVIL_REGISTRY_URL=http://localhost:4873 anvil explain is-number@7.0.0
+ANVIL_REGISTRY_URL=http://localhost:4873 anvil registry explain is-number@7.0.0
 ```
 
 Review:
@@ -74,7 +74,7 @@ Before routing a team through the gateway, warm it with representative lockfiles
 ```bash
 ANVIL_REGISTRY_URL=http://localhost:4873 \
 ANVIL_ADMIN_TOKEN=local-dev-token \
-  anvil warm ./seed-lockfiles/package-lock.web.json
+  anvil registry warm ./seed-lockfiles/package-lock.web.json
 ```
 
 Use real lockfiles from high-traffic repos:
@@ -92,9 +92,9 @@ Start with CI that reports decisions without breaking delivery. Then move to str
 Useful commands:
 
 ```bash
-ANVIL_REGISTRY_URL=http://localhost:4873 anvil scan pnpm-lock.yaml --queue-analysis
-ANVIL_REGISTRY_URL=http://localhost:4873 anvil scan yarn.lock --queue-analysis
-ANVIL_REGISTRY_URL=http://localhost:4873 ANVIL_ADMIN_TOKEN=local-dev-token anvil queue status
+ANVIL_REGISTRY_URL=http://localhost:4873 anvil registry scan pnpm-lock.yaml --queue-analysis
+ANVIL_REGISTRY_URL=http://localhost:4873 anvil registry scan yarn.lock --queue-analysis
+ANVIL_REGISTRY_URL=http://localhost:4873 ANVIL_ADMIN_TOKEN=local-dev-token anvil registry queue status
 ```
 
 Read [Registry CI](/docs/registry/ci) for CI wiring.

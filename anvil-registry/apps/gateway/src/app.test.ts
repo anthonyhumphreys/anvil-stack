@@ -1212,7 +1212,7 @@ describe("gateway policy enforcement", () => {
           { packageName: "@scope/pkg", version: "2.0.0" }
         ],
         reason: "lockfile_scan",
-        requestedBy: "anvil-cli"
+        requestedBy: "anvil-registry-cli"
       }
     });
     const invalid = await app.inject({
@@ -1230,8 +1230,8 @@ describe("gateway policy enforcement", () => {
     expect(invalid.json()).toMatchObject({ error: "ANVIL_ANALYZE_INVALID" });
     expect(accepted.json()).toMatchObject({ ok: true, queued: 2 });
     expect(queuedJobs).toEqual([
-      expect.objectContaining({ packageName: "pkg", version: "1.0.0", reason: "lockfile_scan", priority: "normal", requestedBy: "anvil-cli" }),
-      expect.objectContaining({ packageName: "@scope/pkg", version: "2.0.0", reason: "lockfile_scan", priority: "normal", requestedBy: "anvil-cli" })
+      expect.objectContaining({ packageName: "pkg", version: "1.0.0", reason: "lockfile_scan", priority: "normal", requestedBy: "anvil-registry-cli" }),
+      expect.objectContaining({ packageName: "@scope/pkg", version: "2.0.0", reason: "lockfile_scan", priority: "normal", requestedBy: "anvil-registry-cli" })
     ]);
     expect(await persistence.listAuditEvents()).toEqual(
       expect.arrayContaining([

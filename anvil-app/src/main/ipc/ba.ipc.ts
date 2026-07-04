@@ -1,4 +1,6 @@
-import { ipcMain, BrowserWindow } from 'electron';
+import { randomUUID } from 'node:crypto';
+import path from 'node:path';
+import { ipcMain, BrowserWindow, app } from 'electron';
 import type {
   BaSession,
   BaFinding,
@@ -28,13 +30,25 @@ import {
   linkBaFindingToWorkItem,
 } from '../services/ba-persistence.service.js';
 import {
-  setupSpikeBranch,
+  setupSpikeWorktree,
   teardownSpikeBranch,
+  teardownSpikeWorktree,
   cleanupAllSpikes,
 } from '../services/spike-guard.service.js';
 import { startSession } from '../services/codex-session.service.js';
 import { detectCodexCli, getCodexInstallInstructions } from '../services/codex-bridge.service.js';
 import { getActiveProvider } from '../services/workitem-provider.js';
+
+function buildSpikeWorktreePath(workItemId: string, repoId: string, runId: string): string {
+  const safeWorkItem = workItemId.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+  const safeRepoId = repoId.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
+  return path.join(
+    app.getPath('userData'),
+    'ba-spike-worktrees',
+    safeWorkItem || 'spike',
+    `${safeRepoId || 'repo'}-${runId}`,
+  );
+}
 
 export function registerBaHandlers(): void {
   // ba:sessions:start
@@ -64,13 +78,21 @@ export function registerBaHandlers(): void {
       if (!provider) throw new Error('No active work item provider configured');
       await provider.getItem(workItemId);
 
-      // Setup spike branch with drift detection
+      // Setup retained spike worktree with drift detection
       const onDrift = (): void => {
         for (const win of BrowserWindow.getAllWindows()) {
           win.webContents.send('ba:spike-drift', { workItemId, repoId });
         }
       };
-      const spikeState = await setupSpikeBranch(repoPath, workItemId, onDrift);
+      const spikeRunId = randomUUID().slice(0, 8);
+      const worktreePath = buildSpikeWorktreePath(workItemId, repoId, spikeRunId);
+      const spikeState = await setupSpikeWorktree(
+        repoPath,
+        worktreePath,
+        workItemId,
+        onDrift,
+        spikeRunId,
+      );
 
       // Save repo link
       setBaRepoLink(workItemId, repoId);
@@ -81,13 +103,14 @@ export function registerBaHandlers(): void {
         repoId,
         spikeBranch: spikeState.spikeBranch,
         originBranch: spikeState.originBranch,
+        worktreePath,
         stashRef: spikeState.stashRef ?? undefined,
       });
       const session = getBaSession(sessionId);
       if (!session) throw new Error(`Failed to retrieve created BA session: ${sessionId}`);
 
       // Start Codex session
-      const codexSession = await startSession([repoPath], [repoId], 'ba');
+      const codexSession = await startSession([worktreePath], [repoId], 'ba');
 
       return { session, codexSession };
     },
@@ -104,7 +127,11 @@ export function registerBaHandlers(): void {
       | undefined;
     if (!repoRow) throw new Error(`Repo not found: ${session.repoId}`);
 
-    await teardownSpikeBranch(repoRow.path, session.workItemId);
+    if (session.worktreePath) {
+      await teardownSpikeWorktree(session.worktreePath);
+    } else {
+      await teardownSpikeBranch(repoRow.path, session.workItemId);
+    }
     endBaSession(sessionId);
   });
 

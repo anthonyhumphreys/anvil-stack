@@ -223,6 +223,7 @@ export interface BaSession {
   repoId: string;
   spikeBranch: string;
   originBranch: string;
+  worktreePath?: string;
   stashRef?: string;
   status: BaSessionStatus;
   startedAt: string;
@@ -274,6 +275,33 @@ export interface ChatMessage {
   attachments?: ChatAttachment[];
 }
 
+export type ChatArtifactKind = 'markdown' | 'code' | 'html' | 'diagram' | 'data' | 'text';
+
+export interface ChatArtifact {
+  id: string;
+  threadId: string;
+  repoId?: string;
+  sourceMessageId?: string;
+  title: string;
+  kind: ChatArtifactKind;
+  relativePath: string;
+  filePath?: string;
+  content: string;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ChatArtifactInput {
+  threadId: string;
+  repoId?: string | null;
+  sourceMessageId?: string;
+  title: string;
+  kind: ChatArtifactKind;
+  relativePath: string;
+  content: string;
+}
+
 export interface ChatAttachment {
   id: string;
   name: string;
@@ -293,8 +321,12 @@ export interface ChatAttachmentInput {
   dataUrl?: string;
 }
 
+/** Reasoning effort levels supported by the Codex CLI (`model_reasoning_effort`). */
+export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+
 export interface ChatSendOptions {
   collaborationMode?: ChatCollaborationMode;
+  reasoningEffort?: ReasoningEffort;
 }
 
 export interface ChatFileMentionSearchInput {
@@ -327,6 +359,7 @@ export interface ChatThread {
   lastMessageAt?: string;
   preview?: string;
   messageCount: number;
+  providerThreadId?: string;
   activePlan?: ChatPlanSnapshot;
   activeGoal?: ChatGoalSnapshot;
 }
@@ -398,6 +431,43 @@ export interface ChatTurnSummary {
   evidence: TurnEvidenceItem[];
 }
 
+export type AgentRunSource = 'chat' | 'automation' | 'code_review';
+export type AgentRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+
+export interface AgentRunSummary {
+  id: string;
+  source: AgentRunSource;
+  title: string;
+  status: AgentRunStatus;
+  workspaceId?: string;
+  repoIds: string[];
+  threadId?: string;
+  sessionId?: string;
+  automationId?: string;
+  reviewId?: string;
+  startedAt: string;
+  completedAt?: string;
+  summary?: string;
+  changedFileCount: number;
+  evidenceCount: number;
+}
+
+export interface AutomationTriageItem {
+  id: string;
+  automationId: string;
+  automationName: string;
+  status: AutomationRunStatus;
+  trigger: AutomationRunTrigger;
+  startedAt: string;
+  completedAt?: string;
+  changedFileCount: number;
+  summary?: string;
+  errorMessage?: string;
+  retainedWorktreeCount: number;
+  worktrees: AutomationRunWorktree[];
+  attention: 'blocked' | 'changes' | 'running';
+}
+
 export type JsonRpcRequestId = string | number;
 
 export interface CodexEvent {
@@ -459,6 +529,9 @@ export interface CodexSession {
   status: 'starting' | 'ready' | 'busy' | 'error';
   startedAt: string;
   mode?: CodexMode;
+  providerThreadId?: string;
+  currentTurnId?: string;
+  resumable?: boolean;
 }
 
 export type CodexMode = 'read-only' | 'on-request' | 'workspace-auto' | 'full-access';
@@ -525,6 +598,11 @@ export interface MobileApprovalRequest {
   command?: string;
   cwd?: string;
   grantRoot?: string;
+  workspaceId?: string;
+  workspaceName?: string;
+  repoId?: string;
+  repoName?: string;
+  policy?: CompanionApprovalPolicy;
   createdAt: string;
 }
 
@@ -656,6 +734,29 @@ export interface MobileWorkflowDigest {
   };
 }
 
+export type MobileWorkQueueItemKind = 'approval' | 'session' | 'thread';
+export type MobileWorkQueueItemPriority = 'critical' | 'high' | 'normal' | 'low';
+
+export interface MobileWorkQueueItem {
+  id: string;
+  kind: MobileWorkQueueItemKind;
+  priority: MobileWorkQueueItemPriority;
+  title: string;
+  detail: string;
+  statusLabel: string;
+  updatedAt: string;
+  workspaceId?: string;
+  workspaceName?: string;
+  repoId?: string;
+  repoName?: string;
+  sessionId?: string;
+  threadId?: string;
+  requestKey?: string;
+  risk?: CompanionApprovalRisk;
+  requiresDesktopReview?: boolean;
+  actionLabel?: string;
+}
+
 export interface MobileQuickAction {
   id: string;
   title: string;
@@ -673,6 +774,7 @@ export interface MobileStartChatInput {
   personaId?: string;
   workspaceId?: string;
   repoIds?: string[];
+  collaborationMode?: ChatCollaborationMode;
 }
 
 export interface MobileStartChatResult {
@@ -688,6 +790,7 @@ export interface MobileOverview {
   activeSessions: CodexSession[];
   pendingApprovals: MobileApprovalRequest[];
   threads: MobileChatThreadSummary[];
+  workQueue: MobileWorkQueueItem[];
   workflow: MobileWorkflowDigest;
   quickActions: MobileQuickAction[];
   companion: MobileCompanionStatus;
@@ -962,6 +1065,7 @@ export interface WorkspaceScaffoldMaybeCompleteResult {
 export type AutomationExecutionMode = 'disposable-worktree';
 export type AutomationRunTrigger = 'manual' | 'schedule';
 export type AutomationRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type AutomationLoopMode = 'sequence' | 'dynamic';
 export type AutomationEventType =
   | 'status'
   | 'text'
@@ -971,6 +1075,15 @@ export type AutomationEventType =
   | 'tool_call'
   | 'error'
   | 'system';
+
+export interface AutomationLoopConfig {
+  enabled: boolean;
+  mode: AutomationLoopMode;
+  memberPersonaIds: string[];
+  separateThreads: boolean;
+  maxIterations: number;
+  stopCondition: string;
+}
 
 export interface AutomationDefinitionInput {
   name: string;
@@ -982,6 +1095,7 @@ export interface AutomationDefinitionInput {
   enabled: boolean;
   allowRepoWrite: boolean;
   allowCommandRun: boolean;
+  loopConfig?: AutomationLoopConfig;
 }
 
 export interface AutomationDefinition extends AutomationDefinitionInput {
@@ -1176,6 +1290,7 @@ export interface AppSettings {
   activeWorkspaceId?: string;
   githubPat?: string;
   githubUsername?: string;
+  cloudFeaturesEnabled: boolean;
   theme: AppTheme;
   userRole?: UserRole;
 }
@@ -1233,6 +1348,61 @@ export interface CodexRegistrySnapshot {
   refreshedAt: string;
 }
 
+// ---------------------------------------------------------------------------
+// Codex usage
+// ---------------------------------------------------------------------------
+
+export interface CodexUsageRateLimitWindow {
+  usedPercent: number;
+  remainingPercent: number;
+  windowDurationMins: number | null;
+  resetsAt: string | null;
+}
+
+export interface CodexUsageCreditsSnapshot {
+  hasCredits: boolean;
+  unlimited: boolean;
+  balance: string | null;
+}
+
+export interface CodexUsageLimitSnapshot {
+  id: string;
+  label: string;
+  planType: string | null;
+  rateLimitReachedType: string | null;
+  primary: CodexUsageRateLimitWindow | null;
+  secondary: CodexUsageRateLimitWindow | null;
+  credits: CodexUsageCreditsSnapshot | null;
+}
+
+export interface CodexUsageDailyBucket {
+  startDate: string;
+  tokens: number;
+}
+
+export interface CodexUsageTokenSummary {
+  lifetimeTokens: number | null;
+  peakDailyTokens: number | null;
+  longestRunningTurnSec: number | null;
+  currentStreakDays: number | null;
+  longestStreakDays: number | null;
+  recentDailyBuckets: CodexUsageDailyBucket[];
+}
+
+export interface CodexUsageSnapshot {
+  status: 'available' | 'unavailable';
+  refreshedAt: string;
+  cliInstalled: boolean;
+  cliVersion?: string;
+  codexHome?: string;
+  appServerUserAgent?: string;
+  defaultLimit: CodexUsageLimitSnapshot | null;
+  limits: CodexUsageLimitSnapshot[];
+  tokenUsage: CodexUsageTokenSummary | null;
+  resetCreditsAvailable: number | null;
+  error?: string;
+}
+
 export interface CodexSkillSearchResult {
   id: string;
   name: string;
@@ -1251,6 +1421,60 @@ export interface CodexSkillInstallInput {
   source: string;
   skillName?: string;
   global?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Anvil Cloud
+// ---------------------------------------------------------------------------
+
+export type AnvilCloudCommandId =
+  | 'doctor'
+  | 'check'
+  | 'build'
+  | 'inspect-local'
+  | 'lens'
+  | 'logs-local'
+  | 'db-list'
+  | 'workflows-list'
+  | 'services-list'
+  | 'agents-validate'
+  | 'agents-manifest'
+  | 'agents-sandboxes';
+
+export interface AnvilCloudCliStatus {
+  available: boolean;
+  command: string;
+  version?: string;
+  source: 'workspace' | 'wrapper' | 'path';
+  cloudWorkspacePath?: string;
+  error?: string;
+}
+
+export interface AnvilCloudCommandDefinition {
+  id: AnvilCloudCommandId;
+  label: string;
+  description: string;
+  command: string;
+  category: 'health' | 'build' | 'runtime' | 'agents';
+}
+
+export interface AnvilCloudCommandResult {
+  ok: boolean;
+  commandId: AnvilCloudCommandId;
+  command: string;
+  cwd: string;
+  stdout: string;
+  stderr: string;
+  parsed?: unknown;
+  exitCode?: number;
+  durationMs: number;
+  completedAt: string;
+  error?: string;
+}
+
+export interface AnvilCloudWorkbenchSnapshot {
+  status: AnvilCloudCliStatus;
+  commands: AnvilCloudCommandDefinition[];
 }
 
 export interface CodexRegistryActionResult {
@@ -1370,8 +1594,10 @@ export type Feature =
   | 'diagrams'
   | 'governance'
   | 'browser'
+  | 'argent'
   | 'git'
   | 'compliance'
+  | 'cloud'
   | 'meeting-notes'
   | 'workspace-notes';
 
@@ -1393,8 +1619,10 @@ export const ROLE_FEATURES: Record<UserRole, readonly Feature[]> = {
     'diagrams',
     'governance',
     'browser',
+    'argent',
     'git',
     'compliance',
+    'cloud',
     'meeting-notes',
     'workspace-notes',
   ],
@@ -1411,6 +1639,7 @@ export const ROLE_FEATURES: Record<UserRole, readonly Feature[]> = {
     'diagrams',
     'governance',
     'compliance',
+    'cloud',
     'meeting-notes',
     'workspace-notes',
   ],
@@ -1422,6 +1651,7 @@ export const ROLE_FEATURES: Record<UserRole, readonly Feature[]> = {
     'diagrams',
     'governance',
     'compliance',
+    'cloud',
     'meeting-notes',
     'workspace-notes',
   ],
@@ -1521,6 +1751,146 @@ export interface BrowserBridgeStatus {
   running: boolean;
   port?: number;
   connectedUrl?: string;
+}
+
+export interface BrowserAnnotation {
+  id: string;
+  url: string;
+  title?: string;
+  note: string;
+  selectedText?: string;
+  viewport: {
+    width: number;
+    height: number;
+  };
+  createdAt: string;
+}
+
+export interface SimulatorPreviewStatus {
+  running: boolean;
+  url?: string;
+  metroUrl?: string;
+  pid?: number;
+  cwd?: string;
+  command?: string;
+  startedAt?: string;
+  lastOutput?: string;
+  lastError?: string;
+}
+
+export interface SimulatorPreviewStartOptions {
+  cwd?: string;
+  port?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Expo Argent
+// ---------------------------------------------------------------------------
+
+export type ArgentCommandId = 'install-cli' | 'init-mcp' | 'update' | 'flags';
+export type ArgentCommandCategory = 'setup' | 'maintenance';
+
+export interface ArgentCommandDefinition {
+  id: ArgentCommandId;
+  label: string;
+  description: string;
+  command: string;
+  category: ArgentCommandCategory;
+}
+
+export interface ArgentCommandResult {
+  ok: boolean;
+  commandId: ArgentCommandId;
+  command: string;
+  cwd: string;
+  stdout: string;
+  stderr: string;
+  exitCode?: number | string;
+  durationMs: number;
+  completedAt: string;
+  error?: string;
+}
+
+export type ArgentPromptId =
+  | 'launch-attach'
+  | 'verify-screenshot'
+  | 'smoke-flow'
+  | 'debug-logs'
+  | 'network-request'
+  | 'react-tree'
+  | 'profile-slowdown'
+  | 'deep-link';
+
+export interface ArgentPromptTemplate {
+  id: ArgentPromptId;
+  label: string;
+  description: string;
+  prompt: string;
+  evidence: string[];
+}
+
+export interface ArgentCliStatus {
+  installed: boolean;
+  command: string;
+  version?: string;
+  path?: string;
+  error?: string;
+}
+
+export interface ArgentNodeStatus {
+  version: string;
+  major: number;
+  supported: boolean;
+}
+
+export interface ArgentMcpStatus {
+  codexAvailable: boolean;
+  registered: boolean;
+  command: string;
+  rawList?: string;
+  error?: string;
+}
+
+export interface ArgentDeviceStatus {
+  platform: 'ios' | 'android';
+  available: boolean;
+  command: string;
+  devices: string[];
+  detail: string;
+  error?: string;
+}
+
+export interface ArgentMetroStatus {
+  running: boolean;
+  url: string;
+  detail: string;
+  error?: string;
+}
+
+export type ArgentReadinessLevel = 'pass' | 'warn' | 'fail' | 'unknown';
+
+export interface ArgentReadinessCheck {
+  id: string;
+  label: string;
+  level: ArgentReadinessLevel;
+  detail: string;
+}
+
+export interface ArgentWorkbenchSnapshot {
+  capturedAt: string;
+  projectRoot: string;
+  mobileProjectPath: string;
+  mobileProjectExists: boolean;
+  node: ArgentNodeStatus;
+  cli: ArgentCliStatus;
+  mcp: ArgentMcpStatus;
+  ios: ArgentDeviceStatus;
+  android: ArgentDeviceStatus;
+  metro: ArgentMetroStatus;
+  simulatorPreview: SimulatorPreviewStatus;
+  checks: ArgentReadinessCheck[];
+  commands: ArgentCommandDefinition[];
+  prompts: ArgentPromptTemplate[];
 }
 
 // ---------------------------------------------------------------------------

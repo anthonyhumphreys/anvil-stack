@@ -59,7 +59,7 @@ Health can pass while readiness fails. That is normal and useful.
 Use explain:
 
 ```bash
-anvil explain package-name@1.2.3
+anvil registry explain package-name@1.2.3
 ```
 
 Check:

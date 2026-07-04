@@ -329,9 +329,9 @@ The command must exit `0` only when the worker can reach required runtime depend
 
 ### Manual and lockfile analysis enqueue
 
-The gateway exposes `POST /-/anvil/analyze` so developer tools can enqueue explicit package analysis without waiting for a blocked metadata or tarball request. It accepts either a single `packageName`/`version` pair or a `targets` array, deduplicates exact package/version pairs, and enqueues `AnalysisJob` messages with `manual_review` by default. CLI lockfile warming uses `reason: "lockfile_scan"` so worker output can be traced back to preinstall review rather than install-path enforcement. `anvil scan --queue-analysis` uses the same route for risky or not-yet-reviewed lockfile targets after printing the policy verdict.
+The gateway exposes `POST /-/anvil/analyze` so developer tools can enqueue explicit package analysis without waiting for a blocked metadata or tarball request. It accepts either a single `packageName`/`version` pair or a `targets` array, deduplicates exact package/version pairs, and enqueues `AnalysisJob` messages with `manual_review` by default. CLI lockfile warming uses `reason: "lockfile_scan"` so worker output can be traced back to preinstall review rather than install-path enforcement. `anvil-registry scan --queue-analysis` uses the same route for risky or not-yet-reviewed lockfile targets after printing the policy verdict.
 
-`anvil queue status` calls `GET /-/anvil/queue` with the admin token and prints current queue depth so local operators can see backlog before blaming policy, npm, or whatever else is closest to hand.
+`anvil-registry queue status` calls `GET /-/anvil/queue` with the admin token and prints current queue depth so local operators can see backlog before blaming policy, npm, or whatever else is closest to hand.
 
 The gateway also exposes token-gated `POST /-/anvil/llm-review` for reviewer-requested model context when LLM review is enabled. It accepts the same single-target or `targets` array shape as `/analyze`, deduplicates exact package/version pairs, enqueues high-priority `manual_review` jobs with `runLlmReview: true`, and records `llm_review.enqueued` audit events. The worker must still respect the private-package opt-in; this route is a review trigger, not a permission slip to leak private source because someone got enthusiastic.
 
@@ -385,21 +385,21 @@ The CLI gives developers a way to inspect decisions before install or CI.
 ### Commands
 
 ```bash
-anvil scan package-lock.json
-anvil scan pnpm-lock.yaml --queue-analysis
-anvil scan yarn.lock --queue-analysis
-anvil explain react@19.0.0
-anvil explain @tanstack/react-query@latest
-anvil warm package-lock.json
-anvil warm yarn.lock
-anvil approve package@version --reason "intentional dependency" --approved-by reviewer --expires-at 2026-06-20T00:00:00Z
-anvil revoke package@version --revoked-by reviewer
-anvil llm-review package@version --requested-by reviewer
-anvil queue status
-anvil popular-index show
-anvil popular-index upload popular-index.json --generated-at 2026-05-20T00:00:00Z
-anvil policy test package.json
-anvil doctor
+anvil-registry scan package-lock.json
+anvil-registry scan pnpm-lock.yaml --queue-analysis
+anvil-registry scan yarn.lock --queue-analysis
+anvil-registry explain react@19.0.0
+anvil-registry explain @tanstack/react-query@latest
+anvil-registry warm package-lock.json
+anvil-registry warm yarn.lock
+anvil-registry approve package@version --reason "intentional dependency" --approved-by reviewer --expires-at 2027-06-20T00:00:00Z
+anvil-registry revoke package@version --revoked-by reviewer
+anvil-registry llm-review package@version --requested-by reviewer
+anvil-registry queue status
+anvil-registry popular-index show
+anvil-registry popular-index upload popular-index.json --generated-at 2026-05-20T00:00:00Z
+anvil-registry policy test package.json
+anvil-registry doctor
 ```
 
 ### Example output
@@ -416,7 +416,7 @@ Suggested package:
 - @tanstack/react-query
 
 Override:
-anvil approve @tenstack/react-query@1.0.1 --reason "intentional"
+anvil-registry approve @tenstack/react-query@1.0.1 --reason "intentional"
 ```
 
 ---
@@ -1515,7 +1515,7 @@ When blocked, return useful JSON.
       "reason": "Popular package with similar name."
     }
   ],
-  "overrideHint": "Run: anvil approve @tenstack/react-query@1.0.1 --reason \"intentional\""
+  "overrideHint": "Run: anvil-registry approve @tenstack/react-query@1.0.1 --reason \"intentional\""
 }
 ```
 
@@ -1627,11 +1627,11 @@ When blocked, return useful JSON.
 - Override approval.
 - Override revoke.
 - Audit log.
-- `anvil scan`.
-- `anvil explain`.
-- `anvil warm`.
-- `anvil llm-review`.
-- `anvil popular-index show/upload`.
+- `anvil-registry scan`.
+- `anvil-registry explain`.
+- `anvil-registry warm`.
+- `anvil-registry llm-review`.
+- `anvil-registry popular-index show/upload`.
 
 ## Phase 6: SST production deployment
 

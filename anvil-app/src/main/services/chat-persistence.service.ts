@@ -53,6 +53,7 @@ interface ChatThreadRow {
   last_message_at: string | null;
   preview: string | null;
   message_count: number;
+  provider_thread_id: string | null;
   active_plan_json: string | null;
   active_plan_updated_at: string | null;
   active_goal_json: string | null;
@@ -180,6 +181,7 @@ function mapThreadRow(row: ChatThreadRow): ChatThread {
     lastMessageAt: row.last_message_at ?? undefined,
     preview: row.preview?.trim() ? row.preview : undefined,
     messageCount: Number(row.message_count ?? 0),
+    providerThreadId: row.provider_thread_id ?? undefined,
     activePlan: parsePlanSnapshot(row.active_plan_json),
     activeGoal: parseGoalSnapshot(row.active_goal_json),
   };
@@ -206,6 +208,7 @@ export function listChatThreads(workspaceId: string | null, personaId: string): 
          t.created_at,
          t.updated_at,
          t.last_message_at,
+         t.provider_thread_id,
          t.active_plan_json,
          t.active_plan_updated_at,
          t.active_goal_json,
@@ -251,6 +254,7 @@ export function listWorkItemChatThreads(workspaceId: string | null): ChatThread[
          t.created_at,
          t.updated_at,
          t.last_message_at,
+         t.provider_thread_id,
          t.active_plan_json,
          t.active_plan_updated_at,
          t.active_goal_json,
@@ -295,6 +299,7 @@ export function getChatThread(threadId: string): ChatThread | null {
          t.created_at,
          t.updated_at,
          t.last_message_at,
+         t.provider_thread_id,
          t.active_plan_json,
          t.active_plan_updated_at,
          t.active_goal_json,
@@ -337,6 +342,7 @@ export function findWorkItemChatThread(
          t.created_at,
          t.updated_at,
          t.last_message_at,
+         t.provider_thread_id,
          t.active_plan_json,
          t.active_plan_updated_at,
          t.active_goal_json,
@@ -522,14 +528,48 @@ export function createChatSession(
   repoId: string | null,
   personaId: string,
   sessionId?: string,
+  providerThreadId?: string | null,
 ): string {
   const db = getDb();
   const id = sessionId ?? randomUUID();
   db.prepare(
-    `INSERT INTO chat_sessions (id, thread_id, repo_id, persona_id, started_at)
-     VALUES (?, ?, ?, ?, datetime('now'))`,
-  ).run(id, threadId, repoId, personaId);
+    `INSERT INTO chat_sessions
+     (id, thread_id, repo_id, persona_id, provider_thread_id, started_at)
+     VALUES (?, ?, ?, ?, ?, datetime('now'))`,
+  ).run(id, threadId, repoId, personaId, providerThreadId ?? null);
+
+  if (threadId && providerThreadId) {
+    setChatThreadProviderThreadId(threadId, providerThreadId);
+  }
+
   return id;
+}
+
+export function getChatThreadProviderThreadId(threadId: string | null | undefined): string | null {
+  if (!threadId) return null;
+  const row = getDb()
+    .prepare('SELECT provider_thread_id FROM chat_threads WHERE id = ?')
+    .get(threadId) as { provider_thread_id: string | null } | undefined;
+  return row?.provider_thread_id ?? null;
+}
+
+export function setChatThreadProviderThreadId(threadId: string, providerThreadId: string): void {
+  getDb()
+    .prepare(
+      `UPDATE chat_threads
+       SET provider_thread_id = ?, updated_at = ?
+       WHERE id = ?`,
+    )
+    .run(providerThreadId, new Date().toISOString(), threadId);
+}
+
+export function setChatSessionProviderTurnId(
+  sessionId: string,
+  providerTurnId: string | null,
+): void {
+  getDb()
+    .prepare('UPDATE chat_sessions SET provider_turn_id = ? WHERE id = ?')
+    .run(providerTurnId, sessionId);
 }
 
 export function endChatSession(sessionId: string): void {

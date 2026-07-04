@@ -50,6 +50,7 @@ interface SettingsRow {
   active_workspace_id: string | null;
   github_pat: Buffer | null;
   github_username: string | null;
+  cloud_features_enabled: number | null;
 }
 
 const APP_THEMES: AppTheme[] = [
@@ -133,6 +134,7 @@ export function getSettings(): AppSettings {
     activeWorkspaceId: row.active_workspace_id ?? undefined,
     githubPat: decryptSecret(row.github_pat, 'settings.githubPat'),
     githubUsername: row.github_username ?? undefined,
+    cloudFeaturesEnabled: row.cloud_features_enabled === 1,
     defaultRepoPath: row.default_repo_path ?? undefined,
     theme: normaliseTheme(row.theme),
   };
@@ -300,6 +302,10 @@ export function updateSettings(partial: Partial<AppSettings>): void {
     setClauses.push('github_username = ?');
     values.push(partial.githubUsername || null);
   }
+  if (partial.cloudFeaturesEnabled !== undefined) {
+    setClauses.push('cloud_features_enabled = ?');
+    values.push(partial.cloudFeaturesEnabled ? 1 : 0);
+  }
   if (partial.theme !== undefined) {
     setClauses.push('theme = ?');
     values.push(normaliseTheme(partial.theme));
@@ -390,6 +396,7 @@ function defaultSettings(): AppSettings {
     activeWorkspaceId: undefined,
     githubPat: undefined,
     githubUsername: undefined,
+    cloudFeaturesEnabled: false,
     theme: 'system',
   };
 }

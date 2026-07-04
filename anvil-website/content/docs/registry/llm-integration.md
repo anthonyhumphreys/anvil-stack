@@ -28,7 +28,7 @@ The gateway and Admin service can enqueue LLM review jobs. The worker calls the 
 | --- | --- |
 | Gateway | Exposes `POST /-/anvil/llm-review` for admin-token-gated manual review requests. |
 | Admin | Lets reviewers queue LLM review from package detail pages and reads persisted review records. |
-| CLI | Wraps the route with `anvil llm-review package@version`. |
+| CLI | Wraps the route with `anvil registry llm-review package@version`. |
 | Worker | Calls the configured LLM endpoint and stores schema-valid review output. |
 | Policy engine | Treats high or critical LLM risk as quarantine context, not as an allow authority. |
 
@@ -59,13 +59,13 @@ Then queue a review:
 ```bash
 ANVIL_REGISTRY_URL=http://localhost:4873 \
 ANVIL_ADMIN_TOKEN=local-dev-token \
-  anvil llm-review is-number@7.0.0 --requested-by security-review --priority high
+  anvil registry llm-review is-number@7.0.0 --requested-by security-review --priority high
 ```
 
 Inspect the result:
 
 ```bash
-ANVIL_REGISTRY_URL=http://localhost:4873 anvil explain is-number@7.0.0
+ANVIL_REGISTRY_URL=http://localhost:4873 anvil registry explain is-number@7.0.0
 ```
 
 ## Environment variables
@@ -166,7 +166,7 @@ CLI equivalent:
 ```bash
 ANVIL_REGISTRY_URL=http://localhost:4873 \
 ANVIL_ADMIN_TOKEN=local-dev-token \
-  anvil llm-review example@1.2.3 --requested-by security-review --priority high
+  anvil registry llm-review example@1.2.3 --requested-by security-review --priority high
 ```
 
 ## Hosted deployment

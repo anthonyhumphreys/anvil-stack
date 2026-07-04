@@ -172,9 +172,9 @@ export default app({
 Validate and invoke it locally:
 
 ```bash
-anvil agents validate --json
-anvil agents manifest --json
-anvil agents invoke support --input "Review this Cell" --json
+anvil cloud agents validate --json
+anvil cloud agents manifest --json
+anvil cloud agents invoke support --input "Review this Cell" --json
 ```
 
 ### Filtering with where clauses
@@ -286,7 +286,7 @@ pnpm verify:notes-local
 
 ## Inspecting the example
 
-While `anvil dev` is running:
+While `anvil cloud dev` is running:
 
 ```bash
 node ../../packages/cli/dist/index.js lens --json

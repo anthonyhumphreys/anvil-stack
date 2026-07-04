@@ -1,5 +1,6 @@
 ---
 title: Quickstart
+navTitle: Quickstart
 description: Run Anvil Registry locally and point npm-compatible clients at the gateway.
 product: Anvil Registry
 section: Getting started
@@ -11,6 +12,16 @@ order: 2
 This guide gets Anvil Registry running locally, points an npm-compatible client at the gateway, and shows where Anvil Node Base fits when you want a safer install container.
 
 ## Start Anvil Registry
+
+From a checkout:
+
+```bash
+git clone https://github.com/anthonyhumphreys/anvil-stack.git
+cd anvil-stack/anvil-registry
+pnpm install --ignore-scripts
+```
+
+Start the local stack:
 
 ```bash
 docker compose -f infra/docker/docker-compose.yml up --build
@@ -60,13 +71,14 @@ Install the CLI from npm:
 
 ```bash
 npm install --global @anvilstack/cli
-ANVIL_REGISTRY_URL=http://localhost:4873 anvil explain react@latest
+npm install --global @anvilstack/registry-cli
+ANVIL_REGISTRY_URL=http://localhost:4873 anvil registry explain react@latest
 ```
 
 Or run it without a global install:
 
 ```bash
-npx @anvilstack/cli explain react@latest
+npx @anvilstack/registry-cli explain react@latest
 ```
 
 The CLI requires the gateway you started above. See [CLI](/docs/registry/cli) for endpoint configuration, admin tokens, command reference, and CI examples.
@@ -76,7 +88,7 @@ The explain route resolves dist-tags, evaluates policy, and returns the current 
 ## Queue analysis
 
 ```bash
-anvil scan pnpm-lock.yaml --queue-analysis
+anvil registry scan pnpm-lock.yaml --queue-analysis
 ```
 
 Lockfile warming uses `reason: "lockfile_scan"` so worker output can be traced back to preinstall review rather than request-path enforcement.
@@ -88,7 +100,7 @@ Before routing a team through Anvil Registry, warm it with lockfiles from repres
 ```bash
 ANVIL_REGISTRY_URL=http://localhost:4873 \
 ANVIL_ADMIN_TOKEN=local-dev-token \
-  anvil warm ./seed-lockfiles/package-lock.web.json
+  anvil registry warm ./seed-lockfiles/package-lock.web.json
 ```
 
 Use real `package-lock.json`, `pnpm-lock.yaml`, or `yarn.lock` files from high-traffic repos. Seeding uses the same warm and analysis queue path as normal lockfile review; it just does the work before someone is waiting on `npm install`. See [Registry seeding](/docs/registry/registry-seeding) for the full rollout flow.
@@ -98,7 +110,7 @@ Use real `package-lock.json`, `pnpm-lock.yaml`, or `yarn.lock` files from high-t
 Use Node Base when you want the install itself to happen inside a safer container:
 
 ```bash
-docker run --rm -it -v "$PWD:/workspace" -w /workspace ghcr.io/<owner>/<repo>/anvil-node-base:22 anvil-npm-ci-safe
+docker run --rm -it -v "$PWD:/workspace" -w /workspace ghcr.io/anthonyhumphreys/anvil-stack/anvil-node-base:22 anvil-npm-ci-safe
 ```
 
 Safe mode runs `npm ci --ignore-scripts`, scans installed package manifests, and writes reports under `.anvil/reports` or `ANVIL_REPORT_DIR`.
@@ -106,7 +118,7 @@ Safe mode runs `npm ci --ignore-scripts`, scans installed package manifests, and
 Observed mode is explicit:
 
 ```bash
-docker run --rm -it -v "$PWD:/workspace" -w /workspace ghcr.io/<owner>/<repo>/anvil-node-base:22 anvil-npm-ci-observed
+docker run --rm -it -v "$PWD:/workspace" -w /workspace ghcr.io/anthonyhumphreys/anvil-stack/anvil-node-base:22 anvil-npm-ci-observed
 ```
 
 Use observed mode only when dependency lifecycle scripts must run and you want process, network, filesystem, lifecycle, and environment evidence.

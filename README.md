@@ -21,7 +21,7 @@ GitHub Actions workflows live in `.github/workflows/` and are path-filtered per 
 - **anvil-cloud** — lint/typecheck/test/build CI.
 - **anvil-registry** — CI plus container images published to GitHub Container Registry (`ghcr.io/anthonyhumphreys/...`).
 - **anvil-website** — build/typecheck CI; deployed via the Vercel git integration.
-- **npm** — `@anvilstack/cli` is published to npm on release tags.
+- **npm** — `@anvilstack/cloud-cli`, `@anvilstack/registry-cli`, and the thin `@anvilstack/cli` wrapper publish from release tags.
 
 ## License
 

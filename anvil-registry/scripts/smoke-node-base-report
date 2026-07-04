@@ -67,7 +67,7 @@ NODE
 echo "[anvil] Admin API found report $REPORT_ID"
 
 LIST_OUTPUT="$(
-  ANVIL_ADMIN_URL="$ADMIN_URL" ANVIL_ADMIN_TOKEN="$ADMIN_TOKEN" pnpm --dir "$ROOT_DIR" --filter @anvilstack/cli dev -- node-base reports --type network --limit 50
+  ANVIL_ADMIN_URL="$ADMIN_URL" ANVIL_ADMIN_TOKEN="$ADMIN_TOKEN" pnpm --dir "$ROOT_DIR" --filter @anvilstack/registry-cli dev -- node-base reports --type network --limit 50
 )"
 if [[ "$LIST_OUTPUT" != *"$PROJECT_NAME"* ]]; then
   echo "$LIST_OUTPUT"
@@ -76,7 +76,7 @@ if [[ "$LIST_OUTPUT" != *"$PROJECT_NAME"* ]]; then
 fi
 
 DETAIL_OUTPUT="$(
-  ANVIL_ADMIN_URL="$ADMIN_URL" ANVIL_ADMIN_TOKEN="$ADMIN_TOKEN" pnpm --dir "$ROOT_DIR" --filter @anvilstack/cli dev -- node-base report "$REPORT_ID"
+  ANVIL_ADMIN_URL="$ADMIN_URL" ANVIL_ADMIN_TOKEN="$ADMIN_TOKEN" pnpm --dir "$ROOT_DIR" --filter @anvilstack/registry-cli dev -- node-base report "$REPORT_ID"
 )"
 if [[ "$DETAIL_OUTPUT" != *"NON_STANDARD_PORT"* || "$DETAIL_OUTPUT" != *"198.51.100.10:8080"* ]]; then
   echo "$DETAIL_OUTPUT"

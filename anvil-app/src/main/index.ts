@@ -7,6 +7,8 @@ import path from 'node:path';
 import { initDatabase } from './db/database.js';
 import { registerSettingsHandlers } from './ipc/settings.ipc.js';
 import { registerCodexRegistryHandlers } from './ipc/codex-registry.ipc.js';
+import { registerCodexUsageHandlers } from './ipc/codex-usage.ipc.js';
+import { registerAnvilCloudHandlers } from './ipc/anvil-cloud.ipc.js';
 import { registerDiagnosticsHandlers } from './ipc/diagnostics.ipc.js';
 import { registerMobileCompanionHandlers } from './ipc/mobile-companion.ipc.js';
 import { registerRepoHandlers, handleStaleIndexingRepos } from './ipc/repo.ipc.js';
@@ -29,9 +31,12 @@ import { registerTerminalHandlers, cleanupTerminals } from './ipc/terminal.ipc.j
 import { registerGovernanceHandlers } from './ipc/governance.ipc.js';
 import { registerDbInsightsHandlers } from './ipc/db-insights.ipc.js';
 import { registerAutomationHandlers } from './ipc/automation.ipc.js';
+import { registerAgentRunHandlers } from './ipc/agent-run.ipc.js';
 import { registerDesignHandlers } from './ipc/design.ipc.js';
 import { registerAdrHandlers } from './ipc/adr.ipc.js';
 import { registerBrowserHandlers, cleanupBrowser } from './ipc/browser.ipc.js';
+import { registerSimulatorPreviewHandlers } from './ipc/simulator-preview.ipc.js';
+import { registerArgentHandlers } from './ipc/argent.ipc.js';
 import { registerEditorHandlers, cleanupEmbeddedEditor } from './ipc/editor.ipc.js';
 import { registerGitHandlers } from './ipc/git.ipc.js';
 import { registerCicdHandlers } from './ipc/cicd.ipc.js';
@@ -59,6 +64,7 @@ import {
   syncMobileCompanionServer,
 } from './services/mobile-companion.service.js';
 import { cleanupStatusBar, initializeStatusBar } from './services/statusbar.service.js';
+import { cleanupSimulatorPreview } from './services/simulator-preview.service.js';
 
 const brandId = parseBrandFromArgs(process.argv);
 const brand = getBrand(brandId);
@@ -279,6 +285,8 @@ app.whenReady().then(() => {
   registerSettingsHandlers();
   registerMobileCompanionHandlers();
   registerCodexRegistryHandlers();
+  registerCodexUsageHandlers();
+  registerAnvilCloudHandlers();
   registerDiagnosticsHandlers();
   registerRepoHandlers();
   registerChatHandlers();
@@ -304,9 +312,12 @@ app.whenReady().then(() => {
   registerGovernanceHandlers();
   registerDbInsightsHandlers();
   registerAutomationHandlers();
+  registerAgentRunHandlers();
   registerDesignHandlers();
   registerAdrHandlers();
   registerBrowserHandlers();
+  registerSimulatorPreviewHandlers();
+  registerArgentHandlers();
   registerEditorHandlers();
   registerGitHandlers();
   registerCicdHandlers();
@@ -354,6 +365,7 @@ app.on('before-quit', () => {
   cleanupDiagramServices();
   cleanupTerminals();
   cleanupBrowser();
+  cleanupSimulatorPreview();
   void stopMobileCompanionServer();
   void cleanupEmbeddedEditor();
   cleanupPentest();
