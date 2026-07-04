@@ -321,8 +321,12 @@ export interface ChatAttachmentInput {
   dataUrl?: string;
 }
 
+/** Reasoning effort levels supported by the Codex CLI (`model_reasoning_effort`). */
+export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+
 export interface ChatSendOptions {
   collaborationMode?: ChatCollaborationMode;
+  reasoningEffort?: ReasoningEffort;
 }
 
 export interface ChatFileMentionSearchInput {

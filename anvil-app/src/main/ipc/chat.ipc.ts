@@ -25,12 +25,19 @@ import {
   steerTurn,
   stopSession,
   interruptTurn,
+  emitLocalAssistantTurn,
   getSessionStatus,
   stopAllSessions,
   getSessionForRepo,
   listActiveCodexSessions,
   resolveApproval,
 } from '../services/codex-session.service.js';
+import {
+  callAppleFoundationModel,
+  classifyPromptForOnDeviceModel,
+  isLikelyAppleFoundationModelsRefusal,
+} from '../services/apple-foundation-models.service.js';
+import { getSettings } from '../services/settings.service.js';
 import { getPersonas } from '../services/persona.service.js';
 import { detectCodexCli, getCodexInstallInstructions } from '../services/codex-bridge.service.js';
 import {
@@ -56,6 +63,35 @@ import {
 import { listChatTurnSummaries, saveChatEvent } from '../services/chat-evidence.service.js';
 import { searchChatFileMentions } from '../services/chat-file-mention.service.js';
 import { listChatArtifacts, upsertChatArtifact } from '../services/chat-artifact.service.js';
+
+const APPLE_FOUNDATION_CHAT_MAX_PROMPT_CHARS = 8_000;
+
+/**
+ * When the on-device Apple model opt-in is enabled, classify the prompt and —
+ * if it is simple enough — answer it locally instead of starting a Codex turn.
+ * Returns true when the message was fully handled on-device.
+ */
+async function tryAppleFoundationModelChatReply(
+  sessionId: string,
+  message: string,
+): Promise<boolean> {
+  if (getSettings().appleFoundationModelsMode !== 'prefer-simple') return false;
+  if (message.length > APPLE_FOUNDATION_CHAT_MAX_PROMPT_CHARS) return false;
+
+  const route = await classifyPromptForOnDeviceModel(message);
+  if (route !== 'local') return false;
+
+  const result = await callAppleFoundationModel(message);
+  const content = result.ok ? (result.content?.trim() ?? '') : '';
+  if (!content || isLikelyAppleFoundationModelsRefusal(content)) {
+    console.warn('[Chat] Apple Foundation Models reply unusable; falling back to Codex');
+    return false;
+  }
+
+  console.log(`[Chat] Answered on-device via Apple Foundation Models (${content.length} chars)`);
+  emitLocalAssistantTurn(sessionId, content);
+  return true;
+}
 
 export function registerChatHandlers(): void {
   ipcMain.handle(
@@ -158,6 +194,12 @@ export function registerChatHandlers(): void {
       if (parsed.command && parsed.workItemId) {
         // TODO: Fetch real work item from ADO in Phase 4
         enrichedMessage = `[Work Item ${parsed.workItemId}] ${parsed.command}: ${message}`;
+      }
+
+      // Plain messages without attachments may be answerable on-device.
+      if (!parsed.command && (!attachments || attachments.length === 0)) {
+        const handledLocally = await tryAppleFoundationModelChatReply(sessionId, enrichedMessage);
+        if (handledLocally) return;
       }
 
       await sendMessage(sessionId, enrichedMessage, attachments, options);
