@@ -54,7 +54,7 @@ Artifacts land in `dist/`.
 
 On first launch the app walks you through connector setup:
 
-1. **LLM provider**: add an Azure AI Foundry or OpenAI key in Settings, or authenticate the Codex CLI for agentic chat sessions. Credentials are encrypted before being stored in the local SQLite database; no `.env` file is involved.
+1. **LLM provider**: authenticate the Codex CLI for agentic chat sessions, add an OpenAI key in Settings, or configure Azure AI Foundry through `~/.codex/config.toml` plus the referenced API-key environment variable. OpenAI credentials entered in Settings are encrypted before being stored in the local SQLite database.
 2. **Optional Apple Foundation Models route**: on macOS 26 or later, with Apple Intelligence available and enabled, set Apple Foundation Models to **Prefer simple** and run **Test Apple Models** from Settings. This only routes short, self-contained helper prompts to the on-device model; repo-aware work still uses the configured backend.
 3. **Repositories**: connect local checkouts or clone from GitHub/Azure DevOps, then let indexing run.
 4. **Optional connectors**: Azure DevOps PAT, Linear API key, or Jira token for work items; a Confluence PAT for documentation features.
