@@ -19,7 +19,7 @@ import {
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
-import { Effect, Either } from "effect";
+import { Cause, Effect, Exit, Schedule } from "effect";
 
 import {
   summarizeAwsPreviewDeployArtifacts,
@@ -179,7 +179,7 @@ export class AwsSdkPreviewProvisioner implements AwsPreviewProvisioner {
   async provision(
     input: AwsPreviewProvisionerInput,
   ): Promise<AwsPreviewProvisionerResult> {
-    return runAwsProvisioningEffect(this.provisionEffect(input));
+    return runAwsEffect(this.provisionEffect(input));
   }
 
   private provisionEffect(
@@ -212,11 +212,12 @@ export class AwsSdkPreviewProvisioner implements AwsPreviewProvisioner {
         stackName,
       );
 
+      // Client asset counts are unbounded, so cap concurrent S3 uploads.
       yield* Effect.all(
         input.artifacts.clientAssets.map((artifact) =>
           this.uploadArtifactEffect(artifact, artifact.key, clientAssetsBucket),
         ),
-        { concurrency: "unbounded" },
+        { concurrency: 8 },
       );
 
       const deploymentId = `dep_${Date.now().toString(36)}`;
@@ -408,67 +409,65 @@ export class AwsSdkPreviewProvisioner implements AwsPreviewProvisioner {
     return stack;
   }
 
-  private async waitForStack(stackName: string): Promise<Stack> {
-    return runAwsProvisioningEffect(this.waitForStackEffect(stackName));
-  }
-
   private waitForStackEffect(
     stackName: string,
   ): Effect.Effect<Stack, AwsPreviewProvisioningError> {
     const maxAttempts = this.options.stackMaxPollAttempts ?? 60;
     const delayMs = this.options.stackPollDelayMs ?? 5000;
-    let lastStatus: string | undefined;
 
-    return Effect.gen(this, function* () {
-      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-        const stack = yield* Effect.tryPromise({
-          try: () => this.describeStack(stackName),
+    const pollOnce = Effect.gen(this, function* () {
+      const stack = yield* Effect.tryPromise({
+        try: () => this.describeStack(stackName),
+        catch: toAwsPreviewProvisioningError,
+      });
+      const status = stack.StackStatus;
+
+      if (status && isFailedStackStatus(status)) {
+        const failureSummary = yield* Effect.tryPromise({
+          try: () => this.describeStackFailureSummary(stackName),
           catch: toAwsPreviewProvisioningError,
         });
-        const status = stack.StackStatus;
 
-        lastStatus = status;
-
-        if (status && isFailedStackStatus(status)) {
-          const failureSummary = yield* Effect.tryPromise({
-            try: () => this.describeStackFailureSummary(stackName),
-            catch: toAwsPreviewProvisioningError,
-          });
-
-          return yield* Effect.fail(
-            new AwsPreviewProvisioningError(
-              "AWS_STACK_FAILED",
-              `CloudFormation stack '${stackName}' finished with status '${status}'.${failureSummary.messageSuffix}`,
-              {
-                stackName,
-                status,
-                events: failureSummary.events,
-              },
-            ),
-          );
-        }
-
-        if (!status || !status.endsWith("_IN_PROGRESS")) {
-          return stack;
-        }
-
-        if (delayMs > 0) {
-          yield* Effect.sleep(`${delayMs} millis`);
-        }
+        return yield* Effect.fail(
+          new AwsPreviewProvisioningError(
+            "AWS_STACK_FAILED",
+            `CloudFormation stack '${stackName}' finished with status '${status}'.${failureSummary.messageSuffix}`,
+            {
+              stackName,
+              status,
+              events: failureSummary.events,
+            },
+          ),
+        );
       }
 
-      return yield* Effect.fail(
-        new AwsPreviewProvisioningError(
-          "AWS_STACK_TIMEOUT",
-          `CloudFormation stack '${stackName}' did not finish within ${maxAttempts} attempts. Last status: ${lastStatus ?? "unknown"}.`,
-          {
-            stackName,
-            ...(lastStatus ? { lastStatus } : {}),
-            attempts: maxAttempts,
-            delayMs,
-          },
-        ),
+      return stack;
+    });
+
+    return Effect.gen(this, function* () {
+      const stack = yield* pollOnce.pipe(
+        Effect.repeat({
+          schedule: pollSchedule(delayMs, maxAttempts),
+          until: (candidate) => isSettledStackStatus(candidate.StackStatus),
+        }),
       );
+
+      if (!isSettledStackStatus(stack.StackStatus)) {
+        return yield* Effect.fail(
+          new AwsPreviewProvisioningError(
+            "AWS_STACK_TIMEOUT",
+            `CloudFormation stack '${stackName}' did not finish within ${maxAttempts} attempts. Last status: ${stack.StackStatus ?? "unknown"}.`,
+            {
+              stackName,
+              ...(stack.StackStatus ? { lastStatus: stack.StackStatus } : {}),
+              attempts: maxAttempts,
+              delayMs,
+            },
+          ),
+        );
+      }
+
+      return stack;
     });
   }
 
@@ -590,54 +589,79 @@ export class AwsSdkPreviewDestroyer {
   async destroy(
     input: AwsPreviewDestroyInput,
   ): Promise<AwsPreviewDestroyResult> {
+    return runAwsEffect(this.destroyEffect(input));
+  }
+
+  private destroyEffect(
+    input: AwsPreviewDestroyInput,
+  ): Effect.Effect<AwsPreviewDestroyResult, AwsPreviewDestroyError> {
     const stackName = awsPreviewStackNameFor(
       input.cell,
       input.environment,
       this.options.stackNamePrefix,
     );
 
-    const stack = await this.readStack(stackName);
+    return Effect.gen(this, function* () {
+      const stack = yield* Effect.tryPromise({
+        try: () => this.readStack(stackName),
+        catch: toAwsPreviewDestroyError,
+      });
 
-    if (!stack) {
-      const metadataDeleted = await this.deleteDeploymentMetadata(input);
+      if (!stack) {
+        const metadataDeleted = yield* Effect.tryPromise({
+          try: () => this.deleteDeploymentMetadata(input),
+          catch: toAwsPreviewDestroyError,
+        });
+
+        return {
+          ok: true as const,
+          adapter: "aws" as const,
+          cell: input.cell,
+          environment: input.environment,
+          stackName,
+          deleted: false,
+          metadataDeleted,
+          emptiedBuckets: [],
+        };
+      }
+
+      const emptiedBuckets = yield* Effect.tryPromise({
+        try: () => this.emptyStackBuckets(stack),
+        catch: toAwsPreviewDestroyError,
+      });
+
+      yield* Effect.tryPromise({
+        try: () =>
+          writeAwsDestroyOperation(
+            "cloudformation:DeleteStack",
+            { stackName },
+            () =>
+              this.cloudFormation.send(
+                new DeleteStackCommand({
+                  StackName: stackName,
+                }),
+              ),
+          ),
+        catch: toAwsPreviewDestroyError,
+      });
+      yield* this.waitForStackDeletionEffect(stackName);
+
+      const metadataDeleted = yield* Effect.tryPromise({
+        try: () => this.deleteDeploymentMetadata(input),
+        catch: toAwsPreviewDestroyError,
+      });
 
       return {
-        ok: true,
-        adapter: "aws",
+        ok: true as const,
+        adapter: "aws" as const,
         cell: input.cell,
         environment: input.environment,
         stackName,
-        deleted: false,
+        deleted: true,
         metadataDeleted,
-        emptiedBuckets: [],
+        emptiedBuckets,
       };
-    }
-
-    const emptiedBuckets = await this.emptyStackBuckets(stack);
-
-    await writeAwsDestroyOperation(
-      "cloudformation:DeleteStack",
-      { stackName },
-      () =>
-        this.cloudFormation.send(
-          new DeleteStackCommand({
-            StackName: stackName,
-          }),
-        ),
-    );
-    await this.waitForStackDeletion(stackName);
-    const metadataDeleted = await this.deleteDeploymentMetadata(input);
-
-    return {
-      ok: true,
-      adapter: "aws",
-      cell: input.cell,
-      environment: input.environment,
-      stackName,
-      deleted: true,
-      metadataDeleted,
-      emptiedBuckets,
-    };
+    });
   }
 
   private async readStack(stackName: string): Promise<Stack | null> {
@@ -654,63 +678,87 @@ export class AwsSdkPreviewDestroyer {
     }
   }
 
-  private async waitForStackDeletion(stackName: string): Promise<void> {
+  private waitForStackDeletionEffect(
+    stackName: string,
+  ): Effect.Effect<void, AwsPreviewDestroyError> {
     const maxAttempts = this.options.stackMaxPollAttempts ?? 60;
     const delayMs = this.options.stackPollDelayMs ?? 5000;
-    let lastStatus: string | undefined;
 
-    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      try {
-        const stack = await describeStack(this.cloudFormation, stackName);
-        const status = stack.StackStatus;
+    type DeletionPoll = {
+      deleted: boolean;
+      lastStatus?: string;
+    };
 
-        lastStatus = status;
+    const pollOnce: Effect.Effect<DeletionPoll, AwsPreviewDestroyError> =
+      Effect.tryPromise({
+        try: () => describeStack(this.cloudFormation, stackName),
+        catch: (error) => error,
+      }).pipe(
+        Effect.matchEffect({
+          onFailure: (error) =>
+            isStackNotFoundError(error)
+              ? Effect.succeed<DeletionPoll>({ deleted: true })
+              : Effect.fail(
+                  toAwsPreviewDestroyError(
+                    error,
+                    "cloudformation:DescribeStacks",
+                    { stackName },
+                  ),
+                ),
+          onSuccess: (stack) => {
+            const status = stack.StackStatus;
 
-        if (status === "DELETE_COMPLETE") {
-          return;
-        }
+            if (status === "DELETE_COMPLETE") {
+              return Effect.succeed<DeletionPoll>({
+                deleted: true,
+                lastStatus: status,
+              });
+            }
 
-        if (status && isFailedStackStatus(status)) {
-          throw new AwsPreviewDestroyError(
-            "AWS_DESTROY_FAILED",
-            `CloudFormation stack '${stackName}' finished with status '${status}' while deleting.`,
+            if (status && isFailedStackStatus(status)) {
+              return Effect.fail(
+                new AwsPreviewDestroyError(
+                  "AWS_DESTROY_FAILED",
+                  `CloudFormation stack '${stackName}' finished with status '${status}' while deleting.`,
+                  {
+                    stackName,
+                    status,
+                  },
+                ),
+              );
+            }
+
+            return Effect.succeed<DeletionPoll>({
+              deleted: false,
+              ...(status ? { lastStatus: status } : {}),
+            });
+          },
+        }),
+      );
+
+    return Effect.gen(function* () {
+      const result = yield* pollOnce.pipe(
+        Effect.repeat({
+          schedule: pollSchedule(delayMs, maxAttempts),
+          until: (poll) => poll.deleted,
+        }),
+      );
+
+      if (!result.deleted) {
+        return yield* Effect.fail(
+          new AwsPreviewDestroyError(
+            "AWS_DESTROY_TIMEOUT",
+            `CloudFormation stack '${stackName}' was not deleted within ${maxAttempts} attempts. Last status: ${result.lastStatus ?? "unknown"}.`,
             {
               stackName,
-              status,
+              ...(result.lastStatus ? { lastStatus: result.lastStatus } : {}),
+              attempts: maxAttempts,
+              delayMs,
             },
-          );
-        }
-      } catch (error) {
-        if (error instanceof AwsPreviewDestroyError) {
-          throw error;
-        }
-
-        if (isStackNotFoundError(error)) {
-          return;
-        }
-
-        throw toAwsDestroyOperationError(
-          "cloudformation:DescribeStacks",
-          error,
-          {
-            stackName,
-          },
+          ),
         );
       }
-
-      await delay(delayMs);
-    }
-
-    throw new AwsPreviewDestroyError(
-      "AWS_DESTROY_TIMEOUT",
-      `CloudFormation stack '${stackName}' was not deleted within ${maxAttempts} attempts. Last status: ${lastStatus ?? "unknown"}.`,
-      {
-        stackName,
-        ...(lastStatus ? { lastStatus } : {}),
-        attempts: maxAttempts,
-        delayMs,
-      },
-    );
+    });
   }
 
   private async emptyStackBuckets(stack: Stack): Promise<string[]> {
@@ -796,10 +844,7 @@ export class AwsSdkPreviewDestroyer {
               TableName: tableName,
               Key: {
                 pk: {
-                  S: deploymentMetadataRecordKey(
-                    input.cell,
-                    input.environment,
-                  ),
+                  S: deploymentMetadataRecordKey(input.cell, input.environment),
                 },
               },
             }),
@@ -817,7 +862,10 @@ export class AwsSdkPreviewDestroyer {
   }
 }
 
-function deploymentMetadataRecordKey(cell: string, environment: string): string {
+function deploymentMetadataRecordKey(
+  cell: string,
+  environment: string,
+): string {
   return `deployment#${cell}#${environment}`;
 }
 
@@ -826,16 +874,44 @@ type AwsSdkErrorCause = {
   message: string;
 };
 
-async function runAwsProvisioningEffect<T>(
-  effect: Effect.Effect<T, AwsPreviewProvisioningError>,
-): Promise<T> {
-  const result = await Effect.runPromise(Effect.either(effect));
+// Runs an AWS orchestration effect at the Promise boundary. Typed failures
+// and defects are both rethrown as their original values so callers keep the
+// pre-Effect error contract.
+async function runAwsEffect<T, E>(effect: Effect.Effect<T, E>): Promise<T> {
+  const exit = await Effect.runPromiseExit(effect);
 
-  if (Either.isLeft(result)) {
-    throw result.left;
+  if (Exit.isSuccess(exit)) {
+    return exit.value;
   }
 
-  return result.right;
+  throw Cause.squash(exit.cause);
+}
+
+// One initial attempt plus (maxAttempts - 1) spaced repeats keeps the total
+// describe-call budget identical to the previous manual polling loops. The
+// passthrough makes Effect.repeat return the last poll result instead of the
+// schedule counters.
+function pollSchedule<T>(delayMs: number, maxAttempts: number) {
+  return Schedule.spaced(`${Math.max(0, delayMs)} millis`).pipe(
+    Schedule.intersect(Schedule.recurs(Math.max(0, maxAttempts - 1))),
+    Schedule.passthrough,
+  ) as Schedule.Schedule<T, T>;
+}
+
+function isSettledStackStatus(status: string | undefined): boolean {
+  return !status || !status.endsWith("_IN_PROGRESS");
+}
+
+function toAwsPreviewDestroyError(
+  error: unknown,
+  operation = "destroy",
+  details: { stackName?: string; bucket?: string; table?: string } = {},
+): AwsPreviewDestroyError {
+  if (error instanceof AwsPreviewDestroyError) {
+    return error;
+  }
+
+  return toAwsDestroyOperationError(operation, error, details);
 }
 
 function toAwsPreviewProvisioningError(
@@ -1174,8 +1250,4 @@ function toFailureEvent(event: StackEvent): AwsStackFailureEvent {
   }
 
   return failure;
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

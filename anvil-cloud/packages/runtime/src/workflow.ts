@@ -65,6 +65,9 @@ export async function executeWorkflowRun(
     stepRun.startedAt = new Date().toISOString();
     await persist(run, save);
 
+    // Attempts already recorded on a resumed run keep counting up, but a
+    // resumed step always gets a fresh attempt budget: the retry schedule
+    // allows `retries` repeats on top of the initial attempt below.
     try {
       const stepResult = await Effect.runPromise(
         Effect.either(

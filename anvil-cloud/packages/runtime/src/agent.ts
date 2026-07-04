@@ -1,5 +1,5 @@
 import { RuntimeError } from "./errors.js";
-import { Effect, Either } from "effect";
+import { Cause, Effect, Exit } from "effect";
 
 export type AgentModelConfig = {
   provider: string;
@@ -516,15 +516,14 @@ export class AgentRuntime {
   private invokeEffect(
     agent: AgentDefinition,
     input: AgentRuntimeInvokeInput,
-  ): Effect.Effect<AgentRuntimeInvokeResult, unknown> {
+  ): Effect.Effect<AgentRuntimeInvokeResult, RuntimeError> {
     const validationOptions =
       this.baseDir === undefined ? {} : { baseDir: this.baseDir };
 
     return Effect.gen(this, function* () {
-      const issues = yield* Effect.tryPromise({
-        try: () => validateAgentDefinition(agent, validationOptions),
-        catch: identityError,
-      });
+      const issues = yield* runtimeEffectFromPromise(() =>
+        validateAgentDefinition(agent, validationOptions),
+      );
       const errors = issues.filter((issue) => issue.severity === "error");
 
       if (errors.length > 0) {
@@ -538,14 +537,12 @@ export class AgentRuntime {
         );
       }
 
-      const provider = yield* Effect.try({
-        try: () => this.providers.get(agent.model.provider),
-        catch: identityError,
-      });
-      const instructions = yield* Effect.tryPromise({
-        try: () => resolveInstructions(agent, this.baseDir),
-        catch: identityError,
-      });
+      const provider = yield* runtimeEffectFromSync(() =>
+        this.providers.get(agent.model.provider),
+      );
+      const instructions = yield* runtimeEffectFromPromise(() =>
+        resolveInstructions(agent, this.baseDir),
+      );
       const messages: AgentMessage[] = [];
 
       if (instructions.length > 0) {
@@ -575,10 +572,9 @@ export class AgentRuntime {
         request.metadata = input.context;
       }
 
-      const response = yield* Effect.tryPromise({
-        try: () => provider.invoke(request),
-        catch: identityError,
-      });
+      const response = yield* runtimeEffectFromPromise(() =>
+        provider.invoke(request),
+      );
       const toolCalls = response.toolCalls ?? [];
       const approvalsRequired: AgentApprovalRequest[] = [];
 
@@ -591,10 +587,9 @@ export class AgentRuntime {
           continue;
         }
 
-        const approval = yield* Effect.tryPromise({
-          try: () => this.prepareToolExecution(agent, tool.definition),
-          catch: identityError,
-        });
+        const approval = yield* runtimeEffectFromPromise(() =>
+          this.prepareToolExecution(agent, tool.definition),
+        );
 
         if (approval) {
           approvalsRequired.push(approval);
@@ -627,18 +622,16 @@ export class AgentRuntime {
     tool: AgentToolExecutor,
     input: unknown,
     metadata?: Record<string, unknown>,
-  ): Effect.Effect<AgentToolResult, unknown> {
+  ): Effect.Effect<AgentToolResult, RuntimeError> {
     return Effect.gen(this, function* () {
-      const approval = yield* Effect.tryPromise({
-        try: () => this.prepareToolExecution(agent, tool.definition),
-        catch: identityError,
-      });
+      const approval = yield* runtimeEffectFromPromise(() =>
+        this.prepareToolExecution(agent, tool.definition),
+      );
 
       if (approval) {
-        const decision = yield* Effect.tryPromise({
-          try: () => this.approvalProvider.requestApproval(approval),
-          catch: identityError,
-        });
+        const decision = yield* runtimeEffectFromPromise(() =>
+          this.approvalProvider.requestApproval(approval),
+        );
 
         if (decision.status !== "approved") {
           return {
@@ -661,10 +654,9 @@ export class AgentRuntime {
         context.metadata = metadata;
       }
 
-      return yield* Effect.tryPromise({
-        try: () => tool.execute(input, context),
-        catch: identityError,
-      });
+      return yield* runtimeEffectFromPromise(() =>
+        tool.execute(input, context),
+      );
     });
   }
 
@@ -700,20 +692,44 @@ export class AgentRuntime {
   }
 }
 
+// Runs an agent-runtime effect at the Promise boundary. Expected failures
+// (RuntimeError) and defects (anything else thrown inside the effect) are both
+// rethrown as their original values so callers keep the pre-Effect contract.
 async function runAgentRuntimeEffect<T>(
-  effect: Effect.Effect<T, unknown>,
+  effect: Effect.Effect<T, RuntimeError>,
 ): Promise<T> {
-  const result = await Effect.runPromise(Effect.either(effect));
+  const exit = await Effect.runPromiseExit(effect);
 
-  if (Either.isLeft(result)) {
-    throw result.left;
+  if (Exit.isSuccess(exit)) {
+    return exit.value;
   }
 
-  return result.right;
+  throw Cause.squash(exit.cause);
 }
 
-function identityError(error: unknown): unknown {
-  return error;
+// RuntimeError is the agent runtime's expected failure channel. Anything else
+// (provider/tool errors of unknown shape) is treated as a defect and preserved
+// as-is by runAgentRuntimeEffect.
+function runtimeEffectFromPromise<T>(
+  run: () => Promise<T> | T,
+): Effect.Effect<T, RuntimeError> {
+  return Effect.tryPromise({
+    try: async () => run(),
+    catch: (error) => error,
+  }).pipe(Effect.catchAll(failOrDie));
+}
+
+function runtimeEffectFromSync<T>(
+  run: () => T,
+): Effect.Effect<T, RuntimeError> {
+  return Effect.try({
+    try: run,
+    catch: (error) => error,
+  }).pipe(Effect.catchAll(failOrDie));
+}
+
+function failOrDie(error: unknown): Effect.Effect<never, RuntimeError> {
+  return error instanceof RuntimeError ? Effect.fail(error) : Effect.die(error);
 }
 
 export async function resolveInstructions(

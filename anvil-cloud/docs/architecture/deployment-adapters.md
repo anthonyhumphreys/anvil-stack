@@ -124,14 +124,31 @@ has not inspected.
 
 Effect is used inside Anvil Cloud orchestration code where retries, timeouts,
 typed provider failures, resource cleanup, or multi-step async control flow are
-part of the platform contract. The AWS preview provisioner, remote reader, CLI
-deploy flow, workflow executor, and guarded agent tool runtime are valid Effect
-surfaces.
+part of the platform contract. The AWS preview provisioner and destroyer,
+remote reader, CLI deploy flow, workflow executor, and guarded agent tool
+runtime are valid Effect surfaces.
 
 Effect is not part of the Cell authoring contract. Cell code should continue to
 use the normal Anvil Runtime APIs and ordinary async TypeScript; deployment
 adapters translate those provider-neutral contracts into Effect-backed platform
 operations internally.
+
+Effect surfaces follow a shared boundary contract:
+
+- Public APIs stay Promise-based. Effect programs are run at the boundary with
+  `Effect.runPromiseExit`, and both typed failures and defects are rethrown as
+  their original error values, so callers see the same error shapes as before
+  Effect adoption (`RuntimeError`, `AwsPreviewProvisioningError`,
+  `AwsPreviewDestroyError`, `AwsRemoteReaderError`).
+- Error channels are typed. Each surface declares its expected failure type in
+  the Effect error channel; unexpected errors are defects, not silently widened
+  `unknown` failures.
+- Polling and retry use `Schedule` (`Schedule.spaced`, `Schedule.recurs`,
+  `Schedule.addDelay`) rather than hand-rolled loops, with attempt budgets that
+  match the documented adapter options (`stackPollDelayMs`,
+  `stackMaxPollAttempts`, workflow `retries`).
+- Fan-out work (for example client asset uploads) uses `Effect.all` with a
+  bounded concurrency, because input sizes are not bounded by the platform.
 
 ## Non-goals
 

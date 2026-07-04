@@ -58,6 +58,14 @@ timeouts. This is an implementation detail of the Anvil Runtime: Cell workflow
 handlers still use ordinary async TypeScript, and adapters still receive the
 same `WorkflowRun` persistence contract.
 
+Two executor semantics worth knowing:
+
+- A resumed step keeps counting attempts up, but always gets a fresh attempt
+  budget of one initial attempt plus `retries` repeats.
+- Persistence failures inside a step attempt count against that step's retry
+  budget and are recorded as a step failure, rather than aborting the whole
+  run loop.
+
 ### Manifest
 
 `AppInspection` and the Cell manifest list workflows as `{ name, steps: string[] }` so the CLI, inspector, and deployment adapters can see workflow topology without executing handlers.

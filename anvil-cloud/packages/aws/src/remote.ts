@@ -4,7 +4,7 @@ import {
   type FilterLogEventsCommandOutput,
 } from "@aws-sdk/client-cloudwatch-logs";
 import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
-import { Effect, Either } from "effect";
+import { Cause, Effect, Exit } from "effect";
 
 import type { CellManifest } from "@anvil-cloud/builder";
 import type { AwsPreviewDeployArtifactSummary } from "./artifacts.js";
@@ -100,38 +100,32 @@ export class AwsRemoteReader {
   }): Effect.Effect<AwsRemoteInspectResult, AwsRemoteReaderError> {
     return Effect.gen(this, function* () {
       const item = yield* this.readDeploymentItemEffect(input);
-      const manifest = yield* parseJsonAttributeEffect<CellManifest>(
+      const manifest = yield* parseJsonAttribute<CellManifest>(
         item.manifest,
         "manifest",
       );
-      const outputs = yield* parseJsonAttributeEffect<Record<string, string>>(
+      const outputs = yield* parseJsonAttribute<Record<string, string>>(
         item.outputs,
         "outputs",
       );
       const artifacts =
-        yield* optionalJsonAttributeEffect<AwsPreviewDeployArtifactSummary>(
+        yield* optionalJsonAttribute<AwsPreviewDeployArtifactSummary>(
           item.artifacts,
           "artifacts",
         );
 
-      const runtimeUrl = yield* stringAttributeEffect(
-        item.runtimeUrl,
-        "runtimeUrl",
-      );
+      const runtimeUrl = yield* stringAttribute(item.runtimeUrl, "runtimeUrl");
       const result: AwsRemoteInspectResult = {
         ok: true,
         adapter: "aws",
         cell: input.cell,
         environment: input.environment,
-        deploymentId: yield* stringAttributeEffect(
-          item.deploymentId,
-          "deploymentId",
-        ),
+        deploymentId: yield* stringAttribute(item.deploymentId, "deploymentId"),
         runtimeUrl,
         manifest,
         ...(artifacts ? { artifacts } : {}),
         resources: {
-          stack: yield* stringAttributeEffect(item.stackName, "stackName"),
+          stack: yield* stringAttribute(item.stackName, "stackName"),
           runtimeUrl,
           ...(outputs.ClientAssetsBucketName
             ? { assetsBucket: outputs.ClientAssetsBucketName }
@@ -268,16 +262,19 @@ export class AwsRemoteReader {
   }
 }
 
+// Runs a remote-reader effect at the Promise boundary. Typed failures and
+// defects are both rethrown as their original values so callers keep the
+// pre-Effect error contract.
 async function runAwsRemoteEffect<T>(
   effect: Effect.Effect<T, AwsRemoteReaderError>,
 ): Promise<T> {
-  const result = await Effect.runPromise(Effect.either(effect));
+  const exit = await Effect.runPromiseExit(effect);
 
-  if (Either.isLeft(result)) {
-    throw result.left;
+  if (Exit.isSuccess(exit)) {
+    return exit.value;
   }
 
-  return result.right;
+  throw Cause.squash(exit.cause);
 }
 
 function readAwsRemoteEffect<T>(
@@ -357,92 +354,58 @@ function parseLogEvent(
   }
 }
 
-function parseJsonAttribute<T>(attribute: unknown, name: string): T {
-  const raw = stringAttribute(attribute, name);
-
-  try {
-    return JSON.parse(raw) as T;
-  } catch (error) {
-    throw new AwsRemoteReaderError(
-      "AWS_DEPLOYMENT_METADATA_INVALID",
-      `Deployment metadata attribute '${name}' is not valid JSON.`,
-      {
-        attribute: name,
-        cause: error instanceof Error ? error.message : String(error),
-      },
-    );
-  }
-}
-
-function parseJsonAttributeEffect<T>(
+function parseJsonAttribute<T>(
   attribute: unknown,
   name: string,
 ): Effect.Effect<T, AwsRemoteReaderError> {
-  return Effect.try({
-    try: () => parseJsonAttribute<T>(attribute, name),
-    catch: toAwsRemoteReaderError,
-  });
+  return stringAttribute(attribute, name).pipe(
+    Effect.flatMap((raw) =>
+      Effect.try({
+        try: () => JSON.parse(raw) as T,
+        catch: (error) =>
+          new AwsRemoteReaderError(
+            "AWS_DEPLOYMENT_METADATA_INVALID",
+            `Deployment metadata attribute '${name}' is not valid JSON.`,
+            {
+              attribute: name,
+              cause: error instanceof Error ? error.message : String(error),
+            },
+          ),
+      }),
+    ),
+  );
 }
 
 function optionalJsonAttribute<T>(
   attribute: unknown,
   name: string,
-): T | undefined {
+): Effect.Effect<T | undefined, AwsRemoteReaderError> {
   if (!attribute) {
-    return undefined;
+    return Effect.succeed(undefined);
   }
 
   return parseJsonAttribute<T>(attribute, name);
 }
 
-function optionalJsonAttributeEffect<T>(
+function stringAttribute(
   attribute: unknown,
   name: string,
-): Effect.Effect<T | undefined, AwsRemoteReaderError> {
-  return Effect.try({
-    try: () => optionalJsonAttribute<T>(attribute, name),
-    catch: toAwsRemoteReaderError,
-  });
-}
-
-function stringAttribute(attribute: unknown, name: string): string {
+): Effect.Effect<string, AwsRemoteReaderError> {
   if (
     typeof attribute === "object" &&
     attribute !== null &&
     "S" in attribute &&
     typeof attribute.S === "string"
   ) {
-    return attribute.S;
+    return Effect.succeed(attribute.S);
   }
 
-  throw new AwsRemoteReaderError(
-    "AWS_DEPLOYMENT_METADATA_INVALID",
-    `Deployment metadata attribute '${name}' is required.`,
-    { attribute: name },
-  );
-}
-
-function stringAttributeEffect(
-  attribute: unknown,
-  name: string,
-): Effect.Effect<string, AwsRemoteReaderError> {
-  return Effect.try({
-    try: () => stringAttribute(attribute, name),
-    catch: toAwsRemoteReaderError,
-  });
-}
-
-function toAwsRemoteReaderError(error: unknown): AwsRemoteReaderError {
-  if (error instanceof AwsRemoteReaderError) {
-    return error;
-  }
-
-  return new AwsRemoteReaderError(
-    "AWS_DEPLOYMENT_METADATA_INVALID",
-    "Deployment metadata could not be parsed.",
-    {
-      cause: error instanceof Error ? error.message : String(error),
-    },
+  return Effect.fail(
+    new AwsRemoteReaderError(
+      "AWS_DEPLOYMENT_METADATA_INVALID",
+      `Deployment metadata attribute '${name}' is required.`,
+      { attribute: name },
+    ),
   );
 }
 

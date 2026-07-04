@@ -5,7 +5,7 @@ import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { Effect, Either } from "effect";
+import { Cause, Effect, Exit } from "effect";
 
 import {
   AwsPreviewDeploymentAdapter,
@@ -1817,14 +1817,17 @@ function commandDeployPreviewEffect(
   });
 }
 
+// Runs a CLI effect at the Promise boundary. Typed failures and defects are
+// both rethrown as their original values so callers keep the pre-Effect
+// error contract.
 async function runCliEffect<T>(effect: Effect.Effect<T, Error>): Promise<T> {
-  const result = await Effect.runPromise(Effect.either(effect));
+  const exit = await Effect.runPromiseExit(effect);
 
-  if (Either.isLeft(result)) {
-    throw result.left;
+  if (Exit.isSuccess(exit)) {
+    return exit.value;
   }
 
-  return result.right;
+  throw Cause.squash(exit.cause);
 }
 
 function toCliEffectError(error: unknown): Error {
