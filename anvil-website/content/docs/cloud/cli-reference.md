@@ -200,7 +200,7 @@ anvil cloud agents discover --json
 Guardian review:
 
 ```bash
-anvil-cloud agents guardian --json
+anvil cloud agents guardian --json
 ```
 
 Local invocation:
