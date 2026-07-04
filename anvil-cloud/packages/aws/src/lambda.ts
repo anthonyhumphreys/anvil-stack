@@ -104,14 +104,17 @@ export function createAwsLambdaRuntimeHandler(
 
 export function installOutboundFetchPolicy(rawAllowList: string | undefined) {
   const allowList = parseOutboundFetchAllowList(rawAllowList);
-
-  if (allowList.length === 0) {
-    return;
-  }
-
   const currentFetch = globalThis.fetch as
     | (typeof fetch & { __anvilOriginalFetch?: typeof fetch })
     | undefined;
+
+  if (allowList.length === 0) {
+    if (currentFetch?.__anvilOriginalFetch) {
+      globalThis.fetch = currentFetch.__anvilOriginalFetch;
+    }
+    return;
+  }
+
   const originalFetch = currentFetch?.__anvilOriginalFetch ?? currentFetch;
 
   if (!originalFetch) {
