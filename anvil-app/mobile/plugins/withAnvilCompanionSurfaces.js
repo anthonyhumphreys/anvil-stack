@@ -222,7 +222,7 @@ function setAppBridgeBuildSettings(project, iosBundleId) {
   for (const [, config] of Object.entries(project.pbxXCBuildConfigurationSection())) {
     if (!config || !config.buildSettings) continue;
     const settings = config.buildSettings;
-    if (settings.PRODUCT_BUNDLE_IDENTIFIER !== `"${iosBundleId}"`) continue;
+    if (!buildSettingEquals(settings.PRODUCT_BUNDLE_IDENTIFIER, iosBundleId)) continue;
     settings.SWIFT_VERSION = settings.SWIFT_VERSION ?? '5.0';
   }
 }
@@ -231,10 +231,11 @@ function setWatchBuildSettings(project, targetUuid, iosBundleId, appVersion) {
   const target = project.pbxNativeTargetSection()[targetUuid];
   if (target) target.productType = '"com.apple.product-type.application"';
 
+  const watchBundleId = `${iosBundleId}${WATCH_BUNDLE_SUFFIX}`;
   for (const [, config] of Object.entries(project.pbxXCBuildConfigurationSection())) {
     if (!config || !config.buildSettings) continue;
     const settings = config.buildSettings;
-    if (settings.PRODUCT_BUNDLE_IDENTIFIER !== `"${iosBundleId}${WATCH_BUNDLE_SUFFIX}"`) continue;
+    if (!buildSettingEquals(settings.PRODUCT_BUNDLE_IDENTIFIER, watchBundleId)) continue;
     settings.ASSETCATALOG_COMPILER_APPICON_NAME = 'AppIcon';
     settings.CODE_SIGN_ENTITLEMENTS = `${WATCH_TARGET_NAME}/${WATCH_TARGET_NAME}.entitlements`;
     settings.CURRENT_PROJECT_VERSION = '1';
@@ -252,10 +253,11 @@ function setWatchBuildSettings(project, targetUuid, iosBundleId, appVersion) {
 }
 
 function setWidgetBuildSettings(project, targetUuid, iosBundleId, appVersion) {
+  const widgetBundleId = `${iosBundleId}${WIDGET_BUNDLE_SUFFIX}`;
   for (const [, config] of Object.entries(project.pbxXCBuildConfigurationSection())) {
     if (!config || !config.buildSettings) continue;
     const settings = config.buildSettings;
-    if (settings.PRODUCT_BUNDLE_IDENTIFIER !== `"${iosBundleId}${WIDGET_BUNDLE_SUFFIX}"`) continue;
+    if (!buildSettingEquals(settings.PRODUCT_BUNDLE_IDENTIFIER, widgetBundleId)) continue;
     settings.ASSETCATALOG_COMPILER_APPICON_NAME = 'AppIcon';
     settings.CODE_SIGN_ENTITLEMENTS = `${WIDGET_TARGET_NAME}/${WIDGET_TARGET_NAME}.entitlements`;
     settings.CURRENT_PROJECT_VERSION = '1';
@@ -270,6 +272,11 @@ function setWidgetBuildSettings(project, targetUuid, iosBundleId, appVersion) {
     settings.APPLICATION_EXTENSION_API_ONLY = 'YES';
     settings.IPHONEOS_DEPLOYMENT_TARGET = '17.0';
   }
+}
+
+function buildSettingEquals(value, expected) {
+  if (typeof value !== 'string') return false;
+  return value === expected || value === `"${expected}"`;
 }
 
 async function writeCompanionSurfaceSources(
