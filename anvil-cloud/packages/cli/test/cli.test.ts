@@ -1305,7 +1305,7 @@ describe("main", () => {
       process.chdir(originalCwd);
       await rm(rootDir, { recursive: true, force: true });
     }
-  }, 15_000);
+  });
 
   it("emits lightweight AWS preview usage visibility", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-"));
@@ -1418,7 +1418,7 @@ describe("main", () => {
       restoreEnvSnapshot(env);
       await rm(rootDir, { recursive: true, force: true });
     }
-  }, 15_000);
+  });
 
   it("requires explicit confirmation before destroying AWS preview stacks", async () => {
     const originalExitCode = process.exitCode;
