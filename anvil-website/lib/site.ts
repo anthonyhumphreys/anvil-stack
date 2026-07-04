@@ -67,7 +67,8 @@ export const productLines = [
     command: "pnpm dev",
     points: [
       "Local Electron shell with SQLite persistence and typed IPC boundaries",
-      "Codex and LLM workflows grounded in checked-out repositories",
+      "Codex and LLM workflows grounded in checked-out repositories, with per-turn reasoning controls",
+      "Optional Apple Foundation Models routing for short on-device helper prompts",
       "Work item, review, security, documentation, diagram, and terminal surfaces",
       "Mobile, Raycast, watch, widget, and menu bar companion controls"
     ],

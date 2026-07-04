@@ -50,7 +50,7 @@ anvil registry doctor
 | Understand the desktop app | [Desktop overview](/docs/desktop/overview) |
 | Follow Electron process boundaries | [Desktop architecture](/docs/desktop/architecture) |
 | Run repo-aware agent sessions | [Agent workflows](/docs/desktop/agent-workflows) |
-| Configure LLM providers and personas | [Chat personas and LLM](/docs/desktop/chat-personas-and-llm) |
+| Configure LLM providers, reasoning, and personas | [Chat personas and LLM](/docs/desktop/chat-personas-and-llm) |
 | Manage Git branches and commits | [Git workflows](/docs/desktop/git-workflows) |
 | Review security and code changes | [Security and review](/docs/desktop/security-and-review) |
 | Use phone, watch, Raycast, widgets, or menu bar controls | [Companion surfaces](/docs/desktop/companion-surfaces) |
@@ -84,7 +84,7 @@ Read these when you want to understand the desktop app as a local delivery works
 - [Architecture](/docs/desktop/architecture)
 - [Operating guide](/docs/desktop/operating-guide)
 - [Agent workflows](/docs/desktop/agent-workflows)
-- [Chat personas and LLM providers](/docs/desktop/chat-personas-and-llm)
+- [Chat personas, reasoning, and LLM providers](/docs/desktop/chat-personas-and-llm)
 - [Git workflows](/docs/desktop/git-workflows)
 - [Work items and planning](/docs/desktop/work-items-and-planning)
 - [Security and review](/docs/desktop/security-and-review)

@@ -54,9 +54,10 @@ Artifacts land in `dist/`.
 
 On first launch the app walks you through connector setup:
 
-1. **LLM provider**: add an Azure AI Foundry or OpenAI key in Settings. Credentials are encrypted before being stored in the local SQLite database; no `.env` file is involved.
-2. **Repositories**: connect local checkouts or clone from GitHub/Azure DevOps, then let indexing run.
-3. **Optional connectors**: Azure DevOps PAT, Linear API key, or Jira token for work items; a Confluence PAT for documentation features.
+1. **LLM provider**: add an Azure AI Foundry or OpenAI key in Settings, or authenticate the Codex CLI for agentic chat sessions. Credentials are encrypted before being stored in the local SQLite database; no `.env` file is involved.
+2. **Optional Apple Foundation Models route**: on macOS 26 or later, with Apple Intelligence available and enabled, set Apple Foundation Models to **Prefer simple** and run **Test Apple Models** from Settings. This only routes short, self-contained helper prompts to the on-device model; repo-aware work still uses the configured backend.
+3. **Repositories**: connect local checkouts or clone from GitHub/Azure DevOps, then let indexing run.
+4. **Optional connectors**: Azure DevOps PAT, Linear API key, or Jira token for work items; a Confluence PAT for documentation features.
 
 Everything is stored locally. There is no hosted backend; deleting the app's data directory resets it completely.
 
@@ -68,5 +69,5 @@ Everything is stored locally. There is no hosted backend; deleting the app's dat
 ## Read next
 
 - [Operating guide](/docs/desktop/operating-guide) for the day-to-day working loop.
-- [Chat personas and LLM providers](/docs/desktop/chat-personas-and-llm) to configure models.
+- [Chat personas, reasoning, and LLM providers](/docs/desktop/chat-personas-and-llm) to configure models.
 - [Troubleshooting](/docs/desktop/troubleshooting) if something refuses to start.
