@@ -82,6 +82,18 @@ describe('createBaSession', () => {
     const session = getBaSession(id);
     expect(session!.stashRef).toBe('stash@{0}');
   });
+
+  it('persists optional worktreePath', () => {
+    const id = createBaSession({
+      workItemId: 'wi-1',
+      repoId: 'repo-1',
+      spikeBranch: 'spike/wi-1-abc123',
+      originBranch: 'main',
+      worktreePath: '/tmp/anvil/ba-spike-worktrees/wi-1/repo-abc123',
+    });
+    const session = getBaSession(id);
+    expect(session!.worktreePath).toBe('/tmp/anvil/ba-spike-worktrees/wi-1/repo-abc123');
+  });
 });
 
 describe('getBaSession', () => {

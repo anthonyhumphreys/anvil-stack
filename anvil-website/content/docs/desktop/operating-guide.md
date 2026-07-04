@@ -13,7 +13,7 @@ order: 110
 
 1. Install and launch Anvil Desktop.
 2. Choose a role so the navigation starts from the surfaces you actually use.
-3. Configure AI execution through Codex CLI, OpenAI API, Azure AI Foundry, or local assists where available.
+3. Configure AI execution through Codex CLI, OpenAI API, or Azure AI Foundry. On supported Macs, optionally enable Apple Foundation Models for short on-device helper prompts.
 4. Connect delivery providers such as GitHub, Azure DevOps, Linear, Jira, Confluence, Notion, Draw.io, Figma, or Repobase.
 5. Create a workspace.
 6. Add and index local repositories.

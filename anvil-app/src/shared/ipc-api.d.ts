@@ -9,6 +9,12 @@ import type { RunCommand, RunStatus } from './run-types';
 import type {
   Iteration,
   AgentRunSummary,
+  ArgentCommandId,
+  ArgentCommandResult,
+  ArgentWorkbenchSnapshot,
+  AnvilCloudCommandId,
+  AnvilCloudCommandResult,
+  AnvilCloudWorkbenchSnapshot,
   AutomationDaemonStatus,
   AutomationDefinition,
   AutomationDefinitionInput,
@@ -24,6 +30,8 @@ import type {
   BaSession,
   ChatAttachment,
   ChatAttachmentInput,
+  ChatArtifact,
+  ChatArtifactInput,
   ChatFileMentionSearchInput,
   ChatFileMentionSearchResult,
   ChatGoalSnapshot,
@@ -49,6 +57,7 @@ import type {
   CodexRegistrySnapshot,
   CodexSkillInstallInput,
   CodexSkillSearchResult,
+  CodexUsageSnapshot,
   CodexEvent,
   CodexSession,
   DocPage,
@@ -204,6 +213,8 @@ export interface AnvilAPI {
     getSessionStatus: (sessionId: string) => Promise<CodexSession['status']>;
     listActiveSessions: () => Promise<CodexSession[]>;
     listTurnSummaries: (threadId: string) => Promise<ChatTurnSummary[]>;
+    listArtifacts: (threadId: string) => Promise<ChatArtifact[]>;
+    upsertArtifact: (input: ChatArtifactInput) => Promise<ChatArtifact>;
     listThreads: (workspaceId: string | null, personaId: string) => Promise<ChatThread[]>;
     listWorkItemThreads: (workspaceId: string | null) => Promise<ChatThread[]>;
     createThread: (input: {
@@ -459,6 +470,17 @@ export interface AnvilAPI {
     installNotionMcp: () => Promise<{ success: boolean; error?: string }>;
     startNotionOAuthFlow: () => Promise<{ authUrl: string; state: string; error?: string }>;
     exchangeNotionOAuthCode: (code: string) => Promise<{ success: boolean; error?: string }>;
+    getCodexAgentsFile: () => Promise<{
+      path: string;
+      content: string;
+      exists: boolean;
+      updatedAt?: string;
+    }>;
+    saveCodexAgentsFile: (content: string) => Promise<{
+      path: string;
+      savedAt: string;
+      bytes: number;
+    }>;
     resetOnboarding: () => Promise<{ success: boolean; error?: string }>;
   };
 
@@ -467,6 +489,21 @@ export interface AnvilAPI {
     searchSkills: (query: string) => Promise<CodexSkillSearchResult[]>;
     installSkill: (input: CodexSkillInstallInput) => Promise<CodexRegistryActionResult>;
     registerMcp: (input: CodexMcpRegisterInput) => Promise<CodexRegistryActionResult>;
+  };
+
+  codexUsage: {
+    snapshot: () => Promise<CodexUsageSnapshot>;
+  };
+
+  anvilCloud: {
+    snapshot: () => Promise<AnvilCloudWorkbenchSnapshot>;
+    run: (commandId: AnvilCloudCommandId, cwd: string) => Promise<AnvilCloudCommandResult>;
+    openLens: (cwd: string) => Promise<{
+      success: boolean;
+      url?: string;
+      result: AnvilCloudCommandResult;
+      error?: string;
+    }>;
   };
 
   diagrams: {
@@ -559,6 +596,12 @@ export interface AnvilAPI {
     getStatus(): Promise<SimulatorPreviewStatus>;
     start(options?: SimulatorPreviewStartOptions): Promise<SimulatorPreviewStatus>;
     stop(): Promise<void>;
+  };
+
+  argent: {
+    getSnapshot(): Promise<ArgentWorkbenchSnapshot>;
+    runCommand(commandId: ArgentCommandId): Promise<ArgentCommandResult>;
+    startSimulatorPreview(): Promise<SimulatorPreviewStatus>;
   };
 
   editor: {

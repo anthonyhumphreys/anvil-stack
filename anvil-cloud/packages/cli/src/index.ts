@@ -5,6 +5,7 @@ import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { Cause, Effect, Exit } from "effect";
 
 import {
   AwsPreviewDeploymentAdapter,
@@ -16,6 +17,7 @@ import {
   createAwsRemoteReaderFromEnv,
   createAwsSdkPreviewProvisionerFromEnv,
   BedrockInferenceProvider,
+  checkAwsAgentCompatibility,
 } from "@anvil-cloud/aws";
 import {
   buildCell,
@@ -213,6 +215,9 @@ async function commandAgents(
     case "invoke":
       await commandAgentsInvoke(context, maybeArg);
       return;
+    case "sandboxes":
+      await commandAgentsSandboxes(context);
+      return;
     default:
       writeJsonOrHuman(
         context,
@@ -222,11 +227,11 @@ async function commandAgents(
             {
               code: "INVALID_USAGE",
               message:
-                "Usage: anvil-cloud agents <validate|manifest|discover|guardian|invoke> [agent] --input <text>",
+                "Usage: anvil-cloud agents <validate|manifest|discover|guardian|invoke|sandboxes> [agent] --input <text>",
             },
           ],
         },
-        "Usage: anvil-cloud agents <validate|manifest|discover|guardian|invoke> [agent] --input <text>",
+        "Usage: anvil-cloud agents <validate|manifest|discover|guardian|invoke|sandboxes> [agent] --input <text>",
       );
       process.exitCode = 2;
   }
@@ -243,6 +248,15 @@ async function commandAgentsValidate(context: CliContext): Promise<void> {
 
   const manifest = result.manifest as CellManifest;
   const agents = manifest.agents ?? {};
+  const agentSandboxesEnabled =
+    typeof process.env.ANVIL_AWS_AGENT_SANDBOX_IMAGE === "string" &&
+    process.env.ANVIL_AWS_AGENT_SANDBOX_IMAGE.length > 0;
+  const aws = Object.fromEntries(
+    Object.entries(agents).map(([name, agent]) => [
+      name,
+      checkAwsAgentCompatibility(agent, { agentSandboxesEnabled }),
+    ]),
+  );
   const warnings = Object.values(agents)
     .flatMap((agent) => agent.requires.humanApproval)
     .map((action) => ({
@@ -259,6 +273,7 @@ async function commandAgentsValidate(context: CliContext): Promise<void> {
       providers: unique(
         Object.values(agents).map((agent) => agent.model.provider),
       ),
+      aws,
       warnings,
     },
     [
@@ -266,6 +281,62 @@ async function commandAgentsValidate(context: CliContext): Promise<void> {
       ...Object.keys(agents).map((name) => `  ✓ ${name}`),
       ...warnings.map((warning) => `  ⚠ ${warning.message}`),
     ].join("\n"),
+  );
+}
+
+async function commandAgentsSandboxes(context: CliContext): Promise<void> {
+  const result = await buildCell({ rootDir: context.cwd });
+
+  if (!result.ok || !result.manifest) {
+    writeBuildResult(context, result, "Agent sandbox inspection failed.");
+    process.exitCode = 4;
+    return;
+  }
+
+  const manifest = result.manifest as CellManifest;
+  const agents = manifest.agents ?? {};
+  const image = process.env.ANVIL_AWS_AGENT_SANDBOX_IMAGE;
+  const agentSandboxesEnabled = typeof image === "string" && image.length > 0;
+  const sandboxes = Object.entries(agents)
+    .filter(([, agent]) => agent.requires.sandbox)
+    .map(([mount, agent]) => ({
+      mount,
+      agent: agent.name,
+      provider: "aws-lambda-microvm",
+      required: agent.requires.sandbox,
+      supported: checkAwsAgentCompatibility(agent, {
+        agentSandboxesEnabled,
+      }).supported,
+      imageConfigured: agentSandboxesEnabled,
+      approvals: agent.requires.humanApproval,
+      capabilities: agent.capabilities,
+    }));
+
+  const payload = {
+    ok: true,
+    provider: "aws-lambda-microvm",
+    imageConfigured: agentSandboxesEnabled,
+    sandboxes,
+    warnings: agentSandboxesEnabled
+      ? []
+      : sandboxes.map((sandbox) => ({
+          code: "AWS_AGENT_SANDBOX_IMAGE_REQUIRED",
+          message: `Agent '${sandbox.agent}' requires a sandbox but ANVIL_AWS_AGENT_SANDBOX_IMAGE is not configured.`,
+        })),
+  };
+
+  writeJsonOrHuman(
+    context,
+    payload,
+    sandboxes.length === 0
+      ? "No mounted agents require Agent Sandboxes."
+      : [
+          "Agent Sandboxes:",
+          ...sandboxes.map(
+            (sandbox) =>
+              `  ${sandbox.imageConfigured ? "✓" : "⚠"} ${sandbox.mount} -> ${sandbox.provider}`,
+          ),
+        ].join("\n"),
   );
 }
 
@@ -1943,54 +2014,128 @@ async function commandDeploy(context: CliContext): Promise<void> {
     return;
   }
 
-  const result = await buildCell({ rootDir: context.cwd, target: "preview" });
+  const previewResult = await runCliEffect(
+    commandDeployPreviewEffect(context, waitTimeoutSeconds ?? 60),
+  );
 
-  if (!result.ok || !result.manifest || !result.output) {
-    writeBuildResult(context, result, "Build failed.");
+  if (previewResult.kind === "build-failed") {
+    writeBuildResult(context, previewResult.result, "Build failed.");
     process.exitCode = 4;
     return;
   }
 
-  const provisioner = createAwsSdkPreviewProvisionerFromEnv();
-  const adapter = new AwsPreviewDeploymentAdapter(
-    provisioner ? { provisioner } : {},
+  writeJsonOrHuman(
+    context,
+    previewResult.output,
+    JSON.stringify(previewResult.output, null, 2),
   );
-  const deployResult = await adapter.deploy({
-    manifest: result.manifest as CellManifest,
-    buildOutput: result.output,
-    environment: "preview",
-  });
-  let output: unknown = deployResult;
 
-  if (deployResult.ok && context.flags.has("wait")) {
-    const timeoutSeconds = waitTimeoutSeconds ?? 60;
-    const verification = await waitForRemoteRuntime(deployResult.url, {
-      timeoutMs: timeoutSeconds * 1000,
+  if (!previewResult.ok) {
+    process.exitCode = 6;
+  }
+}
+
+type PreviewDeployCommandResult =
+  | {
+      kind: "build-failed";
+      result: BuildResult;
+    }
+  | {
+      kind: "completed";
+      ok: boolean;
+      output: unknown;
+    };
+
+function commandDeployPreviewEffect(
+  context: CliContext,
+  waitTimeoutSeconds: number,
+): Effect.Effect<PreviewDeployCommandResult, Error> {
+  return Effect.gen(function* () {
+    const result = yield* Effect.tryPromise({
+      try: () => buildCell({ rootDir: context.cwd, target: "preview" }),
+      catch: toCliEffectError,
+    });
+
+    if (!result.ok || !result.manifest || !result.output) {
+      return {
+        kind: "build-failed" as const,
+        result,
+      };
+    }
+
+    const manifest = result.manifest as CellManifest;
+    const buildOutput = result.output;
+    const provisioner = createAwsSdkPreviewProvisionerFromEnv();
+    const adapter = new AwsPreviewDeploymentAdapter(
+      provisioner ? { provisioner } : {},
+    );
+    const deployResult = yield* Effect.tryPromise({
+      try: () =>
+        adapter.deploy({
+          manifest,
+          buildOutput,
+          environment: "preview",
+        }),
+      catch: toCliEffectError,
+    });
+
+    if (!deployResult.ok || !context.flags.has("wait")) {
+      return {
+        kind: "completed" as const,
+        ok: deployResult.ok,
+        output: deployResult,
+      };
+    }
+
+    const verification = yield* Effect.tryPromise({
+      try: () =>
+        waitForRemoteRuntime(deployResult.url, {
+          timeoutMs: waitTimeoutSeconds * 1000,
+        }),
+      catch: toCliEffectError,
     });
 
     if (verification.ok) {
-      output = {
-        ...deployResult,
-        verification,
+      return {
+        kind: "completed" as const,
+        ok: true,
+        output: {
+          ...deployResult,
+          verification,
+        },
       };
-    } else {
-      output = {
+    }
+
+    return {
+      kind: "completed" as const,
+      ok: false,
+      output: {
         ok: false,
         code: verification.code,
         message: verification.message,
         hint: "Inspect the deployed Lambda logs and CloudFormation outputs, then rerun anvil-cloud deploy --preview --wait.",
         deployment: deployResult,
         verification,
-      };
-      process.exitCode = 6;
-    }
+      },
+    };
+  });
+}
+
+// Runs a CLI effect at the Promise boundary. Typed failures and defects are
+// both rethrown as their original values so callers keep the pre-Effect
+// error contract.
+async function runCliEffect<T>(effect: Effect.Effect<T, Error>): Promise<T> {
+  const exit = await Effect.runPromiseExit(effect);
+
+  if (Exit.isSuccess(exit)) {
+    return exit.value;
   }
 
-  writeJsonOrHuman(context, output, JSON.stringify(output, null, 2));
+  throw Cause.squash(exit.cause);
+}
 
-  if (!deployResult.ok) {
-    process.exitCode = 6;
-  }
+function toCliEffectError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 async function commandDestroy(context: CliContext): Promise<void> {

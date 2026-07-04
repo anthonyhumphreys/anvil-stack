@@ -1,6 +1,7 @@
 ---
 title: Registry CLI
-description: Install and use the Anvil Registry command-line client for package decisions, lockfile scans, reports, overrides, and operations.
+navTitle: CLI
+description: Install and use Anvil Registry commands for package decisions, lockfile scans, reports, overrides, and operations.
 product: Anvil Registry
 section: Getting started
 order: 3
@@ -8,7 +9,23 @@ order: 3
 
 # Registry CLI
 
-The Anvil Registry CLI is the `anvil-registry` command-line client in `apps/cli`. Use it to inspect package decisions before install, scan lockfiles, warm the registry cache, request analysis, review reports, manage overrides, and check gateway health.
+The normal user-facing command is `anvil registry ...` through the umbrella
+`@anvilstack/cli` package. Use it to inspect package decisions before install,
+scan lockfiles, warm the registry cache, request analysis, review reports,
+manage overrides, and check gateway health.
+
+The product package is `@anvilstack/registry-cli` and the direct binary is
+`anvil-registry`. The wrapper dispatches to that binary, so these are
+equivalent when both packages are installed:
+
+```bash
+anvil registry doctor
+anvil-registry doctor
+```
+
+Use `anvil registry ...` in normal docs, tutorials, and shell usage. Use
+`anvil-registry ...` when you are testing the package directly, debugging the
+wrapper, or writing package-specific CI.
 
 The CLI is a client. It does not run Anvil Registry by itself. Package decision commands require a running gateway, and protected operator commands require an Admin service plus an admin token. Tiny detail, large difference; otherwise you have installed a very confident phone with nobody on the other end.
 
@@ -20,9 +37,10 @@ The CLI is a client. It does not run Anvil Registry by itself. Package decision 
 
 ## Install from npm
 
-Install the published CLI globally:
+Install the umbrella CLI and the Registry product CLI globally:
 
 ```bash
+npm install --global @anvilstack/cli
 npm install --global @anvilstack/registry-cli
 ```
 
@@ -36,7 +54,7 @@ Then point it at a gateway:
 
 ```bash
 export ANVIL_REGISTRY_URL=http://localhost:4873
-anvil-registry doctor
+anvil registry doctor
 ```
 
 If you do not have a gateway yet, start one with Docker Compose from the repository:
@@ -87,7 +105,7 @@ pnpm --dir apps/cli link --global
 Then run:
 
 ```bash
-ANVIL_REGISTRY_URL=http://localhost:4873 anvil-registry doctor
+ANVIL_REGISTRY_URL=http://localhost:4873 anvil registry doctor
 ```
 
 To remove the local development link later:
@@ -127,7 +145,7 @@ Keep this token out of committed shell scripts and CI logs. It is small, sharp, 
 Use `doctor` before routing installs through the gateway:
 
 ```bash
-anvil-registry doctor
+anvil registry doctor
 ```
 
 It checks:
@@ -141,8 +159,8 @@ The command exits with `0` only when health and readiness pass.
 ## Explain one package
 
 ```bash
-anvil-registry explain react@latest
-anvil-registry explain @tanstack/react-query@latest
+anvil registry explain react@latest
+anvil registry explain @tanstack/react-query@latest
 ```
 
 `explain` posts to `/-/anvil/explain`, prints the policy decision, reasons, analysis summary, LLM review summary when present, and any active override.
@@ -163,9 +181,9 @@ Use `scan` when quarantine should fail a lockfile gate.
 Scan exact dependency versions from lockfiles:
 
 ```bash
-anvil-registry scan package-lock.json
-anvil-registry scan pnpm-lock.yaml
-anvil-registry scan yarn.lock
+anvil registry scan package-lock.json
+anvil registry scan pnpm-lock.yaml
+anvil registry scan yarn.lock
 ```
 
 Supported inputs:
@@ -179,7 +197,7 @@ Supported inputs:
 Queue static analysis for risky or not-yet-reviewed versions:
 
 ```bash
-anvil-registry scan pnpm-lock.yaml --queue-analysis
+anvil registry scan pnpm-lock.yaml --queue-analysis
 ```
 
 `scan` exits with `1` when any scanned package is blocked or quarantined. Warnings are printed but do not fail the command.
@@ -191,7 +209,7 @@ Use `warm` before a team or CI fleet switches registry traffic:
 ```bash
 ANVIL_REGISTRY_URL=http://localhost:4873 \
 ANVIL_ADMIN_TOKEN=local-dev-token \
-  anvil-registry warm ./seed-lockfiles/package-lock.web.json
+  anvil registry warm ./seed-lockfiles/package-lock.web.json
 ```
 
 `warm` fetches package metadata through the gateway and queues analysis for every resolved package version in the lockfile. It does not approve packages or create a bypass.
@@ -199,7 +217,7 @@ ANVIL_ADMIN_TOKEN=local-dev-token \
 Watch the queue:
 
 ```bash
-anvil-registry queue status
+anvil registry queue status
 ```
 
 ## Smoke test the gateway
@@ -207,8 +225,8 @@ anvil-registry queue status
 Run a basic gateway smoke check:
 
 ```bash
-anvil-registry smoke
-anvil-registry smoke is-number
+anvil registry smoke
+anvil registry smoke is-number
 ```
 
 The smoke command checks gateway health/readiness, fetches metadata, verifies tarball URL rewriting through Anvil, fetches the tarball, and optionally checks Admin health when `ANVIL_ADMIN_URL` is set.
@@ -218,7 +236,7 @@ The smoke command checks gateway health/readiness, fetches metadata, verifies ta
 Create explicit audited overrides:
 
 ```bash
-anvil-registry approve suspicious-pkg@1.2.3 \
+anvil registry approve suspicious-pkg@1.2.3 \
   --reason "reviewed package source and install script" \
   --approved-by security-review \
   --expires-at 2027-06-20T00:00:00Z
@@ -227,7 +245,7 @@ anvil-registry approve suspicious-pkg@1.2.3 \
 By default, `approve` creates an `allow` override. To create a different action:
 
 ```bash
-anvil-registry approve suspicious-pkg@1.2.3 \
+anvil registry approve suspicious-pkg@1.2.3 \
   --action quarantine \
   --reason "allow local review but keep CI blocked" \
   --approved-by security-review
@@ -236,22 +254,22 @@ anvil-registry approve suspicious-pkg@1.2.3 \
 Revoke an override:
 
 ```bash
-anvil-registry revoke suspicious-pkg@1.2.3 --revoked-by security-review
+anvil registry revoke suspicious-pkg@1.2.3 --revoked-by security-review
 ```
 
 List overrides:
 
 ```bash
-anvil-registry overrides --limit 20
-anvil-registry overrides --target suspicious-pkg@1.2.3
-anvil-registry overrides --package suspicious-pkg --version 1.2.3
+anvil registry overrides --limit 20
+anvil registry overrides --target suspicious-pkg@1.2.3
+anvil registry overrides --package suspicious-pkg --version 1.2.3
 ```
 
 Review audit events:
 
 ```bash
-anvil-registry audit-events --limit 20
-anvil-registry audit-events --target suspicious-pkg@1.2.3
+anvil registry audit-events --limit 20
+anvil registry audit-events --target suspicious-pkg@1.2.3
 ```
 
 Override commands require `ANVIL_ADMIN_TOKEN` or `ADMIN_TOKEN`.
@@ -261,7 +279,7 @@ Override commands require `ANVIL_ADMIN_TOKEN` or `ADMIN_TOKEN`.
 When LLM review is enabled, request reviewer context for a package:
 
 ```bash
-anvil-registry llm-review package@1.2.3 --requested-by security-review --priority high
+anvil registry llm-review package@1.2.3 --requested-by security-review --priority high
 ```
 
 This queues review work. It does not allow a package, and deterministic policy remains the enforcement authority.
@@ -273,13 +291,13 @@ For provider setup, local smoke testing, and private-package controls, see [LLM 
 Fetch the latest matching analysis report:
 
 ```bash
-anvil-registry reports package@1.2.3
+anvil registry reports package@1.2.3
 ```
 
 Narrow by immutable identity:
 
 ```bash
-anvil-registry reports package@1.2.3 \
+anvil registry reports package@1.2.3 \
   --integrity sha512-example \
   --shasum abc123 \
   --analyser static-v1
@@ -288,7 +306,7 @@ anvil-registry reports package@1.2.3 \
 Compare two reports for the same package version:
 
 ```bash
-anvil-registry reports compare package@1.2.3 \
+anvil registry reports compare package@1.2.3 \
   --left-integrity sha512-old \
   --right-integrity sha512-new
 ```
@@ -300,15 +318,15 @@ Report commands use `ANVIL_ADMIN_URL` and require an admin token. They read the 
 List submitted Anvil Node Base reports:
 
 ```bash
-anvil-registry node-base reports --limit 20
-anvil-registry node-base reports --type lifecycle
-anvil-registry node-base reports --type ioc --risk high
+anvil registry node-base reports --limit 20
+anvil registry node-base reports --type lifecycle
+anvil registry node-base reports --type ioc --risk high
 ```
 
 Fetch one report by id:
 
 ```bash
-anvil-registry node-base report <id>
+anvil registry node-base report <id>
 ```
 
 The command exits with `1` when a listed or fetched Node Base report contains high-risk findings.
@@ -318,13 +336,13 @@ The command exits with `1` when a listed or fetched Node Base report contains hi
 Inspect the active popular package index:
 
 ```bash
-anvil-registry popular-index show
+anvil registry popular-index show
 ```
 
 Upload a generated index:
 
 ```bash
-anvil-registry popular-index upload popular-index.json \
+anvil registry popular-index upload popular-index.json \
   --generated-at 2026-05-20T00:00:00Z \
   --uploaded-by security-review
 ```
@@ -337,10 +355,10 @@ You can inspect and upload the same index through the Admin console at `/popular
 Use `policy test` for a quick dependency-name check:
 
 ```bash
-anvil-registry policy test package.json
+anvil registry policy test package.json
 ```
 
-This reads dependency names from `package.json` and asks the gateway about the latest resolvable versions. For exact installed versions, use `anvil-registry scan <lockfile>` instead.
+This reads dependency names from `package.json` and asks the gateway about the latest resolvable versions. For exact installed versions, use `anvil registry scan <lockfile>` instead.
 
 ## CI examples
 
@@ -350,9 +368,10 @@ Scan an npm lockfile in CI:
 export ANVIL_REGISTRY_URL=https://npm.example.com
 export ANVIL_ADMIN_TOKEN="${ANVIL_ADMIN_TOKEN}"
 
+npm install --global @anvilstack/cli
 npm install --global @anvilstack/registry-cli
-anvil-registry doctor
-anvil-registry scan package-lock.json --queue-analysis
+anvil registry doctor
+anvil registry scan package-lock.json --queue-analysis
 ```
 
 If you prefer not to install globally:
@@ -364,13 +383,15 @@ npx @anvilstack/registry-cli scan package-lock.json --queue-analysis
 
 Use `npm ci --ignore-scripts` or Anvil Node Base safe mode for the actual install. The CLI reviews and warms dependency decisions; it is not a replacement package manager.
 
-## Publish the CLI
+## Stage the CLI for publishing
 
 The npm package is `@anvilstack/registry-cli` and exposes the `anvil-registry` binary. Publishing requires access to the `@anvilstack` npm scope.
 
 Release publishing is handled by `.github/workflows/publish-registry-cli.yml`
-through trusted publishing. The workflow runs on `registry-cli-v*` tags and also
-supports a manual dry run.
+through trusted publishing and npm staged publishing. The workflow runs on
+`registry-cli-v*` tags and also supports a manual dry run. It stages the package
+with `npm stage publish`; a maintainer must review and approve the staged
+package on npm before it becomes publicly available.
 
 From the repository, verify the package before tagging:
 
@@ -382,30 +403,30 @@ cd apps/cli
 npm pack --dry-run
 ```
 
-Before publishing a release, verify that the npm README still points users at the gateway setup docs and that `anvil-registry doctor` works against a local Compose gateway.
+Before publishing a release, verify that the npm README still points users at the gateway setup docs and that `anvil registry doctor` works against a local Compose gateway.
 
 ## Command reference
 
 ```text
-anvil-registry doctor
-anvil-registry explain package@version
-anvil-registry scan package-lock.json [--queue-analysis]
-anvil-registry scan pnpm-lock.yaml [--queue-analysis]
-anvil-registry scan yarn.lock [--queue-analysis]
-anvil-registry warm package-lock.json
-anvil-registry warm yarn.lock
-anvil-registry smoke [package]
-anvil-registry approve package@version --reason "intentional dependency" [--approved-by reviewer] [--expires-at 2027-06-20T00:00:00Z]
-anvil-registry revoke package@version [--revoked-by reviewer]
-anvil-registry llm-review package@version [--requested-by reviewer] [--priority high]
-anvil-registry queue status
-anvil-registry overrides [--target package@version] [--package package] [--version version] [--limit 20]
-anvil-registry audit-events [--target package@version] [--limit 20]
-anvil-registry popular-index show
-anvil-registry popular-index upload popular-index.json [--generated-at 2026-05-20T00:00:00Z]
-anvil-registry reports package@version [--integrity sha512-...] [--shasum ...] [--analyser static-v1]
-anvil-registry reports compare package@version [--left-integrity sha512-old] [--right-integrity sha512-new]
-anvil-registry node-base reports [--type dependency|lifecycle|ioc|network] [--risk risky|high|medium] [--limit 20]
-anvil-registry node-base report <id>
-anvil-registry policy test package.json
+anvil registry doctor
+anvil registry explain package@version
+anvil registry scan package-lock.json [--queue-analysis]
+anvil registry scan pnpm-lock.yaml [--queue-analysis]
+anvil registry scan yarn.lock [--queue-analysis]
+anvil registry warm package-lock.json
+anvil registry warm yarn.lock
+anvil registry smoke [package]
+anvil registry approve package@version --reason "intentional dependency" [--approved-by reviewer] [--expires-at 2027-06-20T00:00:00Z]
+anvil registry revoke package@version [--revoked-by reviewer]
+anvil registry llm-review package@version [--requested-by reviewer] [--priority high]
+anvil registry queue status
+anvil registry overrides [--target package@version] [--package package] [--version version] [--limit 20]
+anvil registry audit-events [--target package@version] [--limit 20]
+anvil registry popular-index show
+anvil registry popular-index upload popular-index.json [--generated-at 2026-05-20T00:00:00Z]
+anvil registry reports package@version [--integrity sha512-...] [--shasum ...] [--analyser static-v1]
+anvil registry reports compare package@version [--left-integrity sha512-old] [--right-integrity sha512-new]
+anvil registry node-base reports [--type dependency|lifecycle|ioc|network] [--risk risky|high|medium] [--limit 20]
+anvil registry node-base report <id>
+anvil registry policy test package.json
 ```

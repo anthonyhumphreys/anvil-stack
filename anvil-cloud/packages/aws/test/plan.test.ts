@@ -7,6 +7,7 @@ import { afterEach } from "vitest";
 import { describe, expect, it } from "vitest";
 
 import { buildCell } from "@anvil-cloud/builder";
+import { createAgentManifest, defineAgent } from "@anvil-cloud/runtime";
 import {
   AwsPreviewDeploymentAdapter,
   AwsPreviewProvisioningError,
@@ -52,6 +53,7 @@ const manifest = {
       publicRead: false,
     },
   },
+  agents: {},
 } as const;
 
 const tempDirs: string[] = [];
@@ -264,6 +266,76 @@ describe("createAwsPreviewDeploymentPlan", () => {
       }),
     ).toEqual([]);
   });
+
+  it("reports Lambda MicroVM sandbox resources for sandbox-required agents", () => {
+    const previousImage = process.env.ANVIL_AWS_AGENT_SANDBOX_IMAGE;
+
+    try {
+      process.env.ANVIL_AWS_AGENT_SANDBOX_IMAGE =
+        "arn:aws:lambda-microvms:eu-west-1:123:image/anvil";
+      const plan = createAwsPreviewDeploymentPlan({
+        ...manifest,
+        agents: {
+          support: createAgentManifest(
+            defineAgent({
+              name: "support",
+              model: { provider: "aws-bedrock", model: "test-model" },
+              approvals: { requiredFor: ["git.push"] },
+              runtime: { sandbox: "required" },
+            }),
+            "cell",
+          ),
+        },
+      });
+
+      expect(plan.changes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            concept: "agent-sandboxes",
+            details: {
+              service: "lambda-microvms",
+              imageConfigured: true,
+              agents: [
+                expect.objectContaining({
+                  name: "support",
+                  provider: "aws-bedrock",
+                  approvals: ["git.push"],
+                }),
+              ],
+            },
+          }),
+        ]),
+      );
+      expect(plan.operations.cost.drivers).toEqual(
+        expect.arrayContaining(["Lambda MicroVM agent sandbox sessions"]),
+      );
+      expect(plan.review.cost.drivers).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "lambda-microvms-agent-sandboxes",
+          }),
+        ]),
+      );
+      expect(plan.review.approvalGates).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "agent-sandbox-review",
+            required: true,
+            severity: "review",
+          }),
+        ]),
+      );
+      expect(checkAwsPreviewSupport(planManifestWithSandboxAgent())).toEqual(
+        [],
+      );
+    } finally {
+      if (previousImage === undefined) {
+        delete process.env.ANVIL_AWS_AGENT_SANDBOX_IMAGE;
+      } else {
+        process.env.ANVIL_AWS_AGENT_SANDBOX_IMAGE = previousImage;
+      }
+    }
+  });
 });
 
 describe("checkAwsPreviewSupport", () => {
@@ -315,6 +387,29 @@ describe("runPreviewAdapterConformance", () => {
       environment: "preview",
       diagnostics: [],
     });
+  });
+
+  it("flags sandbox-required agents when no MicroVM image is configured", () => {
+    const previousImage = process.env.ANVIL_AWS_AGENT_SANDBOX_IMAGE;
+
+    try {
+      delete process.env.ANVIL_AWS_AGENT_SANDBOX_IMAGE;
+      const diagnostics = checkAwsPreviewSupport(
+        planManifestWithSandboxAgent(),
+      );
+
+      expect(diagnostics).toEqual([
+        expect.objectContaining({
+          code: "AWS_PREVIEW_UNSUPPORTED_FEATURE",
+          feature: "agentSandboxes",
+          names: ["support"],
+        }),
+      ]);
+    } finally {
+      if (previousImage !== undefined) {
+        process.env.ANVIL_AWS_AGENT_SANDBOX_IMAGE = previousImage;
+      }
+    }
   });
 });
 
@@ -737,4 +832,20 @@ async function createBuildOutputFixture(): Promise<string> {
   );
 
   return rootDir;
+}
+
+function planManifestWithSandboxAgent() {
+  return {
+    ...manifest,
+    agents: {
+      support: createAgentManifest(
+        defineAgent({
+          name: "support",
+          model: { provider: "aws-bedrock", model: "test-model" },
+          runtime: { sandbox: "required" },
+        }),
+        "cell",
+      ),
+    },
+  };
 }

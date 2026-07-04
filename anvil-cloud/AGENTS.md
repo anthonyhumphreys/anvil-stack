@@ -100,6 +100,18 @@ capabilities: {
 
 Cell code should not import cloud provider SDKs directly. Add platform capabilities instead.
 
+### Effect is platform-internal only
+
+Anvil Cloud uses [Effect](https://effect.website) inside orchestration internals: the workflow executor, the guarded agent runtime, the AWS preview provisioner/destroyer and remote reader, and the CLI deploy flow. Effect is never part of the Cell authoring contract; Cell code uses ordinary async TypeScript and the Anvil Runtime APIs.
+
+When writing or changing Effect code, follow the established boundary contract:
+
+- Keep public APIs Promise-based. Run effects with `Effect.runPromiseExit` at the boundary and rethrow both typed failures and defects as their original values (`Cause.squash`), so callers keep pre-Effect error shapes.
+- Type the error channel with the surface's expected failure class (`RuntimeError`, `AwsPreviewProvisioningError`, `AwsPreviewDestroyError`, `AwsRemoteReaderError`). Do not use `unknown` error channels or identity catch functions. Unexpected errors are defects (`Effect.die`), not widened failures.
+- Use `Schedule` for retries and polling instead of manual loops with `setTimeout`.
+- Bound concurrency in `Effect.all` when the input size is not fixed.
+- See `docs/architecture/deployment-adapters.md` (Effect usage) and `PATCH.md` at the repo root for the full contract and verification commands.
+
 ## Expected repo structure
 
 ```txt

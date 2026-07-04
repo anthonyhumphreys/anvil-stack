@@ -6,6 +6,7 @@ import {
   Cloud,
   Code2,
   Command,
+  Cpu,
   FileSearch,
   GitBranch,
   GitPullRequestArrow,
@@ -35,6 +36,9 @@ export const repositoryUrl = "/docs/project/repositories";
 
 export const githubRepositoryUrl = "https://github.com/anthonyhumphreys/anvil-stack";
 
+export const latestDesktopDmgUrl =
+  "https://github.com/anthonyhumphreys/anvil-stack/releases/latest/download/Anvil-latest-arm64.dmg";
+
 export const navItems = [
   { label: "Products", href: "/#products" },
   { label: "Docs", href: "/docs" },
@@ -58,10 +62,13 @@ export const productLines = [
     imageAlt: "Anvil Desktop showing repository navigation and an agent chat workspace.",
     href: "/docs/desktop/overview",
     repoHref: desktopRepositoryUrl,
+    downloadHref: latestDesktopDmgUrl,
+    downloadLabel: "macOS Apple Silicon DMG",
     command: "pnpm dev",
     points: [
       "Local Electron shell with SQLite persistence and typed IPC boundaries",
-      "Codex and LLM workflows grounded in checked-out repositories",
+      "Codex and LLM workflows grounded in checked-out repositories, with per-turn reasoning controls",
+      "Optional Apple Foundation Models routing for short on-device helper prompts",
       "Work item, review, security, documentation, diagram, and terminal surfaces",
       "Mobile, Raycast, watch, widget, and menu bar companion controls"
     ],
@@ -116,6 +123,7 @@ export const productLines = [
     points: [
       "Cell DSL for queries, mutations, endpoints, jobs, durable workflows, supervised services, and mounted agents",
       "Contract-first Anvil Agents with capabilities, approvals, provider-neutral manifests, local stub inference, and AWS Bedrock provider support",
+      "Agent Sandbox contract and AWS Lambda MicroVM provider for sandbox-required, sessionful agent workspaces",
       "Real auth: declarative per-handler access control, a local IdP signing real JWTs, OIDC providers by config",
       "Builder pipeline for import policy, typecheck, bundle, manifest, generated client output, and agent validation",
       "Anvil Lens local management UI plus an AWS preview adapter with CloudFormation synthesis"
@@ -123,6 +131,7 @@ export const productLines = [
     links: [
       { label: "Cell contract", href: "/docs/cloud/cell-contract" },
       { label: "Agents", href: "/docs/cloud/agents" },
+      { label: "Agent Sandboxes", href: "/docs/cloud/agent-sandboxes" },
       { label: "Auth", href: "/docs/cloud/auth" },
       { label: "Workflows", href: "/docs/cloud/workflows" }
     ]
@@ -171,6 +180,13 @@ export const repoComparison = [
     owns: "npm dependency ingress and install execution safety",
     firstFiles: "apps/gateway, apps/worker, apps/admin, apps/cli, packages, devcontainer-base",
     usefulWhen: "Installs need policy, caching, analysis, quarantine, overrides, reports, or safer container execution."
+  },
+  {
+    repo: "anvil-registry/devcontainer-base/",
+    product: "Anvil Node Base",
+    owns: "Safer Node dependency installation",
+    firstFiles: "Dockerfile, scripts, README.md",
+    usefulWhen: "An unknown repo needs npm installs with lifecycle scripts disabled or observed inside a container."
   },
   {
     repo: "anvil-cloud/",
@@ -283,10 +299,11 @@ export const docsProductGuides = [
     icon: Cloud,
     href: "/docs/cloud/overview",
     description:
-      "Cell contract, Anvil Agents, auth, durable workflows, supervised services, local runtime, Anvil Lens, builder, Guard checks, CLI, generated client, AWS preview adapter, and alpha limits.",
+      "Cell contract, Anvil Agents, Agent Sandboxes, auth, durable workflows, supervised services, local runtime, Anvil Lens, builder, Guard checks, CLI, generated client, AWS preview adapter, and alpha limits.",
     links: [
       { label: "Quickstart", href: "/docs/cloud/quickstart" },
       { label: "Agents", href: "/docs/cloud/agents" },
+      { label: "Agent Sandboxes", href: "/docs/cloud/agent-sandboxes" },
       { label: "Auth", href: "/docs/cloud/auth" },
       { label: "Workflows", href: "/docs/cloud/workflows" }
     ]
@@ -355,6 +372,12 @@ export const docsHighlights = [
     href: "/docs/cloud/agents",
     icon: MessageSquareText,
     description: "Define capability-bound agents, mount them in Cells, compile manifests, and run local stub or provider mode."
+  },
+  {
+    label: "Agent Sandboxes",
+    href: "/docs/cloud/agent-sandboxes",
+    icon: Cpu,
+    description: "Read the contract and AWS Lambda MicroVM provider path for sandbox-required agent workspaces."
   },
   {
     label: "Cloud CLI",

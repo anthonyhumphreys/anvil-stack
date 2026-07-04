@@ -20,6 +20,14 @@ describe("anvil wrapper cli", () => {
     expect(spawnProduct).toHaveBeenCalledWith("cloud", ["check", "--json"]);
   });
 
+  it("prints wrapper version", async () => {
+    const writes: string[] = [];
+    const exitCode = await run(["--version"], fakeDependencies({ stdout: writes }));
+
+    expect(exitCode).toBe(0);
+    expect(writes.join("")).toMatch(/^\d+\.\d+\.\d+\n$/);
+  });
+
   it("dispatches registry commands", async () => {
     const spawnProduct = vi.fn(async () => 0);
     const exitCode = await run(["registry", "scan", "package-lock.json"], fakeDependencies({ spawnProduct }));

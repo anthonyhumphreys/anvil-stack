@@ -159,6 +159,17 @@ describe('getPersonas', () => {
       }),
     );
   });
+
+  it('includes the Workshop Planner persona', () => {
+    expect(getPersonas()).toContainEqual(
+      expect.objectContaining({
+        id: 'workshop-planner',
+        name: 'Workshop Planner',
+        icon: 'Presentation',
+        systemPromptTemplate: 'personas/workshop-planner.md',
+      }),
+    );
+  });
 });
 
 describe('buildSystemPrompt', () => {

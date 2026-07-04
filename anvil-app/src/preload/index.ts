@@ -7,6 +7,8 @@ import type {
   AutomationRun,
   AutomationRunEvent,
   AutomationTriageItem,
+  ArgentCommandId,
+  ChatArtifactInput,
   ChatAttachment,
   ChatAttachmentInput,
   ChatFileMentionSearchInput,
@@ -23,6 +25,7 @@ import type {
   SimulatorPreviewStartOptions,
   GateId,
   GateTemplateUpdate,
+  CodexUsageSnapshot,
   RepoIndexProgress,
   WorkItemProvider,
   WorkspaceCreateOptions,
@@ -147,6 +150,8 @@ const api: AnvilAPI = {
     listActiveSessions: () => ipcRenderer.invoke('chat:list-active-sessions'),
     listTurnSummaries: (threadId: string) =>
       ipcRenderer.invoke('chat:list-turn-summaries', threadId),
+    listArtifacts: (threadId: string) => ipcRenderer.invoke('chat:list-artifacts', threadId),
+    upsertArtifact: (input: ChatArtifactInput) => ipcRenderer.invoke('chat:upsert-artifact', input),
     listThreads: (workspaceId: string | null, personaId: string) =>
       ipcRenderer.invoke('chat:list-threads', workspaceId, personaId),
     listWorkItemThreads: (workspaceId: string | null) =>
@@ -494,6 +499,9 @@ const api: AnvilAPI = {
     startNotionOAuthFlow: () => ipcRenderer.invoke('settings:notion-oauth-start'),
     exchangeNotionOAuthCode: (code: string) =>
       ipcRenderer.invoke('settings:notion-oauth-exchange', code),
+    getCodexAgentsFile: () => ipcRenderer.invoke('settings:codex-agents:get'),
+    saveCodexAgentsFile: (content: string) =>
+      ipcRenderer.invoke('settings:codex-agents:save', content),
     resetOnboarding: () => ipcRenderer.invoke('settings:reset-onboarding'),
   },
 
@@ -502,6 +510,16 @@ const api: AnvilAPI = {
     searchSkills: (query: string) => ipcRenderer.invoke('codex-registry:search-skills', query),
     installSkill: (input) => ipcRenderer.invoke('codex-registry:install-skill', input),
     registerMcp: (input) => ipcRenderer.invoke('codex-registry:register-mcp', input),
+  },
+
+  codexUsage: {
+    snapshot: () => ipcRenderer.invoke('codex-usage:snapshot') as Promise<CodexUsageSnapshot>,
+  },
+
+  anvilCloud: {
+    snapshot: () => ipcRenderer.invoke('anvil-cloud:snapshot'),
+    run: (commandId, cwd) => ipcRenderer.invoke('anvil-cloud:run', commandId, cwd),
+    openLens: (cwd) => ipcRenderer.invoke('anvil-cloud:open-lens', cwd),
   },
 
   diagrams: {
@@ -726,6 +744,12 @@ const api: AnvilAPI = {
     start: (options?: SimulatorPreviewStartOptions) =>
       ipcRenderer.invoke('simulator-preview:start', options),
     stop: () => ipcRenderer.invoke('simulator-preview:stop'),
+  },
+
+  argent: {
+    getSnapshot: () => ipcRenderer.invoke('argent:get-snapshot'),
+    runCommand: (commandId: ArgentCommandId) => ipcRenderer.invoke('argent:run-command', commandId),
+    startSimulatorPreview: () => ipcRenderer.invoke('argent:start-simulator-preview'),
   },
 
   editor: {

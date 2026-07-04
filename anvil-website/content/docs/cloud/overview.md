@@ -25,7 +25,7 @@ The goal is not to make AWS easier to spray around. The goal is to give develope
 | `@anvil-cloud/local` | Local runtime server, JSON database adapter, local files, auth, logs, events, jobs, and inspection state. |
 | `@anvil-cloud/client` | Browser client and framework hook helpers for generated query and mutation metadata. |
 | `@anvil-cloud/auth` | Provider-neutral token verification: OIDC discovery/JWKS verification plus a local identity provider that signs real JWTs. |
-| `@anvilstack/cloud-cli` | `anvil-cloud new`, `dev`, `check`, `review`, `build`, `agents`, `inspect`, `logs`, `usage`, `db`, `auth`, `workflows`, `services`, `lens`, `deploy --preview`, and rollback/destroy preview commands. |
+| `@anvilstack/cloud-cli` | `anvil cloud new`, `dev`, `check`, `review`, `build`, `agents`, `inspect`, `logs`, `usage`, `db`, `auth`, `workflows`, `services`, `lens`, `deploy --preview`, and rollback/destroy preview commands. |
 | `@anvil-cloud/control-plane` | The `ControlPlaneApi` contract behind Anvil Lens, implemented over the local runtime routes today and swappable for a hosted plane later. |
 | `@anvil-cloud/aws` | AWS preview adapter, CloudFormation synthesis, Lambda runtime bridge, AWS-backed host adapters, Bedrock inference provider, agent compatibility checks, artifact packaging, provisioning, remote inspect, remote logs, and preview cleanup. |
 
@@ -39,6 +39,7 @@ The goal is not to make AWS easier to spray around. The goal is to give develope
 - **Anvil Guard**: import policy, capability checks, and safety validation.
 - **Anvil Lens**: inspection surface for manifest, runtime status, local auth, logs, database state, workflows, services, and diagnostics.
 - **Anvil Agent**: a portable, inspectable runtime unit with explicit capabilities, approval-gated actions, model configuration, and a provider-neutral manifest.
+- **Agent Sandbox**: an isolated, sessionful, inspectable workspace for agents that need sandboxed tool execution. On AWS, `@anvil-cloud/aws` provides a Lambda MicroVM-backed sandbox provider.
 
 ## What works now
 
@@ -46,6 +47,7 @@ The alpha implementation includes:
 
 - object-based Cell DSL for `app`, `query`, `mutation`, `endpoint`, `job`, `workflow`, `service`, `table`, and field builders
 - contract-first [Anvil Agents](/docs/cloud/agents): `defineAgent`, provider-neutral agent manifests, mounted Cell Agents, local stub inference, provider registry, approval gates, tool capability checks, and AWS Bedrock provider support
+- [Agent Sandbox](/docs/cloud/agent-sandboxes) contract and AWS Lambda MicroVM provider for sandbox-required agent workspaces
 - shared runtime request handling for query, mutation, endpoint, job, and workflow triggers
 - [real authentication](/docs/cloud/auth): declarative per-handler access control enforced by the runtime, a local identity provider signing real JWTs, and OIDC verification for any compliant provider via configuration
 - [durable workflows](/docs/cloud/workflows): ordered typed steps with retries and timeouts, state persisted per transition, resumable after interruption
@@ -56,7 +58,7 @@ The alpha implementation includes:
 - local JSON database, files, events, jobs, and NDJSON logs
 - builder checks for config, forbidden imports, direct `process.env`, undeclared fetch, scheduled jobs, and capability use (database, files, outboundFetch, events, workflows, services)
 - typecheck, bundle, manifest extraction, generated client output, and build metadata
-- CLI commands with JSON output for automation, including `anvil-cloud agents validate`, `anvil-cloud agents manifest`, `anvil-cloud agents invoke`, and `anvil-cloud auth token` for agent-friendly authenticated sessions
+- CLI commands with JSON output for automation, including `anvil cloud agents validate`, `anvil cloud agents manifest`, `anvil cloud agents invoke`, and `anvil cloud auth token` for agent-friendly authenticated sessions
 - AWS preview plan and CloudFormation synthesis
 - AWS-backed runtime host adapters for DynamoDB, S3, SQS, EventBridge events and scheduled jobs, Lambda env, OIDC token verification, workflow Step Functions starts when configured, and structured logs
 - optional AWS provisioning when required environment variables are configured
@@ -72,7 +74,7 @@ Current alpha limits include:
 - Services execute fully locally; AWS preview synthesizes ECS/Fargate service resources, but exact Cell service-handler execution inside Fargate is still a hardening step.
 - Outbound fetch policy is checked by Guard and enforced by the AWS Lambda runtime allow-list guard.
 - Production use needs wider operational validation beyond the preview verifier.
-- Agents are a contract/runtime foundation, not a hosted agent platform. Project-agent discovery and deterministic Guardian review exist; production approval UI, durable multi-step orchestration, hosted memory, and sandbox execution are future work.
+- Agents are a contract/runtime foundation, not a hosted agent platform. Project-agent discovery and deterministic Guardian review exist; AWS Lambda MicroVM-backed Agent Sandboxes cover sandbox-required agents when configured. Production approval UI, durable multi-step orchestration, hosted memory, streamed sandbox tools, workspace snapshots, and sandbox-aware Lens views are future work.
 - Auth token verification is real locally and on AWS, but session/refresh lifecycle and login UI belong to your provider.
 - Anvil Lens is local-first; there is no hosted control plane, marketplace, or multi-region deployment.
 - No arbitrary provider-resource authoring or raw container/Kubernetes definitions in Cell code.
@@ -84,6 +86,7 @@ Current alpha limits include:
 - [Cell contract](/docs/cloud/cell-contract)
 - [Auth](/docs/cloud/auth)
 - [Anvil Agents](/docs/cloud/agents)
+- [Agent Sandboxes](/docs/cloud/agent-sandboxes)
 - [Workflows](/docs/cloud/workflows)
 - [Services](/docs/cloud/services)
 - [Runtime model](/docs/cloud/architecture)

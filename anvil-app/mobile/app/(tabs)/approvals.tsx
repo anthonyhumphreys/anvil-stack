@@ -5,6 +5,7 @@ import {
   EmptyState,
   Panel,
   ScreenHeader,
+  StatusPill,
   bodyStyle,
   companionColors,
   screenStyle,
@@ -13,7 +14,7 @@ import {
   titleStyle,
 } from '@/components/companion-ui';
 import { useCompanion } from '@/contexts/companion-context';
-import type { MobileApprovalRequest } from '../../../src/shared/types';
+import type { CompanionApprovalRisk, MobileApprovalRequest } from '../../../src/shared/types';
 
 export default function ApprovalsScreen() {
   const { overview, loading, refresh, resolve } = useCompanion();
@@ -33,7 +34,10 @@ export default function ApprovalsScreen() {
       />
 
       {approvals.length === 0 ? (
-        <EmptyState title="Nothing waiting" body="No pending Codex approvals. Suspiciously peaceful." />
+        <EmptyState
+          title="Nothing waiting"
+          body="No pending Codex approvals. Suspiciously peaceful."
+        />
       ) : (
         approvals.map((approval) => (
           <ApprovalCard
@@ -55,6 +59,8 @@ function ApprovalCard({
   onDecision: (decision: 'accept' | 'acceptForSession' | 'decline') => void;
 }) {
   const isCommand = approval.kind === 'command';
+  const policy = approval.policy;
+  const riskTone = riskPillTone(policy?.risk);
 
   return (
     <Panel>
@@ -68,14 +74,28 @@ function ApprovalCard({
         </View>
         <View style={{ flex: 1 }}>
           <Text style={titleStyle}>{isCommand ? 'Command approval' : 'File change approval'}</Text>
-          <Text style={subtleStyle}>{approval.createdAt ? 'Pending decision' : 'Needs review'}</Text>
+          <Text style={subtleStyle}>
+            {approval.createdAt ? 'Pending decision' : 'Needs review'}
+          </Text>
         </View>
+        {policy?.risk && (
+          <StatusPill
+            label={policy.requiresFullReview ? `${policy.risk} / desktop` : policy.risk}
+            color={riskTone.color}
+            background={riskTone.background}
+          />
+        )}
       </View>
 
       <Text selectable style={monoStyle}>
         {isCommand ? approval.command || 'Command requested' : approval.grantRoot || 'File change'}
       </Text>
 
+      {policy?.summary && (
+        <Text selectable style={bodyStyle}>
+          {policy.summary}
+        </Text>
+      )}
       {approval.reason && (
         <Text selectable style={bodyStyle}>
           {approval.reason}
@@ -84,6 +104,16 @@ function ApprovalCard({
       {approval.cwd && (
         <Text selectable style={subtleStyle}>
           cwd: {approval.cwd}
+        </Text>
+      )}
+      {approval.repoName && (
+        <Text selectable style={subtleStyle}>
+          repo: {approval.repoName}
+        </Text>
+      )}
+      {policy?.blockedReason && (
+        <Text selectable style={[subtleStyle, { color: companionColors.red }]}>
+          {policy.blockedReason}
         </Text>
       )}
 
@@ -109,6 +139,16 @@ function ApprovalCard({
       </View>
     </Panel>
   );
+}
+
+function riskPillTone(risk?: CompanionApprovalRisk) {
+  if (risk === 'low') {
+    return { color: companionColors.green, background: companionColors.greenSoft };
+  }
+  if (risk === 'medium') {
+    return { color: companionColors.accentInk, background: companionColors.accentSoft };
+  }
+  return { color: companionColors.red, background: companionColors.redSoft };
 }
 
 const cardHeaderStyle = {

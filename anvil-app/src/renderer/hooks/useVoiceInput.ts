@@ -46,8 +46,22 @@ export function useVoiceInput({ onResult, onError, enabled = true }: UseVoiceInp
   const [transcript, setTranscript] = useState('');
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
   const isListeningRef = useRef(false);
+  const transcriptRef = useRef('');
 
   const isSupported = SpeechRecognition !== null && enabled;
+
+  const updateTranscript = useCallback((text: string) => {
+    transcriptRef.current = text;
+    setTranscript(text);
+  }, []);
+
+  const flushTranscript = useCallback(() => {
+    const text = transcriptRef.current.trim();
+    if (!text) return;
+    onResult(text);
+    transcriptRef.current = '';
+    setTranscript('');
+  }, [onResult]);
 
   const startListening = useCallback(() => {
     if (!isSupported || isListeningRef.current) return;
@@ -60,7 +74,7 @@ export function useVoiceInput({ onResult, onError, enabled = true }: UseVoiceInp
     recognition.onstart = () => {
       isListeningRef.current = true;
       setStatus('listening');
-      setTranscript('');
+      updateTranscript('');
     };
 
     recognition.onresult = (event: SpeechRecognitionEvent) => {
@@ -77,9 +91,9 @@ export function useVoiceInput({ onResult, onError, enabled = true }: UseVoiceInp
       }
 
       if (finalTranscript) {
-        setTranscript(finalTranscript);
+        updateTranscript(finalTranscript);
       } else if (interimTranscript) {
-        setTranscript(interimTranscript);
+        updateTranscript(interimTranscript);
       }
     };
 
@@ -93,10 +107,7 @@ export function useVoiceInput({ onResult, onError, enabled = true }: UseVoiceInp
     recognition.onend = () => {
       isListeningRef.current = false;
       setStatus('idle');
-      if (transcript) {
-        onResult(transcript);
-        setTranscript('');
-      }
+      flushTranscript();
     };
 
     recognitionRef.current = recognition;
@@ -107,7 +118,7 @@ export function useVoiceInput({ onResult, onError, enabled = true }: UseVoiceInp
       setStatus('error');
       onError?.(err instanceof Error ? err.message : 'Failed to start voice input');
     }
-  }, [isSupported, onResult, onError, transcript]);
+  }, [flushTranscript, isSupported, onError, updateTranscript]);
 
   const stopListening = useCallback(() => {
     if (recognitionRef.current && isListeningRef.current) {
@@ -116,11 +127,8 @@ export function useVoiceInput({ onResult, onError, enabled = true }: UseVoiceInp
     }
     isListeningRef.current = false;
     setStatus('idle');
-    if (transcript) {
-      onResult(transcript);
-      setTranscript('');
-    }
-  }, [onResult, transcript]);
+    flushTranscript();
+  }, [flushTranscript]);
 
   useEffect(() => {
     return () => {
@@ -129,6 +137,7 @@ export function useVoiceInput({ onResult, onError, enabled = true }: UseVoiceInp
         recognitionRef.current = null;
       }
       isListeningRef.current = false;
+      transcriptRef.current = '';
     };
   }, []);
 

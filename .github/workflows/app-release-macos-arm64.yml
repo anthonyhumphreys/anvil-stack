@@ -30,22 +30,60 @@ jobs:
 
     env:
       GH_TOKEN: ${{ github.token }}
-      CSC_LINK: ${{ secrets.CSC_LINK }}
-      CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-      APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
-      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check release scope
+        id: release_scope
+        shell: bash
+        working-directory: .
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_EVENT_NAME}" != "push" || "${GITHUB_REF_TYPE}" != "tag" ]]; then
+            echo "should_release=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          current_tag="${GITHUB_REF_NAME}"
+          previous_tag="$(
+            git -C "${GITHUB_WORKSPACE}" tag --list 'app-v*' --sort=-v:refname \
+              | grep -v -F -- "${current_tag}" \
+              | head -n 1 || true
+          )"
+
+          if [[ -z "${previous_tag}" ]]; then
+            echo "No previous app-v* tag found; allowing ${current_tag}."
+            echo "should_release=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          changed_app_files="$(
+            git -C "${GITHUB_WORKSPACE}" diff --name-only "${previous_tag}" "${GITHUB_SHA}" -- anvil-app \
+              || true
+          )"
+
+          if [[ -n "${changed_app_files}" ]]; then
+            echo "Anvil app changes found since ${previous_tag}:"
+            printf '%s\n' "${changed_app_files}"
+            echo "should_release=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "No anvil-app changes found between ${previous_tag} and ${current_tag}; skipping release."
+            echo "should_release=false" >> "${GITHUB_OUTPUT}"
+          fi
 
       - name: Set up pnpm
+        if: steps.release_scope.outputs.should_release == 'true'
         uses: pnpm/action-setup@v4
         with:
           version: 10.32.1
 
       - name: Set up Node.js
+        if: steps.release_scope.outputs.should_release == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -53,9 +91,11 @@ jobs:
           cache-dependency-path: anvil-app/pnpm-lock.yaml
 
       - name: Install dependencies
+        if: steps.release_scope.outputs.should_release == 'true'
         run: pnpm install --frozen-lockfile
 
       - name: Resolve release tag
+        if: steps.release_scope.outputs.should_release == 'true'
         id: release
         shell: bash
         run: |
@@ -81,25 +121,75 @@ jobs:
           echo "name=Anvil ${release_tag}" >> "${GITHUB_OUTPUT}"
 
       - name: Build unsigned macOS Apple Silicon artifacts
-        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.notarize }}
+        if: ${{ steps.release_scope.outputs.should_release == 'true' && (github.event_name != 'workflow_dispatch' || !inputs.notarize) }}
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: pnpm run dist:mac:arm64
 
       - name: Build signed and notarized macOS Apple Silicon artifacts
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.notarize }}
+        if: ${{ steps.release_scope.outputs.should_release == 'true' && github.event_name == 'workflow_dispatch' && inputs.notarize }}
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: pnpm run dist:mac:arm64:anvil:notarized
 
+      - name: Prepare stable download asset
+        if: steps.release_scope.outputs.should_release == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          shopt -s nullglob
+          dmg_assets=(dist/Anvil-[0-9]*-arm64.dmg)
+          if [[ "${#dmg_assets[@]}" -ne 1 ]]; then
+            echo "Expected exactly one macOS Apple Silicon DMG, found ${#dmg_assets[@]}." >&2
+            printf 'DMG candidates:\n' >&2
+            printf '  %s\n' "${dmg_assets[@]}" >&2
+            exit 1
+          fi
+
+          cp "${dmg_assets[0]}" dist/Anvil-latest-arm64.dmg
+
       - name: Create or update GitHub Release
+        if: steps.release_scope.outputs.should_release == 'true'
         shell: bash
         run: |
           set -euo pipefail
 
           release_tag="${{ steps.release.outputs.tag }}"
           release_name="${{ steps.release.outputs.name }}"
+          release_url="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${release_tag}"
           notarized_release="${{ github.event_name == 'workflow_dispatch' && inputs.notarize }}"
-          assets=(dist/*-arm64.dmg dist/*-arm64-mac.zip)
+          assets=(dist/Anvil-[0-9]*-arm64.dmg dist/Anvil-latest-arm64.dmg dist/*-arm64-mac.zip)
           notes_file="$(mktemp)"
+          changelog_file="$(mktemp)"
+          share_file="$(mktemp)"
+          previous_tag="$(
+            git -C "${GITHUB_WORKSPACE}" tag --list 'app-v*' --sort=-v:refname \
+              | grep -v -F -- "${release_tag}" \
+              | head -n 1 || true
+          )"
+
+          notes_args=(
+            -f "tag_name=${release_tag}"
+            -f "target_commitish=${GITHUB_SHA}"
+          )
+          if [[ -n "${previous_tag}" ]]; then
+            notes_args+=(-f "previous_tag_name=${previous_tag}")
+          fi
+
+          if ! gh api \
+            --method POST \
+            "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            "${notes_args[@]}" \
+            --jq '.body' > "${changelog_file}"; then
+            printf '%s\n' \
+              "GitHub could not generate release notes automatically. Compare ${previous_tag:-the previous app release} to ${release_tag} before publishing externally." \
+              > "${changelog_file}"
+          fi
 
           if [[ "${notarized_release}" == "true" ]]; then
             printf '%s\n' \
@@ -116,6 +206,23 @@ jobs:
               '```' \
               > "${notes_file}"
           fi
+
+          printf '\n## Changelog\n\n' >> "${notes_file}"
+          cat "${changelog_file}" >> "${notes_file}"
+
+          node "${GITHUB_WORKSPACE}/.github/scripts/create-x-release-intent.mjs" \
+            "${notes_file}" \
+            "${release_name}" \
+            "${release_url}" \
+            "${share_file}"
+
+          printf '\n' >> "${notes_file}"
+          cat "${share_file}" >> "${notes_file}"
+
+          {
+            printf '## %s\n\n' "${release_name}"
+            cat "${share_file}"
+          } >> "${GITHUB_STEP_SUMMARY}"
 
           if gh release view "${release_tag}" >/dev/null 2>&1; then
             gh release upload "${release_tag}" "${assets[@]}" --clobber

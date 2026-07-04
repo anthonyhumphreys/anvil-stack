@@ -27,6 +27,12 @@ import {
 import type { AwsPreviewProvisioner } from "./provisioner.js";
 
 export {
+  AwsLambdaMicroVmSandboxError,
+  AwsLambdaMicroVmSandboxProvider,
+  createAwsLambdaMicroVmSandboxProviderFromEnv,
+  type AwsLambdaMicroVmSandboxProviderOptions,
+} from "./sandbox.js";
+export {
   BedrockInferenceProvider,
   checkAwsAgentCompatibility,
   type AwsAgentCompatibilityResult,
@@ -107,6 +113,7 @@ export type DeploymentPlanChange = {
     | "events"
     | "files"
     | "http-ingress"
+    | "agent-sandboxes"
     | "jobs"
     | "logs"
     | "runtime"
@@ -216,7 +223,7 @@ export type DeploymentPlanOperations = {
 
 export type AwsPreviewSupportDiagnostic = {
   code: "AWS_PREVIEW_UNSUPPORTED_FEATURE";
-  feature: string;
+  feature: "agentSandboxes" | "outboundFetch" | "services" | "workflows";
   message: string;
   hint: string;
   names: string[];
@@ -546,6 +553,26 @@ export function createAwsPreviewDeploymentPlan(
     });
   }
 
+  const sandboxAgents = sandboxRequiredAgents(manifest);
+
+  if (sandboxAgents.length > 0) {
+    changes.push({
+      kind: "create",
+      concept: "agent-sandboxes",
+      name: `${manifest.cell.name}-${environment}`,
+      details: {
+        service: "lambda-microvms",
+        agents: sandboxAgents.map((agent) => ({
+          name: agent.name,
+          provider: agent.model.provider,
+          approvals: agent.requires.humanApproval,
+          durability: agent.runtime.durability,
+        })),
+        imageConfigured: isAgentSandboxImageConfigured(),
+      },
+    });
+  }
+
   if (manifest.services.length > 0) {
     changes.push({
       kind: "create",
@@ -744,6 +771,23 @@ function createPreviewApprovalGates(
   capabilityDiffs: DeploymentPlanCapabilityDiff[],
 ): DeploymentPlanApprovalGate[] {
   const gates: DeploymentPlanApprovalGate[] = [];
+  const unsupported = checkAwsPreviewSupport(manifest);
+
+  if (unsupported.length > 0) {
+    gates.push({
+      id: "aws-preview-support-gate",
+      required: true,
+      severity: "block",
+      reason:
+        "AWS preview cannot execute every declared Cell feature yet. Deploy is gated before provisioning.",
+      changeIds: unsupported.flatMap((diagnostic) =>
+        idsForConcepts(changeSet, [
+          conceptForUnsupportedFeature(diagnostic.feature),
+        ]),
+      ),
+    });
+  }
+
   if (manifest.capabilities.database === true) {
     gates.push({
       id: "data-resource-review",
@@ -808,6 +852,19 @@ function createPreviewApprovalGates(
     });
   }
 
+  const agentSandboxIds = idsForConcepts(changeSet, ["agent-sandboxes"]);
+
+  if (agentSandboxIds.length > 0) {
+    gates.push({
+      id: "agent-sandbox-review",
+      required: true,
+      severity: "review",
+      reason:
+        "Sandbox-required agents create Lambda MicroVM sandbox sessions. Confirm image, IAM role, network, approval, TTL, and cleanup policy.",
+      changeIds: agentSandboxIds,
+    });
+  }
+
   if (gates.length === 0) {
     gates.push({
       id: "standard-review",
@@ -843,6 +900,12 @@ function idsForConcepts(
     .filter((change) => wanted.has(change.concept))
     .map((change) => change.id)
     .sort();
+}
+
+function conceptForUnsupportedFeature(
+  feature: AwsPreviewSupportDiagnostic["feature"],
+): string {
+  return feature === "agentSandboxes" ? "agent-sandboxes" : feature;
 }
 
 function createStructuredCostDrivers(
@@ -925,6 +988,15 @@ function createStructuredCostDrivers(
     });
   }
 
+  if (sandboxRequiredAgents(manifest).length > 0) {
+    drivers.push({
+      id: "lambda-microvms-agent-sandboxes",
+      label: "Lambda MicroVM agent sandbox sessions",
+      reason:
+        "Sandbox-required mounted agents can run in sessionful Lambda MicroVM sandboxes.",
+    });
+  }
+
   return drivers;
 }
 
@@ -961,15 +1033,44 @@ function createCostDrivers(manifest: CellManifest): string[] {
     drivers.push("ECS/Fargate service task vCPU and memory");
   }
 
+  if (sandboxRequiredAgents(manifest).length > 0) {
+    drivers.push("Lambda MicroVM agent sandbox sessions");
+  }
+
   return drivers;
 }
 
 export function checkAwsPreviewSupport(
   manifest: CellManifest,
 ): AwsPreviewSupportDiagnostic[] {
-  void manifest;
+  const diagnostics: AwsPreviewSupportDiagnostic[] = [];
+  const sandboxAgents = sandboxRequiredAgents(manifest);
 
-  return [];
+  if (sandboxAgents.length > 0 && !isAgentSandboxImageConfigured()) {
+    diagnostics.push({
+      code: "AWS_PREVIEW_UNSUPPORTED_FEATURE",
+      feature: "agentSandboxes",
+      message:
+        "AWS preview requires a Lambda MicroVM image before it can run sandbox-required agents.",
+      hint: "Set ANVIL_AWS_AGENT_SANDBOX_IMAGE to a Lambda MicroVM image ARN or remove runtime.sandbox: 'required' from mounted agents for this preview deploy.",
+      names: sandboxAgents.map((agent) => agent.name),
+    });
+  }
+
+  return diagnostics;
+}
+
+function sandboxRequiredAgents(manifest: CellManifest) {
+  return Object.values(manifest.agents ?? {}).filter(
+    (agent) => agent.requires.sandbox,
+  );
+}
+
+function isAgentSandboxImageConfigured(): boolean {
+  return (
+    typeof process.env.ANVIL_AWS_AGENT_SANDBOX_IMAGE === "string" &&
+    process.env.ANVIL_AWS_AGENT_SANDBOX_IMAGE.length > 0
+  );
 }
 
 function createWarnings(manifest: CellManifest): string[] {

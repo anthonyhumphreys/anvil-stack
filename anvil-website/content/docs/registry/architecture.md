@@ -137,7 +137,7 @@ The CLI is for operators and CI:
 - Manage overrides.
 - Check health and readiness.
 
-Protected operations require the admin endpoint and token documented in [CLI](/docs/registry/registry-cli) and [API reference](/docs/registry/api-reference).
+Protected operations require the admin endpoint and token documented in [CLI](/docs/registry/cli) and [API reference](/docs/registry/api-reference).
 
 ## Node Base
 

@@ -1,15 +1,15 @@
 ---
-title: Chat personas and LLM providers
+title: Chat personas, reasoning, and LLM providers
 navTitle: Chat and LLM
-description: Configure AI providers, switch chat personas, and understand how Anvil Desktop grounds sessions in repository context.
+description: Configure AI providers, switch chat personas, tune reasoning effort, and understand how Anvil Desktop grounds sessions in repository context.
 product: Anvil Desktop
 section: Working guide
 order: 111
 ---
 
-# Chat personas and LLM providers
+# Chat personas, reasoning, and LLM providers
 
-Anvil Desktop chat sessions are not generic AI chats. They are grounded in repository context, work items, and the current branch state. The persona system shapes what the model optimises for, and the LLM provider configuration keeps credentials out of renderer code.
+Anvil Desktop chat sessions are not generic AI chats. They are grounded in repository context, work items, and the current branch state. The persona system shapes what the model optimises for, reasoning effort controls how much work the Codex turn asks the model to do, and the LLM provider configuration keeps credentials out of renderer code.
 
 ## Supported LLM providers
 
@@ -17,23 +17,52 @@ Anvil Desktop can route chat sessions through multiple backends:
 
 | Provider | Setup path | Notes |
 | --- | --- | --- |
-| OpenAI API | API key in Settings | GPT-4o, GPT-4 Turbo, o1, o3-mini. Direct API calls from the main process. |
-| Azure AI Foundry | Endpoint, key, deployment name in Settings | For organisations with Azure OpenAI deployments. |
+| OpenAI API | API key in Settings | Direct API calls from the main process for configured OpenAI models. |
+| Azure AI Foundry | `~/.codex/config.toml` provider config plus the configured API-key environment variable | For organisations with Azure OpenAI deployments. The app reads the same provider config used by Codex. |
 | Codex CLI | Codex CLI installed and authenticated | Uses the local `codex` command through the Codex bridge. Good for agentic sessions that need local file access. |
-| Apple Foundation Models | macOS 15.4+ with Apple Intelligence | Local on-device inference where available. No network call, no API key. |
-| Local assists | Ollama or LM Studio when configured | Experimental. Useful for offline work or sensitive codebases. |
+| Apple Foundation Models | macOS 26+, Apple Intelligence support, Apple Intelligence enabled, and a Swift toolchain with `FoundationModels` | Optional on-device route for short helper prompts. No API key. Falls back to the configured backend when unavailable or unsuitable. |
 
 Credentials are stored encrypted in SQLite by the main-process settings service. The renderer never sees raw API keys.
 
 ## Configuring a provider
 
 1. Open Settings in Anvil Desktop.
-2. Choose the LLM provider tab.
-3. Enter the required fields. API keys are masked after save.
-4. Test the connection with the built-in ping.
-5. Set the default provider for new sessions.
+2. Choose the AI settings section.
+3. Pick Codex CLI, OpenAI API, or Azure AI Foundry as the Settings-level provider.
+4. For OpenAI, enter the API key and model in Settings.
+5. For Azure AI Foundry, configure `~/.codex/config.toml` and the environment variable referenced by its `env_key`.
+6. Use the built-in connection test where the selected provider exposes one. Apple Foundation Models has its own **Test Apple Models** button.
 
-You can override the default per session by choosing a different provider in the chat header.
+The selected provider is a Settings-level choice. Chat turns can still change reasoning effort per turn, but there is no separate per-session provider picker in the chat surface.
+
+## Reasoning effort
+
+The chat input includes a reasoning effort menu for Codex-backed turns:
+
+| Effort | Use it for |
+| --- | --- |
+| `none` | Fast responses where extended reasoning is not useful. |
+| `minimal` | Trivial prompts that need a little structure. |
+| `low` | Quick answers and lightweight edits. |
+| `medium` | The everyday default for normal coding work. |
+| `high` | Complex implementation, debugging, or review work. |
+| `xhigh` | Slow, expensive reasoning for the awkward jobs that have started making eye contact. |
+
+Anvil sends the selected effort with each Codex `turn/start` request. The global Settings page still exposes the older low/medium/high default for direct GPT-5.5-style API calls; the chat menu is the per-turn control for Codex sessions.
+
+## Apple Foundation Models routing
+
+Apple Foundation Models support is opt-in. In Settings, set **Apple Foundation Models** to **Prefer simple**, then use **Test Apple Models** to verify the helper can call the local framework.
+
+When enabled, Anvil tries the on-device model only for plain chat messages without attachments or slash-style commands. The flow is deliberately conservative:
+
+1. The normal Anvil chat session starts first. That still means the Codex CLI must be installed and authenticated for Codex-backed chat.
+2. Anvil asks the Apple model to classify the prompt as `local` or `cloud`.
+3. `local` is accepted only for short, self-contained prompts that need no repository access, file edits, command execution, web access, or deep multi-step reasoning.
+4. If the classifier says `cloud`, fails, refuses, returns empty output, or the prompt is too large, Anvil sends the turn to the configured backend.
+5. If the local answer is accepted, Anvil emits it through the normal chat event stream so the renderer displays and persists it like any other assistant reply.
+
+This is the only local model assist path currently implemented in the app. It is not a replacement for agentic Codex work. It is useful for small wording, summarisation, or helper prompts where involving a larger backend would be theatre with an invoice.
 
 ## Chat personas
 
@@ -85,7 +114,8 @@ Read [Agent workflows](/docs/desktop/agent-workflows) for the full session playb
 
 - Context windows still matter. Large repos need module summaries, not full file dumps.
 - Personas do not change model capabilities. A security persona cannot make an unsafe model safe.
-- Local models (Apple Foundation Models, Ollama) vary in capability. Use them for sensitive or offline work; verify important output with a stronger model when possible.
+- Apple Foundation Models require macOS 26 or later, an Apple Intelligence-compatible Mac, Apple Intelligence enabled, and a Swift toolchain that can import `FoundationModels`.
+- The Apple on-device model varies in capability and availability. Use it for sensitive or offline helper work where it fits, but verify important output with the configured backend when possible.
 - Codex CLI sessions depend on the local `codex` binary and its auth state.
 
 ## Read next

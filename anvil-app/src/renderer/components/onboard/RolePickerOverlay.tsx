@@ -57,7 +57,10 @@ export function RolePickerOverlay({ onRoleSelected }: RolePickerOverlayProps) {
 
         <div className="space-y-3">
           {ROLES.map(({ role, label, description }) => {
-            const features = ROLE_FEATURES[role].map((f) => ROLE_LABELS[f] ?? f).join(' · ');
+            const features = ROLE_FEATURES[role]
+              .filter((feature) => feature !== 'cloud')
+              .map((feature) => ROLE_LABELS[feature] ?? feature)
+              .join(' · ');
             return (
               <button
                 key={role}

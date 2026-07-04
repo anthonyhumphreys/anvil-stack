@@ -10,14 +10,23 @@ import type {
   MobilePairingPayload,
   MobileStartChatInput,
   MobileStartChatResult,
+  MobileWorkQueueItem,
   MobileWorkflowDigest,
   MobileWorkflowHealth,
 } from '../../src/shared/types';
 
 export interface CompanionConnection {
+  id: string;
   baseUrl: string;
   token: string;
   deviceName: string;
+  pairedAt: string;
+  lastUsedAt: string;
+}
+
+export interface CompanionConnectionState {
+  activeConnectionId: string | null;
+  connections: CompanionConnection[];
 }
 
 export interface PairResponse {
@@ -47,6 +56,7 @@ export interface CompanionStreamEvent {
 }
 
 const CONNECTION_KEY = 'anvil.mobile.connection.v1';
+const CONNECTIONS_KEY = 'anvil.mobile.connections.v2';
 const DEFAULT_WORKFLOW_COUNTS: MobileWorkflowDigest['counts'] = {
   pendingApprovals: 0,
   activeSessions: 0,
@@ -72,22 +82,98 @@ const DEFAULT_COMPANION_STATUS: MobileCompanionStatus = {
 };
 
 export async function loadConnection(): Promise<CompanionConnection | null> {
-  const raw = await getStoredConnection();
-  if (!raw) return null;
+  const state = await loadConnectionState();
+  return state.connections.find((connection) => connection.id === state.activeConnectionId) ?? null;
+}
+
+export async function loadConnectionState(): Promise<CompanionConnectionState> {
+  const raw = await getStoredValue(CONNECTIONS_KEY);
+  if (raw) {
+    try {
+      return normalizeConnectionState(JSON.parse(raw));
+    } catch {
+      await deleteStoredValue(CONNECTIONS_KEY);
+    }
+  }
+
+  const legacyRaw = await getStoredValue(CONNECTION_KEY);
+  if (!legacyRaw) return emptyConnectionState();
+
   try {
-    return JSON.parse(raw) as CompanionConnection;
+    const migrated = normalizeConnection(JSON.parse(legacyRaw));
+    const state = { activeConnectionId: migrated.id, connections: [migrated] };
+    await saveConnectionState(state);
+    await deleteStoredValue(CONNECTION_KEY);
+    return state;
   } catch {
-    await deleteStoredConnection();
-    return null;
+    await deleteStoredValue(CONNECTION_KEY);
+    return emptyConnectionState();
   }
 }
 
-export async function saveConnection(connection: CompanionConnection): Promise<void> {
-  await setStoredConnection(JSON.stringify(connection));
+export async function saveConnection(
+  connection: Pick<CompanionConnection, 'baseUrl' | 'token' | 'deviceName'> &
+    Partial<CompanionConnection>,
+): Promise<void> {
+  const state = await loadConnectionState();
+  const normalized = normalizeConnection(connection);
+  const existingConnection = state.connections.find(
+    (candidate) =>
+      candidate.id === normalized.id ||
+      trimBaseUrl(candidate.baseUrl) === trimBaseUrl(normalized.baseUrl),
+  );
+  const nextConnection = {
+    ...normalized,
+    id: existingConnection?.id ?? normalized.id,
+    pairedAt: existingConnection?.pairedAt ?? normalized.pairedAt,
+    lastUsedAt: new Date().toISOString(),
+  };
+  const connections = [
+    nextConnection,
+    ...state.connections.filter((candidate) => candidate.id !== nextConnection.id),
+  ];
+  await saveConnectionState({ activeConnectionId: nextConnection.id, connections });
 }
 
 export async function clearConnection(): Promise<void> {
-  await deleteStoredConnection();
+  const state = await loadConnectionState();
+  if (!state.activeConnectionId) {
+    await deleteStoredValue(CONNECTIONS_KEY);
+    await deleteStoredValue(CONNECTION_KEY);
+    return;
+  }
+
+  await removeConnection(state.activeConnectionId);
+}
+
+export async function activateConnection(
+  connectionId: string,
+): Promise<CompanionConnection | null> {
+  const state = await loadConnectionState();
+  const connection = state.connections.find((candidate) => candidate.id === connectionId);
+  if (!connection) return null;
+
+  const nextConnection = { ...connection, lastUsedAt: new Date().toISOString() };
+  const nextState = {
+    activeConnectionId: nextConnection.id,
+    connections: state.connections.map((candidate) =>
+      candidate.id === nextConnection.id ? nextConnection : candidate,
+    ),
+  };
+  await saveConnectionState(nextState);
+  return nextConnection;
+}
+
+export async function removeConnection(connectionId: string): Promise<CompanionConnectionState> {
+  const state = await loadConnectionState();
+  const connections = state.connections.filter((connection) => connection.id !== connectionId);
+  const activeConnectionId =
+    state.activeConnectionId === connectionId
+      ? (connections[0]?.id ?? null)
+      : state.activeConnectionId;
+  const nextState = { activeConnectionId, connections };
+  await saveConnectionState(nextState);
+  return nextState;
 }
 
 export function parsePairingPayload(raw: string): MobilePairingPayload {
@@ -111,10 +197,14 @@ export async function pairWithDesktop(
     body: JSON.stringify({ ticket: payload.ticket, deviceName }),
   });
   const body = (await readBody(response)) as PairResponse;
+  const now = new Date().toISOString();
   const connection = {
+    id: body.device.id || createConnectionId(payload.baseUrl),
     baseUrl: trimBaseUrl(payload.baseUrl),
     token: body.token,
     deviceName: body.device.name,
+    pairedAt: body.device.createdAt || now,
+    lastUsedAt: now,
   };
   await saveConnection(connection);
   return connection;
@@ -285,29 +375,187 @@ function normalizeMobileOverview(raw: unknown): MobileOverview {
   const threads = arrayValue(overview.threads) as MobileOverview['threads'];
   const quickActions = arrayValue(overview.quickActions) as MobileOverview['quickActions'];
   const notifications = arrayValue(overview.notifications) as MobileOverview['notifications'];
+  const activeWorkspace = isRecord(overview.activeWorkspace)
+    ? (overview.activeWorkspace as unknown as MobileOverview['activeWorkspace'])
+    : undefined;
   const workflow = normalizeWorkflow(
     overview.workflow,
     activeSessions,
     pendingApprovals,
     threads,
-    overview.activeWorkspace,
+    activeWorkspace,
+  );
+  const workQueue = normalizeWorkQueue(
+    overview.workQueue,
+    activeSessions,
+    pendingApprovals,
+    threads,
+    activeWorkspace,
   );
 
   return {
     generatedAt: stringValue(overview.generatedAt, new Date().toISOString()),
-    activeWorkspace: isRecord(overview.activeWorkspace)
-      ? (overview.activeWorkspace as unknown as MobileOverview['activeWorkspace'])
-      : undefined,
+    activeWorkspace,
     workspaces,
     activeSessions,
     pendingApprovals,
     threads,
+    workQueue,
     workflow,
     quickActions,
     companion: isRecord(overview.companion)
       ? ({ ...DEFAULT_COMPANION_STATUS, ...overview.companion } as MobileCompanionStatus)
       : DEFAULT_COMPANION_STATUS,
     notifications,
+  };
+}
+
+function normalizeWorkQueue(
+  raw: unknown,
+  activeSessions: MobileOverview['activeSessions'],
+  pendingApprovals: MobileOverview['pendingApprovals'],
+  threads: MobileOverview['threads'],
+  activeWorkspace: MobileOverview['activeWorkspace'],
+): MobileWorkQueueItem[] {
+  const fromHost = arrayValue(raw)
+    .map(normalizeWorkQueueItem)
+    .filter((item): item is MobileWorkQueueItem => Boolean(item));
+  if (fromHost.length > 0) return fromHost;
+
+  const approvalItems = pendingApprovals.map(
+    (approval): MobileWorkQueueItem => ({
+      id: `approval:${approval.sessionId}:${approval.requestKey}`,
+      kind: 'approval',
+      priority: approval.policy?.risk === 'low' ? 'high' : 'critical',
+      title:
+        approval.policy?.summary ??
+        (approval.kind === 'command' ? 'Command approval' : 'File change approval'),
+      detail:
+        approval.reason ?? approval.command ?? approval.grantRoot ?? 'Codex needs a decision.',
+      statusLabel: approval.policy?.requiresFullReview ? 'Desktop review' : 'Needs approval',
+      updatedAt: approval.createdAt,
+      workspaceId: approval.workspaceId,
+      workspaceName: approval.workspaceName,
+      repoId: approval.repoId,
+      repoName: approval.repoName,
+      sessionId: approval.sessionId,
+      requestKey: approval.requestKey,
+      risk: approval.policy?.risk,
+      requiresDesktopReview: approval.policy?.requiresFullReview,
+      actionLabel: approval.policy?.requiresFullReview ? 'Open Mac' : 'Decide',
+    }),
+  );
+
+  const activeThreadIds = new Set<string>();
+  const sessionItems = activeSessions.map((session): MobileWorkQueueItem => {
+    const thread = threads.find((candidate) => candidate.activeSessionId === session.id);
+    if (thread) activeThreadIds.add(thread.id);
+    const approvalCount = pendingApprovals.filter(
+      (approval) => approval.sessionId === session.id,
+    ).length;
+    const repo = session.repoId
+      ? activeWorkspace?.repos.find((candidate) => candidate.id === session.repoId)
+      : undefined;
+
+    return {
+      id: `session:${session.id}`,
+      kind: 'session',
+      priority:
+        session.status === 'error'
+          ? 'critical'
+          : approvalCount > 0
+            ? 'high'
+            : session.status === 'busy' || session.status === 'starting'
+              ? 'normal'
+              : 'low',
+      title: thread?.title ?? `${session.personaId} session`,
+      detail:
+        approvalCount > 0
+          ? `${approvalCount} approval${approvalCount === 1 ? '' : 's'} blocking this run.`
+          : session.status === 'busy'
+            ? 'Agent is working on the desktop host.'
+            : 'Session is ready for steering or handoff.',
+      statusLabel: approvalCount > 0 ? 'Blocked' : sessionStatusLabel(session.status),
+      updatedAt: thread?.updatedAt ?? session.startedAt,
+      workspaceId: session.workspaceId ?? activeWorkspace?.id,
+      workspaceName: activeWorkspace?.name,
+      repoId: repo?.id ?? session.repoId,
+      repoName: repo?.name ?? repo?.path,
+      sessionId: session.id,
+      threadId: thread?.id ?? session.appThreadId,
+      actionLabel:
+        session.status === 'busy' || session.status === 'starting' ? 'Interrupt' : 'Open thread',
+    };
+  });
+
+  const threadItems = threads
+    .filter((thread) => !activeThreadIds.has(thread.id) && thread.pendingApprovalCount === 0)
+    .slice(0, 4)
+    .map(
+      (thread): MobileWorkQueueItem => ({
+        id: `thread:${thread.id}`,
+        kind: 'thread',
+        priority: 'low',
+        title: thread.title,
+        detail: thread.preview ?? `${thread.personaId} thread`,
+        statusLabel: 'Recent',
+        updatedAt: thread.updatedAt,
+        workspaceId: thread.workspaceId,
+        workspaceName:
+          thread.workspaceId && thread.workspaceId === activeWorkspace?.id
+            ? activeWorkspace.name
+            : undefined,
+        threadId: thread.id,
+        sessionId: thread.activeSessionId,
+        actionLabel: 'Continue',
+      }),
+    );
+
+  return [...approvalItems, ...sessionItems, ...threadItems]
+    .sort(compareWorkQueueItems)
+    .slice(0, 12);
+}
+
+function normalizeWorkQueueItem(raw: unknown): MobileWorkQueueItem | null {
+  if (!isRecord(raw)) return null;
+  const id = stringValue(raw.id, '');
+  const title = stringValue(raw.title, '');
+  if (!id || !title) return null;
+
+  return {
+    id,
+    kind:
+      raw.kind === 'approval' || raw.kind === 'session' || raw.kind === 'thread'
+        ? raw.kind
+        : 'thread',
+    priority:
+      raw.priority === 'critical' ||
+      raw.priority === 'high' ||
+      raw.priority === 'normal' ||
+      raw.priority === 'low'
+        ? raw.priority
+        : 'normal',
+    title,
+    detail: stringValue(raw.detail, ''),
+    statusLabel: stringValue(raw.statusLabel, 'Needs attention'),
+    updatedAt: stringValue(raw.updatedAt, new Date().toISOString()),
+    workspaceId: optionalString(raw.workspaceId),
+    workspaceName: optionalString(raw.workspaceName),
+    repoId: optionalString(raw.repoId),
+    repoName: optionalString(raw.repoName),
+    sessionId: optionalString(raw.sessionId),
+    threadId: optionalString(raw.threadId),
+    requestKey: optionalString(raw.requestKey),
+    risk:
+      raw.risk === 'low' ||
+      raw.risk === 'medium' ||
+      raw.risk === 'high' ||
+      raw.risk === 'destructive'
+        ? raw.risk
+        : undefined,
+    requiresDesktopReview:
+      typeof raw.requiresDesktopReview === 'boolean' ? raw.requiresDesktopReview : undefined,
+    actionLabel: optionalString(raw.actionLabel),
   };
 }
 
@@ -369,25 +617,123 @@ function numberValue(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
-async function getStoredConnection(): Promise<string | null> {
-  if (hasSecureStore()) return SecureStore.getItemAsync(CONNECTION_KEY);
-  return getBrowserStorage()?.getItem(CONNECTION_KEY) ?? null;
+function optionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined;
 }
 
-async function setStoredConnection(value: string): Promise<void> {
-  if (hasSecureStore()) {
-    await SecureStore.setItemAsync(CONNECTION_KEY, value);
-    return;
+function sessionStatusLabel(status: MobileOverview['activeSessions'][number]['status']): string {
+  switch (status) {
+    case 'busy':
+      return 'Working';
+    case 'starting':
+      return 'Starting';
+    case 'error':
+      return 'Error';
+    case 'ready':
+      return 'Ready';
   }
-  getBrowserStorage()?.setItem(CONNECTION_KEY, value);
 }
 
-async function deleteStoredConnection(): Promise<void> {
+function compareWorkQueueItems(a: MobileWorkQueueItem, b: MobileWorkQueueItem): number {
+  const priorityOrder: Record<MobileWorkQueueItem['priority'], number> = {
+    critical: 0,
+    high: 1,
+    normal: 2,
+    low: 3,
+  };
+  const priorityDelta = priorityOrder[a.priority] - priorityOrder[b.priority];
+  if (priorityDelta !== 0) return priorityDelta;
+  return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+}
+
+function emptyConnectionState(): CompanionConnectionState {
+  return { activeConnectionId: null, connections: [] };
+}
+
+async function saveConnectionState(state: CompanionConnectionState): Promise<void> {
+  await setStoredValue(
+    CONNECTIONS_KEY,
+    JSON.stringify({
+      version: 2,
+      activeConnectionId: state.activeConnectionId,
+      connections: state.connections,
+    }),
+  );
+}
+
+function normalizeConnectionState(raw: unknown): CompanionConnectionState {
+  const state = isRecord(raw) ? raw : {};
+  const connections = arrayValue(state.connections)
+    .map((connection) => {
+      try {
+        return normalizeConnection(connection);
+      } catch {
+        return null;
+      }
+    })
+    .filter((connection): connection is CompanionConnection => Boolean(connection));
+  const activeConnectionId =
+    typeof state.activeConnectionId === 'string' &&
+    connections.some((connection) => connection.id === state.activeConnectionId)
+      ? state.activeConnectionId
+      : (connections[0]?.id ?? null);
+  return { activeConnectionId, connections };
+}
+
+function normalizeConnection(raw: unknown): CompanionConnection {
+  if (!isRecord(raw)) throw new Error('Invalid companion connection.');
+
+  const baseUrl = stringValue(raw.baseUrl, '');
+  const token = stringValue(raw.token, '');
+  if (!baseUrl || !token) throw new Error('Invalid companion connection.');
+
+  const now = new Date().toISOString();
+  return {
+    id: stringValue(raw.id, createConnectionId(baseUrl)),
+    baseUrl: trimBaseUrl(baseUrl),
+    token,
+    deviceName: stringValue(raw.deviceName, hostLabelFromBaseUrl(baseUrl)),
+    pairedAt: stringValue(raw.pairedAt, now),
+    lastUsedAt: stringValue(raw.lastUsedAt, now),
+  };
+}
+
+function createConnectionId(seed: string): string {
+  const normalized = trimBaseUrl(seed).toLowerCase();
+  let hash = 0;
+  for (let index = 0; index < normalized.length; index += 1) {
+    hash = (hash * 31 + normalized.charCodeAt(index)) >>> 0;
+  }
+  return `host-${hash.toString(36) || 'local'}`;
+}
+
+function hostLabelFromBaseUrl(baseUrl: string): string {
+  try {
+    return new URL(baseUrl).host;
+  } catch {
+    return 'Anvil host';
+  }
+}
+
+async function getStoredValue(key: string): Promise<string | null> {
+  if (hasSecureStore()) return SecureStore.getItemAsync(key);
+  return getBrowserStorage()?.getItem(key) ?? null;
+}
+
+async function setStoredValue(key: string, value: string): Promise<void> {
   if (hasSecureStore()) {
-    await SecureStore.deleteItemAsync(CONNECTION_KEY);
+    await SecureStore.setItemAsync(key, value);
     return;
   }
-  getBrowserStorage()?.removeItem(CONNECTION_KEY);
+  getBrowserStorage()?.setItem(key, value);
+}
+
+async function deleteStoredValue(key: string): Promise<void> {
+  if (hasSecureStore()) {
+    await SecureStore.deleteItemAsync(key);
+    return;
+  }
+  getBrowserStorage()?.removeItem(key);
 }
 
 function hasSecureStore(): boolean {

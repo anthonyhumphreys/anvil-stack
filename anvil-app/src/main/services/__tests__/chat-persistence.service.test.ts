@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { SCHEMA_SQL } from '../../db/schema.js';
 
 const inMemoryDb = new Database(':memory:');
@@ -25,8 +28,10 @@ import {
   updateChatThread,
 } from '../chat-persistence.service.js';
 import { listChatTurnSummaries, saveChatEvent } from '../chat-evidence.service.js';
+import { listChatArtifacts, upsertChatArtifact } from '../chat-artifact.service.js';
 
 beforeEach(() => {
+  inMemoryDb.exec('DELETE FROM chat_artifacts');
   inMemoryDb.exec('DELETE FROM chat_messages');
   inMemoryDb.exec('DELETE FROM chat_sessions');
   inMemoryDb.exec('DELETE FROM chat_threads');
@@ -57,7 +62,7 @@ beforeEach(() => {
          updated_at
        ) VALUES (?, ?, ?, NULL, 'main', 'indexed', 0, 1, datetime('now'), datetime('now'))`,
     )
-    .run('repo-1', 'orders-service', '/tmp/orders-service');
+    .run('repo-1', 'orders-service', mkdtempSync(join(tmpdir(), 'anvil-artifact-repo-')));
 });
 
 describe('chat thread persistence', () => {
@@ -312,5 +317,49 @@ describe('chat thread persistence', () => {
 
     const clearedGoal = saveChatThreadGoal(thread.id, null);
     expect(clearedGoal?.activeGoal).toBeUndefined();
+  });
+
+  it('persists versioned thread artifacts and writes repo-backed files', () => {
+    const thread = createChatThread({
+      workspaceId: 'ws-1',
+      personaId: 'coder',
+      title: 'Canvas work',
+      repoIds: ['repo-1'],
+      activeRepoId: 'repo-1',
+    });
+    const repo = inMemoryDb.prepare('SELECT path FROM repos WHERE id = ?').get('repo-1') as {
+      path: string;
+    };
+
+    const first = upsertChatArtifact({
+      threadId: thread.id,
+      repoId: 'repo-1',
+      sourceMessageId: 'm-1',
+      title: 'Review Pack',
+      kind: 'markdown',
+      relativePath: 'reviews/review-pack.md',
+      content: '# Review\n\nShip it carefully.',
+    });
+
+    expect(first.version).toBe(1);
+    expect(first.filePath).toBe(join(repo.path, '.anvil/artifacts/reviews/review-pack.md'));
+    expect(readFileSync(first.filePath!, 'utf8')).toContain('Ship it carefully.');
+
+    const second = upsertChatArtifact({
+      threadId: thread.id,
+      repoId: 'repo-1',
+      sourceMessageId: 'm-2',
+      title: 'Review Pack',
+      kind: 'markdown',
+      relativePath: 'reviews/review-pack.md',
+      content: '# Review\n\nNow with fewer footguns.',
+    });
+
+    expect(second.id).toBe(first.id);
+    expect(second.version).toBe(2);
+    expect(readFileSync(second.filePath!, 'utf8')).toContain('fewer footguns');
+    expect(listChatArtifacts(thread.id).map((artifact) => artifact.id)).toEqual([first.id]);
+
+    rmSync(repo.path, { recursive: true, force: true });
   });
 });

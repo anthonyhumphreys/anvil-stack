@@ -15,9 +15,9 @@ It uses the same `handleRuntimeRequest` boundary as deployment adapters, then
 provides local implementations for database, files, env, auth, logs, events,
 jobs, workflows, and supervised services.
 
-## What starts with `anvil-cloud dev`
+## What starts with `anvil cloud dev`
 
-`anvil-cloud dev` runs a build first. If the build passes, it imports the server bundle, loads the manifest, and starts:
+`anvil cloud dev` runs a build first. If the build passes, it imports the server bundle, loads the manifest, and starts:
 
 - local runtime HTTP server
 - local client asset server
@@ -42,9 +42,9 @@ Default ports:
 Options:
 
 ```bash
-anvil-cloud dev --port 8787 --client-port 5173
-anvil-cloud dev --json
-anvil-cloud dev --agent --json
+anvil cloud dev --port 8787 --client-port 5173
+anvil cloud dev --json
+anvil cloud dev --agent --json
 ```
 
 ## Local routes
@@ -109,8 +109,8 @@ The current database adapter stores JSON records in `dev.db`. It is intentionall
 Inspection commands:
 
 ```bash
-anvil-cloud db list --local --json
-anvil-cloud db dump notes --local --json
+anvil cloud db list --local --json
+anvil cloud db dump notes --local --json
 ```
 
 ## Files
@@ -138,7 +138,7 @@ Local logs are NDJSON in `.anvil/local/logs.ndjson`.
 Read them with:
 
 ```bash
-anvil-cloud logs --local --json
+anvil cloud logs --local --json
 ```
 
 Runtime errors include request id, handler kind, handler name, message, and error metadata.
@@ -152,9 +152,9 @@ server starts again.
 Useful commands:
 
 ```bash
-anvil-cloud workflows list --json
-anvil-cloud workflows show <runId> --json
-anvil-cloud workflows run <name> --input '{"example":true}' --json
+anvil cloud workflows list --json
+anvil cloud workflows show <runId> --json
+anvil cloud workflows run <name> --input '{"example":true}' --json
 ```
 
 ## Services
@@ -163,7 +163,7 @@ Local services run under the runtime service supervisor. Service state snapshots
 are written to `.anvil/local/services.json`.
 
 ```bash
-anvil-cloud services list --json
+anvil cloud services list --json
 ```
 
 For live state while the dev server is running, use the local Lens UI or
@@ -174,7 +174,7 @@ For live state while the dev server is running, use the local Lens UI or
 Use:
 
 ```bash
-anvil-cloud inspect --local --json
+anvil cloud inspect --local --json
 ```
 
 The local inspection payload includes:

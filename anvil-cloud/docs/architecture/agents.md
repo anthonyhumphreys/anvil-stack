@@ -206,6 +206,126 @@ Runtime code resolves providers by id through `AgentProviderRegistry`. Agent con
 
 `@anvil-cloud/aws` includes the first AWS inference provider. It maps Anvil messages to Bedrock Runtime requests and maps responses back to Anvil messages and token usage. AWS SDK imports remain in the AWS package.
 
+## Agent Sandboxes
+
+Some agent work does not fit a request-shaped runtime. Reviewing a manifest is
+small. Operating a repository, running tests, installing dependencies, using a
+browser, waiting for approval, and resuming with the same workspace state is
+session-shaped.
+
+Anvil models that as an Agent Sandbox: an isolated, inspectable,
+capability-bound execution workspace owned by an agent session. The runtime
+package exposes the provider-neutral sandbox contract; provider packages
+implement it.
+
+```txt
+Agent Manifest
+  ↓
+Agent Session
+  ↓
+Agent Sandbox
+  ↓
+tool execution, filesystem state, shell commands, browser work, logs, diffs
+  ↓
+Anvil approval, audit, and inspection surfaces
+```
+
+The sandbox is not a Cell authoring primitive. Cell code still declares agents,
+capabilities, approvals, and runtime requirements. Deployment adapters decide
+how to satisfy those requirements.
+
+An Agent Sandbox carries:
+
+- the agent manifest and mounted Cell context;
+- declared capabilities and approval-gated action ids;
+- a workspace snapshot or checked-out project state;
+- a brokered secret boundary rather than raw secret reads;
+- network policy derived from agent capabilities;
+- filesystem policy derived from agent capabilities;
+- structured tool logs, command output, diffs, and audit events;
+- lifecycle metadata for start, suspend, resume, and terminate.
+
+This gives agents a small world that can still do real work. The alternative is
+pretending every useful agent action is a stateless function call, which is a
+polite way to manufacture sadness.
+
+## AWS Lambda MicroVM Target
+
+For AWS deployments, `@anvil-cloud/aws` includes a Lambda MicroVM-backed sandbox
+provider. It uses the AWS Lambda MicroVM SDK to run, inspect, suspend, resume,
+terminate, and create auth tokens for MicroVM sessions. The provider requires a
+MicroVM image identifier, supplied either through `ANVIL_AWS_AGENT_SANDBOX_IMAGE`
+or directly in provider options.
+
+The Anvil mapping should stay provider-neutral:
+
+```txt
+runtime.sandbox: "required"
+  → AWS compatibility requires an Agent Sandbox image
+  → AwsLambdaMicroVmSandboxProvider starts a Lambda MicroVM session
+
+runtime.durability: "required"
+  → still unsupported until Anvil has durable orchestration and persisted run state
+
+approvals.requiredFor
+  → enforced by Anvil before sharp tools execute inside the sandbox
+```
+
+The Lambda-based Cell runtime remains the request/control boundary. The
+MicroVM-backed sandbox is the agent workspace. AWS preview deployment plans now
+report `agent-sandboxes` changes for mounted agents with `runtime.sandbox:
+"required"`, add review/cost entries, and block preview deploys unless the
+sandbox image is configured.
+
+```txt
+Cell Lambda
+  - auth
+  - query/mutation/endpoint/job routing
+  - capability broker
+  - approval gate
+  - session registry
+
+Agent Sandbox MicroVM
+  - repository workspace
+  - shell and tool execution
+  - browser/MCP processes
+  - generated-code execution
+  - streamed output and filesystem diff
+```
+
+This split matters. Lambda is a good Cell runtime. A MicroVM is a good
+workshop. Asking either one to be both is how abstractions acquire a basement.
+
+## Target Agent Delivery Loop
+
+The current implemented slice gives AWS-backed agents:
+
+- provider-neutral sandbox session types in `@anvil-cloud/runtime`;
+- `AwsLambdaMicroVmSandboxProvider` in `@anvil-cloud/aws`;
+- AWS compatibility reporting that treats sandbox-required agents as supported
+  when a sandbox image is configured;
+- AWS preview plan changes, review gates, and cost drivers for sandbox-required
+  mounted agents;
+- `anvil-cloud agents sandboxes --json` for CLI/agent inspection.
+
+The fuller delivery loop still needs to:
+
+1. start from a provider-neutral agent manifest;
+2. launch or resume a sandbox with a workspace snapshot;
+3. inspect the Cell manifest and declared capabilities;
+4. run tests, typechecks, browser checks, package analysis, or build commands;
+5. stream evidence into Anvil Lens and CLI JSON output;
+6. request approval before protected actions such as external email, branch
+   pushes, preview deploys, or production changes;
+7. call brokered Anvil control-plane actions after approval;
+8. suspend when waiting on a human;
+9. resume with the same workspace state;
+10. terminate with logs, diffs, artifacts, cost metadata, and audit history.
+
+That is the product-shaped version of "agent sandboxing": not merely safer code
+execution, but inspectable agent workspaces with policy in front and receipts
+behind.
+
 ## Runtime Invocation MVP
 
 The first runtime invocation path resolves instructions, builds a system message, appends user input, resolves the configured provider, invokes it, and returns a provider-neutral response.

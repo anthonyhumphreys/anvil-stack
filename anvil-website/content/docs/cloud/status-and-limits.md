@@ -24,7 +24,7 @@ what evidence should I inspect before trusting a Cell?"
 | --- | --- |
 | Runtime DSL | `app`, `query`, `mutation`, `endpoint`, `job`, `workflow`, `service`, `table`, and field builders exist. |
 | Runtime execution | `handleRuntimeRequest` supports query, mutation, endpoint, job, and workflow handlers. Services run through the runtime `ServiceSupervisor`, not per-request invocation. |
-| Agents | `defineAgent`, agent capabilities, approval contracts, provider-neutral manifests, provider registry, deterministic local stub inference, mounted Cell Agents, local invocation routes, CLI contract commands, and AWS Bedrock inference provider support exist. |
+| Agents | `defineAgent`, agent capabilities, approval contracts, provider-neutral manifests, provider registry, deterministic local stub inference, mounted Cell Agents, local invocation routes, CLI contract commands, AWS Bedrock inference provider support, and the Agent Sandbox target architecture exist. |
 | Runtime host | Host adapter interfaces exist for db, files, env, auth, logs, events, and jobs. |
 | Builder | Config, import policy, typecheck, server/client bundle, manifest extraction, generated client, and build metadata exist. |
 | Local runtime | Local HTTP server, JSON database, files, auth, logs, events, jobs, workflows, supervised services, manifest, and inspection state exist. |
@@ -61,18 +61,19 @@ Safety comes from a smaller contract: declared capabilities, import restrictions
 | No hosted control plane | A local Lens UI (`/_anvil/lens`) and the `ControlPlaneApi` contract exist, but inspect and logs still depend on local state or AWS deployment metadata. A hosted plane would be a future adapter behind the same contract. See [Anvil Lens](/docs/cloud/lens). |
 | Workflows need deeper remote inspection | Local workflows have durable run state, retries, timeouts, resume behavior, CLI commands, and Lens inspection. AWS preview maps workflows to Step Functions, but remote `workflows list/show --app` is not wired yet. |
 | Services are preview-resource support | The `service` primitive is supervised by the local runtime. AWS preview synthesizes ECS/Fargate service resources for review and cleanup evidence, but exact Cell service-handler execution inside Fargate is still a hardening step. See [Services](/docs/cloud/services). |
-| Usage is visibility, not billing | `anvil-cloud usage --preview` reports declared resource counts and cost-driver hints. It does not query AWS billing or produce prices. |
-| Agents are foundation-level | Mounted Cell Agents run locally and compile to manifests. Project-agent discovery and deterministic Guardian review exist; hosted orchestration, production approval UI, durable multi-step tool execution, hosted memory, sandbox execution, and full AWS agent infrastructure generation are not implemented yet. See [Anvil Agents](/docs/cloud/agents). |
+| Usage is visibility, not billing | `anvil cloud usage --preview` reports declared resource counts and cost-driver hints. It does not query AWS billing or produce prices. |
+| Agents are foundation-level | Mounted Cell Agents run locally and compile to manifests. Project-agent discovery and deterministic Guardian review exist; hosted orchestration, production approval UI, durable multi-step tool execution, and hosted memory are not implemented yet. See [Anvil Agents](/docs/cloud/agents). |
+| Agent Sandboxes are first-slice implemented | Runtime sandbox types, the AWS Lambda MicroVM sandbox provider, deploy-plan entries, compatibility gates, cost/review reporting, and CLI readiness output exist. Hosted policy brokering, session streaming, workspace snapshots, sandbox-aware Lens views, and remote inspect/logs are not implemented. See [Agent Sandboxes](/docs/cloud/agent-sandboxes). |
 
 ## What to verify before trusting a Cell
 
 Run:
 
 ```bash
-anvil-cloud check --json
-anvil-cloud build --json
-anvil-cloud inspect --local --json
-anvil-cloud logs --local --json
+anvil cloud check --json
+anvil cloud build --json
+anvil cloud inspect --local --json
+anvil cloud logs --local --json
 ```
 
 Before preview deploy, inspect:
@@ -103,7 +104,7 @@ Before treating AWS preview as more than a local deploy experiment, verify:
 - CloudWatch logs
 - deployment metadata table
 - remote `inspect` and `logs`
-- preview cleanup through `anvil-cloud destroy --preview --app <name> --yes`
+- preview cleanup through `anvil cloud destroy --preview --app <name> --yes`
 - rollback dry-run intent plus the current manual fallback: redeploy a known-good checkout or destroy the preview stack
 
 ## Contribution priorities
@@ -120,6 +121,7 @@ Useful next work includes:
 - standalone project-agent manifest generation beyond instruction discovery
 - provider-mode examples for AWS Bedrock with local contract checks
 - production approval, memory, sandbox, and durable orchestration adapter work for agents
+- AWS Lambda MicroVM-backed Agent Sandboxes for sandbox-required agents
 - automated artifact rollback beyond dry-run intent
 - real cost reporting beyond declared usage visibility and preview plan cost drivers
 - clearer package publishing path

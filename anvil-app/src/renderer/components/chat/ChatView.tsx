@@ -15,6 +15,7 @@ import {
   X,
   Palette,
   ClipboardList,
+  Presentation,
   GraduationCap,
   Database,
   Sparkles,
@@ -27,10 +28,18 @@ import {
   Bot,
   SendHorizontal,
   Activity,
+  FileText,
+  Braces,
+  PanelRightOpen,
+  PanelRightClose,
+  Copy,
+  Check,
+  ExternalLink,
 } from 'lucide-react';
 import type {
   AgentRunSummary,
   ChatAttachment,
+  ChatArtifact,
   ChatGoalSnapshot,
   ChatPlanSnapshot,
   ChatPlanStep,
@@ -51,6 +60,7 @@ import {
 } from './ChatMessage';
 import { ChatEmptyState } from './ChatEmptyState';
 import { ChatStatusBar } from './ChatStatusBar';
+import { MarkdownRenderer } from './MarkdownRenderer';
 import { useChatContext, type ChatEntry } from '../../contexts/ChatContext';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { DesignProvider } from '../../contexts/DesignContext';
@@ -73,6 +83,7 @@ const PERSONA_ICONS: Record<string, React.ReactNode> = {
   Eye: <Eye size={14} />,
   BookOpen: <BookOpen size={14} />,
   ClipboardList: <ClipboardList size={14} />,
+  Presentation: <Presentation size={14} />,
   Palette: <Palette size={14} />,
   GraduationCap: <GraduationCap size={14} />,
   Database: <Database size={14} />,
@@ -108,6 +119,7 @@ export function ChatView() {
     collaborationMode,
     activePlan,
     activeGoal,
+    activeArtifacts,
     chatLayout,
     send,
     steer,
@@ -135,6 +147,8 @@ export function ChatView() {
   const [goalPopoverOpen, setGoalPopoverOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(false);
   const [runsOpen, setRunsOpen] = useState(false);
+  const [canvasOpen, setCanvasOpen] = useState(true);
+  const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [recentRuns, setRecentRuns] = useState<AgentRunSummary[]>([]);
   const [activeSessions, setActiveSessions] = useState<CodexSession[]>([]);
   const [steerDraft, setSteerDraft] = useState('');
@@ -432,6 +446,28 @@ export function ChatView() {
 
   const isEmpty = entries.length === 0 && !error;
   const showCenteredEmptyPane = isEmpty || (scaffoldModeActive && entries.length === 0 && !error);
+  const selectedArtifact =
+    activeArtifacts.find((artifact) => artifact.id === selectedArtifactId) ??
+    activeArtifacts[0] ??
+    null;
+  const showCanvasSidebar =
+    !isDesignPersona &&
+    !isBaPersona &&
+    canvasOpen &&
+    (activeArtifacts.length > 0 || activePlan || activeGoal);
+
+  useEffect(() => {
+    if (activeArtifacts.length === 0) {
+      setSelectedArtifactId(null);
+      return;
+    }
+    setCanvasOpen(true);
+    setSelectedArtifactId((current) =>
+      current && activeArtifacts.some((artifact) => artifact.id === current)
+        ? current
+        : activeArtifacts[0].id,
+    );
+  }, [activeArtifacts]);
 
   const handleBranch = useCallback(
     (messageIndex: number) => {
@@ -690,6 +726,26 @@ export function ChatView() {
             >
               <MessageSquarePlus size={13} />
               <span className="hidden xl:inline">{getNewChatThreadActionLabel()}</span>
+            </button>
+          )}
+
+          {!isDesignPersona && !isBaPersona && (
+            <button
+              type="button"
+              onClick={() => setCanvasOpen((open) => !open)}
+              disabled={activeArtifacts.length === 0 && !activePlan && !activeGoal}
+              className="flex items-center gap-1.5 rounded-xl border border-border px-3 py-1.5 text-sm text-text-secondary transition-all hover:bg-bg-tertiary hover:text-text-primary hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-45"
+              title={canvasOpen ? 'Hide canvas' : 'Show canvas'}
+              aria-label={canvasOpen ? 'Hide canvas' : 'Show canvas'}
+              aria-pressed={canvasOpen}
+            >
+              {canvasOpen ? <PanelRightClose size={13} /> : <PanelRightOpen size={13} />}
+              <span className="hidden xl:inline">Canvas</span>
+              {activeArtifacts.length > 0 && (
+                <span className="rounded-full bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold text-accent">
+                  {activeArtifacts.length}
+                </span>
+              )}
             </button>
           )}
         </div>
@@ -1000,17 +1056,23 @@ export function ChatView() {
           />
         )}
 
-        {!isDesignPersona && !isBaPersona && (activePlan || activeGoal) && (
+        {showCanvasSidebar && (
           <ResizableSidebarPanel
-            storageKey="chat:plan-goal"
+            storageKey="chat:canvas"
             side="right"
-            title="Plan & Goal"
-            defaultWidth={360}
-            minWidth={300}
-            maxWidth={520}
+            title="Canvas"
+            defaultWidth={460}
+            minWidth={360}
+            maxWidth={720}
             className="border-l border-border/60 bg-bg-secondary/50"
           >
-            <PlanGoalSidebar activePlan={activePlan} activeGoal={activeGoal} />
+            <ChatCanvasSidebar
+              artifacts={activeArtifacts}
+              selectedArtifact={selectedArtifact}
+              activePlan={activePlan}
+              activeGoal={activeGoal}
+              onSelectArtifact={setSelectedArtifactId}
+            />
           </ResizableSidebarPanel>
         )}
       </div>
@@ -1454,17 +1516,211 @@ function GoalControl({
   );
 }
 
+function ChatCanvasSidebar({
+  artifacts,
+  selectedArtifact,
+  activePlan,
+  activeGoal,
+  onSelectArtifact,
+}: {
+  artifacts: ChatArtifact[];
+  selectedArtifact: ChatArtifact | null;
+  activePlan: ChatPlanSnapshot | null;
+  activeGoal: ChatGoalSnapshot | null;
+  onSelectArtifact: (artifactId: string) => void;
+}) {
+  const [mode, setMode] = useState<'preview' | 'source'>('preview');
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = useCallback(() => {
+    if (!selectedArtifact) return;
+    void navigator.clipboard.writeText(selectedArtifact.content).then(() => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1400);
+    });
+  }, [selectedArtifact]);
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="border-b border-border/60 px-3 py-2.5">
+        <div className="flex items-center gap-2">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-accent/20 bg-accent/10 text-accent">
+            <Braces size={15} />
+          </div>
+          <div className="min-w-0">
+            <h3 className="truncate text-sm font-semibold text-text-primary">Canvas</h3>
+            <p className="truncate text-xs text-text-tertiary">
+              {artifacts.length > 0
+                ? `${artifacts.length} artifact${artifacts.length === 1 ? '' : 's'}`
+                : 'Plan and goal context'}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {artifacts.length > 0 && (
+        <div className="border-b border-border/60 p-2">
+          <div className="flex gap-1 overflow-x-auto pb-1">
+            {artifacts.map((artifact) => (
+              <button
+                key={artifact.id}
+                type="button"
+                onClick={() => onSelectArtifact(artifact.id)}
+                className={`flex max-w-48 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-left text-xs transition-colors ${
+                  selectedArtifact?.id === artifact.id
+                    ? 'border-accent/35 bg-accent/10 text-accent'
+                    : 'border-border bg-bg-primary/60 text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
+                }`}
+                title={artifact.title}
+              >
+                <ArtifactIcon kind={artifact.kind} />
+                <span className="truncate">{artifact.title}</span>
+                <span className="shrink-0 text-[10px] opacity-70">v{artifact.version}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {selectedArtifact ? (
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className="border-b border-border/60 px-3 py-2">
+            <div className="flex items-start gap-2">
+              <ArtifactIcon kind={selectedArtifact.kind} />
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-medium text-text-primary">
+                  {selectedArtifact.title}
+                </div>
+                <div className="mt-0.5 truncate font-mono text-[11px] text-text-tertiary">
+                  {selectedArtifact.filePath ?? `.anvil/artifacts/${selectedArtifact.relativePath}`}
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setMode('preview')}
+                  className={`rounded-md p-1.5 transition-colors ${
+                    mode === 'preview'
+                      ? 'bg-accent/10 text-accent'
+                      : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary'
+                  }`}
+                  title="Preview"
+                  aria-label="Preview artifact"
+                  aria-pressed={mode === 'preview'}
+                >
+                  <Eye size={13} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMode('source')}
+                  className={`rounded-md p-1.5 transition-colors ${
+                    mode === 'source'
+                      ? 'bg-accent/10 text-accent'
+                      : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary'
+                  }`}
+                  title="Source"
+                  aria-label="View artifact source"
+                  aria-pressed={mode === 'source'}
+                >
+                  <Code size={13} />
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCopy}
+                  className="rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+                  title={copied ? 'Copied' : 'Copy artifact'}
+                  aria-label={copied ? 'Copied artifact' : 'Copy artifact'}
+                >
+                  {copied ? <Check size={13} className="text-success" /> : <Copy size={13} />}
+                </button>
+                {selectedArtifact.filePath && (
+                  <button
+                    type="button"
+                    onClick={() => window.open(`file://${selectedArtifact.filePath}`, '_blank')}
+                    className="rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+                    title="Open artifact file"
+                    aria-label="Open artifact file"
+                  >
+                    <ExternalLink size={13} />
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-auto bg-bg-primary/40">
+            <ArtifactBody artifact={selectedArtifact} mode={mode} />
+          </div>
+        </div>
+      ) : (
+        <PlanGoalSidebar activePlan={activePlan} activeGoal={activeGoal} />
+      )}
+
+      {selectedArtifact && (activePlan || activeGoal) && (
+        <div className="max-h-60 overflow-auto border-t border-border/60">
+          <PlanGoalSidebar activePlan={activePlan} activeGoal={activeGoal} compact />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ArtifactIcon({ kind }: { kind: ChatArtifact['kind'] }) {
+  if (kind === 'markdown' || kind === 'text') return <FileText size={13} className="shrink-0" />;
+  if (kind === 'html') return <Eye size={13} className="shrink-0" />;
+  return <Braces size={13} className="shrink-0" />;
+}
+
+function ArtifactBody({ artifact, mode }: { artifact: ChatArtifact; mode: 'preview' | 'source' }) {
+  if (mode === 'source' || artifact.kind === 'code' || artifact.kind === 'data') {
+    return (
+      <pre className="min-h-full overflow-auto p-4 font-mono text-xs leading-relaxed text-text-secondary">
+        <code>{artifact.content}</code>
+      </pre>
+    );
+  }
+
+  if (artifact.kind === 'html') {
+    return (
+      <iframe
+        title={artifact.title}
+        sandbox=""
+        srcDoc={artifact.content}
+        className="h-full min-h-[520px] w-full bg-white"
+      />
+    );
+  }
+
+  if (artifact.kind === 'markdown') {
+    return (
+      <div className="mx-auto max-w-3xl px-5 py-4">
+        <MarkdownRenderer content={artifact.content} />
+      </div>
+    );
+  }
+
+  return (
+    <pre className="min-h-full whitespace-pre-wrap p-4 text-sm leading-relaxed text-text-secondary">
+      {artifact.content}
+    </pre>
+  );
+}
+
 function PlanGoalSidebar({
   activePlan,
   activeGoal,
+  compact = false,
 }: {
   activePlan: ChatPlanSnapshot | null;
   activeGoal: ChatGoalSnapshot | null;
+  compact?: boolean;
 }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-3">
       {activeGoal && (
-        <section className="mb-3 rounded-xl border border-success/20 bg-success/5 p-3">
+        <section
+          className={`${compact ? 'mb-2' : 'mb-3'} rounded-xl border border-success/20 bg-success/5 p-3`}
+        >
           <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
             <Target size={14} className="text-success" />
             Goal

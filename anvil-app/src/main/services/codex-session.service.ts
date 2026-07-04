@@ -244,6 +244,7 @@ export async function sendMessage(
     input: buildUserInput(message, attachments),
     approvalPolicy: codexPolicy.approvalPolicy,
     sandboxPolicy: sandboxModeToTurnPolicy(codexPolicy.sandbox, session.cwd),
+    ...(options?.reasoningEffort ? { effort: options.reasoningEffort } : {}),
   });
 }
 
@@ -293,6 +294,22 @@ export function buildTurnSteerParams(
     expectedTurnId: turnId,
     input: buildUserInput(message, attachments),
   };
+}
+
+/**
+ * Emit an assistant reply that was produced locally (e.g. by Apple Foundation
+ * Models) through the same event stream a Codex turn would use, so the
+ * renderer displays and persists it without a Codex round-trip.
+ */
+export function emitLocalAssistantTurn(sessionId: string, text: string): void {
+  const session = sessions.get(sessionId);
+  if (!session) throw new Error(`Session not found: ${sessionId}`);
+
+  broadcastEvent(sessionId, { type: 'status', status: 'thinking' });
+  broadcastEvent(sessionId, { type: 'text', text });
+  session.status = 'ready';
+  broadcastEvent(sessionId, { type: 'status', status: 'complete' });
+  emitCompanionEvent('sessions');
 }
 
 export function interruptTurn(sessionId: string): void {

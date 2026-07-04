@@ -1,6 +1,6 @@
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { useRef, useState } from 'react';
-import { ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Alert, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from 'expo-camera';
 import {
   ActionButton,
@@ -18,8 +18,17 @@ import {
 import { useCompanion } from '@/contexts/companion-context';
 
 export default function SettingsScreen() {
-  const { connection, error, pairFromQr, setManualConnection, disconnect, refresh } =
-    useCompanion();
+  const {
+    connection,
+    connections,
+    error,
+    pairFromQr,
+    setManualConnection,
+    selectHost,
+    forgetHost,
+    disconnect,
+    refresh,
+  } = useCompanion();
   const [permission, requestPermission] = useCameraPermissions();
   const [scanning, setScanning] = useState(false);
   const [pairing, setPairing] = useState(false);
@@ -62,6 +71,17 @@ export default function SettingsScreen() {
       deviceName,
     });
     await refresh();
+  };
+
+  const confirmForgetHost = (connectionId: string, label: string) => {
+    Alert.alert('Forget host?', `Remove ${label} from this device.`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Forget',
+        style: 'destructive',
+        onPress: () => void forgetHost(connectionId),
+      },
+    ]);
   };
 
   return (
@@ -129,7 +149,11 @@ export default function SettingsScreen() {
           </View>
         </View>
         {connection ? (
-          <ActionButton label="Disconnect" variant="danger" onPress={() => void disconnect()} />
+          <ActionButton
+            label="Forget active host"
+            variant="danger"
+            onPress={() => void disconnect()}
+          />
         ) : (
           <EmptyState
             title="Waiting for a Mac"
@@ -139,8 +163,77 @@ export default function SettingsScreen() {
       </Panel>
 
       <Panel>
+        <View style={panelHeaderStyle}>
+          <View style={iconBoxStyle}>
+            <MaterialIcons name="computer" size={18} color={companionColors.accentInk} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={titleStyle}>Paired hosts</Text>
+            <Text style={bodyStyle}>
+              Choose which Mac this companion should control. Everything else follows the selected
+              host.
+            </Text>
+          </View>
+        </View>
+        {connections.length > 0 ? (
+          connections.map((host) => {
+            const active = host.id === connection?.id;
+            return (
+              <View key={host.id} style={[hostRowStyle, active && activeHostRowStyle]}>
+                <TouchableOpacity
+                  disabled={active}
+                  onPress={() => void selectHost(host.id)}
+                  style={hostMainStyle}
+                >
+                  <View
+                    style={[
+                      hostIconStyle,
+                      {
+                        backgroundColor: active
+                          ? companionColors.greenSoft
+                          : companionColors.surfaceMuted,
+                      },
+                    ]}
+                  >
+                    <MaterialIcons
+                      name={active ? 'radio-button-checked' : 'radio-button-unchecked'}
+                      size={18}
+                      color={active ? companionColors.green : companionColors.subtle}
+                    />
+                  </View>
+                  <View style={{ flex: 1, gap: 2 }}>
+                    <Text numberOfLines={1} style={titleStyle}>
+                      {host.deviceName || hostLabel(host.baseUrl)}
+                    </Text>
+                    <Text selectable numberOfLines={1} style={subtleStyle}>
+                      {host.baseUrl}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() =>
+                    confirmForgetHost(host.id, host.deviceName || hostLabel(host.baseUrl))
+                  }
+                  style={forgetButtonStyle}
+                >
+                  <MaterialIcons name="delete-outline" size={20} color={companionColors.red} />
+                </TouchableOpacity>
+              </View>
+            );
+          })
+        ) : (
+          <EmptyState
+            title="No hosts paired"
+            body="Scan a desktop pairing code to add the first host."
+          />
+        )}
+      </Panel>
+
+      <Panel>
         <Text style={titleStyle}>Manual connection</Text>
-        <Text style={bodyStyle}>Useful when QR scanning is being fussy. Technology, majestically.</Text>
+        <Text style={bodyStyle}>
+          Useful when QR scanning is being fussy. Technology, majestically.
+        </Text>
         <TextInput
           value={manualBaseUrl}
           onChangeText={setManualBaseUrl}
@@ -209,3 +302,46 @@ const refreshLinkStyle = {
   gap: 8,
   paddingVertical: 8,
 };
+const hostRowStyle = {
+  flexDirection: 'row' as const,
+  alignItems: 'center' as const,
+  gap: 8,
+  borderRadius: 10,
+  borderWidth: 1,
+  borderColor: companionColors.borderSubtle,
+  backgroundColor: companionColors.surface,
+  padding: 10,
+};
+const activeHostRowStyle = {
+  borderColor: '#abefc6',
+  backgroundColor: companionColors.greenSoft,
+};
+const hostMainStyle = {
+  flex: 1,
+  flexDirection: 'row' as const,
+  alignItems: 'center' as const,
+  gap: 10,
+};
+const hostIconStyle = {
+  alignItems: 'center' as const,
+  justifyContent: 'center' as const,
+  width: 34,
+  height: 34,
+  borderRadius: 9,
+};
+const forgetButtonStyle = {
+  alignItems: 'center' as const,
+  justifyContent: 'center' as const,
+  width: 38,
+  height: 38,
+  borderRadius: 10,
+  backgroundColor: companionColors.redSoft,
+};
+
+function hostLabel(baseUrl: string): string {
+  try {
+    return new URL(baseUrl).host;
+  } catch {
+    return 'Anvil host';
+  }
+}

@@ -1,7 +1,7 @@
 ---
 title: CLI reference
 navTitle: CLI reference
-description: Commands, JSON output, exit codes, local inspection, and AWS preview deployment for the Anvil Cloud CLI.
+description: Commands, JSON output, exit codes, local inspection, and AWS preview deployment through the Anvil Cloud CLI.
 product: Anvil Cloud
 section: Reference
 order: 140
@@ -9,60 +9,82 @@ order: 140
 
 # CLI reference
 
-The Anvil Cloud CLI package is `@anvilstack/cloud-cli` and the binary is
-`anvil-cloud`. From a checkout, run the command contract through
-`pnpm anvil-cloud ...` at the workspace root, or through `node
-../../packages/cli/dist/index.js ...` inside checked-in examples. Human output
-can be friendly, but automation output must be stable.
+The normal user-facing command is `anvil cloud ...` through the umbrella
+`@anvilstack/cli` package:
+
+```bash
+npm install --global @anvilstack/cli
+npm install --global @anvilstack/cloud-cli
+
+anvil cloud check --json
+anvil cloud dev
+```
+
+The product package is `@anvilstack/cloud-cli` and the direct binary is
+`anvil-cloud`. The wrapper dispatches to that binary, so these are equivalent
+when both packages are installed:
+
+```bash
+anvil cloud check --json
+anvil-cloud check --json
+```
+
+Use `anvil cloud ...` in docs, tutorials, and normal shell usage. Use
+`anvil-cloud ...` when you are testing the product package directly, debugging
+wrapper dispatch, or writing a package-specific CI path. From a checkout, run
+the command contract through `pnpm anvil-cloud ...` at the workspace root, or
+through `node ../../packages/cli/dist/index.js ...` inside checked-in examples.
+Human output can be friendly, but automation output must be stable.
 
 ## Commands
 
 | Command | Purpose |
 | --- | --- |
-| `anvil-cloud new <name>` | Create a new Cell project. |
-| `anvil-cloud dev` | Build and start the local runtime and client server. |
-| `anvil-cloud check` | Validate config, import policy, capabilities, and TypeScript without writing build output. |
-| `anvil-cloud review` | Aggregate Guard diagnostics and AWS preview approval gates into one trust report. |
-| `anvil-cloud build` | Build server and client artifacts, manifest, generated client, generated types, and metadata. |
-| `anvil-cloud agents validate` | Validate mounted agents and compile their contracts without calling a model provider. |
-| `anvil-cloud agents manifest` | Emit provider-neutral agent manifests from the current Cell build. |
-| `anvil-cloud agents discover` | Discover project agent instruction files and mounted Cell agents. |
-| `anvil-cloud agents guardian` | Run the deterministic Guardian review over the Cell trust report. |
-| `anvil-cloud agents invoke <name>` | Invoke a mounted agent locally through the registered provider (`--input <text>`). |
-| `anvil-cloud inspect --local` | Inspect local manifest, auth, database counts, and recent errors. |
-| `anvil-cloud lens` | Verify the local runtime is reachable and print the Anvil Lens URL. |
-| `anvil-cloud logs --local` | Read local NDJSON logs. |
-| `anvil-cloud db list --local` | List local database tables. |
-| `anvil-cloud db dump <table> --local` | Dump local table rows. |
-| `anvil-cloud deploy --preview` | Build and synthesize AWS preview deployment output, with provisioning when configured. |
-| `anvil-cloud usage --preview` | Report declared preview resource counts, cost-driver hints, and cleanup commands. |
-| `anvil-cloud rollback --preview --dry-run` | Emit dry-run rollback intent for a previous preview deployment. |
-| `anvil-cloud auth users` | List local identity provider users. |
-| `anvil-cloud auth add-user <id>` | Create a local user (`--email`, `--roles a,b`). |
-| `anvil-cloud auth remove-user <id>` | Delete a local user. |
-| `anvil-cloud auth login <id>` | Set the ambient dev identity and print a JWT. |
-| `anvil-cloud auth token <id>` | Mint a JWT for a user (`--ttl` seconds); ideal for agents and curl. |
-| `anvil-cloud auth whoami` | Show the ambient dev identity. |
-| `anvil-cloud workflows list` | List local workflow runs. |
-| `anvil-cloud workflows show <runId>` | Show a local workflow run with per-step state. |
-| `anvil-cloud workflows run <name>` | Build the Cell and execute a workflow locally (`--input '<json>'`). |
-| `anvil-cloud services list` | Show the last recorded local service states from `.anvil/local/services.json`. |
+| `anvil cloud new <name>` | Create a new Cell project. |
+| `anvil cloud dev` | Build and start the local runtime and client server. |
+| `anvil cloud check` | Validate config, import policy, capabilities, and TypeScript without writing build output. |
+| `anvil cloud review` | Aggregate Guard diagnostics and AWS preview approval gates into one trust report. |
+| `anvil cloud build` | Build server and client artifacts, manifest, generated client, generated types, and metadata. |
+| `anvil cloud agents validate` | Validate mounted agents and compile their contracts without calling a model provider. |
+| `anvil cloud agents manifest` | Emit provider-neutral agent manifests from the current Cell build. |
+| `anvil cloud agents discover` | Discover project agent instruction files and mounted Cell agents. |
+| `anvil cloud agents guardian` | Run the deterministic Guardian review over the Cell trust report. |
+| `anvil cloud agents sandboxes` | Report AWS Lambda MicroVM sandbox readiness for sandbox-required agents. |
+| `anvil cloud agents invoke <name>` | Invoke a mounted agent locally through the registered provider (`--input <text>`). |
+| `anvil cloud inspect --local` | Inspect local manifest, auth, database counts, and recent errors. |
+| `anvil cloud lens` | Verify the local runtime is reachable and print the Anvil Lens URL. |
+| `anvil cloud logs --local` | Read local NDJSON logs. |
+| `anvil cloud db list --local` | List local database tables. |
+| `anvil cloud db dump <table> --local` | Dump local table rows. |
+| `anvil cloud deploy --preview` | Build and synthesize AWS preview deployment output, with provisioning when configured. |
+| `anvil cloud usage --preview` | Report declared preview resource counts, cost-driver hints, and cleanup commands. |
+| `anvil cloud rollback --preview --dry-run` | Emit dry-run rollback intent for a previous preview deployment. |
+| `anvil cloud auth users` | List local identity provider users. |
+| `anvil cloud auth add-user <id>` | Create a local user (`--email`, `--roles a,b`). |
+| `anvil cloud auth remove-user <id>` | Delete a local user. |
+| `anvil cloud auth login <id>` | Set the ambient dev identity and print a JWT. |
+| `anvil cloud auth token <id>` | Mint a JWT for a user (`--ttl` seconds); ideal for agents and curl. |
+| `anvil cloud auth whoami` | Show the ambient dev identity. |
+| `anvil cloud workflows list` | List local workflow runs. |
+| `anvil cloud workflows show <runId>` | Show a local workflow run with per-step state. |
+| `anvil cloud workflows run <name>` | Build the Cell and execute a workflow locally (`--input '<json>'`). |
+| `anvil cloud services list` | Show the last recorded local service states from `.anvil/local/services.json`. |
 
 Remote inspection:
 
 ```bash
-anvil-cloud inspect --app notes --env preview --json
-anvil-cloud logs --app notes --env preview --json
+anvil cloud inspect --app notes --env preview --json
+anvil cloud logs --app notes --env preview --json
 ```
 
 Remote AWS readers require `ANVIL_AWS_DEPLOYMENT_METADATA_TABLE`.
 
-## `anvil-cloud new <name>`
+## `anvil cloud new <name>`
 
 Creates a starter Cell:
 
 ```bash
-anvil-cloud new notes
+anvil cloud new notes
 ```
 
 JSON output:
@@ -72,11 +94,11 @@ JSON output:
   "ok": true,
   "cell": "notes",
   "path": "./notes",
-  "next": ["cd notes", "anvil-cloud dev"]
+  "next": ["cd notes", "anvil cloud dev"]
 }
 ```
 
-## `anvil-cloud dev`
+## `anvil cloud dev`
 
 Starts local runtime and client servers after a successful build.
 
@@ -99,13 +121,13 @@ Anvil Lens           http://localhost:8787/_anvil/lens
 
 `--agent --json` emits JSONL events and avoids rich terminal output.
 
-## `anvil-cloud lens`
+## `anvil cloud lens`
 
 Checks that a local runtime is reachable (`GET /_anvil/health` at `--port`, default `8787`) and prints the Lens URL:
 
 ```bash
-anvil-cloud lens
-anvil-cloud lens --json
+anvil cloud lens
+anvil cloud lens --json
 ```
 
 Success:
@@ -114,14 +136,14 @@ Success:
 { "ok": true, "url": "http://localhost:8787/_anvil/lens" }
 ```
 
-If nothing is running, the command exits with code `5` and returns `LENS_SERVER_NOT_RUNNING` telling you to run `anvil-cloud dev` first. See [Anvil Lens](/docs/cloud/lens).
+If nothing is running, the command exits with code `5` and returns `LENS_SERVER_NOT_RUNNING` telling you to run `anvil cloud dev` first. See [Anvil Lens](/docs/cloud/lens).
 
-## `anvil-cloud check`
+## `anvil cloud check`
 
 Runs validation without writing artifacts:
 
 ```bash
-anvil-cloud check --json
+anvil cloud check --json
 ```
 
 Failure shape:
@@ -152,21 +174,21 @@ Failure shape:
 `errors` is kept as a compatibility alias for older automation; new agent flows
 should read `diagnostics`.
 
-## `anvil-cloud agents`
+## `anvil cloud agents`
 
 Agent commands build the current Cell and use the same manifest extraction path
-as `anvil-cloud build`.
+as `anvil cloud build`.
 
 Contract validation:
 
 ```bash
-anvil-cloud agents validate --json
+anvil cloud agents validate --json
 ```
 
 Manifest output:
 
 ```bash
-anvil-cloud agents manifest --json
+anvil cloud agents manifest --json
 ```
 
 Project discovery:
@@ -184,7 +206,7 @@ anvil-cloud agents guardian --json
 Local invocation:
 
 ```bash
-anvil-cloud agents invoke support --input "Review this Cell" --json
+anvil cloud agents invoke support --input "Review this Cell" --json
 ```
 
 `validate`, `manifest`, `discover`, and `guardian` do not call a model provider.
@@ -199,12 +221,12 @@ contract locally.
 
 See [Anvil Agents](/docs/cloud/agents).
 
-## `anvil-cloud build`
+## `anvil cloud build`
 
 Writes `.anvil/dist` and `.anvil/generated`:
 
 ```bash
-anvil-cloud build --json
+anvil cloud build --json
 ```
 
 Successful output includes build paths, manifest, and diagnostics.
@@ -212,22 +234,22 @@ Successful output includes build paths, manifest, and diagnostics.
 ## Local inspection commands
 
 ```bash
-anvil-cloud inspect --local --json
-anvil-cloud logs --local --json
-anvil-cloud db list --local --json
-anvil-cloud db dump notes --local --json
-anvil-cloud services list --json
+anvil cloud inspect --local --json
+anvil cloud logs --local --json
+anvil cloud db list --local --json
+anvil cloud db dump notes --local --json
+anvil cloud services list --json
 ```
 
-`anvil-cloud services list` reads the snapshot file written by the dev server, so it shows the last recorded states. For live service state, query `GET /_anvil/services` on a running dev server. See [Services](/docs/cloud/services).
+`anvil cloud services list` reads the snapshot file written by the dev server, so it shows the last recorded states. For live service state, query `GET /_anvil/services` on a running dev server. See [Services](/docs/cloud/services).
 
 Use these before deploying. They are cheap and they catch the kind of "it worked in my imagination" issues that make preview environments do performance art.
 
 For remote AWS inspection:
 
 ```bash
-anvil-cloud inspect --app notes --env preview --json
-anvil-cloud logs --app notes --env preview --json
+anvil cloud inspect --app notes --env preview --json
+anvil cloud logs --app notes --env preview --json
 ```
 
 Both commands read the deployment metadata table configured with
@@ -242,11 +264,11 @@ with `ms`, `s`, `m`, `h`, or `d`, such as `30s`, `10m`, or `1h`. They page
 through CloudWatch events until the requested `--limit` is reached or CloudWatch
 has no more pages. `--limit` must be a positive whole number.
 
-## `anvil-cloud deploy --preview`
+## `anvil cloud deploy --preview`
 
 ```bash
-anvil-cloud deploy --preview --json
-anvil-cloud deploy --preview --wait --wait-timeout 60 --json
+anvil cloud deploy --preview --json
+anvil cloud deploy --preview --wait --wait-timeout 60 --json
 ```
 
 The CLI:
@@ -323,10 +345,10 @@ runs remote `inspect` and `logs`, and destroys the preview stack unless
 `ANVIL_AWS_SMOKE_KEEP_STACK=1` is set. Set `ANVIL_AWS_SMOKE_TOKEN` to include
 authenticated mutation/query checks.
 
-## `anvil-cloud destroy --preview`
+## `anvil cloud destroy --preview`
 
 ```bash
-anvil-cloud destroy --preview --app notes --yes --json
+anvil cloud destroy --preview --app notes --yes --json
 ```
 
 Deletes the computed AWS preview CloudFormation stack for a Cell. The command

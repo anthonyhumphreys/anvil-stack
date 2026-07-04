@@ -132,8 +132,8 @@ same generated metadata and browser client API.
 For local demos, use the CLI to create a user and mint a token:
 
 ```bash
-anvil-cloud auth add-user local_demo --email demo@example.test --roles admin --json
-anvil-cloud auth token local_demo --json
+anvil cloud auth add-user local_demo --email demo@example.test --roles admin --json
+anvil cloud auth token local_demo --json
 ```
 
 In a real app, token acquisition belongs to the auth provider. The generated
