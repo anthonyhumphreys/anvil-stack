@@ -194,7 +194,7 @@ anvil cloud agents manifest --json
 Project discovery:
 
 ```bash
-anvil-cloud agents discover --json
+anvil cloud agents discover --json
 ```
 
 Guardian review:
