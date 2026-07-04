@@ -10,6 +10,7 @@ import type {
   MobilePairingPayload,
   MobileStartChatInput,
   MobileStartChatResult,
+  MobileWorkQueueItem,
   MobileWorkflowDigest,
   MobileWorkflowHealth,
 } from '../../src/shared/types';
@@ -374,29 +375,187 @@ function normalizeMobileOverview(raw: unknown): MobileOverview {
   const threads = arrayValue(overview.threads) as MobileOverview['threads'];
   const quickActions = arrayValue(overview.quickActions) as MobileOverview['quickActions'];
   const notifications = arrayValue(overview.notifications) as MobileOverview['notifications'];
+  const activeWorkspace = isRecord(overview.activeWorkspace)
+    ? (overview.activeWorkspace as unknown as MobileOverview['activeWorkspace'])
+    : undefined;
   const workflow = normalizeWorkflow(
     overview.workflow,
     activeSessions,
     pendingApprovals,
     threads,
-    overview.activeWorkspace,
+    activeWorkspace,
+  );
+  const workQueue = normalizeWorkQueue(
+    overview.workQueue,
+    activeSessions,
+    pendingApprovals,
+    threads,
+    activeWorkspace,
   );
 
   return {
     generatedAt: stringValue(overview.generatedAt, new Date().toISOString()),
-    activeWorkspace: isRecord(overview.activeWorkspace)
-      ? (overview.activeWorkspace as unknown as MobileOverview['activeWorkspace'])
-      : undefined,
+    activeWorkspace,
     workspaces,
     activeSessions,
     pendingApprovals,
     threads,
+    workQueue,
     workflow,
     quickActions,
     companion: isRecord(overview.companion)
       ? ({ ...DEFAULT_COMPANION_STATUS, ...overview.companion } as MobileCompanionStatus)
       : DEFAULT_COMPANION_STATUS,
     notifications,
+  };
+}
+
+function normalizeWorkQueue(
+  raw: unknown,
+  activeSessions: MobileOverview['activeSessions'],
+  pendingApprovals: MobileOverview['pendingApprovals'],
+  threads: MobileOverview['threads'],
+  activeWorkspace: MobileOverview['activeWorkspace'],
+): MobileWorkQueueItem[] {
+  const fromHost = arrayValue(raw)
+    .map(normalizeWorkQueueItem)
+    .filter((item): item is MobileWorkQueueItem => Boolean(item));
+  if (fromHost.length > 0) return fromHost;
+
+  const approvalItems = pendingApprovals.map(
+    (approval): MobileWorkQueueItem => ({
+      id: `approval:${approval.sessionId}:${approval.requestKey}`,
+      kind: 'approval',
+      priority: approval.policy?.risk === 'low' ? 'high' : 'critical',
+      title:
+        approval.policy?.summary ??
+        (approval.kind === 'command' ? 'Command approval' : 'File change approval'),
+      detail:
+        approval.reason ?? approval.command ?? approval.grantRoot ?? 'Codex needs a decision.',
+      statusLabel: approval.policy?.requiresFullReview ? 'Desktop review' : 'Needs approval',
+      updatedAt: approval.createdAt,
+      workspaceId: approval.workspaceId,
+      workspaceName: approval.workspaceName,
+      repoId: approval.repoId,
+      repoName: approval.repoName,
+      sessionId: approval.sessionId,
+      requestKey: approval.requestKey,
+      risk: approval.policy?.risk,
+      requiresDesktopReview: approval.policy?.requiresFullReview,
+      actionLabel: approval.policy?.requiresFullReview ? 'Open Mac' : 'Decide',
+    }),
+  );
+
+  const activeThreadIds = new Set<string>();
+  const sessionItems = activeSessions.map((session): MobileWorkQueueItem => {
+    const thread = threads.find((candidate) => candidate.activeSessionId === session.id);
+    if (thread) activeThreadIds.add(thread.id);
+    const approvalCount = pendingApprovals.filter(
+      (approval) => approval.sessionId === session.id,
+    ).length;
+    const repo = session.repoId
+      ? activeWorkspace?.repos.find((candidate) => candidate.id === session.repoId)
+      : undefined;
+
+    return {
+      id: `session:${session.id}`,
+      kind: 'session',
+      priority:
+        session.status === 'error'
+          ? 'critical'
+          : approvalCount > 0
+            ? 'high'
+            : session.status === 'busy' || session.status === 'starting'
+              ? 'normal'
+              : 'low',
+      title: thread?.title ?? `${session.personaId} session`,
+      detail:
+        approvalCount > 0
+          ? `${approvalCount} approval${approvalCount === 1 ? '' : 's'} blocking this run.`
+          : session.status === 'busy'
+            ? 'Agent is working on the desktop host.'
+            : 'Session is ready for steering or handoff.',
+      statusLabel: approvalCount > 0 ? 'Blocked' : sessionStatusLabel(session.status),
+      updatedAt: thread?.updatedAt ?? session.startedAt,
+      workspaceId: session.workspaceId ?? activeWorkspace?.id,
+      workspaceName: activeWorkspace?.name,
+      repoId: repo?.id ?? session.repoId,
+      repoName: repo?.name ?? repo?.path,
+      sessionId: session.id,
+      threadId: thread?.id ?? session.appThreadId,
+      actionLabel:
+        session.status === 'busy' || session.status === 'starting' ? 'Interrupt' : 'Open thread',
+    };
+  });
+
+  const threadItems = threads
+    .filter((thread) => !activeThreadIds.has(thread.id) && thread.pendingApprovalCount === 0)
+    .slice(0, 4)
+    .map(
+      (thread): MobileWorkQueueItem => ({
+        id: `thread:${thread.id}`,
+        kind: 'thread',
+        priority: 'low',
+        title: thread.title,
+        detail: thread.preview ?? `${thread.personaId} thread`,
+        statusLabel: 'Recent',
+        updatedAt: thread.updatedAt,
+        workspaceId: thread.workspaceId,
+        workspaceName:
+          thread.workspaceId && thread.workspaceId === activeWorkspace?.id
+            ? activeWorkspace.name
+            : undefined,
+        threadId: thread.id,
+        sessionId: thread.activeSessionId,
+        actionLabel: 'Continue',
+      }),
+    );
+
+  return [...approvalItems, ...sessionItems, ...threadItems]
+    .sort(compareWorkQueueItems)
+    .slice(0, 12);
+}
+
+function normalizeWorkQueueItem(raw: unknown): MobileWorkQueueItem | null {
+  if (!isRecord(raw)) return null;
+  const id = stringValue(raw.id, '');
+  const title = stringValue(raw.title, '');
+  if (!id || !title) return null;
+
+  return {
+    id,
+    kind:
+      raw.kind === 'approval' || raw.kind === 'session' || raw.kind === 'thread'
+        ? raw.kind
+        : 'thread',
+    priority:
+      raw.priority === 'critical' ||
+      raw.priority === 'high' ||
+      raw.priority === 'normal' ||
+      raw.priority === 'low'
+        ? raw.priority
+        : 'normal',
+    title,
+    detail: stringValue(raw.detail, ''),
+    statusLabel: stringValue(raw.statusLabel, 'Needs attention'),
+    updatedAt: stringValue(raw.updatedAt, new Date().toISOString()),
+    workspaceId: optionalString(raw.workspaceId),
+    workspaceName: optionalString(raw.workspaceName),
+    repoId: optionalString(raw.repoId),
+    repoName: optionalString(raw.repoName),
+    sessionId: optionalString(raw.sessionId),
+    threadId: optionalString(raw.threadId),
+    requestKey: optionalString(raw.requestKey),
+    risk:
+      raw.risk === 'low' ||
+      raw.risk === 'medium' ||
+      raw.risk === 'high' ||
+      raw.risk === 'destructive'
+        ? raw.risk
+        : undefined,
+    requiresDesktopReview:
+      typeof raw.requiresDesktopReview === 'boolean' ? raw.requiresDesktopReview : undefined,
+    actionLabel: optionalString(raw.actionLabel),
   };
 }
 
@@ -456,6 +615,35 @@ function stringValue(value: unknown, fallback: string): string {
 
 function numberValue(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined;
+}
+
+function sessionStatusLabel(status: MobileOverview['activeSessions'][number]['status']): string {
+  switch (status) {
+    case 'busy':
+      return 'Working';
+    case 'starting':
+      return 'Starting';
+    case 'error':
+      return 'Error';
+    case 'ready':
+      return 'Ready';
+  }
+}
+
+function compareWorkQueueItems(a: MobileWorkQueueItem, b: MobileWorkQueueItem): number {
+  const priorityOrder: Record<MobileWorkQueueItem['priority'], number> = {
+    critical: 0,
+    high: 1,
+    normal: 2,
+    low: 3,
+  };
+  const priorityDelta = priorityOrder[a.priority] - priorityOrder[b.priority];
+  if (priorityDelta !== 0) return priorityDelta;
+  return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
 }
 
 function emptyConnectionState(): CompanionConnectionState {

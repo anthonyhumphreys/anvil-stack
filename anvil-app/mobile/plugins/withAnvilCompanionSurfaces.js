@@ -1,11 +1,13 @@
 const {
   withDangerousMod,
   withEntitlementsPlist,
+  withInfoPlist,
   withXcodeProject,
 } = require('@expo/config-plugins');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
+const APP_SCENE_DELEGATE = 'AnvilCompanion/AnvilAppSceneDelegate.swift';
 const WATCH_TARGET_NAME = 'AnvilWatch';
 const WATCH_BUNDLE_SUFFIX = '.watchkitapp';
 const WIDGET_TARGET_NAME = 'AnvilWidgets';
@@ -15,6 +17,25 @@ const WIDGET_SNAPSHOT_KEY = 'anvil.widget.snapshot.v1';
 const WIDGET_UPDATED_AT_KEY = 'anvil.widget.updatedAt.v1';
 
 function withAnvilCompanionSurfaces(config) {
+  config = withInfoPlist(config, (config) => {
+    const existingManifest = config.modResults.UIApplicationSceneManifest ?? {};
+    config.modResults.UIApplicationSceneManifest = {
+      ...existingManifest,
+      UIApplicationSupportsMultipleScenes:
+        existingManifest.UIApplicationSupportsMultipleScenes ?? false,
+      UISceneConfigurations: {
+        ...(existingManifest.UISceneConfigurations ?? {}),
+        UIWindowSceneSessionRoleApplication: [
+          {
+            UISceneConfigurationName: 'Anvil Main',
+            UISceneDelegateClassName: '$(PRODUCT_MODULE_NAME).AnvilAppSceneDelegate',
+          },
+        ],
+      },
+    };
+    return config;
+  });
+
   config = withEntitlementsPlist(config, (config) => {
     const bundleId = config.ios?.bundleIdentifier;
     if (!bundleId) return config;
@@ -31,6 +52,7 @@ function withAnvilCompanionSurfaces(config) {
       if (!bundleId) return config;
       await writeCompanionSurfaceSources(
         config.modRequest.platformProjectRoot,
+        config.modRequest.projectName,
         bundleId,
         getAppGroupIdentifier(bundleId),
       );
@@ -48,6 +70,8 @@ function withAnvilCompanionSurfaces(config) {
 
     const appTarget = getApplicationTarget(project, bundleId);
     if (appTarget) {
+      const appGroup = ensureGroup(project, 'AnvilCompanion');
+      addSourceFileIfMissing(project, APP_SCENE_DELEGATE, appTarget.uuid, appGroup.uuid);
       const bridgeGroup = ensureGroup(project, WIDGET_BRIDGE_GROUP_NAME);
       addSourceFileIfMissing(
         project,
@@ -248,13 +272,27 @@ function setWidgetBuildSettings(project, targetUuid, iosBundleId, appVersion) {
   }
 }
 
-async function writeCompanionSurfaceSources(iosRoot, iosBundleId, appGroupIdentifier) {
+async function writeCompanionSurfaceSources(
+  iosRoot,
+  projectName,
+  iosBundleId,
+  appGroupIdentifier,
+) {
+  const appRoot = path.join(iosRoot, projectName ?? 'AnvilCompanion');
   const watchRoot = path.join(iosRoot, WATCH_TARGET_NAME);
   const widgetRoot = path.join(iosRoot, WIDGET_TARGET_NAME);
   const widgetBridgeRoot = path.join(iosRoot, WIDGET_BRIDGE_GROUP_NAME);
+  await fs.mkdir(appRoot, { recursive: true });
   await fs.mkdir(watchRoot, { recursive: true });
   await fs.mkdir(widgetRoot, { recursive: true });
   await fs.mkdir(widgetBridgeRoot, { recursive: true });
+
+  await fs.writeFile(
+    path.join(appRoot, 'AnvilAppSceneDelegate.swift'),
+    appSceneDelegateSwift(),
+    'utf8',
+  );
+  await patchAppDelegateForSceneLifecycle(path.join(appRoot, 'AppDelegate.swift'));
 
   await fs.writeFile(
     path.join(widgetBridgeRoot, 'AnvilWidgetBridge.swift'),
@@ -283,6 +321,109 @@ async function writeCompanionSurfaceSources(iosRoot, iosBundleId, appGroupIdenti
     widgetSwift(appGroupIdentifier),
     'utf8',
   );
+}
+
+async function patchAppDelegateForSceneLifecycle(appDelegatePath) {
+  const source = await fs.readFile(appDelegatePath, 'utf8');
+  if (source.includes('configureReactNativeFactoryIfNeeded()')) return;
+
+  const startupBlock = `    let delegate = ReactNativeDelegate()
+    let factory = ExpoReactNativeFactory(delegate: delegate)
+    delegate.dependencyProvider = RCTAppDependencyProvider()
+
+    reactNativeDelegate = delegate
+    reactNativeFactory = factory
+    bindReactNativeFactory(factory)
+
+#if os(iOS) || os(tvOS)
+    window = UIWindow(frame: UIScreen.main.bounds)
+    factory.startReactNative(
+      withModuleName: "main",
+      in: window,
+      launchOptions: launchOptions)
+#endif
+
+    return super.application(application, didFinishLaunchingWithOptions: launchOptions)`;
+
+  const nextSource = source
+    .replace(
+      startupBlock,
+      `    configureReactNativeFactoryIfNeeded()
+
+    return super.application(application, didFinishLaunchingWithOptions: launchOptions)`,
+    )
+    .replace(
+      '\n  // Linking API\n',
+      `
+  func configureReactNativeFactoryIfNeeded() -> RCTReactNativeFactory {
+    if let reactNativeFactory {
+      return reactNativeFactory
+    }
+
+    let delegate = ReactNativeDelegate()
+    let factory = ExpoReactNativeFactory(delegate: delegate)
+    delegate.dependencyProvider = RCTAppDependencyProvider()
+
+    reactNativeDelegate = delegate
+    reactNativeFactory = factory
+    bindReactNativeFactory(factory)
+
+    return factory
+  }
+
+  // Linking API
+`,
+    );
+
+  if (nextSource === source) {
+    throw new Error('Unable to patch AppDelegate.swift for scene lifecycle support.');
+  }
+
+  await fs.writeFile(appDelegatePath, nextSource, 'utf8');
+}
+
+function appSceneDelegateSwift() {
+  return `import React
+import UIKit
+
+final class AnvilAppSceneDelegate: UIResponder, UIWindowSceneDelegate {
+  var window: UIWindow?
+
+  func scene(
+    _ scene: UIScene,
+    willConnectTo session: UISceneSession,
+    options connectionOptions: UIScene.ConnectionOptions
+  ) {
+    guard let windowScene = scene as? UIWindowScene,
+          let appDelegate = UIApplication.shared.delegate as? AppDelegate else {
+      return
+    }
+
+    let window = UIWindow(windowScene: windowScene)
+    self.window = window
+
+    appDelegate.configureReactNativeFactoryIfNeeded().startReactNative(
+      withModuleName: "main",
+      in: window,
+      launchOptions: nil
+    )
+  }
+
+  func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+    for context in URLContexts {
+      _ = RCTLinkingManager.application(UIApplication.shared, open: context.url, options: [:])
+    }
+  }
+
+  func scene(_ scene: UIScene, continue userActivity: NSUserActivity) {
+    _ = RCTLinkingManager.application(
+      UIApplication.shared,
+      continue: userActivity,
+      restorationHandler: { _ in }
+    )
+  }
+}
+`;
 }
 
 function watchInfoPlist(iosBundleId) {

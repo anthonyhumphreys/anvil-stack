@@ -25,6 +25,7 @@ import type {
   DbInsightArtifact,
   GovernanceDocument,
   Persona,
+  ReasoningEffort,
   RepoInfo,
   WorkItem,
   WorkspaceScaffoldStatus,
@@ -53,7 +54,7 @@ interface ChatContextValue {
   scaffoldStatus: WorkspaceScaffoldStatus | null;
   busy: boolean;
   error: string | null;
-  reasoningLevel: 'low' | 'medium' | 'high';
+  reasoningLevel: ReasoningEffort;
   threads: ChatThread[];
   activeThread: ChatThread | null;
   activeThreadId: string | null;
@@ -73,7 +74,7 @@ interface ChatContextValue {
   startNewSession: () => Promise<void>;
   loadHistory: () => Promise<void>;
   clearHistory: () => Promise<void>;
-  setReasoningLevel: (level: 'low' | 'medium' | 'high') => void;
+  setReasoningLevel: (level: ReasoningEffort) => void;
   selectThread: (threadId: string) => Promise<void>;
   renameThread: (threadId: string, title: string) => Promise<void>;
   deleteThread: (threadId: string) => Promise<void>;
@@ -85,7 +86,7 @@ interface ChatContextValue {
     personaId: string;
     repoIds?: string[];
     message: string;
-    reasoningLevel?: 'low' | 'medium' | 'high';
+    reasoningLevel?: ReasoningEffort;
     threadTitle?: string;
     workItem?: WorkItem;
   }) => Promise<void>;
@@ -113,7 +114,7 @@ export function useChatContext(): ChatContextValue {
   return ctx;
 }
 
-function getDefaultReasoningForPersona(personaId?: string): 'low' | 'medium' | 'high' {
+function getDefaultReasoningForPersona(personaId?: string): ReasoningEffort {
   switch (personaId) {
     case 'architect':
       return 'high';
@@ -146,7 +147,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [activeArtifacts, setActiveArtifacts] = useState<ChatArtifact[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [reasoningLevel, setReasoningLevel] = useState<'low' | 'medium' | 'high'>('medium');
+  const [reasoningLevel, setReasoningLevel] = useState<ReasoningEffort>('medium');
   const [collaborationMode, setCollaborationModeState] = useState<ChatCollaborationMode>(() =>
     loadCollaborationMode(),
   );
@@ -1483,6 +1484,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
           await window.anvil.chat.send(startedSession.id, enriched, attachments, {
             collaborationMode,
+            reasoningEffort: reasoningLevel,
           });
         } catch (err) {
           setError(err instanceof Error ? err.message : 'Failed to start session');
@@ -1517,6 +1519,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         bumpThreadSummary(thread.id, buildThreadPreview(displayMessage, attachments), timestamp);
         await window.anvil.chat.send(currentSessionForThread.id, enriched, attachments, {
           collaborationMode,
+          reasoningEffort: reasoningLevel,
         });
       } catch (err) {
         setBusy(false);
@@ -1539,6 +1542,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       dbInsightArtifacts,
       dbInsightAnalysis,
       findThreadIdForSession,
+      reasoningLevel,
       rememberLiveSession,
       scaffoldModeActive,
       setLiveThreadStatus,
@@ -1794,7 +1798,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       personaId: string;
       repoIds?: string[];
       message: string;
-      reasoningLevel?: 'low' | 'medium' | 'high';
+      reasoningLevel?: ReasoningEffort;
       threadTitle?: string;
       workItem?: WorkItem;
     }) => {
@@ -1911,7 +1915,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         );
         bumpThreadSummary(createdThread.id, opts.message, timestamp);
 
-        await window.anvil.chat.send(nextSession.id, enrichedMessage, [], { collaborationMode });
+        await window.anvil.chat.send(nextSession.id, enrichedMessage, [], {
+          collaborationMode,
+          reasoningEffort: opts.reasoningLevel ?? getDefaultReasoningForPersona(targetPersona.id),
+        });
       } catch (err) {
         setBusy(false);
         setError(err instanceof Error ? err.message : 'Failed to launch chat');

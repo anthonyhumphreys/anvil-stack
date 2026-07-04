@@ -28,6 +28,9 @@ The rule of thumb: if native behavior looks strange after touching dependencies 
 - **Chat returns auth errors**: re-enter the API key in Settings. Keys are stored encrypted in the local SQLite database, so an OS keychain reset or a copied database will invalidate them.
 - **Requests time out**: check the endpoint URL for Azure AI Foundry deployments; the deployment name is part of the configuration, not just the key.
 - **Features are greyed out**: most AI surfaces require a configured LLM provider. The connector setup flow can be re-run from Settings.
+- **Apple Foundation Models test fails**: confirm the Mac is running macOS 26 or later, supports Apple Intelligence, has Apple Intelligence enabled, and has an installed Swift toolchain that can import `FoundationModels`.
+- **Simple prompts still use the configured backend**: that is expected when the on-device classifier says the prompt needs tools, repo context, files, web access, or deeper reasoning. The local route is intentionally conservative.
+- **Apple Foundation Models works but chat still requires Codex**: current chat sessions are still created through the Codex-backed Anvil chat path before local routing is attempted. Install and authenticate the Codex CLI for agentic chat.
 
 ## Repository indexing
 

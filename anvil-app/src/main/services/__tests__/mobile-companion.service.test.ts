@@ -44,7 +44,7 @@ vi.mock('../chat-persistence.service.js', () => ({
   saveChatEntry: vi.fn(),
 }));
 
-import { buildWorkflowDigest } from '../mobile-companion.service.js';
+import { buildMobileWorkQueue, buildWorkflowDigest } from '../mobile-companion.service.js';
 
 const workspace = {
   id: 'ws-1',
@@ -121,5 +121,113 @@ describe('mobile companion workflow digest', () => {
     expect(busyDigest.health).toBe('busy');
     expect(idleDigest.health).toBe('idle');
     expect(idleDigest.headline).toBe('Ready to launch');
+  });
+});
+
+describe('mobile companion work queue', () => {
+  it('puts policy-aware approvals ahead of running sessions', () => {
+    const queue = buildMobileWorkQueue(
+      workspace,
+      [
+        {
+          id: 'session-1',
+          repoId: 'repo-1',
+          workspaceId: 'ws-1',
+          personaId: 'coder',
+          status: 'busy',
+          startedAt: '2026-05-26T10:00:00.000Z',
+          appThreadId: 'thread-1',
+        },
+      ],
+      [
+        {
+          sessionId: 'session-1',
+          requestKey: 'approval-1',
+          requestId: 'approval-1',
+          kind: 'command',
+          command: 'rm -rf dist',
+          createdAt: '2026-05-26T10:01:00.000Z',
+          workspaceId: 'ws-1',
+          workspaceName: 'Launch Control',
+          repoId: 'repo-1',
+          repoName: 'anvil',
+        },
+      ],
+      [
+        {
+          id: 'thread-1',
+          personaId: 'coder',
+          title: 'Release check',
+          workspaceId: 'ws-1',
+          preview: 'Checking the release.',
+          messageCount: 2,
+          updatedAt: '2026-05-26T10:02:00.000Z',
+          activeSessionId: 'session-1',
+          activeSessionStatus: 'busy',
+          pendingApprovalCount: 1,
+        },
+      ],
+    );
+
+    expect(queue[0]).toMatchObject({
+      kind: 'approval',
+      priority: 'critical',
+      statusLabel: 'Desktop review',
+      repoName: 'anvil',
+      requiresDesktopReview: true,
+    });
+    expect(queue[1]).toMatchObject({
+      kind: 'session',
+      title: 'Release check',
+      statusLabel: 'Blocked',
+    });
+  });
+
+  it('keeps recent inactive threads behind active work', () => {
+    const queue = buildMobileWorkQueue(
+      workspace,
+      [
+        {
+          id: 'session-1',
+          repoId: 'repo-1',
+          workspaceId: 'ws-1',
+          personaId: 'coder',
+          status: 'ready',
+          startedAt: '2026-05-26T10:00:00.000Z',
+          appThreadId: 'thread-1',
+        },
+      ],
+      [],
+      [
+        {
+          id: 'thread-1',
+          personaId: 'coder',
+          title: 'Ready session',
+          workspaceId: 'ws-1',
+          messageCount: 3,
+          updatedAt: '2026-05-26T10:03:00.000Z',
+          activeSessionId: 'session-1',
+          activeSessionStatus: 'ready',
+          pendingApprovalCount: 0,
+        },
+        {
+          id: 'thread-2',
+          personaId: 'reviewer',
+          title: 'Yesterday review',
+          workspaceId: 'ws-1',
+          preview: 'No findings.',
+          messageCount: 4,
+          updatedAt: '2026-05-26T09:00:00.000Z',
+          pendingApprovalCount: 0,
+        },
+      ],
+    );
+
+    expect(queue.map((item) => item.kind)).toEqual(['session', 'thread']);
+    expect(queue[1]).toMatchObject({
+      title: 'Yesterday review',
+      statusLabel: 'Recent',
+      actionLabel: 'Continue',
+    });
   });
 });

@@ -5,7 +5,11 @@ import { homedir, tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
 import { getSettings } from './settings.service.js';
 import { PRIMARY_CODEX_TEMP_PREFIX } from '../../shared/app-identity.js';
-import { callAppleFoundationModel } from './apple-foundation-models.service.js';
+import {
+  callAppleFoundationModel,
+  classifyPromptForOnDeviceModel,
+  isLikelyAppleFoundationModelsRefusal,
+} from './apple-foundation-models.service.js';
 
 let cachedClient: AzureOpenAI | OpenAI | null = null;
 let cachedProvider: string | null = null;
@@ -28,11 +32,6 @@ export interface LlmCallOptions {
 class EmptyLlmResponseError extends Error {}
 
 const APPLE_FOUNDATION_MODELS_MAX_PROMPT_CHARS = 12_000;
-const APPLE_FOUNDATION_MODELS_ELIGIBLE_TASKS = new Set<LlmCallOptions['taskClass']>([
-  'simple-json',
-  'short-summary',
-  'prompt-draft',
-]);
 
 function killProcessTree(pid: number | undefined, signal: NodeJS.Signals): void {
   if (!pid) return;
@@ -62,17 +61,12 @@ function isLikelyJsonResponse(value: string): boolean {
   }
 }
 
-function isLikelyAppleFoundationModelsRefusal(value: string): boolean {
-  return /(?:i apologize|i'm sorry|cannot assist|can't assist|unable to assist)/i.test(value);
-}
-
 function isAppleFoundationModelsEligible(
   prompt: string,
   maxTokens: number,
   options?: LlmCallOptions,
 ): boolean {
   if (!options?.taskClass) return false;
-  if (!APPLE_FOUNDATION_MODELS_ELIGIBLE_TASKS.has(options.taskClass)) return false;
   if (prompt.length > APPLE_FOUNDATION_MODELS_MAX_PROMPT_CHARS) return false;
   if (maxTokens > 4096) return false;
   return true;
@@ -86,6 +80,17 @@ async function tryAppleFoundationModels(
   const settings = getSettings();
   if (settings.appleFoundationModelsMode !== 'prefer-simple') return null;
   if (!isAppleFoundationModelsEligible(prompt, maxTokens, options)) return null;
+
+  options?.onProgress?.('Checking whether the on-device Apple model can handle this...');
+  const route = await classifyPromptForOnDeviceModel(prompt);
+  if (route !== 'local') {
+    if (route === 'cloud') {
+      console.log('[LLM] On-device classifier routed prompt to the configured backend');
+    } else {
+      console.warn('[LLM] On-device classification unavailable; using configured backend');
+    }
+    return null;
+  }
 
   options?.onProgress?.('Trying Apple Foundation Models locally...');
   const result = await callAppleFoundationModel(prompt);
