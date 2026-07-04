@@ -1094,13 +1094,21 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 function slug(value: string): string {
-  return (
-    value
-      .toLowerCase()
-      .replace(/[^a-z0-9-]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 48) || "anvil"
-  );
+  const normalized = value.toLowerCase().replace(/[^a-z0-9-]+/g, "-");
+  // Trim leading/trailing dashes without regex to avoid polynomial backtracking
+  // on adversarial inputs (CodeQL js/polynomial-redos).
+  let start = 0;
+  let end = normalized.length;
+
+  while (start < end && normalized[start] === "-") {
+    start += 1;
+  }
+
+  while (end > start && normalized[end - 1] === "-") {
+    end -= 1;
+  }
+
+  return normalized.slice(start, end).slice(0, 48) || "anvil";
 }
 
 export {
