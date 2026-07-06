@@ -29,7 +29,7 @@ describe("main", () => {
     expect(output).toContain("anvil-cloud check");
     expect(output).toContain("anvil-cloud doctor");
     expect(output).toContain(
-      "anvil-cloud destroy --preview --app <name> --yes",
+      "anvil-cloud destroy --preview --app <name> [--name branch] --yes",
     );
   });
 
@@ -1076,7 +1076,7 @@ describe("main", () => {
           approvalRequired: 1,
           reviewGates: 1,
           blockingGates: 0,
-          rollbackSupported: false,
+          rollbackSupported: true,
         },
         guard: {
           ok: true,
@@ -1274,7 +1274,7 @@ describe("main", () => {
         },
         findings: expect.arrayContaining([
           expect.objectContaining({
-            code: "ROLLBACK_MANUAL",
+            code: "APPROVAL_STANDARD_REVIEW",
           }),
         ]),
       });
@@ -1531,6 +1531,8 @@ describe("main", () => {
           "--preview",
           "--app",
           "notes",
+          "--name",
+          "Feature/Branch",
           "--yes",
           "--dry-run",
           "--json",
@@ -1543,11 +1545,12 @@ describe("main", () => {
         adapter: "aws",
         cell: "notes",
         environment: "preview",
+        previewName: "feature-branch",
         dryRun: true,
-        stackName: "custom-notes-preview",
+        stackName: "custom-notes-preview-feature-branch",
         cleanup: {
           stack: {
-            name: "custom-notes-preview",
+            name: "custom-notes-preview-feature-branch",
             action: "delete",
           },
           stackOwnedBuckets: {
@@ -1556,7 +1559,7 @@ describe("main", () => {
           deploymentMetadata: {
             action: "delete",
             table: "deployments",
-            key: "deployment#notes#preview",
+            key: "deployment#notes#preview#feature-branch",
           },
         },
         next: ["anvil-cloud destroy --preview --app notes --yes --json"],

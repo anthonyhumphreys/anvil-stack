@@ -13,6 +13,7 @@ import {
   AwsPreviewDestroyError,
   AwsRemoteReaderError,
   awsPreviewStackNameFor,
+  normalizePreviewName,
   createAwsSdkPreviewDestroyerFromEnv,
   createAwsRemoteReaderFromEnv,
   createAwsSdkPreviewProvisionerFromEnv,
@@ -25,6 +26,7 @@ import {
   createAnvilCellGraph,
   validateAnvilCellGraph,
   type BuilderDiagnostic,
+  type BuildOutput,
   type BuildResult,
   type CellManifest,
 } from "@anvil-cloud/builder";
@@ -1495,10 +1497,21 @@ async function commandInspect(context: CliContext): Promise<void> {
     let payload: Awaited<ReturnType<typeof reader.inspect>>;
 
     try {
-      payload = await reader.inspect({
+      const inspectInput: {
+        cell: string;
+        environment: "preview";
+        previewName?: string;
+      } = {
         cell: remoteApp,
         environment,
-      });
+      };
+      const previewName = context.values.get("name");
+
+      if (previewName !== undefined) {
+        inspectInput.previewName = previewName;
+      }
+
+      payload = await reader.inspect(inspectInput);
     } catch (error) {
       if (writeAwsRemoteReaderError(context, error)) {
         return;
@@ -1608,6 +1621,7 @@ async function commandLogs(context: CliContext): Promise<void> {
     const logInput: {
       cell: string;
       environment: "preview";
+      previewName?: string;
       sinceMs?: number;
       limit?: number;
     } = { cell: remoteApp, environment: "preview" };
@@ -1618,6 +1632,11 @@ async function commandLogs(context: CliContext): Promise<void> {
     }
 
     logInput.environment = environment;
+    const previewName = context.values.get("name");
+
+    if (previewName !== undefined) {
+      logInput.previewName = previewName;
+    }
     const limitOption = context.values.get("limit");
     const sinceOption = context.values.get("since");
 
@@ -2070,12 +2089,25 @@ function commandDeployPreviewEffect(
       provisioner ? { provisioner } : {},
     );
     const deployResult = yield* Effect.tryPromise({
-      try: () =>
-        adapter.deploy({
+      try: () => {
+        const deployInput: {
+          manifest: CellManifest;
+          buildOutput: BuildOutput;
+          environment: "preview";
+          previewName?: string;
+        } = {
           manifest,
           buildOutput,
           environment: "preview",
-        }),
+        };
+        const previewName = context.values.get("name");
+
+        if (previewName !== undefined) {
+          deployInput.previewName = previewName;
+        }
+
+        return adapter.deploy(deployInput);
+      },
       catch: toCliEffectError,
     });
 
@@ -2206,15 +2238,17 @@ async function commandDestroy(context: CliContext): Promise<void> {
     if (context.flags.has("dry-run")) {
       const stackName = awsPreviewStackNameFor(
         app,
-        environment,
+        previewStackEnvironment(environment, context.values.get("name")),
         process.env.ANVIL_AWS_STACK_PREFIX,
       );
+      const previewName = normalizePreviewName(context.values.get("name"));
       const metadataTable = process.env.ANVIL_AWS_DEPLOYMENT_METADATA_TABLE;
       const result = {
         ok: true,
         adapter: "aws",
         cell: app,
         environment,
+        previewName,
         dryRun: true,
         stackName,
         cleanup: {
@@ -2231,7 +2265,7 @@ async function commandDestroy(context: CliContext): Promise<void> {
               : {
                   action: "delete",
                   table: metadataTable,
-                  key: `deployment#${app}#${environment}`,
+                  key: deploymentMetadataKey(app, environment, previewName),
                 },
         },
         next: [`anvil-cloud destroy --preview --app ${app} --yes --json`],
@@ -2248,10 +2282,21 @@ async function commandDestroy(context: CliContext): Promise<void> {
     const destroyer = createAwsSdkPreviewDestroyerFromEnv();
     let result: Awaited<ReturnType<typeof destroyer.destroy>>;
 
-    result = await destroyer.destroy({
+    const destroyInput: {
+      cell: string;
+      environment: "preview";
+      previewName?: string;
+    } = {
       cell: app,
       environment,
-    });
+    };
+    const previewName = context.values.get("name");
+
+    if (previewName !== undefined) {
+      destroyInput.previewName = previewName;
+    }
+
+    result = await destroyer.destroy(destroyInput);
 
     writeJsonOrHuman(
       context,
@@ -3298,9 +3343,9 @@ function writeHelp(): void {
       "  anvil-cloud plan --stage dev --adapter aws [--verbose] [--json]",
       "  anvil-cloud deploy --stage dev --adapter aws [--verbose] [--json]",
       "  anvil-cloud remove --stage dev --adapter aws [--verbose] [--json]",
-      "  anvil-cloud deploy --preview [--wait] [--wait-timeout 60] [--json]",
+      "  anvil-cloud deploy --preview [--name branch] [--wait] [--wait-timeout 60] [--json]",
       "  anvil-cloud rollback --preview --app <name> --to-deployment <id> --dry-run [--json]",
-      "  anvil-cloud destroy --preview --app <name> --yes [--dry-run] [--json]",
+      "  anvil-cloud destroy --preview --app <name> [--name branch] --yes [--dry-run] [--json]",
       "  anvil-cloud auth users [--json]",
       "  anvil-cloud auth add-user <id> [--email x@y] [--roles admin,editor] [--json]",
       "  anvil-cloud auth remove-user <id> [--json]",
@@ -4146,6 +4191,29 @@ function readEnvironment(context: CliContext): "preview" | undefined {
   }
 
   return "preview";
+}
+
+function previewStackEnvironment(
+  environment: "preview",
+  previewNameValue: string | undefined,
+): string {
+  const previewName = normalizePreviewName(previewNameValue);
+
+  return previewName === "default"
+    ? environment
+    : `${environment}-${previewName}`;
+}
+
+function deploymentMetadataKey(
+  cell: string,
+  environment: "preview",
+  previewNameValue: string | undefined,
+): string {
+  const previewName = normalizePreviewName(previewNameValue);
+
+  return previewName === "default"
+    ? `deployment#${cell}#${environment}`
+    : `deployment#${cell}#${environment}#${previewName}`;
 }
 
 function readNumberOption(

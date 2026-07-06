@@ -296,6 +296,10 @@ must be positive. If the runtime does not become healthy, the JSON result uses
 `AWS_RUNTIME_UNHEALTHY` and includes the deployment result plus verification
 details.
 
+`--name <preview>` deploys an additional named preview for the same Cell. The
+default preview keeps the existing stack and metadata key; named previews use a
+normalized preview name in the adapter-owned stack and deployment metadata key.
+
 Preview deploy JSON includes review-oriented plan metadata: stable
 `plan.review.changeSet` ids, `plan.review.changeSummary` concept counts,
 structured `plan.review.cost.drivers`, rollback/cleanup notes, and
@@ -320,15 +324,16 @@ error cause.
 
 ### `anvil-cloud rollback --preview`
 
-Returns dry-run rollback intent for a previous preview deployment.
+Returns rollback intent for a previous preview deployment.
 
 ```sh
 anvil-cloud rollback --preview --app notes --to-deployment dep_123 --dry-run --json
 ```
 
-The command is intentionally dry-run only in alpha. It returns the target
-deployment id, inspection/log commands, and redeploy guidance. Artifact
-promotion is not automated yet.
+The deployment plan reports rollback as supported at the adapter contract layer
+because preview deployments carry versioned metadata. In alpha, the CLI still
+emits rollback intent and validation output rather than directly promoting an S3
+artifact pointer; AWS artifact promotion remains provider-owned.
 
 ### `anvil-cloud destroy --preview --app <name> --yes [--dry-run]`
 
@@ -338,10 +343,11 @@ become infrastructure archaeology with billing.
 Only `--env preview` is accepted during alpha; other environments return
 `INVALID_USAGE`.
 
-`--dry-run` validates the same command shape and returns the computed stack name,
-bucket cleanup intent, deployment metadata key, and real destroy command without
-calling AWS. It exists so local contract tests can cover the full lifecycle
-without pretending every laptop is a cloud control plane.
+Pass `--name <preview>` to destroy a named preview. `--dry-run` validates the
+same command shape and returns the computed stack name, bucket cleanup intent,
+deployment metadata key, and real destroy command without calling AWS. It exists
+so local contract tests can cover the full lifecycle without pretending every
+laptop is a cloud control plane.
 
 When `ANVIL_AWS_DEPLOYMENT_METADATA_TABLE` is configured, successful destroy
 also deletes the matching deployment metadata record. The JSON result includes

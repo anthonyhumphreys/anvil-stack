@@ -59,8 +59,9 @@ Initial commands:
 - `anvil-cloud usage --preview`
 - `anvil-cloud db list`
 - `anvil-cloud db dump <table>`
-- `anvil-cloud deploy --preview`
+- `anvil-cloud deploy --preview [--name branch]`
 - `anvil-cloud rollback --preview --dry-run`
+- `anvil-cloud destroy --preview --app <name> [--name branch] --yes`
 
 Every automation-oriented command must support `--json`.
 
