@@ -35,9 +35,9 @@ jobs, workflows, and supervised services.
 Default ports:
 
 | Surface | Default |
-| --- | --- |
-| Runtime | `8787` |
-| Client | `5173` |
+| ------- | ------- |
+| Runtime | `8787`  |
+| Client  | `5173`  |
 
 Options:
 
@@ -61,6 +61,10 @@ GET  /_anvil/inspect
 GET  /_anvil/lens
 GET  /_anvil/agents
 POST /_anvil/agents/:name
+GET  /_anvil/approvals
+GET  /_anvil/approvals/audit
+POST /_anvil/approvals/:id/approve
+POST /_anvil/approvals/:id/reject
 POST /_anvil/workflows/run/:name
 GET  /_anvil/workflows
 GET  /_anvil/workflows/:runId
@@ -75,6 +79,11 @@ Agent requests under `/_anvil/agents/:name` invoke mounted Cell Agents through
 the same provider-neutral `AgentRuntime` used by tests and provider mode. The
 local stub inference provider is registered automatically for `provider: "local"`.
 
+Approval-gated tool execution records pending requests in local state and
+returns a pending approval id instead of executing the gated action. Use
+`/_anvil/approvals`, Lens, or `anvil-cloud approvals ... --json` to inspect,
+approve, reject, and audit those requests.
+
 ## Local state
 
 Local state lives in `.anvil/local` by default:
@@ -82,6 +91,7 @@ Local state lives in `.anvil/local` by default:
 ```txt
 .anvil/local/
   auth.json
+  approvals.json
   dev.db
   events.json
   files/

@@ -52,6 +52,8 @@ a feature here.
 │   └── users.json
 ├── dev.db
 ├── files/
+├── approvals.json
+├── events.json
 ├── jobs.json
 ├── logs.ndjson
 ├── services.json
@@ -68,11 +70,34 @@ GET  /_anvil/health
 GET  /_anvil/manifest
 GET  /_anvil/inspect
 GET  /_anvil/logs
+GET  /_anvil/approvals
+GET  /_anvil/approvals/audit
+POST /_anvil/approvals/:id/approve
+POST /_anvil/approvals/:id/reject
 GET  /_anvil/db/tables
 GET  /_anvil/db/:table
 POST /_anvil/auth/as/:userId
+GET  /_anvil/auth/users
+POST /_anvil/auth/users
+DELETE /_anvil/auth/users/:userId
+POST /_anvil/auth/token
+GET  /_anvil/auth/jwks
+GET  /_anvil/auth/whoami
+GET  /_anvil/agents
+POST /_anvil/agents/:name
+POST /_anvil/workflows/run/:name
+GET  /_anvil/workflows
+GET  /_anvil/workflows/:runId
+GET  /_anvil/services
+POST /_anvil/services/:name/start
+POST /_anvil/services/:name/stop
 POST /_anvil/jobs/run/:name
 ```
+
+Approval-gated agent tool execution writes pending requests to
+`.anvil/local/approvals.json`. The CLI can inspect and decide them with
+`anvil-cloud approvals list|approve|reject|audit --json`; Lens shows the same
+pending requests and audit trail while the local runtime is running.
 
 ## Local database
 

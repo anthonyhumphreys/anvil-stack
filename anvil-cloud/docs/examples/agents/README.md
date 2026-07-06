@@ -13,6 +13,8 @@ Run contract checks from a Cell project with:
 anvil-cloud agents validate
 anvil-cloud agents manifest --json
 anvil-cloud agents invoke support --input "Review this Cell"
+anvil-cloud approvals list --status pending --json
 ```
 
 Local stub mode does not call external APIs. Provider mode uses the same Anvil runtime contract with a registered provider.
+Approval-gated tools persist local pending decisions in `.anvil/local/approvals.json`; inspect or decide them with `anvil-cloud approvals list|approve|reject|audit`.

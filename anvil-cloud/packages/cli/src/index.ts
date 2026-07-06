@@ -35,7 +35,11 @@ import {
 } from "@anvil-cloud/auth";
 import {
   createLocalRuntimeHost,
+  isLocalApprovalStatus,
+  LocalApprovalStore,
   startLocalRuntimeServer,
+  type LocalApprovalRecord,
+  type LocalApprovalStatus,
 } from "@anvil-cloud/local";
 import {
   AgentProviderRegistry,
@@ -166,6 +170,9 @@ export async function main(argv: string[]): Promise<void> {
       return;
     case "auth":
       await commandAuth(context, subcommand, maybeArg);
+      return;
+    case "approvals":
+      await commandApprovals(context, subcommand, maybeArg);
       return;
     case "agents":
       await commandAgents(context, subcommand, maybeArg);
@@ -3146,6 +3153,105 @@ async function commandServices(
   );
 }
 
+async function commandApprovals(
+  context: CliContext,
+  subcommand: string | undefined,
+  maybeArg: string | undefined,
+): Promise<void> {
+  const store = createCliApprovalStore(context.cwd);
+
+  if (subcommand === "list") {
+    const status = readCliApprovalStatus(context);
+
+    if (status === "invalid") {
+      writeInvalidUsage(
+        context,
+        "Approval status must be pending, approved, or rejected.",
+      );
+      return;
+    }
+
+    const approvals = await store.list(status === undefined ? {} : { status });
+
+    writeJsonOrHuman(
+      context,
+      { ok: true, approvals },
+      formatApprovals(approvals),
+    );
+    return;
+  }
+
+  if (subcommand === "audit") {
+    const events = await store.audit();
+
+    writeJsonOrHuman(
+      context,
+      { ok: true, events },
+      events.length === 0
+        ? "No local approval audit events."
+        : events
+            .map(
+              (event) =>
+                `${event.at}  ${event.type}  ${event.approvalId}${event.actor ? `  ${event.actor}` : ""}`,
+            )
+            .join("\n"),
+    );
+    return;
+  }
+
+  if (subcommand === "approve" || subcommand === "reject") {
+    if (!maybeArg) {
+      writeApprovalsUsage(context);
+      return;
+    }
+
+    const actor =
+      context.values.get("by") ??
+      (subcommand === "approve"
+        ? "anvil-cloud approvals approve"
+        : "anvil-cloud approvals reject");
+    const reason =
+      context.values.get("reason") ?? context.values.get("justification");
+    const approval =
+      subcommand === "approve"
+        ? await store.approve(maybeArg, {
+            approvedBy: actor,
+            ...(reason === undefined ? {} : { reason }),
+          })
+        : await store.reject(maybeArg, {
+            rejectedBy: actor,
+            ...(reason === undefined ? {} : { reason }),
+          });
+
+    if (!approval) {
+      writeJsonOrHuman(
+        context,
+        {
+          ok: false,
+          errors: [
+            {
+              code: "APPROVAL_NOT_FOUND",
+              message: `No approval '${maybeArg}' was found.`,
+            },
+          ],
+        },
+        `No approval '${maybeArg}' was found.`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    writeJsonOrHuman(
+      context,
+      { ok: true, approval },
+      `${approval.id}  ${approval.action}  ${approval.status}`,
+    );
+    return;
+  }
+
+  writeApprovalsUsage(context);
+}
+
 function writeWorkflowsUsage(context: CliContext): void {
   writeJsonOrHuman(
     context,
@@ -3162,6 +3268,55 @@ function writeWorkflowsUsage(context: CliContext): void {
     "Usage: anvil-cloud workflows <list|show <runId>|run <name> [--input '<json>']>",
   );
   process.exitCode = 2;
+}
+
+function writeApprovalsUsage(context: CliContext): void {
+  writeJsonOrHuman(
+    context,
+    {
+      ok: false,
+      errors: [
+        {
+          code: "INVALID_USAGE",
+          message:
+            "Usage: anvil-cloud approvals <list|audit|approve <id>|reject <id>> [--status pending|approved|rejected] [--by actor] [--reason text] [--json]",
+        },
+      ],
+    },
+    "Usage: anvil-cloud approvals <list|audit|approve <id>|reject <id>> [--status pending|approved|rejected] [--by actor] [--reason text] [--json]",
+  );
+  process.exitCode = 2;
+}
+
+function createCliApprovalStore(rootDir: string): LocalApprovalStore {
+  return new LocalApprovalStore({
+    filePath: path.join(rootDir, ".anvil/local/approvals.json"),
+  });
+}
+
+function readCliApprovalStatus(
+  context: CliContext,
+): LocalApprovalStatus | "invalid" | undefined {
+  const status = context.values.get("status");
+
+  if (status === undefined || status.length === 0) {
+    return undefined;
+  }
+
+  return isLocalApprovalStatus(status) ? status : "invalid";
+}
+
+function formatApprovals(approvals: LocalApprovalRecord[]): string {
+  if (approvals.length === 0) {
+    return "No local approval requests.";
+  }
+
+  return approvals
+    .map(
+      (approval) =>
+        `${approval.id}  ${approval.action}  ${approval.status}  ${approval.requestedAt}`,
+    )
+    .join("\n");
 }
 
 async function readWorkflowRuns(rootDir: string): Promise<WorkflowRun[]> {
@@ -3307,6 +3462,10 @@ function writeHelp(): void {
       "  anvil-cloud auth login <id> [--json]",
       "  anvil-cloud auth token <id> [--ttl 3600] [--json]",
       "  anvil-cloud auth whoami [--json]",
+      "  anvil-cloud approvals list [--status pending|approved|rejected] [--json]",
+      "  anvil-cloud approvals approve <id> [--by actor] [--reason text] [--json]",
+      "  anvil-cloud approvals reject <id> [--by actor] [--reason text] [--json]",
+      "  anvil-cloud approvals audit [--json]",
       "  anvil-cloud agents discover [--json]",
       "  anvil-cloud agents guardian [--json]",
       "  anvil-cloud workflows list [--json]",
@@ -3654,6 +3813,7 @@ async function checkLocalState(rootDir: string): Promise<DoctorCheck> {
     jobs: await fileExists(path.join(localDir, "jobs.json")),
     workflows: await fileExists(path.join(localDir, "workflows.json")),
     services: await fileExists(path.join(localDir, "services.json")),
+    approvals: await fileExists(path.join(localDir, "approvals.json")),
   };
   const hasAnyState = Object.values(files).some(Boolean);
 

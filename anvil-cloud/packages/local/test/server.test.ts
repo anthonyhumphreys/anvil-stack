@@ -134,6 +134,51 @@ describe("startLocalRuntimeServer", () => {
       await expect(
         fetchText(`${server.runtimeUrl}/_anvil/lens`),
       ).resolves.toContain("Diagnostics");
+      await expect(
+        fetchText(`${server.runtimeUrl}/_anvil/lens`),
+      ).resolves.toContain("Approvals");
+
+      await expect(
+        server.host.approvals.requestApproval({
+          action: "deploy.preview",
+          reason: "Manual preview gate",
+          metadata: { agentName: "shipmate" },
+        }),
+      ).resolves.toMatchObject({ status: "pending" });
+      const approvalsPayload = (await fetchJson(
+        `${server.runtimeUrl}/_anvil/approvals?status=pending`,
+      )) as { approvals: Array<{ id: string }> };
+      const approval = approvalsPayload.approvals[0];
+
+      expect(approval).toMatchObject({
+        status: "pending",
+        action: "deploy.preview",
+        metadata: { agentName: "shipmate" },
+      });
+      await expect(
+        postJson(
+          `${server.runtimeUrl}/_anvil/approvals/${approval.id}/approve`,
+          { actor: "test", reason: "Checked" },
+        ),
+      ).resolves.toMatchObject({
+        ok: true,
+        approval: {
+          id: approval.id,
+          status: "approved",
+          decidedBy: "test",
+        },
+      });
+      await expect(
+        fetchJson(`${server.runtimeUrl}/_anvil/approvals/audit`),
+      ).resolves.toMatchObject({
+        ok: true,
+        events: expect.arrayContaining([
+          expect.objectContaining({
+            type: "approval.approved",
+            approvalId: approval.id,
+          }),
+        ]),
+      });
 
       await expect(
         postJson(`${server.clientUrl}/_anvil/mutation/createNote`, {
