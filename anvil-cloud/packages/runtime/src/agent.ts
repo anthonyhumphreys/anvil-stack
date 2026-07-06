@@ -669,13 +669,13 @@ export class AgentRuntime {
         }
       }
 
-      const result = {
+      const result: AgentRuntimeInvokeResult = {
         agentName: agent.name,
-        traceId,
         response: response.message,
         toolCalls,
         approvalsRequired,
         usage: response.usage ?? {},
+        ...(this.traces !== undefined ? { traceId } : {}),
       };
 
       yield* runtimeEffectFromPromise(

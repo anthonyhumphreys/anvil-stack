@@ -82,6 +82,11 @@ export function redactTraceValue(value: unknown): unknown {
 
 function redactTraceNode(value: unknown, seen: WeakSet<object>): unknown {
   if (Array.isArray(value)) {
+    if (seen.has(value)) {
+      return "[Circular]";
+    }
+
+    seen.add(value);
     return value.map((item) => redactTraceNode(item, seen));
   }
 
