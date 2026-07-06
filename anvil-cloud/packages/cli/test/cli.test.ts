@@ -736,12 +736,27 @@ describe("main", () => {
         dependencies: Record<string, string>;
         devDependencies: Record<string, string>;
       };
+      const tsconfig = JSON.parse(
+        await readFile(path.join(cellDir, "tsconfig.json"), "utf8"),
+      ) as {
+        compilerOptions: {
+          paths: Record<string, string[]>;
+        };
+      };
 
       expect(payload).toMatchObject({
         ok: true,
         cell: "react-notes",
         client: {
           kind: "vite-react",
+        },
+        template: "todo",
+        lensUrl: "http://localhost:8787/_anvil/lens",
+        bootstrap: {
+          install: false,
+          git: false,
+          start: false,
+          packageManager: "pnpm",
         },
       });
       expect(anvilConfig.client.kind).toBe("vite-react");
@@ -757,7 +772,7 @@ describe("main", () => {
           "anvil-cloud destroy --preview --app react-notes --yes --dry-run --json",
       });
       expect(packageJson.dependencies).toMatchObject({
-        "@anvil-cloud/client": "workspace:*",
+        "@anvilstack/cloud-cli": expect.any(String),
         "@vitejs/plugin-react": expect.any(String),
         react: expect.any(String),
         "react-dom": expect.any(String),
@@ -780,6 +795,15 @@ describe("main", () => {
       await expect(
         readFile(path.join(cellDir, "index.html"), "utf8"),
       ).resolves.toContain("/src/client/main.tsx");
+      await expect(
+        readFile(path.join(cellDir, "README.md"), "utf8"),
+      ).resolves.toContain("http://localhost:8787/_anvil/lens");
+      await expect(
+        readFile(path.join(cellDir, ".gitignore"), "utf8"),
+      ).resolves.toContain(".anvil/local/");
+      expect(tsconfig.compilerOptions.paths["@anvil-cloud/runtime"]).toContain(
+        "node_modules/@anvilstack/cloud-cli/dist/packages/runtime/src/index.ts",
+      );
     } finally {
       process.chdir(originalCwd);
       await rm(rootDir, { recursive: true, force: true });
@@ -817,6 +841,7 @@ describe("main", () => {
         client: {
           kind: "expo-router",
         },
+        template: "todo",
       });
       expect(anvilConfig.client.kind).toBe("expo-router");
       expect(anvilConfig.entrypoints.client).toBe("app/index.tsx");
@@ -832,8 +857,7 @@ describe("main", () => {
         start: "expo start",
       });
       expect(packageJson.dependencies).toMatchObject({
-        "@anvil-cloud/client": "workspace:*",
-        "@anvil-cloud/runtime": "workspace:*",
+        "@anvilstack/cloud-cli": expect.any(String),
         expo: expect.any(String),
         "expo-router": expect.any(String),
         react: expect.any(String),
@@ -875,6 +899,33 @@ describe("main", () => {
     }
   });
 
+  it("scaffolds additive Cell templates", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-"));
+    const originalCwd = process.cwd();
+
+    try {
+      process.chdir(rootDir);
+      const output = await captureStdout(() =>
+        main(["new", "workflow-notes", "--template", "workflow", "--json"]),
+      );
+      const payload = JSON.parse(output) as Record<string, unknown>;
+      const server = await readFile(
+        path.join(rootDir, "workflow-notes", "src/cell.server.ts"),
+        "utf8",
+      );
+
+      expect(payload).toMatchObject({
+        ok: true,
+        template: "workflow",
+      });
+      expect(server).toContain("workflows: true");
+      expect(server).toContain("dailyDigest: workflow");
+    } finally {
+      process.chdir(originalCwd);
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects unknown client targets when scaffolding", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-"));
     const originalCwd = process.cwd();
@@ -899,6 +950,79 @@ describe("main", () => {
       expect(process.exitCode).toBe(2);
       await expect(
         readFile(path.join(rootDir, "bad-client", "anvil.json"), "utf8"),
+      ).rejects.toThrow();
+    } finally {
+      process.chdir(originalCwd);
+      process.exitCode = originalExitCode;
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects unknown template targets when scaffolding", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-"));
+    const originalCwd = process.cwd();
+    const originalExitCode = process.exitCode;
+
+    try {
+      process.exitCode = undefined;
+      process.chdir(rootDir);
+      const output = await captureStdout(() =>
+        main(["new", "bad-template", "--template", "vibes", "--json"]),
+      );
+      const payload = JSON.parse(output) as Record<string, unknown>;
+
+      expect(payload).toMatchObject({
+        ok: false,
+        errors: [
+          {
+            code: "INVALID_USAGE",
+          },
+        ],
+      });
+      expect(process.exitCode).toBe(2);
+      await expect(
+        readFile(path.join(rootDir, "bad-template", "anvil.json"), "utf8"),
+      ).rejects.toThrow();
+    } finally {
+      process.chdir(originalCwd);
+      process.exitCode = originalExitCode;
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects unknown package managers when scaffolding", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-"));
+    const originalCwd = process.cwd();
+    const originalExitCode = process.exitCode;
+
+    try {
+      process.exitCode = undefined;
+      process.chdir(rootDir);
+      const output = await captureStdout(() =>
+        main([
+          "new",
+          "bad-package-manager",
+          "--package-manager",
+          "yarn",
+          "--json",
+        ]),
+      );
+      const payload = JSON.parse(output) as Record<string, unknown>;
+
+      expect(payload).toMatchObject({
+        ok: false,
+        errors: [
+          {
+            code: "INVALID_USAGE",
+          },
+        ],
+      });
+      expect(process.exitCode).toBe(2);
+      await expect(
+        readFile(
+          path.join(rootDir, "bad-package-manager", "anvil.json"),
+          "utf8",
+        ),
       ).rejects.toThrow();
     } finally {
       process.chdir(originalCwd);

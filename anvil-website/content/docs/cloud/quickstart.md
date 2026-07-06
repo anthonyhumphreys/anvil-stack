@@ -81,9 +81,14 @@ cd notes
 With the published CLI installed:
 
 ```bash
-anvil cloud new notes
+pnpm dlx @anvilstack/cloud-cli new notes
 cd notes
 ```
+
+The package name is `@anvilstack/cloud-cli`; it exposes the `anvil-cloud`
+binary. In human mode, `new` installs dependencies, runs `git init`, prints the
+Lens URL, and starts the local dev server. Use `--json` when you want a finite
+machine-readable scaffold result for an agent run.
 
 Inside a checked-in example such as `examples/notes`, use the relative built
 entrypoint:
@@ -176,10 +181,10 @@ anvil cloud dev
 
 Default local URLs:
 
-| Surface | URL |
-| --- | --- |
+| Surface | URL                     |
+| ------- | ----------------------- |
 | Runtime | `http://localhost:8787` |
-| Client | `http://localhost:5173` |
+| Client  | `http://localhost:5173` |
 
 Useful local routes:
 

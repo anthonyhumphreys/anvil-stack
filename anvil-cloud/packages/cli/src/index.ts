@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { execFile } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { execFile, spawn } from "node:child_process";
+import { existsSync, realpathSync } from "node:fs";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import path from "node:path";
@@ -54,6 +54,14 @@ type CliContext = {
 };
 
 type StarterClientKind = "vite-react" | "expo-router" | "headless";
+type StarterTemplateKind = "todo" | "workflow" | "agent" | "auth";
+
+type NewBootstrapOptions = {
+  install: boolean;
+  git: boolean;
+  start: boolean;
+  packageManager: "pnpm" | "npm" | "bun";
+};
 
 type DoctorStatus = "ok" | "info" | "warning" | "error";
 
@@ -535,6 +543,7 @@ async function commandNew(
   }
 
   const clientKind = readStarterClientKind(context);
+  const templateKind = readStarterTemplateKind(context);
 
   if (!clientKind) {
     writeJsonOrHuman(
@@ -555,7 +564,53 @@ async function commandNew(
     return;
   }
 
+  if (!templateKind) {
+    writeJsonOrHuman(
+      context,
+      {
+        ok: false,
+        errors: [
+          {
+            code: "INVALID_USAGE",
+            message:
+              "Usage: anvil-cloud new <name> [--template todo|workflow|agent|auth]",
+          },
+        ],
+      },
+      "Usage: anvil-cloud new <name> [--template todo|workflow|agent|auth]",
+    );
+    process.exitCode = 2;
+    return;
+  }
+
   const cellDir = path.resolve(context.cwd, name);
+  const bootstrap = readNewBootstrapOptions(context);
+
+  if (!bootstrap) {
+    writeJsonOrHuman(
+      context,
+      {
+        ok: false,
+        errors: [
+          {
+            code: "INVALID_USAGE",
+            message:
+              "Usage: anvil-cloud new <name> [--package-manager pnpm|npm|bun]",
+          },
+        ],
+      },
+      "Usage: anvil-cloud new <name> [--package-manager pnpm|npm|bun]",
+    );
+    process.exitCode = 2;
+    return;
+  }
+  const startedAt = Date.now();
+  const steps: Array<{
+    name: string;
+    status: "skipped" | "completed";
+    durationMs?: number;
+    command?: string;
+  }> = [];
   const clientEntry =
     clientKind === "expo-router"
       ? "app/index.tsx"
@@ -600,7 +655,7 @@ async function commandNew(
         private: true,
         type: "module",
         scripts: createStarterScripts(name, clientKind),
-        dependencies: createStarterDependencies(clientKind),
+        dependencies: await createStarterDependencies(clientKind),
         devDependencies: createStarterDevDependencies(clientKind),
       },
       null,
@@ -696,41 +751,7 @@ async function commandNew(
   );
   await writeFile(
     path.join(cellDir, "src", "cell.server.ts"),
-    [
-      'import { app, boolean, mutation, query, table, text } from "@anvil-cloud/runtime";',
-      "",
-      "export default app({",
-      "  schema: {",
-      "    todos: table({",
-      "      text: text().min(1).max(500),",
-      "      done: boolean().default(false),",
-      "    }),",
-      "  },",
-      "  capabilities: {",
-      "    database: true,",
-      "  },",
-      "  queries: {",
-      "    listTodos: query({",
-      '      auth: "public",',
-      "      handler: async (ctx) => {",
-      "        return ctx.db.todos.all();",
-      "      },",
-      "    }),",
-      "  },",
-      "  mutations: {",
-      "    addTodo: mutation<{ text: string }>({",
-      '      auth: "public",',
-      "      handler: async (ctx, input) => {",
-      "        return ctx.db.todos.insert({",
-      "          text: input.text,",
-      "          done: false,",
-      "        });",
-      "      },",
-      "    }),",
-      "  },",
-      "});",
-      "",
-    ].join("\n"),
+    renderStarterServer(templateKind),
     "utf8",
   );
   if (clientKind === "expo-router") {
@@ -1263,28 +1284,92 @@ async function commandNew(
     );
   }
 
+  await writeFile(
+    path.join(cellDir, ".gitignore"),
+    [
+      "node_modules/",
+      ".anvil/dist/",
+      ".anvil/local/",
+      ".env",
+      "dist/",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  await writeFile(
+    path.join(cellDir, "README.md"),
+    renderStarterReadme(name, clientKind, templateKind),
+    "utf8",
+  );
+
+  steps.push({
+    name: "scaffold",
+    status: "completed",
+    durationMs: Date.now() - startedAt,
+  });
+
+  if (bootstrap.install) {
+    await runNewCommand(
+      bootstrap.packageManager,
+      ["install", "--ignore-scripts"],
+      cellDir,
+    );
+    steps.push({
+      name: "install",
+      status: "completed",
+      command: `${bootstrap.packageManager} install --ignore-scripts`,
+    });
+  } else {
+    steps.push({ name: "install", status: "skipped" });
+  }
+
+  if (bootstrap.git) {
+    await runNewCommand("git", ["init"], cellDir);
+    steps.push({ name: "git", status: "completed", command: "git init" });
+  } else {
+    steps.push({ name: "git", status: "skipped" });
+  }
+
+  const lensUrl = "http://localhost:8787/_anvil/lens";
+  const startCommand = `${process.execPath} ${fileURLToPath(import.meta.url)} dev`;
+  const next =
+    clientKind === "expo-router"
+      ? [
+          `cd ${name}`,
+          "anvil-cloud dev",
+          "EXPO_PUBLIC_ANVIL_RUNTIME_URL=http://localhost:8787 pnpm start",
+        ]
+      : [`cd ${name}`, "anvil-cloud dev"];
+  const payload = {
+    ok: true,
+    cell: name,
+    client: {
+      kind: clientKind,
+    },
+    template: templateKind,
+    path: `./${name}`,
+    lensUrl,
+    bootstrap: {
+      install: bootstrap.install,
+      git: bootstrap.git,
+      start: bootstrap.start,
+      packageManager: bootstrap.packageManager,
+      durationMs: Date.now() - startedAt,
+      steps,
+      startCommand,
+    },
+    next,
+  };
+
   writeJsonOrHuman(
     context,
-    {
-      ok: true,
-      cell: name,
-      client: {
-        kind: clientKind,
-      },
-      path: `./${name}`,
-      next:
-        clientKind === "expo-router"
-          ? [
-              `cd ${name}`,
-              "anvil-cloud dev",
-              "EXPO_PUBLIC_ANVIL_RUNTIME_URL=http://localhost:8787 pnpm start",
-            ]
-          : [`cd ${name}`, "anvil-cloud dev"],
-    },
+    payload,
     [
       `Created Anvil Cell ${name}`,
+      `Template: ${templateKind}`,
+      `Lens: ${lensUrl}`,
       "",
-      "Next steps:",
+      bootstrap.start ? "Starting Anvil Local..." : "Next steps:",
       `  cd ${name}`,
       "  anvil-cloud dev",
       ...(clientKind === "expo-router"
@@ -1292,6 +1377,17 @@ async function commandNew(
         : []),
     ].join("\n"),
   );
+
+  if (bootstrap.start) {
+    await runNewCommand(
+      process.execPath,
+      [fileURLToPath(import.meta.url), "dev"],
+      cellDir,
+      {
+        inherit: true,
+      },
+    );
+  }
 }
 
 async function commandCheck(context: CliContext): Promise<void> {
@@ -3276,13 +3372,67 @@ function readStarterClientKind(context: CliContext): StarterClientKind | null {
   return null;
 }
 
+function readStarterTemplateKind(
+  context: CliContext,
+): StarterTemplateKind | null {
+  const value = context.values.get("template") ?? "todo";
+
+  if (
+    value === "todo" ||
+    value === "workflow" ||
+    value === "agent" ||
+    value === "auth"
+  ) {
+    return value;
+  }
+
+  return null;
+}
+
+function readNewBootstrapOptions(
+  context: CliContext,
+): NewBootstrapOptions | null {
+  const jsonMode = context.flags.has("json") || context.flags.has("agent");
+  const humanDefault = !jsonMode;
+  const packageManager = readPackageManager(context);
+
+  if (!packageManager) {
+    return null;
+  }
+
+  return {
+    install:
+      context.flags.has("install") ||
+      (humanDefault && !context.flags.has("no-install")),
+    git:
+      context.flags.has("git") ||
+      (humanDefault && !context.flags.has("no-git")),
+    start:
+      context.flags.has("start") ||
+      (humanDefault && !context.flags.has("no-start")),
+    packageManager,
+  };
+}
+
+function readPackageManager(
+  context: CliContext,
+): NewBootstrapOptions["packageManager"] | null {
+  const value = context.values.get("package-manager") ?? "pnpm";
+
+  if (value === "pnpm" || value === "npm" || value === "bun") {
+    return value;
+  }
+
+  return null;
+}
+
 function writeHelp(): void {
   process.stdout.write(
     [
       "Anvil Cloud CLI",
       "",
       "Commands:",
-      "  anvil-cloud new <name> [--client vite-react|expo-router|headless]",
+      "  anvil-cloud new <name> [--client vite-react|expo-router|headless] [--template todo|workflow|agent|auth]",
       "  anvil-cloud dev [--json] [--agent] [--port 8787] [--client-port 5173]",
       "  anvil-cloud doctor [--json] [--port 8787] [--client-port 5173]",
       "  anvil-cloud check [--json]",
@@ -4414,12 +4564,11 @@ function createStarterScripts(
   };
 }
 
-function createStarterDependencies(
+async function createStarterDependencies(
   clientKind: StarterClientKind,
-): Record<string, string> {
+): Promise<Record<string, string>> {
   const dependencies: Record<string, string> = {
-    "@anvil-cloud/client": "workspace:*",
-    "@anvil-cloud/runtime": "workspace:*",
+    "@anvilstack/cloud-cli": `^${await readCloudCliVersion()}`,
   };
 
   if (clientKind === "expo-router") {
@@ -4494,7 +4643,14 @@ async function createStarterTsconfig(
         };
   const localPaths = await detectLocalPackagePaths(cellDir);
   const paths = {
-    ...localPaths,
+    "@anvil-cloud/client": [
+      ...(localPaths["@anvil-cloud/client"] ?? []),
+      "node_modules/@anvilstack/cloud-cli/dist/packages/client/src/index.ts",
+    ],
+    "@anvil-cloud/runtime": [
+      ...(localPaths["@anvil-cloud/runtime"] ?? []),
+      "node_modules/@anvilstack/cloud-cli/dist/packages/runtime/src/index.ts",
+    ],
     "@anvil/generated/client": [".anvil/generated/client.ts"],
   };
 
@@ -4549,6 +4705,204 @@ async function detectLocalPackagePaths(
   }
 
   return paths;
+}
+
+async function readCloudCliVersion(): Promise<string> {
+  const packageJsonPath = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "..",
+    "package.json",
+  );
+  const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8")) as {
+    version?: unknown;
+  };
+
+  return typeof packageJson.version === "string"
+    ? packageJson.version
+    : "0.1.0";
+}
+
+function renderStarterServer(template: StarterTemplateKind): string {
+  const imports = new Set([
+    "app",
+    "boolean",
+    "mutation",
+    "query",
+    "table",
+    "text",
+  ]);
+
+  if (template === "workflow") {
+    imports.add("workflow");
+  }
+
+  if (template === "agent") {
+    imports.add("defineAgent");
+    imports.add("endpoint");
+  }
+
+  const lines = [
+    `import { ${Array.from(imports).sort().join(", ")} } from "@anvil-cloud/runtime";`,
+    "",
+    "export default app({",
+    "  schema: {",
+    "    todos: table({",
+    "      text: text().min(1).max(500),",
+    "      done: boolean().default(false),",
+    "    }),",
+    "  },",
+    "  capabilities: {",
+    "    database: true,",
+    ...(template === "workflow" ? ["    workflows: true,"] : []),
+    "  },",
+    ...(template === "agent"
+      ? [
+          "  agents: {",
+          "    helper: defineAgent({",
+          '      name: "helper",',
+          '      instructions: "Explain this Cell using only manifest-visible facts.",',
+          '      model: { provider: "local", model: "stub" },',
+          "      capabilities: { cells: ['read'], filesystem: 'none', secrets: 'none' },",
+          "    }),",
+          "  },",
+        ]
+      : []),
+    "  queries: {",
+    "    listTodos: query({",
+    '      auth: "public",',
+    "      handler: async (ctx) => {",
+    "        return ctx.db.todos.all();",
+    "      },",
+    "    }),",
+    ...(template === "auth"
+      ? [
+          "    whoami: query({",
+          "      handler: async (ctx) => {",
+          "        return { userId: ctx.auth.requireUser() };",
+          "      },",
+          "    }),",
+        ]
+      : []),
+    "  },",
+    "  mutations: {",
+    "    addTodo: mutation<{ text: string }>({",
+    '      auth: "public",',
+    "      handler: async (ctx, input) => {",
+    "        return ctx.db.todos.insert({",
+    "          text: input.text,",
+    "          done: false,",
+    "        });",
+    "      },",
+    "    }),",
+    "  },",
+    ...(template === "workflow"
+      ? [
+          "  workflows: {",
+          "    dailyDigest: workflow({",
+          "      steps: [",
+          "        {",
+          '          name: "collect",',
+          "          handler: async (ctx) => ({",
+          "            todos: await ctx.db.todos.all(),",
+          "          }),",
+          "        },",
+          "      ],",
+          "    }),",
+          "  },",
+        ]
+      : []),
+    ...(template === "agent"
+      ? [
+          "  endpoints: {",
+          "    explain: endpoint({",
+          '      method: "POST",',
+          '      path: "/api/explain",',
+          '      auth: "public",',
+          '      agent: "helper",',
+          "      handler: async () => ({ ok: true }),",
+          "    }),",
+          "  },",
+        ]
+      : []),
+    "});",
+    "",
+  ];
+
+  return lines.join("\n");
+}
+
+function renderStarterReadme(
+  name: string,
+  clientKind: StarterClientKind,
+  templateKind: StarterTemplateKind,
+): string {
+  return [
+    `# ${name}`,
+    "",
+    "Generated by `anvil-cloud new`.",
+    "",
+    `- Client: \`${clientKind}\``,
+    `- Template: \`${templateKind}\``,
+    "",
+    "## Run",
+    "",
+    "```sh",
+    "pnpm install --ignore-scripts",
+    "pnpm dev",
+    "```",
+    "",
+    "Anvil Lens is available at:",
+    "",
+    "```txt",
+    "http://localhost:8787/_anvil/lens",
+    "```",
+    "",
+    "## Useful Commands",
+    "",
+    "```sh",
+    "pnpm check",
+    "pnpm build",
+    "pnpm inspect:local",
+    "pnpm logs:local",
+    "```",
+    "",
+    "The generated Cell code lives in `src/cell.server.ts`. The generated client metadata is written under `.anvil/generated` and should not be edited by hand.",
+    "",
+  ].join("\n");
+}
+
+async function runNewCommand(
+  command: string,
+  args: string[],
+  cwd: string,
+  options: { inherit?: boolean } = {},
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd,
+      stdio: options.inherit ? "inherit" : "pipe",
+      env: process.env,
+    });
+
+    let stderr = "";
+
+    child.stderr?.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+
+      reject(
+        new Error(
+          `${command} ${args.join(" ")} failed with exit code ${code ?? "unknown"}${stderr ? `: ${stderr.trim()}` : ""}`,
+        ),
+      );
+    });
+  });
 }
 
 async function firstExistingPath(candidates: string[]): Promise<string | null> {

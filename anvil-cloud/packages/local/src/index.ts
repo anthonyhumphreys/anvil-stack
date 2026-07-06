@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import http, {
   type IncomingMessage,
@@ -6,6 +7,7 @@ import http, {
   type ServerResponse,
 } from "node:http";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   AuthError,
@@ -283,6 +285,7 @@ async function startViteClientServer(options: {
     },
     resolve: {
       alias: {
+        ...workspacePackageAliases(),
         "@anvil/generated/client": path.resolve(
           options.rootDir,
           ".anvil/generated/client.ts",
@@ -294,6 +297,36 @@ async function startViteClientServer(options: {
   await server.listen();
 
   return server;
+}
+
+function workspacePackageAliases(): Record<string, string> {
+  const currentDir = path.dirname(fileURLToPath(import.meta.url));
+  const workspacePackagesRoot = path.resolve(currentDir, "..", "..");
+  const packedPackagesRoot = path.resolve(currentDir, "packages");
+  const aliases: Record<string, string> = {};
+
+  addFirstExistingAlias(aliases, "@anvil-cloud/runtime", [
+    path.join(workspacePackagesRoot, "runtime", "src", "index.ts"),
+    path.join(packedPackagesRoot, "runtime", "src", "index.ts"),
+  ]);
+  addFirstExistingAlias(aliases, "@anvil-cloud/client", [
+    path.join(workspacePackagesRoot, "client", "src", "index.ts"),
+    path.join(packedPackagesRoot, "client", "src", "index.ts"),
+  ]);
+
+  return aliases;
+}
+
+function addFirstExistingAlias(
+  aliases: Record<string, string>,
+  specifier: string,
+  candidates: string[],
+): void {
+  const source = candidates.find((candidate) => existsSync(candidate));
+
+  if (source) {
+    aliases[specifier] = source;
+  }
 }
 
 async function writeServicesSnapshot(

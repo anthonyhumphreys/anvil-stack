@@ -15,18 +15,38 @@ Creates a new Anvil Cell project.
 ```sh
 anvil-cloud new notes
 anvil-cloud new native-notes --client expo-router
+pnpm dlx @anvilstack/cloud-cli new demo
 ```
+
+The published package is `@anvilstack/cloud-cli`; the binary it exposes is
+`anvil-cloud`.
 
 Options:
 
 ```txt
 --client vite-react|expo-router|headless
+--template todo|workflow|agent|auth
+--install / --no-install
+--git / --no-git
+--start / --no-start
+--package-manager pnpm|npm|bun
 ```
 
 `vite-react` is the default. `expo-router` scaffolds an Expo Router client
 target with `app/index.tsx` and `app/_layout.tsx`; it still uses the Anvil
 runtime through `@anvil-cloud/client`. `headless` writes generated client
 metadata without a browser UI.
+
+`todo` is the default template. `workflow`, `agent`, and `auth` add the matching
+Cell contract shape while keeping the generated Todo query and mutation working
+for first-run smoke checks.
+
+In human mode, `new` scaffolds the project, installs dependencies with
+`pnpm install --ignore-scripts`, runs `git init`, prints the Lens URL, and starts
+`anvil-cloud dev`. Use `--no-install`, `--no-git`, or `--no-start` to split the
+flow. With `--json` or `--agent`, the command is finite by default: it scaffolds
+and returns the install/start commands and Lens URL without launching a long-lived
+server unless the caller explicitly passes `--start`.
 
 Expo Router scaffolds read `EXPO_PUBLIC_ANVIL_RUNTIME_URL` when it is set. For
 local development they fall back to `http://localhost:8787`, except Android
@@ -53,7 +73,15 @@ JSON output:
   "client": {
     "kind": "vite-react"
   },
+  "template": "todo",
   "path": "./notes",
+  "lensUrl": "http://localhost:8787/_anvil/lens",
+  "bootstrap": {
+    "install": false,
+    "git": false,
+    "start": false,
+    "packageManager": "pnpm"
+  },
   "next": ["cd notes", "anvil-cloud dev"]
 }
 ```
