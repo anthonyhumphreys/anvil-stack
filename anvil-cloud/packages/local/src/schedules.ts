@@ -75,7 +75,7 @@ export class LocalScheduleAdapter {
     await this.reconcile();
 
     for (const schedule of await this.list()) {
-      this.scheduleNext(schedule.name);
+      await this.scheduleNext(schedule.name);
     }
   }
 
@@ -165,7 +165,7 @@ export class LocalScheduleAdapter {
     } finally {
       this.active.delete(name);
       if (existing !== null) {
-        this.scheduleNext(name);
+        await this.scheduleNext(name);
       }
     }
   }
@@ -231,7 +231,7 @@ export class LocalScheduleAdapter {
     await this.write({ schedules });
   }
 
-  private scheduleNext(name: string): void {
+  private async scheduleNext(name: string): Promise<void> {
     const app = this.app;
     const definition = app?.jobs?.[name];
 
@@ -260,7 +260,7 @@ export class LocalScheduleAdapter {
       }, boundedDelay),
     );
 
-    void this.updateSchedule(name, {
+    await this.updateSchedule(name, {
       nextRunAt: dueAt.toISOString(),
       running: this.active.has(name),
     });
