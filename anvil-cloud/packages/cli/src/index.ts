@@ -287,7 +287,7 @@ async function commandChannelsSimulate(context: CliContext): Promise<void> {
       },
       `No Anvil Local runtime is reachable at ${runtimeUrl}.`,
     );
-    process.exitCode = 4;
+    process.exitCode = 5;
     return;
   }
 
@@ -304,7 +304,7 @@ async function commandChannelsSimulate(context: CliContext): Promise<void> {
   writeJsonOrHuman(context, payload, JSON.stringify(payload, null, 2));
 
   if (!response.ok) {
-    process.exitCode = 4;
+    process.exitCode = 1;
   }
 }
 

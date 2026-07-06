@@ -1463,19 +1463,23 @@ async function sendAgentSessionMessageRoute(
     return;
   }
 
-  const messagePayload = await sendAgentSessionMessage(options, {
-    session,
-    input: body.input,
-    context: isObject(body.context) ? body.context : {},
-  });
+  try {
+    const messagePayload = await sendAgentSessionMessage(options, {
+      session,
+      input: body.input,
+      context: isObject(body.context) ? body.context : {},
+    });
 
-  await sendJson(options.response, 200, {
-    ok: true,
-    result: messagePayload,
-    session: messagePayload.session,
-    events: messagePayload.events,
-    continuationToken: messagePayload.continuationToken,
-  });
+    await sendJson(options.response, 200, {
+      ok: true,
+      result: messagePayload,
+      session: messagePayload.session,
+      events: messagePayload.events,
+      continuationToken: messagePayload.continuationToken,
+    });
+  } catch (error) {
+    await sendServiceError(options.response, error);
+  }
 }
 
 async function simulateChannelMessageRoute(
@@ -1554,38 +1558,42 @@ async function simulateChannelMessageRoute(
   const session =
     existing ??
     (await options.host.agentSessions.create(channel.agent, channelSession));
-  const messagePayload = await sendAgentSessionMessage(options, {
-    session,
-    input: body.input,
-    eventType: "channel.message",
-    context: {
-      ...(isObject(body.context) ? body.context : {}),
-      channel: {
-        name: channelName,
-        provider: channel.provider,
-        sender,
-        thread,
+  try {
+    const messagePayload = await sendAgentSessionMessage(options, {
+      session,
+      input: body.input,
+      eventType: "channel.message",
+      context: {
+        ...(isObject(body.context) ? body.context : {}),
+        channel: {
+          name: channelName,
+          provider: channel.provider,
+          sender,
+          thread,
+        },
       },
-    },
-  });
-  const reply = messagePayload.events
-    .filter((event) => event.type === "channel.reply")
-    .map((event) => event.data);
+    });
+    const reply = messagePayload.events
+      .filter((event) => event.type === "channel.reply")
+      .map((event) => event.data);
 
-  await sendJson(options.response, 200, {
-    ok: true,
-    result: {
-      channel: {
-        name: channelName,
-        provider: channel.provider,
-        sessionKey: channel.sessionKey ?? "thread",
+    await sendJson(options.response, 200, {
+      ok: true,
+      result: {
+        channel: {
+          name: channelName,
+          provider: channel.provider,
+          sessionKey: channel.sessionKey ?? "thread",
+        },
+        session: messagePayload.session,
+        events: messagePayload.events,
+        continuationToken: messagePayload.continuationToken,
+        reply,
       },
-      session: messagePayload.session,
-      events: messagePayload.events,
-      continuationToken: messagePayload.continuationToken,
-      reply,
-    },
-  });
+    });
+  } catch (error) {
+    await sendServiceError(options.response, error);
+  }
 }
 
 async function sendAgentSessionMessage(
