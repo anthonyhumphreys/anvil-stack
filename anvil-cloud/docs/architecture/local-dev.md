@@ -171,6 +171,24 @@ Each event should include:
 }
 ```
 
+## Usage metering
+
+Local usage events are NDJSON at `.anvil/local/usage.ndjson`. The runtime writes
+an event for each Cell handler invocation and each mounted Agent invocation.
+Agent events include provider/model metadata, token counts, session id when
+provided, estimated USD cost, and sandbox runtime milliseconds. The local stub
+provider reports zero tokens through the same shape as production providers.
+
+`anvil-cloud usage --local --json` and `GET /_anvil/usage` aggregate the same
+file into totals, per-Cell and per-Agent rollups, hourly buckets, top
+consumers, and budget warnings. Budgets are warnings only in alpha:
+
+```sh
+ANVIL_USAGE_DAILY_BUDGET_USD=1 \
+ANVIL_USAGE_SESSION_BUDGET_USD=0.25 \
+anvil-cloud usage --local --json
+```
+
 ## Inspector
 
 `GET /_anvil/inspect` and `anvil-cloud inspect --local --json` should return:

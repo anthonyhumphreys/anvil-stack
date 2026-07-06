@@ -222,6 +222,32 @@ error cause.
 The AWS log reader follows CloudWatch pagination until the requested limit is
 reached or there are no more pages.
 
+### `anvil-cloud usage --local`
+
+Reads local runtime usage events from `.anvil/local/usage.ndjson` and emits a
+provider-neutral summary for automation.
+
+```sh
+anvil-cloud usage --local --json
+anvil-cloud usage --local --since 1h --json
+```
+
+The local report includes:
+
+- per-Cell and per-Agent invocation counts;
+- model token totals (`inputTokens`, `outputTokens`, `totalTokens`);
+- provider/model metadata when available;
+- estimated cost in USD, defaulting to zero unless model cost rates are
+  configured;
+- sandbox runtime milliseconds;
+- hourly time-series buckets and top consumers;
+- budget warnings from `ANVIL_USAGE_DAILY_BUDGET_USD` and
+  `ANVIL_USAGE_SESSION_BUDGET_USD`.
+
+Budget warnings never silently kill an agent. A budget breach is explicit
+review evidence so a future approval-gated resume can be wired through the
+supervision machinery.
+
 ### `anvil-cloud usage --preview`
 
 Builds the Cell and emits lightweight usage visibility from the AWS preview

@@ -27,10 +27,10 @@ what evidence should I inspect before trusting a Cell?"
 | Agents | `defineAgent`, agent capabilities, approval contracts, provider-neutral manifests, provider registry, deterministic local stub inference, mounted Cell Agents, local invocation routes, CLI contract commands, AWS Bedrock inference provider support, and the Agent Sandbox target architecture exist. |
 | Runtime host | Host adapter interfaces exist for db, files, env, auth, logs, events, and jobs. |
 | Builder | Config, import policy, typecheck, server/client bundle, manifest extraction, generated client, and build metadata exist. |
-| Local runtime | Local HTTP server, JSON database, files, auth, logs, events, jobs, workflows, supervised services, manifest, and inspection state exist. |
-| CLI | `new`, `dev`, `check`, `review`, `build`, `agents`, `inspect`, `logs`, `usage`, `db`, `workflows`, `services list`, `deploy --preview`, `rollback --preview --dry-run`, and `destroy --preview` exist. |
+| Local runtime | Local HTTP server, JSON database, files, auth, logs, usage events, events, jobs, workflows, supervised services, manifest, and inspection state exist. |
+| CLI | `new`, `dev`, `check`, `review`, `build`, `agents`, `inspect`, `logs`, `usage --local`, `usage --preview`, `db`, `workflows`, `services list`, `deploy --preview`, `rollback --preview --dry-run`, and `destroy --preview` exist. |
 | Client | React/Vite is the current paved road. The browser client supports generated query/mutation metadata, token lookup, structured runtime errors, hook helpers, and manual `refetch`. |
-| Lens | Local Lens is served at `/_anvil/lens` and reads the same local runtime truth as CLI JSON: manifest, capabilities, auth users, logs, database state, workflows, services, and diagnostics. |
+| Lens | Local Lens is served at `/_anvil/lens` and reads the same local runtime truth as CLI JSON: manifest, capabilities, auth users, logs, usage totals, database state, workflows, services, and diagnostics. |
 | Examples | `examples/notes` is the canonical local demo. `examples/aws-preview` is the AWS-compatible smoke Cell. |
 | AWS preview | Plan, review aggregation, CloudFormation synthesis, artifacts, optional provisioner, Lambda bridge, DynamoDB, S3, SQS, EventBridge events and schedules, Step Functions workflows, outbound fetch guard, ECS/Fargate service resource synthesis, CloudWatch logs, remote inspect, remote logs, usage visibility, rollback dry-run intent, preview destroy, cost-driver hints, and cleanup hints exist. |
 
