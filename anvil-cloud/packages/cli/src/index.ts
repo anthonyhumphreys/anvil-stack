@@ -34,8 +34,11 @@ import {
   type LocalUser,
 } from "@anvil-cloud/auth";
 import {
+  createLocalSandboxProvider,
   createLocalRuntimeHost,
+  listLocalSandboxSessions,
   startLocalRuntimeServer,
+  type LocalSandboxBackendSelection,
 } from "@anvil-cloud/local";
 import {
   AgentProviderRegistry,
@@ -295,6 +298,16 @@ async function commandAgentsSandboxes(context: CliContext): Promise<void> {
 
   const manifest = result.manifest as CellManifest;
   const agents = manifest.agents ?? {};
+  const localBackend = readLocalSandboxBackendOption(context);
+
+  if (localBackend === null) {
+    return;
+  }
+
+  const localProvider = await createLocalSandboxProvider({
+    rootDir: context.cwd,
+    ...(localBackend === undefined ? {} : { backend: localBackend }),
+  });
   const image = process.env.ANVIL_AWS_AGENT_SANDBOX_IMAGE;
   const agentSandboxesEnabled = typeof image === "string" && image.length > 0;
   const sandboxes = Object.entries(agents)
@@ -303,6 +316,9 @@ async function commandAgentsSandboxes(context: CliContext): Promise<void> {
       mount,
       agent: agent.name,
       provider: "aws-lambda-microvm",
+      localProvider: localProvider.id,
+      localBackend: localProvider.backend,
+      awsProvider: "aws-lambda-microvm",
       required: agent.requires.sandbox,
       supported: checkAwsAgentCompatibility(agent, {
         agentSandboxesEnabled,
@@ -315,6 +331,8 @@ async function commandAgentsSandboxes(context: CliContext): Promise<void> {
   const payload = {
     ok: true,
     provider: "aws-lambda-microvm",
+    localProvider: localProvider.id,
+    localBackend: localProvider.backend,
     imageConfigured: agentSandboxesEnabled,
     sandboxes,
     warnings: agentSandboxesEnabled
@@ -334,7 +352,7 @@ async function commandAgentsSandboxes(context: CliContext): Promise<void> {
           "Agent Sandboxes:",
           ...sandboxes.map(
             (sandbox) =>
-              `  ${sandbox.imageConfigured ? "✓" : "⚠"} ${sandbox.mount} -> ${sandbox.provider}`,
+              `  ${sandbox.imageConfigured ? "✓" : "⚠"} ${sandbox.mount} -> ${sandbox.localProvider} locally, ${sandbox.provider} on AWS`,
           ),
         ].join("\n"),
   );
@@ -1519,6 +1537,7 @@ async function commandInspect(context: CliContext): Promise<void> {
   );
   const database = await readDatabase(context.cwd);
   const logs = await readLogs(context.cwd);
+  const sandboxes = await listLocalSandboxSessions({ rootDir: context.cwd });
   const payload = {
     ok: true,
     status: manifest ? "built" : "not-built",
@@ -1537,6 +1556,17 @@ async function commandInspect(context: CliContext): Promise<void> {
         ]),
       ),
     },
+    sandboxes: sandboxes.map((record) => ({
+      id: record.session.id,
+      agent: record.session.agent,
+      status: record.session.status,
+      provider: record.session.provider,
+      backend: record.backend,
+      workspaceRoot: record.workspaceRoot,
+      startedAt: record.session.startedAt,
+      terminatedAt: record.session.terminatedAt,
+      policy: record.policy,
+    })),
     recentErrors: logs.filter((entry) => entry.level === "error").slice(-10),
   };
 
@@ -3309,6 +3339,7 @@ function writeHelp(): void {
       "  anvil-cloud auth whoami [--json]",
       "  anvil-cloud agents discover [--json]",
       "  anvil-cloud agents guardian [--json]",
+      "  anvil-cloud agents sandboxes [--sandbox-backend auto|docker|process] [--json]",
       "  anvil-cloud workflows list [--json]",
       "  anvil-cloud workflows show <runId> [--json]",
       "  anvil-cloud workflows run <name> [--input '<json>'] [--json]",
@@ -4146,6 +4177,27 @@ function readEnvironment(context: CliContext): "preview" | undefined {
   }
 
   return "preview";
+}
+
+function readLocalSandboxBackendOption(
+  context: CliContext,
+): LocalSandboxBackendSelection | null | undefined {
+  const value = context.values.get("sandbox-backend");
+
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (value === "auto" || value === "docker" || value === "process") {
+    return value;
+  }
+
+  writeInvalidUsage(
+    context,
+    "Invalid --sandbox-backend value. Use auto, docker, or process.",
+  );
+
+  return null;
 }
 
 function readNumberOption(

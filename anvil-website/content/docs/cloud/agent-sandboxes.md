@@ -112,6 +112,28 @@ Cell to declare each credential in `capabilities.secrets`, the agent to declare
 `secrets: "brokered"`, the agent to require a sandbox, and the broker domains to
 be present in `capabilities.network.allow`.
 
+## Local backends
+
+Anvil Local now reports sandbox-required agents against the same provider
+contract used by AWS. It can choose between:
+
+- `local-docker`: a Docker-backed session with a per-session workspace mount.
+- `local-process`: a development fallback that records lifecycle and policy
+  state without Docker. It is not an OS isolation boundary for untrusted code.
+
+The default backend is `auto`: use Docker when the Docker CLI can reach a
+daemon, otherwise fall back to `local-process`. Override it with:
+
+```sh
+ANVIL_LOCAL_SANDBOX_BACKEND=process anvil-cloud agents sandboxes --json
+anvil-cloud agents sandboxes --sandbox-backend docker --json
+```
+
+Local sessions are persisted under `.anvil/local/sandboxes`. `anvil-cloud
+inspect --local --json` includes the backend id, lifecycle status, workspace
+root, capability policy, network policy, and brokered credential policy names.
+It does not include credential values.
+
 ## AWS implementation
 
 For AWS deployments, Anvil keeps normal Cell traffic on Lambda and can use
@@ -265,6 +287,8 @@ Implemented today:
 - provider-neutral Agent Sandbox types in `@anvil-cloud/runtime`
 - brokered credential declarations in agent manifests and sandbox startup
   payloads
+- local Docker and process sandbox providers in `@anvil-cloud/local`
+- local sandbox backend selection and inspect JSON session reporting
 - `AwsLambdaMicroVmSandboxProvider` in `@anvil-cloud/aws`
 - `ANVIL_AWS_AGENT_SANDBOX_IMAGE`-gated AWS support for sandbox-required agents
 - AWS preview plan changes, review gates, and cost drivers for `agent-sandboxes`

@@ -49,6 +49,20 @@ import { createServer as createViteServer, type ViteDevServer } from "vite";
 import { lensPageHtml } from "./lens.js";
 
 export { lensPageHtml } from "./lens.js";
+export {
+  createLocalSandboxProvider,
+  listLocalSandboxSessions,
+  LocalDockerSandboxProvider,
+  LocalProcessSandboxProvider,
+  readLocalSandboxBackendSelection,
+  selectLocalSandboxBackend,
+  type DockerCommandRunner,
+  type LocalSandboxBackend,
+  type LocalSandboxBackendSelection,
+  type LocalSandboxProvider,
+  type LocalSandboxProviderOptions,
+  type LocalSandboxSessionRecord,
+} from "./sandbox.js";
 
 export type LocalRuntimeHost = RuntimeHost & {
   db: JsonDatabaseAdapter;

@@ -348,6 +348,34 @@ Agent Sandbox MicroVM
 This split matters. Lambda is a good Cell runtime. A MicroVM is a good
 workshop. Asking either one to be both is how abstractions acquire a basement.
 
+## Local Sandbox Backends
+
+Local Agent Sandboxes use the same `AgentSandboxProvider` contract as the AWS
+adapter. `@anvil-cloud/local` provides two local backends:
+
+- `local-docker`: starts a long-lived Docker container with a per-session
+  workspace mount. Docker is the preferred local backend when available because
+  it gives a real process and filesystem boundary.
+- `local-process`: creates a per-session workspace and lifecycle record without
+  Docker. This is a fallback for development machines without Docker. It is not
+  an OS isolation boundary for untrusted generated code.
+
+Backend selection is automatic by default. Docker is selected when the Docker
+CLI can reach a daemon; otherwise Anvil falls back to `local-process`. Developers
+can override selection with `ANVIL_LOCAL_SANDBOX_BACKEND=auto|docker|process` or
+`anvil-cloud agents sandboxes --sandbox-backend auto|docker|process`.
+
+Local sandbox session records are stored under `.anvil/local/sandboxes`. They
+record provider/backend id, lifecycle status, workspace root, capability policy,
+network policy, and brokered credential policy names/domains only. They do not
+store credential values. `anvil-cloud inspect --local --json` includes these
+records so Lens and agent tooling can report which backend handled each session.
+
+Parity is contract-level today: lifecycle, workspace isolation, policy
+recording, broker policy redaction, and teardown are covered across local
+providers. Fine-grained network allowlist enforcement and production-grade
+untrusted-code isolation still belong to Docker/prod adapter execution work.
+
 ## Target Agent Delivery Loop
 
 The current implemented slice gives AWS-backed agents:
