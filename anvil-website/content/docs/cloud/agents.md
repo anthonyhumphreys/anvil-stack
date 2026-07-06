@@ -127,11 +127,11 @@ Builder validation catches endpoint or workflow references to missing mounted ag
 
 ## Project Agents, Cell Agents, and Agent Cells
 
-| Shape | Use it for |
-| --- | --- |
-| Project Agent | Workspace operations: review a Cell manifest, inspect capability changes, draft release notes, prepare preview deployment, explain blast radius, or check policy. |
-| Cell Agent | Runtime behavior inside a Cell: endpoint, job, workflow, mutation, or internal app behavior. |
-| Agent Cell | A Cell whose primary product surface is an agent-powered experience. The Cell remains the boundary for auth, capabilities, approvals, validation, local runtime, and deployment adapters. |
+| Shape         | Use it for                                                                                                                                                                                |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Project Agent | Workspace operations: review a Cell manifest, inspect capability changes, draft release notes, prepare preview deployment, explain blast radius, or check policy.                         |
+| Cell Agent    | Runtime behavior inside a Cell: endpoint, job, workflow, mutation, or internal app behavior.                                                                                              |
+| Agent Cell    | A Cell whose primary product surface is an agent-powered experience. The Cell remains the boundary for auth, capabilities, approvals, validation, local runtime, and deployment adapters. |
 
 Project-agent discovery currently reports instruction files under
 `agents/**/instructions.md`. Mounted Cell Agents are wired through the current
@@ -179,7 +179,16 @@ Anvil Local also exposes:
 ```txt
 GET  /_anvil/agents
 POST /_anvil/agents/:name
+POST /_anvil/agents/:name/sessions
+POST /_anvil/agents/sessions/:sessionId/messages
+GET  /_anvil/agents/sessions/:sessionId/stream?after=:token
 ```
+
+`POST /_anvil/agents/:name` accepts `{ "input": "..." }` and returns the
+provider-neutral `AgentRuntime` result. Session routes persist local agent event
+history in `.anvil/local/agent-sessions.json`. Message sends return ordered
+events and a continuation token; the stream route replays events after that
+token as `text/event-stream`.
 
 ## Provider mode
 

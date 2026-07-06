@@ -59,6 +59,7 @@ export type LocalRuntimeHost = RuntimeHost & {
   events: LocalEventAdapter;
   jobs: LocalJobAdapter;
   workflows: LocalWorkflowAdapter;
+  agentSessions: LocalAgentSessionAdapter;
   idp: LocalIdentityProvider;
 };
 
@@ -110,6 +111,9 @@ export async function createLocalRuntimeHost(options: {
     jobs: new LocalJobAdapter(path.join(options.stateDir, "jobs.json")),
     workflows: new LocalWorkflowAdapter(
       path.join(options.stateDir, "workflows.json"),
+    ),
+    agentSessions: new LocalAgentSessionAdapter(
+      path.join(options.stateDir, "agent-sessions.json"),
     ),
     idp,
   };
@@ -620,6 +624,134 @@ export type LocalJobEntry = {
   ranAt?: string;
 };
 
+export type LocalAgentSessionStatus = "idle" | "running" | "failed";
+
+export type LocalAgentSessionEvent = {
+  id: number;
+  sessionId: string;
+  type:
+    | "session.created"
+    | "message.user"
+    | "message.assistant"
+    | "tool.calls"
+    | "approval.required"
+    | "session.failed";
+  timestamp: string;
+  data: unknown;
+};
+
+export type LocalAgentSessionRecord = {
+  sessionId: string;
+  agent: string;
+  status: LocalAgentSessionStatus;
+  createdAt: string;
+  updatedAt: string;
+  continuationToken: string;
+  events: LocalAgentSessionEvent[];
+};
+
+export class LocalAgentSessionAdapter {
+  constructor(private readonly filePath: string) {}
+
+  async create(agent: string): Promise<LocalAgentSessionRecord> {
+    const sessions = await this.read();
+    const now = new Date().toISOString();
+    const session: LocalAgentSessionRecord = {
+      sessionId: `session_${randomUUID()}`,
+      agent,
+      status: "idle",
+      createdAt: now,
+      updatedAt: now,
+      continuationToken: "0",
+      events: [],
+    };
+
+    sessions.push(session);
+    await this.write(sessions);
+    await this.append(session.sessionId, {
+      type: "session.created",
+      data: { agent },
+      timestamp: now,
+    });
+
+    return (await this.get(session.sessionId)) ?? session;
+  }
+
+  async get(sessionId: string): Promise<LocalAgentSessionRecord | null> {
+    return (
+      (await this.read()).find((session) => session.sessionId === sessionId) ??
+      null
+    );
+  }
+
+  async append(
+    sessionId: string,
+    input: Omit<LocalAgentSessionEvent, "id" | "sessionId" | "timestamp"> & {
+      timestamp?: string;
+    },
+  ): Promise<LocalAgentSessionEvent> {
+    const sessions = await this.read();
+    const session = sessions.find(
+      (candidate) => candidate.sessionId === sessionId,
+    );
+
+    if (!session) {
+      throw new RuntimeError(
+        "HANDLER_NOT_FOUND",
+        `No agent session '${sessionId}' was found.`,
+        404,
+        { sessionId },
+      );
+    }
+
+    const event: LocalAgentSessionEvent = {
+      id: session.events.length + 1,
+      sessionId,
+      timestamp: input.timestamp ?? new Date().toISOString(),
+      type: input.type,
+      data: input.data,
+    };
+
+    session.events.push(event);
+    session.updatedAt = event.timestamp;
+    session.continuationToken = String(event.id);
+    await this.write(sessions);
+
+    return event;
+  }
+
+  async complete(
+    sessionId: string,
+    status: LocalAgentSessionStatus,
+  ): Promise<void> {
+    const sessions = await this.read();
+    const session = sessions.find(
+      (candidate) => candidate.sessionId === sessionId,
+    );
+
+    if (!session) {
+      return;
+    }
+
+    session.status = status;
+    session.updatedAt = new Date().toISOString();
+    await this.write(sessions);
+  }
+
+  private async read(): Promise<LocalAgentSessionRecord[]> {
+    return readJsonFile<LocalAgentSessionRecord[]>(this.filePath, []);
+  }
+
+  private async write(sessions: LocalAgentSessionRecord[]): Promise<void> {
+    await mkdir(path.dirname(this.filePath), { recursive: true });
+    await writeFile(
+      this.filePath,
+      `${JSON.stringify(sessions, null, 2)}\n`,
+      "utf8",
+    );
+  }
+}
+
 export class LocalWorkflowAdapter implements WorkflowAdapter {
   private app: AppDefinition | null = null;
   private host: RuntimeHost | null = null;
@@ -800,6 +932,33 @@ async function handleLocalRequest(options: LocalRequestOptions): Promise<void> {
         agents: Object.keys(options.app.agents ?? {}),
         providers: options.agentProviders.list(),
       });
+      return;
+    }
+
+    if (
+      method === "POST" &&
+      url.pathname.startsWith("/_anvil/agents/") &&
+      url.pathname.endsWith("/sessions")
+    ) {
+      await createAgentSessionRoute(options, url);
+      return;
+    }
+
+    if (
+      method === "POST" &&
+      url.pathname.startsWith("/_anvil/agents/sessions/") &&
+      url.pathname.endsWith("/messages")
+    ) {
+      await sendAgentSessionMessageRoute(options, url);
+      return;
+    }
+
+    if (
+      method === "GET" &&
+      url.pathname.startsWith("/_anvil/agents/sessions/") &&
+      url.pathname.endsWith("/stream")
+    ) {
+      await streamAgentSessionRoute(options, url);
       return;
     }
 
@@ -1188,6 +1347,259 @@ async function handleLocalRequest(options: LocalRequestOptions): Promise<void> {
       },
     });
   }
+}
+
+async function createAgentSessionRoute(
+  options: LocalRequestOptions,
+  url: URL,
+): Promise<void> {
+  const name = decodeURIComponent(
+    url.pathname.slice(
+      "/_anvil/agents/".length,
+      url.pathname.length - "/sessions".length,
+    ),
+  );
+  const agent = options.app.agents?.[name];
+
+  if (!agent) {
+    await sendJson(options.response, 404, {
+      ok: false,
+      error: {
+        code: "AGENT_NOT_FOUND",
+        message: `No mounted agent '${name}' is defined.`,
+      },
+    });
+    return;
+  }
+
+  const session = await options.host.agentSessions.create(name);
+
+  await sendJson(options.response, 201, {
+    ok: true,
+    result: {
+      session: sessionSummary(session),
+    },
+    session: sessionSummary(session),
+  });
+}
+
+async function sendAgentSessionMessageRoute(
+  options: LocalRequestOptions,
+  url: URL,
+): Promise<void> {
+  const sessionId = decodeURIComponent(
+    url.pathname.slice(
+      "/_anvil/agents/sessions/".length,
+      url.pathname.length - "/messages".length,
+    ),
+  );
+  const session = await options.host.agentSessions.get(sessionId);
+
+  if (!session) {
+    await sendJson(options.response, 404, {
+      ok: false,
+      error: {
+        code: "AGENT_SESSION_NOT_FOUND",
+        message: `No agent session '${sessionId}' was found.`,
+      },
+    });
+    return;
+  }
+
+  const agent = options.app.agents?.[session.agent];
+
+  if (!agent) {
+    await sendJson(options.response, 404, {
+      ok: false,
+      error: {
+        code: "AGENT_NOT_FOUND",
+        message: `No mounted agent '${session.agent}' is defined.`,
+      },
+    });
+    return;
+  }
+
+  const body = await readJsonRequest(options.request);
+
+  if (!isObject(body) || typeof body.input !== "string") {
+    await sendJson(options.response, 400, {
+      ok: false,
+      error: {
+        code: "AGENT_INPUT_INVALID",
+        message: "Agent session messages require a string 'input'.",
+      },
+    });
+    return;
+  }
+
+  const userEvent = await options.host.agentSessions.append(sessionId, {
+    type: "message.user",
+    data: { input: body.input },
+  });
+
+  try {
+    const result = await options.agentRuntime.invoke(agent, {
+      input: body.input,
+      context: {
+        ...(isObject(body.context) ? body.context : {}),
+        sessionId,
+      },
+    });
+    const events: LocalAgentSessionEvent[] = [
+      userEvent,
+      await options.host.agentSessions.append(sessionId, {
+        type: "message.assistant",
+        data: {
+          message: result.response,
+          usage: result.usage,
+        },
+      }),
+    ];
+
+    if (result.toolCalls.length > 0) {
+      events.push(
+        await options.host.agentSessions.append(sessionId, {
+          type: "tool.calls",
+          data: { toolCalls: result.toolCalls },
+        }),
+      );
+    }
+
+    if (result.approvalsRequired.length > 0) {
+      events.push(
+        await options.host.agentSessions.append(sessionId, {
+          type: "approval.required",
+          data: { approvals: result.approvalsRequired },
+        }),
+      );
+    }
+
+    await options.host.agentSessions.complete(sessionId, "idle");
+    const sessionPayload = sessionSummary(
+      (await options.host.agentSessions.get(sessionId)) ?? session,
+    );
+    const messagePayload = {
+      session: sessionPayload,
+      events,
+      continuationToken: continuationTokenFor(events),
+      result,
+    };
+
+    await sendJson(options.response, 200, {
+      ok: true,
+      result: messagePayload,
+      session: sessionPayload,
+      events,
+      continuationToken: messagePayload.continuationToken,
+    });
+  } catch (error) {
+    const failed = await options.host.agentSessions.append(sessionId, {
+      type: "session.failed",
+      data: {
+        message: error instanceof Error ? error.message : String(error),
+      },
+    });
+
+    await options.host.agentSessions.complete(sessionId, "failed");
+    await sendJson(options.response, 500, {
+      ok: false,
+      error: {
+        code: "AGENT_SESSION_FAILED",
+        message: error instanceof Error ? error.message : String(error),
+      },
+      events: [userEvent, failed],
+      continuationToken: String(failed.id),
+    });
+  }
+}
+
+async function streamAgentSessionRoute(
+  options: LocalRequestOptions,
+  url: URL,
+): Promise<void> {
+  const sessionId = decodeURIComponent(
+    url.pathname.slice(
+      "/_anvil/agents/sessions/".length,
+      url.pathname.length - "/stream".length,
+    ),
+  );
+  const session = await options.host.agentSessions.get(sessionId);
+
+  if (!session) {
+    await sendJson(options.response, 404, {
+      ok: false,
+      error: {
+        code: "AGENT_SESSION_NOT_FOUND",
+        message: `No agent session '${sessionId}' was found.`,
+      },
+    });
+    return;
+  }
+
+  await sendSessionEventStream(
+    options.response,
+    session.events.filter((event) => event.id > continuationFromUrl(url)),
+  );
+}
+
+async function sendSessionEventStream(
+  response: ServerResponse,
+  events: LocalAgentSessionEvent[],
+): Promise<void> {
+  response.statusCode = 200;
+  response.setHeader("content-type", "text/event-stream; charset=utf-8");
+  response.setHeader("cache-control", "no-cache");
+
+  for (const event of events) {
+    await writeSseEvent(response, event);
+  }
+
+  response.end();
+}
+
+async function writeSseEvent(
+  response: ServerResponse,
+  event: LocalAgentSessionEvent,
+): Promise<void> {
+  const payload = [
+    `id: ${event.id}`,
+    `event: ${event.type}`,
+    `data: ${JSON.stringify(event)}`,
+    "",
+    "",
+  ].join("\n");
+
+  if (response.write(payload)) {
+    return;
+  }
+
+  await new Promise<void>((resolve) => {
+    response.once("drain", resolve);
+  });
+}
+
+function continuationFromUrl(url: URL): number {
+  const raw = url.searchParams.get("after");
+  const parsed = raw === null ? 0 : Number.parseInt(raw, 10);
+
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function continuationTokenFor(events: LocalAgentSessionEvent[]): string {
+  return String(events.at(-1)?.id ?? 0);
+}
+
+function sessionSummary(
+  session: LocalAgentSessionRecord,
+): Omit<LocalAgentSessionRecord, "events"> {
+  return {
+    sessionId: session.sessionId,
+    agent: session.agent,
+    status: session.status,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+    continuationToken: session.continuationToken,
+  };
 }
 
 type ClientRequestOptions = {

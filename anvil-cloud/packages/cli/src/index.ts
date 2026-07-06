@@ -3651,6 +3651,7 @@ async function checkLocalState(rootDir: string): Promise<DoctorCheck> {
     authKeys: await fileExists(path.join(localDir, "auth/keys.json")),
     database: await fileExists(path.join(localDir, "dev.db")),
     logs: await fileExists(path.join(localDir, "logs.ndjson")),
+    agentSessions: await fileExists(path.join(localDir, "agent-sessions.json")),
     jobs: await fileExists(path.join(localDir, "jobs.json")),
     workflows: await fileExists(path.join(localDir, "workflows.json")),
     services: await fileExists(path.join(localDir, "services.json")),

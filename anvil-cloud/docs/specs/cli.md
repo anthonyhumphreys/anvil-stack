@@ -139,8 +139,8 @@ Initial checks include:
   and no public `workspace:` dependencies;
 - Cell config and build manifest;
 - generated client metadata presence and consistency with the built manifest;
-- local `.anvil/local` state, including auth, database, logs, jobs, workflows,
-  and service snapshots;
+- local `.anvil/local` state, including auth, database, logs, agent sessions,
+  jobs, workflows, and service snapshots;
 - local runtime health and runtime/client port availability;
 - Notes golden-path verification runs doctor against the live local runtime and
   expects `project.build`, `project.generatedClient`, `local.state`, and

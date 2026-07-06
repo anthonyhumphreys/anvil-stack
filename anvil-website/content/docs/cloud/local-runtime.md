@@ -35,9 +35,9 @@ jobs, workflows, and supervised services.
 Default ports:
 
 | Surface | Default |
-| --- | --- |
-| Runtime | `8787` |
-| Client | `5173` |
+| ------- | ------- |
+| Runtime | `8787`  |
+| Client  | `5173`  |
 
 Options:
 
@@ -61,6 +61,9 @@ GET  /_anvil/inspect
 GET  /_anvil/lens
 GET  /_anvil/agents
 POST /_anvil/agents/:name
+POST /_anvil/agents/:name/sessions
+POST /_anvil/agents/sessions/:sessionId/messages
+GET  /_anvil/agents/sessions/:sessionId/stream?after=:token
 POST /_anvil/workflows/run/:name
 GET  /_anvil/workflows
 GET  /_anvil/workflows/:runId
@@ -75,6 +78,10 @@ Agent requests under `/_anvil/agents/:name` invoke mounted Cell Agents through
 the same provider-neutral `AgentRuntime` used by tests and provider mode. The
 local stub inference provider is registered automatically for `provider: "local"`.
 
+Session routes add resumable event history around mounted agents. Create a
+session, send messages to it, then reconnect to the SSE stream with the last
+continuation token to replay missed events.
+
 ## Local state
 
 Local state lives in `.anvil/local` by default:
@@ -82,6 +89,7 @@ Local state lives in `.anvil/local` by default:
 ```txt
 .anvil/local/
   auth.json
+  agent-sessions.json
   dev.db
   events.json
   files/

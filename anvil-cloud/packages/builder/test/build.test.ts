@@ -86,6 +86,7 @@ describe("buildCell", () => {
         '    schemaVersion: "0.1",',
         '    queries: ["listNotes"],',
         '    mutations: ["createNote"],',
+        "    agents: [],",
         "  },",
       ].join("\n"),
     );

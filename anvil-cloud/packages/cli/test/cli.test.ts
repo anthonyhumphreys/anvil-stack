@@ -150,6 +150,7 @@ describe("main", () => {
             authKeys: false,
             database: true,
             logs: false,
+            agentSessions: false,
             jobs: false,
             workflows: true,
             services: true,

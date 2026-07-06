@@ -162,6 +162,76 @@ describe("startLocalRuntimeServer", () => {
     }
   });
 
+  it("creates agent sessions, sends messages, and resumes event streams", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-local-"));
+    tempDirs.push(rootDir);
+
+    const cell = app({
+      agents: {
+        support: defineAgent({
+          name: "support",
+          model: { provider: "local", model: "stub" },
+        }),
+      },
+    });
+    const server = await startLocalRuntimeServer({
+      app: cell,
+      manifest: {
+        agents: { support: { name: "support" } },
+      },
+      rootDir,
+      cellName: "agent-cell",
+      port: 0,
+      clientPort: 0,
+    });
+
+    try {
+      const created = (await postJson(
+        `${server.runtimeUrl}/_anvil/agents/support/sessions`,
+        {},
+      )) as {
+        ok: boolean;
+        result: { session: { sessionId: string; continuationToken: string } };
+      };
+
+      expect(created.ok).toBe(true);
+      expect(created.result.session.sessionId).toMatch(/^session_/);
+      expect(created.result.session.continuationToken).toBe("1");
+
+      const sent = (await postJson(
+        `${server.runtimeUrl}/_anvil/agents/sessions/${created.result.session.sessionId}/messages`,
+        { input: "hello" },
+      )) as {
+        ok: boolean;
+        result: {
+          continuationToken: string;
+          events: Array<{ id: number; type: string }>;
+        };
+      };
+
+      expect(sent).toMatchObject({
+        ok: true,
+        result: {
+          events: expect.arrayContaining([
+            expect.objectContaining({ type: "message.user" }),
+            expect.objectContaining({ type: "message.assistant" }),
+          ]),
+        },
+      });
+
+      const stream = await fetchText(
+        `${server.runtimeUrl}/_anvil/agents/sessions/${created.result.session.sessionId}/stream?after=1`,
+      );
+
+      expect(stream).toContain("event: message.user");
+      expect(stream).toContain("event: message.assistant");
+      expect(stream).not.toContain("event: session.created");
+      expect(sent.result.continuationToken).toBe("3");
+    } finally {
+      await server.close();
+    }
+  });
+
   it("serves a Vite client with runtime proxying", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-local-"));
     tempDirs.push(rootDir);
