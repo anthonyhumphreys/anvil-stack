@@ -533,7 +533,7 @@ anvil-cloud logs --local --json</pre>
       });
       if ((usage.topConsumers || []).length === 0) {
         consumerBody.appendChild(el("tr", null, [
-          el("td", { class: "muted", text: "No usage events yet." })
+          el("td", { class: "muted", colspan: "4", text: "No usage events yet." })
         ]));
       }
     });
