@@ -1,7 +1,16 @@
 #!/usr/bin/env node
 import { execFile } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
+import os from "node:os";
 import { createServer } from "node:net";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -23,10 +32,12 @@ import {
   buildCell,
   checkCell,
   createAnvilCellGraph,
+  diffCellManifests,
   validateAnvilCellGraph,
   type BuilderDiagnostic,
   type BuildResult,
   type CellManifest,
+  type ManifestDiffResult,
 } from "@anvil-cloud/builder";
 import {
   AuthError,
@@ -127,6 +138,9 @@ export async function main(argv: string[]): Promise<void> {
       return;
     case "build":
       await commandBuild(context);
+      return;
+    case "manifest":
+      await commandManifest(context, subcommand);
       return;
     case "doctor":
       await commandDoctor(context);
@@ -1304,6 +1318,230 @@ async function commandBuild(context: CliContext): Promise<void> {
   const result = await buildCell({ rootDir: context.cwd });
 
   writeBuildResult(context, result, "Build complete.");
+}
+
+async function commandManifest(
+  context: CliContext,
+  subcommand: string | undefined,
+): Promise<void> {
+  if (subcommand !== "diff") {
+    writeJsonOrHuman(
+      context,
+      {
+        ok: false,
+        errors: [
+          {
+            code: "INVALID_USAGE",
+            message:
+              "Usage: anvil-cloud manifest diff [--from <manifest>] [--to <manifest>] [--json]",
+          },
+        ],
+      },
+      "Usage: anvil-cloud manifest diff [--from <manifest>] [--to <manifest>] [--json]",
+    );
+    process.exitCode = 2;
+    return;
+  }
+
+  await commandManifestDiff(context);
+}
+
+async function commandManifestDiff(context: CliContext): Promise<void> {
+  const fromPath = path.resolve(
+    context.cwd,
+    context.values.get("from") ?? ".anvil/dist/manifest.json",
+  );
+  const fromManifest = await readManifestForDiff(fromPath);
+
+  if (!fromManifest) {
+    const payload = {
+      ok: true,
+      status: "no-baseline",
+      from: null,
+      to: null,
+      summary: emptyManifestDiffSummary(),
+      changes: [],
+      diagnostics: [
+        {
+          code: "MANIFEST_BASELINE_NOT_FOUND",
+          severity: "warning",
+          message: `No manifest baseline found at ${path.relative(context.cwd, fromPath)}.`,
+          hint: "Run anvil-cloud build first, or pass --from <manifest>.",
+        },
+      ],
+    };
+
+    writeJsonOrHuman(
+      context,
+      payload,
+      "No manifest baseline found. Run anvil-cloud build first, or pass --from <manifest>.",
+    );
+    return;
+  }
+
+  const next = await loadNextManifestForDiff(context);
+
+  if (!next.ok) {
+    if (next.result) {
+      writeBuildResult(context, next.result, "Manifest diff build complete.");
+    } else {
+      writeJsonOrHuman(
+        context,
+        {
+          ok: false,
+          errors: [
+            {
+              code: "MANIFEST_COMPARE_NOT_FOUND",
+              message: `No comparison manifest found at ${path.relative(context.cwd, next.path)}.`,
+            },
+          ],
+        },
+        `No comparison manifest found at ${path.relative(context.cwd, next.path)}.`,
+      );
+      process.exitCode = 2;
+    }
+    return;
+  }
+
+  const diff = diffCellManifests(fromManifest, next.manifest);
+  const payload = {
+    ok: diff.summary.errors === 0,
+    status:
+      diff.summary.errors > 0
+        ? "block"
+        : diff.changed
+          ? "changed"
+          : "unchanged",
+    from: manifestDiffSource(fromPath, fromManifest),
+    to: manifestDiffSource(next.path, next.manifest),
+    summary: diff.summary,
+    changes: diff.changes,
+    diagnostics: next.diagnostics,
+  };
+
+  writeJsonOrHuman(context, payload, formatManifestDiff(diff));
+
+  if (diff.summary.errors > 0) {
+    process.exitCode = 5;
+  }
+}
+
+type LoadedManifestForDiff =
+  | {
+      ok: true;
+      manifest: CellManifest;
+      path: string;
+      diagnostics: BuilderDiagnostic[];
+    }
+  | {
+      ok: false;
+      path: string;
+      result?: BuildResult;
+    };
+
+async function loadNextManifestForDiff(
+  context: CliContext,
+): Promise<LoadedManifestForDiff> {
+  const explicitTo = context.values.get("to");
+
+  if (explicitTo) {
+    const toPath = path.resolve(context.cwd, explicitTo);
+    const manifest = await readManifestForDiff(toPath);
+
+    return manifest
+      ? { ok: true, manifest, path: toPath, diagnostics: [] }
+      : { ok: false, path: toPath };
+  }
+
+  const scratchDir = await mkdtemp(path.join(os.tmpdir(), "anvil-manifest-"));
+
+  try {
+    const result = await buildCell({
+      rootDir: context.cwd,
+      distDir: path.join(scratchDir, "dist"),
+      generatedDir: path.join(scratchDir, "generated"),
+    });
+
+    if (!result.ok || !result.manifest) {
+      return {
+        ok: false,
+        path: path.join(scratchDir, "dist/manifest.json"),
+        result,
+      };
+    }
+
+    return {
+      ok: true,
+      manifest: result.manifest as CellManifest,
+      path: "current source build",
+      diagnostics: result.diagnostics,
+    };
+  } finally {
+    await rm(scratchDir, { recursive: true, force: true });
+  }
+}
+
+async function readManifestForDiff(
+  manifestPath: string,
+): Promise<CellManifest | null> {
+  const manifest = await readOptionalJson(manifestPath);
+
+  return isCellManifestForDiff(manifest) ? manifest : null;
+}
+
+function isCellManifestForDiff(value: unknown): value is CellManifest {
+  return (
+    isObject(value) &&
+    value.schemaVersion === "0.1" &&
+    isObject(value.cell) &&
+    isObject(value.schema) &&
+    isObject(value.capabilities) &&
+    Array.isArray(value.queries) &&
+    Array.isArray(value.mutations) &&
+    Array.isArray(value.endpoints) &&
+    Array.isArray(value.jobs) &&
+    Array.isArray(value.workflows) &&
+    Array.isArray(value.services)
+  );
+}
+
+function manifestDiffSource(pathValue: string, manifest: CellManifest) {
+  return {
+    path: pathValue,
+    cell: manifest.cell.name,
+    target: manifest.cell.target,
+  };
+}
+
+function emptyManifestDiffSummary(): ManifestDiffResult["summary"] {
+  return {
+    additions: 0,
+    removals: 0,
+    changes: 0,
+    warnings: 0,
+    errors: 0,
+  };
+}
+
+function formatManifestDiff(diff: ManifestDiffResult): string {
+  if (!diff.changed) {
+    return "Manifest unchanged.";
+  }
+
+  const header = [
+    `Manifest ${diff.summary.errors > 0 ? "blocked" : "changed"}.`,
+    `Additions: ${diff.summary.additions}`,
+    `Removals: ${diff.summary.removals}`,
+    `Changes: ${diff.summary.changes}`,
+    `Warnings: ${diff.summary.warnings}`,
+    `Errors: ${diff.summary.errors}`,
+  ].join("\n");
+  const lines = diff.changes.map(
+    (change) =>
+      `${change.severity.toUpperCase()} ${change.id}: ${change.message}`,
+  );
+
+  return [header, "", ...lines].join("\n");
 }
 
 async function commandReview(context: CliContext): Promise<void> {
@@ -3288,6 +3526,7 @@ function writeHelp(): void {
       "  anvil-cloud check [--json]",
       "  anvil-cloud review [--adapter aws] [--env preview] [--json]",
       "  anvil-cloud build [--json]",
+      "  anvil-cloud manifest diff [--from .anvil/dist/manifest.json] [--to manifest.json] [--json]",
       "  anvil-cloud inspect --local [--json]",
       "  anvil-cloud lens [--port 8787] [--json]",
       "  anvil-cloud logs --local [--json]",
@@ -4405,6 +4644,7 @@ function createStarterScripts(
   return {
     check: "anvil-cloud check --json",
     build: "anvil-cloud build --json",
+    "manifest:diff": "anvil-cloud manifest diff --json",
     dev: "anvil-cloud dev --json",
     "inspect:local": "anvil-cloud inspect --local --json",
     "logs:local": "anvil-cloud logs --local --json",
