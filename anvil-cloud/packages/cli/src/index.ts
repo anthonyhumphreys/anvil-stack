@@ -3166,7 +3166,7 @@ async function commandSchedules(
         : schedules
             .map(
               (schedule) =>
-                `${schedule.name}  ${schedule.schedule}  next=${schedule.nextRunAt ?? "-"}  last=${schedule.lastStatus ?? "-"}`,
+                `${schedule.name}  ${schedule.schedule}  next=${schedule.nextRunAt ?? "-"}  status=${schedule.lastStatus ?? "-"}`,
             )
             .join("\n"),
     );

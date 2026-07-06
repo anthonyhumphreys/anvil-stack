@@ -62,7 +62,7 @@ export class LocalScheduleAdapter {
   private app: AppDefinition | null = null;
   private host: RuntimeHost | null = null;
   private readonly timers = new Map<string, NodeJS.Timeout>();
-  private readonly active = new Set<string>();
+  private readonly activeRuns = new Map<string, number>();
 
   constructor(private readonly filePath: string) {}
 
@@ -107,7 +107,7 @@ export class LocalScheduleAdapter {
     const existing = await this.getSchedule(name);
     const overlap = definition.overlap ?? "skip";
 
-    if (overlap === "skip" && this.active.has(name)) {
+    if (overlap === "skip" && this.isJobRunning(name)) {
       return this.recordRun(name, {
         id: `sched_${randomUUID()}`,
         job: name,
@@ -137,7 +137,7 @@ export class LocalScheduleAdapter {
     };
 
     await this.recordRun(name, run);
-    this.active.add(name);
+    this.beginRun(name);
 
     try {
       const result = await withTimeout(
@@ -163,7 +163,7 @@ export class LocalScheduleAdapter {
 
       return await this.recordRun(name, failed);
     } finally {
-      this.active.delete(name);
+      this.endRun(name);
       if (existing !== null) {
         await this.scheduleNext(name);
       }
@@ -221,7 +221,7 @@ export class LocalScheduleAdapter {
         ...(previous?.lastStatus === undefined
           ? {}
           : { lastStatus: previous.lastStatus }),
-        running: this.active.has(name),
+        running: this.isJobRunning(name),
         runs: previous?.runs ?? [],
       };
 
@@ -262,8 +262,27 @@ export class LocalScheduleAdapter {
 
     await this.updateSchedule(name, {
       nextRunAt: dueAt.toISOString(),
-      running: this.active.has(name),
+      running: this.isJobRunning(name),
     });
+  }
+
+  private isJobRunning(name: string): boolean {
+    return (this.activeRuns.get(name) ?? 0) > 0;
+  }
+
+  private beginRun(name: string): void {
+    this.activeRuns.set(name, (this.activeRuns.get(name) ?? 0) + 1);
+  }
+
+  private endRun(name: string): void {
+    const count = this.activeRuns.get(name) ?? 0;
+
+    if (count <= 1) {
+      this.activeRuns.delete(name);
+      return;
+    }
+
+    this.activeRuns.set(name, count - 1);
   }
 
   private async getSchedule(name: string): Promise<LocalScheduleStatus | null> {
@@ -567,21 +586,27 @@ async function withTimeout<T>(
     return promise;
   }
 
-  return Promise.race([
-    promise,
-    new Promise<T>((_, reject) => {
-      setTimeout(() => {
-        reject(
-          new RuntimeError(
-            "INTERNAL_ERROR",
-            `Scheduled job '${name}' exceeded timeout ${timeoutMs}ms.`,
-            500,
-            { name, timeoutMs },
-          ),
-        );
-      }, timeoutMs);
-    }),
-  ]);
+  let timer: NodeJS.Timeout;
+
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(
+            new RuntimeError(
+              "INTERNAL_ERROR",
+              `Scheduled job '${name}' exceeded timeout ${timeoutMs}ms.`,
+              500,
+              { name, timeoutMs },
+            ),
+          );
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer!);
+  }
 }
 
 function errorToPayload(error: unknown): { code: string; message: string } {
