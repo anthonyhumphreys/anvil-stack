@@ -2268,7 +2268,11 @@ async function commandDestroy(context: CliContext): Promise<void> {
                   key: deploymentMetadataKey(app, environment, previewName),
                 },
         },
-        next: [`anvil-cloud destroy --preview --app ${app} --yes --json`],
+        next: [
+          `anvil-cloud destroy --preview --app ${app}${
+            previewName !== "default" ? ` --name ${previewName}` : ""
+          } --yes --json`,
+        ],
       };
 
       writeJsonOrHuman(

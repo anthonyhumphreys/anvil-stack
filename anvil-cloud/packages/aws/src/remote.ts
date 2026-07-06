@@ -125,9 +125,11 @@ export class AwsRemoteReader {
         adapter: "aws",
         cell: input.cell,
         environment: input.environment,
-        previewName: yield* optionalStringAttributeEffect(
-          item.previewName,
-          "default",
+        previewName: normalizePreviewName(
+          yield* optionalStringAttributeEffect(
+            item.previewName,
+            "default",
+          ),
         ),
         deploymentId: yield* stringAttribute(item.deploymentId, "deploymentId"),
         runtimeUrl,
