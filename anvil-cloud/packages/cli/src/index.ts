@@ -3473,7 +3473,7 @@ async function checkDocker(): Promise<DoctorCheck> {
   return {
     id: "sandbox.docker",
     status: "info",
-    message: "Docker was not reachable on PATH.",
+    message: "Docker is not installed or the daemon is not reachable.",
     hint: "Install and start Docker before using Docker-backed local sandbox providers.",
     details: {
       available: false,
