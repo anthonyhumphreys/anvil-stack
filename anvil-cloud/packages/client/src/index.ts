@@ -126,6 +126,8 @@ export type AgentSessionEvent = {
   sessionId: string;
   type:
     | "session.created"
+    | "channel.message"
+    | "channel.reply"
     | "message.user"
     | "message.assistant"
     | "tool.calls"

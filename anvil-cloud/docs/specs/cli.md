@@ -93,6 +93,30 @@ Checks:
 
 Builds local artefacts into `.anvil/dist` and `.anvil/generated`.
 
+### `anvil-cloud channels simulate`
+
+Sends a provider-neutral channel message to a running local runtime.
+
+```sh
+anvil-cloud channels simulate --channel supportSlack --input "hello" --json
+```
+
+Options:
+
+```txt
+--channel     channel binding name from the Cell manifest
+--input       inbound channel message text
+--sender      optional provider sender id
+--thread      optional provider thread/conversation id
+--runtime-url local runtime URL, default http://localhost:8787
+--json        stable JSON result
+```
+
+The command posts to `/_anvil/channels/simulate`. JSON output includes the
+matched channel, local agent session summary, ordered events, continuation
+token, and reply chunks. Real provider credentials remain platform-side; Cell
+agent code only receives normalized channel context.
+
 ### `anvil-cloud review`
 
 Aggregates Guard diagnostics and AWS preview deployment review into one trust

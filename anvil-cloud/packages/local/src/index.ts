@@ -626,11 +626,19 @@ export type LocalJobEntry = {
 
 export type LocalAgentSessionStatus = "idle" | "running" | "failed";
 
+export type LocalAgentSessionChannel = {
+  name: string;
+  provider: string;
+  key: string;
+};
+
 export type LocalAgentSessionEvent = {
   id: number;
   sessionId: string;
   type:
     | "session.created"
+    | "channel.message"
+    | "channel.reply"
     | "message.user"
     | "message.assistant"
     | "tool.calls"
@@ -643,6 +651,7 @@ export type LocalAgentSessionEvent = {
 export type LocalAgentSessionRecord = {
   sessionId: string;
   agent: string;
+  channel?: LocalAgentSessionChannel;
   status: LocalAgentSessionStatus;
   createdAt: string;
   updatedAt: string;
@@ -653,12 +662,16 @@ export type LocalAgentSessionRecord = {
 export class LocalAgentSessionAdapter {
   constructor(private readonly filePath: string) {}
 
-  async create(agent: string): Promise<LocalAgentSessionRecord> {
+  async create(
+    agent: string,
+    channel?: LocalAgentSessionChannel,
+  ): Promise<LocalAgentSessionRecord> {
     const sessions = await this.read();
     const now = new Date().toISOString();
     const session: LocalAgentSessionRecord = {
       sessionId: `session_${randomUUID()}`,
       agent,
+      ...(channel === undefined ? {} : { channel }),
       status: "idle",
       createdAt: now,
       updatedAt: now,
@@ -681,6 +694,19 @@ export class LocalAgentSessionAdapter {
     return (
       (await this.read()).find((session) => session.sessionId === sessionId) ??
       null
+    );
+  }
+
+  async findForChannel(
+    channel: LocalAgentSessionChannel,
+  ): Promise<LocalAgentSessionRecord | null> {
+    return (
+      (await this.read()).find(
+        (session) =>
+          session.channel?.name === channel.name &&
+          session.channel.provider === channel.provider &&
+          session.channel.key === channel.key,
+      ) ?? null
     );
   }
 
@@ -932,6 +958,11 @@ async function handleLocalRequest(options: LocalRequestOptions): Promise<void> {
         agents: Object.keys(options.app.agents ?? {}),
         providers: options.agentProviders.list(),
       });
+      return;
+    }
+
+    if (method === "POST" && url.pathname === "/_anvil/channels/simulate") {
+      await simulateChannelMessageRoute(options);
       return;
     }
 
@@ -1432,23 +1463,174 @@ async function sendAgentSessionMessageRoute(
     return;
   }
 
-  const userEvent = await options.host.agentSessions.append(sessionId, {
-    type: "message.user",
-    data: { input: body.input },
+  const messagePayload = await sendAgentSessionMessage(options, {
+    session,
+    input: body.input,
+    context: isObject(body.context) ? body.context : {},
   });
 
+  await sendJson(options.response, 200, {
+    ok: true,
+    result: messagePayload,
+    session: messagePayload.session,
+    events: messagePayload.events,
+    continuationToken: messagePayload.continuationToken,
+  });
+}
+
+async function simulateChannelMessageRoute(
+  options: LocalRequestOptions,
+): Promise<void> {
+  const body = await readJsonRequest(options.request);
+
+  if (!isObject(body) || typeof body.channel !== "string") {
+    await sendJson(options.response, 400, {
+      ok: false,
+      error: {
+        code: "CHANNEL_INPUT_INVALID",
+        message: "Channel simulation requires a string 'channel'.",
+      },
+    });
+    return;
+  }
+
+  if (typeof body.input !== "string" || body.input.length === 0) {
+    await sendJson(options.response, 400, {
+      ok: false,
+      error: {
+        code: "CHANNEL_INPUT_INVALID",
+        message: "Channel simulation requires a non-empty string 'input'.",
+      },
+    });
+    return;
+  }
+
+  const channelName = body.channel;
+  const channel = options.app.channels?.[channelName];
+
+  if (!channel) {
+    await sendJson(options.response, 404, {
+      ok: false,
+      error: {
+        code: "CHANNEL_NOT_FOUND",
+        message: `No channel '${channelName}' is defined.`,
+      },
+    });
+    return;
+  }
+
+  const agent = options.app.agents?.[channel.agent];
+
+  if (!agent) {
+    await sendJson(options.response, 404, {
+      ok: false,
+      error: {
+        code: "AGENT_NOT_FOUND",
+        message: `No mounted agent '${channel.agent}' is defined.`,
+      },
+    });
+    return;
+  }
+
+  const sender =
+    typeof body.sender === "string" && body.sender.length > 0
+      ? body.sender
+      : "local-user";
+  const thread =
+    typeof body.thread === "string" && body.thread.length > 0
+      ? body.thread
+      : "local-thread";
+  const channelSession = {
+    name: channelName,
+    provider: channel.provider,
+    key: channelSessionKey(channel.sessionKey ?? "thread", {
+      channel: channelName,
+      sender,
+      thread,
+    }),
+  };
+  const existing =
+    await options.host.agentSessions.findForChannel(channelSession);
+  const session =
+    existing ??
+    (await options.host.agentSessions.create(channel.agent, channelSession));
+  const messagePayload = await sendAgentSessionMessage(options, {
+    session,
+    input: body.input,
+    eventType: "channel.message",
+    context: {
+      ...(isObject(body.context) ? body.context : {}),
+      channel: {
+        name: channelName,
+        provider: channel.provider,
+        sender,
+        thread,
+      },
+    },
+  });
+  const reply = messagePayload.events
+    .filter((event) => event.type === "channel.reply")
+    .map((event) => event.data);
+
+  await sendJson(options.response, 200, {
+    ok: true,
+    result: {
+      channel: {
+        name: channelName,
+        provider: channel.provider,
+        sessionKey: channel.sessionKey ?? "thread",
+      },
+      session: messagePayload.session,
+      events: messagePayload.events,
+      continuationToken: messagePayload.continuationToken,
+      reply,
+    },
+  });
+}
+
+async function sendAgentSessionMessage(
+  options: LocalRequestOptions,
+  input: {
+    session: LocalAgentSessionRecord;
+    input: string;
+    context: Record<string, unknown>;
+    eventType?: "channel.message" | "message.user";
+  },
+): Promise<{
+  session: Omit<LocalAgentSessionRecord, "events">;
+  events: LocalAgentSessionEvent[];
+  continuationToken: string;
+  result: Awaited<ReturnType<AgentRuntime["invoke"]>>;
+}> {
+  const userEvent = await options.host.agentSessions.append(
+    input.session.sessionId,
+    {
+      type: input.eventType ?? "message.user",
+      data: { input: input.input, context: input.context },
+    },
+  );
+
   try {
+    const agent = options.app.agents?.[input.session.agent];
+
+    if (!agent) {
+      throw new Error(`No mounted agent '${input.session.agent}' is defined.`);
+    }
+
     const result = await options.agentRuntime.invoke(agent, {
-      input: body.input,
+      input: input.input,
       context: {
-        ...(isObject(body.context) ? body.context : {}),
-        sessionId,
+        ...input.context,
+        sessionId: input.session.sessionId,
       },
     });
     const events: LocalAgentSessionEvent[] = [
       userEvent,
-      await options.host.agentSessions.append(sessionId, {
-        type: "message.assistant",
+      await options.host.agentSessions.append(input.session.sessionId, {
+        type:
+          input.eventType === "channel.message"
+            ? "channel.reply"
+            : "message.assistant",
         data: {
           message: result.response,
           usage: result.usage,
@@ -1456,60 +1638,61 @@ async function sendAgentSessionMessageRoute(
       }),
     ];
 
-    if (result.toolCalls.length > 0) {
-      events.push(
-        await options.host.agentSessions.append(sessionId, {
-          type: "tool.calls",
-          data: { toolCalls: result.toolCalls },
-        }),
-      );
-    }
-
     if (result.approvalsRequired.length > 0) {
       events.push(
-        await options.host.agentSessions.append(sessionId, {
+        await options.host.agentSessions.append(input.session.sessionId, {
           type: "approval.required",
           data: { approvals: result.approvalsRequired },
         }),
       );
     }
 
-    await options.host.agentSessions.complete(sessionId, "idle");
+    if (result.toolCalls.length > 0) {
+      events.push(
+        await options.host.agentSessions.append(input.session.sessionId, {
+          type: "tool.calls",
+          data: { toolCalls: result.toolCalls },
+        }),
+      );
+    }
+
+    await options.host.agentSessions.complete(input.session.sessionId, "idle");
     const sessionPayload = sessionSummary(
-      (await options.host.agentSessions.get(sessionId)) ?? session,
+      (await options.host.agentSessions.get(input.session.sessionId)) ??
+        input.session,
     );
-    const messagePayload = {
+
+    return {
       session: sessionPayload,
       events,
       continuationToken: continuationTokenFor(events),
       result,
     };
-
-    await sendJson(options.response, 200, {
-      ok: true,
-      result: messagePayload,
-      session: sessionPayload,
-      events,
-      continuationToken: messagePayload.continuationToken,
-    });
   } catch (error) {
-    const failed = await options.host.agentSessions.append(sessionId, {
-      type: "session.failed",
-      data: {
-        message: error instanceof Error ? error.message : String(error),
+    const failed = await options.host.agentSessions.append(
+      input.session.sessionId,
+      {
+        type: "session.failed",
+        data: {
+          message: error instanceof Error ? error.message : String(error),
+        },
       },
-    });
+    );
 
-    await options.host.agentSessions.complete(sessionId, "failed");
-    await sendJson(options.response, 500, {
-      ok: false,
-      error: {
-        code: "AGENT_SESSION_FAILED",
-        message: error instanceof Error ? error.message : String(error),
+    await options.host.agentSessions.complete(
+      input.session.sessionId,
+      "failed",
+    );
+
+    throw new RuntimeError(
+      "INTERNAL_ERROR",
+      error instanceof Error ? error.message : String(error),
+      500,
+      {
+        events: [userEvent, failed],
+        continuationToken: String(failed.id),
       },
-      events: [userEvent, failed],
-      continuationToken: String(failed.id),
-    });
+    );
   }
 }
 
@@ -1589,12 +1772,29 @@ function continuationTokenFor(events: LocalAgentSessionEvent[]): string {
   return String(events.at(-1)?.id ?? 0);
 }
 
+function channelSessionKey(
+  strategy: "channel" | "sender" | "sender-thread" | "thread",
+  input: { channel: string; sender: string; thread: string },
+): string {
+  switch (strategy) {
+    case "channel":
+      return input.channel;
+    case "sender":
+      return `${input.channel}:${input.sender}`;
+    case "sender-thread":
+      return `${input.channel}:${input.sender}:${input.thread}`;
+    case "thread":
+      return `${input.channel}:${input.thread}`;
+  }
+}
+
 function sessionSummary(
   session: LocalAgentSessionRecord,
 ): Omit<LocalAgentSessionRecord, "events"> {
   return {
     sessionId: session.sessionId,
     agent: session.agent,
+    ...(session.channel === undefined ? {} : { channel: session.channel }),
     status: session.status,
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
