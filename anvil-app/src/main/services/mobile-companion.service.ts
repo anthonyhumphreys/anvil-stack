@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createReadStream, existsSync, statSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { networkInterfaces } from 'node:os';
 import { BrowserWindow } from 'electron';
@@ -18,9 +19,13 @@ import type {
   MobileOverview,
   MobilePairingPayload,
   MobilePairingTicket,
+  MobileSendChatMessageInput,
   MobileStartChatInput,
   MobileStartChatResult,
   MobileWorkQueueItem,
+  MobileWorkspaceHealth,
+  MobileWorkspaceSignal,
+  MobileWorkspaceSignalDetail,
   MobileWorkflowDigest,
   RaycastCompanionToken,
 } from '../../shared/types.js';
@@ -42,15 +47,21 @@ import {
   sendMessage,
   startSession,
 } from './codex-session.service.js';
+import { prepareChatAttachments } from './chat-attachment.service.js';
+import { searchChatFileMentions } from './chat-file-mention.service.js';
 import {
   createChatSession,
   createChatThread,
   deleteChatThread,
+  findChatAttachment,
   getChatThread,
   loadChatHistory,
   saveChatEntry,
 } from './chat-persistence.service.js';
+import { getCodexRegistrySnapshot } from './codex-registry.service.js';
 import { createWorkspaceNote, listWorkspaceNotes } from './workspace-notes.service.js';
+import { listAgentRuns } from './agent-run.service.js';
+import { getItem as getLifecycleItem, listItems as listLifecycleItems } from './lifecycle.service.js';
 
 interface MobileCompanionSettingsRow {
   enabled: number;
@@ -74,6 +85,7 @@ interface ChatThreadRow {
   workspace_id: string | null;
   persona_id: string;
   title: string;
+  repo_ids_json: string | null;
   updated_at: string;
   last_message_at: string | null;
   preview: string | null;
@@ -93,6 +105,78 @@ interface CompanionReviewItemRow {
   status: string;
   created_at: string;
   updated_at: string;
+}
+
+interface MobileReviewFindingRow {
+  id: string;
+  review_id: string;
+  repo_id: string;
+  repo_name: string | null;
+  severity: string;
+  category: string;
+  file_path: string | null;
+  description: string;
+  started_at: string;
+}
+
+interface MobileReviewFindingDetailRow extends MobileReviewFindingRow {
+  line_start: number | null;
+  line_end: number | null;
+  suggestion: string | null;
+  work_item_id: string | null;
+  pr_comment_url: string | null;
+  pr_commented_at: string | null;
+  review_mode: string;
+  review_scope_type: string;
+  review_scope_ref: string | null;
+  review_status: string;
+  review_summary: string | null;
+  verification_status: string | null;
+  verification_summary: string | null;
+  completed_at: string | null;
+}
+
+interface MobileSecurityFindingRow {
+  id: string;
+  audit_id: string;
+  repo_id: string;
+  repo_name: string | null;
+  severity: string;
+  category: string;
+  affected_files: string | null;
+  description: string;
+  started_at: string;
+}
+
+interface MobileSecurityFindingDetailRow extends MobileSecurityFindingRow {
+  owasp_ref: string | null;
+  cwe_ref: string | null;
+  remediation: string | null;
+  work_item_id: string | null;
+  audit_scope: string;
+  audit_status: string;
+  audit_summary: string | null;
+  model_version: string | null;
+  completed_at: string | null;
+}
+
+interface MobileWorkItemRow {
+  id: string;
+  title: string | null;
+  type: string | null;
+  state: string | null;
+  priority: number | null;
+  fetched_at: string | null;
+}
+
+interface MobileWorkItemDetailRow extends MobileWorkItemRow {
+  assignee: string | null;
+  description: string | null;
+  acceptance_criteria: string | null;
+  repo_url: string | null;
+  tags: string | null;
+  iteration_path: string | null;
+  parent_id: string | null;
 }
 
 interface PairingTicketState {
@@ -117,13 +201,33 @@ const QUICK_ACTIONS: MobileQuickAction[] = [
   },
   {
     id: 'review-diff',
-    title: 'Review current change',
+    title: 'Code review',
     subtitle: 'Look for correctness, regressions, security, accessibility, and missing tests.',
     personaId: 'reviewer',
     tone: 'amber',
     requiresActiveWorkspace: true,
     prompt:
       'Review the current workspace changes. Prioritise correctness, regressions, security, data integrity, accessibility, and missing tests. Lead with findings and cite files where possible.',
+  },
+  {
+    id: 'security-sweep',
+    title: 'Security sweep',
+    subtitle: 'Check auth, secrets, command risk, dependency exposure, and unsafe data paths.',
+    personaId: 'security',
+    tone: 'red',
+    requiresActiveWorkspace: true,
+    prompt:
+      'Do a focused security sweep of the current workspace changes. Prioritise auth, data exposure, command execution, secrets, dependency risk, unsafe file access, and production blast radius. Lead with concrete findings and cite files.',
+  },
+  {
+    id: 'work-items',
+    title: 'Work items',
+    subtitle: 'Turn the current repo state into clear next tasks and blockers.',
+    personaId: 'planner',
+    tone: 'purple',
+    requiresActiveWorkspace: true,
+    prompt:
+      'Triage the current workspace into actionable work items. Identify what is in progress, what is blocked, what needs review, and the next smallest useful tasks. Keep it concrete and local to this workspace.',
   },
   {
     id: 'test-hunt',
@@ -399,7 +503,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
 
-  const device = authenticateRequest(req, req.method === 'GET' && url.pathname === '/api/events');
+  const allowQueryToken =
+    req.method === 'GET' &&
+    (url.pathname === '/api/events' || isChatAttachmentRoute(pathParts));
+  const device = authenticateRequest(req, allowQueryToken);
   if (!device) {
     sendJson(res, 401, { error: 'Missing or invalid mobile companion token.' });
     return;
@@ -409,6 +516,22 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 
   if (req.method === 'GET' && url.pathname === '/api/overview') {
     sendJson(res, 200, getMobileOverview());
+    return;
+  }
+
+  if (
+    req.method === 'GET' &&
+    pathParts[0] === 'api' &&
+    pathParts[1] === 'workspace-health' &&
+    pathParts[2] === 'signals' &&
+    pathParts[3]
+  ) {
+    const detail = getMobileWorkspaceSignalDetail(decodeURIComponent(pathParts.slice(3).join('/')));
+    if (!detail) {
+      sendJson(res, 404, { error: 'Workspace health signal not found.' });
+      return;
+    }
+    sendJson(res, 200, detail);
     return;
   }
 
@@ -422,19 +545,50 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
 
+  if (req.method === 'GET' && url.pathname === '/api/chat/skills') {
+    sendJson(res, 200, await listMobileChatSkills(url.searchParams.get('query') ?? ''));
+    return;
+  }
+
   if (req.method === 'GET' && pathParts[0] === 'api' && pathParts[1] === 'chat') {
     const threadId = pathParts[3];
     if (pathParts[2] === 'threads' && threadId && pathParts[4] === 'history') {
       sendJson(res, 200, loadChatHistory(threadId));
       return;
     }
+    if (isChatAttachmentRoute(pathParts)) {
+      sendChatAttachment(res, decodeURIComponent(pathParts.slice(3).join('/')));
+      return;
+    }
   }
 
   if (req.method === 'POST' && pathParts[0] === 'api' && pathParts[1] === 'chat') {
+    if (pathParts[2] === 'attachments' && pathParts[3] === 'prepare') {
+      const body = await readJsonBody<{ attachments?: MobileSendChatMessageInput['attachments'] }>(
+        req,
+      );
+      sendJson(res, 200, prepareChatAttachments(body.attachments ?? []));
+      return;
+    }
+
+    if (pathParts[2] === 'file-mentions' && pathParts[3] === 'search') {
+      const body = await readJsonBody<{ repoIds?: string[]; query?: string; limit?: number }>(req);
+      sendJson(
+        res,
+        200,
+        await searchChatFileMentions({
+          repoIds: Array.isArray(body.repoIds) ? body.repoIds : [],
+          query: body.query,
+          limit: body.limit,
+        }),
+      );
+      return;
+    }
+
     const threadId = pathParts[3];
     if (pathParts[2] === 'threads' && threadId && pathParts[4] === 'messages') {
-      const body = await readJsonBody<{ sessionId?: string; message?: string }>(req);
-      await sendMobileMessage(threadId, body.sessionId, body.message);
+      const body = await readJsonBody<MobileSendChatMessageInput>(req);
+      await sendMobileMessage(threadId, body);
       sendJson(res, 202, { ok: true });
       return;
     }
@@ -715,6 +869,8 @@ export function getMobileOverview(): MobileOverview {
     activeSessions,
   );
   const threads = listMobileChatThreads();
+  const recentRuns = activeWorkspace ? listAgentRuns(activeWorkspace.id, 8) : [];
+  const workspaceHealth = buildMobileWorkspaceHealth(activeWorkspace);
 
   return {
     generatedAt: new Date().toISOString(),
@@ -723,6 +879,8 @@ export function getMobileOverview(): MobileOverview {
     activeSessions,
     pendingApprovals,
     threads,
+    recentRuns,
+    workspaceHealth,
     workQueue: buildMobileWorkQueue(activeWorkspace, activeSessions, pendingApprovals, threads),
     workflow: buildWorkflowDigest(activeWorkspace, activeSessions, pendingApprovals, threads),
     quickActions: listMobileQuickActions(),
@@ -855,6 +1013,7 @@ function listMobileChatThreads(): MobileChatThreadSummary[] {
         t.workspace_id,
         t.persona_id,
         t.title,
+        t.repo_ids_json,
         t.updated_at,
         t.last_message_at,
         (
@@ -885,6 +1044,7 @@ function listMobileChatThreads(): MobileChatThreadSummary[] {
       personaId: row.persona_id,
       title: row.title,
       workspaceId: row.workspace_id ?? undefined,
+      repoIds: parseRepoIds(row.repo_ids_json),
       preview: row.preview ?? undefined,
       messageCount: row.message_count,
       updatedAt: row.last_message_at ?? row.updated_at,
@@ -897,30 +1057,48 @@ function listMobileChatThreads(): MobileChatThreadSummary[] {
   });
 }
 
+function parseRepoIds(value: string | null | undefined): string[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === 'string' && item.length > 0)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
 async function sendMobileMessage(
   threadId: string,
-  sessionId: string | undefined,
-  message: string | undefined,
+  input: MobileSendChatMessageInput,
 ): Promise<void> {
+  const message = input.message;
   if (!message?.trim()) throw new Error('Message is required.');
   const targetSessionId =
-    sessionId ?? listMobileChatThreads().find((thread) => thread.id === threadId)?.activeSessionId;
+    input.sessionId ??
+    listMobileChatThreads().find((thread) => thread.id === threadId)?.activeSessionId;
   if (!targetSessionId || !getCodexSession(targetSessionId)) {
     throw new Error('This thread does not have an active desktop Codex session.');
   }
   const session = getCodexSession(targetSessionId);
   const thread = getChatThread(threadId);
   const timestamp = new Date().toISOString();
+  const attachments = prepareChatAttachments(input.attachments ?? []);
   saveChatEntry(threadId, session?.repoId ?? null, targetSessionId, {
     id: randomUUID(),
     role: 'user',
     content: message.trim(),
+    attachments,
     timestamp,
     personaId: session?.personaId ?? thread?.personaId,
     sessionId: targetSessionId,
     threadId,
   });
-  await sendMessage(targetSessionId, message.trim());
+  await sendMessage(targetSessionId, message.trim(), attachments, {
+    collaborationMode: input.collaborationMode,
+    reasoningEffort: input.reasoningEffort,
+  });
   pushCompanionNotification(
     'sessions',
     'Session updated',
@@ -965,6 +1143,7 @@ export async function startMobileWorkflow(
 
   const personaId = input.personaId?.trim() || action?.personaId || 'coder';
   const title = input.title?.trim() || action?.title || titleFromMessage(message);
+  const attachments = prepareChatAttachments(input.attachments ?? []);
   const thread = createChatThread({
     workspaceId: workspace?.id ?? null,
     personaId,
@@ -989,12 +1168,16 @@ export async function startMobileWorkflow(
     id: randomUUID(),
     role: 'user',
     content: message,
+    attachments,
     timestamp,
     personaId,
     sessionId: session.id,
     threadId: thread.id,
   });
-  await sendMessage(session.id, message, [], { collaborationMode: input.collaborationMode });
+  await sendMessage(session.id, message, attachments, {
+    collaborationMode: input.collaborationMode,
+    reasoningEffort: input.reasoningEffort,
+  });
   pushCompanionNotification(
     'sessions',
     'Workflow started',
@@ -1013,6 +1196,21 @@ export async function startMobileWorkflow(
     session,
     queuedMessage: message,
   };
+}
+
+async function listMobileChatSkills(query: string) {
+  const normalized = query.trim().toLowerCase();
+  const { skills } = await getCodexRegistrySnapshot();
+  const matches = normalized
+    ? skills.filter((skill) =>
+        [skill.name, skill.description, skill.source, ...(skill.tags ?? [])]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase()
+          .includes(normalized),
+      )
+    : skills;
+  return matches.slice(0, 30);
 }
 
 function enrichMobileApprovalRequests(
@@ -1145,6 +1343,491 @@ export function buildMobileWorkQueue(
   return [...approvalItems, ...sessionItems, ...recentThreadItems]
     .sort(compareWorkQueueItems)
     .slice(0, 12);
+}
+
+export function buildMobileWorkspaceHealth(
+  activeWorkspace: MobileOverview['activeWorkspace'],
+): MobileWorkspaceHealth {
+  if (!activeWorkspace) {
+    return emptyWorkspaceHealth();
+  }
+
+  const repoIds = activeWorkspace.repos.map((repo) => repo.id);
+  if (repoIds.length === 0) {
+    const lifecycleSignals = buildLifecycleSignals(activeWorkspace.id);
+    return {
+      ...emptyWorkspaceHealth(),
+      lifecycleItemCount: lifecycleSignals.count,
+      signals: lifecycleSignals.signals,
+    };
+  }
+
+  const reviewFindings = listMobileReviewFindings(repoIds);
+  const securityFindings = listMobileSecurityFindings(repoIds);
+  const lifecycleSignals = buildLifecycleSignals(activeWorkspace.id);
+  const workItemSignals = buildWorkItemSignals();
+  const signals = [
+    ...reviewFindings.slice(0, 10).map(reviewFindingSignal),
+    ...securityFindings.slice(0, 10).map(securityFindingSignal),
+    ...lifecycleSignals.signals,
+    ...workItemSignals.signals,
+  ]
+    .sort(compareWorkspaceSignals)
+    .slice(0, 30);
+
+  return {
+    reviewFindingCount: reviewFindings.length,
+    securityFindingCount: securityFindings.length,
+    lifecycleItemCount: lifecycleSignals.count,
+    workItemCount: workItemSignals.count,
+    criticalCount:
+      reviewFindings.filter((finding) => finding.severity === 'critical').length +
+      securityFindings.filter((finding) => finding.severity === 'critical').length,
+    highCount:
+      reviewFindings.filter((finding) => finding.severity === 'major').length +
+      securityFindings.filter((finding) => finding.severity === 'high').length,
+    signals,
+  };
+}
+
+function emptyWorkspaceHealth(): MobileWorkspaceHealth {
+  return {
+    reviewFindingCount: 0,
+    securityFindingCount: 0,
+    lifecycleItemCount: 0,
+    workItemCount: 0,
+    criticalCount: 0,
+    highCount: 0,
+    signals: [],
+  };
+}
+
+function listMobileReviewFindings(repoIds: string[]): MobileReviewFindingRow[] {
+  if (repoIds.length === 0) return [];
+  return getDb()
+    .prepare(
+      `SELECT
+         f.id,
+         f.review_id,
+         cr.repo_id,
+         repos.name AS repo_name,
+         f.severity,
+         f.category,
+         f.file_path,
+         f.description,
+         cr.started_at
+       FROM code_review_findings f
+       JOIN code_reviews cr ON cr.id = f.review_id
+       LEFT JOIN repos ON repos.id = cr.repo_id
+       WHERE f.dismissed = 0
+         AND cr.repo_id IN (${repoIds.map(() => '?').join(',')})
+       ORDER BY
+         CASE f.severity
+           WHEN 'critical' THEN 0
+           WHEN 'major' THEN 1
+           WHEN 'minor' THEN 2
+           WHEN 'suggestion' THEN 3
+           WHEN 'nitpick' THEN 4
+           ELSE 5
+         END,
+         cr.started_at DESC
+       LIMIT 20`,
+    )
+    .all(...repoIds) as MobileReviewFindingRow[];
+}
+
+function listMobileSecurityFindings(repoIds: string[]): MobileSecurityFindingRow[] {
+  if (repoIds.length === 0) return [];
+  return getDb()
+    .prepare(
+      `SELECT
+         f.id,
+         f.audit_id,
+         a.repo_id,
+         repos.name AS repo_name,
+         f.severity,
+         f.category,
+         f.affected_files,
+         f.description,
+         a.started_at
+       FROM security_findings f
+       JOIN security_audits a ON a.id = f.audit_id
+       LEFT JOIN repos ON repos.id = a.repo_id
+       WHERE f.dismissed = 0
+         AND a.repo_id IN (${repoIds.map(() => '?').join(',')})
+       ORDER BY
+         CASE f.severity
+           WHEN 'critical' THEN 0
+           WHEN 'high' THEN 1
+           WHEN 'medium' THEN 2
+           WHEN 'low' THEN 3
+           WHEN 'info' THEN 4
+           ELSE 5
+         END,
+         a.started_at DESC
+       LIMIT 20`,
+    )
+    .all(...repoIds) as MobileSecurityFindingRow[];
+}
+
+function buildLifecycleSignals(workspaceId: string): {
+  count: number;
+  signals: MobileWorkspaceSignal[];
+} {
+  const items = listLifecycleItems(workspaceId);
+  return {
+    count: items.length,
+    signals: items.slice(0, 10).map((item) => ({
+      id: `lifecycle:${item.id}`,
+      kind: 'lifecycle',
+      priority: 'normal',
+      title: item.title,
+      detail: item.description ?? `${item.linkedRepoIds.length} linked repo${item.linkedRepoIds.length === 1 ? '' : 's'}`,
+      statusLabel: item.stage,
+      updatedAt: item.updatedAt,
+      sourceId: item.id,
+      actionId: 'work-items',
+    })),
+  };
+}
+
+function buildWorkItemSignals(): { count: number; signals: MobileWorkspaceSignal[] } {
+  const rows = getDb()
+    .prepare(
+      `SELECT id, title, type, state, priority, fetched_at
+       FROM work_items_cache
+       WHERE COALESCE(LOWER(state), '') NOT IN ('done', 'closed', 'resolved', 'complete', 'completed')
+       ORDER BY COALESCE(priority, 999) ASC, fetched_at DESC
+       LIMIT 12`,
+    )
+    .all() as MobileWorkItemRow[];
+
+  return {
+    count: rows.length,
+    signals: rows.map((row) => ({
+      id: `work-item:${row.id}`,
+      kind: 'work_item',
+      priority: row.priority !== null && row.priority <= 1 ? 'high' : 'low',
+      title: row.title ?? row.id,
+      detail: row.type ?? 'Tracked work item',
+      statusLabel: row.state ?? 'Open',
+      updatedAt: row.fetched_at ?? new Date().toISOString(),
+      sourceId: row.id,
+      actionId: 'work-items',
+    })),
+  };
+}
+
+function getMobileWorkspaceSignalDetail(signalId: string): MobileWorkspaceSignalDetail | null {
+  const [kind, ...idParts] = signalId.split(':');
+  const sourceId = idParts.join(':');
+  if (!sourceId) return null;
+
+  switch (kind) {
+    case 'review-finding':
+      return getMobileReviewFindingDetail(sourceId);
+    case 'security-finding':
+      return getMobileSecurityFindingDetail(sourceId);
+    case 'lifecycle':
+      return getMobileLifecycleDetail(sourceId);
+    case 'work-item':
+      return getMobileWorkItemDetail(sourceId);
+    default:
+      return null;
+  }
+}
+
+function getMobileReviewFindingDetail(findingId: string): MobileWorkspaceSignalDetail | null {
+  const row = getDb()
+    .prepare(
+      `SELECT
+         f.id,
+         f.review_id,
+         cr.repo_id,
+         repos.name AS repo_name,
+         f.severity,
+         f.category,
+         f.file_path,
+         f.line_start,
+         f.line_end,
+         f.description,
+         f.suggestion,
+         f.work_item_id,
+         f.pr_comment_url,
+         f.pr_commented_at,
+         cr.mode AS review_mode,
+         cr.scope_type AS review_scope_type,
+         cr.scope_ref AS review_scope_ref,
+         cr.status AS review_status,
+         cr.summary AS review_summary,
+         cr.verification_status,
+         cr.verification_summary,
+         cr.started_at,
+         cr.completed_at
+       FROM code_review_findings f
+       JOIN code_reviews cr ON cr.id = f.review_id
+       LEFT JOIN repos ON repos.id = cr.repo_id
+       WHERE f.id = ? AND f.dismissed = 0`,
+    )
+    .get(findingId) as MobileReviewFindingDetailRow | undefined;
+  if (!row) return null;
+
+  const signal = reviewFindingSignal(row);
+  return {
+    signal,
+    summary: row.review_summary ?? undefined,
+    description: row.description,
+    recommendation: row.suggestion ?? undefined,
+    files: row.file_path
+      ? [{ path: row.file_path, lineStart: row.line_start ?? undefined, lineEnd: row.line_end ?? undefined }]
+      : [],
+    linkedWorkItemId: row.work_item_id ?? undefined,
+    provenance: compactProvenance([
+      ['Review', row.review_id],
+      ['Mode', row.review_mode],
+      ['Scope', [row.review_scope_type, row.review_scope_ref].filter(Boolean).join(' / ')],
+      ['Status', row.review_status],
+      ['Verification', row.verification_status],
+      ['PR comment', row.pr_comment_url],
+      ['Commented', row.pr_commented_at],
+      ['Completed', row.completed_at],
+    ]),
+  };
+}
+
+function getMobileSecurityFindingDetail(findingId: string): MobileWorkspaceSignalDetail | null {
+  const row = getDb()
+    .prepare(
+      `SELECT
+         f.id,
+         f.audit_id,
+         a.repo_id,
+         repos.name AS repo_name,
+         f.severity,
+         f.category,
+         f.affected_files,
+         f.owasp_ref,
+         f.cwe_ref,
+         f.description,
+         f.remediation,
+         f.work_item_id,
+         a.scope AS audit_scope,
+         a.status AS audit_status,
+         a.summary AS audit_summary,
+         a.model_version,
+         a.started_at,
+         a.completed_at
+       FROM security_findings f
+       JOIN security_audits a ON a.id = f.audit_id
+       LEFT JOIN repos ON repos.id = a.repo_id
+       WHERE f.id = ? AND f.dismissed = 0`,
+    )
+    .get(findingId) as MobileSecurityFindingDetailRow | undefined;
+  if (!row) return null;
+
+  const files = parseAffectedFiles(row.affected_files).map((path) => ({ path }));
+  return {
+    signal: securityFindingSignal(row),
+    summary: row.audit_summary ?? undefined,
+    description: row.description,
+    recommendation: row.remediation ?? undefined,
+    files,
+    linkedWorkItemId: row.work_item_id ?? undefined,
+    provenance: compactProvenance([
+      ['Audit', row.audit_id],
+      ['Scope', row.audit_scope],
+      ['Status', row.audit_status],
+      ['OWASP', row.owasp_ref],
+      ['CWE', row.cwe_ref],
+      ['Model', row.model_version],
+      ['Completed', row.completed_at],
+    ]),
+  };
+}
+
+function getMobileLifecycleDetail(itemId: string): MobileWorkspaceSignalDetail | null {
+  try {
+    const item = getLifecycleItem(itemId);
+    const repoNames = item.linkedRepoIds.map((repoId) => getRepoName(repoId) ?? repoId);
+    return {
+      signal: {
+        id: `lifecycle:${item.id}`,
+        kind: 'lifecycle',
+        priority: 'normal',
+        title: item.title,
+        detail: item.description ?? `${item.linkedRepoIds.length} linked repo${item.linkedRepoIds.length === 1 ? '' : 's'}`,
+        statusLabel: item.stage,
+        updatedAt: item.updatedAt,
+        sourceId: item.id,
+        actionId: 'work-items',
+      },
+      description: item.description,
+      files: [],
+      linkedWorkItemId: item.linkedWorkItemId,
+      provenance: compactProvenance([
+        ['Stage', item.stage],
+        ['Classification', item.changeClassification],
+        ['Linked repos', repoNames.join(', ')],
+        ['Work item provider', item.linkedWorkItemProvider],
+        ['Created', item.createdAt],
+        ['Updated', item.updatedAt],
+      ]),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function getMobileWorkItemDetail(workItemId: string): MobileWorkspaceSignalDetail | null {
+  const row = getDb()
+    .prepare(
+      `SELECT
+         id,
+         title,
+         type,
+         state,
+         priority,
+         assignee,
+         description,
+         acceptance_criteria,
+         repo_url,
+         tags,
+         iteration_path,
+         parent_id,
+         fetched_at
+       FROM work_items_cache
+       WHERE id = ?`,
+    )
+    .get(workItemId) as MobileWorkItemDetailRow | undefined;
+  if (!row) return null;
+
+  const signal = {
+    id: `work-item:${row.id}`,
+    kind: 'work_item' as const,
+    priority: row.priority !== null && row.priority <= 1 ? 'high' : 'low',
+    title: row.title ?? row.id,
+    detail: row.type ?? 'Tracked work item',
+    statusLabel: row.state ?? 'Open',
+    updatedAt: row.fetched_at ?? new Date().toISOString(),
+    sourceId: row.id,
+    actionId: 'work-items',
+  };
+
+  return {
+    signal,
+    description: row.description ?? undefined,
+    recommendation: row.acceptance_criteria ?? undefined,
+    files: [],
+    linkedWorkItemId: row.id,
+    provenance: compactProvenance([
+      ['Type', row.type],
+      ['State', row.state],
+      ['Priority', row.priority === null ? undefined : String(row.priority)],
+      ['Assignee', row.assignee],
+      ['Tags', row.tags],
+      ['Iteration', row.iteration_path],
+      ['Parent', row.parent_id],
+      ['Repo URL', row.repo_url],
+      ['Fetched', row.fetched_at],
+    ]),
+  };
+}
+
+function reviewFindingSignal(row: MobileReviewFindingRow): MobileWorkspaceSignal {
+  return {
+    id: `review-finding:${row.id}`,
+    kind: 'code_review',
+    priority: reviewSeverityPriority(row.severity),
+    title: row.description,
+    detail: [row.category, row.file_path].filter(Boolean).join(' / ') || 'Code review finding',
+    statusLabel: row.severity,
+    updatedAt: row.started_at,
+    repoId: row.repo_id,
+    repoName: row.repo_name ?? undefined,
+    sourceId: row.review_id,
+    actionId: 'review-diff',
+  };
+}
+
+function securityFindingSignal(row: MobileSecurityFindingRow): MobileWorkspaceSignal {
+  return {
+    id: `security-finding:${row.id}`,
+    kind: 'security',
+    priority: securitySeverityPriority(row.severity),
+    title: row.description,
+    detail:
+      [row.category, firstAffectedFile(row.affected_files)].filter(Boolean).join(' / ') ||
+      'Security finding',
+    statusLabel: row.severity,
+    updatedAt: row.started_at,
+    repoId: row.repo_id,
+    repoName: row.repo_name ?? undefined,
+    sourceId: row.audit_id,
+    actionId: 'security-sweep',
+  };
+}
+
+function compactProvenance(
+  entries: Array<[label: string, value: string | null | undefined]>,
+): MobileWorkspaceSignalDetail['provenance'] {
+  return entries
+    .map(([label, value]) => ({ label, value: value?.trim() ?? '' }))
+    .filter((entry) => entry.value.length > 0);
+}
+
+function getRepoName(repoId: string): string | undefined {
+  const row = getDb()
+    .prepare('SELECT name, path FROM repos WHERE id = ?')
+    .get(repoId) as { name: string | null; path: string | null } | undefined;
+  return row?.name ?? row?.path ?? undefined;
+}
+
+function firstAffectedFile(value: string | null): string | undefined {
+  return parseAffectedFiles(value)[0];
+}
+
+function parseAffectedFiles(value: string | null): string[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+  } catch {
+    return [];
+  }
+}
+
+function reviewSeverityPriority(severity: string): MobileWorkQueueItem['priority'] {
+  if (severity === 'critical') return 'critical';
+  if (severity === 'major') return 'high';
+  if (severity === 'minor') return 'normal';
+  return 'low';
+}
+
+function securitySeverityPriority(severity: string): MobileWorkQueueItem['priority'] {
+  if (severity === 'critical') return 'critical';
+  if (severity === 'high') return 'high';
+  if (severity === 'medium') return 'normal';
+  return 'low';
+}
+
+function compareWorkspaceSignals(a: MobileWorkspaceSignal, b: MobileWorkspaceSignal): number {
+  const priorityDelta = queuePriorityRank(a.priority) - queuePriorityRank(b.priority);
+  if (priorityDelta !== 0) return priorityDelta;
+  return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+}
+
+function queuePriorityRank(priority: MobileWorkQueueItem['priority']): number {
+  switch (priority) {
+    case 'critical':
+      return 0;
+    case 'high':
+      return 1;
+    case 'normal':
+      return 2;
+    case 'low':
+      return 3;
+  }
 }
 
 export function buildWorkflowDigest(
@@ -1477,6 +2160,46 @@ function setCommonHeaders(res: ServerResponse): void {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+}
+
+function isChatAttachmentRoute(pathParts: string[]): boolean {
+  return (
+    pathParts[0] === 'api' &&
+    pathParts[1] === 'chat' &&
+    pathParts[2] === 'attachments' &&
+    Boolean(pathParts[3])
+  );
+}
+
+function sendChatAttachment(res: ServerResponse, attachmentId: string): void {
+  const attachment = findChatAttachment(attachmentId);
+  if (!attachment) {
+    sendJson(res, 404, { error: 'Chat attachment not found.' });
+    return;
+  }
+  if (!existsSync(attachment.path)) {
+    sendJson(res, 404, { error: 'Chat attachment file is no longer available.' });
+    return;
+  }
+
+  const fileStat = statSync(attachment.path);
+  if (!fileStat.isFile()) {
+    sendJson(res, 404, { error: 'Chat attachment file is no longer available.' });
+    return;
+  }
+
+  setCommonHeaders(res);
+  res.writeHead(200, {
+    'Content-Type': attachment.mimeType || 'application/octet-stream',
+    'Content-Length': fileStat.size,
+    'Cache-Control': 'private, max-age=300',
+    'Content-Disposition': `inline; filename="${sanitizeHeaderValue(attachment.name)}"`,
+  });
+  createReadStream(attachment.path).pipe(res);
+}
+
+function sanitizeHeaderValue(value: string): string {
+  return value.replace(/["\r\n]/g, '_').slice(0, 160);
 }
 
 function randomToken(bytes: number): string {

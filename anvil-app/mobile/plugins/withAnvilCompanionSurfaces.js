@@ -33,6 +33,7 @@ function withAnvilCompanionSurfaces(config) {
         ],
       },
     };
+    config.modResults.NSSupportsLiveActivities = true;
     return config;
   });
 
@@ -300,6 +301,7 @@ async function writeCompanionSurfaceSources(
     'utf8',
   );
   await patchAppDelegateForSceneLifecycle(path.join(appRoot, 'AppDelegate.swift'));
+  await patchPodfileForXcodeBetaFmt(path.join(iosRoot, 'Podfile'));
 
   await fs.writeFile(
     path.join(widgetBridgeRoot, 'AnvilWidgetBridge.swift'),
@@ -387,6 +389,29 @@ async function patchAppDelegateForSceneLifecycle(appDelegatePath) {
   }
 
   await fs.writeFile(appDelegatePath, nextSource, 'utf8');
+}
+
+async function patchPodfileForXcodeBetaFmt(podfilePath) {
+  const source = await fs.readFile(podfilePath, 'utf8');
+  if (source.includes("pod_target.name == 'fmt'")) return;
+
+  const needle = `      pod_target.build_configurations.each do |build_configuration|
+        current_target = build_configuration.build_settings['IPHONEOS_DEPLOYMENT_TARGET']`;
+  const nextSource = source.replace(
+    needle,
+    `      pod_target.build_configurations.each do |build_configuration|
+        if pod_target.name == 'fmt'
+          build_configuration.build_settings['CLANG_CXX_LANGUAGE_STANDARD'] = 'gnu++17'
+        end
+
+        current_target = build_configuration.build_settings['IPHONEOS_DEPLOYMENT_TARGET']`,
+  );
+
+  if (nextSource === source) {
+    throw new Error('Unable to patch Podfile for fmt C++ standard support.');
+  }
+
+  await fs.writeFile(podfilePath, nextSource, 'utf8');
 }
 
 function appSceneDelegateSwift() {
@@ -506,14 +531,32 @@ function entitlements(appGroupIdentifier) {
 
 function widgetBridgeSwift(appGroupIdentifier) {
   return `import Foundation
+import ActivityKit
 import React
 import WatchConnectivity
 import WidgetKit
+
+struct AnvilLiveActivityAttributes: ActivityAttributes {
+  public struct ContentState: Codable, Hashable {
+    var status: String
+    var detail: String
+    var primaryLabel: String
+    var primaryDestination: String
+    var attentionLevel: String
+    var pendingApprovals: Int
+    var busySessions: Int
+    var workSignals: Int
+  }
+
+  var title: String
+  var workspaceName: String?
+}
 
 @objc(AnvilWidgetBridge)
 final class AnvilWidgetBridge: RCTEventEmitter, WCSessionDelegate {
   private var hasActiveListeners = false
   private var pendingWatchReplies: [String: ([String: Any]) -> Void] = [:]
+  private var liveActivity: Any?
 
   override init() {
     super.init()
@@ -583,6 +626,69 @@ final class AnvilWidgetBridge: RCTEventEmitter, WCSessionDelegate {
     }
 
     resolve(true)
+  }
+
+  @objc(writeLiveActivity:resolver:rejecter:)
+  func writeLiveActivity(
+    _ payload: NSDictionary,
+    resolver resolve: @escaping RCTPromiseResolveBlock,
+    rejecter reject: @escaping RCTPromiseRejectBlock
+  ) {
+    guard #available(iOS 16.2, *) else {
+      resolve(false)
+      return
+    }
+
+    Task {
+      do {
+        let title = payload["title"] as? String ?? "Anvil"
+        let workspaceName = payload["workspaceName"] as? String
+        let state = AnvilLiveActivityAttributes.ContentState(
+          status: payload["status"] as? String ?? "Working",
+          detail: payload["detail"] as? String ?? "Anvil is working.",
+          primaryLabel: payload["primaryLabel"] as? String ?? "Open",
+          primaryDestination: payload["primaryDestination"] as? String ?? "anvil-companion://work",
+          attentionLevel: payload["attentionLevel"] as? String ?? "working",
+          pendingApprovals: payload["pendingApprovals"] as? Int ?? 0,
+          busySessions: payload["busySessions"] as? Int ?? 0,
+          workSignals: payload["workSignals"] as? Int ?? 0
+        )
+
+        let content = ActivityContent(state: state, staleDate: Date().addingTimeInterval(900))
+        if let activity = liveActivity as? Activity<AnvilLiveActivityAttributes> {
+          await activity.update(content)
+        } else {
+          let attributes = AnvilLiveActivityAttributes(title: title, workspaceName: workspaceName)
+          liveActivity = try Activity<AnvilLiveActivityAttributes>.request(
+            attributes: attributes,
+            content: content,
+            pushType: nil
+          )
+        }
+        resolve(true)
+      } catch {
+        reject("ANVIL_LIVE_ACTIVITY_WRITE_FAILED", "Failed to update the Anvil Live Activity.", error)
+      }
+    }
+  }
+
+  @objc(clearLiveActivity:rejecter:)
+  func clearLiveActivity(
+    _ resolve: @escaping RCTPromiseResolveBlock,
+    rejecter reject: @escaping RCTPromiseRejectBlock
+  ) {
+    guard #available(iOS 16.2, *) else {
+      resolve(false)
+      return
+    }
+
+    Task {
+      if let activity = liveActivity as? Activity<AnvilLiveActivityAttributes> {
+        await activity.end(nil, dismissalPolicy: .immediate)
+      }
+      liveActivity = nil
+      resolve(true)
+    }
   }
 
   @objc(activateWatchRelay:rejecter:)
@@ -695,6 +801,11 @@ RCT_EXTERN_METHOD(writeSnapshot:(NSDictionary *)payload
                   rejecter:(RCTPromiseRejectBlock)reject)
 RCT_EXTERN_METHOD(clearSnapshot:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
+RCT_EXTERN_METHOD(writeLiveActivity:(NSDictionary *)payload
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+RCT_EXTERN_METHOD(clearLiveActivity:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
 RCT_EXTERN_METHOD(activateWatchRelay:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject)
 RCT_EXTERN_METHOD(replyToWatchRequest:(NSString *)requestId
@@ -708,6 +819,7 @@ RCT_EXTERN_METHOD(replyToWatchRequest:(NSString *)requestId
 
 function widgetSwift(appGroupIdentifier) {
   return `import SwiftUI
+import ActivityKit
 import WidgetKit
 
 private let appGroupIdentifier = "${appGroupIdentifier}"
@@ -721,7 +833,13 @@ struct AnvilWidgetSnapshot: Codable {
   let detail: String
   let activeWorkspaceName: String?
   let counts: AnvilWidgetCounts
+  let reviewFindings: Int?
+  let securityFindings: Int?
+  let workSignals: Int?
   let quickActions: [AnvilWidgetAction]
+  let primaryDestination: String
+  let primaryLabel: String
+  let attentionLevel: String
 }
 
 struct AnvilWidgetCounts: Codable {
@@ -738,6 +856,7 @@ struct AnvilWidgetAction: Codable, Identifiable {
   let title: String
   let subtitle: String
   let tone: String?
+  let destination: String?
 }
 
 struct AnvilWidgetEntry: TimelineEntry {
@@ -783,7 +902,13 @@ struct AnvilWidgetProvider: TimelineProvider {
         recentThreads: 4,
         workspaceRepos: 2
       ),
-      quickActions: fallbackActions()
+      reviewFindings: 2,
+      securityFindings: 1,
+      workSignals: 5,
+      quickActions: fallbackActions(),
+      primaryDestination: "anvil-companion://work",
+      primaryLabel: "Open",
+      attentionLevel: "working"
     )
   }
 }
@@ -794,7 +919,7 @@ struct AnvilCommandWidget: Widget {
       AnvilWidgetView(entry: entry)
     }
     .configurationDisplayName("Anvil Command Deck")
-    .description("Launch focused Anvil workflows from your Home Screen.")
+    .description("Start Anvil workflows and inspect active work.")
     .supportedFamilies([.systemSmall, .systemMedium])
   }
 }
@@ -808,7 +933,7 @@ struct AnvilWidgetView: View {
 
   var body: some View {
     if family == .systemSmall {
-      Link(destination: workflowUrl(snapshot.quickActions.first?.id ?? "status-sweep")) {
+      Link(destination: URL(string: snapshot.primaryDestination) ?? workflowUrl(snapshot.quickActions.first?.id ?? "status-sweep")) {
         VStack(alignment: .leading, spacing: 8) {
           HeaderRow(snapshot: snapshot, compact: true)
           Text(snapshot.headline)
@@ -839,7 +964,7 @@ struct AnvilWidgetView: View {
           .lineLimit(2)
         HStack(spacing: 8) {
           ForEach(Array(snapshot.quickActions.prefix(4))) { action in
-            WorkflowLink(title: shortActionTitle(action.title), actionId: action.id)
+            WorkflowLink(title: shortActionTitle(action.title), destination: action.destination ?? workflowUrl(action.id).absoluteString)
           }
         }
       }
@@ -875,9 +1000,9 @@ struct CountStrip: View {
 
   var body: some View {
     HStack(spacing: 6) {
-      CountPill(label: "OKs", value: snapshot.counts.pendingApprovals)
+      CountPill(label: "OK", value: snapshot.counts.pendingApprovals)
       CountPill(label: "Run", value: snapshot.counts.busySessions)
-      CountPill(label: "Repos", value: snapshot.counts.workspaceRepos)
+      CountPill(label: "Work", value: snapshot.workSignals ?? 0)
     }
   }
 }
@@ -902,10 +1027,10 @@ struct CountPill: View {
 
 struct WorkflowLink: View {
   let title: String
-  let actionId: String
+  let destination: String
 
   var body: some View {
-    Link(destination: workflowUrl(actionId)) {
+    Link(destination: URL(string: destination) ?? workflowUrl("status-sweep")) {
       Text(title)
         .font(.caption.bold())
         .frame(maxWidth: .infinity)
@@ -920,8 +1045,8 @@ func fallbackSnapshot() -> AnvilWidgetSnapshot {
     version: 1,
     generatedAt: ISO8601DateFormatter().string(from: Date()),
     health: "unconfigured",
-    headline: "Pair Anvil",
-    detail: "Open the companion app to connect your Mac and publish live workflow state.",
+    headline: "No host paired",
+    detail: "Open Anvil on Mac and scan the pairing code.",
     activeWorkspaceName: "Anvil",
     counts: AnvilWidgetCounts(
       pendingApprovals: 0,
@@ -931,17 +1056,146 @@ func fallbackSnapshot() -> AnvilWidgetSnapshot {
       recentThreads: 0,
       workspaceRepos: 0
     ),
-    quickActions: fallbackActions()
+    reviewFindings: 0,
+    securityFindings: 0,
+    workSignals: 0,
+    quickActions: fallbackActions(),
+    primaryDestination: "anvil-companion://settings",
+    primaryLabel: "Pair",
+    attentionLevel: "setup"
   )
 }
 
 func fallbackActions() -> [AnvilWidgetAction] {
   [
-    AnvilWidgetAction(id: "status-sweep", title: "Status sweep", subtitle: "Check active work", tone: "blue"),
-    AnvilWidgetAction(id: "review-diff", title: "Review diff", subtitle: "Inspect changes", tone: "purple"),
-    AnvilWidgetAction(id: "test-hunt", title: "Find tests", subtitle: "Run the right checks", tone: "green"),
-    AnvilWidgetAction(id: "ship-handoff", title: "Ship handoff", subtitle: "Summarize release state", tone: "amber")
+    AnvilWidgetAction(id: "status-sweep", title: "Status sweep", subtitle: "Check active work", tone: "blue", destination: "anvil-companion://workflow/status-sweep"),
+    AnvilWidgetAction(id: "work", title: "Work", subtitle: "Review signals", tone: "blue", destination: "anvil-companion://work"),
+    AnvilWidgetAction(id: "review-diff", title: "Review", subtitle: "Inspect findings", tone: "amber", destination: "anvil-companion://work?filter=code_review"),
+    AnvilWidgetAction(id: "security-sweep", title: "Security", subtitle: "Inspect risk", tone: "red", destination: "anvil-companion://work?filter=security")
   ]
+}
+
+struct AnvilLiveActivityAttributes: ActivityAttributes {
+  public struct ContentState: Codable, Hashable {
+    var status: String
+    var detail: String
+    var primaryLabel: String
+    var primaryDestination: String
+    var attentionLevel: String
+    var pendingApprovals: Int
+    var busySessions: Int
+    var workSignals: Int
+  }
+
+  var title: String
+  var workspaceName: String?
+}
+
+@available(iOSApplicationExtension 16.2, *)
+struct AnvilLiveActivityWidget: Widget {
+  var body: some WidgetConfiguration {
+    ActivityConfiguration(for: AnvilLiveActivityAttributes.self) { context in
+      Link(destination: URL(string: context.state.primaryDestination) ?? workflowUrl("status-sweep")) {
+        VStack(alignment: .leading, spacing: 10) {
+          HStack {
+            Text(context.attributes.workspaceName ?? context.attributes.title)
+              .font(.headline)
+              .lineLimit(1)
+            Spacer()
+            Text(liveAttentionLabel(context.state.attentionLevel))
+              .font(.caption2.bold())
+              .padding(.horizontal, 7)
+              .padding(.vertical, 4)
+              .background(liveAttentionColor(context.state.attentionLevel).opacity(0.16), in: Capsule())
+              .foregroundStyle(liveAttentionColor(context.state.attentionLevel))
+          }
+          Text(context.state.status)
+            .font(.title3.bold())
+            .lineLimit(1)
+          Text(context.state.detail)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(2)
+          HStack(spacing: 8) {
+            CountPill(label: "OKs", value: context.state.pendingApprovals)
+            CountPill(label: "Run", value: context.state.busySessions)
+            CountPill(label: "Work", value: context.state.workSignals)
+            Spacer(minLength: 4)
+            Text(context.state.primaryLabel)
+              .font(.caption.bold())
+              .padding(.horizontal, 10)
+              .padding(.vertical, 6)
+              .background(.orange.opacity(0.18), in: Capsule())
+          }
+        }
+        .padding()
+      }
+      .activityBackgroundTint(Color(.secondarySystemBackground))
+      .activitySystemActionForegroundColor(.orange)
+    } dynamicIsland: { context in
+      DynamicIsland {
+        DynamicIslandExpandedRegion(.leading) {
+          Text(context.attributes.workspaceName ?? "Anvil")
+            .font(.caption.bold())
+            .lineLimit(1)
+        }
+        DynamicIslandExpandedRegion(.trailing) {
+          Text(liveAttentionLabel(context.state.attentionLevel))
+            .font(.caption2.bold())
+            .foregroundStyle(liveAttentionColor(context.state.attentionLevel))
+        }
+        DynamicIslandExpandedRegion(.bottom) {
+          VStack(alignment: .leading, spacing: 4) {
+            Text(context.state.status)
+              .font(.headline)
+              .lineLimit(1)
+            Text(context.state.detail)
+              .font(.caption)
+              .foregroundStyle(.secondary)
+              .lineLimit(1)
+          }
+        }
+      } compactLeading: {
+        Text("\\(context.state.pendingApprovals > 0 ? context.state.pendingApprovals : context.state.workSignals)")
+          .font(.caption2.bold())
+          .foregroundStyle(context.state.pendingApprovals > 0 ? .red : liveAttentionColor(context.state.attentionLevel))
+      } compactTrailing: {
+        Text("\\(context.state.busySessions)")
+          .font(.caption2.bold())
+      } minimal: {
+        Circle()
+          .fill(liveAttentionColor(context.state.attentionLevel))
+      }
+      .widgetURL(URL(string: context.state.primaryDestination) ?? workflowUrl("status-sweep"))
+      .keylineTint(liveAttentionColor(context.state.attentionLevel))
+    }
+  }
+}
+
+func liveAttentionLabel(_ level: String) -> String {
+  switch level {
+  case "approval":
+    return "Needs OK"
+  case "working":
+    return "Working"
+  case "setup":
+    return "Setup"
+  default:
+    return "Anvil"
+  }
+}
+
+func liveAttentionColor(_ level: String) -> Color {
+  switch level {
+  case "approval":
+    return .red
+  case "working":
+    return .blue
+  case "setup":
+    return .orange
+  default:
+    return .gray
+  }
 }
 
 func workflowUrl(_ actionId: String) -> URL {
@@ -997,6 +1251,9 @@ func shortActionTitle(_ title: String) -> String {
 struct AnvilWidgetBundle: WidgetBundle {
   var body: some Widget {
     AnvilCommandWidget()
+    if #available(iOSApplicationExtension 16.2, *) {
+      AnvilLiveActivityWidget()
+    }
   }
 }
 `;

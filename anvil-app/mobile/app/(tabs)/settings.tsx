@@ -1,12 +1,16 @@
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
+import type { ComponentProps } from 'react';
 import { useRef, useState } from 'react';
 import { Alert, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from 'expo-camera';
 import {
   ActionButton,
+  AttentionPanel,
   EmptyState,
   Panel,
   ScreenHeader,
+  SignalGrid,
+  SignalTile,
   bodyStyle,
   companionColors,
   inputStyle,
@@ -90,11 +94,56 @@ export default function SettingsScreen() {
       contentInsetAdjustmentBehavior="automatic"
       contentContainerStyle={scrollContentStyle}
     >
-      <ScreenHeader
-        eyebrow="Companion setup"
-        title="Settings"
-        detail="Pair this device with the local Anvil companion server on your Mac."
-      />
+      <ScreenHeader eyebrow={connection ? 'Connected' : 'Not paired'} title="Hosts" />
+
+      <AttentionPanel
+        label="COMPANION SURFACES"
+        title={connection ? 'Phone, widgets, and watch are using this host' : 'Pair a Mac first'}
+        detail={
+          connection
+            ? 'Widgets and Live Activity update from the same host snapshot as this app.'
+            : 'No native surfaces update until the phone has a trusted desktop token.'
+        }
+        tone={connection ? 'green' : 'amber'}
+        right={
+          connection ? (
+            <ActionButton
+              label="Refresh"
+              variant="secondary"
+              onPress={() => void refresh()}
+              style={{ paddingVertical: 8 }}
+            />
+          ) : undefined
+        }
+      >
+        <View style={surfaceGridStyle}>
+          <SurfaceChip icon="phone-iphone" label="App" active={Boolean(connection)} />
+          <SurfaceChip icon="widgets" label="Widget" active={Boolean(connection)} />
+          <SurfaceChip icon="bolt" label="Live Activity" active={Boolean(connection)} />
+          <SurfaceChip icon="watch" label="Watch" active={Boolean(connection)} />
+        </View>
+      </AttentionPanel>
+
+      <SignalGrid>
+        <SignalTile
+          label="Active"
+          value={connection ? 'Yes' : 'No'}
+          detail={connection ? hostLabel(connection.baseUrl) : 'not paired'}
+          tone={connection ? 'green' : 'amber'}
+        />
+        <SignalTile
+          label="Hosts"
+          value={connections.length}
+          detail={connections.length === 1 ? 'paired Mac' : 'paired Macs'}
+          tone={connections.length > 0 ? 'blue' : 'neutral'}
+        />
+        <SignalTile
+          label="Camera"
+          value={permission?.granted ? 'Ready' : 'Ask'}
+          detail="QR pairing"
+          tone={permission?.granted ? 'green' : 'neutral'}
+        />
+      </SignalGrid>
 
       <Panel>
         <View style={panelHeaderStyle}>
@@ -102,10 +151,8 @@ export default function SettingsScreen() {
             <MaterialIcons name="qr-code-scanner" size={18} color={companionColors.accentInk} />
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={titleStyle}>Pairing</Text>
-            <Text style={bodyStyle}>
-              Enable Mobile Companion in Anvil Settings on your Mac, then scan the QR code.
-            </Text>
+            <Text style={titleStyle}>Pair by QR</Text>
+            <Text style={bodyStyle}>Desktop Settings, Mobile Companion.</Text>
           </View>
         </View>
         <TextInput
@@ -115,6 +162,11 @@ export default function SettingsScreen() {
           placeholderTextColor={companionColors.faint}
           style={inputStyle}
         />
+        <View style={pairingStepsStyle}>
+          <PairingStep index="1" label="Open desktop Settings" />
+          <PairingStep index="2" label="Show Mobile Companion QR" />
+          <PairingStep index="3" label="Scan here" />
+        </View>
         {scanning ? (
           <View style={scannerFrameStyle}>
             <CameraView
@@ -142,7 +194,7 @@ export default function SettingsScreen() {
             />
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={titleStyle}>Connection</Text>
+            <Text style={titleStyle}>Active host</Text>
             <Text selectable style={bodyStyle}>
               {connection ? connection.baseUrl : 'No desktop paired'}
             </Text>
@@ -155,10 +207,7 @@ export default function SettingsScreen() {
             onPress={() => void disconnect()}
           />
         ) : (
-          <EmptyState
-            title="Waiting for a Mac"
-            body="Pair by QR code or use a manual token when scanning is not available."
-          />
+          <EmptyState title="Waiting for a Mac" body="Scan a QR code or enter a token." />
         )}
       </Panel>
 
@@ -169,10 +218,7 @@ export default function SettingsScreen() {
           </View>
           <View style={{ flex: 1 }}>
             <Text style={titleStyle}>Paired hosts</Text>
-            <Text style={bodyStyle}>
-              Choose which Mac this companion should control. Everything else follows the selected
-              host.
-            </Text>
+            <Text style={bodyStyle}>Select the Mac to control.</Text>
           </View>
         </View>
         {connections.length > 0 ? (
@@ -222,18 +268,13 @@ export default function SettingsScreen() {
             );
           })
         ) : (
-          <EmptyState
-            title="No hosts paired"
-            body="Scan a desktop pairing code to add the first host."
-          />
+          <EmptyState title="No hosts paired" body="Scan a pairing code." />
         )}
       </Panel>
 
       <Panel>
         <Text style={titleStyle}>Manual connection</Text>
-        <Text style={bodyStyle}>
-          Useful when QR scanning is being fussy. Technology, majestically.
-        </Text>
+        <Text style={bodyStyle}>Base URL and token.</Text>
         <TextInput
           value={manualBaseUrl}
           onChangeText={setManualBaseUrl}
@@ -291,9 +332,41 @@ const iconBoxStyle = {
 const scannerFrameStyle = {
   height: 320,
   overflow: 'hidden' as const,
-  borderRadius: 12,
+  borderRadius: 8,
   borderWidth: 1,
   borderColor: companionColors.border,
+};
+const pairingStepsStyle = {
+  gap: 8,
+  borderWidth: 1,
+  borderColor: companionColors.borderSubtle,
+  borderRadius: 8,
+  backgroundColor: companionColors.surfaceMuted,
+  padding: 10,
+};
+const pairingStepStyle = {
+  flexDirection: 'row' as const,
+  alignItems: 'center' as const,
+  gap: 9,
+};
+const pairingStepIndexStyle = {
+  width: 22,
+  height: 22,
+  alignItems: 'center' as const,
+  justifyContent: 'center' as const,
+  borderRadius: 999,
+  backgroundColor: companionColors.dark,
+};
+const pairingStepIndexTextStyle = {
+  color: companionColors.onDark,
+  fontSize: 12,
+  fontWeight: '900' as const,
+};
+const pairingStepLabelStyle = {
+  color: companionColors.muted,
+  fontSize: 13,
+  fontWeight: '700' as const,
+  flex: 1,
 };
 const refreshLinkStyle = {
   flexDirection: 'row' as const,
@@ -306,14 +379,14 @@ const hostRowStyle = {
   flexDirection: 'row' as const,
   alignItems: 'center' as const,
   gap: 8,
-  borderRadius: 10,
+  borderRadius: 8,
   borderWidth: 1,
   borderColor: companionColors.borderSubtle,
   backgroundColor: companionColors.surface,
   padding: 10,
 };
 const activeHostRowStyle = {
-  borderColor: '#abefc6',
+  borderColor: companionColors.greenBorder,
   backgroundColor: companionColors.greenSoft,
 };
 const hostMainStyle = {
@@ -334,7 +407,7 @@ const forgetButtonStyle = {
   justifyContent: 'center' as const,
   width: 38,
   height: 38,
-  borderRadius: 10,
+  borderRadius: 8,
   backgroundColor: companionColors.redSoft,
 };
 
@@ -345,3 +418,67 @@ function hostLabel(baseUrl: string): string {
     return 'Anvil host';
   }
 }
+
+function PairingStep({ index, label }: { index: string; label: string }) {
+  return (
+    <View style={pairingStepStyle}>
+      <View style={pairingStepIndexStyle}>
+        <Text style={pairingStepIndexTextStyle}>{index}</Text>
+      </View>
+      <Text style={pairingStepLabelStyle}>{label}</Text>
+    </View>
+  );
+}
+
+function SurfaceChip({
+  icon,
+  label,
+  active,
+}: {
+  icon: ComponentProps<typeof MaterialIcons>['name'];
+  label: string;
+  active: boolean;
+}) {
+  return (
+    <View style={[surfaceChipStyle, active && activeSurfaceChipStyle]}>
+      <MaterialIcons
+        name={icon}
+        size={16}
+        color={active ? companionColors.green : companionColors.subtle}
+      />
+      <Text style={[surfaceChipTextStyle, active && activeSurfaceChipTextStyle]}>{label}</Text>
+    </View>
+  );
+}
+
+const surfaceGridStyle = {
+  flexDirection: 'row' as const,
+  flexWrap: 'wrap' as const,
+  gap: 8,
+};
+const surfaceChipStyle = {
+  flexGrow: 1,
+  flexBasis: '45%' as const,
+  flexDirection: 'row' as const,
+  alignItems: 'center' as const,
+  justifyContent: 'center' as const,
+  gap: 7,
+  borderWidth: 1,
+  borderColor: companionColors.borderSubtle,
+  borderRadius: 999,
+  backgroundColor: companionColors.translucentSurface,
+  paddingHorizontal: 10,
+  paddingVertical: 9,
+};
+const activeSurfaceChipStyle = {
+  borderColor: companionColors.greenBorder,
+  backgroundColor: companionColors.translucentGreen,
+};
+const surfaceChipTextStyle = {
+  color: companionColors.subtle,
+  fontSize: 12,
+  fontWeight: '900' as const,
+};
+const activeSurfaceChipTextStyle = {
+  color: companionColors.green,
+};

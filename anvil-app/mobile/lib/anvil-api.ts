@@ -2,15 +2,26 @@ import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 import type {
   ChatMessage,
+  ChatAttachment,
+  ChatAttachmentInput,
+  ChatFileMentionSearchResult,
+  CodexRegisteredSkill,
+  AgentRunSummary,
+  AgentRunSource,
+  AgentRunStatus,
   MobileApprovalRequest,
   MobileChatThreadSummary,
   MobileCompanionClientType,
   MobileCompanionStatus,
   MobileOverview,
   MobilePairingPayload,
+  MobileSendChatMessageInput,
   MobileStartChatInput,
   MobileStartChatResult,
   MobileWorkQueueItem,
+  MobileWorkspaceHealth,
+  MobileWorkspaceSignal,
+  MobileWorkspaceSignalDetail,
   MobileWorkflowDigest,
   MobileWorkflowHealth,
 } from '../../src/shared/types';
@@ -70,6 +81,15 @@ const DEFAULT_WORKFLOW: MobileWorkflowDigest = {
   headline: 'Pair Anvil on your Mac',
   detail: 'Enable Mobile Companion in desktop Settings, then scan the pairing code.',
   counts: DEFAULT_WORKFLOW_COUNTS,
+};
+const DEFAULT_WORKSPACE_HEALTH: MobileWorkspaceHealth = {
+  reviewFindingCount: 0,
+  securityFindingCount: 0,
+  lifecycleItemCount: 0,
+  workItemCount: 0,
+  criticalCount: 0,
+  highCount: 0,
+  signals: [],
 };
 const DEFAULT_COMPANION_STATUS: MobileCompanionStatus = {
   enabled: false,
@@ -214,6 +234,17 @@ export async function fetchOverview(connection: CompanionConnection): Promise<Mo
   return normalizeMobileOverview(await fetchJson(connection, '/api/overview'));
 }
 
+export async function fetchWorkspaceSignalDetail(
+  connection: CompanionConnection,
+  signalId: string,
+): Promise<MobileWorkspaceSignalDetail | null> {
+  const detail = await fetchJson(
+    connection,
+    `/api/workspace-health/signals/${encodeURIComponent(signalId)}`,
+  );
+  return normalizeWorkspaceSignalDetail(detail);
+}
+
 export async function fetchThreads(
   connection: CompanionConnection,
 ): Promise<MobileChatThreadSummary[]> {
@@ -227,16 +258,54 @@ export async function fetchThreadHistory(
   return fetchJson(connection, `/api/chat/threads/${encodeURIComponent(threadId)}/history`);
 }
 
+export function chatAttachmentUrl(connection: CompanionConnection, attachmentId: string): string {
+  const url = new URL(
+    `/api/chat/attachments/${encodeURIComponent(attachmentId)}`,
+    trimBaseUrl(connection.baseUrl),
+  );
+  url.searchParams.set('access_token', connection.token);
+  return url.toString();
+}
+
 export async function sendThreadMessage(
   connection: CompanionConnection,
   threadId: string,
   sessionId: string | undefined,
-  message: string,
+  input: string | MobileSendChatMessageInput,
 ): Promise<void> {
+  const body = typeof input === 'string' ? { sessionId, message: input } : { ...input, sessionId };
   await fetchJson(connection, `/api/chat/threads/${encodeURIComponent(threadId)}/messages`, {
     method: 'POST',
-    body: JSON.stringify({ sessionId, message }),
+    body: JSON.stringify(body),
   });
+}
+
+export async function prepareChatAttachments(
+  connection: CompanionConnection,
+  attachments: ChatAttachmentInput[],
+): Promise<ChatAttachment[]> {
+  return fetchJson(connection, '/api/chat/attachments/prepare', {
+    method: 'POST',
+    body: JSON.stringify({ attachments }),
+  });
+}
+
+export async function searchChatFileMentions(
+  connection: CompanionConnection,
+  input: { repoIds: string[]; query?: string; limit?: number },
+): Promise<ChatFileMentionSearchResult[]> {
+  return fetchJson(connection, '/api/chat/file-mentions/search', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function fetchChatSkills(
+  connection: CompanionConnection,
+  query = '',
+): Promise<CodexRegisteredSkill[]> {
+  const params = query.trim() ? `?query=${encodeURIComponent(query.trim())}` : '';
+  return fetchJson(connection, `/api/chat/skills${params}`);
 }
 
 export async function startWorkflow(
@@ -373,6 +442,9 @@ function normalizeMobileOverview(raw: unknown): MobileOverview {
     overview.pendingApprovals,
   ) as MobileOverview['pendingApprovals'];
   const threads = arrayValue(overview.threads) as MobileOverview['threads'];
+  const recentRuns = arrayValue(overview.recentRuns)
+    .map(normalizeAgentRun)
+    .filter((run): run is AgentRunSummary => Boolean(run));
   const quickActions = arrayValue(overview.quickActions) as MobileOverview['quickActions'];
   const notifications = arrayValue(overview.notifications) as MobileOverview['notifications'];
   const activeWorkspace = isRecord(overview.activeWorkspace)
@@ -400,6 +472,8 @@ function normalizeMobileOverview(raw: unknown): MobileOverview {
     activeSessions,
     pendingApprovals,
     threads,
+    recentRuns,
+    workspaceHealth: normalizeWorkspaceHealth(overview.workspaceHealth),
     workQueue,
     workflow,
     quickActions,
@@ -408,6 +482,144 @@ function normalizeMobileOverview(raw: unknown): MobileOverview {
       : DEFAULT_COMPANION_STATUS,
     notifications,
   };
+}
+
+function normalizeWorkspaceHealth(raw: unknown): MobileWorkspaceHealth {
+  if (!isRecord(raw)) return DEFAULT_WORKSPACE_HEALTH;
+  const signals = arrayValue(raw.signals)
+    .map(normalizeWorkspaceSignal)
+    .filter((signal): signal is MobileWorkspaceSignal => Boolean(signal));
+
+  return {
+    reviewFindingCount: numberValue(raw.reviewFindingCount, 0),
+    securityFindingCount: numberValue(raw.securityFindingCount, 0),
+    lifecycleItemCount: numberValue(raw.lifecycleItemCount, 0),
+    workItemCount: numberValue(raw.workItemCount, 0),
+    criticalCount: numberValue(raw.criticalCount, 0),
+    highCount: numberValue(raw.highCount, 0),
+    signals,
+  };
+}
+
+function normalizeWorkspaceSignal(raw: unknown): MobileWorkspaceSignal | null {
+  if (!isRecord(raw)) return null;
+  const id = stringValue(raw.id, '');
+  const title = stringValue(raw.title, '');
+  if (!id || !title) return null;
+
+  return {
+    id,
+    kind:
+      raw.kind === 'code_review' ||
+      raw.kind === 'security' ||
+      raw.kind === 'lifecycle' ||
+      raw.kind === 'work_item'
+        ? raw.kind
+        : 'work_item',
+    priority:
+      raw.priority === 'critical' ||
+      raw.priority === 'high' ||
+      raw.priority === 'normal' ||
+      raw.priority === 'low'
+        ? raw.priority
+        : 'normal',
+    title,
+    detail: stringValue(raw.detail, ''),
+    statusLabel: stringValue(raw.statusLabel, 'Open'),
+    updatedAt: stringValue(raw.updatedAt, new Date().toISOString()),
+    repoId: optionalString(raw.repoId),
+    repoName: optionalString(raw.repoName),
+    sourceId: optionalString(raw.sourceId),
+    actionId: optionalString(raw.actionId),
+  };
+}
+
+function normalizeWorkspaceSignalDetail(raw: unknown): MobileWorkspaceSignalDetail | null {
+  if (!isRecord(raw)) return null;
+  const signal = normalizeWorkspaceSignal(raw.signal);
+  if (!signal) return null;
+
+  return {
+    signal,
+    summary: optionalString(raw.summary),
+    description: optionalString(raw.description),
+    recommendation: optionalString(raw.recommendation),
+    files: arrayValue(raw.files)
+      .map(normalizeWorkspaceSignalFile)
+      .filter(
+        (file): file is MobileWorkspaceSignalDetail['files'][number] => Boolean(file),
+      ),
+    linkedWorkItemId: optionalString(raw.linkedWorkItemId),
+    provenance: arrayValue(raw.provenance)
+      .map(normalizeWorkspaceSignalProvenance)
+      .filter(
+        (entry): entry is MobileWorkspaceSignalDetail['provenance'][number] => Boolean(entry),
+      ),
+  };
+}
+
+function normalizeWorkspaceSignalFile(
+  raw: unknown,
+): MobileWorkspaceSignalDetail['files'][number] | null {
+  if (!isRecord(raw)) return null;
+  const path = stringValue(raw.path, '');
+  if (!path) return null;
+  const lineStart = numberValue(raw.lineStart, Number.NaN);
+  const lineEnd = numberValue(raw.lineEnd, Number.NaN);
+  return {
+    path,
+    lineStart: Number.isFinite(lineStart) ? lineStart : undefined,
+    lineEnd: Number.isFinite(lineEnd) ? lineEnd : undefined,
+  };
+}
+
+function normalizeWorkspaceSignalProvenance(
+  raw: unknown,
+): MobileWorkspaceSignalDetail['provenance'][number] | null {
+  if (!isRecord(raw)) return null;
+  const label = stringValue(raw.label, '');
+  const value = stringValue(raw.value, '');
+  if (!label || !value) return null;
+  return { label, value };
+}
+
+function normalizeAgentRun(raw: unknown): AgentRunSummary | null {
+  if (!isRecord(raw)) return null;
+  const id = stringValue(raw.id, '');
+  const title = stringValue(raw.title, '');
+  if (!id || !title) return null;
+
+  return {
+    id,
+    source: normalizeAgentRunSource(raw.source),
+    title,
+    status: normalizeAgentRunStatus(raw.status),
+    workspaceId: optionalString(raw.workspaceId),
+    repoIds: arrayValue(raw.repoIds).filter((repoId): repoId is string => typeof repoId === 'string'),
+    threadId: optionalString(raw.threadId),
+    sessionId: optionalString(raw.sessionId),
+    automationId: optionalString(raw.automationId),
+    reviewId: optionalString(raw.reviewId),
+    startedAt: stringValue(raw.startedAt, new Date().toISOString()),
+    completedAt: optionalString(raw.completedAt),
+    summary: optionalString(raw.summary),
+    changedFileCount: numberValue(raw.changedFileCount, 0),
+    evidenceCount: numberValue(raw.evidenceCount, 0),
+  };
+}
+
+function normalizeAgentRunSource(value: unknown): AgentRunSource {
+  return value === 'automation' || value === 'code_review' || value === 'chat' ? value : 'chat';
+}
+
+function normalizeAgentRunStatus(value: unknown): AgentRunStatus {
+  return value === 'queued' ||
+    value === 'running' ||
+    value === 'completed' ||
+    value === 'failed' ||
+    value === 'cancelled'
+    ? value
+    : 'running';
 }
 
 function normalizeWorkQueue(
@@ -716,13 +928,21 @@ function hostLabelFromBaseUrl(baseUrl: string): string {
 }
 
 async function getStoredValue(key: string): Promise<string | null> {
-  if (hasSecureStore()) return SecureStore.getItemAsync(key);
-  return getBrowserStorage()?.getItem(key) ?? null;
+  if (!hasSecureStore()) return getBrowserStorage()?.getItem(key) ?? null;
+  try {
+    return await SecureStore.getItemAsync(key);
+  } catch {
+    return null;
+  }
 }
 
 async function setStoredValue(key: string, value: string): Promise<void> {
   if (hasSecureStore()) {
-    await SecureStore.setItemAsync(key, value);
+    try {
+      await SecureStore.setItemAsync(key, value);
+    } catch {
+      throw new Error('Secure storage is unavailable in this build, so pairing cannot be saved.');
+    }
     return;
   }
   getBrowserStorage()?.setItem(key, value);
@@ -730,7 +950,11 @@ async function setStoredValue(key: string, value: string): Promise<void> {
 
 async function deleteStoredValue(key: string): Promise<void> {
   if (hasSecureStore()) {
-    await SecureStore.deleteItemAsync(key);
+    try {
+      await SecureStore.deleteItemAsync(key);
+    } catch {
+      return;
+    }
     return;
   }
   getBrowserStorage()?.removeItem(key);

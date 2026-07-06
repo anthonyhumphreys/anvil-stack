@@ -2,12 +2,17 @@ import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import { RefreshControl, ScrollView, Text, View } from 'react-native';
 import {
   ActionButton,
+  AttentionPanel,
+  BlockedNotice,
   EmptyState,
   Panel,
   ScreenHeader,
+  SignalGrid,
+  SignalTile,
   StatusPill,
   bodyStyle,
   companionColors,
+  monoStyle,
   screenStyle,
   scrollContentStyle,
   subtleStyle,
@@ -17,8 +22,18 @@ import { useCompanion } from '@/contexts/companion-context';
 import type { CompanionApprovalRisk, MobileApprovalRequest } from '../../../src/shared/types';
 
 export default function ApprovalsScreen() {
-  const { overview, loading, refresh, resolve } = useCompanion();
+  const { overview, loading, refresh, resolve, openOnDesktop } = useCompanion();
   const approvals = overview?.pendingApprovals ?? [];
+  const desktopOnlyCount = approvals.filter(
+    (approval) => approval.policy?.requiresFullReview,
+  ).length;
+  const commandCount = approvals.filter((approval) => approval.kind === 'command').length;
+  const highRiskCount = approvals.filter(
+    (approval) => approval.policy?.risk === 'high' || approval.policy?.risk === 'destructive',
+  ).length;
+  const leadApproval =
+    approvals.find((approval) => approval.policy?.requiresFullReview) ?? approvals[0];
+  const attentionTone = desktopOnlyCount > 0 ? 'red' : approvals.length > 0 ? 'amber' : 'green';
 
   return (
     <ScrollView
@@ -27,17 +42,52 @@ export default function ApprovalsScreen() {
       refreshControl={<RefreshControl refreshing={loading} onRefresh={refresh} />}
       contentContainerStyle={scrollContentStyle}
     >
-      <ScreenHeader
-        eyebrow="Permission queue"
-        title="Approvals"
-        detail="Approve the narrow thing, approve the session, or decline before a local agent treats a local workflow like production."
+      <ScreenHeader eyebrow={`${approvals.length} pending`} title="Approvals" />
+
+      <AttentionPanel
+        label={desktopOnlyCount > 0 ? 'MAC REVIEW REQUIRED' : 'DECISION QUEUE'}
+        title={approvalHeadline(approvals.length, desktopOnlyCount)}
+        detail={
+          leadApproval
+            ? approvalSummary(leadApproval)
+            : 'No commands or file grants are waiting on this device.'
+        }
+        tone={attentionTone}
+        right={
+          desktopOnlyCount > 0 ? (
+            <ActionButton
+              label="Open Mac"
+              variant="secondary"
+              onPress={openOnDesktop}
+              style={{ paddingVertical: 8 }}
+            />
+          ) : undefined
+        }
       />
 
-      {approvals.length === 0 ? (
-        <EmptyState
-          title="Nothing waiting"
-          body="No pending Codex approvals. Suspiciously peaceful."
+      <SignalGrid>
+        <SignalTile
+          label="Pending"
+          value={approvals.length}
+          detail={approvals.length === 1 ? 'request' : 'requests'}
+          tone={approvals.length > 0 ? 'amber' : 'green'}
         />
+        <SignalTile
+          label="Commands"
+          value={commandCount}
+          detail="terminal"
+          tone={commandCount > 0 ? 'blue' : 'neutral'}
+        />
+        <SignalTile
+          label="Desktop"
+          value={desktopOnlyCount}
+          detail={highRiskCount > 0 ? `${highRiskCount} high risk` : 'review'}
+          tone={desktopOnlyCount > 0 ? 'red' : 'neutral'}
+        />
+      </SignalGrid>
+
+      {approvals.length === 0 ? (
+        <EmptyState title="Nothing waiting" body="No commands or file grants need a decision." />
       ) : (
         approvals.map((approval) => (
           <ApprovalCard
@@ -63,7 +113,7 @@ function ApprovalCard({
   const riskTone = riskPillTone(policy?.risk);
 
   return (
-    <Panel>
+    <Panel style={policy?.requiresFullReview ? desktopReviewPanelStyle : undefined}>
       <View style={cardHeaderStyle}>
         <View style={approvalIconStyle}>
           <MaterialIcons
@@ -73,7 +123,7 @@ function ApprovalCard({
           />
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={titleStyle}>{isCommand ? 'Command approval' : 'File change approval'}</Text>
+          <Text style={titleStyle}>{isCommand ? 'Command' : 'File access'}</Text>
           <Text style={subtleStyle}>
             {approval.createdAt ? 'Pending decision' : 'Needs review'}
           </Text>
@@ -117,19 +167,27 @@ function ApprovalCard({
         </Text>
       )}
 
+      {policy?.requiresFullReview && (
+        <BlockedNotice body="Review on Mac before approving. Mobile can decline this request, not bless it." />
+      )}
+
       <View style={buttonGridStyle}>
-        <ActionButton
-          label="Approve"
-          variant="success"
-          onPress={() => onDecision('accept')}
-          style={{ flexGrow: 1 }}
-        />
-        <ActionButton
-          label="For session"
-          variant="secondary"
-          onPress={() => onDecision('acceptForSession')}
-          style={{ flexGrow: 1 }}
-        />
+        {!policy?.requiresFullReview && (
+          <>
+            <ActionButton
+              label="Approve once"
+              variant="success"
+              onPress={() => onDecision('accept')}
+              style={{ flexGrow: 1 }}
+            />
+            <ActionButton
+              label="For session"
+              variant="secondary"
+              onPress={() => onDecision('acceptForSession')}
+              style={{ flexGrow: 1 }}
+            />
+          </>
+        )}
         <ActionButton
           label="Decline"
           variant="danger"
@@ -151,10 +209,32 @@ function riskPillTone(risk?: CompanionApprovalRisk) {
   return { color: companionColors.red, background: companionColors.redSoft };
 }
 
+function approvalHeadline(total: number, desktopOnlyCount: number): string {
+  if (total === 0) return 'Clear';
+  if (desktopOnlyCount > 0) {
+    return `${desktopOnlyCount} ${desktopOnlyCount === 1 ? 'request needs' : 'requests need'} the Mac`;
+  }
+  return `${total} ${total === 1 ? 'request' : 'requests'} can be decided here`;
+}
+
+function approvalSummary(approval: MobileApprovalRequest): string {
+  const target =
+    approval.kind === 'command'
+      ? approval.command || 'Command requested'
+      : approval.grantRoot || 'File access requested';
+  const repo = approval.repoName ? ` / ${approval.repoName}` : '';
+  const risk = approval.policy?.risk ? `${approval.policy.risk} risk / ` : '';
+  return `${risk}${target}${repo}`;
+}
+
 const cardHeaderStyle = {
   flexDirection: 'row' as const,
   alignItems: 'center' as const,
   gap: 12,
+};
+const desktopReviewPanelStyle = {
+  borderColor: companionColors.redBorder,
+  backgroundColor: companionColors.redSoft,
 };
 const approvalIconStyle = {
   alignItems: 'center' as const,
@@ -163,16 +243,6 @@ const approvalIconStyle = {
   height: 38,
   borderRadius: 10,
   backgroundColor: companionColors.accentSoft,
-};
-const monoStyle = {
-  color: companionColors.ink,
-  fontFamily: 'Menlo',
-  fontSize: 13,
-  backgroundColor: companionColors.surfaceMuted,
-  borderColor: companionColors.borderSubtle,
-  borderWidth: 1,
-  padding: 10,
-  borderRadius: 10,
 };
 const buttonGridStyle = {
   flexDirection: 'row' as const,

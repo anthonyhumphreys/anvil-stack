@@ -1,28 +1,37 @@
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
+import { router, type RelativePathString } from 'expo-router';
 import { useMemo, useState, type ComponentProps } from 'react';
 import { RefreshControl, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import {
   ActionButton,
+  AttentionPanel,
   EmptyState,
   Panel,
   ScreenHeader,
   SectionHeader,
+  SignalGrid,
+  SignalTile,
   StatusPill,
   bodyStyle,
   companionColors,
   inputStyle,
+  monoStyle,
   screenStyle,
   scrollContentStyle,
   subtleStyle,
   titleStyle,
+  type CompanionColor,
 } from '@/components/companion-ui';
 import { useCompanion } from '@/contexts/companion-context';
 import type {
+  AgentRunStatus,
+  AgentRunSummary,
   CodexSession,
   MobileApprovalRequest,
   MobileQuickAction,
   MobileStartChatInput,
   MobileWorkQueueItem,
+  MobileWorkspaceSignal,
   MobileWorkflowHealth,
   RepoInfo,
 } from '../../../src/shared/types';
@@ -32,7 +41,7 @@ type IconName = ComponentProps<typeof MaterialIcons>['name'];
 
 const HEALTH_COPY: Record<
   MobileWorkflowHealth,
-  { label: string; color: string; background: string; icon: IconName }
+  { label: string; color: CompanionColor; background: CompanionColor; icon: IconName }
 > = {
   'needs-approval': {
     label: 'Needs approval',
@@ -55,7 +64,7 @@ const HEALTH_COPY: Record<
   idle: {
     label: 'Ready to launch',
     color: companionColors.muted,
-    background: '#f2f4f7',
+    background: companionColors.surfaceMuted,
     icon: 'play-arrow',
   },
   unconfigured: {
@@ -106,7 +115,34 @@ export default function WorkScreen() {
   const approvals = overview?.pendingApprovals ?? [];
   const activeSessions = overview?.activeSessions ?? [];
   const quickActions = overview?.quickActions ?? [];
+  const recentRuns = overview?.recentRuns ?? [];
+  const workspaceHealth = overview?.workspaceHealth;
   const canLaunch = Boolean(connection && activeWorkspace && launchRepoIds.length > 0);
+  const topQueueItem = workQueue[0];
+  const attentionTone = workflow ? healthTone(workflow.health) : 'amber';
+  const primaryActionLabel =
+    approvals.length > 0
+      ? 'Review'
+      : topQueueItem?.threadId
+        ? 'Open thread'
+        : connection
+          ? 'Open Mac'
+          : 'Pair';
+  const primaryAction = () => {
+    if (approvals.length > 0) {
+      router.navigate('/(tabs)/approvals');
+      return;
+    }
+    if (topQueueItem?.threadId) {
+      router.push(threadHref(topQueueItem.threadId));
+      return;
+    }
+    if (connection) {
+      void openOnDesktop();
+      return;
+    }
+    router.navigate('/(tabs)/settings');
+  };
 
   const launchInput = (
     input: Omit<MobileStartChatInput, 'workspaceId' | 'repoIds'>,
@@ -164,11 +200,8 @@ export default function WorkScreen() {
       contentContainerStyle={scrollContentStyle}
     >
       <ScreenHeader
-        eyebrow="Anvil companion"
-        title="Work"
-        detail={
-          connection ? hostDetail(connection) : 'Pair your Mac to launch and steer local agents.'
-        }
+        eyebrow={activeWorkspace?.name ?? 'No workspace'}
+        title="Home"
         right={
           <StatusPill label={health.label} color={health.color} background={health.background} />
         }
@@ -194,6 +227,136 @@ export default function WorkScreen() {
         </View>
       )}
 
+      <AttentionPanel
+        label={live ? 'LIVE COMPANION' : connection ? 'COMPANION' : 'SETUP'}
+        title={homeHeadline(workflow?.headline, topQueueItem)}
+        detail={
+          homeDetail(workflow?.detail, activeWorkspace?.name, topQueueItem) ??
+          'Scan the desktop pairing QR, then use this phone for approvals, handoffs, and quick starts.'
+        }
+        tone={attentionTone}
+        right={
+          <ActionButton
+            label={primaryActionLabel}
+            variant={approvals.length > 0 ? 'danger' : 'secondary'}
+            onPress={primaryAction}
+            style={{ paddingVertical: 8 }}
+          />
+        }
+      >
+        {topQueueItem ? (
+          <TouchableOpacity
+            activeOpacity={0.76}
+            onPress={() =>
+              topQueueItem.kind === 'approval'
+                ? router.navigate('/(tabs)/approvals')
+                : topQueueItem.threadId
+                  ? router.push(threadHref(topQueueItem.threadId))
+                  : router.navigate('/(tabs)/chats')
+            }
+            style={nextActionStyle}
+          >
+            <View style={nextActionIconStyle}>
+              <MaterialIcons
+                name={queueIcon(topQueueItem)}
+                size={17}
+                color={companionColors.ink}
+              />
+            </View>
+            <View style={{ flex: 1, gap: 2 }}>
+              <Text numberOfLines={1} style={nextActionTitleStyle}>
+                {topQueueItem.title}
+              </Text>
+              <Text numberOfLines={1} style={nextActionDetailStyle}>
+                {topQueueItem.statusLabel} / {relativeTime(topQueueItem.updatedAt)}
+              </Text>
+            </View>
+            <MaterialIcons name="chevron-right" size={20} color={companionColors.subtle} />
+          </TouchableOpacity>
+        ) : (
+          <View style={nextActionStyle}>
+            <View style={nextActionIconStyle}>
+              <MaterialIcons name="done-all" size={17} color={companionColors.green} />
+            </View>
+            <View style={{ flex: 1, gap: 2 }}>
+              <Text style={nextActionTitleStyle}>Clear</Text>
+              <Text style={nextActionDetailStyle}>
+                Launch a run, resume a thread, or leave it alone.
+              </Text>
+            </View>
+          </View>
+        )}
+      </AttentionPanel>
+
+      <SignalGrid>
+        <SignalTile
+          label="Needs"
+          value={workflow?.counts?.pendingApprovals ?? 0}
+          detail={approvals.length > 0 ? 'decisions' : 'clear'}
+          tone={approvals.length > 0 ? 'red' : 'green'}
+          onPress={() => router.navigate('/(tabs)/approvals')}
+        />
+        <SignalTile
+          label="Running"
+          value={workflow?.counts?.busySessions ?? 0}
+          detail={activeSessions.length > 0 ? 'in progress' : 'idle'}
+          tone={activeSessions.length > 0 ? 'blue' : 'neutral'}
+        />
+        <SignalTile
+          label="Threads"
+          value={workflow?.counts?.recentThreads ?? overview?.threads.length ?? 0}
+          detail="recent"
+          tone="cyan"
+          onPress={() => router.navigate('/(tabs)/chats')}
+        />
+      </SignalGrid>
+
+      <View style={sectionStyle}>
+        <SectionHeader title="Workspace health" />
+        <SignalGrid>
+          <SignalTile
+            label="Review"
+            value={workspaceHealth?.reviewFindingCount ?? 0}
+            detail="findings"
+            tone={(workspaceHealth?.reviewFindingCount ?? 0) > 0 ? 'amber' : 'green'}
+          />
+          <SignalTile
+            label="Security"
+            value={workspaceHealth?.securityFindingCount ?? 0}
+            detail={
+              (workspaceHealth?.criticalCount ?? 0) > 0
+                ? `${workspaceHealth?.criticalCount} critical`
+                : 'findings'
+            }
+            tone={(workspaceHealth?.securityFindingCount ?? 0) > 0 ? 'red' : 'green'}
+          />
+          <SignalTile
+            label="Work"
+            value={(workspaceHealth?.lifecycleItemCount ?? 0) + (workspaceHealth?.workItemCount ?? 0)}
+            detail="tracked"
+            tone={(workspaceHealth?.lifecycleItemCount ?? 0) > 0 ? 'purple' : 'neutral'}
+          />
+        </SignalGrid>
+        {workspaceHealth?.signals.length ? (
+          workspaceHealth.signals.slice(0, 4).map((signal) => (
+            <WorkspaceSignalCard
+              key={signal.id}
+              signal={signal}
+              onPress={() => router.push(healthSignalHref(signal.id))}
+            />
+          ))
+        ) : (
+          <EmptyState
+            title="No open signals"
+            body={
+              activeWorkspace
+                ? 'No review findings, security findings, or tracked work need attention.'
+                : 'Pair a Mac and choose a workspace to load health signals.'
+            }
+          />
+        )}
+      </View>
+
       {error && (
         <Panel tone="danger">
           <Text selectable style={{ color: companionColors.red, fontWeight: '800' }}>
@@ -204,7 +367,7 @@ export default function WorkScreen() {
 
       {connections.length > 1 && (
         <View style={sectionStyle}>
-          <SectionHeader title="Hosts" detail="Pick the desktop that owns this run." />
+          <SectionHeader title="Hosts" />
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
@@ -225,9 +388,9 @@ export default function WorkScreen() {
       <Panel tone="dark" style={launchPanelStyle}>
         <View style={launchHeaderStyle}>
           <View style={{ flex: 1, gap: 4 }}>
-            <Text style={darkEyebrowStyle}>Active workspace</Text>
+            <Text style={darkEyebrowStyle}>COMMAND</Text>
             <Text style={workspaceTitleStyle}>
-              {activeWorkspace?.name ?? 'No active workspace'}
+              {activeWorkspace?.name ?? 'Choose a workspace on Mac'}
             </Text>
           </View>
           <View style={heroStatusIconStyle}>
@@ -235,56 +398,91 @@ export default function WorkScreen() {
           </View>
         </View>
 
-        <Text style={heroHeadlineStyle}>{workflow?.headline ?? 'Pair Anvil on your Mac'}</Text>
-        <Text style={heroDetailStyle}>
-          {workflow?.detail ??
-            'Enable Mobile Companion in desktop Settings, then scan the pairing code.'}
-        </Text>
-
-        <View style={metricGridStyle}>
-          <MetricChip label="Needs you" value={workflow?.counts?.pendingApprovals ?? 0} />
-          <MetricChip label="Working" value={workflow?.counts?.busySessions ?? 0} />
-          <MetricChip label="Repos" value={workflow?.counts?.workspaceRepos ?? 0} />
-        </View>
-
-        <View style={modeRowStyle}>
-          <ModeButton active={planFirst} label="Plan" onPress={() => setPlanFirst(true)} />
-          <ModeButton active={!planFirst} label="Execute" onPress={() => setPlanFirst(false)} />
-        </View>
-
-        {repos.length > 0 && (
-          <RepoPicker
-            repos={repos}
-            selectedRepoIds={effectiveSelectedRepoIds}
-            onSelectAll={() => setSelectedRepoIds([])}
-            onToggleRepo={toggleRepo}
+        <View style={consoleStripStyle}>
+          <ConsoleFact label="Mode" value={planFirst ? 'Plan first' : 'Execute'} />
+          <ConsoleFact
+            label="Scope"
+            value={
+              launchRepoIds.length === repos.length
+                ? 'All repos'
+                : `${launchRepoIds.length} repo${launchRepoIds.length === 1 ? '' : 's'}`
+            }
           />
-        )}
+          <ConsoleFact
+            label="Queue"
+            value={`${workQueue.length} item${workQueue.length === 1 ? '' : 's'}`}
+          />
+        </View>
 
-        <TextInput
-          value={draft}
-          onChangeText={setDraft}
-          placeholder="Ask Anvil to review, test, investigate, or prepare a handoff..."
-          placeholderTextColor="#98a2b3"
-          multiline
-          style={darkInputStyle}
-        />
-        <ActionButton
-          label={
-            launchingActionId === 'custom' ? 'Launching...' : planFirst ? 'Start plan' : 'Start run'
-          }
-          onPress={() => void launchDraft()}
-          disabled={!draft.trim() || !canLaunch || Boolean(launchingActionId)}
-          style={{ backgroundColor: companionColors.accent, borderColor: companionColors.accent }}
-          textStyle={{ color: companionColors.dark }}
-        />
+        {canLaunch ? (
+          <>
+            <View style={modeRowStyle}>
+              <ModeButton active={planFirst} label="Plan" onPress={() => setPlanFirst(true)} />
+              <ModeButton active={!planFirst} label="Execute" onPress={() => setPlanFirst(false)} />
+            </View>
+
+            {repos.length > 0 && (
+              <RepoPicker
+                repos={repos}
+                selectedRepoIds={effectiveSelectedRepoIds}
+                onSelectAll={() => setSelectedRepoIds([])}
+                onToggleRepo={toggleRepo}
+              />
+            )}
+
+            <TextInput
+              value={draft}
+              onChangeText={setDraft}
+              placeholder="Review the current diff, find risk, write the next step..."
+              placeholderTextColor={companionColors.darkMuted}
+              multiline
+              style={darkInputStyle}
+            />
+            <ActionButton
+              label={
+                launchingActionId === 'custom'
+                  ? 'Launching...'
+                  : planFirst
+                    ? 'Start plan'
+                    : 'Start run'
+              }
+              onPress={() => void launchDraft()}
+              disabled={!draft.trim() || Boolean(launchingActionId)}
+              style={{ backgroundColor: companionColors.accent, borderColor: companionColors.accent }}
+              textStyle={{ color: companionColors.dark }}
+            />
+          </>
+        ) : (
+          <View style={setupNoticeStyle}>
+            <MaterialIcons
+              name={connection ? 'workspaces' : 'qr-code-scanner'}
+              size={19}
+              color={companionColors.accent}
+            />
+            <View style={{ flex: 1, gap: 4 }}>
+              <Text style={setupNoticeTitleStyle}>
+                {connection ? 'Choose a workspace on Mac' : 'Pair a Mac first'}
+              </Text>
+              <Text style={setupNoticeBodyStyle}>
+                {connection
+                  ? 'Remote runs need an active workspace with at least one repo.'
+                  : 'Pairing unlocks chat, reviews, approvals, widgets, and handoff actions.'}
+              </Text>
+            </View>
+            <ActionButton
+              label={connection ? 'Open Mac' : 'Settings'}
+              variant="secondary"
+              onPress={() =>
+                connection ? void openOnDesktop() : router.navigate('/(tabs)/settings')
+              }
+              style={{ paddingVertical: 8 }}
+            />
+          </View>
+        )}
       </Panel>
 
       <View style={sectionStyle}>
-        <SectionHeader
-          title="Quick starts"
-          detail="Plan-first by default; execute only when you mean it."
-        />
+        <SectionHeader title="Quick starts" />
         <View style={quickActionGridStyle}>
           {quickActions.map((action) => (
             <QuickActionButton
@@ -296,10 +494,28 @@ export default function WorkScreen() {
             />
           ))}
         </View>
-        {!connection && (
+        {!connection && <EmptyState title="No host" body="Pair a Mac in Settings." />}
+      </View>
+
+      <View style={sectionStyle}>
+        <SectionHeader title="Recent work" count={recentRuns.length} />
+        {recentRuns.length > 0 ? (
+          recentRuns.slice(0, 6).map((run) => (
+            <ActivityRunCard
+              key={run.id}
+              run={run}
+              onOpenThread={(threadId) => router.push(threadHref(threadId))}
+              onOpenDesktop={openOnDesktop}
+            />
+          ))
+        ) : (
           <EmptyState
-            title="Pair before launching"
-            body="Remote launches need a local Anvil desktop session to drive."
+            title="No runs yet"
+            body={
+              activeWorkspace
+                ? 'Start a review, security sweep, or chat run from this phone.'
+                : 'Choose a workspace on the Mac first.'
+            }
           />
         )}
       </View>
@@ -316,16 +532,107 @@ export default function WorkScreen() {
               onResolve={(approval, decision) => void resolve(approval, decision)}
               onInterrupt={(sessionId) => void interrupt(sessionId)}
               onOpenDesktop={openOnDesktop}
+              onOpenThread={(threadId) => router.push(threadHref(threadId))}
             />
           ))
         ) : (
-          <EmptyState
-            title="Nothing active"
-            body="Start a plan, kick off a review, or enjoy the suspicious calm."
-          />
+          <EmptyState title="Clear" body="No active runs or pending decisions." />
         )}
       </View>
     </ScrollView>
+  );
+}
+
+function ActivityRunCard({
+  run,
+  onOpenThread,
+  onOpenDesktop,
+}: {
+  run: AgentRunSummary;
+  onOpenThread: (threadId: string) => void;
+  onOpenDesktop: () => void;
+}) {
+  const tone = RUN_STATUS_TONES[run.status];
+  const source = runSource(run);
+
+  return (
+    <TouchableOpacity
+      activeOpacity={0.78}
+      onPress={() => (run.threadId ? onOpenThread(run.threadId) : onOpenDesktop())}
+      style={activityRunStyle}
+    >
+      <View style={[activityIconStyle, { backgroundColor: source.background }]}>
+        <MaterialIcons name={source.icon} size={18} color={source.color} />
+      </View>
+      <View style={{ flex: 1, gap: 5 }}>
+        <View style={activityRunTopStyle}>
+          <Text numberOfLines={1} style={[titleStyle, { flex: 1 }]}>
+            {run.title}
+          </Text>
+          <StatusPill
+            label={runStatusLabel(run.status)}
+            color={tone.color}
+            background={tone.background}
+          />
+        </View>
+        {run.summary && (
+          <Text numberOfLines={2} style={bodyStyle}>
+            {run.summary}
+          </Text>
+        )}
+        <View style={activityMetaRowStyle}>
+          <MetadataChip icon={source.icon} label={source.label} />
+          <MetadataChip icon="edit-note" label={`${run.changedFileCount} files`} />
+          <MetadataChip icon="fact-check" label={`${run.evidenceCount} evidence`} />
+          <MetadataChip icon="schedule" label={relativeTime(run.startedAt)} />
+        </View>
+      </View>
+      <MaterialIcons
+        name={run.threadId ? 'chevron-right' : 'desktop-windows'}
+        size={20}
+        color={companionColors.subtle}
+      />
+    </TouchableOpacity>
+  );
+}
+
+function WorkspaceSignalCard({
+  signal,
+  onPress,
+}: {
+  signal: MobileWorkspaceSignal;
+  onPress: () => void;
+}) {
+  const tone = QUEUE_TONES[signal.priority];
+  const source = signalSource(signal);
+
+  return (
+    <TouchableOpacity
+      activeOpacity={0.78}
+      onPress={onPress}
+      style={workspaceSignalStyle}
+    >
+      <View style={[workspaceSignalIconStyle, { backgroundColor: source.background }]}>
+        <MaterialIcons name={source.icon} size={18} color={source.color} />
+      </View>
+      <View style={{ flex: 1, gap: 5 }}>
+        <View style={activityRunTopStyle}>
+          <Text numberOfLines={1} style={[titleStyle, { flex: 1 }]}>
+            {signal.title}
+          </Text>
+          <StatusPill label={signal.statusLabel} color={tone.color} background={tone.background} />
+        </View>
+        <Text numberOfLines={2} style={bodyStyle}>
+          {signal.detail || source.label}
+        </Text>
+        <View style={activityMetaRowStyle}>
+          <MetadataChip icon={source.icon} label={source.label} />
+          {signal.repoName && <MetadataChip icon="folder" label={signal.repoName} />}
+          <MetadataChip icon="schedule" label={relativeTime(signal.updatedAt)} />
+        </View>
+      </View>
+      <MaterialIcons name="chevron-right" size={20} color={companionColors.subtle} />
+    </TouchableOpacity>
   );
 }
 
@@ -385,7 +692,11 @@ function RepoPicker({
           onPress={onSelectAll}
           style={[repoChipStyle, allSelected && selectedRepoChipStyle]}
         >
-          <MaterialIcons name="select-all" size={16} color={allSelected ? '#fcfcfd' : '#98a2b3'} />
+          <MaterialIcons
+            name="select-all"
+            size={16}
+            color={allSelected ? companionColors.onDark : companionColors.darkMuted}
+          />
           <Text style={[repoChipTextStyle, allSelected && selectedRepoChipTextStyle]}>
             All repos
           </Text>
@@ -401,7 +712,7 @@ function RepoPicker({
               <MaterialIcons
                 name={selected ? 'check-circle' : 'folder'}
                 size={16}
-                color={selected ? '#fcfcfd' : '#98a2b3'}
+                color={selected ? companionColors.onDark : companionColors.darkMuted}
               />
               <Text
                 numberOfLines={1}
@@ -433,11 +744,13 @@ function ModeButton({
   );
 }
 
-function MetricChip({ label, value }: { label: string; value: number }) {
+function ConsoleFact({ label, value }: { label: string; value: string }) {
   return (
-    <View style={metricChipStyle}>
-      <Text style={metricLabelStyle}>{label}</Text>
-      <Text style={metricValueStyle}>{value}</Text>
+    <View style={consoleFactStyle}>
+      <Text style={consoleFactLabelStyle}>{label}</Text>
+      <Text numberOfLines={1} style={consoleFactValueStyle}>
+        {value}
+      </Text>
     </View>
   );
 }
@@ -471,12 +784,15 @@ function QuickActionButton({
       <View style={[actionIconStyle, { backgroundColor: tone.iconBackground }]}>
         <MaterialIcons name={loading ? 'hourglass-top' : icon} size={18} color={tone.text} />
       </View>
-      <Text numberOfLines={1} style={[titleStyle, { color: tone.text }]}>
-        {action.title}
-      </Text>
-      <Text numberOfLines={2} style={subtleStyle}>
-        {action.subtitle}
-      </Text>
+      <View style={{ flex: 1, gap: 3 }}>
+        <Text numberOfLines={1} style={[titleStyle, { color: tone.text }]}>
+          {action.title}
+        </Text>
+        <Text numberOfLines={2} style={subtleStyle}>
+          {action.subtitle}
+        </Text>
+      </View>
+      <MaterialIcons name="chevron-right" size={20} color={tone.text} />
     </TouchableOpacity>
   );
 }
@@ -488,6 +804,7 @@ function WorkQueueCard({
   onResolve,
   onInterrupt,
   onOpenDesktop,
+  onOpenThread,
 }: {
   item: MobileWorkQueueItem;
   approval?: MobileApprovalRequest;
@@ -498,6 +815,7 @@ function WorkQueueCard({
   ) => void;
   onInterrupt: (sessionId: string) => void;
   onOpenDesktop: () => void;
+  onOpenThread: (threadId: string) => void;
 }) {
   const tone = QUEUE_TONES[item.priority];
   const busy = session?.status === 'busy' || session?.status === 'starting';
@@ -559,17 +877,23 @@ function WorkQueueCard({
         )}
         {item.kind === 'session' && item.sessionId && (
           <ActionButton
-            label={busy ? 'Interrupt' : 'Open Mac'}
+            label={busy ? 'Interrupt' : item.threadId ? 'Open thread' : 'Open Mac'}
             variant={busy ? 'danger' : 'secondary'}
-            onPress={() => (busy ? onInterrupt(item.sessionId!) : onOpenDesktop())}
+            onPress={() =>
+              busy
+                ? onInterrupt(item.sessionId!)
+                : item.threadId
+                  ? onOpenThread(item.threadId)
+                  : onOpenDesktop()
+            }
             style={{ flexGrow: 1 }}
           />
         )}
         {item.kind === 'thread' && (
           <ActionButton
-            label="Open Mac"
+            label={item.threadId ? 'Open thread' : 'Open Mac'}
             variant="secondary"
-            onPress={onOpenDesktop}
+            onPress={() => (item.threadId ? onOpenThread(item.threadId) : onOpenDesktop())}
             style={{ flexGrow: 1 }}
           />
         )}
@@ -640,13 +964,113 @@ function queueIcon(item: MobileWorkQueueItem): IconName {
   return 'forum';
 }
 
+function runSource(run: AgentRunSummary): {
+  label: string;
+  icon: IconName;
+  color: CompanionColor;
+  background: CompanionColor;
+} {
+  if (run.source === 'automation') {
+    return {
+      label: 'automation',
+      icon: 'precision-manufacturing',
+      color: companionColors.purple,
+      background: companionColors.purpleSoft,
+    };
+  }
+  if (run.source === 'code_review') {
+    return {
+      label: 'code review',
+      icon: 'rate-review',
+      color: companionColors.accentInk,
+      background: companionColors.accentSoft,
+    };
+  }
+  return {
+    label: 'chat',
+    icon: 'forum',
+    color: companionColors.blue,
+    background: companionColors.blueSoft,
+  };
+}
+
+function signalSource(signal: MobileWorkspaceSignal): {
+  label: string;
+  icon: IconName;
+  color: CompanionColor;
+  background: CompanionColor;
+} {
+  if (signal.kind === 'security') {
+    return {
+      label: 'security',
+      icon: 'shield',
+      color: companionColors.red,
+      background: companionColors.redSoft,
+    };
+  }
+  if (signal.kind === 'code_review') {
+    return {
+      label: 'code review',
+      icon: 'rate-review',
+      color: companionColors.accentInk,
+      background: companionColors.accentSoft,
+    };
+  }
+  if (signal.kind === 'lifecycle') {
+    return {
+      label: 'lifecycle',
+      icon: 'account-tree',
+      color: companionColors.purple,
+      background: companionColors.purpleSoft,
+    };
+  }
+  return {
+    label: 'work item',
+    icon: 'assignment',
+    color: companionColors.blue,
+    background: companionColors.blueSoft,
+  };
+}
+
+function runStatusLabel(status: AgentRunStatus): string {
+  if (status === 'completed') return 'done';
+  if (status === 'failed') return 'failed';
+  if (status === 'cancelled') return 'cancelled';
+  return status;
+}
+
+function healthTone(
+  health: MobileWorkflowHealth,
+): 'blue' | 'green' | 'amber' | 'red' | 'purple' | 'cyan' {
+  if (health === 'needs-approval') return 'red';
+  if (health === 'busy') return 'blue';
+  if (health === 'ready') return 'green';
+  if (health === 'idle') return 'cyan';
+  return 'amber';
+}
+
+function homeHeadline(headline: string | undefined, item: MobileWorkQueueItem | undefined): string {
+  if (item?.priority === 'critical' || item?.kind === 'approval') return item.title;
+  return headline ?? 'Pair a Mac to start';
+}
+
+function homeDetail(
+  detail: string | undefined,
+  workspaceName: string | undefined,
+  item: MobileWorkQueueItem | undefined,
+): string | undefined {
+  if (item) {
+    const target = item.repoName ?? item.workspaceName ?? workspaceName;
+    return target
+      ? `${item.statusLabel} / ${target} / ${relativeTime(item.updatedAt)}`
+      : item.detail;
+  }
+  return detail;
+}
+
 function titleFromMessage(message: string): string {
   const trimmed = message.replace(/\s+/g, ' ').trim();
   return trimmed.length > 44 ? `${trimmed.slice(0, 41)}...` : trimmed || 'Remote prompt';
-}
-
-function hostDetail(connection: CompanionConnection): string {
-  return `${connection.deviceName || 'Selected host'} / ${hostLabel(connection.baseUrl)}`;
 }
 
 function hostLabel(baseUrl: string): string {
@@ -670,6 +1094,14 @@ function relativeTime(value: string): string {
   return `${days}d ago`;
 }
 
+function threadHref(threadId: string): RelativePathString {
+  return `/(tabs)/chats/${encodeURIComponent(threadId)}` as RelativePathString;
+}
+
+function healthSignalHref(signalId: string): RelativePathString {
+  return `/(tabs)/health/${encodeURIComponent(signalId)}` as RelativePathString;
+}
+
 const ACTION_TONES = {
   neutral: {
     background: companionColors.surface,
@@ -679,43 +1111,53 @@ const ACTION_TONES = {
   },
   blue: {
     background: companionColors.blueSoft,
-    border: '#b2ddff',
+    border: companionColors.blueBorder,
     text: companionColors.blue,
-    iconBackground: '#d1e9ff',
+    iconBackground: companionColors.blueSoft,
   },
   green: {
     background: companionColors.greenSoft,
-    border: '#abefc6',
+    border: companionColors.greenBorder,
     text: companionColors.green,
-    iconBackground: '#dcfae6',
+    iconBackground: companionColors.greenSoft,
   },
   amber: {
     background: companionColors.accentSoft,
-    border: '#fedf89',
+    border: companionColors.accent,
     text: companionColors.accentInk,
-    iconBackground: '#ffead5',
+    iconBackground: companionColors.accentSoft,
   },
   red: {
     background: companionColors.redSoft,
-    border: '#fecdca',
+    border: companionColors.redBorder,
     text: companionColors.red,
-    iconBackground: '#fee4e2',
+    iconBackground: companionColors.redSoft,
   },
   purple: {
     background: companionColors.purpleSoft,
-    border: '#d9d6fe',
+    border: companionColors.purpleBorder,
     text: companionColors.purple,
-    iconBackground: '#ebe9fe',
+    iconBackground: companionColors.purpleSoft,
   },
 };
 
-const QUEUE_TONES: Record<MobileWorkQueueItem['priority'], { color: string; background: string }> =
-  {
-    critical: { color: companionColors.red, background: companionColors.redSoft },
-    high: { color: companionColors.accentInk, background: companionColors.accentSoft },
-    normal: { color: companionColors.blue, background: companionColors.blueSoft },
-    low: { color: companionColors.subtle, background: companionColors.surfaceMuted },
-  };
+const QUEUE_TONES: Record<
+  MobileWorkQueueItem['priority'],
+  { color: CompanionColor; background: CompanionColor }
+> = {
+  critical: { color: companionColors.red, background: companionColors.redSoft },
+  high: { color: companionColors.accentInk, background: companionColors.accentSoft },
+  normal: { color: companionColors.blue, background: companionColors.blueSoft },
+  low: { color: companionColors.subtle, background: companionColors.surfaceMuted },
+};
+
+const RUN_STATUS_TONES: Record<AgentRunStatus, { color: CompanionColor; background: CompanionColor }> = {
+  queued: { color: companionColors.subtle, background: companionColors.surfaceMuted },
+  running: { color: companionColors.blue, background: companionColors.blueSoft },
+  completed: { color: companionColors.green, background: companionColors.greenSoft },
+  failed: { color: companionColors.red, background: companionColors.redSoft },
+  cancelled: { color: companionColors.subtle, background: companionColors.surfaceMuted },
+};
 
 const connectionBarStyle = {
   flexDirection: 'row' as const,
@@ -734,6 +1176,34 @@ const connectionTextStyle = {
   fontSize: 13,
   fontWeight: '700' as const,
 };
+const nextActionStyle = {
+  flexDirection: 'row' as const,
+  alignItems: 'center' as const,
+  gap: 10,
+  borderRadius: 10,
+  borderWidth: 1,
+  borderColor: companionColors.borderSubtle,
+  backgroundColor: companionColors.surfaceMuted,
+  padding: 10,
+};
+const nextActionIconStyle = {
+  alignItems: 'center' as const,
+  justifyContent: 'center' as const,
+  width: 34,
+  height: 34,
+  borderRadius: 9,
+  backgroundColor: companionColors.surface,
+};
+const nextActionTitleStyle = {
+  color: companionColors.ink,
+  fontSize: 14,
+  fontWeight: '900' as const,
+};
+const nextActionDetailStyle = {
+  color: companionColors.subtle,
+  fontSize: 12,
+  fontWeight: '800' as const,
+};
 const sectionStyle = { gap: 10 };
 const hostRailStyle = { gap: 8, paddingRight: 4 };
 const hostChipStyle = {
@@ -748,7 +1218,7 @@ const hostChipStyle = {
   paddingVertical: 10,
 };
 const activeHostChipStyle = {
-  borderColor: '#abefc6',
+  borderColor: companionColors.greenBorder,
   backgroundColor: companionColors.greenSoft,
 };
 const hostTitleStyle = {
@@ -774,7 +1244,7 @@ const darkEyebrowStyle = {
   fontWeight: '800' as const,
 };
 const workspaceTitleStyle = {
-  color: '#fcfcfd',
+  color: companionColors.onDark,
   fontSize: 16,
   fontWeight: '900' as const,
 };
@@ -784,44 +1254,41 @@ const heroStatusIconStyle = {
   width: 36,
   height: 36,
   borderRadius: 10,
-  backgroundColor: '#1f2937',
+  backgroundColor: companionColors.darkIconSurface,
 };
-const heroHeadlineStyle = {
-  color: '#fcfcfd',
-  fontSize: 28,
-  fontWeight: '900' as const,
-  lineHeight: 32,
+const consoleStripStyle = {
+  flexDirection: 'row' as const,
+  gap: 8,
+  flexWrap: 'wrap' as const,
 };
-const heroDetailStyle = {
-  color: companionColors.darkMuted,
-  fontSize: 15,
-  lineHeight: 22,
-};
-const metricGridStyle = { flexDirection: 'row' as const, gap: 8, flexWrap: 'wrap' as const };
-const metricChipStyle = {
-  backgroundColor: '#1f2937',
-  borderRadius: 10,
-  paddingHorizontal: 12,
+const consoleFactStyle = {
+  flexGrow: 1,
+  minWidth: 92,
+  backgroundColor: companionColors.darkRaised,
+  borderColor: companionColors.darkControlActive,
+  borderWidth: 1,
+  borderRadius: 8,
+  paddingHorizontal: 10,
   paddingVertical: 9,
-  minWidth: 88,
+  gap: 2,
 };
-const metricLabelStyle = {
+const consoleFactLabelStyle = {
   color: companionColors.darkMuted,
-  fontSize: 12,
-  fontWeight: '700' as const,
+  fontSize: 11,
+  fontWeight: '800' as const,
 };
-const metricValueStyle = {
-  color: '#fcfcfd',
-  fontSize: 18,
+const consoleFactValueStyle = {
+  color: companionColors.onDark,
+  fontSize: 13,
   fontWeight: '900' as const,
 };
 const modeRowStyle = {
   flexDirection: 'row' as const,
   borderWidth: 1,
-  borderColor: '#475467',
+  borderColor: companionColors.darkBorder,
   borderRadius: 10,
   padding: 3,
-  backgroundColor: '#1d2939',
+  backgroundColor: companionColors.darkControl,
 };
 const modeButtonStyle = {
   flex: 1,
@@ -829,7 +1296,7 @@ const modeButtonStyle = {
   borderRadius: 8,
   paddingVertical: 9,
 };
-const activeModeButtonStyle = { backgroundColor: '#fcfcfd' };
+const activeModeButtonStyle = { backgroundColor: companionColors.onDark };
 const modeButtonTextStyle = {
   color: companionColors.darkMuted,
   fontSize: 14,
@@ -846,43 +1313,62 @@ const repoChipStyle = {
   minHeight: 38,
   borderRadius: 999,
   borderWidth: 1,
-  borderColor: '#475467',
-  backgroundColor: '#1d2939',
+  borderColor: companionColors.darkBorder,
+  backgroundColor: companionColors.darkControl,
   paddingHorizontal: 12,
   paddingVertical: 8,
 };
 const selectedRepoChipStyle = {
-  borderColor: '#fcfcfd',
-  backgroundColor: '#344054',
+  borderColor: companionColors.onDark,
+  backgroundColor: companionColors.darkControlActive,
 };
 const repoChipTextStyle = {
-  color: '#98a2b3',
+  color: companionColors.darkMuted,
   fontSize: 13,
   fontWeight: '800' as const,
   maxWidth: 150,
 };
-const selectedRepoChipTextStyle = { color: '#fcfcfd' };
+const selectedRepoChipTextStyle = { color: companionColors.onDark };
+const setupNoticeStyle = {
+  flexDirection: 'row' as const,
+  alignItems: 'center' as const,
+  gap: 10,
+  borderRadius: 8,
+  borderWidth: 1,
+  borderColor: companionColors.darkBorder,
+  backgroundColor: companionColors.darkRaised,
+  padding: 12,
+};
+const setupNoticeTitleStyle = {
+  color: companionColors.onDark,
+  fontSize: 14,
+  fontWeight: '900' as const,
+};
+const setupNoticeBodyStyle = {
+  color: companionColors.darkMuted,
+  fontSize: 12,
+  lineHeight: 17,
+  fontWeight: '700' as const,
+};
 const darkInputStyle = {
   ...inputStyle,
   minHeight: 96,
-  backgroundColor: '#1d2939',
-  borderColor: '#475467',
-  color: '#fcfcfd',
+  backgroundColor: companionColors.darkControl,
+  borderColor: companionColors.darkBorder,
+  color: companionColors.onDark,
   textAlignVertical: 'top' as const,
 };
 const quickActionGridStyle = {
-  flexDirection: 'row' as const,
-  flexWrap: 'wrap' as const,
   gap: 10,
 };
 const quickActionStyle = {
-  flexGrow: 1,
-  flexBasis: '47%' as const,
-  minHeight: 132,
+  flexDirection: 'row' as const,
+  alignItems: 'center' as const,
+  minHeight: 76,
   borderWidth: 1,
-  borderRadius: 10,
+  borderRadius: 8,
   padding: 12,
-  gap: 8,
+  gap: 12,
 };
 const actionIconStyle = {
   width: 34,
@@ -890,6 +1376,50 @@ const actionIconStyle = {
   borderRadius: 9,
   alignItems: 'center' as const,
   justifyContent: 'center' as const,
+};
+const activityRunStyle = {
+  flexDirection: 'row' as const,
+  alignItems: 'flex-start' as const,
+  gap: 12,
+  borderRadius: 8,
+  borderWidth: 1,
+  borderColor: companionColors.borderSubtle,
+  backgroundColor: companionColors.surface,
+  padding: 12,
+};
+const workspaceSignalStyle = {
+  flexDirection: 'row' as const,
+  alignItems: 'flex-start' as const,
+  gap: 12,
+  borderRadius: 8,
+  borderWidth: 1,
+  borderColor: companionColors.borderSubtle,
+  backgroundColor: companionColors.surface,
+  padding: 12,
+};
+const workspaceSignalIconStyle = {
+  alignItems: 'center' as const,
+  justifyContent: 'center' as const,
+  width: 38,
+  height: 38,
+  borderRadius: 10,
+};
+const activityIconStyle = {
+  alignItems: 'center' as const,
+  justifyContent: 'center' as const,
+  width: 38,
+  height: 38,
+  borderRadius: 10,
+};
+const activityRunTopStyle = {
+  flexDirection: 'row' as const,
+  alignItems: 'center' as const,
+  gap: 8,
+};
+const activityMetaRowStyle = {
+  flexDirection: 'row' as const,
+  flexWrap: 'wrap' as const,
+  gap: 6,
 };
 const queueHeaderStyle = {
   flexDirection: 'row' as const,
@@ -932,16 +1462,6 @@ const metadataTextStyle = {
   maxWidth: 170,
 };
 const approvalDetailStyle = { gap: 7 };
-const monoStyle = {
-  color: companionColors.ink,
-  fontFamily: 'Menlo',
-  fontSize: 13,
-  backgroundColor: companionColors.surfaceMuted,
-  borderColor: companionColors.borderSubtle,
-  borderWidth: 1,
-  padding: 10,
-  borderRadius: 10,
-};
 const queueActionRowStyle = {
   flexDirection: 'row' as const,
   flexWrap: 'wrap' as const,

@@ -110,6 +110,28 @@ function serialiseAttachments(attachments: ChatAttachment[] | undefined): string
   return JSON.stringify(attachments);
 }
 
+export function findChatAttachment(attachmentId: string): ChatAttachment | null {
+  const id = attachmentId.trim();
+  if (!id) return null;
+
+  const rows = getDb()
+    .prepare(
+      `SELECT attachments_json
+       FROM chat_messages
+       WHERE attachments_json IS NOT NULL`,
+    )
+    .all() as Array<{ attachments_json: string | null }>;
+
+  for (const row of rows) {
+    const attachment = parseAttachments(row.attachments_json)?.find(
+      (candidate) => candidate.id === id,
+    );
+    if (attachment) return attachment;
+  }
+
+  return null;
+}
+
 function parsePlanSnapshot(value: string | null | undefined): ChatPlanSnapshot | undefined {
   if (!value) return undefined;
   try {

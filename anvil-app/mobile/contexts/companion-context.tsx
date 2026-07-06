@@ -9,35 +9,47 @@ import {
   type ReactNode,
 } from 'react';
 import { AppState, Linking } from 'react-native';
+import { router, type RelativePathString } from 'expo-router';
 import type {
   ChatMessage,
+  ChatAttachment,
+  ChatAttachmentInput,
+  ChatFileMentionSearchResult,
+  CodexRegisteredSkill,
   MobileApprovalRequest,
   MobileChatThreadSummary,
   MobileOverview,
   MobileStartChatInput,
   MobileStartChatResult,
+  MobileWorkspaceSignalDetail,
 } from '../../src/shared/types';
 import {
   activateConnection,
   clearConnection,
   fetchOverview,
+  fetchChatSkills,
   fetchThreadHistory,
+  fetchWorkspaceSignalDetail,
   interruptSession,
   loadConnectionState,
   openDesktop,
   pairWithDesktop,
+  prepareChatAttachments,
   parsePairingPayload,
   removeConnection,
   resolveApproval,
   resolveApprovalByKey,
   saveConnection,
+  searchChatFileMentions,
   sendThreadMessage,
   startWorkflow as startCompanionWorkflow,
   subscribeToCompanionEvents,
   type CompanionConnection,
 } from '@/lib/anvil-api';
 import {
+  clearLiveActivitySnapshot,
   clearWidgetSnapshot,
+  publishLiveActivitySnapshot,
   publishWidgetSnapshot,
   replyToWatchRequest,
   subscribeToWatchRequests,
@@ -67,7 +79,19 @@ interface CompanionContextValue {
   refresh: () => Promise<void>;
   selectThread: (threadId: string) => Promise<void>;
   startWorkflow: (input: MobileStartChatInput) => Promise<MobileStartChatResult | null>;
-  sendMessage: (threadId: string, sessionId: string | undefined, message: string) => Promise<void>;
+  sendMessage: (
+    threadId: string,
+    sessionId: string | undefined,
+    input: string | Parameters<typeof sendThreadMessage>[3],
+  ) => Promise<void>;
+  prepareAttachments: (attachments: ChatAttachmentInput[]) => Promise<ChatAttachment[]>;
+  searchFiles: (input: {
+    repoIds: string[];
+    query?: string;
+    limit?: number;
+  }) => Promise<ChatFileMentionSearchResult[]>;
+  searchSkills: (query?: string) => Promise<CodexRegisteredSkill[]>;
+  fetchSignalDetail: (signalId: string) => Promise<MobileWorkspaceSignalDetail | null>;
   resolve: (
     approval: MobileApprovalRequest,
     decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel',
@@ -97,6 +121,7 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
     setThreads(nextOverview.threads);
     setLastUpdatedAt(nextOverview.generatedAt);
     void publishWidgetSnapshot(nextOverview);
+    void publishLiveActivitySnapshot(nextOverview);
   }, []);
 
   const refresh = useCallback(async () => {
@@ -107,6 +132,7 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
       setLoading(false);
       setLive(false);
       void clearWidgetSnapshot();
+      void clearLiveActivitySnapshot();
       void publishDriveModeState(null);
       return;
     }
@@ -201,6 +227,7 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
     setLastUpdatedAt(null);
     setLive(false);
     await clearWidgetSnapshot();
+    await clearLiveActivitySnapshot();
     await publishDriveModeState(null);
   }, []);
 
@@ -277,8 +304,13 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
     if (!connection) return;
 
     const handleUrl = (url: string | null) => {
-      const actionId = extractWorkflowActionId(url);
-      if (actionId) void startWorkflow({ actionId });
+      const action = parseCompanionUrl(url);
+      if (!action) return;
+      if (action.type === 'workflow') {
+        void startWorkflow({ actionId: action.actionId });
+        return;
+      }
+      router.navigate(action.route);
     };
 
     void Linking.getInitialURL().then(handleUrl);
@@ -353,12 +385,57 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
   }, [connection, handleWatchRequest]);
 
   const sendMessage = useCallback(
-    async (threadId: string, sessionId: string | undefined, message: string) => {
+    async (
+      threadId: string,
+      sessionId: string | undefined,
+      input: string | Parameters<typeof sendThreadMessage>[3],
+    ) => {
       if (!connection) return;
-      await sendThreadMessage(connection, threadId, sessionId, message);
+      await sendThreadMessage(connection, threadId, sessionId, input);
       await Promise.all([refresh(), selectThread(threadId)]);
     },
     [connection, refresh, selectThread],
+  );
+
+  const prepareAttachments = useCallback(
+    async (attachments: ChatAttachmentInput[]): Promise<ChatAttachment[]> => {
+      if (!connection) return [];
+      return prepareChatAttachments(connection, attachments);
+    },
+    [connection],
+  );
+
+  const searchFiles = useCallback(
+    async (input: {
+      repoIds: string[];
+      query?: string;
+      limit?: number;
+    }): Promise<ChatFileMentionSearchResult[]> => {
+      if (!connection) return [];
+      return searchChatFileMentions(connection, input);
+    },
+    [connection],
+  );
+
+  const searchSkills = useCallback(
+    async (query = ''): Promise<CodexRegisteredSkill[]> => {
+      if (!connection) return [];
+      return fetchChatSkills(connection, query);
+    },
+    [connection],
+  );
+
+  const fetchSignalDetail = useCallback(
+    async (signalId: string): Promise<MobileWorkspaceSignalDetail | null> => {
+      if (!connection) return null;
+      try {
+        return await fetchWorkspaceSignalDetail(connection, signalId);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to load signal detail.');
+        return null;
+      }
+    },
+    [connection],
   );
 
   const resolve = useCallback(
@@ -408,6 +485,10 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
       selectThread,
       startWorkflow,
       sendMessage,
+      prepareAttachments,
+      searchFiles,
+      searchSkills,
+      fetchSignalDetail,
       resolve,
       interrupt,
       openOnDesktop,
@@ -417,6 +498,7 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
       connections,
       disconnect,
       error,
+      fetchSignalDetail,
       interrupt,
       lastUpdatedAt,
       live,
@@ -432,6 +514,9 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
       selectedThreadHistory,
       selectedThreadId,
       sendMessage,
+      prepareAttachments,
+      searchFiles,
+      searchSkills,
       setManualConnection,
       startWorkflow,
       threads,
@@ -447,13 +532,50 @@ export function useCompanion(): CompanionContextValue {
   return value;
 }
 
-function extractWorkflowActionId(url: string | null): string | null {
+function parseCompanionUrl(
+  url: string | null,
+):
+  | { type: 'workflow'; actionId: string }
+  | {
+      type: 'route';
+      route:
+        | RelativePathString
+        | '/(tabs)'
+        | '/(tabs)/approvals'
+        | '/(tabs)/settings';
+    }
+  | null {
   if (!url) return null;
   try {
     const parsed = new URL(url);
     const parts = [parsed.hostname, ...parsed.pathname.split('/').filter(Boolean)].filter(Boolean);
-    if (parts[0] !== 'workflow') return null;
-    return parts[1] ?? null;
+    if (parts[0] === 'workflow' && parts[1]) {
+      return { type: 'workflow', actionId: parts[1] };
+    }
+    if (parts[0] === 'approvals') return { type: 'route', route: '/(tabs)/approvals' };
+    if (parts[0] === 'chats' && parts[1]) {
+      return {
+        type: 'route',
+        route: `/(tabs)/chats/${encodeURIComponent(parts[1])}` as RelativePathString,
+      };
+    }
+    if (parts[0] === 'chats')
+      return { type: 'route', route: '/(tabs)/chats' as RelativePathString };
+    if (parts[0] === 'health' && parts[1]) {
+      return {
+        type: 'route',
+        route: `/(tabs)/health/${encodeURIComponent(parts[1])}` as RelativePathString,
+      };
+    }
+    if (parts[0] === 'settings') return { type: 'route', route: '/(tabs)/settings' };
+    if (parts[0] === 'work')
+      return {
+        type: 'route',
+        route: parsed.search
+          ? (`/(tabs)/work${parsed.search}` as RelativePathString)
+          : ('/(tabs)/work' as RelativePathString),
+      };
+    return null;
   } catch {
     return null;
   }

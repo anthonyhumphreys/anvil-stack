@@ -710,6 +710,7 @@ export interface MobileChatThreadSummary {
   personaId: string;
   title: string;
   workspaceId?: string;
+  repoIds: string[];
   preview?: string;
   messageCount: number;
   updatedAt: string;
@@ -757,6 +758,53 @@ export interface MobileWorkQueueItem {
   actionLabel?: string;
 }
 
+export type MobileWorkspaceSignalKind = 'code_review' | 'security' | 'lifecycle' | 'work_item';
+
+export interface MobileWorkspaceSignal {
+  id: string;
+  kind: MobileWorkspaceSignalKind;
+  priority: MobileWorkQueueItemPriority;
+  title: string;
+  detail: string;
+  statusLabel: string;
+  updatedAt: string;
+  repoId?: string;
+  repoName?: string;
+  sourceId?: string;
+  actionId?: string;
+}
+
+export interface MobileWorkspaceSignalFile {
+  path: string;
+  lineStart?: number;
+  lineEnd?: number;
+}
+
+export interface MobileWorkspaceSignalProvenance {
+  label: string;
+  value: string;
+}
+
+export interface MobileWorkspaceSignalDetail {
+  signal: MobileWorkspaceSignal;
+  summary?: string;
+  description?: string;
+  recommendation?: string;
+  files: MobileWorkspaceSignalFile[];
+  linkedWorkItemId?: string;
+  provenance: MobileWorkspaceSignalProvenance[];
+}
+
+export interface MobileWorkspaceHealth {
+  reviewFindingCount: number;
+  securityFindingCount: number;
+  lifecycleItemCount: number;
+  workItemCount: number;
+  criticalCount: number;
+  highCount: number;
+  signals: MobileWorkspaceSignal[];
+}
+
 export interface MobileQuickAction {
   id: string;
   title: string;
@@ -775,6 +823,16 @@ export interface MobileStartChatInput {
   workspaceId?: string;
   repoIds?: string[];
   collaborationMode?: ChatCollaborationMode;
+  reasoningEffort?: ReasoningEffort;
+  attachments?: ChatAttachmentInput[];
+}
+
+export interface MobileSendChatMessageInput {
+  sessionId?: string;
+  message?: string;
+  collaborationMode?: ChatCollaborationMode;
+  reasoningEffort?: ReasoningEffort;
+  attachments?: ChatAttachmentInput[];
 }
 
 export interface MobileStartChatResult {
@@ -790,6 +848,8 @@ export interface MobileOverview {
   activeSessions: CodexSession[];
   pendingApprovals: MobileApprovalRequest[];
   threads: MobileChatThreadSummary[];
+  recentRuns: AgentRunSummary[];
+  workspaceHealth: MobileWorkspaceHealth;
   workQueue: MobileWorkQueueItem[];
   workflow: MobileWorkflowDigest;
   quickActions: MobileQuickAction[];

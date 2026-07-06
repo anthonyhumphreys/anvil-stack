@@ -2,19 +2,22 @@
   "expo": {
     "name": "Anvil Companion",
     "slug": "anvil-companion",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "anvil-companion",
+    "jsEngine": "jsc",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
+    "newArchEnabled": false,
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "dev.anthonyhumphreys.anvil.app.companion",
-      "appleTeamId": "43W273J2TJ"
+      "appleTeamId": "43W273J2TJ",
+      "buildNumber": "2"
     },
     "android": {
       "package": "dev.anthonyhumphreys.anvil.mobile",
+      "versionCode": 2,
       "adaptiveIcon": {
         "backgroundColor": "#030712",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
