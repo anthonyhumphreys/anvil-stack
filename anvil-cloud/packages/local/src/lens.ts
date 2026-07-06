@@ -516,7 +516,7 @@ anvil-cloud logs --local --json</pre>
       });
       if ((usage.budgets || []).length === 0) {
         budgetBody.appendChild(el("tr", null, [
-          el("td", { class: "muted", text: "No budgets configured." })
+          el("td", { class: "muted", colspan: "4", text: "No budgets configured." })
         ]));
       }
 
