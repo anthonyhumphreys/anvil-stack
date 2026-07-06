@@ -42,6 +42,7 @@ import {
   AgentRuntime,
   LocalStubInferenceProvider,
   AuthIdentity,
+  createAgentEvalToolExecutors,
   runAgentEvalSuite,
   type AgentEvalBaseline,
   type AppDefinition,
@@ -566,13 +567,18 @@ async function commandEval(
     baseDir: context.cwd,
   });
   const runs = await Promise.all(
-    agents.map(async ([mount, agent]) => ({
-      mount,
-      ...(await runAgentEvalSuite(agent, agent.evals!, {
-        runtime,
-        ...(baseline === undefined ? {} : { baseline }),
-      })),
-    })),
+    agents.map(async ([mount, agent]) => {
+      const tools = createAgentEvalToolExecutors(agent);
+
+      return {
+        mount,
+        ...(await runAgentEvalSuite(agent, agent.evals!, {
+          runtime,
+          ...(baseline === undefined ? {} : { baseline }),
+          ...(tools === undefined ? {} : { tools }),
+        })),
+      };
+    }),
   );
   const summary = {
     agents: runs.length,
@@ -581,12 +587,16 @@ async function commandEval(
     failed: runs.reduce((total, run) => total + run.summary.failed, 0),
   };
   const nextBaseline = mergeEvalBaselines(runs.map((run) => run.baseline));
+  const baselineToWrite =
+    baseline === undefined
+      ? nextBaseline
+      : mergeEvalBaselines([baseline, nextBaseline]);
 
   if (context.flags.has("write-baseline")) {
     await mkdir(path.dirname(baselinePath), { recursive: true });
     await writeFile(
       baselinePath,
-      `${JSON.stringify(nextBaseline, null, 2)}\n`,
+      `${JSON.stringify(baselineToWrite, null, 2)}\n`,
       "utf8",
     );
   }
@@ -4492,9 +4502,24 @@ async function readEvalBaseline(
 }
 
 function mergeEvalBaselines(baselines: AgentEvalBaseline[]): AgentEvalBaseline {
-  return {
-    agents: Object.assign({}, ...baselines.map((baseline) => baseline.agents)),
-  };
+  const agents: AgentEvalBaseline["agents"] = {};
+
+  for (const baseline of baselines) {
+    for (const [agentName, agentBaseline] of Object.entries(
+      baseline.agents ?? {},
+    )) {
+      const existing = agents[agentName];
+
+      agents[agentName] = {
+        scenarios: {
+          ...(existing?.scenarios ?? {}),
+          ...(agentBaseline.scenarios ?? {}),
+        },
+      };
+    }
+  }
+
+  return { agents };
 }
 
 function isAppDefinition(value: unknown): value is AppDefinition {

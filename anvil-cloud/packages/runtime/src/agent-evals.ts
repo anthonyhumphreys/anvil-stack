@@ -96,6 +96,21 @@ export function defineAgentEvalSuite(suite: AgentEvalSuite): AgentEvalSuite {
   return suite;
 }
 
+export function createAgentEvalToolExecutors(
+  agent: AgentDefinition,
+): AgentToolExecutor[] | undefined {
+  const definitions = Array.isArray(agent.tools) ? agent.tools : [];
+
+  if (definitions.length === 0) {
+    return undefined;
+  }
+
+  return definitions.map((definition) => ({
+    definition,
+    execute: async () => ({ ok: true }),
+  }));
+}
+
 export async function runAgentEvalSuite(
   agent: AgentDefinition,
   suite: AgentEvalSuite,
@@ -161,7 +176,7 @@ async function runAgentEvalScenario(
     capabilityUsage,
   });
   const baseline = evaluateBaseline(
-    options.baseline?.agents[agent.name]?.scenarios[scenario.name],
+    options.baseline?.agents?.[agent.name]?.scenarios?.[scenario.name],
     {
       responseText,
       toolCalls,

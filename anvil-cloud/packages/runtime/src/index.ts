@@ -6,6 +6,7 @@ export {
   type AgentSandboxStatus,
 } from "./agent-sandbox.js";
 export {
+  createAgentEvalToolExecutors,
   defineAgentEvalSuite,
   runAgentEvalSuite,
   type AgentEvalAssertionResult,
