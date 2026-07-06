@@ -116,12 +116,18 @@ Example `auth.json`:
 Useful commands:
 
 ```sh
-anvil-cloud auth as local_anth
-anvil-cloud auth current --json
-anvil-cloud auth create-user anth@example.local --role admin
+anvil-cloud auth add-user local_anth --email anth@example.local --roles admin
+anvil-cloud auth login local_anth --json
+anvil-cloud auth token local_anth --ttl 3600 --json
+anvil-cloud auth users --json
+anvil-cloud auth whoami --json
+anvil-cloud auth test --json
 ```
 
-Auth commands may be implemented after the core local runtime, but the runtime should be designed for them.
+`auth test --json` runs the reusable conformance kit for local JWT issue and
+verification, runtime public/required/role policy, mock OIDC discovery and JWKS
+verification, issuer/audience/expiry rejection, claim mapping, and common
+provider fixture config examples.
 
 ## Local files
 

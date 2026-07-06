@@ -28,9 +28,54 @@ describe("main", () => {
     expect(output).toContain("Anvil Cloud CLI");
     expect(output).toContain("anvil-cloud check");
     expect(output).toContain("anvil-cloud doctor");
+    expect(output).toContain("anvil-cloud auth test");
     expect(output).toContain(
       "anvil-cloud destroy --preview --app <name> --yes",
     );
+  });
+
+  it("runs auth conformance checks as stable JSON", async () => {
+    const output = await captureStdout(() => main(["auth", "test", "--json"]));
+    const payload = JSON.parse(output) as {
+      ok: boolean;
+      summary: { passed: number; failed: number };
+      checks: Array<{ id: string; status: string; provider: string }>;
+      fixtures: Array<{ provider: string; env: Record<string, string> }>;
+    };
+
+    expect(payload.ok).toBe(true);
+    expect(payload.summary.failed).toBe(0);
+    expect(payload.summary.passed).toBe(13);
+    expect(payload.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "local.issueAndVerify",
+          status: "pass",
+          provider: "local",
+        }),
+        expect.objectContaining({
+          id: "oidc.discoveryAndVerify",
+          status: "pass",
+          provider: "oidc",
+        }),
+        expect.objectContaining({
+          id: "policy.roles",
+          status: "pass",
+          provider: "policy",
+        }),
+      ]),
+    );
+    expect(payload.fixtures.map((fixture) => fixture.provider)).toEqual([
+      "auth0",
+      "entra",
+      "cognito",
+      "keycloak",
+    ]);
+    expect(payload.fixtures[0]?.env).toMatchObject({
+      ANVIL_AUTH_ISSUER: "https://tenant.us.auth0.com/",
+      ANVIL_AUTH_AUDIENCE: "https://api.example.test",
+      ANVIL_AUTH_ROLES_CLAIM: "https://anvil.dev/roles",
+    });
   });
 
   it("checks the supported pnpm version floor", () => {
