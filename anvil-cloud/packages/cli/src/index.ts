@@ -38,6 +38,7 @@ import {
 import {
   createLocalRuntimeHost,
   JsonDatabaseBranchManager,
+  normalizeDatabaseBranchName,
   startLocalRuntimeServer,
   type JsonDatabaseBranchDiff,
 } from "@anvil-cloud/local";
@@ -1779,7 +1780,11 @@ async function commandDb(
   table: string | undefined,
 ): Promise<void> {
   const manager = new JsonDatabaseBranchManager(localStateDir(context.cwd));
-  const branch = context.values.get("branch");
+  const branchArg = context.values.get("branch");
+  const branch =
+    branchArg === undefined
+      ? undefined
+      : normalizeDatabaseBranchName(branchArg);
   const database = await readDatabase(context.cwd, branch);
 
   if (subcommand === "list") {
@@ -3532,7 +3537,7 @@ function writeHelp(): void {
       "",
       "Commands:",
       "  anvil-cloud new <name> [--client vite-react|expo-router|headless]",
-      "  anvil-cloud dev [--json] [--agent] [--port 8787] [--client-port 5173] [--db-branch main]",
+      "  anvil-cloud dev [--json] [--agent] [--port 8787] [--client-port 5173] [--db-branch <name>]",
       "  anvil-cloud doctor [--json] [--port 8787] [--client-port 5173]",
       "  anvil-cloud check [--json]",
       "  anvil-cloud review [--adapter aws] [--env preview] [--json]",
@@ -4626,7 +4631,10 @@ async function readDatabase(
   branch?: string,
 ): Promise<Record<string, unknown[]>> {
   const manager = new JsonDatabaseBranchManager(localStateDir(rootDir));
-  const activeBranch = branch ?? (await manager.getActiveBranch());
+  const activeBranch =
+    branch === undefined
+      ? await manager.getActiveBranch()
+      : normalizeDatabaseBranchName(branch);
 
   return readOptionalJson(manager.resolveDatabasePath(activeBranch)).then(
     (value) => (isRecordOfArrays(value) ? value : {}),

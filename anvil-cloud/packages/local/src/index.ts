@@ -696,8 +696,17 @@ export class JsonDatabaseBranchManager {
 
     try {
       await copyFile(from, to);
-    } catch {
-      await writeFile(to, "{}\n", "utf8");
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        "code" in error &&
+        (error as NodeJS.ErrnoException).code === "ENOENT"
+      ) {
+        await writeFile(to, "{}\n", "utf8");
+        return;
+      }
+
+      throw error;
     }
   }
 
@@ -707,15 +716,27 @@ export class JsonDatabaseBranchManager {
       {},
     );
 
-    return {
-      active:
-        typeof state.active === "string"
-          ? normalizeDatabaseBranchName(state.active)
-          : primaryDatabaseBranch,
-      branches: Array.isArray(state.branches)
-        ? state.branches.filter(isDatabaseBranchMetadata)
-        : [],
-    };
+    const branches = Array.isArray(state.branches)
+      ? state.branches.filter(isDatabaseBranchMetadata)
+      : [];
+
+    let active =
+      typeof state.active === "string"
+        ? normalizeDatabaseBranchName(state.active)
+        : primaryDatabaseBranch;
+
+    const activeExists =
+      active === primaryDatabaseBranch ||
+      branches.some((branch) => branch.name === active);
+
+    if (!activeExists) {
+      active =
+        branches.find((branch) => branch.name === primaryDatabaseBranch)?.name ??
+        branches[0]?.name ??
+        primaryDatabaseBranch;
+    }
+
+    return { active, branches };
   }
 
   private async writeState(state: JsonDatabaseBranchState): Promise<void> {
