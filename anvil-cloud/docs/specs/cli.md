@@ -227,6 +227,13 @@ JSON output:
         "userId": "sub",
         "email": "email",
         "roles": "https://anvil.dev/roles"
+      },
+      "env": {
+        "ANVIL_AUTH_ISSUER": "https://tenant.us.auth0.com/",
+        "ANVIL_AUTH_AUDIENCE": "https://api.example.test",
+        "ANVIL_AUTH_USER_ID_CLAIM": "sub",
+        "ANVIL_AUTH_EMAIL_CLAIM": "email",
+        "ANVIL_AUTH_ROLES_CLAIM": "https://anvil.dev/roles"
       }
     }
   ]
