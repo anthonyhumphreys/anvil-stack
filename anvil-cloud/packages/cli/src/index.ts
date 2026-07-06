@@ -3085,13 +3085,15 @@ async function commandWorkflows(
         process.exitCode = 1;
       }
 
+      const summary = summarizeWorkflowRun(run);
+
       writeJsonOrHuman(
         context,
         {
           ok: run.status === "completed",
-          run: summarizeWorkflowRun(run),
+          run: summary,
         },
-        JSON.stringify(summarizeWorkflowRun(run), null, 2),
+        JSON.stringify(summary, null, 2),
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

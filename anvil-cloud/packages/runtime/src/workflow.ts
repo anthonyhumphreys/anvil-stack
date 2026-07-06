@@ -76,7 +76,7 @@ export function summarizeWorkflowRun(
   const progress: WorkflowRunProgress = {
     lifecycle,
     resumable,
-    inFlight: active,
+    inFlight: lifecycle === "in-flight",
     currentStep:
       currentStepIndex >= 0
         ? (run.steps[currentStepIndex]?.name ?? null)

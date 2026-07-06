@@ -91,8 +91,39 @@ describe("executeWorkflowRun", () => {
       progress: {
         lifecycle: "failed",
         resumable: false,
+        inFlight: false,
         failedSteps: 1,
         currentStep: "store",
+      },
+    });
+
+    run.status = "completed";
+    run.steps[1] = {
+      name: "store",
+      status: "completed",
+      attempts: 1,
+      result: { ok: true },
+    };
+
+    expect(summarizeWorkflowRun(run, { active: true })).toMatchObject({
+      progress: {
+        lifecycle: "completed",
+        inFlight: false,
+      },
+    });
+
+    run.status = "failed";
+    run.steps[1] = {
+      name: "store",
+      status: "failed",
+      attempts: 2,
+      error: { code: "INTERNAL_ERROR", message: "boom" },
+    };
+
+    expect(summarizeWorkflowRun(run, { active: true })).toMatchObject({
+      progress: {
+        lifecycle: "failed",
+        inFlight: false,
       },
     });
   });
