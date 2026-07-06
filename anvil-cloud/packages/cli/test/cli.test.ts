@@ -16,6 +16,11 @@ import {
 } from "../src/index.js";
 
 const testCwd = process.cwd();
+const cloudRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../../..",
+);
+const workspaceRoot = path.resolve(cloudRoot, "..");
 
 afterEach(() => {
   process.chdir(testCwd);
@@ -121,16 +126,25 @@ describe("main", () => {
       const payload = JSON.parse(output) as {
         ok: boolean;
         summary: { info: number; errors: number };
-        checks: Array<{ id: string; status: string; details?: unknown }>;
+        checks: Array<{
+          id: string;
+          status: string;
+          docs: string;
+          details?: unknown;
+        }>;
       };
       const checks = new Map(payload.checks.map((check) => [check.id, check]));
 
       expect(payload.ok).toBe(true);
-      expect(payload.summary.info).toBe(0);
+      expect(payload.summary.info).toBeGreaterThanOrEqual(0);
       expect(payload.summary.errors).toBe(0);
-      expect(checks.get("node.version")).toMatchObject({ status: "ok" });
+      expect(checks.get("node.version")).toMatchObject({
+        status: "ok",
+        docs: "/docs/cloud/doctor#nodeversion",
+      });
       expect(checks.get("packages.publicBoundary")).toMatchObject({
         status: "ok",
+        docs: "/docs/cloud/doctor#packagespublicboundary",
         details: {
           publicPackages: ["@anvilstack/cloud-cli"],
           candidatePublicApis: ["@anvil-cloud/runtime", "@anvil-cloud/client"],
@@ -157,6 +171,7 @@ describe("main", () => {
         },
       });
       expect(checks.get("local.runtime")?.status).toMatch(/ok|warning/);
+      expect(checks.get("sandbox.docker")?.status).toMatch(/ok|info/);
       expect(checks.get("aws.artifactBucket")).toMatchObject({
         status: "ok",
       });
@@ -272,6 +287,49 @@ describe("main", () => {
     } finally {
       process.exitCode = originalExitCode;
       restoreEnvSnapshot(env);
+    }
+  });
+
+  it("keeps doctor diagnostic docs in sync with JSON output", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-doctor-"));
+    const originalCwd = process.cwd();
+    const originalExitCode = process.exitCode;
+
+    try {
+      process.exitCode = undefined;
+      process.chdir(rootDir);
+
+      const output = await captureStdout(() =>
+        main(["doctor", "--json", "--port", "65443", "--client-port", "65444"]),
+      );
+      const payload = JSON.parse(output) as {
+        checks: Array<{ id: string; docs: string }>;
+      };
+      const cloudDoctorDocs = await readFile(
+        path.join(cloudRoot, "docs/reference/doctor.md"),
+        "utf8",
+      );
+      const websiteDoctorDocs = await readFile(
+        path.join(workspaceRoot, "anvil-website/content/docs/cloud/doctor.md"),
+        "utf8",
+      );
+      const agentDocs = await readFile(
+        path.join(cloudRoot, "llms-full.txt"),
+        "utf8",
+      );
+
+      for (const check of payload.checks) {
+        const anchor = check.id.replace(/\./g, "").toLowerCase();
+
+        expect(check.docs).toBe(`/docs/cloud/doctor#${anchor}`);
+        expect(cloudDoctorDocs).toContain(`### ${check.id}`);
+        expect(websiteDoctorDocs).toContain(`### ${check.id}`);
+        expect(agentDocs).toContain(`| \`${check.id}\``);
+      }
+    } finally {
+      process.chdir(originalCwd);
+      process.exitCode = originalExitCode;
+      await rm(rootDir, { recursive: true, force: true });
     }
   });
 

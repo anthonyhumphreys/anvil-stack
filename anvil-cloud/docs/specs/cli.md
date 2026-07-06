@@ -128,7 +128,9 @@ anvil-cloud doctor --port 8787 --client-port 5173 --json
 Doctor is read-only. It reports stable check ids with `ok`, `warning`, or
 `error` status. Warnings explain optional or situational setup, such as AWS
 preview environment variables, without failing local development. Errors are
-reserved for local blockers such as an unsupported Node version.
+reserved for local blockers such as an unsupported Node version. Each check
+also includes a `docs` link to the matching diagnostic section, and `hint` is
+the remediation field.
 
 Initial checks include:
 
@@ -171,7 +173,8 @@ JSON output:
     {
       "id": "node.version",
       "status": "ok",
-      "message": "Node 20.11.0 satisfies >=20.11.0."
+      "message": "Node 20.11.0 satisfies >=20.11.0.",
+      "docs": "/docs/cloud/doctor#nodeversion"
     }
   ],
   "summary": {
