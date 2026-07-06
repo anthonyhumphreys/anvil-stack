@@ -183,6 +183,67 @@ JSON output:
 }
 ```
 
+### `anvil-cloud auth test`
+
+Runs the auth conformance kit locally and emits a CI-friendly report.
+
+```sh
+anvil-cloud auth test --json
+```
+
+The suite proves that the local IdP and OIDC verification path agree on the
+same auth contract:
+
+- local ES256 JWT issue and verification;
+- runtime auth policy for public, required, and role-gated handlers;
+- OIDC discovery plus JWKS verification;
+- expired-token, issuer, and audience rejection;
+- configured claim mapping for user id, email, and roles;
+- fixture config examples for Auth0, Entra ID, Cognito, and Keycloak.
+
+JSON output:
+
+```json
+{
+  "ok": true,
+  "summary": {
+    "passed": 13,
+    "failed": 0
+  },
+  "checks": [
+    {
+      "id": "local.issueAndVerify",
+      "status": "pass",
+      "provider": "local",
+      "message": "Local IdP issued and verified an ES256 JWT."
+    }
+  ],
+  "fixtures": [
+    {
+      "provider": "auth0",
+      "issuer": "https://tenant.us.auth0.com/",
+      "audience": "https://api.example.test",
+      "claims": {
+        "userId": "sub",
+        "email": "email",
+        "roles": "https://anvil.dev/roles"
+      },
+      "env": {
+        "ANVIL_AUTH_ISSUER": "https://tenant.us.auth0.com/",
+        "ANVIL_AUTH_AUDIENCE": "https://api.example.test",
+        "ANVIL_AUTH_USER_ID_CLAIM": "sub",
+        "ANVIL_AUTH_EMAIL_CLAIM": "email",
+        "ANVIL_AUTH_ROLES_CLAIM": "https://anvil.dev/roles"
+      }
+    }
+  ]
+}
+```
+
+Non-zero failures set exit code `1`. The command does not contact real Auth0,
+Entra, Cognito, or Keycloak tenants; provider entries are fixture configs kept
+green against mock OIDC endpoints so CI stays local and secret-free.
+
 ### `anvil-cloud inspect`
 
 Inspects local or remote runtime state.

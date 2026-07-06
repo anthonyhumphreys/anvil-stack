@@ -3,6 +3,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import {
+  oidcProviderFixtures,
+  runAuthConformanceSuite,
+} from "../src/conformance.js";
 import { identityFromClaims } from "../src/claims.js";
 import { LocalIdentityProvider } from "../src/local-provider.js";
 import { OidcTokenVerifier } from "../src/oidc.js";
@@ -274,6 +278,33 @@ describe("OidcTokenVerifier", () => {
       code: "TOKEN_INVALID",
       message: "Token is missing the 'uid' claim.",
     });
+  });
+});
+
+describe("auth conformance kit", () => {
+  it("runs the local IdP, OIDC, policy, and fixture scenarios", async () => {
+    const result = await runAuthConformanceSuite({
+      stateDir: await createStateDir(),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.summary.failed).toBe(0);
+    expect(result.checks.map((check) => check.id)).toEqual([
+      "local.issueAndVerify",
+      "policy.required",
+      "policy.roles",
+      "policy.public",
+      "oidc.discoveryAndVerify",
+      "oidc.expiry",
+      "oidc.issuer",
+      "oidc.audience",
+      "oidc.claimMapping",
+      "fixture.auth0",
+      "fixture.entra",
+      "fixture.cognito",
+      "fixture.keycloak",
+    ]);
+    expect(result.fixtures).toEqual(oidcProviderFixtures);
   });
 });
 

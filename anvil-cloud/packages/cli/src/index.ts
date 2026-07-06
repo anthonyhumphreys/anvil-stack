@@ -31,6 +31,8 @@ import {
 import {
   AuthError,
   LocalIdentityProvider,
+  runAuthConformanceSuite,
+  type AuthConformanceResult,
   type LocalUser,
 } from "@anvil-cloud/auth";
 import {
@@ -3035,6 +3037,16 @@ async function commandAuth(
         );
         return;
       }
+      case "test": {
+        const result = await runAuthConformanceSuite();
+
+        if (!result.ok) {
+          process.exitCode = 1;
+        }
+
+        writeJsonOrHuman(context, result, formatAuthConformanceResult(result));
+        return;
+      }
       default:
         writeJsonOrHuman(
           context,
@@ -3044,11 +3056,11 @@ async function commandAuth(
               {
                 code: "INVALID_USAGE",
                 message:
-                  "Usage: anvil-cloud auth <users|add-user|remove-user|login|token|whoami>",
+                  "Usage: anvil-cloud auth <users|add-user|remove-user|login|token|whoami|test>",
               },
             ],
           },
-          "Usage: anvil-cloud auth <users|add-user|remove-user|login|token|whoami>",
+          "Usage: anvil-cloud auth <users|add-user|remove-user|login|token|whoami|test>",
         );
         process.exitCode = 2;
     }
@@ -3406,6 +3418,7 @@ function writeHelp(): void {
       "  anvil-cloud auth login <id> [--json]",
       "  anvil-cloud auth token <id> [--ttl 3600] [--json]",
       "  anvil-cloud auth whoami [--json]",
+      "  anvil-cloud auth test [--json]",
       "  anvil-cloud agents discover [--json]",
       "  anvil-cloud agents guardian [--json]",
       "  anvil-cloud workflows list [--json]",
@@ -4161,6 +4174,21 @@ function formatDoctorChecks(checks: DoctorCheck[]): string {
   return checks
     .map((check) => `${icons[check.status]} ${check.id}: ${check.message}`)
     .join("\n");
+}
+
+function formatAuthConformanceResult(result: AuthConformanceResult): string {
+  const lines = [
+    result.ok ? "Auth conformance passed." : "Auth conformance failed.",
+    `Passed: ${result.summary.passed}; failed: ${result.summary.failed}.`,
+    ...result.checks.map(
+      (check) => `${check.status} ${check.id}: ${check.message}`,
+    ),
+    `Provider fixtures: ${result.fixtures
+      .map((fixture) => fixture.provider)
+      .join(", ")}.`,
+  ];
+
+  return lines.join("\n");
 }
 
 function writeJsonOrHuman(
