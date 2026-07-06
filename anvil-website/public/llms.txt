@@ -4,7 +4,7 @@ Anvil Cloud is an alpha TypeScript platform for Anvil Cells and contract-first
 Agents. It is local-first, capability-scoped, and adapter-driven. Do not treat
 it as a raw AWS authoring surface.
 
-Full agent instructions: `/llms-full.txt`.
+Full agent instructions: `llms-full.txt`.
 
 ## Start Here
 
