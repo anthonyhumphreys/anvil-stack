@@ -40,9 +40,16 @@ import {
   type RuntimeHost,
   type RuntimeRequest,
   type RuntimeResponse,
+  redactTraceValue,
   type WorkflowAdapter,
   type WorkflowRun,
   type AgentApprovalProvider,
+  type TraceAdapter,
+  type TraceCompleteInput,
+  type TraceEventInput,
+  type TraceRecord,
+  type TraceRedactor,
+  type TraceStartInput,
 } from "@anvil-cloud/runtime";
 import { createServer as createViteServer, type ViteDevServer } from "vite";
 
@@ -59,6 +66,7 @@ export type LocalRuntimeHost = RuntimeHost & {
   events: LocalEventAdapter;
   jobs: LocalJobAdapter;
   workflows: LocalWorkflowAdapter;
+  traces: LocalTraceAdapter;
   idp: LocalIdentityProvider;
 };
 
@@ -75,6 +83,7 @@ export type LocalRuntimeServerOptions = {
   env?: Record<string, string>;
   agentProviders?: AgentProviderRegistry;
   agentApprovalProvider?: AgentApprovalProvider;
+  traceRedactor?: TraceRedactor;
 };
 
 export type LocalRuntimeServer = {
@@ -89,6 +98,7 @@ export async function createLocalRuntimeHost(options: {
   stateDir: string;
   cellName: string;
   env?: Record<string, string>;
+  traceRedactor?: TraceRedactor;
 }): Promise<LocalRuntimeHost> {
   await mkdir(options.stateDir, { recursive: true });
   await mkdir(path.join(options.stateDir, "files"), { recursive: true });
@@ -111,6 +121,9 @@ export async function createLocalRuntimeHost(options: {
     workflows: new LocalWorkflowAdapter(
       path.join(options.stateDir, "workflows.json"),
     ),
+    traces: new LocalTraceAdapter(path.join(options.stateDir, "traces.json"), {
+      redactor: options.traceRedactor ?? redactTraceValue,
+    }),
     idp,
   };
 }
@@ -133,6 +146,7 @@ export async function startLocalRuntimeServer(
     stateDir: string;
     cellName: string;
     env?: Record<string, string>;
+    traceRedactor?: TraceRedactor;
   } = {
     stateDir,
     cellName: options.cellName,
@@ -140,6 +154,10 @@ export async function startLocalRuntimeServer(
 
   if (options.env !== undefined) {
     hostOptions.env = options.env;
+  }
+
+  if (options.traceRedactor !== undefined) {
+    hostOptions.traceRedactor = options.traceRedactor;
   }
 
   const host = await createLocalRuntimeHost(hostOptions);
@@ -173,6 +191,7 @@ export async function startLocalRuntimeServer(
       agentRuntime: new AgentRuntime({
         providers: agentProviders,
         baseDir: rootDir,
+        traces: host.traces,
         ...(options.agentApprovalProvider === undefined
           ? {}
           : { approvalProvider: options.agentApprovalProvider }),
@@ -753,6 +772,126 @@ export class LocalWorkflowAdapter implements WorkflowAdapter {
   }
 }
 
+export class LocalTraceAdapter implements TraceAdapter {
+  private readonly redactor: TraceRedactor;
+
+  constructor(
+    private readonly filePath: string,
+    options: { redactor?: TraceRedactor } = {},
+  ) {
+    this.redactor = options.redactor ?? redactTraceValue;
+  }
+
+  async start(input: TraceStartInput): Promise<TraceRecord> {
+    const traces = await this.read();
+    const existing = traces.find((trace) => trace.traceId === input.traceId);
+
+    if (existing) {
+      return existing;
+    }
+
+    const now = input.startedAt ?? new Date().toISOString();
+    const trace: TraceRecord = {
+      traceId: input.traceId,
+      kind: input.kind,
+      name: input.name,
+      subjectId: input.subjectId,
+      status: "running",
+      startedAt: now,
+      updatedAt: now,
+      events: [],
+    };
+
+    traces.push(trace);
+    await this.write(traces);
+
+    if (input.attributes !== undefined) {
+      await this.event(input.traceId, {
+        type:
+          input.kind === "agent" ? "agent.invoke.started" : "workflow.started",
+        name: input.name,
+        status: "running",
+        timestamp: now,
+        attributes: input.attributes,
+      });
+    }
+
+    return trace;
+  }
+
+  async event(traceId: string, input: TraceEventInput): Promise<void> {
+    const traces = await this.read();
+    const trace = traces.find((candidate) => candidate.traceId === traceId);
+
+    if (!trace) {
+      return;
+    }
+
+    const timestamp = input.timestamp ?? new Date().toISOString();
+
+    trace.events.push({
+      eventId: input.eventId ?? `event_${trace.events.length + 1}`,
+      traceId,
+      timestamp,
+      type: input.type,
+      name: input.name,
+      ...(input.status === undefined ? {} : { status: input.status }),
+      ...(input.durationMs === undefined
+        ? {}
+        : { durationMs: input.durationMs }),
+      ...(input.attributes === undefined
+        ? {}
+        : {
+            attributes: this.redactor(input.attributes) as Record<
+              string,
+              unknown
+            >,
+          }),
+    });
+    trace.updatedAt = timestamp;
+    await this.write(traces);
+  }
+
+  async complete(traceId: string, input: TraceCompleteInput): Promise<void> {
+    const traces = await this.read();
+    const trace = traces.find((candidate) => candidate.traceId === traceId);
+
+    if (!trace) {
+      return;
+    }
+
+    const completedAt = input.completedAt ?? new Date().toISOString();
+
+    trace.status = input.status;
+    trace.completedAt = completedAt;
+    trace.updatedAt = completedAt;
+    await this.write(traces);
+  }
+
+  async get(traceId: string): Promise<TraceRecord | null> {
+    return (
+      (await this.read()).find((trace) => trace.traceId === traceId) ?? null
+    );
+  }
+
+  async list(): Promise<TraceRecord[]> {
+    return this.read();
+  }
+
+  private async read(): Promise<TraceRecord[]> {
+    return readJsonFile<TraceRecord[]>(this.filePath, []);
+  }
+
+  private async write(traces: TraceRecord[]): Promise<void> {
+    await mkdir(path.dirname(this.filePath), { recursive: true });
+    await writeFile(
+      this.filePath,
+      `${JSON.stringify(traces, null, 2)}\n`,
+      "utf8",
+    );
+  }
+}
+
 type LocalRequestOptions = {
   app: AppDefinition;
   manifest: unknown;
@@ -856,6 +995,35 @@ async function handleLocalRequest(options: LocalRequestOptions): Promise<void> {
         ok: true,
         logs: await options.host.logs.entries(),
       });
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/_anvil/traces") {
+      await sendJson(options.response, 200, {
+        ok: true,
+        traces: await options.host.traces.list(),
+      });
+      return;
+    }
+
+    if (method === "GET" && url.pathname.startsWith("/_anvil/traces/")) {
+      const traceId = decodeURIComponent(
+        url.pathname.slice("/_anvil/traces/".length),
+      );
+      const trace = await options.host.traces.get(traceId);
+
+      if (!trace) {
+        await sendJson(options.response, 404, {
+          ok: false,
+          error: {
+            code: "NOT_FOUND",
+            message: `No trace '${traceId}' was found.`,
+          },
+        });
+        return;
+      }
+
+      await sendJson(options.response, 200, { ok: true, trace });
       return;
     }
 
@@ -1387,6 +1555,7 @@ async function inspectLocalRuntime(
     },
     database: await options.host.db.inspect(),
     recentErrors: logs.filter((entry) => entry.level === "error").slice(-10),
+    traces: (await options.host.traces.list()).slice(-20),
   };
 }
 

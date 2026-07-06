@@ -17,6 +17,13 @@ import type {
   WorkflowAdapter,
   WorkflowRun,
 } from "./host.js";
+import type {
+  TraceAdapter,
+  TraceCompleteInput,
+  TraceEventInput,
+  TraceRecord,
+  TraceStartInput,
+} from "./trace.js";
 
 export type InMemoryRuntimeHost = RuntimeHost & {
   db: InMemoryDatabaseAdapter;
@@ -27,6 +34,7 @@ export type InMemoryRuntimeHost = RuntimeHost & {
   events: InMemoryEventAdapter;
   jobs: InMemoryJobAdapter;
   workflows: InMemoryWorkflowAdapter;
+  traces: InMemoryTraceAdapter;
 };
 
 export type InMemoryRuntimeHostOptions = {
@@ -47,6 +55,7 @@ export function createInMemoryRuntimeHost(
     events: new InMemoryEventAdapter(),
     jobs: new InMemoryJobAdapter(),
     workflows: new InMemoryWorkflowAdapter(),
+    traces: new InMemoryTraceAdapter(),
   };
 }
 
@@ -300,6 +309,95 @@ export class InMemoryWorkflowAdapter implements WorkflowAdapter {
 
   async listRuns(): Promise<WorkflowRun[]> {
     return [...this.runs];
+  }
+}
+
+export class InMemoryTraceAdapter implements TraceAdapter {
+  readonly traces: TraceRecord[] = [];
+
+  async start(input: TraceStartInput): Promise<TraceRecord> {
+    const now = input.startedAt ?? new Date().toISOString();
+    const existing = this.traces.find(
+      (trace) => trace.traceId === input.traceId,
+    );
+
+    if (existing) {
+      return existing;
+    }
+
+    const trace: TraceRecord = {
+      traceId: input.traceId,
+      kind: input.kind,
+      name: input.name,
+      subjectId: input.subjectId,
+      status: "running",
+      startedAt: now,
+      updatedAt: now,
+      events: [],
+    };
+
+    this.traces.push(trace);
+
+    if (input.attributes !== undefined) {
+      await this.event(input.traceId, {
+        type:
+          input.kind === "agent" ? "agent.invoke.started" : "workflow.started",
+        name: input.name,
+        status: "running",
+        attributes: input.attributes,
+        timestamp: now,
+      });
+    }
+
+    return trace;
+  }
+
+  async event(traceId: string, input: TraceEventInput): Promise<void> {
+    const trace = await this.get(traceId);
+
+    if (!trace) {
+      return;
+    }
+
+    const timestamp = input.timestamp ?? new Date().toISOString();
+
+    trace.events.push({
+      eventId: input.eventId ?? `event_${trace.events.length + 1}`,
+      traceId,
+      timestamp,
+      type: input.type,
+      name: input.name,
+      ...(input.status === undefined ? {} : { status: input.status }),
+      ...(input.durationMs === undefined
+        ? {}
+        : { durationMs: input.durationMs }),
+      ...(input.attributes === undefined
+        ? {}
+        : { attributes: input.attributes }),
+    });
+    trace.updatedAt = timestamp;
+  }
+
+  async complete(traceId: string, input: TraceCompleteInput): Promise<void> {
+    const trace = await this.get(traceId);
+
+    if (!trace) {
+      return;
+    }
+
+    const completedAt = input.completedAt ?? new Date().toISOString();
+
+    trace.status = input.status;
+    trace.completedAt = completedAt;
+    trace.updatedAt = completedAt;
+  }
+
+  async get(traceId: string): Promise<TraceRecord | null> {
+    return this.traces.find((trace) => trace.traceId === traceId) ?? null;
+  }
+
+  async list(): Promise<TraceRecord[]> {
+    return [...this.traces];
   }
 }
 

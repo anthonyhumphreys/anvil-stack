@@ -1626,6 +1626,72 @@ describe("main", () => {
     }
   });
 
+  it("prints a local trace by id as JSON", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-"));
+    const originalCwd = process.cwd();
+    const originalExitCode = process.exitCode;
+
+    try {
+      process.exitCode = undefined;
+      process.chdir(rootDir);
+      await mkdir(path.join(rootDir, ".anvil/local"), { recursive: true });
+      await writeFile(
+        path.join(rootDir, ".anvil/local/traces.json"),
+        `${JSON.stringify(
+          [
+            {
+              traceId: "run_123",
+              kind: "workflow",
+              name: "syncNotes",
+              subjectId: "run_123",
+              status: "completed",
+              startedAt: "2026-07-06T12:00:00.000Z",
+              updatedAt: "2026-07-06T12:00:01.000Z",
+              completedAt: "2026-07-06T12:00:01.000Z",
+              events: [
+                {
+                  eventId: "event_1",
+                  traceId: "run_123",
+                  timestamp: "2026-07-06T12:00:00.000Z",
+                  type: "workflow.step.completed",
+                  name: "fetch",
+                  status: "completed",
+                },
+              ],
+            },
+          ],
+          null,
+          2,
+        )}\n`,
+        "utf8",
+      );
+
+      const output = await captureStdout(() =>
+        main(["logs", "--trace", "run_123", "--json"]),
+      );
+      const payload = JSON.parse(output) as Record<string, unknown>;
+
+      expect(payload).toMatchObject({
+        ok: true,
+        trace: {
+          traceId: "run_123",
+          status: "completed",
+          events: [
+            {
+              type: "workflow.step.completed",
+              name: "fetch",
+            },
+          ],
+        },
+      });
+      expect(process.exitCode).toBeUndefined();
+    } finally {
+      process.chdir(originalCwd);
+      process.exitCode = originalExitCode;
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects invalid remote AWS log since filters", async () => {
     const originalExitCode = process.exitCode;
     const originalMetadataTable =

@@ -1581,6 +1581,47 @@ async function commandLens(context: CliContext): Promise<void> {
 }
 
 async function commandLogs(context: CliContext): Promise<void> {
+  const traceId = context.values.get("trace");
+
+  if (traceId !== undefined) {
+    const trace = await readTrace(context.cwd, traceId);
+
+    if (!trace) {
+      writeJsonOrHuman(
+        context,
+        {
+          ok: false,
+          errors: [
+            {
+              code: "TRACE_NOT_FOUND",
+              message: `No local trace '${traceId}' was found.`,
+            },
+          ],
+        },
+        `No local trace '${traceId}' was found.`,
+      );
+      process.exitCode = 4;
+      return;
+    }
+
+    writeJsonOrHuman(
+      context,
+      {
+        ok: true,
+        trace,
+      },
+      (Array.isArray(trace.events) ? trace.events : [])
+        .map(
+          (event) =>
+            `${event.timestamp} ${event.type} ${event.name}${
+              event.durationMs === undefined ? "" : ` ${event.durationMs}ms`
+            }`,
+        )
+        .join("\n"),
+    );
+    return;
+  }
+
   const remoteApp = context.values.get("app");
 
   if (remoteApp) {
@@ -3291,6 +3332,7 @@ function writeHelp(): void {
       "  anvil-cloud inspect --local [--json]",
       "  anvil-cloud lens [--port 8787] [--json]",
       "  anvil-cloud logs --local [--json]",
+      "  anvil-cloud logs --trace <traceId> [--json]",
       "  anvil-cloud logs --app <name> --env preview [--since 10m] [--limit 50] [--json]",
       "  anvil-cloud usage --preview [--json]",
       "  anvil-cloud db list --local [--json]",
@@ -4364,6 +4406,26 @@ async function readLogs(
   } catch {
     return [];
   }
+}
+
+async function readTrace(
+  rootDir: string,
+  traceId: string,
+): Promise<Record<string, unknown> | null> {
+  const traces = await readOptionalJson(
+    path.join(rootDir, ".anvil/local/traces.json"),
+  );
+
+  if (!Array.isArray(traces)) {
+    return null;
+  }
+
+  return (
+    traces.find(
+      (trace): trace is Record<string, unknown> =>
+        isObject(trace) && trace.traceId === traceId,
+    ) ?? null
+  );
 }
 
 async function readOptionalJson(filePath: string): Promise<unknown | null> {

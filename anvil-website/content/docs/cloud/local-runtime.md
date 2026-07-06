@@ -61,6 +61,8 @@ GET  /_anvil/inspect
 GET  /_anvil/lens
 GET  /_anvil/agents
 POST /_anvil/agents/:name
+GET  /_anvil/traces
+GET  /_anvil/traces/:traceId
 POST /_anvil/workflows/run/:name
 GET  /_anvil/workflows
 GET  /_anvil/workflows/:runId
@@ -88,6 +90,7 @@ Local state lives in `.anvil/local` by default:
   jobs.json
   logs.ndjson
   services.json
+  traces.json
   workflows.json
 ```
 

@@ -236,6 +236,7 @@ Successful output includes build paths, manifest, and diagnostics.
 ```bash
 anvil cloud inspect --local --json
 anvil cloud logs --local --json
+anvil cloud logs --trace run_123 --json
 anvil cloud db list --local --json
 anvil cloud db dump notes --local --json
 anvil cloud services list --json
@@ -244,6 +245,10 @@ anvil cloud services list --json
 `anvil cloud services list` reads the snapshot file written by the dev server, so it shows the last recorded states. For live service state, query `GET /_anvil/services` on a running dev server. See [Services](/docs/cloud/services).
 
 Use these before deploying. They are cheap and they catch the kind of "it worked in my imagination" issues that make preview environments do performance art.
+
+`logs --trace <traceId>` reads local trace records from
+`.anvil/local/traces.json`. Workflow traces use the workflow run id; agent
+invocations return a `traceId` in local runtime responses.
 
 For remote AWS inspection:
 

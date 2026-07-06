@@ -74,13 +74,21 @@ Two executor semantics worth knowing:
 
 Anvil Local persists runs to `.anvil/local/workflows.json`. The executor awaits a persistence callback after every step transition, so a crash mid-run leaves resumable state on disk. When the local runtime server starts, any run still marked `running` is resumed; completed steps are skipped and their persisted results are fed back into `state.steps`.
 
+The same run id is also used as the local trace id. Step start, completion,
+failure, and run completion events are written to `.anvil/local/traces.json`
+with trace attributes passed through the runtime redactor before persistence.
+
 Local HTTP routes:
 
 - `POST /_anvil/workflows/run/<name>` with `{ "input": ... }` starts a run asynchronously and returns `{ ok, runId }`.
 - `GET /_anvil/workflows` lists runs.
 - `GET /_anvil/workflows/<runId>` returns run detail.
+- `GET /_anvil/traces/<runId>` returns the corresponding local trace.
 
 CLI: `anvil-cloud workflows list`, `anvil-cloud workflows show <runId>`, and `anvil-cloud workflows run <name> [--input '<json>']`, all with `--json`.
+
+Trace detail is available through `anvil-cloud logs --trace <runId> --json`
+and in the Traces tab in Anvil Lens.
 
 ## AWS mapping (preview implemented)
 

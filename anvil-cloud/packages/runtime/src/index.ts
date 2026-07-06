@@ -144,6 +144,19 @@ export {
   type WorkflowStepRunStatus,
 } from "./host.js";
 export {
+  redactTraceValue,
+  type TraceAdapter,
+  type TraceCompleteInput,
+  type TraceEvent,
+  type TraceEventInput,
+  type TraceEventType,
+  type TraceKind,
+  type TraceRecord,
+  type TraceRedactor,
+  type TraceStartInput,
+  type TraceStatus,
+} from "./trace.js";
+export {
   inspectAppDefinition,
   type AppInspection,
   type EndpointInspection,
