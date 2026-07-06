@@ -24,7 +24,7 @@ The Cloud repository also includes agent contract examples under
 Bedrock Agent Cell, and provider registration. These are contract examples, not
 separate runnable workspaces.
 
-`anvil cloud new --template <name>` scaffolds runnable starter Cells shaped like
+`anvil cloud new --template <template>` scaffolds runnable starter Cells shaped like
 the same examples:
 
 | Template   | Pattern it demonstrates                                      |
@@ -242,7 +242,7 @@ Logs are written to `.anvil/local/logs.ndjson` locally and CloudWatch in AWS pre
 ```ts
 capabilities: {
   files: {
-    publicRead: false;
+    publicRead: false,
   }
 }
 
@@ -256,7 +256,7 @@ const file = await ctx.files.get("uploads/avatar.png");
 ```ts
 capabilities: {
   outboundFetch: {
-    allow: ["api.stripe.com"];
+    allow: ["api.stripe.com"],
   }
 }
 
