@@ -85,7 +85,7 @@ Creates a starter Cell:
 
 ```bash
 anvil cloud new notes
-pnpm dlx @anvilstack/cloud-cli new demo
+pnpm dlx @anvilstack/cloud-cli new notes
 ```
 
 The package name is `@anvilstack/cloud-cli`; the binary name is `anvil-cloud`.
@@ -99,7 +99,7 @@ JSON output:
   "template": "todo",
   "path": "./notes",
   "lensUrl": "http://localhost:8787/_anvil/lens",
-  "next": ["cd notes", "anvil cloud dev"]
+  "next": ["cd notes", "anvil-cloud dev"]
 }
 ```
 

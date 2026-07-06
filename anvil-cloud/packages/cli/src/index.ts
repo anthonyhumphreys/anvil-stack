@@ -4886,6 +4886,9 @@ async function runNewCommand(
 
     let stderr = "";
 
+    child.stdout?.on("data", () => {
+      // Drain stdout so piped child processes cannot block on a full buffer.
+    });
     child.stderr?.on("data", (chunk) => {
       stderr += String(chunk);
     });

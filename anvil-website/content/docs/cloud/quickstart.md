@@ -78,7 +78,7 @@ pnpm anvil cloud new notes
 cd notes
 ```
 
-With the published CLI installed:
+Without a local workspace checkout, run the published CLI via `pnpm dlx`:
 
 ```bash
 pnpm dlx @anvilstack/cloud-cli new notes
