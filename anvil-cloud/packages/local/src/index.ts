@@ -651,30 +651,45 @@ export type LocalAgentSessionRecord = {
 };
 
 export class LocalAgentSessionAdapter {
+  private tail: Promise<unknown> = Promise.resolve();
+
   constructor(private readonly filePath: string) {}
 
+  private exclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.tail.then(operation, operation);
+    this.tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
   async create(agent: string): Promise<LocalAgentSessionRecord> {
-    const sessions = await this.read();
-    const now = new Date().toISOString();
-    const session: LocalAgentSessionRecord = {
-      sessionId: `session_${randomUUID()}`,
-      agent,
-      status: "idle",
-      createdAt: now,
-      updatedAt: now,
-      continuationToken: "0",
-      events: [],
-    };
+    return this.exclusive(async () => {
+      const sessions = await this.read();
+      const now = new Date().toISOString();
+      const session: LocalAgentSessionRecord = {
+        sessionId: `session_${randomUUID()}`,
+        agent,
+        status: "idle",
+        createdAt: now,
+        updatedAt: now,
+        continuationToken: "0",
+        events: [],
+      };
 
-    sessions.push(session);
-    await this.write(sessions);
-    await this.append(session.sessionId, {
-      type: "session.created",
-      data: { agent },
-      timestamp: now,
+      sessions.push(session);
+      await this.write(sessions);
+      await this.appendUnlocked(sessions, session.sessionId, {
+        type: "session.created",
+        data: { agent },
+        timestamp: now,
+      });
+
+      return (await this.read()).find(
+        (candidate) => candidate.sessionId === session.sessionId,
+      ) ?? session;
     });
-
-    return (await this.get(session.sessionId)) ?? session;
   }
 
   async get(sessionId: string): Promise<LocalAgentSessionRecord | null> {
@@ -690,7 +705,19 @@ export class LocalAgentSessionAdapter {
       timestamp?: string;
     },
   ): Promise<LocalAgentSessionEvent> {
-    const sessions = await this.read();
+    return this.exclusive(async () => {
+      const sessions = await this.read();
+      return this.appendUnlocked(sessions, sessionId, input);
+    });
+  }
+
+  private async appendUnlocked(
+    sessions: LocalAgentSessionRecord[],
+    sessionId: string,
+    input: Omit<LocalAgentSessionEvent, "id" | "sessionId" | "timestamp"> & {
+      timestamp?: string;
+    },
+  ): Promise<LocalAgentSessionEvent> {
     const session = sessions.find(
       (candidate) => candidate.sessionId === sessionId,
     );
@@ -724,18 +751,20 @@ export class LocalAgentSessionAdapter {
     sessionId: string,
     status: LocalAgentSessionStatus,
   ): Promise<void> {
-    const sessions = await this.read();
-    const session = sessions.find(
-      (candidate) => candidate.sessionId === sessionId,
-    );
+    await this.exclusive(async () => {
+      const sessions = await this.read();
+      const session = sessions.find(
+        (candidate) => candidate.sessionId === sessionId,
+      );
 
-    if (!session) {
-      return;
-    }
+      if (!session) {
+        return;
+      }
 
-    session.status = status;
-    session.updatedAt = new Date().toISOString();
-    await this.write(sessions);
+      session.status = status;
+      session.updatedAt = new Date().toISOString();
+      await this.write(sessions);
+    });
   }
 
   private async read(): Promise<LocalAgentSessionRecord[]> {
@@ -1436,6 +1465,8 @@ async function sendAgentSessionMessageRoute(
     type: "message.user",
     data: { input: body.input },
   });
+
+  await options.host.agentSessions.complete(sessionId, "running");
 
   try {
     const result = await options.agentRuntime.invoke(agent, {
