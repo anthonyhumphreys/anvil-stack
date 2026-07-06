@@ -125,6 +125,45 @@ export default app({
 
 Builder validation catches endpoint or workflow references to missing mounted agents. The generated Cell manifest includes the mounted agent manifests under `agents`.
 
+## Add evals
+
+Evals are colocated with the agent definition:
+
+```ts
+import { defineAgent, defineAgentEvalSuite } from "@anvil-cloud/runtime";
+
+const support = defineAgent({
+  name: "support",
+  model: { provider: "local", model: "stub" },
+  evals: defineAgentEvalSuite({
+    scenarios: [
+      {
+        name: "answers support review",
+        input: "Review this Cell.",
+        expect: {
+          responseIncludes: "Review this Cell.",
+          toolCalls: { count: 0 },
+          capabilities: {
+            notUsed: ["network.api.statuspage.io"],
+          },
+        },
+      },
+    ],
+  }),
+});
+```
+
+Run them locally or in CI:
+
+```sh
+anvil-cloud eval --json
+anvil-cloud eval --write-baseline --json
+```
+
+The JSON output includes scenario pass/fail, assertion results, tool calls,
+approval requests, capability usage, and baseline diffs. Failed assertions or
+baseline drift exit non-zero.
+
 ## Project Agents, Cell Agents, and Agent Cells
 
 | Shape | Use it for |

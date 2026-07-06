@@ -1,4 +1,9 @@
-import { app, defineAgent, endpoint } from "@anvil-cloud/runtime";
+import {
+  app,
+  defineAgent,
+  defineAgentEvalSuite,
+  endpoint,
+} from "@anvil-cloud/runtime";
 
 const supportAssistant = defineAgent({
   name: "support-assistant",
@@ -18,6 +23,21 @@ const supportAssistant = defineAgent({
   approvals: {
     requiredFor: ["email.sendExternal"],
   },
+  evals: defineAgentEvalSuite({
+    scenarios: [
+      {
+        name: "explains support context without tools",
+        input: "Review this support Cell.",
+        expect: {
+          responseIncludes: "Review this support Cell.",
+          toolCalls: { count: 0 },
+          capabilities: {
+            notUsed: ["network.api.statuspage.io"],
+          },
+        },
+      },
+    ],
+  }),
   runtime: {
     sandbox: "required",
     humanApproval: "required",

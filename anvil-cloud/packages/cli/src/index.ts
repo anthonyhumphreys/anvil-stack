@@ -41,8 +41,10 @@ import {
   AgentProviderRegistry,
   AgentRuntime,
   LocalStubInferenceProvider,
-  type AppDefinition,
   AuthIdentity,
+  runAgentEvalSuite,
+  type AgentEvalBaseline,
+  type AppDefinition,
   type WorkflowRun,
 } from "@anvil-cloud/runtime";
 
@@ -169,6 +171,9 @@ export async function main(argv: string[]): Promise<void> {
       return;
     case "agents":
       await commandAgents(context, subcommand, maybeArg);
+      return;
+    case "eval":
+      await commandEval(context, subcommand);
       return;
     case "workflows":
       await commandWorkflows(context, subcommand, maybeArg);
@@ -510,6 +515,104 @@ async function commandAgentsInvoke(
   const payload = { ok: true, result: invocation };
 
   writeJsonOrHuman(context, payload, JSON.stringify(payload, null, 2));
+}
+
+async function commandEval(
+  context: CliContext,
+  name: string | undefined,
+): Promise<void> {
+  const result = await buildCell({ rootDir: context.cwd });
+
+  if (!result.ok || !result.output || !result.manifest) {
+    writeBuildResult(context, result, "Agent eval build failed.");
+    process.exitCode = 4;
+    return;
+  }
+
+  const app = await importApp(result.output.serverBundle);
+  const agents = Object.entries(app.agents ?? {}).filter(([mount, agent]) => {
+    if (name !== undefined && mount !== name && agent.name !== name) {
+      return false;
+    }
+
+    return agent.evals !== undefined;
+  });
+
+  if (name !== undefined && agents.length === 0) {
+    writeJsonOrHuman(
+      context,
+      {
+        ok: false,
+        errors: [
+          {
+            code: "AGENT_EVALS_NOT_FOUND",
+            message: `No eval suite found for mounted agent '${name}'.`,
+          },
+        ],
+      },
+      `No eval suite found for mounted agent '${name}'.`,
+    );
+    process.exitCode = 4;
+    return;
+  }
+
+  const baselinePath = path.resolve(
+    context.cwd,
+    context.values.get("baseline") ?? ".anvil/evals/baseline.json",
+  );
+  const baseline = await readEvalBaseline(baselinePath);
+  const runtime = new AgentRuntime({
+    providers: createAgentProviderRegistry(),
+    baseDir: context.cwd,
+  });
+  const runs = await Promise.all(
+    agents.map(async ([mount, agent]) => ({
+      mount,
+      ...(await runAgentEvalSuite(agent, agent.evals!, {
+        runtime,
+        ...(baseline === undefined ? {} : { baseline }),
+      })),
+    })),
+  );
+  const summary = {
+    agents: runs.length,
+    total: runs.reduce((total, run) => total + run.summary.total, 0),
+    passed: runs.reduce((total, run) => total + run.summary.passed, 0),
+    failed: runs.reduce((total, run) => total + run.summary.failed, 0),
+  };
+  const nextBaseline = mergeEvalBaselines(runs.map((run) => run.baseline));
+
+  if (context.flags.has("write-baseline")) {
+    await mkdir(path.dirname(baselinePath), { recursive: true });
+    await writeFile(
+      baselinePath,
+      `${JSON.stringify(nextBaseline, null, 2)}\n`,
+      "utf8",
+    );
+  }
+
+  const payload = {
+    ok: runs.every((run) => run.ok),
+    summary,
+    baseline: {
+      path: path.relative(context.cwd, baselinePath),
+      loaded: baseline !== undefined,
+      wrote: context.flags.has("write-baseline"),
+    },
+    agents: runs,
+  };
+
+  writeJsonOrHuman(
+    context,
+    payload,
+    payload.ok
+      ? `Agent evals passed (${summary.passed}/${summary.total}).`
+      : `Agent evals failed (${summary.failed}/${summary.total}).`,
+  );
+
+  if (!payload.ok) {
+    process.exitCode = 6;
+  }
 }
 
 async function commandNew(
@@ -3288,6 +3391,7 @@ function writeHelp(): void {
       "  anvil-cloud check [--json]",
       "  anvil-cloud review [--adapter aws] [--env preview] [--json]",
       "  anvil-cloud build [--json]",
+      "  anvil-cloud eval [agent] [--baseline .anvil/evals/baseline.json] [--write-baseline] [--json]",
       "  anvil-cloud inspect --local [--json]",
       "  anvil-cloud lens [--port 8787] [--json]",
       "  anvil-cloud logs --local [--json]",
@@ -4373,6 +4477,24 @@ async function readOptionalJson(filePath: string): Promise<unknown | null> {
   } catch {
     return null;
   }
+}
+
+async function readEvalBaseline(
+  filePath: string,
+): Promise<AgentEvalBaseline | undefined> {
+  const json = await readOptionalJson(filePath);
+
+  if (!isObject(json) || !isObject(json.agents)) {
+    return undefined;
+  }
+
+  return json as AgentEvalBaseline;
+}
+
+function mergeEvalBaselines(baselines: AgentEvalBaseline[]): AgentEvalBaseline {
+  return {
+    agents: Object.assign({}, ...baselines.map((baseline) => baseline.agents)),
+  };
 }
 
 function isAppDefinition(value: unknown): value is AppDefinition {
