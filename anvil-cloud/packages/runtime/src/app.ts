@@ -82,6 +82,8 @@ export type EndpointDefinition<TResult = unknown> = {
 export type JobDefinition<TPayload = unknown, TResult = unknown> = {
   kind: "job";
   schedule?: string;
+  overlap?: "skip" | "queue";
+  timeoutMs?: number;
   handler: JobHandler<TPayload, TResult>;
 };
 

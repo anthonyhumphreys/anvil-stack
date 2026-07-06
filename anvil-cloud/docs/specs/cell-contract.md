@@ -202,12 +202,19 @@ Jobs are named background handlers.
 jobs: {
   refreshData: job({
     schedule: "rate(1 hour)",
+    overlap: "skip",
+    timeoutMs: 30_000,
     handler: async (ctx) => {
       ctx.log.info("Refreshing data");
     },
   });
 }
 ```
+
+Scheduled jobs support `rate(1 hour)`, `@every 5m`, and five-field cron syntax
+locally. The local runtime persists schedule state and run history in
+`.anvil/local/schedules.json`; missed runs while the runtime is stopped are
+skipped rather than replayed.
 
 ## Capabilities
 

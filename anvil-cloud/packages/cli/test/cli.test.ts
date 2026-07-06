@@ -39,6 +39,79 @@ describe("main", () => {
     expect(isPnpmVersionSupported("10.1.0")).toBe(true);
   });
 
+  it("runs and lists local schedules", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-schedules-"));
+    const originalCwd = process.cwd();
+    const originalExitCode = process.exitCode;
+
+    try {
+      process.exitCode = undefined;
+      process.chdir(rootDir);
+      await captureStdout(() =>
+        main(["new", "scheduled", "--client", "headless", "--json"]),
+      );
+      await writeFile(
+        path.join(rootDir, "scheduled", "src/cell.server.ts"),
+        [
+          'import { app, job } from "@anvil-cloud/runtime";',
+          "",
+          "export default app({",
+          "  capabilities: { scheduledJobs: true },",
+          "  jobs: {",
+          "    refresh: job({",
+          "      schedule: 'rate(1 day)',",
+          "      handler: async () => ({ refreshed: true }),",
+          "    }),",
+          "  },",
+          "});",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      process.chdir(path.join(rootDir, "scheduled"));
+
+      const runOutput = await captureStdout(() =>
+        main(["schedules", "run", "refresh", "--json"]),
+      );
+      const runPayload = JSON.parse(runOutput) as {
+        ok: boolean;
+        run: { job: string; status: string; result: unknown };
+      };
+
+      expect(runPayload).toMatchObject({
+        ok: true,
+        run: {
+          job: "refresh",
+          status: "completed",
+          result: { refreshed: true },
+        },
+      });
+
+      const listOutput = await captureStdout(() =>
+        main(["schedules", "list", "--json"]),
+      );
+      const listPayload = JSON.parse(listOutput) as {
+        ok: boolean;
+        schedules: Array<{ name: string; lastStatus?: string }>;
+      };
+
+      expect(listPayload).toMatchObject({
+        ok: true,
+        schedules: [
+          {
+            name: "refresh",
+            lastStatus: "completed",
+          },
+        ],
+      });
+      expect(process.exitCode).toBeUndefined();
+    } finally {
+      process.chdir(originalCwd);
+      process.exitCode = originalExitCode;
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("emits doctor diagnostics as stable JSON", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-doctor-"));
     const originalCwd = process.cwd();
@@ -152,6 +225,7 @@ describe("main", () => {
             logs: false,
             jobs: false,
             workflows: true,
+            schedules: false,
             services: true,
           },
         },

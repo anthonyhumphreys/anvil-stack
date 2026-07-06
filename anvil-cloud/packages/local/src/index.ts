@@ -47,8 +47,17 @@ import {
 import { createServer as createViteServer, type ViteDevServer } from "vite";
 
 import { lensPageHtml } from "./lens.js";
+import { LocalScheduleAdapter } from "./schedules.js";
 
 export { lensPageHtml } from "./lens.js";
+export {
+  LocalScheduleAdapter,
+  nextRunAt,
+  parseScheduleExpression,
+  type LocalScheduleRun,
+  type LocalScheduleRunStatus,
+  type LocalScheduleStatus,
+} from "./schedules.js";
 
 export type LocalRuntimeHost = RuntimeHost & {
   db: JsonDatabaseAdapter;
@@ -59,6 +68,7 @@ export type LocalRuntimeHost = RuntimeHost & {
   events: LocalEventAdapter;
   jobs: LocalJobAdapter;
   workflows: LocalWorkflowAdapter;
+  schedules: LocalScheduleAdapter;
   idp: LocalIdentityProvider;
 };
 
@@ -111,6 +121,9 @@ export async function createLocalRuntimeHost(options: {
     workflows: new LocalWorkflowAdapter(
       path.join(options.stateDir, "workflows.json"),
     ),
+    schedules: new LocalScheduleAdapter(
+      path.join(options.stateDir, "schedules.json"),
+    ),
     idp,
   };
 }
@@ -150,6 +163,7 @@ export async function startLocalRuntimeServer(
   }
 
   host.workflows.bind(options.app, host);
+  host.schedules.bind(options.app, host);
   void host.workflows.resumeInterrupted().catch(() => {
     // Resume failures are recorded on the persisted run state.
   });
@@ -164,6 +178,7 @@ export async function startLocalRuntimeServer(
   });
 
   await services.startAll();
+  await host.schedules.start();
 
   const server = http.createServer((request, response) => {
     void handleLocalRequest({
@@ -220,6 +235,7 @@ export async function startLocalRuntimeServer(
       await listen(clientServer, clientPort);
     }
   } catch (error) {
+    await host.schedules.stop();
     await services.stopAll();
     await close(server);
     throw error;
@@ -237,6 +253,7 @@ export async function startLocalRuntimeServer(
     runtimeUrl,
     clientUrl,
     close: async () => {
+      await host.schedules.stop();
       await services.stopAll();
       if (viteServer) {
         await viteServer.close();
@@ -1100,6 +1117,40 @@ async function handleLocalRequest(options: LocalRequestOptions): Promise<void> {
       return;
     }
 
+    if (method === "GET" && url.pathname === "/_anvil/schedules") {
+      await sendJson(options.response, 200, {
+        ok: true,
+        schedules: await options.host.schedules.list(),
+      });
+      return;
+    }
+
+    if (method === "POST" && url.pathname.startsWith("/_anvil/schedules/")) {
+      const action = url.pathname.endsWith("/run") ? "run" : null;
+
+      if (action) {
+        const name = decodeURIComponent(
+          url.pathname.slice(
+            "/_anvil/schedules/".length,
+            url.pathname.length - `/${action}`.length,
+          ),
+        );
+        const body = await readJsonRequest(options.request);
+
+        try {
+          const run = await options.host.schedules.trigger(name, {
+            payload: isObject(body) && "payload" in body ? body.payload : {},
+            trigger: "manual",
+          });
+
+          await sendJson(options.response, 200, { ok: true, run });
+        } catch (error) {
+          await sendScheduleError(options.response, error);
+        }
+        return;
+      }
+    }
+
     if (method === "GET" && url.pathname === "/_anvil/services") {
       await sendJson(options.response, 200, {
         ok: true,
@@ -1532,6 +1583,27 @@ async function sendServiceError(
 }
 
 async function sendWorkflowError(
+  response: ServerResponse,
+  error: unknown,
+): Promise<void> {
+  if (error instanceof RuntimeError) {
+    await sendJson(response, error.status, {
+      ok: false,
+      error: error.toPayload(),
+    });
+    return;
+  }
+
+  await sendJson(response, 500, {
+    ok: false,
+    error: {
+      code: "LOCAL_RUNTIME_ERROR",
+      message: error instanceof Error ? error.message : String(error),
+    },
+  });
+}
+
+async function sendScheduleError(
   response: ServerResponse,
   error: unknown,
 ): Promise<void> {

@@ -59,6 +59,8 @@ Initial commands:
 - `anvil-cloud usage --preview`
 - `anvil-cloud db list`
 - `anvil-cloud db dump <table>`
+- `anvil-cloud schedules list`
+- `anvil-cloud schedules run <name>`
 - `anvil-cloud deploy --preview`
 - `anvil-cloud rollback --preview --dry-run`
 

@@ -36,6 +36,7 @@ import {
 import {
   createLocalRuntimeHost,
   startLocalRuntimeServer,
+  type LocalScheduleStatus,
 } from "@anvil-cloud/local";
 import {
   AgentProviderRegistry,
@@ -172,6 +173,9 @@ export async function main(argv: string[]): Promise<void> {
       return;
     case "workflows":
       await commandWorkflows(context, subcommand, maybeArg);
+      return;
+    case "schedules":
+      await commandSchedules(context, subcommand, maybeArg);
       return;
     case "services":
       await commandServices(context, subcommand);
@@ -3146,6 +3150,98 @@ async function commandServices(
   );
 }
 
+async function commandSchedules(
+  context: CliContext,
+  subcommand: string | undefined,
+  maybeArg: string | undefined,
+): Promise<void> {
+  if (subcommand === "list") {
+    const schedules = await readScheduleSnapshot(context.cwd);
+
+    writeJsonOrHuman(
+      context,
+      { ok: true, schedules },
+      schedules.length === 0
+        ? "No local schedule snapshot. Start the dev server with scheduled jobs first."
+        : schedules
+            .map(
+              (schedule) =>
+                `${schedule.name}  ${schedule.schedule}  next=${schedule.nextRunAt ?? "-"}  last=${schedule.lastStatus ?? "-"}`,
+            )
+            .join("\n"),
+    );
+    return;
+  }
+
+  if (subcommand === "run") {
+    if (!maybeArg) {
+      writeSchedulesUsage(context);
+      return;
+    }
+
+    let payload: unknown = {};
+    const rawPayload = context.values.get("payload");
+
+    if (rawPayload !== undefined) {
+      try {
+        payload = JSON.parse(rawPayload) as unknown;
+      } catch {
+        writeInvalidUsage(context, "--payload must be valid JSON.");
+        return;
+      }
+    }
+
+    const result = await buildCell({ rootDir: context.cwd });
+
+    if (!result.ok || !result.output || !result.manifest) {
+      writeBuildResult(context, result, "Build failed.");
+      process.exitCode = 4;
+      return;
+    }
+
+    const app = await importApp(result.output.serverBundle);
+    const manifest = result.manifest as CellManifest;
+    const host = await createLocalRuntimeHost({
+      stateDir: path.join(context.cwd, ".anvil/local"),
+      cellName: manifest.cell.name,
+    });
+
+    host.schedules.bind(app, host);
+    await host.schedules.start();
+
+    try {
+      const run = await host.schedules.trigger(maybeArg, {
+        payload,
+        trigger: "manual",
+      });
+
+      if (run.status === "failed") {
+        process.exitCode = 1;
+      }
+
+      writeJsonOrHuman(
+        context,
+        { ok: run.status === "completed", run },
+        `${run.id}  ${run.job}  ${run.status}`,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+
+      writeJsonOrHuman(
+        context,
+        { ok: false, errors: [{ code: "SCHEDULE_ERROR", message }] },
+        message,
+      );
+      process.exitCode = 1;
+    } finally {
+      await host.schedules.stop();
+    }
+    return;
+  }
+
+  writeSchedulesUsage(context);
+}
+
 function writeWorkflowsUsage(context: CliContext): void {
   writeJsonOrHuman(
     context,
@@ -3164,12 +3260,46 @@ function writeWorkflowsUsage(context: CliContext): void {
   process.exitCode = 2;
 }
 
+function writeSchedulesUsage(context: CliContext): void {
+  writeJsonOrHuman(
+    context,
+    {
+      ok: false,
+      errors: [
+        {
+          code: "INVALID_USAGE",
+          message:
+            "Usage: anvil-cloud schedules <list|run <name> [--payload '<json>']> [--json]",
+        },
+      ],
+    },
+    "Usage: anvil-cloud schedules <list|run <name> [--payload '<json>']> [--json]",
+  );
+  process.exitCode = 2;
+}
+
 async function readWorkflowRuns(rootDir: string): Promise<WorkflowRun[]> {
   const runs = await readOptionalJson(
     path.join(rootDir, ".anvil/local/workflows.json"),
   );
 
   return Array.isArray(runs) ? (runs as WorkflowRun[]) : [];
+}
+
+async function readScheduleSnapshot(
+  rootDir: string,
+): Promise<LocalScheduleStatus[]> {
+  const snapshot = await readOptionalJson(
+    path.join(rootDir, ".anvil/local/schedules.json"),
+  );
+
+  if (Array.isArray(snapshot)) {
+    return snapshot as LocalScheduleStatus[];
+  }
+
+  return isObject(snapshot) && Array.isArray(snapshot.schedules)
+    ? (snapshot.schedules as LocalScheduleStatus[])
+    : [];
 }
 
 function requireAuthUserId(
@@ -3312,6 +3442,8 @@ function writeHelp(): void {
       "  anvil-cloud workflows list [--json]",
       "  anvil-cloud workflows show <runId> [--json]",
       "  anvil-cloud workflows run <name> [--input '<json>'] [--json]",
+      "  anvil-cloud schedules list [--json]",
+      "  anvil-cloud schedules run <name> [--payload '<json>'] [--json]",
       "  anvil-cloud services list [--json]",
       "",
     ].join("\n"),
@@ -3653,6 +3785,7 @@ async function checkLocalState(rootDir: string): Promise<DoctorCheck> {
     logs: await fileExists(path.join(localDir, "logs.ndjson")),
     jobs: await fileExists(path.join(localDir, "jobs.json")),
     workflows: await fileExists(path.join(localDir, "workflows.json")),
+    schedules: await fileExists(path.join(localDir, "schedules.json")),
     services: await fileExists(path.join(localDir, "services.json")),
   };
   const hasAnyState = Object.values(files).some(Boolean);

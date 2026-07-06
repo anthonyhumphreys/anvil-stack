@@ -161,6 +161,7 @@ pre {
   <button data-tab="database">Database</button>
   <button data-tab="auth">Auth</button>
   <button data-tab="workflows">Workflows</button>
+  <button data-tab="schedules">Schedules</button>
   <button data-tab="services">Services</button>
   <button data-tab="diagnostics">Diagnostics</button>
 </nav>
@@ -236,6 +237,19 @@ pre {
     </table></div>
     <h2 id="wf-detail-title" style="display:none">Run detail</h2>
     <div class="panel" id="wf-detail" style="display:none"></div>
+  </section>
+
+  <section id="tab-schedules">
+    <h2>Scheduled jobs</h2>
+    <div class="panel"><table id="sched-table">
+      <thead><tr><th>job</th><th>schedule</th><th>next</th><th>last</th><th>status</th><th>actions</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+    <h2>Run history</h2>
+    <div class="panel"><table id="sched-runs">
+      <thead><tr><th>run</th><th>job</th><th>trigger</th><th>status</th><th>started</th><th>completed</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
   </section>
 
   <section id="tab-services">
@@ -676,6 +690,62 @@ anvil-cloud logs --local --json</pre>
     }).catch(function (error) { showError(error.message); });
   }
 
+  // Schedules
+  function loadSchedules() {
+    return getJson("/_anvil/schedules").then(function (payload) {
+      var schedules = payload.schedules || [];
+      var tbody = document.querySelector("#sched-table tbody");
+      var runsBody = document.querySelector("#sched-runs tbody");
+      tbody.textContent = "";
+      runsBody.textContent = "";
+      if (schedules.length === 0) {
+        tbody.appendChild(el("tr", null, [
+          el("td", { class: "muted", text: "No scheduled jobs declared." })
+        ]));
+        runsBody.appendChild(el("tr", null, [
+          el("td", { class: "muted", text: "No schedule runs yet." })
+        ]));
+        return;
+      }
+      schedules.forEach(function (schedule) {
+        var run = el("button", { class: "act", text: "Run" });
+        run.addEventListener("click", function () { runSchedule(schedule.name); });
+        tbody.appendChild(el("tr", null, [
+          el("td", { text: schedule.name || "" }),
+          el("td", { text: schedule.schedule || "" }),
+          el("td", { class: "muted", text: schedule.nextRunAt || "-" }),
+          el("td", { class: "muted", text: schedule.lastRunAt || "-" }),
+          el("td", null, [badge(schedule.running ? "running" : (schedule.lastStatus || "pending"))]),
+          el("td", null, [run])
+        ]));
+        (schedule.runs || []).forEach(function (entry) {
+          runsBody.appendChild(el("tr", null, [
+            el("td", { text: entry.id || "" }),
+            el("td", { text: entry.job || "" }),
+            el("td", { text: entry.trigger || "" }),
+            el("td", null, [badge(entry.status || "unknown")]),
+            el("td", { class: "muted", text: entry.startedAt || "" }),
+            el("td", { class: "muted", text: entry.completedAt || "-" })
+          ]));
+        });
+      });
+      if (!runsBody.firstChild) {
+        runsBody.appendChild(el("tr", null, [
+          el("td", { class: "muted", text: "No schedule runs yet." })
+        ]));
+      }
+    });
+  }
+
+  function runSchedule(name) {
+    postJson("/_anvil/schedules/" + encodeURIComponent(name) + "/run", { payload: {} })
+      .then(function () {
+        clearError();
+        return loadSchedules();
+      })
+      .catch(function (error) { showError(error.message); });
+  }
+
   // Services
   function loadServices() {
     return getJson("/_anvil/services").then(function (payload) {
@@ -722,6 +792,7 @@ anvil-cloud logs --local --json</pre>
       loadTables(),
       loadUsers(),
       loadRuns(),
+      loadSchedules(),
       loadServices()
     ]).catch(function (error) { showError(error.message); });
   }

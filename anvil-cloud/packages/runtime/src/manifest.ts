@@ -16,6 +16,8 @@ export type EndpointInspection = {
 export type JobInspection = {
   name: string;
   schedule?: string;
+  overlap?: "skip" | "queue";
+  timeoutMs?: number;
 };
 
 export type WorkflowInspection = {
@@ -105,6 +107,14 @@ export function inspectAppDefinition(app: AppDefinition): AppInspection {
 
       if (definition.schedule !== undefined) {
         inspected.schedule = definition.schedule;
+      }
+
+      if (definition.overlap !== undefined) {
+        inspected.overlap = definition.overlap;
+      }
+
+      if (definition.timeoutMs !== undefined) {
+        inspected.timeoutMs = definition.timeoutMs;
       }
 
       return inspected;
