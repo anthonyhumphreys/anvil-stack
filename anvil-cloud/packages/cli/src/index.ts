@@ -1351,9 +1351,28 @@ async function commandManifestDiff(context: CliContext): Promise<void> {
     context.cwd,
     context.values.get("from") ?? ".anvil/dist/manifest.json",
   );
-  const fromManifest = await readManifestForDiff(fromPath);
+  const fromResult = await readManifestForDiff(fromPath);
 
-  if (!fromManifest) {
+  if (!fromResult.ok) {
+    if (fromResult.kind === "invalid-json") {
+      const relativePath = path.relative(context.cwd, fromPath);
+      writeJsonOrHuman(
+        context,
+        {
+          ok: false,
+          errors: [
+            {
+              code: "MANIFEST_INVALID_JSON",
+              message: `${fromResult.message} (${relativePath})`,
+            },
+          ],
+        },
+        `${fromResult.message} (${relativePath})`,
+      );
+      process.exitCode = 2;
+      return;
+    }
+
     const payload = {
       ok: true,
       status: "no-baseline",
@@ -1384,6 +1403,16 @@ async function commandManifestDiff(context: CliContext): Promise<void> {
   if (!next.ok) {
     if (next.result) {
       writeBuildResult(context, next.result, "Manifest diff build complete.");
+    } else if (next.error) {
+      writeJsonOrHuman(
+        context,
+        {
+          ok: false,
+          errors: [next.error],
+        },
+        next.error.message,
+      );
+      process.exitCode = 2;
     } else {
       writeJsonOrHuman(
         context,
@@ -1403,7 +1432,7 @@ async function commandManifestDiff(context: CliContext): Promise<void> {
     return;
   }
 
-  const diff = diffCellManifests(fromManifest, next.manifest);
+  const diff = diffCellManifests(fromResult.manifest, next.manifest);
   const payload = {
     ok: diff.summary.errors === 0,
     status:
@@ -1412,7 +1441,7 @@ async function commandManifestDiff(context: CliContext): Promise<void> {
         : diff.changed
           ? "changed"
           : "unchanged",
-    from: manifestDiffSource(fromPath, fromManifest),
+    from: manifestDiffSource(fromPath, fromResult.manifest),
     to: manifestDiffSource(next.path, next.manifest),
     summary: diff.summary,
     changes: diff.changes,
@@ -1437,6 +1466,7 @@ type LoadedManifestForDiff =
       ok: false;
       path: string;
       result?: BuildResult;
+      error?: { code: string; message: string };
     };
 
 async function loadNextManifestForDiff(
@@ -1446,11 +1476,25 @@ async function loadNextManifestForDiff(
 
   if (explicitTo) {
     const toPath = path.resolve(context.cwd, explicitTo);
-    const manifest = await readManifestForDiff(toPath);
+    const toResult = await readManifestForDiff(toPath);
 
-    return manifest
-      ? { ok: true, manifest, path: toPath, diagnostics: [] }
-      : { ok: false, path: toPath };
+    if (toResult.ok) {
+      return { ok: true, manifest: toResult.manifest, path: toPath, diagnostics: [] };
+    }
+
+    if (toResult.kind === "invalid-json") {
+      const relativePath = path.relative(context.cwd, toPath);
+      return {
+        ok: false,
+        path: toPath,
+        error: {
+          code: "MANIFEST_INVALID_JSON",
+          message: `${toResult.message} (${relativePath})`,
+        },
+      };
+    }
+
+    return { ok: false, path: toPath };
   }
 
   const scratchDir = await mkdtemp(path.join(os.tmpdir(), "anvil-manifest-"));
@@ -1481,12 +1525,49 @@ async function loadNextManifestForDiff(
   }
 }
 
+type ReadManifestForDiffResult =
+  | { ok: true; manifest: CellManifest }
+  | { ok: false; kind: "not-found" }
+  | { ok: false; kind: "invalid-json"; message: string };
+
 async function readManifestForDiff(
   manifestPath: string,
-): Promise<CellManifest | null> {
-  const manifest = await readOptionalJson(manifestPath);
+): Promise<ReadManifestForDiffResult> {
+  let raw: string;
 
-  return isCellManifestForDiff(manifest) ? manifest : null;
+  try {
+    raw = await readFile(manifestPath, "utf8");
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "ENOENT"
+    ) {
+      return { ok: false, kind: "not-found" };
+    }
+
+    throw error;
+  }
+
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch (error) {
+    return {
+      ok: false,
+      kind: "invalid-json",
+      message:
+        error instanceof Error
+          ? `Manifest is not valid JSON: ${error.message}`
+          : "Manifest is not valid JSON.",
+    };
+  }
+
+  return isCellManifestForDiff(parsed)
+    ? { ok: true, manifest: parsed }
+    : { ok: false, kind: "not-found" };
 }
 
 function isCellManifestForDiff(value: unknown): value is CellManifest {

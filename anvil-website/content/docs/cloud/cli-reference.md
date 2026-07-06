@@ -401,7 +401,7 @@ returns `AWS_DESTROY_OPERATION_FAILED`.
 | `2`  | Invalid CLI usage                                   |
 | `3`  | Project validation failed                           |
 | `4`  | Build failed                                        |
-| `5`  | Runtime unavailable or remote reader not configured |
+| `5`  | Runtime unavailable, remote reader not configured, doctor blocking errors, or manifest diff blocking errors |
 | `6`  | Deploy or destroy failed                            |
 
 ## Automation rule
