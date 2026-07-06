@@ -129,7 +129,7 @@ describe("main", () => {
         checks: Array<{
           id: string;
           status: string;
-          docs?: string;
+          docs: string;
           details?: unknown;
         }>;
       };
