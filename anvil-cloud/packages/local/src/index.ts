@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import http, {
@@ -1356,6 +1357,47 @@ async function runRuntimeRequest(
   await sendRuntimeResponse(options.response, response);
 }
 
+type GuardedFetch = typeof fetch & { __anvilOutboundFetchGuard?: boolean };
+
+const outboundFetchAllowHostsStorage = new AsyncLocalStorage<Set<string>>();
+
+function ensureOutboundFetchGuardInstalled(): void {
+  const currentFetch = globalThis.fetch as GuardedFetch;
+
+  if (currentFetch.__anvilOutboundFetchGuard) {
+    return;
+  }
+
+  const originalFetch = globalThis.fetch;
+
+  const guardedFetch = (async (input, init) => {
+    const allowedHosts = outboundFetchAllowHostsStorage.getStore();
+
+    if (allowedHosts) {
+      const host = hostForFetchInput(input);
+
+      if (!host || !allowedHosts.has(host)) {
+        throw new RuntimeError(
+          "OUTBOUND_FETCH_NOT_ALLOWED",
+          host
+            ? `Fetch host '${host}' is not declared in capabilities.outboundFetch.allow.`
+            : "Fetch target could not be resolved against capabilities.outboundFetch.allow.",
+          403,
+          {
+            host,
+            allowedHosts: Array.from(allowedHosts).sort(),
+          },
+        );
+      }
+    }
+
+    return originalFetch(input, init);
+  }) as GuardedFetch;
+
+  guardedFetch.__anvilOutboundFetchGuard = true;
+  globalThis.fetch = guardedFetch;
+}
+
 async function withOutboundFetchPolicy<T>(
   allowHosts: string[],
   run: () => Promise<T>,
@@ -1364,34 +1406,9 @@ async function withOutboundFetchPolicy<T>(
     return run();
   }
 
-  const originalFetch = globalThis.fetch;
-  const allowedHosts = new Set(allowHosts);
+  ensureOutboundFetchGuardInstalled();
 
-  globalThis.fetch = (async (input, init) => {
-    const host = hostForFetchInput(input);
-
-    if (!host || !allowedHosts.has(host)) {
-      throw new RuntimeError(
-        "OUTBOUND_FETCH_NOT_ALLOWED",
-        host
-          ? `Fetch host '${host}' is not declared in capabilities.outboundFetch.allow.`
-          : "Fetch target could not be resolved against capabilities.outboundFetch.allow.",
-        403,
-        {
-          host,
-          allowedHosts: Array.from(allowedHosts).sort(),
-        },
-      );
-    }
-
-    return originalFetch(input, init);
-  }) as typeof fetch;
-
-  try {
-    return await run();
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+  return outboundFetchAllowHostsStorage.run(new Set(allowHosts), run);
 }
 
 function outboundFetchAllowListFromManifest(manifest: unknown): string[] {
@@ -1405,9 +1422,10 @@ function outboundFetchAllowListFromManifest(manifest: unknown): string[] {
     return [];
   }
 
-  return outboundFetch.allow.filter(
-    (host): host is string => typeof host === "string" && host.length > 0,
-  );
+  return outboundFetch.allow
+    .filter((host): host is string => typeof host === "string")
+    .map((host) => host.trim())
+    .filter((host) => host.length > 0);
 }
 
 function hostForFetchInput(input: Parameters<typeof fetch>[0]): string | null {
