@@ -54,6 +54,7 @@ Human output can be friendly, but automation output must be stable.
 | `anvil cloud inspect --local` | Inspect local manifest, auth, database counts, and recent errors. |
 | `anvil cloud lens` | Verify the local runtime is reachable and print the Anvil Lens URL. |
 | `anvil cloud logs --local` | Read local NDJSON logs. |
+| `anvil cloud usage --local` | Read local usage events: invocations, tokens, estimated cost, budget warnings, and top consumers. |
 | `anvil cloud db list --local` | List local database tables. |
 | `anvil cloud db dump <table> --local` | Dump local table rows. |
 | `anvil cloud deploy --preview` | Build and synthesize AWS preview deployment output, with provisioning when configured. |

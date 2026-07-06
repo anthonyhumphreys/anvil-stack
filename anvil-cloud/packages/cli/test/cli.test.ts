@@ -1355,6 +1355,101 @@ describe("main", () => {
     }
   });
 
+  it("emits local runtime usage summaries", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-usage-"));
+    const originalCwd = process.cwd();
+    const originalExitCode = process.exitCode;
+    const env = snapshotEnv([
+      "ANVIL_USAGE_DAILY_BUDGET_USD",
+      "ANVIL_USAGE_SESSION_BUDGET_USD",
+    ]);
+
+    try {
+      process.exitCode = undefined;
+      process.chdir(rootDir);
+      process.env.ANVIL_USAGE_DAILY_BUDGET_USD = "0.000001";
+      process.env.ANVIL_USAGE_SESSION_BUDGET_USD = "0.000001";
+      await mkdir(path.join(rootDir, ".anvil/local"), { recursive: true });
+      await writeFile(
+        path.join(rootDir, ".anvil/local/usage.ndjson"),
+        [
+          JSON.stringify({
+            timestamp: "2026-07-06T10:00:00.000Z",
+            cell: "notes",
+            scope: "agent",
+            name: "support",
+            sessionId: "session_1",
+            provider: "aws-bedrock",
+            model: "anthropic.claude",
+            invocations: 1,
+            inputTokens: 100,
+            outputTokens: 50,
+            totalTokens: 150,
+            estimatedCostUsd: 0.01,
+            sandboxRuntimeMs: 0,
+          }),
+          JSON.stringify({
+            timestamp: "2026-07-06T10:05:00.000Z",
+            cell: "notes",
+            scope: "cell",
+            name: "listNotes",
+            kind: "query",
+            invocations: 1,
+            inputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 0,
+            estimatedCostUsd: 0,
+            sandboxRuntimeMs: 0,
+          }),
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+
+      const output = await captureStdout(() =>
+        main(["usage", "--local", "--json"]),
+      );
+      const payload = JSON.parse(output) as {
+        ok: boolean;
+        target: { adapter: string };
+        usage: {
+          totals: { invocations: number; totalTokens: number; estimatedCostUsd: number };
+          byAgent: Record<string, { invocations: number }>;
+          budgets: Array<{ id: string; status: string }>;
+        };
+      };
+
+      expect(payload).toMatchObject({
+        ok: true,
+        target: {
+          adapter: "local",
+        },
+        usage: {
+          totals: {
+            invocations: 2,
+            totalTokens: 150,
+            estimatedCostUsd: 0.01,
+          },
+          byAgent: {
+            support: {
+              invocations: 1,
+            },
+          },
+          budgets: expect.arrayContaining([
+            expect.objectContaining({ id: "daily", status: "warning" }),
+            expect.objectContaining({ id: "session", status: "warning" }),
+          ]),
+        },
+      });
+      expect(process.exitCode).toBeUndefined();
+    } finally {
+      process.chdir(originalCwd);
+      process.exitCode = originalExitCode;
+      restoreEnvSnapshot(env);
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("reports AWS Lambda MicroVM sandbox readiness for sandbox agents", async () => {
     const rootDir = await createAgentCell({
       modelProvider: "aws-bedrock",
