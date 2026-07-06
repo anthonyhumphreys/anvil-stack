@@ -21,6 +21,7 @@ Options:
 
 ```txt
 --client vite-react|expo-router|headless
+--template crud|auth|workflow|service|agent|sandbox
 ```
 
 `vite-react` is the default. `expo-router` scaffolds an Expo Router client
@@ -33,6 +34,17 @@ local development they fall back to `http://localhost:8787`, except Android
 emulators use `http://10.0.2.2:8787` so the native app can reach the host
 runtime. The scaffold includes `src/expo-env.d.ts` so the public runtime URL is
 typed without adding Node globals to Cell authoring.
+
+`--template` selects the runnable example pattern to scaffold. Every template
+keeps the starter query/mutation client path working, then adds one canonical
+primitive:
+
+- `crud`: table, query, mutation
+- `auth`: auth-required query/mutation with owner data
+- `workflow`: durable workflow
+- `service`: supervised service
+- `agent`: mounted agent with approval contract
+- `sandbox`: mounted sandbox-required agent
 
 Expected output:
 
@@ -53,6 +65,7 @@ JSON output:
   "client": {
     "kind": "vite-react"
   },
+  "template": "crud",
   "path": "./notes",
   "next": ["cd notes", "anvil-cloud dev"]
 }

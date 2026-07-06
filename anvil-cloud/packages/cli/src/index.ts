@@ -54,6 +54,13 @@ type CliContext = {
 };
 
 type StarterClientKind = "vite-react" | "expo-router" | "headless";
+type StarterTemplate =
+  | "agent"
+  | "auth"
+  | "crud"
+  | "sandbox"
+  | "service"
+  | "workflow";
 
 type DoctorStatus = "ok" | "info" | "warning" | "error";
 
@@ -535,8 +542,9 @@ async function commandNew(
   }
 
   const clientKind = readStarterClientKind(context);
+  const template = readStarterTemplate(context);
 
-  if (!clientKind) {
+  if (!clientKind || !template) {
     writeJsonOrHuman(
       context,
       {
@@ -545,11 +553,11 @@ async function commandNew(
           {
             code: "INVALID_USAGE",
             message:
-              "Usage: anvil-cloud new <name> [--client vite-react|expo-router|headless]",
+              "Usage: anvil-cloud new <name> [--client vite-react|expo-router|headless] [--template crud|auth|workflow|service|agent|sandbox]",
           },
         ],
       },
-      "Usage: anvil-cloud new <name> [--client vite-react|expo-router|headless]",
+      "Usage: anvil-cloud new <name> [--client vite-react|expo-router|headless] [--template crud|auth|workflow|service|agent|sandbox]",
     );
     process.exitCode = 2;
     return;
@@ -577,6 +585,7 @@ async function commandNew(
     `${JSON.stringify(
       {
         name,
+        template,
         client: {
           kind: clientKind,
         },
@@ -619,6 +628,7 @@ async function commandNew(
       "# Anvil Cell Instructions",
       "",
       "Use Anvil Runtime capabilities through ctx. Do not import provider SDKs directly.",
+      `Template: ${template}. Keep the demonstrated primitive runnable before adding adjacent concepts.`,
       "",
     ].join("\n"),
     "utf8",
@@ -696,41 +706,7 @@ async function commandNew(
   );
   await writeFile(
     path.join(cellDir, "src", "cell.server.ts"),
-    [
-      'import { app, boolean, mutation, query, table, text } from "@anvil-cloud/runtime";',
-      "",
-      "export default app({",
-      "  schema: {",
-      "    todos: table({",
-      "      text: text().min(1).max(500),",
-      "      done: boolean().default(false),",
-      "    }),",
-      "  },",
-      "  capabilities: {",
-      "    database: true,",
-      "  },",
-      "  queries: {",
-      "    listTodos: query({",
-      '      auth: "public",',
-      "      handler: async (ctx) => {",
-      "        return ctx.db.todos.all();",
-      "      },",
-      "    }),",
-      "  },",
-      "  mutations: {",
-      "    addTodo: mutation<{ text: string }>({",
-      '      auth: "public",',
-      "      handler: async (ctx, input) => {",
-      "        return ctx.db.todos.insert({",
-      "          text: input.text,",
-      "          done: false,",
-      "        });",
-      "      },",
-      "    }),",
-      "  },",
-      "});",
-      "",
-    ].join("\n"),
+    createStarterServerSource(template),
     "utf8",
   );
   if (clientKind === "expo-router") {
@@ -1271,6 +1247,7 @@ async function commandNew(
       client: {
         kind: clientKind,
       },
+      template,
       path: `./${name}`,
       next:
         clientKind === "expo-router"
@@ -1283,6 +1260,7 @@ async function commandNew(
     },
     [
       `Created Anvil Cell ${name}`,
+      `Template: ${template}`,
       "",
       "Next steps:",
       `  cd ${name}`,
@@ -3276,13 +3254,30 @@ function readStarterClientKind(context: CliContext): StarterClientKind | null {
   return null;
 }
 
+function readStarterTemplate(context: CliContext): StarterTemplate | null {
+  const value = context.values.get("template") ?? "crud";
+
+  if (
+    value === "agent" ||
+    value === "auth" ||
+    value === "crud" ||
+    value === "sandbox" ||
+    value === "service" ||
+    value === "workflow"
+  ) {
+    return value;
+  }
+
+  return null;
+}
+
 function writeHelp(): void {
   process.stdout.write(
     [
       "Anvil Cloud CLI",
       "",
       "Commands:",
-      "  anvil-cloud new <name> [--client vite-react|expo-router|headless]",
+      "  anvil-cloud new <name> [--client vite-react|expo-router|headless] [--template crud|auth|workflow|service|agent|sandbox]",
       "  anvil-cloud dev [--json] [--agent] [--port 8787] [--client-port 5173]",
       "  anvil-cloud doctor [--json] [--port 8787] [--client-port 5173]",
       "  anvil-cloud check [--json]",
@@ -4412,6 +4407,177 @@ function createStarterScripts(
     "destroy:preview:dry-run": `anvil-cloud destroy --preview --app ${name} --yes --dry-run --json`,
     ...(clientKind === "expo-router" ? { start: "expo start" } : {}),
   };
+}
+
+function createStarterServerSource(template: StarterTemplate): string {
+  const imports = new Set([
+    "app",
+    "boolean",
+    "mutation",
+    "query",
+    "table",
+    "text",
+  ]);
+  const capabilities = ["    database: true,"];
+  const extraBlocks: string[] = [];
+
+  if (template === "auth") {
+    imports.add("userId");
+  }
+
+  if (template === "workflow") {
+    imports.add("workflow");
+    capabilities.push("    workflows: true,");
+    extraBlocks.push(
+      [
+        "  workflows: {",
+        "    onboardUser: workflow({",
+        "      steps: [",
+        "        {",
+        '          name: "seedWelcomeTodo",',
+        "          handler: async (ctx) => {",
+        "            return ctx.db.todos.insert({",
+        '              text: "Welcome to your new Cell",',
+        "              done: false,",
+        "            });",
+        "          },",
+        "        },",
+        "      ],",
+        "    }),",
+        "  },",
+      ].join("\n"),
+    );
+  }
+
+  if (template === "service") {
+    imports.add("service");
+    capabilities.push("    services: true,");
+    extraBlocks.push(
+      [
+        "  services: {",
+        "    heartbeat: service({",
+        '      restart: "always",',
+        "      handler: async (ctx, controls) => {",
+        "        while (!controls.stopping()) {",
+        '          await ctx.log.info("Heartbeat service tick");',
+        "          await new Promise((resolve) => setTimeout(resolve, 30000));",
+        "        }",
+        "      },",
+        "    }),",
+        "  },",
+      ].join("\n"),
+    );
+  }
+
+  if (template === "agent" || template === "sandbox") {
+    imports.add("defineAgent");
+    imports.add("endpoint");
+    const runtime =
+      template === "sandbox"
+        ? [
+            "      runtime: {",
+            '        sandbox: "required",',
+            '        humanApproval: "required",',
+            "      },",
+          ]
+        : [];
+    extraBlocks.push(
+      [
+        "  agents: {",
+        "    support: defineAgent({",
+        '      name: "support",',
+        '      instructions: "Stay inside the declared Cell contract.",',
+        '      model: { provider: "local", model: "stub" },',
+        "      capabilities: {",
+        '        cells: ["read"],',
+        '        filesystem: "none",',
+        '        secrets: "none",',
+        "      },",
+        "      approvals: {",
+        '        requiredFor: ["email.sendExternal"],',
+        "      },",
+        ...runtime,
+        "    }),",
+        "  },",
+        "  endpoints: {",
+        "    chat: endpoint({",
+        '      method: "POST",',
+        '      path: "/api/chat",',
+        '      auth: "public",',
+        '      agent: "support",',
+        "      handler: async () => ({ ok: true }),",
+        "    }),",
+        "  },",
+      ].join("\n"),
+    );
+  }
+
+  const schemaFields =
+    template === "auth"
+      ? [
+          "      text: text().min(1).max(500),",
+          "      done: boolean().default(false),",
+          "      ownerId: userId(),",
+        ]
+      : [
+          "      text: text().min(1).max(500),",
+          "      done: boolean().default(false),",
+        ];
+  const listTodos =
+    template === "auth"
+      ? [
+          "        return ctx.db.todos",
+          '          .where("ownerId", "=", ctx.auth.requireUser())',
+          "          .all();",
+        ]
+      : ["        return ctx.db.todos.all();"];
+  const insertFields =
+    template === "auth"
+      ? [
+          "          text: input.text,",
+          "          done: false,",
+          "          ownerId: ctx.auth.requireUser(),",
+        ]
+      : ["          text: input.text,", "          done: false,"];
+  const auth = template === "auth" ? "required" : "public";
+  const sections = [
+    "  schema: {",
+    "    todos: table({",
+    ...schemaFields,
+    "    }),",
+    "  },",
+    "  capabilities: {",
+    ...capabilities,
+    "  },",
+    "  queries: {",
+    "    listTodos: query({",
+    `      auth: "${auth}",`,
+    "      handler: async (ctx) => {",
+    ...listTodos,
+    "      },",
+    "    }),",
+    "  },",
+    "  mutations: {",
+    "    addTodo: mutation<{ text: string }>({",
+    `      auth: "${auth}",`,
+    "      handler: async (ctx, input) => {",
+    "        return ctx.db.todos.insert({",
+    ...insertFields,
+    "        });",
+    "      },",
+    "    }),",
+    "  },",
+    ...extraBlocks,
+  ];
+
+  return [
+    `import { ${Array.from(imports).sort().join(", ")} } from "@anvil-cloud/runtime";`,
+    "",
+    "export default app({",
+    sections.join("\n"),
+    "});",
+    "",
+  ].join("\n");
 }
 
 function createStarterDependencies(
