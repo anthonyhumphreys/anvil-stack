@@ -1218,6 +1218,9 @@ describe("main", () => {
           support: {
             kind: "anvil.agent",
             name: "support",
+            credentialBroker: {
+              credentials: [],
+            },
           },
         },
       });

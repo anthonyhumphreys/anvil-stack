@@ -167,6 +167,21 @@ describe("AwsLambdaMicroVmSandboxProvider", () => {
         capabilities: {
           git: ["read"],
           filesystem: "read-write",
+          network: { allow: ["github.com"] },
+          secrets: "brokered",
+        },
+        credentialBroker: {
+          credentials: [
+            {
+              credential: "GITHUB_TOKEN",
+              domains: ["github.com"],
+              inject: {
+                kind: "header",
+                name: "authorization",
+                scheme: "bearer",
+              },
+            },
+          ],
         },
         approvals: {
           requiredFor: ["git.push"],
@@ -195,6 +210,32 @@ describe("AwsLambdaMicroVmSandboxProvider", () => {
       expiresAt: "2026-06-30T11:00:00.000Z",
     });
     expect(JSON.stringify(sent[0])).toContain("release-engineer");
+    const runHookPayload = JSON.parse(
+      String(
+        (
+          sent[0] as {
+            input?: { runHookPayload?: string };
+          }
+        ).input?.runHookPayload,
+      ),
+    ) as Record<string, unknown>;
+    expect(runHookPayload).toMatchObject({
+      credentialBroker: {
+        credentials: [
+          {
+            credential: "GITHUB_TOKEN",
+            domains: ["github.com"],
+            inject: {
+              kind: "header",
+              name: "authorization",
+              scheme: "bearer",
+            },
+          },
+        ],
+      },
+    });
+    expect(JSON.stringify(runHookPayload)).not.toContain("Bearer");
+    expect(JSON.stringify(runHookPayload)).not.toContain("ghp_");
 
     await expect(provider.inspect("mvm_123")).resolves.toMatchObject({
       id: "mvm_123",

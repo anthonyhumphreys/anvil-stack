@@ -16,8 +16,9 @@ wait for approval, resume with state, and leave evidence behind.
 The first implementation slice exists: Anvil has a provider-neutral sandbox
 contract, an AWS Lambda MicroVM sandbox provider, AWS compatibility checks,
 preview-plan entries, and CLI readiness output. The full hosted experience still
-needs policy brokering, streamed tools, workspace snapshots, Lens views, and
-remote inspect. Technically functional, not yet wearing a cape.
+needs live network-bound credential injection, streamed tools, workspace
+snapshots, Lens views, and remote inspect. Technically functional, not yet
+wearing a cape.
 
 ## Why sandboxes exist
 
@@ -77,6 +78,19 @@ defineAgent({
     filesystem: "read-write",
     secrets: "brokered",
   },
+  credentialBroker: {
+    credentials: [
+      {
+        credential: "GITHUB_TOKEN",
+        domains: ["github.com"],
+        inject: {
+          kind: "header",
+          name: "authorization",
+          scheme: "bearer",
+        },
+      },
+    ],
+  },
   approvals: {
     requiredFor: ["git.push", "deploy.preview"],
   },
@@ -90,6 +104,13 @@ defineAgent({
 
 The adapter decides how to satisfy `runtime.sandbox`. On AWS, the target is a
 Lambda MicroVM-backed sandbox session.
+
+`credentialBroker` is a manifest policy, not a secret container. The generated
+manifest records credential names, allowed domains, and header/query injection
+targets. It does not include credential values. Builder validation requires the
+Cell to declare each credential in `capabilities.secrets`, the agent to declare
+`secrets: "brokered"`, the agent to require a sandbox, and the broker domains to
+be present in `capabilities.network.allow`.
 
 ## AWS implementation
 
@@ -127,7 +148,13 @@ The provider-neutral sandbox contract is:
 type AgentSandboxSession = {
   id: string;
   agent: string;
-  status: "starting" | "active" | "waiting-for-approval" | "suspended" | "terminated" | "expired";
+  status:
+    | "starting"
+    | "active"
+    | "waiting-for-approval"
+    | "suspended"
+    | "terminated"
+    | "expired";
   endpointUrl?: string;
   startedAt: string;
   expiresAt?: string;
@@ -236,6 +263,8 @@ Implemented today:
 - AWS Bedrock inference provider
 - AWS compatibility reporting
 - provider-neutral Agent Sandbox types in `@anvil-cloud/runtime`
+- brokered credential declarations in agent manifests and sandbox startup
+  payloads
 - `AwsLambdaMicroVmSandboxProvider` in `@anvil-cloud/aws`
 - `ANVIL_AWS_AGENT_SANDBOX_IMAGE`-gated AWS support for sandbox-required agents
 - AWS preview plan changes, review gates, and cost drivers for `agent-sandboxes`
@@ -243,7 +272,7 @@ Implemented today:
 
 Not implemented yet:
 
-- hosted policy broker around live sandbox tools
+- live network-bound credential injection around sandbox tools
 - session streaming transport
 - workspace snapshot storage
 - production approval UI

@@ -63,9 +63,23 @@ export default defineAgent({
   capabilities: {
     cells: ["read"],
     database: ["supportTickets.read", "supportTickets.update"],
-    network: { allow: ["api.statuspage.io"] },
+    network: { allow: ["github.com", "api.statuspage.io"] },
     filesystem: "none",
     secrets: "brokered",
+    git: ["clone"],
+  },
+  credentialBroker: {
+    credentials: [
+      {
+        credential: "GITHUB_TOKEN",
+        domains: ["github.com"],
+        inject: {
+          kind: "header",
+          name: "authorization",
+          scheme: "bearer",
+        },
+      },
+    ],
   },
   approvals: {
     requiredFor: ["supportTickets.bulkUpdate", "email.sendExternal"],
@@ -88,6 +102,50 @@ Least privilege is the default:
 - `filesystem` defaults to `none`
 - `secrets` defaults to `none`
 - `network` defaults to `restricted`
+
+## Broker credentials to sandboxes
+
+Brokered credentials let an agent reach a private external resource without
+placing the raw secret in sandbox environment variables.
+
+The Cell declares the secret name:
+
+```ts
+capabilities: {
+  secrets: ["GITHUB_TOKEN"],
+}
+```
+
+The mounted agent declares the broker policy:
+
+```ts
+capabilities: {
+  network: { allow: ["github.com"] },
+  secrets: "brokered",
+},
+credentialBroker: {
+  credentials: [
+    {
+      credential: "GITHUB_TOKEN",
+      domains: ["github.com"],
+      inject: {
+        kind: "header",
+        name: "authorization",
+        scheme: "bearer",
+      },
+    },
+  ],
+},
+runtime: {
+  sandbox: "required",
+}
+```
+
+The generated manifest records credential names, allowed domains, and
+header/query injection targets. It does not contain secret values. Validation
+fails if the Cell does not declare the credential, if the agent does not use
+`secrets: "brokered"`, if the agent is not sandbox-required, or if the target
+domain is outside `capabilities.network.allow`.
 
 ## Mount an agent in a Cell
 
@@ -127,11 +185,11 @@ Builder validation catches endpoint or workflow references to missing mounted ag
 
 ## Project Agents, Cell Agents, and Agent Cells
 
-| Shape | Use it for |
-| --- | --- |
-| Project Agent | Workspace operations: review a Cell manifest, inspect capability changes, draft release notes, prepare preview deployment, explain blast radius, or check policy. |
-| Cell Agent | Runtime behavior inside a Cell: endpoint, job, workflow, mutation, or internal app behavior. |
-| Agent Cell | A Cell whose primary product surface is an agent-powered experience. The Cell remains the boundary for auth, capabilities, approvals, validation, local runtime, and deployment adapters. |
+| Shape         | Use it for                                                                                                                                                                                |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Project Agent | Workspace operations: review a Cell manifest, inspect capability changes, draft release notes, prepare preview deployment, explain blast radius, or check policy.                         |
+| Cell Agent    | Runtime behavior inside a Cell: endpoint, job, workflow, mutation, or internal app behavior.                                                                                              |
+| Agent Cell    | A Cell whose primary product surface is an agent-powered experience. The Cell remains the boundary for auth, capabilities, approvals, validation, local runtime, and deployment adapters. |
 
 Project-agent discovery currently reports instruction files under
 `agents/**/instructions.md`. Mounted Cell Agents are wired through the current

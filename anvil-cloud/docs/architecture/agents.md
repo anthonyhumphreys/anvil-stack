@@ -44,9 +44,23 @@ export default defineAgent({
   capabilities: {
     cells: ["read"],
     database: ["supportTickets.read", "supportTickets.update"],
-    network: { allow: ["api.statuspage.io"] },
+    network: { allow: ["github.com", "api.statuspage.io"] },
     filesystem: "none",
     secrets: "brokered",
+    git: ["clone"],
+  },
+  credentialBroker: {
+    credentials: [
+      {
+        credential: "GITHUB_TOKEN",
+        domains: ["github.com"],
+        inject: {
+          kind: "header",
+          name: "authorization",
+          scheme: "bearer",
+        },
+      },
+    ],
   },
   approvals: {
     requiredFor: ["supportTickets.bulkUpdate", "email.sendExternal"],
@@ -64,6 +78,42 @@ export default defineAgent({
 ```
 
 Omitted capabilities are unavailable. `filesystem` defaults to `none`, `secrets` defaults to `none`, and `network` defaults to `restricted`.
+
+## Credential Brokering
+
+Agents that need private external resources can declare brokered credentials
+without receiving raw secret values. The Cell declares the secret name in
+`capabilities.secrets`; the agent declares `capabilities.secrets: "brokered"`,
+`runtime.sandbox: "required"`, explicit network domains, and a
+`credentialBroker` rule for each credential.
+
+Broker rules are provider-neutral:
+
+```ts
+credentialBroker: {
+  credentials: [
+    {
+      credential: "GITHUB_TOKEN",
+      domains: ["github.com"],
+      inject: {
+        kind: "header",
+        name: "authorization",
+        scheme: "bearer",
+      },
+    },
+  ],
+}
+```
+
+The manifest records credential names, domains, and injection targets, never
+secret values. Validation fails when a brokered credential is missing from the
+Cell secret declarations, when the agent lacks `secrets: "brokered"`, when the
+agent is not sandbox-required, or when the broker domain is outside
+`capabilities.network.allow`.
+
+Provider adapters receive the broker policy as part of sandbox startup. Live
+network-boundary injection is adapter execution work; Cell and agent code should
+not read platform secrets directly.
 
 ## Local Runtime Model
 
@@ -238,6 +288,8 @@ An Agent Sandbox carries:
 
 - the agent manifest and mounted Cell context;
 - declared capabilities and approval-gated action ids;
+- brokered credential policy: credential names, allowed domains, and
+  header/query injection targets;
 - a workspace snapshot or checked-out project state;
 - a brokered secret boundary rather than raw secret reads;
 - network policy derived from agent capabilities;

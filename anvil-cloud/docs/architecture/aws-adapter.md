@@ -241,13 +241,16 @@ An AWS-backed Agent Sandbox provider now provides:
   test runs, browser automation, scanners, and MCP/tool processes;
 - a workspace filesystem with session state for the configured lifetime;
 - a dedicated session endpoint for streamed interaction;
+- sandbox startup payloads that include brokered credential policy
+  declarations from the agent manifest, without including credential values;
 - AWS SDK lifecycle calls for run, inspect, suspend, resume, terminate, and
   auth-token creation;
 - lifecycle metadata: started, active, waiting for approval, suspended,
   resumed, terminated, expired.
 
-The policy broker, streamed command transport, workspace snapshot store,
-sandbox-aware Lens view, and artifact/diff capture are still follow-on work.
+The network-bound credential injection broker, streamed command transport,
+workspace snapshot store, sandbox-aware Lens view, and artifact/diff capture are
+still follow-on work.
 
 ### Compatibility mapping
 

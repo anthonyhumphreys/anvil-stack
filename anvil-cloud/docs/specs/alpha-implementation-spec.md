@@ -85,6 +85,14 @@ Sandboxes are adapter-backed and capability-bound. On AWS, `@anvil-cloud/aws`
 provides a Lambda MicroVM-backed sandbox provider when a MicroVM image is
 configured.
 
+Agents can declare brokered credential policy for sandbox execution. The Cell
+declares secret names in `capabilities.secrets`; the agent declares
+`capabilities.secrets: "brokered"`, `runtime.sandbox: "required"`, explicit
+network domains, and `credentialBroker.credentials[]` entries mapping a
+credential name to header/query injection rules. Manifests and sandbox startup
+payloads include the policy, not secret values. Provider-side network injection
+is still adapter execution work.
+
 ## Alpha golden path
 
 ```sh
