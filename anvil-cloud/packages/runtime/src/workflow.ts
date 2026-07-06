@@ -1,7 +1,13 @@
 import type { AnyWorkflowDefinition, WorkflowState } from "./app.js";
 import { createRuntimeContext } from "./context.js";
 import { normaliseRuntimeError, RuntimeError } from "./errors.js";
-import type { RuntimeHost, WorkflowRun, WorkflowStepRun } from "./host.js";
+import type {
+  RuntimeHost,
+  WorkflowRun,
+  WorkflowRunProgress,
+  WorkflowRunSummary,
+  WorkflowStepRun,
+} from "./host.js";
 import { Effect, Either, Schedule } from "effect";
 
 export type ExecuteWorkflowRunOptions = {
@@ -32,6 +38,63 @@ export function createWorkflowRun(options: {
     })),
     createdAt: now,
     updatedAt: now,
+  };
+}
+
+export function summarizeWorkflowRun(
+  run: WorkflowRun,
+  options: { active?: boolean } = {},
+): WorkflowRunSummary {
+  const completedSteps = run.steps.filter(
+    (step) => step.status === "completed",
+  ).length;
+  const failedSteps = run.steps.filter(
+    (step) => step.status === "failed",
+  ).length;
+  const runningSteps = run.steps.filter(
+    (step) => step.status === "running",
+  ).length;
+  const pendingSteps = run.steps.filter(
+    (step) => step.status === "pending",
+  ).length;
+  const currentStepIndex = run.steps.findIndex(
+    (step) => step.status === "running" || step.status === "failed",
+  );
+  const nextStepIndex = run.steps.findIndex(
+    (step) => step.status === "pending" || step.status === "running",
+  );
+  const active = options.active === true;
+  const resumable = run.status === "running" && !active;
+  const lifecycle =
+    run.status === "completed"
+      ? "completed"
+      : run.status === "failed"
+        ? "failed"
+        : active
+          ? "in-flight"
+          : "resumable";
+  const progress: WorkflowRunProgress = {
+    lifecycle,
+    resumable,
+    inFlight: active,
+    currentStep:
+      currentStepIndex >= 0
+        ? (run.steps[currentStepIndex]?.name ?? null)
+        : null,
+    currentStepIndex: currentStepIndex >= 0 ? currentStepIndex : null,
+    nextStep:
+      nextStepIndex >= 0 ? (run.steps[nextStepIndex]?.name ?? null) : null,
+    nextStepIndex: nextStepIndex >= 0 ? nextStepIndex : null,
+    completedSteps,
+    failedSteps,
+    runningSteps,
+    pendingSteps,
+    totalSteps: run.steps.length,
+  };
+
+  return {
+    ...run,
+    progress,
   };
 }
 

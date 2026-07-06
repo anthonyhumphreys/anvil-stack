@@ -8,6 +8,7 @@ import {
   handleRuntimeRequest,
   inspectAppDefinition,
   mutation,
+  summarizeWorkflowRun,
   workflow,
   type WorkflowRun,
 } from "../src/index.js";
@@ -25,6 +26,77 @@ function startRun(
 }
 
 describe("executeWorkflowRun", () => {
+  it("summarizes completed, failed, active, and resumable workflow positions", () => {
+    const definition = workflow({
+      steps: [
+        { name: "fetch", handler: async () => ({}) },
+        { name: "store", handler: async () => ({}) },
+      ],
+    });
+    const run = startRun(definition);
+
+    expect(summarizeWorkflowRun(run)).toMatchObject({
+      status: "running",
+      progress: {
+        lifecycle: "resumable",
+        resumable: true,
+        inFlight: false,
+        completedSteps: 0,
+        totalSteps: 2,
+        nextStep: "fetch",
+        nextStepIndex: 0,
+      },
+    });
+
+    expect(summarizeWorkflowRun(run, { active: true })).toMatchObject({
+      progress: {
+        lifecycle: "in-flight",
+        resumable: false,
+        inFlight: true,
+      },
+    });
+
+    run.steps[0] = {
+      name: "fetch",
+      status: "completed",
+      attempts: 1,
+      result: { ok: true },
+    };
+    run.steps[1] = {
+      name: "store",
+      status: "running",
+      attempts: 1,
+    };
+
+    expect(summarizeWorkflowRun(run)).toMatchObject({
+      progress: {
+        lifecycle: "resumable",
+        currentStep: "store",
+        currentStepIndex: 1,
+        nextStep: "store",
+        nextStepIndex: 1,
+        completedSteps: 1,
+      },
+    });
+
+    run.status = "failed";
+    run.steps[1] = {
+      name: "store",
+      status: "failed",
+      attempts: 2,
+      error: { code: "INTERNAL_ERROR", message: "boom" },
+    };
+
+    expect(summarizeWorkflowRun(run)).toMatchObject({
+      progress: {
+        lifecycle: "failed",
+        resumable: false,
+        failedSteps: 1,
+        currentStep: "store",
+      },
+    });
+  });
+
   it("runs steps in order and threads prior results through state", async () => {
     const order: string[] = [];
     const definition = workflow({

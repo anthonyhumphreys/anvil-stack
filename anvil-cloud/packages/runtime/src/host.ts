@@ -106,6 +106,31 @@ export type WorkflowRun = {
   updatedAt: string;
 };
 
+export type WorkflowRunLifecycle =
+  | "completed"
+  | "failed"
+  | "in-flight"
+  | "resumable";
+
+export type WorkflowRunProgress = {
+  lifecycle: WorkflowRunLifecycle;
+  resumable: boolean;
+  inFlight: boolean;
+  currentStep: string | null;
+  currentStepIndex: number | null;
+  nextStep: string | null;
+  nextStepIndex: number | null;
+  completedSteps: number;
+  failedSteps: number;
+  runningSteps: number;
+  pendingSteps: number;
+  totalSteps: number;
+};
+
+export type WorkflowRunSummary = WorkflowRun & {
+  progress: WorkflowRunProgress;
+};
+
 export interface WorkflowAdapter {
   start(name: string, input: unknown): Promise<{ runId: string }>;
   getRun?(runId: string): Promise<WorkflowRun | null>;

@@ -41,9 +41,11 @@ import {
   AgentProviderRegistry,
   AgentRuntime,
   LocalStubInferenceProvider,
+  summarizeWorkflowRun,
   type AppDefinition,
   AuthIdentity,
   type WorkflowRun,
+  type WorkflowRunSummary,
 } from "@anvil-cloud/runtime";
 
 type CliContext = {
@@ -2974,14 +2976,18 @@ async function commandWorkflows(
 ): Promise<void> {
   if (subcommand === "list") {
     const runs = await readWorkflowRuns(context.cwd);
+    const summaries = runs.map((run) => summarizeWorkflowRun(run));
 
     writeJsonOrHuman(
       context,
-      { ok: true, runs },
+      { ok: true, runs: summaries },
       runs.length === 0
         ? "No local workflow runs. Start one with `anvil-cloud workflows run <name>`."
-        : runs
-            .map((run) => `${run.runId}  ${run.workflow}  ${run.status}`)
+        : summaries
+            .map(
+              (run) =>
+                `${run.runId}  ${run.workflow}  ${run.progress.lifecycle}  ${workflowProgressLabel(run)}`,
+            )
             .join("\n"),
     );
     return;
@@ -3014,7 +3020,13 @@ async function commandWorkflows(
       return;
     }
 
-    writeJsonOrHuman(context, { ok: true, run }, JSON.stringify(run, null, 2));
+    const summary = summarizeWorkflowRun(run);
+
+    writeJsonOrHuman(
+      context,
+      { ok: true, run: summary },
+      JSON.stringify(summary, null, 2),
+    );
     return;
   }
 
@@ -3075,8 +3087,11 @@ async function commandWorkflows(
 
       writeJsonOrHuman(
         context,
-        { ok: run.status === "completed", run },
-        JSON.stringify(run, null, 2),
+        {
+          ok: run.status === "completed",
+          run: summarizeWorkflowRun(run),
+        },
+        JSON.stringify(summarizeWorkflowRun(run), null, 2),
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -3170,6 +3185,13 @@ async function readWorkflowRuns(rootDir: string): Promise<WorkflowRun[]> {
   );
 
   return Array.isArray(runs) ? (runs as WorkflowRun[]) : [];
+}
+
+function workflowProgressLabel(run: WorkflowRunSummary): string {
+  const progress = run.progress;
+  const step = progress.currentStep ?? progress.nextStep ?? progress.lifecycle;
+
+  return `${progress.completedSteps}/${progress.totalSteps} steps, next=${step}`;
 }
 
 function requireAuthUserId(

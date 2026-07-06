@@ -139,7 +139,10 @@ export {
   type RuntimeHost,
   type WorkflowAdapter,
   type WorkflowRun,
+  type WorkflowRunLifecycle,
+  type WorkflowRunProgress,
   type WorkflowRunStatus,
+  type WorkflowRunSummary,
   type WorkflowStepRun,
   type WorkflowStepRunStatus,
 } from "./host.js";
@@ -178,5 +181,6 @@ export {
 export {
   createWorkflowRun,
   executeWorkflowRun,
+  summarizeWorkflowRun,
   type ExecuteWorkflowRunOptions,
 } from "./workflow.js";
