@@ -265,6 +265,84 @@ describe("local workflow HTTP routes", () => {
       await server.close();
     }
   });
+
+  it("enforces outbound fetch allow lists during local workflow runs", async () => {
+    const originalFetch = globalThis.fetch;
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-workflows-"));
+    tempDirs.push(rootDir);
+
+    const server = await startLocalRuntimeServer({
+      app: app({
+        capabilities: {
+          workflows: true,
+          outboundFetch: { allow: ["api.example.test"] },
+        },
+        workflows: {
+          blockedSync: workflow({
+            steps: [
+              {
+                name: "fetch",
+                handler: async () => {
+                  await fetch("https://billing.example.test/v1");
+                },
+              },
+            ],
+          }),
+        },
+      }),
+      manifest: {
+        capabilities: {
+          outboundFetch: { allow: ["api.example.test"] },
+        },
+        workflows: [{ name: "blockedSync", steps: ["fetch"] }],
+      },
+      rootDir,
+      cellName: "notes",
+      port: 0,
+      clientPort: 0,
+    });
+
+    try {
+      globalThis.fetch = (async (input, init) => {
+        const url = String(input instanceof Request ? input.url : input);
+
+        if (url.startsWith(server.runtimeUrl)) {
+          return originalFetch(input, init);
+        }
+
+        return new Response("ok");
+      }) as typeof fetch;
+
+      const started = (await postJson(
+        `${server.runtimeUrl}/_anvil/workflows/run/blockedSync`,
+        { input: {} },
+      )) as { ok: boolean; runId: string };
+
+      expect(started.ok).toBe(true);
+
+      await server.host.workflows.waitForActiveRuns();
+      await expect(
+        fetchJson(`${server.runtimeUrl}/_anvil/workflows/${started.runId}`),
+      ).resolves.toMatchObject({
+        ok: true,
+        run: {
+          status: "failed",
+          steps: [
+            {
+              name: "fetch",
+              status: "failed",
+              error: {
+                code: "OUTBOUND_FETCH_NOT_ALLOWED",
+              },
+            },
+          ],
+        },
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+      await server.close();
+    }
+  });
 });
 
 async function postJson(url: string, body: unknown): Promise<unknown> {

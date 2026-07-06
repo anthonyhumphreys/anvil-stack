@@ -32,12 +32,16 @@ jobs, workflows, and supervised services.
 - local workflow adapter
 - local service supervisor
 
+When `capabilities.outboundFetch.allow` is declared, local request handlers and
+workflow steps run with the same outbound host guard as AWS preview. Calls to
+undeclared hosts fail with `OUTBOUND_FETCH_NOT_ALLOWED`.
+
 Default ports:
 
 | Surface | Default |
-| --- | --- |
-| Runtime | `8787` |
-| Client | `5173` |
+| ------- | ------- |
+| Runtime | `8787`  |
+| Client  | `5173`  |
 
 Options:
 
