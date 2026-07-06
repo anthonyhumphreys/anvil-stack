@@ -147,7 +147,14 @@ describe("startLocalRuntimeServer", () => {
       ).resolves.toMatchObject({ status: "pending" });
       const approvalsPayload = (await fetchJson(
         `${server.runtimeUrl}/_anvil/approvals?status=pending`,
-      )) as { approvals: Array<{ id: string }> };
+      )) as {
+        approvals: Array<{
+          id: string;
+          status: string;
+          action: string;
+          metadata: Record<string, unknown>;
+        }>;
+      };
       const approval = approvalsPayload.approvals[0];
 
       expect(approval).toMatchObject({

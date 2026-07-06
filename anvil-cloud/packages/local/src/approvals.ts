@@ -49,12 +49,15 @@ export type LocalApprovalStoreOptions = {
   idFactory?: () => string;
 };
 
+const WEBHOOK_TIMEOUT_MS = 10_000;
+
 export class LocalApprovalStore implements AgentApprovalProvider {
   private readonly filePath: string;
   private readonly webhookUrl: string | undefined;
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => Date;
   private readonly idFactory: () => string;
+  private writeChain: Promise<void> = Promise.resolve();
 
   constructor(options: LocalApprovalStoreOptions) {
     this.filePath = options.filePath;
@@ -149,37 +152,41 @@ export class LocalApprovalStore implements AgentApprovalProvider {
   ): Promise<LocalApprovalRecord | null> {
     let decided: LocalApprovalRecord | null = null;
 
-    await this.update((state) => ({
-      approvals: state.approvals.map((approval) => {
-        if (approval.id !== id) {
-          return approval;
-        }
+    await this.update((state) => {
+      const approval = state.approvals.find((entry) => entry.id === id);
+      if (!approval) {
+        return null;
+      }
 
-        const at = this.now().toISOString();
-        decided = {
-          ...approval,
-          status,
-          decidedAt: at,
-          ...(actor === undefined ? {} : { decidedBy: actor }),
-          ...(reason === undefined ? {} : { decisionReason: reason }),
-          audit: [
-            ...approval.audit,
-            {
-              type:
-                status === "approved"
-                  ? "approval.approved"
-                  : "approval.rejected",
-              approvalId: id,
-              at,
-              ...(actor === undefined ? {} : { actor }),
-              ...(reason === undefined ? {} : { reason }),
-            },
-          ],
-        };
+      const at = this.now().toISOString();
+      const next: LocalApprovalRecord = {
+        ...approval,
+        status,
+        decidedAt: at,
+        ...(actor === undefined ? {} : { decidedBy: actor }),
+        ...(reason === undefined ? {} : { decisionReason: reason }),
+        audit: [
+          ...approval.audit,
+          {
+            type:
+              status === "approved"
+                ? "approval.approved"
+                : "approval.rejected",
+            approvalId: id,
+            at,
+            ...(actor === undefined ? {} : { actor }),
+            ...(reason === undefined ? {} : { reason }),
+          },
+        ],
+      };
+      decided = next;
 
-        return decided;
-      }),
-    }));
+      return {
+        approvals: state.approvals.map((entry) =>
+          entry.id === id ? next : entry,
+        ),
+      };
+    });
 
     return decided;
   }
@@ -189,6 +196,9 @@ export class LocalApprovalStore implements AgentApprovalProvider {
       return;
     }
 
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), WEBHOOK_TIMEOUT_MS);
+
     try {
       const response = await this.fetchImpl(this.webhookUrl, {
         method: "POST",
@@ -197,6 +207,7 @@ export class LocalApprovalStore implements AgentApprovalProvider {
           type: "approval.requested",
           approval,
         }),
+        signal: controller.signal,
       });
 
       await this.appendAudit(approval.id, {
@@ -220,6 +231,8 @@ export class LocalApprovalStore implements AgentApprovalProvider {
           message: error instanceof Error ? error.message : String(error),
         },
       });
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
@@ -269,9 +282,18 @@ export class LocalApprovalStore implements AgentApprovalProvider {
   }
 
   private async update(
-    updater: (state: LocalApprovalsState) => LocalApprovalsState,
+    updater: (state: LocalApprovalsState) => LocalApprovalsState | null,
   ): Promise<void> {
-    await this.write(updater(await this.read()));
+    const run = this.writeChain.then(async () => {
+      const next = updater(await this.read());
+      if (next !== null) {
+        await this.write(next);
+      }
+    });
+    this.writeChain = run.catch(() => {
+      // Keep the serialized write chain alive after failures.
+    });
+    return run;
   }
 }
 

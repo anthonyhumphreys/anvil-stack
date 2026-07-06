@@ -620,7 +620,7 @@ anvil-cloud logs --local --json</pre>
       tbody.textContent = "";
       if (approvals.length === 0) {
         tbody.appendChild(el("tr", null, [
-          el("td", { class: "muted", text: "No approval requests." })
+          el("td", { class: "muted", colspan: "7", text: "No approval requests." })
         ]));
       }
       approvals.slice().reverse().forEach(function (approval) {
@@ -656,7 +656,7 @@ anvil-cloud logs --local --json</pre>
       auditBody.textContent = "";
       if (events.length === 0) {
         auditBody.appendChild(el("tr", null, [
-          el("td", { class: "muted", text: "No approval audit events." })
+          el("td", { class: "muted", colspan: "5", text: "No approval audit events." })
         ]));
       }
       events.slice().reverse().forEach(function (event) {
