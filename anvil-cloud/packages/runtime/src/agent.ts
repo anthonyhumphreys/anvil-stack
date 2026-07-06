@@ -281,12 +281,17 @@ export function createAgentManifest(
     runtime,
     tools,
     skills,
-    subagents: Object.fromEntries(
-      Object.entries(agent.subagents ?? {}).map(([mount, subagent]) => [
-        mount,
-        createAgentManifest(subagent, "agent.subagent"),
-      ]),
-    ),
+    subagents:
+      exposure === "agent.subagent"
+        ? {}
+        : Object.fromEntries(
+            Object.entries(
+              isObject(agent.subagents) ? agent.subagents : {},
+            ).map(([mount, subagent]) => [
+              mount,
+              createAgentManifest(subagent, "agent.subagent"),
+            ]),
+          ),
     metadata: agent.metadata ?? {},
   };
 
@@ -328,7 +333,9 @@ export async function validateAgentDefinition(
 
 export function validateAgentDefinitionShape(
   agent: AgentDefinition,
+  options: { includeSubagents?: boolean } = {},
 ): AgentValidationIssue[] {
+  const includeSubagents = options.includeSubagents ?? true;
   const issues: AgentValidationIssue[] = [];
 
   if (agent.kind !== "agent") {
@@ -384,7 +391,9 @@ export function validateAgentDefinitionShape(
   issues.push(...validateCapabilities(agent.name, agent.capabilities));
   issues.push(...validateApprovals(agent.name, agent.approvals));
   issues.push(...validateRuntimeRequirements(agent.name, agent.runtime));
-  issues.push(...validateSubagents(agent));
+  if (includeSubagents) {
+    issues.push(...validateSubagents(agent));
+  }
 
   return issues;
 }
@@ -991,8 +1000,19 @@ function validateRuntimeRequirements(
 }
 
 function validateSubagents(agent: AgentDefinition): AgentValidationIssue[] {
-  const entries = Object.entries(agent.subagents ?? {});
   const issues: AgentValidationIssue[] = [];
+
+  if (agent.subagents !== undefined && !isObject(agent.subagents)) {
+    issues.push({
+      code: "AGENT_SUBAGENTS_INVALID",
+      severity: "error",
+      message: `Agent '${agent.name}' subagents must be an object mapping mount names to agent definitions.`,
+      path: "subagents",
+    });
+    return issues;
+  }
+
+  const entries = Object.entries(agent.subagents ?? {});
 
   for (const [mount, subagent] of entries) {
     if (!isObject(subagent) || subagent.kind !== "agent") {
@@ -1005,7 +1025,9 @@ function validateSubagents(agent: AgentDefinition): AgentValidationIssue[] {
       continue;
     }
 
-    for (const issue of validateAgentDefinitionShape(subagent)) {
+    for (const issue of validateAgentDefinitionShape(subagent, {
+      includeSubagents: false,
+    })) {
       issues.push({
         ...issue,
         path: issue.path
