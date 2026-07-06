@@ -330,6 +330,43 @@ pnpm typecheck
 pnpm test
 ```
 
+## Doctor Diagnostics
+
+`anvil-cloud doctor --json` is the read-only preflight command for local Cell
+work, generated artifacts, local runtime state, AWS preview prerequisites, and
+auth smoke-test setup.
+
+Every check includes `id`, `status`, `message`, `docs`, optional remediation
+`hint`, and optional check-specific `details`.
+
+Diagnostic IDs:
+
+| ID                             | Checks                                                                                       |
+| ------------------------------ | -------------------------------------------------------------------------------------------- |
+| `node.version`                 | Active Node.js satisfies the supported version floor.                                        |
+| `pnpm.version`                 | pnpm exists and satisfies the workspace version floor.                                       |
+| `cli.built`                    | The built CLI entrypoint exists.                                                             |
+| `packages.publicBoundary`      | Only intentional packages are public and published packages avoid `workspace:` dependencies. |
+| `project.config`               | `anvil.json` exists in the current directory.                                                |
+| `project.build`                | `.anvil/dist/manifest.json` exists.                                                          |
+| `project.generatedClient`      | generated client metadata exists and matches the built manifest.                             |
+| `local.state`                  | `.anvil/local` contains local runtime state files.                                           |
+| `local.runtime`                | `GET /_anvil/health` answers on the configured runtime port.                                 |
+| `ports.runtime`                | runtime port availability or expected Anvil Local occupancy.                                 |
+| `ports.client`                 | client dev-server port availability.                                                         |
+| `sandbox.docker`               | Docker reachability for Docker-backed local sandbox providers.                               |
+| `aws.region`                   | `AWS_REGION` or `AWS_DEFAULT_REGION` is configured.                                          |
+| `aws.artifactBucket`           | `ANVIL_AWS_ARTIFACT_BUCKET` is configured.                                                   |
+| `aws.deploymentMetadataTable`  | `ANVIL_AWS_DEPLOYMENT_METADATA_TABLE` is configured.                                         |
+| `auth.oidc`                    | OIDC issuer plus audience or JWKS URI are configured.                                        |
+| `auth.smokeToken`              | authenticated preview smoke token is configured.                                             |
+| `auth.expiredSmokeToken`       | optional expired-token negative smoke token is configured.                                   |
+| `auth.wrongIssuerSmokeToken`   | optional wrong-issuer negative smoke token is configured.                                    |
+| `auth.wrongAudienceSmokeToken` | optional wrong-audience negative smoke token is configured.                                  |
+
+Use the website path from each check's `docs` field for longer remediation.
+For example: `/docs/cloud/doctor#nodeversion`.
+
 ## Common Agent Mistakes
 
 - Editing generated `.anvil/generated/*` files instead of source Cell code.

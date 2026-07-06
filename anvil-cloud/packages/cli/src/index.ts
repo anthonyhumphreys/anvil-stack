@@ -61,6 +61,7 @@ type DoctorCheck = {
   id: string;
   status: DoctorStatus;
   message: string;
+  docs?: string;
   hint?: string | undefined;
   details?: Record<string, unknown>;
 };
@@ -3339,6 +3340,7 @@ async function runDoctorChecks(context: CliContext): Promise<DoctorCheck[]> {
       runtimeHealth.status === "ok",
     ),
     await checkPort("ports.client", clientPort, false),
+    await checkDocker(),
     checkAwsRegion(),
     checkEnvPresence(
       "aws.artifactBucket",
@@ -3379,7 +3381,18 @@ async function runDoctorChecks(context: CliContext): Promise<DoctorCheck[]> {
     ),
   ];
 
-  return checks;
+  return checks.map(withDoctorDocs);
+}
+
+function withDoctorDocs(check: DoctorCheck): DoctorCheck {
+  return {
+    ...check,
+    docs: `/docs/cloud/doctor#${doctorDocsAnchor(check.id)}`,
+  };
+}
+
+function doctorDocsAnchor(id: string): string {
+  return id.replace(/\./g, "").toLowerCase();
 }
 
 function checkNodeVersion(): DoctorCheck {
@@ -3429,6 +3442,41 @@ async function checkPnpm(): Promise<DoctorCheck> {
     message: "pnpm was not found on PATH.",
     hint: "Install pnpm 9.x before running workspace builds or example checks.",
     details: {
+      error: result.error,
+    },
+  };
+}
+
+async function checkDocker(): Promise<DoctorCheck> {
+  const result = await execFileResult("docker", [
+    "version",
+    "--format",
+    "{{.Server.Version}}",
+  ]);
+
+  if (result.ok) {
+    const version = result.stdout.trim();
+
+    return {
+      id: "sandbox.docker",
+      status: "ok",
+      message: version
+        ? `Docker ${version} is reachable.`
+        : "Docker is reachable.",
+      details: {
+        available: true,
+        version: version || null,
+      },
+    };
+  }
+
+  return {
+    id: "sandbox.docker",
+    status: "info",
+    message: "Docker was not reachable on PATH.",
+    hint: "Install and start Docker before using Docker-backed local sandbox providers.",
+    details: {
+      available: false,
       error: result.error,
     },
   };
