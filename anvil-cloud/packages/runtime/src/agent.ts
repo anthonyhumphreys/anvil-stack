@@ -87,6 +87,7 @@ export type AgentToolExecutor = {
 export type AgentDefinitionInput = {
   name: string;
   description?: string;
+  purpose?: string;
   instructions?: string;
   model: AgentModelConfig;
   tools?: AgentFileSet | AgentToolDefinition[];
@@ -95,6 +96,7 @@ export type AgentDefinitionInput = {
   capabilities?: AgentCapabilities;
   approvals?: AgentApprovals;
   runtime?: AgentRuntimeRequirements;
+  subagents?: Record<string, AgentDefinition>;
   metadata?: Record<string, unknown>;
 };
 
@@ -106,6 +108,7 @@ export type AgentManifest = {
   kind: "anvil.agent";
   name: string;
   description?: string;
+  purpose?: string;
   exposure: AgentExposure;
   model: AgentModelConfig;
   requires: {
@@ -124,6 +127,7 @@ export type AgentManifest = {
   };
   tools: AgentToolDefinition[];
   skills: string[];
+  subagents: Record<string, AgentManifest>;
   metadata: Record<string, unknown>;
 };
 
@@ -131,7 +135,8 @@ export type AgentExposure =
   | "project"
   | "cell"
   | "cell.endpoint"
-  | "cell.workflow";
+  | "cell.workflow"
+  | "agent.subagent";
 
 export type AgentValidationIssue = {
   code: string;
@@ -220,6 +225,11 @@ export type AgentRuntimeInvokeResult = {
   usage: AgentTokenUsage;
 };
 
+export type AgentRuntimeDelegationResult = AgentRuntimeInvokeResult & {
+  parentAgentName: string;
+  subagentMount: string;
+};
+
 export function defineAgent(definition: AgentDefinitionInput): AgentDefinition {
   return {
     ...definition,
@@ -271,11 +281,21 @@ export function createAgentManifest(
     runtime,
     tools,
     skills,
+    subagents: Object.fromEntries(
+      Object.entries(agent.subagents ?? {}).map(([mount, subagent]) => [
+        mount,
+        createAgentManifest(subagent, "agent.subagent"),
+      ]),
+    ),
     metadata: agent.metadata ?? {},
   };
 
   if (agent.description !== undefined) {
     manifest.description = agent.description;
+  }
+
+  if (agent.purpose !== undefined) {
+    manifest.purpose = agent.purpose;
   }
 
   return manifest;
@@ -364,6 +384,7 @@ export function validateAgentDefinitionShape(
   issues.push(...validateCapabilities(agent.name, agent.capabilities));
   issues.push(...validateApprovals(agent.name, agent.approvals));
   issues.push(...validateRuntimeRequirements(agent.name, agent.runtime));
+  issues.push(...validateSubagents(agent));
 
   return issues;
 }
@@ -511,6 +532,38 @@ export class AgentRuntime {
     input: AgentRuntimeInvokeInput,
   ): Promise<AgentRuntimeInvokeResult> {
     return runAgentRuntimeEffect(this.invokeEffect(agent, input));
+  }
+
+  async invokeSubagent(
+    parent: AgentDefinition,
+    mount: string,
+    input: AgentRuntimeInvokeInput,
+  ): Promise<AgentRuntimeDelegationResult> {
+    const subagent = parent.subagents?.[mount];
+
+    if (!subagent) {
+      throw new RuntimeError(
+        "HANDLER_NOT_FOUND",
+        `Agent '${parent.name}' does not declare subagent '${mount}'.`,
+        404,
+        { agent: parent.name, subagent: mount },
+      );
+    }
+
+    const result = await this.invoke(subagent, {
+      ...input,
+      context: {
+        ...(input.context ?? {}),
+        parentAgentName: parent.name,
+        subagentMount: mount,
+      },
+    });
+
+    return {
+      ...result,
+      parentAgentName: parent.name,
+      subagentMount: mount,
+    };
   }
 
   private invokeEffect(
@@ -935,6 +988,124 @@ function validateRuntimeRequirements(
   }
 
   return issues;
+}
+
+function validateSubagents(agent: AgentDefinition): AgentValidationIssue[] {
+  const entries = Object.entries(agent.subagents ?? {});
+  const issues: AgentValidationIssue[] = [];
+
+  for (const [mount, subagent] of entries) {
+    if (!isObject(subagent) || subagent.kind !== "agent") {
+      issues.push({
+        code: "AGENT_SUBAGENT_INVALID",
+        severity: "error",
+        message: `Subagent '${mount}' on agent '${agent.name}' must be created with defineAgent().`,
+        path: `subagents.${mount}`,
+      });
+      continue;
+    }
+
+    for (const issue of validateAgentDefinitionShape(subagent)) {
+      issues.push({
+        ...issue,
+        path: issue.path
+          ? `subagents.${mount}.${issue.path}`
+          : `subagents.${mount}`,
+      });
+    }
+
+    if (Object.keys(subagent.subagents ?? {}).length > 0) {
+      issues.push({
+        code: "AGENT_SUBAGENT_NESTING_UNSUPPORTED",
+        severity: "error",
+        message: `Subagent '${subagent.name}' cannot declare nested subagents during alpha.`,
+        path: `subagents.${mount}.subagents`,
+      });
+    }
+
+    if (!capabilitiesAreSubset(agent.capabilities, subagent.capabilities)) {
+      issues.push({
+        code: "AGENT_SUBAGENT_CAPABILITY_ESCALATION",
+        severity: "error",
+        message: `Subagent '${subagent.name}' declares capabilities outside parent agent '${agent.name}'.`,
+        path: `subagents.${mount}.capabilities`,
+      });
+    }
+  }
+
+  return issues;
+}
+
+function capabilitiesAreSubset(
+  parent: AgentCapabilities | undefined,
+  child: AgentCapabilities | undefined,
+): boolean {
+  const parentCapabilities = normalizeAgentCapabilities(parent);
+  const childCapabilities = normalizeAgentCapabilities(child);
+
+  return (
+    stringListIsSubset(parentCapabilities.cells, childCapabilities.cells) &&
+    stringListIsSubset(
+      parentCapabilities.database,
+      childCapabilities.database,
+    ) &&
+    stringListIsSubset(parentCapabilities.git, childCapabilities.git) &&
+    stringListIsSubset(
+      parentCapabilities.deployments,
+      childCapabilities.deployments,
+    ) &&
+    filesystemLevel(childCapabilities.filesystem) <=
+      filesystemLevel(parentCapabilities.filesystem) &&
+    secretsLevel(childCapabilities.secrets) <=
+      secretsLevel(parentCapabilities.secrets) &&
+    networkIsSubset(parentCapabilities.network, childCapabilities.network)
+  );
+}
+
+function stringListIsSubset(parent: string[], child: string[]): boolean {
+  return child.every((value) => parent.includes("*") || parent.includes(value));
+}
+
+function filesystemLevel(value: "none" | "read" | "read-write"): number {
+  return { none: 0, read: 1, "read-write": 2 }[value];
+}
+
+function secretsLevel(value: "none" | "brokered" | "read"): number {
+  return { none: 0, brokered: 1, read: 2 }[value];
+}
+
+function networkIsSubset(
+  parent: AgentNetworkCapability,
+  child: AgentNetworkCapability,
+): boolean {
+  if (child === "none") {
+    return true;
+  }
+
+  if (parent === "none") {
+    return false;
+  }
+
+  if (child === "restricted") {
+    return parent === "restricted" || isObject(parent);
+  }
+
+  if (parent === "restricted") {
+    return false;
+  }
+
+  if (!isObject(parent)) {
+    return false;
+  }
+
+  const parentAllow = parent.allow ?? [];
+  const childAllow = child.allow ?? [];
+  const childDeny = child.deny ?? [];
+
+  return (
+    childAllow.every((host) => parentAllow.includes(host)) &&
+    childDeny.every((host) => typeof host === "string")
+  );
 }
 
 function networkAllows(network: AgentNetworkCapability, host: string): boolean {

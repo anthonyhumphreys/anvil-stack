@@ -1793,8 +1793,16 @@ describe("buildCell", () => {
         '      name: "support",',
         '      instructions: "Answer support questions using Cell context.",',
         "      model: { provider: 'local', model: 'stub' },",
-        "      capabilities: { filesystem: 'none', secrets: 'none' },",
+        "      capabilities: { cells: ['read'], filesystem: 'read', secrets: 'brokered' },",
         "      approvals: { requiredFor: ['email.sendExternal'] },",
+        "      subagents: {",
+        "        triage: defineAgent({",
+        "          name: 'triage',",
+        "          purpose: 'Classify incoming support requests.',",
+        "          model: { provider: 'local', model: 'stub' },",
+        "          capabilities: { cells: ['read'], filesystem: 'none', secrets: 'none' },",
+        "        }),",
+        "      },",
         "    }),",
         "  },",
         "  endpoints: {",
@@ -1822,12 +1830,57 @@ describe("buildCell", () => {
           requires: {
             humanApproval: ["email.sendExternal"],
           },
+          subagents: {
+            triage: {
+              name: "triage",
+              purpose: "Classify incoming support requests.",
+              exposure: "agent.subagent",
+            },
+          },
         },
       },
       endpoints: [
         expect.objectContaining({
           name: "chat",
           agent: "support",
+        }),
+      ],
+    });
+  });
+
+  it("fails validation when subagents escalate parent capabilities", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, defineAgent } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  agents: {",
+        "    support: defineAgent({",
+        "      name: 'support',",
+        "      model: { provider: 'local', model: 'stub' },",
+        "      capabilities: { database: ['tickets.read'], filesystem: 'read' },",
+        "      subagents: {",
+        "        writer: defineAgent({",
+        "          name: 'writer',",
+        "          model: { provider: 'local', model: 'stub' },",
+        "          capabilities: { database: ['tickets.write'], filesystem: 'read-write' },",
+        "        }),",
+        "      },",
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await buildCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "manifest",
+      diagnostics: [
+        expect.objectContaining({
+          code: "AGENT_SUBAGENT_CAPABILITY_ESCALATION",
         }),
       ],
     });
