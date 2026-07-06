@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  mkdir,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import http, {
   type IncomingMessage,
   type Server,
@@ -73,6 +80,7 @@ export type LocalRuntimeServerOptions = {
   clientDistDir?: string;
   clientMode?: "none" | "static" | "vite";
   env?: Record<string, string>;
+  databaseBranch?: string;
   agentProviders?: AgentProviderRegistry;
   agentApprovalProvider?: AgentApprovalProvider;
 };
@@ -89,6 +97,7 @@ export async function createLocalRuntimeHost(options: {
   stateDir: string;
   cellName: string;
   env?: Record<string, string>;
+  databaseBranch?: string;
 }): Promise<LocalRuntimeHost> {
   await mkdir(options.stateDir, { recursive: true });
   await mkdir(path.join(options.stateDir, "files"), { recursive: true });
@@ -97,8 +106,18 @@ export async function createLocalRuntimeHost(options: {
     stateDir: path.join(options.stateDir, "auth"),
   });
 
+  const dbBranches = new JsonDatabaseBranchManager(options.stateDir);
+  const databaseBranch =
+    options.databaseBranch ??
+    options.env?.ANVIL_DATABASE_BRANCH ??
+    process.env.ANVIL_DATABASE_BRANCH ??
+    (await dbBranches.getActiveBranch());
+
   return {
-    db: new JsonDatabaseAdapter(path.join(options.stateDir, "dev.db")),
+    db: await JsonDatabaseAdapter.open({
+      stateDir: options.stateDir,
+      branch: databaseBranch,
+    }),
     files: new LocalFileAdapter(path.join(options.stateDir, "files")),
     env: new LocalEnvAdapter(options.env ?? process.env),
     auth: new LocalAuthAdapter(path.join(options.stateDir, "auth.json"), idp),
@@ -133,6 +152,7 @@ export async function startLocalRuntimeServer(
     stateDir: string;
     cellName: string;
     env?: Record<string, string>;
+    databaseBranch?: string;
   } = {
     stateDir,
     cellName: options.cellName,
@@ -140,6 +160,9 @@ export async function startLocalRuntimeServer(
 
   if (options.env !== undefined) {
     hostOptions.env = options.env;
+  }
+  if (options.databaseBranch !== undefined) {
+    hostOptions.databaseBranch = options.databaseBranch;
   }
 
   const host = await createLocalRuntimeHost(hostOptions);
@@ -312,8 +335,421 @@ async function writeServicesSnapshot(
   );
 }
 
+export type JsonDatabaseBranchMetadata = {
+  name: string;
+  source: string;
+  file: string;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt?: string;
+  promotedAt?: string;
+};
+
+export type JsonDatabaseBranchSummary = JsonDatabaseBranchMetadata & {
+  active: boolean;
+  expired: boolean;
+  tables: DatabaseInspection["tables"];
+};
+
+export type JsonDatabaseBranchDiff = {
+  branch: string;
+  against: string;
+  tables: Record<
+    string,
+    {
+      branchRows: number;
+      againstRows: number;
+      rowDelta: number;
+      addedFields: string[];
+      removedFields: string[];
+    }
+  >;
+};
+
+type JsonDatabaseBranchState = {
+  active: string;
+  branches: JsonDatabaseBranchMetadata[];
+};
+
+const primaryDatabaseBranch = "main";
+const databaseBranchNamePattern = /^[a-z0-9][a-z0-9-]{0,47}$/;
+
+export function normalizeDatabaseBranchName(name: string): string {
+  const normalized = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+
+  return normalized || primaryDatabaseBranch;
+}
+
+export class JsonDatabaseBranchManager {
+  private readonly primaryPath: string;
+  private readonly branchDir: string;
+  private readonly metadataPath: string;
+
+  constructor(private readonly stateDir: string) {
+    this.primaryPath = path.join(stateDir, "dev.db");
+    this.branchDir = path.join(stateDir, "db-branches");
+    this.metadataPath = path.join(stateDir, "db-branches.json");
+  }
+
+  async getActiveBranch(): Promise<string> {
+    return (await this.readState()).active;
+  }
+
+  async setActiveBranch(name: string): Promise<JsonDatabaseBranchSummary> {
+    const branch = this.normalizeExistingBranch(name);
+    const state = await this.readState();
+    const summary = await this.getBranch(branch, state);
+
+    state.active = branch;
+    await this.writeState(state);
+
+    return { ...summary, active: true };
+  }
+
+  async createBranch(options: {
+    name: string;
+    from?: string;
+    ttlSeconds?: number;
+    now?: Date;
+  }): Promise<JsonDatabaseBranchSummary> {
+    const name = normalizeDatabaseBranchName(options.name);
+
+    if (name === primaryDatabaseBranch) {
+      throw new Error("The primary database branch already exists.");
+    }
+    if (!databaseBranchNamePattern.test(name)) {
+      throw new Error(`Invalid database branch name '${options.name}'.`);
+    }
+
+    const source = normalizeDatabaseBranchName(
+      options.from ?? primaryDatabaseBranch,
+    );
+    const state = await this.readState();
+    await this.assertBranchExists(source, state);
+
+    if (state.branches.some((branch) => branch.name === name)) {
+      throw new Error(`Database branch '${name}' already exists.`);
+    }
+
+    const now = options.now ?? new Date();
+    const metadata: JsonDatabaseBranchMetadata = {
+      name,
+      source,
+      file: `${name}.db.json`,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+    };
+
+    if (options.ttlSeconds !== undefined) {
+      metadata.expiresAt = new Date(
+        now.getTime() + options.ttlSeconds * 1_000,
+      ).toISOString();
+    }
+
+    await mkdir(this.branchDir, { recursive: true });
+    await this.copyDatabaseFile(
+      this.resolveBranchPath(source, state),
+      this.resolveBranchFile(metadata.file),
+    );
+
+    state.branches.push(metadata);
+    await this.writeState(state);
+
+    return this.summarize(metadata, state.active, now);
+  }
+
+  async listBranches(now: Date = new Date()): Promise<JsonDatabaseBranchSummary[]> {
+    const state = await this.readState();
+    const primary = await this.primarySummary(state.active, now);
+    const branches = await Promise.all(
+      state.branches.map((branch) => this.summarize(branch, state.active, now)),
+    );
+
+    return [primary, ...branches].sort((left, right) =>
+      left.name.localeCompare(right.name),
+    );
+  }
+
+  async diffBranch(
+    name: string,
+    against: string = primaryDatabaseBranch,
+  ): Promise<JsonDatabaseBranchDiff> {
+    const state = await this.readState();
+    const branchName = this.normalizeExistingBranch(name);
+    const againstName = this.normalizeExistingBranch(against);
+    await this.assertBranchExists(branchName, state);
+    await this.assertBranchExists(againstName, state);
+
+    const branchData = await readJsonFile<Record<string, DatabaseRecord[]>>(
+      this.resolveBranchPath(branchName, state),
+      {},
+    );
+    const againstData = await readJsonFile<Record<string, DatabaseRecord[]>>(
+      this.resolveBranchPath(againstName, state),
+      {},
+    );
+    const tableNames = new Set([
+      ...Object.keys(branchData),
+      ...Object.keys(againstData),
+    ]);
+    const tables: JsonDatabaseBranchDiff["tables"] = {};
+
+    for (const tableName of [...tableNames].sort()) {
+      const branchRows = branchData[tableName] ?? [];
+      const againstRows = againstData[tableName] ?? [];
+      const branchFields = recordFields(branchRows);
+      const againstFields = recordFields(againstRows);
+
+      tables[tableName] = {
+        branchRows: branchRows.length,
+        againstRows: againstRows.length,
+        rowDelta: branchRows.length - againstRows.length,
+        addedFields: [...branchFields]
+          .filter((field) => !againstFields.has(field))
+          .sort(),
+        removedFields: [...againstFields]
+          .filter((field) => !branchFields.has(field))
+          .sort(),
+      };
+    }
+
+    return { branch: branchName, against: againstName, tables };
+  }
+
+  async promoteBranch(name: string, now: Date = new Date()): Promise<JsonDatabaseBranchSummary> {
+    const state = await this.readState();
+    const branchName = this.normalizeExistingBranch(name);
+
+    if (branchName === primaryDatabaseBranch) {
+      return this.primarySummary(state.active, now);
+    }
+
+    const metadata = state.branches.find((branch) => branch.name === branchName);
+
+    if (!metadata) {
+      throw new Error(`Database branch '${name}' does not exist.`);
+    }
+
+    await this.copyDatabaseFile(
+      this.resolveBranchFile(metadata.file),
+      this.primaryPath,
+    );
+    metadata.promotedAt = now.toISOString();
+    metadata.updatedAt = now.toISOString();
+    await this.writeState(state);
+
+    return this.summarize(metadata, state.active, now);
+  }
+
+  async deleteBranch(name: string): Promise<{ name: string; deleted: boolean }> {
+    const branchName = this.normalizeExistingBranch(name);
+
+    if (branchName === primaryDatabaseBranch) {
+      throw new Error("The primary database branch cannot be deleted.");
+    }
+
+    const state = await this.readState();
+    const metadata = state.branches.find((branch) => branch.name === branchName);
+
+    if (!metadata) {
+      return { name: branchName, deleted: false };
+    }
+
+    state.branches = state.branches.filter((branch) => branch.name !== branchName);
+    if (state.active === branchName) {
+      state.active = primaryDatabaseBranch;
+    }
+    await rm(this.resolveBranchFile(metadata.file), { force: true });
+    await this.writeState(state);
+
+    return { name: branchName, deleted: true };
+  }
+
+  async deleteExpiredBranches(now: Date = new Date()): Promise<string[]> {
+    const state = await this.readState();
+    const expired = state.branches.filter(
+      (branch) =>
+        branch.expiresAt !== undefined &&
+        Date.parse(branch.expiresAt) <= now.getTime(),
+    );
+
+    for (const branch of expired) {
+      await rm(this.resolveBranchFile(branch.file), { force: true });
+    }
+
+    if (expired.length > 0) {
+      const expiredNames = new Set(expired.map((branch) => branch.name));
+      state.branches = state.branches.filter(
+        (branch) => !expiredNames.has(branch.name),
+      );
+      if (expiredNames.has(state.active)) {
+        state.active = primaryDatabaseBranch;
+      }
+      await this.writeState(state);
+    }
+
+    return expired.map((branch) => branch.name).sort();
+  }
+
+  resolveDatabasePath(name: string = primaryDatabaseBranch): string {
+    return this.resolveBranchPath(normalizeDatabaseBranchName(name), {
+      active: primaryDatabaseBranch,
+      branches: [],
+    });
+  }
+
+  private async getBranch(
+    name: string,
+    state: JsonDatabaseBranchState,
+  ): Promise<JsonDatabaseBranchSummary> {
+    if (name === primaryDatabaseBranch) {
+      return this.primarySummary(state.active, new Date());
+    }
+
+    const metadata = state.branches.find((branch) => branch.name === name);
+
+    if (!metadata) {
+      throw new Error(`Database branch '${name}' does not exist.`);
+    }
+
+    return this.summarize(metadata, state.active, new Date());
+  }
+
+  private async assertBranchExists(
+    name: string,
+    state: JsonDatabaseBranchState,
+  ): Promise<void> {
+    if (name === primaryDatabaseBranch) {
+      return;
+    }
+
+    if (!state.branches.some((branch) => branch.name === name)) {
+      throw new Error(`Database branch '${name}' does not exist.`);
+    }
+  }
+
+  private normalizeExistingBranch(name: string): string {
+    const normalized = normalizeDatabaseBranchName(name);
+
+    if (!databaseBranchNamePattern.test(normalized)) {
+      throw new Error(`Invalid database branch name '${name}'.`);
+    }
+
+    return normalized;
+  }
+
+  private async primarySummary(
+    active: string,
+    _now: Date,
+  ): Promise<JsonDatabaseBranchSummary> {
+    return {
+      name: primaryDatabaseBranch,
+      source: primaryDatabaseBranch,
+      file: "dev.db",
+      createdAt: new Date(0).toISOString(),
+      updatedAt: new Date(0).toISOString(),
+      active: active === primaryDatabaseBranch,
+      expired: false,
+      tables: await inspectDatabaseFile(this.primaryPath),
+    };
+  }
+
+  private async summarize(
+    metadata: JsonDatabaseBranchMetadata,
+    active: string,
+    now: Date,
+  ): Promise<JsonDatabaseBranchSummary> {
+    return {
+      ...metadata,
+      active: metadata.name === active,
+      expired:
+        metadata.expiresAt !== undefined &&
+        Date.parse(metadata.expiresAt) <= now.getTime(),
+      tables: await inspectDatabaseFile(this.resolveBranchFile(metadata.file)),
+    };
+  }
+
+  private resolveBranchPath(
+    name: string,
+    state: JsonDatabaseBranchState,
+  ): string {
+    if (name === primaryDatabaseBranch) {
+      return this.primaryPath;
+    }
+
+    const metadata = state.branches.find((branch) => branch.name === name);
+
+    return this.resolveBranchFile(metadata?.file ?? `${name}.db.json`);
+  }
+
+  private resolveBranchFile(file: string): string {
+    return path.join(this.branchDir, file);
+  }
+
+  private async copyDatabaseFile(from: string, to: string): Promise<void> {
+    await mkdir(path.dirname(to), { recursive: true });
+
+    try {
+      await copyFile(from, to);
+    } catch {
+      await writeFile(to, "{}\n", "utf8");
+    }
+  }
+
+  private async readState(): Promise<JsonDatabaseBranchState> {
+    const state = await readJsonFile<Partial<JsonDatabaseBranchState>>(
+      this.metadataPath,
+      {},
+    );
+
+    return {
+      active:
+        typeof state.active === "string"
+          ? normalizeDatabaseBranchName(state.active)
+          : primaryDatabaseBranch,
+      branches: Array.isArray(state.branches)
+        ? state.branches.filter(isDatabaseBranchMetadata)
+        : [],
+    };
+  }
+
+  private async writeState(state: JsonDatabaseBranchState): Promise<void> {
+    await mkdir(path.dirname(this.metadataPath), { recursive: true });
+    await writeFile(
+      this.metadataPath,
+      `${JSON.stringify(state, null, 2)}\n`,
+      "utf8",
+    );
+  }
+}
+
 export class JsonDatabaseAdapter implements DatabaseAdapter {
-  constructor(private readonly filePath: string) {}
+  static async open(options: {
+    stateDir: string;
+    branch?: string;
+  }): Promise<JsonDatabaseAdapter> {
+    const branches = new JsonDatabaseBranchManager(options.stateDir);
+    const branch = normalizeDatabaseBranchName(
+      options.branch ?? (await branches.getActiveBranch()),
+    );
+
+    return new JsonDatabaseAdapter(
+      branches.resolveDatabasePath(branch),
+      branch,
+      branches,
+    );
+  }
+
+  constructor(
+    private readonly filePath: string,
+    readonly branch: string = primaryDatabaseBranch,
+    private readonly branches?: JsonDatabaseBranchManager,
+  ) {}
 
   table(name: string): DatabaseTableClient {
     return new JsonDatabaseTableClient(name, this);
@@ -330,6 +766,10 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
     }
 
     return { tables };
+  }
+
+  async inspectBranches(): Promise<JsonDatabaseBranchSummary[]> {
+    return this.branches?.listBranches() ?? [];
   }
 
   async dumpTable(name: string): Promise<DatabaseRecord[]> {
@@ -863,6 +1303,7 @@ async function handleLocalRequest(options: LocalRequestOptions): Promise<void> {
       await sendJson(options.response, 200, {
         ok: true,
         database: await options.host.db.inspect(),
+        branches: await options.host.db.inspectBranches(),
       });
       return;
     }
@@ -1385,7 +1826,11 @@ async function inspectLocalRuntime(
     auth: {
       currentUser: auth?.userId ?? null,
     },
-    database: await options.host.db.inspect(),
+    database: {
+      ...(await options.host.db.inspect()),
+      activeBranch: options.host.db.branch,
+      branches: await options.host.db.inspectBranches(),
+    },
     recentErrors: logs.filter((entry) => entry.level === "error").slice(-10),
   };
 }
@@ -1632,6 +2077,22 @@ async function readJsonFile<T>(filePath: string, fallback: T): Promise<T> {
   }
 }
 
+async function inspectDatabaseFile(
+  filePath: string,
+): Promise<DatabaseInspection["tables"]> {
+  const data = await readJsonFile<Record<string, DatabaseRecord[]>>(
+    filePath,
+    {},
+  );
+  const tables: DatabaseInspection["tables"] = {};
+
+  for (const [name, rows] of Object.entries(data)) {
+    tables[name] = { rows: Array.isArray(rows) ? rows.length : 0 };
+  }
+
+  return tables;
+}
+
 async function readNdjsonFile<T>(filePath: string): Promise<T[]> {
   try {
     const info = await stat(filePath);
@@ -1657,6 +2118,18 @@ function cloneRecords(records: DatabaseRecord[]): DatabaseRecord[] {
 
 function cloneRecord(record: DatabaseRecord): DatabaseRecord {
   return structuredClone(record) as DatabaseRecord;
+}
+
+function recordFields(records: DatabaseRecord[]): Set<string> {
+  const fields = new Set<string>();
+
+  for (const record of records) {
+    for (const field of Object.keys(record)) {
+      fields.add(field);
+    }
+  }
+
+  return fields;
 }
 
 function nextId(table: string, rows: DatabaseRecord[]): string {
@@ -1700,4 +2173,22 @@ function compare(
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isDatabaseBranchMetadata(
+  value: unknown,
+): value is JsonDatabaseBranchMetadata {
+  if (!isObject(value)) {
+    return false;
+  }
+
+  return (
+    typeof value.name === "string" &&
+    typeof value.source === "string" &&
+    typeof value.file === "string" &&
+    typeof value.createdAt === "string" &&
+    typeof value.updatedAt === "string" &&
+    (value.expiresAt === undefined || typeof value.expiresAt === "string") &&
+    (value.promotedAt === undefined || typeof value.promotedAt === "string")
+  );
 }

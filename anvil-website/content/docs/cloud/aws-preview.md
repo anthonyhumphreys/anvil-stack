@@ -195,6 +195,19 @@ anvil cloud logs --app notes --env preview --json
 anvil cloud destroy --preview --app notes --name branch --yes --json
 ```
 
+Local preview data can be isolated with database branches before deploying:
+
+```bash
+anvil cloud db branch branch --from main --ttl 3600 --json
+anvil cloud dev --db-branch branch --json
+anvil cloud db diff branch --against main --json
+```
+
+The AWS alpha adapter currently provisions DynamoDB for preview Cells, but it
+does not yet map local JSON branches to provider-native database branches.
+Use local branches for safe preview/test data states; provider-backed branch
+promotion remains an adapter roadmap item.
+
 For the checked-in AWS-compatible smoke Cell, run the repeatable verifier from
 the `anvil-cloud` workspace:
 

@@ -76,24 +76,35 @@ POST /_anvil/jobs/run/:name
 
 ## Local database
 
-Default alpha adapter: SQLite.
+Default alpha adapter: local JSON files.
 
 Rationale:
 
 - no Docker required;
 - easy to inspect;
 - fast for local dev;
-- reliable for agent workflows;
+- reliable enough for alpha agent workflows;
 - can be reset cheaply.
 
 The database API should remain constrained so a future DynamoDB Local mode can be added.
+
+The primary branch is `.anvil/local/dev.db`. Named branches are snapshot files
+under `.anvil/local/db-branches`, tracked by `.anvil/local/db-branches.json`.
+Branching is local-first: it copies the source JSON store, can record a TTL for
+agent-created throwaway branches, and keeps `ctx.db` unchanged for Cell code.
 
 Recommended CLI commands:
 
 ```sh
 anvil-cloud db list --local --json
 anvil-cloud db dump todos --local --json
-anvil-cloud db reset --local
+anvil-cloud db branch preview --from main --ttl 3600 --json
+anvil-cloud db use preview --json
+anvil-cloud dev --db-branch preview --json
+anvil-cloud db diff preview --against main --json
+anvil-cloud db promote preview --json
+anvil-cloud db delete preview --yes --json
+anvil-cloud db cleanup --expired --json
 ```
 
 ## Local auth
@@ -233,7 +244,7 @@ Server reload should:
 1. Runtime test host.
 2. Local Hono/Fastify server.
 3. In-memory database adapter.
-4. SQLite adapter.
+4. JSON database adapter with snapshot branches.
 5. Local auth adapter.
 6. Local logs adapter.
 7. Local inspector.

@@ -28,6 +28,7 @@ describe("main", () => {
     expect(output).toContain("Anvil Cloud CLI");
     expect(output).toContain("anvil-cloud check");
     expect(output).toContain("anvil-cloud doctor");
+    expect(output).toContain("anvil-cloud db branch <name>");
     expect(output).toContain(
       "anvil-cloud destroy --preview --app <name> [--name branch] --yes",
     );
@@ -211,6 +212,166 @@ describe("main", () => {
       process.chdir(originalCwd);
       process.exitCode = originalExitCode;
       restoreEnvSnapshot(env);
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("manages local database branches with stable JSON output", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-db-"));
+    const originalCwd = process.cwd();
+    const originalExitCode = process.exitCode;
+
+    try {
+      process.exitCode = undefined;
+      process.chdir(rootDir);
+      await mkdir(path.join(rootDir, ".anvil/local"), { recursive: true });
+      await writeFile(
+        path.join(rootDir, ".anvil/local/dev.db"),
+        JSON.stringify({
+          notes: [{ id: "note_1", title: "Main" }],
+        }),
+        "utf8",
+      );
+
+      const created = JSON.parse(
+        await captureStdout(() =>
+          main([
+            "db",
+            "branch",
+            "Feature/Branch",
+            "--from",
+            "main",
+            "--ttl",
+            "60",
+            "--json",
+          ]),
+        ),
+      ) as { ok: boolean; branch: { name: string; source: string } };
+
+      expect(created).toMatchObject({
+        ok: true,
+        branch: {
+          name: "feature-branch",
+          source: "main",
+        },
+      });
+
+      await writeFile(
+        path.join(rootDir, ".anvil/local/db-branches/feature-branch.db.json"),
+        JSON.stringify({
+          notes: [
+            { id: "note_1", title: "Main" },
+            { id: "note_2", title: "Branch", preview: true },
+          ],
+        }),
+        "utf8",
+      );
+
+      const diff = JSON.parse(
+        await captureStdout(() =>
+          main(["db", "diff", "feature-branch", "--json"]),
+        ),
+      ) as {
+        ok: boolean;
+        diff: {
+          tables: {
+            notes: { rowDelta: number; addedFields: string[] };
+          };
+        };
+      };
+
+      expect(diff).toMatchObject({
+        ok: true,
+        diff: {
+          tables: {
+            notes: {
+              rowDelta: 1,
+              addedFields: ["preview"],
+            },
+          },
+        },
+      });
+
+      const active = JSON.parse(
+        await captureStdout(() =>
+          main(["db", "use", "feature-branch", "--json"]),
+        ),
+      ) as { ok: boolean; branch: { name: string; active: boolean } };
+
+      expect(active).toMatchObject({
+        ok: true,
+        branch: {
+          name: "feature-branch",
+          active: true,
+        },
+      });
+
+      const tables = JSON.parse(
+        await captureStdout(() => main(["db", "list", "--json"])),
+      ) as {
+        ok: boolean;
+        branch: string;
+        tables: Array<{ name: string; rows: number }>;
+      };
+
+      expect(tables).toMatchObject({
+        ok: true,
+        branch: "feature-branch",
+        tables: [{ name: "notes", rows: 2 }],
+      });
+
+      const promoted = JSON.parse(
+        await captureStdout(() =>
+          main(["db", "promote", "feature-branch", "--json"]),
+        ),
+      ) as { ok: boolean; branch: { name: string; promotedAt: string } };
+
+      expect(promoted.ok).toBe(true);
+      expect(promoted.branch.name).toBe("feature-branch");
+      expect(promoted.branch.promotedAt).toEqual(expect.any(String));
+
+      const deleted = JSON.parse(
+        await captureStdout(() =>
+          main(["db", "delete", "feature-branch", "--yes", "--json"]),
+        ),
+      ) as { ok: boolean; name: string; deleted: boolean };
+
+      expect(deleted).toEqual({
+        ok: true,
+        name: "feature-branch",
+        deleted: true,
+      });
+
+      await captureStdout(() =>
+        main(["db", "branch", "expired", "--ttl", "60", "--json"]),
+      );
+      const metadataPath = path.join(rootDir, ".anvil/local/db-branches.json");
+      const metadata = JSON.parse(await readFile(metadataPath, "utf8")) as {
+        branches: Array<{ name: string; expiresAt?: string }>;
+      };
+      const expiredBranch = metadata.branches.find(
+        (branch) => branch.name === "expired",
+      );
+      expect(expiredBranch).toBeDefined();
+      if (expiredBranch) {
+        expiredBranch.expiresAt = "1970-01-01T00:00:00.000Z";
+      }
+      await writeFile(metadataPath, JSON.stringify(metadata), "utf8");
+
+      const cleanup = JSON.parse(
+        await captureStdout(() =>
+          main(["db", "cleanup", "--expired", "--json"]),
+        ),
+      ) as { ok: boolean; deleted: string[] };
+
+      expect(cleanup).toEqual({
+        ok: true,
+        deleted: ["expired"],
+      });
+      expect(process.exitCode).toBeUndefined();
+    } finally {
+      process.exitCode = originalExitCode;
+      process.chdir(originalCwd);
       await rm(rootDir, { recursive: true, force: true });
     }
   });

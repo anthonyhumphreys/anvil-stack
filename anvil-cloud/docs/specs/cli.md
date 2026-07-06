@@ -237,10 +237,11 @@ It is not a bill and does not query AWS.
 
 ### `anvil-cloud db list`
 
-Lists known database tables.
+Lists tables on the active local database branch, or on `--branch <name>`.
 
 ```sh
 anvil-cloud db list --local --json
+anvil-cloud db list --branch feature --local --json
 ```
 
 ### `anvil-cloud db dump <table>`
@@ -249,9 +250,37 @@ Dumps table rows for local or remote inspection.
 
 ```sh
 anvil-cloud db dump todos --local --json
+anvil-cloud db dump todos --branch feature --local --json
 ```
 
 Remote database dump should require explicit environment and future confirmation/policy rules.
+
+### `anvil-cloud db branch <name>`
+
+Creates a local JSON database branch by snapshotting another branch. `main`
+maps to `.anvil/local/dev.db`; named branches live under
+`.anvil/local/db-branches`.
+
+```sh
+anvil-cloud db branch feature --from main --ttl 3600 --json
+```
+
+Related lifecycle commands:
+
+```sh
+anvil-cloud db branches --json
+anvil-cloud db branches --expired --json
+anvil-cloud db use feature --json
+anvil-cloud db diff feature --against main --json
+anvil-cloud db promote feature --json
+anvil-cloud db delete feature --yes --json
+anvil-cloud db cleanup --expired --json
+```
+
+`db use` stores the active branch for local CLI inspection and dev runs.
+`anvil-cloud dev --db-branch feature` selects a branch for that process without
+changing the stored active branch. Cell code continues to see the same `ctx.db`
+contract.
 
 ### `anvil-cloud plan --stage <stage> --adapter aws`
 

@@ -59,6 +59,13 @@ Initial commands:
 - `anvil-cloud usage --preview`
 - `anvil-cloud db list`
 - `anvil-cloud db dump <table>`
+- `anvil-cloud db branch <name>`
+- `anvil-cloud db branches`
+- `anvil-cloud db use <name>`
+- `anvil-cloud db diff <name>`
+- `anvil-cloud db promote <name>`
+- `anvil-cloud db delete <name> --yes`
+- `anvil-cloud db cleanup --expired`
 - `anvil-cloud deploy --preview [--name branch]`
 - `anvil-cloud rollback --preview --dry-run`
 - `anvil-cloud destroy --preview --app <name> [--name branch] --yes`
