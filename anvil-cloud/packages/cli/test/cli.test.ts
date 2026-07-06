@@ -303,7 +303,7 @@ describe("main", () => {
         main(["doctor", "--json", "--port", "65443", "--client-port", "65444"]),
       );
       const payload = JSON.parse(output) as {
-        checks: Array<{ id: string; docs?: string }>;
+        checks: Array<{ id: string; docs: string }>;
       };
       const cloudDoctorDocs = await readFile(
         path.join(cloudRoot, "docs/reference/doctor.md"),
