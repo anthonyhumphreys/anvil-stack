@@ -30,6 +30,7 @@ export type GeneratedAnvilApiMeta = {
   schemaVersion: "0.1";
   queries: readonly string[];
   mutations: readonly string[];
+  agents?: readonly string[];
 };
 
 export type GeneratedQueryClient<
@@ -106,9 +107,59 @@ export type MutationOptions<TResult = unknown> = {
 };
 
 export type AnvilClientRequestInfo = {
-  kind: "query" | "mutation";
+  kind: "agent-session" | "query" | "mutation";
   name: string;
   path: string;
+};
+
+export type AgentSession = {
+  sessionId: string;
+  agent: string;
+  status: "idle" | "running" | "failed";
+  createdAt: string;
+  updatedAt: string;
+  continuationToken: string;
+};
+
+export type AgentSessionEvent = {
+  id: number;
+  sessionId: string;
+  type:
+    | "session.created"
+    | "channel.message"
+    | "channel.reply"
+    | "message.user"
+    | "message.assistant"
+    | "tool.calls"
+    | "approval.required"
+    | "session.failed";
+  timestamp: string;
+  data: unknown;
+};
+
+export type AgentSessionState = {
+  status: "idle" | "loading" | "streaming" | "error";
+  session: AgentSession | null;
+  events: AgentSessionEvent[];
+  continuationToken: string | null;
+  error: Error | null;
+};
+
+export type AgentSessionCreateResult = {
+  session: AgentSession;
+};
+
+export type AgentSessionMessageResult<TResult = unknown> = {
+  session: AgentSession;
+  events: AgentSessionEvent[];
+  continuationToken: string;
+  result?: TResult;
+};
+
+export type AgentSessionStreamOptions = {
+  after?: string | number | null;
+  signal?: AbortSignal;
+  onEvent?: (event: AgentSessionEvent) => void | Promise<void>;
 };
 
 export class AnvilClientError extends Error {
@@ -202,6 +253,96 @@ export class AnvilClient {
     });
   }
 
+  async createAgentSession(agent: string): Promise<AgentSession> {
+    validateAgentName(agent);
+    const path = `/_anvil/agents/${encodeURIComponent(agent)}/sessions`;
+    const payload = await this.postJson<AgentSessionCreateResult>(
+      path,
+      {},
+      {
+        kind: "agent-session",
+        name: agent,
+        path,
+      },
+    );
+
+    return payload.session;
+  }
+
+  async sendAgentSessionMessage<TResult = unknown>(
+    sessionId: string,
+    input: string,
+    context?: Record<string, unknown>,
+  ): Promise<AgentSessionMessageResult<TResult>> {
+    validateSessionId(sessionId);
+    const path = `/_anvil/agents/sessions/${encodeURIComponent(sessionId)}/messages`;
+    const body =
+      context === undefined
+        ? { input }
+        : {
+            input,
+            context,
+          };
+
+    return this.postJson<AgentSessionMessageResult<TResult>>(path, body, {
+      kind: "agent-session",
+      name: sessionId,
+      path,
+    });
+  }
+
+  async streamAgentSessionEvents(
+    sessionId: string,
+    options: AgentSessionStreamOptions = {},
+  ): Promise<AgentSessionEvent[]> {
+    validateSessionId(sessionId);
+    const after =
+      options.after === undefined || options.after === null
+        ? ""
+        : `?after=${encodeURIComponent(String(options.after))}`;
+    const path = `/_anvil/agents/sessions/${encodeURIComponent(sessionId)}/stream${after}`;
+    const init: RequestInit = {
+      method: "GET",
+      headers: { accept: "text/event-stream" },
+    };
+
+    if (options.signal !== undefined) {
+      init.signal = options.signal;
+    }
+
+    const response = await this.fetchImpl(`${this.runtimeUrl}${path}`, init);
+
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null);
+
+      throw errorFromPayload(
+        response.status,
+        isRuntimePayload(payload)
+          ? payload
+          : {
+              ok: false,
+              error: {
+                code: "HTTP_ERROR",
+                message: `Agent session stream failed with ${response.status}.`,
+              },
+            },
+        {
+          kind: "agent-session",
+          name: sessionId,
+          path,
+        },
+      );
+    }
+
+    const events = parseAgentSessionEventStream(await response.text());
+
+    for (const event of events) {
+      await options.onEvent?.(event);
+    }
+
+    return events;
+  }
+
   private async callRuntime<TResult>(
     path: string,
     input: unknown,
@@ -247,6 +388,38 @@ export class AnvilClient {
     }
 
     if (!payload.ok) {
+      throw errorFromPayload(response.status, payload, request);
+    }
+
+    return payload.result as TResult;
+  }
+
+  private async postJson<TResult>(
+    path: string,
+    body: unknown,
+    request: AnvilClientRequestInfo,
+  ): Promise<TResult> {
+    let response: Response;
+
+    try {
+      response = await this.fetchImpl(`${this.runtimeUrl}${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    } catch (error) {
+      throw new AnvilClientError({
+        status: 0,
+        code: "NETWORK_ERROR",
+        message: "Runtime request failed before a response was received.",
+        details: errorDetails(error),
+        request,
+      });
+    }
+
+    const payload = await readRuntimePayload<TResult>(response, request);
+
+    if (!response.ok || !payload.ok) {
       throw errorFromPayload(response.status, payload, request);
     }
 
@@ -445,6 +618,139 @@ export function createAnvilHooks(client: AnvilClient, hooks: HookRuntime) {
         mutate,
       };
     },
+
+    useAgentSession(agent: string) {
+      const [state, setState] = hooks.useState<AgentSessionState>({
+        status: "idle",
+        session: null,
+        events: [],
+        continuationToken: null,
+        error: null,
+      });
+      const stateRef = hooks.useRef(state);
+      stateRef.current = state;
+
+      const start = hooks.useCallback(async () => {
+        setState((previous) => ({
+          ...previous,
+          status: "loading",
+          error: null,
+        }));
+        try {
+          const session = await client.createAgentSession(agent);
+
+          setState({
+            status: "idle",
+            session,
+            events: [],
+            continuationToken: session.continuationToken,
+            error: null,
+          });
+
+          return session;
+        } catch (error) {
+          const normalized = toError(error);
+
+          setState((previous) => ({
+            ...previous,
+            status: "error",
+            error: normalized,
+          }));
+          throw normalized;
+        }
+      }, [agent]);
+
+      const send = hooks.useCallback(
+        async (input: string, context?: Record<string, unknown>) => {
+          setState((previous) => ({
+            ...previous,
+            status: "streaming",
+            error: null,
+          }));
+
+          try {
+            const session =
+              stateRef.current.session ??
+              (await client.createAgentSession(agent));
+
+            setState((previous) => ({
+              ...previous,
+              session,
+            }));
+
+            const result = await client.sendAgentSessionMessage(
+              session.sessionId,
+              input,
+              context,
+            );
+
+            setState((previous) => ({
+              status: "idle",
+              session: result.session,
+              events: [...previous.events, ...result.events],
+              continuationToken: result.continuationToken,
+              error: null,
+            }));
+
+            return result;
+          } catch (error) {
+            const normalized = toError(error);
+
+            setState((previous) => ({
+              ...previous,
+              status: "error",
+              error: normalized,
+            }));
+            throw normalized;
+          }
+        },
+        [agent],
+      );
+
+      const resume = hooks.useCallback(async () => {
+        const session = stateRef.current.session;
+
+        if (!session) {
+          return [];
+        }
+
+        try {
+          const events = await client.streamAgentSessionEvents(
+            session.sessionId,
+            {
+              after: stateRef.current.continuationToken,
+            },
+          );
+
+          setState((previous) => ({
+            ...previous,
+            events: [...previous.events, ...events],
+            continuationToken:
+              events.length > 0
+                ? String(events[events.length - 1]?.id)
+                : previous.continuationToken,
+          }));
+
+          return events;
+        } catch (error) {
+          const normalized = toError(error);
+
+          setState((previous) => ({
+            ...previous,
+            status: "error",
+            error: normalized,
+          }));
+          throw normalized;
+        }
+      }, [agent]);
+
+      return {
+        ...state,
+        start,
+        send,
+        resume,
+      };
+    },
   };
 }
 
@@ -604,7 +910,65 @@ function validateGeneratedApi(api: GeneratedAnvilApi): void {
   validateGeneratedApiMeta(api);
 }
 
-function isRouteRecord(value: unknown): value is Record<string, ApiQuery | ApiMutation> {
+function validateAgentName(agent: string): void {
+  if (typeof agent !== "string" || agent.length === 0) {
+    throw new AnvilClientError({
+      status: 0,
+      code: "INVALID_AGENT_SESSION",
+      message: "Agent session requires a non-empty agent name.",
+    });
+  }
+}
+
+function validateSessionId(sessionId: string): void {
+  if (typeof sessionId !== "string" || sessionId.length === 0) {
+    throw new AnvilClientError({
+      status: 0,
+      code: "INVALID_AGENT_SESSION",
+      message: "Agent session requires a non-empty session id.",
+    });
+  }
+}
+
+function parseAgentSessionEventStream(body: string): AgentSessionEvent[] {
+  return body
+    .split(/\n\n+/)
+    .map((chunk) => {
+      const data = chunk
+        .split("\n")
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice("data:".length).trimStart())
+        .join("\n");
+
+      if (!data) {
+        return null;
+      }
+
+      const parsed = JSON.parse(data) as unknown;
+
+      return isAgentSessionEvent(parsed) ? parsed : null;
+    })
+    .filter((event): event is AgentSessionEvent => event !== null);
+}
+
+function isAgentSessionEvent(value: unknown): value is AgentSessionEvent {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "id" in value &&
+    typeof value.id === "number" &&
+    "sessionId" in value &&
+    typeof value.sessionId === "string" &&
+    "type" in value &&
+    typeof value.type === "string" &&
+    "timestamp" in value &&
+    typeof value.timestamp === "string"
+  );
+}
+
+function isRouteRecord(
+  value: unknown,
+): value is Record<string, ApiQuery | ApiMutation> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -620,7 +984,8 @@ function validateGeneratedApiMeta(api: GeneratedAnvilApi): void {
     meta === null ||
     meta.schemaVersion !== "0.1" ||
     !isStringArray(meta.queries) ||
-    !isStringArray(meta.mutations)
+    !isStringArray(meta.mutations) ||
+    (meta.agents !== undefined && !isStringArray(meta.agents))
   ) {
     throw invalidGeneratedApiMetadata({
       reason: "invalid-meta",
@@ -657,6 +1022,7 @@ function generatedApiMeta(api: GeneratedAnvilApi): GeneratedAnvilApiMeta {
       schemaVersion: "0.1",
       queries: sortedKeys(api.queries),
       mutations: sortedKeys(api.mutations),
+      agents: [],
     }
   );
 }
@@ -671,7 +1037,9 @@ function invalidGeneratedApiMetadata(details: unknown): AnvilClientError {
 }
 
 function isStringArray(value: unknown): value is readonly string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === "string");
+  return (
+    Array.isArray(value) && value.every((item) => typeof item === "string")
+  );
 }
 
 function sortedKeys(value: Record<string, unknown>): string[] {
@@ -682,7 +1050,10 @@ function sortedUnique(values: readonly string[]): string[] {
   return Array.from(new Set(values)).sort();
 }
 
-function sameStringArray(left: readonly string[], right: readonly string[]): boolean {
+function sameStringArray(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
   return (
     left.length === right.length &&
     left.every((value, index) => value === right[index])

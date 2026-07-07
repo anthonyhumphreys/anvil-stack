@@ -1,5 +1,6 @@
 import {
   app,
+  channel,
   defineAgent,
   defineAgentEvalSuite,
   endpoint,
@@ -72,6 +73,14 @@ export default app({
       auth: "required",
       agent: "support",
       handler: async () => ({ ok: true }),
+    }),
+  },
+  channels: {
+    supportSlack: channel({
+      provider: "slack",
+      agent: "support",
+      sessionKey: "sender-thread",
+      events: ["app_mention", "message"],
     }),
   },
 });

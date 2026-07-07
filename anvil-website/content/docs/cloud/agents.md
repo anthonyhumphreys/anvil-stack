@@ -94,7 +94,7 @@ Least privilege is the default:
 Cell Agents are mounted inside the Cell definition:
 
 ```ts
-import { app, defineAgent, endpoint } from "@anvil-cloud/runtime";
+import { app, channel, defineAgent, endpoint } from "@anvil-cloud/runtime";
 
 const support = defineAgent({
   name: "support",
@@ -134,12 +134,21 @@ export default app({
       handler: async () => ({ ok: true }),
     }),
   },
+  channels: {
+    supportSlack: channel({
+      provider: "slack",
+      agent: "support",
+      sessionKey: "sender-thread",
+      events: ["app_mention", "message"],
+    }),
+  },
 });
 ```
 
-Builder validation catches endpoint or workflow references to missing mounted
-agents. The generated Cell manifest includes mounted agent manifests under
-`agents`, and each agent manifest includes its explicit `subagents` tree.
+Builder validation catches endpoint, workflow, or channel references to missing
+mounted agents. The generated Cell manifest includes mounted agent manifests
+under `agents`, each agent manifest includes its explicit `subagents` tree, and
+channel bindings under `channels`.
 
 Subagents are shallow during alpha. A parent can declare subagents, but a
 subagent cannot declare its own nested subagents. Guard validation fails if a
@@ -238,7 +247,33 @@ Anvil Local also exposes:
 ```txt
 GET  /_anvil/agents
 POST /_anvil/agents/:name
+POST /_anvil/agents/:name/sessions
+POST /_anvil/agents/sessions/:sessionId/messages
+GET  /_anvil/agents/sessions/:sessionId/stream?after=:token
+POST /_anvil/channels/simulate
 ```
+
+`POST /_anvil/agents/:name` accepts `{ "input": "..." }` and returns the
+provider-neutral `AgentRuntime` result. Session routes persist local agent event
+history in `.anvil/local/agent-sessions.json`. Message sends return ordered
+events and a continuation token; the stream route replays events after that
+token as `text/event-stream`.
+
+Channel simulation lets local dev and tests exercise Slack/GitHub/Discord-style
+inbound messages without real workspace credentials:
+
+```bash
+anvil cloud channels simulate \
+  --channel supportSlack \
+  --sender U123 \
+  --thread T456 \
+  --input "Can you review this issue?" \
+  --json
+```
+
+The runtime maps the normalized channel message to the mounted agent session
+using the channel's `sessionKey`. Agent code stays channel-agnostic; provider
+credentials and webhook verification remain platform-side.
 
 ## Provider mode
 
