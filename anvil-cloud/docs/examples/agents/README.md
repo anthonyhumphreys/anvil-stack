@@ -14,6 +14,8 @@ anvil-cloud agents validate
 anvil-cloud agents manifest --json
 anvil-cloud agents invoke support --input "Review this Cell"
 anvil-cloud approvals list --status pending --json
+anvil-cloud eval --json
+anvil-cloud eval --write-baseline --json
 ```
 
 Local stub mode does not call external APIs. Provider mode uses the same Anvil runtime contract with a registered provider.

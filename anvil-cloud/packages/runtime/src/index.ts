@@ -6,6 +6,20 @@ export {
   type AgentSandboxStatus,
 } from "./agent-sandbox.js";
 export {
+  createAgentEvalToolExecutors,
+  defineAgentEvalSuite,
+  runAgentEvalSuite,
+  type AgentEvalAssertionResult,
+  type AgentEvalAssertions,
+  type AgentEvalBaseline,
+  type AgentEvalBaselineScenario,
+  type AgentEvalCapabilityAssertions,
+  type AgentEvalRunResult,
+  type AgentEvalScenario,
+  type AgentEvalScenarioResult,
+  type AgentEvalSuite,
+} from "./agent-evals.js";
+export {
   AgentProviderRegistry,
   AgentRuntime,
   LocalStubInferenceProvider,
@@ -149,6 +163,19 @@ export {
   type WorkflowStepRun,
   type WorkflowStepRunStatus,
 } from "./host.js";
+export {
+  redactTraceValue,
+  type TraceAdapter,
+  type TraceCompleteInput,
+  type TraceEvent,
+  type TraceEventInput,
+  type TraceEventType,
+  type TraceKind,
+  type TraceRecord,
+  type TraceRedactor,
+  type TraceStartInput,
+  type TraceStatus,
+} from "./trace.js";
 export {
   inspectAppDefinition,
   type AppInspection,

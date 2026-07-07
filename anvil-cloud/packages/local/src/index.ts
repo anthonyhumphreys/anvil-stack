@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import {
   appendFile,
@@ -47,9 +48,16 @@ import {
   type RuntimeHost,
   type RuntimeRequest,
   type RuntimeResponse,
+  redactTraceValue,
   type WorkflowAdapter,
   type WorkflowRun,
   type AgentApprovalProvider,
+  type TraceAdapter,
+  type TraceCompleteInput,
+  type TraceEventInput,
+  type TraceRecord,
+  type TraceRedactor,
+  type TraceStartInput,
   type AgentModelConfig,
   type AgentTokenUsage,
 } from "@anvil-cloud/runtime";
@@ -81,6 +89,7 @@ export type LocalRuntimeHost = RuntimeHost & {
   events: LocalEventAdapter;
   jobs: LocalJobAdapter;
   workflows: LocalWorkflowAdapter;
+  traces: LocalTraceAdapter;
   agentSessions: LocalAgentSessionAdapter;
   usage: LocalUsageMeter;
   idp: LocalIdentityProvider;
@@ -100,6 +109,7 @@ export type LocalRuntimeServerOptions = {
   env?: Record<string, string>;
   agentProviders?: AgentProviderRegistry;
   agentApprovalProvider?: AgentApprovalProvider;
+  traceRedactor?: TraceRedactor;
 };
 
 export type LocalRuntimeServer = {
@@ -114,6 +124,7 @@ export async function createLocalRuntimeHost(options: {
   stateDir: string;
   cellName: string;
   env?: Record<string, string>;
+  traceRedactor?: TraceRedactor;
 }): Promise<LocalRuntimeHost> {
   await mkdir(options.stateDir, { recursive: true });
   await mkdir(path.join(options.stateDir, "files"), { recursive: true });
@@ -136,6 +147,9 @@ export async function createLocalRuntimeHost(options: {
     workflows: new LocalWorkflowAdapter(
       path.join(options.stateDir, "workflows.json"),
     ),
+    traces: new LocalTraceAdapter(path.join(options.stateDir, "traces.json"), {
+      redactor: options.traceRedactor ?? redactTraceValue,
+    }),
     agentSessions: new LocalAgentSessionAdapter(
       path.join(options.stateDir, "agent-sessions.json"),
     ),
@@ -165,12 +179,16 @@ export async function startLocalRuntimeServer(
   const port = options.port ?? 8787;
   const clientPort = options.clientPort ?? 5173;
   const clientMode = options.clientMode ?? "static";
+  const outboundFetchAllowHosts = outboundFetchAllowListFromManifest(
+    options.manifest,
+  );
   let runtimeUrl = `http://localhost:${port}`;
   let clientUrl = `http://localhost:${clientPort}`;
   const hostOptions: {
     stateDir: string;
     cellName: string;
     env?: Record<string, string>;
+    traceRedactor?: TraceRedactor;
   } = {
     stateDir,
     cellName: options.cellName,
@@ -178,6 +196,10 @@ export async function startLocalRuntimeServer(
 
   if (options.env !== undefined) {
     hostOptions.env = options.env;
+  }
+
+  if (options.traceRedactor !== undefined) {
+    hostOptions.traceRedactor = options.traceRedactor;
   }
 
   const host = await createLocalRuntimeHost(hostOptions);
@@ -188,6 +210,7 @@ export async function startLocalRuntimeServer(
     agentProviders.register(new LocalStubInferenceProvider());
   }
 
+  host.workflows.setOutboundFetchAllowHosts(outboundFetchAllowHosts);
   host.workflows.bind(options.app, host);
   void host.workflows.resumeInterrupted().catch(() => {
     // Resume failures are recorded on the persisted run state.
@@ -212,10 +235,12 @@ export async function startLocalRuntimeServer(
       agentRuntime: new AgentRuntime({
         providers: agentProviders,
         baseDir: rootDir,
+        traces: host.traces,
         approvalProvider: agentApprovalProvider,
       }),
       agentProviders,
       services,
+      outboundFetchAllowHosts,
       runtimeUrl,
       clientUrl,
       request,
@@ -1019,9 +1044,14 @@ export class LocalAgentSessionAdapter {
 export class LocalWorkflowAdapter implements WorkflowAdapter {
   private app: AppDefinition | null = null;
   private host: RuntimeHost | null = null;
+  private outboundFetchAllowHosts: string[] = [];
   private readonly active = new Map<string, Promise<WorkflowRun>>();
 
   constructor(private readonly filePath: string) {}
+
+  setOutboundFetchAllowHosts(allowHosts: string[]): void {
+    this.outboundFetchAllowHosts = allowHosts;
+  }
 
   bind(app: AppDefinition, host: RuntimeHost): void {
     this.app = app;
@@ -1085,12 +1115,16 @@ export class LocalWorkflowAdapter implements WorkflowAdapter {
   private async execute(run: WorkflowRun): Promise<WorkflowRun> {
     const definition = this.requireWorkflow(run.workflow);
     const host = this.requireHost();
-    const execution = executeWorkflowRun({
-      workflow: definition,
-      host,
-      run,
-      save: (next) => this.save(next),
-    }).finally(() => {
+    const execution = withOutboundFetchPolicy(
+      this.outboundFetchAllowHosts,
+      () =>
+        executeWorkflowRun({
+          workflow: definition,
+          host,
+          run,
+          save: (next) => this.save(next),
+        }),
+    ).finally(() => {
       this.active.delete(run.runId);
     });
 
@@ -1149,6 +1183,146 @@ export class LocalWorkflowAdapter implements WorkflowAdapter {
   }
 }
 
+export class LocalTraceAdapter implements TraceAdapter {
+  private readonly redactor: TraceRedactor;
+
+  constructor(
+    private readonly filePath: string,
+    options: { redactor?: TraceRedactor } = {},
+  ) {
+    this.redactor = options.redactor ?? redactTraceValue;
+  }
+
+  async start(input: TraceStartInput): Promise<TraceRecord> {
+    const traces = await this.read();
+    const existing = traces.find((trace) => trace.traceId === input.traceId);
+
+    if (existing) {
+      return existing;
+    }
+
+    const now = input.startedAt ?? new Date().toISOString();
+    const trace: TraceRecord = {
+      traceId: input.traceId,
+      kind: input.kind,
+      name: input.name,
+      subjectId: input.subjectId,
+      status: "running",
+      startedAt: now,
+      updatedAt: now,
+      events: [],
+    };
+
+    traces.push(trace);
+    await this.write(traces);
+
+    if (input.attributes !== undefined) {
+      await this.event(input.traceId, {
+        type:
+          input.kind === "agent" ? "agent.invoke.started" : "workflow.started",
+        name: input.name,
+        status: "running",
+        timestamp: now,
+        attributes: input.attributes,
+      });
+    }
+
+    return trace;
+  }
+
+  async event(traceId: string, input: TraceEventInput): Promise<void> {
+    const traces = await this.read();
+    const trace = traces.find((candidate) => candidate.traceId === traceId);
+
+    if (!trace) {
+      return;
+    }
+
+    const timestamp = input.timestamp ?? new Date().toISOString();
+
+    trace.events.push({
+      eventId: input.eventId ?? `event_${trace.events.length + 1}`,
+      traceId,
+      timestamp,
+      type: input.type,
+      name: input.name,
+      ...(input.status === undefined ? {} : { status: input.status }),
+      ...(input.durationMs === undefined
+        ? {}
+        : { durationMs: input.durationMs }),
+      ...(input.attributes === undefined
+        ? {}
+        : {
+            attributes: this.redactor(input.attributes) as Record<
+              string,
+              unknown
+            >,
+          }),
+    });
+    trace.updatedAt = timestamp;
+    await this.write(traces);
+  }
+
+  async complete(traceId: string, input: TraceCompleteInput): Promise<void> {
+    const traces = await this.read();
+    const trace = traces.find((candidate) => candidate.traceId === traceId);
+
+    if (!trace) {
+      return;
+    }
+
+    const completedAt = input.completedAt ?? new Date().toISOString();
+
+    trace.status = input.status;
+    trace.completedAt = completedAt;
+    trace.updatedAt = completedAt;
+
+    if (input.attributes !== undefined) {
+      trace.events.push({
+        eventId: `event_${trace.events.length + 1}`,
+        traceId,
+        timestamp: completedAt,
+        type:
+          trace.kind === "agent"
+            ? input.status === "failed"
+              ? "agent.invoke.failed"
+              : "agent.invoke.completed"
+            : input.status === "failed"
+              ? "workflow.failed"
+              : "workflow.completed",
+        name: trace.name,
+        status: input.status,
+        attributes: this.redactor(input.attributes) as Record<string, unknown>,
+      });
+    }
+
+    await this.write(traces);
+  }
+
+  async get(traceId: string): Promise<TraceRecord | null> {
+    return (
+      (await this.read()).find((trace) => trace.traceId === traceId) ?? null
+    );
+  }
+
+  async list(): Promise<TraceRecord[]> {
+    return this.read();
+  }
+
+  private async read(): Promise<TraceRecord[]> {
+    return readJsonFile<TraceRecord[]>(this.filePath, []);
+  }
+
+  private async write(traces: TraceRecord[]): Promise<void> {
+    await mkdir(path.dirname(this.filePath), { recursive: true });
+    await writeFile(
+      this.filePath,
+      `${JSON.stringify(traces, null, 2)}\n`,
+      "utf8",
+    );
+  }
+}
+
 type LocalRequestOptions = {
   app: AppDefinition;
   manifest: unknown;
@@ -1156,6 +1330,7 @@ type LocalRequestOptions = {
   agentRuntime: AgentRuntime;
   agentProviders: AgentProviderRegistry;
   services: ServiceSupervisor;
+  outboundFetchAllowHosts: string[];
   runtimeUrl: string;
   clientUrl: string;
   request: IncomingMessage;
@@ -1373,6 +1548,35 @@ async function handleLocalRequest(options: LocalRequestOptions): Promise<void> {
         await sendJson(options.response, 200, { ok: true, approval });
         return;
       }
+    }
+
+    if (method === "GET" && url.pathname === "/_anvil/traces") {
+      await sendJson(options.response, 200, {
+        ok: true,
+        traces: await options.host.traces.list(),
+      });
+      return;
+    }
+
+    if (method === "GET" && url.pathname.startsWith("/_anvil/traces/")) {
+      const traceId = decodeURIComponent(
+        url.pathname.slice("/_anvil/traces/".length),
+      );
+      const trace = await options.host.traces.get(traceId);
+
+      if (!trace) {
+        await sendJson(options.response, 404, {
+          ok: false,
+          error: {
+            code: "NOT_FOUND",
+            message: `No trace '${traceId}' was found.`,
+          },
+        });
+        return;
+      }
+
+      await sendJson(options.response, 200, { ok: true, trace });
+      return;
     }
 
     if (method === "GET" && url.pathname === "/_anvil/usage") {
@@ -2296,10 +2500,9 @@ async function runRuntimeRequest(
   runtimeRequest: RuntimeRequest,
 ): Promise<void> {
   const startedAt = Date.now();
-  const response = await handleRuntimeRequest(
-    options.app,
-    options.host,
-    runtimeRequest,
+  const response = await withOutboundFetchPolicy(
+    options.outboundFetchAllowHosts,
+    () => handleRuntimeRequest(options.app, options.host, runtimeRequest),
   );
   await options.host.usage.record({
     scope: "cell",
@@ -2315,6 +2518,89 @@ async function runRuntimeRequest(
   });
 
   await sendRuntimeResponse(options.response, response);
+}
+
+type GuardedFetch = typeof fetch & { __anvilOutboundFetchGuard?: boolean };
+
+const outboundFetchAllowHostsStorage = new AsyncLocalStorage<Set<string>>();
+
+function ensureOutboundFetchGuardInstalled(): void {
+  const currentFetch = globalThis.fetch as GuardedFetch;
+
+  if (currentFetch.__anvilOutboundFetchGuard) {
+    return;
+  }
+
+  const originalFetch = globalThis.fetch;
+
+  const guardedFetch = (async (input, init) => {
+    const allowedHosts = outboundFetchAllowHostsStorage.getStore();
+
+    if (allowedHosts) {
+      const host = hostForFetchInput(input);
+
+      if (!host || !allowedHosts.has(host)) {
+        throw new RuntimeError(
+          "OUTBOUND_FETCH_NOT_ALLOWED",
+          host
+            ? `Fetch host '${host}' is not declared in capabilities.outboundFetch.allow.`
+            : "Fetch target could not be resolved against capabilities.outboundFetch.allow.",
+          403,
+          {
+            host,
+            allowedHosts: Array.from(allowedHosts).sort(),
+          },
+        );
+      }
+    }
+
+    return originalFetch(input, init);
+  }) as GuardedFetch;
+
+  guardedFetch.__anvilOutboundFetchGuard = true;
+  globalThis.fetch = guardedFetch;
+}
+
+async function withOutboundFetchPolicy<T>(
+  allowHosts: string[],
+  run: () => Promise<T>,
+): Promise<T> {
+  if (allowHosts.length === 0) {
+    return run();
+  }
+
+  ensureOutboundFetchGuardInstalled();
+
+  return outboundFetchAllowHostsStorage.run(new Set(allowHosts), run);
+}
+
+function outboundFetchAllowListFromManifest(manifest: unknown): string[] {
+  if (!isObject(manifest) || !isObject(manifest.capabilities)) {
+    return [];
+  }
+
+  const outboundFetch = manifest.capabilities.outboundFetch;
+
+  if (!isObject(outboundFetch) || !Array.isArray(outboundFetch.allow)) {
+    return [];
+  }
+
+  return outboundFetch.allow
+    .filter((host): host is string => typeof host === "string")
+    .map((host) => host.trim())
+    .filter((host) => host.length > 0);
+}
+
+function hostForFetchInput(input: Parameters<typeof fetch>[0]): string | null {
+  try {
+    if (typeof input === "string" || input instanceof URL) {
+      return new URL(input).host;
+    }
+
+    return new URL(input.url).host;
+  } catch {
+    return null;
+  }
 }
 
 async function sendRuntimeResponse(
@@ -2370,6 +2656,7 @@ async function inspectLocalRuntime(
       budgets: usage.budgets,
     },
     recentErrors: logs.filter((entry) => entry.level === "error").slice(-10),
+    traces: (await options.host.traces.list()).slice(-20),
   };
 }
 

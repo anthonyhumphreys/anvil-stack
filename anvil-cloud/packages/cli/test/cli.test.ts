@@ -1710,6 +1710,113 @@ describe("main", () => {
     }
   });
 
+  it("runs mounted agent evals and writes a baseline", async () => {
+    const rootDir = await createAgentCell({ evals: true });
+    const originalCwd = process.cwd();
+    const originalExitCode = process.exitCode;
+
+    try {
+      process.exitCode = undefined;
+      process.chdir(rootDir);
+
+      const output = await captureStdout(() => main(["eval", "--json"]));
+      const payload = JSON.parse(output) as Record<string, unknown>;
+
+      expect(payload).toMatchObject({
+        ok: true,
+        summary: {
+          agents: 1,
+          total: 1,
+          passed: 1,
+          failed: 0,
+        },
+        agents: [
+          {
+            mount: "support",
+            agentName: "support",
+            scenarios: [
+              {
+                name: "answers support review",
+                ok: true,
+              },
+            ],
+          },
+        ],
+      });
+      expect(process.exitCode).toBeUndefined();
+
+      const baselineOutput = await captureStdout(() =>
+        main(["eval", "--write-baseline", "--json"]),
+      );
+      const baselinePayload = JSON.parse(baselineOutput) as Record<
+        string,
+        unknown
+      >;
+
+      expect(baselinePayload).toMatchObject({
+        ok: true,
+        baseline: {
+          wrote: true,
+        },
+      });
+      await expect(
+        readFile(path.join(rootDir, ".anvil/evals/baseline.json"), "utf8"),
+      ).resolves.toContain("answers support review");
+    } finally {
+      process.chdir(originalCwd);
+      process.exitCode = originalExitCode;
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails evals when the committed baseline changes", async () => {
+    const rootDir = await createAgentCell({ evals: true });
+    const originalCwd = process.cwd();
+    const originalExitCode = process.exitCode;
+
+    try {
+      process.exitCode = undefined;
+      process.chdir(rootDir);
+      await mkdir(path.join(rootDir, ".anvil/evals"), { recursive: true });
+      await writeFile(
+        path.join(rootDir, ".anvil/evals/baseline.json"),
+        JSON.stringify(
+          {
+            agents: {
+              support: {
+                scenarios: {
+                  "answers support review": {
+                    responseText: "Old response",
+                    toolCalls: [],
+                    approvalsRequired: [],
+                  },
+                },
+              },
+            },
+          },
+          null,
+          2,
+        ),
+        "utf8",
+      );
+
+      const output = await captureStdout(() => main(["eval", "--json"]));
+      const payload = JSON.parse(output) as Record<string, unknown>;
+
+      expect(payload).toMatchObject({
+        ok: false,
+        summary: {
+          failed: 1,
+        },
+      });
+      expect(process.exitCode).toBe(6);
+    } finally {
+      process.chdir(originalCwd);
+      process.exitCode = originalExitCode;
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("emits lightweight AWS preview usage visibility", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-"));
     const originalCwd = process.cwd();
@@ -2121,6 +2228,72 @@ describe("main", () => {
     } finally {
       process.exitCode = originalExitCode;
       restoreEnv("ANVIL_AWS_DEPLOYMENT_METADATA_TABLE", originalMetadataTable);
+    }
+  });
+
+  it("prints a local trace by id as JSON", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-"));
+    const originalCwd = process.cwd();
+    const originalExitCode = process.exitCode;
+
+    try {
+      process.exitCode = undefined;
+      process.chdir(rootDir);
+      await mkdir(path.join(rootDir, ".anvil/local"), { recursive: true });
+      await writeFile(
+        path.join(rootDir, ".anvil/local/traces.json"),
+        `${JSON.stringify(
+          [
+            {
+              traceId: "run_123",
+              kind: "workflow",
+              name: "syncNotes",
+              subjectId: "run_123",
+              status: "completed",
+              startedAt: "2026-07-06T12:00:00.000Z",
+              updatedAt: "2026-07-06T12:00:01.000Z",
+              completedAt: "2026-07-06T12:00:01.000Z",
+              events: [
+                {
+                  eventId: "event_1",
+                  traceId: "run_123",
+                  timestamp: "2026-07-06T12:00:00.000Z",
+                  type: "workflow.step.completed",
+                  name: "fetch",
+                  status: "completed",
+                },
+              ],
+            },
+          ],
+          null,
+          2,
+        )}\n`,
+        "utf8",
+      );
+
+      const output = await captureStdout(() =>
+        main(["logs", "--trace", "run_123", "--json"]),
+      );
+      const payload = JSON.parse(output) as Record<string, unknown>;
+
+      expect(payload).toMatchObject({
+        ok: true,
+        trace: {
+          traceId: "run_123",
+          status: "completed",
+          events: [
+            {
+              type: "workflow.step.completed",
+              name: "fetch",
+            },
+          ],
+        },
+      });
+      expect(process.exitCode).toBeUndefined();
+    } finally {
+      process.chdir(originalCwd);
+      process.exitCode = originalExitCode;
+      await rm(rootDir, { recursive: true, force: true });
     }
   });
 
@@ -2663,6 +2836,7 @@ async function createAgentCell(
   options: {
     modelProvider?: "aws-bedrock" | "local";
     sandbox?: "optional" | "required";
+    evals?: boolean;
   } = {},
 ): Promise<string> {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-agent-"));
@@ -2720,7 +2894,7 @@ async function createAgentCell(
   await writeFile(
     path.join(rootDir, "src/cell.server.ts"),
     [
-      'import { app, defineAgent, endpoint } from "@anvil-cloud/runtime";',
+      'import { app, defineAgent, defineAgentEvalSuite, endpoint } from "@anvil-cloud/runtime";',
       "",
       "export default app({",
       "  agents: {",
@@ -2729,6 +2903,21 @@ async function createAgentCell(
       "      instructions: 'Stay inside declared support capabilities.',",
       `      model: { provider: '${options.modelProvider ?? "local"}', model: 'stub' },`,
       "      capabilities: { cells: ['read'], filesystem: 'none', secrets: 'none' },",
+      ...(options.evals
+        ? [
+            "      evals: defineAgentEvalSuite({",
+            "        scenarios: [{",
+            "          name: 'answers support review',",
+            "          input: 'Review this Cell',",
+            "          expect: {",
+            "            responseIncludes: 'Review this Cell',",
+            "            toolCalls: { count: 0 },",
+            "            capabilities: { notUsed: ['network.github.com'] },",
+            "          },",
+            "        }],",
+            "      }),",
+          ]
+        : []),
       ...(options.sandbox === undefined
         ? []
         : [`      runtime: { sandbox: '${options.sandbox}' },`]),

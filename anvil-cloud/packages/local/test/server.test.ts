@@ -232,6 +232,90 @@ describe("startLocalRuntimeServer", () => {
     }
   });
 
+  it("enforces outbound fetch allow lists during local runtime requests", async () => {
+    const originalFetch = globalThis.fetch;
+    const externalFetches: string[] = [];
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-local-"));
+    tempDirs.push(rootDir);
+
+    const cell = app({
+      capabilities: {
+        outboundFetch: { allow: ["api.example.test"] },
+      },
+      queries: {
+        allowedFetch: query({
+          handler: async () => {
+            const response = await fetch("https://api.example.test/v1");
+
+            return { status: response.status };
+          },
+        }),
+        blockedFetch: query({
+          handler: async () => {
+            await fetch("https://billing.example.test/v1");
+
+            return { ok: true };
+          },
+        }),
+      },
+    });
+    const server = await startLocalRuntimeServer({
+      app: cell,
+      manifest: {
+        capabilities: {
+          outboundFetch: { allow: ["api.example.test"] },
+        },
+        queries: ["allowedFetch", "blockedFetch"],
+        mutations: [],
+      },
+      rootDir,
+      cellName: "notes",
+      port: 0,
+      clientPort: 0,
+      clientMode: "none",
+    });
+
+    try {
+      globalThis.fetch = (async (input, init) => {
+        const url = String(input instanceof Request ? input.url : input);
+
+        if (url.startsWith(server.runtimeUrl)) {
+          return originalFetch(input, init);
+        }
+
+        externalFetches.push(url);
+        return new Response("ok", { status: 202 });
+      }) as typeof fetch;
+
+      await expect(
+        postJson(`${server.runtimeUrl}/_anvil/query/allowedFetch`, {
+          input: {},
+        }),
+      ).resolves.toMatchObject({
+        ok: true,
+        result: { status: 202 },
+      });
+      await expect(
+        postJson(`${server.runtimeUrl}/_anvil/query/blockedFetch`, {
+          input: {},
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: {
+          code: "OUTBOUND_FETCH_NOT_ALLOWED",
+          details: {
+            host: "billing.example.test",
+            allowedHosts: ["api.example.test"],
+          },
+        },
+      });
+      expect(externalFetches).toEqual(["https://api.example.test/v1"]);
+    } finally {
+      globalThis.fetch = originalFetch;
+      await server.close();
+    }
+  });
+
   it("creates agent sessions, sends messages, and resumes event streams", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-local-"));
     tempDirs.push(rootDir);
