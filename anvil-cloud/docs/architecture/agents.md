@@ -128,10 +128,10 @@ inspection surface for humans and other agents.
 ## Cell Agents
 
 Cell Agents are mounted inside Cells and can power endpoints, jobs, workflows,
-mutations, or internal runtime behaviour.
+mutations, channel bindings, or internal runtime behaviour.
 
 ```ts
-import { app, defineAgent, endpoint } from "@anvil-cloud/runtime";
+import { app, channel, defineAgent, endpoint } from "@anvil-cloud/runtime";
 
 const support = defineAgent({
   name: "support",
@@ -171,14 +171,24 @@ export default app({
       handler: async () => ({ ok: true }),
     }),
   },
+  channels: {
+    supportSlack: channel({
+      provider: "slack",
+      agent: "support",
+      sessionKey: "sender-thread",
+      events: ["app_mention", "message"],
+    }),
+  },
 });
 ```
 
-Validation fails when an endpoint or workflow references a missing mounted
-agent. Subagents are shallow and explicit during alpha: a parent can declare
-subagents, but subagents cannot declare their own nested subagents. Guard
-validation fails if a subagent declares capabilities outside the parent
-capability set.
+Validation fails when an endpoint, workflow, or channel references a missing
+mounted agent. Subagents are shallow and explicit during alpha: a parent can
+declare subagents, but subagents cannot declare their own nested subagents.
+Guard validation fails if a subagent declares capabilities outside the parent
+capability set. Channel adapters are platform-side; Cell agent code receives
+normalized channel context and remains channel-agnostic. Local development can
+simulate inbound channel messages through `anvil-cloud channels simulate`.
 
 ## Agent Cells
 
