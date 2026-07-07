@@ -131,7 +131,25 @@ Jobs are named handlers invoked by local queues, manual CLI calls, or deployment
 
 Local jobs should be persisted to `.anvil/local/jobs.json` for debuggability.
 
-Cloud jobs should be mapped by each deployment adapter depending on whether the job is scheduled or queued.
+Scheduled jobs use `job({ schedule })`. The schedule string supports
+`rate(1 hour)`, `@every 5m`, or five-field cron syntax in the local runtime.
+Optional `overlap` and `timeoutMs` fields describe local and adapter behaviour:
+
+```ts
+refreshData: job({
+  schedule: "0 2 * * *",
+  overlap: "skip",
+  timeoutMs: 30_000,
+  handler: async (ctx) => {
+    await ctx.log.info("Refreshing data");
+  },
+});
+```
+
+Local schedule state and run history are persisted to
+`.anvil/local/schedules.json`. Missed local runs are skipped while the runtime
+is offline. Cloud jobs should be mapped by each deployment adapter depending on
+whether the job is scheduled or queued.
 
 ## Error model
 

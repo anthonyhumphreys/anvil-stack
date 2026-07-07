@@ -320,6 +320,7 @@ Local state lives in `.anvil/local/`.
 ├── files/
 ├── logs.ndjson
 ├── jobs.json
+├── schedules.json
 └── auth.json
 ```
 
@@ -336,6 +337,8 @@ GET  /_anvil/logs
 GET  /_anvil/db/tables
 GET  /_anvil/db/:table
 POST /_anvil/auth/as/:userId
+GET  /_anvil/schedules
+POST /_anvil/schedules/:name/run
 ```
 
 Production inspection routes must not be exposed publicly. Remote inspection should go through CLI/control-plane APIs.
@@ -351,6 +354,8 @@ anvil-cloud inspect [--local] [--json]
 anvil-cloud logs [--local] [--json]
 anvil-cloud db list [--local] [--json]
 anvil-cloud db dump <table> [--local] [--json]
+anvil-cloud schedules list [--json]
+anvil-cloud schedules run <name> [--payload '<json>'] [--json]
 anvil-cloud deploy --preview [--json]
 ```
 

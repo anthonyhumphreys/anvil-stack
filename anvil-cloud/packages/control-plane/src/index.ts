@@ -35,6 +35,8 @@ export interface ControlPlaneApi {
   dbTables(): Promise<Record<string, { rows: number }>>;
   dbDump(table: string): Promise<unknown[]>;
   authUsers(): Promise<unknown[]>;
+  traces(): Promise<unknown[]>;
+  trace(traceId: string): Promise<unknown | null>;
   workflows(): Promise<unknown[]>;
   workflowRun(runId: string): Promise<unknown | null>;
   services(): Promise<unknown[]>;
@@ -176,6 +178,26 @@ export function createHttpControlPlane(
       const payload = await request("/_anvil/auth/users");
 
       return Array.isArray(payload.users) ? payload.users : [];
+    },
+    async traces() {
+      const payload = await request("/_anvil/traces");
+
+      return Array.isArray(payload.traces) ? payload.traces : [];
+    },
+    async trace(traceId) {
+      try {
+        const payload = await request(
+          `/_anvil/traces/${encodeURIComponent(traceId)}`,
+        );
+
+        return payload.trace ?? null;
+      } catch (error) {
+        if (error instanceof ControlPlaneError && error.status === 404) {
+          return null;
+        }
+
+        throw error;
+      }
     },
     async workflows() {
       const payload = await request("/_anvil/workflows");
