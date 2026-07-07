@@ -10,14 +10,51 @@ Full agent instructions: `llms-full.txt`.
 
 - `README.md`: project overview.
 - `AGENTS.md`: repo rules for coding agents.
+- `docs/product/vision.md`: product thesis and boundaries.
 - `docs/specs/alpha-implementation-spec.md`: alpha scope.
 - `docs/specs/cell-contract.md`: Anvil Cell contract.
 - `docs/specs/cli.md`: CLI and stable JSON contracts.
+- `docs/examples/agents/README.md`: agent contract examples.
+- `examples/notes/README.md`: canonical local Cell example.
+- `examples/aws-preview/README.md`: AWS preview smoke Cell.
 - `docs/architecture/agents.md`: Anvil Agent contract.
 - `docs/architecture/runtime.md`: runtime design.
 - `docs/architecture/builder.md`: Builder and Guard design.
 - `docs/architecture/local-dev.md`: Anvil Local and Lens.
 - `docs/architecture/aws-adapter.md`: AWS preview adapter.
+
+## Auth conformance
+
+- Use `anvil-cloud auth test --json` before changing auth behavior or wiring a
+  new OIDC provider.
+- The command returns stable `checks` for local JWT issue/verify, runtime
+  public/required/role policy, OIDC discovery and JWKS verification, expiry,
+  issuer and audience rejection, configured claim mapping, and provider fixture
+  configs.
+- Handler code should rely on `ctx.auth.identity.userId`, `email`, `roles`, and
+  `claims`; provider-specific JWT names belong in `ANVIL_AUTH_*_CLAIM`
+  configuration, not Cell code.
+
+## Core terms
+
+- Anvil Cloud: overall platform.
+- Anvil Cell: deployable app unit.
+- Anvil Runtime: shared execution layer.
+- Anvil Builder: compiler and bundler.
+- Anvil Local: local development runtime.
+- Anvil Guard: policy and capability checks.
+- Anvil Lens: inspection and diagnostics.
+
+## Current implementation priority
+
+Implement in this order:
+
+1. Runtime DSL and test host.
+2. Local runtime server.
+3. Builder and manifest extraction.
+4. CLI with stable `--json` output.
+5. Client SDK and generated metadata.
+6. AWS preview deployment.
 
 ## Non-Negotiable Rules
 
@@ -48,6 +85,12 @@ anvil-cloud doctor --json
 anvil-cloud review --json
 ```
 
+## Starter templates
+
+Use `anvil-cloud new <name> --template <crud|auth|workflow|service|agent|sandbox>`
+to scaffold runnable examples. Each template keeps the starter generated client
+path working and adds one canonical primitive for agents to copy.
+
 From the monorepo checkout, run commands inside `anvil-cloud/` and use the
 workspace script or built entrypoint:
 
@@ -55,3 +98,12 @@ workspace script or built entrypoint:
 pnpm anvil-cloud --help
 node packages/cli/dist/index.js check --json
 ```
+
+## Hard rules
+
+- Do not use `forge` naming.
+- Do not expose direct AWS SDK usage to Anvil Cell authors.
+- Do not begin with AWS infrastructure before local runtime is proven.
+- Do not add Kubernetes, ECS, arbitrary Docker, or multi-cloud support in v0.
+- Local usage metering is available through `.anvil/local/usage.ndjson`, `GET /_anvil/usage`, Lens Usage, and `anvil-cloud usage --local --json`; preview usage remains declared-resource visibility.
+- Keep docs professional and suitable for a future open-source repository.
