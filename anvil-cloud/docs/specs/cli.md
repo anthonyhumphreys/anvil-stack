@@ -107,6 +107,30 @@ Checks:
 
 Builds local artefacts into `.anvil/dist` and `.anvil/generated`.
 
+### `anvil-cloud channels simulate`
+
+Sends a provider-neutral channel message to a running local runtime.
+
+```sh
+anvil-cloud channels simulate --channel supportSlack --input "hello" --json
+```
+
+Options:
+
+```txt
+--channel     channel binding name from the Cell manifest
+--input       inbound channel message text
+--sender      optional provider sender id
+--thread      optional provider thread/conversation id
+--runtime-url local runtime URL, default http://localhost:8787
+--json        stable JSON result
+```
+
+The command posts to `/_anvil/channels/simulate`. JSON output includes the
+matched channel, local agent session summary, ordered events, continuation
+token, and reply chunks. Real provider credentials remain platform-side; Cell
+agent code only receives normalized channel context.
+
 ### `anvil-cloud manifest diff`
 
 Compares Cell manifests without deploying anything.
@@ -180,8 +204,8 @@ Initial checks include:
   and no public `workspace:` dependencies;
 - Cell config and build manifest;
 - generated client metadata presence and consistency with the built manifest;
-- local `.anvil/local` state, including auth, database, logs, jobs, workflows,
-  and service snapshots;
+- local `.anvil/local` state, including auth, database, logs, agent sessions,
+  jobs, workflows, and service snapshots;
 - local runtime health and runtime/client port availability;
 - Notes golden-path verification runs doctor against the live local runtime and
   expects `project.build`, `project.generatedClient`, `local.state`, and
