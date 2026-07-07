@@ -56,6 +56,7 @@ Initial commands:
 - `anvil-cloud agents guardian`
 - `anvil-cloud inspect`
 - `anvil-cloud logs`
+- `anvil-cloud logs --trace <traceId>`
 - `anvil-cloud usage --local`
 - `anvil-cloud usage --preview`
 - `anvil-cloud db list`

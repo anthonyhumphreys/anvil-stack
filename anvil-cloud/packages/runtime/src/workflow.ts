@@ -2,6 +2,7 @@ import type { AnyWorkflowDefinition, WorkflowState } from "./app.js";
 import { createRuntimeContext } from "./context.js";
 import { normaliseRuntimeError, RuntimeError } from "./errors.js";
 import type { RuntimeHost, WorkflowRun, WorkflowStepRun } from "./host.js";
+import type { TraceAdapter } from "./trace.js";
 import { Effect, Either, Schedule } from "effect";
 
 export type ExecuteWorkflowRunOptions = {
@@ -47,9 +48,21 @@ export async function executeWorkflowRun(
   const { workflow, host, run, save } = options;
   const retryDelayMs = options.retryDelayMs ?? 50;
   const state: WorkflowState = { input: run.input, steps: {} };
+  const trace = host.traces;
 
   run.status = "running";
   await persist(run, save);
+  await trace?.start({
+    traceId: run.runId,
+    kind: "workflow",
+    name: run.workflow,
+    subjectId: run.runId,
+    startedAt: run.createdAt,
+    attributes: {
+      workflow: run.workflow,
+      input: run.input,
+    },
+  });
 
   for (const definition of workflow.steps) {
     const stepRun = ensureStepRun(run, definition.name);
@@ -64,6 +77,16 @@ export async function executeWorkflowRun(
     stepRun.status = "running";
     stepRun.startedAt = new Date().toISOString();
     await persist(run, save);
+    await trace?.event(run.runId, {
+      type: "workflow.step.started",
+      name: stepRun.name,
+      status: "running",
+      attributes: {
+        workflow: run.workflow,
+        step: stepRun.name,
+        attempt: stepRun.attempts + 1,
+      },
+    });
 
     // Attempts already recorded on a resumed run keep counting up, but a
     // resumed step always gets a fresh attempt budget: the retry schedule
@@ -94,6 +117,7 @@ export async function executeWorkflowRun(
         stepRun.completedAt = new Date().toISOString();
         state.steps[stepRun.name] = stepResult.right;
         await persist(run, save);
+        await traceWorkflowStepCompleted(trace, run, stepRun);
       }
     } catch (error) {
       lastError = normaliseRuntimeError(error);
@@ -108,6 +132,7 @@ export async function executeWorkflowRun(
       stepRun.completedAt = new Date().toISOString();
       run.status = "failed";
       await persist(run, save);
+      await traceWorkflowStepFailed(trace, run, stepRun, lastError);
       await writeWorkflowErrorLog(host, run, stepRun, lastError);
 
       return run;
@@ -116,8 +141,95 @@ export async function executeWorkflowRun(
 
   run.status = "completed";
   await persist(run, save);
+  await trace?.event(run.runId, {
+    type: "workflow.completed",
+    name: run.workflow,
+    status: "completed",
+    attributes: {
+      workflow: run.workflow,
+      steps: run.steps.length,
+    },
+  });
+  await trace?.complete(run.runId, { status: "completed" });
 
   return run;
+}
+
+async function traceWorkflowStepCompleted(
+  trace: TraceAdapter | undefined,
+  run: WorkflowRun,
+  stepRun: WorkflowStepRun,
+): Promise<void> {
+  await trace?.event(run.runId, {
+    type: "workflow.step.completed",
+    name: stepRun.name,
+    status: "completed",
+    ...durationField(stepRun.startedAt, stepRun.completedAt),
+    attributes: {
+      workflow: run.workflow,
+      step: stepRun.name,
+      attempts: stepRun.attempts,
+      result: stepRun.result,
+    },
+  });
+}
+
+async function traceWorkflowStepFailed(
+  trace: TraceAdapter | undefined,
+  run: WorkflowRun,
+  stepRun: WorkflowStepRun,
+  error: RuntimeError,
+): Promise<void> {
+  await trace?.event(run.runId, {
+    type: "workflow.step.failed",
+    name: stepRun.name,
+    status: "failed",
+    ...durationField(stepRun.startedAt, stepRun.completedAt),
+    attributes: {
+      workflow: run.workflow,
+      step: stepRun.name,
+      attempts: stepRun.attempts,
+      error: {
+        code: error.code,
+        message: error.message,
+      },
+    },
+  });
+  await trace?.event(run.runId, {
+    type: "workflow.failed",
+    name: run.workflow,
+    status: "failed",
+    attributes: {
+      workflow: run.workflow,
+      step: stepRun.name,
+      code: error.code,
+    },
+  });
+  await trace?.complete(run.runId, { status: "failed" });
+}
+
+function durationField(
+  startedAt: string | undefined,
+  completedAt: string | undefined,
+): { durationMs: number } | {} {
+  const durationMs = durationBetween(startedAt, completedAt);
+
+  return durationMs === undefined ? {} : { durationMs };
+}
+
+function durationBetween(
+  startedAt: string | undefined,
+  completedAt: string | undefined,
+): number | undefined {
+  if (!startedAt || !completedAt) {
+    return undefined;
+  }
+
+  const durationMs = Date.parse(completedAt) - Date.parse(startedAt);
+
+  return Number.isFinite(durationMs) && durationMs >= 0
+    ? durationMs
+    : undefined;
 }
 
 type WorkflowStepAttemptOptions = {

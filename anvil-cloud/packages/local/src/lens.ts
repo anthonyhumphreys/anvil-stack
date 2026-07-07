@@ -158,6 +158,7 @@ pre {
 <nav id="tabs">
   <button data-tab="overview" class="active">Overview</button>
   <button data-tab="logs">Logs</button>
+  <button data-tab="traces">Traces</button>
   <button data-tab="usage">Usage</button>
   <button data-tab="database">Database</button>
   <button data-tab="auth">Auth</button>
@@ -193,6 +194,15 @@ pre {
       <thead><tr><th>time</th><th>level</th><th>handler</th><th>message</th></tr></thead>
       <tbody></tbody>
     </table></div>
+  </section>
+
+  <section id="tab-traces">
+    <div class="panel"><table id="trace-table">
+      <thead><tr><th>traceId</th><th>kind</th><th>name</th><th>status</th><th>updated</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+    <h2 id="trace-detail-title" style="display:none">Trace detail</h2>
+    <div class="panel" id="trace-detail" style="display:none"></div>
   </section>
 
   <section id="tab-usage">
@@ -423,7 +433,8 @@ anvil-cloud logs --local --json</pre>
       ["current user", (payload.auth && payload.auth.currentUser) || "none"],
       ["usage cost", "$" + Number((((payload.usage || {}).totals || {}).estimatedCostUsd || 0)).toFixed(6)],
       ["tables", tableNames.length ? tableNames.join(", ") : "none"],
-      ["recent errors", String((payload.recentErrors || []).length)]
+      ["recent errors", String((payload.recentErrors || []).length)],
+      ["traces", String((payload.traces || []).length)]
     ].forEach(function (pair) {
       state.appendChild(el("div", { text: pair[0] }));
       state.appendChild(el("div", { text: pair[1] }));
@@ -484,6 +495,64 @@ anvil-cloud logs --local --json</pre>
       loadLogs().catch(function () { /* transient; keep last view */ });
     }
   }, 5000);
+
+  // Traces
+  function loadTraces() {
+    return getJson("/_anvil/traces").then(function (payload) {
+      var traces = payload.traces || [];
+      var tbody = document.querySelector("#trace-table tbody");
+      tbody.textContent = "";
+      if (traces.length === 0) {
+        tbody.appendChild(el("tr", null, [
+          el("td", { class: "muted", text: "No traces yet." })
+        ]));
+      }
+      traces.slice().reverse().forEach(function (trace) {
+        var row = el("tr", { class: "clickable" }, [
+          el("td", { text: trace.traceId || "" }),
+          el("td", { text: trace.kind || "" }),
+          el("td", { text: trace.name || "" }),
+          el("td", null, [badge(trace.status || "unknown")]),
+          el("td", { class: "muted", text: trace.updatedAt || "" })
+        ]);
+        row.addEventListener("click", function () { loadTraceDetail(trace.traceId); });
+        tbody.appendChild(row);
+      });
+    });
+  }
+
+  function loadTraceDetail(traceId) {
+    getJson("/_anvil/traces/" + encodeURIComponent(traceId)).then(function (payload) {
+      var trace = payload.trace || {};
+      var events = trace.events || [];
+      var title = document.getElementById("trace-detail-title");
+      var panel = document.getElementById("trace-detail");
+      title.style.display = "block";
+      title.textContent = "Trace detail: " + traceId;
+      panel.style.display = "block";
+      panel.textContent = "";
+      panel.appendChild(el("div", null, [badge(trace.status || "unknown")]));
+      if (events.length === 0) {
+        panel.appendChild(el("pre", { text: JSON.stringify(trace, null, 2) }));
+        return;
+      }
+      var thead = el("thead", null, [
+        el("tr", null, ["time", "type", "name", "duration", "attributes"].map(function (head) {
+          return el("th", { text: head });
+        }))
+      ]);
+      var tbody = el("tbody", null, events.map(function (event) {
+        return el("tr", null, [
+          el("td", { class: "muted", text: event.timestamp || "" }),
+          el("td", { text: event.type || "" }),
+          el("td", { text: event.name || "" }),
+          el("td", { text: event.durationMs !== undefined ? String(event.durationMs) + "ms" : "-" }),
+          el("td", null, [renderValue(event.attributes || null)])
+        ]);
+      }));
+      panel.appendChild(el("table", null, [thead, tbody]));
+    }).catch(function (error) { showError(error.message); });
+  }
 
   // Usage
   function loadUsage() {
@@ -791,6 +860,7 @@ anvil-cloud logs --local --json</pre>
       loadOverview(),
       loadLogs(),
       loadUsage(),
+      loadTraces(),
       loadTables(),
       loadUsers(),
       loadRuns(),

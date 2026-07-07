@@ -56,6 +56,7 @@ a feature here.
 ├── jobs.json
 ├── logs.ndjson
 ├── services.json
+├── traces.json
 └── workflows.json
 ```
 
@@ -69,6 +70,8 @@ GET  /_anvil/health
 GET  /_anvil/manifest
 GET  /_anvil/inspect
 GET  /_anvil/logs
+GET  /_anvil/traces
+GET  /_anvil/traces/:traceId
 GET  /_anvil/agents
 POST /_anvil/agents/:name
 POST /_anvil/agents/:name/sessions

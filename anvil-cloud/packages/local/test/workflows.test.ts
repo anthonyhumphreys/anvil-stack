@@ -81,6 +81,24 @@ describe("LocalWorkflowAdapter", () => {
         { name: "store", status: "completed" },
       ],
     });
+
+    const traces = JSON.parse(
+      await readFile(path.join(stateDir, "traces.json"), "utf8"),
+    ) as Array<{ traceId: string; status: string; events: unknown[] }>;
+
+    expect(traces).toHaveLength(1);
+    expect(traces[0]).toMatchObject({
+      traceId: run.runId,
+      status: "completed",
+      events: expect.arrayContaining([
+        expect.objectContaining({ type: "workflow.started" }),
+        expect.objectContaining({
+          type: "workflow.step.completed",
+          name: "fetch",
+        }),
+        expect.objectContaining({ type: "workflow.completed" }),
+      ]),
+    });
   });
 
   it("persists a failed run with step error details", async () => {
@@ -131,6 +149,49 @@ describe("LocalWorkflowAdapter", () => {
           error: { code: "INTERNAL_ERROR" },
         },
       ],
+    });
+
+    const traces = JSON.parse(
+      await readFile(path.join(stateDir, "traces.json"), "utf8"),
+    ) as Array<{ status: string; events: unknown[] }>;
+
+    expect(traces[0]).toMatchObject({
+      status: "failed",
+      events: expect.arrayContaining([
+        expect.objectContaining({ type: "workflow.step.failed" }),
+        expect.objectContaining({ type: "workflow.failed" }),
+      ]),
+    });
+  });
+
+  it("redacts sensitive trace attributes before persistence", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-workflows-"));
+    tempDirs.push(rootDir);
+
+    const stateDir = path.join(rootDir, ".anvil/local");
+    const host = await createLocalRuntimeHost({
+      stateDir,
+      cellName: "notes",
+    });
+
+    await host.traces.start({
+      traceId: "trace_secret",
+      kind: "agent",
+      name: "support",
+      subjectId: "trace_secret",
+      attributes: {
+        authorization: "Bearer nope",
+        nested: { apiKey: "also-nope", safe: "visible" },
+      },
+    });
+
+    const persisted = JSON.parse(
+      await readFile(path.join(stateDir, "traces.json"), "utf8"),
+    ) as Array<{ events: Array<{ attributes: Record<string, unknown> }> }>;
+
+    expect(persisted[0]?.events[0]?.attributes).toEqual({
+      authorization: "[redacted]",
+      nested: { apiKey: "[redacted]", safe: "visible" },
     });
   });
 
@@ -247,6 +308,29 @@ describe("local workflow HTTP routes", () => {
             { name: "fetch", status: "completed" },
             { name: "store", status: "completed" },
           ],
+        },
+      });
+      await expect(
+        fetchJson(`${server.runtimeUrl}/_anvil/traces`),
+      ).resolves.toMatchObject({
+        ok: true,
+        traces: [
+          expect.objectContaining({
+            traceId: started.runId,
+            kind: "workflow",
+            status: "completed",
+          }),
+        ],
+      });
+      await expect(
+        fetchJson(`${server.runtimeUrl}/_anvil/traces/${started.runId}`),
+      ).resolves.toMatchObject({
+        ok: true,
+        trace: {
+          traceId: started.runId,
+          events: expect.arrayContaining([
+            expect.objectContaining({ type: "workflow.step.completed" }),
+          ]),
         },
       });
       await expect(

@@ -335,8 +335,12 @@ Reads local or remote structured logs.
 
 ```sh
 anvil-cloud logs --local --json
+anvil-cloud logs --trace run_123 --json
 anvil-cloud logs --app notes --env preview --since 10m --json
 ```
+
+`--trace <id>` reads a local trace from `.anvil/local/traces.json` and returns
+the trace record plus ordered trace events. It is local-only in alpha.
 
 Remote AWS logs use the same deployment metadata lookup as inspect, so metadata
 lookup failures use the same stable error codes. DynamoDB or CloudWatch read

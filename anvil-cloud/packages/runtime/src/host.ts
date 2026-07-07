@@ -1,4 +1,5 @@
 import type { HandlerKind } from "./app.js";
+import type { TraceAdapter } from "./trace.js";
 
 export type AuthIdentity = {
   userId: string;
@@ -121,4 +122,5 @@ export interface RuntimeHost {
   events: EventAdapter;
   jobs: JobAdapter;
   workflows: WorkflowAdapter;
+  traces?: TraceAdapter;
 }

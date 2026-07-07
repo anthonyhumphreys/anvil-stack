@@ -99,6 +99,28 @@ describe("createHttpControlPlane", () => {
     ]);
   });
 
+  it("lists traces and returns null for missing trace detail", async () => {
+    const traces = [{ traceId: "run_1", status: "completed" }];
+    const { fetchImpl } = createStubFetch({
+      "GET /_anvil/traces": { payload: { ok: true, traces } },
+      "GET /_anvil/traces/run_1": {
+        payload: { ok: true, trace: traces[0] },
+      },
+      "GET /_anvil/traces/missing": {
+        status: 404,
+        payload: {
+          ok: false,
+          error: { code: "NOT_FOUND", message: "No trace." },
+        },
+      },
+    });
+    const plane = createHttpControlPlane("http://localhost:8787", fetchImpl);
+
+    await expect(plane.traces()).resolves.toEqual(traces);
+    await expect(plane.trace("run_1")).resolves.toEqual(traces[0]);
+    await expect(plane.trace("missing")).resolves.toBeNull();
+  });
+
   it("reads table inspection and dumps rows", async () => {
     const { fetchImpl, requests } = createStubFetch({
       "GET /_anvil/db/tables": {

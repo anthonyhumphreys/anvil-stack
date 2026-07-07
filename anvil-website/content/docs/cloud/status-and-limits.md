@@ -30,7 +30,7 @@ what evidence should I inspect before trusting a Cell?"
 | Local runtime | Local HTTP server, JSON database, files, auth, logs, usage events, events, jobs, workflows, supervised services, manifest, and inspection state exist. |
 | CLI | `new`, `dev`, `check`, `review`, `build`, `agents`, `channels simulate`, `inspect`, `logs`, `usage --local`, `usage --preview`, `db`, `workflows`, `services list`, `deploy --preview`, `rollback --preview --dry-run`, and `destroy --preview` exist. |
 | Client | React/Vite is the current paved road. The browser client supports generated query/mutation metadata, mounted agent session helpers, token lookup, structured runtime errors, hook helpers, and manual `refetch`. |
-| Lens | Local Lens is served at `/_anvil/lens` and reads the same local runtime truth as CLI JSON: manifest, capabilities, auth users, logs, usage totals, database state, workflows, services, and diagnostics. |
+| Lens | Local Lens is served at `/_anvil/lens` and reads the same local runtime truth as CLI JSON: manifest, capabilities, auth users, logs, traces, usage totals, database state, workflows, services, and diagnostics. |
 | Examples | `examples/notes` is the canonical local demo. `examples/aws-preview` is the AWS-compatible smoke Cell. |
 | AWS preview | Plan, review aggregation, CloudFormation synthesis, artifacts, optional provisioner, Lambda bridge, DynamoDB, S3, SQS, EventBridge events and schedules, Step Functions workflows, outbound fetch guard, ECS/Fargate service resource synthesis, CloudWatch logs, remote inspect, remote logs, usage visibility, rollback dry-run intent, preview destroy, cost-driver hints, and cleanup hints exist. |
 
