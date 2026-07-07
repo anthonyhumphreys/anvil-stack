@@ -22,6 +22,7 @@ import {
   AwsPreviewDestroyError,
   AwsRemoteReaderError,
   awsPreviewStackNameFor,
+  normalizePreviewName,
   createAwsSdkPreviewDestroyerFromEnv,
   createAwsRemoteReaderFromEnv,
   createAwsSdkPreviewProvisionerFromEnv,
@@ -35,6 +36,7 @@ import {
   diffCellManifests,
   validateAnvilCellGraph,
   type BuilderDiagnostic,
+  type BuildOutput,
   type BuildResult,
   type CellManifest,
   type ManifestDiffResult,
@@ -48,17 +50,30 @@ import {
 } from "@anvil-cloud/auth";
 import {
   createLocalRuntimeHost,
+  JsonDatabaseBranchManager,
+  isLocalApprovalStatus,
+  LocalApprovalStore,
   LocalUsageMeter,
+  normalizeDatabaseBranchName,
   startLocalRuntimeServer,
+  type JsonDatabaseBranchDiff,
+  type LocalScheduleStatus,
+  type LocalApprovalRecord,
+  type LocalApprovalStatus,
   type LocalUsageSummary,
 } from "@anvil-cloud/local";
 import {
   AgentProviderRegistry,
   AgentRuntime,
   LocalStubInferenceProvider,
-  type AppDefinition,
+  summarizeWorkflowRun,
   AuthIdentity,
+  createAgentEvalToolExecutors,
+  runAgentEvalSuite,
+  type AgentEvalBaseline,
+  type AppDefinition,
   type WorkflowRun,
+  type WorkflowRunSummary,
 } from "@anvil-cloud/runtime";
 
 type CliContext = {
@@ -193,14 +208,24 @@ export async function main(argv: string[]): Promise<void> {
     case "auth":
       await commandAuth(context, subcommand, maybeArg);
       return;
+    case "approvals":
+      await commandApprovals(context, subcommand, maybeArg);
+      return;
     case "agents":
       await commandAgents(context, subcommand, maybeArg);
+      return;
+    case "eval":
+      await commandEval(context, subcommand);
       return;
     case "channels":
       await commandChannels(context, subcommand);
       return;
+      return;
     case "workflows":
       await commandWorkflows(context, subcommand, maybeArg);
+      return;
+    case "schedules":
+      await commandSchedules(context, subcommand, maybeArg);
       return;
     case "services":
       await commandServices(context, subcommand);
@@ -650,6 +675,113 @@ async function commandAgentsInvoke(
   const payload = { ok: true, result: invocation };
 
   writeJsonOrHuman(context, payload, JSON.stringify(payload, null, 2));
+}
+
+async function commandEval(
+  context: CliContext,
+  name: string | undefined,
+): Promise<void> {
+  const result = await buildCell({ rootDir: context.cwd });
+
+  if (!result.ok || !result.output || !result.manifest) {
+    writeBuildResult(context, result, "Agent eval build failed.");
+    process.exitCode = 4;
+    return;
+  }
+
+  const app = await importApp(result.output.serverBundle);
+  const agents = Object.entries(app.agents ?? {}).filter(([mount, agent]) => {
+    if (name !== undefined && mount !== name && agent.name !== name) {
+      return false;
+    }
+
+    return agent.evals !== undefined;
+  });
+
+  if (name !== undefined && agents.length === 0) {
+    writeJsonOrHuman(
+      context,
+      {
+        ok: false,
+        errors: [
+          {
+            code: "AGENT_EVALS_NOT_FOUND",
+            message: `No eval suite found for mounted agent '${name}'.`,
+          },
+        ],
+      },
+      `No eval suite found for mounted agent '${name}'.`,
+    );
+    process.exitCode = 4;
+    return;
+  }
+
+  const baselinePath = path.resolve(
+    context.cwd,
+    context.values.get("baseline") ?? ".anvil/evals/baseline.json",
+  );
+  const baseline = await readEvalBaseline(baselinePath);
+  const runtime = new AgentRuntime({
+    providers: createAgentProviderRegistry(),
+    baseDir: context.cwd,
+  });
+  const runs = await Promise.all(
+    agents.map(async ([mount, agent]) => {
+      const tools = createAgentEvalToolExecutors(agent);
+
+      return {
+        mount,
+        ...(await runAgentEvalSuite(agent, agent.evals!, {
+          runtime,
+          ...(baseline === undefined ? {} : { baseline }),
+          ...(tools === undefined ? {} : { tools }),
+        })),
+      };
+    }),
+  );
+  const summary = {
+    agents: runs.length,
+    total: runs.reduce((total, run) => total + run.summary.total, 0),
+    passed: runs.reduce((total, run) => total + run.summary.passed, 0),
+    failed: runs.reduce((total, run) => total + run.summary.failed, 0),
+  };
+  const nextBaseline = mergeEvalBaselines(runs.map((run) => run.baseline));
+  const baselineToWrite =
+    baseline === undefined
+      ? nextBaseline
+      : mergeEvalBaselines([baseline, nextBaseline]);
+
+  if (context.flags.has("write-baseline")) {
+    await mkdir(path.dirname(baselinePath), { recursive: true });
+    await writeFile(
+      baselinePath,
+      `${JSON.stringify(baselineToWrite, null, 2)}\n`,
+      "utf8",
+    );
+  }
+
+  const payload = {
+    ok: runs.every((run) => run.ok),
+    summary,
+    baseline: {
+      path: path.relative(context.cwd, baselinePath),
+      loaded: baseline !== undefined,
+      wrote: context.flags.has("write-baseline"),
+    },
+    agents: runs,
+  };
+
+  writeJsonOrHuman(
+    context,
+    payload,
+    payload.ok
+      ? `Agent evals passed (${summary.passed}/${summary.total}).`
+      : `Agent evals failed (${summary.failed}/${summary.total}).`,
+  );
+
+  if (!payload.ok) {
+    process.exitCode = 6;
+  }
 }
 
 async function commandNew(
@@ -1836,6 +1968,7 @@ async function commandDev(context: CliContext): Promise<void> {
   const manifest = result.manifest as CellManifest;
   const port = Number(context.values.get("port") ?? "8787");
   const clientPort = Number(context.values.get("client-port") ?? "5173");
+  const databaseBranch = context.values.get("db-branch");
   const server = await startLocalRuntimeServer({
     app,
     manifest,
@@ -1843,6 +1976,7 @@ async function commandDev(context: CliContext): Promise<void> {
     cellName: manifest.cell.name,
     port,
     clientPort,
+    ...(databaseBranch === undefined ? {} : { databaseBranch }),
     clientMode: manifest.client.kind === "vite-react" ? "vite" : "none",
   });
   const ready = {
@@ -1851,6 +1985,7 @@ async function commandDev(context: CliContext): Promise<void> {
     clientUrl: server.clientUrl,
     client: manifest.client,
     lensUrl: `${server.runtimeUrl}/_anvil/lens`,
+    databaseBranch: server.host.db.branch,
     queries: manifest.queries,
     mutations: manifest.mutations,
   };
@@ -1911,10 +2046,21 @@ async function commandInspect(context: CliContext): Promise<void> {
     let payload: Awaited<ReturnType<typeof reader.inspect>>;
 
     try {
-      payload = await reader.inspect({
+      const inspectInput: {
+        cell: string;
+        environment: "preview";
+        previewName?: string;
+      } = {
         cell: remoteApp,
         environment,
-      });
+      };
+      const previewName = context.values.get("name");
+
+      if (previewName !== undefined) {
+        inspectInput.previewName = previewName;
+      }
+
+      payload = await reader.inspect(inspectInput);
     } catch (error) {
       if (writeAwsRemoteReaderError(context, error)) {
         return;
@@ -1934,6 +2080,9 @@ async function commandInspect(context: CliContext): Promise<void> {
     path.join(context.cwd, ".anvil/local/auth.json"),
   );
   const database = await readDatabase(context.cwd);
+  const dbBranches = new JsonDatabaseBranchManager(localStateDir(context.cwd));
+  const branches = await dbBranches.listBranches();
+  const activeBranch = await dbBranches.getActiveBranch();
   const logs = await readLogs(context.cwd);
   const payload = {
     ok: true,
@@ -1946,12 +2095,14 @@ async function commandInspect(context: CliContext): Promise<void> {
           : null,
     },
     database: {
+      activeBranch,
       tables: Object.fromEntries(
         Object.entries(database).map(([name, rows]) => [
           name,
           { rows: rows.length },
         ]),
       ),
+      branches,
     },
     recentErrors: logs.filter((entry) => entry.level === "error").slice(-10),
   };
@@ -1997,6 +2148,47 @@ async function commandLens(context: CliContext): Promise<void> {
 }
 
 async function commandLogs(context: CliContext): Promise<void> {
+  const traceId = context.values.get("trace");
+
+  if (traceId !== undefined) {
+    const trace = await readTrace(context.cwd, traceId);
+
+    if (!trace) {
+      writeJsonOrHuman(
+        context,
+        {
+          ok: false,
+          errors: [
+            {
+              code: "TRACE_NOT_FOUND",
+              message: `No local trace '${traceId}' was found.`,
+            },
+          ],
+        },
+        `No local trace '${traceId}' was found.`,
+      );
+      process.exitCode = 4;
+      return;
+    }
+
+    writeJsonOrHuman(
+      context,
+      {
+        ok: true,
+        trace,
+      },
+      (Array.isArray(trace.events) ? trace.events : [])
+        .map(
+          (event) =>
+            `${event.timestamp} ${event.type} ${event.name}${
+              event.durationMs === undefined ? "" : ` ${event.durationMs}ms`
+            }`,
+        )
+        .join("\n"),
+    );
+    return;
+  }
+
   const remoteApp = context.values.get("app");
 
   if (remoteApp) {
@@ -2024,6 +2216,7 @@ async function commandLogs(context: CliContext): Promise<void> {
     const logInput: {
       cell: string;
       environment: "preview";
+      previewName?: string;
       sinceMs?: number;
       limit?: number;
     } = { cell: remoteApp, environment: "preview" };
@@ -2034,6 +2227,11 @@ async function commandLogs(context: CliContext): Promise<void> {
     }
 
     logInput.environment = environment;
+    const previewName = context.values.get("name");
+
+    if (previewName !== undefined) {
+      logInput.previewName = previewName;
+    }
     const limitOption = context.values.get("limit");
     const sinceOption = context.values.get("since");
 
@@ -2203,13 +2401,21 @@ async function commandDb(
   subcommand: string | undefined,
   table: string | undefined,
 ): Promise<void> {
-  const database = await readDatabase(context.cwd);
+  const manager = new JsonDatabaseBranchManager(localStateDir(context.cwd));
+  const branchArg = context.values.get("branch");
+  const branch =
+    branchArg === undefined
+      ? undefined
+      : normalizeDatabaseBranchName(branchArg);
+  const database = await readDatabase(context.cwd, branch);
 
   if (subcommand === "list") {
+    const activeBranch = await manager.getActiveBranch();
     writeJsonOrHuman(
       context,
       {
         ok: true,
+        branch: branch ?? activeBranch,
         tables: Object.entries(database).map(([name, rows]) => ({
           name,
           rows: rows.length,
@@ -2221,15 +2427,153 @@ async function commandDb(
   }
 
   if (subcommand === "dump" && table) {
+    const activeBranch = await manager.getActiveBranch();
     writeJsonOrHuman(
       context,
       {
         ok: true,
+        branch: branch ?? activeBranch,
         table,
         rows: database[table] ?? [],
       },
       JSON.stringify(database[table] ?? [], null, 2),
     );
+    return;
+  }
+
+  if (subcommand === "branch" && table) {
+    const ttlSeconds = context.values.has("ttl")
+      ? parsePositiveIntegerOption(context.values.get("ttl") ?? "")
+      : undefined;
+
+    if (context.values.has("ttl") && ttlSeconds === undefined) {
+      writeInvalidUsage(context, "--ttl must be a positive integer in seconds.");
+      return;
+    }
+
+    await writeDbOperation(context, async () => {
+      const result = await manager.createBranch({
+        name: table,
+        ...(context.values.has("from")
+          ? { from: context.values.get("from") ?? "" }
+          : {}),
+        ...(ttlSeconds === undefined ? {} : { ttlSeconds }),
+      });
+
+      if (context.flags.has("use")) {
+        await manager.setActiveBranch(result.name);
+      }
+
+      return {
+        payload: {
+          ok: true,
+          branch: {
+            ...result,
+            active: context.flags.has("use") ? true : result.active,
+          },
+        },
+        human: `Created database branch ${result.name}`,
+      };
+    });
+    return;
+  }
+
+  if (subcommand === "branches") {
+    await writeDbOperation(context, async () => {
+      const expired = context.flags.has("expired");
+      const branches = await manager.listBranches();
+      const filtered = expired
+        ? branches.filter((branchSummary) => branchSummary.expired)
+        : branches;
+
+      return {
+        payload: { ok: true, branches: filtered },
+        human: filtered
+          .map((branchSummary) =>
+            [
+              branchSummary.name,
+              branchSummary.active ? "(active)" : "",
+              branchSummary.expired ? "(expired)" : "",
+            ]
+              .filter(Boolean)
+              .join(" "),
+          )
+          .join("\n"),
+      };
+    });
+    return;
+  }
+
+  if (subcommand === "use" && table) {
+    await writeDbOperation(context, async () => {
+      const result = await manager.setActiveBranch(table);
+
+      return {
+        payload: { ok: true, branch: result },
+        human: `Using database branch ${result.name}`,
+      };
+    });
+    return;
+  }
+
+  if (subcommand === "diff" && table) {
+    await writeDbOperation(context, async () => {
+      const diff = await manager.diffBranch(table, context.values.get("against"));
+
+      return {
+        payload: { ok: true, diff },
+        human: formatDatabaseBranchDiff(diff),
+      };
+    });
+    return;
+  }
+
+  if (subcommand === "promote" && table) {
+    await writeDbOperation(context, async () => {
+      const result = await manager.promoteBranch(table);
+
+      return {
+        payload: { ok: true, branch: result },
+        human: `Promoted database branch ${result.name} to main`,
+      };
+    });
+    return;
+  }
+
+  if (subcommand === "delete" && table) {
+    if (!context.flags.has("yes")) {
+      writeInvalidUsage(
+        context,
+        "Deleting a database branch requires --yes.",
+      );
+      return;
+    }
+
+    await writeDbOperation(context, async () => {
+      const result = await manager.deleteBranch(table);
+
+      return {
+        payload: { ok: true, ...result },
+        human: result.deleted
+          ? `Deleted database branch ${result.name}`
+          : `Database branch ${result.name} did not exist`,
+      };
+    });
+    return;
+  }
+
+  if (subcommand === "cleanup" && context.flags.has("expired")) {
+    await writeDbOperation(context, async () => {
+      const deleted = await manager.deleteExpiredBranches();
+
+      return {
+        payload: { ok: true, deleted },
+        human:
+          deleted.length === 0
+            ? "No expired database branches."
+            : `Deleted expired database branches: ${deleted.join(", ")}`,
+      };
+    });
     return;
   }
 
@@ -2241,13 +2585,65 @@ async function commandDb(
         {
           code: "INVALID_USAGE",
           message:
-            "Usage: anvil-cloud db list --local or anvil-cloud db dump <table> --local",
+            "Usage: anvil-cloud db list|dump|branch|branches|use|diff|promote|delete|cleanup --local",
         },
       ],
     },
-    "Usage: anvil-cloud db list --local or anvil-cloud db dump <table> --local",
+    "Usage: anvil-cloud db list|dump|branch|branches|use|diff|promote|delete|cleanup --local",
   );
   process.exitCode = 2;
+}
+
+async function writeDbOperation(
+  context: CliContext,
+  operation: () => Promise<{ payload: unknown; human: string }>,
+): Promise<void> {
+  try {
+    const result = await operation();
+    writeJsonOrHuman(context, result.payload, result.human);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+
+    writeJsonOrHuman(
+      context,
+      {
+        ok: false,
+        errors: [
+          {
+            code: "DATABASE_BRANCH_ERROR",
+            message,
+          },
+        ],
+      },
+      message,
+    );
+    process.exitCode = 2;
+  }
+}
+
+function formatDatabaseBranchDiff(diff: JsonDatabaseBranchDiff): string {
+  const lines = [`${diff.branch} against ${diff.against}`];
+
+  for (const [table, summary] of Object.entries(diff.tables)) {
+    lines.push(
+      `${table}: ${summary.branchRows} rows (${formatSignedNumber(
+        summary.rowDelta,
+      )})`,
+    );
+
+    if (summary.addedFields.length > 0) {
+      lines.push(`  added fields: ${summary.addedFields.join(", ")}`);
+    }
+    if (summary.removedFields.length > 0) {
+      lines.push(`  removed fields: ${summary.removedFields.join(", ")}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+function formatSignedNumber(value: number): string {
+  return value >= 0 ? `+${value}` : String(value);
 }
 
 function formatLocalUsageSummary(summary: LocalUsageSummary): string {
@@ -2582,12 +2978,25 @@ function commandDeployPreviewEffect(
       provisioner ? { provisioner } : {},
     );
     const deployResult = yield* Effect.tryPromise({
-      try: () =>
-        adapter.deploy({
+      try: () => {
+        const deployInput: {
+          manifest: CellManifest;
+          buildOutput: BuildOutput;
+          environment: "preview";
+          previewName?: string;
+        } = {
           manifest,
           buildOutput,
           environment: "preview",
-        }),
+        };
+        const previewName = context.values.get("name");
+
+        if (previewName !== undefined) {
+          deployInput.previewName = previewName;
+        }
+
+        return adapter.deploy(deployInput);
+      },
       catch: toCliEffectError,
     });
 
@@ -2718,15 +3127,17 @@ async function commandDestroy(context: CliContext): Promise<void> {
     if (context.flags.has("dry-run")) {
       const stackName = awsPreviewStackNameFor(
         app,
-        environment,
+        previewStackEnvironment(environment, context.values.get("name")),
         process.env.ANVIL_AWS_STACK_PREFIX,
       );
+      const previewName = normalizePreviewName(context.values.get("name"));
       const metadataTable = process.env.ANVIL_AWS_DEPLOYMENT_METADATA_TABLE;
       const result = {
         ok: true,
         adapter: "aws",
         cell: app,
         environment,
+        previewName,
         dryRun: true,
         stackName,
         cleanup: {
@@ -2743,10 +3154,14 @@ async function commandDestroy(context: CliContext): Promise<void> {
               : {
                   action: "delete",
                   table: metadataTable,
-                  key: `deployment#${app}#${environment}`,
+                  key: deploymentMetadataKey(app, environment, previewName),
                 },
         },
-        next: [`anvil-cloud destroy --preview --app ${app} --yes --json`],
+        next: [
+          `anvil-cloud destroy --preview --app ${app}${
+            previewName !== "default" ? ` --name ${previewName}` : ""
+          } --yes --json`,
+        ],
       };
 
       writeJsonOrHuman(
@@ -2760,10 +3175,21 @@ async function commandDestroy(context: CliContext): Promise<void> {
     const destroyer = createAwsSdkPreviewDestroyerFromEnv();
     let result: Awaited<ReturnType<typeof destroyer.destroy>>;
 
-    result = await destroyer.destroy({
+    const destroyInput: {
+      cell: string;
+      environment: "preview";
+      previewName?: string;
+    } = {
       cell: app,
       environment,
-    });
+    };
+    const previewName = context.values.get("name");
+
+    if (previewName !== undefined) {
+      destroyInput.previewName = previewName;
+    }
+
+    result = await destroyer.destroy(destroyInput);
 
     writeJsonOrHuman(
       context,
@@ -3496,14 +3922,18 @@ async function commandWorkflows(
 ): Promise<void> {
   if (subcommand === "list") {
     const runs = await readWorkflowRuns(context.cwd);
+    const summaries = runs.map((run) => summarizeWorkflowRun(run));
 
     writeJsonOrHuman(
       context,
-      { ok: true, runs },
+      { ok: true, runs: summaries },
       runs.length === 0
         ? "No local workflow runs. Start one with `anvil-cloud workflows run <name>`."
-        : runs
-            .map((run) => `${run.runId}  ${run.workflow}  ${run.status}`)
+        : summaries
+            .map(
+              (run) =>
+                `${run.runId}  ${run.workflow}  ${run.progress.lifecycle}  ${workflowProgressLabel(run)}`,
+            )
             .join("\n"),
     );
     return;
@@ -3536,7 +3966,13 @@ async function commandWorkflows(
       return;
     }
 
-    writeJsonOrHuman(context, { ok: true, run }, JSON.stringify(run, null, 2));
+    const summary = summarizeWorkflowRun(run);
+
+    writeJsonOrHuman(
+      context,
+      { ok: true, run: summary },
+      JSON.stringify(summary, null, 2),
+    );
     return;
   }
 
@@ -3595,10 +4031,15 @@ async function commandWorkflows(
         process.exitCode = 1;
       }
 
+      const summary = summarizeWorkflowRun(run);
+
       writeJsonOrHuman(
         context,
-        { ok: run.status === "completed", run },
-        JSON.stringify(run, null, 2),
+        {
+          ok: run.status === "completed",
+          run: summary,
+        },
+        JSON.stringify(summary, null, 2),
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -3668,6 +4109,197 @@ async function commandServices(
   );
 }
 
+async function commandSchedules(
+  context: CliContext,
+  subcommand: string | undefined,
+  maybeArg: string | undefined,
+): Promise<void> {
+  if (subcommand === "list") {
+    const schedules = await readScheduleSnapshot(context.cwd);
+
+    writeJsonOrHuman(
+      context,
+      { ok: true, schedules },
+      schedules.length === 0
+        ? "No local schedule snapshot. Start the dev server with scheduled jobs first."
+        : schedules
+            .map(
+              (schedule) =>
+                `${schedule.name}  ${schedule.schedule}  next=${schedule.nextRunAt ?? "-"}  status=${schedule.lastStatus ?? "-"}`,
+            )
+            .join("\n"),
+    );
+    return;
+  }
+
+  if (subcommand === "run") {
+    if (!maybeArg) {
+      writeSchedulesUsage(context);
+      return;
+    }
+
+    let payload: unknown = {};
+    const rawPayload = context.values.get("payload");
+
+    if (rawPayload !== undefined) {
+      try {
+        payload = JSON.parse(rawPayload) as unknown;
+      } catch {
+        writeInvalidUsage(context, "--payload must be valid JSON.");
+        return;
+      }
+    }
+
+    const result = await buildCell({ rootDir: context.cwd });
+
+    if (!result.ok || !result.output || !result.manifest) {
+      writeBuildResult(context, result, "Build failed.");
+      process.exitCode = 4;
+      return;
+    }
+
+    const app = await importApp(result.output.serverBundle);
+    const manifest = result.manifest as CellManifest;
+    const host = await createLocalRuntimeHost({
+      stateDir: path.join(context.cwd, ".anvil/local"),
+      cellName: manifest.cell.name,
+    });
+
+    host.schedules.bind(app, host);
+    await host.schedules.start();
+
+    try {
+      const run = await host.schedules.trigger(maybeArg, {
+        payload,
+        trigger: "manual",
+      });
+
+      if (run.status === "failed") {
+        process.exitCode = 1;
+      }
+
+      writeJsonOrHuman(
+        context,
+        { ok: run.status === "completed", run },
+        `${run.id}  ${run.job}  ${run.status}`,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+
+      writeJsonOrHuman(
+        context,
+        { ok: false, errors: [{ code: "SCHEDULE_ERROR", message }] },
+        message,
+      );
+      process.exitCode = 1;
+    } finally {
+      await host.schedules.stop();
+    }
+    return;
+  }
+
+  writeSchedulesUsage(context);
+}
+
+async function commandApprovals(
+  context: CliContext,
+  subcommand: string | undefined,
+  maybeArg: string | undefined,
+): Promise<void> {
+  const store = createCliApprovalStore(context.cwd);
+
+  if (subcommand === "list") {
+    const status = readCliApprovalStatus(context);
+
+    if (status === "invalid") {
+      writeInvalidUsage(
+        context,
+        "Approval status must be pending, approved, or rejected.",
+      );
+      return;
+    }
+
+    const approvals = await store.list(status === undefined ? {} : { status });
+
+    writeJsonOrHuman(
+      context,
+      { ok: true, approvals },
+      formatApprovals(approvals),
+    );
+    return;
+  }
+
+  if (subcommand === "audit") {
+    const events = await store.audit();
+
+    writeJsonOrHuman(
+      context,
+      { ok: true, events },
+      events.length === 0
+        ? "No local approval audit events."
+        : events
+            .map(
+              (event) =>
+                `${event.at}  ${event.type}  ${event.approvalId}${event.actor ? `  ${event.actor}` : ""}`,
+            )
+            .join("\n"),
+    );
+    return;
+  }
+
+  if (subcommand === "approve" || subcommand === "reject") {
+    if (!maybeArg) {
+      writeApprovalsUsage(context);
+      return;
+    }
+
+    const actor =
+      context.values.get("by") ??
+      (subcommand === "approve"
+        ? "anvil-cloud approvals approve"
+        : "anvil-cloud approvals reject");
+    const reason =
+      context.values.get("reason") ?? context.values.get("justification");
+    const approval =
+      subcommand === "approve"
+        ? await store.approve(maybeArg, {
+            approvedBy: actor,
+            ...(reason === undefined ? {} : { reason }),
+          })
+        : await store.reject(maybeArg, {
+            rejectedBy: actor,
+            ...(reason === undefined ? {} : { reason }),
+          });
+
+    if (!approval) {
+      writeJsonOrHuman(
+        context,
+        {
+          ok: false,
+          errors: [
+            {
+              code: "APPROVAL_NOT_FOUND",
+              message: `No approval '${maybeArg}' was found.`,
+            },
+          ],
+        },
+        `No approval '${maybeArg}' was found.`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    writeJsonOrHuman(
+      context,
+      { ok: true, approval },
+      `${approval.id}  ${approval.action}  ${approval.status}`,
+    );
+    return;
+  }
+
+  writeApprovalsUsage(context);
+}
+
 function writeWorkflowsUsage(context: CliContext): void {
   writeJsonOrHuman(
     context,
@@ -3686,12 +4318,102 @@ function writeWorkflowsUsage(context: CliContext): void {
   process.exitCode = 2;
 }
 
+function writeSchedulesUsage(context: CliContext): void {
+  writeJsonOrHuman(
+    context,
+    {
+      ok: false,
+      errors: [
+        {
+          code: "INVALID_USAGE",
+          message:
+            "Usage: anvil-cloud schedules <list|run <name> [--payload '<json>']> [--json]",
+        },
+      ],
+    },
+    "Usage: anvil-cloud schedules <list|run <name> [--payload '<json>']> [--json]",
+  );
+  process.exitCode = 2;
+}
+
+function writeApprovalsUsage(context: CliContext): void {
+  writeJsonOrHuman(
+    context,
+    {
+      ok: false,
+      errors: [
+        {
+          code: "INVALID_USAGE",
+          message:
+            "Usage: anvil-cloud approvals <list|audit|approve <id>|reject <id>> [--status pending|approved|rejected] [--by actor] [--reason text] [--json]",
+        },
+      ],
+    },
+    "Usage: anvil-cloud approvals <list|audit|approve <id>|reject <id>> [--status pending|approved|rejected] [--by actor] [--reason text] [--json]",
+  );
+  process.exitCode = 2;
+}
+
+function createCliApprovalStore(rootDir: string): LocalApprovalStore {
+  return new LocalApprovalStore({
+    filePath: path.join(rootDir, ".anvil/local/approvals.json"),
+  });
+}
+
+function readCliApprovalStatus(
+  context: CliContext,
+): LocalApprovalStatus | "invalid" | undefined {
+  const status = context.values.get("status");
+
+  if (status === undefined || status.length === 0) {
+    return undefined;
+  }
+
+  return isLocalApprovalStatus(status) ? status : "invalid";
+}
+
+function formatApprovals(approvals: LocalApprovalRecord[]): string {
+  if (approvals.length === 0) {
+    return "No local approval requests.";
+  }
+
+  return approvals
+    .map(
+      (approval) =>
+        `${approval.id}  ${approval.action}  ${approval.status}  ${approval.requestedAt}`,
+    )
+    .join("\n");
+}
+
 async function readWorkflowRuns(rootDir: string): Promise<WorkflowRun[]> {
   const runs = await readOptionalJson(
     path.join(rootDir, ".anvil/local/workflows.json"),
   );
 
   return Array.isArray(runs) ? (runs as WorkflowRun[]) : [];
+}
+
+function workflowProgressLabel(run: WorkflowRunSummary): string {
+  const progress = run.progress;
+  const step = progress.currentStep ?? progress.nextStep ?? progress.lifecycle;
+
+  return `${progress.completedSteps}/${progress.totalSteps} steps, next=${step}`;
+}
+
+async function readScheduleSnapshot(
+  rootDir: string,
+): Promise<LocalScheduleStatus[]> {
+  const snapshot = await readOptionalJson(
+    path.join(rootDir, ".anvil/local/schedules.json"),
+  );
+
+  if (Array.isArray(snapshot)) {
+    return snapshot as LocalScheduleStatus[];
+  }
+
+  return isObject(snapshot) && Array.isArray(snapshot.schedules)
+    ? (snapshot.schedules as LocalScheduleStatus[])
+    : [];
 }
 
 function requireAuthUserId(
@@ -3822,32 +4544,45 @@ function writeHelp(): void {
       "",
       "Commands:",
       "  anvil-cloud new <name> [--client vite-react|expo-router|headless] [--template crud|auth|workflow|service|agent|sandbox]",
-      "  anvil-cloud dev [--json] [--agent] [--port 8787] [--client-port 5173]",
+      "  anvil-cloud dev [--json] [--agent] [--port 8787] [--client-port 5173] [--db-branch <name>]",
       "  anvil-cloud doctor [--json] [--port 8787] [--client-port 5173]",
       "  anvil-cloud check [--json]",
       "  anvil-cloud review [--adapter aws] [--env preview] [--json]",
       "  anvil-cloud build [--json]",
+      "  anvil-cloud eval [agent] [--baseline .anvil/evals/baseline.json] [--write-baseline] [--json]",
       "  anvil-cloud manifest diff [--from .anvil/dist/manifest.json] [--to manifest.json] [--json]",
       "  anvil-cloud inspect --local [--json]",
       "  anvil-cloud lens [--port 8787] [--json]",
       "  anvil-cloud logs --local [--json]",
+      "  anvil-cloud logs --trace <traceId> [--json]",
       "  anvil-cloud logs --app <name> --env preview [--since 10m] [--limit 50] [--json]",
       "  anvil-cloud usage --local [--since 1h] [--json]",
       "  anvil-cloud usage --preview [--json]",
       "  anvil-cloud db list --local [--json]",
       "  anvil-cloud db dump <table> --local [--json]",
+      "  anvil-cloud db branch <name> [--from main] [--ttl 3600] [--use] [--json]",
+      "  anvil-cloud db branches [--expired] [--json]",
+      "  anvil-cloud db use <name> [--json]",
+      "  anvil-cloud db diff <name> [--against main] [--json]",
+      "  anvil-cloud db promote <name> [--json]",
+      "  anvil-cloud db delete <name> --yes [--json]",
+      "  anvil-cloud db cleanup --expired [--json]",
       "  anvil-cloud plan --stage dev --adapter aws [--verbose] [--json]",
       "  anvil-cloud deploy --stage dev --adapter aws [--verbose] [--json]",
       "  anvil-cloud remove --stage dev --adapter aws [--verbose] [--json]",
-      "  anvil-cloud deploy --preview [--wait] [--wait-timeout 60] [--json]",
+      "  anvil-cloud deploy --preview [--name branch] [--wait] [--wait-timeout 60] [--json]",
       "  anvil-cloud rollback --preview --app <name> --to-deployment <id> --dry-run [--json]",
-      "  anvil-cloud destroy --preview --app <name> --yes [--dry-run] [--json]",
+      "  anvil-cloud destroy --preview --app <name> [--name branch] --yes [--dry-run] [--json]",
       "  anvil-cloud auth users [--json]",
       "  anvil-cloud auth add-user <id> [--email x@y] [--roles admin,editor] [--json]",
       "  anvil-cloud auth remove-user <id> [--json]",
       "  anvil-cloud auth login <id> [--json]",
       "  anvil-cloud auth token <id> [--ttl 3600] [--json]",
       "  anvil-cloud auth whoami [--json]",
+      "  anvil-cloud approvals list [--status pending|approved|rejected] [--json]",
+      "  anvil-cloud approvals approve <id> [--by actor] [--reason text] [--json]",
+      "  anvil-cloud approvals reject <id> [--by actor] [--reason text] [--json]",
+      "  anvil-cloud approvals audit [--json]",
       "  anvil-cloud auth test [--json]",
       "  anvil-cloud agents discover [--json]",
       "  anvil-cloud agents guardian [--json]",
@@ -3855,6 +4590,8 @@ function writeHelp(): void {
       "  anvil-cloud workflows list [--json]",
       "  anvil-cloud workflows show <runId> [--json]",
       "  anvil-cloud workflows run <name> [--input '<json>'] [--json]",
+      "  anvil-cloud schedules list [--json]",
+      "  anvil-cloud schedules run <name> [--payload '<json>'] [--json]",
       "  anvil-cloud services list [--json]",
       "",
     ].join("\n"),
@@ -4240,11 +4977,14 @@ async function checkLocalState(rootDir: string): Promise<DoctorCheck> {
     authUsers: await fileExists(path.join(localDir, "auth/users.json")),
     authKeys: await fileExists(path.join(localDir, "auth/keys.json")),
     database: await fileExists(path.join(localDir, "dev.db")),
+    databaseBranches: await fileExists(path.join(localDir, "db-branches.json")),
     logs: await fileExists(path.join(localDir, "logs.ndjson")),
     agentSessions: await fileExists(path.join(localDir, "agent-sessions.json")),
     jobs: await fileExists(path.join(localDir, "jobs.json")),
     workflows: await fileExists(path.join(localDir, "workflows.json")),
+    schedules: await fileExists(path.join(localDir, "schedules.json")),
     services: await fileExists(path.join(localDir, "services.json")),
+    approvals: await fileExists(path.join(localDir, "approvals.json")),
   };
   const hasAnyState = Object.values(files).some(Boolean);
 
@@ -4754,6 +5494,29 @@ function readEnvironment(context: CliContext): "preview" | undefined {
   return "preview";
 }
 
+function previewStackEnvironment(
+  environment: "preview",
+  previewNameValue: string | undefined,
+): string {
+  const previewName = normalizePreviewName(previewNameValue);
+
+  return previewName === "default"
+    ? environment
+    : `${environment}-${previewName}`;
+}
+
+function deploymentMetadataKey(
+  cell: string,
+  environment: "preview",
+  previewNameValue: string | undefined,
+): string {
+  const previewName = normalizePreviewName(previewNameValue);
+
+  return previewName === "default"
+    ? `deployment#${cell}#${environment}`
+    : `deployment#${cell}#${environment}#${previewName}`;
+}
+
 function readNumberOption(
   context: CliContext,
   name: string,
@@ -4949,10 +5712,21 @@ async function waitForShutdown(
 
 async function readDatabase(
   rootDir: string,
+  branch?: string,
 ): Promise<Record<string, unknown[]>> {
-  return readOptionalJson(path.join(rootDir, ".anvil/local/dev.db")).then(
+  const manager = new JsonDatabaseBranchManager(localStateDir(rootDir));
+  const activeBranch =
+    branch === undefined
+      ? await manager.getActiveBranch()
+      : normalizeDatabaseBranchName(branch);
+
+  return readOptionalJson(manager.resolveDatabasePath(activeBranch)).then(
     (value) => (isRecordOfArrays(value) ? value : {}),
   );
+}
+
+function localStateDir(rootDir: string): string {
+  return path.join(rootDir, ".anvil/local");
 }
 
 async function readLogs(
@@ -4972,6 +5746,26 @@ async function readLogs(
   }
 }
 
+async function readTrace(
+  rootDir: string,
+  traceId: string,
+): Promise<Record<string, unknown> | null> {
+  const traces = await readOptionalJson(
+    path.join(rootDir, ".anvil/local/traces.json"),
+  );
+
+  if (!Array.isArray(traces)) {
+    return null;
+  }
+
+  return (
+    traces.find(
+      (trace): trace is Record<string, unknown> =>
+        isObject(trace) && trace.traceId === traceId,
+    ) ?? null
+  );
+}
+
 async function readOptionalJson(filePath: string): Promise<unknown | null> {
   try {
     await stat(filePath);
@@ -4979,6 +5773,39 @@ async function readOptionalJson(filePath: string): Promise<unknown | null> {
   } catch {
     return null;
   }
+}
+
+async function readEvalBaseline(
+  filePath: string,
+): Promise<AgentEvalBaseline | undefined> {
+  const json = await readOptionalJson(filePath);
+
+  if (!isObject(json) || !isObject(json.agents)) {
+    return undefined;
+  }
+
+  return json as AgentEvalBaseline;
+}
+
+function mergeEvalBaselines(baselines: AgentEvalBaseline[]): AgentEvalBaseline {
+  const agents: AgentEvalBaseline["agents"] = {};
+
+  for (const baseline of baselines) {
+    for (const [agentName, agentBaseline] of Object.entries(
+      baseline.agents ?? {},
+    )) {
+      const existing = agents[agentName];
+
+      agents[agentName] = {
+        scenarios: {
+          ...(existing?.scenarios ?? {}),
+          ...(agentBaseline.scenarios ?? {}),
+        },
+      };
+    }
+  }
+
+  return { agents };
 }
 
 function isAppDefinition(value: unknown): value is AppDefinition {

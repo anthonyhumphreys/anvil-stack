@@ -64,7 +64,7 @@ flowchart LR
   Guard["Guard checks<br/>capability and import policy"]
   Server["Local runtime server<br/>http://localhost:8787"]
   Client["Vite client server<br/>http://localhost:5173"]
-  State[".anvil/local<br/>SQLite, auth, files, jobs, logs"]
+  State[".anvil/local<br/>JSON database, branches, auth, files, jobs, logs"]
   Lens["/_anvil/lens and inspect API"]
   Agent["Agent mode<br/>JSONL lifecycle events"]
 
@@ -211,7 +211,7 @@ keeps handlers behind `ctx` instead of raw platform APIs.
 ```mermaid
 flowchart LR
   Graph["AnvilCellGraph<br/>routes, functions, tables, secrets, jobs, workflows, services"]
-  Local["Local adapter<br/>Hono/Fastify-style runtime, SQLite, local auth, NDJSON logs"]
+  Local["Local adapter<br/>Hono/Fastify-style runtime, JSON database, local auth, NDJSON logs"]
   AWS["AWS preview adapter<br/>Lambda, API Gateway, DynamoDB, S3, CloudWatch"]
   Future["Future adapters<br/>same Cell graph, different engine"]
   Lens["Inspection<br/>manifest, logs, status, tables, recent errors"]

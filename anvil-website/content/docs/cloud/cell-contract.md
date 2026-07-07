@@ -55,7 +55,7 @@ import {
   query,
   table,
   text,
-  userId
+  userId,
 } from "@anvil-cloud/runtime";
 
 export default app({
@@ -63,18 +63,18 @@ export default app({
     todos: table({
       text: text().min(1).max(500),
       done: boolean().default(false),
-      ownerId: userId()
-    })
+      ownerId: userId(),
+    }),
   },
   capabilities: {
-    database: true
+    database: true,
   },
   queries: {
     listTodos: query({
       handler: async (ctx) => {
         return ctx.db.todos.where("ownerId", "=", ctx.auth.requireUser()).all();
-      }
-    })
+      },
+    }),
   },
   mutations: {
     addTodo: mutation<{ text: string }>({
@@ -82,27 +82,27 @@ export default app({
         return ctx.db.todos.insert({
           text: input.text,
           done: false,
-          ownerId: ctx.auth.requireUser()
+          ownerId: ctx.auth.requireUser(),
         });
-      }
-    })
-  }
+      },
+    }),
+  },
 });
 ```
 
 ## Supported definition types
 
-| Definition | Purpose |
-| --- | --- |
-| `app` | Root Cell definition containing schema, capabilities, handlers, endpoints, jobs, workflows, and services. |
-| `table` | Declares a table in the Cell schema. |
-| `text`, `boolean`, `userId` | Current field builders. |
-| `query` | Read-oriented named server function. |
-| `mutation` | Write-oriented named server function. |
-| `endpoint` | Declared HTTP route with method, path, optional auth mode, and handler. |
-| `job` | Named background handler, optionally scheduled. |
-| `workflow` | Durable ordered steps with retries, timeouts, and persisted run state. |
-| `service` | Supervised long-running local handler with restart policy. |
+| Definition                  | Purpose                                                                                                   |
+| --------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `app`                       | Root Cell definition containing schema, capabilities, handlers, endpoints, jobs, workflows, and services. |
+| `table`                     | Declares a table in the Cell schema.                                                                      |
+| `text`, `boolean`, `userId` | Current field builders.                                                                                   |
+| `query`                     | Read-oriented named server function.                                                                      |
+| `mutation`                  | Write-oriented named server function.                                                                     |
+| `endpoint`                  | Declared HTTP route with method, path, optional auth mode, and handler.                                   |
+| `job`                       | Named background handler, optionally scheduled.                                                           |
+| `workflow`                  | Durable ordered steps with retries, timeouts, and persisted run state.                                    |
+| `service`                   | Supervised long-running local handler with restart policy.                                                |
 
 ## Capabilities
 
@@ -171,7 +171,9 @@ Adapters should consume the manifest rather than crawling arbitrary source.
 - `child_process` is forbidden. Move background work into declared jobs.
 - `@aws-sdk/*`, `aws-cdk-lib`, `sst`, `cdktf`, and `pulumi` are forbidden in Cell server code.
 - Global `fetch` requires `capabilities.outboundFetch`, and static absolute
-  URL hosts must be listed in `capabilities.outboundFetch.allow`.
+  URL hosts must be listed in `capabilities.outboundFetch.allow`. Local runtime
+  request handlers and workflow steps, plus AWS preview, reject undeclared hosts
+  with `OUTBOUND_FETCH_NOT_ALLOWED`.
 - Handler use of `ctx.db`, `ctx.files`, `ctx.events`, `ctx.jobs`, and
   `ctx.workflows` must match declared capabilities where Guard can inspect it.
 

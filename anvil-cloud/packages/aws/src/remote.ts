@@ -9,12 +9,14 @@ import { Cause, Effect, Exit } from "effect";
 import type { CellManifest } from "@anvil-cloud/builder";
 import type { AwsPreviewDeployArtifactSummary } from "./artifacts.js";
 import type { DeploymentEnvironment } from "./index.js";
+import { normalizePreviewName } from "./preview-name.js";
 
 export type AwsRemoteInspectResult = {
   ok: true;
   adapter: "aws";
   cell: string;
   environment: DeploymentEnvironment;
+  previewName: string;
   deploymentId: string;
   updatedAt?: string;
   runtimeUrl: string;
@@ -35,6 +37,7 @@ export type AwsRemoteLogsResult = {
   adapter: "aws";
   cell: string;
   environment: DeploymentEnvironment;
+  previewName: string;
   logs: AwsRemoteLogEntry[];
 };
 
@@ -81,6 +84,7 @@ export class AwsRemoteReader {
   async inspect(input: {
     cell: string;
     environment: DeploymentEnvironment;
+    previewName?: string;
   }): Promise<AwsRemoteInspectResult> {
     return runAwsRemoteEffect(this.inspectEffect(input));
   }
@@ -88,6 +92,7 @@ export class AwsRemoteReader {
   async readLogs(input: {
     cell: string;
     environment: DeploymentEnvironment;
+    previewName?: string;
     sinceMs?: number;
     limit?: number;
   }): Promise<AwsRemoteLogsResult> {
@@ -97,6 +102,7 @@ export class AwsRemoteReader {
   private inspectEffect(input: {
     cell: string;
     environment: DeploymentEnvironment;
+    previewName?: string;
   }): Effect.Effect<AwsRemoteInspectResult, AwsRemoteReaderError> {
     return Effect.gen(this, function* () {
       const item = yield* this.readDeploymentItemEffect(input);
@@ -120,6 +126,12 @@ export class AwsRemoteReader {
         adapter: "aws",
         cell: input.cell,
         environment: input.environment,
+        previewName: normalizePreviewName(
+          yield* optionalStringAttributeEffect(
+            item.previewName,
+            "default",
+          ),
+        ),
         deploymentId: yield* stringAttribute(item.deploymentId, "deploymentId"),
         runtimeUrl,
         manifest,
@@ -164,6 +176,7 @@ export class AwsRemoteReader {
   private readLogsEffect(input: {
     cell: string;
     environment: DeploymentEnvironment;
+    previewName?: string;
     sinceMs?: number;
     limit?: number;
   }): Effect.Effect<AwsRemoteLogsResult, AwsRemoteReaderError> {
@@ -178,6 +191,7 @@ export class AwsRemoteReader {
           adapter: "aws" as const,
           cell: input.cell,
           environment: input.environment,
+          previewName: inspected.previewName,
           logs: [],
         };
       }
@@ -191,6 +205,7 @@ export class AwsRemoteReader {
           {
             cell: input.cell,
             environment: input.environment,
+            previewName: input.previewName,
             logGroupName,
           },
           () =>
@@ -213,6 +228,7 @@ export class AwsRemoteReader {
         adapter: "aws" as const,
         cell: input.cell,
         environment: input.environment,
+        previewName: inspected.previewName,
         logs: events
           .slice(0, limit)
           .map((event) => parseLogEvent(event.timestamp, event.message ?? "")),
@@ -223,6 +239,7 @@ export class AwsRemoteReader {
   private readDeploymentItemEffect(input: {
     cell: string;
     environment: DeploymentEnvironment;
+    previewName?: string;
   }) {
     return Effect.gen(this, function* () {
       const response = yield* readAwsRemoteEffect(
@@ -237,7 +254,13 @@ export class AwsRemoteReader {
             new GetItemCommand({
               TableName: this.options.deploymentMetadataTable,
               Key: {
-                pk: { S: `deployment#${input.cell}#${input.environment}` },
+                pk: {
+                  S: deploymentMetadataRecordKey(
+                    input.cell,
+                    input.environment,
+                    input.previewName,
+                  ),
+                },
               },
             }),
           ),
@@ -251,6 +274,7 @@ export class AwsRemoteReader {
             {
               cell: input.cell,
               environment: input.environment,
+              previewName: normalizePreviewName(input.previewName),
               table: this.options.deploymentMetadataTable,
             },
           ),
@@ -420,6 +444,25 @@ function optionalStringAttribute(attribute: unknown): string | undefined {
   }
 
   return undefined;
+}
+
+function optionalStringAttributeEffect(
+  attribute: unknown,
+  fallback: string,
+): Effect.Effect<string, never> {
+  return Effect.succeed(optionalStringAttribute(attribute) ?? fallback);
+}
+
+function deploymentMetadataRecordKey(
+  cell: string,
+  environment: string,
+  previewName?: string,
+): string {
+  const normalizedPreviewName = normalizePreviewName(previewName);
+
+  return normalizedPreviewName === "default"
+    ? `deployment#${cell}#${environment}`
+    : `deployment#${cell}#${environment}#${normalizedPreviewName}`;
 }
 
 function workflowStateMachineResources(

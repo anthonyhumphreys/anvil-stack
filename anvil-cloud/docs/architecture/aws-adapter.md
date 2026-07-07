@@ -366,17 +366,23 @@ Cloud logs should be structured JSON and include:
 10. Return deployed URL and inspection commands
 ```
 
+`anvil-cloud deploy --preview --name <preview>` creates an additional named
+preview for the same Cell. The default preview keeps the existing stack and
+metadata key; named previews add a normalized name to the adapter-owned stack
+and deployment metadata key.
+
 `anvil-cloud rollback --preview --app <name> --to-deployment <id> --dry-run`
-returns stable rollback intent JSON for redeploying a known-good checkout or
-artifact. It does not mutate AWS; artifact promotion is not automated in alpha.
+returns stable rollback intent JSON for a previous deployment id. Preview
+deployments are versioned in adapter metadata; direct AWS artifact pointer
+promotion remains adapter-owned in alpha.
 
 `anvil-cloud usage --preview --json` returns declared preview resource counts,
 cost-driver hints, and cleanup commands from the built manifest and AWS preview
 plan. It is visibility, not billing.
 
-`anvil-cloud destroy --preview --app <name> --yes` deletes the computed AWS
-preview CloudFormation stack for the Cell. `--dry-run` returns the same computed
-stack name, bucket cleanup
+`anvil-cloud destroy --preview --app <name> --name <preview> --yes` deletes the
+computed AWS preview CloudFormation stack for the Cell and preview name.
+`--dry-run` returns the same computed stack name, bucket cleanup
 intent, optional deployment metadata key, and real destroy command without
 calling AWS, which lets local contract tests cover cleanup intent safely. Before
 deleting the stack, destroy empties stack-owned S3 buckets from CloudFormation
@@ -440,6 +446,11 @@ The AWS runtime host currently supports:
   for workflow state machine ARNs, and `ctx.workflows.start` against configured
   state machines.
 
+Local database branching snapshots `.anvil/local/dev.db` and named JSON branch
+files for preview/test data states. The AWS alpha adapter does not yet map
+those branches to provider-native DynamoDB branch/snapshot resources; remote
+branch promotion remains an adapter roadmap item.
+
 Remote inspection and logs use deployment metadata plus CloudWatch Logs. The CLI
 remote reader requires `ANVIL_AWS_DEPLOYMENT_METADATA_TABLE` so it can find the
 latest deployment record for `anvil-cloud inspect --app <name> --env preview --json`
@@ -453,6 +464,7 @@ the latest preview deployment references. Remote logs page through CloudWatch
 events until the requested limit is reached or CloudWatch has no more pages.
 DynamoDB and CloudWatch SDK failures return `AWS_REMOTE_READ_FAILED` with the
 failed operation and provider error cause.
+Pass `--name <preview>` to inspect or read logs for a named preview record.
 
 The `verify:aws-preview` smoke treats that metadata path as part of the preview
 contract: deploy output must include the deployment metadata table/key, remote
@@ -482,6 +494,7 @@ before any AWS resources are created.
   "ok": true,
   "deploymentId": "dep_abc123",
   "environment": "preview",
+  "previewName": "default",
   "url": "https://example.cloudfront.net",
   "resources": {
     "lambda": "anvil-notes-preview",

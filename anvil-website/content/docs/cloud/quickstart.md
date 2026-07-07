@@ -229,6 +229,7 @@ Local state is stored under `.anvil/local`:
   files/
   jobs.json
   logs.ndjson
+  schedules.json
   services.json
   workflows.json
 ```
