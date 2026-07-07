@@ -50,6 +50,7 @@ a feature here.
 ├── auth/
 │   ├── keys.json
 │   └── users.json
+├── agent-sessions.json
 ├── dev.db
 ├── files/
 ├── jobs.json
@@ -68,6 +69,12 @@ GET  /_anvil/health
 GET  /_anvil/manifest
 GET  /_anvil/inspect
 GET  /_anvil/logs
+GET  /_anvil/agents
+POST /_anvil/agents/:name
+POST /_anvil/agents/:name/sessions
+POST /_anvil/agents/sessions/:sessionId/messages
+GET  /_anvil/agents/sessions/:sessionId/stream?after=:token
+POST /_anvil/channels/simulate
 GET  /_anvil/db/tables
 GET  /_anvil/db/:table
 POST /_anvil/auth/as/:userId
@@ -127,12 +134,18 @@ Example `auth.json`:
 Useful commands:
 
 ```sh
-anvil-cloud auth as local_anth
-anvil-cloud auth current --json
-anvil-cloud auth create-user anth@example.local --role admin
+anvil-cloud auth add-user local_anth --email anth@example.local --roles admin
+anvil-cloud auth login local_anth --json
+anvil-cloud auth token local_anth --ttl 3600 --json
+anvil-cloud auth users --json
+anvil-cloud auth whoami --json
+anvil-cloud auth test --json
 ```
 
-Auth commands may be implemented after the core local runtime, but the runtime should be designed for them.
+`auth test --json` runs the reusable conformance kit for local JWT issue and
+verification, runtime public/required/role policy, mock OIDC discovery and JWKS
+verification, issuer/audience/expiry rejection, claim mapping, and common
+provider fixture config examples.
 
 ## Local files
 
@@ -180,6 +193,24 @@ Each event should include:
   "message": "Todo created",
   "meta": { "id": "todo_123" }
 }
+```
+
+## Usage metering
+
+Local usage events are NDJSON at `.anvil/local/usage.ndjson`. The runtime writes
+an event for each Cell handler invocation and each mounted Agent invocation.
+Agent events include provider/model metadata, token counts, session id when
+provided, estimated USD cost, and sandbox runtime milliseconds. The local stub
+provider reports zero tokens through the same shape as production providers.
+
+`anvil-cloud usage --local --json` and `GET /_anvil/usage` aggregate the same
+file into totals, per-Cell and per-Agent rollups, hourly buckets, top
+consumers, and budget warnings. Budgets are warnings only in alpha:
+
+```sh
+ANVIL_USAGE_DAILY_BUDGET_USD=1 \
+ANVIL_USAGE_SESSION_BUDGET_USD=0.25 \
+anvil-cloud usage --local --json
 ```
 
 ## Inspector

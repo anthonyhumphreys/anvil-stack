@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   app,
+  channel,
   defineAgent,
   mutation,
   query,
@@ -189,6 +190,23 @@ describe("startLocalRuntimeServer", () => {
           },
         },
       });
+      await expect(
+        fetchJson(`${server.runtimeUrl}/_anvil/usage`),
+      ).resolves.toMatchObject({
+        ok: true,
+        usage: {
+          totals: {
+            invocations: 2,
+            totalTokens: 0,
+            estimatedCostUsd: 0,
+          },
+          byCell: {
+            notes: {
+              invocations: 2,
+            },
+          },
+        },
+      });
       await expect(fetchText(server.clientUrl)).resolves.toContain(
         "Anvil Cell",
       );
@@ -296,6 +314,163 @@ describe("startLocalRuntimeServer", () => {
           },
         },
       });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("creates agent sessions, sends messages, and resumes event streams", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-local-"));
+    tempDirs.push(rootDir);
+
+    const cell = app({
+      agents: {
+        support: defineAgent({
+          name: "support",
+          model: { provider: "local", model: "stub" },
+        }),
+      },
+    });
+    const server = await startLocalRuntimeServer({
+      app: cell,
+      manifest: {
+        agents: { support: { name: "support" } },
+      },
+      rootDir,
+      cellName: "agent-cell",
+      port: 0,
+      clientPort: 0,
+    });
+
+    try {
+      const created = (await postJson(
+        `${server.runtimeUrl}/_anvil/agents/support/sessions`,
+        {},
+      )) as {
+        ok: boolean;
+        result: { session: { sessionId: string; continuationToken: string } };
+      };
+
+      expect(created.ok).toBe(true);
+      expect(created.result.session.sessionId).toMatch(/^session_/);
+      expect(created.result.session.continuationToken).toBe("1");
+
+      const sent = (await postJson(
+        `${server.runtimeUrl}/_anvil/agents/sessions/${created.result.session.sessionId}/messages`,
+        { input: "hello" },
+      )) as {
+        ok: boolean;
+        result: {
+          continuationToken: string;
+          events: Array<{ id: number; type: string }>;
+        };
+      };
+
+      expect(sent).toMatchObject({
+        ok: true,
+        result: {
+          events: expect.arrayContaining([
+            expect.objectContaining({ type: "message.user" }),
+            expect.objectContaining({ type: "message.assistant" }),
+          ]),
+        },
+      });
+
+      const stream = await fetchText(
+        `${server.runtimeUrl}/_anvil/agents/sessions/${created.result.session.sessionId}/stream?after=1`,
+      );
+
+      expect(stream).toContain("event: message.user");
+      expect(stream).toContain("event: message.assistant");
+      expect(stream).not.toContain("event: session.created");
+      expect(sent.result.continuationToken).toBe("3");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("simulates channel messages through mounted agent sessions", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-local-"));
+    tempDirs.push(rootDir);
+
+    const cell = app({
+      agents: {
+        support: defineAgent({
+          name: "support",
+          model: { provider: "local", model: "stub" },
+        }),
+      },
+      channels: {
+        supportSlack: channel({
+          provider: "slack",
+          agent: "support",
+          sessionKey: "sender-thread",
+          events: ["app_mention"],
+        }),
+      },
+    });
+    const server = await startLocalRuntimeServer({
+      app: cell,
+      manifest: {
+        agents: { support: { name: "support" } },
+        channels: [{ name: "supportSlack", provider: "slack" }],
+      },
+      rootDir,
+      cellName: "channel-cell",
+      port: 0,
+      clientPort: 0,
+    });
+
+    try {
+      const first = (await postJson(
+        `${server.runtimeUrl}/_anvil/channels/simulate`,
+        {
+          channel: "supportSlack",
+          sender: "U123",
+          thread: "T456",
+          input: "hello",
+        },
+      )) as {
+        ok: boolean;
+        result: {
+          session: { sessionId: string; channel: { key: string } };
+          events: Array<{ type: string }>;
+          reply: unknown[];
+        };
+      };
+      const second = (await postJson(
+        `${server.runtimeUrl}/_anvil/channels/simulate`,
+        {
+          channel: "supportSlack",
+          sender: "U123",
+          thread: "T456",
+          input: "still there?",
+        },
+      )) as {
+        result: {
+          session: { sessionId: string; continuationToken: string };
+        };
+      };
+
+      expect(first).toMatchObject({
+        ok: true,
+        result: {
+          session: {
+            channel: {
+              key: "supportSlack:U123:T456",
+            },
+          },
+          events: expect.arrayContaining([
+            expect.objectContaining({ type: "channel.message" }),
+            expect.objectContaining({ type: "channel.reply" }),
+          ]),
+        },
+      });
+      expect(first.result.reply).toHaveLength(1);
+      expect(second.result.session.sessionId).toBe(
+        first.result.session.sessionId,
+      );
+      expect(second.result.session.continuationToken).toBe("5");
     } finally {
       await server.close();
     }
@@ -411,6 +586,7 @@ describe("startLocalRuntimeServer", () => {
       await expect(
         postJson(`${server.runtimeUrl}/_anvil/agents/support`, {
           input: "Triage ticket A-123",
+          context: { sessionId: "session_1" },
         }),
       ).resolves.toMatchObject({
         ok: true,
@@ -420,6 +596,30 @@ describe("startLocalRuntimeServer", () => {
             role: "assistant",
             content: "Local stub response from Anvil Agent.",
           },
+        },
+      });
+      await expect(
+        fetchJson(`${server.runtimeUrl}/_anvil/usage`),
+      ).resolves.toMatchObject({
+        ok: true,
+        usage: {
+          totals: {
+            invocations: 1,
+            inputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 0,
+          },
+          byAgent: {
+            support: {
+              invocations: 1,
+            },
+          },
+          topConsumers: [
+            {
+              scope: "agent",
+              name: "support",
+            },
+          ],
         },
       });
     } finally {

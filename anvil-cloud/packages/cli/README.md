@@ -56,6 +56,7 @@ Initial commands:
 - `anvil-cloud agents guardian`
 - `anvil-cloud inspect`
 - `anvil-cloud logs`
+- `anvil-cloud usage --local`
 - `anvil-cloud usage --preview`
 - `anvil-cloud db list`
 - `anvil-cloud db dump <table>`
@@ -66,10 +67,16 @@ Initial commands:
 - `anvil-cloud db promote <name>`
 - `anvil-cloud db delete <name> --yes`
 - `anvil-cloud db cleanup --expired`
+- `anvil-cloud auth test --json`
 - `anvil-cloud deploy --preview [--name branch]`
 - `anvil-cloud rollback --preview --dry-run`
 - `anvil-cloud destroy --preview --app <name> [--name branch] --yes`
 
 Every automation-oriented command must support `--json`.
+
+`anvil-cloud auth test --json` runs the local/OIDC auth conformance kit and
+reports stable check ids for CI: local JWT issue/verify, runtime auth policy,
+OIDC discovery/JWKS verification, issuer/audience/expiry rejection, claim
+mapping, and common provider fixture configs.
 
 See `docs/specs/cli.md` for the command contract.

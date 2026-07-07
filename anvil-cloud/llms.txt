@@ -10,10 +10,25 @@ Anvil Cloud is an experimental agent-ready application platform for AWS.
 - `docs/specs/v0-implementation-spec.md` — v0 implementation scope.
 - `docs/specs/cell-contract.md` — Anvil Cell authoring contract.
 - `docs/specs/cli.md` — CLI command and JSON output contracts.
+- `docs/examples/agents/README.md` — agent contract examples.
+- `examples/notes/README.md` — canonical local Cell example.
+- `examples/aws-preview/README.md` — AWS preview smoke Cell.
 - `docs/architecture/runtime.md` — runtime design.
 - `docs/architecture/builder.md` — builder/compiler design.
 - `docs/architecture/local-dev.md` — local dev design.
 - `docs/architecture/aws-adapter.md` — AWS adapter design.
+
+## Auth conformance
+
+- Use `anvil-cloud auth test --json` before changing auth behavior or wiring a
+  new OIDC provider.
+- The command returns stable `checks` for local JWT issue/verify, runtime
+  public/required/role policy, OIDC discovery and JWKS verification, expiry,
+  issuer and audience rejection, configured claim mapping, and provider fixture
+  configs.
+- Handler code should rely on `ctx.auth.identity.userId`, `email`, `roles`, and
+  `claims`; provider-specific JWT names belong in `ANVIL_AUTH_*_CLAIM`
+  configuration, not Cell code.
 
 ## Core terms
 
@@ -36,6 +51,12 @@ Implement in this order:
 5. Client SDK and generated metadata.
 6. AWS preview deployment.
 
+## Starter templates
+
+Use `anvil-cloud new <name> --template <crud|auth|workflow|service|agent|sandbox>`
+to scaffold runnable examples. Each template keeps the starter generated client
+path working and adds one canonical primitive for agents to copy.
+
 ## Hard rules
 
 - Do not use `forge` naming.
@@ -43,4 +64,5 @@ Implement in this order:
 - Do not begin with AWS infrastructure before local runtime is proven.
 - Do not add Kubernetes, ECS, arbitrary Docker, or multi-cloud support in v0.
 - Local database branches are JSON snapshots managed through `anvil-cloud db branch`, `db use`, `db diff`, `db promote`, `db delete`, and `db cleanup --expired`; Cell code still uses the same `ctx.db` contract.
+- Local usage metering is available through `.anvil/local/usage.ndjson`, `GET /_anvil/usage`, Lens Usage, and `anvil-cloud usage --local --json`; preview usage remains declared-resource visibility.
 - Keep docs professional and suitable for a future open-source repository.

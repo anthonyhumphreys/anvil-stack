@@ -325,7 +325,7 @@ export default function ChatsInboxScreen() {
           <TextInput
             value={launchDraft}
             onChangeText={setLaunchDraft}
-            placeholder="Ask for a change, review, investigation, or handoff. Use @files or $skills..."
+            placeholder="Ask for a change, review, investigation, or handoff. Use @files or $skills…"
             placeholderTextColor={companionColors.darkMuted}
             multiline
             style={darkInputStyle}
@@ -467,7 +467,7 @@ export default function ChatsInboxScreen() {
             </Text>
           </View>
           <ActionButton
-            label={launching ? 'Launching...' : 'Launch'}
+            label={launching ? 'Launching…' : 'Launch'}
             onPress={() => void launchFromPhone()}
             disabled={(!launchDraft.trim() && attachments.length === 0) || launching}
             style={{ backgroundColor: companionColors.accent, borderColor: companionColors.accent }}
@@ -612,7 +612,7 @@ function titleFromPrompt(message: string): string {
       .split('\n')
       .find((line) => line.trim())
       ?.trim() ?? 'Remote prompt';
-  return firstLine.length > 64 ? `${firstLine.slice(0, 61)}...` : firstLine;
+  return firstLine.length > 64 ? `${firstLine.slice(0, 61)}…` : firstLine;
 }
 
 function threadHref(threadId: string): RelativePathString {
