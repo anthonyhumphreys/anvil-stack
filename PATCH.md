@@ -85,10 +85,14 @@ consumers must never need to know Effect exists.
 4. Workflow step timeouts use `Effect.timeoutFail` and produce the same
    `RuntimeError` (`INTERNAL_ERROR`, step name, `timeoutMs` details) as the
    old `Promise.race` implementation.
-5. Fan-out work uses `Effect.all` with bounded concurrency (client asset
+5. Workflow progress summaries are derived from persisted run state, not stored
+   as a second source of truth. A persisted `running` run with no active local
+   executor is reported as `resumable`; an active local executor is reported as
+   `in-flight`. Completed steps remain the replay boundary.
+6. Fan-out work uses `Effect.all` with bounded concurrency (client asset
    uploads currently use `concurrency: 8`), never `"unbounded"` for inputs the
    platform does not bound.
-6. Effect stays out of the Cell authoring surface. Cell code, the app DSL,
+7. Effect stays out of the Cell authoring surface. Cell code, the app DSL,
    manifests, and adapter contracts remain ordinary async TypeScript. The
    `effect` dependency belongs to `@anvil-cloud/runtime`, `@anvil-cloud/aws`,
    and `@anvilstack/cloud-cli` only.

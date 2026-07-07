@@ -78,6 +78,7 @@ describe("AwsSdkPreviewProvisioner", () => {
 
     expect(result).toMatchObject({
       deploymentId: expect.stringMatching(/^dep_/),
+      previewName: "default",
       url: "https://runtime.example.test",
       resources: {
         stack: "anvil-notes-preview",
@@ -140,6 +141,9 @@ describe("AwsSdkPreviewProvisioner", () => {
         cell: {
           S: "notes",
         },
+        previewName: {
+          S: "default",
+        },
       },
     });
     expect(
@@ -171,6 +175,63 @@ describe("AwsSdkPreviewProvisioner", () => {
           cacheControl: "no-cache",
         },
       ],
+    });
+  });
+
+  it("uses named preview stack and metadata keys", async () => {
+    const cloudFormation = new FakeAwsClient({
+      DescribeStacksCommand: {
+        Stacks: [
+          {
+            Outputs: [
+              {
+                OutputKey: "RuntimeUrl",
+                OutputValue: "https://branch.example.test",
+              },
+              {
+                OutputKey: "ClientAssetsBucketName",
+                OutputValue: "assets-bucket",
+              },
+              {
+                OutputKey: "RuntimeLogGroupName",
+                OutputValue: "/aws/lambda/anvil-notes-preview-branch",
+              },
+              {
+                OutputKey: "DeploymentMetadataTableName",
+                OutputValue: "deployments-table",
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const dynamodb = new FakeAwsClient();
+    const provisioner = new AwsSdkPreviewProvisioner({
+      artifactBucket: "artifact-bucket",
+      cloudFormation,
+      dynamodb,
+      s3: new FakeAwsClient(),
+    });
+
+    const result = await provisioner.provision(
+      createInput({ previewName: "Feature/Branch" }),
+    );
+
+    expect(result).toMatchObject({
+      previewName: "feature-branch",
+      resources: {
+        stack: "anvil-notes-preview-feature-branch",
+        deploymentMetadataKey: "deployment#notes#preview#feature-branch",
+      },
+    });
+    expect(cloudFormation.commands[0]?.input).toMatchObject({
+      StackName: "anvil-notes-preview-feature-branch",
+    });
+    expect(dynamodb.commands[0]?.input).toMatchObject({
+      Item: {
+        pk: { S: "deployment#notes#preview#feature-branch" },
+        previewName: { S: "feature-branch" },
+      },
     });
   });
 
@@ -453,6 +514,7 @@ describe("AwsSdkPreviewDestroyer", () => {
       adapter: "aws",
       cell: "notes",
       environment: "preview",
+      previewName: "default",
       stackName: "anvil-notes-preview",
       deleted: true,
       metadataDeleted: false,
@@ -945,9 +1007,12 @@ function stringAttribute(value: unknown, path: string): string {
   return resolved;
 }
 
-function createInput(): AwsPreviewProvisionerInput {
+function createInput(
+  overrides: Partial<AwsPreviewProvisionerInput> = {},
+): AwsPreviewProvisionerInput {
   return {
     environment: "preview",
+    ...overrides,
     manifest: {
       schemaVersion: "0.1",
       cell: {
@@ -972,6 +1037,7 @@ function createInput(): AwsPreviewProvisionerInput {
         database: true,
       },
     },
+    ...(overrides.manifest ? { manifest: overrides.manifest } : {}),
     plan: {
       schemaVersion: "0.1",
       adapter: "aws",
@@ -980,6 +1046,7 @@ function createInput(): AwsPreviewProvisionerInput {
       changes: [],
       warnings: [],
     },
+    ...(overrides.plan ? { plan: overrides.plan } : {}),
     template: {
       AWSTemplateFormatVersion: "2010-09-09",
       Description: "test",
@@ -987,6 +1054,7 @@ function createInput(): AwsPreviewProvisionerInput {
       Resources: {},
       Outputs: {},
     },
+    ...(overrides.template ? { template: overrides.template } : {}),
     artifacts: {
       lambda: {
         key: "notes/server.zip",
@@ -1016,5 +1084,6 @@ function createInput(): AwsPreviewProvisionerInput {
         },
       ],
     },
+    ...(overrides.artifacts ? { artifacts: overrides.artifacts } : {}),
   };
 }

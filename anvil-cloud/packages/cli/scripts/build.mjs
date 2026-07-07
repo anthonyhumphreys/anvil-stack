@@ -1,4 +1,4 @@
-import { cp, rm } from "node:fs/promises";
+import { cp, mkdir, rm } from "node:fs/promises";
 
 import { build } from "esbuild";
 
@@ -34,4 +34,11 @@ await build({
 await Promise.all([
   cp("../runtime/src", "dist/packages/runtime/src", { recursive: true }),
   cp("../client/src", "dist/packages/client/src", { recursive: true }),
+]);
+
+await rm("docs", { recursive: true, force: true });
+await mkdir("docs", { recursive: true });
+await Promise.all([
+  cp("../../llms.txt", "docs/llms.txt"),
+  cp("../../llms-full.txt", "docs/llms-full.txt"),
 ]);

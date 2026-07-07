@@ -17,6 +17,10 @@ through the umbrella `@anvilstack/cli` wrapper. The Cloud product package is
 `@anvilstack/cloud-cli`, and from a local checkout you run the same command
 contract through `pnpm anvil-cloud` or the built CLI entrypoint.
 
+Coding agents can read the short contract at `/llms.txt` or the full authoring
+guide at `/llms-full.txt`. The same files are bundled under `docs/` in the
+published Cloud CLI package so an installed project can be inspected offline.
+
 ## 1) Prepare the checkout
 
 From `anvil-cloud`:
@@ -74,7 +78,7 @@ the front door so the Cloud and Registry commands share one Anvil shape.
 From the workspace root during alpha development:
 
 ```bash
-pnpm anvil cloud new notes
+pnpm anvil-cloud new notes
 cd notes
 ```
 
@@ -230,6 +234,7 @@ Local state is stored under `.anvil/local`:
   files/
   jobs.json
   logs.ndjson
+  schedules.json
   services.json
   workflows.json
 ```

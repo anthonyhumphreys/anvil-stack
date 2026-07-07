@@ -111,6 +111,49 @@ model: {
 
 Contracts, approvals, and capability checks are still enforced locally. The provider-neutral request is passed to the registered provider, and the provider maps the response back to the Anvil response shape.
 
+## Agent Evals
+
+Agent eval suites are colocated with the agent definition:
+
+```ts
+import { defineAgent, defineAgentEvalSuite } from "@anvil-cloud/runtime";
+
+export const support = defineAgent({
+  name: "support",
+  model: { provider: "local", model: "stub" },
+  evals: defineAgentEvalSuite({
+    scenarios: [
+      {
+        name: "answers support review",
+        input: "Review this Cell.",
+        expect: {
+          responseIncludes: "Review this Cell.",
+          toolCalls: { count: 0 },
+          capabilities: {
+            notUsed: ["network.api.statuspage.io"],
+          },
+        },
+      },
+    ],
+  }),
+});
+```
+
+`anvil-cloud eval --json` builds the Cell, imports mounted agents, runs every
+suite through the same `AgentRuntime` used by local invocation, and emits stable
+JSON with pass/fail counts, scenario scores, assertion results, tool calls,
+approval requests, capability usage, and baseline comparison diffs.
+
+Baselines are normal JSON:
+
+```sh
+anvil-cloud eval --write-baseline --json
+anvil-cloud eval --baseline .anvil/evals/baseline.json --json
+```
+
+The command exits non-zero when assertions or baseline checks fail, so CI can
+verify agent contracts without a third-party eval service.
+
 ## Project Agents
 
 Project Agents help inspect, review, govern, deploy, or operate an Anvil workspace. They are not user-facing by default.
@@ -299,6 +342,25 @@ runtime.durability: "required"
 approvals.requiredFor
   → enforced by Anvil before sharp tools execute inside the sandbox
 ```
+
+Local approval gates now persist pending decisions in
+`.anvil/local/approvals.json`. When an approval-gated tool action is requested,
+Anvil Local records the action id, reason, request metadata, and audit event,
+then returns a pending `approvalId` instead of executing the tool. Developers
+and coding agents can inspect or decide those requests with:
+
+```bash
+anvil-cloud approvals list --status pending --json
+anvil-cloud approvals approve <approvalId> --by reviewer --reason "Checked"
+anvil-cloud approvals reject <approvalId> --by reviewer --reason "Not safe"
+anvil-cloud approvals audit --json
+```
+
+Lens exposes the same pending queue and audit trail under the Approvals tab.
+If `ANVIL_APPROVAL_WEBHOOK_URL` is set for the local runtime, Anvil posts an
+`approval.requested` webhook and records delivery or failure in the same audit
+log. The hosted production approval UI is still future work; the current
+end-to-end implementation is local runtime, CLI, Lens, and webhook dispatch.
 
 The Lambda-based Cell runtime remains the request/control boundary. The
 MicroVM-backed sandbox is the agent workspace. AWS preview deployment plans now

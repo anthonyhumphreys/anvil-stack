@@ -26,6 +26,7 @@ import {
   type AwsDeployArtifact,
 } from "./artifacts.js";
 import { createAwsResourceNames } from "./cloudformation.js";
+import { normalizePreviewName } from "./preview-name.js";
 import type {
   AwsPreviewProvisioner,
   AwsPreviewProvisionerInput,
@@ -57,6 +58,7 @@ export type AwsSdkPreviewDestroyerOptions = {
 export type AwsPreviewDestroyInput = {
   cell: string;
   environment: string;
+  previewName?: string;
 };
 
 export type AwsPreviewDestroyResult = {
@@ -64,6 +66,7 @@ export type AwsPreviewDestroyResult = {
   adapter: "aws";
   cell: string;
   environment: string;
+  previewName: string;
   stackName: string;
   deleted: boolean;
   metadataDeleted: boolean;
@@ -187,7 +190,7 @@ export class AwsSdkPreviewProvisioner implements AwsPreviewProvisioner {
   ): Effect.Effect<AwsPreviewProvisionerResult, AwsPreviewProvisioningError> {
     const stackName = awsPreviewStackNameFor(
       input.plan.cell,
-      input.environment,
+      stackEnvironment(input.environment, input.previewName),
       this.options.stackNamePrefix,
     );
     const serverKey = artifactKey(input.artifacts.lambda);
@@ -229,6 +232,7 @@ export class AwsSdkPreviewProvisioner implements AwsPreviewProvisioner {
       const deploymentMetadataKey = deploymentMetadataRecordKey(
         input.plan.cell,
         input.environment,
+        input.previewName,
       );
 
       yield* this.publishDeploymentMetadataEffect({
@@ -253,6 +257,7 @@ export class AwsSdkPreviewProvisioner implements AwsPreviewProvisioner {
 
       return {
         deploymentId,
+        previewName: normalizePreviewName(input.previewName),
         url: runtimeUrl,
         resources: {
           stack: stackName,
@@ -523,6 +528,9 @@ export class AwsSdkPreviewProvisioner implements AwsPreviewProvisioner {
               deploymentId: { S: input.deploymentId },
               cell: { S: input.input.plan.cell },
               environment: { S: input.input.environment },
+              previewName: {
+                S: normalizePreviewName(input.input.previewName),
+              },
               stackName: { S: input.stackName },
               runtimeUrl: {
                 S: requiredStackOutput(
@@ -597,9 +605,10 @@ export class AwsSdkPreviewDestroyer {
   ): Effect.Effect<AwsPreviewDestroyResult, AwsPreviewDestroyError> {
     const stackName = awsPreviewStackNameFor(
       input.cell,
-      input.environment,
+      stackEnvironment(input.environment, input.previewName),
       this.options.stackNamePrefix,
     );
+    const previewName = normalizePreviewName(input.previewName);
 
     return Effect.gen(this, function* () {
       const stack = yield* Effect.tryPromise({
@@ -618,6 +627,7 @@ export class AwsSdkPreviewDestroyer {
           adapter: "aws" as const,
           cell: input.cell,
           environment: input.environment,
+          previewName,
           stackName,
           deleted: false,
           metadataDeleted,
@@ -656,6 +666,7 @@ export class AwsSdkPreviewDestroyer {
         adapter: "aws" as const,
         cell: input.cell,
         environment: input.environment,
+        previewName,
         stackName,
         deleted: true,
         metadataDeleted,
@@ -844,7 +855,11 @@ export class AwsSdkPreviewDestroyer {
               TableName: tableName,
               Key: {
                 pk: {
-                  S: deploymentMetadataRecordKey(input.cell, input.environment),
+                  S: deploymentMetadataRecordKey(
+                    input.cell,
+                    input.environment,
+                    input.previewName,
+                  ),
                 },
               },
             }),
@@ -865,8 +880,21 @@ export class AwsSdkPreviewDestroyer {
 function deploymentMetadataRecordKey(
   cell: string,
   environment: string,
+  previewName?: string,
 ): string {
-  return `deployment#${cell}#${environment}`;
+  const normalizedPreviewName = normalizePreviewName(previewName);
+
+  return normalizedPreviewName === "default"
+    ? `deployment#${cell}#${environment}`
+    : `deployment#${cell}#${environment}#${normalizedPreviewName}`;
+}
+
+function stackEnvironment(environment: string, previewName?: string): string {
+  const normalizedPreviewName = normalizePreviewName(previewName);
+
+  return normalizedPreviewName === "default"
+    ? environment
+    : `${environment}-${normalizedPreviewName}`;
 }
 
 type AwsSdkErrorCause = {
