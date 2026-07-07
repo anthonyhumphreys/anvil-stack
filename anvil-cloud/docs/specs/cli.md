@@ -21,6 +21,7 @@ Options:
 
 ```txt
 --client vite-react|expo-router|headless
+--template crud|auth|workflow|service|agent|sandbox
 ```
 
 `vite-react` is the default. `expo-router` scaffolds an Expo Router client
@@ -33,6 +34,17 @@ local development they fall back to `http://localhost:8787`, except Android
 emulators use `http://10.0.2.2:8787` so the native app can reach the host
 runtime. The scaffold includes `src/expo-env.d.ts` so the public runtime URL is
 typed without adding Node globals to Cell authoring.
+
+`--template` selects the runnable example pattern to scaffold. Every template
+keeps the starter query/mutation client path working, then adds one canonical
+primitive:
+
+- `crud`: table, query, mutation
+- `auth`: auth-required query/mutation with owner data
+- `workflow`: durable workflow
+- `service`: supervised service
+- `agent`: mounted agent with approval contract
+- `sandbox`: mounted sandbox-required agent
 
 Expected output:
 
@@ -53,6 +65,7 @@ JSON output:
   "client": {
     "kind": "vite-react"
   },
+  "template": "crud",
   "path": "./notes",
   "next": ["cd notes", "anvil-cloud dev"]
 }
@@ -86,6 +99,7 @@ Checks:
 - public file-read escalation against the previous local manifest when building;
 - destructive schema removals or field type changes against the previous local
   manifest when building;
+- standalone manifest diffing through `anvil-cloud manifest diff`;
 - manifest extraction safety;
 - declared capabilities.
 
@@ -116,6 +130,33 @@ The command posts to `/_anvil/channels/simulate`. JSON output includes the
 matched channel, local agent session summary, ordered events, continuation
 token, and reply chunks. Real provider credentials remain platform-side; Cell
 agent code only receives normalized channel context.
+
+### `anvil-cloud manifest diff`
+
+Compares Cell manifests without deploying anything.
+
+```sh
+anvil-cloud manifest diff --json
+anvil-cloud manifest diff --from .anvil/dist/manifest.json --to candidate.json --json
+```
+
+Without `--to`, the command compares the previous local
+`.anvil/dist/manifest.json` with a scratch build of the current Cell source.
+Scratch output is removed after the comparison. With `--to`, the command reads
+both manifest files directly and does not build source.
+
+JSON output includes:
+
+- `status: "no-baseline" | "unchanged" | "changed" | "block"`;
+- `summary.additions`, `summary.removals`, `summary.changes`,
+  `summary.warnings`, and `summary.errors`;
+- stable `changes[].id` values;
+- `changes[].category`, `action`, `severity`, `path`, `message`, optional
+  `before`, `after`, and `hint`.
+
+Error-severity diff entries currently cover public file access escalation,
+schema table removal, schema field removal, and schema field type changes. The
+command exits with code `5` when any error-severity diff is present.
 
 ### `anvil-cloud review`
 

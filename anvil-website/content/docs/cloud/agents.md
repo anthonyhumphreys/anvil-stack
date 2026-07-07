@@ -102,8 +102,22 @@ const support = defineAgent({
   model: { provider: "local", model: "stub" },
   capabilities: {
     cells: ["read"],
+    database: ["supportTickets.read"],
     filesystem: "none",
     secrets: "none",
+  },
+  subagents: {
+    triage: defineAgent({
+      name: "support-triage",
+      purpose: "Classify incoming support requests.",
+      model: { provider: "local", model: "stub" },
+      capabilities: {
+        cells: ["read"],
+        database: ["supportTickets.read"],
+        filesystem: "none",
+        secrets: "none",
+      },
+    }),
   },
 });
 
@@ -132,8 +146,13 @@ export default app({
 ```
 
 Builder validation catches endpoint, workflow, or channel references to missing
-mounted agents. The generated Cell manifest includes the mounted agent manifests
-under `agents` and channel bindings under `channels`.
+mounted agents. The generated Cell manifest includes mounted agent manifests
+under `agents`, each agent manifest includes its explicit `subagents` tree, and
+channel bindings under `channels`.
+
+Subagents are shallow during alpha. A parent can declare subagents, but a
+subagent cannot declare its own nested subagents. Guard validation fails if a
+subagent declares capabilities outside the parent's capability set.
 
 ## Project Agents, Cell Agents, and Agent Cells
 

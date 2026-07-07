@@ -40,6 +40,7 @@ export {
   type AgentNetworkCapability,
   type AgentResponseFormat,
   type AgentRuntimeInvokeInput,
+  type AgentRuntimeDelegationResult,
   type AgentRuntimeInvokeResult,
   type AgentRuntimeRequirements,
   type AgentTokenUsage,

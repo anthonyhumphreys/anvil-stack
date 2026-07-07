@@ -139,8 +139,22 @@ const support = defineAgent({
   model: { provider: "local", model: "stub" },
   capabilities: {
     cells: ["read"],
+    database: ["supportTickets.read"],
     filesystem: "none",
     secrets: "none",
+  },
+  subagents: {
+    triage: defineAgent({
+      name: "support-triage",
+      purpose: "Classify incoming support requests.",
+      model: { provider: "local", model: "stub" },
+      capabilities: {
+        cells: ["read"],
+        database: ["supportTickets.read"],
+        filesystem: "none",
+        secrets: "none",
+      },
+    }),
   },
 });
 
@@ -169,7 +183,10 @@ export default app({
 ```
 
 Validation fails when an endpoint, workflow, or channel references a missing
-mounted agent. Channel adapters are platform-side; Cell agent code receives
+mounted agent. Subagents are shallow and explicit during alpha: a parent can
+declare subagents, but subagents cannot declare their own nested subagents.
+Guard validation fails if a subagent declares capabilities outside the parent
+capability set. Channel adapters are platform-side; Cell agent code receives
 normalized channel context and remains channel-agnostic. Local development can
 simulate inbound channel messages through `anvil-cloud channels simulate`.
 
