@@ -87,6 +87,8 @@ export class AwsLambdaMicroVmSandboxProvider implements AgentSandboxProvider {
         agent: input.manifest.name,
         capabilities: input.manifest.capabilities,
         approvals: input.manifest.requires.humanApproval,
+        credentialBroker:
+          input.credentialBroker ?? input.manifest.credentialBroker,
         workspace: input.workspace,
       }),
     };

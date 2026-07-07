@@ -1904,6 +1904,116 @@ describe("buildCell", () => {
     });
   });
 
+  it("compiles brokered agent credentials into the manifest", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, defineAgent, endpoint } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  capabilities: { secrets: ['GITHUB_TOKEN'] },",
+        "  agents: {",
+        "    repo: defineAgent({",
+        '      name: "repo",',
+        '      instructions: "Clone repositories through brokered credentials only.",',
+        "      model: { provider: 'local', model: 'stub' },",
+        "      capabilities: {",
+        "        network: { allow: ['github.com'] },",
+        "        secrets: 'brokered',",
+        "        git: ['clone'],",
+        "      },",
+        "      credentialBroker: {",
+        "        credentials: [{",
+        "          credential: 'GITHUB_TOKEN',",
+        "          domains: ['github.com'],",
+        "          inject: { kind: 'header', name: 'authorization', scheme: 'bearer' },",
+        "        }],",
+        "      },",
+        "      runtime: { sandbox: 'required' },",
+        "    }),",
+        "  },",
+        "  endpoints: {",
+        "    clone: endpoint({",
+        "      method: 'POST',",
+        "      path: '/api/clone',",
+        "      auth: 'public',",
+        "      agent: 'repo',",
+        "      handler: async () => ({ ok: true }),",
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await buildCell({ rootDir });
+
+    expect(result.ok).toBe(true);
+    expect(result.manifest).toMatchObject({
+      capabilities: {
+        secrets: ["GITHUB_TOKEN"],
+      },
+      agents: {
+        repo: {
+          credentialBroker: {
+            credentials: [
+              {
+                credential: "GITHUB_TOKEN",
+                domains: ["github.com"],
+                inject: {
+                  kind: "header",
+                  name: "authorization",
+                  scheme: "bearer",
+                },
+              },
+            ],
+          },
+        },
+      },
+    });
+  });
+
+  it("fails validation when brokered agent credentials are not declared Cell secrets", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, defineAgent } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  agents: {",
+        "    repo: defineAgent({",
+        '      name: "repo",',
+        "      model: { provider: 'local', model: 'stub' },",
+        "      capabilities: {",
+        "        network: { allow: ['github.com'] },",
+        "        secrets: 'brokered',",
+        "      },",
+        "      credentialBroker: {",
+        "        credentials: [{",
+        "          credential: 'GITHUB_TOKEN',",
+        "          domains: ['github.com'],",
+        "          inject: { kind: 'header', name: 'authorization' },",
+        "        }],",
+        "      },",
+        "      runtime: { sandbox: 'required' },",
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await buildCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "manifest",
+      diagnostics: [
+        expect.objectContaining({
+          code: "AGENT_CREDENTIAL_BROKER_SECRET_NOT_DECLARED",
+        }),
+      ],
+    });
+  });
+
   it("fails validation when endpoints reference missing mounted agents", async () => {
     const rootDir = await createCell({
       server: [

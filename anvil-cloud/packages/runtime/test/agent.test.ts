@@ -83,6 +83,115 @@ describe("defineAgent", () => {
     );
   });
 
+  it("compiles brokered credential policy into the manifest without secret values", () => {
+    const manifest = createAgentManifest(
+      defineAgent({
+        name: "repo-helper",
+        model: { provider: "local", model: "stub" },
+        capabilities: {
+          network: { allow: ["github.com"] },
+          secrets: "brokered",
+        },
+        credentialBroker: {
+          credentials: [
+            {
+              credential: "GITHUB_TOKEN",
+              domains: ["github.com"],
+              inject: {
+                kind: "header",
+                name: "authorization",
+                scheme: "bearer",
+              },
+            },
+          ],
+        },
+        runtime: { sandbox: "required" },
+      }),
+      "cell",
+    );
+
+    expect(manifest).toMatchObject({
+      credentialBroker: {
+        credentials: [
+          {
+            credential: "GITHUB_TOKEN",
+            domains: ["github.com"],
+            inject: {
+              kind: "header",
+              name: "authorization",
+              scheme: "bearer",
+            },
+          },
+        ],
+      },
+    });
+    expect(JSON.stringify(manifest)).not.toContain("ghp_");
+  });
+
+  it("rejects brokered credentials without sandboxed broker capabilities", () => {
+    const issues = validateAgentDefinition(
+      defineAgent({
+        name: "unsafe",
+        model: { provider: "local", model: "stub" },
+        capabilities: {
+          network: { allow: ["github.com"] },
+          secrets: "none",
+        },
+        credentialBroker: {
+          credentials: [
+            {
+              credential: "GITHUB_TOKEN",
+              domains: ["github.com"],
+              inject: { kind: "query", name: "token" },
+            },
+          ],
+        },
+      }),
+    );
+
+    return expect(issues).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "AGENT_CREDENTIAL_BROKER_REQUIRES_BROKERED_SECRETS",
+        }),
+        expect.objectContaining({
+          code: "AGENT_CREDENTIAL_BROKER_REQUIRES_SANDBOX",
+        }),
+      ]),
+    );
+  });
+
+  it("rejects brokered credential domains outside the network allowlist", async () => {
+    await expect(
+      validateAgentDefinition(
+        defineAgent({
+          name: "unsafe-network",
+          model: { provider: "local", model: "stub" },
+          capabilities: {
+            network: { allow: ["api.github.com"] },
+            secrets: "brokered",
+          },
+          credentialBroker: {
+            credentials: [
+              {
+                credential: "GITHUB_TOKEN",
+                domains: ["github.com"],
+                inject: { kind: "header", name: "authorization" },
+              },
+            ],
+          },
+          runtime: { sandbox: "required" },
+        }),
+      ),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "AGENT_CREDENTIAL_BROKER_DOMAIN_NOT_ALLOWED",
+        }),
+      ]),
+    );
+  });
+
   it("compiles explicit subagents into the manifest", () => {
     const manifest = createAgentManifest(
       defineAgent({

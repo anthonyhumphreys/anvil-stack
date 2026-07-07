@@ -63,9 +63,23 @@ export default defineAgent({
   capabilities: {
     cells: ["read"],
     database: ["supportTickets.read", "supportTickets.update"],
-    network: { allow: ["api.statuspage.io"] },
+    network: { allow: ["github.com", "api.statuspage.io"] },
     filesystem: "none",
     secrets: "brokered",
+    git: ["clone"],
+  },
+  credentialBroker: {
+    credentials: [
+      {
+        credential: "GITHUB_TOKEN",
+        domains: ["github.com"],
+        inject: {
+          kind: "header",
+          name: "authorization",
+          scheme: "bearer",
+        },
+      },
+    ],
   },
   approvals: {
     requiredFor: ["supportTickets.bulkUpdate", "email.sendExternal"],
@@ -88,6 +102,50 @@ Least privilege is the default:
 - `filesystem` defaults to `none`
 - `secrets` defaults to `none`
 - `network` defaults to `restricted`
+
+## Broker credentials to sandboxes
+
+Brokered credentials let an agent reach a private external resource without
+placing the raw secret in sandbox environment variables.
+
+The Cell declares the secret name:
+
+```ts
+capabilities: {
+  secrets: ["GITHUB_TOKEN"],
+}
+```
+
+The mounted agent declares the broker policy:
+
+```ts
+capabilities: {
+  network: { allow: ["github.com"] },
+  secrets: "brokered",
+},
+credentialBroker: {
+  credentials: [
+    {
+      credential: "GITHUB_TOKEN",
+      domains: ["github.com"],
+      inject: {
+        kind: "header",
+        name: "authorization",
+        scheme: "bearer",
+      },
+    },
+  ],
+},
+runtime: {
+  sandbox: "required",
+}
+```
+
+The generated manifest records credential names, allowed domains, and
+header/query injection targets. It does not contain secret values. Validation
+fails if the Cell does not declare the credential, if the agent does not use
+`secrets: "brokered"`, if the agent is not sandbox-required, or if the target
+domain is outside `capabilities.network.allow`.
 
 ## Mount an agent in a Cell
 

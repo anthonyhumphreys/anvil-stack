@@ -92,11 +92,25 @@ export async function validateCellAgents(options: {
 }): Promise<AgentValidationIssue[]> {
   const issues: AgentValidationIssue[] = [];
   const agents = options.app.agents ?? {};
+  const declaredSecrets = readCapabilityNames(
+    options.app.capabilities?.secrets,
+  );
 
   for (const [mount, agent] of Object.entries(agents)) {
     issues.push(
       ...(await validateAgentDefinition(agent, { baseDir: options.rootDir })),
     );
+
+    for (const brokered of agent.credentialBroker?.credentials ?? []) {
+      if (!declaredSecrets.has(brokered.credential)) {
+        issues.push({
+          code: "AGENT_CREDENTIAL_BROKER_SECRET_NOT_DECLARED",
+          severity: "error",
+          message: `Agent '${agent.name}' brokers credential '${brokered.credential}', but it is not declared in capabilities.secrets.`,
+          path: `agents.${mount}.credentialBroker`,
+        });
+      }
+    }
 
     if (agent.name !== mount) {
       issues.push({
@@ -142,6 +156,20 @@ export async function validateCellAgents(options: {
   }
 
   return issues;
+}
+
+function readCapabilityNames(value: unknown): Set<string> {
+  if (Array.isArray(value)) {
+    return new Set(
+      value.filter((entry): entry is string => typeof entry === "string"),
+    );
+  }
+
+  if (value && typeof value === "object") {
+    return new Set(Object.keys(value as Record<string, unknown>));
+  }
+
+  return new Set();
 }
 
 export function isAppDefinition(value: unknown): value is AppDefinition {

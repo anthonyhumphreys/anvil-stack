@@ -41,6 +41,27 @@ export type AgentApprovals = {
   requiredFor: string[];
 };
 
+export type AgentBrokeredCredentialInjection =
+  | {
+      kind: "header";
+      name: string;
+      scheme?: "bearer" | "basic" | "raw";
+    }
+  | {
+      kind: "query";
+      name: string;
+    };
+
+export type AgentBrokeredCredential = {
+  credential: string;
+  domains: string[];
+  inject: AgentBrokeredCredentialInjection;
+};
+
+export type AgentCredentialBroker = {
+  credentials: AgentBrokeredCredential[];
+};
+
 export type AgentRuntimeRequirements = {
   durability?: "none" | "optional" | "required";
   sandbox?: "optional" | "required";
@@ -96,6 +117,7 @@ export type AgentDefinitionInput = {
   memory?: AgentMemoryConfig;
   capabilities?: AgentCapabilities;
   approvals?: AgentApprovals;
+  credentialBroker?: AgentCredentialBroker;
   evals?: import("./agent-evals.js").AgentEvalSuite;
   runtime?: AgentRuntimeRequirements;
   subagents?: Record<string, AgentDefinition>;
@@ -129,6 +151,7 @@ export type AgentManifest = {
   };
   tools: AgentToolDefinition[];
   skills: string[];
+  credentialBroker: AgentCredentialBroker;
   subagents: Record<string, AgentManifest>;
   metadata: Record<string, unknown>;
 };
@@ -284,6 +307,7 @@ export function createAgentManifest(
     runtime,
     tools,
     skills,
+    credentialBroker: sanitizeCredentialBroker(agent.credentialBroker),
     subagents:
       exposure === "agent.subagent"
         ? {}
@@ -393,6 +417,14 @@ export function validateAgentDefinitionShape(
 
   issues.push(...validateCapabilities(agent.name, agent.capabilities));
   issues.push(...validateApprovals(agent.name, agent.approvals));
+  issues.push(
+    ...validateCredentialBroker(
+      agent.name,
+      agent.credentialBroker,
+      agent.capabilities,
+      agent.runtime,
+    ),
+  );
   issues.push(...validateRuntimeRequirements(agent.name, agent.runtime));
   if (includeSubagents) {
     issues.push(...validateSubagents(agent));
@@ -1104,6 +1136,18 @@ function sanitizeModelConfig(model: AgentModelConfig): AgentModelConfig {
   return sanitized;
 }
 
+function sanitizeCredentialBroker(
+  broker: AgentCredentialBroker | undefined,
+): AgentCredentialBroker {
+  return {
+    credentials: (broker?.credentials ?? []).map((entry) => ({
+      credential: entry.credential,
+      domains: [...entry.domains],
+      inject: { ...entry.inject },
+    })),
+  };
+}
+
 function validateCapabilities(
   agentName: string,
   capabilities: AgentCapabilities | undefined,
@@ -1190,6 +1234,111 @@ function validateApprovals(
   }
 
   return [];
+}
+
+function validateCredentialBroker(
+  agentName: string,
+  broker: AgentCredentialBroker | undefined,
+  capabilities: AgentCapabilities | undefined,
+  runtime: AgentRuntimeRequirements | undefined,
+): AgentValidationIssue[] {
+  if (broker === undefined) {
+    return [];
+  }
+
+  if (!isObject(broker) || !Array.isArray(broker.credentials)) {
+    return [
+      {
+        code: "AGENT_CREDENTIAL_BROKER_INVALID",
+        severity: "error",
+        message: `Agent '${agentName}' credentialBroker.credentials must be an array.`,
+        path: "credentialBroker.credentials",
+      },
+    ];
+  }
+
+  const issues: AgentValidationIssue[] = [];
+  const normalized = normalizeAgentCapabilities(capabilities);
+
+  if (broker.credentials.length > 0) {
+    if (normalized.secrets !== "brokered") {
+      issues.push({
+        code: "AGENT_CREDENTIAL_BROKER_REQUIRES_BROKERED_SECRETS",
+        severity: "error",
+        message: `Agent '${agentName}' credentialBroker requires capabilities.secrets to be 'brokered'.`,
+        path: "capabilities.secrets",
+      });
+    }
+
+    if (runtime?.sandbox !== "required") {
+      issues.push({
+        code: "AGENT_CREDENTIAL_BROKER_REQUIRES_SANDBOX",
+        severity: "error",
+        message: `Agent '${agentName}' credentialBroker requires runtime.sandbox to be 'required'.`,
+        path: "runtime.sandbox",
+      });
+    }
+  }
+
+  broker.credentials.forEach((entry, index) => {
+    const path = `credentialBroker.credentials.${index}`;
+
+    if (!isObject(entry)) {
+      issues.push({
+        code: "AGENT_CREDENTIAL_BROKER_INVALID",
+        severity: "error",
+        message: `Agent '${agentName}' brokered credential entries must be objects.`,
+        path,
+      });
+      return;
+    }
+
+    if (typeof entry.credential !== "string" || entry.credential.length === 0) {
+      issues.push({
+        code: "AGENT_CREDENTIAL_BROKER_INVALID",
+        severity: "error",
+        message: `Agent '${agentName}' brokered credential must name a credential.`,
+        path: `${path}.credential`,
+      });
+    }
+
+    if (
+      !Array.isArray(entry.domains) ||
+      entry.domains.length === 0 ||
+      entry.domains.some(
+        (domain) => typeof domain !== "string" || domain.length === 0,
+      )
+    ) {
+      issues.push({
+        code: "AGENT_CREDENTIAL_BROKER_INVALID",
+        severity: "error",
+        message: `Agent '${agentName}' brokered credential '${String(entry.credential)}' must declare one or more domains.`,
+        path: `${path}.domains`,
+      });
+    } else {
+      for (const domain of entry.domains) {
+        if (!networkAllows(normalized.network, domain)) {
+          issues.push({
+            code: "AGENT_CREDENTIAL_BROKER_DOMAIN_NOT_ALLOWED",
+            severity: "error",
+            message: `Agent '${agentName}' brokered credential '${String(entry.credential)}' targets '${domain}', but that domain is not allowed by capabilities.network.`,
+            path: `${path}.domains`,
+          });
+        }
+      }
+    }
+
+    if (!isValidCredentialInjection(entry.inject)) {
+      issues.push({
+        code: "AGENT_CREDENTIAL_BROKER_INVALID",
+        severity: "error",
+        message: `Agent '${agentName}' brokered credential '${String(entry.credential)}' must inject into a named header or query parameter.`,
+        path: `${path}.inject`,
+      });
+    }
+  });
+
+  return issues;
 }
 
 function validateRuntimeRequirements(
@@ -1386,6 +1535,34 @@ function networkAllows(network: AgentNetworkCapability, host: string): boolean {
   }
 
   return network.allow?.includes(host) ?? false;
+}
+
+function isValidCredentialInjection(
+  value: unknown,
+): value is AgentBrokeredCredentialInjection {
+  if (!isObject(value)) {
+    return false;
+  }
+
+  if (value.kind !== "header" && value.kind !== "query") {
+    return false;
+  }
+
+  if (typeof value.name !== "string" || value.name.length === 0) {
+    return false;
+  }
+
+  if (
+    value.kind === "header" &&
+    value.scheme !== undefined &&
+    value.scheme !== "bearer" &&
+    value.scheme !== "basic" &&
+    value.scheme !== "raw"
+  ) {
+    return false;
+  }
+
+  return true;
 }
 
 function messageText(content: string | AgentContentPart[]): string {

@@ -1,4 +1,4 @@
-import type { AgentManifest } from "./agent.js";
+import type { AgentCredentialBroker, AgentManifest } from "./agent.js";
 
 export type AgentSandboxStatus =
   | "starting"
@@ -35,6 +35,7 @@ export type AgentSandboxStartInput = {
     id?: string;
     snapshot?: string;
   };
+  credentialBroker?: AgentCredentialBroker;
   clientToken?: string;
 };
 
