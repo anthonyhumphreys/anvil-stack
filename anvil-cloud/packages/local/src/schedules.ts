@@ -58,6 +58,8 @@ type CronFields = {
   weekdays: Set<number>;
 };
 
+const MAX_TIMEOUT_MS = 2_147_483_647;
+
 export class LocalScheduleAdapter {
   private app: AppDefinition | null = null;
   private host: RuntimeHost | null = null;
@@ -108,7 +110,7 @@ export class LocalScheduleAdapter {
     const overlap = definition.overlap ?? "skip";
 
     if (overlap === "skip" && this.isJobRunning(name)) {
-      return this.recordRun(name, {
+      const skippedRun = await this.recordRun(name, {
         id: `sched_${randomUUID()}`,
         job: name,
         trigger: options.trigger ?? "manual",
@@ -123,6 +125,12 @@ export class LocalScheduleAdapter {
           message: `Scheduled job '${name}' is already running.`,
         },
       });
+
+      if (existing !== null) {
+        await this.scheduleNext(name);
+      }
+
+      return skippedRun;
     }
 
     const run: LocalScheduleRun = {
@@ -240,30 +248,39 @@ export class LocalScheduleAdapter {
     }
 
     const dueAt = nextRunAt(definition.schedule, new Date());
-    const delay = Math.max(0, dueAt.getTime() - Date.now());
-    const boundedDelay = Math.min(delay, 2_147_483_647);
     const existing = this.timers.get(name);
 
     if (existing) {
       clearTimeout(existing);
     }
 
+    this.armTimer(name, dueAt);
+
+    await this.updateSchedule(name, {
+      nextRunAt: dueAt.toISOString(),
+      running: this.isJobRunning(name),
+    });
+  }
+
+  private armTimer(name: string, dueAt: Date): void {
+    const delay = Math.max(0, dueAt.getTime() - Date.now());
+
     this.timers.set(
       name,
       setTimeout(() => {
+        if (Date.now() < dueAt.getTime()) {
+          this.armTimer(name, dueAt);
+          return;
+        }
+
         void this.trigger(name, {
           trigger: "scheduled",
           scheduledFor: dueAt,
         }).catch(() => {
           // Failures are recorded on the persisted schedule run.
         });
-      }, boundedDelay),
+      }, Math.min(delay, MAX_TIMEOUT_MS)),
     );
-
-    await this.updateSchedule(name, {
-      nextRunAt: dueAt.toISOString(),
-      running: this.isJobRunning(name),
-    });
   }
 
   private isJobRunning(name: string): boolean {
