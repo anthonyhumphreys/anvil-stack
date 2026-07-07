@@ -195,6 +195,9 @@ export async function main(argv: string[]): Promise<void> {
     case "agents":
       await commandAgents(context, subcommand, maybeArg);
       return;
+    case "channels":
+      await commandChannels(context, subcommand);
+      return;
     case "workflows":
       await commandWorkflows(context, subcommand, maybeArg);
       return;
@@ -216,6 +219,117 @@ export async function main(argv: string[]): Promise<void> {
         `Unknown command '${command}'.`,
       );
       process.exitCode = 2;
+  }
+}
+
+async function commandChannels(
+  context: CliContext,
+  subcommand: string | undefined,
+): Promise<void> {
+  switch (subcommand) {
+    case "simulate":
+      await commandChannelsSimulate(context);
+      return;
+    default:
+      writeJsonOrHuman(
+        context,
+        {
+          ok: false,
+          errors: [
+            {
+              code: "INVALID_USAGE",
+              message:
+                "Usage: anvil-cloud channels simulate --channel <name> --input <text> [--sender <id>] [--thread <id>]",
+            },
+          ],
+        },
+        "Usage: anvil-cloud channels simulate --channel <name> --input <text> [--sender <id>] [--thread <id>]",
+      );
+      process.exitCode = 2;
+  }
+}
+
+async function commandChannelsSimulate(context: CliContext): Promise<void> {
+  const channel = context.values.get("channel");
+  const input = context.values.get("input");
+
+  if (!channel || !input) {
+    writeJsonOrHuman(
+      context,
+      {
+        ok: false,
+        errors: [
+          {
+            code: "INVALID_USAGE",
+            message:
+              "Channel simulation requires --channel <name> and --input <text>.",
+          },
+        ],
+      },
+      "Channel simulation requires --channel <name> and --input <text>.",
+    );
+    process.exitCode = 2;
+    return;
+  }
+
+  const runtimeUrl =
+    context.values.get("runtime-url") ?? "http://localhost:8787";
+  const body: Record<string, string> = { channel, input };
+  const sender = context.values.get("sender");
+  const thread = context.values.get("thread");
+
+  if (sender) {
+    body.sender = sender;
+  }
+
+  if (thread) {
+    body.thread = thread;
+  }
+
+  let response: Response;
+
+  try {
+    response = await fetch(
+      new URL("/_anvil/channels/simulate", runtimeUrl).toString(),
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
+  } catch (error) {
+    writeJsonOrHuman(
+      context,
+      {
+        ok: false,
+        errors: [
+          {
+            code: "CHANNEL_RUNTIME_UNREACHABLE",
+            message: `No Anvil Local runtime is reachable at ${runtimeUrl}.`,
+            details: error instanceof Error ? error.message : String(error),
+          },
+        ],
+      },
+      `No Anvil Local runtime is reachable at ${runtimeUrl}.`,
+    );
+    process.exitCode = 5;
+    return;
+  }
+
+  const payload = (await response.json().catch(() => ({
+    ok: false,
+    errors: [
+      {
+        code: "CHANNEL_RUNTIME_INVALID_RESPONSE",
+        message: "Channel simulation returned a non-JSON response.",
+      },
+    ],
+  }))) as unknown;
+
+  writeJsonOrHuman(context, payload, JSON.stringify(payload, null, 2));
+
+  if (!response.ok) {
+    process.exitCode = 1;
   }
 }
 
@@ -3736,6 +3850,7 @@ function writeHelp(): void {
       "  anvil-cloud auth test [--json]",
       "  anvil-cloud agents discover [--json]",
       "  anvil-cloud agents guardian [--json]",
+      "  anvil-cloud channels simulate --channel <name> --input <text> [--sender <id>] [--thread <id>] [--json]",
       "  anvil-cloud workflows list [--json]",
       "  anvil-cloud workflows show <runId> [--json]",
       "  anvil-cloud workflows run <name> [--input '<json>'] [--json]",
@@ -4078,6 +4193,7 @@ async function checkLocalState(rootDir: string): Promise<DoctorCheck> {
     authKeys: await fileExists(path.join(localDir, "auth/keys.json")),
     database: await fileExists(path.join(localDir, "dev.db")),
     logs: await fileExists(path.join(localDir, "logs.ndjson")),
+    agentSessions: await fileExists(path.join(localDir, "agent-sessions.json")),
     jobs: await fileExists(path.join(localDir, "jobs.json")),
     workflows: await fileExists(path.join(localDir, "workflows.json")),
     services: await fileExists(path.join(localDir, "services.json")),

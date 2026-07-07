@@ -86,6 +86,7 @@ describe("buildCell", () => {
         '    schemaVersion: "0.1",',
         '    queries: ["listNotes"],',
         '    mutations: ["createNote"],',
+        "    agents: [],",
         "  },",
       ].join("\n"),
     );
@@ -1785,7 +1786,7 @@ describe("buildCell", () => {
   it("compiles Cell-mounted agents into the manifest", async () => {
     const rootDir = await createCell({
       server: [
-        'import { app, defineAgent, endpoint } from "@anvil-cloud/runtime";',
+        'import { app, channel, defineAgent, endpoint } from "@anvil-cloud/runtime";',
         "",
         "export default app({",
         "  agents: {",
@@ -1812,6 +1813,14 @@ describe("buildCell", () => {
         "      auth: 'public',",
         "      agent: 'support',",
         "      handler: async () => ({ ok: true }),",
+        "    }),",
+        "  },",
+        "  channels: {",
+        "    supportSlack: channel({",
+        "      provider: 'slack',",
+        "      agent: 'support',",
+        "      sessionKey: 'sender-thread',",
+        "      events: ['app_mention', 'message'],",
         "    }),",
         "  },",
         "});",
@@ -1844,6 +1853,15 @@ describe("buildCell", () => {
           name: "chat",
           agent: "support",
         }),
+      ],
+      channels: [
+        {
+          name: "supportSlack",
+          provider: "slack",
+          agent: "support",
+          sessionKey: "sender-thread",
+          events: ["app_mention", "message"],
+        },
       ],
     });
   });
@@ -1914,6 +1932,36 @@ describe("buildCell", () => {
       diagnostics: [
         expect.objectContaining({
           code: "AGENT_ENDPOINT_REFERENCE_MISSING",
+        }),
+      ],
+    });
+  });
+
+  it("fails validation when channels reference missing mounted agents", async () => {
+    const rootDir = await createCell({
+      server: [
+        'import { app, channel } from "@anvil-cloud/runtime";',
+        "",
+        "export default app({",
+        "  channels: {",
+        "    supportSlack: channel({",
+        "      provider: 'slack',",
+        "      agent: 'missing',",
+        "    }),",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    });
+
+    const result = await buildCell({ rootDir });
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: "manifest",
+      diagnostics: [
+        expect.objectContaining({
+          code: "AGENT_CHANNEL_REFERENCE_MISSING",
         }),
       ],
     });

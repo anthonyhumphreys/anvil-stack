@@ -37,6 +37,7 @@ export type CellManifest = {
   jobs: AppInspection["jobs"];
   workflows: AppInspection["workflows"];
   services: AppInspection["services"];
+  channels: AppInspection["channels"];
   agents: Record<string, AgentManifest>;
   capabilities: Record<string, unknown>;
 };
@@ -79,6 +80,7 @@ export function createCellManifest(
     jobs: inspection.jobs,
     workflows: inspection.workflows,
     services: inspection.services,
+    channels: inspection.channels,
     agents: inspection.agents,
     capabilities: inspection.capabilities,
   };
@@ -124,6 +126,17 @@ export async function validateCellAgents(options: {
         severity: "error",
         message: `Workflow '${name}' references missing mounted agent '${workflow.agent}'.`,
         path: `workflows.${name}.agent`,
+      });
+    }
+  }
+
+  for (const [name, channel] of Object.entries(options.app.channels ?? {})) {
+    if (!(channel.agent in agents)) {
+      issues.push({
+        code: "AGENT_CHANNEL_REFERENCE_MISSING",
+        severity: "error",
+        message: `Channel '${name}' references missing mounted agent '${channel.agent}'.`,
+        path: `channels.${name}.agent`,
       });
     }
   }

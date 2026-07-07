@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   app,
   boolean,
+  channel,
   createInMemoryRuntimeHost,
+  defineAgent,
   endpoint,
   handleRuntimeRequest,
   inspectAppDefinition,
@@ -207,6 +209,12 @@ describe("inspectAppDefinition", () => {
       capabilities: {
         database: true,
       },
+      agents: {
+        support: defineAgent({
+          name: "support",
+          model: { provider: "local", model: "stub" },
+        }),
+      },
       queries: {
         listNotes: query({
           handler: () => {
@@ -240,6 +248,14 @@ describe("inspectAppDefinition", () => {
           handler: () => {
             handlerExecutions += 1;
           },
+        }),
+      },
+      channels: {
+        supportSlack: channel({
+          provider: "slack",
+          agent: "support",
+          sessionKey: "sender-thread",
+          events: ["app_mention", "message"],
         }),
       },
     });
@@ -301,7 +317,20 @@ describe("inspectAppDefinition", () => {
       ],
       workflows: [],
       services: [],
-      agents: {},
+      channels: [
+        {
+          name: "supportSlack",
+          provider: "slack",
+          agent: "support",
+          sessionKey: "sender-thread",
+          events: ["app_mention", "message"],
+        },
+      ],
+      agents: {
+        support: expect.objectContaining({
+          name: "support",
+        }),
+      },
     });
     expect(handlerExecutions).toBe(0);
   });
