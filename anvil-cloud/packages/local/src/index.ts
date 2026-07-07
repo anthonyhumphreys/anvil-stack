@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import {
   appendFile,
@@ -158,6 +159,9 @@ export async function startLocalRuntimeServer(
   const port = options.port ?? 8787;
   const clientPort = options.clientPort ?? 5173;
   const clientMode = options.clientMode ?? "static";
+  const outboundFetchAllowHosts = outboundFetchAllowListFromManifest(
+    options.manifest,
+  );
   let runtimeUrl = `http://localhost:${port}`;
   let clientUrl = `http://localhost:${clientPort}`;
   const hostOptions: {
@@ -185,6 +189,7 @@ export async function startLocalRuntimeServer(
     agentProviders.register(new LocalStubInferenceProvider());
   }
 
+  host.workflows.setOutboundFetchAllowHosts(outboundFetchAllowHosts);
   host.workflows.bind(options.app, host);
   void host.workflows.resumeInterrupted().catch(() => {
     // Resume failures are recorded on the persisted run state.
@@ -216,6 +221,7 @@ export async function startLocalRuntimeServer(
       }),
       agentProviders,
       services,
+      outboundFetchAllowHosts,
       runtimeUrl,
       clientUrl,
       request,
@@ -1019,9 +1025,14 @@ export class LocalAgentSessionAdapter {
 export class LocalWorkflowAdapter implements WorkflowAdapter {
   private app: AppDefinition | null = null;
   private host: RuntimeHost | null = null;
+  private outboundFetchAllowHosts: string[] = [];
   private readonly active = new Map<string, Promise<WorkflowRun>>();
 
   constructor(private readonly filePath: string) {}
+
+  setOutboundFetchAllowHosts(allowHosts: string[]): void {
+    this.outboundFetchAllowHosts = allowHosts;
+  }
 
   bind(app: AppDefinition, host: RuntimeHost): void {
     this.app = app;
@@ -1085,12 +1096,16 @@ export class LocalWorkflowAdapter implements WorkflowAdapter {
   private async execute(run: WorkflowRun): Promise<WorkflowRun> {
     const definition = this.requireWorkflow(run.workflow);
     const host = this.requireHost();
-    const execution = executeWorkflowRun({
-      workflow: definition,
-      host,
-      run,
-      save: (next) => this.save(next),
-    }).finally(() => {
+    const execution = withOutboundFetchPolicy(
+      this.outboundFetchAllowHosts,
+      () =>
+        executeWorkflowRun({
+          workflow: definition,
+          host,
+          run,
+          save: (next) => this.save(next),
+        }),
+    ).finally(() => {
       this.active.delete(run.runId);
     });
 
@@ -1296,6 +1311,7 @@ type LocalRequestOptions = {
   agentRuntime: AgentRuntime;
   agentProviders: AgentProviderRegistry;
   services: ServiceSupervisor;
+  outboundFetchAllowHosts: string[];
   runtimeUrl: string;
   clientUrl: string;
   request: IncomingMessage;
@@ -2392,10 +2408,9 @@ async function runRuntimeRequest(
   runtimeRequest: RuntimeRequest,
 ): Promise<void> {
   const startedAt = Date.now();
-  const response = await handleRuntimeRequest(
-    options.app,
-    options.host,
-    runtimeRequest,
+  const response = await withOutboundFetchPolicy(
+    options.outboundFetchAllowHosts,
+    () => handleRuntimeRequest(options.app, options.host, runtimeRequest),
   );
   await options.host.usage.record({
     scope: "cell",
@@ -2411,6 +2426,89 @@ async function runRuntimeRequest(
   });
 
   await sendRuntimeResponse(options.response, response);
+}
+
+type GuardedFetch = typeof fetch & { __anvilOutboundFetchGuard?: boolean };
+
+const outboundFetchAllowHostsStorage = new AsyncLocalStorage<Set<string>>();
+
+function ensureOutboundFetchGuardInstalled(): void {
+  const currentFetch = globalThis.fetch as GuardedFetch;
+
+  if (currentFetch.__anvilOutboundFetchGuard) {
+    return;
+  }
+
+  const originalFetch = globalThis.fetch;
+
+  const guardedFetch = (async (input, init) => {
+    const allowedHosts = outboundFetchAllowHostsStorage.getStore();
+
+    if (allowedHosts) {
+      const host = hostForFetchInput(input);
+
+      if (!host || !allowedHosts.has(host)) {
+        throw new RuntimeError(
+          "OUTBOUND_FETCH_NOT_ALLOWED",
+          host
+            ? `Fetch host '${host}' is not declared in capabilities.outboundFetch.allow.`
+            : "Fetch target could not be resolved against capabilities.outboundFetch.allow.",
+          403,
+          {
+            host,
+            allowedHosts: Array.from(allowedHosts).sort(),
+          },
+        );
+      }
+    }
+
+    return originalFetch(input, init);
+  }) as GuardedFetch;
+
+  guardedFetch.__anvilOutboundFetchGuard = true;
+  globalThis.fetch = guardedFetch;
+}
+
+async function withOutboundFetchPolicy<T>(
+  allowHosts: string[],
+  run: () => Promise<T>,
+): Promise<T> {
+  if (allowHosts.length === 0) {
+    return run();
+  }
+
+  ensureOutboundFetchGuardInstalled();
+
+  return outboundFetchAllowHostsStorage.run(new Set(allowHosts), run);
+}
+
+function outboundFetchAllowListFromManifest(manifest: unknown): string[] {
+  if (!isObject(manifest) || !isObject(manifest.capabilities)) {
+    return [];
+  }
+
+  const outboundFetch = manifest.capabilities.outboundFetch;
+
+  if (!isObject(outboundFetch) || !Array.isArray(outboundFetch.allow)) {
+    return [];
+  }
+
+  return outboundFetch.allow
+    .filter((host): host is string => typeof host === "string")
+    .map((host) => host.trim())
+    .filter((host) => host.length > 0);
+}
+
+function hostForFetchInput(input: Parameters<typeof fetch>[0]): string | null {
+  try {
+    if (typeof input === "string" || input instanceof URL) {
+      return new URL(input).host;
+    }
+
+    return new URL(input.url).host;
+  } catch {
+    return null;
+  }
 }
 
 async function sendRuntimeResponse(
