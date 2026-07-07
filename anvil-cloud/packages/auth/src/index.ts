@@ -1,5 +1,14 @@
 export { identityFromClaims } from "./claims.js";
 export {
+  oidcProviderFixtures,
+  runAuthConformanceSuite,
+  type AuthConformanceCheck,
+  type AuthConformanceOptions,
+  type AuthConformanceResult,
+  type AuthConformanceStatus,
+  type AuthProviderFixture,
+} from "./conformance.js";
+export {
   LocalIdentityProvider,
   localIssuer,
   type IssueTokenOptions,

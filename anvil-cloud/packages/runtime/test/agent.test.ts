@@ -191,6 +191,53 @@ describe("defineAgent", () => {
     );
   });
 
+  it("compiles explicit subagents into the manifest", () => {
+    const manifest = createAgentManifest(
+      defineAgent({
+        name: "support-orchestrator",
+        model: { provider: "local", model: "stub" },
+        capabilities: {
+          cells: ["read"],
+          database: ["supportTickets.read"],
+          filesystem: "read",
+          secrets: "brokered",
+        },
+        subagents: {
+          triage: defineAgent({
+            name: "triage",
+            purpose: "Classify incoming support requests.",
+            model: { provider: "local", model: "stub" },
+            capabilities: {
+              cells: ["read"],
+              database: ["supportTickets.read"],
+              filesystem: "none",
+              secrets: "none",
+            },
+          }),
+        },
+      }),
+      "cell",
+    );
+
+    expect(manifest).toMatchObject({
+      name: "support-orchestrator",
+      subagents: {
+        triage: {
+          kind: "anvil.agent",
+          name: "triage",
+          purpose: "Classify incoming support requests.",
+          exposure: "agent.subagent",
+          capabilities: {
+            database: ["supportTickets.read"],
+            filesystem: "none",
+            secrets: "none",
+          },
+          subagents: {},
+        },
+      },
+    });
+  });
+
   it("validates file-based instructions", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-agent-"));
     tempDirs.push(rootDir);
@@ -227,6 +274,52 @@ describe("defineAgent", () => {
         code: "AGENT_INSTRUCTIONS_NOT_FOUND",
       }),
     ]);
+  });
+
+  it("rejects subagent capability escalation and nested subagents", async () => {
+    const agent = defineAgent({
+      name: "parent",
+      model: { provider: "local", model: "stub" },
+      capabilities: {
+        database: ["tickets.read"],
+        filesystem: "read",
+        secrets: "brokered",
+      },
+      subagents: {
+        writer: defineAgent({
+          name: "writer",
+          model: { provider: "local", model: "stub" },
+          capabilities: {
+            database: ["tickets.write"],
+            filesystem: "read-write",
+            secrets: "read",
+          },
+        }),
+        nested: defineAgent({
+          name: "nested",
+          model: { provider: "local", model: "stub" },
+          subagents: {
+            tooDeep: defineAgent({
+              name: "too-deep",
+              model: { provider: "local", model: "stub" },
+            }),
+          },
+        }),
+      },
+    });
+
+    await expect(validateAgentDefinition(agent)).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "AGENT_SUBAGENT_CAPABILITY_ESCALATION",
+          path: "subagents.writer.capabilities",
+        }),
+        expect.objectContaining({
+          code: "AGENT_SUBAGENT_NESTING_UNSUPPORTED",
+          path: "subagents.nested.subagents",
+        }),
+      ]),
+    );
   });
 });
 
@@ -336,6 +429,43 @@ describe("AgentProviderRegistry and AgentRuntime", () => {
         approvalProvider: createAutoApproveApprovalProvider("tester"),
       }).executeTool(agent, tool, {}),
     ).resolves.toEqual({ ok: true, output: { updated: 2 } });
+  });
+
+  it("invokes declared subagents and rejects undeclared delegation", async () => {
+    const parent = defineAgent({
+      name: "orchestrator",
+      model: { provider: "local", model: "stub" },
+      capabilities: { cells: ["read"] },
+      subagents: {
+        triage: defineAgent({
+          name: "triage",
+          model: { provider: "local", model: "stub" },
+          capabilities: { cells: ["read"] },
+        }),
+      },
+    });
+    const runtime = new AgentRuntime({
+      providers: new AgentProviderRegistry([
+        new LocalStubInferenceProvider({ echoInput: true }),
+      ]),
+    });
+
+    await expect(
+      runtime.invokeSubagent(parent, "triage", { input: "classify this" }),
+    ).resolves.toMatchObject({
+      agentName: "triage",
+      parentAgentName: "orchestrator",
+      subagentMount: "triage",
+      response: {
+        content: "Local stub response from Anvil Agent: classify this",
+      },
+    });
+
+    await expect(
+      runtime.invokeSubagent(parent, "missing", { input: "nope" }),
+    ).rejects.toMatchObject({
+      code: "HANDLER_NOT_FOUND",
+    });
   });
 });
 

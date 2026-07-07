@@ -439,8 +439,8 @@ export default function ChatThreadScreen() {
             onChangeText={setDraft}
             placeholder={
               thread?.activeSessionId
-                ? 'Steer the run. Use @files or $skills...'
-                : 'Start a run. Use @files or $skills...'
+                ? 'Steer the run. Use @files or $skills…'
+                : 'Start a run. Use @files or $skills…'
             }
             placeholderTextColor={companionColors.faint}
             multiline
@@ -470,7 +470,7 @@ export default function ChatThreadScreen() {
             </Text>
           </View>
           <ActionButton
-            label={submitting ? 'Sending...' : thread?.activeSessionId ? 'Send' : 'Launch'}
+            label={submitting ? 'Sending…' : thread?.activeSessionId ? 'Send' : 'Launch'}
             onPress={() => void submit()}
             disabled={!thread || (!draft.trim() && attachments.length === 0) || submitting}
             style={sendButtonStyle}
