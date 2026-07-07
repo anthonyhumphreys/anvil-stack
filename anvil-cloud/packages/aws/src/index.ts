@@ -24,6 +24,7 @@ import {
   createAwsPreviewCloudFormationTemplate,
   type CloudFormationTemplate,
 } from "./cloudformation.js";
+import { normalizePreviewName } from "./preview-name.js";
 import type { AwsPreviewProvisioner } from "./provisioner.js";
 
 export {
@@ -432,16 +433,7 @@ function normalizeDeployInput(
   };
 }
 
-export function normalizePreviewName(value: string | undefined): string {
-  const normalized = (value ?? "default")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "");
-
-  return normalized.length > 0 ? normalized.slice(0, 48) : "default";
-}
+export { normalizePreviewName } from "./preview-name.js";
 
 function previewNameFlag(previewName: string): string {
   return previewName === "default" ? "" : ` --name ${previewName}`;

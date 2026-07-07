@@ -9,6 +9,7 @@ import { Cause, Effect, Exit } from "effect";
 import type { CellManifest } from "@anvil-cloud/builder";
 import type { AwsPreviewDeployArtifactSummary } from "./artifacts.js";
 import type { DeploymentEnvironment } from "./index.js";
+import { normalizePreviewName } from "./preview-name.js";
 
 export type AwsRemoteInspectResult = {
   ok: true;
@@ -462,17 +463,6 @@ function deploymentMetadataRecordKey(
   return normalizedPreviewName === "default"
     ? `deployment#${cell}#${environment}`
     : `deployment#${cell}#${environment}#${normalizedPreviewName}`;
-}
-
-function normalizePreviewName(value: string | undefined): string {
-  const normalized = (value ?? "default")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "");
-
-  return normalized.length > 0 ? normalized.slice(0, 48) : "default";
 }
 
 function workflowStateMachineResources(

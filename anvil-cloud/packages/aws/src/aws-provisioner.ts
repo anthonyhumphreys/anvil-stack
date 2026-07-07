@@ -26,6 +26,7 @@ import {
   type AwsDeployArtifact,
 } from "./artifacts.js";
 import { createAwsResourceNames } from "./cloudformation.js";
+import { normalizePreviewName } from "./preview-name.js";
 import type {
   AwsPreviewProvisioner,
   AwsPreviewProvisionerInput,
@@ -894,17 +895,6 @@ function stackEnvironment(environment: string, previewName?: string): string {
   return normalizedPreviewName === "default"
     ? environment
     : `${environment}-${normalizedPreviewName}`;
-}
-
-function normalizePreviewName(value: string | undefined): string {
-  const normalized = (value ?? "default")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "");
-
-  return normalized.length > 0 ? normalized.slice(0, 48) : "default";
 }
 
 type AwsSdkErrorCause = {
