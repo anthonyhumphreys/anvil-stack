@@ -123,6 +123,23 @@ describe("startLocalRuntimeServer", () => {
           },
         },
       });
+      await expect(
+        fetchJson(`${server.runtimeUrl}/_anvil/usage`),
+      ).resolves.toMatchObject({
+        ok: true,
+        usage: {
+          totals: {
+            invocations: 2,
+            totalTokens: 0,
+            estimatedCostUsd: 0,
+          },
+          byCell: {
+            notes: {
+              invocations: 2,
+            },
+          },
+        },
+      });
       await expect(fetchText(server.clientUrl)).resolves.toContain(
         "Anvil Cell",
       );
@@ -430,6 +447,7 @@ describe("startLocalRuntimeServer", () => {
       await expect(
         postJson(`${server.runtimeUrl}/_anvil/agents/support`, {
           input: "Triage ticket A-123",
+          context: { sessionId: "session_1" },
         }),
       ).resolves.toMatchObject({
         ok: true,
@@ -439,6 +457,30 @@ describe("startLocalRuntimeServer", () => {
             role: "assistant",
             content: "Local stub response from Anvil Agent.",
           },
+        },
+      });
+      await expect(
+        fetchJson(`${server.runtimeUrl}/_anvil/usage`),
+      ).resolves.toMatchObject({
+        ok: true,
+        usage: {
+          totals: {
+            invocations: 1,
+            inputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 0,
+          },
+          byAgent: {
+            support: {
+              invocations: 1,
+            },
+          },
+          topConsumers: [
+            {
+              scope: "agent",
+              name: "support",
+            },
+          ],
         },
       });
     } finally {

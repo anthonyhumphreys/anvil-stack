@@ -15,6 +15,18 @@ Anvil Cloud is an experimental agent-ready application platform for AWS.
 - `docs/architecture/local-dev.md` — local dev design.
 - `docs/architecture/aws-adapter.md` — AWS adapter design.
 
+## Auth conformance
+
+- Use `anvil-cloud auth test --json` before changing auth behavior or wiring a
+  new OIDC provider.
+- The command returns stable `checks` for local JWT issue/verify, runtime
+  public/required/role policy, OIDC discovery and JWKS verification, expiry,
+  issuer and audience rejection, configured claim mapping, and provider fixture
+  configs.
+- Handler code should rely on `ctx.auth.identity.userId`, `email`, `roles`, and
+  `claims`; provider-specific JWT names belong in `ANVIL_AUTH_*_CLAIM`
+  configuration, not Cell code.
+
 ## Core terms
 
 - Anvil Cloud: overall platform.
@@ -42,4 +54,5 @@ Implement in this order:
 - Do not expose direct AWS SDK usage to Anvil Cell authors.
 - Do not begin with AWS infrastructure before local runtime is proven.
 - Do not add Kubernetes, ECS, arbitrary Docker, or multi-cloud support in v0.
+- Local usage metering is available through `.anvil/local/usage.ndjson`, `GET /_anvil/usage`, Lens Usage, and `anvil-cloud usage --local --json`; preview usage remains declared-resource visibility.
 - Keep docs professional and suitable for a future open-source repository.

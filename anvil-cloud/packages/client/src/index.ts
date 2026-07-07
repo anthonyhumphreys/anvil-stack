@@ -662,18 +662,22 @@ export function createAnvilHooks(client: AnvilClient, hooks: HookRuntime) {
 
       const send = hooks.useCallback(
         async (input: string, context?: Record<string, unknown>) => {
-          const session =
-            stateRef.current.session ??
-            (await client.createAgentSession(agent));
-
           setState((previous) => ({
             ...previous,
             status: "streaming",
-            session,
             error: null,
           }));
 
           try {
+            const session =
+              stateRef.current.session ??
+              (await client.createAgentSession(agent));
+
+            setState((previous) => ({
+              ...previous,
+              session,
+            }));
+
             const result = await client.sendAgentSessionMessage(
               session.sessionId,
               input,
@@ -710,23 +714,34 @@ export function createAnvilHooks(client: AnvilClient, hooks: HookRuntime) {
           return [];
         }
 
-        const events = await client.streamAgentSessionEvents(
-          session.sessionId,
-          {
-            after: stateRef.current.continuationToken,
-          },
-        );
+        try {
+          const events = await client.streamAgentSessionEvents(
+            session.sessionId,
+            {
+              after: stateRef.current.continuationToken,
+            },
+          );
 
-        setState((previous) => ({
-          ...previous,
-          events: [...previous.events, ...events],
-          continuationToken:
-            events.length > 0
-              ? String(events[events.length - 1]?.id)
-              : previous.continuationToken,
-        }));
+          setState((previous) => ({
+            ...previous,
+            events: [...previous.events, ...events],
+            continuationToken:
+              events.length > 0
+                ? String(events[events.length - 1]?.id)
+                : previous.continuationToken,
+          }));
 
-        return events;
+          return events;
+        } catch (error) {
+          const normalized = toError(error);
+
+          setState((previous) => ({
+            ...previous,
+            status: "error",
+            error: normalized,
+          }));
+          throw normalized;
+        }
       }, [agent]);
 
       return {

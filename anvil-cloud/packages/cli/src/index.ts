@@ -31,11 +31,15 @@ import {
 import {
   AuthError,
   LocalIdentityProvider,
+  runAuthConformanceSuite,
+  type AuthConformanceResult,
   type LocalUser,
 } from "@anvil-cloud/auth";
 import {
   createLocalRuntimeHost,
+  LocalUsageMeter,
   startLocalRuntimeServer,
+  type LocalUsageSummary,
 } from "@anvil-cloud/local";
 import {
   AgentProviderRegistry,
@@ -1803,10 +1807,48 @@ async function commandLogs(context: CliContext): Promise<void> {
 }
 
 async function commandUsage(context: CliContext): Promise<void> {
+  if (context.flags.has("local")) {
+    const sinceOption = context.values.get("since");
+    const sinceMs =
+      sinceOption === undefined ? undefined : parseSinceOption(sinceOption);
+
+    if (sinceOption !== undefined && sinceMs === undefined) {
+      writeInvalidUsage(
+        context,
+        "Invalid --since value. Use a duration like 10m, 1h, 30s, or a millisecond timestamp.",
+      );
+      return;
+    }
+
+    const meter = new LocalUsageMeter(
+      path.join(context.cwd, ".anvil/local/usage.ndjson"),
+      "local",
+    );
+    const summary = await meter.summarize({
+      ...(sinceMs === undefined ? {} : { sinceMs }),
+      ...usageBudgetOptionsFromEnv(),
+    });
+
+    writeJsonOrHuman(
+      context,
+      {
+        ok: true,
+        schemaVersion: "0.1",
+        target: {
+          adapter: "local",
+          environment: "local",
+        },
+        usage: summary,
+      },
+      formatLocalUsageSummary(summary),
+    );
+    return;
+  }
+
   if (!context.flags.has("preview")) {
     writeInvalidUsage(
       context,
-      "Only anvil-cloud usage --preview is supported in alpha.",
+      "Usage: anvil-cloud usage --local [--since 1h] [--json] or anvil-cloud usage --preview [--json].",
     );
     return;
   }
@@ -1908,6 +1950,64 @@ async function commandDb(
     "Usage: anvil-cloud db list --local or anvil-cloud db dump <table> --local",
   );
   process.exitCode = 2;
+}
+
+function formatLocalUsageSummary(summary: LocalUsageSummary): string {
+  const totals = summary.totals;
+  const lines = [
+    "Usage visibility for local runtime",
+    `  invocations: ${totals.invocations}`,
+    `  tokens: ${totals.totalTokens} (${totals.inputTokens} in / ${totals.outputTokens} out)`,
+    `  estimated cost: $${totals.estimatedCostUsd.toFixed(6)}`,
+    `  sandbox runtime: ${totals.sandboxRuntimeMs}ms`,
+  ];
+
+  if (summary.topConsumers.length > 0) {
+    lines.push("", "Top consumers:");
+    for (const consumer of summary.topConsumers) {
+      lines.push(
+        `  ${consumer.scope}:${consumer.name} ${consumer.totals.invocations} invocations ${consumer.totals.totalTokens} tokens $${consumer.totals.estimatedCostUsd.toFixed(6)}`,
+      );
+    }
+  }
+
+  if (summary.budgets.length > 0) {
+    lines.push("", "Budgets:");
+    for (const budget of summary.budgets) {
+      lines.push(
+        `  ${budget.id}: ${budget.status} $${budget.actualUsd.toFixed(6)} / $${budget.limitUsd.toFixed(6)}`,
+      );
+    }
+  }
+
+  return lines.join("\n");
+}
+
+function usageBudgetOptionsFromEnv(): {
+  budgetUsd?: number;
+  sessionBudgetUsd?: number;
+} {
+  const budgetUsd = usageBudgetOptionFromEnv("ANVIL_USAGE_DAILY_BUDGET_USD");
+  const sessionBudgetUsd = usageBudgetOptionFromEnv(
+    "ANVIL_USAGE_SESSION_BUDGET_USD",
+  );
+
+  return {
+    ...(budgetUsd === undefined ? {} : { budgetUsd }),
+    ...(sessionBudgetUsd === undefined ? {} : { sessionBudgetUsd }),
+  };
+}
+
+function usageBudgetOptionFromEnv(name: string): number | undefined {
+  const value = process.env[name];
+
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
 async function commandPlan(context: CliContext): Promise<void> {
@@ -3051,6 +3151,16 @@ async function commandAuth(
         );
         return;
       }
+      case "test": {
+        const result = await runAuthConformanceSuite();
+
+        if (!result.ok) {
+          process.exitCode = 1;
+        }
+
+        writeJsonOrHuman(context, result, formatAuthConformanceResult(result));
+        return;
+      }
       default:
         writeJsonOrHuman(
           context,
@@ -3060,11 +3170,11 @@ async function commandAuth(
               {
                 code: "INVALID_USAGE",
                 message:
-                  "Usage: anvil-cloud auth <users|add-user|remove-user|login|token|whoami>",
+                  "Usage: anvil-cloud auth <users|add-user|remove-user|login|token|whoami|test>",
               },
             ],
           },
-          "Usage: anvil-cloud auth <users|add-user|remove-user|login|token|whoami>",
+          "Usage: anvil-cloud auth <users|add-user|remove-user|login|token|whoami|test>",
         );
         process.exitCode = 2;
     }
@@ -3406,6 +3516,7 @@ function writeHelp(): void {
       "  anvil-cloud lens [--port 8787] [--json]",
       "  anvil-cloud logs --local [--json]",
       "  anvil-cloud logs --app <name> --env preview [--since 10m] [--limit 50] [--json]",
+      "  anvil-cloud usage --local [--since 1h] [--json]",
       "  anvil-cloud usage --preview [--json]",
       "  anvil-cloud db list --local [--json]",
       "  anvil-cloud db dump <table> --local [--json]",
@@ -3421,6 +3532,7 @@ function writeHelp(): void {
       "  anvil-cloud auth login <id> [--json]",
       "  anvil-cloud auth token <id> [--ttl 3600] [--json]",
       "  anvil-cloud auth whoami [--json]",
+      "  anvil-cloud auth test [--json]",
       "  anvil-cloud agents discover [--json]",
       "  anvil-cloud agents guardian [--json]",
       "  anvil-cloud channels simulate --channel <name> --input <text> [--sender <id>] [--thread <id>] [--json]",
@@ -4178,6 +4290,21 @@ function formatDoctorChecks(checks: DoctorCheck[]): string {
   return checks
     .map((check) => `${icons[check.status]} ${check.id}: ${check.message}`)
     .join("\n");
+}
+
+function formatAuthConformanceResult(result: AuthConformanceResult): string {
+  const lines = [
+    result.ok ? "Auth conformance passed." : "Auth conformance failed.",
+    `Passed: ${result.summary.passed}; failed: ${result.summary.failed}.`,
+    ...result.checks.map(
+      (check) => `${check.status} ${check.id}: ${check.message}`,
+    ),
+    `Provider fixtures: ${result.fixtures
+      .map((fixture) => fixture.provider)
+      .join(", ")}.`,
+  ];
+
+  return lines.join("\n");
 }
 
 function writeJsonOrHuman(
