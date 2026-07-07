@@ -28,11 +28,86 @@ describe("main", () => {
     expect(output).toContain("Anvil Cloud CLI");
     expect(output).toContain("anvil-cloud check");
     expect(output).toContain("anvil-cloud doctor");
+    expect(output).toContain("anvil-cloud channels simulate");
     expect(output).toContain("anvil-cloud manifest diff");
     expect(output).toContain("anvil-cloud auth test");
     expect(output).toContain(
       "anvil-cloud destroy --preview --app <name> --yes",
     );
+  });
+
+  it("posts channel simulation payloads to the local runtime", async () => {
+    const originalExitCode = process.exitCode;
+    let received: unknown;
+    const server = await startDoctorHealthServer((request, response) => {
+      if (
+        request.method !== "POST" ||
+        request.url !== "/_anvil/channels/simulate"
+      ) {
+        response.writeHead(404).end();
+        return;
+      }
+
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        received = JSON.parse(body) as unknown;
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            ok: true,
+            result: {
+              channel: { name: "supportSlack", provider: "slack" },
+              session: { sessionId: "session_1" },
+              events: [],
+              continuationToken: "1",
+              reply: [],
+            },
+          }),
+        );
+      });
+    });
+
+    try {
+      process.exitCode = undefined;
+      const output = await captureStdout(() =>
+        main([
+          "channels",
+          "simulate",
+          "--channel",
+          "supportSlack",
+          "--sender",
+          "U123",
+          "--thread",
+          "T456",
+          "--input",
+          "hello",
+          "--runtime-url",
+          `http://127.0.0.1:${server.port}`,
+          "--json",
+        ]),
+      );
+
+      expect(JSON.parse(output)).toMatchObject({
+        ok: true,
+        result: {
+          session: { sessionId: "session_1" },
+        },
+      });
+      expect(received).toEqual({
+        channel: "supportSlack",
+        sender: "U123",
+        thread: "T456",
+        input: "hello",
+      });
+      expect(process.exitCode).toBeUndefined();
+    } finally {
+      process.exitCode = originalExitCode;
+      await server.close();
+    }
   });
 
   it("runs auth conformance checks as stable JSON", async () => {
@@ -327,6 +402,7 @@ describe("main", () => {
             authKeys: false,
             database: true,
             logs: false,
+            agentSessions: false,
             jobs: false,
             workflows: true,
             schedules: false,

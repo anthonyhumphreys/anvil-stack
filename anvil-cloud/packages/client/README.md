@@ -4,7 +4,8 @@ Client SDK package for Anvil Cloud.
 
 Responsibilities:
 
-- provide client-side hooks or functions for generated query/mutation metadata;
+- provide client-side hooks or functions for generated query/mutation metadata
+  and mounted agent sessions;
 - route calls to the local or deployed Anvil runtime;
 - avoid hard-coded runtime paths in Cell client code;
 - provide React hooks while keeping headless and native targets on the same
@@ -23,7 +24,10 @@ import * as React from "react";
 
 const client = createClient();
 const apiClient = createApiClient(client, api);
-const { useQuery, useMutation } = createAnvilHooks(client, React);
+const { useQuery, useMutation, useAgentSession } = createAnvilHooks(
+  client,
+  React,
+);
 
 await apiClient.queries.listNotes({});
 console.log(apiClient.meta.queries);
@@ -45,8 +49,25 @@ stable operation list without retaining the raw generated object.
 Generated clients also include stable `api.meta` operation arrays. Runtime calls
 still use `api.queries` and `api.mutations`; `api.meta` is for tools that need to
 compare the generated client with a manifest without parsing route definitions.
+Mounted agents are exposed as `api.meta.agents`.
 `createApiClient` validates `api.meta` against the route records when it is
 present, so stale generated metadata fails before any runtime call.
+
+## Agent sessions
+
+Mounted agents can be consumed through the plain TypeScript client:
+
+```ts
+const session = await client.createAgentSession("support");
+const sent = await client.sendAgentSessionMessage(session.sessionId, "hello");
+const missed = await client.streamAgentSessionEvents(session.sessionId, {
+  after: sent.continuationToken,
+});
+```
+
+`streamAgentSessionEvents` reads the local runtime's SSE stream and returns
+ordered events after the supplied continuation token. React clients can use
+`useAgentSession("support")` for `start`, `send`, and `resume` helpers.
 
 Generated metadata carries optional phantom input/result types. Add a local
 declaration file to type routes without changing runtime metadata:

@@ -33,6 +33,14 @@ export type ServiceInspection = {
   maxRestarts: number;
 };
 
+export type ChannelInspection = {
+  name: string;
+  provider: string;
+  agent: string;
+  sessionKey: string;
+  events: string[];
+};
+
 export type TableInspection = {
   name: string;
   fields: Record<string, FieldInspection>;
@@ -55,6 +63,7 @@ export type AppInspection = {
   jobs: JobInspection[];
   workflows: WorkflowInspection[];
   services: ServiceInspection[];
+  channels: ChannelInspection[];
   agents: Record<string, AgentManifest>;
   authPolicies: {
     queries: Record<string, AuthPolicyInspection>;
@@ -139,6 +148,13 @@ export function inspectAppDefinition(app: AppDefinition): AppInspection {
       name,
       restart: definition.restart ?? "on-failure",
       maxRestarts: definition.maxRestarts ?? 5,
+    })),
+    channels: Object.entries(app.channels ?? {}).map(([name, definition]) => ({
+      name,
+      provider: definition.provider,
+      agent: definition.agent,
+      sessionKey: definition.sessionKey ?? "thread",
+      events: definition.events ?? [],
     })),
     agents: Object.fromEntries(
       Object.entries(app.agents ?? {}).map(([mount, agent]) => [

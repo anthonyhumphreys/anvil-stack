@@ -50,6 +50,7 @@ a feature here.
 ├── auth/
 │   ├── keys.json
 │   └── users.json
+├── agent-sessions.json
 ├── dev.db
 ├── files/
 ├── jobs.json
@@ -68,6 +69,12 @@ GET  /_anvil/health
 GET  /_anvil/manifest
 GET  /_anvil/inspect
 GET  /_anvil/logs
+GET  /_anvil/agents
+POST /_anvil/agents/:name
+POST /_anvil/agents/:name/sessions
+POST /_anvil/agents/sessions/:sessionId/messages
+GET  /_anvil/agents/sessions/:sessionId/stream?after=:token
+POST /_anvil/channels/simulate
 GET  /_anvil/db/tables
 GET  /_anvil/db/:table
 POST /_anvil/auth/as/:userId

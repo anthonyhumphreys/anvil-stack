@@ -149,6 +149,116 @@ describe("AnvilClient", () => {
     ]);
   });
 
+  it("creates agent sessions, sends messages, and reads resumed stream events", async () => {
+    const calls: Array<{ url: string; method: string; body?: unknown }> = [];
+    const client = createClient({
+      runtimeUrl: "http://runtime.local",
+      fetch: async (url, init) => {
+        calls.push({
+          url: String(url),
+          method: init?.method ?? "GET",
+          ...(typeof init?.body === "string"
+            ? { body: JSON.parse(init.body) as unknown }
+            : {}),
+        });
+
+        if (String(url).endsWith("/_anvil/agents/support/sessions")) {
+          return Response.json(
+            {
+              ok: true,
+              result: {
+                session: {
+                  sessionId: "session_1",
+                  agent: "support",
+                  status: "idle",
+                  createdAt: "2026-07-06T12:00:00.000Z",
+                  updatedAt: "2026-07-06T12:00:00.000Z",
+                  continuationToken: "1",
+                },
+              },
+            },
+            { status: 201 },
+          );
+        }
+
+        if (
+          String(url).endsWith("/_anvil/agents/sessions/session_1/messages")
+        ) {
+          return Response.json({
+            ok: true,
+            result: {
+              session: {
+                sessionId: "session_1",
+                agent: "support",
+                status: "idle",
+                createdAt: "2026-07-06T12:00:00.000Z",
+                updatedAt: "2026-07-06T12:00:01.000Z",
+                continuationToken: "3",
+              },
+              events: [
+                {
+                  id: 2,
+                  sessionId: "session_1",
+                  type: "message.user",
+                  timestamp: "2026-07-06T12:00:01.000Z",
+                  data: { input: "hello" },
+                },
+              ],
+              continuationToken: "3",
+            },
+          });
+        }
+
+        return new Response(
+          [
+            "id: 3",
+            "event: message.assistant",
+            'data: {"id":3,"sessionId":"session_1","type":"message.assistant","timestamp":"2026-07-06T12:00:02.000Z","data":{"message":{"role":"assistant","content":"hi"}}}',
+            "",
+            "",
+          ].join("\n"),
+          {
+            headers: { "content-type": "text/event-stream" },
+          },
+        );
+      },
+    });
+
+    await expect(client.createAgentSession("support")).resolves.toMatchObject({
+      sessionId: "session_1",
+      continuationToken: "1",
+    });
+    await expect(
+      client.sendAgentSessionMessage("session_1", "hello"),
+    ).resolves.toMatchObject({
+      continuationToken: "3",
+      events: [{ type: "message.user" }],
+    });
+    await expect(
+      client.streamAgentSessionEvents("session_1", { after: "2" }),
+    ).resolves.toMatchObject([
+      {
+        id: 3,
+        type: "message.assistant",
+      },
+    ]);
+    expect(calls).toMatchObject([
+      {
+        method: "POST",
+        url: "http://runtime.local/_anvil/agents/support/sessions",
+      },
+      {
+        method: "POST",
+        url: "http://runtime.local/_anvil/agents/sessions/session_1/messages",
+        body: { input: "hello" },
+      },
+      {
+        method: "GET",
+        url: "http://runtime.local/_anvil/agents/sessions/session_1/stream?after=2",
+      },
+    ]);
+  });
+
   it("synthesizes generated API client meta when legacy metadata is absent", () => {
     const client = createClient({
       runtimeUrl: "http://runtime.local",
@@ -169,6 +279,7 @@ describe("AnvilClient", () => {
       schemaVersion: "0.1",
       queries: ["alpha", "zeta"],
       mutations: ["createNote"],
+      agents: [],
     });
   });
 
@@ -309,10 +420,7 @@ describe("AnvilClient", () => {
     });
 
     await client.query({ kind: "query", name: "notes/search all" }, {});
-    await client.mutation(
-      { kind: "mutation", name: "notes/archive all" },
-      {},
-    );
+    await client.mutation({ kind: "mutation", name: "notes/archive all" }, {});
 
     expect(calls).toEqual([
       "http://runtime.local/_anvil/query/notes%2Fsearch%20all",
@@ -1007,7 +1115,10 @@ async function waitFor(assertion: () => void | Promise<void>): Promise<void> {
   throw lastError;
 }
 
-function sameDeps(left: readonly unknown[], right: readonly unknown[]): boolean {
+function sameDeps(
+  left: readonly unknown[],
+  right: readonly unknown[],
+): boolean {
   return (
     left.length === right.length &&
     left.every((value, index) => Object.is(value, right[index]))
