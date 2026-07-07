@@ -25,7 +25,7 @@ Options:
 
 ```txt
 --client vite-react|expo-router|headless
---template todo|workflow|agent|auth
+--template crud|auth|workflow|service|agent|sandbox
 --install / --no-install
 --git / --no-git
 --start / --no-start
@@ -37,9 +37,9 @@ target with `app/index.tsx` and `app/_layout.tsx`; it still uses the Anvil
 runtime through `@anvil-cloud/client`. `headless` writes generated client
 metadata without a browser UI.
 
-`todo` is the default template. `workflow`, `agent`, and `auth` add the matching
-Cell contract shape while keeping the generated Todo query and mutation working
-for first-run smoke checks.
+`crud` is the default template. `auth`, `workflow`, `service`, `agent`, and
+`sandbox` add the matching Cell contract shape while keeping the generated Todo
+query and mutation working for first-run smoke checks.
 
 In human mode, `new` scaffolds the project, installs dependencies with
 `pnpm install --ignore-scripts`, runs `git init`, prints the Lens URL, and starts
@@ -53,6 +53,17 @@ local development they fall back to `http://localhost:8787`, except Android
 emulators use `http://10.0.2.2:8787` so the native app can reach the host
 runtime. The scaffold includes `src/expo-env.d.ts` so the public runtime URL is
 typed without adding Node globals to Cell authoring.
+
+`--template` selects the runnable example pattern to scaffold. Every template
+keeps the starter query/mutation client path working, then adds one canonical
+primitive:
+
+- `crud`: table, query, mutation
+- `auth`: auth-required query/mutation with owner data
+- `workflow`: durable workflow
+- `service`: supervised service
+- `agent`: mounted agent with approval contract
+- `sandbox`: mounted sandbox-required agent
 
 Expected output:
 
@@ -73,7 +84,7 @@ JSON output:
   "client": {
     "kind": "vite-react"
   },
-  "template": "todo",
+  "template": "crud",
   "path": "./notes",
   "lensUrl": "http://localhost:8787/_anvil/lens",
   "bootstrap": {
@@ -114,12 +125,64 @@ Checks:
 - public file-read escalation against the previous local manifest when building;
 - destructive schema removals or field type changes against the previous local
   manifest when building;
+- standalone manifest diffing through `anvil-cloud manifest diff`;
 - manifest extraction safety;
 - declared capabilities.
 
 ### `anvil-cloud build`
 
 Builds local artefacts into `.anvil/dist` and `.anvil/generated`.
+
+### `anvil-cloud channels simulate`
+
+Sends a provider-neutral channel message to a running local runtime.
+
+```sh
+anvil-cloud channels simulate --channel supportSlack --input "hello" --json
+```
+
+Options:
+
+```txt
+--channel     channel binding name from the Cell manifest
+--input       inbound channel message text
+--sender      optional provider sender id
+--thread      optional provider thread/conversation id
+--runtime-url local runtime URL, default http://localhost:8787
+--json        stable JSON result
+```
+
+The command posts to `/_anvil/channels/simulate`. JSON output includes the
+matched channel, local agent session summary, ordered events, continuation
+token, and reply chunks. Real provider credentials remain platform-side; Cell
+agent code only receives normalized channel context.
+
+### `anvil-cloud manifest diff`
+
+Compares Cell manifests without deploying anything.
+
+```sh
+anvil-cloud manifest diff --json
+anvil-cloud manifest diff --from .anvil/dist/manifest.json --to candidate.json --json
+```
+
+Without `--to`, the command compares the previous local
+`.anvil/dist/manifest.json` with a scratch build of the current Cell source.
+Scratch output is removed after the comparison. With `--to`, the command reads
+both manifest files directly and does not build source.
+
+JSON output includes:
+
+- `status: "no-baseline" | "unchanged" | "changed" | "block"`;
+- `summary.additions`, `summary.removals`, `summary.changes`,
+  `summary.warnings`, and `summary.errors`;
+- stable `changes[].id` values;
+- `changes[].category`, `action`, `severity`, `path`, `message`, optional
+  `before`, `after`, and `hint`.
+
+Error-severity diff entries currently cover public file access escalation,
+schema table removal, schema field removal, and schema field type changes. The
+command exits with code `5` when any error-severity diff is present.
 
 ### `anvil-cloud review`
 
@@ -167,8 +230,8 @@ Initial checks include:
   and no public `workspace:` dependencies;
 - Cell config and build manifest;
 - generated client metadata presence and consistency with the built manifest;
-- local `.anvil/local` state, including auth, database, logs, jobs, workflows,
-  and service snapshots;
+- local `.anvil/local` state, including auth, database, logs, agent sessions,
+  jobs, workflows, and service snapshots;
 - local runtime health and runtime/client port availability;
 - Notes golden-path verification runs doctor against the live local runtime and
   expects `project.build`, `project.generatedClient`, `local.state`, and
@@ -211,6 +274,67 @@ JSON output:
 }
 ```
 
+### `anvil-cloud auth test`
+
+Runs the auth conformance kit locally and emits a CI-friendly report.
+
+```sh
+anvil-cloud auth test --json
+```
+
+The suite proves that the local IdP and OIDC verification path agree on the
+same auth contract:
+
+- local ES256 JWT issue and verification;
+- runtime auth policy for public, required, and role-gated handlers;
+- OIDC discovery plus JWKS verification;
+- expired-token, issuer, and audience rejection;
+- configured claim mapping for user id, email, and roles;
+- fixture config examples for Auth0, Entra ID, Cognito, and Keycloak.
+
+JSON output:
+
+```json
+{
+  "ok": true,
+  "summary": {
+    "passed": 13,
+    "failed": 0
+  },
+  "checks": [
+    {
+      "id": "local.issueAndVerify",
+      "status": "pass",
+      "provider": "local",
+      "message": "Local IdP issued and verified an ES256 JWT."
+    }
+  ],
+  "fixtures": [
+    {
+      "provider": "auth0",
+      "issuer": "https://tenant.us.auth0.com/",
+      "audience": "https://api.example.test",
+      "claims": {
+        "userId": "sub",
+        "email": "email",
+        "roles": "https://anvil.dev/roles"
+      },
+      "env": {
+        "ANVIL_AUTH_ISSUER": "https://tenant.us.auth0.com/",
+        "ANVIL_AUTH_AUDIENCE": "https://api.example.test",
+        "ANVIL_AUTH_USER_ID_CLAIM": "sub",
+        "ANVIL_AUTH_EMAIL_CLAIM": "email",
+        "ANVIL_AUTH_ROLES_CLAIM": "https://anvil.dev/roles"
+      }
+    }
+  ]
+}
+```
+
+Non-zero failures set exit code `1`. The command does not contact real Auth0,
+Entra, Cognito, or Keycloak tenants; provider entries are fixture configs kept
+green against mock OIDC endpoints so CI stays local and secret-free.
+
 ### `anvil-cloud inspect`
 
 Inspects local or remote runtime state.
@@ -249,6 +373,32 @@ error cause.
 `--limit` must be a positive whole number.
 The AWS log reader follows CloudWatch pagination until the requested limit is
 reached or there are no more pages.
+
+### `anvil-cloud usage --local`
+
+Reads local runtime usage events from `.anvil/local/usage.ndjson` and emits a
+provider-neutral summary for automation.
+
+```sh
+anvil-cloud usage --local --json
+anvil-cloud usage --local --since 1h --json
+```
+
+The local report includes:
+
+- per-Cell and per-Agent invocation counts;
+- model token totals (`inputTokens`, `outputTokens`, `totalTokens`);
+- provider/model metadata when available;
+- estimated cost in USD, defaulting to zero unless model cost rates are
+  configured;
+- sandbox runtime milliseconds;
+- hourly time-series buckets and top consumers;
+- budget warnings from `ANVIL_USAGE_DAILY_BUDGET_USD` and
+  `ANVIL_USAGE_SESSION_BUDGET_USD`.
+
+Budget warnings never silently kill an agent. A budget breach is explicit
+review evidence so a future approval-gated resume can be wired through the
+supervision machinery.
 
 ### `anvil-cloud usage --preview`
 

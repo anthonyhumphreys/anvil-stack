@@ -45,15 +45,18 @@ Human output can be friendly, but automation output must be stable.
 | `anvil cloud check`                        | Validate config, import policy, capabilities, and TypeScript without writing build output.    |
 | `anvil cloud review`                       | Aggregate Guard diagnostics and AWS preview approval gates into one trust report.             |
 | `anvil cloud build`                        | Build server and client artifacts, manifest, generated client, generated types, and metadata. |
+| `anvil cloud manifest diff`                | Compare manifest baselines against current source or an explicit candidate manifest.          |
 | `anvil cloud agents validate`              | Validate mounted agents and compile their contracts without calling a model provider.         |
 | `anvil cloud agents manifest`              | Emit provider-neutral agent manifests from the current Cell build.                            |
 | `anvil cloud agents discover`              | Discover project agent instruction files and mounted Cell agents.                             |
 | `anvil cloud agents guardian`              | Run the deterministic Guardian review over the Cell trust report.                             |
 | `anvil cloud agents sandboxes`             | Report AWS Lambda MicroVM sandbox readiness for sandbox-required agents.                      |
 | `anvil cloud agents invoke <name>`         | Invoke a mounted agent locally through the registered provider (`--input <text>`).            |
+| `anvil cloud channels simulate`            | Send a simulated channel message to a mounted agent through the local runtime.                |
 | `anvil cloud inspect --local`              | Inspect local manifest, auth, database counts, and recent errors.                             |
 | `anvil cloud lens`                         | Verify the local runtime is reachable and print the Anvil Lens URL.                           |
 | `anvil cloud logs --local`                 | Read local NDJSON logs.                                                                       |
+| `anvil cloud usage --local`                | Read local usage events: invocations, tokens, estimated cost, and budget warnings.          |
 | `anvil cloud db list --local`              | List local database tables.                                                                   |
 | `anvil cloud db dump <table> --local`      | Dump local table rows.                                                                        |
 | `anvil cloud deploy --preview`             | Build and synthesize AWS preview deployment output, with provisioning when configured.        |
@@ -96,7 +99,7 @@ JSON output:
 {
   "ok": true,
   "cell": "notes",
-  "template": "todo",
+  "template": "crud",
   "path": "./notes",
   "lensUrl": "http://localhost:8787/_anvil/lens",
   "next": ["cd notes", "anvil-cloud dev"]
@@ -113,7 +116,7 @@ Useful starter options:
 
 ```txt
 --client vite-react|expo-router|headless
---template todo|workflow|agent|auth
+--template crud|auth|workflow|service|agent|sandbox
 --package-manager pnpm|npm|bun
 ```
 
@@ -240,6 +243,24 @@ contract locally.
 
 See [Anvil Agents](/docs/cloud/agents).
 
+## `anvil cloud channels`
+
+Simulate provider-neutral channel ingress against a running local runtime:
+
+```bash
+anvil cloud channels simulate \
+  --channel supportSlack \
+  --sender U123 \
+  --thread T456 \
+  --input "Can you review this issue?" \
+  --json
+```
+
+The command posts to `/_anvil/channels/simulate`. The JSON response includes
+the matched channel, session summary, ordered events, continuation token, and
+reply chunks. Real Slack, GitHub, and Discord credentials stay platform-side;
+Cell agent code receives normalized context and remains channel-agnostic.
+
 ## `anvil cloud build`
 
 Writes `.anvil/dist` and `.anvil/generated`:
@@ -249,6 +270,31 @@ anvil cloud build --json
 ```
 
 Successful output includes build paths, manifest, and diagnostics.
+
+## `anvil cloud manifest diff`
+
+Compares Cell manifests without deploying anything:
+
+```bash
+anvil cloud manifest diff --json
+anvil cloud manifest diff --from .anvil/dist/manifest.json --to candidate.json --json
+```
+
+Without `--to`, the command compares the previous local
+`.anvil/dist/manifest.json` with a scratch build of the current Cell source.
+With `--to`, it reads both manifest files directly and skips the build.
+
+JSON output includes:
+
+- `status: "no-baseline" | "unchanged" | "changed" | "block"`
+- summary counts for additions, removals, changes, warnings, and errors
+- stable `changes[].id` values
+- `category`, `action`, `severity`, `path`, `message`, optional `before`,
+  `after`, and `hint` for each change
+
+Error-severity changes currently include public file access escalation, schema
+table removal, schema field removal, and schema field type changes. The command
+exits with code `5` when any error-severity diff is present.
 
 ## Local inspection commands
 
@@ -394,7 +440,7 @@ returns `AWS_DESTROY_OPERATION_FAILED`.
 | `2`  | Invalid CLI usage                                   |
 | `3`  | Project validation failed                           |
 | `4`  | Build failed                                        |
-| `5`  | Runtime unavailable or remote reader not configured |
+| `5`  | Runtime unavailable, remote reader not configured, doctor blocking errors, or manifest diff blocking errors |
 | `6`  | Deploy or destroy failed                            |
 
 ## Automation rule

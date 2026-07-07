@@ -1,4 +1,4 @@
-import { app, defineAgent, endpoint } from "@anvil-cloud/runtime";
+import { app, channel, defineAgent, endpoint } from "@anvil-cloud/runtime";
 
 const supportAssistant = defineAgent({
   name: "support-assistant",
@@ -22,6 +22,23 @@ const supportAssistant = defineAgent({
     sandbox: "required",
     humanApproval: "required",
   },
+  subagents: {
+    triage: defineAgent({
+      name: "support-triage",
+      purpose: "Classify incoming support requests before the parent responds.",
+      model: {
+        provider: "local",
+        model: "stub",
+      },
+      capabilities: {
+        cells: ["read"],
+        database: ["supportTickets.read"],
+        network: "restricted",
+        filesystem: "none",
+        secrets: "none",
+      },
+    }),
+  },
 });
 
 export default app({
@@ -35,6 +52,14 @@ export default app({
       auth: "required",
       agent: "support",
       handler: async () => ({ ok: true }),
+    }),
+  },
+  channels: {
+    supportSlack: channel({
+      provider: "slack",
+      agent: "support",
+      sessionKey: "sender-thread",
+      events: ["app_mention", "message"],
     }),
   },
 });
