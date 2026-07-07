@@ -57,12 +57,19 @@ Initial commands:
 - `anvil-cloud inspect`
 - `anvil-cloud logs`
 - `anvil-cloud logs --trace <traceId>`
+- `anvil-cloud usage --local`
 - `anvil-cloud usage --preview`
 - `anvil-cloud db list`
 - `anvil-cloud db dump <table>`
+- `anvil-cloud auth test --json`
 - `anvil-cloud deploy --preview`
 - `anvil-cloud rollback --preview --dry-run`
 
 Every automation-oriented command must support `--json`.
+
+`anvil-cloud auth test --json` runs the local/OIDC auth conformance kit and
+reports stable check ids for CI: local JWT issue/verify, runtime auth policy,
+OIDC discovery/JWKS verification, issuer/audience/expiry rejection, claim
+mapping, and common provider fixture configs.
 
 See `docs/specs/cli.md` for the command contract.

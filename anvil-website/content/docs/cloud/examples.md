@@ -11,9 +11,9 @@ order: 112
 
 The `anvil-cloud` repository includes two examples that serve different jobs:
 
-| Example | Use it for |
-| --- | --- |
-| `examples/notes` | Canonical local-first demo: React/Vite UI, auth, database, query, mutation, endpoint, job, workflow, generated client, local Lens, and CLI JSON. |
+| Example                | Use it for                                                                                                                                                                     |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `examples/notes`       | Canonical local-first demo: React/Vite UI, auth, database, query, mutation, endpoint, job, workflow, generated client, local Lens, and CLI JSON.                               |
 | `examples/aws-preview` | AWS-compatible smoke Cell for preview deploy, inspect, logs, auth rejection, and destroy. It stays small so preview smoke failures point at the adapter, not a sprawling demo. |
 
 Start with `examples/notes` when learning the Cell model. Use
@@ -23,6 +23,26 @@ The Cloud repository also includes agent contract examples under
 `docs/examples/agents`: a local Project Agent, a local Agent Cell, an AWS
 Bedrock Agent Cell, and provider registration. These are contract examples, not
 separate runnable workspaces.
+
+`anvil cloud new --template <template>` scaffolds runnable starter Cells shaped like
+the same examples:
+
+| Template   | Pattern it demonstrates                                      |
+| ---------- | ------------------------------------------------------------ |
+| `crud`     | table, query, mutation, generated client                     |
+| `auth`     | auth-required query/mutation with owner-scoped rows          |
+| `workflow` | durable workflow alongside the starter CRUD path             |
+| `service`  | supervised service alongside the starter CRUD path           |
+| `agent`    | mounted agent with an approval contract and local invocation |
+| `sandbox`  | sandbox-required mounted agent                               |
+
+```bash
+anvil cloud new support-cell --template agent --client headless
+```
+
+All templates keep the starter `listTodos`/`addTodo` generated client path
+working so they can be checked, built, and extended by agents without first
+repairing the scaffold.
 
 ## Notes example
 
@@ -58,7 +78,7 @@ export default app({
       body: text().max(2000).optional(),
       archived: boolean().default(false),
       ownerId: userId(),
-    })
+    }),
   },
   capabilities: {
     database: true,
@@ -73,9 +93,7 @@ export default app({
     listNotes: query({
       auth: "required",
       handler: async (ctx) => {
-        return ctx.db.notes
-          .where("ownerId", "=", ctx.auth.requireUser())
-          .all();
+        return ctx.db.notes.where("ownerId", "=", ctx.auth.requireUser()).all();
       },
     }),
   },
@@ -223,7 +241,9 @@ Logs are written to `.anvil/local/logs.ndjson` locally and CloudWatch in AWS pre
 
 ```ts
 capabilities: {
-  files: { publicRead: false }
+  files: {
+    publicRead: false,
+  }
 }
 
 // in a mutation or endpoint
@@ -236,7 +256,7 @@ const file = await ctx.files.get("uploads/avatar.png");
 ```ts
 capabilities: {
   outboundFetch: {
-    allow: ["api.stripe.com"]
+    allow: ["api.stripe.com"],
   }
 }
 

@@ -159,6 +159,7 @@ pre {
   <button data-tab="overview" class="active">Overview</button>
   <button data-tab="logs">Logs</button>
   <button data-tab="traces">Traces</button>
+  <button data-tab="usage">Usage</button>
   <button data-tab="database">Database</button>
   <button data-tab="auth">Auth</button>
   <button data-tab="workflows">Workflows</button>
@@ -202,6 +203,21 @@ pre {
     </table></div>
     <h2 id="trace-detail-title" style="display:none">Trace detail</h2>
     <div class="panel" id="trace-detail" style="display:none"></div>
+  </section>
+
+  <section id="tab-usage">
+    <h2>Totals</h2>
+    <div class="panel kv" id="usage-totals"><span class="muted">Loading…</span></div>
+    <h2>Budgets</h2>
+    <div class="panel"><table id="usage-budgets">
+      <thead><tr><th>budget</th><th>status</th><th>actual</th><th>limit</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+    <h2>Top consumers</h2>
+    <div class="panel"><table id="usage-consumers">
+      <thead><tr><th>consumer</th><th>invocations</th><th>tokens</th><th>cost</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
   </section>
 
   <section id="tab-database">
@@ -415,6 +431,7 @@ anvil-cloud logs --local --json</pre>
       ["cell", (manifest.cell && manifest.cell.name) || "unknown"],
       ["runtime", payload.runtimeUrl || window.location.origin],
       ["current user", (payload.auth && payload.auth.currentUser) || "none"],
+      ["usage cost", "$" + Number((((payload.usage || {}).totals || {}).estimatedCostUsd || 0)).toFixed(6)],
       ["tables", tableNames.length ? tableNames.join(", ") : "none"],
       ["recent errors", String((payload.recentErrors || []).length)],
       ["traces", String((payload.traces || []).length)]
@@ -535,6 +552,60 @@ anvil-cloud logs --local --json</pre>
       }));
       panel.appendChild(el("table", null, [thead, tbody]));
     }).catch(function (error) { showError(error.message); });
+  }
+
+  // Usage
+  function loadUsage() {
+    return getJson("/_anvil/usage").then(function (payload) {
+      var usage = payload.usage || {};
+      var totals = usage.totals || {};
+      var totalPanel = document.getElementById("usage-totals");
+      totalPanel.textContent = "";
+      [
+        ["invocations", String(totals.invocations || 0)],
+        ["tokens", String(totals.totalTokens || 0)],
+        ["input tokens", String(totals.inputTokens || 0)],
+        ["output tokens", String(totals.outputTokens || 0)],
+        ["estimated cost", "$" + Number(totals.estimatedCostUsd || 0).toFixed(6)],
+        ["sandbox runtime", String(totals.sandboxRuntimeMs || 0) + "ms"]
+      ].forEach(function (pair) {
+        totalPanel.appendChild(el("div", { text: pair[0] }));
+        totalPanel.appendChild(el("div", { text: pair[1] }));
+      });
+
+      var budgetBody = document.querySelector("#usage-budgets tbody");
+      budgetBody.textContent = "";
+      (usage.budgets || []).forEach(function (budget) {
+        budgetBody.appendChild(el("tr", null, [
+          el("td", { text: budget.id }),
+          el("td", { text: budget.status }),
+          el("td", { text: "$" + Number(budget.actualUsd || 0).toFixed(6) }),
+          el("td", { text: "$" + Number(budget.limitUsd || 0).toFixed(6) })
+        ]));
+      });
+      if ((usage.budgets || []).length === 0) {
+        budgetBody.appendChild(el("tr", null, [
+          el("td", { class: "muted", colspan: "4", text: "No budgets configured." })
+        ]));
+      }
+
+      var consumerBody = document.querySelector("#usage-consumers tbody");
+      consumerBody.textContent = "";
+      (usage.topConsumers || []).forEach(function (consumer) {
+        var consumerTotals = consumer.totals || {};
+        consumerBody.appendChild(el("tr", null, [
+          el("td", { text: consumer.scope + ":" + consumer.name }),
+          el("td", { text: String(consumerTotals.invocations || 0) }),
+          el("td", { text: String(consumerTotals.totalTokens || 0) }),
+          el("td", { text: "$" + Number(consumerTotals.estimatedCostUsd || 0).toFixed(6) })
+        ]));
+      });
+      if ((usage.topConsumers || []).length === 0) {
+        consumerBody.appendChild(el("tr", null, [
+          el("td", { class: "muted", colspan: "4", text: "No usage events yet." })
+        ]));
+      }
+    });
   }
 
   // Database
@@ -788,6 +859,7 @@ anvil-cloud logs --local --json</pre>
     Promise.all([
       loadOverview(),
       loadLogs(),
+      loadUsage(),
       loadTraces(),
       loadTables(),
       loadUsers(),

@@ -390,6 +390,25 @@ export class InMemoryTraceAdapter implements TraceAdapter {
     trace.status = input.status;
     trace.completedAt = completedAt;
     trace.updatedAt = completedAt;
+
+    if (input.attributes !== undefined) {
+      trace.events.push({
+        eventId: `event_${trace.events.length + 1}`,
+        traceId,
+        timestamp: completedAt,
+        type:
+          trace.kind === "agent"
+            ? input.status === "failed"
+              ? "agent.invoke.failed"
+              : "agent.invoke.completed"
+            : input.status === "failed"
+              ? "workflow.failed"
+              : "workflow.completed",
+        name: trace.name,
+        status: input.status,
+        attributes: input.attributes,
+      });
+    }
   }
 
   async get(traceId: string): Promise<TraceRecord | null> {
