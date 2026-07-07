@@ -53,9 +53,12 @@ a feature here.
 ├── agent-sessions.json
 ├── dev.db
 ├── files/
+├── approvals.json
+├── events.json
 ├── jobs.json
 ├── logs.ndjson
 ├── services.json
+├── traces.json
 └── workflows.json
 ```
 
@@ -69,6 +72,12 @@ GET  /_anvil/health
 GET  /_anvil/manifest
 GET  /_anvil/inspect
 GET  /_anvil/logs
+GET  /_anvil/approvals
+GET  /_anvil/approvals/audit
+POST /_anvil/approvals/:id/approve
+POST /_anvil/approvals/:id/reject
+GET  /_anvil/traces
+GET  /_anvil/traces/:traceId
 GET  /_anvil/agents
 POST /_anvil/agents/:name
 POST /_anvil/agents/:name/sessions
@@ -78,29 +87,59 @@ POST /_anvil/channels/simulate
 GET  /_anvil/db/tables
 GET  /_anvil/db/:table
 POST /_anvil/auth/as/:userId
+GET  /_anvil/auth/users
+POST /_anvil/auth/users
+DELETE /_anvil/auth/users/:userId
+POST /_anvil/auth/token
+GET  /_anvil/auth/jwks
+GET  /_anvil/auth/whoami
+GET  /_anvil/agents
+POST /_anvil/agents/:name
+POST /_anvil/workflows/run/:name
+GET  /_anvil/workflows
+GET  /_anvil/workflows/:runId
+GET  /_anvil/services
+POST /_anvil/services/:name/start
+POST /_anvil/services/:name/stop
 POST /_anvil/jobs/run/:name
 ```
 
+Approval-gated agent tool execution writes pending requests to
+`.anvil/local/approvals.json`. The CLI can inspect and decide them with
+`anvil-cloud approvals list|approve|reject|audit --json`; Lens shows the same
+pending requests and audit trail while the local runtime is running.
+
 ## Local database
 
-Default alpha adapter: SQLite.
+Default alpha adapter: local JSON files.
 
 Rationale:
 
 - no Docker required;
 - easy to inspect;
 - fast for local dev;
-- reliable for agent workflows;
+- reliable enough for alpha agent workflows;
 - can be reset cheaply.
 
 The database API should remain constrained so a future DynamoDB Local mode can be added.
+
+The primary branch is `.anvil/local/dev.db`. Named branches are snapshot files
+under `.anvil/local/db-branches`, tracked by `.anvil/local/db-branches.json`.
+Branching is local-first: it copies the source JSON store, can record a TTL for
+agent-created throwaway branches, and keeps `ctx.db` unchanged for Cell code.
 
 Recommended CLI commands:
 
 ```sh
 anvil-cloud db list --local --json
 anvil-cloud db dump todos --local --json
-anvil-cloud db reset --local
+anvil-cloud db branch preview --from main --ttl 3600 --json
+anvil-cloud db use preview --json
+anvil-cloud dev --db-branch preview --json
+anvil-cloud db diff preview --against main --json
+anvil-cloud db promote preview --json
+anvil-cloud db delete preview --yes --json
+anvil-cloud db cleanup --expired --json
 ```
 
 ## Local auth
@@ -152,18 +191,22 @@ http://localhost:8787/_anvil/files/<key>?token=dev
 
 ## Local jobs
 
-Local jobs should be persisted in `.anvil/local/jobs.json` and executable manually.
+Local queued jobs are persisted in `.anvil/local/jobs.json`; scheduled job state
+and run history live in `.anvil/local/schedules.json`.
 
 ```sh
-anvil jobs run refreshData --local --json
+anvil-cloud schedules list --json
+anvil-cloud schedules run refreshData --payload '{}' --json
 ```
 
-The alpha job runner may be simple:
+The alpha scheduler is intentionally simple:
 
 - in-memory queue during dev;
 - persisted job metadata for inspection;
-- manual execution support;
-- scheduled jobs can be simulated with timers.
+- manual execution support through the CLI and `/_anvil/schedules/:name/run`;
+- scheduled execution with local timers while `anvil-cloud dev` is running;
+- missed runs while the local runtime is stopped are skipped, not caught up;
+- overlapping scheduled executions default to `skip`; `overlap: "queue"` allows concurrent manual/scheduled runs.
 
 ## Logs
 
@@ -264,7 +307,7 @@ Server reload should:
 1. Runtime test host.
 2. Local Hono/Fastify server.
 3. In-memory database adapter.
-4. SQLite adapter.
+4. JSON database adapter with snapshot branches.
 5. Local auth adapter.
 6. Local logs adapter.
 7. Local inspector.

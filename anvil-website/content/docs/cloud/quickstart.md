@@ -17,6 +17,10 @@ through the umbrella `@anvilstack/cli` wrapper. The Cloud product package is
 `@anvilstack/cloud-cli`, and from a local checkout you run the same command
 contract through `pnpm anvil-cloud` or the built CLI entrypoint.
 
+Coding agents can read the short contract at `/llms.txt` or the full authoring
+guide at `/llms-full.txt`. The same files are bundled under `docs/` in the
+published Cloud CLI package so an installed project can be inspected offline.
+
 ## 1) Prepare the checkout
 
 From `anvil-cloud`:
@@ -74,16 +78,21 @@ the front door so the Cloud and Registry commands share one Anvil shape.
 From the workspace root during alpha development:
 
 ```bash
-pnpm anvil cloud new notes
+pnpm anvil-cloud new notes
 cd notes
 ```
 
-With the published CLI installed:
+Without a local workspace checkout, run the published CLI via `pnpm dlx`:
 
 ```bash
-anvil cloud new notes
+pnpm dlx @anvilstack/cloud-cli new notes
 cd notes
 ```
+
+The package name is `@anvilstack/cloud-cli`; it exposes the `anvil-cloud`
+binary. In human mode, `new` installs dependencies, runs `git init`, prints the
+Lens URL, and starts the local dev server. Use `--json` when you want a finite
+machine-readable scaffold result for an agent run.
 
 Inside a checked-in example such as `examples/notes`, use the relative built
 entrypoint:
@@ -176,10 +185,10 @@ anvil cloud dev
 
 Default local URLs:
 
-| Surface | URL |
-| --- | --- |
+| Surface | URL                     |
+| ------- | ----------------------- |
 | Runtime | `http://localhost:8787` |
-| Client | `http://localhost:5173` |
+| Client  | `http://localhost:5173` |
 
 Useful local routes:
 
@@ -225,6 +234,7 @@ Local state is stored under `.anvil/local`:
   files/
   jobs.json
   logs.ndjson
+  schedules.json
   services.json
   workflows.json
 ```

@@ -92,8 +92,8 @@ tr.clickable:hover td { background: var(--panel-2); }
   color: var(--gray);
 }
 .badge.running, .badge.starting { border-color: var(--amber); color: var(--amber); }
-.badge.completed { border-color: var(--green); color: var(--green); }
-.badge.failed, .badge.error, .badge.crashed { border-color: var(--red); color: var(--red); }
+.badge.completed, .badge.approved { border-color: var(--green); color: var(--green); }
+.badge.failed, .badge.error, .badge.crashed, .badge.rejected { border-color: var(--red); color: var(--red); }
 .badge.stopped, .badge.pending { border-color: var(--gray); color: var(--gray); }
 .stat-grid { display: flex; flex-wrap: wrap; gap: 8px; }
 .stat {
@@ -158,10 +158,13 @@ pre {
 <nav id="tabs">
   <button data-tab="overview" class="active">Overview</button>
   <button data-tab="logs">Logs</button>
+  <button data-tab="traces">Traces</button>
   <button data-tab="usage">Usage</button>
   <button data-tab="database">Database</button>
   <button data-tab="auth">Auth</button>
+  <button data-tab="approvals">Approvals</button>
   <button data-tab="workflows">Workflows</button>
+  <button data-tab="schedules">Schedules</button>
   <button data-tab="services">Services</button>
   <button data-tab="diagnostics">Diagnostics</button>
 </nav>
@@ -195,6 +198,15 @@ pre {
     </table></div>
   </section>
 
+  <section id="tab-traces">
+    <div class="panel"><table id="trace-table">
+      <thead><tr><th>traceId</th><th>kind</th><th>name</th><th>status</th><th>updated</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+    <h2 id="trace-detail-title" style="display:none">Trace detail</h2>
+    <div class="panel" id="trace-detail" style="display:none"></div>
+  </section>
+
   <section id="tab-usage">
     <h2>Totals</h2>
     <div class="panel kv" id="usage-totals"><span class="muted">Loading…</span></div>
@@ -212,8 +224,14 @@ pre {
 
   <section id="tab-database">
     <h2>Tables</h2>
+    <div class="panel kv" id="db-summary"></div>
     <div class="panel"><table id="db-tables">
       <thead><tr><th>table</th><th>rows</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+    <h2>Branches</h2>
+    <div class="panel"><table id="db-branches">
+      <thead><tr><th>branch</th><th>source</th><th>tables</th><th>expires</th></tr></thead>
       <tbody></tbody>
     </table></div>
     <h2 id="db-rows-title" style="display:none">Rows</h2>
@@ -242,16 +260,53 @@ pre {
     </div>
   </section>
 
+  <section id="tab-approvals">
+    <div class="toolbar">
+      <label>Status
+        <select id="approval-status">
+          <option value="">all</option>
+          <option value="pending">pending</option>
+          <option value="approved">approved</option>
+          <option value="rejected">rejected</option>
+        </select>
+      </label>
+      <button class="act" id="approval-refresh">Refresh</button>
+    </div>
+    <h2>Approval requests</h2>
+    <div class="panel"><table id="approval-table">
+      <thead><tr><th>id</th><th>action</th><th>status</th><th>reason</th><th>requested</th><th>context</th><th>actions</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+    <h2>Audit</h2>
+    <div class="panel"><table id="approval-audit">
+      <thead><tr><th>time</th><th>event</th><th>approval</th><th>actor</th><th>reason</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+  </section>
+
   <section id="tab-workflows">
     <h2>Declared workflows</h2>
     <div class="panel" id="wf-declared"><span class="muted">Loading…</span></div>
     <h2>Runs</h2>
     <div class="panel"><table id="wf-runs">
-      <thead><tr><th>runId</th><th>workflow</th><th>status</th><th>created</th></tr></thead>
+      <thead><tr><th>runId</th><th>workflow</th><th>lifecycle</th><th>progress</th><th>created</th></tr></thead>
       <tbody></tbody>
     </table></div>
     <h2 id="wf-detail-title" style="display:none">Run detail</h2>
     <div class="panel" id="wf-detail" style="display:none"></div>
+  </section>
+
+  <section id="tab-schedules">
+    <h2>Scheduled jobs</h2>
+    <div class="panel"><table id="sched-table">
+      <thead><tr><th>job</th><th>schedule</th><th>next</th><th>last</th><th>status</th><th>actions</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+    <h2>Run history</h2>
+    <div class="panel"><table id="sched-runs">
+      <thead><tr><th>run</th><th>job</th><th>trigger</th><th>status</th><th>started</th><th>completed</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
   </section>
 
   <section id="tab-services">
@@ -414,6 +469,7 @@ anvil-cloud logs --local --json</pre>
     var state = document.getElementById("diag-state");
     var manifest = payload.manifest || {};
     var database = (payload.database && payload.database.tables) || {};
+    var activeBranch = (payload.database && payload.database.activeBranch) || "main";
     var tableNames = Object.keys(database);
     state.textContent = "";
     [
@@ -421,9 +477,11 @@ anvil-cloud logs --local --json</pre>
       ["cell", (manifest.cell && manifest.cell.name) || "unknown"],
       ["runtime", payload.runtimeUrl || window.location.origin],
       ["current user", (payload.auth && payload.auth.currentUser) || "none"],
+      ["database branch", activeBranch],
       ["usage cost", "$" + Number((((payload.usage || {}).totals || {}).estimatedCostUsd || 0)).toFixed(6)],
       ["tables", tableNames.length ? tableNames.join(", ") : "none"],
-      ["recent errors", String((payload.recentErrors || []).length)]
+      ["recent errors", String((payload.recentErrors || []).length)],
+      ["traces", String((payload.traces || []).length)]
     ].forEach(function (pair) {
       state.appendChild(el("div", { text: pair[0] }));
       state.appendChild(el("div", { text: pair[1] }));
@@ -485,6 +543,64 @@ anvil-cloud logs --local --json</pre>
     }
   }, 5000);
 
+  // Traces
+  function loadTraces() {
+    return getJson("/_anvil/traces").then(function (payload) {
+      var traces = payload.traces || [];
+      var tbody = document.querySelector("#trace-table tbody");
+      tbody.textContent = "";
+      if (traces.length === 0) {
+        tbody.appendChild(el("tr", null, [
+          el("td", { class: "muted", text: "No traces yet." })
+        ]));
+      }
+      traces.slice().reverse().forEach(function (trace) {
+        var row = el("tr", { class: "clickable" }, [
+          el("td", { text: trace.traceId || "" }),
+          el("td", { text: trace.kind || "" }),
+          el("td", { text: trace.name || "" }),
+          el("td", null, [badge(trace.status || "unknown")]),
+          el("td", { class: "muted", text: trace.updatedAt || "" })
+        ]);
+        row.addEventListener("click", function () { loadTraceDetail(trace.traceId); });
+        tbody.appendChild(row);
+      });
+    });
+  }
+
+  function loadTraceDetail(traceId) {
+    getJson("/_anvil/traces/" + encodeURIComponent(traceId)).then(function (payload) {
+      var trace = payload.trace || {};
+      var events = trace.events || [];
+      var title = document.getElementById("trace-detail-title");
+      var panel = document.getElementById("trace-detail");
+      title.style.display = "block";
+      title.textContent = "Trace detail: " + traceId;
+      panel.style.display = "block";
+      panel.textContent = "";
+      panel.appendChild(el("div", null, [badge(trace.status || "unknown")]));
+      if (events.length === 0) {
+        panel.appendChild(el("pre", { text: JSON.stringify(trace, null, 2) }));
+        return;
+      }
+      var thead = el("thead", null, [
+        el("tr", null, ["time", "type", "name", "duration", "attributes"].map(function (head) {
+          return el("th", { text: head });
+        }))
+      ]);
+      var tbody = el("tbody", null, events.map(function (event) {
+        return el("tr", null, [
+          el("td", { class: "muted", text: event.timestamp || "" }),
+          el("td", { text: event.type || "" }),
+          el("td", { text: event.name || "" }),
+          el("td", { text: event.durationMs !== undefined ? String(event.durationMs) + "ms" : "-" }),
+          el("td", null, [renderValue(event.attributes || null)])
+        ]);
+      }));
+      panel.appendChild(el("table", null, [thead, tbody]));
+    }).catch(function (error) { showError(error.message); });
+  }
+
   // Usage
   function loadUsage() {
     return getJson("/_anvil/usage").then(function (payload) {
@@ -543,6 +659,18 @@ anvil-cloud logs --local --json</pre>
   function loadTables() {
     return getJson("/_anvil/db/tables").then(function (payload) {
       var tables = (payload.database && payload.database.tables) || {};
+      var branches = payload.branches || [];
+      var active = branches.find(function (branch) { return branch.active; });
+      var summary = document.getElementById("db-summary");
+      summary.textContent = "";
+      [
+        ["active branch", (active && active.name) || "main"],
+        ["branches", String(branches.length || 1)]
+      ].forEach(function (pair) {
+        summary.appendChild(el("div", { text: pair[0] }));
+        summary.appendChild(el("div", { text: pair[1] }));
+      });
+
       var tbody = document.querySelector("#db-tables tbody");
       tbody.textContent = "";
       var names = Object.keys(tables);
@@ -558,6 +686,18 @@ anvil-cloud logs --local --json</pre>
         ]);
         row.addEventListener("click", function () { loadRows(name); });
         tbody.appendChild(row);
+      });
+
+      var branchBody = document.querySelector("#db-branches tbody");
+      branchBody.textContent = "";
+      branches.forEach(function (branch) {
+        var branchTables = Object.keys(branch.tables || {});
+        branchBody.appendChild(el("tr", null, [
+          el("td", { text: branch.name + (branch.active ? " (active)" : "") }),
+          el("td", { text: branch.source || "main" }),
+          el("td", { text: branchTables.length ? branchTables.join(", ") : "none" }),
+          el("td", { text: branch.expiresAt || "never" })
+        ]));
       });
     });
   }
@@ -651,6 +791,91 @@ anvil-cloud logs --local --json</pre>
     }
   });
 
+  // Approvals
+  function loadApprovals() {
+    var status = document.getElementById("approval-status").value;
+    var path = "/_anvil/approvals" + (status ? "?status=" + encodeURIComponent(status) : "");
+
+    return Promise.all([
+      getJson(path),
+      getJson("/_anvil/approvals/audit")
+    ]).then(function (results) {
+      var approvals = results[0].approvals || [];
+      var events = results[1].events || [];
+      var tbody = document.querySelector("#approval-table tbody");
+      tbody.textContent = "";
+      if (approvals.length === 0) {
+        tbody.appendChild(el("tr", null, [
+          el("td", { class: "muted", colspan: "7", text: "No approval requests." })
+        ]));
+      }
+      approvals.slice().reverse().forEach(function (approval) {
+        var actions = el("td", null, []);
+        if (approval.status === "pending") {
+          var approve = el("button", { class: "act", text: "Approve" });
+          var reject = el("button", { class: "act", text: "Reject" });
+          approve.addEventListener("click", function () {
+            decideApproval(approval.id, "approve");
+          });
+          reject.addEventListener("click", function () {
+            decideApproval(approval.id, "reject");
+          });
+          approve.style.marginRight = "6px";
+          actions.appendChild(approve);
+          actions.appendChild(reject);
+        } else {
+          actions.appendChild(el("span", { class: "muted", text: approval.decidedBy || "-" }));
+        }
+
+        tbody.appendChild(el("tr", null, [
+          el("td", { text: approval.id || "" }),
+          el("td", { text: approval.action || "" }),
+          el("td", null, [badge(approval.status || "unknown")]),
+          el("td", { text: approval.reason || approval.decisionReason || "-" }),
+          el("td", { class: "muted", text: approval.requestedAt || "" }),
+          el("td", null, [renderValue(approval.metadata || {})]),
+          actions
+        ]));
+      });
+
+      var auditBody = document.querySelector("#approval-audit tbody");
+      auditBody.textContent = "";
+      if (events.length === 0) {
+        auditBody.appendChild(el("tr", null, [
+          el("td", { class: "muted", colspan: "5", text: "No approval audit events." })
+        ]));
+      }
+      events.slice().reverse().forEach(function (event) {
+        auditBody.appendChild(el("tr", null, [
+          el("td", { class: "muted", text: event.at || "" }),
+          el("td", { text: event.type || "" }),
+          el("td", { text: event.approvalId || "" }),
+          el("td", { text: event.actor || "-" }),
+          el("td", { text: event.reason || "-" })
+        ]));
+      });
+    });
+  }
+
+  function decideApproval(id, action) {
+    var reason = window.prompt(action === "approve" ? "Approval note" : "Rejection reason") || "";
+
+    postJson("/_anvil/approvals/" + encodeURIComponent(id) + "/" + action, {
+      actor: "lens",
+      reason: reason
+    }).then(function () {
+      clearError();
+      return loadApprovals();
+    }).catch(function (error) { showError(error.message); });
+  }
+
+  document.getElementById("approval-status").addEventListener("change", function () {
+    loadApprovals().catch(function (error) { showError(error.message); });
+  });
+  document.getElementById("approval-refresh").addEventListener("click", function () {
+    loadApprovals().catch(function (error) { showError(error.message); });
+  });
+
   // Workflows
   function renderDeclaredWorkflows() {
     var container = document.getElementById("wf-declared");
@@ -706,7 +931,8 @@ anvil-cloud logs --local --json</pre>
         var row = el("tr", { class: "clickable" }, [
           el("td", { text: run.runId || "" }),
           el("td", { text: run.workflow || "" }),
-          el("td", null, [badge(run.status || "unknown")]),
+          el("td", null, [badge((run.progress && run.progress.lifecycle) || run.status || "unknown")]),
+          el("td", { text: workflowProgressText(run) }),
           el("td", { class: "muted", text: run.createdAt || "" })
         ]);
         row.addEventListener("click", function () { loadRunDetail(run.runId); });
@@ -724,7 +950,10 @@ anvil-cloud logs --local --json</pre>
       title.textContent = "Run detail: " + runId;
       panel.style.display = "block";
       panel.textContent = "";
-      panel.appendChild(el("div", null, [badge(run.status || "unknown")]));
+      panel.appendChild(el("div", null, [
+        badge((run.progress && run.progress.lifecycle) || run.status || "unknown"),
+        el("span", { class: "muted", text: " " + workflowProgressText(run) })
+      ]));
       var steps = run.steps || [];
       if (steps.length === 0) {
         panel.appendChild(el("pre", { text: JSON.stringify(run, null, 2) }));
@@ -745,6 +974,70 @@ anvil-cloud logs --local --json</pre>
       }));
       panel.appendChild(el("table", null, [thead, tbody]));
     }).catch(function (error) { showError(error.message); });
+  }
+
+  function workflowProgressText(run) {
+    var progress = run.progress || {};
+    var total = progress.totalSteps !== undefined ? progress.totalSteps : (run.steps || []).length;
+    var completed = progress.completedSteps !== undefined ? progress.completedSteps : 0;
+    var next = progress.currentStep || progress.nextStep || "-";
+    return completed + "/" + total + " steps, next " + next;
+  }
+
+  // Schedules
+  function loadSchedules() {
+    return getJson("/_anvil/schedules").then(function (payload) {
+      var schedules = payload.schedules || [];
+      var tbody = document.querySelector("#sched-table tbody");
+      var runsBody = document.querySelector("#sched-runs tbody");
+      tbody.textContent = "";
+      runsBody.textContent = "";
+      if (schedules.length === 0) {
+        tbody.appendChild(el("tr", null, [
+          el("td", { class: "muted", text: "No scheduled jobs declared." })
+        ]));
+        runsBody.appendChild(el("tr", null, [
+          el("td", { class: "muted", text: "No schedule runs yet." })
+        ]));
+        return;
+      }
+      schedules.forEach(function (schedule) {
+        var run = el("button", { class: "act", text: "Run" });
+        run.addEventListener("click", function () { runSchedule(schedule.name); });
+        tbody.appendChild(el("tr", null, [
+          el("td", { text: schedule.name || "" }),
+          el("td", { text: schedule.schedule || "" }),
+          el("td", { class: "muted", text: schedule.nextRunAt || "-" }),
+          el("td", { class: "muted", text: schedule.lastRunAt || "-" }),
+          el("td", null, [badge(schedule.running ? "running" : (schedule.lastStatus || "pending"))]),
+          el("td", null, [run])
+        ]));
+        (schedule.runs || []).forEach(function (entry) {
+          runsBody.appendChild(el("tr", null, [
+            el("td", { text: entry.id || "" }),
+            el("td", { text: entry.job || "" }),
+            el("td", { text: entry.trigger || "" }),
+            el("td", null, [badge(entry.status || "unknown")]),
+            el("td", { class: "muted", text: entry.startedAt || "" }),
+            el("td", { class: "muted", text: entry.completedAt || "-" })
+          ]));
+        });
+      });
+      if (!runsBody.firstChild) {
+        runsBody.appendChild(el("tr", null, [
+          el("td", { class: "muted", text: "No schedule runs yet." })
+        ]));
+      }
+    });
+  }
+
+  function runSchedule(name) {
+    postJson("/_anvil/schedules/" + encodeURIComponent(name) + "/run", { payload: {} })
+      .then(function () {
+        clearError();
+        return loadSchedules();
+      })
+      .catch(function (error) { showError(error.message); });
   }
 
   // Services
@@ -791,9 +1084,12 @@ anvil-cloud logs --local --json</pre>
       loadOverview(),
       loadLogs(),
       loadUsage(),
+      loadTraces(),
       loadTables(),
       loadUsers(),
+      loadApprovals(),
       loadRuns(),
+      loadSchedules(),
       loadServices()
     ]).catch(function (error) { showError(error.message); });
   }

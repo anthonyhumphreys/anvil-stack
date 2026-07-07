@@ -24,6 +24,7 @@ import {
   createAwsPreviewCloudFormationTemplate,
   type CloudFormationTemplate,
 } from "./cloudformation.js";
+import { normalizePreviewName } from "./preview-name.js";
 import type { AwsPreviewProvisioner } from "./provisioner.js";
 
 export {
@@ -234,6 +235,7 @@ export type DeploymentResult =
       ok: true;
       deploymentId: string;
       environment: DeploymentEnvironment;
+      previewName: string;
       url: string;
       resources: Record<string, string>;
       next: string[];
@@ -262,6 +264,7 @@ export type AwsPreviewDeployInput = {
   manifest: CellManifest;
   buildOutput?: BuildOutput;
   environment?: DeploymentEnvironment;
+  previewName?: string;
 };
 
 export interface DeploymentAdapter {
@@ -306,6 +309,7 @@ export class AwsPreviewDeploymentAdapter implements DeploymentAdapter {
     environment: DeploymentEnvironment = "preview",
   ): Promise<DeploymentResult> {
     const deployInput = normalizeDeployInput(input, environment);
+    const previewName = normalizePreviewName(deployInput.previewName);
     const synthesis = this.synthesize(
       deployInput.manifest,
       deployInput.environment ?? "preview",
@@ -371,6 +375,7 @@ export class AwsPreviewDeploymentAdapter implements DeploymentAdapter {
     try {
       provisioned = await this.options.provisioner.provision({
         environment: deployInput.environment ?? "preview",
+        previewName,
         manifest: deployInput.manifest,
         plan: synthesis.plan,
         template: synthesis.template,
@@ -397,11 +402,12 @@ export class AwsPreviewDeploymentAdapter implements DeploymentAdapter {
       ok: true,
       deploymentId: provisioned.deploymentId,
       environment: deployInput.environment ?? "preview",
+      previewName: provisioned.previewName,
       url: provisioned.url,
       resources: provisioned.resources,
       next: [
-        `anvil-cloud inspect --app ${deployInput.manifest.cell.name} --env ${deployInput.environment ?? "preview"} --json`,
-        `anvil-cloud logs --app ${deployInput.manifest.cell.name} --env ${deployInput.environment ?? "preview"} --json`,
+        `anvil-cloud inspect --app ${deployInput.manifest.cell.name} --env ${deployInput.environment ?? "preview"}${previewNameFlag(provisioned.previewName)} --json`,
+        `anvil-cloud logs --app ${deployInput.manifest.cell.name} --env ${deployInput.environment ?? "preview"}${previewNameFlag(provisioned.previewName)} --json`,
       ],
       plan: synthesis.plan,
       template: synthesis.template,
@@ -425,6 +431,12 @@ function normalizeDeployInput(
     manifest: input,
     environment: fallbackEnvironment,
   };
+}
+
+export { normalizePreviewName } from "./preview-name.js";
+
+function previewNameFlag(previewName: string): string {
+  return previewName === "default" ? "" : ` --name ${previewName}`;
 }
 
 export function synthesizeAwsPreviewDeployment(
@@ -735,15 +747,15 @@ function createOperations(
 ): DeploymentPlanOperations {
   return {
     rollback: {
-      supported: false,
-      strategy: "manual",
+      supported: true,
+      strategy: "redeploy-previous-artifact",
       commands: [
-        "anvil-cloud deploy --preview --json",
-        `anvil-cloud destroy --preview --app ${manifest.cell.name} --yes --json`,
+        `anvil-cloud rollback --preview --app ${manifest.cell.name} --to-deployment <deploymentId> --json`,
+        "anvil-cloud deploy --preview --name <preview> --json",
       ],
       notes: [
-        "Preview rollback commands are not implemented yet.",
-        "Until artifact rollback lands, redeploy a known-good checkout or destroy the preview stack.",
+        "Preview deployments are versioned in adapter metadata.",
+        "Rollback is exposed through the provider-neutral CLI contract; AWS artifact promotion remains adapter-owned.",
       ],
     },
     cost: {

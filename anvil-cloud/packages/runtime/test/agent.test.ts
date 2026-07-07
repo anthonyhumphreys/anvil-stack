@@ -13,6 +13,7 @@ import {
   createAgentManifest,
   createAutoApproveApprovalProvider,
   createAutoRejectApprovalProvider,
+  createInMemoryRuntimeHost,
   createPendingApprovalProvider,
   defineAgent,
   endpoint,
@@ -348,6 +349,36 @@ describe("AgentProviderRegistry and AgentRuntime", () => {
       usage: {
         totalTokens: 0,
       },
+    });
+  });
+
+  it("records model-call and invocation trace events when a trace adapter is available", async () => {
+    const host = createInMemoryRuntimeHost();
+    const runtime = new AgentRuntime({
+      providers: new AgentProviderRegistry([
+        new LocalStubInferenceProvider({ echoInput: true }),
+      ]),
+      traces: host.traces,
+    });
+
+    const result = await runtime.invoke(
+      defineAgent({
+        name: "cell-reviewer",
+        model: { provider: "local", model: "stub" },
+      }),
+      { input: "Trace this." },
+    );
+
+    expect(result.traceId).toMatch(/^agent_/);
+    await expect(host.traces.get(result.traceId ?? "")).resolves.toMatchObject({
+      kind: "agent",
+      name: "cell-reviewer",
+      status: "completed",
+      events: expect.arrayContaining([
+        expect.objectContaining({ type: "agent.invoke.started" }),
+        expect.objectContaining({ type: "agent.model.completed" }),
+        expect.objectContaining({ type: "agent.invoke.completed" }),
+      ]),
     });
   });
 

@@ -1,6 +1,9 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import {
   appendFile,
+  copyFile,
   mkdir,
   readFile,
   rm,
@@ -13,6 +16,7 @@ import http, {
   type ServerResponse,
 } from "node:http";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   AuthError,
@@ -28,6 +32,7 @@ import {
   handleRuntimeRequest,
   RuntimeError,
   ServiceSupervisor,
+  summarizeWorkflowRun,
   type ServiceStatus,
   type AppDefinition,
   type AuthAdapter,
@@ -47,16 +52,38 @@ import {
   type RuntimeHost,
   type RuntimeRequest,
   type RuntimeResponse,
+  redactTraceValue,
   type WorkflowAdapter,
   type WorkflowRun,
+  type WorkflowRunSummary,
   type AgentApprovalProvider,
+  type TraceAdapter,
+  type TraceCompleteInput,
+  type TraceEventInput,
+  type TraceRecord,
+  type TraceRedactor,
+  type TraceStartInput,
   type AgentModelConfig,
   type AgentTokenUsage,
 } from "@anvil-cloud/runtime";
 import { createServer as createViteServer, type ViteDevServer } from "vite";
 
+import {
+  isLocalApprovalStatus,
+  LocalApprovalStore,
+  type LocalApprovalStatus,
+} from "./approvals.js";
 import { lensPageHtml } from "./lens.js";
+import { LocalScheduleAdapter } from "./schedules.js";
 
+export {
+  isLocalApprovalStatus,
+  LocalApprovalStore,
+  type LocalApprovalAuditEvent,
+  type LocalApprovalRecord,
+  type LocalApprovalStatus,
+  type LocalApprovalStoreOptions,
+} from "./approvals.js";
 export { lensPageHtml } from "./lens.js";
 export {
   createLocalSandboxProvider,
@@ -72,6 +99,14 @@ export {
   type LocalSandboxProviderOptions,
   type LocalSandboxSessionRecord,
 } from "./sandbox.js";
+export {
+  LocalScheduleAdapter,
+  nextRunAt,
+  parseScheduleExpression,
+  type LocalScheduleRun,
+  type LocalScheduleRunStatus,
+  type LocalScheduleStatus,
+} from "./schedules.js";
 
 export type LocalRuntimeHost = RuntimeHost & {
   db: JsonDatabaseAdapter;
@@ -82,9 +117,12 @@ export type LocalRuntimeHost = RuntimeHost & {
   events: LocalEventAdapter;
   jobs: LocalJobAdapter;
   workflows: LocalWorkflowAdapter;
+  schedules: LocalScheduleAdapter;
+  traces: LocalTraceAdapter;
   agentSessions: LocalAgentSessionAdapter;
   usage: LocalUsageMeter;
   idp: LocalIdentityProvider;
+  approvals: LocalApprovalStore;
 };
 
 export type LocalRuntimeServerOptions = {
@@ -98,8 +136,10 @@ export type LocalRuntimeServerOptions = {
   clientDistDir?: string;
   clientMode?: "none" | "static" | "vite";
   env?: Record<string, string>;
+  databaseBranch?: string;
   agentProviders?: AgentProviderRegistry;
   agentApprovalProvider?: AgentApprovalProvider;
+  traceRedactor?: TraceRedactor;
 };
 
 export type LocalRuntimeServer = {
@@ -114,6 +154,8 @@ export async function createLocalRuntimeHost(options: {
   stateDir: string;
   cellName: string;
   env?: Record<string, string>;
+  databaseBranch?: string;
+  traceRedactor?: TraceRedactor;
 }): Promise<LocalRuntimeHost> {
   await mkdir(options.stateDir, { recursive: true });
   await mkdir(path.join(options.stateDir, "files"), { recursive: true });
@@ -122,8 +164,18 @@ export async function createLocalRuntimeHost(options: {
     stateDir: path.join(options.stateDir, "auth"),
   });
 
+  const dbBranches = new JsonDatabaseBranchManager(options.stateDir);
+  const databaseBranch =
+    options.databaseBranch ??
+    options.env?.ANVIL_DATABASE_BRANCH ??
+    process.env.ANVIL_DATABASE_BRANCH ??
+    (await dbBranches.getActiveBranch());
+
   return {
-    db: new JsonDatabaseAdapter(path.join(options.stateDir, "dev.db")),
+    db: await JsonDatabaseAdapter.open({
+      stateDir: options.stateDir,
+      branch: databaseBranch,
+    }),
     files: new LocalFileAdapter(path.join(options.stateDir, "files")),
     env: new LocalEnvAdapter(options.env ?? process.env),
     auth: new LocalAuthAdapter(path.join(options.stateDir, "auth.json"), idp),
@@ -136,6 +188,12 @@ export async function createLocalRuntimeHost(options: {
     workflows: new LocalWorkflowAdapter(
       path.join(options.stateDir, "workflows.json"),
     ),
+    schedules: new LocalScheduleAdapter(
+      path.join(options.stateDir, "schedules.json"),
+    ),
+    traces: new LocalTraceAdapter(path.join(options.stateDir, "traces.json"), {
+      redactor: options.traceRedactor ?? redactTraceValue,
+    }),
     agentSessions: new LocalAgentSessionAdapter(
       path.join(options.stateDir, "agent-sessions.json"),
     ),
@@ -144,6 +202,12 @@ export async function createLocalRuntimeHost(options: {
       options.cellName,
     ),
     idp,
+    approvals: new LocalApprovalStore({
+      filePath: path.join(options.stateDir, "approvals.json"),
+      ...(options.env?.ANVIL_APPROVAL_WEBHOOK_URL === undefined
+        ? {}
+        : { webhookUrl: options.env.ANVIL_APPROVAL_WEBHOOK_URL }),
+    }),
   };
 }
 
@@ -159,12 +223,17 @@ export async function startLocalRuntimeServer(
   const port = options.port ?? 8787;
   const clientPort = options.clientPort ?? 5173;
   const clientMode = options.clientMode ?? "static";
+  const outboundFetchAllowHosts = outboundFetchAllowListFromManifest(
+    options.manifest,
+  );
   let runtimeUrl = `http://localhost:${port}`;
   let clientUrl = `http://localhost:${clientPort}`;
   const hostOptions: {
     stateDir: string;
     cellName: string;
     env?: Record<string, string>;
+    databaseBranch?: string;
+    traceRedactor?: TraceRedactor;
   } = {
     stateDir,
     cellName: options.cellName,
@@ -173,15 +242,25 @@ export async function startLocalRuntimeServer(
   if (options.env !== undefined) {
     hostOptions.env = options.env;
   }
+  if (options.databaseBranch !== undefined) {
+    hostOptions.databaseBranch = options.databaseBranch;
+  }
+
+  if (options.traceRedactor !== undefined) {
+    hostOptions.traceRedactor = options.traceRedactor;
+  }
 
   const host = await createLocalRuntimeHost(hostOptions);
   const agentProviders = options.agentProviders ?? new AgentProviderRegistry();
+  const agentApprovalProvider = options.agentApprovalProvider ?? host.approvals;
 
   if (!agentProviders.has("local")) {
     agentProviders.register(new LocalStubInferenceProvider());
   }
 
+  host.workflows.setOutboundFetchAllowHosts(outboundFetchAllowHosts);
   host.workflows.bind(options.app, host);
+  host.schedules.bind(options.app, host);
   void host.workflows.resumeInterrupted().catch(() => {
     // Resume failures are recorded on the persisted run state.
   });
@@ -196,6 +275,7 @@ export async function startLocalRuntimeServer(
   });
 
   await services.startAll();
+  await host.schedules.start();
 
   const server = http.createServer((request, response) => {
     void handleLocalRequest({
@@ -205,12 +285,12 @@ export async function startLocalRuntimeServer(
       agentRuntime: new AgentRuntime({
         providers: agentProviders,
         baseDir: rootDir,
-        ...(options.agentApprovalProvider === undefined
-          ? {}
-          : { approvalProvider: options.agentApprovalProvider }),
+        traces: host.traces,
+        approvalProvider: agentApprovalProvider,
       }),
       agentProviders,
       services,
+      outboundFetchAllowHosts,
       runtimeUrl,
       clientUrl,
       request,
@@ -252,6 +332,7 @@ export async function startLocalRuntimeServer(
       await listen(clientServer, clientPort);
     }
   } catch (error) {
+    await host.schedules.stop();
     await services.stopAll();
     await close(server);
     throw error;
@@ -269,6 +350,7 @@ export async function startLocalRuntimeServer(
     runtimeUrl,
     clientUrl,
     close: async () => {
+      await host.schedules.stop();
       await services.stopAll();
       if (viteServer) {
         await viteServer.close();
@@ -315,6 +397,7 @@ async function startViteClientServer(options: {
     },
     resolve: {
       alias: {
+        ...workspacePackageAliases(),
         "@anvil/generated/client": path.resolve(
           options.rootDir,
           ".anvil/generated/client.ts",
@@ -326,6 +409,36 @@ async function startViteClientServer(options: {
   await server.listen();
 
   return server;
+}
+
+function workspacePackageAliases(): Record<string, string> {
+  const currentDir = path.dirname(fileURLToPath(import.meta.url));
+  const workspacePackagesRoot = path.resolve(currentDir, "..", "..");
+  const packedPackagesRoot = path.resolve(currentDir, "packages");
+  const aliases: Record<string, string> = {};
+
+  addFirstExistingAlias(aliases, "@anvil-cloud/runtime", [
+    path.join(workspacePackagesRoot, "runtime", "src", "index.ts"),
+    path.join(packedPackagesRoot, "runtime", "src", "index.ts"),
+  ]);
+  addFirstExistingAlias(aliases, "@anvil-cloud/client", [
+    path.join(workspacePackagesRoot, "client", "src", "index.ts"),
+    path.join(packedPackagesRoot, "client", "src", "index.ts"),
+  ]);
+
+  return aliases;
+}
+
+function addFirstExistingAlias(
+  aliases: Record<string, string>,
+  specifier: string,
+  candidates: string[],
+): void {
+  const source = candidates.find((candidate) => existsSync(candidate));
+
+  if (source) {
+    aliases[specifier] = source;
+  }
 }
 
 async function writeServicesSnapshot(
@@ -344,8 +457,443 @@ async function writeServicesSnapshot(
   );
 }
 
+export type JsonDatabaseBranchMetadata = {
+  name: string;
+  source: string;
+  file: string;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt?: string;
+  promotedAt?: string;
+};
+
+export type JsonDatabaseBranchSummary = JsonDatabaseBranchMetadata & {
+  active: boolean;
+  expired: boolean;
+  tables: DatabaseInspection["tables"];
+};
+
+export type JsonDatabaseBranchDiff = {
+  branch: string;
+  against: string;
+  tables: Record<
+    string,
+    {
+      branchRows: number;
+      againstRows: number;
+      rowDelta: number;
+      addedFields: string[];
+      removedFields: string[];
+    }
+  >;
+};
+
+type JsonDatabaseBranchState = {
+  active: string;
+  branches: JsonDatabaseBranchMetadata[];
+};
+
+const primaryDatabaseBranch = "main";
+const databaseBranchNamePattern = /^[a-z0-9][a-z0-9-]{0,47}$/;
+
+export function normalizeDatabaseBranchName(name: string): string {
+  const normalized = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/-+/g, "-")
+    .slice(0, 48)
+    .replace(/^-|-$/g, "");
+
+  return normalized || primaryDatabaseBranch;
+}
+
+export class JsonDatabaseBranchManager {
+  private readonly primaryPath: string;
+  private readonly branchDir: string;
+  private readonly metadataPath: string;
+
+  constructor(private readonly stateDir: string) {
+    this.primaryPath = path.join(stateDir, "dev.db");
+    this.branchDir = path.join(stateDir, "db-branches");
+    this.metadataPath = path.join(stateDir, "db-branches.json");
+  }
+
+  async getActiveBranch(): Promise<string> {
+    return (await this.readState()).active;
+  }
+
+  async setActiveBranch(name: string): Promise<JsonDatabaseBranchSummary> {
+    const branch = this.normalizeExistingBranch(name);
+    const state = await this.readState();
+    const summary = await this.getBranch(branch, state);
+
+    state.active = branch;
+    await this.writeState(state);
+
+    return { ...summary, active: true };
+  }
+
+  async createBranch(options: {
+    name: string;
+    from?: string;
+    ttlSeconds?: number;
+    now?: Date;
+  }): Promise<JsonDatabaseBranchSummary> {
+    const name = normalizeDatabaseBranchName(options.name);
+
+    if (name === primaryDatabaseBranch) {
+      throw new Error("The primary database branch already exists.");
+    }
+    if (!databaseBranchNamePattern.test(name)) {
+      throw new Error(`Invalid database branch name '${options.name}'.`);
+    }
+
+    const source = normalizeDatabaseBranchName(
+      options.from ?? primaryDatabaseBranch,
+    );
+    const state = await this.readState();
+    await this.assertBranchExists(source, state);
+
+    if (state.branches.some((branch) => branch.name === name)) {
+      throw new Error(`Database branch '${name}' already exists.`);
+    }
+
+    const now = options.now ?? new Date();
+    const metadata: JsonDatabaseBranchMetadata = {
+      name,
+      source,
+      file: `${name}.db.json`,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+    };
+
+    if (options.ttlSeconds !== undefined) {
+      metadata.expiresAt = new Date(
+        now.getTime() + options.ttlSeconds * 1_000,
+      ).toISOString();
+    }
+
+    await mkdir(this.branchDir, { recursive: true });
+    await this.copyDatabaseFile(
+      this.resolveBranchPath(source, state),
+      this.resolveBranchFile(metadata.file),
+    );
+
+    state.branches.push(metadata);
+    await this.writeState(state);
+
+    return this.summarize(metadata, state.active, now);
+  }
+
+  async listBranches(now: Date = new Date()): Promise<JsonDatabaseBranchSummary[]> {
+    const state = await this.readState();
+    const primary = await this.primarySummary(state.active, now);
+    const branches = await Promise.all(
+      state.branches.map((branch) => this.summarize(branch, state.active, now)),
+    );
+
+    return [primary, ...branches].sort((left, right) =>
+      left.name.localeCompare(right.name),
+    );
+  }
+
+  async diffBranch(
+    name: string,
+    against: string = primaryDatabaseBranch,
+  ): Promise<JsonDatabaseBranchDiff> {
+    const state = await this.readState();
+    const branchName = this.normalizeExistingBranch(name);
+    const againstName = this.normalizeExistingBranch(against);
+    await this.assertBranchExists(branchName, state);
+    await this.assertBranchExists(againstName, state);
+
+    const branchData = await readJsonFile<Record<string, DatabaseRecord[]>>(
+      this.resolveBranchPath(branchName, state),
+      {},
+    );
+    const againstData = await readJsonFile<Record<string, DatabaseRecord[]>>(
+      this.resolveBranchPath(againstName, state),
+      {},
+    );
+    const tableNames = new Set([
+      ...Object.keys(branchData),
+      ...Object.keys(againstData),
+    ]);
+    const tables: JsonDatabaseBranchDiff["tables"] = {};
+
+    for (const tableName of [...tableNames].sort()) {
+      const branchRows = branchData[tableName] ?? [];
+      const againstRows = againstData[tableName] ?? [];
+      const branchFields = recordFields(branchRows);
+      const againstFields = recordFields(againstRows);
+
+      tables[tableName] = {
+        branchRows: branchRows.length,
+        againstRows: againstRows.length,
+        rowDelta: branchRows.length - againstRows.length,
+        addedFields: [...branchFields]
+          .filter((field) => !againstFields.has(field))
+          .sort(),
+        removedFields: [...againstFields]
+          .filter((field) => !branchFields.has(field))
+          .sort(),
+      };
+    }
+
+    return { branch: branchName, against: againstName, tables };
+  }
+
+  async promoteBranch(name: string, now: Date = new Date()): Promise<JsonDatabaseBranchSummary> {
+    const state = await this.readState();
+    const branchName = this.normalizeExistingBranch(name);
+
+    if (branchName === primaryDatabaseBranch) {
+      return this.primarySummary(state.active, now);
+    }
+
+    const metadata = state.branches.find((branch) => branch.name === branchName);
+
+    if (!metadata) {
+      throw new Error(`Database branch '${name}' does not exist.`);
+    }
+
+    await this.copyDatabaseFile(
+      this.resolveBranchFile(metadata.file),
+      this.primaryPath,
+    );
+    metadata.promotedAt = now.toISOString();
+    metadata.updatedAt = now.toISOString();
+    await this.writeState(state);
+
+    return this.summarize(metadata, state.active, now);
+  }
+
+  async deleteBranch(name: string): Promise<{ name: string; deleted: boolean }> {
+    const branchName = this.normalizeExistingBranch(name);
+
+    if (branchName === primaryDatabaseBranch) {
+      throw new Error("The primary database branch cannot be deleted.");
+    }
+
+    const state = await this.readState();
+    const metadata = state.branches.find((branch) => branch.name === branchName);
+
+    if (!metadata) {
+      return { name: branchName, deleted: false };
+    }
+
+    state.branches = state.branches.filter((branch) => branch.name !== branchName);
+    if (state.active === branchName) {
+      state.active = primaryDatabaseBranch;
+    }
+    await rm(this.resolveBranchFile(metadata.file), { force: true });
+    await this.writeState(state);
+
+    return { name: branchName, deleted: true };
+  }
+
+  async deleteExpiredBranches(now: Date = new Date()): Promise<string[]> {
+    const state = await this.readState();
+    const expired = state.branches.filter(
+      (branch) =>
+        branch.expiresAt !== undefined &&
+        Date.parse(branch.expiresAt) <= now.getTime(),
+    );
+
+    for (const branch of expired) {
+      await rm(this.resolveBranchFile(branch.file), { force: true });
+    }
+
+    if (expired.length > 0) {
+      const expiredNames = new Set(expired.map((branch) => branch.name));
+      state.branches = state.branches.filter(
+        (branch) => !expiredNames.has(branch.name),
+      );
+      if (expiredNames.has(state.active)) {
+        state.active = primaryDatabaseBranch;
+      }
+      await this.writeState(state);
+    }
+
+    return expired.map((branch) => branch.name).sort();
+  }
+
+  resolveDatabasePath(name: string = primaryDatabaseBranch): string {
+    return this.resolveBranchPath(normalizeDatabaseBranchName(name), {
+      active: primaryDatabaseBranch,
+      branches: [],
+    });
+  }
+
+  private async getBranch(
+    name: string,
+    state: JsonDatabaseBranchState,
+  ): Promise<JsonDatabaseBranchSummary> {
+    if (name === primaryDatabaseBranch) {
+      return this.primarySummary(state.active, new Date());
+    }
+
+    const metadata = state.branches.find((branch) => branch.name === name);
+
+    if (!metadata) {
+      throw new Error(`Database branch '${name}' does not exist.`);
+    }
+
+    return this.summarize(metadata, state.active, new Date());
+  }
+
+  private async assertBranchExists(
+    name: string,
+    state: JsonDatabaseBranchState,
+  ): Promise<void> {
+    if (name === primaryDatabaseBranch) {
+      return;
+    }
+
+    if (!state.branches.some((branch) => branch.name === name)) {
+      throw new Error(`Database branch '${name}' does not exist.`);
+    }
+  }
+
+  private normalizeExistingBranch(name: string): string {
+    const normalized = normalizeDatabaseBranchName(name);
+
+    if (!databaseBranchNamePattern.test(normalized)) {
+      throw new Error(`Invalid database branch name '${name}'.`);
+    }
+
+    return normalized;
+  }
+
+  private async primarySummary(
+    active: string,
+    _now: Date,
+  ): Promise<JsonDatabaseBranchSummary> {
+    return {
+      name: primaryDatabaseBranch,
+      source: primaryDatabaseBranch,
+      file: "dev.db",
+      createdAt: new Date(0).toISOString(),
+      updatedAt: new Date(0).toISOString(),
+      active: active === primaryDatabaseBranch,
+      expired: false,
+      tables: await inspectDatabaseFile(this.primaryPath),
+    };
+  }
+
+  private async summarize(
+    metadata: JsonDatabaseBranchMetadata,
+    active: string,
+    now: Date,
+  ): Promise<JsonDatabaseBranchSummary> {
+    return {
+      ...metadata,
+      active: metadata.name === active,
+      expired:
+        metadata.expiresAt !== undefined &&
+        Date.parse(metadata.expiresAt) <= now.getTime(),
+      tables: await inspectDatabaseFile(this.resolveBranchFile(metadata.file)),
+    };
+  }
+
+  private resolveBranchPath(
+    name: string,
+    state: JsonDatabaseBranchState,
+  ): string {
+    if (name === primaryDatabaseBranch) {
+      return this.primaryPath;
+    }
+
+    const metadata = state.branches.find((branch) => branch.name === name);
+
+    return this.resolveBranchFile(metadata?.file ?? `${name}.db.json`);
+  }
+
+  private resolveBranchFile(file: string): string {
+    return path.join(this.branchDir, file);
+  }
+
+  private async copyDatabaseFile(from: string, to: string): Promise<void> {
+    await mkdir(path.dirname(to), { recursive: true });
+
+    try {
+      await copyFile(from, to);
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        "code" in error &&
+        (error as NodeJS.ErrnoException).code === "ENOENT"
+      ) {
+        await writeFile(to, "{}\n", "utf8");
+        return;
+      }
+
+      throw error;
+    }
+  }
+
+  private async readState(): Promise<JsonDatabaseBranchState> {
+    const state = await readJsonFile<Partial<JsonDatabaseBranchState>>(
+      this.metadataPath,
+      {},
+    );
+
+    const branches = Array.isArray(state.branches)
+      ? state.branches.filter(isDatabaseBranchMetadata)
+      : [];
+
+    let active =
+      typeof state.active === "string"
+        ? normalizeDatabaseBranchName(state.active)
+        : primaryDatabaseBranch;
+
+    const activeExists =
+      active === primaryDatabaseBranch ||
+      branches.some((branch) => branch.name === active);
+
+    if (!activeExists) {
+      active =
+        branches.find((branch) => branch.name === primaryDatabaseBranch)?.name ??
+        branches[0]?.name ??
+        primaryDatabaseBranch;
+    }
+
+    return { active, branches };
+  }
+
+  private async writeState(state: JsonDatabaseBranchState): Promise<void> {
+    await mkdir(path.dirname(this.metadataPath), { recursive: true });
+    await writeFile(
+      this.metadataPath,
+      `${JSON.stringify(state, null, 2)}\n`,
+      "utf8",
+    );
+  }
+}
+
 export class JsonDatabaseAdapter implements DatabaseAdapter {
-  constructor(private readonly filePath: string) {}
+  static async open(options: {
+    stateDir: string;
+    branch?: string;
+  }): Promise<JsonDatabaseAdapter> {
+    const branches = new JsonDatabaseBranchManager(options.stateDir);
+    const branch = normalizeDatabaseBranchName(
+      options.branch ?? (await branches.getActiveBranch()),
+    );
+
+    return new JsonDatabaseAdapter(
+      branches.resolveDatabasePath(branch),
+      branch,
+      branches,
+    );
+  }
+
+  constructor(
+    private readonly filePath: string,
+    readonly branch: string = primaryDatabaseBranch,
+    private readonly branches?: JsonDatabaseBranchManager,
+  ) {}
 
   table(name: string): DatabaseTableClient {
     return new JsonDatabaseTableClient(name, this);
@@ -362,6 +910,10 @@ export class JsonDatabaseAdapter implements DatabaseAdapter {
     }
 
     return { tables };
+  }
+
+  async inspectBranches(): Promise<JsonDatabaseBranchSummary[]> {
+    return this.branches?.listBranches() ?? [];
   }
 
   async dumpTable(name: string): Promise<DatabaseRecord[]> {
@@ -1014,9 +1566,14 @@ export class LocalAgentSessionAdapter {
 export class LocalWorkflowAdapter implements WorkflowAdapter {
   private app: AppDefinition | null = null;
   private host: RuntimeHost | null = null;
+  private outboundFetchAllowHosts: string[] = [];
   private readonly active = new Map<string, Promise<WorkflowRun>>();
 
   constructor(private readonly filePath: string) {}
+
+  setOutboundFetchAllowHosts(allowHosts: string[]): void {
+    this.outboundFetchAllowHosts = allowHosts;
+  }
 
   bind(app: AppDefinition, host: RuntimeHost): void {
     this.app = app;
@@ -1045,8 +1602,24 @@ export class LocalWorkflowAdapter implements WorkflowAdapter {
     return runs.find((run) => run.runId === runId) ?? null;
   }
 
+  async getRunSummary(runId: string): Promise<WorkflowRunSummary | null> {
+    const run = await this.getRun(runId);
+
+    return run
+      ? summarizeWorkflowRun(run, { active: this.active.has(run.runId) })
+      : null;
+  }
+
   async listRuns(): Promise<WorkflowRun[]> {
     return readJsonFile<WorkflowRun[]>(this.filePath, []);
+  }
+
+  async listRunSummaries(): Promise<WorkflowRunSummary[]> {
+    const runs = await this.listRuns();
+
+    return runs.map((run) =>
+      summarizeWorkflowRun(run, { active: this.active.has(run.runId) }),
+    );
   }
 
   async resumeInterrupted(): Promise<WorkflowRun[]> {
@@ -1080,12 +1653,16 @@ export class LocalWorkflowAdapter implements WorkflowAdapter {
   private async execute(run: WorkflowRun): Promise<WorkflowRun> {
     const definition = this.requireWorkflow(run.workflow);
     const host = this.requireHost();
-    const execution = executeWorkflowRun({
-      workflow: definition,
-      host,
-      run,
-      save: (next) => this.save(next),
-    }).finally(() => {
+    const execution = withOutboundFetchPolicy(
+      this.outboundFetchAllowHosts,
+      () =>
+        executeWorkflowRun({
+          workflow: definition,
+          host,
+          run,
+          save: (next) => this.save(next),
+        }),
+    ).finally(() => {
       this.active.delete(run.runId);
     });
 
@@ -1144,6 +1721,146 @@ export class LocalWorkflowAdapter implements WorkflowAdapter {
   }
 }
 
+export class LocalTraceAdapter implements TraceAdapter {
+  private readonly redactor: TraceRedactor;
+
+  constructor(
+    private readonly filePath: string,
+    options: { redactor?: TraceRedactor } = {},
+  ) {
+    this.redactor = options.redactor ?? redactTraceValue;
+  }
+
+  async start(input: TraceStartInput): Promise<TraceRecord> {
+    const traces = await this.read();
+    const existing = traces.find((trace) => trace.traceId === input.traceId);
+
+    if (existing) {
+      return existing;
+    }
+
+    const now = input.startedAt ?? new Date().toISOString();
+    const trace: TraceRecord = {
+      traceId: input.traceId,
+      kind: input.kind,
+      name: input.name,
+      subjectId: input.subjectId,
+      status: "running",
+      startedAt: now,
+      updatedAt: now,
+      events: [],
+    };
+
+    traces.push(trace);
+    await this.write(traces);
+
+    if (input.attributes !== undefined) {
+      await this.event(input.traceId, {
+        type:
+          input.kind === "agent" ? "agent.invoke.started" : "workflow.started",
+        name: input.name,
+        status: "running",
+        timestamp: now,
+        attributes: input.attributes,
+      });
+    }
+
+    return trace;
+  }
+
+  async event(traceId: string, input: TraceEventInput): Promise<void> {
+    const traces = await this.read();
+    const trace = traces.find((candidate) => candidate.traceId === traceId);
+
+    if (!trace) {
+      return;
+    }
+
+    const timestamp = input.timestamp ?? new Date().toISOString();
+
+    trace.events.push({
+      eventId: input.eventId ?? `event_${trace.events.length + 1}`,
+      traceId,
+      timestamp,
+      type: input.type,
+      name: input.name,
+      ...(input.status === undefined ? {} : { status: input.status }),
+      ...(input.durationMs === undefined
+        ? {}
+        : { durationMs: input.durationMs }),
+      ...(input.attributes === undefined
+        ? {}
+        : {
+            attributes: this.redactor(input.attributes) as Record<
+              string,
+              unknown
+            >,
+          }),
+    });
+    trace.updatedAt = timestamp;
+    await this.write(traces);
+  }
+
+  async complete(traceId: string, input: TraceCompleteInput): Promise<void> {
+    const traces = await this.read();
+    const trace = traces.find((candidate) => candidate.traceId === traceId);
+
+    if (!trace) {
+      return;
+    }
+
+    const completedAt = input.completedAt ?? new Date().toISOString();
+
+    trace.status = input.status;
+    trace.completedAt = completedAt;
+    trace.updatedAt = completedAt;
+
+    if (input.attributes !== undefined) {
+      trace.events.push({
+        eventId: `event_${trace.events.length + 1}`,
+        traceId,
+        timestamp: completedAt,
+        type:
+          trace.kind === "agent"
+            ? input.status === "failed"
+              ? "agent.invoke.failed"
+              : "agent.invoke.completed"
+            : input.status === "failed"
+              ? "workflow.failed"
+              : "workflow.completed",
+        name: trace.name,
+        status: input.status,
+        attributes: this.redactor(input.attributes) as Record<string, unknown>,
+      });
+    }
+
+    await this.write(traces);
+  }
+
+  async get(traceId: string): Promise<TraceRecord | null> {
+    return (
+      (await this.read()).find((trace) => trace.traceId === traceId) ?? null
+    );
+  }
+
+  async list(): Promise<TraceRecord[]> {
+    return this.read();
+  }
+
+  private async read(): Promise<TraceRecord[]> {
+    return readJsonFile<TraceRecord[]>(this.filePath, []);
+  }
+
+  private async write(traces: TraceRecord[]): Promise<void> {
+    await mkdir(path.dirname(this.filePath), { recursive: true });
+    await writeFile(
+      this.filePath,
+      `${JSON.stringify(traces, null, 2)}\n`,
+      "utf8",
+    );
+  }
+}
+
 type LocalRequestOptions = {
   app: AppDefinition;
   manifest: unknown;
@@ -1151,6 +1868,7 @@ type LocalRequestOptions = {
   agentRuntime: AgentRuntime;
   agentProviders: AgentProviderRegistry;
   services: ServiceSupervisor;
+  outboundFetchAllowHosts: string[];
   runtimeUrl: string;
   clientUrl: string;
   request: IncomingMessage;
@@ -1297,6 +2015,108 @@ async function handleLocalRequest(options: LocalRequestOptions): Promise<void> {
       return;
     }
 
+    if (method === "GET" && url.pathname === "/_anvil/approvals") {
+      const status = readApprovalStatus(url.searchParams.get("status"));
+
+      if (status === "invalid") {
+        await sendJson(options.response, 400, {
+          ok: false,
+          error: {
+            code: "APPROVAL_STATUS_INVALID",
+            message: "Approval status must be pending, approved, or rejected.",
+          },
+        });
+        return;
+      }
+
+      await sendJson(options.response, 200, {
+        ok: true,
+        approvals: await options.host.approvals.list(
+          status === undefined ? {} : { status },
+        ),
+      });
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/_anvil/approvals/audit") {
+      await sendJson(options.response, 200, {
+        ok: true,
+        events: await options.host.approvals.audit(),
+      });
+      return;
+    }
+
+    if (method === "POST" && url.pathname.startsWith("/_anvil/approvals/")) {
+      const approvalAction = readApprovalAction(url.pathname);
+
+      if (approvalAction) {
+        const body = await readJsonRequest(options.request);
+        const actor =
+          isObject(body) && typeof body.actor === "string"
+            ? body.actor
+            : undefined;
+        const reason =
+          isObject(body) && typeof body.reason === "string"
+            ? body.reason
+            : isObject(body) && typeof body.justification === "string"
+              ? body.justification
+              : undefined;
+        const approval =
+          approvalAction.action === "approve"
+            ? await options.host.approvals.approve(
+                approvalAction.id,
+                approvalDecisionOptions("approved", actor, reason),
+              )
+            : await options.host.approvals.reject(
+                approvalAction.id,
+                approvalDecisionOptions("rejected", actor, reason),
+              );
+
+        if (!approval) {
+          await sendJson(options.response, 404, {
+            ok: false,
+            error: {
+              code: "APPROVAL_NOT_FOUND",
+              message: `No approval '${approvalAction.id}' was found.`,
+            },
+          });
+          return;
+        }
+
+        await sendJson(options.response, 200, { ok: true, approval });
+        return;
+      }
+    }
+
+    if (method === "GET" && url.pathname === "/_anvil/traces") {
+      await sendJson(options.response, 200, {
+        ok: true,
+        traces: await options.host.traces.list(),
+      });
+      return;
+    }
+
+    if (method === "GET" && url.pathname.startsWith("/_anvil/traces/")) {
+      const traceId = decodeURIComponent(
+        url.pathname.slice("/_anvil/traces/".length),
+      );
+      const trace = await options.host.traces.get(traceId);
+
+      if (!trace) {
+        await sendJson(options.response, 404, {
+          ok: false,
+          error: {
+            code: "NOT_FOUND",
+            message: `No trace '${traceId}' was found.`,
+          },
+        });
+        return;
+      }
+
+      await sendJson(options.response, 200, { ok: true, trace });
+      return;
+    }
+
     if (method === "GET" && url.pathname === "/_anvil/usage") {
       const since = parseLocalSince(url.searchParams.get("since"));
       const summary = await options.host.usage.summarize({
@@ -1315,6 +2135,7 @@ async function handleLocalRequest(options: LocalRequestOptions): Promise<void> {
       await sendJson(options.response, 200, {
         ok: true,
         database: await options.host.db.inspect(),
+        branches: await options.host.db.inspectBranches(),
       });
       return;
     }
@@ -1524,9 +2345,11 @@ async function handleLocalRequest(options: LocalRequestOptions): Promise<void> {
     }
 
     if (method === "GET" && url.pathname === "/_anvil/workflows") {
+      const runs = await options.host.workflows.listRunSummaries();
+
       await sendJson(options.response, 200, {
         ok: true,
-        runs: await options.host.workflows.listRuns(),
+        runs,
       });
       return;
     }
@@ -1535,7 +2358,7 @@ async function handleLocalRequest(options: LocalRequestOptions): Promise<void> {
       const runId = decodeURIComponent(
         url.pathname.slice("/_anvil/workflows/".length),
       );
-      const run = await options.host.workflows.getRun(runId);
+      const run = await options.host.workflows.getRunSummary(runId);
 
       if (!run) {
         await sendJson(options.response, 404, {
@@ -1550,6 +2373,40 @@ async function handleLocalRequest(options: LocalRequestOptions): Promise<void> {
 
       await sendJson(options.response, 200, { ok: true, run });
       return;
+    }
+
+    if (method === "GET" && url.pathname === "/_anvil/schedules") {
+      await sendJson(options.response, 200, {
+        ok: true,
+        schedules: await options.host.schedules.list(),
+      });
+      return;
+    }
+
+    if (method === "POST" && url.pathname.startsWith("/_anvil/schedules/")) {
+      const action = url.pathname.endsWith("/run") ? "run" : null;
+
+      if (action) {
+        const name = decodeURIComponent(
+          url.pathname.slice(
+            "/_anvil/schedules/".length,
+            url.pathname.length - `/${action}`.length,
+          ),
+        );
+        const body = await readJsonRequest(options.request);
+
+        try {
+          const run = await options.host.schedules.trigger(name, {
+            payload: isObject(body) && "payload" in body ? body.payload : {},
+            trigger: "manual",
+          });
+
+          await sendJson(options.response, 200, { ok: true, run });
+        } catch (error) {
+          await sendScheduleError(options.response, error);
+        }
+        return;
+      }
     }
 
     if (method === "GET" && url.pathname === "/_anvil/services") {
@@ -2218,10 +3075,9 @@ async function runRuntimeRequest(
   runtimeRequest: RuntimeRequest,
 ): Promise<void> {
   const startedAt = Date.now();
-  const response = await handleRuntimeRequest(
-    options.app,
-    options.host,
-    runtimeRequest,
+  const response = await withOutboundFetchPolicy(
+    options.outboundFetchAllowHosts,
+    () => handleRuntimeRequest(options.app, options.host, runtimeRequest),
   );
   await options.host.usage.record({
     scope: "cell",
@@ -2237,6 +3093,89 @@ async function runRuntimeRequest(
   });
 
   await sendRuntimeResponse(options.response, response);
+}
+
+type GuardedFetch = typeof fetch & { __anvilOutboundFetchGuard?: boolean };
+
+const outboundFetchAllowHostsStorage = new AsyncLocalStorage<Set<string>>();
+
+function ensureOutboundFetchGuardInstalled(): void {
+  const currentFetch = globalThis.fetch as GuardedFetch;
+
+  if (currentFetch.__anvilOutboundFetchGuard) {
+    return;
+  }
+
+  const originalFetch = globalThis.fetch;
+
+  const guardedFetch = (async (input, init) => {
+    const allowedHosts = outboundFetchAllowHostsStorage.getStore();
+
+    if (allowedHosts) {
+      const host = hostForFetchInput(input);
+
+      if (!host || !allowedHosts.has(host)) {
+        throw new RuntimeError(
+          "OUTBOUND_FETCH_NOT_ALLOWED",
+          host
+            ? `Fetch host '${host}' is not declared in capabilities.outboundFetch.allow.`
+            : "Fetch target could not be resolved against capabilities.outboundFetch.allow.",
+          403,
+          {
+            host,
+            allowedHosts: Array.from(allowedHosts).sort(),
+          },
+        );
+      }
+    }
+
+    return originalFetch(input, init);
+  }) as GuardedFetch;
+
+  guardedFetch.__anvilOutboundFetchGuard = true;
+  globalThis.fetch = guardedFetch;
+}
+
+async function withOutboundFetchPolicy<T>(
+  allowHosts: string[],
+  run: () => Promise<T>,
+): Promise<T> {
+  if (allowHosts.length === 0) {
+    return run();
+  }
+
+  ensureOutboundFetchGuardInstalled();
+
+  return outboundFetchAllowHostsStorage.run(new Set(allowHosts), run);
+}
+
+function outboundFetchAllowListFromManifest(manifest: unknown): string[] {
+  if (!isObject(manifest) || !isObject(manifest.capabilities)) {
+    return [];
+  }
+
+  const outboundFetch = manifest.capabilities.outboundFetch;
+
+  if (!isObject(outboundFetch) || !Array.isArray(outboundFetch.allow)) {
+    return [];
+  }
+
+  return outboundFetch.allow
+    .filter((host): host is string => typeof host === "string")
+    .map((host) => host.trim())
+    .filter((host) => host.length > 0);
+}
+
+function hostForFetchInput(input: Parameters<typeof fetch>[0]): string | null {
+  try {
+    if (typeof input === "string" || input instanceof URL) {
+      return new URL(input).host;
+    }
+
+    return new URL(input.url).host;
+  } catch {
+    return null;
+  }
 }
 
 async function sendRuntimeResponse(
@@ -2285,13 +3224,18 @@ async function inspectLocalRuntime(
     auth: {
       currentUser: auth?.userId ?? null,
     },
-    database: await options.host.db.inspect(),
+    database: {
+      ...(await options.host.db.inspect()),
+      activeBranch: options.host.db.branch,
+      branches: await options.host.db.inspectBranches(),
+    },
     usage: {
       totals: usage.totals,
       topConsumers: usage.topConsumers,
       budgets: usage.budgets,
     },
     recentErrors: logs.filter((entry) => entry.level === "error").slice(-10),
+    traces: (await options.host.traces.list()).slice(-20),
   };
 }
 
@@ -2457,6 +3401,27 @@ async function sendWorkflowError(
   });
 }
 
+async function sendScheduleError(
+  response: ServerResponse,
+  error: unknown,
+): Promise<void> {
+  if (error instanceof RuntimeError) {
+    await sendJson(response, error.status, {
+      ok: false,
+      error: error.toPayload(),
+    });
+    return;
+  }
+
+  await sendJson(response, 500, {
+    ok: false,
+    error: {
+      code: "LOCAL_RUNTIME_ERROR",
+      message: error instanceof Error ? error.message : String(error),
+    },
+  });
+}
+
 function readInputFromBody(body: unknown): unknown {
   return isObject(body) && "input" in body ? body.input : body;
 }
@@ -2567,6 +3532,72 @@ async function readJsonRequest(request: IncomingMessage): Promise<unknown> {
   return JSON.parse(body.toString("utf8")) as unknown;
 }
 
+function readApprovalStatus(
+  value: string | null,
+): LocalApprovalStatus | "invalid" | undefined {
+  if (value === null || value.length === 0) {
+    return undefined;
+  }
+
+  return isLocalApprovalStatus(value) ? value : "invalid";
+}
+
+function readApprovalAction(
+  pathname: string,
+): { id: string; action: "approve" | "reject" } | null {
+  if (pathname.endsWith("/approve")) {
+    return {
+      id: decodeURIComponent(
+        pathname.slice(
+          "/_anvil/approvals/".length,
+          pathname.length - "/approve".length,
+        ),
+      ),
+      action: "approve",
+    };
+  }
+
+  if (pathname.endsWith("/reject")) {
+    return {
+      id: decodeURIComponent(
+        pathname.slice(
+          "/_anvil/approvals/".length,
+          pathname.length - "/reject".length,
+        ),
+      ),
+      action: "reject",
+    };
+  }
+
+  return null;
+}
+
+function approvalDecisionOptions(
+  status: "approved",
+  actor: string | undefined,
+  reason: string | undefined,
+): { approvedBy?: string; reason?: string };
+function approvalDecisionOptions(
+  status: "rejected",
+  actor: string | undefined,
+  reason: string | undefined,
+): { rejectedBy?: string; reason?: string };
+function approvalDecisionOptions(
+  status: "approved" | "rejected",
+  actor: string | undefined,
+  reason: string | undefined,
+): { approvedBy?: string; rejectedBy?: string; reason?: string } {
+  return {
+    ...(status === "approved" && actor !== undefined
+      ? { approvedBy: actor }
+      : {}),
+    ...(status === "rejected" && actor !== undefined
+      ? { rejectedBy: actor }
+      : {}),
+    ...(reason === undefined ? {} : { reason }),
+  };
+}
+
 async function readRawBody(request: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
 
@@ -2633,6 +3664,22 @@ async function readJsonFile<T>(filePath: string, fallback: T): Promise<T> {
   }
 }
 
+async function inspectDatabaseFile(
+  filePath: string,
+): Promise<DatabaseInspection["tables"]> {
+  const data = await readJsonFile<Record<string, DatabaseRecord[]>>(
+    filePath,
+    {},
+  );
+  const tables: DatabaseInspection["tables"] = {};
+
+  for (const [name, rows] of Object.entries(data)) {
+    tables[name] = { rows: Array.isArray(rows) ? rows.length : 0 };
+  }
+
+  return tables;
+}
+
 async function readNdjsonFile<T>(filePath: string): Promise<T[]> {
   try {
     const info = await stat(filePath);
@@ -2658,6 +3705,18 @@ function cloneRecords(records: DatabaseRecord[]): DatabaseRecord[] {
 
 function cloneRecord(record: DatabaseRecord): DatabaseRecord {
   return structuredClone(record) as DatabaseRecord;
+}
+
+function recordFields(records: DatabaseRecord[]): Set<string> {
+  const fields = new Set<string>();
+
+  for (const record of records) {
+    for (const field of Object.keys(record)) {
+      fields.add(field);
+    }
+  }
+
+  return fields;
 }
 
 function emptyUsageTotals(): LocalUsageTotals {
@@ -2794,4 +3853,22 @@ function compare(
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isDatabaseBranchMetadata(
+  value: unknown,
+): value is JsonDatabaseBranchMetadata {
+  if (!isObject(value)) {
+    return false;
+  }
+
+  return (
+    typeof value.name === "string" &&
+    typeof value.source === "string" &&
+    typeof value.file === "string" &&
+    typeof value.createdAt === "string" &&
+    typeof value.updatedAt === "string" &&
+    (value.expiresAt === undefined || typeof value.expiresAt === "string") &&
+    (value.promotedAt === undefined || typeof value.promotedAt === "string")
+  );
 }

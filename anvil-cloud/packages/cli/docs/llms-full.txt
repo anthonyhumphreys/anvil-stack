@@ -1,0 +1,383 @@
+# Anvil Cloud Agent Guide
+
+This file is for coding agents building or reviewing Anvil Cloud Cells,
+Agents, docs, and examples. It is intentionally direct: follow the contract,
+run the checks, and keep provider machinery out of user code.
+
+## Product Model
+
+Anvil Cloud is an alpha TypeScript platform for deployable Anvil Cells and
+contract-first Anvil Agents.
+
+Core terms:
+
+- Anvil Cloud: the platform.
+- Anvil Cell: a deployable app unit.
+- Anvil Runtime: request, data, auth, file, event, job, workflow, service, and
+  agent execution contract.
+- Anvil Builder: compiler, bundler, generated client, manifest extraction.
+- Anvil Guard: static policy and capability checks.
+- Anvil Local: local runtime server.
+- Anvil Lens: local inspection UI at `/_anvil/lens`.
+- Deployment adapter: provider-owned translation from manifest to provider
+  resources. AWS preview is the first adapter.
+
+## Repository Rules
+
+Work inside the product workspace:
+
+```sh
+cd anvil-cloud
+pnpm install --ignore-scripts
+```
+
+Never run `pnpm install` at the monorepo root.
+
+Read before changing code:
+
+- `AGENTS.md`
+- root `PATCH.md` if touching Effect orchestration internals
+- `docs/specs/alpha-implementation-spec.md`
+- the relevant file under `docs/architecture/`
+
+Effect is allowed only inside platform orchestration internals. Public APIs stay
+Promise-based. Cell authors must never need to know Effect exists.
+
+## Cell File Layout
+
+The expected Cell layout is:
+
+```txt
+src/cell.server.ts
+anvil.json
+package.json
+tsconfig.json
+AGENTS.md
+```
+
+`vite-react` clients also include:
+
+```txt
+index.html
+vite.config.ts
+src/client/main.tsx
+src/client/App.tsx
+src/client/styles.css
+```
+
+`expo-router` clients use Expo files such as `app/index.tsx` and read
+`EXPO_PUBLIC_ANVIL_RUNTIME_URL`.
+
+## Cell Server Contract
+
+`src/cell.server.ts` must default-export an app definition:
+
+```ts
+import { app, query } from "@anvil-cloud/runtime";
+
+export default app({
+  capabilities: {},
+  queries: {
+    ping: query({
+      handler: async () => ({ ok: true }),
+    }),
+  },
+});
+```
+
+Use these runtime primitives:
+
+- `query(...)`
+- `mutation(...)`
+- `endpoint(...)`
+- `job(...)`
+- `workflow(...)`
+- `service(...)`
+- `table(...)`
+- field builders such as `text()`, `boolean()`, and `userId()`
+- `defineAgent(...)`
+
+## Capabilities
+
+Declare capabilities before using privileged runtime features:
+
+```ts
+export default app({
+  capabilities: {
+    database: true,
+    files: { publicRead: false },
+    outboundFetch: { allow: ["api.example.com"] },
+    jobs: true,
+    scheduledJobs: true,
+    workflows: true,
+    services: true,
+    env: ["PUBLIC_CONFIG"],
+    secrets: ["API_TOKEN"],
+  },
+});
+```
+
+Guard checks capability use before bundling. Common failures:
+
+- `ctx.db` without `capabilities.database`.
+- `ctx.files` without `capabilities.files`.
+- `ctx.jobs` or scheduled jobs without `capabilities.jobs` /
+  `capabilities.scheduledJobs`.
+- global `fetch` without `capabilities.outboundFetch`.
+- `fetch("https://host/...")` where `host` is missing from
+  `capabilities.outboundFetch.allow`.
+- `ctx.env.get("NAME")` or `ctx.env.require("NAME")` without `NAME` declared
+  in `capabilities.env` or `capabilities.secrets`.
+
+## Forbidden Cell Code
+
+Do not use these in Cell authoring code:
+
+- AWS SDKs or provider SDKs.
+- Pulumi, CDK, SST, Terraform, CDKTF, Kubernetes, Docker, or raw cloud
+  infrastructure authoring.
+- `process.env`, including aliases, destructuring, or `globalThis.process`.
+- Node filesystem modules for app data such as `fs`, `fs/promises`,
+  `node:fs`, or `node:fs/promises`.
+- Direct network modules such as `http`, `https`, `node:http`, `node:https`,
+  `net`, `tls`, or `undici`.
+- Dynamic import or `createRequire()` in Cell server code.
+- Background work outside declared jobs, workflows, or services.
+
+Use platform capabilities instead. If the capability does not exist, add a
+provider-neutral platform capability rather than leaking provider machinery into
+Cell code.
+
+## Runtime Context
+
+Handlers receive `ctx`:
+
+```ts
+ctx.auth.requireUser();
+ctx.auth.requireRole("admin");
+await ctx.db.notes.insert({ title: "Hello" });
+await ctx.files.put("notes/1.txt", bytes);
+ctx.env.require("API_TOKEN");
+await ctx.log.info("Created note", { noteId });
+await ctx.jobs.enqueue("refresh", {});
+await ctx.workflows.start("syncNotes", {});
+```
+
+`ctx.auth.identity` is null in workflow and service handlers unless a future
+runtime explicitly carries identity into that execution context.
+
+## Agents
+
+Agents are defined with `defineAgent(...)`:
+
+```ts
+import { defineAgent } from "@anvil-cloud/runtime";
+
+export const support = defineAgent({
+  name: "support",
+  instructions: "./agents/support/instructions.md",
+  model: { provider: "local", model: "stub" },
+  capabilities: {
+    cells: ["read"],
+    filesystem: "none",
+    secrets: "none",
+    network: { allow: ["api.statuspage.io"] },
+  },
+  approvals: {
+    requiredFor: ["email.sendExternal"],
+  },
+  runtime: {
+    durability: "optional",
+    sandbox: "optional",
+    humanApproval: "required",
+  },
+});
+```
+
+Mounted agents live in `app({ agents: { support } })`. Endpoints and workflows
+can reference mounted agents by name. Validation fails when a reference points
+to a missing mounted agent.
+
+Use the local stub model for examples unless the example is explicitly about a
+real provider. Provider SDKs belong in provider packages such as
+`@anvil-cloud/aws`, not in Cell code.
+
+## CLI Contract
+
+Automation-facing commands should support `--json` and return stable shapes.
+Prefer these commands in agent workflows:
+
+```sh
+anvil-cloud doctor --json
+anvil-cloud check --json
+anvil-cloud build --json
+anvil-cloud review --json
+anvil-cloud inspect --local --json
+anvil-cloud logs --local --json
+anvil-cloud workflows list --json
+anvil-cloud workflows show <runId> --json
+anvil-cloud services list --json
+anvil-cloud usage --preview --json
+```
+
+The public docs use the umbrella wrapper shape `anvil cloud ...`, but the Cloud
+product package also exposes the direct `anvil-cloud` binary. In this workspace
+the root script is:
+
+```sh
+pnpm anvil-cloud --help
+```
+
+Inside examples, the built CLI entrypoint is often used:
+
+```sh
+node ../../packages/cli/dist/index.js check --json
+```
+
+## Generated Output
+
+`anvil-cloud build --json` writes:
+
+```txt
+.anvil/
+  dist/
+    manifest.json
+    build-meta.json
+    server/index.mjs
+    client/
+  generated/
+    client.ts
+    api.d.ts
+```
+
+The manifest is the review and adapter handoff. Generated client metadata is
+imported through:
+
+```ts
+import { api, createAnvilApiClient } from "@anvil/generated/client";
+```
+
+Do not hand-edit generated files.
+
+## Local Development
+
+Start local runtime:
+
+```sh
+anvil-cloud dev
+```
+
+Default local routes:
+
+```txt
+GET  /_anvil/health
+GET  /_anvil/manifest
+GET  /_anvil/inspect
+GET  /_anvil/lens
+GET  /_anvil/logs
+POST /_anvil/query/:name
+POST /_anvil/mutation/:name
+POST /_anvil/workflows/run/:name
+GET  /_anvil/workflows
+GET  /_anvil/services
+ANY  /api/*
+```
+
+Local state is under `.anvil/local`.
+
+## AWS Preview Boundary
+
+AWS preview is an adapter. Cell code should not mention CloudFormation, Lambda,
+DynamoDB, S3, EventBridge, IAM, ECS, Step Functions, Bedrock SDK clients, or
+Lambda MicroVM SDK clients.
+
+Use review and deploy commands:
+
+```sh
+anvil-cloud review --json
+anvil-cloud deploy --preview --json
+anvil-cloud deploy --preview --wait --json
+anvil-cloud inspect --app <name> --env preview --json
+anvil-cloud logs --app <name> --env preview --json
+anvil-cloud destroy --preview --app <name> --yes --json
+```
+
+Missing AWS configuration should produce stable JSON errors and reviewable
+plans, not half-mutated infrastructure.
+
+## Verification
+
+For narrow package work, run focused filters from `anvil-cloud/`:
+
+```sh
+pnpm --filter @anvilstack/cloud-cli typecheck
+pnpm --filter @anvilstack/cloud-cli test
+```
+
+For runtime, AWS adapter, or CLI orchestration changes, use the owned Effect
+verification set from root `PATCH.md`:
+
+```sh
+pnpm --filter @anvil-cloud/runtime --filter @anvil-cloud/aws --filter @anvilstack/cloud-cli typecheck
+pnpm --filter @anvil-cloud/runtime --filter @anvil-cloud/aws --filter @anvilstack/cloud-cli test
+```
+
+Before a broad PR, prefer:
+
+```sh
+pnpm lint
+pnpm typecheck
+pnpm test
+```
+
+## Doctor Diagnostics
+
+`anvil-cloud doctor --json` is the read-only preflight command for local Cell
+work, generated artifacts, local runtime state, AWS preview prerequisites, and
+auth smoke-test setup.
+
+Every check includes `id`, `status`, `message`, `docs`, optional remediation
+`hint`, and optional check-specific `details`.
+
+Diagnostic IDs:
+
+| ID                             | Checks                                                                                       |
+| ------------------------------ | -------------------------------------------------------------------------------------------- |
+| `node.version`                 | Active Node.js satisfies the supported version floor.                                        |
+| `pnpm.version`                 | pnpm exists and satisfies the workspace version floor.                                       |
+| `cli.built`                    | The built CLI entrypoint exists.                                                             |
+| `packages.publicBoundary`      | Only intentional packages are public and published packages avoid `workspace:` dependencies. |
+| `project.config`               | `anvil.json` exists in the current directory.                                                |
+| `project.build`                | `.anvil/dist/manifest.json` exists.                                                          |
+| `project.generatedClient`      | generated client metadata exists and matches the built manifest.                             |
+| `local.state`                  | `.anvil/local` contains local runtime state files.                                           |
+| `local.runtime`                | `GET /_anvil/health` answers on the configured runtime port.                                 |
+| `ports.runtime`                | runtime port availability or expected Anvil Local occupancy.                                 |
+| `ports.client`                 | client dev-server port availability.                                                         |
+| `sandbox.docker`               | Docker reachability for Docker-backed local sandbox providers.                               |
+| `aws.region`                   | `AWS_REGION` or `AWS_DEFAULT_REGION` is configured.                                          |
+| `aws.artifactBucket`           | `ANVIL_AWS_ARTIFACT_BUCKET` is configured.                                                   |
+| `aws.deploymentMetadataTable`  | `ANVIL_AWS_DEPLOYMENT_METADATA_TABLE` is configured.                                         |
+| `auth.oidc`                    | OIDC issuer plus audience or JWKS URI are configured.                                        |
+| `auth.smokeToken`              | authenticated preview smoke token is configured.                                             |
+| `auth.expiredSmokeToken`       | optional expired-token negative smoke token is configured.                                   |
+| `auth.wrongIssuerSmokeToken`   | optional wrong-issuer negative smoke token is configured.                                    |
+| `auth.wrongAudienceSmokeToken` | optional wrong-audience negative smoke token is configured.                                  |
+
+Use the website path from each check's `docs` field for longer remediation.
+For example: `/docs/cloud/doctor#nodeversion`.
+
+## Common Agent Mistakes
+
+- Editing generated `.anvil/generated/*` files instead of source Cell code.
+- Importing provider SDKs in `src/cell.server.ts`.
+- Reading `process.env` because it works locally. It is blocked by Guard for a
+  reason.
+- Adding a new CLI command without `--json` output.
+- Changing public JSON shapes without tests.
+- Updating `anvil-cloud/docs` but forgetting the website mirror in
+  `anvil-website/content/docs/cloud`.
+- Treating `usage --preview` as a bill. It is declared resource visibility, not
+  measured cloud cost.
+- Describing alpha gaps as finished production infrastructure. Be precise;
+  optimism is not a deployment adapter.

@@ -101,10 +101,10 @@ describe("createAwsPreviewDeploymentPlan", () => {
     );
     expect(plan.operations).toMatchObject({
       rollback: {
-        supported: false,
+        supported: true,
         commands: expect.arrayContaining([
-          "anvil-cloud deploy --preview --json",
-          "anvil-cloud destroy --preview --app notes --yes --json",
+          "anvil-cloud rollback --preview --app notes --to-deployment <deploymentId> --json",
+          "anvil-cloud deploy --preview --name <preview> --json",
         ]),
       },
       cleanup: {

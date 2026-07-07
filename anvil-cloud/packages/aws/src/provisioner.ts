@@ -5,6 +5,7 @@ import type { CellManifest } from "@anvil-cloud/builder";
 
 export type AwsPreviewProvisionerInput = {
   environment: DeploymentEnvironment;
+  previewName?: string;
   manifest: CellManifest;
   plan: DeploymentPlan;
   template: CloudFormationTemplate;
@@ -13,6 +14,7 @@ export type AwsPreviewProvisionerInput = {
 
 export type AwsPreviewProvisionerResult = {
   deploymentId: string;
+  previewName: string;
   url: string;
   resources: Record<string, string>;
 };
