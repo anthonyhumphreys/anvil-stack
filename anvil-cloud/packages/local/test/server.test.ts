@@ -13,7 +13,10 @@ import {
   text,
 } from "@anvil-cloud/runtime";
 
-import { startLocalRuntimeServer } from "../src/index.js";
+import {
+  JsonDatabaseBranchManager,
+  startLocalRuntimeServer,
+} from "../src/index.js";
 
 const tempDirs: string[] = [];
 
@@ -24,6 +27,70 @@ afterEach(async () => {
 });
 
 describe("startLocalRuntimeServer", () => {
+  it("manages local database branches without changing the ctx.db contract", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-local-"));
+    tempDirs.push(rootDir);
+    const stateDir = path.join(rootDir, ".anvil/local");
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(
+      path.join(stateDir, "dev.db"),
+      JSON.stringify({
+        notes: [{ id: "note_1", title: "Main", ownerId: "user" }],
+      }),
+      "utf8",
+    );
+    const branches = new JsonDatabaseBranchManager(stateDir);
+
+    await expect(
+      branches.createBranch({
+        name: "Feature/Branch",
+        ttlSeconds: 60,
+        now: new Date("2026-07-06T10:00:00.000Z"),
+      }),
+    ).resolves.toMatchObject({
+      name: "feature-branch",
+      source: "main",
+      expiresAt: "2026-07-06T10:01:00.000Z",
+      tables: { notes: { rows: 1 } },
+    });
+
+    await writeFile(
+      path.join(stateDir, "db-branches/feature-branch.db.json"),
+      JSON.stringify({
+        notes: [
+          { id: "note_1", title: "Main", ownerId: "user" },
+          { id: "note_2", title: "Branch", ownerId: "user", preview: true },
+        ],
+      }),
+      "utf8",
+    );
+
+    await expect(branches.diffBranch("feature-branch")).resolves.toMatchObject({
+      branch: "feature-branch",
+      against: "main",
+      tables: {
+        notes: {
+          branchRows: 2,
+          againstRows: 1,
+          rowDelta: 1,
+          addedFields: ["preview"],
+        },
+      },
+    });
+
+    await expect(
+      branches.setActiveBranch("feature-branch"),
+    ).resolves.toMatchObject({
+      name: "feature-branch",
+      active: true,
+    });
+
+    await expect(
+      branches.deleteExpiredBranches(new Date("2026-07-06T10:02:00.000Z")),
+    ).resolves.toEqual(["feature-branch"]);
+    await expect(branches.getActiveBranch()).resolves.toBe("main");
+  });
+
   it("serves query, mutation, auth switching, and inspection routes", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-local-"));
     const clientDistDir = path.join(rootDir, ".anvil/dist/client");
@@ -156,6 +223,78 @@ describe("startLocalRuntimeServer", () => {
             ownerId: "local_user",
           }),
         ]),
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("binds the local runtime to a selected database branch", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-local-"));
+    tempDirs.push(rootDir);
+    const stateDir = path.join(rootDir, ".anvil/local");
+    await mkdir(path.join(rootDir, ".anvil/dist/client"), { recursive: true });
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(
+      path.join(rootDir, ".anvil/dist/client/index.html"),
+      "<!doctype html><h1>Anvil Cell</h1>",
+      "utf8",
+    );
+    await writeFile(
+      path.join(stateDir, "dev.db"),
+      JSON.stringify({ notes: [{ id: "note_1", title: "Main" }] }),
+      "utf8",
+    );
+    await new JsonDatabaseBranchManager(stateDir).createBranch({
+      name: "preview",
+    });
+    await writeFile(
+      path.join(stateDir, "db-branches/preview.db.json"),
+      JSON.stringify({ notes: [{ id: "note_2", title: "Preview" }] }),
+      "utf8",
+    );
+    const cell = app({
+      schema: {
+        notes: table({
+          title: text().min(1),
+        }),
+      },
+      capabilities: {
+        database: true,
+      },
+      queries: {
+        listNotes: query({
+          handler: async (ctx) => ctx.db.notes.all(),
+        }),
+      },
+    });
+    const server = await startLocalRuntimeServer({
+      app: cell,
+      manifest: { queries: ["listNotes"], mutations: [] },
+      rootDir,
+      cellName: "notes",
+      databaseBranch: "preview",
+      port: 0,
+      clientPort: 0,
+    });
+
+    try {
+      await expect(
+        postJson(`${server.runtimeUrl}/_anvil/query/listNotes`, { input: {} }),
+      ).resolves.toMatchObject({
+        ok: true,
+        result: [{ id: "note_2", title: "Preview" }],
+      });
+      await expect(
+        fetchJson(`${server.runtimeUrl}/_anvil/inspect`),
+      ).resolves.toMatchObject({
+        ok: true,
+        database: {
+          activeBranch: "preview",
+          tables: {
+            notes: { rows: 1 },
+          },
+        },
       });
     } finally {
       await server.close();

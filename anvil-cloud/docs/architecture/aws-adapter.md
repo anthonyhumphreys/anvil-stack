@@ -446,6 +446,11 @@ The AWS runtime host currently supports:
   for workflow state machine ARNs, and `ctx.workflows.start` against configured
   state machines.
 
+Local database branching snapshots `.anvil/local/dev.db` and named JSON branch
+files for preview/test data states. The AWS alpha adapter does not yet map
+those branches to provider-native DynamoDB branch/snapshot resources; remote
+branch promotion remains an adapter roadmap item.
+
 Remote inspection and logs use deployment metadata plus CloudWatch Logs. The CLI
 remote reader requires `ANVIL_AWS_DEPLOYMENT_METADATA_TABLE` so it can find the
 latest deployment record for `anvil-cloud inspect --app <name> --env preview --json`

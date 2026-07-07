@@ -530,6 +530,6 @@ AWS is the first planned alpha adapter. Its concrete service mapping belongs in 
 - Additional starter templates beyond the default Vite + React Cell.
 - Zod, Valibot, or custom schema DSL.
 - Hono vs Fastify for local/runtime HTTP layer.
-- SQLite-only local DB vs optional DynamoDB Local mode.
+- JSON local DB branches vs optional DynamoDB Local mode.
 - AWS adapter internals: SST vs CDK.
 - Whether the first non-AWS adapter should be a local static/runtime bundle, Fly.io, Cloudflare, or another target after alpha.

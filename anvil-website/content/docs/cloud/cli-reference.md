@@ -54,8 +54,15 @@ Human output can be friendly, but automation output must be stable.
 | `anvil cloud inspect --local`              | Inspect local manifest, auth, database counts, and recent errors.                             |
 | `anvil cloud lens`                         | Verify the local runtime is reachable and print the Anvil Lens URL.                           |
 | `anvil cloud logs --local`                 | Read local NDJSON logs.                                                                       |
-| `anvil cloud db list --local`              | List local database tables.                                                                   |
-| `anvil cloud db dump <table> --local`      | Dump local table rows.                                                                        |
+| `anvil cloud db list --local`              | List local database tables on the active branch, or `--branch <name>`.                        |
+| `anvil cloud db dump <table> --local`      | Dump local table rows on the active branch, or `--branch <name>`.                             |
+| `anvil cloud db branch <name>`             | Snapshot a local database branch (`--from main`, optional `--ttl` and `--use`).               |
+| `anvil cloud db branches`                  | List local database branches; add `--expired` to filter TTL-expired branches.                 |
+| `anvil cloud db use <name>`                | Store the active local database branch for CLI inspection and dev runs.                       |
+| `anvil cloud db diff <name>`               | Compare row counts and schema fields against `main` or `--against <branch>`.                  |
+| `anvil cloud db promote <name>`            | Copy a branch snapshot back to `main`.                                                        |
+| `anvil cloud db delete <name> --yes`       | Delete a named local database branch.                                                         |
+| `anvil cloud db cleanup --expired`         | Delete TTL-expired local database branches.                                                   |
 | `anvil cloud deploy --preview`             | Build and synthesize AWS preview deployment output, with provisioning when configured.        |
 | `anvil cloud usage --preview`              | Report declared preview resource counts, cost-driver hints, and cleanup commands.             |
 | `anvil cloud rollback --preview --dry-run` | Emit rollback intent for a previous preview deployment.                                       |
