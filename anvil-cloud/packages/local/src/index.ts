@@ -29,6 +29,7 @@ import {
   handleRuntimeRequest,
   RuntimeError,
   ServiceSupervisor,
+  summarizeWorkflowRun,
   type ServiceStatus,
   type AppDefinition,
   type AuthAdapter,
@@ -51,6 +52,7 @@ import {
   redactTraceValue,
   type WorkflowAdapter,
   type WorkflowRun,
+  type WorkflowRunSummary,
   type AgentApprovalProvider,
   type TraceAdapter,
   type TraceCompleteInput,
@@ -1097,8 +1099,24 @@ export class LocalWorkflowAdapter implements WorkflowAdapter {
     return runs.find((run) => run.runId === runId) ?? null;
   }
 
+  async getRunSummary(runId: string): Promise<WorkflowRunSummary | null> {
+    const run = await this.getRun(runId);
+
+    return run
+      ? summarizeWorkflowRun(run, { active: this.active.has(run.runId) })
+      : null;
+  }
+
   async listRuns(): Promise<WorkflowRun[]> {
     return readJsonFile<WorkflowRun[]>(this.filePath, []);
+  }
+
+  async listRunSummaries(): Promise<WorkflowRunSummary[]> {
+    const runs = await this.listRuns();
+
+    return runs.map((run) =>
+      summarizeWorkflowRun(run, { active: this.active.has(run.runId) }),
+    );
   }
 
   async resumeInterrupted(): Promise<WorkflowRun[]> {
@@ -1823,9 +1841,11 @@ async function handleLocalRequest(options: LocalRequestOptions): Promise<void> {
     }
 
     if (method === "GET" && url.pathname === "/_anvil/workflows") {
+      const runs = await options.host.workflows.listRunSummaries();
+
       await sendJson(options.response, 200, {
         ok: true,
-        runs: await options.host.workflows.listRuns(),
+        runs,
       });
       return;
     }
@@ -1834,7 +1854,7 @@ async function handleLocalRequest(options: LocalRequestOptions): Promise<void> {
       const runId = decodeURIComponent(
         url.pathname.slice("/_anvil/workflows/".length),
       );
-      const run = await options.host.workflows.getRun(runId);
+      const run = await options.host.workflows.getRunSummary(runId);
 
       if (!run) {
         await sendJson(options.response, 404, {

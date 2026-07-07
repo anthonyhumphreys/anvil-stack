@@ -36,6 +36,74 @@ describe("main", () => {
     );
   });
 
+  it("reports workflow progress summaries from local state", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-"));
+    const originalCwd = process.cwd();
+
+    try {
+      process.chdir(rootDir);
+      await mkdir(path.join(rootDir, ".anvil/local"), { recursive: true });
+      await writeFile(
+        path.join(rootDir, ".anvil/local/workflows.json"),
+        JSON.stringify(
+          [
+            {
+              runId: "run_resume",
+              workflow: "syncNotes",
+              status: "running",
+              input: { n: 1 },
+              steps: [
+                {
+                  name: "fetch",
+                  status: "completed",
+                  attempts: 1,
+                  result: { ok: true },
+                },
+                { name: "store", status: "running", attempts: 1 },
+              ],
+              createdAt: "2026-07-06T10:00:00.000Z",
+              updatedAt: "2026-07-06T10:00:01.000Z",
+            },
+          ],
+          null,
+          2,
+        ),
+        "utf8",
+      );
+
+      const listOutput = await captureStdout(() =>
+        main(["workflows", "list", "--json"]),
+      );
+      const listPayload = JSON.parse(listOutput) as {
+        runs: Array<{ progress: Record<string, unknown> }>;
+      };
+
+      expect(listPayload.runs[0]?.progress).toMatchObject({
+        lifecycle: "resumable",
+        resumable: true,
+        currentStep: "store",
+        completedSteps: 1,
+        totalSteps: 2,
+      });
+
+      const showOutput = await captureStdout(() =>
+        main(["workflows", "show", "run_resume", "--json"]),
+      );
+      const showPayload = JSON.parse(showOutput) as {
+        run: { progress: Record<string, unknown> };
+      };
+
+      expect(showPayload.run.progress).toMatchObject({
+        lifecycle: "resumable",
+        nextStep: "store",
+        nextStepIndex: 1,
+      });
+    } finally {
+      process.chdir(originalCwd);
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("posts channel simulation payloads to the local runtime", async () => {
     const originalExitCode = process.exitCode;
     let received: unknown;

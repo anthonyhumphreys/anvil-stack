@@ -53,6 +53,14 @@ interface WorkflowAdapter {
 
 Handlers can start runs through `ctx.workflows.start(name, input)`. The shared executor in `@anvil-cloud/runtime` (`executeWorkflowRun`) owns step sequencing, retries, timeouts, and state threading; adapters own persistence and scheduling.
 
+`summarizeWorkflowRun(run, { active })` derives the agent-facing progress view
+from persisted state without changing the stored run shape. The summary reports
+`progress.lifecycle` (`in-flight`, `resumable`, `completed`, or `failed`), the
+active or next step name and index, step counts, and whether a persisted
+`running` run is resumable. Local HTTP routes and `anvil-cloud workflows --json`
+return this summary shape so agents can decide whether a run is currently owned
+by a live process or should be resumed after a restart.
+
 The executor uses Effect internally for step attempts, retry policy, and
 timeouts. This is an implementation detail of the Anvil Runtime: Cell workflow
 handlers still use ordinary async TypeScript, and adapters still receive the
@@ -81,8 +89,9 @@ with trace attributes passed through the runtime redactor before persistence.
 Local HTTP routes:
 
 - `POST /_anvil/workflows/run/<name>` with `{ "input": ... }` starts a run asynchronously and returns `{ ok, runId }`.
-- `GET /_anvil/workflows` lists runs.
-- `GET /_anvil/workflows/<runId>` returns run detail.
+- `GET /_anvil/workflows` lists runs with `progress` summaries.
+- `GET /_anvil/workflows/<runId>` returns run detail with the same `progress`
+  summary.
 - `GET /_anvil/traces/<runId>` returns the corresponding local trace.
 
 CLI: `anvil-cloud workflows list`, `anvil-cloud workflows show <runId>`, and `anvil-cloud workflows run <name> [--input '<json>']`, all with `--json`.
@@ -97,7 +106,7 @@ adapter owns the state machine definition; Cell code still declares only
 `workflow({ steps })` and `capabilities.workflows`.
 
 - **One state machine per workflow.** The deployment adapter synthesizes a Step Functions state machine for each entry in the manifest's `workflows` list, named `anvil-<cell>-<environment>-<workflow>`. The state machine definition is derived from the manifest topology at deploy time, so Cell code never authors ASL.
-- **Task states invoke the shared runtime Lambda.** Each step becomes an ASL `Task` state that invokes the existing per-Cell Lambda with a payload identifying the workflow, step, run id, and accumulated state. The Lambda routes the invocation to the matching step handler through the shared runtime, exactly as it routes HTTP and SQS events today.
+- **Task states invoke the shared runtime Lambda.** Each step becomes an ASL `Task` state that invokes the existing per-Cell Lambda with a payload identifying the workflow, step, run id, and accumulated state. Each task writes its result back to the state document (`ResultPath: "$"`), so the next step receives the prior `steps` object through the same `WorkflowState` contract used locally. The Lambda routes the invocation to the matching step handler through the shared runtime, exactly as it routes HTTP and SQS events today.
 - **Starts use configured state machines.** The CloudFormation template writes
   `ANVIL_WORKFLOW_STATE_MACHINES` into the Lambda environment, mapping workflow
   names to state machine ARNs. The AWS runtime host uses that mapping for

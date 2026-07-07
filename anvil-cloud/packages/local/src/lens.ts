@@ -283,7 +283,7 @@ pre {
     <div class="panel" id="wf-declared"><span class="muted">Loading…</span></div>
     <h2>Runs</h2>
     <div class="panel"><table id="wf-runs">
-      <thead><tr><th>runId</th><th>workflow</th><th>status</th><th>created</th></tr></thead>
+      <thead><tr><th>runId</th><th>workflow</th><th>lifecycle</th><th>progress</th><th>created</th></tr></thead>
       <tbody></tbody>
     </table></div>
     <h2 id="wf-detail-title" style="display:none">Run detail</h2>
@@ -899,7 +899,8 @@ anvil-cloud logs --local --json</pre>
         var row = el("tr", { class: "clickable" }, [
           el("td", { text: run.runId || "" }),
           el("td", { text: run.workflow || "" }),
-          el("td", null, [badge(run.status || "unknown")]),
+          el("td", null, [badge((run.progress && run.progress.lifecycle) || run.status || "unknown")]),
+          el("td", { text: workflowProgressText(run) }),
           el("td", { class: "muted", text: run.createdAt || "" })
         ]);
         row.addEventListener("click", function () { loadRunDetail(run.runId); });
@@ -917,7 +918,10 @@ anvil-cloud logs --local --json</pre>
       title.textContent = "Run detail: " + runId;
       panel.style.display = "block";
       panel.textContent = "";
-      panel.appendChild(el("div", null, [badge(run.status || "unknown")]));
+      panel.appendChild(el("div", null, [
+        badge((run.progress && run.progress.lifecycle) || run.status || "unknown"),
+        el("span", { class: "muted", text: " " + workflowProgressText(run) })
+      ]));
       var steps = run.steps || [];
       if (steps.length === 0) {
         panel.appendChild(el("pre", { text: JSON.stringify(run, null, 2) }));
@@ -938,6 +942,14 @@ anvil-cloud logs --local --json</pre>
       }));
       panel.appendChild(el("table", null, [thead, tbody]));
     }).catch(function (error) { showError(error.message); });
+  }
+
+  function workflowProgressText(run) {
+    var progress = run.progress || {};
+    var total = progress.totalSteps !== undefined ? progress.totalSteps : (run.steps || []).length;
+    var completed = progress.completedSteps !== undefined ? progress.completedSteps : 0;
+    var next = progress.currentStep || progress.nextStep || "-";
+    return completed + "/" + total + " steps, next " + next;
   }
 
   // Schedules

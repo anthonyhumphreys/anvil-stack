@@ -257,6 +257,68 @@ describe("LocalWorkflowAdapter", () => {
     ).resolves.toMatchObject({
       status: "completed",
     });
+    await expect(
+      host.workflows.getRunSummary("run_interrupted"),
+    ).resolves.toMatchObject({
+      progress: {
+        lifecycle: "completed",
+        resumable: false,
+        completedSteps: 2,
+        totalSteps: 2,
+      },
+    });
+  });
+
+  it("summarizes persisted running runs as resumable when no process owns them", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-workflows-"));
+    tempDirs.push(rootDir);
+
+    const stateDir = path.join(rootDir, ".anvil/local");
+    const interrupted: WorkflowRun = {
+      runId: "run_resumable",
+      workflow: "syncNotes",
+      status: "running",
+      input: { n: 7 },
+      steps: [
+        {
+          name: "fetch",
+          status: "completed",
+          attempts: 1,
+          result: { fetched: "persisted-before-crash" },
+        },
+        { name: "store", status: "running", attempts: 1 },
+      ],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(
+      path.join(stateDir, "workflows.json"),
+      `${JSON.stringify([interrupted], null, 2)}\n`,
+      "utf8",
+    );
+
+    const host = await createLocalRuntimeHost({
+      stateDir,
+      cellName: "notes",
+    });
+
+    host.workflows.bind(syncWorkflowApp(), host);
+
+    await expect(host.workflows.listRunSummaries()).resolves.toMatchObject([
+      {
+        runId: "run_resumable",
+        progress: {
+          lifecycle: "resumable",
+          resumable: true,
+          currentStep: "store",
+          currentStepIndex: 1,
+          completedSteps: 1,
+          totalSteps: 2,
+        },
+      },
+    ]);
   });
 });
 
@@ -294,6 +356,11 @@ describe("local workflow HTTP routes", () => {
             runId: started.runId,
             workflow: "syncNotes",
             status: "completed",
+            progress: {
+              lifecycle: "completed",
+              completedSteps: 2,
+              totalSteps: 2,
+            },
           },
         ],
       });
@@ -308,6 +375,11 @@ describe("local workflow HTTP routes", () => {
             { name: "fetch", status: "completed" },
             { name: "store", status: "completed" },
           ],
+          progress: {
+            lifecycle: "completed",
+            completedSteps: 2,
+            totalSteps: 2,
+          },
         },
       });
       await expect(
