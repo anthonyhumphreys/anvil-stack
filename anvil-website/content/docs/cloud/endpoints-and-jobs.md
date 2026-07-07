@@ -34,9 +34,9 @@ export default app({
         const payload = ctx.request.body;
         // verify signature, record event, enqueue job
         return { received: true };
-      }
-    })
-  }
+      },
+    }),
+  },
 });
 ```
 
@@ -68,9 +68,9 @@ export default app({
     sendEmail: job({
       handler: async (ctx, payload) => {
         // send email, update status
-      }
-    })
-  }
+      },
+    }),
+  },
 });
 ```
 
@@ -87,29 +87,43 @@ import { job } from "@anvil-cloud/runtime";
 
 export default app({
   capabilities: {
-    scheduledJobs: true
+    scheduledJobs: true,
   },
   jobs: {
     nightlyCleanup: job({
       schedule: "0 2 * * *",
+      overlap: "skip",
+      timeoutMs: 30_000,
       handler: async (ctx) => {
         // run cleanup
-      }
-    })
-  }
+      },
+    }),
+  },
 });
 ```
 
 Scheduled jobs require `capabilities.scheduledJobs`. Guard rejects scheduled jobs without the capability declaration.
+Local schedules support `rate(1 hour)`, `@every 5m`, and five-field cron
+expressions. Missed local runs while the runtime is stopped are skipped, not
+replayed.
 
 ### Local job execution
 
-Local runtime stores queued jobs in `.anvil/local/jobs.json` and runs them on a simple scheduler. You can also trigger a job manually:
+Local runtime stores queued jobs in `.anvil/local/jobs.json`, and scheduled job
+state plus run history in `.anvil/local/schedules.json`. You can trigger a
+queued job manually:
 
 ```bash
 curl -X POST http://localhost:8787/_anvil/jobs/run/sendEmail \
   -H "Content-Type: application/json" \
   -d '{"to":"user@example.com"}'
+```
+
+You can inspect and trigger scheduled jobs through the CLI:
+
+```bash
+anvil-cloud schedules list --json
+anvil-cloud schedules run nightlyCleanup --payload '{}' --json
 ```
 
 ### AWS job execution

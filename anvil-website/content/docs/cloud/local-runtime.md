@@ -78,6 +78,8 @@ POST /_anvil/channels/simulate
 POST /_anvil/workflows/run/:name
 GET  /_anvil/workflows
 GET  /_anvil/workflows/:runId
+GET  /_anvil/schedules
+POST /_anvil/schedules/:name/run
 GET  /_anvil/services
 POST /_anvil/services/:name/start
 POST /_anvil/services/:name/stop
@@ -117,12 +119,19 @@ Local state lives in `.anvil/local` by default:
   files/
   jobs.json
   logs.ndjson
+  schedules.json
   services.json
   traces.json
   workflows.json
 ```
 
 The current database adapter stores JSON records in `dev.db`. It is intentionally simple, inspectable, and suited to alpha local development.
+
+Scheduled jobs declared with `job({ schedule })` are tracked in
+`schedules.json`. Local scheduling supports `rate(1 hour)`, `@every 5m`, and
+five-field cron expressions. Missed runs while the dev runtime is stopped are
+skipped rather than replayed. Use Lens or `anvil-cloud schedules list|run
+--json` to inspect and manually trigger schedules.
 
 ## Database behavior
 

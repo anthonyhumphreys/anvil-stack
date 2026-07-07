@@ -8,6 +8,7 @@ import {
   app,
   channel,
   defineAgent,
+  job,
   mutation,
   query,
   table,
@@ -523,6 +524,85 @@ describe("startLocalRuntimeServer", () => {
         result: {
           ok: true,
         },
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("serves schedule routes and Lens schedule UI", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-local-"));
+    tempDirs.push(rootDir);
+    let runs = 0;
+    const cell = app({
+      capabilities: { scheduledJobs: true },
+      jobs: {
+        refresh: job({
+          schedule: "rate(1 day)",
+          handler: async () => {
+            runs += 1;
+
+            return { runs };
+          },
+        }),
+      },
+    });
+    const server = await startLocalRuntimeServer({
+      app: cell,
+      manifest: {
+        jobs: [{ name: "refresh", schedule: "rate(1 day)" }],
+      },
+      rootDir,
+      cellName: "scheduled-cell",
+      port: 0,
+      clientPort: 0,
+      clientMode: "none",
+    });
+
+    try {
+      await expect(
+        fetchText(`${server.runtimeUrl}/_anvil/lens`),
+      ).resolves.toContain("Schedules");
+      await expect(
+        fetchJson(`${server.runtimeUrl}/_anvil/schedules`),
+      ).resolves.toMatchObject({
+        ok: true,
+        schedules: [
+          {
+            name: "refresh",
+            schedule: "rate(1 day)",
+            overlap: "skip",
+          },
+        ],
+      });
+      await expect(
+        postJson(`${server.runtimeUrl}/_anvil/schedules/refresh/run`, {
+          payload: {},
+        }),
+      ).resolves.toMatchObject({
+        ok: true,
+        run: {
+          job: "refresh",
+          status: "completed",
+          result: { runs: 1 },
+        },
+      });
+      await expect(
+        fetchJson(`${server.runtimeUrl}/_anvil/schedules`),
+      ).resolves.toMatchObject({
+        ok: true,
+        schedules: [
+          {
+            name: "refresh",
+            lastStatus: "completed",
+            runs: [
+              {
+                job: "refresh",
+                status: "completed",
+              },
+            ],
+          },
+        ],
       });
     } finally {
       await server.close();

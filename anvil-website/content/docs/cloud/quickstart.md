@@ -176,10 +176,10 @@ anvil cloud dev
 
 Default local URLs:
 
-| Surface | URL |
-| --- | --- |
+| Surface | URL                     |
+| ------- | ----------------------- |
 | Runtime | `http://localhost:8787` |
-| Client | `http://localhost:5173` |
+| Client  | `http://localhost:5173` |
 
 Useful local routes:
 
@@ -225,6 +225,7 @@ Local state is stored under `.anvil/local`:
   files/
   jobs.json
   logs.ndjson
+  schedules.json
   services.json
   workflows.json
 ```

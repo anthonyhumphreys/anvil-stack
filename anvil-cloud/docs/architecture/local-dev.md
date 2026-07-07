@@ -180,18 +180,22 @@ http://localhost:8787/_anvil/files/<key>?token=dev
 
 ## Local jobs
 
-Local jobs should be persisted in `.anvil/local/jobs.json` and executable manually.
+Local queued jobs are persisted in `.anvil/local/jobs.json`; scheduled job state
+and run history live in `.anvil/local/schedules.json`.
 
 ```sh
-anvil jobs run refreshData --local --json
+anvil-cloud schedules list --json
+anvil-cloud schedules run refreshData --payload '{}' --json
 ```
 
-The alpha job runner may be simple:
+The alpha scheduler is intentionally simple:
 
 - in-memory queue during dev;
 - persisted job metadata for inspection;
-- manual execution support;
-- scheduled jobs can be simulated with timers.
+- manual execution support through the CLI and `/_anvil/schedules/:name/run`;
+- scheduled execution with local timers while `anvil-cloud dev` is running;
+- missed runs while the local runtime is stopped are skipped, not caught up;
+- overlapping scheduled executions default to `skip`; `overlap: "queue"` allows concurrent manual/scheduled runs.
 
 ## Logs
 
