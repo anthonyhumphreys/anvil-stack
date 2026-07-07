@@ -38,7 +38,9 @@ export function WorkspaceSignalDetail({ signalId }: { signalId?: string }) {
   const [detailLoading, setDetailLoading] = useState(false);
   const activeWorkspace = overview?.activeWorkspace;
   const repos = useMemo(() => activeWorkspace?.repos ?? [], [activeWorkspace?.repos]);
-  const overviewSignal = overview?.workspaceHealth.signals.find((candidate) => candidate.id === signalId);
+  const overviewSignal = overview?.workspaceHealth.signals.find(
+    (candidate) => candidate.id === signalId,
+  );
   const signal = detail?.signal ?? overviewSignal;
   const source = signal ? signalSource(signal) : null;
   const tone = signal ? signalTone(signal.priority) : null;
@@ -113,7 +115,11 @@ export function WorkspaceSignalDetail({ signalId }: { signalId?: string }) {
                   {source.label} / {relativeTime(signal.updatedAt)}
                 </Text>
               </View>
-              <StatusPill label={signal.statusLabel} color={tone.color} background={tone.background} />
+              <StatusPill
+                label={signal.statusLabel}
+                color={tone.color}
+                background={tone.background}
+              />
             </View>
 
             {signal.detail ? (
@@ -130,14 +136,24 @@ export function WorkspaceSignalDetail({ signalId }: { signalId?: string }) {
           </Panel>
 
           <SignalGrid>
-            <SignalTile label="Priority" value={signal.priority} detail="signal" tone={signalToneName(signal)} />
-            <SignalTile label="Source" value={source.shortLabel} detail="desktop" tone={source.tone} />
+            <SignalTile
+              label="Priority"
+              value={signal.priority}
+              detail="signal"
+              tone={signalToneName(signal)}
+            />
+            <SignalTile
+              label="Source"
+              value={source.shortLabel}
+              detail="desktop"
+              tone={source.tone}
+            />
             <SignalTile label="Mode" value="Plan" detail="default" tone="blue" />
           </SignalGrid>
 
           {detailLoading && (
             <Panel compact>
-              <Text style={titleStyle}>Loading detail</Text>
+              <Text style={titleStyle}>Loading Detail…</Text>
               <Text style={bodyStyle}>Fetching the desktop evidence for this signal.</Text>
             </Panel>
           )}
@@ -185,14 +201,19 @@ export function WorkspaceSignalDetail({ signalId }: { signalId?: string }) {
               </View>
             </View>
             <ActionButton
-              label={launching ? 'Starting...' : signal.actionId ? 'Start plan' : 'Open Mac'}
+              label={launching ? 'Starting…' : signal.actionId ? 'Start Plan' : 'Open Mac'}
               disabled={launching || (!canLaunch && Boolean(signal.actionId))}
               onPress={() => (signal.actionId ? void launchAction() : void openOnDesktop())}
-              style={{ backgroundColor: companionColors.accent, borderColor: companionColors.accent }}
+              style={{
+                backgroundColor: companionColors.accent,
+                borderColor: companionColors.accent,
+              }}
               textStyle={{ color: companionColors.dark }}
             />
             {!canLaunch && signal.actionId && (
-              <Text style={darkBodyStyle}>Pair a host and choose a workspace with repos first.</Text>
+              <Text style={darkBodyStyle}>
+                Pair a host and choose a workspace with repos first.
+              </Text>
             )}
           </Panel>
 
@@ -258,7 +279,10 @@ function FilesPanel({ files }: { files: MobileWorkspaceSignalDetail['files'] }) 
       </View>
       <View style={{ gap: 8 }}>
         {files.map((file) => (
-          <View key={`${file.path}:${file.lineStart ?? ''}:${file.lineEnd ?? ''}`} style={fileRowStyle}>
+          <View
+            key={`${file.path}:${file.lineStart ?? ''}:${file.lineEnd ?? ''}`}
+            style={fileRowStyle}
+          >
             <MaterialIcons name="insert-drive-file" size={16} color={companionColors.subtle} />
             <View style={{ flex: 1, gap: 2 }}>
               <Text selectable numberOfLines={2} style={filePathStyle}>
@@ -349,9 +373,12 @@ function signalTone(priority: MobileWorkspaceSignal['priority']): {
   color: CompanionColor;
   background: CompanionColor;
 } {
-  if (priority === 'critical') return { color: companionColors.red, background: companionColors.redSoft };
-  if (priority === 'high') return { color: companionColors.accentInk, background: companionColors.accentSoft };
-  if (priority === 'normal') return { color: companionColors.blue, background: companionColors.blueSoft };
+  if (priority === 'critical')
+    return { color: companionColors.red, background: companionColors.redSoft };
+  if (priority === 'high')
+    return { color: companionColors.accentInk, background: companionColors.accentSoft };
+  if (priority === 'normal')
+    return { color: companionColors.blue, background: companionColors.blueSoft };
   return { color: companionColors.subtle, background: companionColors.surfaceMuted };
 }
 
