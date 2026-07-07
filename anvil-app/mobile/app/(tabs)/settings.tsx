@@ -97,12 +97,12 @@ export default function SettingsScreen() {
       <ScreenHeader eyebrow={connection ? 'Connected' : 'Not paired'} title="Hosts" />
 
       <AttentionPanel
-        label="COMPANION SURFACES"
-        title={connection ? 'Phone, widgets, and watch are using this host' : 'Pair a Mac first'}
+        label="SURFACES"
+        title={connection ? 'This host is active' : 'Pair a Mac first'}
         detail={
           connection
-            ? 'Widgets and Live Activity update from the same host snapshot as this app.'
-            : 'No native surfaces update until the phone has a trusted desktop token.'
+            ? 'App, widgets, Live Activity, and watch read the same desktop snapshot.'
+            : 'Native surfaces stay quiet until this device has a trusted token.'
         }
         tone={connection ? 'green' : 'amber'}
         right={
@@ -152,7 +152,7 @@ export default function SettingsScreen() {
           </View>
           <View style={{ flex: 1 }}>
             <Text style={titleStyle}>Pair by QR</Text>
-            <Text style={bodyStyle}>Desktop Settings, Mobile Companion.</Text>
+            <Text style={bodyStyle}>Desktop Settings, Mobile Companion QR.</Text>
           </View>
         </View>
         <TextInput
@@ -177,7 +177,7 @@ export default function SettingsScreen() {
           </View>
         ) : (
           <ActionButton
-            label={pairing ? 'Pairing...' : 'Scan QR code'}
+            label={pairing ? 'Pairing…' : 'Scan QR Code'}
             disabled={pairing}
             onPress={startScan}
           />
@@ -293,7 +293,7 @@ export default function SettingsScreen() {
           style={inputStyle}
         />
         <ActionButton
-          label="Save manual connection"
+          label="Save Manual Connection"
           variant="secondary"
           onPress={saveManual}
           disabled={!manualBaseUrl.trim() || !manualToken.trim()}
