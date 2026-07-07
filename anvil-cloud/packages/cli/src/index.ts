@@ -4878,9 +4878,10 @@ async function runNewCommand(
   options: { inherit?: boolean } = {},
 ): Promise<void> {
   await new Promise<void>((resolve, reject) => {
+    const stdio = options.inherit ? "inherit" : ["ignore", "ignore", "pipe"];
     const child = spawn(command, args, {
       cwd,
-      stdio: options.inherit ? "inherit" : "pipe",
+      stdio,
       env: process.env,
     });
 
