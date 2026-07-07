@@ -51,6 +51,7 @@ Human output can be friendly, but automation output must be stable.
 | `anvil cloud agents guardian` | Run the deterministic Guardian review over the Cell trust report. |
 | `anvil cloud agents sandboxes` | Report AWS Lambda MicroVM sandbox readiness for sandbox-required agents. |
 | `anvil cloud agents invoke <name>` | Invoke a mounted agent locally through the registered provider (`--input <text>`). |
+| `anvil cloud channels simulate` | Send a simulated channel message to a mounted agent through the local runtime (`--channel`, `--input`). |
 | `anvil cloud inspect --local` | Inspect local manifest, auth, database counts, and recent errors. |
 | `anvil cloud lens` | Verify the local runtime is reachable and print the Anvil Lens URL. |
 | `anvil cloud logs --local` | Read local NDJSON logs. |
@@ -222,6 +223,24 @@ contract locally.
 
 See [Anvil Agents](/docs/cloud/agents).
 
+## `anvil cloud channels`
+
+Simulate provider-neutral channel ingress against a running local runtime:
+
+```bash
+anvil cloud channels simulate \
+  --channel supportSlack \
+  --sender U123 \
+  --thread T456 \
+  --input "Can you review this issue?" \
+  --json
+```
+
+The command posts to `/_anvil/channels/simulate`. The JSON response includes
+the matched channel, session summary, ordered events, continuation token, and
+reply chunks. Real Slack, GitHub, and Discord credentials stay platform-side;
+Cell agent code receives normalized context and remains channel-agnostic.
+
 ## `anvil cloud build`
 
 Writes `.anvil/dist` and `.anvil/generated`:
@@ -369,15 +388,15 @@ returns `AWS_DESTROY_OPERATION_FAILED`.
 
 ## Exit codes
 
-| Code | Meaning |
-| --- | --- |
-| `0` | Success |
-| `1` | General failure |
-| `2` | Invalid CLI usage |
-| `3` | Project validation failed |
-| `4` | Build failed |
-| `5` | Runtime unavailable or remote reader not configured |
-| `6` | Deploy or destroy failed |
+| Code | Meaning                                             |
+| ---- | --------------------------------------------------- |
+| `0`  | Success                                             |
+| `1`  | General failure                                     |
+| `2`  | Invalid CLI usage                                   |
+| `3`  | Project validation failed                           |
+| `4`  | Build failed                                        |
+| `5`  | Runtime unavailable or remote reader not configured |
+| `6`  | Deploy or destroy failed                            |
 
 ## Automation rule
 

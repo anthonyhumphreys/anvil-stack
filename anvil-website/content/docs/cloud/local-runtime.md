@@ -64,6 +64,7 @@ POST /_anvil/agents/:name
 POST /_anvil/agents/:name/sessions
 POST /_anvil/agents/sessions/:sessionId/messages
 GET  /_anvil/agents/sessions/:sessionId/stream?after=:token
+POST /_anvil/channels/simulate
 POST /_anvil/workflows/run/:name
 GET  /_anvil/workflows
 GET  /_anvil/workflows/:runId
@@ -81,6 +82,11 @@ local stub inference provider is registered automatically for `provider: "local"
 Session routes add resumable event history around mounted agents. Create a
 session, send messages to it, then reconnect to the SSE stream with the last
 continuation token to replay missed events.
+
+Channel simulation routes normalize local Slack/GitHub/Discord-style inbound
+messages and map them to mounted agent sessions. They are for local development
+and tests; real provider credentials and webhook verification stay outside Cell
+code.
 
 ## Local state
 

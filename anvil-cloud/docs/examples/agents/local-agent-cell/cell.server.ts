@@ -1,4 +1,4 @@
-import { app, defineAgent, endpoint } from "@anvil-cloud/runtime";
+import { app, channel, defineAgent, endpoint } from "@anvil-cloud/runtime";
 
 const supportAssistant = defineAgent({
   name: "support-assistant",
@@ -35,6 +35,14 @@ export default app({
       auth: "required",
       agent: "support",
       handler: async () => ({ ok: true }),
+    }),
+  },
+  channels: {
+    supportSlack: channel({
+      provider: "slack",
+      agent: "support",
+      sessionKey: "sender-thread",
+      events: ["app_mention", "message"],
     }),
   },
 });

@@ -118,12 +118,29 @@ export type ServiceDefinition = {
   handler: ServiceHandler;
 };
 
+export type ChannelProvider = "discord" | "github" | "slack";
+
+export type ChannelSessionKey =
+  | "channel"
+  | "thread"
+  | "sender"
+  | "sender-thread";
+
+export type ChannelDefinition = {
+  kind: "channel";
+  provider: ChannelProvider;
+  agent: string;
+  sessionKey?: ChannelSessionKey;
+  events?: string[];
+};
+
 export type AnyQueryDefinition = QueryDefinition<any, any>;
 export type AnyMutationDefinition = MutationDefinition<any, any>;
 export type AnyEndpointDefinition = EndpointDefinition<any>;
 export type AnyJobDefinition = JobDefinition<any, any>;
 export type AnyWorkflowDefinition = WorkflowDefinition;
 export type AnyServiceDefinition = ServiceDefinition;
+export type AnyChannelDefinition = ChannelDefinition;
 
 export type TableDefinition<
   TFields extends Record<string, unknown> = Record<string, unknown>,
@@ -149,6 +166,7 @@ export type AppDefinition = {
   jobs?: Record<string, AnyJobDefinition>;
   workflows?: Record<string, AnyWorkflowDefinition>;
   services?: Record<string, AnyServiceDefinition>;
+  channels?: Record<string, AnyChannelDefinition>;
 };
 
 export type AppDefinitionInput = {
@@ -161,6 +179,7 @@ export type AppDefinitionInput = {
   jobs?: Record<string, AnyJobDefinition>;
   workflows?: Record<string, AnyWorkflowDefinition>;
   services?: Record<string, AnyServiceDefinition>;
+  channels?: Record<string, AnyChannelDefinition>;
 };
 
 export function app(definition: AppDefinitionInput): AppDefinition {
@@ -174,6 +193,7 @@ export function app(definition: AppDefinitionInput): AppDefinition {
     jobs: definition.jobs ?? {},
     workflows: definition.workflows ?? {},
     services: definition.services ?? {},
+    channels: definition.channels ?? {},
   };
 }
 
@@ -229,6 +249,15 @@ export function service(
   return {
     ...definition,
     kind: "service",
+  };
+}
+
+export function channel(
+  definition: Omit<ChannelDefinition, "kind">,
+): ChannelDefinition {
+  return {
+    ...definition,
+    kind: "channel",
   };
 }
 

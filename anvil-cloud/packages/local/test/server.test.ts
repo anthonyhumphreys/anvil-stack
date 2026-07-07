@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   app,
+  channel,
   defineAgent,
   mutation,
   query,
@@ -244,6 +245,93 @@ describe("startLocalRuntimeServer", () => {
       expect(stream).toContain("event: message.assistant");
       expect(stream).not.toContain("event: session.created");
       expect(sent.result.continuationToken).toBe("3");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("simulates channel messages through mounted agent sessions", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-local-"));
+    tempDirs.push(rootDir);
+
+    const cell = app({
+      agents: {
+        support: defineAgent({
+          name: "support",
+          model: { provider: "local", model: "stub" },
+        }),
+      },
+      channels: {
+        supportSlack: channel({
+          provider: "slack",
+          agent: "support",
+          sessionKey: "sender-thread",
+          events: ["app_mention"],
+        }),
+      },
+    });
+    const server = await startLocalRuntimeServer({
+      app: cell,
+      manifest: {
+        agents: { support: { name: "support" } },
+        channels: [{ name: "supportSlack", provider: "slack" }],
+      },
+      rootDir,
+      cellName: "channel-cell",
+      port: 0,
+      clientPort: 0,
+    });
+
+    try {
+      const first = (await postJson(
+        `${server.runtimeUrl}/_anvil/channels/simulate`,
+        {
+          channel: "supportSlack",
+          sender: "U123",
+          thread: "T456",
+          input: "hello",
+        },
+      )) as {
+        ok: boolean;
+        result: {
+          session: { sessionId: string; channel: { key: string } };
+          events: Array<{ type: string }>;
+          reply: unknown[];
+        };
+      };
+      const second = (await postJson(
+        `${server.runtimeUrl}/_anvil/channels/simulate`,
+        {
+          channel: "supportSlack",
+          sender: "U123",
+          thread: "T456",
+          input: "still there?",
+        },
+      )) as {
+        result: {
+          session: { sessionId: string; continuationToken: string };
+        };
+      };
+
+      expect(first).toMatchObject({
+        ok: true,
+        result: {
+          session: {
+            channel: {
+              key: "supportSlack:U123:T456",
+            },
+          },
+          events: expect.arrayContaining([
+            expect.objectContaining({ type: "channel.message" }),
+            expect.objectContaining({ type: "channel.reply" }),
+          ]),
+        },
+      });
+      expect(first.result.reply).toHaveLength(1);
+      expect(second.result.session.sessionId).toBe(
+        first.result.session.sessionId,
+      );
+      expect(second.result.session.continuationToken).toBe("5");
     } finally {
       await server.close();
     }
