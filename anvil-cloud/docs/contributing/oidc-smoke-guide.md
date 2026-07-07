@@ -42,6 +42,13 @@ and roles claim names, including whether each came from an explicit
 `ANVIL_AUTH_*_CLAIM` variable or the default mapping. Very glamorous. Very
 useful.
 
+Run `anvil-cloud auth test --json` before wiring a real provider. It exercises
+the same contract locally: local IdP token issue/verification, runtime
+public/required/role policy, OIDC discovery and JWKS verification, expiry,
+issuer and audience rejection, claim mapping, and fixture config examples for
+Auth0, Entra ID, Cognito, and Keycloak. It uses mock issuers, so it belongs in
+CI and does not need provider secrets.
+
 ## Provider Setup
 
 Use an OIDC provider that can issue JWTs with:
@@ -66,6 +73,15 @@ export ANVIL_AUTH_ROLES_CLAIM=scp
 The mapped user id claim is required. A token can pass signature, issuer, and
 audience validation and still fail the smoke if it cannot be mapped to an Anvil
 identity. Decorative JWT success is still failure. Security loves paperwork.
+
+Provider fixture defaults in the conformance kit:
+
+| Provider | User id | Email                | Roles                     |
+| -------- | ------- | -------------------- | ------------------------- |
+| Auth0    | `sub`   | `email`              | `https://anvil.dev/roles` |
+| Entra ID | `oid`   | `preferred_username` | `roles`                   |
+| Cognito  | `sub`   | `email`              | `cognito:groups`          |
+| Keycloak | `sub`   | `email`              | `roles`                   |
 
 ## Smoke Run
 

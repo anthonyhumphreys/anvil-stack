@@ -15,5 +15,19 @@ export {
   type ImportPolicyOptions,
 } from "./import-policy.js";
 export { createCellManifest, type CellManifest } from "./manifest.js";
+export {
+  diffCellManifests,
+  type ManifestDiffAction,
+  type ManifestDiffCategory,
+  type ManifestDiffChange,
+  type ManifestDiffResult,
+  type ManifestDiffSeverity,
+  type ManifestDiffSummary,
+} from "./manifest-diff.js";
 
-export { createAnvilCellGraph, validateAnvilCellGraph, type AnvilCellGraph, type GraphValidationDiagnostic } from "./graph.js";
+export {
+  createAnvilCellGraph,
+  validateAnvilCellGraph,
+  type AnvilCellGraph,
+  type GraphValidationDiagnostic,
+} from "./graph.js";

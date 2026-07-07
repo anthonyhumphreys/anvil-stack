@@ -28,6 +28,8 @@ describe("main", () => {
     expect(output).toContain("Anvil Cloud CLI");
     expect(output).toContain("anvil-cloud check");
     expect(output).toContain("anvil-cloud doctor");
+    expect(output).toContain("anvil-cloud manifest diff");
+    expect(output).toContain("anvil-cloud auth test");
     expect(output).toContain(
       "anvil-cloud destroy --preview --app <name> --yes",
     );
@@ -101,10 +103,112 @@ describe("main", () => {
     }
   });
 
+  it("runs auth conformance checks as stable JSON", async () => {
+    const output = await captureStdout(() => main(["auth", "test", "--json"]));
+    const payload = JSON.parse(output) as {
+      ok: boolean;
+      summary: { passed: number; failed: number };
+      checks: Array<{ id: string; status: string; provider: string }>;
+      fixtures: Array<{ provider: string; env: Record<string, string> }>;
+    };
+
+    expect(payload.ok).toBe(true);
+    expect(payload.summary.failed).toBe(0);
+    expect(payload.summary.passed).toBe(13);
+    expect(payload.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "local.issueAndVerify",
+          status: "pass",
+          provider: "local",
+        }),
+        expect.objectContaining({
+          id: "oidc.discoveryAndVerify",
+          status: "pass",
+          provider: "oidc",
+        }),
+        expect.objectContaining({
+          id: "policy.roles",
+          status: "pass",
+          provider: "policy",
+        }),
+      ]),
+    );
+    expect(payload.fixtures.map((fixture) => fixture.provider)).toEqual([
+      "auth0",
+      "entra",
+      "cognito",
+      "keycloak",
+    ]);
+    expect(payload.fixtures[0]?.env).toMatchObject({
+      ANVIL_AUTH_ISSUER: "https://tenant.us.auth0.com/",
+      ANVIL_AUTH_AUDIENCE: "https://api.example.test",
+      ANVIL_AUTH_ROLES_CLAIM: "https://anvil.dev/roles",
+    });
+  });
+
   it("checks the supported pnpm version floor", () => {
     expect(isPnpmVersionSupported("8.15.9")).toBe(false);
     expect(isPnpmVersionSupported("9.0.0")).toBe(true);
     expect(isPnpmVersionSupported("10.1.0")).toBe(true);
+  });
+
+  it("scaffolds example-shaped starter templates", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-new-"));
+    const originalCwd = process.cwd();
+    const originalExitCode = process.exitCode;
+
+    try {
+      process.exitCode = undefined;
+      process.chdir(rootDir);
+      const output = await captureStdout(() =>
+        main([
+          "new",
+          "sandbox-cell",
+          "--client",
+          "headless",
+          "--template",
+          "sandbox",
+          "--json",
+        ]),
+      );
+      const payload = JSON.parse(output) as {
+        ok: boolean;
+        template: string;
+        client: { kind: string };
+      };
+      const cellDir = path.join(rootDir, "sandbox-cell");
+      const config = JSON.parse(
+        await readFile(path.join(cellDir, "anvil.json"), "utf8"),
+      ) as { template?: string; client?: { kind?: string } };
+      const instructions = await readFile(
+        path.join(cellDir, "AGENTS.md"),
+        "utf8",
+      );
+      const server = await readFile(
+        path.join(cellDir, "src/cell.server.ts"),
+        "utf8",
+      );
+
+      expect(payload).toMatchObject({
+        ok: true,
+        template: "sandbox",
+        client: { kind: "headless" },
+      });
+      expect(config).toMatchObject({
+        template: "sandbox",
+        client: { kind: "headless" },
+      });
+      expect(instructions).toContain("Template: sandbox");
+      expect(server).toContain("defineAgent");
+      expect(server).toContain('sandbox: "required"');
+      expect(server).toContain("listTodos");
+      expect(process.exitCode).toBeUndefined();
+    } finally {
+      process.chdir(originalCwd);
+      process.exitCode = originalExitCode;
+      await rm(rootDir, { recursive: true, force: true });
+    }
   });
 
   it("emits doctor diagnostics as stable JSON", async () => {
@@ -783,6 +887,138 @@ describe("main", () => {
     }
   });
 
+  it("diffs the previous built manifest against the current Cell source", async () => {
+    const rootDir = await createManifestDiffCell([
+      'import { app, query, table, text } from "@anvil-cloud/runtime";',
+      "",
+      "export default app({",
+      "  schema: { notes: table({ title: text(), body: text() }) },",
+      "  capabilities: { database: true, files: { publicRead: false } },",
+      "  queries: { listNotes: query({ handler: async () => [] }) },",
+      "});",
+      "",
+    ]);
+    const originalCwd = process.cwd();
+    const originalExitCode = process.exitCode;
+
+    try {
+      process.exitCode = undefined;
+      process.chdir(rootDir);
+      await captureStdout(() => main(["build", "--json"]));
+      await writeFile(
+        path.join(rootDir, "src/cell.server.ts"),
+        [
+          'import { app, query, table, text } from "@anvil-cloud/runtime";',
+          "",
+          "export default app({",
+          "  schema: { notes: table({ title: text() }) },",
+          "  capabilities: { database: true, files: { publicRead: true } },",
+          "  queries: { searchNotes: query({ handler: async () => [] }) },",
+          "});",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+
+      const output = await captureStdout(() =>
+        main(["manifest", "diff", "--json"]),
+      );
+      const payload = JSON.parse(output) as {
+        ok: boolean;
+        status: string;
+        summary: { errors: number; warnings: number };
+        changes: Array<{
+          id: string;
+          severity: string;
+          action: string;
+          path: string;
+        }>;
+      };
+
+      expect(payload.ok).toBe(false);
+      expect(payload.status).toBe("block");
+      expect(payload.summary).toMatchObject({ errors: 2, warnings: 1 });
+      expect(payload.changes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "capabilities.files.changed",
+            severity: "error",
+          }),
+          expect.objectContaining({
+            id: "schema.tables.notes.fields.body.removed",
+            severity: "error",
+          }),
+          expect.objectContaining({
+            id: "queries.listNotes.removed",
+            severity: "warning",
+          }),
+          expect.objectContaining({
+            id: "queries.searchNotes.added",
+            severity: "info",
+          }),
+        ]),
+      );
+      expect(process.exitCode).toBe(5);
+    } finally {
+      process.chdir(originalCwd);
+      process.exitCode = originalExitCode;
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("diffs explicit manifest paths without building source", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-manifest-"));
+    const originalExitCode = process.exitCode;
+    const previous = createTestManifest({ queries: ["listNotes"] });
+    const next = createTestManifest({
+      queries: ["listNotes", "searchNotes"],
+    });
+
+    try {
+      process.exitCode = undefined;
+      await writeFile(
+        path.join(rootDir, "previous.json"),
+        `${JSON.stringify(previous)}\n`,
+        "utf8",
+      );
+      await writeFile(
+        path.join(rootDir, "next.json"),
+        `${JSON.stringify(next)}\n`,
+        "utf8",
+      );
+
+      const output = await captureStdout(() =>
+        main([
+          "manifest",
+          "diff",
+          "--json",
+          "--from",
+          path.join(rootDir, "previous.json"),
+          "--to",
+          path.join(rootDir, "next.json"),
+        ]),
+      );
+      const payload = JSON.parse(output) as {
+        ok: boolean;
+        status: string;
+        changes: Array<{ id: string; action: string }>;
+      };
+
+      expect(payload.ok).toBe(true);
+      expect(payload.status).toBe("changed");
+      expect(payload.changes).toEqual([
+        expect.objectContaining({
+          id: "queries.searchNotes.added",
+          action: "add",
+        }),
+      ]);
+      expect(process.exitCode).toBeUndefined();
+    } finally {
+      process.exitCode = originalExitCode;
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("scaffolds a Vite React client by default", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-"));
     const originalCwd = process.cwd();
@@ -817,6 +1053,7 @@ describe("main", () => {
       expect(packageJson.scripts).toMatchObject({
         check: "anvil-cloud check --json",
         build: "anvil-cloud build --json",
+        "manifest:diff": "anvil-cloud manifest diff --json",
         dev: "anvil-cloud dev --json",
         "inspect:local": "anvil-cloud inspect --local --json",
         "logs:local": "anvil-cloud logs --local --json",
@@ -891,6 +1128,7 @@ describe("main", () => {
       expect(packageJson.scripts).toMatchObject({
         check: "anvil-cloud check --json",
         build: "anvil-cloud build --json",
+        "manifest:diff": "anvil-cloud manifest diff --json",
         dev: "anvil-cloud dev --json",
         "inspect:local": "anvil-cloud inspect --local --json",
         "logs:local": "anvil-cloud logs --local --json",
@@ -1419,6 +1657,101 @@ describe("main", () => {
     } finally {
       process.chdir(originalCwd);
       process.exitCode = originalExitCode;
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("emits local runtime usage summaries", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-usage-"));
+    const originalCwd = process.cwd();
+    const originalExitCode = process.exitCode;
+    const env = snapshotEnv([
+      "ANVIL_USAGE_DAILY_BUDGET_USD",
+      "ANVIL_USAGE_SESSION_BUDGET_USD",
+    ]);
+
+    try {
+      process.exitCode = undefined;
+      process.chdir(rootDir);
+      process.env.ANVIL_USAGE_DAILY_BUDGET_USD = "0.000001";
+      process.env.ANVIL_USAGE_SESSION_BUDGET_USD = "0.000001";
+      await mkdir(path.join(rootDir, ".anvil/local"), { recursive: true });
+      await writeFile(
+        path.join(rootDir, ".anvil/local/usage.ndjson"),
+        [
+          JSON.stringify({
+            timestamp: "2026-07-06T10:00:00.000Z",
+            cell: "notes",
+            scope: "agent",
+            name: "support",
+            sessionId: "session_1",
+            provider: "aws-bedrock",
+            model: "anthropic.claude",
+            invocations: 1,
+            inputTokens: 100,
+            outputTokens: 50,
+            totalTokens: 150,
+            estimatedCostUsd: 0.01,
+            sandboxRuntimeMs: 0,
+          }),
+          JSON.stringify({
+            timestamp: "2026-07-06T10:05:00.000Z",
+            cell: "notes",
+            scope: "cell",
+            name: "listNotes",
+            kind: "query",
+            invocations: 1,
+            inputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 0,
+            estimatedCostUsd: 0,
+            sandboxRuntimeMs: 0,
+          }),
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+
+      const output = await captureStdout(() =>
+        main(["usage", "--local", "--json"]),
+      );
+      const payload = JSON.parse(output) as {
+        ok: boolean;
+        target: { adapter: string };
+        usage: {
+          totals: { invocations: number; totalTokens: number; estimatedCostUsd: number };
+          byAgent: Record<string, { invocations: number }>;
+          budgets: Array<{ id: string; status: string }>;
+        };
+      };
+
+      expect(payload).toMatchObject({
+        ok: true,
+        target: {
+          adapter: "local",
+        },
+        usage: {
+          totals: {
+            invocations: 2,
+            totalTokens: 150,
+            estimatedCostUsd: 0.01,
+          },
+          byAgent: {
+            support: {
+              invocations: 1,
+            },
+          },
+          budgets: expect.arrayContaining([
+            expect.objectContaining({ id: "daily", status: "warning" }),
+            expect.objectContaining({ id: "session", status: "warning" }),
+          ]),
+        },
+      });
+      expect(process.exitCode).toBeUndefined();
+    } finally {
+      process.chdir(originalCwd);
+      process.exitCode = originalExitCode;
+      restoreEnvSnapshot(env);
       await rm(rootDir, { recursive: true, force: true });
     }
   });
@@ -2122,6 +2455,111 @@ function restoreEnvSnapshot(snapshot: Map<string, string | undefined>): void {
   for (const [name, value] of snapshot) {
     restoreEnv(name, value);
   }
+}
+
+async function createManifestDiffCell(serverLines: string[]): Promise<string> {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-manifest-"));
+  const repoRoot = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "../../..",
+  );
+
+  await mkdir(path.join(rootDir, "src"), { recursive: true });
+  await mkdir(path.join(rootDir, ".anvil/generated"), { recursive: true });
+  await writeFile(
+    path.join(rootDir, "anvil.json"),
+    JSON.stringify(
+      {
+        name: "notes",
+        runtime: "nodejs20",
+        entrypoints: {
+          server: "src/cell.server.ts",
+          client: "src/cell.client.tsx",
+        },
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+  await writeFile(
+    path.join(rootDir, "tsconfig.json"),
+    JSON.stringify(
+      {
+        compilerOptions: {
+          target: "ES2022",
+          module: "NodeNext",
+          moduleResolution: "NodeNext",
+          strict: true,
+          jsx: "react-jsx",
+          baseUrl: ".",
+          paths: {
+            "@anvil-cloud/runtime": [
+              toPosixPath(path.join(repoRoot, "packages/runtime/src/index.ts")),
+            ],
+            "@anvil-cloud/client": [
+              toPosixPath(path.join(repoRoot, "packages/client/src/index.ts")),
+            ],
+            "@anvil/generated/client": [".anvil/generated/client.ts"],
+          },
+        },
+        include: ["src/**/*.ts", "src/**/*.tsx", ".anvil/generated/**/*.ts"],
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+  await writeFile(
+    path.join(rootDir, "src/cell.server.ts"),
+    serverLines.join("\n"),
+    "utf8",
+  );
+  await writeFile(
+    path.join(rootDir, "src/cell.client.tsx"),
+    "document.body.textContent = 'manifest diff';\n",
+    "utf8",
+  );
+  await writeFile(
+    path.join(rootDir, ".anvil/generated/client.ts"),
+    [
+      'import type { GeneratedAnvilApi } from "@anvil-cloud/client";',
+      "",
+      "export const api = { queries: {}, mutations: {} } as GeneratedAnvilApi;",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+
+  return rootDir;
+}
+
+function createTestManifest(overrides: {
+  queries?: string[];
+  capabilities?: Record<string, unknown>;
+}) {
+  return {
+    schemaVersion: "0.1",
+    cell: {
+      name: "notes",
+      runtime: "nodejs20",
+      target: "local",
+    },
+    entrypoints: {
+      server: "dist/server/index.mjs",
+      client: "dist/client/index.html",
+    },
+    client: { kind: "vite-react" },
+    schema: { tables: {} },
+    queries: overrides.queries ?? [],
+    mutations: [],
+    endpoints: [],
+    jobs: [],
+    workflows: [],
+    services: [],
+    agents: {},
+    capabilities: overrides.capabilities ?? {},
+  };
 }
 
 async function createAgentCell(
