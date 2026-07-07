@@ -65,6 +65,10 @@ GET  /_anvil/approvals
 GET  /_anvil/approvals/audit
 POST /_anvil/approvals/:id/approve
 POST /_anvil/approvals/:id/reject
+POST /_anvil/agents/:name/sessions
+POST /_anvil/agents/sessions/:sessionId/messages
+GET  /_anvil/agents/sessions/:sessionId/stream?after=:token
+POST /_anvil/channels/simulate
 POST /_anvil/workflows/run/:name
 GET  /_anvil/workflows
 GET  /_anvil/workflows/:runId
@@ -84,6 +88,15 @@ returns a pending approval id instead of executing the gated action. Use
 `/_anvil/approvals`, Lens, or `anvil-cloud approvals ... --json` to inspect,
 approve, reject, and audit those requests.
 
+Session routes add resumable event history around mounted agents. Create a
+session, send messages to it, then reconnect to the SSE stream with the last
+continuation token to replay missed events.
+
+Channel simulation routes normalize local Slack/GitHub/Discord-style inbound
+messages and map them to mounted agent sessions. They are for local development
+and tests; real provider credentials and webhook verification stay outside Cell
+code.
+
 ## Local state
 
 Local state lives in `.anvil/local` by default:
@@ -92,6 +105,7 @@ Local state lives in `.anvil/local` by default:
 .anvil/local/
   auth.json
   approvals.json
+  agent-sessions.json
   dev.db
   events.json
   files/

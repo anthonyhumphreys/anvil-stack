@@ -50,6 +50,7 @@ a feature here.
 ├── auth/
 │   ├── keys.json
 │   └── users.json
+├── agent-sessions.json
 ├── dev.db
 ├── files/
 ├── approvals.json
@@ -74,6 +75,12 @@ GET  /_anvil/approvals
 GET  /_anvil/approvals/audit
 POST /_anvil/approvals/:id/approve
 POST /_anvil/approvals/:id/reject
+GET  /_anvil/agents
+POST /_anvil/agents/:name
+POST /_anvil/agents/:name/sessions
+POST /_anvil/agents/sessions/:sessionId/messages
+GET  /_anvil/agents/sessions/:sessionId/stream?after=:token
+POST /_anvil/channels/simulate
 GET  /_anvil/db/tables
 GET  /_anvil/db/:table
 POST /_anvil/auth/as/:userId
