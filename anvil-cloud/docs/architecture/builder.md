@@ -163,6 +163,19 @@ This is a local Guard check, not a remote migration engine. It catches
 high-signal mistakes during build while deployment adapters and remote
 inspection grow the richer history needed for approved migrations.
 
+The same manifest comparison rules are also available as a standalone review
+surface:
+
+```sh
+anvil-cloud manifest diff --json
+anvil-cloud manifest diff --from .anvil/dist/manifest.json --to candidate.json --json
+```
+
+Without `--to`, the CLI compares the previous local manifest with a scratch
+build of the current Cell source. The JSON result includes stable change IDs,
+categories, actions, severity, paths, optional `before`/`after` values, and
+remediation hints for risky changes.
+
 Preferred replacements:
 
 | Unsafe operation  | Anvil replacement |
