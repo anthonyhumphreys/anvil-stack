@@ -57,6 +57,7 @@ anvil cloud auth login dev_1          # sets ambient identity + prints a token
 anvil cloud auth token dev_1 --ttl 3600   # mints a JWT (perfect for agents and curl)
 anvil cloud auth users
 anvil cloud auth whoami
+anvil cloud auth test --json   # runs the local/OIDC conformance kit
 ```
 
 All commands support `--json`. An agent that needs an authenticated session is two commands away:
@@ -98,6 +99,22 @@ Cognito, Auth0, Clerk, Entra ID, and anything else speaking OIDC are configurati
 
 Identity supplied in request bodies is **ignored by default** in deployed runtimes. The `ANVIL_AUTH_ALLOW_BODY_IDENTITY=true` escape hatch exists for test harnesses and nothing else.
 
+## Claims contract
+
+Handlers can rely on the runtime-normalised identity shape, not provider-specific
+JWT names:
+
+| Runtime field | Default claim source | Notes |
+| --- | --- | --- |
+| `ctx.auth.identity.userId` | `sub` | Required for every verified identity. Override with `ANVIL_AUTH_USER_ID_CLAIM`. |
+| `ctx.auth.identity.email` | `email` | Optional. Override with `ANVIL_AUTH_EMAIL_CLAIM`. |
+| `ctx.auth.identity.roles` | `roles`, `cognito:groups`, or `groups` | Optional. Override with `ANVIL_AUTH_ROLES_CLAIM`. String role claims can be space-separated. |
+| `ctx.auth.identity.claims` | Full verified JWT payload | Use for app-specific claims after signature, issuer, audience, and expiry checks pass. |
+
+Provider fixture examples are kept in the auth conformance kit for Auth0, Entra
+ID, Cognito, and Keycloak. They are configuration examples, not hard-coded
+provider branches.
+
 ## Browser client
 
 The generated client attaches tokens automatically:
@@ -112,6 +129,17 @@ client.setToken(token);
 ```
 
 ## Testing
+
+Run the cross-provider conformance kit before trusting a new auth setup:
+
+```bash
+anvil cloud auth test --json
+```
+
+The suite covers local JWT issue/verify, public/required/role handler policy,
+OIDC discovery and JWKS verification, expired-token rejection, issuer and
+audience rejection, configured claims mapping, and the common provider fixture
+configs. It runs against local mock issuers so CI never needs live IdP secrets.
 
 The in-memory test host verifies tokens too:
 
