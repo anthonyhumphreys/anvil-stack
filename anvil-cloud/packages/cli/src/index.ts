@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { execFile, spawn } from "node:child_process";
+import { execFile, spawn, type StdioOptions } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import {
   mkdir,
@@ -6420,7 +6420,9 @@ async function runNewCommand(
   options: { inherit?: boolean } = {},
 ): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    const stdio = options.inherit ? "inherit" : ["ignore", "ignore", "pipe"];
+    const stdio: StdioOptions = options.inherit
+      ? "inherit"
+      : ["ignore", "ignore", "pipe"];
     const child = spawn(command, args, {
       cwd,
       stdio,
