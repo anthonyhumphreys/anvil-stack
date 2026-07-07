@@ -86,12 +86,40 @@ Checks:
 - public file-read escalation against the previous local manifest when building;
 - destructive schema removals or field type changes against the previous local
   manifest when building;
+- standalone manifest diffing through `anvil-cloud manifest diff`;
 - manifest extraction safety;
 - declared capabilities.
 
 ### `anvil-cloud build`
 
 Builds local artefacts into `.anvil/dist` and `.anvil/generated`.
+
+### `anvil-cloud manifest diff`
+
+Compares Cell manifests without deploying anything.
+
+```sh
+anvil-cloud manifest diff --json
+anvil-cloud manifest diff --from .anvil/dist/manifest.json --to candidate.json --json
+```
+
+Without `--to`, the command compares the previous local
+`.anvil/dist/manifest.json` with a scratch build of the current Cell source.
+Scratch output is removed after the comparison. With `--to`, the command reads
+both manifest files directly and does not build source.
+
+JSON output includes:
+
+- `status: "no-baseline" | "unchanged" | "changed" | "block"`;
+- `summary.additions`, `summary.removals`, `summary.changes`,
+  `summary.warnings`, and `summary.errors`;
+- stable `changes[].id` values;
+- `changes[].category`, `action`, `severity`, `path`, `message`, optional
+  `before`, `after`, and `hint`.
+
+Error-severity diff entries currently cover public file access escalation,
+schema table removal, schema field removal, and schema field type changes. The
+command exits with code `5` when any error-severity diff is present.
 
 ### `anvil-cloud review`
 

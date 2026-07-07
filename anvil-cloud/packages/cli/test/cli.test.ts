@@ -28,6 +28,7 @@ describe("main", () => {
     expect(output).toContain("Anvil Cloud CLI");
     expect(output).toContain("anvil-cloud check");
     expect(output).toContain("anvil-cloud doctor");
+    expect(output).toContain("anvil-cloud manifest diff");
     expect(output).toContain("anvil-cloud auth test");
     expect(output).toContain(
       "anvil-cloud destroy --preview --app <name> --yes",
@@ -760,6 +761,138 @@ describe("main", () => {
     }
   });
 
+  it("diffs the previous built manifest against the current Cell source", async () => {
+    const rootDir = await createManifestDiffCell([
+      'import { app, query, table, text } from "@anvil-cloud/runtime";',
+      "",
+      "export default app({",
+      "  schema: { notes: table({ title: text(), body: text() }) },",
+      "  capabilities: { database: true, files: { publicRead: false } },",
+      "  queries: { listNotes: query({ handler: async () => [] }) },",
+      "});",
+      "",
+    ]);
+    const originalCwd = process.cwd();
+    const originalExitCode = process.exitCode;
+
+    try {
+      process.exitCode = undefined;
+      process.chdir(rootDir);
+      await captureStdout(() => main(["build", "--json"]));
+      await writeFile(
+        path.join(rootDir, "src/cell.server.ts"),
+        [
+          'import { app, query, table, text } from "@anvil-cloud/runtime";',
+          "",
+          "export default app({",
+          "  schema: { notes: table({ title: text() }) },",
+          "  capabilities: { database: true, files: { publicRead: true } },",
+          "  queries: { searchNotes: query({ handler: async () => [] }) },",
+          "});",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+
+      const output = await captureStdout(() =>
+        main(["manifest", "diff", "--json"]),
+      );
+      const payload = JSON.parse(output) as {
+        ok: boolean;
+        status: string;
+        summary: { errors: number; warnings: number };
+        changes: Array<{
+          id: string;
+          severity: string;
+          action: string;
+          path: string;
+        }>;
+      };
+
+      expect(payload.ok).toBe(false);
+      expect(payload.status).toBe("block");
+      expect(payload.summary).toMatchObject({ errors: 2, warnings: 1 });
+      expect(payload.changes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "capabilities.files.changed",
+            severity: "error",
+          }),
+          expect.objectContaining({
+            id: "schema.tables.notes.fields.body.removed",
+            severity: "error",
+          }),
+          expect.objectContaining({
+            id: "queries.listNotes.removed",
+            severity: "warning",
+          }),
+          expect.objectContaining({
+            id: "queries.searchNotes.added",
+            severity: "info",
+          }),
+        ]),
+      );
+      expect(process.exitCode).toBe(5);
+    } finally {
+      process.chdir(originalCwd);
+      process.exitCode = originalExitCode;
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("diffs explicit manifest paths without building source", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-manifest-"));
+    const originalExitCode = process.exitCode;
+    const previous = createTestManifest({ queries: ["listNotes"] });
+    const next = createTestManifest({
+      queries: ["listNotes", "searchNotes"],
+    });
+
+    try {
+      process.exitCode = undefined;
+      await writeFile(
+        path.join(rootDir, "previous.json"),
+        `${JSON.stringify(previous)}\n`,
+        "utf8",
+      );
+      await writeFile(
+        path.join(rootDir, "next.json"),
+        `${JSON.stringify(next)}\n`,
+        "utf8",
+      );
+
+      const output = await captureStdout(() =>
+        main([
+          "manifest",
+          "diff",
+          "--json",
+          "--from",
+          path.join(rootDir, "previous.json"),
+          "--to",
+          path.join(rootDir, "next.json"),
+        ]),
+      );
+      const payload = JSON.parse(output) as {
+        ok: boolean;
+        status: string;
+        changes: Array<{ id: string; action: string }>;
+      };
+
+      expect(payload.ok).toBe(true);
+      expect(payload.status).toBe("changed");
+      expect(payload.changes).toEqual([
+        expect.objectContaining({
+          id: "queries.searchNotes.added",
+          action: "add",
+        }),
+      ]);
+      expect(process.exitCode).toBeUndefined();
+    } finally {
+      process.exitCode = originalExitCode;
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("scaffolds a Vite React client by default", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-"));
     const originalCwd = process.cwd();
@@ -794,6 +927,7 @@ describe("main", () => {
       expect(packageJson.scripts).toMatchObject({
         check: "anvil-cloud check --json",
         build: "anvil-cloud build --json",
+        "manifest:diff": "anvil-cloud manifest diff --json",
         dev: "anvil-cloud dev --json",
         "inspect:local": "anvil-cloud inspect --local --json",
         "logs:local": "anvil-cloud logs --local --json",
@@ -868,6 +1002,7 @@ describe("main", () => {
       expect(packageJson.scripts).toMatchObject({
         check: "anvil-cloud check --json",
         build: "anvil-cloud build --json",
+        "manifest:diff": "anvil-cloud manifest diff --json",
         dev: "anvil-cloud dev --json",
         "inspect:local": "anvil-cloud inspect --local --json",
         "logs:local": "anvil-cloud logs --local --json",
@@ -2194,6 +2329,111 @@ function restoreEnvSnapshot(snapshot: Map<string, string | undefined>): void {
   for (const [name, value] of snapshot) {
     restoreEnv(name, value);
   }
+}
+
+async function createManifestDiffCell(serverLines: string[]): Promise<string> {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-manifest-"));
+  const repoRoot = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "../../..",
+  );
+
+  await mkdir(path.join(rootDir, "src"), { recursive: true });
+  await mkdir(path.join(rootDir, ".anvil/generated"), { recursive: true });
+  await writeFile(
+    path.join(rootDir, "anvil.json"),
+    JSON.stringify(
+      {
+        name: "notes",
+        runtime: "nodejs20",
+        entrypoints: {
+          server: "src/cell.server.ts",
+          client: "src/cell.client.tsx",
+        },
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+  await writeFile(
+    path.join(rootDir, "tsconfig.json"),
+    JSON.stringify(
+      {
+        compilerOptions: {
+          target: "ES2022",
+          module: "NodeNext",
+          moduleResolution: "NodeNext",
+          strict: true,
+          jsx: "react-jsx",
+          baseUrl: ".",
+          paths: {
+            "@anvil-cloud/runtime": [
+              toPosixPath(path.join(repoRoot, "packages/runtime/src/index.ts")),
+            ],
+            "@anvil-cloud/client": [
+              toPosixPath(path.join(repoRoot, "packages/client/src/index.ts")),
+            ],
+            "@anvil/generated/client": [".anvil/generated/client.ts"],
+          },
+        },
+        include: ["src/**/*.ts", "src/**/*.tsx", ".anvil/generated/**/*.ts"],
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+  await writeFile(
+    path.join(rootDir, "src/cell.server.ts"),
+    serverLines.join("\n"),
+    "utf8",
+  );
+  await writeFile(
+    path.join(rootDir, "src/cell.client.tsx"),
+    "document.body.textContent = 'manifest diff';\n",
+    "utf8",
+  );
+  await writeFile(
+    path.join(rootDir, ".anvil/generated/client.ts"),
+    [
+      'import type { GeneratedAnvilApi } from "@anvil-cloud/client";',
+      "",
+      "export const api = { queries: {}, mutations: {} } as GeneratedAnvilApi;",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+
+  return rootDir;
+}
+
+function createTestManifest(overrides: {
+  queries?: string[];
+  capabilities?: Record<string, unknown>;
+}) {
+  return {
+    schemaVersion: "0.1",
+    cell: {
+      name: "notes",
+      runtime: "nodejs20",
+      target: "local",
+    },
+    entrypoints: {
+      server: "dist/server/index.mjs",
+      client: "dist/client/index.html",
+    },
+    client: { kind: "vite-react" },
+    schema: { tables: {} },
+    queries: overrides.queries ?? [],
+    mutations: [],
+    endpoints: [],
+    jobs: [],
+    workflows: [],
+    services: [],
+    agents: {},
+    capabilities: overrides.capabilities ?? {},
+  };
 }
 
 async function createAgentCell(
