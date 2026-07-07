@@ -42,6 +42,7 @@ Human output can be friendly, but automation output must be stable.
 | ------------------------------------------ | --------------------------------------------------------------------------------------------- |
 | `anvil cloud new <name>`                   | Create a new Cell project.                                                                    |
 | `anvil cloud dev`                          | Build and start the local runtime and client server.                                          |
+| `anvil cloud doctor`                       | Check local toolchain, project artifacts, runtime ports, AWS preview env, and auth smoke setup. |
 | `anvil cloud check`                        | Validate config, import policy, capabilities, and TypeScript without writing build output.    |
 | `anvil cloud review`                       | Aggregate Guard diagnostics and AWS preview approval gates into one trust report.             |
 | `anvil cloud build`                        | Build server and client artifacts, manifest, generated client, generated types, and metadata. |
@@ -147,6 +148,21 @@ Success:
 ```
 
 If nothing is running, the command exits with code `5` and returns `LENS_SERVER_NOT_RUNNING` telling you to run `anvil cloud dev` first. See [Anvil Lens](/docs/cloud/lens).
+
+## `anvil cloud doctor`
+
+Checks the local toolchain, Cell config, built artifacts, generated client
+freshness, local runtime state, runtime/client ports, AWS preview environment,
+and OIDC smoke-test variables:
+
+```bash
+anvil cloud doctor --json
+anvil cloud doctor --port 8787 --client-port 5173 --json
+```
+
+Each check includes a stable `id`, `status`, display `message`, optional
+remediation `hint`, optional `details`, and a `docs` link. See
+[Doctor diagnostics](/docs/cloud/doctor) for the full ID list.
 
 ## `anvil cloud check`
 
