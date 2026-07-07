@@ -10,6 +10,9 @@ Anvil Cloud is an experimental agent-ready application platform for AWS.
 - `docs/specs/v0-implementation-spec.md` — v0 implementation scope.
 - `docs/specs/cell-contract.md` — Anvil Cell authoring contract.
 - `docs/specs/cli.md` — CLI command and JSON output contracts.
+- `docs/examples/agents/README.md` — agent contract examples.
+- `examples/notes/README.md` — canonical local Cell example.
+- `examples/aws-preview/README.md` — AWS preview smoke Cell.
 - `docs/architecture/runtime.md` — runtime design.
 - `docs/architecture/builder.md` — builder/compiler design.
 - `docs/architecture/local-dev.md` — local dev design.
@@ -47,6 +50,12 @@ Implement in this order:
 4. CLI with stable `--json` output.
 5. Client SDK and generated metadata.
 6. AWS preview deployment.
+
+## Starter templates
+
+Use `anvil-cloud new <name> --template <crud|auth|workflow|service|agent|sandbox>`
+to scaffold runnable examples. Each template keeps the starter generated client
+path working and adds one canonical primitive for agents to copy.
 
 ## Hard rules
 

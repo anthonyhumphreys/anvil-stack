@@ -85,6 +85,64 @@ describe("main", () => {
     expect(isPnpmVersionSupported("10.1.0")).toBe(true);
   });
 
+  it("scaffolds example-shaped starter templates", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-new-"));
+    const originalCwd = process.cwd();
+    const originalExitCode = process.exitCode;
+
+    try {
+      process.exitCode = undefined;
+      process.chdir(rootDir);
+      const output = await captureStdout(() =>
+        main([
+          "new",
+          "sandbox-cell",
+          "--client",
+          "headless",
+          "--template",
+          "sandbox",
+          "--json",
+        ]),
+      );
+      const payload = JSON.parse(output) as {
+        ok: boolean;
+        template: string;
+        client: { kind: string };
+      };
+      const cellDir = path.join(rootDir, "sandbox-cell");
+      const config = JSON.parse(
+        await readFile(path.join(cellDir, "anvil.json"), "utf8"),
+      ) as { template?: string; client?: { kind?: string } };
+      const instructions = await readFile(
+        path.join(cellDir, "AGENTS.md"),
+        "utf8",
+      );
+      const server = await readFile(
+        path.join(cellDir, "src/cell.server.ts"),
+        "utf8",
+      );
+
+      expect(payload).toMatchObject({
+        ok: true,
+        template: "sandbox",
+        client: { kind: "headless" },
+      });
+      expect(config).toMatchObject({
+        template: "sandbox",
+        client: { kind: "headless" },
+      });
+      expect(instructions).toContain("Template: sandbox");
+      expect(server).toContain("defineAgent");
+      expect(server).toContain('sandbox: "required"');
+      expect(server).toContain("listTodos");
+      expect(process.exitCode).toBeUndefined();
+    } finally {
+      process.chdir(originalCwd);
+      process.exitCode = originalExitCode;
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("emits doctor diagnostics as stable JSON", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-doctor-"));
     const originalCwd = process.cwd();
