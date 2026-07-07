@@ -2448,20 +2448,24 @@ describe("main", () => {
     }
   });
 
-  it("reports AWS Lambda MicroVM sandbox readiness for sandbox agents", async () => {
+  it("reports local and AWS sandbox readiness for sandbox agents", async () => {
     const rootDir = await createAgentCell({
       modelProvider: "aws-bedrock",
       sandbox: "required",
     });
     const originalCwd = process.cwd();
-    const env = snapshotEnv(["ANVIL_AWS_AGENT_SANDBOX_IMAGE"]);
+    const env = snapshotEnv([
+      "ANVIL_AWS_AGENT_SANDBOX_IMAGE",
+      "ANVIL_LOCAL_SANDBOX_BACKEND",
+    ]);
 
     try {
       delete process.env.ANVIL_AWS_AGENT_SANDBOX_IMAGE;
+      process.env.ANVIL_LOCAL_SANDBOX_BACKEND = "process";
       process.chdir(rootDir);
 
       const missingImageOutput = await captureStdout(() =>
-        main(["agents", "sandboxes", "--json"]),
+        main(["agents", "sandboxes", "--sandbox-backend", "process", "--json"]),
       );
       const missingImagePayload = JSON.parse(missingImageOutput) as Record<
         string,
@@ -2471,11 +2475,15 @@ describe("main", () => {
       expect(missingImagePayload).toMatchObject({
         ok: true,
         provider: "aws-lambda-microvm",
+        localProvider: "local-process",
+        localBackend: "process",
         imageConfigured: false,
         sandboxes: [
           {
             mount: "support",
             agent: "support",
+            localProvider: "local-process",
+            localBackend: "process",
             supported: false,
             imageConfigured: false,
           },
@@ -2509,6 +2517,84 @@ describe("main", () => {
     } finally {
       process.chdir(originalCwd);
       restoreEnvSnapshot(env);
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("includes local sandbox sessions in inspect output", async () => {
+    const rootDir = await createAgentCell({
+      sandbox: "required",
+    });
+    const originalCwd = process.cwd();
+
+    try {
+      process.chdir(rootDir);
+      await mkdir(path.join(rootDir, ".anvil/local/sandboxes/sbox_1"), {
+        recursive: true,
+      });
+      await writeFile(
+        path.join(rootDir, ".anvil/local/sandboxes/sbox_1/session.json"),
+        JSON.stringify(
+          {
+            schemaVersion: "0.1",
+            backend: "process",
+            workspaceRoot: path.join(
+              rootDir,
+              ".anvil/local/sandboxes/sbox_1/workspace",
+            ),
+            session: {
+              id: "sbox_1",
+              agent: "support",
+              status: "active",
+              provider: "local-process",
+              startedAt: "2026-07-06T10:00:00.000Z",
+              metadata: {
+                backend: "process",
+              },
+            },
+            policy: {
+              capabilities: {
+                filesystem: "none",
+                network: "restricted",
+                secrets: "none",
+              },
+              approvals: [],
+              network: "restricted",
+              credentialBroker: {
+                credentials: [],
+              },
+            },
+          },
+          null,
+          2,
+        ),
+        "utf8",
+      );
+
+      const output = await captureStdout(() =>
+        main(["inspect", "--local", "--json"]),
+      );
+      const payload = JSON.parse(output) as Record<string, unknown>;
+
+      expect(payload).toMatchObject({
+        ok: true,
+        sandboxes: [
+          {
+            id: "sbox_1",
+            agent: "support",
+            status: "active",
+            provider: "local-process",
+            backend: "process",
+            policy: {
+              credentialBroker: {
+                credentials: [],
+              },
+            },
+          },
+        ],
+      });
+    } finally {
+      process.chdir(originalCwd);
       await rm(rootDir, { recursive: true, force: true });
     }
   });
