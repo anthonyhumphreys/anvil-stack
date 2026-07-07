@@ -96,6 +96,7 @@ export type AgentDefinitionInput = {
   memory?: AgentMemoryConfig;
   capabilities?: AgentCapabilities;
   approvals?: AgentApprovals;
+  evals?: import("./agent-evals.js").AgentEvalSuite;
   runtime?: AgentRuntimeRequirements;
   subagents?: Record<string, AgentDefinition>;
   metadata?: Record<string, unknown>;

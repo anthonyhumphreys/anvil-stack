@@ -154,6 +154,45 @@ Subagents are shallow during alpha. A parent can declare subagents, but a
 subagent cannot declare its own nested subagents. Guard validation fails if a
 subagent declares capabilities outside the parent's capability set.
 
+## Add evals
+
+Evals are colocated with the agent definition:
+
+```ts
+import { defineAgent, defineAgentEvalSuite } from "@anvil-cloud/runtime";
+
+const support = defineAgent({
+  name: "support",
+  model: { provider: "local", model: "stub" },
+  evals: defineAgentEvalSuite({
+    scenarios: [
+      {
+        name: "answers support review",
+        input: "Review this Cell.",
+        expect: {
+          responseIncludes: "Review this Cell.",
+          toolCalls: { count: 0 },
+          capabilities: {
+            notUsed: ["network.api.statuspage.io"],
+          },
+        },
+      },
+    ],
+  }),
+});
+```
+
+Run them locally or in CI:
+
+```sh
+anvil-cloud eval --json
+anvil-cloud eval --write-baseline --json
+```
+
+The JSON output includes scenario pass/fail, assertion results, tool calls,
+approval requests, capability usage, and baseline diffs. Failed assertions or
+baseline drift exit non-zero.
+
 ## Project Agents, Cell Agents, and Agent Cells
 
 | Shape         | Use it for                                                                                                                                                                                |

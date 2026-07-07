@@ -6,6 +6,20 @@ export {
   type AgentSandboxStatus,
 } from "./agent-sandbox.js";
 export {
+  createAgentEvalToolExecutors,
+  defineAgentEvalSuite,
+  runAgentEvalSuite,
+  type AgentEvalAssertionResult,
+  type AgentEvalAssertions,
+  type AgentEvalBaseline,
+  type AgentEvalBaselineScenario,
+  type AgentEvalCapabilityAssertions,
+  type AgentEvalRunResult,
+  type AgentEvalScenario,
+  type AgentEvalScenarioResult,
+  type AgentEvalSuite,
+} from "./agent-evals.js";
+export {
   AgentProviderRegistry,
   AgentRuntime,
   LocalStubInferenceProvider,
