@@ -1723,7 +1723,9 @@ describe("main", () => {
             key: "deployment#notes#preview#feature-branch",
           },
         },
-        next: ["anvil-cloud destroy --preview --app notes --yes --json"],
+        next: [
+          "anvil-cloud destroy --preview --app notes --name feature-branch --yes --json",
+        ],
       });
       expect(process.exitCode).toBeUndefined();
     } finally {
