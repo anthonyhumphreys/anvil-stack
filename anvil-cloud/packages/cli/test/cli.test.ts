@@ -37,6 +37,74 @@ describe("main", () => {
     );
   });
 
+  it("reports workflow progress summaries from local state", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-"));
+    const originalCwd = process.cwd();
+
+    try {
+      process.chdir(rootDir);
+      await mkdir(path.join(rootDir, ".anvil/local"), { recursive: true });
+      await writeFile(
+        path.join(rootDir, ".anvil/local/workflows.json"),
+        JSON.stringify(
+          [
+            {
+              runId: "run_resume",
+              workflow: "syncNotes",
+              status: "running",
+              input: { n: 1 },
+              steps: [
+                {
+                  name: "fetch",
+                  status: "completed",
+                  attempts: 1,
+                  result: { ok: true },
+                },
+                { name: "store", status: "running", attempts: 1 },
+              ],
+              createdAt: "2026-07-06T10:00:00.000Z",
+              updatedAt: "2026-07-06T10:00:01.000Z",
+            },
+          ],
+          null,
+          2,
+        ),
+        "utf8",
+      );
+
+      const listOutput = await captureStdout(() =>
+        main(["workflows", "list", "--json"]),
+      );
+      const listPayload = JSON.parse(listOutput) as {
+        runs: Array<{ progress: Record<string, unknown> }>;
+      };
+
+      expect(listPayload.runs[0]?.progress).toMatchObject({
+        lifecycle: "resumable",
+        resumable: true,
+        currentStep: "store",
+        completedSteps: 1,
+        totalSteps: 2,
+      });
+
+      const showOutput = await captureStdout(() =>
+        main(["workflows", "show", "run_resume", "--json"]),
+      );
+      const showPayload = JSON.parse(showOutput) as {
+        run: { progress: Record<string, unknown> };
+      };
+
+      expect(showPayload.run.progress).toMatchObject({
+        lifecycle: "resumable",
+        nextStep: "store",
+        nextStepIndex: 1,
+      });
+    } finally {
+      process.chdir(originalCwd);
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("posts channel simulation payloads to the local runtime", async () => {
     const originalExitCode = process.exitCode;
     let received: unknown;
@@ -159,6 +227,167 @@ describe("main", () => {
     expect(isPnpmVersionSupported("8.15.9")).toBe(false);
     expect(isPnpmVersionSupported("9.0.0")).toBe(true);
     expect(isPnpmVersionSupported("10.1.0")).toBe(true);
+  });
+
+  it("runs and lists local schedules", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-schedules-"));
+    const originalCwd = process.cwd();
+    const originalExitCode = process.exitCode;
+
+    try {
+      process.exitCode = undefined;
+      process.chdir(rootDir);
+      await captureStdout(() =>
+        main(["new", "scheduled", "--client", "headless", "--json"]),
+      );
+      await writeFile(
+        path.join(rootDir, "scheduled", "src/cell.server.ts"),
+        [
+          'import { app, job } from "@anvil-cloud/runtime";',
+          "",
+          "export default app({",
+          "  capabilities: { scheduledJobs: true },",
+          "  jobs: {",
+          "    refresh: job({",
+          "      schedule: 'rate(1 day)',",
+          "      handler: async () => ({ refreshed: true }),",
+          "    }),",
+          "  },",
+          "});",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      process.chdir(path.join(rootDir, "scheduled"));
+
+      const runOutput = await captureStdout(() =>
+        main(["schedules", "run", "refresh", "--json"]),
+      );
+      const runPayload = JSON.parse(runOutput) as {
+        ok: boolean;
+        run: { job: string; status: string; result: unknown };
+      };
+
+      expect(runPayload).toMatchObject({
+        ok: true,
+        run: {
+          job: "refresh",
+          status: "completed",
+          result: { refreshed: true },
+        },
+      });
+
+      const listOutput = await captureStdout(() =>
+        main(["schedules", "list", "--json"]),
+      );
+      const listPayload = JSON.parse(listOutput) as {
+        ok: boolean;
+        schedules: Array<{ name: string; lastStatus?: string }>;
+      };
+
+      expect(listPayload).toMatchObject({
+        ok: true,
+        schedules: [
+          {
+            name: "refresh",
+            lastStatus: "completed",
+          },
+        ],
+      });
+      expect(process.exitCode).toBeUndefined();
+    } finally {
+      process.chdir(originalCwd);
+      process.exitCode = originalExitCode;
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("manages local approval requests from persisted state", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-approvals-"));
+    const originalCwd = process.cwd();
+    const originalExitCode = process.exitCode;
+
+    try {
+      process.exitCode = undefined;
+      process.chdir(rootDir);
+      await mkdir(path.join(rootDir, ".anvil/local"), { recursive: true });
+      await writeFile(
+        path.join(rootDir, ".anvil/local/approvals.json"),
+        JSON.stringify({
+          approvals: [
+            {
+              id: "appr_cli",
+              status: "pending",
+              action: "deploy.preview",
+              reason: "Preview deploy",
+              metadata: { agentName: "shipmate" },
+              requestedAt: "2026-07-06T12:00:00.000Z",
+              audit: [
+                {
+                  type: "approval.requested",
+                  approvalId: "appr_cli",
+                  at: "2026-07-06T12:00:00.000Z",
+                },
+              ],
+            },
+          ],
+        }),
+        "utf8",
+      );
+
+      const listOutput = await captureStdout(() =>
+        main(["approvals", "list", "--status", "pending", "--json"]),
+      );
+      const listPayload = JSON.parse(listOutput) as {
+        approvals: Array<{ id: string; status: string }>;
+      };
+
+      expect(listPayload.approvals).toEqual([
+        expect.objectContaining({ id: "appr_cli", status: "pending" }),
+      ]);
+
+      const approveOutput = await captureStdout(() =>
+        main([
+          "approvals",
+          "approve",
+          "appr_cli",
+          "--by",
+          "qa",
+          "--reason",
+          "Checked",
+          "--json",
+        ]),
+      );
+      const approvePayload = JSON.parse(approveOutput) as {
+        approval: { status: string; decidedBy?: string };
+      };
+
+      expect(approvePayload.approval).toMatchObject({
+        status: "approved",
+        decidedBy: "qa",
+      });
+
+      const auditOutput = await captureStdout(() =>
+        main(["approvals", "audit", "--json"]),
+      );
+      const auditPayload = JSON.parse(auditOutput) as {
+        events: Array<{ type: string; approvalId: string }>;
+      };
+
+      expect(auditPayload.events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "approval.approved",
+            approvalId: "appr_cli",
+          }),
+        ]),
+      );
+      expect(process.exitCode).toBeUndefined();
+    } finally {
+      process.chdir(originalCwd);
+      process.exitCode = originalExitCode;
+      await rm(rootDir, { recursive: true, force: true });
+    }
   });
 
   it("scaffolds example-shaped starter templates", async () => {
@@ -333,7 +562,9 @@ describe("main", () => {
             agentSessions: false,
             jobs: false,
             workflows: true,
+            schedules: false,
             services: true,
+            approvals: false,
           },
         },
       });
@@ -1782,6 +2013,113 @@ describe("main", () => {
     }
   });
 
+  it("runs mounted agent evals and writes a baseline", async () => {
+    const rootDir = await createAgentCell({ evals: true });
+    const originalCwd = process.cwd();
+    const originalExitCode = process.exitCode;
+
+    try {
+      process.exitCode = undefined;
+      process.chdir(rootDir);
+
+      const output = await captureStdout(() => main(["eval", "--json"]));
+      const payload = JSON.parse(output) as Record<string, unknown>;
+
+      expect(payload).toMatchObject({
+        ok: true,
+        summary: {
+          agents: 1,
+          total: 1,
+          passed: 1,
+          failed: 0,
+        },
+        agents: [
+          {
+            mount: "support",
+            agentName: "support",
+            scenarios: [
+              {
+                name: "answers support review",
+                ok: true,
+              },
+            ],
+          },
+        ],
+      });
+      expect(process.exitCode).toBeUndefined();
+
+      const baselineOutput = await captureStdout(() =>
+        main(["eval", "--write-baseline", "--json"]),
+      );
+      const baselinePayload = JSON.parse(baselineOutput) as Record<
+        string,
+        unknown
+      >;
+
+      expect(baselinePayload).toMatchObject({
+        ok: true,
+        baseline: {
+          wrote: true,
+        },
+      });
+      await expect(
+        readFile(path.join(rootDir, ".anvil/evals/baseline.json"), "utf8"),
+      ).resolves.toContain("answers support review");
+    } finally {
+      process.chdir(originalCwd);
+      process.exitCode = originalExitCode;
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails evals when the committed baseline changes", async () => {
+    const rootDir = await createAgentCell({ evals: true });
+    const originalCwd = process.cwd();
+    const originalExitCode = process.exitCode;
+
+    try {
+      process.exitCode = undefined;
+      process.chdir(rootDir);
+      await mkdir(path.join(rootDir, ".anvil/evals"), { recursive: true });
+      await writeFile(
+        path.join(rootDir, ".anvil/evals/baseline.json"),
+        JSON.stringify(
+          {
+            agents: {
+              support: {
+                scenarios: {
+                  "answers support review": {
+                    responseText: "Old response",
+                    toolCalls: [],
+                    approvalsRequired: [],
+                  },
+                },
+              },
+            },
+          },
+          null,
+          2,
+        ),
+        "utf8",
+      );
+
+      const output = await captureStdout(() => main(["eval", "--json"]));
+      const payload = JSON.parse(output) as Record<string, unknown>;
+
+      expect(payload).toMatchObject({
+        ok: false,
+        summary: {
+          failed: 1,
+        },
+      });
+      expect(process.exitCode).toBe(6);
+    } finally {
+      process.chdir(originalCwd);
+      process.exitCode = originalExitCode;
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("emits lightweight AWS preview usage visibility", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-"));
     const originalCwd = process.cwd();
@@ -2198,6 +2536,72 @@ describe("main", () => {
     } finally {
       process.exitCode = originalExitCode;
       restoreEnv("ANVIL_AWS_DEPLOYMENT_METADATA_TABLE", originalMetadataTable);
+    }
+  });
+
+  it("prints a local trace by id as JSON", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-"));
+    const originalCwd = process.cwd();
+    const originalExitCode = process.exitCode;
+
+    try {
+      process.exitCode = undefined;
+      process.chdir(rootDir);
+      await mkdir(path.join(rootDir, ".anvil/local"), { recursive: true });
+      await writeFile(
+        path.join(rootDir, ".anvil/local/traces.json"),
+        `${JSON.stringify(
+          [
+            {
+              traceId: "run_123",
+              kind: "workflow",
+              name: "syncNotes",
+              subjectId: "run_123",
+              status: "completed",
+              startedAt: "2026-07-06T12:00:00.000Z",
+              updatedAt: "2026-07-06T12:00:01.000Z",
+              completedAt: "2026-07-06T12:00:01.000Z",
+              events: [
+                {
+                  eventId: "event_1",
+                  traceId: "run_123",
+                  timestamp: "2026-07-06T12:00:00.000Z",
+                  type: "workflow.step.completed",
+                  name: "fetch",
+                  status: "completed",
+                },
+              ],
+            },
+          ],
+          null,
+          2,
+        )}\n`,
+        "utf8",
+      );
+
+      const output = await captureStdout(() =>
+        main(["logs", "--trace", "run_123", "--json"]),
+      );
+      const payload = JSON.parse(output) as Record<string, unknown>;
+
+      expect(payload).toMatchObject({
+        ok: true,
+        trace: {
+          traceId: "run_123",
+          status: "completed",
+          events: [
+            {
+              type: "workflow.step.completed",
+              name: "fetch",
+            },
+          ],
+        },
+      });
+      expect(process.exitCode).toBeUndefined();
+    } finally {
+      process.chdir(originalCwd);
+      process.exitCode = originalExitCode;
+      await rm(rootDir, { recursive: true, force: true });
     }
   });
 
@@ -2740,6 +3144,7 @@ async function createAgentCell(
   options: {
     modelProvider?: "aws-bedrock" | "local";
     sandbox?: "optional" | "required";
+    evals?: boolean;
   } = {},
 ): Promise<string> {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-agent-"));
@@ -2797,7 +3202,7 @@ async function createAgentCell(
   await writeFile(
     path.join(rootDir, "src/cell.server.ts"),
     [
-      'import { app, defineAgent, endpoint } from "@anvil-cloud/runtime";',
+      'import { app, defineAgent, defineAgentEvalSuite, endpoint } from "@anvil-cloud/runtime";',
       "",
       "export default app({",
       "  agents: {",
@@ -2806,6 +3211,21 @@ async function createAgentCell(
       "      instructions: 'Stay inside declared support capabilities.',",
       `      model: { provider: '${options.modelProvider ?? "local"}', model: 'stub' },`,
       "      capabilities: { cells: ['read'], filesystem: 'none', secrets: 'none' },",
+      ...(options.evals
+        ? [
+            "      evals: defineAgentEvalSuite({",
+            "        scenarios: [{",
+            "          name: 'answers support review',",
+            "          input: 'Review this Cell',",
+            "          expect: {",
+            "            responseIncludes: 'Review this Cell',",
+            "            toolCalls: { count: 0 },",
+            "            capabilities: { notUsed: ['network.github.com'] },",
+            "          },",
+            "        }],",
+            "      }),",
+          ]
+        : []),
       ...(options.sandbox === undefined
         ? []
         : [`      runtime: { sandbox: '${options.sandbox}' },`]),

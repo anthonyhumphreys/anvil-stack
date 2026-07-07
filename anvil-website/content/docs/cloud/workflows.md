@@ -57,6 +57,12 @@ The executor persists run state after every step transition: when a step starts,
 - When a step exhausts its attempts, the step and the run are marked `failed` and later steps do not run.
 - If the local runtime crashes mid-run, the run is left in `running` state on disk. When the local server starts again, it resumes the run: completed steps are skipped and their persisted results are threaded back into `state.steps`.
 
+Workflow list/detail responses include a derived `progress` summary. It reports
+whether a `running` run is currently `in-flight` or persisted as `resumable`,
+the active or next step name and index, and completed/failed/running/pending
+step counts. The summary is derived from persisted state; Cell code still sees
+plain async step handlers and the same `state.input` / `state.steps` contract.
+
 ## Starting workflows
 
 From a handler:
@@ -73,8 +79,8 @@ Over the local runtime HTTP surface:
 
 ```txt
 POST /_anvil/workflows/run/<name>   body: { "input": ... }  ->  { "ok": true, "runId": "run_..." }
-GET  /_anvil/workflows              ->  { "ok": true, "runs": [...] }
-GET  /_anvil/workflows/<runId>      ->  { "ok": true, "run": {...} }
+GET  /_anvil/workflows              ->  { "ok": true, "runs": [{..., "progress": {...}}] }
+GET  /_anvil/workflows/<runId>      ->  { "ok": true, "run": {..., "progress": {...}} }
 ```
 
 The run starts asynchronously; poll the detail route for status.
@@ -98,9 +104,33 @@ A run record looks like:
   "status": "completed",
   "input": { "full": true },
   "steps": [
-    { "name": "fetch", "status": "completed", "attempts": 1, "result": { "notes": { "full": true } } },
-    { "name": "store", "status": "completed", "attempts": 1, "result": { "stored": { "notes": { "full": true } } } }
+    {
+      "name": "fetch",
+      "status": "completed",
+      "attempts": 1,
+      "result": { "notes": { "full": true } }
+    },
+    {
+      "name": "store",
+      "status": "completed",
+      "attempts": 1,
+      "result": { "stored": { "notes": { "full": true } } }
+    }
   ],
+  "progress": {
+    "lifecycle": "completed",
+    "resumable": false,
+    "inFlight": false,
+    "currentStep": null,
+    "currentStepIndex": null,
+    "nextStep": null,
+    "nextStepIndex": null,
+    "completedSteps": 2,
+    "failedSteps": 0,
+    "runningSteps": 0,
+    "pendingSteps": 0,
+    "totalSteps": 2
+  },
   "createdAt": "2025-01-01T00:00:00.000Z",
   "updatedAt": "2025-01-01T00:00:01.000Z"
 }
@@ -114,8 +144,10 @@ shared runtime Lambda.
 
 The AWS runtime host can start configured Step Functions executions for
 `ctx.workflows.start` when `ANVIL_WORKFLOW_STATE_MACHINES` maps workflow names
-to state machine ARNs. The generated CloudFormation template now writes that
-mapping into the Lambda environment for workflow-bearing manifests.
+to state machine ARNs. Each state machine task writes its Lambda result back to
+the state document, so the next step receives the accumulated `steps` object.
+The generated CloudFormation template writes the state machine mapping into the
+Lambda environment for workflow-bearing manifests.
 
 AWS preview deployment plans include a `workflow-preview-review` approval gate
 and Step Functions cost-driver hints. Remote workflow run inspection is not yet

@@ -54,8 +54,13 @@ Initial commands:
 - `anvil-cloud build`
 - `anvil-cloud agents discover`
 - `anvil-cloud agents guardian`
+- `anvil-cloud approvals list`
+- `anvil-cloud approvals approve <id>`
+- `anvil-cloud approvals reject <id>`
+- `anvil-cloud approvals audit`
 - `anvil-cloud inspect`
 - `anvil-cloud logs`
+- `anvil-cloud logs --trace <traceId>`
 - `anvil-cloud usage --local`
 - `anvil-cloud usage --preview`
 - `anvil-cloud db list`
@@ -67,6 +72,8 @@ Initial commands:
 - `anvil-cloud db promote <name>`
 - `anvil-cloud db delete <name> --yes`
 - `anvil-cloud db cleanup --expired`
+- `anvil-cloud schedules list`
+- `anvil-cloud schedules run <name>`
 - `anvil-cloud auth test --json`
 - `anvil-cloud deploy --preview [--name branch]`
 - `anvil-cloud rollback --preview --dry-run`
