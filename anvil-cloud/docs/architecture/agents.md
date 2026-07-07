@@ -170,7 +170,8 @@ inspection surface for humans and other agents.
 
 ## Cell Agents
 
-Cell Agents are mounted inside Cells and can power endpoints, jobs, workflows, mutations, or internal runtime behaviour.
+Cell Agents are mounted inside Cells and can power endpoints, jobs, workflows,
+mutations, or internal runtime behaviour.
 
 ```ts
 import { app, defineAgent, endpoint } from "@anvil-cloud/runtime";
@@ -181,8 +182,22 @@ const support = defineAgent({
   model: { provider: "local", model: "stub" },
   capabilities: {
     cells: ["read"],
+    database: ["supportTickets.read"],
     filesystem: "none",
     secrets: "none",
+  },
+  subagents: {
+    triage: defineAgent({
+      name: "support-triage",
+      purpose: "Classify incoming support requests.",
+      model: { provider: "local", model: "stub" },
+      capabilities: {
+        cells: ["read"],
+        database: ["supportTickets.read"],
+        filesystem: "none",
+        secrets: "none",
+      },
+    }),
   },
 });
 
@@ -202,7 +217,11 @@ export default app({
 });
 ```
 
-Validation fails when an endpoint or workflow references a missing mounted agent.
+Validation fails when an endpoint or workflow references a missing mounted
+agent. Subagents are shallow and explicit during alpha: a parent can declare
+subagents, but subagents cannot declare their own nested subagents. Guard
+validation fails if a subagent declares capabilities outside the parent
+capability set.
 
 ## Agent Cells
 

@@ -18,3 +18,14 @@ anvil-cloud eval --write-baseline --json
 ```
 
 Local stub mode does not call external APIs. Provider mode uses the same Anvil runtime contract with a registered provider.
+
+To scaffold a runnable Cell from these patterns, use:
+
+```sh
+anvil-cloud new support-cell --template agent --client headless
+anvil-cloud new sandbox-cell --template sandbox --client headless
+```
+
+Templates keep the starter generated client path working and add the selected
+agent primitive on top so coding agents can extend a passing Cell instead of
+debugging an empty sketch.

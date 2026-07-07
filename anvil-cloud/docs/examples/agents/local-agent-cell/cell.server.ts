@@ -42,6 +42,23 @@ const supportAssistant = defineAgent({
     sandbox: "required",
     humanApproval: "required",
   },
+  subagents: {
+    triage: defineAgent({
+      name: "support-triage",
+      purpose: "Classify incoming support requests before the parent responds.",
+      model: {
+        provider: "local",
+        model: "stub",
+      },
+      capabilities: {
+        cells: ["read"],
+        database: ["supportTickets.read"],
+        network: "restricted",
+        filesystem: "none",
+        secrets: "none",
+      },
+    }),
+  },
 });
 
 export default app({

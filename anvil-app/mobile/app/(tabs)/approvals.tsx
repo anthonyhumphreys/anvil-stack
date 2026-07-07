@@ -48,9 +48,7 @@ export default function ApprovalsScreen() {
         label={desktopOnlyCount > 0 ? 'MAC REVIEW REQUIRED' : 'DECISION QUEUE'}
         title={approvalHeadline(approvals.length, desktopOnlyCount)}
         detail={
-          leadApproval
-            ? approvalSummary(leadApproval)
-            : 'No commands or file grants are waiting on this device.'
+          leadApproval ? approvalSummary(leadApproval) : 'No command or file grants are waiting.'
         }
         tone={attentionTone}
         right={
@@ -124,9 +122,7 @@ function ApprovalCard({
         </View>
         <View style={{ flex: 1 }}>
           <Text style={titleStyle}>{isCommand ? 'Command' : 'File access'}</Text>
-          <Text style={subtleStyle}>
-            {approval.createdAt ? 'Pending decision' : 'Needs review'}
-          </Text>
+          <Text style={subtleStyle}>{approval.createdAt ? 'Pending' : 'Needs review'}</Text>
         </View>
         {policy?.risk && (
           <StatusPill
@@ -168,20 +164,20 @@ function ApprovalCard({
       )}
 
       {policy?.requiresFullReview && (
-        <BlockedNotice body="Review on Mac before approving. Mobile can decline this request, not bless it." />
+        <BlockedNotice body="Review on Mac before approval. Mobile can decline this request." />
       )}
 
       <View style={buttonGridStyle}>
         {!policy?.requiresFullReview && (
           <>
             <ActionButton
-              label="Approve once"
+              label="Approve Once"
               variant="success"
               onPress={() => onDecision('accept')}
               style={{ flexGrow: 1 }}
             />
             <ActionButton
-              label="For session"
+              label="For Session"
               variant="secondary"
               onPress={() => onDecision('acceptForSession')}
               style={{ flexGrow: 1 }}

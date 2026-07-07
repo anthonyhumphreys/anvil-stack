@@ -102,8 +102,22 @@ const support = defineAgent({
   model: { provider: "local", model: "stub" },
   capabilities: {
     cells: ["read"],
+    database: ["supportTickets.read"],
     filesystem: "none",
     secrets: "none",
+  },
+  subagents: {
+    triage: defineAgent({
+      name: "support-triage",
+      purpose: "Classify incoming support requests.",
+      model: { provider: "local", model: "stub" },
+      capabilities: {
+        cells: ["read"],
+        database: ["supportTickets.read"],
+        filesystem: "none",
+        secrets: "none",
+      },
+    }),
   },
 });
 
@@ -123,7 +137,13 @@ export default app({
 });
 ```
 
-Builder validation catches endpoint or workflow references to missing mounted agents. The generated Cell manifest includes the mounted agent manifests under `agents`.
+Builder validation catches endpoint or workflow references to missing mounted
+agents. The generated Cell manifest includes mounted agent manifests under
+`agents`, and each agent manifest includes its explicit `subagents` tree.
+
+Subagents are shallow during alpha. A parent can declare subagents, but a
+subagent cannot declare its own nested subagents. Guard validation fails if a
+subagent declares capabilities outside the parent's capability set.
 
 ## Add evals
 
@@ -166,11 +186,11 @@ baseline drift exit non-zero.
 
 ## Project Agents, Cell Agents, and Agent Cells
 
-| Shape | Use it for |
-| --- | --- |
-| Project Agent | Workspace operations: review a Cell manifest, inspect capability changes, draft release notes, prepare preview deployment, explain blast radius, or check policy. |
-| Cell Agent | Runtime behavior inside a Cell: endpoint, job, workflow, mutation, or internal app behavior. |
-| Agent Cell | A Cell whose primary product surface is an agent-powered experience. The Cell remains the boundary for auth, capabilities, approvals, validation, local runtime, and deployment adapters. |
+| Shape         | Use it for                                                                                                                                                                                |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Project Agent | Workspace operations: review a Cell manifest, inspect capability changes, draft release notes, prepare preview deployment, explain blast radius, or check policy.                         |
+| Cell Agent    | Runtime behavior inside a Cell: endpoint, job, workflow, mutation, or internal app behavior.                                                                                              |
+| Agent Cell    | A Cell whose primary product surface is an agent-powered experience. The Cell remains the boundary for auth, capabilities, approvals, validation, local runtime, and deployment adapters. |
 
 Project-agent discovery currently reports instruction files under
 `agents/**/instructions.md`. Mounted Cell Agents are wired through the current
