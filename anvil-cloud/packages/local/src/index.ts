@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  mkdir,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import http, {
   type IncomingMessage,
   type Server,
@@ -43,6 +50,8 @@ import {
   type WorkflowAdapter,
   type WorkflowRun,
   type AgentApprovalProvider,
+  type AgentModelConfig,
+  type AgentTokenUsage,
 } from "@anvil-cloud/runtime";
 import { createServer as createViteServer, type ViteDevServer } from "vite";
 
@@ -60,6 +69,7 @@ export type LocalRuntimeHost = RuntimeHost & {
   jobs: LocalJobAdapter;
   workflows: LocalWorkflowAdapter;
   agentSessions: LocalAgentSessionAdapter;
+  usage: LocalUsageMeter;
   idp: LocalIdentityProvider;
 };
 
@@ -114,6 +124,10 @@ export async function createLocalRuntimeHost(options: {
     ),
     agentSessions: new LocalAgentSessionAdapter(
       path.join(options.stateDir, "agent-sessions.json"),
+    ),
+    usage: new LocalUsageMeter(
+      path.join(options.stateDir, "usage.ndjson"),
+      options.cellName,
     ),
     idp,
   };
@@ -550,6 +564,182 @@ export class LocalLogAdapter implements LogAdapter {
 
   async entries(): Promise<Array<LogEntry & { cell: string }>> {
     return readNdjsonFile<LogEntry & { cell: string }>(this.filePath);
+  }
+}
+
+export type LocalUsageEvent = {
+  timestamp: string;
+  cell: string;
+  scope: "agent" | "cell" | "sandbox";
+  name: string;
+  sessionId?: string;
+  provider?: string;
+  model?: string;
+  kind?: RuntimeRequest["kind"];
+  durationMs?: number;
+  invocations: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  estimatedCostUsd: number;
+  sandboxRuntimeMs: number;
+};
+
+export type LocalUsageTotals = {
+  invocations: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  estimatedCostUsd: number;
+  sandboxRuntimeMs: number;
+};
+
+export type LocalUsageSummary = {
+  events: LocalUsageEvent[];
+  totals: LocalUsageTotals;
+  byCell: Record<string, LocalUsageTotals>;
+  byAgent: Record<string, LocalUsageTotals>;
+  timeSeries: Array<{ bucket: string } & LocalUsageTotals>;
+  topConsumers: Array<{
+    scope: LocalUsageEvent["scope"];
+    name: string;
+    totals: LocalUsageTotals;
+  }>;
+  budgets: Array<{
+    id: string;
+    status: "ok" | "warning";
+    limitUsd: number;
+    actualUsd: number;
+    message: string;
+  }>;
+};
+
+export class LocalUsageMeter {
+  constructor(
+    private readonly filePath: string,
+    private readonly cellName: string,
+  ) {}
+
+  async record(
+    event: Omit<LocalUsageEvent, "cell" | "timestamp"> & {
+      timestamp?: string;
+      cell?: string;
+    },
+  ): Promise<void> {
+    const stored: LocalUsageEvent = {
+      timestamp: event.timestamp ?? new Date().toISOString(),
+      cell: event.cell ?? this.cellName,
+      scope: event.scope,
+      name: event.name,
+      invocations: event.invocations,
+      inputTokens: event.inputTokens,
+      outputTokens: event.outputTokens,
+      totalTokens: event.totalTokens,
+      estimatedCostUsd: event.estimatedCostUsd,
+      sandboxRuntimeMs: event.sandboxRuntimeMs,
+    };
+
+    if (event.sessionId !== undefined) {
+      stored.sessionId = event.sessionId;
+    }
+    if (event.provider !== undefined) {
+      stored.provider = event.provider;
+    }
+    if (event.model !== undefined) {
+      stored.model = event.model;
+    }
+    if (event.kind !== undefined) {
+      stored.kind = event.kind;
+    }
+    if (event.durationMs !== undefined) {
+      stored.durationMs = event.durationMs;
+    }
+
+    await mkdir(path.dirname(this.filePath), { recursive: true });
+    await appendFile(this.filePath, `${JSON.stringify(stored)}\n`, "utf8");
+  }
+
+  async entries(): Promise<LocalUsageEvent[]> {
+    return readNdjsonFile<LocalUsageEvent>(this.filePath);
+  }
+
+  async summarize(options: {
+    sinceMs?: number;
+    budgetUsd?: number;
+    sessionBudgetUsd?: number;
+  } = {}): Promise<LocalUsageSummary> {
+    const events = (await this.entries()).filter((event) => {
+      if (options.sinceMs === undefined) {
+        return true;
+      }
+
+      return Date.parse(event.timestamp) >= options.sinceMs;
+    });
+    const totals = emptyUsageTotals();
+    const byCell: Record<string, LocalUsageTotals> = {};
+    const byAgent: Record<string, LocalUsageTotals> = {};
+    const byConsumer = new Map<
+      string,
+      {
+        scope: LocalUsageEvent["scope"];
+        name: string;
+        totals: LocalUsageTotals;
+      }
+    >();
+    const buckets = new Map<string, LocalUsageTotals>();
+
+    for (const event of events) {
+      addUsage(totals, event);
+      addUsage((byCell[event.cell] ??= emptyUsageTotals()), event);
+
+      if (event.scope === "agent") {
+        addUsage((byAgent[event.name] ??= emptyUsageTotals()), event);
+      }
+
+      const consumerKey = `${event.scope}:${event.name}`;
+      let consumer = byConsumer.get(consumerKey);
+
+      if (!consumer) {
+        consumer = {
+          scope: event.scope,
+          name: event.name,
+          totals: emptyUsageTotals(),
+        };
+        byConsumer.set(consumerKey, consumer);
+      }
+      addUsage(consumer.totals, event);
+
+      const bucket = hourlyBucket(event.timestamp);
+      addUsage((buckets.get(bucket) ?? setUsageBucket(buckets, bucket)), event);
+    }
+
+    return {
+      events,
+      totals,
+      byCell,
+      byAgent,
+      timeSeries: [...buckets.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([bucket, bucketTotals]) => ({ bucket, ...bucketTotals })),
+      topConsumers: [...byConsumer.values()]
+        .sort(
+          (left, right) =>
+            right.totals.estimatedCostUsd - left.totals.estimatedCostUsd ||
+            right.totals.totalTokens - left.totals.totalTokens ||
+            right.totals.invocations - left.totals.invocations,
+        )
+        .slice(0, 10),
+      budgets: usageBudgetSummaries({
+        totals,
+        events,
+        ...(options.budgetUsd === undefined
+          ? {}
+          : { budgetUsd: options.budgetUsd }),
+        ...(options.sessionBudgetUsd === undefined
+          ? {}
+          : { sessionBudgetUsd: options.sessionBudgetUsd }),
+      }),
+    };
   }
 }
 
@@ -1025,7 +1215,22 @@ async function handleLocalRequest(options: LocalRequestOptions): Promise<void> {
         input: body.input,
         ...(isObject(body.context) ? { context: body.context } : {}),
       };
+      const startedAt = Date.now();
       const result = await options.agentRuntime.invoke(agent, invocationInput);
+      await options.host.usage.record({
+        scope: "agent",
+        name: agent.name,
+        provider: agent.model.provider,
+        model: agent.model.model,
+        durationMs: Date.now() - startedAt,
+        invocations: 1,
+        inputTokens: result.usage.inputTokens ?? 0,
+        outputTokens: result.usage.outputTokens ?? 0,
+        totalTokens: result.usage.totalTokens ?? 0,
+        estimatedCostUsd: estimateInferenceCostUsd(agent.model, result.usage),
+        sandboxRuntimeMs: 0,
+        ...optionalSessionId(invocationInput.context),
+      });
 
       await sendJson(options.response, 200, {
         ok: true,
@@ -1043,6 +1248,20 @@ async function handleLocalRequest(options: LocalRequestOptions): Promise<void> {
       await sendJson(options.response, 200, {
         ok: true,
         logs: await options.host.logs.entries(),
+      });
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/_anvil/usage") {
+      const since = parseLocalSince(url.searchParams.get("since"));
+      const summary = await options.host.usage.summarize({
+        ...(since === undefined ? {} : { sinceMs: since }),
+        ...usageBudgetOptions(options.host.env),
+      });
+
+      await sendJson(options.response, 200, {
+        ok: true,
+        usage: summary,
       });
       return;
     }
@@ -1776,11 +1995,24 @@ async function runRuntimeRequest(
   options: LocalRequestOptions,
   runtimeRequest: RuntimeRequest,
 ): Promise<void> {
+  const startedAt = Date.now();
   const response = await handleRuntimeRequest(
     options.app,
     options.host,
     runtimeRequest,
   );
+  await options.host.usage.record({
+    scope: "cell",
+    name: runtimeRequestName(runtimeRequest),
+    kind: runtimeRequest.kind,
+    durationMs: Date.now() - startedAt,
+    invocations: 1,
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    estimatedCostUsd: 0,
+    sandboxRuntimeMs: 0,
+  });
 
   await sendRuntimeResponse(options.response, response);
 }
@@ -1818,6 +2050,9 @@ async function inspectLocalRuntime(
 ): Promise<Record<string, unknown>> {
   const auth = await options.host.auth.current();
   const logs = await options.host.logs.entries();
+  const usage = await options.host.usage.summarize({
+    ...usageBudgetOptions(options.host.env),
+  });
 
   return {
     ok: true,
@@ -1829,6 +2064,11 @@ async function inspectLocalRuntime(
       currentUser: auth?.userId ?? null,
     },
     database: await options.host.db.inspect(),
+    usage: {
+      totals: usage.totals,
+      topConsumers: usage.topConsumers,
+      budgets: usage.budgets,
+    },
     recentErrors: logs.filter((entry) => entry.level === "error").slice(-10),
   };
 }
@@ -1999,6 +2239,102 @@ function readInputFromBody(body: unknown): unknown {
   return isObject(body) && "input" in body ? body.input : body;
 }
 
+function runtimeRequestName(request: RuntimeRequest): string {
+  return request.kind === "endpoint"
+    ? `${request.method} ${request.path}`
+    : request.name;
+}
+
+function optionalSessionId(
+  context: Record<string, unknown> | undefined,
+): { sessionId?: string } {
+  const sessionId = context?.sessionId;
+
+  return typeof sessionId === "string" ? { sessionId } : {};
+}
+
+function estimateInferenceCostUsd(
+  model: AgentModelConfig,
+  usage: AgentTokenUsage,
+): number {
+  const inputRate = numberFromModelOption(model, "inputTokenUsdPerMillion");
+  const outputRate = numberFromModelOption(model, "outputTokenUsdPerMillion");
+
+  return (
+    ((usage.inputTokens ?? 0) / 1_000_000) * inputRate +
+    ((usage.outputTokens ?? 0) / 1_000_000) * outputRate
+  );
+}
+
+function numberFromModelOption(
+  model: AgentModelConfig,
+  key: string,
+): number {
+  const value = model.options?.[key];
+
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : 0;
+}
+
+function numberFromEnv(env: LocalEnvAdapter, name: string): number | undefined {
+  const value = env.get(name);
+
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+function usageBudgetOptions(env: LocalEnvAdapter): {
+  budgetUsd?: number;
+  sessionBudgetUsd?: number;
+} {
+  const budgetUsd = numberFromEnv(env, "ANVIL_USAGE_DAILY_BUDGET_USD");
+  const sessionBudgetUsd = numberFromEnv(
+    env,
+    "ANVIL_USAGE_SESSION_BUDGET_USD",
+  );
+
+  return {
+    ...(budgetUsd === undefined ? {} : { budgetUsd }),
+    ...(sessionBudgetUsd === undefined ? {} : { sessionBudgetUsd }),
+  };
+}
+
+function parseLocalSince(value: string | null): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  if (/^\d+$/.test(value)) {
+    return Number(value);
+  }
+
+  const match = /^(\d+)(s|m|h|d)$/.exec(value);
+
+  if (!match) {
+    return undefined;
+  }
+
+  const amount = Number(match[1]);
+  const unit = match[2];
+  if (unit === undefined) {
+    return undefined;
+  }
+  const multipliers: Record<string, number> = {
+    s: 1_000,
+    m: 60_000,
+    h: 60 * 60_000,
+    d: 24 * 60 * 60_000,
+  };
+
+  return Date.now() - amount * (multipliers[unit] ?? 0);
+}
+
 async function readJsonRequest(request: IncomingMessage): Promise<unknown> {
   const body = await readRawBody(request);
 
@@ -2100,6 +2436,99 @@ function cloneRecords(records: DatabaseRecord[]): DatabaseRecord[] {
 
 function cloneRecord(record: DatabaseRecord): DatabaseRecord {
   return structuredClone(record) as DatabaseRecord;
+}
+
+function emptyUsageTotals(): LocalUsageTotals {
+  return {
+    invocations: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    estimatedCostUsd: 0,
+    sandboxRuntimeMs: 0,
+  };
+}
+
+function addUsage(totals: LocalUsageTotals, event: LocalUsageEvent): void {
+  totals.invocations += event.invocations;
+  totals.inputTokens += event.inputTokens;
+  totals.outputTokens += event.outputTokens;
+  totals.totalTokens += event.totalTokens;
+  totals.estimatedCostUsd += event.estimatedCostUsd;
+  totals.sandboxRuntimeMs += event.sandboxRuntimeMs;
+}
+
+function setUsageBucket(
+  buckets: Map<string, LocalUsageTotals>,
+  bucket: string,
+): LocalUsageTotals {
+  const totals = emptyUsageTotals();
+  buckets.set(bucket, totals);
+
+  return totals;
+}
+
+function hourlyBucket(timestamp: string): string {
+  const date = new Date(timestamp);
+
+  if (Number.isNaN(date.getTime())) {
+    return "invalid";
+  }
+
+  date.setUTCMinutes(0, 0, 0);
+
+  return date.toISOString();
+}
+
+function usageBudgetSummaries(options: {
+  totals: LocalUsageTotals;
+  events: LocalUsageEvent[];
+  budgetUsd?: number;
+  sessionBudgetUsd?: number;
+}): LocalUsageSummary["budgets"] {
+  const budgets: LocalUsageSummary["budgets"] = [];
+
+  if (options.budgetUsd !== undefined) {
+    budgets.push({
+      id: "daily",
+      status:
+        options.totals.estimatedCostUsd > options.budgetUsd ? "warning" : "ok",
+      limitUsd: options.budgetUsd,
+      actualUsd: options.totals.estimatedCostUsd,
+      message:
+        options.totals.estimatedCostUsd > options.budgetUsd
+          ? "Daily usage budget exceeded; require approval before resuming costly agent work."
+          : "Daily usage is within budget.",
+    });
+  }
+
+  if (options.sessionBudgetUsd !== undefined) {
+    const bySession = new Map<string, number>();
+
+    for (const event of options.events) {
+      if (event.sessionId) {
+        bySession.set(
+          event.sessionId,
+          (bySession.get(event.sessionId) ?? 0) + event.estimatedCostUsd,
+        );
+      }
+    }
+
+    const highest = Math.max(0, ...bySession.values());
+
+    budgets.push({
+      id: "session",
+      status: highest > options.sessionBudgetUsd ? "warning" : "ok",
+      limitUsd: options.sessionBudgetUsd,
+      actualUsd: highest,
+      message:
+        highest > options.sessionBudgetUsd
+          ? "A session usage budget was exceeded; resume should be approval-gated."
+          : "Session usage is within budget.",
+    });
+  }
+
+  return budgets;
 }
 
 function nextId(table: string, rows: DatabaseRecord[]): string {

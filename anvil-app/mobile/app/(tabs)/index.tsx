@@ -201,7 +201,7 @@ export default function WorkScreen() {
     >
       <ScreenHeader
         eyebrow={activeWorkspace?.name ?? 'No workspace'}
-        title="Home"
+        title="Anvil"
         right={
           <StatusPill label={health.label} color={health.color} background={health.background} />
         }
@@ -228,11 +228,11 @@ export default function WorkScreen() {
       )}
 
       <AttentionPanel
-        label={live ? 'LIVE COMPANION' : connection ? 'COMPANION' : 'SETUP'}
+        label={live ? 'LIVE' : connection ? 'HOST' : 'SETUP'}
         title={homeHeadline(workflow?.headline, topQueueItem)}
         detail={
           homeDetail(workflow?.detail, activeWorkspace?.name, topQueueItem) ??
-          'Scan the desktop pairing QR, then use this phone for approvals, handoffs, and quick starts.'
+          'Pair a Mac to approve commands, launch runs, and keep moving from this phone.'
         }
         tone={attentionTone}
         right={
@@ -257,11 +257,7 @@ export default function WorkScreen() {
             style={nextActionStyle}
           >
             <View style={nextActionIconStyle}>
-              <MaterialIcons
-                name={queueIcon(topQueueItem)}
-                size={17}
-                color={companionColors.ink}
-              />
+              <MaterialIcons name={queueIcon(topQueueItem)} size={17} color={companionColors.ink} />
             </View>
             <View style={{ flex: 1, gap: 2 }}>
               <Text numberOfLines={1} style={nextActionTitleStyle}>
@@ -287,103 +283,6 @@ export default function WorkScreen() {
           </View>
         )}
       </AttentionPanel>
-
-      <SignalGrid>
-        <SignalTile
-          label="Needs"
-          value={workflow?.counts?.pendingApprovals ?? 0}
-          detail={approvals.length > 0 ? 'decisions' : 'clear'}
-          tone={approvals.length > 0 ? 'red' : 'green'}
-          onPress={() => router.navigate('/(tabs)/approvals')}
-        />
-        <SignalTile
-          label="Running"
-          value={workflow?.counts?.busySessions ?? 0}
-          detail={activeSessions.length > 0 ? 'in progress' : 'idle'}
-          tone={activeSessions.length > 0 ? 'blue' : 'neutral'}
-        />
-        <SignalTile
-          label="Threads"
-          value={workflow?.counts?.recentThreads ?? overview?.threads.length ?? 0}
-          detail="recent"
-          tone="cyan"
-          onPress={() => router.navigate('/(tabs)/chats')}
-        />
-      </SignalGrid>
-
-      <View style={sectionStyle}>
-        <SectionHeader title="Workspace health" />
-        <SignalGrid>
-          <SignalTile
-            label="Review"
-            value={workspaceHealth?.reviewFindingCount ?? 0}
-            detail="findings"
-            tone={(workspaceHealth?.reviewFindingCount ?? 0) > 0 ? 'amber' : 'green'}
-          />
-          <SignalTile
-            label="Security"
-            value={workspaceHealth?.securityFindingCount ?? 0}
-            detail={
-              (workspaceHealth?.criticalCount ?? 0) > 0
-                ? `${workspaceHealth?.criticalCount} critical`
-                : 'findings'
-            }
-            tone={(workspaceHealth?.securityFindingCount ?? 0) > 0 ? 'red' : 'green'}
-          />
-          <SignalTile
-            label="Work"
-            value={(workspaceHealth?.lifecycleItemCount ?? 0) + (workspaceHealth?.workItemCount ?? 0)}
-            detail="tracked"
-            tone={(workspaceHealth?.lifecycleItemCount ?? 0) > 0 ? 'purple' : 'neutral'}
-          />
-        </SignalGrid>
-        {workspaceHealth?.signals.length ? (
-          workspaceHealth.signals.slice(0, 4).map((signal) => (
-            <WorkspaceSignalCard
-              key={signal.id}
-              signal={signal}
-              onPress={() => router.push(healthSignalHref(signal.id))}
-            />
-          ))
-        ) : (
-          <EmptyState
-            title="No open signals"
-            body={
-              activeWorkspace
-                ? 'No review findings, security findings, or tracked work need attention.'
-                : 'Pair a Mac and choose a workspace to load health signals.'
-            }
-          />
-        )}
-      </View>
-
-      {error && (
-        <Panel tone="danger">
-          <Text selectable style={{ color: companionColors.red, fontWeight: '800' }}>
-            {error}
-          </Text>
-        </Panel>
-      )}
-
-      {connections.length > 1 && (
-        <View style={sectionStyle}>
-          <SectionHeader title="Hosts" />
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={hostRailStyle}
-          >
-            {connections.map((host) => (
-              <HostChip
-                key={host.id}
-                host={host}
-                active={host.id === connection?.id}
-                onPress={() => void selectHost(host.id)}
-              />
-            ))}
-          </ScrollView>
-        </View>
-      )}
 
       <Panel tone="dark" style={launchPanelStyle}>
         <View style={launchHeaderStyle}>
@@ -433,7 +332,7 @@ export default function WorkScreen() {
             <TextInput
               value={draft}
               onChangeText={setDraft}
-              placeholder="Review the current diff, find risk, write the next step..."
+              placeholder="Review the diff, find risk, write the next step…"
               placeholderTextColor={companionColors.darkMuted}
               multiline
               style={darkInputStyle}
@@ -441,14 +340,17 @@ export default function WorkScreen() {
             <ActionButton
               label={
                 launchingActionId === 'custom'
-                  ? 'Launching...'
+                  ? 'Launching…'
                   : planFirst
-                    ? 'Start plan'
-                    : 'Start run'
+                    ? 'Start Plan'
+                    : 'Start Run'
               }
               onPress={() => void launchDraft()}
               disabled={!draft.trim() || Boolean(launchingActionId)}
-              style={{ backgroundColor: companionColors.accent, borderColor: companionColors.accent }}
+              style={{
+                backgroundColor: companionColors.accent,
+                borderColor: companionColors.accent,
+              }}
               textStyle={{ color: companionColors.dark }}
             />
           </>
@@ -481,6 +383,107 @@ export default function WorkScreen() {
         )}
       </Panel>
 
+      <SignalGrid>
+        <SignalTile
+          label="Needs"
+          value={workflow?.counts?.pendingApprovals ?? 0}
+          detail={approvals.length > 0 ? 'decisions' : 'clear'}
+          tone={approvals.length > 0 ? 'red' : 'green'}
+          onPress={() => router.navigate('/(tabs)/approvals')}
+        />
+        <SignalTile
+          label="Running"
+          value={workflow?.counts?.busySessions ?? 0}
+          detail={activeSessions.length > 0 ? 'in progress' : 'idle'}
+          tone={activeSessions.length > 0 ? 'blue' : 'neutral'}
+        />
+        <SignalTile
+          label="Threads"
+          value={workflow?.counts?.recentThreads ?? overview?.threads.length ?? 0}
+          detail="recent"
+          tone="cyan"
+          onPress={() => router.navigate('/(tabs)/chats')}
+        />
+      </SignalGrid>
+
+      <View style={sectionStyle}>
+        <SectionHeader title="Workspace health" />
+        <SignalGrid>
+          <SignalTile
+            label="Review"
+            value={workspaceHealth?.reviewFindingCount ?? 0}
+            detail="findings"
+            tone={(workspaceHealth?.reviewFindingCount ?? 0) > 0 ? 'amber' : 'green'}
+          />
+          <SignalTile
+            label="Security"
+            value={workspaceHealth?.securityFindingCount ?? 0}
+            detail={
+              (workspaceHealth?.criticalCount ?? 0) > 0
+                ? `${workspaceHealth?.criticalCount} critical`
+                : 'findings'
+            }
+            tone={(workspaceHealth?.securityFindingCount ?? 0) > 0 ? 'red' : 'green'}
+          />
+          <SignalTile
+            label="Work"
+            value={
+              (workspaceHealth?.lifecycleItemCount ?? 0) + (workspaceHealth?.workItemCount ?? 0)
+            }
+            detail="tracked"
+            tone={(workspaceHealth?.lifecycleItemCount ?? 0) > 0 ? 'purple' : 'neutral'}
+          />
+        </SignalGrid>
+        {workspaceHealth?.signals.length ? (
+          workspaceHealth.signals
+            .slice(0, 4)
+            .map((signal) => (
+              <WorkspaceSignalCard
+                key={signal.id}
+                signal={signal}
+                onPress={() => router.push(healthSignalHref(signal.id))}
+              />
+            ))
+        ) : (
+          <EmptyState
+            title="No open signals"
+            body={
+              activeWorkspace
+                ? 'No review findings, security findings, or tracked work need attention.'
+                : 'Pair a Mac and choose a workspace to load health signals.'
+            }
+          />
+        )}
+      </View>
+
+      {error && (
+        <Panel tone="danger">
+          <Text selectable style={{ color: companionColors.red, fontWeight: '800' }}>
+            {error}
+          </Text>
+        </Panel>
+      )}
+
+      {connections.length > 1 && (
+        <View style={sectionStyle}>
+          <SectionHeader title="Hosts" />
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={hostRailStyle}
+          >
+            {connections.map((host) => (
+              <HostChip
+                key={host.id}
+                host={host}
+                active={host.id === connection?.id}
+                onPress={() => void selectHost(host.id)}
+              />
+            ))}
+          </ScrollView>
+        </View>
+      )}
+
       <View style={sectionStyle}>
         <SectionHeader title="Quick starts" />
         <View style={quickActionGridStyle}>
@@ -500,14 +503,16 @@ export default function WorkScreen() {
       <View style={sectionStyle}>
         <SectionHeader title="Recent work" count={recentRuns.length} />
         {recentRuns.length > 0 ? (
-          recentRuns.slice(0, 6).map((run) => (
-            <ActivityRunCard
-              key={run.id}
-              run={run}
-              onOpenThread={(threadId) => router.push(threadHref(threadId))}
-              onOpenDesktop={openOnDesktop}
-            />
-          ))
+          recentRuns
+            .slice(0, 6)
+            .map((run) => (
+              <ActivityRunCard
+                key={run.id}
+                run={run}
+                onOpenThread={(threadId) => router.push(threadHref(threadId))}
+                onOpenDesktop={openOnDesktop}
+              />
+            ))
         ) : (
           <EmptyState
             title="No runs yet"
@@ -607,11 +612,7 @@ function WorkspaceSignalCard({
   const source = signalSource(signal);
 
   return (
-    <TouchableOpacity
-      activeOpacity={0.78}
-      onPress={onPress}
-      style={workspaceSignalStyle}
-    >
+    <TouchableOpacity activeOpacity={0.78} onPress={onPress} style={workspaceSignalStyle}>
       <View style={[workspaceSignalIconStyle, { backgroundColor: source.background }]}>
         <MaterialIcons name={source.icon} size={18} color={source.color} />
       </View>
@@ -1070,7 +1071,7 @@ function homeDetail(
 
 function titleFromMessage(message: string): string {
   const trimmed = message.replace(/\s+/g, ' ').trim();
-  return trimmed.length > 44 ? `${trimmed.slice(0, 41)}...` : trimmed || 'Remote prompt';
+  return trimmed.length > 44 ? `${trimmed.slice(0, 41)}…` : trimmed || 'Remote prompt';
 }
 
 function hostLabel(baseUrl: string): string {
@@ -1151,7 +1152,10 @@ const QUEUE_TONES: Record<
   low: { color: companionColors.subtle, background: companionColors.surfaceMuted },
 };
 
-const RUN_STATUS_TONES: Record<AgentRunStatus, { color: CompanionColor; background: CompanionColor }> = {
+const RUN_STATUS_TONES: Record<
+  AgentRunStatus,
+  { color: CompanionColor; background: CompanionColor }
+> = {
   queued: { color: companionColors.subtle, background: companionColors.surfaceMuted },
   running: { color: companionColors.blue, background: companionColors.blueSoft },
   completed: { color: companionColors.green, background: companionColors.greenSoft },
@@ -1163,7 +1167,7 @@ const connectionBarStyle = {
   flexDirection: 'row' as const,
   alignItems: 'center' as const,
   gap: 8,
-  borderRadius: 10,
+  borderRadius: 8,
   borderWidth: 1,
   borderColor: companionColors.borderSubtle,
   backgroundColor: companionColors.surface,
@@ -1180,7 +1184,7 @@ const nextActionStyle = {
   flexDirection: 'row' as const,
   alignItems: 'center' as const,
   gap: 10,
-  borderRadius: 10,
+  borderRadius: 8,
   borderWidth: 1,
   borderColor: companionColors.borderSubtle,
   backgroundColor: companionColors.surfaceMuted,
@@ -1210,7 +1214,7 @@ const hostChipStyle = {
   flexDirection: 'row' as const,
   alignItems: 'center' as const,
   gap: 8,
-  borderRadius: 10,
+  borderRadius: 8,
   borderWidth: 1,
   borderColor: companionColors.borderSubtle,
   backgroundColor: companionColors.surface,
@@ -1253,7 +1257,7 @@ const heroStatusIconStyle = {
   justifyContent: 'center' as const,
   width: 36,
   height: 36,
-  borderRadius: 10,
+  borderRadius: 8,
   backgroundColor: companionColors.darkIconSurface,
 };
 const consoleStripStyle = {
@@ -1286,7 +1290,7 @@ const modeRowStyle = {
   flexDirection: 'row' as const,
   borderWidth: 1,
   borderColor: companionColors.darkBorder,
-  borderRadius: 10,
+  borderRadius: 8,
   padding: 3,
   backgroundColor: companionColors.darkControl,
 };
@@ -1311,7 +1315,7 @@ const repoChipStyle = {
   gap: 6,
   maxWidth: 190,
   minHeight: 38,
-  borderRadius: 999,
+  borderRadius: 8,
   borderWidth: 1,
   borderColor: companionColors.darkBorder,
   backgroundColor: companionColors.darkControl,

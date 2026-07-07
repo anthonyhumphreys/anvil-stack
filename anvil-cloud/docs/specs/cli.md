@@ -183,6 +183,67 @@ JSON output:
 }
 ```
 
+### `anvil-cloud auth test`
+
+Runs the auth conformance kit locally and emits a CI-friendly report.
+
+```sh
+anvil-cloud auth test --json
+```
+
+The suite proves that the local IdP and OIDC verification path agree on the
+same auth contract:
+
+- local ES256 JWT issue and verification;
+- runtime auth policy for public, required, and role-gated handlers;
+- OIDC discovery plus JWKS verification;
+- expired-token, issuer, and audience rejection;
+- configured claim mapping for user id, email, and roles;
+- fixture config examples for Auth0, Entra ID, Cognito, and Keycloak.
+
+JSON output:
+
+```json
+{
+  "ok": true,
+  "summary": {
+    "passed": 13,
+    "failed": 0
+  },
+  "checks": [
+    {
+      "id": "local.issueAndVerify",
+      "status": "pass",
+      "provider": "local",
+      "message": "Local IdP issued and verified an ES256 JWT."
+    }
+  ],
+  "fixtures": [
+    {
+      "provider": "auth0",
+      "issuer": "https://tenant.us.auth0.com/",
+      "audience": "https://api.example.test",
+      "claims": {
+        "userId": "sub",
+        "email": "email",
+        "roles": "https://anvil.dev/roles"
+      },
+      "env": {
+        "ANVIL_AUTH_ISSUER": "https://tenant.us.auth0.com/",
+        "ANVIL_AUTH_AUDIENCE": "https://api.example.test",
+        "ANVIL_AUTH_USER_ID_CLAIM": "sub",
+        "ANVIL_AUTH_EMAIL_CLAIM": "email",
+        "ANVIL_AUTH_ROLES_CLAIM": "https://anvil.dev/roles"
+      }
+    }
+  ]
+}
+```
+
+Non-zero failures set exit code `1`. The command does not contact real Auth0,
+Entra, Cognito, or Keycloak tenants; provider entries are fixture configs kept
+green against mock OIDC endpoints so CI stays local and secret-free.
+
 ### `anvil-cloud inspect`
 
 Inspects local or remote runtime state.
@@ -221,6 +282,32 @@ error cause.
 `--limit` must be a positive whole number.
 The AWS log reader follows CloudWatch pagination until the requested limit is
 reached or there are no more pages.
+
+### `anvil-cloud usage --local`
+
+Reads local runtime usage events from `.anvil/local/usage.ndjson` and emits a
+provider-neutral summary for automation.
+
+```sh
+anvil-cloud usage --local --json
+anvil-cloud usage --local --since 1h --json
+```
+
+The local report includes:
+
+- per-Cell and per-Agent invocation counts;
+- model token totals (`inputTokens`, `outputTokens`, `totalTokens`);
+- provider/model metadata when available;
+- estimated cost in USD, defaulting to zero unless model cost rates are
+  configured;
+- sandbox runtime milliseconds;
+- hourly time-series buckets and top consumers;
+- budget warnings from `ANVIL_USAGE_DAILY_BUDGET_USD` and
+  `ANVIL_USAGE_SESSION_BUDGET_USD`.
+
+Budget warnings never silently kill an agent. A budget breach is explicit
+review evidence so a future approval-gated resume can be wired through the
+supervision machinery.
 
 ### `anvil-cloud usage --preview`
 

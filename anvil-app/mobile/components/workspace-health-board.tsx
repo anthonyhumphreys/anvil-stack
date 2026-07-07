@@ -113,7 +113,7 @@ export function WorkspaceHealthBoard() {
         detail={
           activeWorkspace
             ? `${openSignalCount} open signal${openSignalCount === 1 ? '' : 's'} from the desktop workspace.`
-            : 'Choose a workspace on the Mac to load reviews, security, lifecycle, and work items.'
+            : 'Choose a desktop workspace to load reviews, security, lifecycle, and work items.'
         }
         right={
           <StatusPill
@@ -136,7 +136,9 @@ export function WorkspaceHealthBoard() {
         <SignalTile
           label="Security"
           value={health?.securityFindingCount ?? 0}
-          detail={(health?.criticalCount ?? 0) > 0 ? `${health?.criticalCount} critical` : 'findings'}
+          detail={
+            (health?.criticalCount ?? 0) > 0 ? `${health?.criticalCount} critical` : 'findings'
+          }
           tone={(health?.securityFindingCount ?? 0) > 0 ? 'red' : 'green'}
           selected={filter === 'security'}
           onPress={() => setFilter(filter === 'security' ? 'all' : 'security')}
@@ -145,7 +147,11 @@ export function WorkspaceHealthBoard() {
           label="Work"
           value={(health?.lifecycleItemCount ?? 0) + (health?.workItemCount ?? 0)}
           detail="tracked"
-          tone={(health?.lifecycleItemCount ?? 0) + (health?.workItemCount ?? 0) > 0 ? 'purple' : 'neutral'}
+          tone={
+            (health?.lifecycleItemCount ?? 0) + (health?.workItemCount ?? 0) > 0
+              ? 'purple'
+              : 'neutral'
+          }
           selected={filter === 'work_item' || filter === 'lifecycle'}
           onPress={() => setFilter(filter === 'work_item' ? 'all' : 'work_item')}
         />
@@ -177,7 +183,7 @@ export function WorkspaceHealthBoard() {
         <SectionHeader
           title={filter === 'all' ? 'Open signals' : `${filterLabel(filter)} signals`}
           count={filteredSignals.length}
-          detail="Tap a signal for evidence, files, remediation, and a plan action."
+          detail="Evidence, files, remediation, and plan actions."
         />
         {filteredSignals.length > 0 ? (
           filteredSignals.map((signal) => <WorkSignalRow key={signal.id} signal={signal} />)
@@ -228,7 +234,7 @@ export function WorkspaceHealthBoard() {
                 <Text style={bodyStyle}>
                   {connection
                     ? 'Plans need an active desktop workspace with at least one repo.'
-                    : 'Pairing connects this surface to desktop reviews, security, and work items.'}
+                    : 'Pairing connects this phone to desktop reviews, security, and work items.'}
                 </Text>
               </View>
               <ActionButton
@@ -336,9 +342,12 @@ function signalTone(priority: MobileWorkspaceSignal['priority']): {
   color: CompanionColor;
   background: CompanionColor;
 } {
-  if (priority === 'critical') return { color: companionColors.red, background: companionColors.redSoft };
-  if (priority === 'high') return { color: companionColors.accentInk, background: companionColors.accentSoft };
-  if (priority === 'normal') return { color: companionColors.blue, background: companionColors.blueSoft };
+  if (priority === 'critical')
+    return { color: companionColors.red, background: companionColors.redSoft };
+  if (priority === 'high')
+    return { color: companionColors.accentInk, background: companionColors.accentSoft };
+  if (priority === 'normal')
+    return { color: companionColors.blue, background: companionColors.blueSoft };
   return { color: companionColors.subtle, background: companionColors.surfaceMuted };
 }
 

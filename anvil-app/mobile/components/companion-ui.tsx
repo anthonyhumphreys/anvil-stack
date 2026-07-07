@@ -284,7 +284,12 @@ export function StatusPill({
 }
 
 export const screenStyle = { backgroundColor: companionColors.screen };
-export const scrollContentStyle = { padding: 20, gap: 16, paddingBottom: 36 };
+export const scrollContentStyle = {
+  paddingHorizontal: 16,
+  paddingTop: 14,
+  gap: 14,
+  paddingBottom: 34,
+};
 export const titleStyle = {
   color: companionColors.ink,
   fontSize: 17,
@@ -327,7 +332,7 @@ const headerStyle = {
 };
 const screenTitleStyle = {
   color: companionColors.ink,
-  fontSize: 32,
+  fontSize: 30,
   fontWeight: '900' as const,
   letterSpacing: 0,
 };
@@ -343,9 +348,9 @@ const panelBaseStyle = {
   padding: 16,
   gap: 12,
   shadowColor: '#0f172a',
-  shadowOpacity: 0.05,
-  shadowRadius: 18,
-  shadowOffset: { width: 0, height: 10 },
+  shadowOpacity: 0.045,
+  shadowRadius: 12,
+  shadowOffset: { width: 0, height: 6 },
   elevation: 2,
 };
 const compactPanelStyle = { padding: 12, gap: 8 };
@@ -551,13 +556,13 @@ const blockedNoticeTextStyle = {
 };
 const attentionPanelStyle = {
   borderWidth: 1,
-  borderRadius: 12,
+  borderRadius: 8,
   padding: 16,
   gap: 14,
   shadowColor: '#0f172a',
-  shadowOpacity: 0.06,
-  shadowRadius: 20,
-  shadowOffset: { width: 0, height: 12 },
+  shadowOpacity: 0.05,
+  shadowRadius: 14,
+  shadowOffset: { width: 0, height: 8 },
   elevation: 2,
 };
 const attentionHeaderStyle = {
