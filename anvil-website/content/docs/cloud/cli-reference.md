@@ -96,7 +96,10 @@ Creates a starter Cell:
 
 ```bash
 anvil cloud new notes
+pnpm dlx @anvilstack/cloud-cli new notes
 ```
+
+The package name is `@anvilstack/cloud-cli`; the binary name is `anvil-cloud`.
 
 JSON output:
 
@@ -104,9 +107,25 @@ JSON output:
 {
   "ok": true,
   "cell": "notes",
+  "template": "crud",
   "path": "./notes",
-  "next": ["cd notes", "anvil cloud dev"]
+  "lensUrl": "http://localhost:8787/_anvil/lens",
+  "next": ["cd notes", "anvil-cloud dev"]
 }
+```
+
+Human mode scaffolds, installs dependencies with `pnpm install --ignore-scripts`,
+runs `git init`, prints the Lens URL, and starts the local dev server. Pass
+`--no-install`, `--no-git`, or `--no-start` to split the flow. `--json` stays
+finite by default so coding agents get the project path, Lens URL, bootstrap
+plan, and next commands without being trapped inside a long-running server.
+
+Useful starter options:
+
+```txt
+--client vite-react|expo-router|headless
+--template crud|auth|workflow|service|agent|sandbox
+--package-manager pnpm|npm|bun
 ```
 
 ## `anvil cloud dev`
