@@ -1,7 +1,16 @@
 #!/usr/bin/env node
 import { execFile } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
+import os from "node:os";
 import { createServer } from "node:net";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -23,19 +32,25 @@ import {
   buildCell,
   checkCell,
   createAnvilCellGraph,
+  diffCellManifests,
   validateAnvilCellGraph,
   type BuilderDiagnostic,
   type BuildResult,
   type CellManifest,
+  type ManifestDiffResult,
 } from "@anvil-cloud/builder";
 import {
   AuthError,
   LocalIdentityProvider,
+  runAuthConformanceSuite,
+  type AuthConformanceResult,
   type LocalUser,
 } from "@anvil-cloud/auth";
 import {
   createLocalRuntimeHost,
+  LocalUsageMeter,
   startLocalRuntimeServer,
+  type LocalUsageSummary,
 } from "@anvil-cloud/local";
 import {
   AgentProviderRegistry,
@@ -54,6 +69,13 @@ type CliContext = {
 };
 
 type StarterClientKind = "vite-react" | "expo-router" | "headless";
+type StarterTemplate =
+  | "agent"
+  | "auth"
+  | "crud"
+  | "sandbox"
+  | "service"
+  | "workflow";
 
 type DoctorStatus = "ok" | "info" | "warning" | "error";
 
@@ -128,6 +150,9 @@ export async function main(argv: string[]): Promise<void> {
     case "build":
       await commandBuild(context);
       return;
+    case "manifest":
+      await commandManifest(context, subcommand);
+      return;
     case "doctor":
       await commandDoctor(context);
       return;
@@ -170,6 +195,9 @@ export async function main(argv: string[]): Promise<void> {
     case "agents":
       await commandAgents(context, subcommand, maybeArg);
       return;
+    case "channels":
+      await commandChannels(context, subcommand);
+      return;
     case "workflows":
       await commandWorkflows(context, subcommand, maybeArg);
       return;
@@ -191,6 +219,117 @@ export async function main(argv: string[]): Promise<void> {
         `Unknown command '${command}'.`,
       );
       process.exitCode = 2;
+  }
+}
+
+async function commandChannels(
+  context: CliContext,
+  subcommand: string | undefined,
+): Promise<void> {
+  switch (subcommand) {
+    case "simulate":
+      await commandChannelsSimulate(context);
+      return;
+    default:
+      writeJsonOrHuman(
+        context,
+        {
+          ok: false,
+          errors: [
+            {
+              code: "INVALID_USAGE",
+              message:
+                "Usage: anvil-cloud channels simulate --channel <name> --input <text> [--sender <id>] [--thread <id>]",
+            },
+          ],
+        },
+        "Usage: anvil-cloud channels simulate --channel <name> --input <text> [--sender <id>] [--thread <id>]",
+      );
+      process.exitCode = 2;
+  }
+}
+
+async function commandChannelsSimulate(context: CliContext): Promise<void> {
+  const channel = context.values.get("channel");
+  const input = context.values.get("input");
+
+  if (!channel || !input) {
+    writeJsonOrHuman(
+      context,
+      {
+        ok: false,
+        errors: [
+          {
+            code: "INVALID_USAGE",
+            message:
+              "Channel simulation requires --channel <name> and --input <text>.",
+          },
+        ],
+      },
+      "Channel simulation requires --channel <name> and --input <text>.",
+    );
+    process.exitCode = 2;
+    return;
+  }
+
+  const runtimeUrl =
+    context.values.get("runtime-url") ?? "http://localhost:8787";
+  const body: Record<string, string> = { channel, input };
+  const sender = context.values.get("sender");
+  const thread = context.values.get("thread");
+
+  if (sender) {
+    body.sender = sender;
+  }
+
+  if (thread) {
+    body.thread = thread;
+  }
+
+  let response: Response;
+
+  try {
+    response = await fetch(
+      new URL("/_anvil/channels/simulate", runtimeUrl).toString(),
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
+  } catch (error) {
+    writeJsonOrHuman(
+      context,
+      {
+        ok: false,
+        errors: [
+          {
+            code: "CHANNEL_RUNTIME_UNREACHABLE",
+            message: `No Anvil Local runtime is reachable at ${runtimeUrl}.`,
+            details: error instanceof Error ? error.message : String(error),
+          },
+        ],
+      },
+      `No Anvil Local runtime is reachable at ${runtimeUrl}.`,
+    );
+    process.exitCode = 5;
+    return;
+  }
+
+  const payload = (await response.json().catch(() => ({
+    ok: false,
+    errors: [
+      {
+        code: "CHANNEL_RUNTIME_INVALID_RESPONSE",
+        message: "Channel simulation returned a non-JSON response.",
+      },
+    ],
+  }))) as unknown;
+
+  writeJsonOrHuman(context, payload, JSON.stringify(payload, null, 2));
+
+  if (!response.ok) {
+    process.exitCode = 1;
   }
 }
 
@@ -535,8 +674,9 @@ async function commandNew(
   }
 
   const clientKind = readStarterClientKind(context);
+  const template = readStarterTemplate(context);
 
-  if (!clientKind) {
+  if (!clientKind || !template) {
     writeJsonOrHuman(
       context,
       {
@@ -545,11 +685,11 @@ async function commandNew(
           {
             code: "INVALID_USAGE",
             message:
-              "Usage: anvil-cloud new <name> [--client vite-react|expo-router|headless]",
+              "Usage: anvil-cloud new <name> [--client vite-react|expo-router|headless] [--template crud|auth|workflow|service|agent|sandbox]",
           },
         ],
       },
-      "Usage: anvil-cloud new <name> [--client vite-react|expo-router|headless]",
+      "Usage: anvil-cloud new <name> [--client vite-react|expo-router|headless] [--template crud|auth|workflow|service|agent|sandbox]",
     );
     process.exitCode = 2;
     return;
@@ -577,6 +717,7 @@ async function commandNew(
     `${JSON.stringify(
       {
         name,
+        template,
         client: {
           kind: clientKind,
         },
@@ -619,6 +760,7 @@ async function commandNew(
       "# Anvil Cell Instructions",
       "",
       "Use Anvil Runtime capabilities through ctx. Do not import provider SDKs directly.",
+      `Template: ${template}. Keep the demonstrated primitive runnable before adding adjacent concepts.`,
       "",
     ].join("\n"),
     "utf8",
@@ -696,41 +838,7 @@ async function commandNew(
   );
   await writeFile(
     path.join(cellDir, "src", "cell.server.ts"),
-    [
-      'import { app, boolean, mutation, query, table, text } from "@anvil-cloud/runtime";',
-      "",
-      "export default app({",
-      "  schema: {",
-      "    todos: table({",
-      "      text: text().min(1).max(500),",
-      "      done: boolean().default(false),",
-      "    }),",
-      "  },",
-      "  capabilities: {",
-      "    database: true,",
-      "  },",
-      "  queries: {",
-      "    listTodos: query({",
-      '      auth: "public",',
-      "      handler: async (ctx) => {",
-      "        return ctx.db.todos.all();",
-      "      },",
-      "    }),",
-      "  },",
-      "  mutations: {",
-      "    addTodo: mutation<{ text: string }>({",
-      '      auth: "public",',
-      "      handler: async (ctx, input) => {",
-      "        return ctx.db.todos.insert({",
-      "          text: input.text,",
-      "          done: false,",
-      "        });",
-      "      },",
-      "    }),",
-      "  },",
-      "});",
-      "",
-    ].join("\n"),
+    createStarterServerSource(template),
     "utf8",
   );
   if (clientKind === "expo-router") {
@@ -1271,6 +1379,7 @@ async function commandNew(
       client: {
         kind: clientKind,
       },
+      template,
       path: `./${name}`,
       next:
         clientKind === "expo-router"
@@ -1283,6 +1392,7 @@ async function commandNew(
     },
     [
       `Created Anvil Cell ${name}`,
+      `Template: ${template}`,
       "",
       "Next steps:",
       `  cd ${name}`,
@@ -1304,6 +1414,311 @@ async function commandBuild(context: CliContext): Promise<void> {
   const result = await buildCell({ rootDir: context.cwd });
 
   writeBuildResult(context, result, "Build complete.");
+}
+
+async function commandManifest(
+  context: CliContext,
+  subcommand: string | undefined,
+): Promise<void> {
+  if (subcommand !== "diff") {
+    writeJsonOrHuman(
+      context,
+      {
+        ok: false,
+        errors: [
+          {
+            code: "INVALID_USAGE",
+            message:
+              "Usage: anvil-cloud manifest diff [--from <manifest>] [--to <manifest>] [--json]",
+          },
+        ],
+      },
+      "Usage: anvil-cloud manifest diff [--from <manifest>] [--to <manifest>] [--json]",
+    );
+    process.exitCode = 2;
+    return;
+  }
+
+  await commandManifestDiff(context);
+}
+
+async function commandManifestDiff(context: CliContext): Promise<void> {
+  const fromPath = path.resolve(
+    context.cwd,
+    context.values.get("from") ?? ".anvil/dist/manifest.json",
+  );
+  const fromResult = await readManifestForDiff(fromPath);
+
+  if (!fromResult.ok) {
+    if (fromResult.kind === "invalid-json") {
+      const relativePath = path.relative(context.cwd, fromPath);
+      writeJsonOrHuman(
+        context,
+        {
+          ok: false,
+          errors: [
+            {
+              code: "MANIFEST_INVALID_JSON",
+              message: `${fromResult.message} (${relativePath})`,
+            },
+          ],
+        },
+        `${fromResult.message} (${relativePath})`,
+      );
+      process.exitCode = 2;
+      return;
+    }
+
+    const payload = {
+      ok: true,
+      status: "no-baseline",
+      from: null,
+      to: null,
+      summary: emptyManifestDiffSummary(),
+      changes: [],
+      diagnostics: [
+        {
+          code: "MANIFEST_BASELINE_NOT_FOUND",
+          severity: "warning",
+          message: `No manifest baseline found at ${path.relative(context.cwd, fromPath)}.`,
+          hint: "Run anvil-cloud build first, or pass --from <manifest>.",
+        },
+      ],
+    };
+
+    writeJsonOrHuman(
+      context,
+      payload,
+      "No manifest baseline found. Run anvil-cloud build first, or pass --from <manifest>.",
+    );
+    return;
+  }
+
+  const next = await loadNextManifestForDiff(context);
+
+  if (!next.ok) {
+    if (next.result) {
+      writeBuildResult(context, next.result, "Manifest diff build complete.");
+    } else if (next.error) {
+      writeJsonOrHuman(
+        context,
+        {
+          ok: false,
+          errors: [next.error],
+        },
+        next.error.message,
+      );
+      process.exitCode = 2;
+    } else {
+      writeJsonOrHuman(
+        context,
+        {
+          ok: false,
+          errors: [
+            {
+              code: "MANIFEST_COMPARE_NOT_FOUND",
+              message: `No comparison manifest found at ${path.relative(context.cwd, next.path)}.`,
+            },
+          ],
+        },
+        `No comparison manifest found at ${path.relative(context.cwd, next.path)}.`,
+      );
+      process.exitCode = 2;
+    }
+    return;
+  }
+
+  const diff = diffCellManifests(fromResult.manifest, next.manifest);
+  const payload = {
+    ok: diff.summary.errors === 0,
+    status:
+      diff.summary.errors > 0
+        ? "block"
+        : diff.changed
+          ? "changed"
+          : "unchanged",
+    from: manifestDiffSource(fromPath, fromResult.manifest),
+    to: manifestDiffSource(next.path, next.manifest),
+    summary: diff.summary,
+    changes: diff.changes,
+    diagnostics: next.diagnostics,
+  };
+
+  writeJsonOrHuman(context, payload, formatManifestDiff(diff));
+
+  if (diff.summary.errors > 0) {
+    process.exitCode = 5;
+  }
+}
+
+type LoadedManifestForDiff =
+  | {
+      ok: true;
+      manifest: CellManifest;
+      path: string;
+      diagnostics: BuilderDiagnostic[];
+    }
+  | {
+      ok: false;
+      path: string;
+      result?: BuildResult;
+      error?: { code: string; message: string };
+    };
+
+async function loadNextManifestForDiff(
+  context: CliContext,
+): Promise<LoadedManifestForDiff> {
+  const explicitTo = context.values.get("to");
+
+  if (explicitTo) {
+    const toPath = path.resolve(context.cwd, explicitTo);
+    const toResult = await readManifestForDiff(toPath);
+
+    if (toResult.ok) {
+      return { ok: true, manifest: toResult.manifest, path: toPath, diagnostics: [] };
+    }
+
+    if (toResult.kind === "invalid-json") {
+      const relativePath = path.relative(context.cwd, toPath);
+      return {
+        ok: false,
+        path: toPath,
+        error: {
+          code: "MANIFEST_INVALID_JSON",
+          message: `${toResult.message} (${relativePath})`,
+        },
+      };
+    }
+
+    return { ok: false, path: toPath };
+  }
+
+  const scratchDir = await mkdtemp(path.join(os.tmpdir(), "anvil-manifest-"));
+
+  try {
+    const result = await buildCell({
+      rootDir: context.cwd,
+      distDir: path.join(scratchDir, "dist"),
+      generatedDir: path.join(scratchDir, "generated"),
+    });
+
+    if (!result.ok || !result.manifest) {
+      return {
+        ok: false,
+        path: path.join(scratchDir, "dist/manifest.json"),
+        result,
+      };
+    }
+
+    return {
+      ok: true,
+      manifest: result.manifest as CellManifest,
+      path: "current source build",
+      diagnostics: result.diagnostics,
+    };
+  } finally {
+    await rm(scratchDir, { recursive: true, force: true });
+  }
+}
+
+type ReadManifestForDiffResult =
+  | { ok: true; manifest: CellManifest }
+  | { ok: false; kind: "not-found" }
+  | { ok: false; kind: "invalid-json"; message: string };
+
+async function readManifestForDiff(
+  manifestPath: string,
+): Promise<ReadManifestForDiffResult> {
+  let raw: string;
+
+  try {
+    raw = await readFile(manifestPath, "utf8");
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "ENOENT"
+    ) {
+      return { ok: false, kind: "not-found" };
+    }
+
+    throw error;
+  }
+
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch (error) {
+    return {
+      ok: false,
+      kind: "invalid-json",
+      message:
+        error instanceof Error
+          ? `Manifest is not valid JSON: ${error.message}`
+          : "Manifest is not valid JSON.",
+    };
+  }
+
+  return isCellManifestForDiff(parsed)
+    ? { ok: true, manifest: parsed }
+    : { ok: false, kind: "not-found" };
+}
+
+function isCellManifestForDiff(value: unknown): value is CellManifest {
+  return (
+    isObject(value) &&
+    value.schemaVersion === "0.1" &&
+    isObject(value.cell) &&
+    isObject(value.schema) &&
+    isObject(value.capabilities) &&
+    Array.isArray(value.queries) &&
+    Array.isArray(value.mutations) &&
+    Array.isArray(value.endpoints) &&
+    Array.isArray(value.jobs) &&
+    Array.isArray(value.workflows) &&
+    Array.isArray(value.services)
+  );
+}
+
+function manifestDiffSource(pathValue: string, manifest: CellManifest) {
+  return {
+    path: pathValue,
+    cell: manifest.cell.name,
+    target: manifest.cell.target,
+  };
+}
+
+function emptyManifestDiffSummary(): ManifestDiffResult["summary"] {
+  return {
+    additions: 0,
+    removals: 0,
+    changes: 0,
+    warnings: 0,
+    errors: 0,
+  };
+}
+
+function formatManifestDiff(diff: ManifestDiffResult): string {
+  if (!diff.changed) {
+    return "Manifest unchanged.";
+  }
+
+  const header = [
+    `Manifest ${diff.summary.errors > 0 ? "blocked" : "changed"}.`,
+    `Additions: ${diff.summary.additions}`,
+    `Removals: ${diff.summary.removals}`,
+    `Changes: ${diff.summary.changes}`,
+    `Warnings: ${diff.summary.warnings}`,
+    `Errors: ${diff.summary.errors}`,
+  ].join("\n");
+  const lines = diff.changes.map(
+    (change) =>
+      `${change.severity.toUpperCase()} ${change.id}: ${change.message}`,
+  );
+
+  return [header, "", ...lines].join("\n");
 }
 
 async function commandReview(context: CliContext): Promise<void> {
@@ -1689,10 +2104,48 @@ async function commandLogs(context: CliContext): Promise<void> {
 }
 
 async function commandUsage(context: CliContext): Promise<void> {
+  if (context.flags.has("local")) {
+    const sinceOption = context.values.get("since");
+    const sinceMs =
+      sinceOption === undefined ? undefined : parseSinceOption(sinceOption);
+
+    if (sinceOption !== undefined && sinceMs === undefined) {
+      writeInvalidUsage(
+        context,
+        "Invalid --since value. Use a duration like 10m, 1h, 30s, or a millisecond timestamp.",
+      );
+      return;
+    }
+
+    const meter = new LocalUsageMeter(
+      path.join(context.cwd, ".anvil/local/usage.ndjson"),
+      "local",
+    );
+    const summary = await meter.summarize({
+      ...(sinceMs === undefined ? {} : { sinceMs }),
+      ...usageBudgetOptionsFromEnv(),
+    });
+
+    writeJsonOrHuman(
+      context,
+      {
+        ok: true,
+        schemaVersion: "0.1",
+        target: {
+          adapter: "local",
+          environment: "local",
+        },
+        usage: summary,
+      },
+      formatLocalUsageSummary(summary),
+    );
+    return;
+  }
+
   if (!context.flags.has("preview")) {
     writeInvalidUsage(
       context,
-      "Only anvil-cloud usage --preview is supported in alpha.",
+      "Usage: anvil-cloud usage --local [--since 1h] [--json] or anvil-cloud usage --preview [--json].",
     );
     return;
   }
@@ -1794,6 +2247,64 @@ async function commandDb(
     "Usage: anvil-cloud db list --local or anvil-cloud db dump <table> --local",
   );
   process.exitCode = 2;
+}
+
+function formatLocalUsageSummary(summary: LocalUsageSummary): string {
+  const totals = summary.totals;
+  const lines = [
+    "Usage visibility for local runtime",
+    `  invocations: ${totals.invocations}`,
+    `  tokens: ${totals.totalTokens} (${totals.inputTokens} in / ${totals.outputTokens} out)`,
+    `  estimated cost: $${totals.estimatedCostUsd.toFixed(6)}`,
+    `  sandbox runtime: ${totals.sandboxRuntimeMs}ms`,
+  ];
+
+  if (summary.topConsumers.length > 0) {
+    lines.push("", "Top consumers:");
+    for (const consumer of summary.topConsumers) {
+      lines.push(
+        `  ${consumer.scope}:${consumer.name} ${consumer.totals.invocations} invocations ${consumer.totals.totalTokens} tokens $${consumer.totals.estimatedCostUsd.toFixed(6)}`,
+      );
+    }
+  }
+
+  if (summary.budgets.length > 0) {
+    lines.push("", "Budgets:");
+    for (const budget of summary.budgets) {
+      lines.push(
+        `  ${budget.id}: ${budget.status} $${budget.actualUsd.toFixed(6)} / $${budget.limitUsd.toFixed(6)}`,
+      );
+    }
+  }
+
+  return lines.join("\n");
+}
+
+function usageBudgetOptionsFromEnv(): {
+  budgetUsd?: number;
+  sessionBudgetUsd?: number;
+} {
+  const budgetUsd = usageBudgetOptionFromEnv("ANVIL_USAGE_DAILY_BUDGET_USD");
+  const sessionBudgetUsd = usageBudgetOptionFromEnv(
+    "ANVIL_USAGE_SESSION_BUDGET_USD",
+  );
+
+  return {
+    ...(budgetUsd === undefined ? {} : { budgetUsd }),
+    ...(sessionBudgetUsd === undefined ? {} : { sessionBudgetUsd }),
+  };
+}
+
+function usageBudgetOptionFromEnv(name: string): number | undefined {
+  const value = process.env[name];
+
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
 async function commandPlan(context: CliContext): Promise<void> {
@@ -2937,6 +3448,16 @@ async function commandAuth(
         );
         return;
       }
+      case "test": {
+        const result = await runAuthConformanceSuite();
+
+        if (!result.ok) {
+          process.exitCode = 1;
+        }
+
+        writeJsonOrHuman(context, result, formatAuthConformanceResult(result));
+        return;
+      }
       default:
         writeJsonOrHuman(
           context,
@@ -2946,11 +3467,11 @@ async function commandAuth(
               {
                 code: "INVALID_USAGE",
                 message:
-                  "Usage: anvil-cloud auth <users|add-user|remove-user|login|token|whoami>",
+                  "Usage: anvil-cloud auth <users|add-user|remove-user|login|token|whoami|test>",
               },
             ],
           },
-          "Usage: anvil-cloud auth <users|add-user|remove-user|login|token|whoami>",
+          "Usage: anvil-cloud auth <users|add-user|remove-user|login|token|whoami|test>",
         );
         process.exitCode = 2;
     }
@@ -3276,22 +3797,41 @@ function readStarterClientKind(context: CliContext): StarterClientKind | null {
   return null;
 }
 
+function readStarterTemplate(context: CliContext): StarterTemplate | null {
+  const value = context.values.get("template") ?? "crud";
+
+  if (
+    value === "agent" ||
+    value === "auth" ||
+    value === "crud" ||
+    value === "sandbox" ||
+    value === "service" ||
+    value === "workflow"
+  ) {
+    return value;
+  }
+
+  return null;
+}
+
 function writeHelp(): void {
   process.stdout.write(
     [
       "Anvil Cloud CLI",
       "",
       "Commands:",
-      "  anvil-cloud new <name> [--client vite-react|expo-router|headless]",
+      "  anvil-cloud new <name> [--client vite-react|expo-router|headless] [--template crud|auth|workflow|service|agent|sandbox]",
       "  anvil-cloud dev [--json] [--agent] [--port 8787] [--client-port 5173]",
       "  anvil-cloud doctor [--json] [--port 8787] [--client-port 5173]",
       "  anvil-cloud check [--json]",
       "  anvil-cloud review [--adapter aws] [--env preview] [--json]",
       "  anvil-cloud build [--json]",
+      "  anvil-cloud manifest diff [--from .anvil/dist/manifest.json] [--to manifest.json] [--json]",
       "  anvil-cloud inspect --local [--json]",
       "  anvil-cloud lens [--port 8787] [--json]",
       "  anvil-cloud logs --local [--json]",
       "  anvil-cloud logs --app <name> --env preview [--since 10m] [--limit 50] [--json]",
+      "  anvil-cloud usage --local [--since 1h] [--json]",
       "  anvil-cloud usage --preview [--json]",
       "  anvil-cloud db list --local [--json]",
       "  anvil-cloud db dump <table> --local [--json]",
@@ -3307,8 +3847,10 @@ function writeHelp(): void {
       "  anvil-cloud auth login <id> [--json]",
       "  anvil-cloud auth token <id> [--ttl 3600] [--json]",
       "  anvil-cloud auth whoami [--json]",
+      "  anvil-cloud auth test [--json]",
       "  anvil-cloud agents discover [--json]",
       "  anvil-cloud agents guardian [--json]",
+      "  anvil-cloud channels simulate --channel <name> --input <text> [--sender <id>] [--thread <id>] [--json]",
       "  anvil-cloud workflows list [--json]",
       "  anvil-cloud workflows show <runId> [--json]",
       "  anvil-cloud workflows run <name> [--input '<json>'] [--json]",
@@ -3651,6 +4193,7 @@ async function checkLocalState(rootDir: string): Promise<DoctorCheck> {
     authKeys: await fileExists(path.join(localDir, "auth/keys.json")),
     database: await fileExists(path.join(localDir, "dev.db")),
     logs: await fileExists(path.join(localDir, "logs.ndjson")),
+    agentSessions: await fileExists(path.join(localDir, "agent-sessions.json")),
     jobs: await fileExists(path.join(localDir, "jobs.json")),
     workflows: await fileExists(path.join(localDir, "workflows.json")),
     services: await fileExists(path.join(localDir, "services.json")),
@@ -4064,6 +4607,21 @@ function formatDoctorChecks(checks: DoctorCheck[]): string {
     .join("\n");
 }
 
+function formatAuthConformanceResult(result: AuthConformanceResult): string {
+  const lines = [
+    result.ok ? "Auth conformance passed." : "Auth conformance failed.",
+    `Passed: ${result.summary.passed}; failed: ${result.summary.failed}.`,
+    ...result.checks.map(
+      (check) => `${check.status} ${check.id}: ${check.message}`,
+    ),
+    `Provider fixtures: ${result.fixtures
+      .map((fixture) => fixture.provider)
+      .join(", ")}.`,
+  ];
+
+  return lines.join("\n");
+}
+
 function writeJsonOrHuman(
   context: CliContext,
   payload: unknown,
@@ -4405,6 +4963,7 @@ function createStarterScripts(
   return {
     check: "anvil-cloud check --json",
     build: "anvil-cloud build --json",
+    "manifest:diff": "anvil-cloud manifest diff --json",
     dev: "anvil-cloud dev --json",
     "inspect:local": "anvil-cloud inspect --local --json",
     "logs:local": "anvil-cloud logs --local --json",
@@ -4412,6 +4971,177 @@ function createStarterScripts(
     "destroy:preview:dry-run": `anvil-cloud destroy --preview --app ${name} --yes --dry-run --json`,
     ...(clientKind === "expo-router" ? { start: "expo start" } : {}),
   };
+}
+
+function createStarterServerSource(template: StarterTemplate): string {
+  const imports = new Set([
+    "app",
+    "boolean",
+    "mutation",
+    "query",
+    "table",
+    "text",
+  ]);
+  const capabilities = ["    database: true,"];
+  const extraBlocks: string[] = [];
+
+  if (template === "auth") {
+    imports.add("userId");
+  }
+
+  if (template === "workflow") {
+    imports.add("workflow");
+    capabilities.push("    workflows: true,");
+    extraBlocks.push(
+      [
+        "  workflows: {",
+        "    onboardUser: workflow({",
+        "      steps: [",
+        "        {",
+        '          name: "seedWelcomeTodo",',
+        "          handler: async (ctx) => {",
+        "            return ctx.db.todos.insert({",
+        '              text: "Welcome to your new Cell",',
+        "              done: false,",
+        "            });",
+        "          },",
+        "        },",
+        "      ],",
+        "    }),",
+        "  },",
+      ].join("\n"),
+    );
+  }
+
+  if (template === "service") {
+    imports.add("service");
+    capabilities.push("    services: true,");
+    extraBlocks.push(
+      [
+        "  services: {",
+        "    heartbeat: service({",
+        '      restart: "always",',
+        "      handler: async (ctx, controls) => {",
+        "        while (!controls.stopping()) {",
+        '          await ctx.log.info("Heartbeat service tick");',
+        "          await new Promise((resolve) => setTimeout(resolve, 30000));",
+        "        }",
+        "      },",
+        "    }),",
+        "  },",
+      ].join("\n"),
+    );
+  }
+
+  if (template === "agent" || template === "sandbox") {
+    imports.add("defineAgent");
+    imports.add("endpoint");
+    const runtime =
+      template === "sandbox"
+        ? [
+            "      runtime: {",
+            '        sandbox: "required",',
+            '        humanApproval: "required",',
+            "      },",
+          ]
+        : [];
+    extraBlocks.push(
+      [
+        "  agents: {",
+        "    support: defineAgent({",
+        '      name: "support",',
+        '      instructions: "Stay inside the declared Cell contract.",',
+        '      model: { provider: "local", model: "stub" },',
+        "      capabilities: {",
+        '        cells: ["read"],',
+        '        filesystem: "none",',
+        '        secrets: "none",',
+        "      },",
+        "      approvals: {",
+        '        requiredFor: ["email.sendExternal"],',
+        "      },",
+        ...runtime,
+        "    }),",
+        "  },",
+        "  endpoints: {",
+        "    chat: endpoint({",
+        '      method: "POST",',
+        '      path: "/api/chat",',
+        '      auth: "public",',
+        '      agent: "support",',
+        "      handler: async () => ({ ok: true }),",
+        "    }),",
+        "  },",
+      ].join("\n"),
+    );
+  }
+
+  const schemaFields =
+    template === "auth"
+      ? [
+          "      text: text().min(1).max(500),",
+          "      done: boolean().default(false),",
+          "      ownerId: userId(),",
+        ]
+      : [
+          "      text: text().min(1).max(500),",
+          "      done: boolean().default(false),",
+        ];
+  const listTodos =
+    template === "auth"
+      ? [
+          "        return ctx.db.todos",
+          '          .where("ownerId", "=", ctx.auth.requireUser())',
+          "          .all();",
+        ]
+      : ["        return ctx.db.todos.all();"];
+  const insertFields =
+    template === "auth"
+      ? [
+          "          text: input.text,",
+          "          done: false,",
+          "          ownerId: ctx.auth.requireUser(),",
+        ]
+      : ["          text: input.text,", "          done: false,"];
+  const auth = template === "auth" ? "required" : "public";
+  const sections = [
+    "  schema: {",
+    "    todos: table({",
+    ...schemaFields,
+    "    }),",
+    "  },",
+    "  capabilities: {",
+    ...capabilities,
+    "  },",
+    "  queries: {",
+    "    listTodos: query({",
+    `      auth: "${auth}",`,
+    "      handler: async (ctx) => {",
+    ...listTodos,
+    "      },",
+    "    }),",
+    "  },",
+    "  mutations: {",
+    "    addTodo: mutation<{ text: string }>({",
+    `      auth: "${auth}",`,
+    "      handler: async (ctx, input) => {",
+    "        return ctx.db.todos.insert({",
+    ...insertFields,
+    "        });",
+    "      },",
+    "    }),",
+    "  },",
+    ...extraBlocks,
+  ];
+
+  return [
+    `import { ${Array.from(imports).sort().join(", ")} } from "@anvil-cloud/runtime";`,
+    "",
+    "export default app({",
+    sections.join("\n"),
+    "});",
+    "",
+  ].join("\n");
 }
 
 function createStarterDependencies(

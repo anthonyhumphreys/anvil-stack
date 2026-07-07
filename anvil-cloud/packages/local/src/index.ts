@@ -1,6 +1,13 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  mkdir,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import http, {
   type IncomingMessage,
   type Server,
@@ -44,6 +51,8 @@ import {
   type WorkflowAdapter,
   type WorkflowRun,
   type AgentApprovalProvider,
+  type AgentModelConfig,
+  type AgentTokenUsage,
 } from "@anvil-cloud/runtime";
 import { createServer as createViteServer, type ViteDevServer } from "vite";
 
@@ -60,6 +69,8 @@ export type LocalRuntimeHost = RuntimeHost & {
   events: LocalEventAdapter;
   jobs: LocalJobAdapter;
   workflows: LocalWorkflowAdapter;
+  agentSessions: LocalAgentSessionAdapter;
+  usage: LocalUsageMeter;
   idp: LocalIdentityProvider;
 };
 
@@ -111,6 +122,13 @@ export async function createLocalRuntimeHost(options: {
     jobs: new LocalJobAdapter(path.join(options.stateDir, "jobs.json")),
     workflows: new LocalWorkflowAdapter(
       path.join(options.stateDir, "workflows.json"),
+    ),
+    agentSessions: new LocalAgentSessionAdapter(
+      path.join(options.stateDir, "agent-sessions.json"),
+    ),
+    usage: new LocalUsageMeter(
+      path.join(options.stateDir, "usage.ndjson"),
+      options.cellName,
     ),
     idp,
   };
@@ -555,6 +573,182 @@ export class LocalLogAdapter implements LogAdapter {
   }
 }
 
+export type LocalUsageEvent = {
+  timestamp: string;
+  cell: string;
+  scope: "agent" | "cell" | "sandbox";
+  name: string;
+  sessionId?: string;
+  provider?: string;
+  model?: string;
+  kind?: RuntimeRequest["kind"];
+  durationMs?: number;
+  invocations: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  estimatedCostUsd: number;
+  sandboxRuntimeMs: number;
+};
+
+export type LocalUsageTotals = {
+  invocations: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  estimatedCostUsd: number;
+  sandboxRuntimeMs: number;
+};
+
+export type LocalUsageSummary = {
+  events: LocalUsageEvent[];
+  totals: LocalUsageTotals;
+  byCell: Record<string, LocalUsageTotals>;
+  byAgent: Record<string, LocalUsageTotals>;
+  timeSeries: Array<{ bucket: string } & LocalUsageTotals>;
+  topConsumers: Array<{
+    scope: LocalUsageEvent["scope"];
+    name: string;
+    totals: LocalUsageTotals;
+  }>;
+  budgets: Array<{
+    id: string;
+    status: "ok" | "warning";
+    limitUsd: number;
+    actualUsd: number;
+    message: string;
+  }>;
+};
+
+export class LocalUsageMeter {
+  constructor(
+    private readonly filePath: string,
+    private readonly cellName: string,
+  ) {}
+
+  async record(
+    event: Omit<LocalUsageEvent, "cell" | "timestamp"> & {
+      timestamp?: string;
+      cell?: string;
+    },
+  ): Promise<void> {
+    const stored: LocalUsageEvent = {
+      timestamp: event.timestamp ?? new Date().toISOString(),
+      cell: event.cell ?? this.cellName,
+      scope: event.scope,
+      name: event.name,
+      invocations: event.invocations,
+      inputTokens: event.inputTokens,
+      outputTokens: event.outputTokens,
+      totalTokens: event.totalTokens,
+      estimatedCostUsd: event.estimatedCostUsd,
+      sandboxRuntimeMs: event.sandboxRuntimeMs,
+    };
+
+    if (event.sessionId !== undefined) {
+      stored.sessionId = event.sessionId;
+    }
+    if (event.provider !== undefined) {
+      stored.provider = event.provider;
+    }
+    if (event.model !== undefined) {
+      stored.model = event.model;
+    }
+    if (event.kind !== undefined) {
+      stored.kind = event.kind;
+    }
+    if (event.durationMs !== undefined) {
+      stored.durationMs = event.durationMs;
+    }
+
+    await mkdir(path.dirname(this.filePath), { recursive: true });
+    await appendFile(this.filePath, `${JSON.stringify(stored)}\n`, "utf8");
+  }
+
+  async entries(): Promise<LocalUsageEvent[]> {
+    return readNdjsonFile<LocalUsageEvent>(this.filePath);
+  }
+
+  async summarize(options: {
+    sinceMs?: number;
+    budgetUsd?: number;
+    sessionBudgetUsd?: number;
+  } = {}): Promise<LocalUsageSummary> {
+    const events = (await this.entries()).filter((event) => {
+      if (options.sinceMs === undefined) {
+        return true;
+      }
+
+      return Date.parse(event.timestamp) >= options.sinceMs;
+    });
+    const totals = emptyUsageTotals();
+    const byCell: Record<string, LocalUsageTotals> = {};
+    const byAgent: Record<string, LocalUsageTotals> = {};
+    const byConsumer = new Map<
+      string,
+      {
+        scope: LocalUsageEvent["scope"];
+        name: string;
+        totals: LocalUsageTotals;
+      }
+    >();
+    const buckets = new Map<string, LocalUsageTotals>();
+
+    for (const event of events) {
+      addUsage(totals, event);
+      addUsage((byCell[event.cell] ??= emptyUsageTotals()), event);
+
+      if (event.scope === "agent") {
+        addUsage((byAgent[event.name] ??= emptyUsageTotals()), event);
+      }
+
+      const consumerKey = `${event.scope}:${event.name}`;
+      let consumer = byConsumer.get(consumerKey);
+
+      if (!consumer) {
+        consumer = {
+          scope: event.scope,
+          name: event.name,
+          totals: emptyUsageTotals(),
+        };
+        byConsumer.set(consumerKey, consumer);
+      }
+      addUsage(consumer.totals, event);
+
+      const bucket = hourlyBucket(event.timestamp);
+      addUsage((buckets.get(bucket) ?? setUsageBucket(buckets, bucket)), event);
+    }
+
+    return {
+      events,
+      totals,
+      byCell,
+      byAgent,
+      timeSeries: [...buckets.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([bucket, bucketTotals]) => ({ bucket, ...bucketTotals })),
+      topConsumers: [...byConsumer.values()]
+        .sort(
+          (left, right) =>
+            right.totals.estimatedCostUsd - left.totals.estimatedCostUsd ||
+            right.totals.totalTokens - left.totals.totalTokens ||
+            right.totals.invocations - left.totals.invocations,
+        )
+        .slice(0, 10),
+      budgets: usageBudgetSummaries({
+        totals,
+        events,
+        ...(options.budgetUsd === undefined
+          ? {}
+          : { budgetUsd: options.budgetUsd }),
+        ...(options.sessionBudgetUsd === undefined
+          ? {}
+          : { sessionBudgetUsd: options.sessionBudgetUsd }),
+      }),
+    };
+  }
+}
+
 export class LocalEventAdapter implements EventAdapter {
   constructor(private readonly filePath: string) {}
 
@@ -625,6 +819,189 @@ export type LocalJobEntry = {
   createdAt: string;
   ranAt?: string;
 };
+
+export type LocalAgentSessionStatus = "idle" | "running" | "failed";
+
+export type LocalAgentSessionChannel = {
+  name: string;
+  provider: string;
+  key: string;
+};
+
+export type LocalAgentSessionEvent = {
+  id: number;
+  sessionId: string;
+  type:
+    | "session.created"
+    | "channel.message"
+    | "channel.reply"
+    | "message.user"
+    | "message.assistant"
+    | "tool.calls"
+    | "approval.required"
+    | "session.failed";
+  timestamp: string;
+  data: unknown;
+};
+
+export type LocalAgentSessionRecord = {
+  sessionId: string;
+  agent: string;
+  channel?: LocalAgentSessionChannel;
+  status: LocalAgentSessionStatus;
+  createdAt: string;
+  updatedAt: string;
+  continuationToken: string;
+  events: LocalAgentSessionEvent[];
+};
+
+export class LocalAgentSessionAdapter {
+  private tail: Promise<unknown> = Promise.resolve();
+
+  constructor(private readonly filePath: string) {}
+
+  private exclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.tail.then(operation, operation);
+    this.tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  async create(
+    agent: string,
+    channel?: LocalAgentSessionChannel,
+  ): Promise<LocalAgentSessionRecord> {
+    return this.exclusive(async () => {
+      const sessions = await this.read();
+      const now = new Date().toISOString();
+      const session: LocalAgentSessionRecord = {
+        sessionId: `session_${randomUUID()}`,
+        agent,
+        ...(channel === undefined ? {} : { channel }),
+        status: "idle",
+        createdAt: now,
+        updatedAt: now,
+        continuationToken: "0",
+        events: [],
+      };
+
+      sessions.push(session);
+      await this.write(sessions);
+      await this.appendUnlocked(sessions, session.sessionId, {
+        type: "session.created",
+        data: { agent },
+        timestamp: now,
+      });
+
+      return (await this.read()).find(
+        (candidate) => candidate.sessionId === session.sessionId,
+      ) ?? session;
+    });
+  }
+
+  async get(sessionId: string): Promise<LocalAgentSessionRecord | null> {
+    return (
+      (await this.read()).find((session) => session.sessionId === sessionId) ??
+      null
+    );
+  }
+
+  async findForChannel(
+    channel: LocalAgentSessionChannel,
+  ): Promise<LocalAgentSessionRecord | null> {
+    return (
+      (await this.read()).find(
+        (session) =>
+          session.channel?.name === channel.name &&
+          session.channel.provider === channel.provider &&
+          session.channel.key === channel.key,
+      ) ?? null
+    );
+  }
+
+  async append(
+    sessionId: string,
+    input: Omit<LocalAgentSessionEvent, "id" | "sessionId" | "timestamp"> & {
+      timestamp?: string;
+    },
+  ): Promise<LocalAgentSessionEvent> {
+    return this.exclusive(async () => {
+      const sessions = await this.read();
+      return this.appendUnlocked(sessions, sessionId, input);
+    });
+  }
+
+  private async appendUnlocked(
+    sessions: LocalAgentSessionRecord[],
+    sessionId: string,
+    input: Omit<LocalAgentSessionEvent, "id" | "sessionId" | "timestamp"> & {
+      timestamp?: string;
+    },
+  ): Promise<LocalAgentSessionEvent> {
+    const session = sessions.find(
+      (candidate) => candidate.sessionId === sessionId,
+    );
+
+    if (!session) {
+      throw new RuntimeError(
+        "HANDLER_NOT_FOUND",
+        `No agent session '${sessionId}' was found.`,
+        404,
+        { sessionId },
+      );
+    }
+
+    const event: LocalAgentSessionEvent = {
+      id: session.events.length + 1,
+      sessionId,
+      timestamp: input.timestamp ?? new Date().toISOString(),
+      type: input.type,
+      data: input.data,
+    };
+
+    session.events.push(event);
+    session.updatedAt = event.timestamp;
+    session.continuationToken = String(event.id);
+    await this.write(sessions);
+
+    return event;
+  }
+
+  async complete(
+    sessionId: string,
+    status: LocalAgentSessionStatus,
+  ): Promise<void> {
+    await this.exclusive(async () => {
+      const sessions = await this.read();
+      const session = sessions.find(
+        (candidate) => candidate.sessionId === sessionId,
+      );
+
+      if (!session) {
+        return;
+      }
+
+      session.status = status;
+      session.updatedAt = new Date().toISOString();
+      await this.write(sessions);
+    });
+  }
+
+  private async read(): Promise<LocalAgentSessionRecord[]> {
+    return readJsonFile<LocalAgentSessionRecord[]>(this.filePath, []);
+  }
+
+  private async write(sessions: LocalAgentSessionRecord[]): Promise<void> {
+    await mkdir(path.dirname(this.filePath), { recursive: true });
+    await writeFile(
+      this.filePath,
+      `${JSON.stringify(sessions, null, 2)}\n`,
+      "utf8",
+    );
+  }
+}
 
 export class LocalWorkflowAdapter implements WorkflowAdapter {
   private app: AppDefinition | null = null;
@@ -819,6 +1196,38 @@ async function handleLocalRequest(options: LocalRequestOptions): Promise<void> {
       return;
     }
 
+    if (method === "POST" && url.pathname === "/_anvil/channels/simulate") {
+      await simulateChannelMessageRoute(options);
+      return;
+    }
+
+    if (
+      method === "POST" &&
+      url.pathname.startsWith("/_anvil/agents/") &&
+      url.pathname.endsWith("/sessions")
+    ) {
+      await createAgentSessionRoute(options, url);
+      return;
+    }
+
+    if (
+      method === "POST" &&
+      url.pathname.startsWith("/_anvil/agents/sessions/") &&
+      url.pathname.endsWith("/messages")
+    ) {
+      await sendAgentSessionMessageRoute(options, url);
+      return;
+    }
+
+    if (
+      method === "GET" &&
+      url.pathname.startsWith("/_anvil/agents/sessions/") &&
+      url.pathname.endsWith("/stream")
+    ) {
+      await streamAgentSessionRoute(options, url);
+      return;
+    }
+
     if (method === "POST" && url.pathname.startsWith("/_anvil/agents/")) {
       const name = decodeURIComponent(
         url.pathname.slice("/_anvil/agents/".length),
@@ -853,7 +1262,22 @@ async function handleLocalRequest(options: LocalRequestOptions): Promise<void> {
         input: body.input,
         ...(isObject(body.context) ? { context: body.context } : {}),
       };
+      const startedAt = Date.now();
       const result = await options.agentRuntime.invoke(agent, invocationInput);
+      await options.host.usage.record({
+        scope: "agent",
+        name: agent.name,
+        provider: agent.model.provider,
+        model: agent.model.model,
+        durationMs: Date.now() - startedAt,
+        invocations: 1,
+        inputTokens: result.usage.inputTokens ?? 0,
+        outputTokens: result.usage.outputTokens ?? 0,
+        totalTokens: result.usage.totalTokens ?? 0,
+        estimatedCostUsd: estimateInferenceCostUsd(agent.model, result.usage),
+        sandboxRuntimeMs: 0,
+        ...optionalSessionId(invocationInput.context),
+      });
 
       await sendJson(options.response, 200, {
         ok: true,
@@ -871,6 +1295,20 @@ async function handleLocalRequest(options: LocalRequestOptions): Promise<void> {
       await sendJson(options.response, 200, {
         ok: true,
         logs: await options.host.logs.entries(),
+      });
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/_anvil/usage") {
+      const since = parseLocalSince(url.searchParams.get("since"));
+      const summary = await options.host.usage.summarize({
+        ...(since === undefined ? {} : { sinceMs: since }),
+        ...usageBudgetOptions(options.host.env),
+      });
+
+      await sendJson(options.response, 200, {
+        ok: true,
+        usage: summary,
       });
       return;
     }
@@ -1206,6 +1644,438 @@ async function handleLocalRequest(options: LocalRequestOptions): Promise<void> {
   }
 }
 
+async function createAgentSessionRoute(
+  options: LocalRequestOptions,
+  url: URL,
+): Promise<void> {
+  const name = decodeURIComponent(
+    url.pathname.slice(
+      "/_anvil/agents/".length,
+      url.pathname.length - "/sessions".length,
+    ),
+  );
+  const agent = options.app.agents?.[name];
+
+  if (!agent) {
+    await sendJson(options.response, 404, {
+      ok: false,
+      error: {
+        code: "AGENT_NOT_FOUND",
+        message: `No mounted agent '${name}' is defined.`,
+      },
+    });
+    return;
+  }
+
+  const session = await options.host.agentSessions.create(name);
+
+  await sendJson(options.response, 201, {
+    ok: true,
+    result: {
+      session: sessionSummary(session),
+    },
+    session: sessionSummary(session),
+  });
+}
+
+async function sendAgentSessionMessageRoute(
+  options: LocalRequestOptions,
+  url: URL,
+): Promise<void> {
+  const sessionId = decodeURIComponent(
+    url.pathname.slice(
+      "/_anvil/agents/sessions/".length,
+      url.pathname.length - "/messages".length,
+    ),
+  );
+  const session = await options.host.agentSessions.get(sessionId);
+
+  if (!session) {
+    await sendJson(options.response, 404, {
+      ok: false,
+      error: {
+        code: "AGENT_SESSION_NOT_FOUND",
+        message: `No agent session '${sessionId}' was found.`,
+      },
+    });
+    return;
+  }
+
+  const agent = options.app.agents?.[session.agent];
+
+  if (!agent) {
+    await sendJson(options.response, 404, {
+      ok: false,
+      error: {
+        code: "AGENT_NOT_FOUND",
+        message: `No mounted agent '${session.agent}' is defined.`,
+      },
+    });
+    return;
+  }
+
+  const body = await readJsonRequest(options.request);
+
+  if (!isObject(body) || typeof body.input !== "string") {
+    await sendJson(options.response, 400, {
+      ok: false,
+      error: {
+        code: "AGENT_INPUT_INVALID",
+        message: "Agent session messages require a string 'input'.",
+      },
+    });
+    return;
+  }
+
+  try {
+    const messagePayload = await sendAgentSessionMessage(options, {
+      session,
+      input: body.input,
+      context: isObject(body.context) ? body.context : {},
+    });
+
+    await sendJson(options.response, 200, {
+      ok: true,
+      result: messagePayload,
+      session: messagePayload.session,
+      events: messagePayload.events,
+      continuationToken: messagePayload.continuationToken,
+    });
+  } catch (error) {
+    await sendServiceError(options.response, error);
+  }
+}
+
+async function simulateChannelMessageRoute(
+  options: LocalRequestOptions,
+): Promise<void> {
+  const body = await readJsonRequest(options.request);
+
+  if (!isObject(body) || typeof body.channel !== "string") {
+    await sendJson(options.response, 400, {
+      ok: false,
+      error: {
+        code: "CHANNEL_INPUT_INVALID",
+        message: "Channel simulation requires a string 'channel'.",
+      },
+    });
+    return;
+  }
+
+  if (typeof body.input !== "string" || body.input.length === 0) {
+    await sendJson(options.response, 400, {
+      ok: false,
+      error: {
+        code: "CHANNEL_INPUT_INVALID",
+        message: "Channel simulation requires a non-empty string 'input'.",
+      },
+    });
+    return;
+  }
+
+  const channelName = body.channel;
+  const channel = options.app.channels?.[channelName];
+
+  if (!channel) {
+    await sendJson(options.response, 404, {
+      ok: false,
+      error: {
+        code: "CHANNEL_NOT_FOUND",
+        message: `No channel '${channelName}' is defined.`,
+      },
+    });
+    return;
+  }
+
+  const agent = options.app.agents?.[channel.agent];
+
+  if (!agent) {
+    await sendJson(options.response, 404, {
+      ok: false,
+      error: {
+        code: "AGENT_NOT_FOUND",
+        message: `No mounted agent '${channel.agent}' is defined.`,
+      },
+    });
+    return;
+  }
+
+  const sender =
+    typeof body.sender === "string" && body.sender.length > 0
+      ? body.sender
+      : "local-user";
+  const thread =
+    typeof body.thread === "string" && body.thread.length > 0
+      ? body.thread
+      : "local-thread";
+  const channelSession = {
+    name: channelName,
+    provider: channel.provider,
+    key: channelSessionKey(channel.sessionKey ?? "thread", {
+      channel: channelName,
+      sender,
+      thread,
+    }),
+  };
+  const existing =
+    await options.host.agentSessions.findForChannel(channelSession);
+  const session =
+    existing ??
+    (await options.host.agentSessions.create(channel.agent, channelSession));
+  try {
+    const messagePayload = await sendAgentSessionMessage(options, {
+      session,
+      input: body.input,
+      eventType: "channel.message",
+      context: {
+        ...(isObject(body.context) ? body.context : {}),
+        channel: {
+          name: channelName,
+          provider: channel.provider,
+          sender,
+          thread,
+        },
+      },
+    });
+    const reply = messagePayload.events
+      .filter((event) => event.type === "channel.reply")
+      .map((event) => event.data);
+
+    await sendJson(options.response, 200, {
+      ok: true,
+      result: {
+        channel: {
+          name: channelName,
+          provider: channel.provider,
+          sessionKey: channel.sessionKey ?? "thread",
+        },
+        session: messagePayload.session,
+        events: messagePayload.events,
+        continuationToken: messagePayload.continuationToken,
+        reply,
+      },
+    });
+  } catch (error) {
+    await sendServiceError(options.response, error);
+  }
+}
+
+async function sendAgentSessionMessage(
+  options: LocalRequestOptions,
+  input: {
+    session: LocalAgentSessionRecord;
+    input: string;
+    context: Record<string, unknown>;
+    eventType?: "channel.message" | "message.user";
+  },
+): Promise<{
+  session: Omit<LocalAgentSessionRecord, "events">;
+  events: LocalAgentSessionEvent[];
+  continuationToken: string;
+  result: Awaited<ReturnType<AgentRuntime["invoke"]>>;
+}> {
+  const userEvent = await options.host.agentSessions.append(
+    input.session.sessionId,
+    {
+      type: input.eventType ?? "message.user",
+      data: { input: input.input, context: input.context },
+    },
+  );
+
+  await options.host.agentSessions.complete(input.session.sessionId, "running");
+
+  try {
+    const agent = options.app.agents?.[input.session.agent];
+
+    if (!agent) {
+      throw new Error(`No mounted agent '${input.session.agent}' is defined.`);
+    }
+
+    const result = await options.agentRuntime.invoke(agent, {
+      input: input.input,
+      context: {
+        ...input.context,
+        sessionId: input.session.sessionId,
+      },
+    });
+    const events: LocalAgentSessionEvent[] = [
+      userEvent,
+      await options.host.agentSessions.append(input.session.sessionId, {
+        type:
+          input.eventType === "channel.message"
+            ? "channel.reply"
+            : "message.assistant",
+        data: {
+          message: result.response,
+          usage: result.usage,
+        },
+      }),
+    ];
+
+    if (result.approvalsRequired.length > 0) {
+      events.push(
+        await options.host.agentSessions.append(input.session.sessionId, {
+          type: "approval.required",
+          data: { approvals: result.approvalsRequired },
+        }),
+      );
+    }
+
+    if (result.toolCalls.length > 0) {
+      events.push(
+        await options.host.agentSessions.append(input.session.sessionId, {
+          type: "tool.calls",
+          data: { toolCalls: result.toolCalls },
+        }),
+      );
+    }
+
+    await options.host.agentSessions.complete(input.session.sessionId, "idle");
+    const sessionPayload = sessionSummary(
+      (await options.host.agentSessions.get(input.session.sessionId)) ??
+        input.session,
+    );
+
+    return {
+      session: sessionPayload,
+      events,
+      continuationToken: continuationTokenFor(events),
+      result,
+    };
+  } catch (error) {
+    const failed = await options.host.agentSessions.append(
+      input.session.sessionId,
+      {
+        type: "session.failed",
+        data: {
+          message: error instanceof Error ? error.message : String(error),
+        },
+      },
+    );
+
+    await options.host.agentSessions.complete(
+      input.session.sessionId,
+      "failed",
+    );
+
+    throw new RuntimeError(
+      "INTERNAL_ERROR",
+      error instanceof Error ? error.message : String(error),
+      500,
+      {
+        events: [userEvent, failed],
+        continuationToken: String(failed.id),
+      },
+    );
+  }
+}
+
+async function streamAgentSessionRoute(
+  options: LocalRequestOptions,
+  url: URL,
+): Promise<void> {
+  const sessionId = decodeURIComponent(
+    url.pathname.slice(
+      "/_anvil/agents/sessions/".length,
+      url.pathname.length - "/stream".length,
+    ),
+  );
+  const session = await options.host.agentSessions.get(sessionId);
+
+  if (!session) {
+    await sendJson(options.response, 404, {
+      ok: false,
+      error: {
+        code: "AGENT_SESSION_NOT_FOUND",
+        message: `No agent session '${sessionId}' was found.`,
+      },
+    });
+    return;
+  }
+
+  await sendSessionEventStream(
+    options.response,
+    session.events.filter((event) => event.id > continuationFromUrl(url)),
+  );
+}
+
+async function sendSessionEventStream(
+  response: ServerResponse,
+  events: LocalAgentSessionEvent[],
+): Promise<void> {
+  response.statusCode = 200;
+  response.setHeader("content-type", "text/event-stream; charset=utf-8");
+  response.setHeader("cache-control", "no-cache");
+
+  for (const event of events) {
+    await writeSseEvent(response, event);
+  }
+
+  response.end();
+}
+
+async function writeSseEvent(
+  response: ServerResponse,
+  event: LocalAgentSessionEvent,
+): Promise<void> {
+  const payload = [
+    `id: ${event.id}`,
+    `event: ${event.type}`,
+    `data: ${JSON.stringify(event)}`,
+    "",
+    "",
+  ].join("\n");
+
+  if (response.write(payload)) {
+    return;
+  }
+
+  await new Promise<void>((resolve) => {
+    response.once("drain", resolve);
+  });
+}
+
+function continuationFromUrl(url: URL): number {
+  const raw = url.searchParams.get("after");
+  const parsed = raw === null ? 0 : Number.parseInt(raw, 10);
+
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function continuationTokenFor(events: LocalAgentSessionEvent[]): string {
+  return String(events.at(-1)?.id ?? 0);
+}
+
+function channelSessionKey(
+  strategy: "channel" | "sender" | "sender-thread" | "thread",
+  input: { channel: string; sender: string; thread: string },
+): string {
+  switch (strategy) {
+    case "channel":
+      return input.channel;
+    case "sender":
+      return `${input.channel}:${input.sender}`;
+    case "sender-thread":
+      return `${input.channel}:${input.sender}:${input.thread}`;
+    case "thread":
+      return `${input.channel}:${input.thread}`;
+  }
+}
+
+function sessionSummary(
+  session: LocalAgentSessionRecord,
+): Omit<LocalAgentSessionRecord, "events"> {
+  return {
+    sessionId: session.sessionId,
+    agent: session.agent,
+    ...(session.channel === undefined ? {} : { channel: session.channel }),
+    status: session.status,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+    continuationToken: session.continuationToken,
+  };
+}
+
 type ClientRequestOptions = {
   clientDistDir: string;
   runtimeUrl: string;
@@ -1349,10 +2219,23 @@ async function runRuntimeRequest(
   options: LocalRequestOptions,
   runtimeRequest: RuntimeRequest,
 ): Promise<void> {
+  const startedAt = Date.now();
   const response = await withOutboundFetchPolicy(
     options.outboundFetchAllowHosts,
     () => handleRuntimeRequest(options.app, options.host, runtimeRequest),
   );
+  await options.host.usage.record({
+    scope: "cell",
+    name: runtimeRequestName(runtimeRequest),
+    kind: runtimeRequest.kind,
+    durationMs: Date.now() - startedAt,
+    invocations: 1,
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    estimatedCostUsd: 0,
+    sandboxRuntimeMs: 0,
+  });
 
   await sendRuntimeResponse(options.response, response);
 }
@@ -1473,6 +2356,9 @@ async function inspectLocalRuntime(
 ): Promise<Record<string, unknown>> {
   const auth = await options.host.auth.current();
   const logs = await options.host.logs.entries();
+  const usage = await options.host.usage.summarize({
+    ...usageBudgetOptions(options.host.env),
+  });
 
   return {
     ok: true,
@@ -1484,6 +2370,11 @@ async function inspectLocalRuntime(
       currentUser: auth?.userId ?? null,
     },
     database: await options.host.db.inspect(),
+    usage: {
+      totals: usage.totals,
+      topConsumers: usage.topConsumers,
+      budgets: usage.budgets,
+    },
     recentErrors: logs.filter((entry) => entry.level === "error").slice(-10),
   };
 }
@@ -1654,6 +2545,102 @@ function readInputFromBody(body: unknown): unknown {
   return isObject(body) && "input" in body ? body.input : body;
 }
 
+function runtimeRequestName(request: RuntimeRequest): string {
+  return request.kind === "endpoint"
+    ? `${request.method} ${request.path}`
+    : request.name;
+}
+
+function optionalSessionId(
+  context: Record<string, unknown> | undefined,
+): { sessionId?: string } {
+  const sessionId = context?.sessionId;
+
+  return typeof sessionId === "string" ? { sessionId } : {};
+}
+
+function estimateInferenceCostUsd(
+  model: AgentModelConfig,
+  usage: AgentTokenUsage,
+): number {
+  const inputRate = numberFromModelOption(model, "inputTokenUsdPerMillion");
+  const outputRate = numberFromModelOption(model, "outputTokenUsdPerMillion");
+
+  return (
+    ((usage.inputTokens ?? 0) / 1_000_000) * inputRate +
+    ((usage.outputTokens ?? 0) / 1_000_000) * outputRate
+  );
+}
+
+function numberFromModelOption(
+  model: AgentModelConfig,
+  key: string,
+): number {
+  const value = model.options?.[key];
+
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : 0;
+}
+
+function numberFromEnv(env: LocalEnvAdapter, name: string): number | undefined {
+  const value = env.get(name);
+
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+function usageBudgetOptions(env: LocalEnvAdapter): {
+  budgetUsd?: number;
+  sessionBudgetUsd?: number;
+} {
+  const budgetUsd = numberFromEnv(env, "ANVIL_USAGE_DAILY_BUDGET_USD");
+  const sessionBudgetUsd = numberFromEnv(
+    env,
+    "ANVIL_USAGE_SESSION_BUDGET_USD",
+  );
+
+  return {
+    ...(budgetUsd === undefined ? {} : { budgetUsd }),
+    ...(sessionBudgetUsd === undefined ? {} : { sessionBudgetUsd }),
+  };
+}
+
+function parseLocalSince(value: string | null): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  if (/^\d+$/.test(value)) {
+    return Number(value);
+  }
+
+  const match = /^(\d+)(s|m|h|d)$/.exec(value);
+
+  if (!match) {
+    return undefined;
+  }
+
+  const amount = Number(match[1]);
+  const unit = match[2];
+  if (unit === undefined) {
+    return undefined;
+  }
+  const multipliers: Record<string, number> = {
+    s: 1_000,
+    m: 60_000,
+    h: 60 * 60_000,
+    d: 24 * 60 * 60_000,
+  };
+
+  return Date.now() - amount * (multipliers[unit] ?? 0);
+}
+
 async function readJsonRequest(request: IncomingMessage): Promise<unknown> {
   const body = await readRawBody(request);
 
@@ -1755,6 +2742,99 @@ function cloneRecords(records: DatabaseRecord[]): DatabaseRecord[] {
 
 function cloneRecord(record: DatabaseRecord): DatabaseRecord {
   return structuredClone(record) as DatabaseRecord;
+}
+
+function emptyUsageTotals(): LocalUsageTotals {
+  return {
+    invocations: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    estimatedCostUsd: 0,
+    sandboxRuntimeMs: 0,
+  };
+}
+
+function addUsage(totals: LocalUsageTotals, event: LocalUsageEvent): void {
+  totals.invocations += event.invocations;
+  totals.inputTokens += event.inputTokens;
+  totals.outputTokens += event.outputTokens;
+  totals.totalTokens += event.totalTokens;
+  totals.estimatedCostUsd += event.estimatedCostUsd;
+  totals.sandboxRuntimeMs += event.sandboxRuntimeMs;
+}
+
+function setUsageBucket(
+  buckets: Map<string, LocalUsageTotals>,
+  bucket: string,
+): LocalUsageTotals {
+  const totals = emptyUsageTotals();
+  buckets.set(bucket, totals);
+
+  return totals;
+}
+
+function hourlyBucket(timestamp: string): string {
+  const date = new Date(timestamp);
+
+  if (Number.isNaN(date.getTime())) {
+    return "invalid";
+  }
+
+  date.setUTCMinutes(0, 0, 0);
+
+  return date.toISOString();
+}
+
+function usageBudgetSummaries(options: {
+  totals: LocalUsageTotals;
+  events: LocalUsageEvent[];
+  budgetUsd?: number;
+  sessionBudgetUsd?: number;
+}): LocalUsageSummary["budgets"] {
+  const budgets: LocalUsageSummary["budgets"] = [];
+
+  if (options.budgetUsd !== undefined) {
+    budgets.push({
+      id: "daily",
+      status:
+        options.totals.estimatedCostUsd > options.budgetUsd ? "warning" : "ok",
+      limitUsd: options.budgetUsd,
+      actualUsd: options.totals.estimatedCostUsd,
+      message:
+        options.totals.estimatedCostUsd > options.budgetUsd
+          ? "Daily usage budget exceeded; require approval before resuming costly agent work."
+          : "Daily usage is within budget.",
+    });
+  }
+
+  if (options.sessionBudgetUsd !== undefined) {
+    const bySession = new Map<string, number>();
+
+    for (const event of options.events) {
+      if (event.sessionId) {
+        bySession.set(
+          event.sessionId,
+          (bySession.get(event.sessionId) ?? 0) + event.estimatedCostUsd,
+        );
+      }
+    }
+
+    const highest = Math.max(0, ...bySession.values());
+
+    budgets.push({
+      id: "session",
+      status: highest > options.sessionBudgetUsd ? "warning" : "ok",
+      limitUsd: options.sessionBudgetUsd,
+      actualUsd: highest,
+      message:
+        highest > options.sessionBudgetUsd
+          ? "A session usage budget was exceeded; resume should be approval-gated."
+          : "Session usage is within budget.",
+    });
+  }
+
+  return budgets;
 }
 
 function nextId(table: string, rows: DatabaseRecord[]): string {
