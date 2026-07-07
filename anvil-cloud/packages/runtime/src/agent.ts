@@ -1,4 +1,5 @@
 import { RuntimeError } from "./errors.js";
+import type { TraceAdapter } from "./trace.js";
 import { Cause, Effect, Exit } from "effect";
 
 export type AgentModelConfig = {
@@ -95,6 +96,7 @@ export type AgentDefinitionInput = {
   memory?: AgentMemoryConfig;
   capabilities?: AgentCapabilities;
   approvals?: AgentApprovals;
+  evals?: import("./agent-evals.js").AgentEvalSuite;
   runtime?: AgentRuntimeRequirements;
   subagents?: Record<string, AgentDefinition>;
   metadata?: Record<string, unknown>;
@@ -219,6 +221,7 @@ export type AgentRuntimeInvokeInput = {
 
 export type AgentRuntimeInvokeResult = {
   agentName: string;
+  traceId?: string;
   response: AgentMessage;
   toolCalls: AgentToolCall[];
   approvalsRequired: AgentApprovalRequest[];
@@ -522,25 +525,42 @@ export class AgentRuntime {
   private readonly providers: AgentProviderRegistry;
   private readonly approvalProvider: AgentApprovalProvider;
   private readonly baseDir: string | undefined;
+  private readonly traces: TraceAdapter | undefined;
 
   constructor(
     options: {
       providers?: AgentProviderRegistry;
       approvalProvider?: AgentApprovalProvider;
       baseDir?: string;
+      traces?: TraceAdapter;
     } = {},
   ) {
     this.providers = options.providers ?? new AgentProviderRegistry();
     this.approvalProvider =
       options.approvalProvider ?? createPendingApprovalProvider();
     this.baseDir = options.baseDir;
+    this.traces = options.traces;
   }
 
   async invoke(
     agent: AgentDefinition,
     input: AgentRuntimeInvokeInput,
   ): Promise<AgentRuntimeInvokeResult> {
-    return runAgentRuntimeEffect(this.invokeEffect(agent, input));
+    const traceId = resolveAgentTraceId(input.context);
+
+    try {
+      return await runAgentRuntimeEffect(
+        this.invokeEffect(agent, input, traceId),
+      );
+    } catch (error) {
+      await this.recordAgentFailure(
+        traceId,
+        agent.name,
+        "agent.invoke.failed",
+        error,
+      );
+      throw error;
+    }
   }
 
   async invokeSubagent(
@@ -578,11 +598,28 @@ export class AgentRuntime {
   private invokeEffect(
     agent: AgentDefinition,
     input: AgentRuntimeInvokeInput,
+    traceId: string,
   ): Effect.Effect<AgentRuntimeInvokeResult, RuntimeError> {
     const validationOptions =
       this.baseDir === undefined ? {} : { baseDir: this.baseDir };
+    const startedAt = new Date().toISOString();
 
     return Effect.gen(this, function* () {
+      yield* runtimeEffectFromPromise(
+        () =>
+          this.traces?.start({
+            traceId,
+            kind: "agent",
+            name: agent.name,
+            subjectId: traceId,
+            startedAt,
+            attributes: {
+              agent: agent.name,
+              model: sanitizeModelConfig(agent.model),
+              input: input.input,
+            },
+          }) ?? Promise.resolve(null),
+      );
       const issues = yield* runtimeEffectFromPromise(() =>
         validateAgentDefinition(agent, validationOptions),
       );
@@ -634,8 +671,30 @@ export class AgentRuntime {
         request.metadata = input.context;
       }
 
+      const modelStarted = Date.now();
       const response = yield* runtimeEffectFromPromise(() =>
         provider.invoke(request),
+      );
+      yield* runtimeEffectFromPromise(
+        () =>
+          this.traces?.event(traceId, {
+            type: "agent.model.completed",
+            name: `${agent.name}.${agent.model.provider}`,
+            status: "completed",
+            durationMs: Date.now() - modelStarted,
+            attributes: {
+              provider: agent.model.provider,
+              model: agent.model.model,
+              promptMessages: messages.length,
+              responseRole: response.message.role,
+              usage: response.usage ?? {},
+              inputCharacters: messages.reduce(
+                (sum, message) => sum + messageText(message.content).length,
+                0,
+              ),
+              outputCharacters: messageText(response.message.content).length,
+            },
+          }) ?? Promise.resolve(),
       );
       const toolCalls = response.toolCalls ?? [];
       const approvalsRequired: AgentApprovalRequest[] = [];
@@ -655,16 +714,54 @@ export class AgentRuntime {
 
         if (approval) {
           approvalsRequired.push(approval);
+          yield* runtimeEffectFromPromise(
+            () =>
+              this.traces?.event(traceId, {
+                type: "agent.tool.approval",
+                name: call.name,
+                status: "running",
+                attributes: {
+                  agent: agent.name,
+                  tool: call.name,
+                  action: approval.action,
+                  reason: approval.reason,
+                  metadata: approval.metadata,
+                },
+              }) ?? Promise.resolve(),
+          );
         }
       }
 
-      return {
+      const result: AgentRuntimeInvokeResult = {
         agentName: agent.name,
         response: response.message,
         toolCalls,
         approvalsRequired,
         usage: response.usage ?? {},
+        ...(this.traces !== undefined ? { traceId } : {}),
       };
+
+      yield* runtimeEffectFromPromise(
+        () =>
+          this.traces?.event(traceId, {
+            type: "agent.invoke.completed",
+            name: agent.name,
+            status: "completed",
+            durationMs: Date.now() - Date.parse(startedAt),
+            attributes: {
+              toolCalls: toolCalls.length,
+              approvalsRequired: approvalsRequired.length,
+              usage: result.usage,
+            },
+          }) ?? Promise.resolve(),
+      );
+      yield* runtimeEffectFromPromise(
+        () =>
+          this.traces?.complete(traceId, { status: "completed" }) ??
+          Promise.resolve(),
+      );
+
+      return result;
     });
   }
 
@@ -674,9 +771,119 @@ export class AgentRuntime {
     input: unknown,
     metadata?: Record<string, unknown>,
   ): Promise<AgentToolResult> {
+    const traceId = resolveAgentTraceId(metadata);
+
     return runAgentRuntimeEffect(
-      this.executeToolEffect(agent, tool, input, metadata),
-    );
+      this.executeToolEffect(agent, tool, input, metadata, traceId),
+    ).catch(async (error: unknown) => {
+      await this.recordAgentFailure(
+        traceId,
+        tool.definition.name,
+        "agent.tool.failed",
+        error,
+      );
+      throw error;
+    });
+  }
+
+  private async recordAgentFailure(
+    traceId: string,
+    name: string,
+    type: "agent.invoke.failed" | "agent.tool.failed",
+    error: unknown,
+  ): Promise<void> {
+    const runtimeError =
+      error instanceof RuntimeError ? error : normaliseAgentError(error);
+
+    await this.traces?.event(traceId, {
+      type,
+      name,
+      status: "failed",
+      attributes: {
+        error: {
+          code: runtimeError.code,
+          message: runtimeError.message,
+        },
+      },
+    });
+    await this.traces?.complete(traceId, { status: "failed" });
+  }
+
+  private async completeAgentToolTrace(
+    traceId: string,
+    result: AgentToolResult,
+  ): Promise<void> {
+    await this.traces?.complete(traceId, {
+      status: result.ok ? "completed" : "failed",
+    });
+  }
+
+  private async completePendingApprovalTrace(
+    traceId: string,
+    result: AgentToolResult,
+  ): Promise<void> {
+    await this.completeAgentToolTrace(traceId, result);
+  }
+
+  private async traceToolResult(
+    traceId: string,
+    agent: AgentDefinition,
+    tool: AgentToolExecutor,
+    input: unknown,
+    result: AgentToolResult,
+    startedAt: number,
+  ): Promise<void> {
+    await this.traces?.event(traceId, {
+      type: result.ok ? "agent.tool.completed" : "agent.tool.failed",
+      name: tool.definition.name,
+      status: result.ok ? "completed" : "failed",
+      durationMs: Date.now() - startedAt,
+      attributes: {
+        agent: agent.name,
+        tool: tool.definition.name,
+        input,
+        output: result.output,
+        error: result.error,
+      },
+    });
+    await this.completeAgentToolTrace(traceId, result);
+  }
+
+  private async traceApprovalDecision(
+    traceId: string,
+    agent: AgentDefinition,
+    tool: AgentToolExecutor,
+    approval: AgentApprovalRequest,
+    decision: AgentApprovalDecision,
+  ): Promise<void> {
+    await this.traces?.event(traceId, {
+      type: "agent.tool.approval",
+      name: tool.definition.name,
+      status: decision.status === "approved" ? "completed" : "running",
+      attributes: {
+        agent: agent.name,
+        tool: tool.definition.name,
+        action: approval.action,
+        decision,
+      },
+    });
+  }
+
+  private async traceToolStart(
+    traceId: string,
+    agent: AgentDefinition,
+    tool: AgentToolExecutor,
+  ): Promise<void> {
+    await this.traces?.start({
+      traceId,
+      kind: "agent",
+      name: agent.name,
+      subjectId: traceId,
+      attributes: {
+        agent: agent.name,
+        tool: tool.definition.name,
+      },
+    });
   }
 
   private executeToolEffect(
@@ -684,8 +891,15 @@ export class AgentRuntime {
     tool: AgentToolExecutor,
     input: unknown,
     metadata?: Record<string, unknown>,
+    traceId?: string,
   ): Effect.Effect<AgentToolResult, RuntimeError> {
+    const resolvedTraceId = traceId ?? resolveAgentTraceId(metadata);
+    const startedAt = Date.now();
+
     return Effect.gen(this, function* () {
+      yield* runtimeEffectFromPromise(() =>
+        this.traceToolStart(resolvedTraceId, agent, tool),
+      );
       const approval = yield* runtimeEffectFromPromise(() =>
         this.prepareToolExecution(agent, tool.definition),
       );
@@ -694,9 +908,18 @@ export class AgentRuntime {
         const decision = yield* runtimeEffectFromPromise(() =>
           this.approvalProvider.requestApproval(approval),
         );
+        yield* runtimeEffectFromPromise(() =>
+          this.traceApprovalDecision(
+            resolvedTraceId,
+            agent,
+            tool,
+            approval,
+            decision,
+          ),
+        );
 
         if (decision.status !== "approved") {
-          return {
+          const result = {
             ok: false,
             approval: decision,
             error: {
@@ -704,6 +927,12 @@ export class AgentRuntime {
               message: `Action '${approval.action}' requires approval before execution.`,
             },
           };
+
+          yield* runtimeEffectFromPromise(() =>
+            this.completePendingApprovalTrace(resolvedTraceId, result),
+          );
+
+          return result;
         }
       }
 
@@ -716,9 +945,22 @@ export class AgentRuntime {
         context.metadata = metadata;
       }
 
-      return yield* runtimeEffectFromPromise(() =>
+      const result = yield* runtimeEffectFromPromise(() =>
         tool.execute(input, context),
       );
+
+      yield* runtimeEffectFromPromise(() =>
+        this.traceToolResult(
+          resolvedTraceId,
+          agent,
+          tool,
+          input,
+          result,
+          startedAt,
+        ),
+      );
+
+      return result;
     });
   }
 
@@ -1156,6 +1398,28 @@ function messageText(content: string | AgentContentPart[]): string {
       part.type === "text" ? part.text : JSON.stringify(part.value),
     )
     .join("");
+}
+
+function resolveAgentTraceId(
+  metadata: Record<string, unknown> | undefined,
+): string {
+  return typeof metadata?.traceId === "string"
+    ? metadata.traceId
+    : `agent_${cryptoRandomId()}`;
+}
+
+function cryptoRandomId(): string {
+  return (
+    globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2, 10)
+  );
+}
+
+function normaliseAgentError(error: unknown): RuntimeError {
+  return new RuntimeError(
+    "INTERNAL_ERROR",
+    error instanceof Error ? error.message : String(error),
+    500,
+  );
 }
 
 function isFileReference(value: string): boolean {

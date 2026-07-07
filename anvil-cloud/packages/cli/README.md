@@ -54,8 +54,13 @@ Initial commands:
 - `anvil-cloud build`
 - `anvil-cloud agents discover`
 - `anvil-cloud agents guardian`
+- `anvil-cloud approvals list`
+- `anvil-cloud approvals approve <id>`
+- `anvil-cloud approvals reject <id>`
+- `anvil-cloud approvals audit`
 - `anvil-cloud inspect`
 - `anvil-cloud logs`
+- `anvil-cloud logs --trace <traceId>`
 - `anvil-cloud usage --local`
 - `anvil-cloud usage --preview`
 - `anvil-cloud db list`

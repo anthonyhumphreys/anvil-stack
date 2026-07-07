@@ -32,6 +32,10 @@ jobs, workflows, and supervised services.
 - local workflow adapter
 - local service supervisor
 
+When `capabilities.outboundFetch.allow` is declared, local request handlers and
+workflow steps run with the same outbound host guard as AWS preview. Calls to
+undeclared hosts fail with `OUTBOUND_FETCH_NOT_ALLOWED`.
+
 Default ports:
 
 | Surface | Default |
@@ -61,6 +65,12 @@ GET  /_anvil/inspect
 GET  /_anvil/lens
 GET  /_anvil/agents
 POST /_anvil/agents/:name
+GET  /_anvil/approvals
+GET  /_anvil/approvals/audit
+POST /_anvil/approvals/:id/approve
+POST /_anvil/approvals/:id/reject
+GET  /_anvil/traces
+GET  /_anvil/traces/:traceId
 POST /_anvil/agents/:name/sessions
 POST /_anvil/agents/sessions/:sessionId/messages
 GET  /_anvil/agents/sessions/:sessionId/stream?after=:token
@@ -81,6 +91,11 @@ Agent requests under `/_anvil/agents/:name` invoke mounted Cell Agents through
 the same provider-neutral `AgentRuntime` used by tests and provider mode. The
 local stub inference provider is registered automatically for `provider: "local"`.
 
+Approval-gated tool execution records pending requests in local state and
+returns a pending approval id instead of executing the gated action. Use
+`/_anvil/approvals`, Lens, or `anvil-cloud approvals ... --json` to inspect,
+approve, reject, and audit those requests.
+
 Session routes add resumable event history around mounted agents. Create a
 session, send messages to it, then reconnect to the SSE stream with the last
 continuation token to replay missed events.
@@ -97,6 +112,7 @@ Local state lives in `.anvil/local` by default:
 ```txt
 .anvil/local/
   auth.json
+  approvals.json
   agent-sessions.json
   dev.db
   events.json
@@ -105,6 +121,7 @@ Local state lives in `.anvil/local` by default:
   logs.ndjson
   schedules.json
   services.json
+  traces.json
   workflows.json
 ```
 

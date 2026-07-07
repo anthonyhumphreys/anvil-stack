@@ -48,17 +48,24 @@ import {
 } from "@anvil-cloud/auth";
 import {
   createLocalRuntimeHost,
+  isLocalApprovalStatus,
+  LocalApprovalStore,
   LocalUsageMeter,
   startLocalRuntimeServer,
   type LocalScheduleStatus,
+  type LocalApprovalRecord,
+  type LocalApprovalStatus,
   type LocalUsageSummary,
 } from "@anvil-cloud/local";
 import {
   AgentProviderRegistry,
   AgentRuntime,
   LocalStubInferenceProvider,
-  type AppDefinition,
   AuthIdentity,
+  createAgentEvalToolExecutors,
+  runAgentEvalSuite,
+  type AgentEvalBaseline,
+  type AppDefinition,
   type WorkflowRun,
 } from "@anvil-cloud/runtime";
 
@@ -193,11 +200,18 @@ export async function main(argv: string[]): Promise<void> {
     case "auth":
       await commandAuth(context, subcommand, maybeArg);
       return;
+    case "approvals":
+      await commandApprovals(context, subcommand, maybeArg);
+      return;
     case "agents":
       await commandAgents(context, subcommand, maybeArg);
       return;
+    case "eval":
+      await commandEval(context, subcommand);
+      return;
     case "channels":
       await commandChannels(context, subcommand);
+      return;
       return;
     case "workflows":
       await commandWorkflows(context, subcommand, maybeArg);
@@ -653,6 +667,113 @@ async function commandAgentsInvoke(
   const payload = { ok: true, result: invocation };
 
   writeJsonOrHuman(context, payload, JSON.stringify(payload, null, 2));
+}
+
+async function commandEval(
+  context: CliContext,
+  name: string | undefined,
+): Promise<void> {
+  const result = await buildCell({ rootDir: context.cwd });
+
+  if (!result.ok || !result.output || !result.manifest) {
+    writeBuildResult(context, result, "Agent eval build failed.");
+    process.exitCode = 4;
+    return;
+  }
+
+  const app = await importApp(result.output.serverBundle);
+  const agents = Object.entries(app.agents ?? {}).filter(([mount, agent]) => {
+    if (name !== undefined && mount !== name && agent.name !== name) {
+      return false;
+    }
+
+    return agent.evals !== undefined;
+  });
+
+  if (name !== undefined && agents.length === 0) {
+    writeJsonOrHuman(
+      context,
+      {
+        ok: false,
+        errors: [
+          {
+            code: "AGENT_EVALS_NOT_FOUND",
+            message: `No eval suite found for mounted agent '${name}'.`,
+          },
+        ],
+      },
+      `No eval suite found for mounted agent '${name}'.`,
+    );
+    process.exitCode = 4;
+    return;
+  }
+
+  const baselinePath = path.resolve(
+    context.cwd,
+    context.values.get("baseline") ?? ".anvil/evals/baseline.json",
+  );
+  const baseline = await readEvalBaseline(baselinePath);
+  const runtime = new AgentRuntime({
+    providers: createAgentProviderRegistry(),
+    baseDir: context.cwd,
+  });
+  const runs = await Promise.all(
+    agents.map(async ([mount, agent]) => {
+      const tools = createAgentEvalToolExecutors(agent);
+
+      return {
+        mount,
+        ...(await runAgentEvalSuite(agent, agent.evals!, {
+          runtime,
+          ...(baseline === undefined ? {} : { baseline }),
+          ...(tools === undefined ? {} : { tools }),
+        })),
+      };
+    }),
+  );
+  const summary = {
+    agents: runs.length,
+    total: runs.reduce((total, run) => total + run.summary.total, 0),
+    passed: runs.reduce((total, run) => total + run.summary.passed, 0),
+    failed: runs.reduce((total, run) => total + run.summary.failed, 0),
+  };
+  const nextBaseline = mergeEvalBaselines(runs.map((run) => run.baseline));
+  const baselineToWrite =
+    baseline === undefined
+      ? nextBaseline
+      : mergeEvalBaselines([baseline, nextBaseline]);
+
+  if (context.flags.has("write-baseline")) {
+    await mkdir(path.dirname(baselinePath), { recursive: true });
+    await writeFile(
+      baselinePath,
+      `${JSON.stringify(baselineToWrite, null, 2)}\n`,
+      "utf8",
+    );
+  }
+
+  const payload = {
+    ok: runs.every((run) => run.ok),
+    summary,
+    baseline: {
+      path: path.relative(context.cwd, baselinePath),
+      loaded: baseline !== undefined,
+      wrote: context.flags.has("write-baseline"),
+    },
+    agents: runs,
+  };
+
+  writeJsonOrHuman(
+    context,
+    payload,
+    payload.ok
+      ? `Agent evals passed (${summary.passed}/${summary.total}).`
+      : `Agent evals failed (${summary.failed}/${summary.total}).`,
+  );
+
+  if (!payload.ok) {
+    process.exitCode = 6;
+  }
 }
 
 async function commandNew(
@@ -2000,6 +2121,47 @@ async function commandLens(context: CliContext): Promise<void> {
 }
 
 async function commandLogs(context: CliContext): Promise<void> {
+  const traceId = context.values.get("trace");
+
+  if (traceId !== undefined) {
+    const trace = await readTrace(context.cwd, traceId);
+
+    if (!trace) {
+      writeJsonOrHuman(
+        context,
+        {
+          ok: false,
+          errors: [
+            {
+              code: "TRACE_NOT_FOUND",
+              message: `No local trace '${traceId}' was found.`,
+            },
+          ],
+        },
+        `No local trace '${traceId}' was found.`,
+      );
+      process.exitCode = 4;
+      return;
+    }
+
+    writeJsonOrHuman(
+      context,
+      {
+        ok: true,
+        trace,
+      },
+      (Array.isArray(trace.events) ? trace.events : [])
+        .map(
+          (event) =>
+            `${event.timestamp} ${event.type} ${event.name}${
+              event.durationMs === undefined ? "" : ` ${event.durationMs}ms`
+            }`,
+        )
+        .join("\n"),
+    );
+    return;
+  }
+
   const remoteApp = context.values.get("app");
 
   if (remoteApp) {
@@ -3763,6 +3925,105 @@ async function commandSchedules(
   writeSchedulesUsage(context);
 }
 
+async function commandApprovals(
+  context: CliContext,
+  subcommand: string | undefined,
+  maybeArg: string | undefined,
+): Promise<void> {
+  const store = createCliApprovalStore(context.cwd);
+
+  if (subcommand === "list") {
+    const status = readCliApprovalStatus(context);
+
+    if (status === "invalid") {
+      writeInvalidUsage(
+        context,
+        "Approval status must be pending, approved, or rejected.",
+      );
+      return;
+    }
+
+    const approvals = await store.list(status === undefined ? {} : { status });
+
+    writeJsonOrHuman(
+      context,
+      { ok: true, approvals },
+      formatApprovals(approvals),
+    );
+    return;
+  }
+
+  if (subcommand === "audit") {
+    const events = await store.audit();
+
+    writeJsonOrHuman(
+      context,
+      { ok: true, events },
+      events.length === 0
+        ? "No local approval audit events."
+        : events
+            .map(
+              (event) =>
+                `${event.at}  ${event.type}  ${event.approvalId}${event.actor ? `  ${event.actor}` : ""}`,
+            )
+            .join("\n"),
+    );
+    return;
+  }
+
+  if (subcommand === "approve" || subcommand === "reject") {
+    if (!maybeArg) {
+      writeApprovalsUsage(context);
+      return;
+    }
+
+    const actor =
+      context.values.get("by") ??
+      (subcommand === "approve"
+        ? "anvil-cloud approvals approve"
+        : "anvil-cloud approvals reject");
+    const reason =
+      context.values.get("reason") ?? context.values.get("justification");
+    const approval =
+      subcommand === "approve"
+        ? await store.approve(maybeArg, {
+            approvedBy: actor,
+            ...(reason === undefined ? {} : { reason }),
+          })
+        : await store.reject(maybeArg, {
+            rejectedBy: actor,
+            ...(reason === undefined ? {} : { reason }),
+          });
+
+    if (!approval) {
+      writeJsonOrHuman(
+        context,
+        {
+          ok: false,
+          errors: [
+            {
+              code: "APPROVAL_NOT_FOUND",
+              message: `No approval '${maybeArg}' was found.`,
+            },
+          ],
+        },
+        `No approval '${maybeArg}' was found.`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    writeJsonOrHuman(
+      context,
+      { ok: true, approval },
+      `${approval.id}  ${approval.action}  ${approval.status}`,
+    );
+    return;
+  }
+
+  writeApprovalsUsage(context);
+}
+
 function writeWorkflowsUsage(context: CliContext): void {
   writeJsonOrHuman(
     context,
@@ -3797,6 +4058,55 @@ function writeSchedulesUsage(context: CliContext): void {
     "Usage: anvil-cloud schedules <list|run <name> [--payload '<json>']> [--json]",
   );
   process.exitCode = 2;
+}
+
+function writeApprovalsUsage(context: CliContext): void {
+  writeJsonOrHuman(
+    context,
+    {
+      ok: false,
+      errors: [
+        {
+          code: "INVALID_USAGE",
+          message:
+            "Usage: anvil-cloud approvals <list|audit|approve <id>|reject <id>> [--status pending|approved|rejected] [--by actor] [--reason text] [--json]",
+        },
+      ],
+    },
+    "Usage: anvil-cloud approvals <list|audit|approve <id>|reject <id>> [--status pending|approved|rejected] [--by actor] [--reason text] [--json]",
+  );
+  process.exitCode = 2;
+}
+
+function createCliApprovalStore(rootDir: string): LocalApprovalStore {
+  return new LocalApprovalStore({
+    filePath: path.join(rootDir, ".anvil/local/approvals.json"),
+  });
+}
+
+function readCliApprovalStatus(
+  context: CliContext,
+): LocalApprovalStatus | "invalid" | undefined {
+  const status = context.values.get("status");
+
+  if (status === undefined || status.length === 0) {
+    return undefined;
+  }
+
+  return isLocalApprovalStatus(status) ? status : "invalid";
+}
+
+function formatApprovals(approvals: LocalApprovalRecord[]): string {
+  if (approvals.length === 0) {
+    return "No local approval requests.";
+  }
+
+  return approvals
+    .map(
+      (approval) =>
+        `${approval.id}  ${approval.action}  ${approval.status}  ${approval.requestedAt}`,
+    )
+    .join("\n");
 }
 
 async function readWorkflowRuns(rootDir: string): Promise<WorkflowRun[]> {
@@ -3956,10 +4266,12 @@ function writeHelp(): void {
       "  anvil-cloud check [--json]",
       "  anvil-cloud review [--adapter aws] [--env preview] [--json]",
       "  anvil-cloud build [--json]",
+      "  anvil-cloud eval [agent] [--baseline .anvil/evals/baseline.json] [--write-baseline] [--json]",
       "  anvil-cloud manifest diff [--from .anvil/dist/manifest.json] [--to manifest.json] [--json]",
       "  anvil-cloud inspect --local [--json]",
       "  anvil-cloud lens [--port 8787] [--json]",
       "  anvil-cloud logs --local [--json]",
+      "  anvil-cloud logs --trace <traceId> [--json]",
       "  anvil-cloud logs --app <name> --env preview [--since 10m] [--limit 50] [--json]",
       "  anvil-cloud usage --local [--since 1h] [--json]",
       "  anvil-cloud usage --preview [--json]",
@@ -3977,6 +4289,10 @@ function writeHelp(): void {
       "  anvil-cloud auth login <id> [--json]",
       "  anvil-cloud auth token <id> [--ttl 3600] [--json]",
       "  anvil-cloud auth whoami [--json]",
+      "  anvil-cloud approvals list [--status pending|approved|rejected] [--json]",
+      "  anvil-cloud approvals approve <id> [--by actor] [--reason text] [--json]",
+      "  anvil-cloud approvals reject <id> [--by actor] [--reason text] [--json]",
+      "  anvil-cloud approvals audit [--json]",
       "  anvil-cloud auth test [--json]",
       "  anvil-cloud agents discover [--json]",
       "  anvil-cloud agents guardian [--json]",
@@ -4330,6 +4646,7 @@ async function checkLocalState(rootDir: string): Promise<DoctorCheck> {
     workflows: await fileExists(path.join(localDir, "workflows.json")),
     schedules: await fileExists(path.join(localDir, "schedules.json")),
     services: await fileExists(path.join(localDir, "services.json")),
+    approvals: await fileExists(path.join(localDir, "approvals.json")),
   };
   const hasAnyState = Object.values(files).some(Boolean);
 
@@ -5057,6 +5374,26 @@ async function readLogs(
   }
 }
 
+async function readTrace(
+  rootDir: string,
+  traceId: string,
+): Promise<Record<string, unknown> | null> {
+  const traces = await readOptionalJson(
+    path.join(rootDir, ".anvil/local/traces.json"),
+  );
+
+  if (!Array.isArray(traces)) {
+    return null;
+  }
+
+  return (
+    traces.find(
+      (trace): trace is Record<string, unknown> =>
+        isObject(trace) && trace.traceId === traceId,
+    ) ?? null
+  );
+}
+
 async function readOptionalJson(filePath: string): Promise<unknown | null> {
   try {
     await stat(filePath);
@@ -5064,6 +5401,39 @@ async function readOptionalJson(filePath: string): Promise<unknown | null> {
   } catch {
     return null;
   }
+}
+
+async function readEvalBaseline(
+  filePath: string,
+): Promise<AgentEvalBaseline | undefined> {
+  const json = await readOptionalJson(filePath);
+
+  if (!isObject(json) || !isObject(json.agents)) {
+    return undefined;
+  }
+
+  return json as AgentEvalBaseline;
+}
+
+function mergeEvalBaselines(baselines: AgentEvalBaseline[]): AgentEvalBaseline {
+  const agents: AgentEvalBaseline["agents"] = {};
+
+  for (const baseline of baselines) {
+    for (const [agentName, agentBaseline] of Object.entries(
+      baseline.agents ?? {},
+    )) {
+      const existing = agents[agentName];
+
+      agents[agentName] = {
+        scenarios: {
+          ...(existing?.scenarios ?? {}),
+          ...(agentBaseline.scenarios ?? {}),
+        },
+      };
+    }
+  }
+
+  return { agents };
 }
 
 function isAppDefinition(value: unknown): value is AppDefinition {

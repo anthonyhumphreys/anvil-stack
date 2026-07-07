@@ -153,6 +153,58 @@ describe("startLocalRuntimeServer", () => {
       await expect(
         fetchText(`${server.runtimeUrl}/_anvil/lens`),
       ).resolves.toContain("Diagnostics");
+      await expect(
+        fetchText(`${server.runtimeUrl}/_anvil/lens`),
+      ).resolves.toContain("Approvals");
+
+      await expect(
+        server.host.approvals.requestApproval({
+          action: "deploy.preview",
+          reason: "Manual preview gate",
+          metadata: { agentName: "shipmate" },
+        }),
+      ).resolves.toMatchObject({ status: "pending" });
+      const approvalsPayload = (await fetchJson(
+        `${server.runtimeUrl}/_anvil/approvals?status=pending`,
+      )) as {
+        approvals: Array<{
+          id: string;
+          status: string;
+          action: string;
+          metadata: Record<string, unknown>;
+        }>;
+      };
+      const approval = approvalsPayload.approvals[0];
+
+      expect(approval).toMatchObject({
+        status: "pending",
+        action: "deploy.preview",
+        metadata: { agentName: "shipmate" },
+      });
+      await expect(
+        postJson(
+          `${server.runtimeUrl}/_anvil/approvals/${approval.id}/approve`,
+          { actor: "test", reason: "Checked" },
+        ),
+      ).resolves.toMatchObject({
+        ok: true,
+        approval: {
+          id: approval.id,
+          status: "approved",
+          decidedBy: "test",
+        },
+      });
+      await expect(
+        fetchJson(`${server.runtimeUrl}/_anvil/approvals/audit`),
+      ).resolves.toMatchObject({
+        ok: true,
+        events: expect.arrayContaining([
+          expect.objectContaining({
+            type: "approval.approved",
+            approvalId: approval.id,
+          }),
+        ]),
+      });
 
       await expect(
         postJson(`${server.clientUrl}/_anvil/mutation/createNote`, {
@@ -177,6 +229,90 @@ describe("startLocalRuntimeServer", () => {
         ]),
       });
     } finally {
+      await server.close();
+    }
+  });
+
+  it("enforces outbound fetch allow lists during local runtime requests", async () => {
+    const originalFetch = globalThis.fetch;
+    const externalFetches: string[] = [];
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-local-"));
+    tempDirs.push(rootDir);
+
+    const cell = app({
+      capabilities: {
+        outboundFetch: { allow: ["api.example.test"] },
+      },
+      queries: {
+        allowedFetch: query({
+          handler: async () => {
+            const response = await fetch("https://api.example.test/v1");
+
+            return { status: response.status };
+          },
+        }),
+        blockedFetch: query({
+          handler: async () => {
+            await fetch("https://billing.example.test/v1");
+
+            return { ok: true };
+          },
+        }),
+      },
+    });
+    const server = await startLocalRuntimeServer({
+      app: cell,
+      manifest: {
+        capabilities: {
+          outboundFetch: { allow: ["api.example.test"] },
+        },
+        queries: ["allowedFetch", "blockedFetch"],
+        mutations: [],
+      },
+      rootDir,
+      cellName: "notes",
+      port: 0,
+      clientPort: 0,
+      clientMode: "none",
+    });
+
+    try {
+      globalThis.fetch = (async (input, init) => {
+        const url = String(input instanceof Request ? input.url : input);
+
+        if (url.startsWith(server.runtimeUrl)) {
+          return originalFetch(input, init);
+        }
+
+        externalFetches.push(url);
+        return new Response("ok", { status: 202 });
+      }) as typeof fetch;
+
+      await expect(
+        postJson(`${server.runtimeUrl}/_anvil/query/allowedFetch`, {
+          input: {},
+        }),
+      ).resolves.toMatchObject({
+        ok: true,
+        result: { status: 202 },
+      });
+      await expect(
+        postJson(`${server.runtimeUrl}/_anvil/query/blockedFetch`, {
+          input: {},
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: {
+          code: "OUTBOUND_FETCH_NOT_ALLOWED",
+          details: {
+            host: "billing.example.test",
+            allowedHosts: ["api.example.test"],
+          },
+        },
+      });
+      expect(externalFetches).toEqual(["https://api.example.test/v1"]);
+    } finally {
+      globalThis.fetch = originalFetch;
       await server.close();
     }
   });

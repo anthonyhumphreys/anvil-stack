@@ -246,7 +246,9 @@ capabilities: {
 - Background work outside declared jobs.
 - Direct network client imports such as `http`, `https`, `node:net`, `undici`,
   or `axios`; use `fetch()` with `capabilities.outboundFetch.allow` instead.
-- Network access to undeclared outbound domains.
+- Network access to undeclared outbound domains. Local runtime request handlers
+  and workflow steps, plus AWS preview, reject undeclared hosts with
+  `OUTBOUND_FETCH_NOT_ALLOWED`.
 - Top-level runtime side effects in app definition modules.
 
 ## Manifest extraction requirements
