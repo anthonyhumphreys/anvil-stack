@@ -160,6 +160,94 @@ describe("main", () => {
     expect(isPnpmVersionSupported("10.1.0")).toBe(true);
   });
 
+  it("manages local approval requests from persisted state", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-approvals-"));
+    const originalCwd = process.cwd();
+    const originalExitCode = process.exitCode;
+
+    try {
+      process.exitCode = undefined;
+      process.chdir(rootDir);
+      await mkdir(path.join(rootDir, ".anvil/local"), { recursive: true });
+      await writeFile(
+        path.join(rootDir, ".anvil/local/approvals.json"),
+        JSON.stringify({
+          approvals: [
+            {
+              id: "appr_cli",
+              status: "pending",
+              action: "deploy.preview",
+              reason: "Preview deploy",
+              metadata: { agentName: "shipmate" },
+              requestedAt: "2026-07-06T12:00:00.000Z",
+              audit: [
+                {
+                  type: "approval.requested",
+                  approvalId: "appr_cli",
+                  at: "2026-07-06T12:00:00.000Z",
+                },
+              ],
+            },
+          ],
+        }),
+        "utf8",
+      );
+
+      const listOutput = await captureStdout(() =>
+        main(["approvals", "list", "--status", "pending", "--json"]),
+      );
+      const listPayload = JSON.parse(listOutput) as {
+        approvals: Array<{ id: string; status: string }>;
+      };
+
+      expect(listPayload.approvals).toEqual([
+        expect.objectContaining({ id: "appr_cli", status: "pending" }),
+      ]);
+
+      const approveOutput = await captureStdout(() =>
+        main([
+          "approvals",
+          "approve",
+          "appr_cli",
+          "--by",
+          "qa",
+          "--reason",
+          "Checked",
+          "--json",
+        ]),
+      );
+      const approvePayload = JSON.parse(approveOutput) as {
+        approval: { status: string; decidedBy?: string };
+      };
+
+      expect(approvePayload.approval).toMatchObject({
+        status: "approved",
+        decidedBy: "qa",
+      });
+
+      const auditOutput = await captureStdout(() =>
+        main(["approvals", "audit", "--json"]),
+      );
+      const auditPayload = JSON.parse(auditOutput) as {
+        events: Array<{ type: string; approvalId: string }>;
+      };
+
+      expect(auditPayload.events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "approval.approved",
+            approvalId: "appr_cli",
+          }),
+        ]),
+      );
+      expect(process.exitCode).toBeUndefined();
+    } finally {
+      process.chdir(originalCwd);
+      process.exitCode = originalExitCode;
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("scaffolds example-shaped starter templates", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-new-"));
     const originalCwd = process.cwd();
@@ -333,6 +421,7 @@ describe("main", () => {
             jobs: false,
             workflows: true,
             services: true,
+            approvals: false,
           },
         },
       });

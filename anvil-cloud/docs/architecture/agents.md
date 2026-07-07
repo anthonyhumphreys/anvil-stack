@@ -343,6 +343,25 @@ approvals.requiredFor
   → enforced by Anvil before sharp tools execute inside the sandbox
 ```
 
+Local approval gates now persist pending decisions in
+`.anvil/local/approvals.json`. When an approval-gated tool action is requested,
+Anvil Local records the action id, reason, request metadata, and audit event,
+then returns a pending `approvalId` instead of executing the tool. Developers
+and coding agents can inspect or decide those requests with:
+
+```bash
+anvil-cloud approvals list --status pending --json
+anvil-cloud approvals approve <approvalId> --by reviewer --reason "Checked"
+anvil-cloud approvals reject <approvalId> --by reviewer --reason "Not safe"
+anvil-cloud approvals audit --json
+```
+
+Lens exposes the same pending queue and audit trail under the Approvals tab.
+If `ANVIL_APPROVAL_WEBHOOK_URL` is set for the local runtime, Anvil posts an
+`approval.requested` webhook and records delivery or failure in the same audit
+log. The hosted production approval UI is still future work; the current
+end-to-end implementation is local runtime, CLI, Lens, and webhook dispatch.
+
 The Lambda-based Cell runtime remains the request/control boundary. The
 MicroVM-backed sandbox is the agent workspace. AWS preview deployment plans now
 report `agent-sandboxes` changes for mounted agents with `runtime.sandbox:

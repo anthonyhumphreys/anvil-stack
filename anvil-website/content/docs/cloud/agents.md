@@ -247,11 +247,30 @@ Anvil Local also exposes:
 ```txt
 GET  /_anvil/agents
 POST /_anvil/agents/:name
+GET  /_anvil/approvals
+GET  /_anvil/approvals/audit
+POST /_anvil/approvals/:id/approve
+POST /_anvil/approvals/:id/reject
 POST /_anvil/agents/:name/sessions
 POST /_anvil/agents/sessions/:sessionId/messages
 GET  /_anvil/agents/sessions/:sessionId/stream?after=:token
 POST /_anvil/channels/simulate
 ```
+
+Approval-gated tool actions persist pending decisions to
+`.anvil/local/approvals.json`. Inspect and decide them from the CLI:
+
+```bash
+anvil-cloud approvals list --status pending --json
+anvil-cloud approvals approve <approvalId> --by reviewer --reason "Checked"
+anvil-cloud approvals reject <approvalId> --by reviewer --reason "Not safe"
+anvil-cloud approvals audit --json
+```
+
+Lens shows the same pending queue and audit history in its Approvals tab. Local
+runtimes can also set `ANVIL_APPROVAL_WEBHOOK_URL` to receive
+`approval.requested` webhook events; webhook delivery failures are recorded in
+the approval audit log and do not execute the gated action.
 
 `POST /_anvil/agents/:name` accepts `{ "input": "..." }` and returns the
 provider-neutral `AgentRuntime` result. Session routes persist local agent event
@@ -405,7 +424,8 @@ The manifest may name provider ids such as `local` or `aws-bedrock`. It must not
   TypeScript manifests are future work.
 - There is no hosted production agent orchestration.
 - There is no chat UI.
-- There is no production approval UI.
+- There is no hosted production approval UI. Local approval queues are
+  persisted, visible in Lens, operable from the CLI, and auditable.
 - There is no durable multi-step tool-calling loop.
 - Memory and sandbox requirements are manifest-level contract fields, not complete hosted implementations.
 - AWS support currently covers Bedrock inference, compatibility reporting,

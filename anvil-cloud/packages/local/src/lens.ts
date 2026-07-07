@@ -92,8 +92,8 @@ tr.clickable:hover td { background: var(--panel-2); }
   color: var(--gray);
 }
 .badge.running, .badge.starting { border-color: var(--amber); color: var(--amber); }
-.badge.completed { border-color: var(--green); color: var(--green); }
-.badge.failed, .badge.error, .badge.crashed { border-color: var(--red); color: var(--red); }
+.badge.completed, .badge.approved { border-color: var(--green); color: var(--green); }
+.badge.failed, .badge.error, .badge.crashed, .badge.rejected { border-color: var(--red); color: var(--red); }
 .badge.stopped, .badge.pending { border-color: var(--gray); color: var(--gray); }
 .stat-grid { display: flex; flex-wrap: wrap; gap: 8px; }
 .stat {
@@ -162,6 +162,7 @@ pre {
   <button data-tab="usage">Usage</button>
   <button data-tab="database">Database</button>
   <button data-tab="auth">Auth</button>
+  <button data-tab="approvals">Approvals</button>
   <button data-tab="workflows">Workflows</button>
   <button data-tab="services">Services</button>
   <button data-tab="diagnostics">Diagnostics</button>
@@ -250,6 +251,30 @@ pre {
       <pre id="token-value"></pre>
       <button class="act" id="token-copy">Copy token</button>
     </div>
+  </section>
+
+  <section id="tab-approvals">
+    <div class="toolbar">
+      <label>Status
+        <select id="approval-status">
+          <option value="">all</option>
+          <option value="pending">pending</option>
+          <option value="approved">approved</option>
+          <option value="rejected">rejected</option>
+        </select>
+      </label>
+      <button class="act" id="approval-refresh">Refresh</button>
+    </div>
+    <h2>Approval requests</h2>
+    <div class="panel"><table id="approval-table">
+      <thead><tr><th>id</th><th>action</th><th>status</th><th>reason</th><th>requested</th><th>context</th><th>actions</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+    <h2>Audit</h2>
+    <div class="panel"><table id="approval-audit">
+      <thead><tr><th>time</th><th>event</th><th>approval</th><th>actor</th><th>reason</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
   </section>
 
   <section id="tab-workflows">
@@ -720,6 +745,91 @@ anvil-cloud logs --local --json</pre>
     }
   });
 
+  // Approvals
+  function loadApprovals() {
+    var status = document.getElementById("approval-status").value;
+    var path = "/_anvil/approvals" + (status ? "?status=" + encodeURIComponent(status) : "");
+
+    return Promise.all([
+      getJson(path),
+      getJson("/_anvil/approvals/audit")
+    ]).then(function (results) {
+      var approvals = results[0].approvals || [];
+      var events = results[1].events || [];
+      var tbody = document.querySelector("#approval-table tbody");
+      tbody.textContent = "";
+      if (approvals.length === 0) {
+        tbody.appendChild(el("tr", null, [
+          el("td", { class: "muted", colspan: "7", text: "No approval requests." })
+        ]));
+      }
+      approvals.slice().reverse().forEach(function (approval) {
+        var actions = el("td", null, []);
+        if (approval.status === "pending") {
+          var approve = el("button", { class: "act", text: "Approve" });
+          var reject = el("button", { class: "act", text: "Reject" });
+          approve.addEventListener("click", function () {
+            decideApproval(approval.id, "approve");
+          });
+          reject.addEventListener("click", function () {
+            decideApproval(approval.id, "reject");
+          });
+          approve.style.marginRight = "6px";
+          actions.appendChild(approve);
+          actions.appendChild(reject);
+        } else {
+          actions.appendChild(el("span", { class: "muted", text: approval.decidedBy || "-" }));
+        }
+
+        tbody.appendChild(el("tr", null, [
+          el("td", { text: approval.id || "" }),
+          el("td", { text: approval.action || "" }),
+          el("td", null, [badge(approval.status || "unknown")]),
+          el("td", { text: approval.reason || approval.decisionReason || "-" }),
+          el("td", { class: "muted", text: approval.requestedAt || "" }),
+          el("td", null, [renderValue(approval.metadata || {})]),
+          actions
+        ]));
+      });
+
+      var auditBody = document.querySelector("#approval-audit tbody");
+      auditBody.textContent = "";
+      if (events.length === 0) {
+        auditBody.appendChild(el("tr", null, [
+          el("td", { class: "muted", colspan: "5", text: "No approval audit events." })
+        ]));
+      }
+      events.slice().reverse().forEach(function (event) {
+        auditBody.appendChild(el("tr", null, [
+          el("td", { class: "muted", text: event.at || "" }),
+          el("td", { text: event.type || "" }),
+          el("td", { text: event.approvalId || "" }),
+          el("td", { text: event.actor || "-" }),
+          el("td", { text: event.reason || "-" })
+        ]));
+      });
+    });
+  }
+
+  function decideApproval(id, action) {
+    var reason = window.prompt(action === "approve" ? "Approval note" : "Rejection reason") || "";
+
+    postJson("/_anvil/approvals/" + encodeURIComponent(id) + "/" + action, {
+      actor: "lens",
+      reason: reason
+    }).then(function () {
+      clearError();
+      return loadApprovals();
+    }).catch(function (error) { showError(error.message); });
+  }
+
+  document.getElementById("approval-status").addEventListener("change", function () {
+    loadApprovals().catch(function (error) { showError(error.message); });
+  });
+  document.getElementById("approval-refresh").addEventListener("click", function () {
+    loadApprovals().catch(function (error) { showError(error.message); });
+  });
+
   // Workflows
   function renderDeclaredWorkflows() {
     var container = document.getElementById("wf-declared");
@@ -863,6 +973,7 @@ anvil-cloud logs --local --json</pre>
       loadTraces(),
       loadTables(),
       loadUsers(),
+      loadApprovals(),
       loadRuns(),
       loadServices()
     ]).catch(function (error) { showError(error.message); });

@@ -63,8 +63,21 @@ import {
 } from "@anvil-cloud/runtime";
 import { createServer as createViteServer, type ViteDevServer } from "vite";
 
+import {
+  isLocalApprovalStatus,
+  LocalApprovalStore,
+  type LocalApprovalStatus,
+} from "./approvals.js";
 import { lensPageHtml } from "./lens.js";
 
+export {
+  isLocalApprovalStatus,
+  LocalApprovalStore,
+  type LocalApprovalAuditEvent,
+  type LocalApprovalRecord,
+  type LocalApprovalStatus,
+  type LocalApprovalStoreOptions,
+} from "./approvals.js";
 export { lensPageHtml } from "./lens.js";
 
 export type LocalRuntimeHost = RuntimeHost & {
@@ -80,6 +93,7 @@ export type LocalRuntimeHost = RuntimeHost & {
   agentSessions: LocalAgentSessionAdapter;
   usage: LocalUsageMeter;
   idp: LocalIdentityProvider;
+  approvals: LocalApprovalStore;
 };
 
 export type LocalRuntimeServerOptions = {
@@ -144,6 +158,12 @@ export async function createLocalRuntimeHost(options: {
       options.cellName,
     ),
     idp,
+    approvals: new LocalApprovalStore({
+      filePath: path.join(options.stateDir, "approvals.json"),
+      ...(options.env?.ANVIL_APPROVAL_WEBHOOK_URL === undefined
+        ? {}
+        : { webhookUrl: options.env.ANVIL_APPROVAL_WEBHOOK_URL }),
+    }),
   };
 }
 
@@ -184,6 +204,7 @@ export async function startLocalRuntimeServer(
 
   const host = await createLocalRuntimeHost(hostOptions);
   const agentProviders = options.agentProviders ?? new AgentProviderRegistry();
+  const agentApprovalProvider = options.agentApprovalProvider ?? host.approvals;
 
   if (!agentProviders.has("local")) {
     agentProviders.register(new LocalStubInferenceProvider());
@@ -215,9 +236,7 @@ export async function startLocalRuntimeServer(
         providers: agentProviders,
         baseDir: rootDir,
         traces: host.traces,
-        ...(options.agentApprovalProvider === undefined
-          ? {}
-          : { approvalProvider: options.agentApprovalProvider }),
+        approvalProvider: agentApprovalProvider,
       }),
       agentProviders,
       services,
@@ -1456,6 +1475,79 @@ async function handleLocalRequest(options: LocalRequestOptions): Promise<void> {
         logs: await options.host.logs.entries(),
       });
       return;
+    }
+
+    if (method === "GET" && url.pathname === "/_anvil/approvals") {
+      const status = readApprovalStatus(url.searchParams.get("status"));
+
+      if (status === "invalid") {
+        await sendJson(options.response, 400, {
+          ok: false,
+          error: {
+            code: "APPROVAL_STATUS_INVALID",
+            message: "Approval status must be pending, approved, or rejected.",
+          },
+        });
+        return;
+      }
+
+      await sendJson(options.response, 200, {
+        ok: true,
+        approvals: await options.host.approvals.list(
+          status === undefined ? {} : { status },
+        ),
+      });
+      return;
+    }
+
+    if (method === "GET" && url.pathname === "/_anvil/approvals/audit") {
+      await sendJson(options.response, 200, {
+        ok: true,
+        events: await options.host.approvals.audit(),
+      });
+      return;
+    }
+
+    if (method === "POST" && url.pathname.startsWith("/_anvil/approvals/")) {
+      const approvalAction = readApprovalAction(url.pathname);
+
+      if (approvalAction) {
+        const body = await readJsonRequest(options.request);
+        const actor =
+          isObject(body) && typeof body.actor === "string"
+            ? body.actor
+            : undefined;
+        const reason =
+          isObject(body) && typeof body.reason === "string"
+            ? body.reason
+            : isObject(body) && typeof body.justification === "string"
+              ? body.justification
+              : undefined;
+        const approval =
+          approvalAction.action === "approve"
+            ? await options.host.approvals.approve(
+                approvalAction.id,
+                approvalDecisionOptions("approved", actor, reason),
+              )
+            : await options.host.approvals.reject(
+                approvalAction.id,
+                approvalDecisionOptions("rejected", actor, reason),
+              );
+
+        if (!approval) {
+          await sendJson(options.response, 404, {
+            ok: false,
+            error: {
+              code: "APPROVAL_NOT_FOUND",
+              message: `No approval '${approvalAction.id}' was found.`,
+            },
+          });
+          return;
+        }
+
+        await sendJson(options.response, 200, { ok: true, approval });
+        return;
+      }
     }
 
     if (method === "GET" && url.pathname === "/_anvil/traces") {
@@ -2838,6 +2930,72 @@ async function readJsonRequest(request: IncomingMessage): Promise<unknown> {
   }
 
   return JSON.parse(body.toString("utf8")) as unknown;
+}
+
+function readApprovalStatus(
+  value: string | null,
+): LocalApprovalStatus | "invalid" | undefined {
+  if (value === null || value.length === 0) {
+    return undefined;
+  }
+
+  return isLocalApprovalStatus(value) ? value : "invalid";
+}
+
+function readApprovalAction(
+  pathname: string,
+): { id: string; action: "approve" | "reject" } | null {
+  if (pathname.endsWith("/approve")) {
+    return {
+      id: decodeURIComponent(
+        pathname.slice(
+          "/_anvil/approvals/".length,
+          pathname.length - "/approve".length,
+        ),
+      ),
+      action: "approve",
+    };
+  }
+
+  if (pathname.endsWith("/reject")) {
+    return {
+      id: decodeURIComponent(
+        pathname.slice(
+          "/_anvil/approvals/".length,
+          pathname.length - "/reject".length,
+        ),
+      ),
+      action: "reject",
+    };
+  }
+
+  return null;
+}
+
+function approvalDecisionOptions(
+  status: "approved",
+  actor: string | undefined,
+  reason: string | undefined,
+): { approvedBy?: string; reason?: string };
+function approvalDecisionOptions(
+  status: "rejected",
+  actor: string | undefined,
+  reason: string | undefined,
+): { rejectedBy?: string; reason?: string };
+function approvalDecisionOptions(
+  status: "approved" | "rejected",
+  actor: string | undefined,
+  reason: string | undefined,
+): { approvedBy?: string; rejectedBy?: string; reason?: string } {
+  return {
+    ...(status === "approved" && actor !== undefined
+      ? { approvedBy: actor }
+      : {}),
+    ...(status === "rejected" && actor !== undefined
+      ? { rejectedBy: actor }
+      : {}),
+    ...(reason === undefined ? {} : { reason }),
+  };
 }
 
 async function readRawBody(request: IncomingMessage): Promise<Buffer> {
