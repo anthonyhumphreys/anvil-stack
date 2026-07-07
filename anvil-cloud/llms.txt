@@ -63,5 +63,6 @@ path working and adds one canonical primitive for agents to copy.
 - Do not expose direct AWS SDK usage to Anvil Cell authors.
 - Do not begin with AWS infrastructure before local runtime is proven.
 - Do not add Kubernetes, ECS, arbitrary Docker, or multi-cloud support in v0.
+- Local database branches are JSON snapshots managed through `anvil-cloud db branch`, `db use`, `db diff`, `db promote`, `db delete`, and `db cleanup --expired`; Cell code still uses the same `ctx.db` contract.
 - Local usage metering is available through `.anvil/local/usage.ndjson`, `GET /_anvil/usage`, Lens Usage, and `anvil-cloud usage --local --json`; preview usage remains declared-resource visibility.
 - Keep docs professional and suitable for a future open-source repository.

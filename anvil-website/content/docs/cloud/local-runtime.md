@@ -127,6 +127,12 @@ Local state lives in `.anvil/local` by default:
 
 The current database adapter stores JSON records in `dev.db`. It is intentionally simple, inspectable, and suited to alpha local development.
 
+Local database branches snapshot that JSON store for previews, tests, and agent
+experiments. `main` maps to `.anvil/local/dev.db`; named branches live under
+`.anvil/local/db-branches` with metadata in `.anvil/local/db-branches.json`.
+Cell code still sees the same `ctx.db` contract regardless of the selected
+branch.
+
 Scheduled jobs declared with `job({ schedule })` are tracked in
 `schedules.json`. Local scheduling supports `rate(1 hour)`, `@every 5m`, and
 five-field cron expressions. Missed runs while the dev runtime is stopped are
@@ -151,6 +157,13 @@ Inspection commands:
 ```bash
 anvil cloud db list --local --json
 anvil cloud db dump notes --local --json
+anvil cloud db branch preview --from main --ttl 3600 --json
+anvil cloud db use preview --json
+anvil cloud dev --db-branch preview --json
+anvil cloud db diff preview --against main --json
+anvil cloud db promote preview --json
+anvil cloud db delete preview --yes --json
+anvil cloud db cleanup --expired --json
 ```
 
 ## Files

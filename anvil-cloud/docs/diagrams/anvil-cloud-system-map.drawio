@@ -23,7 +23,7 @@
     <mxCell id="artifacts" value=".anvil artifacts&lt;br&gt;server bundle, client assets&lt;br&gt;manifest, generated client" style="shape=folder;tabWidth=70;tabHeight=18;whiteSpace=wrap;html=1;fillColor=#1f2937;strokeColor=#93c5fd;fontColor=#f8fafc;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
       <mxGeometry x="890" y="155" width="230" height="110" as="geometry"/>
     </mxCell>
-    <mxCell id="local" value="Anvil Local&lt;br&gt;runtime server, Vite client&lt;br&gt;SQLite, auth, jobs, logs" style="rounded=1;whiteSpace=wrap;html=1;arcSize=12;fillColor=#102a24;strokeColor=#34d399;fontColor=#ecfdf5;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
+    <mxCell id="local" value="Anvil Local&lt;br&gt;runtime server, Vite client&lt;br&gt;JSON database, branches, auth, jobs, logs" style="rounded=1;whiteSpace=wrap;html=1;arcSize=12;fillColor=#102a24;strokeColor=#34d399;fontColor=#ecfdf5;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">
       <mxGeometry x="500" y="470" width="250" height="100" as="geometry"/>
     </mxCell>
     <mxCell id="lens" value="Anvil Lens&lt;br&gt;manifest, logs, db, requests" style="rounded=1;whiteSpace=wrap;html=1;arcSize=12;fillColor=#06321f;strokeColor=#6ee7b7;fontColor=#ecfdf5;strokeWidth=2;fontStyle=1;spacing=10;" vertex="1" parent="1">

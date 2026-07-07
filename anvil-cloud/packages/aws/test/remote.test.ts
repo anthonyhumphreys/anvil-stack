@@ -22,6 +22,7 @@ describe("AwsRemoteReader", () => {
       adapter: "aws",
       cell: "notes",
       environment: "preview",
+      previewName: "default",
       deploymentId: "dep_123",
       updatedAt: "2026-01-01T00:00:00.000Z",
       runtimeUrl: "https://runtime.example.test",
@@ -60,6 +61,40 @@ describe("AwsRemoteReader", () => {
       Key: {
         pk: {
           S: "deployment#notes#preview",
+        },
+      },
+    });
+  });
+
+  it("reads named preview deployment metadata", async () => {
+    const dynamodb = new FakeAwsClient({
+      GetItemCommand: {
+        Item: deploymentItem({
+          pk: { S: "deployment#notes#preview#branch" },
+          previewName: { S: "branch" },
+        }),
+      },
+    });
+    const reader = new AwsRemoteReader({
+      deploymentMetadataTable: "deployments",
+      dynamodb,
+      logs: new FakeAwsClient(),
+    });
+
+    await expect(
+      reader.inspect({
+        cell: "notes",
+        environment: "preview",
+        previewName: "Branch",
+      }),
+    ).resolves.toMatchObject({
+      previewName: "branch",
+      deploymentId: "dep_123",
+    });
+    expect(dynamodb.commands[0]?.input).toMatchObject({
+      Key: {
+        pk: {
+          S: "deployment#notes#preview#branch",
         },
       },
     });
@@ -111,6 +146,7 @@ describe("AwsRemoteReader", () => {
       reader.readLogs({ cell: "notes", environment: "preview", limit: 10 }),
     ).resolves.toMatchObject({
       ok: true,
+      previewName: "default",
       logs: [
         {
           timestamp: "2026-01-01T00:00:00.000Z",
@@ -410,12 +446,13 @@ class SequenceAwsClient {
   }
 }
 
-function deploymentItem() {
+function deploymentItem(overrides: Record<string, unknown> = {}) {
   return {
     pk: { S: "deployment#notes#preview" },
     deploymentId: { S: "dep_123" },
     cell: { S: "notes" },
     environment: { S: "preview" },
+    previewName: { S: "default" },
     stackName: { S: "anvil-notes-preview" },
     runtimeUrl: { S: "https://runtime.example.test" },
     updatedAt: { S: "2026-01-01T00:00:00.000Z" },
@@ -483,5 +520,6 @@ function deploymentItem() {
         ],
       }),
     },
+    ...overrides,
   };
 }

@@ -22,6 +22,7 @@ import {
   AwsPreviewDestroyError,
   AwsRemoteReaderError,
   awsPreviewStackNameFor,
+  normalizePreviewName,
   createAwsSdkPreviewDestroyerFromEnv,
   createAwsRemoteReaderFromEnv,
   createAwsSdkPreviewProvisionerFromEnv,
@@ -35,6 +36,7 @@ import {
   diffCellManifests,
   validateAnvilCellGraph,
   type BuilderDiagnostic,
+  type BuildOutput,
   type BuildResult,
   type CellManifest,
   type ManifestDiffResult,
@@ -48,10 +50,13 @@ import {
 } from "@anvil-cloud/auth";
 import {
   createLocalRuntimeHost,
+  JsonDatabaseBranchManager,
   isLocalApprovalStatus,
   LocalApprovalStore,
   LocalUsageMeter,
+  normalizeDatabaseBranchName,
   startLocalRuntimeServer,
+  type JsonDatabaseBranchDiff,
   type LocalScheduleStatus,
   type LocalApprovalRecord,
   type LocalApprovalStatus,
@@ -1962,6 +1967,7 @@ async function commandDev(context: CliContext): Promise<void> {
   const manifest = result.manifest as CellManifest;
   const port = Number(context.values.get("port") ?? "8787");
   const clientPort = Number(context.values.get("client-port") ?? "5173");
+  const databaseBranch = context.values.get("db-branch");
   const server = await startLocalRuntimeServer({
     app,
     manifest,
@@ -1969,6 +1975,7 @@ async function commandDev(context: CliContext): Promise<void> {
     cellName: manifest.cell.name,
     port,
     clientPort,
+    ...(databaseBranch === undefined ? {} : { databaseBranch }),
     clientMode: manifest.client.kind === "vite-react" ? "vite" : "none",
   });
   const ready = {
@@ -1977,6 +1984,7 @@ async function commandDev(context: CliContext): Promise<void> {
     clientUrl: server.clientUrl,
     client: manifest.client,
     lensUrl: `${server.runtimeUrl}/_anvil/lens`,
+    databaseBranch: server.host.db.branch,
     queries: manifest.queries,
     mutations: manifest.mutations,
   };
@@ -2037,10 +2045,21 @@ async function commandInspect(context: CliContext): Promise<void> {
     let payload: Awaited<ReturnType<typeof reader.inspect>>;
 
     try {
-      payload = await reader.inspect({
+      const inspectInput: {
+        cell: string;
+        environment: "preview";
+        previewName?: string;
+      } = {
         cell: remoteApp,
         environment,
-      });
+      };
+      const previewName = context.values.get("name");
+
+      if (previewName !== undefined) {
+        inspectInput.previewName = previewName;
+      }
+
+      payload = await reader.inspect(inspectInput);
     } catch (error) {
       if (writeAwsRemoteReaderError(context, error)) {
         return;
@@ -2060,6 +2079,9 @@ async function commandInspect(context: CliContext): Promise<void> {
     path.join(context.cwd, ".anvil/local/auth.json"),
   );
   const database = await readDatabase(context.cwd);
+  const dbBranches = new JsonDatabaseBranchManager(localStateDir(context.cwd));
+  const branches = await dbBranches.listBranches();
+  const activeBranch = await dbBranches.getActiveBranch();
   const logs = await readLogs(context.cwd);
   const payload = {
     ok: true,
@@ -2072,12 +2094,14 @@ async function commandInspect(context: CliContext): Promise<void> {
           : null,
     },
     database: {
+      activeBranch,
       tables: Object.fromEntries(
         Object.entries(database).map(([name, rows]) => [
           name,
           { rows: rows.length },
         ]),
       ),
+      branches,
     },
     recentErrors: logs.filter((entry) => entry.level === "error").slice(-10),
   };
@@ -2191,6 +2215,7 @@ async function commandLogs(context: CliContext): Promise<void> {
     const logInput: {
       cell: string;
       environment: "preview";
+      previewName?: string;
       sinceMs?: number;
       limit?: number;
     } = { cell: remoteApp, environment: "preview" };
@@ -2201,6 +2226,11 @@ async function commandLogs(context: CliContext): Promise<void> {
     }
 
     logInput.environment = environment;
+    const previewName = context.values.get("name");
+
+    if (previewName !== undefined) {
+      logInput.previewName = previewName;
+    }
     const limitOption = context.values.get("limit");
     const sinceOption = context.values.get("since");
 
@@ -2370,13 +2400,21 @@ async function commandDb(
   subcommand: string | undefined,
   table: string | undefined,
 ): Promise<void> {
-  const database = await readDatabase(context.cwd);
+  const manager = new JsonDatabaseBranchManager(localStateDir(context.cwd));
+  const branchArg = context.values.get("branch");
+  const branch =
+    branchArg === undefined
+      ? undefined
+      : normalizeDatabaseBranchName(branchArg);
+  const database = await readDatabase(context.cwd, branch);
 
   if (subcommand === "list") {
+    const activeBranch = await manager.getActiveBranch();
     writeJsonOrHuman(
       context,
       {
         ok: true,
+        branch: branch ?? activeBranch,
         tables: Object.entries(database).map(([name, rows]) => ({
           name,
           rows: rows.length,
@@ -2388,15 +2426,153 @@ async function commandDb(
   }
 
   if (subcommand === "dump" && table) {
+    const activeBranch = await manager.getActiveBranch();
     writeJsonOrHuman(
       context,
       {
         ok: true,
+        branch: branch ?? activeBranch,
         table,
         rows: database[table] ?? [],
       },
       JSON.stringify(database[table] ?? [], null, 2),
     );
+    return;
+  }
+
+  if (subcommand === "branch" && table) {
+    const ttlSeconds = context.values.has("ttl")
+      ? parsePositiveIntegerOption(context.values.get("ttl") ?? "")
+      : undefined;
+
+    if (context.values.has("ttl") && ttlSeconds === undefined) {
+      writeInvalidUsage(context, "--ttl must be a positive integer in seconds.");
+      return;
+    }
+
+    await writeDbOperation(context, async () => {
+      const result = await manager.createBranch({
+        name: table,
+        ...(context.values.has("from")
+          ? { from: context.values.get("from") ?? "" }
+          : {}),
+        ...(ttlSeconds === undefined ? {} : { ttlSeconds }),
+      });
+
+      if (context.flags.has("use")) {
+        await manager.setActiveBranch(result.name);
+      }
+
+      return {
+        payload: {
+          ok: true,
+          branch: {
+            ...result,
+            active: context.flags.has("use") ? true : result.active,
+          },
+        },
+        human: `Created database branch ${result.name}`,
+      };
+    });
+    return;
+  }
+
+  if (subcommand === "branches") {
+    await writeDbOperation(context, async () => {
+      const expired = context.flags.has("expired");
+      const branches = await manager.listBranches();
+      const filtered = expired
+        ? branches.filter((branchSummary) => branchSummary.expired)
+        : branches;
+
+      return {
+        payload: { ok: true, branches: filtered },
+        human: filtered
+          .map((branchSummary) =>
+            [
+              branchSummary.name,
+              branchSummary.active ? "(active)" : "",
+              branchSummary.expired ? "(expired)" : "",
+            ]
+              .filter(Boolean)
+              .join(" "),
+          )
+          .join("\n"),
+      };
+    });
+    return;
+  }
+
+  if (subcommand === "use" && table) {
+    await writeDbOperation(context, async () => {
+      const result = await manager.setActiveBranch(table);
+
+      return {
+        payload: { ok: true, branch: result },
+        human: `Using database branch ${result.name}`,
+      };
+    });
+    return;
+  }
+
+  if (subcommand === "diff" && table) {
+    await writeDbOperation(context, async () => {
+      const diff = await manager.diffBranch(table, context.values.get("against"));
+
+      return {
+        payload: { ok: true, diff },
+        human: formatDatabaseBranchDiff(diff),
+      };
+    });
+    return;
+  }
+
+  if (subcommand === "promote" && table) {
+    await writeDbOperation(context, async () => {
+      const result = await manager.promoteBranch(table);
+
+      return {
+        payload: { ok: true, branch: result },
+        human: `Promoted database branch ${result.name} to main`,
+      };
+    });
+    return;
+  }
+
+  if (subcommand === "delete" && table) {
+    if (!context.flags.has("yes")) {
+      writeInvalidUsage(
+        context,
+        "Deleting a database branch requires --yes.",
+      );
+      return;
+    }
+
+    await writeDbOperation(context, async () => {
+      const result = await manager.deleteBranch(table);
+
+      return {
+        payload: { ok: true, ...result },
+        human: result.deleted
+          ? `Deleted database branch ${result.name}`
+          : `Database branch ${result.name} did not exist`,
+      };
+    });
+    return;
+  }
+
+  if (subcommand === "cleanup" && context.flags.has("expired")) {
+    await writeDbOperation(context, async () => {
+      const deleted = await manager.deleteExpiredBranches();
+
+      return {
+        payload: { ok: true, deleted },
+        human:
+          deleted.length === 0
+            ? "No expired database branches."
+            : `Deleted expired database branches: ${deleted.join(", ")}`,
+      };
+    });
     return;
   }
 
@@ -2408,13 +2584,65 @@ async function commandDb(
         {
           code: "INVALID_USAGE",
           message:
-            "Usage: anvil-cloud db list --local or anvil-cloud db dump <table> --local",
+            "Usage: anvil-cloud db list|dump|branch|branches|use|diff|promote|delete|cleanup --local",
         },
       ],
     },
-    "Usage: anvil-cloud db list --local or anvil-cloud db dump <table> --local",
+    "Usage: anvil-cloud db list|dump|branch|branches|use|diff|promote|delete|cleanup --local",
   );
   process.exitCode = 2;
+}
+
+async function writeDbOperation(
+  context: CliContext,
+  operation: () => Promise<{ payload: unknown; human: string }>,
+): Promise<void> {
+  try {
+    const result = await operation();
+    writeJsonOrHuman(context, result.payload, result.human);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+
+    writeJsonOrHuman(
+      context,
+      {
+        ok: false,
+        errors: [
+          {
+            code: "DATABASE_BRANCH_ERROR",
+            message,
+          },
+        ],
+      },
+      message,
+    );
+    process.exitCode = 2;
+  }
+}
+
+function formatDatabaseBranchDiff(diff: JsonDatabaseBranchDiff): string {
+  const lines = [`${diff.branch} against ${diff.against}`];
+
+  for (const [table, summary] of Object.entries(diff.tables)) {
+    lines.push(
+      `${table}: ${summary.branchRows} rows (${formatSignedNumber(
+        summary.rowDelta,
+      )})`,
+    );
+
+    if (summary.addedFields.length > 0) {
+      lines.push(`  added fields: ${summary.addedFields.join(", ")}`);
+    }
+    if (summary.removedFields.length > 0) {
+      lines.push(`  removed fields: ${summary.removedFields.join(", ")}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+function formatSignedNumber(value: number): string {
+  return value >= 0 ? `+${value}` : String(value);
 }
 
 function formatLocalUsageSummary(summary: LocalUsageSummary): string {
@@ -2749,12 +2977,25 @@ function commandDeployPreviewEffect(
       provisioner ? { provisioner } : {},
     );
     const deployResult = yield* Effect.tryPromise({
-      try: () =>
-        adapter.deploy({
+      try: () => {
+        const deployInput: {
+          manifest: CellManifest;
+          buildOutput: BuildOutput;
+          environment: "preview";
+          previewName?: string;
+        } = {
           manifest,
           buildOutput,
           environment: "preview",
-        }),
+        };
+        const previewName = context.values.get("name");
+
+        if (previewName !== undefined) {
+          deployInput.previewName = previewName;
+        }
+
+        return adapter.deploy(deployInput);
+      },
       catch: toCliEffectError,
     });
 
@@ -2885,15 +3126,17 @@ async function commandDestroy(context: CliContext): Promise<void> {
     if (context.flags.has("dry-run")) {
       const stackName = awsPreviewStackNameFor(
         app,
-        environment,
+        previewStackEnvironment(environment, context.values.get("name")),
         process.env.ANVIL_AWS_STACK_PREFIX,
       );
+      const previewName = normalizePreviewName(context.values.get("name"));
       const metadataTable = process.env.ANVIL_AWS_DEPLOYMENT_METADATA_TABLE;
       const result = {
         ok: true,
         adapter: "aws",
         cell: app,
         environment,
+        previewName,
         dryRun: true,
         stackName,
         cleanup: {
@@ -2910,10 +3153,14 @@ async function commandDestroy(context: CliContext): Promise<void> {
               : {
                   action: "delete",
                   table: metadataTable,
-                  key: `deployment#${app}#${environment}`,
+                  key: deploymentMetadataKey(app, environment, previewName),
                 },
         },
-        next: [`anvil-cloud destroy --preview --app ${app} --yes --json`],
+        next: [
+          `anvil-cloud destroy --preview --app ${app}${
+            previewName !== "default" ? ` --name ${previewName}` : ""
+          } --yes --json`,
+        ],
       };
 
       writeJsonOrHuman(
@@ -2927,10 +3174,21 @@ async function commandDestroy(context: CliContext): Promise<void> {
     const destroyer = createAwsSdkPreviewDestroyerFromEnv();
     let result: Awaited<ReturnType<typeof destroyer.destroy>>;
 
-    result = await destroyer.destroy({
+    const destroyInput: {
+      cell: string;
+      environment: "preview";
+      previewName?: string;
+    } = {
       cell: app,
       environment,
-    });
+    };
+    const previewName = context.values.get("name");
+
+    if (previewName !== undefined) {
+      destroyInput.previewName = previewName;
+    }
+
+    result = await destroyer.destroy(destroyInput);
 
     writeJsonOrHuman(
       context,
@@ -4285,7 +4543,7 @@ function writeHelp(): void {
       "",
       "Commands:",
       "  anvil-cloud new <name> [--client vite-react|expo-router|headless] [--template crud|auth|workflow|service|agent|sandbox]",
-      "  anvil-cloud dev [--json] [--agent] [--port 8787] [--client-port 5173]",
+      "  anvil-cloud dev [--json] [--agent] [--port 8787] [--client-port 5173] [--db-branch <name>]",
       "  anvil-cloud doctor [--json] [--port 8787] [--client-port 5173]",
       "  anvil-cloud check [--json]",
       "  anvil-cloud review [--adapter aws] [--env preview] [--json]",
@@ -4301,12 +4559,19 @@ function writeHelp(): void {
       "  anvil-cloud usage --preview [--json]",
       "  anvil-cloud db list --local [--json]",
       "  anvil-cloud db dump <table> --local [--json]",
+      "  anvil-cloud db branch <name> [--from main] [--ttl 3600] [--use] [--json]",
+      "  anvil-cloud db branches [--expired] [--json]",
+      "  anvil-cloud db use <name> [--json]",
+      "  anvil-cloud db diff <name> [--against main] [--json]",
+      "  anvil-cloud db promote <name> [--json]",
+      "  anvil-cloud db delete <name> --yes [--json]",
+      "  anvil-cloud db cleanup --expired [--json]",
       "  anvil-cloud plan --stage dev --adapter aws [--verbose] [--json]",
       "  anvil-cloud deploy --stage dev --adapter aws [--verbose] [--json]",
       "  anvil-cloud remove --stage dev --adapter aws [--verbose] [--json]",
-      "  anvil-cloud deploy --preview [--wait] [--wait-timeout 60] [--json]",
+      "  anvil-cloud deploy --preview [--name branch] [--wait] [--wait-timeout 60] [--json]",
       "  anvil-cloud rollback --preview --app <name> --to-deployment <id> --dry-run [--json]",
-      "  anvil-cloud destroy --preview --app <name> --yes [--dry-run] [--json]",
+      "  anvil-cloud destroy --preview --app <name> [--name branch] --yes [--dry-run] [--json]",
       "  anvil-cloud auth users [--json]",
       "  anvil-cloud auth add-user <id> [--email x@y] [--roles admin,editor] [--json]",
       "  anvil-cloud auth remove-user <id> [--json]",
@@ -4664,6 +4929,7 @@ async function checkLocalState(rootDir: string): Promise<DoctorCheck> {
     authUsers: await fileExists(path.join(localDir, "auth/users.json")),
     authKeys: await fileExists(path.join(localDir, "auth/keys.json")),
     database: await fileExists(path.join(localDir, "dev.db")),
+    databaseBranches: await fileExists(path.join(localDir, "db-branches.json")),
     logs: await fileExists(path.join(localDir, "logs.ndjson")),
     agentSessions: await fileExists(path.join(localDir, "agent-sessions.json")),
     jobs: await fileExists(path.join(localDir, "jobs.json")),
@@ -5180,6 +5446,29 @@ function readEnvironment(context: CliContext): "preview" | undefined {
   return "preview";
 }
 
+function previewStackEnvironment(
+  environment: "preview",
+  previewNameValue: string | undefined,
+): string {
+  const previewName = normalizePreviewName(previewNameValue);
+
+  return previewName === "default"
+    ? environment
+    : `${environment}-${previewName}`;
+}
+
+function deploymentMetadataKey(
+  cell: string,
+  environment: "preview",
+  previewNameValue: string | undefined,
+): string {
+  const previewName = normalizePreviewName(previewNameValue);
+
+  return previewName === "default"
+    ? `deployment#${cell}#${environment}`
+    : `deployment#${cell}#${environment}#${previewName}`;
+}
+
 function readNumberOption(
   context: CliContext,
   name: string,
@@ -5375,10 +5664,21 @@ async function waitForShutdown(
 
 async function readDatabase(
   rootDir: string,
+  branch?: string,
 ): Promise<Record<string, unknown[]>> {
-  return readOptionalJson(path.join(rootDir, ".anvil/local/dev.db")).then(
+  const manager = new JsonDatabaseBranchManager(localStateDir(rootDir));
+  const activeBranch =
+    branch === undefined
+      ? await manager.getActiveBranch()
+      : normalizeDatabaseBranchName(branch);
+
+  return readOptionalJson(manager.resolveDatabasePath(activeBranch)).then(
     (value) => (isRecordOfArrays(value) ? value : {}),
   );
+}
+
+function localStateDir(rootDir: string): string {
+  return path.join(rootDir, ".anvil/local");
 }
 
 async function readLogs(

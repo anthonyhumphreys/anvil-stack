@@ -38,25 +38,25 @@ The `@anvil-cloud/aws` package currently includes:
 
 ## Preview resource mapping
 
-| Anvil concept | AWS backing |
-| --- | --- |
-| Cell runtime | Lambda |
-| Query and mutation API | Lambda Function URL or API Gateway style HTTP event bridge |
-| Custom endpoints | Runtime endpoint routing through the Lambda handler |
-| Client bundle | S3 client asset bucket |
-| Database | DynamoDB when `capabilities.database` is declared |
-| Files | S3 when `capabilities.files` is declared |
-| Queued jobs | SQS |
-| Scheduled jobs | EventBridge rules |
-| Events | A dedicated EventBridge bus when `capabilities.events` is declared; `ctx.events.publish` maps to `PutEvents` and reports structured EventBridge failure details |
-| Workflows | Step Functions state machines invoking the shared Lambda runtime |
-| Services | ECS/Fargate preview service resources with adapter-owned task definitions |
-| Agent inference | AWS Bedrock through the `@anvil-cloud/aws` inference provider |
-| Agent sandboxes | Lambda MicroVM sessions for sandbox-required agent work when a sandbox image is configured |
-| Outbound fetch | Lambda runtime allow-list guard from `capabilities.outboundFetch.allow` |
-| Environment | Lambda environment values for alpha |
-| Logs | CloudWatch Logs |
-| Deployment metadata | DynamoDB |
+| Anvil concept          | AWS backing                                                                                                                                                     |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Cell runtime           | Lambda                                                                                                                                                          |
+| Query and mutation API | Lambda Function URL or API Gateway style HTTP event bridge                                                                                                      |
+| Custom endpoints       | Runtime endpoint routing through the Lambda handler                                                                                                             |
+| Client bundle          | S3 client asset bucket                                                                                                                                          |
+| Database               | DynamoDB when `capabilities.database` is declared                                                                                                               |
+| Files                  | S3 when `capabilities.files` is declared                                                                                                                        |
+| Queued jobs            | SQS                                                                                                                                                             |
+| Scheduled jobs         | EventBridge rules                                                                                                                                               |
+| Events                 | A dedicated EventBridge bus when `capabilities.events` is declared; `ctx.events.publish` maps to `PutEvents` and reports structured EventBridge failure details |
+| Workflows              | Step Functions state machines invoking the shared Lambda runtime                                                                                                |
+| Services               | ECS/Fargate preview service resources with adapter-owned task definitions                                                                                       |
+| Agent inference        | AWS Bedrock through the `@anvil-cloud/aws` inference provider                                                                                                   |
+| Agent sandboxes        | Lambda MicroVM sessions for sandbox-required agent work when a sandbox image is configured                                                                      |
+| Outbound fetch         | Lambda runtime allow-list guard from `capabilities.outboundFetch.allow`                                                                                         |
+| Environment            | Lambda environment values for alpha                                                                                                                             |
+| Logs                   | CloudWatch Logs                                                                                                                                                 |
+| Deployment metadata    | DynamoDB                                                                                                                                                        |
 
 Deployment plans include an `events` change when `capabilities.events` is
 declared, so `anvil cloud deploy --preview --json` reports the EventBridge resource
@@ -188,10 +188,25 @@ Then:
 
 ```bash
 anvil cloud deploy --preview --json
+anvil cloud deploy --preview --name branch --json
 anvil cloud inspect --app notes --env preview --json
+anvil cloud inspect --app notes --env preview --name branch --json
 anvil cloud logs --app notes --env preview --json
-anvil cloud destroy --preview --app notes --yes --json
+anvil cloud destroy --preview --app notes --name branch --yes --json
 ```
+
+Local preview data can be isolated with database branches before deploying:
+
+```bash
+anvil cloud db branch branch --from main --ttl 3600 --json
+anvil cloud dev --db-branch branch --json
+anvil cloud db diff branch --against main --json
+```
+
+The AWS alpha adapter currently provisions DynamoDB for preview Cells, but it
+does not yet map local JSON branches to provider-native database branches.
+Use local branches for safe preview/test data states; provider-backed branch
+promotion remains an adapter roadmap item.
 
 For the checked-in AWS-compatible smoke Cell, run the repeatable verifier from
 the `anvil-cloud` workspace:
@@ -225,6 +240,8 @@ failures return `AWS_REMOTE_READ_FAILED` with the failed operation and provider
 error cause.
 Remote logs page through CloudWatch events until the requested limit is reached
 or CloudWatch has no more pages.
+Named previews use `--name <preview>` and write a separate normalized stack and
+metadata key. Omit `--name` for the default preview.
 Destroy empties stack-owned S3 buckets before deleting the stack and deletes the
 matching metadata record when the table is configured, so inspect and logs stop
 advertising a runtime after preview cleanup. Delete failures return

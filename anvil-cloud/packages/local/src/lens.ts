@@ -224,8 +224,14 @@ pre {
 
   <section id="tab-database">
     <h2>Tables</h2>
+    <div class="panel kv" id="db-summary"></div>
     <div class="panel"><table id="db-tables">
       <thead><tr><th>table</th><th>rows</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+    <h2>Branches</h2>
+    <div class="panel"><table id="db-branches">
+      <thead><tr><th>branch</th><th>source</th><th>tables</th><th>expires</th></tr></thead>
       <tbody></tbody>
     </table></div>
     <h2 id="db-rows-title" style="display:none">Rows</h2>
@@ -463,6 +469,7 @@ anvil-cloud logs --local --json</pre>
     var state = document.getElementById("diag-state");
     var manifest = payload.manifest || {};
     var database = (payload.database && payload.database.tables) || {};
+    var activeBranch = (payload.database && payload.database.activeBranch) || "main";
     var tableNames = Object.keys(database);
     state.textContent = "";
     [
@@ -470,6 +477,7 @@ anvil-cloud logs --local --json</pre>
       ["cell", (manifest.cell && manifest.cell.name) || "unknown"],
       ["runtime", payload.runtimeUrl || window.location.origin],
       ["current user", (payload.auth && payload.auth.currentUser) || "none"],
+      ["database branch", activeBranch],
       ["usage cost", "$" + Number((((payload.usage || {}).totals || {}).estimatedCostUsd || 0)).toFixed(6)],
       ["tables", tableNames.length ? tableNames.join(", ") : "none"],
       ["recent errors", String((payload.recentErrors || []).length)],
@@ -651,6 +659,18 @@ anvil-cloud logs --local --json</pre>
   function loadTables() {
     return getJson("/_anvil/db/tables").then(function (payload) {
       var tables = (payload.database && payload.database.tables) || {};
+      var branches = payload.branches || [];
+      var active = branches.find(function (branch) { return branch.active; });
+      var summary = document.getElementById("db-summary");
+      summary.textContent = "";
+      [
+        ["active branch", (active && active.name) || "main"],
+        ["branches", String(branches.length || 1)]
+      ].forEach(function (pair) {
+        summary.appendChild(el("div", { text: pair[0] }));
+        summary.appendChild(el("div", { text: pair[1] }));
+      });
+
       var tbody = document.querySelector("#db-tables tbody");
       tbody.textContent = "";
       var names = Object.keys(tables);
@@ -666,6 +686,18 @@ anvil-cloud logs --local --json</pre>
         ]);
         row.addEventListener("click", function () { loadRows(name); });
         tbody.appendChild(row);
+      });
+
+      var branchBody = document.querySelector("#db-branches tbody");
+      branchBody.textContent = "";
+      branches.forEach(function (branch) {
+        var branchTables = Object.keys(branch.tables || {});
+        branchBody.appendChild(el("tr", null, [
+          el("td", { text: branch.name + (branch.active ? " (active)" : "") }),
+          el("td", { text: branch.source || "main" }),
+          el("td", { text: branchTables.length ? branchTables.join(", ") : "none" }),
+          el("td", { text: branch.expiresAt || "never" })
+        ]));
       });
     });
   }
