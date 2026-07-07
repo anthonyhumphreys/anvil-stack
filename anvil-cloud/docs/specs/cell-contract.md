@@ -202,12 +202,19 @@ Jobs are named background handlers.
 jobs: {
   refreshData: job({
     schedule: "rate(1 hour)",
+    overlap: "skip",
+    timeoutMs: 30_000,
     handler: async (ctx) => {
       ctx.log.info("Refreshing data");
     },
   });
 }
 ```
+
+Scheduled jobs support `rate(1 hour)`, `@every 5m`, and five-field cron syntax
+locally. The local runtime persists schedule state and run history in
+`.anvil/local/schedules.json`; missed runs while the runtime is stopped are
+skipped rather than replayed.
 
 ## Capabilities
 
@@ -239,7 +246,9 @@ capabilities: {
 - Background work outside declared jobs.
 - Direct network client imports such as `http`, `https`, `node:net`, `undici`,
   or `axios`; use `fetch()` with `capabilities.outboundFetch.allow` instead.
-- Network access to undeclared outbound domains.
+- Network access to undeclared outbound domains. Local runtime request handlers
+  and workflow steps, plus AWS preview, reject undeclared hosts with
+  `OUTBOUND_FETCH_NOT_ALLOWED`.
 - Top-level runtime side effects in app definition modules.
 
 ## Manifest extraction requirements

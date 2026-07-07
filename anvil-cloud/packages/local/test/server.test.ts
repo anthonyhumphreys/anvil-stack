@@ -8,13 +8,17 @@ import {
   app,
   channel,
   defineAgent,
+  job,
   mutation,
   query,
   table,
   text,
 } from "@anvil-cloud/runtime";
 
-import { startLocalRuntimeServer } from "../src/index.js";
+import {
+  JsonDatabaseBranchManager,
+  startLocalRuntimeServer,
+} from "../src/index.js";
 
 const tempDirs: string[] = [];
 
@@ -25,6 +29,70 @@ afterEach(async () => {
 });
 
 describe("startLocalRuntimeServer", () => {
+  it("manages local database branches without changing the ctx.db contract", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-local-"));
+    tempDirs.push(rootDir);
+    const stateDir = path.join(rootDir, ".anvil/local");
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(
+      path.join(stateDir, "dev.db"),
+      JSON.stringify({
+        notes: [{ id: "note_1", title: "Main", ownerId: "user" }],
+      }),
+      "utf8",
+    );
+    const branches = new JsonDatabaseBranchManager(stateDir);
+
+    await expect(
+      branches.createBranch({
+        name: "Feature/Branch",
+        ttlSeconds: 60,
+        now: new Date("2026-07-06T10:00:00.000Z"),
+      }),
+    ).resolves.toMatchObject({
+      name: "feature-branch",
+      source: "main",
+      expiresAt: "2026-07-06T10:01:00.000Z",
+      tables: { notes: { rows: 1 } },
+    });
+
+    await writeFile(
+      path.join(stateDir, "db-branches/feature-branch.db.json"),
+      JSON.stringify({
+        notes: [
+          { id: "note_1", title: "Main", ownerId: "user" },
+          { id: "note_2", title: "Branch", ownerId: "user", preview: true },
+        ],
+      }),
+      "utf8",
+    );
+
+    await expect(branches.diffBranch("feature-branch")).resolves.toMatchObject({
+      branch: "feature-branch",
+      against: "main",
+      tables: {
+        notes: {
+          branchRows: 2,
+          againstRows: 1,
+          rowDelta: 1,
+          addedFields: ["preview"],
+        },
+      },
+    });
+
+    await expect(
+      branches.setActiveBranch("feature-branch"),
+    ).resolves.toMatchObject({
+      name: "feature-branch",
+      active: true,
+    });
+
+    await expect(
+      branches.deleteExpiredBranches(new Date("2026-07-06T10:02:00.000Z")),
+    ).resolves.toEqual(["feature-branch"]);
+    await expect(branches.getActiveBranch()).resolves.toBe("main");
+  });
+
   it("serves query, mutation, auth switching, and inspection routes", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-local-"));
     const clientDistDir = path.join(rootDir, ".anvil/dist/client");
@@ -152,6 +220,58 @@ describe("startLocalRuntimeServer", () => {
       await expect(
         fetchText(`${server.runtimeUrl}/_anvil/lens`),
       ).resolves.toContain("Diagnostics");
+      await expect(
+        fetchText(`${server.runtimeUrl}/_anvil/lens`),
+      ).resolves.toContain("Approvals");
+
+      await expect(
+        server.host.approvals.requestApproval({
+          action: "deploy.preview",
+          reason: "Manual preview gate",
+          metadata: { agentName: "shipmate" },
+        }),
+      ).resolves.toMatchObject({ status: "pending" });
+      const approvalsPayload = (await fetchJson(
+        `${server.runtimeUrl}/_anvil/approvals?status=pending`,
+      )) as {
+        approvals: Array<{
+          id: string;
+          status: string;
+          action: string;
+          metadata: Record<string, unknown>;
+        }>;
+      };
+      const approval = approvalsPayload.approvals[0];
+
+      expect(approval).toMatchObject({
+        status: "pending",
+        action: "deploy.preview",
+        metadata: { agentName: "shipmate" },
+      });
+      await expect(
+        postJson(
+          `${server.runtimeUrl}/_anvil/approvals/${approval.id}/approve`,
+          { actor: "test", reason: "Checked" },
+        ),
+      ).resolves.toMatchObject({
+        ok: true,
+        approval: {
+          id: approval.id,
+          status: "approved",
+          decidedBy: "test",
+        },
+      });
+      await expect(
+        fetchJson(`${server.runtimeUrl}/_anvil/approvals/audit`),
+      ).resolves.toMatchObject({
+        ok: true,
+        events: expect.arrayContaining([
+          expect.objectContaining({
+            type: "approval.approved",
+            approvalId: approval.id,
+          }),
+        ]),
+      });
 
       await expect(
         postJson(`${server.clientUrl}/_anvil/mutation/createNote`, {
@@ -176,6 +296,162 @@ describe("startLocalRuntimeServer", () => {
         ]),
       });
     } finally {
+      await server.close();
+    }
+  });
+
+  it("binds the local runtime to a selected database branch", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-local-"));
+    tempDirs.push(rootDir);
+    const stateDir = path.join(rootDir, ".anvil/local");
+    await mkdir(path.join(rootDir, ".anvil/dist/client"), { recursive: true });
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(
+      path.join(rootDir, ".anvil/dist/client/index.html"),
+      "<!doctype html><h1>Anvil Cell</h1>",
+      "utf8",
+    );
+    await writeFile(
+      path.join(stateDir, "dev.db"),
+      JSON.stringify({ notes: [{ id: "note_1", title: "Main" }] }),
+      "utf8",
+    );
+    await new JsonDatabaseBranchManager(stateDir).createBranch({
+      name: "preview",
+    });
+    await writeFile(
+      path.join(stateDir, "db-branches/preview.db.json"),
+      JSON.stringify({ notes: [{ id: "note_2", title: "Preview" }] }),
+      "utf8",
+    );
+    const cell = app({
+      schema: {
+        notes: table({
+          title: text().min(1),
+        }),
+      },
+      capabilities: {
+        database: true,
+      },
+      queries: {
+        listNotes: query({
+          handler: async (ctx) => ctx.db.notes.all(),
+        }),
+      },
+    });
+    const server = await startLocalRuntimeServer({
+      app: cell,
+      manifest: { queries: ["listNotes"], mutations: [] },
+      rootDir,
+      cellName: "notes",
+      databaseBranch: "preview",
+      port: 0,
+      clientPort: 0,
+    });
+
+    try {
+      await expect(
+        postJson(`${server.runtimeUrl}/_anvil/query/listNotes`, { input: {} }),
+      ).resolves.toMatchObject({
+        ok: true,
+        result: [{ id: "note_2", title: "Preview" }],
+      });
+      await expect(
+        fetchJson(`${server.runtimeUrl}/_anvil/inspect`),
+      ).resolves.toMatchObject({
+        ok: true,
+        database: {
+          activeBranch: "preview",
+          tables: {
+            notes: { rows: 1 },
+          },
+        },
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("enforces outbound fetch allow lists during local runtime requests", async () => {
+    const originalFetch = globalThis.fetch;
+    const externalFetches: string[] = [];
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-local-"));
+    tempDirs.push(rootDir);
+
+    const cell = app({
+      capabilities: {
+        outboundFetch: { allow: ["api.example.test"] },
+      },
+      queries: {
+        allowedFetch: query({
+          handler: async () => {
+            const response = await fetch("https://api.example.test/v1");
+
+            return { status: response.status };
+          },
+        }),
+        blockedFetch: query({
+          handler: async () => {
+            await fetch("https://billing.example.test/v1");
+
+            return { ok: true };
+          },
+        }),
+      },
+    });
+    const server = await startLocalRuntimeServer({
+      app: cell,
+      manifest: {
+        capabilities: {
+          outboundFetch: { allow: ["api.example.test"] },
+        },
+        queries: ["allowedFetch", "blockedFetch"],
+        mutations: [],
+      },
+      rootDir,
+      cellName: "notes",
+      port: 0,
+      clientPort: 0,
+      clientMode: "none",
+    });
+
+    try {
+      globalThis.fetch = (async (input, init) => {
+        const url = String(input instanceof Request ? input.url : input);
+
+        if (url.startsWith(server.runtimeUrl)) {
+          return originalFetch(input, init);
+        }
+
+        externalFetches.push(url);
+        return new Response("ok", { status: 202 });
+      }) as typeof fetch;
+
+      await expect(
+        postJson(`${server.runtimeUrl}/_anvil/query/allowedFetch`, {
+          input: {},
+        }),
+      ).resolves.toMatchObject({
+        ok: true,
+        result: { status: 202 },
+      });
+      await expect(
+        postJson(`${server.runtimeUrl}/_anvil/query/blockedFetch`, {
+          input: {},
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: {
+          code: "OUTBOUND_FETCH_NOT_ALLOWED",
+          details: {
+            host: "billing.example.test",
+            allowedHosts: ["api.example.test"],
+          },
+        },
+      });
+      expect(externalFetches).toEqual(["https://api.example.test/v1"]);
+    } finally {
+      globalThis.fetch = originalFetch;
       await server.close();
     }
   });
@@ -387,6 +663,85 @@ describe("startLocalRuntimeServer", () => {
         result: {
           ok: true,
         },
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("serves schedule routes and Lens schedule UI", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-local-"));
+    tempDirs.push(rootDir);
+    let runs = 0;
+    const cell = app({
+      capabilities: { scheduledJobs: true },
+      jobs: {
+        refresh: job({
+          schedule: "rate(1 day)",
+          handler: async () => {
+            runs += 1;
+
+            return { runs };
+          },
+        }),
+      },
+    });
+    const server = await startLocalRuntimeServer({
+      app: cell,
+      manifest: {
+        jobs: [{ name: "refresh", schedule: "rate(1 day)" }],
+      },
+      rootDir,
+      cellName: "scheduled-cell",
+      port: 0,
+      clientPort: 0,
+      clientMode: "none",
+    });
+
+    try {
+      await expect(
+        fetchText(`${server.runtimeUrl}/_anvil/lens`),
+      ).resolves.toContain("Schedules");
+      await expect(
+        fetchJson(`${server.runtimeUrl}/_anvil/schedules`),
+      ).resolves.toMatchObject({
+        ok: true,
+        schedules: [
+          {
+            name: "refresh",
+            schedule: "rate(1 day)",
+            overlap: "skip",
+          },
+        ],
+      });
+      await expect(
+        postJson(`${server.runtimeUrl}/_anvil/schedules/refresh/run`, {
+          payload: {},
+        }),
+      ).resolves.toMatchObject({
+        ok: true,
+        run: {
+          job: "refresh",
+          status: "completed",
+          result: { runs: 1 },
+        },
+      });
+      await expect(
+        fetchJson(`${server.runtimeUrl}/_anvil/schedules`),
+      ).resolves.toMatchObject({
+        ok: true,
+        schedules: [
+          {
+            name: "refresh",
+            lastStatus: "completed",
+            runs: [
+              {
+                job: "refresh",
+                status: "completed",
+              },
+            ],
+          },
+        ],
       });
     } finally {
       await server.close();

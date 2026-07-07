@@ -444,6 +444,7 @@ describe("createAwsPreviewCloudFormationTemplate", () => {
           Type: "Task",
           Resource: "${RuntimeFunction.Arn}",
           Next: "store",
+          ResultPath: "$",
           Parameters: {
             source: "anvil.workflows",
             detail: {
@@ -458,6 +459,17 @@ describe("createAwsPreviewCloudFormationTemplate", () => {
         store: {
           Type: "Task",
           Resource: "${RuntimeFunction.Arn}",
+          ResultPath: "$",
+          Parameters: {
+            source: "anvil.workflows",
+            detail: {
+              workflow: "syncNotes",
+              step: "store",
+              "runId.$": "$.runId",
+              "input.$": "$.input",
+              "steps.$": "$.steps",
+            },
+          },
           End: true,
         },
       },

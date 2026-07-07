@@ -15,19 +15,38 @@ Creates a new Anvil Cell project.
 ```sh
 anvil-cloud new notes
 anvil-cloud new native-notes --client expo-router
+pnpm dlx @anvilstack/cloud-cli new demo
 ```
+
+The published package is `@anvilstack/cloud-cli`; the binary it exposes is
+`anvil-cloud`.
 
 Options:
 
 ```txt
 --client vite-react|expo-router|headless
 --template crud|auth|workflow|service|agent|sandbox
+--install / --no-install
+--git / --no-git
+--start / --no-start
+--package-manager pnpm|npm|bun
 ```
 
 `vite-react` is the default. `expo-router` scaffolds an Expo Router client
 target with `app/index.tsx` and `app/_layout.tsx`; it still uses the Anvil
 runtime through `@anvil-cloud/client`. `headless` writes generated client
 metadata without a browser UI.
+
+`crud` is the default template. `auth`, `workflow`, `service`, `agent`, and
+`sandbox` add the matching Cell contract shape while keeping the generated Todo
+query and mutation working for first-run smoke checks.
+
+In human mode, `new` scaffolds the project, installs dependencies with
+`pnpm install --ignore-scripts`, runs `git init`, prints the Lens URL, and starts
+`anvil-cloud dev`. Use `--no-install`, `--no-git`, or `--no-start` to split the
+flow. With `--json` or `--agent`, the command is finite by default: it scaffolds
+and returns the install/start commands and Lens URL without launching a long-lived
+server unless the caller explicitly passes `--start`.
 
 Expo Router scaffolds read `EXPO_PUBLIC_ANVIL_RUNTIME_URL` when it is set. For
 local development they fall back to `http://localhost:8787`, except Android
@@ -67,6 +86,13 @@ JSON output:
   },
   "template": "crud",
   "path": "./notes",
+  "lensUrl": "http://localhost:8787/_anvil/lens",
+  "bootstrap": {
+    "install": false,
+    "git": false,
+    "start": false,
+    "packageManager": "pnpm"
+  },
   "next": ["cd notes", "anvil-cloud dev"]
 }
 ```
@@ -193,7 +219,9 @@ anvil-cloud doctor --port 8787 --client-port 5173 --json
 Doctor is read-only. It reports stable check ids with `ok`, `warning`, or
 `error` status. Warnings explain optional or situational setup, such as AWS
 preview environment variables, without failing local development. Errors are
-reserved for local blockers such as an unsupported Node version.
+reserved for local blockers such as an unsupported Node version. Each check
+also includes a `docs` link to the matching diagnostic section, and `hint` is
+the remediation field.
 
 Initial checks include:
 
@@ -236,7 +264,8 @@ JSON output:
     {
       "id": "node.version",
       "status": "ok",
-      "message": "Node 20.11.0 satisfies >=20.11.0."
+      "message": "Node 20.11.0 satisfies >=20.11.0.",
+      "docs": "/docs/cloud/doctor#nodeversion"
     }
   ],
   "summary": {
@@ -335,8 +364,12 @@ Reads local or remote structured logs.
 
 ```sh
 anvil-cloud logs --local --json
+anvil-cloud logs --trace run_123 --json
 anvil-cloud logs --app notes --env preview --since 10m --json
 ```
+
+`--trace <id>` reads a local trace from `.anvil/local/traces.json` and returns
+the trace record plus ordered trace events. It is local-only in alpha.
 
 Remote AWS logs use the same deployment metadata lookup as inspect, so metadata
 lookup failures use the same stable error codes. DynamoDB or CloudWatch read
@@ -389,10 +422,11 @@ It is not a bill and does not query AWS.
 
 ### `anvil-cloud db list`
 
-Lists known database tables.
+Lists tables on the active local database branch, or on `--branch <name>`.
 
 ```sh
 anvil-cloud db list --local --json
+anvil-cloud db list --branch feature --local --json
 ```
 
 ### `anvil-cloud db dump <table>`
@@ -401,9 +435,37 @@ Dumps table rows for local or remote inspection.
 
 ```sh
 anvil-cloud db dump todos --local --json
+anvil-cloud db dump todos --branch feature --local --json
 ```
 
 Remote database dump should require explicit environment and future confirmation/policy rules.
+
+### `anvil-cloud db branch <name>`
+
+Creates a local JSON database branch by snapshotting another branch. `main`
+maps to `.anvil/local/dev.db`; named branches live under
+`.anvil/local/db-branches`.
+
+```sh
+anvil-cloud db branch feature --from main --ttl 3600 --json
+```
+
+Related lifecycle commands:
+
+```sh
+anvil-cloud db branches --json
+anvil-cloud db branches --expired --json
+anvil-cloud db use feature --json
+anvil-cloud db diff feature --against main --json
+anvil-cloud db promote feature --json
+anvil-cloud db delete feature --yes --json
+anvil-cloud db cleanup --expired --json
+```
+
+`db use` stores the active branch for local CLI inspection and dev runs.
+`anvil-cloud dev --db-branch feature` selects a branch for that process without
+changing the stored active branch. Cell code continues to see the same `ctx.db`
+contract.
 
 ### `anvil-cloud plan --stage <stage> --adapter aws`
 
@@ -448,6 +510,10 @@ must be positive. If the runtime does not become healthy, the JSON result uses
 `AWS_RUNTIME_UNHEALTHY` and includes the deployment result plus verification
 details.
 
+`--name <preview>` deploys an additional named preview for the same Cell. The
+default preview keeps the existing stack and metadata key; named previews use a
+normalized preview name in the adapter-owned stack and deployment metadata key.
+
 Preview deploy JSON includes review-oriented plan metadata: stable
 `plan.review.changeSet` ids, `plan.review.changeSummary` concept counts,
 structured `plan.review.cost.drivers`, rollback/cleanup notes, and
@@ -472,15 +538,16 @@ error cause.
 
 ### `anvil-cloud rollback --preview`
 
-Returns dry-run rollback intent for a previous preview deployment.
+Returns rollback intent for a previous preview deployment.
 
 ```sh
 anvil-cloud rollback --preview --app notes --to-deployment dep_123 --dry-run --json
 ```
 
-The command is intentionally dry-run only in alpha. It returns the target
-deployment id, inspection/log commands, and redeploy guidance. Artifact
-promotion is not automated yet.
+The deployment plan reports rollback as supported at the adapter contract layer
+because preview deployments carry versioned metadata. In alpha, the CLI still
+emits rollback intent and validation output rather than directly promoting an S3
+artifact pointer; AWS artifact promotion remains provider-owned.
 
 ### `anvil-cloud destroy --preview --app <name> --yes [--dry-run]`
 
@@ -490,10 +557,11 @@ become infrastructure archaeology with billing.
 Only `--env preview` is accepted during alpha; other environments return
 `INVALID_USAGE`.
 
-`--dry-run` validates the same command shape and returns the computed stack name,
-bucket cleanup intent, deployment metadata key, and real destroy command without
-calling AWS. It exists so local contract tests can cover the full lifecycle
-without pretending every laptop is a cloud control plane.
+Pass `--name <preview>` to destroy a named preview. `--dry-run` validates the
+same command shape and returns the computed stack name, bucket cleanup intent,
+deployment metadata key, and real destroy command without calling AWS. It exists
+so local contract tests can cover the full lifecycle without pretending every
+laptop is a cloud control plane.
 
 When `ANVIL_AWS_DEPLOYMENT_METADATA_TABLE` is configured, successful destroy
 also deletes the matching deployment metadata record. The JSON result includes
