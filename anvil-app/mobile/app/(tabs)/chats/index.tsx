@@ -18,6 +18,7 @@ import {
   subtleStyle,
   titleStyle,
 } from '@/components/companion-ui';
+import { ReasoningPicker } from '@/components/reasoning-picker';
 import { useCompanion } from '@/contexts/companion-context';
 import type {
   ChatAttachmentInput,
@@ -30,7 +31,6 @@ import type {
 
 type IconName = ComponentProps<typeof MaterialIcons>['name'];
 
-const REASONING_LEVELS: ReasoningEffort[] = ['minimal', 'low', 'medium', 'high', 'xhigh'];
 const MAX_ATTACHMENT_COUNT = 10;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
@@ -420,28 +420,7 @@ export default function ChatsInboxScreen() {
               ]}
               onChange={(next) => setMode(next as ChatCollaborationMode)}
             />
-            <View style={reasoningRowStyle}>
-              {REASONING_LEVELS.map((level) => (
-                <TouchableOpacity
-                  key={level}
-                  activeOpacity={0.72}
-                  onPress={() => setReasoningEffort(level)}
-                  style={[
-                    reasoningChipStyle,
-                    reasoningEffort === level && reasoningChipActiveStyle,
-                  ]}
-                >
-                  <Text
-                    style={[
-                      reasoningChipTextStyle,
-                      reasoningEffort === level && reasoningChipTextActiveStyle,
-                    ]}
-                  >
-                    {level === 'minimal' ? 'min' : level}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
+            <ReasoningPicker value={reasoningEffort} onChange={setReasoningEffort} variant="dark" />
           </View>
           <View style={composerActionRowStyle}>
             <TouchableOpacity
@@ -796,30 +775,6 @@ const segmentTextStyle = {
   fontWeight: '900' as const,
 };
 const segmentTextActiveStyle = { color: companionColors.dark };
-const reasoningRowStyle = {
-  flexDirection: 'row' as const,
-  gap: 5,
-  flex: 1,
-  justifyContent: 'flex-end' as const,
-};
-const reasoningChipStyle = {
-  borderColor: companionColors.darkBorder,
-  borderWidth: 1,
-  borderRadius: 999,
-  paddingHorizontal: 8,
-  paddingVertical: 6,
-  backgroundColor: companionColors.darkRaised,
-};
-const reasoningChipActiveStyle = {
-  backgroundColor: companionColors.darkControlActive,
-  borderColor: companionColors.accent,
-};
-const reasoningChipTextStyle = {
-  color: companionColors.darkMuted,
-  fontSize: 11,
-  fontWeight: '900' as const,
-};
-const reasoningChipTextActiveStyle = { color: companionColors.accent };
 const composerActionRowStyle = {
   flexDirection: 'row' as const,
   alignItems: 'center' as const,

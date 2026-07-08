@@ -50,6 +50,7 @@ import {
   clearLiveActivitySnapshot,
   clearWidgetSnapshot,
   publishLiveActivitySnapshot,
+  publishConnectionWidgetSnapshot,
   publishWidgetSnapshot,
   replyToWatchRequest,
   subscribeToWatchRequests,
@@ -115,6 +116,20 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const overviewRef = useRef<MobileOverview | null>(null);
 
+  const publishPairedHostSnapshot = useCallback(
+    (
+      nextConnection: CompanionConnection | null = connection,
+      nextConnectionCount = connections.length,
+    ) => {
+      if (nextConnection || nextConnectionCount > 0) {
+        void publishConnectionWidgetSnapshot(nextConnection, nextConnectionCount);
+        return;
+      }
+      void clearWidgetSnapshot();
+    },
+    [connection, connections.length],
+  );
+
   const applyOverview = useCallback((nextOverview: MobileOverview) => {
     overviewRef.current = nextOverview;
     setOverview(nextOverview);
@@ -131,7 +146,7 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
       setThreads([]);
       setLoading(false);
       setLive(false);
-      void clearWidgetSnapshot();
+      publishPairedHostSnapshot(null, connections.length);
       void clearLiveActivitySnapshot();
       void publishDriveModeState(null);
       return;
@@ -144,20 +159,24 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
       void publishDriveModeState(connection);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to reach Anvil on your Mac.');
+      publishPairedHostSnapshot(connection, connections.length);
     } finally {
       setLoading(false);
     }
-  }, [applyOverview, connection]);
+  }, [applyOverview, connection, connections.length, publishPairedHostSnapshot]);
 
   useEffect(() => {
     let cancelled = false;
     loadConnectionState()
       .then((state) => {
         if (cancelled) return;
+        const activeConnection =
+          state.connections.find((candidate) => candidate.id === state.activeConnectionId) ?? null;
         setConnections(state.connections);
-        setConnection(
-          state.connections.find((candidate) => candidate.id === state.activeConnectionId) ?? null,
-        );
+        setConnection(activeConnection);
+        if (state.connections.length > 0) {
+          void publishConnectionWidgetSnapshot(activeConnection, state.connections.length);
+        }
       })
       .catch((err) => {
         if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load pairings.');
@@ -195,6 +214,7 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
       const state = await loadConnectionState();
       setConnections(state.connections);
       setConnection(nextConnection);
+      await publishConnectionWidgetSnapshot(nextConnection, state.connections.length);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Pairing failed.');
       throw err;
@@ -214,22 +234,33 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
         state.connections.find((candidate) => candidate.id === state.activeConnectionId) ?? null;
       setConnections(state.connections);
       setConnection(activeConnection);
+      await publishConnectionWidgetSnapshot(activeConnection, state.connections.length);
     },
     [],
   );
 
-  const resetHostState = useCallback(async () => {
-    overviewRef.current = null;
-    setOverview(null);
-    setThreads([]);
-    setSelectedThreadId(null);
-    setSelectedThreadHistory([]);
-    setLastUpdatedAt(null);
-    setLive(false);
-    await clearWidgetSnapshot();
-    await clearLiveActivitySnapshot();
-    await publishDriveModeState(null);
-  }, []);
+  const resetHostState = useCallback(
+    async (
+      nextConnection: CompanionConnection | null = connection,
+      nextConnectionCount = connections.length,
+    ) => {
+      overviewRef.current = null;
+      setOverview(null);
+      setThreads([]);
+      setSelectedThreadId(null);
+      setSelectedThreadHistory([]);
+      setLastUpdatedAt(null);
+      setLive(false);
+      if (nextConnection || nextConnectionCount > 0) {
+        await publishConnectionWidgetSnapshot(nextConnection, nextConnectionCount);
+      } else {
+        await clearWidgetSnapshot();
+      }
+      await clearLiveActivitySnapshot();
+      await publishDriveModeState(null);
+    },
+    [connection, connections.length],
+  );
 
   const selectHost = useCallback(
     async (connectionId: string) => {
@@ -237,7 +268,7 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
       const state = await loadConnectionState();
       setConnections(state.connections);
       setConnection(nextConnection);
-      await resetHostState();
+      await resetHostState(nextConnection, state.connections.length);
     },
     [resetHostState],
   );
@@ -250,7 +281,8 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
         null;
       setConnections(nextState.connections);
       setConnection(activeConnection);
-      if (connection?.id === connectionId) await resetHostState();
+      if (connection?.id === connectionId)
+        await resetHostState(activeConnection, nextState.connections.length);
     },
     [connection?.id, resetHostState],
   );
@@ -262,7 +294,7 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
       state.connections.find((candidate) => candidate.id === state.activeConnectionId) ?? null;
     setConnections(state.connections);
     setConnection(activeConnection);
-    await resetHostState();
+    await resetHostState(activeConnection, state.connections.length);
   }, [resetHostState]);
 
   const selectThread = useCallback(
@@ -532,17 +564,11 @@ export function useCompanion(): CompanionContextValue {
   return value;
 }
 
-function parseCompanionUrl(
-  url: string | null,
-):
+function parseCompanionUrl(url: string | null):
   | { type: 'workflow'; actionId: string }
   | {
       type: 'route';
-      route:
-        | RelativePathString
-        | '/(tabs)'
-        | '/(tabs)/approvals'
-        | '/(tabs)/settings';
+      route: RelativePathString | '/(tabs)' | '/(tabs)/approvals' | '/(tabs)/settings';
     }
   | null {
   if (!url) return null;

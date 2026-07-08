@@ -1,11 +1,9 @@
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import type { ComponentProps } from 'react';
 import { useRef, useState } from 'react';
 import { Alert, ScrollView, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from 'expo-camera';
 import {
   ActionButton,
-  AttentionPanel,
   EmptyState,
   Panel,
   ScreenHeader,
@@ -94,47 +92,30 @@ export default function SettingsScreen() {
       contentInsetAdjustmentBehavior="automatic"
       contentContainerStyle={scrollContentStyle}
     >
-      <ScreenHeader eyebrow={connection ? 'Connected' : 'Not paired'} title="Hosts" />
-
-      <AttentionPanel
-        label="SURFACES"
-        title={connection ? 'This host is active' : 'Pair a Mac first'}
-        detail={
-          connection
-            ? 'App, widgets, Live Activity, and watch read the same desktop snapshot.'
-            : 'Native surfaces stay quiet until this device has a trusted token.'
-        }
-        tone={connection ? 'green' : 'amber'}
+      <ScreenHeader
+        eyebrow={connection ? 'Connected' : 'Not paired'}
+        title="Connection"
         right={
-          connection ? (
-            <ActionButton
-              label="Refresh"
-              variant="secondary"
-              onPress={() => void refresh()}
-              style={{ paddingVertical: 8 }}
-            />
-          ) : undefined
+          <ActionButton
+            label="Refresh"
+            variant="secondary"
+            onPress={() => void refresh()}
+            style={{ paddingVertical: 8 }}
+          />
         }
-      >
-        <View style={surfaceGridStyle}>
-          <SurfaceChip icon="phone-iphone" label="App" active={Boolean(connection)} />
-          <SurfaceChip icon="widgets" label="Widget" active={Boolean(connection)} />
-          <SurfaceChip icon="bolt" label="Live Activity" active={Boolean(connection)} />
-          <SurfaceChip icon="watch" label="Watch" active={Boolean(connection)} />
-        </View>
-      </AttentionPanel>
+      />
 
       <SignalGrid>
         <SignalTile
-          label="Active"
-          value={connection ? 'Yes' : 'No'}
-          detail={connection ? hostLabel(connection.baseUrl) : 'not paired'}
+          label="Host"
+          value={connection ? 'Live' : 'None'}
+          detail={connection ? hostLabel(connection.baseUrl) : 'pair required'}
           tone={connection ? 'green' : 'amber'}
         />
         <SignalTile
-          label="Hosts"
+          label="Paired"
           value={connections.length}
-          detail={connections.length === 1 ? 'paired Mac' : 'paired Macs'}
+          detail={connections.length === 1 ? 'Mac' : 'Macs'}
           tone={connections.length > 0 ? 'blue' : 'neutral'}
         />
         <SignalTile
@@ -144,45 +125,6 @@ export default function SettingsScreen() {
           tone={permission?.granted ? 'green' : 'neutral'}
         />
       </SignalGrid>
-
-      <Panel>
-        <View style={panelHeaderStyle}>
-          <View style={iconBoxStyle}>
-            <MaterialIcons name="qr-code-scanner" size={18} color={companionColors.accentInk} />
-          </View>
-          <View style={{ flex: 1 }}>
-            <Text style={titleStyle}>Pair by QR</Text>
-            <Text style={bodyStyle}>Desktop Settings, Mobile Companion QR.</Text>
-          </View>
-        </View>
-        <TextInput
-          value={deviceName}
-          onChangeText={setDeviceName}
-          placeholder="Device name"
-          placeholderTextColor={companionColors.faint}
-          style={inputStyle}
-        />
-        <View style={pairingStepsStyle}>
-          <PairingStep index="1" label="Open desktop Settings" />
-          <PairingStep index="2" label="Show Mobile Companion QR" />
-          <PairingStep index="3" label="Scan here" />
-        </View>
-        {scanning ? (
-          <View style={scannerFrameStyle}>
-            <CameraView
-              style={{ flex: 1 }}
-              barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
-              onBarcodeScanned={handleBarcode}
-            />
-          </View>
-        ) : (
-          <ActionButton
-            label={pairing ? 'Pairing…' : 'Scan QR Code'}
-            disabled={pairing}
-            onPress={startScan}
-          />
-        )}
-      </Panel>
 
       <Panel>
         <View style={panelHeaderStyle}>
@@ -207,7 +149,46 @@ export default function SettingsScreen() {
             onPress={() => void disconnect()}
           />
         ) : (
-          <EmptyState title="Waiting for a Mac" body="Scan a QR code or enter a token." />
+          <EmptyState title="No host" body="Scan a pairing code or enter a token." />
+        )}
+      </Panel>
+
+      <Panel>
+        <View style={panelHeaderStyle}>
+          <View style={iconBoxStyle}>
+            <MaterialIcons name="qr-code-scanner" size={18} color={companionColors.accentInk} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={titleStyle}>{connection ? 'Pair another Mac' : 'Pair by QR'}</Text>
+            <Text style={bodyStyle}>Desktop Settings, Mobile Companion, QR.</Text>
+          </View>
+        </View>
+        <TextInput
+          value={deviceName}
+          onChangeText={setDeviceName}
+          placeholder="Device name"
+          placeholderTextColor={companionColors.faint}
+          style={inputStyle}
+        />
+        <View style={pairingStepsStyle}>
+          <PairingStep index="1" label="Open Settings on the Mac" />
+          <PairingStep index="2" label="Show Mobile Companion QR" />
+          <PairingStep index="3" label="Scan it here" />
+        </View>
+        {scanning ? (
+          <View style={scannerFrameStyle}>
+            <CameraView
+              style={{ flex: 1 }}
+              barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+              onBarcodeScanned={handleBarcode}
+            />
+          </View>
+        ) : (
+          <ActionButton
+            label={pairing ? 'Pairing…' : 'Scan QR Code'}
+            disabled={pairing}
+            onPress={startScan}
+          />
         )}
       </Panel>
 
@@ -429,56 +410,3 @@ function PairingStep({ index, label }: { index: string; label: string }) {
     </View>
   );
 }
-
-function SurfaceChip({
-  icon,
-  label,
-  active,
-}: {
-  icon: ComponentProps<typeof MaterialIcons>['name'];
-  label: string;
-  active: boolean;
-}) {
-  return (
-    <View style={[surfaceChipStyle, active && activeSurfaceChipStyle]}>
-      <MaterialIcons
-        name={icon}
-        size={16}
-        color={active ? companionColors.green : companionColors.subtle}
-      />
-      <Text style={[surfaceChipTextStyle, active && activeSurfaceChipTextStyle]}>{label}</Text>
-    </View>
-  );
-}
-
-const surfaceGridStyle = {
-  flexDirection: 'row' as const,
-  flexWrap: 'wrap' as const,
-  gap: 8,
-};
-const surfaceChipStyle = {
-  flexGrow: 1,
-  flexBasis: '45%' as const,
-  flexDirection: 'row' as const,
-  alignItems: 'center' as const,
-  justifyContent: 'center' as const,
-  gap: 7,
-  borderWidth: 1,
-  borderColor: companionColors.borderSubtle,
-  borderRadius: 999,
-  backgroundColor: companionColors.translucentSurface,
-  paddingHorizontal: 10,
-  paddingVertical: 9,
-};
-const activeSurfaceChipStyle = {
-  borderColor: companionColors.greenBorder,
-  backgroundColor: companionColors.translucentGreen,
-};
-const surfaceChipTextStyle = {
-  color: companionColors.subtle,
-  fontSize: 12,
-  fontWeight: '900' as const,
-};
-const activeSurfaceChipTextStyle = {
-  color: companionColors.green,
-};

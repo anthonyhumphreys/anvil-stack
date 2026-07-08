@@ -40,9 +40,7 @@ function withAnvilCompanionSurfaces(config) {
   config = withEntitlementsPlist(config, (config) => {
     const bundleId = config.ios?.bundleIdentifier;
     if (!bundleId) return config;
-    config.modResults['com.apple.security.application-groups'] = [
-      getAppGroupIdentifier(bundleId),
-    ];
+    config.modResults['com.apple.security.application-groups'] = [getAppGroupIdentifier(bundleId)];
     return config;
   });
 
@@ -128,7 +126,10 @@ function withAnvilCompanionSurfaces(config) {
         WIDGET_TARGET_NAME,
         `${bundleId}${WIDGET_BUNDLE_SUFFIX}`,
       );
-      widgetTarget = { uuid: createdWidgetTarget.uuid, target: createdWidgetTarget.pbxNativeTarget };
+      widgetTarget = {
+        uuid: createdWidgetTarget.uuid,
+        target: createdWidgetTarget.pbxNativeTarget,
+      };
       const widgetGroup = ensureGroup(project, WIDGET_TARGET_NAME);
 
       project.addBuildPhase([], 'PBXSourcesBuildPhase', 'Sources', widgetTarget.uuid);
@@ -280,12 +281,7 @@ function buildSettingEquals(value, expected) {
   return value === expected || value === `"${expected}"`;
 }
 
-async function writeCompanionSurfaceSources(
-  iosRoot,
-  projectName,
-  iosBundleId,
-  appGroupIdentifier,
-) {
+async function writeCompanionSurfaceSources(iosRoot, projectName, iosBundleId, appGroupIdentifier) {
   const appRoot = path.join(iosRoot, projectName ?? 'AnvilCompanion');
   const watchRoot = path.join(iosRoot, WATCH_TARGET_NAME);
   const widgetRoot = path.join(iosRoot, WIDGET_TARGET_NAME);
@@ -308,7 +304,11 @@ async function writeCompanionSurfaceSources(
     widgetBridgeSwift(appGroupIdentifier),
     'utf8',
   );
-  await fs.writeFile(path.join(widgetBridgeRoot, 'AnvilWidgetBridge.m'), widgetBridgeObjC(), 'utf8');
+  await fs.writeFile(
+    path.join(widgetBridgeRoot, 'AnvilWidgetBridge.m'),
+    widgetBridgeObjC(),
+    'utf8',
+  );
 
   await fs.writeFile(path.join(watchRoot, 'Info.plist'), watchInfoPlist(iosBundleId), 'utf8');
   await fs.writeFile(
@@ -934,109 +934,248 @@ struct AnvilWidgetView: View {
   var body: some View {
     if family == .systemSmall {
       Link(destination: URL(string: snapshot.primaryDestination) ?? workflowUrl(snapshot.quickActions.first?.id ?? "status-sweep")) {
-        VStack(alignment: .leading, spacing: 8) {
-          HeaderRow(snapshot: snapshot, compact: true)
+        VStack(alignment: .leading, spacing: 7) {
+          WidgetMasthead(snapshot: snapshot, compact: true)
+          Spacer(minLength: 2)
+          Text(primaryMetric(snapshot))
+            .font(.system(.title2, design: .rounded, weight: .semibold))
+            .foregroundStyle(primaryColor(snapshot))
+            .lineLimit(1)
+            .minimumScaleFactor(0.72)
           Text(snapshot.headline)
-            .font(.title3.bold())
+            .font(.system(.subheadline, weight: .semibold))
+            .foregroundStyle(.primary)
             .lineLimit(2)
-            .minimumScaleFactor(0.8)
-          CountStrip(snapshot: snapshot)
-          Text(snapshot.detail)
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-            .lineLimit(2)
+            .minimumScaleFactor(0.82)
+          Spacer(minLength: 2)
+          SignalLine(snapshot: snapshot)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .padding()
-        .containerBackground(.fill.tertiary, for: .widget)
-      }
-    } else {
-      VStack(alignment: .leading, spacing: 9) {
-        HeaderRow(snapshot: snapshot, compact: false)
-        Text(snapshot.headline)
-          .font(.title3.bold())
-          .lineLimit(1)
-          .minimumScaleFactor(0.8)
-        CountStrip(snapshot: snapshot)
-        Text(snapshot.detail)
-          .font(.caption)
-          .foregroundStyle(.secondary)
-          .lineLimit(2)
-        HStack(spacing: 8) {
-          ForEach(Array(snapshot.quickActions.prefix(4))) { action in
-            WorkflowLink(title: shortActionTitle(action.title), destination: action.destination ?? workflowUrl(action.id).absoluteString)
-          }
+        .padding(14)
+        .containerBackground(for: .widget) {
+          widgetBackground(snapshot)
         }
       }
+    } else {
+      HStack(alignment: .top, spacing: 14) {
+        Link(destination: URL(string: snapshot.primaryDestination) ?? workflowUrl("status-sweep")) {
+          VStack(alignment: .leading, spacing: 8) {
+            WidgetMasthead(snapshot: snapshot, compact: false)
+            Text(snapshot.headline)
+              .font(.system(.title3, design: .rounded, weight: .semibold))
+              .foregroundStyle(.primary)
+              .lineLimit(2)
+              .minimumScaleFactor(0.78)
+            Text(snapshot.detail)
+              .font(.caption)
+              .foregroundStyle(.secondary)
+              .lineLimit(2)
+            Spacer(minLength: 2)
+            SignalLine(snapshot: snapshot)
+          }
+          .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+
+        VStack(spacing: 7) {
+          ForEach(Array(bestWidgetActions(snapshot).prefix(3))) { action in
+            WorkflowLink(action: action)
+          }
+          Spacer(minLength: 0)
+        }
+        .frame(width: 92)
+      }
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-      .padding()
-      .containerBackground(.fill.tertiary, for: .widget)
+      .padding(14)
+      .containerBackground(for: .widget) {
+        widgetBackground(snapshot)
+      }
     }
   }
 }
 
-struct HeaderRow: View {
+struct WidgetMasthead: View {
   let snapshot: AnvilWidgetSnapshot
   let compact: Bool
 
   var body: some View {
-    HStack(alignment: .firstTextBaseline, spacing: 6) {
+    HStack(spacing: 6) {
+      Circle()
+        .fill(primaryColor(snapshot))
+        .frame(width: compact ? 7 : 8, height: compact ? 7 : 8)
       Text(snapshot.activeWorkspaceName ?? "Anvil")
-        .font(compact ? .caption.bold() : .headline)
+        .font(compact ? .caption.weight(.semibold) : .subheadline.weight(.semibold))
         .lineLimit(1)
+        .foregroundStyle(.primary)
       Spacer(minLength: 4)
       Text(healthLabel(snapshot.health))
-        .font(.caption2.bold())
-        .padding(.horizontal, 6)
-        .padding(.vertical, 3)
-        .background(healthColor(snapshot.health).opacity(0.16), in: Capsule())
-        .foregroundStyle(healthColor(snapshot.health))
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(primaryColor(snapshot))
     }
   }
 }
 
-struct CountStrip: View {
+struct SignalLine: View {
   let snapshot: AnvilWidgetSnapshot
 
   var body: some View {
-    HStack(spacing: 6) {
-      CountPill(label: "OK", value: snapshot.counts.pendingApprovals)
-      CountPill(label: "Run", value: snapshot.counts.busySessions)
-      CountPill(label: "Work", value: snapshot.workSignals ?? 0)
+    HStack(spacing: 7) {
+      SignalDatum(icon: "checkmark.seal", label: "OK", value: snapshot.counts.pendingApprovals, color: approvalColor(snapshot))
+      SignalDatum(icon: "bolt", label: "Run", value: snapshot.counts.busySessions, color: runColor(snapshot))
+      SignalDatum(icon: "shield", label: "Risk", value: riskCount(snapshot), color: riskColor(snapshot))
     }
   }
 }
 
-struct CountPill: View {
+struct SignalDatum: View {
+  let icon: String
   let label: String
   let value: Int
+  let color: Color
 
   var body: some View {
     HStack(spacing: 3) {
+      Image(systemName: icon)
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(color)
       Text("\\(value)")
-        .font(.caption.bold())
+        .font(.caption.weight(.semibold))
       Text(label)
         .font(.caption2)
         .foregroundStyle(.secondary)
     }
-    .padding(.horizontal, 7)
-    .padding(.vertical, 4)
-    .background(.primary.opacity(0.07), in: Capsule())
   }
 }
 
 struct WorkflowLink: View {
-  let title: String
-  let destination: String
+  let action: AnvilWidgetAction
 
   var body: some View {
-    Link(destination: URL(string: destination) ?? workflowUrl("status-sweep")) {
-      Text(title)
-        .font(.caption.bold())
+    Link(destination: URL(string: action.destination ?? "") ?? workflowUrl("status-sweep")) {
+      HStack(spacing: 5) {
+        Image(systemName: actionIcon(action))
+          .font(.caption.weight(.semibold))
+        Text(shortActionTitle(action.title))
+          .font(.caption.weight(.semibold))
+          .lineLimit(1)
+          .minimumScaleFactor(0.82)
+      }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 8)
-        .background(.orange.opacity(0.18), in: RoundedRectangle(cornerRadius: 8))
+        .foregroundStyle(actionColor(action))
+        .background(actionColor(action).opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
     }
+  }
+}
+
+func widgetBackground(_ snapshot: AnvilWidgetSnapshot) -> some View {
+  LinearGradient(
+    colors: [
+      Color(.systemBackground),
+      primaryColor(snapshot).opacity(snapshot.attentionLevel == "idle" ? 0.06 : 0.12)
+    ],
+    startPoint: .topLeading,
+    endPoint: .bottomTrailing
+  )
+}
+
+func primaryMetric(_ snapshot: AnvilWidgetSnapshot) -> String {
+  if snapshot.counts.pendingApprovals > 0 {
+    return "\\(snapshot.counts.pendingApprovals) OK"
+  }
+  if snapshot.counts.busySessions > 0 {
+    return "\\(snapshot.counts.busySessions) run"
+  }
+  let risk = riskCount(snapshot)
+  if risk > 0 {
+    return "\\(risk) risk"
+  }
+  if snapshot.counts.readySessions > 0 {
+    return "\\(snapshot.counts.readySessions) ready"
+  }
+  return "Ready"
+}
+
+func riskCount(_ snapshot: AnvilWidgetSnapshot) -> Int {
+  (snapshot.reviewFindings ?? 0) + (snapshot.securityFindings ?? 0)
+}
+
+func primaryColor(_ snapshot: AnvilWidgetSnapshot) -> Color {
+  switch snapshot.attentionLevel {
+  case "approval":
+    return .red
+  case "working":
+    return .blue
+  case "setup":
+    return .orange
+  default:
+    return riskCount(snapshot) > 0 ? .orange : .green
+  }
+}
+
+func approvalColor(_ snapshot: AnvilWidgetSnapshot) -> Color {
+  snapshot.counts.pendingApprovals > 0 ? .red : .secondary
+}
+
+func runColor(_ snapshot: AnvilWidgetSnapshot) -> Color {
+  snapshot.counts.busySessions > 0 ? .blue : .secondary
+}
+
+func riskColor(_ snapshot: AnvilWidgetSnapshot) -> Color {
+  riskCount(snapshot) > 0 ? .orange : .secondary
+}
+
+func bestWidgetActions(_ snapshot: AnvilWidgetSnapshot) -> [AnvilWidgetAction] {
+  var actions: [AnvilWidgetAction] = [
+    AnvilWidgetAction(
+      id: "primary",
+      title: snapshot.primaryLabel,
+      subtitle: snapshot.headline,
+      tone: snapshot.attentionLevel,
+      destination: snapshot.primaryDestination
+    )
+  ]
+
+  for action in snapshot.quickActions {
+    if actions.contains(where: { $0.destination == action.destination || $0.id == action.id }) {
+      continue
+    }
+    actions.append(action)
+  }
+
+  return actions
+}
+
+func actionIcon(_ action: AnvilWidgetAction) -> String {
+  switch action.id {
+  case let value where value.contains("security"):
+    return "shield"
+  case let value where value.contains("review"):
+    return "doc.text.magnifyingglass"
+  case let value where value.contains("test"):
+    return "checklist"
+  case let value where value.contains("ship"):
+    return "shippingbox"
+  case let value where value.contains("work"):
+    return "tray.full"
+  case let value where value.contains("primary"):
+    return "arrow.up.forward"
+  default:
+    return "bolt"
+  }
+}
+
+func actionColor(_ action: AnvilWidgetAction) -> Color {
+  switch action.tone {
+  case "red", "approval":
+    return .red
+  case "amber", "setup":
+    return .orange
+  case "green", "idle":
+    return .green
+  case "purple":
+    return .purple
+  default:
+    return .blue
   }
 }
 
@@ -1045,8 +1184,8 @@ func fallbackSnapshot() -> AnvilWidgetSnapshot {
     version: 1,
     generatedAt: ISO8601DateFormatter().string(from: Date()),
     health: "unconfigured",
-    headline: "No host paired",
-    detail: "Open Anvil on Mac and scan the pairing code.",
+    headline: "Open Anvil",
+    detail: "Open the app to refresh host state.",
     activeWorkspaceName: "Anvil",
     counts: AnvilWidgetCounts(
       pendingApprovals: 0,
@@ -1061,7 +1200,7 @@ func fallbackSnapshot() -> AnvilWidgetSnapshot {
     workSignals: 0,
     quickActions: fallbackActions(),
     primaryDestination: "anvil-companion://settings",
-    primaryLabel: "Pair",
+    primaryLabel: "Open",
     attentionLevel: "setup"
   )
 }
@@ -1096,72 +1235,75 @@ struct AnvilLiveActivityWidget: Widget {
   var body: some WidgetConfiguration {
     ActivityConfiguration(for: AnvilLiveActivityAttributes.self) { context in
       Link(destination: URL(string: context.state.primaryDestination) ?? workflowUrl("status-sweep")) {
-        VStack(alignment: .leading, spacing: 10) {
-          HStack {
+        VStack(alignment: .leading, spacing: 9) {
+          HStack(spacing: 7) {
+            Circle()
+              .fill(liveAttentionColor(context.state.attentionLevel))
+              .frame(width: 8, height: 8)
             Text(context.attributes.workspaceName ?? context.attributes.title)
-              .font(.headline)
+              .font(.subheadline.weight(.semibold))
               .lineLimit(1)
             Spacer()
             Text(liveAttentionLabel(context.state.attentionLevel))
-              .font(.caption2.bold())
-              .padding(.horizontal, 7)
-              .padding(.vertical, 4)
-              .background(liveAttentionColor(context.state.attentionLevel).opacity(0.16), in: Capsule())
+              .font(.caption2.weight(.semibold))
               .foregroundStyle(liveAttentionColor(context.state.attentionLevel))
           }
           Text(context.state.status)
-            .font(.title3.bold())
-            .lineLimit(1)
+            .font(.system(.title3, design: .rounded, weight: .semibold))
+            .lineLimit(2)
+            .minimumScaleFactor(0.82)
           Text(context.state.detail)
             .font(.caption)
             .foregroundStyle(.secondary)
             .lineLimit(2)
           HStack(spacing: 8) {
-            CountPill(label: "OKs", value: context.state.pendingApprovals)
-            CountPill(label: "Run", value: context.state.busySessions)
-            CountPill(label: "Work", value: context.state.workSignals)
+            SignalDatum(icon: "checkmark.seal", label: "OK", value: context.state.pendingApprovals, color: context.state.pendingApprovals > 0 ? .red : .secondary)
+            SignalDatum(icon: "bolt", label: "Run", value: context.state.busySessions, color: context.state.busySessions > 0 ? .blue : .secondary)
+            SignalDatum(icon: "tray.full", label: "Work", value: context.state.workSignals, color: context.state.workSignals > 0 ? .orange : .secondary)
             Spacer(minLength: 4)
             Text(context.state.primaryLabel)
-              .font(.caption.bold())
+              .font(.caption.weight(.semibold))
               .padding(.horizontal, 10)
               .padding(.vertical, 6)
-              .background(.orange.opacity(0.18), in: Capsule())
+              .foregroundStyle(liveAttentionColor(context.state.attentionLevel))
+              .background(liveAttentionColor(context.state.attentionLevel).opacity(0.12), in: Capsule())
           }
         }
         .padding()
       }
       .activityBackgroundTint(Color(.secondarySystemBackground))
-      .activitySystemActionForegroundColor(.orange)
+      .activitySystemActionForegroundColor(liveAttentionColor(context.state.attentionLevel))
     } dynamicIsland: { context in
       DynamicIsland {
         DynamicIslandExpandedRegion(.leading) {
-          Text(context.attributes.workspaceName ?? "Anvil")
-            .font(.caption.bold())
+          Label(context.attributes.workspaceName ?? "Anvil", systemImage: "hammer")
+            .font(.caption.weight(.semibold))
             .lineLimit(1)
         }
         DynamicIslandExpandedRegion(.trailing) {
           Text(liveAttentionLabel(context.state.attentionLevel))
-            .font(.caption2.bold())
+            .font(.caption2.weight(.semibold))
             .foregroundStyle(liveAttentionColor(context.state.attentionLevel))
         }
         DynamicIslandExpandedRegion(.bottom) {
-          VStack(alignment: .leading, spacing: 4) {
+          VStack(alignment: .leading, spacing: 5) {
             Text(context.state.status)
               .font(.headline)
               .lineLimit(1)
-            Text(context.state.detail)
-              .font(.caption)
-              .foregroundStyle(.secondary)
-              .lineLimit(1)
+            HStack(spacing: 10) {
+              SignalDatum(icon: "checkmark.seal", label: "OK", value: context.state.pendingApprovals, color: context.state.pendingApprovals > 0 ? .red : .secondary)
+              SignalDatum(icon: "bolt", label: "Run", value: context.state.busySessions, color: context.state.busySessions > 0 ? .blue : .secondary)
+              SignalDatum(icon: "tray.full", label: "Work", value: context.state.workSignals, color: context.state.workSignals > 0 ? .orange : .secondary)
+            }
           }
         }
       } compactLeading: {
-        Text("\\(context.state.pendingApprovals > 0 ? context.state.pendingApprovals : context.state.workSignals)")
-          .font(.caption2.bold())
-          .foregroundStyle(context.state.pendingApprovals > 0 ? .red : liveAttentionColor(context.state.attentionLevel))
+        Image(systemName: context.state.pendingApprovals > 0 ? "checkmark.seal" : "bolt")
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(liveAttentionColor(context.state.attentionLevel))
       } compactTrailing: {
-        Text("\\(context.state.busySessions)")
-          .font(.caption2.bold())
+        Text("\\(context.state.pendingApprovals > 0 ? context.state.pendingApprovals : max(context.state.busySessions, context.state.workSignals))")
+          .font(.caption2.weight(.semibold))
       } minimal: {
         Circle()
           .fill(liveAttentionColor(context.state.attentionLevel))

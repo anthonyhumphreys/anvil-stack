@@ -35,7 +35,7 @@ import {
   isCarPlayApprovable,
 } from '../../shared/companion-policy.js';
 import { getDb } from '../db/database.js';
-import { getSettings } from './settings.service.js';
+import { getSettings, updateSettings } from './settings.service.js';
 import { getWorkspace, listWorkspaces } from './workspace.service.js';
 import { emitCompanionEvent, onCompanionEvent } from './companion-events.service.js';
 import {
@@ -61,7 +61,10 @@ import {
 import { getCodexRegistrySnapshot } from './codex-registry.service.js';
 import { createWorkspaceNote, listWorkspaceNotes } from './workspace-notes.service.js';
 import { listAgentRuns } from './agent-run.service.js';
-import { getItem as getLifecycleItem, listItems as listLifecycleItems } from './lifecycle.service.js';
+import {
+  getItem as getLifecycleItem,
+  listItems as listLifecycleItems,
+} from './lifecycle.service.js';
 
 interface MobileCompanionSettingsRow {
   enabled: number;
@@ -504,8 +507,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   }
 
   const allowQueryToken =
-    req.method === 'GET' &&
-    (url.pathname === '/api/events' || isChatAttachmentRoute(pathParts));
+    req.method === 'GET' && (url.pathname === '/api/events' || isChatAttachmentRoute(pathParts));
   const device = authenticateRequest(req, allowQueryToken);
   if (!device) {
     sendJson(res, 401, { error: 'Missing or invalid mobile companion token.' });
@@ -859,10 +861,12 @@ function touchDevice(deviceId: string): void {
 export function getMobileOverview(): MobileOverview {
   const settings = getSettings();
   const workspaces = listWorkspaces();
-  const activeWorkspace = settings.activeWorkspaceId
-    ? safeGetWorkspace(settings.activeWorkspaceId)
-    : undefined;
   const activeSessions = listActiveCodexSessions();
+  const activeWorkspace = resolveMobileActiveWorkspace(
+    settings.activeWorkspaceId,
+    workspaces,
+    activeSessions,
+  );
   const pendingApprovals = enrichMobileApprovalRequests(
     listPendingApprovalRequests(),
     activeWorkspace,
@@ -887,6 +891,35 @@ export function getMobileOverview(): MobileOverview {
     companion: buildStatus(ensureMobileCompanionSettings()),
     notifications: listRecentCompanionNotifications(),
   };
+}
+
+function resolveMobileActiveWorkspace(
+  activeWorkspaceId: string | undefined,
+  workspaces: MobileOverview['workspaces'],
+  activeSessions: ReturnType<typeof listActiveCodexSessions> = [],
+): MobileOverview['activeWorkspace'] {
+  const candidateIds = [
+    getDesktopWindowWorkspaceId(),
+    ...activeSessions.map((session) => session.workspaceId),
+    activeWorkspaceId,
+    workspaces[0]?.id,
+  ].filter((workspaceId): workspaceId is string => Boolean(workspaceId));
+
+  for (const candidateId of candidateIds) {
+    const workspace = safeGetWorkspace(candidateId);
+    if (!workspace) continue;
+    if (candidateId !== activeWorkspaceId) {
+      updateSettings({ activeWorkspaceId: workspace.id });
+    }
+    return workspace;
+  }
+
+  if (activeWorkspaceId && workspaces.some((workspace) => workspace.id === activeWorkspaceId)) {
+    const workspace = safeGetWorkspace(activeWorkspaceId);
+    if (workspace) return workspace;
+  }
+
+  return undefined;
 }
 
 export function getCarPlayDriveSnapshot(): CarPlayDriveSnapshot {
@@ -1006,6 +1039,12 @@ export function listCarPlaySessions(): CarPlaySessionSummary[] {
 }
 
 function listMobileChatThreads(): MobileChatThreadSummary[] {
+  const sessions = listActiveCodexSessions();
+  const approvals = listPendingApprovalRequests();
+  if (!databaseHasTables(['chat_threads', 'chat_messages'])) {
+    return sessions.map((session) => mobileThreadSummaryFromSession(session, approvals));
+  }
+
   const rows = getDb()
     .prepare(
       `SELECT
@@ -1034,10 +1073,7 @@ function listMobileChatThreads(): MobileChatThreadSummary[] {
     )
     .all() as ChatThreadRow[];
 
-  const sessions = listActiveCodexSessions();
-  const approvals = listPendingApprovalRequests();
-
-  return rows.map((row) => {
+  const threads = rows.map((row) => {
     const activeSession = sessions.find((session) => session.appThreadId === row.id);
     return {
       id: row.id,
@@ -1055,6 +1091,52 @@ function listMobileChatThreads(): MobileChatThreadSummary[] {
         : 0,
     };
   });
+  const representedSessionIds = new Set(
+    threads
+      .map((thread) => thread.activeSessionId)
+      .filter((sessionId): sessionId is string => Boolean(sessionId)),
+  );
+  const representedThreadIds = new Set(threads.map((thread) => thread.id));
+  const missingActiveThreads = sessions
+    .filter((session) => {
+      if (representedSessionIds.has(session.id)) return false;
+      if (session.appThreadId && representedThreadIds.has(session.appThreadId)) return false;
+      return true;
+    })
+    .map((session) => mobileThreadSummaryFromSession(session, approvals));
+
+  return [...missingActiveThreads, ...threads]
+    .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
+    .slice(0, 40);
+}
+
+function mobileThreadSummaryFromSession(
+  session: ReturnType<typeof listActiveCodexSessions>[number],
+  approvals: ReturnType<typeof listPendingApprovalRequests>,
+): MobileChatThreadSummary {
+  const pendingApprovalCount = approvals.filter(
+    (approval) => approval.sessionId === session.id,
+  ).length;
+  return {
+    id: session.appThreadId ?? session.id,
+    personaId: session.personaId,
+    title: `${session.personaId} session`,
+    workspaceId: session.workspaceId,
+    repoIds: session.repoId ? [session.repoId] : [],
+    preview:
+      pendingApprovalCount > 0
+        ? `${pendingApprovalCount} approval${pendingApprovalCount === 1 ? '' : 's'} waiting`
+        : session.status === 'busy'
+          ? 'Agent is working'
+          : session.status === 'starting'
+            ? 'Starting'
+            : 'Ready for steering',
+    messageCount: 0,
+    updatedAt: session.startedAt,
+    activeSessionId: session.id,
+    activeSessionStatus: session.status,
+    pendingApprovalCount,
+  };
 }
 
 function parseRepoIds(value: string | null | undefined): string[] {
@@ -1085,16 +1167,18 @@ async function sendMobileMessage(
   const thread = getChatThread(threadId);
   const timestamp = new Date().toISOString();
   const attachments = prepareChatAttachments(input.attachments ?? []);
-  saveChatEntry(threadId, session?.repoId ?? null, targetSessionId, {
-    id: randomUUID(),
-    role: 'user',
-    content: message.trim(),
-    attachments,
-    timestamp,
-    personaId: session?.personaId ?? thread?.personaId,
-    sessionId: targetSessionId,
-    threadId,
-  });
+  if (thread) {
+    saveChatEntry(threadId, session?.repoId ?? null, targetSessionId, {
+      id: randomUUID(),
+      role: 'user',
+      content: message.trim(),
+      attachments,
+      timestamp,
+      personaId: session?.personaId ?? thread.personaId,
+      sessionId: targetSessionId,
+      threadId,
+    });
+  }
   await sendMessage(targetSessionId, message.trim(), attachments, {
     collaborationMode: input.collaborationMode,
     reasoningEffort: input.reasoningEffort,
@@ -1402,8 +1486,19 @@ function emptyWorkspaceHealth(): MobileWorkspaceHealth {
   };
 }
 
+function databaseHasTables(tableNames: string[]): boolean {
+  if (tableNames.length === 0) return true;
+  const placeholders = tableNames.map(() => '?').join(',');
+  const rows = getDb()
+    .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${placeholders})`)
+    .all(...tableNames) as { name: string }[];
+  const existing = new Set(rows.map((row) => row.name));
+  return tableNames.every((tableName) => existing.has(tableName));
+}
+
 function listMobileReviewFindings(repoIds: string[]): MobileReviewFindingRow[] {
   if (repoIds.length === 0) return [];
+  if (!databaseHasTables(['code_review_findings', 'code_reviews'])) return [];
   return getDb()
     .prepare(
       `SELECT
@@ -1438,36 +1533,42 @@ function listMobileReviewFindings(repoIds: string[]): MobileReviewFindingRow[] {
 
 function listMobileSecurityFindings(repoIds: string[]): MobileSecurityFindingRow[] {
   if (repoIds.length === 0) return [];
-  return getDb()
-    .prepare(
-      `SELECT
-         f.id,
-         f.audit_id,
-         a.repo_id,
-         repos.name AS repo_name,
-         f.severity,
-         f.category,
-         f.affected_files,
-         f.description,
-         a.started_at
-       FROM security_findings f
-       JOIN security_audits a ON a.id = f.audit_id
-       LEFT JOIN repos ON repos.id = a.repo_id
-       WHERE f.dismissed = 0
-         AND a.repo_id IN (${repoIds.map(() => '?').join(',')})
-       ORDER BY
-         CASE f.severity
-           WHEN 'critical' THEN 0
-           WHEN 'high' THEN 1
-           WHEN 'medium' THEN 2
-           WHEN 'low' THEN 3
-           WHEN 'info' THEN 4
-           ELSE 5
-         END,
-         a.started_at DESC
-       LIMIT 20`,
-    )
-    .all(...repoIds) as MobileSecurityFindingRow[];
+  if (!databaseHasTables(['security_findings', 'security_audits'])) return [];
+  try {
+    return getDb()
+      .prepare(
+        `SELECT
+           f.id,
+           f.audit_id,
+           a.repo_id,
+           repos.name AS repo_name,
+           f.severity,
+           f.category,
+           f.affected_files,
+           f.description,
+           a.started_at
+         FROM security_findings f
+         JOIN security_audits a ON a.id = f.audit_id
+         LEFT JOIN repos ON repos.id = a.repo_id
+         WHERE f.dismissed = 0
+           AND a.repo_id IN (${repoIds.map(() => '?').join(',')})
+         ORDER BY
+           CASE f.severity
+             WHEN 'critical' THEN 0
+             WHEN 'high' THEN 1
+             WHEN 'medium' THEN 2
+             WHEN 'low' THEN 3
+             WHEN 'info' THEN 4
+             ELSE 5
+           END,
+           a.started_at DESC
+         LIMIT 20`,
+      )
+      .all(...repoIds) as MobileSecurityFindingRow[];
+  } catch (error) {
+    if (isMissingSqliteTableError(error)) return [];
+    throw error;
+  }
 }
 
 function buildLifecycleSignals(workspaceId: string): {
@@ -1482,7 +1583,9 @@ function buildLifecycleSignals(workspaceId: string): {
       kind: 'lifecycle',
       priority: 'normal',
       title: item.title,
-      detail: item.description ?? `${item.linkedRepoIds.length} linked repo${item.linkedRepoIds.length === 1 ? '' : 's'}`,
+      detail:
+        item.description ??
+        `${item.linkedRepoIds.length} linked repo${item.linkedRepoIds.length === 1 ? '' : 's'}`,
       statusLabel: item.stage,
       updatedAt: item.updatedAt,
       sourceId: item.id,
@@ -1492,6 +1595,10 @@ function buildLifecycleSignals(workspaceId: string): {
 }
 
 function buildWorkItemSignals(): { count: number; signals: MobileWorkspaceSignal[] } {
+  if (!databaseHasTables(['work_items_cache'])) {
+    return { count: 0, signals: [] };
+  }
+
   const rows = getDb()
     .prepare(
       `SELECT id, title, type, state, priority, fetched_at
@@ -1538,6 +1645,8 @@ function getMobileWorkspaceSignalDetail(signalId: string): MobileWorkspaceSignal
 }
 
 function getMobileReviewFindingDetail(findingId: string): MobileWorkspaceSignalDetail | null {
+  if (!databaseHasTables(['code_review_findings', 'code_reviews'])) return null;
+
   const row = getDb()
     .prepare(
       `SELECT
@@ -1579,7 +1688,13 @@ function getMobileReviewFindingDetail(findingId: string): MobileWorkspaceSignalD
     description: row.description,
     recommendation: row.suggestion ?? undefined,
     files: row.file_path
-      ? [{ path: row.file_path, lineStart: row.line_start ?? undefined, lineEnd: row.line_end ?? undefined }]
+      ? [
+          {
+            path: row.file_path,
+            lineStart: row.line_start ?? undefined,
+            lineEnd: row.line_end ?? undefined,
+          },
+        ]
       : [],
     linkedWorkItemId: row.work_item_id ?? undefined,
     provenance: compactProvenance([
@@ -1596,33 +1711,41 @@ function getMobileReviewFindingDetail(findingId: string): MobileWorkspaceSignalD
 }
 
 function getMobileSecurityFindingDetail(findingId: string): MobileWorkspaceSignalDetail | null {
-  const row = getDb()
-    .prepare(
-      `SELECT
-         f.id,
-         f.audit_id,
-         a.repo_id,
-         repos.name AS repo_name,
-         f.severity,
-         f.category,
-         f.affected_files,
-         f.owasp_ref,
-         f.cwe_ref,
-         f.description,
-         f.remediation,
-         f.work_item_id,
-         a.scope AS audit_scope,
-         a.status AS audit_status,
-         a.summary AS audit_summary,
-         a.model_version,
-         a.started_at,
-         a.completed_at
-       FROM security_findings f
-       JOIN security_audits a ON a.id = f.audit_id
-       LEFT JOIN repos ON repos.id = a.repo_id
-       WHERE f.id = ? AND f.dismissed = 0`,
-    )
-    .get(findingId) as MobileSecurityFindingDetailRow | undefined;
+  if (!databaseHasTables(['security_findings', 'security_audits'])) return null;
+
+  let row: MobileSecurityFindingDetailRow | undefined;
+  try {
+    row = getDb()
+      .prepare(
+        `SELECT
+           f.id,
+           f.audit_id,
+           a.repo_id,
+           repos.name AS repo_name,
+           f.severity,
+           f.category,
+           f.affected_files,
+           f.owasp_ref,
+           f.cwe_ref,
+           f.description,
+           f.remediation,
+           f.work_item_id,
+           a.scope AS audit_scope,
+           a.status AS audit_status,
+           a.summary AS audit_summary,
+           a.model_version,
+           a.started_at,
+           a.completed_at
+         FROM security_findings f
+         JOIN security_audits a ON a.id = f.audit_id
+         LEFT JOIN repos ON repos.id = a.repo_id
+         WHERE f.id = ? AND f.dismissed = 0`,
+      )
+      .get(findingId) as MobileSecurityFindingDetailRow | undefined;
+  } catch (error) {
+    if (isMissingSqliteTableError(error)) return null;
+    throw error;
+  }
   if (!row) return null;
 
   const files = parseAffectedFiles(row.affected_files).map((path) => ({ path }));
@@ -1655,7 +1778,9 @@ function getMobileLifecycleDetail(itemId: string): MobileWorkspaceSignalDetail |
         kind: 'lifecycle',
         priority: 'normal',
         title: item.title,
-        detail: item.description ?? `${item.linkedRepoIds.length} linked repo${item.linkedRepoIds.length === 1 ? '' : 's'}`,
+        detail:
+          item.description ??
+          `${item.linkedRepoIds.length} linked repo${item.linkedRepoIds.length === 1 ? '' : 's'}`,
         statusLabel: item.stage,
         updatedAt: item.updatedAt,
         sourceId: item.id,
@@ -1776,9 +1901,9 @@ function compactProvenance(
 }
 
 function getRepoName(repoId: string): string | undefined {
-  const row = getDb()
-    .prepare('SELECT name, path FROM repos WHERE id = ?')
-    .get(repoId) as { name: string | null; path: string | null } | undefined;
+  const row = getDb().prepare('SELECT name, path FROM repos WHERE id = ?').get(repoId) as
+    | { name: string | null; path: string | null }
+    | undefined;
   return row?.name ?? row?.path ?? undefined;
 }
 
@@ -1791,7 +1916,9 @@ function parseAffectedFiles(value: string | null): string[] {
   try {
     const parsed = JSON.parse(value);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+    return parsed.filter(
+      (item): item is string => typeof item === 'string' && item.trim().length > 0,
+    );
   } catch {
     return [];
   }
@@ -2109,6 +2236,30 @@ function safeGetWorkspace(workspaceId: string): MobileOverview['activeWorkspace'
   } catch {
     return undefined;
   }
+}
+
+function getDesktopWindowWorkspaceId(): string | undefined {
+  for (const win of BrowserWindow.getAllWindows()) {
+    const workspaceId = parseWorkspaceIdFromUrl(win.webContents.getURL());
+    if (workspaceId) return workspaceId;
+  }
+  return undefined;
+}
+
+function parseWorkspaceIdFromUrl(rawUrl: string): string | undefined {
+  try {
+    const url = new URL(rawUrl);
+    const hash = url.hash.startsWith('#') ? url.hash.slice(1) : url.hash;
+    if (!hash) return url.searchParams.get('workspaceId') ?? undefined;
+    const hashUrl = new URL(hash, 'anvil://desktop');
+    return hashUrl.searchParams.get('workspaceId') ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isMissingSqliteTableError(error: unknown): boolean {
+  return error instanceof Error && /no such table:/i.test(error.message);
 }
 
 function focusDesktop(): void {

@@ -27,6 +27,7 @@ import {
   subtleStyle,
   titleStyle,
 } from '@/components/companion-ui';
+import { ReasoningPicker } from '@/components/reasoning-picker';
 import { useCompanion } from '@/contexts/companion-context';
 import { chatAttachmentUrl, type CompanionConnection } from '@/lib/anvil-api';
 import type {
@@ -42,7 +43,6 @@ import type {
 
 type IconName = ComponentProps<typeof MaterialIcons>['name'];
 
-const REASONING_LEVELS: ReasoningEffort[] = ['minimal', 'low', 'medium', 'high', 'xhigh'];
 const MAX_ATTACHMENT_COUNT = 10;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
@@ -334,28 +334,7 @@ export default function ChatThreadScreen() {
               ]}
               onChange={(next) => setMode(next as ChatCollaborationMode)}
             />
-            <View style={reasoningRowStyle}>
-              {REASONING_LEVELS.map((level) => (
-                <TouchableOpacity
-                  key={level}
-                  activeOpacity={0.72}
-                  onPress={() => setReasoningEffort(level)}
-                  style={[
-                    reasoningChipStyle,
-                    reasoningEffort === level && reasoningChipActiveStyle,
-                  ]}
-                >
-                  <Text
-                    style={[
-                      reasoningChipTextStyle,
-                      reasoningEffort === level && reasoningChipTextActiveStyle,
-                    ]}
-                  >
-                    {level === 'minimal' ? 'min' : level}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
+            <ReasoningPicker value={reasoningEffort} onChange={setReasoningEffort} />
           </View>
           {attachments.length > 0 && (
             <View style={attachmentChipRowStyle}>
@@ -880,30 +859,6 @@ const segmentTextStyle = {
   fontWeight: '900' as const,
 };
 const segmentTextActiveStyle = { color: companionColors.onDark };
-const reasoningRowStyle = {
-  flexDirection: 'row' as const,
-  gap: 5,
-  flex: 1,
-  justifyContent: 'flex-end' as const,
-};
-const reasoningChipStyle = {
-  borderColor: companionColors.borderSubtle,
-  borderWidth: 1,
-  borderRadius: 999,
-  paddingHorizontal: 8,
-  paddingVertical: 6,
-  backgroundColor: companionColors.surface,
-};
-const reasoningChipActiveStyle = {
-  backgroundColor: companionColors.blueSoft,
-  borderColor: companionColors.blueBorder,
-};
-const reasoningChipTextStyle = {
-  color: companionColors.subtle,
-  fontSize: 11,
-  fontWeight: '900' as const,
-};
-const reasoningChipTextActiveStyle = { color: companionColors.blue };
 const attachmentChipRowStyle = {
   flexDirection: 'row' as const,
   gap: 6,

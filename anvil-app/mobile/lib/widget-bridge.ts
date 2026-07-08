@@ -6,6 +6,7 @@ import type {
   MobileWorkflowDigest,
   MobileWorkflowHealth,
 } from '../../src/shared/types';
+import type { CompanionConnection } from './anvil-api';
 
 export interface WidgetActionSnapshot {
   id: string;
@@ -162,10 +163,52 @@ export function buildWidgetSnapshot(overview: MobileOverview): WidgetSnapshot {
   };
 }
 
+export function buildConnectionWidgetSnapshot(
+  connection: CompanionConnection | null,
+  connectionCount = connection ? 1 : 0,
+): WidgetSnapshot {
+  const paired = connectionCount > 0;
+  const pluralHost = connectionCount === 1 ? 'host' : 'hosts';
+  const headline = connection
+    ? 'Host paired'
+    : paired
+      ? `${connectionCount} ${pluralHost} paired`
+      : 'Pair a Mac';
+  const detail = connection
+    ? 'Open Anvil to refresh workspace state.'
+    : paired
+      ? 'Choose the Mac to control from Settings.'
+      : 'Scan the desktop pairing QR before using the widget.';
+
+  return {
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    health: 'unconfigured',
+    headline,
+    detail,
+    counts: FALLBACK_COUNTS,
+    reviewFindings: 0,
+    securityFindings: 0,
+    workSignals: 0,
+    quickActions: [
+      {
+        id: 'settings',
+        title: 'Settings',
+        subtitle: paired ? 'Hosts' : 'Pair Mac',
+        tone: 'blue',
+        destination: 'anvil-companion://settings',
+      },
+    ],
+    primaryDestination: 'anvil-companion://settings',
+    primaryLabel: 'Settings',
+    attentionLevel: 'setup',
+  };
+}
+
 export function buildLiveActivitySnapshot(overview: MobileOverview): LiveActivitySnapshot | null {
   const counts = overview.workflow?.counts ?? FALLBACK_COUNTS;
   const state = widgetState(overview);
-  if (state.attentionLevel === 'idle') return null;
+  if (state.attentionLevel === 'idle' || state.attentionLevel === 'setup') return null;
   const workSignals = countWorkSignals(overview);
 
   return {
@@ -195,6 +238,20 @@ export async function publishWidgetSnapshot(overview: MobileOverview | null): Pr
 
   try {
     await bridge.writeSnapshot(buildWidgetSnapshot(overview));
+  } catch (error) {
+    void error;
+  }
+}
+
+export async function publishConnectionWidgetSnapshot(
+  connection: CompanionConnection | null,
+  connectionCount = connection ? 1 : 0,
+): Promise<void> {
+  const bridge = getWidgetBridge();
+  if (!bridge) return;
+
+  try {
+    await bridge.writeSnapshot(buildConnectionWidgetSnapshot(connection, connectionCount));
   } catch (error) {
     void error;
   }
@@ -337,7 +394,12 @@ function buildWidgetActions(overview: MobileOverview): WidgetActionSnapshot[] {
 function countWorkSignals(overview: MobileOverview): number {
   const health = overview.workspaceHealth;
   if (!health) return 0;
-  return health.reviewFindingCount + health.securityFindingCount + health.lifecycleItemCount + health.workItemCount;
+  return (
+    health.reviewFindingCount +
+    health.securityFindingCount +
+    health.lifecycleItemCount +
+    health.workItemCount
+  );
 }
 
 function signalTone(
@@ -371,12 +433,22 @@ function widgetState(overview: MobileOverview): {
   ).length;
   const topHealthSignal = overview.workspaceHealth?.signals[0];
 
-  if (!overview.companion.running || !activeWorkspaceName) {
+  if (!overview.companion.running) {
     return {
-      headline: 'No host paired',
-      detail: 'Open Anvil on Mac and scan the pairing code.',
+      headline: 'Host unavailable',
+      detail: 'Open Anvil on Mac, then refresh from the app.',
       destination: 'anvil-companion://settings',
-      label: 'Pair',
+      label: 'Settings',
+      attentionLevel: 'setup',
+    };
+  }
+
+  if (!activeWorkspaceName) {
+    return {
+      headline: 'Select a workspace on Mac',
+      detail: 'Remote runs need the desktop app to have an active workspace.',
+      destination: 'anvil-companion://settings',
+      label: 'Open',
       attentionLevel: 'setup',
     };
   }
@@ -411,7 +483,7 @@ function widgetState(overview: MobileOverview): {
       destination: topThread
         ? `anvil-companion://chats/${encodeURIComponent(topThread.id)}`
         : 'anvil-companion://work',
-      label: topQueueItem?.actionLabel ?? 'Open',
+      label: 'Open',
       attentionLevel: 'working',
     };
   }

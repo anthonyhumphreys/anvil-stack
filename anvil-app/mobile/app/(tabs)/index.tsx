@@ -5,7 +5,6 @@ import { RefreshControl, ScrollView, Text, TextInput, TouchableOpacity, View } f
 import {
   ActionButton,
   AttentionPanel,
-  EmptyState,
   Panel,
   ScreenHeader,
   SectionHeader,
@@ -117,7 +116,17 @@ export default function WorkScreen() {
   const quickActions = overview?.quickActions ?? [];
   const recentRuns = overview?.recentRuns ?? [];
   const workspaceHealth = overview?.workspaceHealth;
+  const riskSignalCount =
+    (workspaceHealth?.reviewFindingCount ?? 0) + (workspaceHealth?.securityFindingCount ?? 0);
+  const trackedWorkCount =
+    (workspaceHealth?.lifecycleItemCount ?? 0) + (workspaceHealth?.workItemCount ?? 0);
+  const urgentSignalCount =
+    (workspaceHealth?.criticalCount ?? 0) + (workspaceHealth?.highCount ?? 0);
   const canLaunch = Boolean(connection && activeWorkspace && launchRepoIds.length > 0);
+  const needsHost = !connection;
+  const needsWorkspace = Boolean(connection && !activeWorkspace);
+  const needsRepos = Boolean(connection && activeWorkspace && launchRepoIds.length === 0);
+  const setupBlocked = needsHost || needsWorkspace || needsRepos;
   const topQueueItem = workQueue[0];
   const attentionTone = workflow ? healthTone(workflow.health) : 'amber';
   const primaryActionLabel =
@@ -200,8 +209,8 @@ export default function WorkScreen() {
       contentContainerStyle={scrollContentStyle}
     >
       <ScreenHeader
-        eyebrow={activeWorkspace?.name ?? 'No workspace'}
-        title="Anvil"
+        eyebrow={connection ? hostLabel(connection.baseUrl) : 'Not paired'}
+        title={activeWorkspace?.name ?? 'Anvil'}
         right={
           <StatusPill label={health.label} color={health.color} background={health.background} />
         }
@@ -210,41 +219,54 @@ export default function WorkScreen() {
       {connection && (
         <View style={connectionBarStyle}>
           <MaterialIcons
-            name={live ? 'wifi-tethering' : 'sync'}
+            name={live ? 'wifi-tethering' : 'computer'}
             size={16}
             color={live ? companionColors.green : companionColors.subtle}
           />
           <Text style={connectionTextStyle}>
-            {live ? 'Live from host' : 'Polling host'}
+            {live ? 'Host live' : 'Host reachable'}
             {lastUpdatedAt ? ` / ${new Date(lastUpdatedAt).toLocaleTimeString()}` : ''}
           </Text>
-          <ActionButton
-            label="Open Mac"
-            variant="secondary"
-            onPress={openOnDesktop}
-            style={{ paddingVertical: 8 }}
-          />
         </View>
       )}
 
       <AttentionPanel
-        label={live ? 'LIVE' : connection ? 'HOST' : 'SETUP'}
-        title={homeHeadline(workflow?.headline, topQueueItem)}
-        detail={
-          homeDetail(workflow?.detail, activeWorkspace?.name, topQueueItem) ??
-          'Pair a Mac to approve commands, launch runs, and keep moving from this phone.'
+        label={setupBlocked ? (needsHost ? 'HOST' : 'WORKSPACE') : live ? 'LIVE' : 'HOST'}
+        title={
+          needsHost
+            ? 'Pair a Mac'
+            : needsWorkspace
+              ? 'Select a workspace on Mac'
+              : needsRepos
+                ? 'Add a repo on Mac'
+                : homeHeadline(workflow?.headline, topQueueItem)
         }
-        tone={attentionTone}
+        detail={
+          setupBlocked
+            ? needsHost
+              ? 'Scan the desktop pairing QR before this phone can read work state or send commands.'
+              : needsWorkspace
+                ? 'Remote runs need the desktop app to have an active workspace.'
+                : 'This workspace has no repos, so repo-backed commands cannot run from the phone.'
+            : homeDetail(workflow?.detail, activeWorkspace?.name, topQueueItem)
+        }
+        tone={setupBlocked ? 'amber' : attentionTone}
         right={
           <ActionButton
-            label={primaryActionLabel}
-            variant={approvals.length > 0 ? 'danger' : 'secondary'}
-            onPress={primaryAction}
+            label={needsHost ? 'Settings' : setupBlocked ? 'Open Mac' : primaryActionLabel}
+            variant={!setupBlocked && approvals.length > 0 ? 'danger' : 'secondary'}
+            onPress={() =>
+              needsHost
+                ? router.navigate('/(tabs)/settings')
+                : needsWorkspace
+                  ? void openOnDesktop()
+                  : primaryAction()
+            }
             style={{ paddingVertical: 8 }}
           />
         }
       >
-        {topQueueItem ? (
+        {!setupBlocked && topQueueItem ? (
           <TouchableOpacity
             activeOpacity={0.76}
             onPress={() =>
@@ -269,52 +291,40 @@ export default function WorkScreen() {
             </View>
             <MaterialIcons name="chevron-right" size={20} color={companionColors.subtle} />
           </TouchableOpacity>
-        ) : (
-          <View style={nextActionStyle}>
-            <View style={nextActionIconStyle}>
-              <MaterialIcons name="done-all" size={17} color={companionColors.green} />
-            </View>
-            <View style={{ flex: 1, gap: 2 }}>
-              <Text style={nextActionTitleStyle}>Clear</Text>
-              <Text style={nextActionDetailStyle}>
-                Launch a run, resume a thread, or leave it alone.
-              </Text>
-            </View>
-          </View>
-        )}
+        ) : null}
       </AttentionPanel>
 
-      <Panel tone="dark" style={launchPanelStyle}>
-        <View style={launchHeaderStyle}>
-          <View style={{ flex: 1, gap: 4 }}>
-            <Text style={darkEyebrowStyle}>COMMAND</Text>
-            <Text style={workspaceTitleStyle}>
-              {activeWorkspace?.name ?? 'Choose a workspace on Mac'}
-            </Text>
-          </View>
-          <View style={heroStatusIconStyle}>
-            <MaterialIcons name={health.icon} size={18} color={health.color} />
-          </View>
-        </View>
+      {!setupBlocked && (
+        <>
+          <Panel tone="dark" style={launchPanelStyle}>
+            <View style={launchHeaderStyle}>
+              <View style={{ flex: 1, gap: 4 }}>
+                <Text style={darkEyebrowStyle}>COMMAND</Text>
+                <Text style={workspaceTitleStyle}>
+                  {activeWorkspace?.name ?? 'Choose a workspace on Mac'}
+                </Text>
+              </View>
+              <View style={heroStatusIconStyle}>
+                <MaterialIcons name={health.icon} size={18} color={health.color} />
+              </View>
+            </View>
 
-        <View style={consoleStripStyle}>
-          <ConsoleFact label="Mode" value={planFirst ? 'Plan first' : 'Execute'} />
-          <ConsoleFact
-            label="Scope"
-            value={
-              launchRepoIds.length === repos.length
-                ? 'All repos'
-                : `${launchRepoIds.length} repo${launchRepoIds.length === 1 ? '' : 's'}`
-            }
-          />
-          <ConsoleFact
-            label="Queue"
-            value={`${workQueue.length} item${workQueue.length === 1 ? '' : 's'}`}
-          />
-        </View>
+            <View style={consoleStripStyle}>
+              <ConsoleFact label="Mode" value={planFirst ? 'Plan first' : 'Execute'} />
+              <ConsoleFact
+                label="Scope"
+                value={
+                  launchRepoIds.length === repos.length
+                    ? 'All repos'
+                    : `${launchRepoIds.length} repo${launchRepoIds.length === 1 ? '' : 's'}`
+                }
+              />
+              <ConsoleFact
+                label="Queue"
+                value={`${workQueue.length} item${workQueue.length === 1 ? '' : 's'}`}
+              />
+            </View>
 
-        {canLaunch ? (
-          <>
             <View style={modeRowStyle}>
               <ModeButton active={planFirst} label="Plan" onPress={() => setPlanFirst(true)} />
               <ModeButton active={!planFirst} label="Execute" onPress={() => setPlanFirst(false)} />
@@ -332,7 +342,7 @@ export default function WorkScreen() {
             <TextInput
               value={draft}
               onChangeText={setDraft}
-              placeholder="Review the diff, find risk, write the next step…"
+              placeholder="What should Codex do?"
               placeholderTextColor={companionColors.darkMuted}
               multiline
               style={darkInputStyle}
@@ -340,121 +350,89 @@ export default function WorkScreen() {
             <ActionButton
               label={
                 launchingActionId === 'custom'
-                  ? 'Launching…'
+                  ? 'Launching...'
                   : planFirst
                     ? 'Start Plan'
                     : 'Start Run'
               }
               onPress={() => void launchDraft()}
-              disabled={!draft.trim() || Boolean(launchingActionId)}
+              disabled={!draft.trim() || !canLaunch || Boolean(launchingActionId)}
               style={{
                 backgroundColor: companionColors.accent,
                 borderColor: companionColors.accent,
               }}
               textStyle={{ color: companionColors.dark }}
             />
-          </>
-        ) : (
-          <View style={setupNoticeStyle}>
-            <MaterialIcons
-              name={connection ? 'workspaces' : 'qr-code-scanner'}
-              size={19}
-              color={companionColors.accent}
+          </Panel>
+
+          <SignalGrid>
+            <SignalTile
+              label="Decide"
+              value={workflow?.counts?.pendingApprovals ?? 0}
+              detail={approvals.length > 0 ? 'pending' : 'clear'}
+              tone={approvals.length > 0 ? 'red' : 'neutral'}
+              onPress={() => router.navigate('/(tabs)/approvals')}
             />
-            <View style={{ flex: 1, gap: 4 }}>
-              <Text style={setupNoticeTitleStyle}>
-                {connection ? 'Choose a workspace on Mac' : 'Pair a Mac first'}
-              </Text>
-              <Text style={setupNoticeBodyStyle}>
-                {connection
-                  ? 'Remote runs need an active workspace with at least one repo.'
-                  : 'Pairing unlocks chat, reviews, approvals, widgets, and handoff actions.'}
-              </Text>
-            </View>
-            <ActionButton
-              label={connection ? 'Open Mac' : 'Settings'}
-              variant="secondary"
-              onPress={() =>
-                connection ? void openOnDesktop() : router.navigate('/(tabs)/settings')
+            <SignalTile
+              label="Runs"
+              value={workflow?.counts?.busySessions ?? 0}
+              detail={activeSessions.length > 0 ? `${activeSessions.length} active` : 'idle'}
+              tone={activeSessions.length > 0 ? 'blue' : 'neutral'}
+            />
+            <SignalTile
+              label="Risk"
+              value={riskSignalCount}
+              detail={urgentSignalCount > 0 ? `${urgentSignalCount} urgent` : 'clear'}
+              tone={riskSignalCount > 0 ? (urgentSignalCount > 0 ? 'red' : 'amber') : 'neutral'}
+              onPress={() => router.navigate('/(tabs)/work')}
+            />
+          </SignalGrid>
+        </>
+      )}
+
+      {!setupBlocked && (
+        <View style={sectionStyle}>
+          <SectionHeader title="Workspace health" />
+          <SignalGrid>
+            <SignalTile
+              label="Review"
+              value={workspaceHealth?.reviewFindingCount ?? 0}
+              detail="findings"
+              tone={(workspaceHealth?.reviewFindingCount ?? 0) > 0 ? 'amber' : 'neutral'}
+              onPress={() => router.navigate('/(tabs)/work?filter=code_review')}
+            />
+            <SignalTile
+              label="Security"
+              value={workspaceHealth?.securityFindingCount ?? 0}
+              detail={
+                (workspaceHealth?.criticalCount ?? 0) > 0
+                  ? `${workspaceHealth?.criticalCount} critical`
+                  : 'findings'
               }
-              style={{ paddingVertical: 8 }}
+              tone={(workspaceHealth?.securityFindingCount ?? 0) > 0 ? 'red' : 'neutral'}
+              onPress={() => router.navigate('/(tabs)/work?filter=security')}
             />
-          </View>
-        )}
-      </Panel>
-
-      <SignalGrid>
-        <SignalTile
-          label="Needs"
-          value={workflow?.counts?.pendingApprovals ?? 0}
-          detail={approvals.length > 0 ? 'decisions' : 'clear'}
-          tone={approvals.length > 0 ? 'red' : 'green'}
-          onPress={() => router.navigate('/(tabs)/approvals')}
-        />
-        <SignalTile
-          label="Running"
-          value={workflow?.counts?.busySessions ?? 0}
-          detail={activeSessions.length > 0 ? 'in progress' : 'idle'}
-          tone={activeSessions.length > 0 ? 'blue' : 'neutral'}
-        />
-        <SignalTile
-          label="Threads"
-          value={workflow?.counts?.recentThreads ?? overview?.threads.length ?? 0}
-          detail="recent"
-          tone="cyan"
-          onPress={() => router.navigate('/(tabs)/chats')}
-        />
-      </SignalGrid>
-
-      <View style={sectionStyle}>
-        <SectionHeader title="Workspace health" />
-        <SignalGrid>
-          <SignalTile
-            label="Review"
-            value={workspaceHealth?.reviewFindingCount ?? 0}
-            detail="findings"
-            tone={(workspaceHealth?.reviewFindingCount ?? 0) > 0 ? 'amber' : 'green'}
-          />
-          <SignalTile
-            label="Security"
-            value={workspaceHealth?.securityFindingCount ?? 0}
-            detail={
-              (workspaceHealth?.criticalCount ?? 0) > 0
-                ? `${workspaceHealth?.criticalCount} critical`
-                : 'findings'
-            }
-            tone={(workspaceHealth?.securityFindingCount ?? 0) > 0 ? 'red' : 'green'}
-          />
-          <SignalTile
-            label="Work"
-            value={
-              (workspaceHealth?.lifecycleItemCount ?? 0) + (workspaceHealth?.workItemCount ?? 0)
-            }
-            detail="tracked"
-            tone={(workspaceHealth?.lifecycleItemCount ?? 0) > 0 ? 'purple' : 'neutral'}
-          />
-        </SignalGrid>
-        {workspaceHealth?.signals.length ? (
-          workspaceHealth.signals
-            .slice(0, 4)
-            .map((signal) => (
-              <WorkspaceSignalCard
-                key={signal.id}
-                signal={signal}
-                onPress={() => router.push(healthSignalHref(signal.id))}
-              />
-            ))
-        ) : (
-          <EmptyState
-            title="No open signals"
-            body={
-              activeWorkspace
-                ? 'No review findings, security findings, or tracked work need attention.'
-                : 'Pair a Mac and choose a workspace to load health signals.'
-            }
-          />
-        )}
-      </View>
+            <SignalTile
+              label="Work"
+              value={trackedWorkCount}
+              detail="tracked"
+              tone={trackedWorkCount > 0 ? 'purple' : 'neutral'}
+              onPress={() => router.navigate('/(tabs)/work')}
+            />
+          </SignalGrid>
+          {workspaceHealth?.signals.length
+            ? workspaceHealth.signals
+                .slice(0, 4)
+                .map((signal) => (
+                  <WorkspaceSignalCard
+                    key={signal.id}
+                    signal={signal}
+                    onPress={() => router.push(healthSignalHref(signal.id))}
+                  />
+                ))
+            : null}
+        </View>
+      )}
 
       {error && (
         <Panel tone="danger">
@@ -484,66 +462,58 @@ export default function WorkScreen() {
         </View>
       )}
 
-      <View style={sectionStyle}>
-        <SectionHeader title="Quick starts" />
-        <View style={quickActionGridStyle}>
-          {quickActions.map((action) => (
-            <QuickActionButton
-              key={action.id}
-              action={action}
-              disabled={!canLaunch || Boolean(launchingActionId)}
-              loading={launchingActionId === action.id}
-              onPress={() => void launchQuickAction(action)}
-            />
-          ))}
-        </View>
-        {!connection && <EmptyState title="No host" body="Pair a Mac in Settings." />}
-      </View>
+      {!setupBlocked && (
+        <>
+          <View style={sectionStyle}>
+            <SectionHeader title="Quick starts" />
+            <View style={quickActionGridStyle}>
+              {quickActions.map((action) => (
+                <QuickActionButton
+                  key={action.id}
+                  action={action}
+                  disabled={!canLaunch || Boolean(launchingActionId)}
+                  loading={launchingActionId === action.id}
+                  onPress={() => void launchQuickAction(action)}
+                />
+              ))}
+            </View>
+          </View>
 
-      <View style={sectionStyle}>
-        <SectionHeader title="Recent work" count={recentRuns.length} />
-        {recentRuns.length > 0 ? (
-          recentRuns
-            .slice(0, 6)
-            .map((run) => (
-              <ActivityRunCard
-                key={run.id}
-                run={run}
-                onOpenThread={(threadId) => router.push(threadHref(threadId))}
-                onOpenDesktop={openOnDesktop}
-              />
-            ))
-        ) : (
-          <EmptyState
-            title="No runs yet"
-            body={
-              activeWorkspace
-                ? 'Start a review, security sweep, or chat run from this phone.'
-                : 'Choose a workspace on the Mac first.'
-            }
-          />
-        )}
-      </View>
+          <View style={sectionStyle}>
+            <SectionHeader title="Recent work" count={recentRuns.length} />
+            {recentRuns.length > 0
+              ? recentRuns
+                  .slice(0, 6)
+                  .map((run) => (
+                    <ActivityRunCard
+                      key={run.id}
+                      run={run}
+                      onOpenThread={(threadId) => router.push(threadHref(threadId))}
+                      onOpenDesktop={openOnDesktop}
+                    />
+                  ))
+              : null}
+          </View>
 
-      <View style={sectionStyle}>
-        <SectionHeader title="Work queue" count={workQueue.length} />
-        {workQueue.length > 0 ? (
-          workQueue.map((item) => (
-            <WorkQueueCard
-              key={item.id}
-              item={item}
-              approval={findApproval(item, approvals)}
-              session={findSession(item, activeSessions)}
-              onResolve={(approval, decision) => void resolve(approval, decision)}
-              onInterrupt={(sessionId) => void interrupt(sessionId)}
-              onOpenDesktop={openOnDesktop}
-              onOpenThread={(threadId) => router.push(threadHref(threadId))}
-            />
-          ))
-        ) : (
-          <EmptyState title="Clear" body="No active runs or pending decisions." />
-        )}
-      </View>
+          <View style={sectionStyle}>
+            <SectionHeader title="Work queue" count={workQueue.length} />
+            {workQueue.length > 0
+              ? workQueue.map((item) => (
+                  <WorkQueueCard
+                    key={item.id}
+                    item={item}
+                    approval={findApproval(item, approvals)}
+                    session={findSession(item, activeSessions)}
+                    onResolve={(approval, decision) => void resolve(approval, decision)}
+                    onInterrupt={(sessionId) => void interrupt(sessionId)}
+                    onOpenDesktop={openOnDesktop}
+                    onOpenThread={(threadId) => router.push(threadHref(threadId))}
+                  />
+                ))
+              : null}
+          </View>
+        </>
+      )}
     </ScrollView>
   );
 }
@@ -1333,27 +1303,6 @@ const repoChipTextStyle = {
   maxWidth: 150,
 };
 const selectedRepoChipTextStyle = { color: companionColors.onDark };
-const setupNoticeStyle = {
-  flexDirection: 'row' as const,
-  alignItems: 'center' as const,
-  gap: 10,
-  borderRadius: 8,
-  borderWidth: 1,
-  borderColor: companionColors.darkBorder,
-  backgroundColor: companionColors.darkRaised,
-  padding: 12,
-};
-const setupNoticeTitleStyle = {
-  color: companionColors.onDark,
-  fontSize: 14,
-  fontWeight: '900' as const,
-};
-const setupNoticeBodyStyle = {
-  color: companionColors.darkMuted,
-  fontSize: 12,
-  lineHeight: 17,
-  fontWeight: '700' as const,
-};
 const darkInputStyle = {
   ...inputStyle,
   minHeight: 96,
