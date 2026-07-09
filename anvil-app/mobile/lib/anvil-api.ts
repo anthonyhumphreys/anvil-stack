@@ -68,6 +68,7 @@ export interface CompanionStreamEvent {
 
 const CONNECTION_KEY = 'anvil.mobile.connection.v1';
 const CONNECTIONS_KEY = 'anvil.mobile.connections.v2';
+const COMPANION_REQUEST_TIMEOUT_MS = 12_000;
 const DEFAULT_WORKFLOW_COUNTS: MobileWorkflowDigest['counts'] = {
   pendingApprovals: 0,
   activeSessions: 0,
@@ -211,16 +212,21 @@ export async function pairWithDesktop(
   payload: MobilePairingPayload,
   deviceName: string,
 ): Promise<CompanionConnection> {
-  const response = await fetch(`${trimBaseUrl(payload.baseUrl)}/pair`, {
+  const baseUrl = trimBaseUrl(payload.baseUrl);
+  const response = await fetchWithTimeout(`${baseUrl}/pair`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ticket: payload.ticket, deviceName }),
+    timeoutMessage: `Timed out pairing with ${baseUrl}. Check the iPhone and Mac are on the same network, or use a Tailscale/manual address.`,
   });
   const body = (await readBody(response)) as PairResponse;
+  if (!body.token || !body.device) {
+    throw new Error('Pairing response was missing device credentials.');
+  }
   const now = new Date().toISOString();
   const connection = {
-    id: body.device.id || createConnectionId(payload.baseUrl),
-    baseUrl: trimBaseUrl(payload.baseUrl),
+    id: body.device.id || createConnectionId(baseUrl),
+    baseUrl,
     token: body.token,
     deviceName: body.device.name,
     pairedAt: body.device.createdAt || now,
@@ -406,7 +412,7 @@ async function fetchJson<T>(
   path: string,
   init: RequestInit = {},
 ): Promise<T> {
-  const response = await fetch(`${connection.baseUrl}${path}`, {
+  const response = await fetchWithTimeout(`${connection.baseUrl}${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
@@ -415,6 +421,41 @@ async function fetchJson<T>(
     },
   });
   return readBody(response) as Promise<T>;
+}
+
+type TimedFetchInit = RequestInit & {
+  timeoutMs?: number;
+  timeoutMessage?: string;
+};
+
+async function fetchWithTimeout(url: string, init: TimedFetchInit = {}): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    init.timeoutMs ?? COMPANION_REQUEST_TIMEOUT_MS,
+  );
+  const { timeoutMs: _timeoutMs, timeoutMessage, signal: _signal, ...fetchInit } = init;
+
+  try {
+    return await fetch(url, {
+      ...fetchInit,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (isAbortError(err)) {
+      throw new Error(timeoutMessage ?? `Timed out reaching Anvil at ${url}.`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function isAbortError(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    (err.name === 'AbortError' || err.message.toLowerCase().includes('aborted'))
+  );
 }
 
 async function readBody(response: Response): Promise<unknown> {
@@ -546,14 +587,12 @@ function normalizeWorkspaceSignalDetail(raw: unknown): MobileWorkspaceSignalDeta
     recommendation: optionalString(raw.recommendation),
     files: arrayValue(raw.files)
       .map(normalizeWorkspaceSignalFile)
-      .filter(
-        (file): file is MobileWorkspaceSignalDetail['files'][number] => Boolean(file),
-      ),
+      .filter((file): file is MobileWorkspaceSignalDetail['files'][number] => Boolean(file)),
     linkedWorkItemId: optionalString(raw.linkedWorkItemId),
     provenance: arrayValue(raw.provenance)
       .map(normalizeWorkspaceSignalProvenance)
-      .filter(
-        (entry): entry is MobileWorkspaceSignalDetail['provenance'][number] => Boolean(entry),
+      .filter((entry): entry is MobileWorkspaceSignalDetail['provenance'][number] =>
+        Boolean(entry),
       ),
   };
 }
@@ -595,7 +634,9 @@ function normalizeAgentRun(raw: unknown): AgentRunSummary | null {
     title,
     status: normalizeAgentRunStatus(raw.status),
     workspaceId: optionalString(raw.workspaceId),
-    repoIds: arrayValue(raw.repoIds).filter((repoId): repoId is string => typeof repoId === 'string'),
+    repoIds: arrayValue(raw.repoIds).filter(
+      (repoId): repoId is string => typeof repoId === 'string',
+    ),
     threadId: optionalString(raw.threadId),
     sessionId: optionalString(raw.sessionId),
     automationId: optionalString(raw.automationId),
