@@ -277,6 +277,31 @@ export interface ChatMessage {
 
 export type ChatArtifactKind = 'markdown' | 'code' | 'html' | 'diagram' | 'data' | 'text';
 
+export interface CodexDetectedModel {
+  id: string;
+  displayName: string;
+  description?: string;
+  hidden?: boolean;
+  defaultReasoningEffort?: ReasoningEffort;
+  supportedReasoningEfforts: ReasoningEffort[];
+  serviceTiers: Array<{ id: string; name: string; description?: string }>;
+}
+
+export interface CodexCliStatus {
+  installed: boolean;
+  version?: string;
+  path?: string;
+  configuredForFoundry: boolean;
+  authConfigured?: boolean;
+  configPath?: string;
+  configuredModel?: string;
+  configuredProvider?: string;
+  configuredReasoningEffort?: string;
+  webSearchMode?: 'disabled' | 'cached' | 'indexed' | 'live';
+  features?: Record<string, { stage: string; enabled: boolean }>;
+  models?: CodexDetectedModel[];
+}
+
 export interface ChatArtifact {
   id: string;
   threadId: string;
@@ -288,6 +313,11 @@ export interface ChatArtifact {
   filePath?: string;
   content: string;
   version: number;
+  status: 'draft' | 'reviewed' | 'approved' | 'superseded' | 'archived';
+  visibility: 'local' | 'shareable' | 'public-ready';
+  source: 'assistant' | 'user' | 'imported';
+  model?: string;
+  reasoningEffort?: ReasoningEffort;
   createdAt: string;
   updatedAt: string;
 }
@@ -300,6 +330,11 @@ export interface ChatArtifactInput {
   kind: ChatArtifactKind;
   relativePath: string;
   content: string;
+  status?: ChatArtifact['status'];
+  visibility?: ChatArtifact['visibility'];
+  source?: ChatArtifact['source'];
+  model?: string;
+  reasoningEffort?: ReasoningEffort;
 }
 
 export interface ChatAttachment {
@@ -321,12 +356,21 @@ export interface ChatAttachmentInput {
   dataUrl?: string;
 }
 
-/** Reasoning effort levels supported by the Codex CLI (`model_reasoning_effort`). */
-export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+/** Reasoning effort levels supported by Codex (`model_reasoning_effort` / app-server `effort`). */
+export type ReasoningEffort =
+  | 'none'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max'
+  | 'ultra';
 
 export interface ChatSendOptions {
   collaborationMode?: ChatCollaborationMode;
   reasoningEffort?: ReasoningEffort;
+  model?: string;
 }
 
 export interface ChatFileMentionSearchInput {
@@ -824,6 +868,7 @@ export interface MobileStartChatInput {
   repoIds?: string[];
   collaborationMode?: ChatCollaborationMode;
   reasoningEffort?: ReasoningEffort;
+  model?: string;
   attachments?: ChatAttachmentInput[];
 }
 
@@ -832,6 +877,7 @@ export interface MobileSendChatMessageInput {
   message?: string;
   collaborationMode?: ChatCollaborationMode;
   reasoningEffort?: ReasoningEffort;
+  model?: string;
   attachments?: ChatAttachmentInput[];
 }
 
@@ -1308,8 +1354,8 @@ export interface AppSettings {
 
   // OpenAI
   openaiApiKey?: string;
-  openaiModel: string; // e.g. "gpt-5.5", "gpt-5.4", "gpt-5.3-codex"
-  reasoningLevel: 'low' | 'medium' | 'high';
+  openaiModel: string; // e.g. "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"
+  reasoningLevel: ReasoningEffort;
   codexMode: CodexMode;
   chatLayout: ChatLayout;
 

@@ -1422,12 +1422,14 @@ function scopeLabel(scope: CodexRegisteredSkill['scope']): string {
 const REASONING_EFFORT_MENU_ID = 'chat-reasoning-effort-menu';
 
 const REASONING_EFFORT_OPTIONS: { level: ReasoningEffort; description: string }[] = [
-  { level: 'none', description: 'Fastest — no extended reasoning' },
+  { level: 'none', description: 'Fastest; no extended reasoning' },
   { level: 'minimal', description: 'Very light reasoning for trivial tasks' },
   { level: 'low', description: 'Light reasoning, quick responses' },
   { level: 'medium', description: 'Balanced default for everyday work' },
   { level: 'high', description: 'Deeper reasoning for complex tasks' },
-  { level: 'xhigh', description: 'Deepest reasoning — slowest, highest quality' },
+  { level: 'xhigh', description: 'Extra high reasoning for difficult tradeoffs' },
+  { level: 'max', description: 'Maximum single-agent depth for hard problems' },
+  { level: 'ultra', description: 'Subagent-backed effort for splittable work' },
 ];
 
 function ReasoningEffortDropdown({

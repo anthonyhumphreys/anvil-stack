@@ -25,6 +25,7 @@ import {
   PRIMARY_STRIX_PREFIX,
   getStrixContainerPrefixes,
 } from '../../shared/app-identity.js';
+import { DEFAULT_CODEX_MODEL } from '../../shared/codex-models.js';
 
 // Track active scans for cleanup
 const activeProcesses = new Map<
@@ -156,7 +157,7 @@ export async function startScan(
   if (settings?.openai_api_key) {
     const apiKey = decryptSecret(settings.openai_api_key as Buffer);
     args.push('-e', `LLM_API_KEY=${apiKey}`);
-    args.push('-e', `STRIX_LLM=openai/${settings.openai_model || 'gpt-5.4'}`);
+    args.push('-e', `STRIX_LLM=openai/${settings.openai_model || DEFAULT_CODEX_MODEL}`);
   }
 
   args.push('strix-agent');

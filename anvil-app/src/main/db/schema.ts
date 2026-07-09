@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 41;
+export const SCHEMA_VERSION = 42;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -119,6 +119,11 @@ CREATE TABLE IF NOT EXISTS chat_artifacts (
   file_path TEXT,
   content TEXT NOT NULL,
   version INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'draft',
+  visibility TEXT NOT NULL DEFAULT 'local',
+  source TEXT NOT NULL DEFAULT 'assistant',
+  model TEXT,
+  reasoning_effort TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE(thread_id, relative_path)
@@ -126,6 +131,28 @@ CREATE TABLE IF NOT EXISTS chat_artifacts (
 
 CREATE INDEX IF NOT EXISTS idx_chat_artifacts_thread_updated
   ON chat_artifacts(thread_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS chat_artifact_revisions (
+  id TEXT PRIMARY KEY,
+  artifact_id TEXT NOT NULL REFERENCES chat_artifacts(id) ON DELETE CASCADE,
+  version INTEGER NOT NULL,
+  source_message_id TEXT,
+  title TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  relative_path TEXT NOT NULL,
+  file_path TEXT,
+  content TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'draft',
+  visibility TEXT NOT NULL DEFAULT 'local',
+  source TEXT NOT NULL DEFAULT 'assistant',
+  model TEXT,
+  reasoning_effort TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE(artifact_id, version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_artifact_revisions_artifact_version
+  ON chat_artifact_revisions(artifact_id, version DESC);
 
 CREATE TABLE IF NOT EXISTS review_workspace_comments (
   id TEXT PRIMARY KEY,
@@ -160,13 +187,13 @@ CREATE TABLE IF NOT EXISTS work_items_cache (
 
 CREATE TABLE IF NOT EXISTS settings (
   id INTEGER PRIMARY KEY CHECK (id = 1),
-  llm_provider TEXT DEFAULT 'openai',
+  llm_provider TEXT DEFAULT 'codex',
   foundry_endpoint TEXT,
   foundry_deployment TEXT,
   foundry_api_version TEXT DEFAULT '2024-10-21',
   foundry_api_key BLOB,
   openai_api_key BLOB,
-  openai_model TEXT DEFAULT 'gpt-5.5',
+  openai_model TEXT DEFAULT 'gpt-5.6-sol',
   reasoning_level TEXT DEFAULT 'medium',
   codex_mode TEXT DEFAULT 'on-request',
   chat_layout TEXT DEFAULT 'classic',
@@ -1382,5 +1409,39 @@ export const MIGRATIONS: Record<number, string> = {
   `,
   41: `
     ALTER TABLE ba_sessions ADD COLUMN worktree_path TEXT;
+  `,
+  42: `
+    ALTER TABLE chat_artifacts ADD COLUMN status TEXT NOT NULL DEFAULT 'draft';
+    ALTER TABLE chat_artifacts ADD COLUMN visibility TEXT NOT NULL DEFAULT 'local';
+    ALTER TABLE chat_artifacts ADD COLUMN source TEXT NOT NULL DEFAULT 'assistant';
+    ALTER TABLE chat_artifacts ADD COLUMN model TEXT;
+    ALTER TABLE chat_artifacts ADD COLUMN reasoning_effort TEXT;
+
+    CREATE TABLE IF NOT EXISTS chat_artifact_revisions (
+      id TEXT PRIMARY KEY,
+      artifact_id TEXT NOT NULL REFERENCES chat_artifacts(id) ON DELETE CASCADE,
+      version INTEGER NOT NULL,
+      source_message_id TEXT,
+      title TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      relative_path TEXT NOT NULL,
+      file_path TEXT,
+      content TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'draft',
+      visibility TEXT NOT NULL DEFAULT 'local',
+      source TEXT NOT NULL DEFAULT 'assistant',
+      model TEXT,
+      reasoning_effort TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE(artifact_id, version)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_artifact_revisions_artifact_version
+      ON chat_artifact_revisions(artifact_id, version DESC);
+
+    UPDATE settings SET llm_provider = 'codex'
+      WHERE llm_provider = 'openai' AND openai_api_key IS NULL;
+    UPDATE settings SET openai_model = 'gpt-5.6-sol'
+      WHERE openai_model IS NULL OR openai_model IN ('gpt-5.4', 'gpt-5.5');
   `,
 };

@@ -1,7 +1,13 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, normalize, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { ChatArtifact, ChatArtifactInput, ChatArtifactKind } from '../../shared/types.js';
+import type {
+  ChatArtifact,
+  ChatArtifactInput,
+  ChatArtifactKind,
+  ReasoningEffort,
+} from '../../shared/types.js';
+import { normaliseReasoningEffort } from '../../shared/codex-models.js';
 import { getDb } from '../db/database.js';
 
 interface ChatArtifactRow {
@@ -15,6 +21,11 @@ interface ChatArtifactRow {
   file_path: string | null;
   content: string;
   version: number;
+  status: string | null;
+  visibility: string | null;
+  source: string | null;
+  model: string | null;
+  reasoning_effort: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -33,6 +44,13 @@ function mapArtifactRow(row: ChatArtifactRow): ChatArtifact {
     filePath: row.file_path ?? undefined,
     content: row.content,
     version: Number(row.version ?? 1),
+    status: parseArtifactStatus(row.status),
+    visibility: parseArtifactVisibility(row.visibility),
+    source: parseArtifactSource(row.source),
+    model: row.model ?? undefined,
+    reasoningEffort: row.reasoning_effort
+      ? normaliseReasoningEffort(row.reasoning_effort)
+      : undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -50,6 +68,29 @@ function parseArtifactKind(value: string): ChatArtifactKind {
     return value;
   }
   return 'text';
+}
+
+function parseArtifactStatus(value: string | null | undefined): ChatArtifact['status'] {
+  if (
+    value === 'draft' ||
+    value === 'reviewed' ||
+    value === 'approved' ||
+    value === 'superseded' ||
+    value === 'archived'
+  ) {
+    return value;
+  }
+  return 'draft';
+}
+
+function parseArtifactVisibility(value: string | null | undefined): ChatArtifact['visibility'] {
+  if (value === 'local' || value === 'shareable' || value === 'public-ready') return value;
+  return 'local';
+}
+
+function parseArtifactSource(value: string | null | undefined): ChatArtifact['source'] {
+  if (value === 'assistant' || value === 'user' || value === 'imported') return value;
+  return 'assistant';
 }
 
 function getRepoPath(repoId: string | null | undefined): string | null {
@@ -124,6 +165,11 @@ export function listChatArtifacts(threadId: string): ChatArtifact[] {
          file_path,
          content,
          version,
+         status,
+         visibility,
+         source,
+         model,
+         reasoning_effort,
          created_at,
          updated_at
        FROM chat_artifacts
@@ -140,6 +186,12 @@ export function upsertChatArtifact(input: ChatArtifactInput): ChatArtifact {
   const relativePath = normaliseArtifactPath(input.relativePath, input.kind);
   const now = new Date().toISOString();
   const filePath = writeRepoArtifact(input.repoId, relativePath, input.content);
+  const status = parseArtifactStatus(input.status);
+  const visibility = parseArtifactVisibility(input.visibility);
+  const source = parseArtifactSource(input.source);
+  const reasoningEffort: ReasoningEffort | undefined = input.reasoningEffort
+    ? normaliseReasoningEffort(input.reasoningEffort)
+    : undefined;
   const existing = db
     .prepare(
       'SELECT id, version, created_at FROM chat_artifacts WHERE thread_id = ? AND relative_path = ?',
@@ -163,9 +215,14 @@ export function upsertChatArtifact(input: ChatArtifactInput): ChatArtifact {
        file_path,
        content,
        version,
+       status,
+       visibility,
+       source,
+       model,
+       reasoning_effort,
        created_at,
        updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(thread_id, relative_path) DO UPDATE SET
        repo_id = excluded.repo_id,
        source_message_id = excluded.source_message_id,
@@ -174,6 +231,11 @@ export function upsertChatArtifact(input: ChatArtifactInput): ChatArtifact {
        file_path = excluded.file_path,
        content = excluded.content,
        version = excluded.version,
+       status = excluded.status,
+       visibility = excluded.visibility,
+       source = excluded.source,
+       model = excluded.model,
+       reasoning_effort = excluded.reasoning_effort,
        updated_at = excluded.updated_at`,
   ).run(
     id,
@@ -186,7 +248,49 @@ export function upsertChatArtifact(input: ChatArtifactInput): ChatArtifact {
     filePath,
     input.content,
     version,
+    status,
+    visibility,
+    source,
+    input.model?.trim() || null,
+    reasoningEffort ?? null,
     existing?.created_at ?? now,
+    now,
+  );
+
+  db.prepare(
+    `INSERT INTO chat_artifact_revisions (
+       id,
+       artifact_id,
+       version,
+       source_message_id,
+       title,
+       kind,
+       relative_path,
+       file_path,
+       content,
+       status,
+       visibility,
+       source,
+       model,
+       reasoning_effort,
+       created_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(artifact_id, version) DO NOTHING`,
+  ).run(
+    randomUUID(),
+    id,
+    version,
+    input.sourceMessageId ?? null,
+    input.title.trim() || relativePath,
+    input.kind,
+    relativePath,
+    filePath,
+    input.content,
+    status,
+    visibility,
+    source,
+    input.model?.trim() || null,
+    reasoningEffort ?? null,
     now,
   );
 

@@ -16,7 +16,9 @@ const REASONING_OPTIONS: {
   { value: 'low', label: 'Low', detail: 'Light', icon: 'speed' },
   { value: 'medium', label: 'Medium', detail: 'Default', icon: 'tune' },
   { value: 'high', label: 'High', detail: 'Deeper', icon: 'psychology' },
-  { value: 'xhigh', label: 'XHigh', detail: 'Max', icon: 'all-inclusive' },
+  { value: 'xhigh', label: 'XHigh', detail: 'Extra', icon: 'all-inclusive' },
+  { value: 'max', label: 'Max', detail: 'Deep', icon: 'bolt' },
+  { value: 'ultra', label: 'Ultra', detail: 'Agents', icon: 'hub' },
 ];
 
 export function ReasoningPicker({

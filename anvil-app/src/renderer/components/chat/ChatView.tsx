@@ -1594,6 +1594,15 @@ function ChatCanvasSidebar({
                 <div className="mt-0.5 truncate font-mono text-[11px] text-text-tertiary">
                   {selectedArtifact.filePath ?? `.anvil/artifacts/${selectedArtifact.relativePath}`}
                 </div>
+                <div className="mt-1 flex flex-wrap gap-1.5">
+                  <ArtifactMetaChip label={selectedArtifact.status} />
+                  <ArtifactMetaChip label={selectedArtifact.visibility} />
+                  <ArtifactMetaChip label={selectedArtifact.source} />
+                  {selectedArtifact.model && <ArtifactMetaChip label={selectedArtifact.model} />}
+                  {selectedArtifact.reasoningEffort && (
+                    <ArtifactMetaChip label={selectedArtifact.reasoningEffort} />
+                  )}
+                </div>
               </div>
               <div className="flex shrink-0 items-center gap-1">
                 <button
@@ -1669,6 +1678,14 @@ function ArtifactIcon({ kind }: { kind: ChatArtifact['kind'] }) {
   if (kind === 'markdown' || kind === 'text') return <FileText size={13} className="shrink-0" />;
   if (kind === 'html') return <Eye size={13} className="shrink-0" />;
   return <Braces size={13} className="shrink-0" />;
+}
+
+function ArtifactMetaChip({ label }: { label: string }) {
+  return (
+    <span className="rounded-full border border-border-subtle bg-bg-primary px-1.5 py-0.5 text-[10px] font-medium text-text-tertiary">
+      {label}
+    </span>
+  );
 }
 
 function ArtifactBody({ artifact, mode }: { artifact: ChatArtifact; mode: 'preview' | 'source' }) {

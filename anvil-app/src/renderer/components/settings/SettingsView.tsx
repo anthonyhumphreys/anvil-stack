@@ -29,19 +29,28 @@ import type { LucideIcon } from 'lucide-react';
 import type {
   AppSettings,
   AppTheme,
+  CodexCliStatus,
   CodexUsageSnapshot,
   DocsProvider,
   MobileCompanionDevice,
   MobileCompanionStatus,
   MobilePairingTicket,
   RaycastCompanionToken,
+  ReasoningEffort,
   UserRole,
 } from '../../../shared/types';
+import {
+  CODEX_MODEL_OPTIONS,
+  CODEX_REASONING_EFFORTS,
+  DEFAULT_CODEX_MODEL,
+  type CodexModelOption,
+} from '../../../shared/codex-models';
 import { useBrand } from '../../contexts/BrandContext';
 
 type TestStatus = 'idle' | 'testing' | 'ok' | 'error';
 type SettingsCategoryId = 'profile' | 'ai' | 'delivery' | 'review' | 'devices' | 'danger';
 type CodexAgentsStatus = { tone: 'success' | 'error'; message: string };
+type CodexModelPickerOption = CodexModelOption & { source: 'docs' | 'cli' };
 
 const SETTINGS_CATEGORIES: Array<{
   id: SettingsCategoryId;
@@ -138,6 +147,27 @@ const THEME_OPTIONS: Array<{
   },
 ];
 
+function buildCodexModelOptions(status: CodexCliStatus | null): CodexModelPickerOption[] {
+  const detected = status?.models
+    ?.filter((model) => !model.hidden)
+    .map<CodexModelPickerOption>((model) => ({
+      id: model.id,
+      label: model.displayName ?? model.id,
+      tier: 'preview',
+      description: model.description ?? 'Detected from the local Codex CLI model catalog.',
+      defaultReasoningEffort: model.defaultReasoningEffort ?? 'medium',
+      supportedReasoningEfforts: model.supportedReasoningEfforts,
+      recommended: model.id === DEFAULT_CODEX_MODEL,
+      source: 'cli',
+    }));
+
+  if (detected?.length) {
+    return detected;
+  }
+
+  return CODEX_MODEL_OPTIONS.map((model) => ({ ...model, source: 'docs' }));
+}
+
 export function SettingsView({
   onSettingsSaved,
   onRoleChange,
@@ -177,6 +207,7 @@ export function SettingsView({
   const [mobileBusy, setMobileBusy] = useState(false);
   const [codexUsage, setCodexUsage] = useState<CodexUsageSnapshot | null>(null);
   const [codexUsageLoading, setCodexUsageLoading] = useState(false);
+  const [codexStatus, setCodexStatus] = useState<CodexCliStatus | null>(null);
   const [codexAgentsContent, setCodexAgentsContent] = useState('');
   const [codexAgentsPath, setCodexAgentsPath] = useState('~/.codex/AGENTS.md');
   const [codexAgentsExists, setCodexAgentsExists] = useState(false);
@@ -206,6 +237,7 @@ export function SettingsView({
     window.anvil.settings.getNotionMcpStatus().then((s) => {
       setNotionMcpInstalled(s.installed);
     });
+    window.anvil.settings.getCodexStatus().then(setCodexStatus).catch(console.warn);
     refreshMobileCompanion().catch(console.error);
     refreshCodexUsage().catch(console.error);
     refreshCodexAgentsFile().catch(console.error);
@@ -507,7 +539,7 @@ export function SettingsView({
     }
   };
 
-  const provider = settings.llmProvider ?? 'openai';
+  const provider = settings.llmProvider ?? 'codex';
   const wiProvider = settings.workItemProvider ?? 'ado';
   const selectedDocsProvider = docsProvider;
   const themeOptions = THEME_OPTIONS;
@@ -523,6 +555,12 @@ export function SettingsView({
     userRole === 'ba-brm' ? 'BA / BRM' : userRole === 'design' ? 'Design' : 'Developer';
   const aiProviderLabel =
     provider === 'codex' ? 'Codex CLI' : provider === 'azure' ? 'Azure AI Foundry' : 'OpenAI API';
+  const codexModelOptions = buildCodexModelOptions(codexStatus);
+  const selectedModelId = settings.openaiModel ?? DEFAULT_CODEX_MODEL;
+  const selectedModel = codexModelOptions.find((model) => model.id === selectedModelId);
+  const reasoningOptions = selectedModel?.supportedReasoningEfforts?.length
+    ? selectedModel.supportedReasoningEfforts
+    : CODEX_REASONING_EFFORTS;
   const deliverySummary = [
     wiProvider === 'none' ? 'No work items' : wiProvider.toUpperCase(),
     selectedDocsProvider === 'none' ? 'No docs' : selectedDocsProvider,
@@ -774,10 +812,9 @@ export function SettingsView({
 
                 {provider === 'codex' && (
                   <p className="text-sm text-text-secondary">
-                    Routes requests through your local Codex CLI installation. No API key needed —
-                    just run <code className="rounded bg-bg-primary px-1 text-xs">codex</code> and
-                    sign in if you haven't already. Model is controlled by your Codex config
-                    (~/.codex/config.toml).
+                    Preferred path. Routes requests through your local Codex CLI using ChatGPT
+                    sign-in and the same local app-server protocol as Codex surfaces. API keys stay
+                    optional for direct OpenAI utility calls.
                   </p>
                 )}
 
@@ -790,43 +827,122 @@ export function SettingsView({
                       type="password"
                       placeholder="sk-..."
                     />
-                    <Field
-                      label="Model"
-                      value={settings.openaiModel ?? 'gpt-5.5'}
-                      onChange={(v) => update('openaiModel', v)}
-                      placeholder="gpt-5.5"
-                    />
+                  </>
+                )}
+
+                {(provider === 'codex' || provider === 'openai') && (
+                  <div className="space-y-4 rounded-md border border-border bg-bg-primary p-4">
                     <div className="space-y-1">
-                      <label className="block text-sm text-text-secondary">Reasoning Level</label>
-                      <div className="flex gap-2">
-                        <ReasoningButton
-                          label="Low"
-                          description="Fast responses, simple tasks"
-                          active={settings.reasoningLevel === 'low'}
-                          onClick={() => update('reasoningLevel', 'low')}
-                        />
-                        <ReasoningButton
-                          label="Medium"
-                          description="Balanced for most coding"
-                          active={settings.reasoningLevel === 'medium'}
-                          onClick={() => update('reasoningLevel', 'medium')}
-                        />
-                        <ReasoningButton
-                          label="High"
-                          description="Deep planning & architecture"
-                          active={settings.reasoningLevel === 'high'}
-                          onClick={() => update('reasoningLevel', 'high')}
-                        />
+                      <label className="block text-sm text-text-secondary">Codex Model</label>
+                      <select
+                        value={selectedModelId}
+                        onChange={(event) => update('openaiModel', event.target.value)}
+                        className="w-full rounded-md border border-border bg-bg-secondary px-3 py-2 text-sm text-text-primary outline-none focus:border-accent"
+                      >
+                        {codexModelOptions.map((model) => (
+                          <option key={model.id} value={model.id}>
+                            {model.label} - {model.id}
+                          </option>
+                        ))}
+                      </select>
+                      <p className="text-xs text-text-tertiary">
+                        {codexStatus?.installed
+                          ? `Codex CLI ${codexStatus.version ?? 'installed'}${
+                              codexStatus.models?.length
+                                ? ` · ${codexStatus.models.length} models detected`
+                                : ' · using docs-backed defaults'
+                            }`
+                          : 'Using docs-backed model defaults until Codex CLI is available.'}
+                      </p>
+                      {codexStatus?.features && (
+                        <div className="flex flex-wrap gap-2 pt-1">
+                          <CapabilityChip
+                            label="Computer use"
+                            active={Boolean(codexStatus.features.computer_use?.enabled)}
+                          />
+                          <CapabilityChip
+                            label="Browser use"
+                            active={Boolean(codexStatus.features.browser_use?.enabled)}
+                          />
+                          <CapabilityChip
+                            label="Multi-agent"
+                            active={Boolean(codexStatus.features.multi_agent?.enabled)}
+                          />
+                          <CapabilityChip
+                            label="Voice"
+                            active={Boolean(codexStatus.features.realtime_conversation?.enabled)}
+                          />
+                          <CapabilityChip
+                            label={`Web search: ${codexStatus.webSearchMode ?? 'unknown'}`}
+                            active={
+                              Boolean(codexStatus.webSearchMode) &&
+                              codexStatus.webSearchMode !== 'disabled'
+                            }
+                          />
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {codexModelOptions.map((model) => (
+                        <button
+                          key={model.id}
+                          type="button"
+                          onClick={() => {
+                            update('openaiModel', model.id);
+                            update('reasoningLevel', model.defaultReasoningEffort);
+                          }}
+                          className={`rounded-lg border p-3 text-left transition-colors ${
+                            selectedModelId === model.id
+                              ? 'border-accent bg-accent/10'
+                              : 'border-border bg-bg-secondary hover:bg-bg-tertiary'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span
+                              className={`text-sm font-medium ${
+                                selectedModelId === model.id
+                                  ? 'text-accent'
+                                  : 'text-text-primary'
+                              }`}
+                            >
+                              {model.label}
+                            </span>
+                            {model.recommended && (
+                              <span className="rounded-full bg-success/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-success">
+                                Recommended
+                              </span>
+                            )}
+                          </div>
+                          <p className="mt-1 text-xs text-text-tertiary">{model.description}</p>
+                          {model.source === 'cli' && (
+                            <p className="mt-2 text-[10px] font-medium uppercase tracking-wide text-text-tertiary">
+                              Detected from Codex CLI
+                            </p>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="block text-sm text-text-secondary">Reasoning Effort</label>
+                      <div className="grid gap-2 sm:grid-cols-4">
+                        {reasoningOptions.map((effort) => (
+                          <ReasoningButton
+                            key={effort}
+                            label={formatReasoningLabel(effort)}
+                            description={describeReasoningEffort(effort)}
+                            active={settings.reasoningLevel === effort}
+                            onClick={() => update('reasoningLevel', effort)}
+                          />
+                        ))}
                       </div>
                       <p className="text-xs text-text-tertiary">
-                        GPT-5.5 reasoning effort: low for quick answers, medium for coding, high for
-                        planning.
+                        Max gives one task more depth. Ultra uses subagents for work that can split
+                        into meaningful parts.
                       </p>
                     </div>
-                    <p className="text-xs text-text-tertiary">
-                      Recommended: gpt-5.5 (default), gpt-5.4, gpt-5.3-codex (optimised for code)
-                    </p>
-                  </>
+                  </div>
                 )}
 
                 {provider === 'azure' && (
@@ -842,7 +958,7 @@ export function SettingsView({
                       <p>
                         <span className="text-text-secondary">model</span>{' '}
                         <span className="text-text-tertiary">=</span>{' '}
-                        <span className="text-success">"gpt-5.5"</span>{' '}
+                        <span className="text-success">"gpt-5.6-sol"</span>{' '}
                         <span className="text-text-tertiary">
                           # Replace with your actual Azure model deployment name
                         </span>
@@ -2019,6 +2135,32 @@ function ProviderButton({
   );
 }
 
+function formatReasoningLabel(effort: ReasoningEffort): string {
+  if (effort === 'xhigh') return 'Extra High';
+  return effort.charAt(0).toUpperCase() + effort.slice(1);
+}
+
+function describeReasoningEffort(effort: ReasoningEffort): string {
+  switch (effort) {
+    case 'none':
+      return 'No extended reasoning';
+    case 'minimal':
+      return 'Tiny prompts';
+    case 'low':
+      return 'Quick scoped work';
+    case 'medium':
+      return 'Default coding';
+    case 'high':
+      return 'Complex changes';
+    case 'xhigh':
+      return 'Hard tradeoffs';
+    case 'max':
+      return 'Deep single task';
+    case 'ultra':
+      return 'Subagent work';
+  }
+}
+
 function ReasoningButton({
   label,
   description,
@@ -2042,6 +2184,23 @@ function ReasoningButton({
       </div>
       <div className="mt-0.5 text-sm text-text-tertiary">{description}</div>
     </button>
+  );
+}
+
+function CapabilityChip({ label, active }: { label: string; active: boolean }) {
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs ${
+        active
+          ? 'border-success/40 bg-success/10 text-success'
+          : 'border-border-subtle bg-bg-secondary text-text-tertiary'
+      }`}
+    >
+      <span
+        className={`h-1.5 w-1.5 rounded-full ${active ? 'bg-success' : 'bg-text-tertiary/50'}`}
+      />
+      {label}
+    </span>
   );
 }
 

@@ -5,6 +5,7 @@ import { homedir, tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
 import { getSettings } from './settings.service.js';
 import { PRIMARY_CODEX_TEMP_PREFIX } from '../../shared/app-identity.js';
+import { DEFAULT_CODEX_MODEL } from '../../shared/codex-models.js';
 import {
   callAppleFoundationModel,
   classifyPromptForOnDeviceModel,
@@ -133,7 +134,7 @@ function readCodexConfig(): { baseUrl: string; model: string; envKey: string } |
     if (providerBaseUrl) {
       return {
         baseUrl: providerBaseUrl[1],
-        model: modelMatch?.[1] ?? 'gpt-5.5',
+        model: modelMatch?.[1] ?? DEFAULT_CODEX_MODEL,
         envKey: providerEnvKey?.[1] ?? 'AZURE_OPENAI_API_KEY',
       };
     }
@@ -143,7 +144,7 @@ function readCodexConfig(): { baseUrl: string; model: string; envKey: string } |
     if (legacyBaseUrl) {
       return {
         baseUrl: legacyBaseUrl[1],
-        model: modelMatch?.[1] ?? 'gpt-5.5',
+        model: modelMatch?.[1] ?? DEFAULT_CODEX_MODEL,
         envKey: 'OPENAI_API_KEY',
       };
     }
@@ -205,7 +206,7 @@ function getClient(): { client: AzureOpenAI | OpenAI; model: string } {
       apiKey: settings.openaiApiKey,
     });
   }
-  return { client: cachedClient, model: settings.openaiModel || 'gpt-5.5' };
+  return { client: cachedClient, model: settings.openaiModel || DEFAULT_CODEX_MODEL };
 }
 
 /**
@@ -431,8 +432,14 @@ export async function callLlm(
           max_completion_tokens: maxTokens,
           temperature,
         };
-        // GPT-5.5 supports reasoning_effort; pass it when configured
-        if (model.startsWith('gpt-5.5') && settings.reasoningLevel) {
+        // Direct OpenAI API calls use the standard reasoning efforts. Codex-only max/ultra
+        // travel through the Codex app-server path instead.
+        if (
+          model.startsWith('gpt-5') &&
+          settings.reasoningLevel &&
+          settings.reasoningLevel !== 'max' &&
+          settings.reasoningLevel !== 'ultra'
+        ) {
           body.reasoning_effort = settings.reasoningLevel;
         }
         const response = await client.chat.completions.create(

@@ -6,6 +6,12 @@ import type {
   AppTheme,
   CodexMode,
 } from '../../shared/types.js';
+import {
+  DEFAULT_CODEX_MODEL,
+  DEFAULT_CODEX_REASONING_EFFORT,
+  normaliseCodexModel,
+  normaliseReasoningEffort,
+} from '../../shared/codex-models.js';
 import { getDb } from '../db/database.js';
 import { decryptSecret, encryptSecret } from './auth.service.js';
 import { testLlmConnection } from './llm.service.js';
@@ -97,15 +103,15 @@ export function getSettings(): AppSettings {
   }
 
   return {
-    llmProvider: (row.llm_provider as 'azure' | 'openai' | 'codex') ?? 'openai',
+    llmProvider: (row.llm_provider as 'azure' | 'openai' | 'codex') ?? 'codex',
     appleFoundationModelsMode: normaliseAppleFoundationModelsMode(row.apple_foundation_models_mode),
     foundryEndpoint: row.foundry_endpoint ?? '',
     foundryDeploymentName: row.foundry_deployment ?? '',
     foundryApiVersion: row.foundry_api_version ?? '2024-10-21',
     foundryApiKey: decryptSecret(row.foundry_api_key, 'settings.foundryApiKey'),
     openaiApiKey: decryptSecret(row.openai_api_key, 'settings.openaiApiKey'),
-    openaiModel: row.openai_model ?? 'gpt-5.5',
-    reasoningLevel: (row.reasoning_level as 'low' | 'medium' | 'high') ?? 'medium',
+    openaiModel: normaliseCodexModel(row.openai_model),
+    reasoningLevel: normaliseReasoningEffort(row.reasoning_level),
     codexMode: normaliseCodexMode(row.codex_mode),
     chatLayout: normaliseChatLayout(row.chat_layout),
     adoOrganizationUrl: row.ado_org_url ?? '',
@@ -378,13 +384,13 @@ export async function testGitConnection(): Promise<{
 
 function defaultSettings(): AppSettings {
   return {
-    llmProvider: 'openai',
+    llmProvider: 'codex',
     appleFoundationModelsMode: 'off',
     foundryEndpoint: '',
     foundryDeploymentName: '',
     foundryApiVersion: '2024-10-21',
-    openaiModel: 'gpt-5.5',
-    reasoningLevel: 'medium',
+    openaiModel: DEFAULT_CODEX_MODEL,
+    reasoningLevel: DEFAULT_CODEX_REASONING_EFFORT,
     codexMode: 'on-request',
     chatLayout: 'classic',
     workItemProvider: 'ado',

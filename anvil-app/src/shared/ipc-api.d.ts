@@ -52,6 +52,7 @@ import type {
   CodeReviewPullRequestComment,
   CodeReviewScopeRef,
   CodeReviewScopeType,
+  CodexCliStatus,
   CodexMcpRegisterInput,
   CodexRegistryActionResult,
   CodexRegistrySnapshot,
@@ -459,6 +460,7 @@ export interface AnvilAPI {
   settings: {
     get: () => Promise<AppSettings>;
     update: (settings: Partial<AppSettings>) => Promise<void>;
+    getCodexStatus: () => Promise<CodexCliStatus>;
     testFoundryConnection: () => Promise<{ ok: boolean; error?: string }>;
     testAppleFoundationModels: () => Promise<{ ok: boolean; error?: string }>;
     testWorkItemProviderConnection: () => Promise<{ ok: boolean; error?: string }>;

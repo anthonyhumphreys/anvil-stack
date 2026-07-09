@@ -25,6 +25,7 @@ import {
   sendCodexJsonRpcNotification,
 } from './codex-protocol.service.js';
 import { emitCompanionEvent } from './companion-events.service.js';
+import { normaliseCodexModel, normaliseReasoningEffort } from '../../shared/codex-models.js';
 
 interface ManagedSession {
   id: string;
@@ -76,6 +77,7 @@ export async function startSession(
   const id = randomUUID();
   const settings = getSettings();
   const mode = settings.codexMode ?? 'on-request';
+  const model = normaliseCodexModel(settings.openaiModel);
   const codexPolicy = codexModeToPolicy(mode);
   const systemPrompt = options?.scaffold
     ? buildScaffoldSystemPrompt(personaId, options.scaffold.rootPath)
@@ -185,6 +187,7 @@ export async function startSession(
 
   // Step 2: Start, resume, or fork a thread with system prompt and cwd.
   const threadParams = {
+    model,
     cwd,
     developerInstructions: systemPrompt,
     approvalPolicy: codexPolicy.approvalPolicy,
@@ -232,7 +235,9 @@ export async function sendMessage(
   session.status = 'busy';
   broadcastEvent(sessionId, { type: 'status', status: 'thinking' });
 
-  const mode = getSettings().codexMode ?? session.mode;
+  const settings = getSettings();
+  const mode = settings.codexMode ?? session.mode;
+  const model = normaliseCodexModel(options?.model ?? settings.openaiModel);
   const codexPolicy =
     options?.collaborationMode === 'plan'
       ? { approvalPolicy: 'on-request' as const, sandbox: 'read-only' as const }
@@ -244,7 +249,8 @@ export async function sendMessage(
     input: buildUserInput(message, attachments),
     approvalPolicy: codexPolicy.approvalPolicy,
     sandboxPolicy: sandboxModeToTurnPolicy(codexPolicy.sandbox, session.cwd),
-    ...(options?.reasoningEffort ? { effort: options.reasoningEffort } : {}),
+    model,
+    effort: normaliseReasoningEffort(options?.reasoningEffort ?? settings.reasoningLevel),
   });
 }
 

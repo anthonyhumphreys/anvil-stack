@@ -1182,6 +1182,7 @@ async function sendMobileMessage(
   await sendMessage(targetSessionId, message.trim(), attachments, {
     collaborationMode: input.collaborationMode,
     reasoningEffort: input.reasoningEffort,
+    model: input.model,
   });
   pushCompanionNotification(
     'sessions',
@@ -1261,6 +1262,7 @@ export async function startMobileWorkflow(
   await sendMessage(session.id, message, attachments, {
     collaborationMode: input.collaborationMode,
     reasoningEffort: input.reasoningEffort,
+    model: input.model,
   });
   pushCompanionNotification(
     'sessions',

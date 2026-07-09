@@ -345,6 +345,9 @@ describe('chat thread persistence', () => {
     });
 
     expect(first.version).toBe(1);
+    expect(first.status).toBe('draft');
+    expect(first.visibility).toBe('local');
+    expect(first.source).toBe('assistant');
     expect(first.filePath).toBe(join(repo.path, '.anvil/artifacts/reviews/review-pack.md'));
     expect(readFileSync(first.filePath!, 'utf8')).toContain('Ship it carefully.');
 
@@ -356,12 +359,25 @@ describe('chat thread persistence', () => {
       kind: 'markdown',
       relativePath: 'reviews/review-pack.md',
       content: '# Review\n\nNow with fewer footguns.',
+      status: 'reviewed',
+      visibility: 'shareable',
+      model: 'gpt-5.6-sol',
+      reasoningEffort: 'max',
     });
 
     expect(second.id).toBe(first.id);
     expect(second.version).toBe(2);
+    expect(second.status).toBe('reviewed');
+    expect(second.visibility).toBe('shareable');
+    expect(second.model).toBe('gpt-5.6-sol');
+    expect(second.reasoningEffort).toBe('max');
     expect(readFileSync(second.filePath!, 'utf8')).toContain('fewer footguns');
     expect(listChatArtifacts(thread.id).map((artifact) => artifact.id)).toEqual([first.id]);
+
+    const revisionCount = inMemoryDb
+      .prepare('SELECT COUNT(*) AS count FROM chat_artifact_revisions WHERE artifact_id = ?')
+      .get(first.id) as { count: number };
+    expect(revisionCount.count).toBe(2);
 
     rmSync(repo.path, { recursive: true, force: true });
   });

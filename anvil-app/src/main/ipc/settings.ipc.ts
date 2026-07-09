@@ -15,6 +15,7 @@ import {
   readCodexAgentsFile,
   writeCodexAgentsFile,
 } from '../services/codex-agents-file.service.js';
+import { detectCodexCli } from '../services/codex-bridge.service.js';
 import {
   isNotionMcpInstalled,
   installNotionMcp,
@@ -61,6 +62,15 @@ export function registerSettingsHandlers(): void {
       resetLlmClient();
     } catch (err) {
       console.error('[Settings IPC] Error updating settings:', err);
+      throw err;
+    }
+  });
+
+  ipcMain.handle('settings:codex-status', async () => {
+    try {
+      return await detectCodexCli();
+    } catch (err) {
+      console.error('[Settings IPC] Error detecting Codex CLI:', err);
       throw err;
     }
   });

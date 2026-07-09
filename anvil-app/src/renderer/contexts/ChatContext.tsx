@@ -148,6 +148,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reasoningLevel, setReasoningLevel] = useState<ReasoningEffort>('medium');
+  const reasoningLevelRef = useRef<ReasoningEffort>('medium');
   const [collaborationMode, setCollaborationModeState] = useState<ChatCollaborationMode>(() =>
     loadCollaborationMode(),
   );
@@ -174,6 +175,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const sessionRef = useRef<CodexSession | null>(null);
   sessionRef.current = session;
+  reasoningLevelRef.current = reasoningLevel;
   const entriesRef = useRef<ChatEntry[]>([]);
   entriesRef.current = entries;
   const threadsRef = useRef<ChatThread[]>([]);
@@ -555,10 +557,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const persistArtifactsForAssistantMessage = useCallback(
     async (threadId: string, repoId: string | null, sourceMessageId: string, content: string) => {
+      const settings = await window.anvil.settings.get().catch(() => null);
       const artifactInputs = extractChatArtifactInputs(content, {
         threadId,
         repoId,
         sourceMessageId,
+        model: settings?.openaiModel,
+        reasoningEffort: reasoningLevelRef.current,
       });
       if (artifactInputs.length === 0) return;
 
@@ -2245,6 +2250,8 @@ interface ArtifactExtractionContext {
   threadId: string;
   repoId: string | null;
   sourceMessageId: string;
+  model?: string;
+  reasoningEffort?: ReasoningEffort;
 }
 
 function extractChatArtifactInputs(
@@ -2273,6 +2280,11 @@ function extractChatArtifactInputs(
       kind,
       relativePath,
       content: artifactContent,
+      status: 'draft',
+      visibility: 'local',
+      source: 'assistant',
+      model: context.model,
+      reasoningEffort: context.reasoningEffort,
     });
   }
 

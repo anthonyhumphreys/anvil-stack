@@ -181,9 +181,9 @@ export function ConnectorSetupOverlay({ onContinue }: ConnectorSetupOverlayProps
                   />
                   <Field
                     label="Model"
-                    value={settings.openaiModel ?? 'gpt-5.4'}
+                    value={settings.openaiModel ?? 'gpt-5.6-sol'}
                     onChange={(v) => update('openaiModel', v)}
-                    placeholder="gpt-5.4"
+                    placeholder="gpt-5.6-sol"
                   />
                 </>
               )}
