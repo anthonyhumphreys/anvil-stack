@@ -331,13 +331,14 @@ export function buildWatchReplyPayload(overview: MobileOverview | null): WatchRe
   };
 }
 
-function toWidgetAction(action: MobileQuickAction): WidgetActionSnapshot {
+function toWidgetAction(action: MobileQuickAction, workspaceId?: string): WidgetActionSnapshot {
+  const query = workspaceId ? `?workspaceId=${encodeURIComponent(workspaceId)}` : '';
   return {
     id: action.id,
     title: action.title,
     subtitle: action.subtitle,
     tone: action.tone,
-    destination: `anvil-companion://workflow/${encodeURIComponent(action.id)}`,
+    destination: `anvil-companion://workflow/${encodeURIComponent(action.id)}${query}`,
   };
 }
 
@@ -385,7 +386,7 @@ function buildWidgetActions(overview: MobileOverview): WidgetActionSnapshot[] {
 
   for (const action of overview.quickActions ?? []) {
     if (actions.length >= 4) break;
-    actions.push(toWidgetAction(action));
+    actions.push(toWidgetAction(action, overview.activeWorkspace?.id));
   }
 
   return actions.slice(0, 4);

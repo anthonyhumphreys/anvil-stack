@@ -517,7 +517,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   touchDevice(device.id);
 
   if (req.method === 'GET' && url.pathname === '/api/overview') {
-    sendJson(res, 200, getMobileOverview());
+    sendJson(res, 200, getMobileOverview(url.searchParams.get('workspaceId') ?? undefined));
     return;
   }
 
@@ -858,11 +858,12 @@ function touchDevice(deviceId: string): void {
     .run(new Date().toISOString(), deviceId);
 }
 
-export function getMobileOverview(): MobileOverview {
+export function getMobileOverview(requestedWorkspaceId?: string): MobileOverview {
   const settings = getSettings();
   const workspaces = listWorkspaces();
   const activeSessions = listActiveCodexSessions();
   const activeWorkspace = resolveMobileActiveWorkspace(
+    requestedWorkspaceId,
     settings.activeWorkspaceId,
     workspaces,
     activeSessions,
@@ -894,11 +895,13 @@ export function getMobileOverview(): MobileOverview {
 }
 
 function resolveMobileActiveWorkspace(
+  requestedWorkspaceId: string | undefined,
   activeWorkspaceId: string | undefined,
   workspaces: MobileOverview['workspaces'],
   activeSessions: ReturnType<typeof listActiveCodexSessions> = [],
 ): MobileOverview['activeWorkspace'] {
   const candidateIds = [
+    requestedWorkspaceId,
     getDesktopWindowWorkspaceId(),
     ...activeSessions.map((session) => session.workspaceId),
     activeWorkspaceId,
@@ -908,9 +911,6 @@ function resolveMobileActiveWorkspace(
   for (const candidateId of candidateIds) {
     const workspace = safeGetWorkspace(candidateId);
     if (!workspace) continue;
-    if (candidateId !== activeWorkspaceId) {
-      updateSettings({ activeWorkspaceId: workspace.id });
-    }
     return workspace;
   }
 

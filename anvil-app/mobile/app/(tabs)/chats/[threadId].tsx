@@ -82,6 +82,12 @@ export default function ChatThreadScreen() {
   }, [selectThread, threadId]);
 
   useEffect(() => {
+    if (!threadId || !thread?.activeSessionId) return;
+    const interval = setInterval(() => void selectThread(threadId), 2_000);
+    return () => clearInterval(interval);
+  }, [selectThread, thread?.activeSessionId, threadId]);
+
+  useEffect(() => {
     const timer = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 120);
     return () => clearTimeout(timer);
   }, [visibleMessages.length]);
@@ -130,33 +136,35 @@ export default function ChatThreadScreen() {
   const submit = async () => {
     if (!thread || (!draft.trim() && attachments.length === 0)) return;
     const message = draft.trim() || attachmentOnlyMessage(attachments);
-    setDraft('');
     setSubmitting(true);
     setAttachmentError(null);
-    if (thread.activeSessionId) {
-      await sendMessage(thread.id, thread.activeSessionId, {
-        message,
-        attachments,
-        collaborationMode: mode,
-        reasoningEffort,
-      });
-    } else {
-      const result = await startWorkflow({
-        message,
-        title: thread.title,
-        personaId: thread.personaId,
-        workspaceId: thread.workspaceId,
-        repoIds: thread.repoIds ?? [],
-        attachments,
-        collaborationMode: mode,
-        reasoningEffort,
-      });
-      if (result?.thread.id && result.thread.id !== thread.id) {
-        router.replace(threadHref(result.thread.id));
+    try {
+      if (thread.activeSessionId) {
+        await sendMessage(thread.id, thread.activeSessionId, {
+          message,
+          attachments,
+          collaborationMode: mode,
+          reasoningEffort,
+        });
+      } else {
+        const result = await startWorkflow({
+          message,
+          title: thread.title,
+          personaId: thread.personaId,
+          workspaceId: thread.workspaceId,
+          repoIds: thread.repoIds ?? [],
+          attachments,
+          collaborationMode: mode,
+          reasoningEffort,
+        });
+        if (!result) return;
+        if (result.thread.id !== thread.id) router.replace(threadHref(result.thread.id));
       }
+      setDraft('');
+      setAttachments([]);
+    } finally {
+      setSubmitting(false);
     }
-    setAttachments([]);
-    setSubmitting(false);
   };
 
   const selectFileSuggestion = (file: ChatFileMentionSearchResult) => {

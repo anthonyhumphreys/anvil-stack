@@ -57,11 +57,19 @@ import {
   type WatchRequestEvent,
 } from '@/lib/widget-bridge';
 import { publishDriveModeState } from '@/lib/drive-mode-bridge';
+import {
+  loadCachedOverview,
+  loadSelectedWorkspaceId,
+  saveCachedOverview,
+  saveSelectedWorkspaceId,
+} from '@/lib/companion-cache';
 
 interface CompanionContextValue {
   connection: CompanionConnection | null;
   connections: CompanionConnection[];
   overview: MobileOverview | null;
+  selectedWorkspaceId: string | null;
+  usingCachedOverview: boolean;
   threads: MobileChatThreadSummary[];
   selectedThreadId: string | null;
   selectedThreadHistory: ChatMessage[];
@@ -78,6 +86,7 @@ interface CompanionContextValue {
   forgetHost: (connectionId: string) => Promise<void>;
   disconnect: () => Promise<void>;
   refresh: () => Promise<void>;
+  selectWorkspace: (workspaceId: string) => Promise<void>;
   selectThread: (threadId: string) => Promise<void>;
   startWorkflow: (input: MobileStartChatInput) => Promise<MobileStartChatResult | null>;
   sendMessage: (
@@ -107,6 +116,8 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
   const [connection, setConnection] = useState<CompanionConnection | null>(null);
   const [connections, setConnections] = useState<CompanionConnection[]>([]);
   const [overview, setOverview] = useState<MobileOverview | null>(null);
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
+  const [usingCachedOverview, setUsingCachedOverview] = useState(false);
   const [threads, setThreads] = useState<MobileChatThreadSummary[]>([]);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [selectedThreadHistory, setSelectedThreadHistory] = useState<ChatMessage[]>([]);
@@ -130,11 +141,12 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
     [connection, connections.length],
   );
 
-  const applyOverview = useCallback((nextOverview: MobileOverview) => {
+  const applyOverview = useCallback((nextOverview: MobileOverview, cached = false) => {
     overviewRef.current = nextOverview;
     setOverview(nextOverview);
     setThreads(nextOverview.threads);
     setLastUpdatedAt(nextOverview.generatedAt);
+    setUsingCachedOverview(cached);
     void publishWidgetSnapshot(nextOverview);
     void publishLiveActivitySnapshot(nextOverview);
   }, []);
@@ -154,16 +166,50 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
 
     setError(null);
     try {
-      const nextOverview = await fetchOverview(connection);
+      const nextOverview = await fetchOverview(connection, selectedWorkspaceId);
       applyOverview(nextOverview);
+      void saveCachedOverview(connection.id, nextOverview);
       void publishDriveModeState(connection);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to reach Anvil on your Mac.');
+      if (!overviewRef.current) {
+        const cached = await loadCachedOverview(connection.id);
+        if (cached) applyOverview(cached, true);
+      }
       publishPairedHostSnapshot(connection, connections.length);
     } finally {
       setLoading(false);
     }
-  }, [applyOverview, connection, connections.length, publishPairedHostSnapshot]);
+  }, [
+    applyOverview,
+    connection,
+    connections.length,
+    publishPairedHostSnapshot,
+    selectedWorkspaceId,
+  ]);
+
+  useEffect(() => {
+    if (!connection) {
+      setSelectedWorkspaceId(null);
+      return;
+    }
+    let cancelled = false;
+    void loadSelectedWorkspaceId(connection.id).then((workspaceId) => {
+      if (!cancelled) setSelectedWorkspaceId(workspaceId);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [connection]);
+
+  const selectWorkspace = useCallback(
+    async (workspaceId: string) => {
+      if (!connection || workspaceId === selectedWorkspaceId) return;
+      setSelectedWorkspaceId(workspaceId);
+      await saveSelectedWorkspaceId(connection.id, workspaceId);
+    },
+    [connection, selectedWorkspaceId],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -339,7 +385,10 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
       const action = parseCompanionUrl(url);
       if (!action) return;
       if (action.type === 'workflow') {
-        void startWorkflow({ actionId: action.actionId });
+        void startWorkflow({
+          actionId: action.actionId,
+          workspaceId: action.workspaceId ?? selectedWorkspaceId ?? undefined,
+        });
         return;
       }
       router.navigate(action.route);
@@ -348,7 +397,7 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
     void Linking.getInitialURL().then(handleUrl);
     const subscription = Linking.addEventListener('url', (event) => handleUrl(event.url));
     return () => subscription.remove();
-  }, [connection, startWorkflow]);
+  }, [connection, selectedWorkspaceId, startWorkflow]);
 
   useEffect(() => {
     if (!connection) {
@@ -362,11 +411,12 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
         setLive(true);
         if (event.type !== 'ready' && event.type !== 'heartbeat') {
           void refresh();
+          if (selectedThreadId) void selectThread(selectedThreadId);
         }
       },
       () => setLive(false),
     );
-  }, [connection, refresh]);
+  }, [connection, refresh, selectThread, selectedThreadId]);
 
   const handleWatchRequest = useCallback(
     async (event: WatchRequestEvent) => {
@@ -400,7 +450,7 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
           if (sessionId) await interruptSession(connection, sessionId);
         }
 
-        const nextOverview = await fetchOverview(connection);
+        const nextOverview = await fetchOverview(connection, selectedWorkspaceId);
         applyOverview(nextOverview);
         await replyToWatchRequest(event.requestId, nextOverview);
       } catch (err) {
@@ -408,7 +458,7 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
         await replyToWatchRequest(event.requestId, overviewRef.current);
       }
     },
-    [applyOverview, connection],
+    [applyOverview, connection, selectedWorkspaceId],
   );
 
   useEffect(() => {
@@ -423,8 +473,14 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
       input: string | Parameters<typeof sendThreadMessage>[3],
     ) => {
       if (!connection) return;
-      await sendThreadMessage(connection, threadId, sessionId, input);
-      await Promise.all([refresh(), selectThread(threadId)]);
+      setError(null);
+      try {
+        await sendThreadMessage(connection, threadId, sessionId, input);
+        await Promise.all([refresh(), selectThread(threadId)]);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to send message.');
+        throw err;
+      }
     },
     [connection, refresh, selectThread],
   );
@@ -501,6 +557,8 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
       connection,
       connections,
       overview,
+      selectedWorkspaceId,
+      usingCachedOverview,
       threads,
       selectedThreadId,
       selectedThreadHistory,
@@ -514,6 +572,7 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
       forgetHost,
       disconnect,
       refresh,
+      selectWorkspace,
       selectThread,
       startWorkflow,
       sendMessage,
@@ -537,12 +596,15 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
       loading,
       openOnDesktop,
       overview,
+      selectedWorkspaceId,
+      usingCachedOverview,
       pairFromQr,
       refresh,
       resolve,
       forgetHost,
       selectThread,
       selectHost,
+      selectWorkspace,
       selectedThreadHistory,
       selectedThreadId,
       sendMessage,
@@ -565,7 +627,7 @@ export function useCompanion(): CompanionContextValue {
 }
 
 function parseCompanionUrl(url: string | null):
-  | { type: 'workflow'; actionId: string }
+  | { type: 'workflow'; actionId: string; workspaceId?: string }
   | {
       type: 'route';
       route: RelativePathString | '/(tabs)' | '/(tabs)/approvals' | '/(tabs)/settings';
@@ -576,7 +638,11 @@ function parseCompanionUrl(url: string | null):
     const parsed = new URL(url);
     const parts = [parsed.hostname, ...parsed.pathname.split('/').filter(Boolean)].filter(Boolean);
     if (parts[0] === 'workflow' && parts[1]) {
-      return { type: 'workflow', actionId: parts[1] };
+      return {
+        type: 'workflow',
+        actionId: parts[1],
+        workspaceId: parsed.searchParams.get('workspaceId') ?? undefined,
+      };
     }
     if (parts[0] === 'approvals') return { type: 'route', route: '/(tabs)/approvals' };
     if (parts[0] === 'chats' && parts[1]) {
@@ -597,9 +663,7 @@ function parseCompanionUrl(url: string | null):
     if (parts[0] === 'work')
       return {
         type: 'route',
-        route: parsed.search
-          ? (`/(tabs)/work${parsed.search}` as RelativePathString)
-          : ('/(tabs)/work' as RelativePathString),
+        route: '/(tabs)',
       };
     return null;
   } catch {

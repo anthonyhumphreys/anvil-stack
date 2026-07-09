@@ -236,8 +236,12 @@ export async function pairWithDesktop(
   return connection;
 }
 
-export async function fetchOverview(connection: CompanionConnection): Promise<MobileOverview> {
-  return normalizeMobileOverview(await fetchJson(connection, '/api/overview'));
+export async function fetchOverview(
+  connection: CompanionConnection,
+  workspaceId?: string | null,
+): Promise<MobileOverview> {
+  const query = workspaceId ? `?workspaceId=${encodeURIComponent(workspaceId)}` : '';
+  return normalizeMobileOverview(await fetchJson(connection, `/api/overview${query}`));
 }
 
 export async function fetchWorkspaceSignalDetail(

@@ -40,6 +40,9 @@ export function ReasoningPicker({
   return (
     <View style={[pickerWrapStyle, style]}>
       <TouchableOpacity
+        accessibilityRole="button"
+        accessibilityLabel={`Reasoning, ${selected.label}`}
+        accessibilityState={{ expanded: open }}
         activeOpacity={0.78}
         onPress={() => setOpen((current) => !current)}
         style={[
@@ -96,6 +99,8 @@ export function ReasoningPicker({
             const active = option.value === value;
             return (
               <TouchableOpacity
+                accessibilityRole="menuitem"
+                accessibilityState={{ selected: active }}
                 key={option.value}
                 activeOpacity={0.78}
                 onPress={() => {
@@ -165,7 +170,7 @@ const pickerWrapStyle = {
   flexGrow: 1,
 };
 const pickerButtonStyle = {
-  minHeight: 42,
+  minHeight: 44,
   flexDirection: 'row' as const,
   alignItems: 'center' as const,
   gap: 8,

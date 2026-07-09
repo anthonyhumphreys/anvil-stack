@@ -218,6 +218,9 @@ export function ActionButton({
 }) {
   return (
     <TouchableOpacity
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ disabled: Boolean(disabled) }}
       disabled={disabled}
       activeOpacity={0.78}
       onPress={() => {
@@ -333,6 +336,7 @@ const headerStyle = {
 const screenTitleStyle = {
   color: companionColors.ink,
   fontSize: 30,
+  lineHeight: 36,
   fontWeight: '900' as const,
   letterSpacing: 0,
 };
@@ -407,6 +411,7 @@ const emptyStateStyle = {
   backgroundColor: companionColors.surfaceMuted,
 };
 const buttonBaseStyle = {
+  minHeight: 44,
   alignItems: 'center' as const,
   justifyContent: 'center' as const,
   borderRadius: 8,

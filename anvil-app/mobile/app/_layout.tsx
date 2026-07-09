@@ -17,6 +17,15 @@ export default function RootLayout() {
       <CompanionProvider>
         <Stack>
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+          <Stack.Screen
+            name="new-task"
+            options={{
+              title: 'New task',
+              presentation: 'formSheet',
+              sheetGrabberVisible: true,
+              sheetAllowedDetents: [0.75, 1],
+            }}
+          />
         </Stack>
         <StatusBar style="auto" />
       </CompanionProvider>
