@@ -9,7 +9,16 @@ export type AutomationDisplayEntry =
   | { kind: 'activity'; events: CodexEvent[]; createdAt: string }
   | { kind: 'event'; event: CodexEvent; createdAt: string };
 
-const ACTIVITY_EVENT_TYPES = new Set(['tool_call', 'command_exec', 'file_edit']);
+const ACTIVITY_EVENT_TYPES = new Set([
+  'tool_call',
+  'command_exec',
+  'file_read',
+  'file_edit',
+  'approval_request',
+  'plan_update',
+  'goal_update',
+  'goal_cleared',
+]);
 
 export function buildAutomationDisplayEntries(
   events: AutomationRunEvent[],

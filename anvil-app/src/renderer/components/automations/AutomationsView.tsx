@@ -22,17 +22,17 @@ import type {
   AutomationRun,
   AutomationRunEvent,
   AutomationTriageItem,
+  CodexEvent,
   Persona,
 } from '../../../shared/types';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { useStoredPanelState } from '../../hooks/useStoredPanelState';
+import { ActivityGroupMessage, ChatEventRenderer } from '../chat/ChatMessage';
+import { MarkdownRenderer } from '../chat/MarkdownRenderer';
 import {
-  ActivityGroupMessage,
-  AssistantMessage,
-  ChatEventRenderer,
-  ThinkingMessage,
-} from '../chat/ChatMessage';
-import { buildAutomationDisplayEntries } from '../../utils/automation-run-events';
+  buildAutomationDisplayEntries,
+  type AutomationDisplayEntry,
+} from '../../utils/automation-run-events';
 
 const DEFAULT_CRON = '0 9 * * 1-5';
 
@@ -45,6 +45,15 @@ const DEFAULT_LOOP_CONFIG: AutomationLoopConfig = {
   stopCondition:
     'Stop when the work is complete, blocked, reviewed cleanly, or ready for human approval.',
 };
+
+type AutomationRunDetailTab = 'transcript' | 'activity' | 'worktrees' | 'raw';
+
+const RUN_DETAIL_TABS: Array<{ id: AutomationRunDetailTab; label: string }> = [
+  { id: 'transcript', label: 'Transcript' },
+  { id: 'activity', label: 'Activity' },
+  { id: 'worktrees', label: 'Worktrees' },
+  { id: 'raw', label: 'Raw Events' },
+];
 
 function emptyDraft(repoIds: string[]): AutomationDefinitionInput {
   return {
@@ -113,6 +122,7 @@ export function AutomationsView() {
   const [triageItems, setTriageItems] = useState<AutomationTriageItem[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [runEvents, setRunEvents] = useState<AutomationRunEvent[]>([]);
+  const [runDetailTab, setRunDetailTab] = useState<AutomationRunDetailTab>('transcript');
   const [daemonStatus, setDaemonStatus] = useState<AutomationDaemonStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -473,7 +483,7 @@ export function AutomationsView() {
               {loading ? (
                 <div className="flex items-center gap-2 rounded-md border border-border-subtle px-3 py-2 text-sm text-text-secondary">
                   <Loader2 size={14} className="animate-spin" />
-                  Loading automations...
+                  Loading automations…
                 </div>
               ) : automations.length === 0 ? (
                 <div className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-text-secondary">
@@ -517,7 +527,7 @@ export function AutomationsView() {
           )}
         </aside>
 
-        <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1.15fr)_minmax(340px,0.85fr)] overflow-hidden">
+        <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,0.78fr)_minmax(440px,1.22fr)] overflow-hidden">
           <section className="min-h-0 overflow-y-auto px-5 py-4">
             <div className="flex items-center justify-between">
               <h3 className="text-lg font-semibold text-text-primary">
@@ -872,155 +882,33 @@ export function AutomationsView() {
               </p>
             </div>
 
-            <div className="grid min-h-0 flex-1 grid-rows-[minmax(180px,0.9fr)_minmax(0,1.1fr)]">
-              <div className="overflow-y-auto border-b border-border px-4 py-3">
+            <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)]">
+              <div className="max-h-44 overflow-y-auto border-b border-border px-4 py-3">
                 {runs.length === 0 ? (
                   <div className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-text-secondary">
                     No runs yet for this automation.
                   </div>
                 ) : (
-                  runs.map((run) => (
-                    <button
-                      key={run.id}
-                      onClick={() => setSelectedRunId(run.id)}
-                      className={`mb-2 w-full rounded-lg border px-3 py-3 text-left transition-colors ${
-                        selectedRunId === run.id
-                          ? 'border-accent bg-accent/10'
-                          : 'border-border-subtle bg-bg-primary hover:border-border'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
-                          {run.status === 'completed' ? (
-                            <CheckCircle2 size={14} className="text-success" />
-                          ) : run.status === 'failed' ? (
-                            <AlertTriangle size={14} className="text-error" />
-                          ) : (
-                            <Loader2 size={14} className="animate-spin text-accent" />
-                          )}
-                          {run.trigger === 'manual' ? 'Manual run' : 'Scheduled run'}
-                        </div>
-                        <span className={`text-xs ${statusTone(run.status)}`}>{run.status}</span>
-                      </div>
-                      <div className="mt-1 text-xs text-text-secondary">
-                        {formatTimestamp(run.startedAt)}
-                      </div>
-                      <div className="mt-2 text-xs text-text-tertiary">
-                        Changed files: {run.changedFileCount}
-                      </div>
-                    </button>
-                  ))
+                  <div className="grid gap-2">
+                    {runs.map((run) => (
+                      <RunPickerItem
+                        key={run.id}
+                        run={run}
+                        selected={selectedRunId === run.id}
+                        onSelect={() => setSelectedRunId(run.id)}
+                      />
+                    ))}
+                  </div>
                 )}
               </div>
 
-              <div className="flex min-h-0 flex-col">
-                <div className="shrink-0 border-b border-border px-4 py-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <div>
-                      <div className="text-sm font-semibold text-text-primary">
-                        {selectedRun ? 'Run detail' : 'Select a run'}
-                      </div>
-                      {selectedRun && (
-                        <div className="mt-1 text-xs text-text-secondary">
-                          Completed {formatTimestamp(selectedRun.completedAt)}
-                        </div>
-                      )}
-                    </div>
-                    {selectedRun?.worktrees.some((worktree) => worktree.kept && worktree.path) && (
-                      <span className="rounded-full border border-border px-2 py-1 text-xs text-text-secondary">
-                        Worktree retained
-                      </span>
-                    )}
-                  </div>
-                </div>
-
-                <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-                  {selectedRun?.assistantMessage && (
-                    <div className="mb-3">
-                      <AssistantMessage content={selectedRun.assistantMessage} />
-                    </div>
-                  )}
-                  {selectedRun?.errorMessage && (
-                    <div className="mb-3 rounded-xl border border-error/20 bg-error/5 px-4 py-3 text-sm text-error shadow-sm">
-                      <div className="font-medium">Run failed</div>
-                      <p className="mt-1 whitespace-pre-wrap leading-relaxed">
-                        {selectedRun.errorMessage}
-                      </p>
-                    </div>
-                  )}
-                  {selectedRun && selectedRun.worktrees.length > 0 && (
-                    <div className="mb-4">
-                      <div className="mb-2 text-sm font-semibold text-text-primary">Worktrees</div>
-                      <div className="grid gap-2">
-                        {selectedRun.worktrees.map((worktree) => (
-                          <div
-                            key={`${worktree.repoId}-${worktree.branchName}`}
-                            className="flex items-center justify-between gap-2 rounded-lg border border-border-subtle bg-bg-primary px-3 py-2"
-                          >
-                            <div className="min-w-0">
-                              <div className="truncate text-sm font-medium text-text-primary">
-                                {worktree.repoName}
-                              </div>
-                              <div className="truncate text-xs text-text-tertiary">
-                                {worktree.branchName}
-                              </div>
-                            </div>
-                            {worktree.path ? (
-                              <button
-                                onClick={() => window.anvil.repo.openInVSCode(worktree.path!)}
-                                className="flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary"
-                              >
-                                <Wrench size={12} />
-                                Open worktree
-                              </button>
-                            ) : (
-                              <span className="shrink-0 text-xs text-text-tertiary">
-                                Cleaned up
-                              </span>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-text-primary">
-                    <Clock3 size={14} />
-                    Run events
-                  </div>
-                  {displayEntries.length === 0 ? (
-                    <div className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-text-secondary">
-                      No captured events for this run yet.
-                    </div>
-                  ) : (
-                    <div className="space-y-2">
-                      {displayEntries.map((entry, index) => {
-                        if (entry.kind === 'assistant') {
-                          return (
-                            <AssistantMessage key={`assistant-${index}`} content={entry.content} />
-                          );
-                        }
-                        if (entry.kind === 'thinking') {
-                          return (
-                            <ThinkingMessage key={`thinking-${index}`} content={entry.content} />
-                          );
-                        }
-                        if (entry.kind === 'system') {
-                          return (
-                            <SystemRunMessage key={`system-${index}`} content={entry.content} />
-                          );
-                        }
-                        if (entry.kind === 'activity') {
-                          return (
-                            <ActivityGroupMessage key={`activity-${index}`} events={entry.events} />
-                          );
-                        }
-                        return <ChatEventRenderer key={`event-${index}`} event={entry.event} />;
-                      })}
-                    </div>
-                  )}
-                </div>
-              </div>
+              <AutomationRunDetail
+                selectedRun={selectedRun}
+                displayEntries={displayEntries}
+                runEvents={runEvents}
+                activeTab={runDetailTab}
+                onTabChange={setRunDetailTab}
+              />
             </div>
           </section>
         </div>
@@ -1029,15 +917,432 @@ export function AutomationsView() {
   );
 }
 
-function SystemRunMessage({ content }: { content: string }) {
+function RunPickerItem({
+  run,
+  selected,
+  onSelect,
+}: {
+  run: AutomationRun;
+  selected: boolean;
+  onSelect: () => void;
+}) {
   return (
-    <div className="rounded-xl border border-border-subtle bg-bg-primary px-4 py-3 shadow-sm">
-      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-text-tertiary">
-        System
+    <button
+      type="button"
+      onClick={onSelect}
+      className={`w-full rounded-lg border px-3 py-2.5 text-left transition-colors ${
+        selected
+          ? 'border-accent bg-accent/10'
+          : 'border-border-subtle bg-bg-primary hover:border-border'
+      }`}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2 text-sm font-medium text-text-primary">
+          {run.status === 'completed' ? (
+            <CheckCircle2 size={14} className="shrink-0 text-success" />
+          ) : run.status === 'failed' ? (
+            <AlertTriangle size={14} className="shrink-0 text-error" />
+          ) : (
+            <Loader2 size={14} className="shrink-0 animate-spin text-accent" />
+          )}
+          <span className="truncate">
+            {run.trigger === 'manual' ? 'Manual run' : 'Scheduled run'}
+          </span>
+        </div>
+        <span className={`shrink-0 text-xs ${statusTone(run.status)}`}>{run.status}</span>
       </div>
-      <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-text-secondary">
-        {content}
-      </p>
+      <div className="mt-1 flex items-center justify-between gap-3 text-xs text-text-tertiary">
+        <span className="truncate">{formatCompactTimestamp(run.startedAt)}</span>
+        <span className="shrink-0">{run.changedFileCount} files</span>
+      </div>
+    </button>
+  );
+}
+
+function AutomationRunDetail({
+  selectedRun,
+  displayEntries,
+  runEvents,
+  activeTab,
+  onTabChange,
+}: {
+  selectedRun: AutomationRun | null;
+  displayEntries: AutomationDisplayEntry[];
+  runEvents: AutomationRunEvent[];
+  activeTab: AutomationRunDetailTab;
+  onTabChange: (tab: AutomationRunDetailTab) => void;
+}) {
+  const hasRetainedWorktree =
+    selectedRun?.worktrees.some((worktree) => worktree.kept && worktree.path) ?? false;
+  const transcriptEntries = displayEntries.filter(isTranscriptEntry);
+  const activityEntries = displayEntries.filter(isActivityEntry);
+  const hasEventTranscript = transcriptEntries.length > 0;
+
+  return (
+    <div className="flex min-h-0 flex-col">
+      <div className="shrink-0 border-b border-border px-4 py-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="text-sm font-semibold text-text-primary">
+                {selectedRun ? 'Run detail' : 'Select a run'}
+              </div>
+              {selectedRun && (
+                <span className={`text-xs ${statusTone(selectedRun.status)}`}>
+                  {selectedRun.status}
+                </span>
+              )}
+            </div>
+            {selectedRun && (
+              <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-text-secondary">
+                <span>Started {formatCompactTimestamp(selectedRun.startedAt)}</span>
+                {selectedRun.completedAt && (
+                  <span>Completed {formatCompactTimestamp(selectedRun.completedAt)}</span>
+                )}
+                <span>{selectedRun.trigger === 'manual' ? 'Manual' : 'Scheduled'}</span>
+                <span>{runEvents.length} events</span>
+              </div>
+            )}
+          </div>
+          {hasRetainedWorktree && (
+            <span className="shrink-0 rounded-full border border-border px-2 py-1 text-xs text-text-secondary">
+              Worktree retained
+            </span>
+          )}
+        </div>
+
+        {selectedRun && (
+          <div className="mt-3 flex gap-1 rounded-lg border border-border-subtle bg-bg-primary p-1">
+            {RUN_DETAIL_TABS.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => onTabChange(tab.id)}
+                className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                  activeTab === tab.id
+                    ? 'bg-bg-tertiary text-text-primary shadow-sm'
+                    : 'text-text-tertiary hover:bg-bg-secondary hover:text-text-primary'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        {!selectedRun ? (
+          <EmptyRunDetail />
+        ) : activeTab === 'transcript' ? (
+          <TranscriptTab
+            selectedRun={selectedRun}
+            transcriptEntries={transcriptEntries}
+            hasEventTranscript={hasEventTranscript}
+          />
+        ) : activeTab === 'activity' ? (
+          <ActivityTab activityEntries={activityEntries} />
+        ) : activeTab === 'worktrees' ? (
+          <WorktreesTab selectedRun={selectedRun} />
+        ) : (
+          <RawEventsTab runEvents={runEvents} />
+        )}
+      </div>
     </div>
   );
+}
+
+function EmptyRunDetail() {
+  return (
+    <div className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-text-secondary">
+      Select a run to read the transcript.
+    </div>
+  );
+}
+
+function TranscriptTab({
+  selectedRun,
+  transcriptEntries,
+  hasEventTranscript,
+}: {
+  selectedRun: AutomationRun;
+  transcriptEntries: AutomationDisplayEntry[];
+  hasEventTranscript: boolean;
+}) {
+  const fallbackMessage =
+    !hasEventTranscript && selectedRun.assistantMessage ? selectedRun.assistantMessage : null;
+
+  return (
+    <div className="space-y-3">
+      {selectedRun.errorMessage && (
+        <div className="rounded-xl border border-error/20 bg-error/5 px-4 py-3 text-sm text-error shadow-sm">
+          <div className="font-medium">Run failed</div>
+          <p className="mt-1 whitespace-pre-wrap leading-relaxed">{selectedRun.errorMessage}</p>
+        </div>
+      )}
+
+      {fallbackMessage && (
+        <TranscriptMessage
+          label="Assistant"
+          timestamp={selectedRun.completedAt ?? selectedRun.startedAt}
+          content={fallbackMessage}
+        />
+      )}
+
+      {transcriptEntries.length === 0 && !fallbackMessage ? (
+        <div className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-text-secondary">
+          No transcript captured for this run yet.
+        </div>
+      ) : (
+        transcriptEntries.map((entry, index) => (
+          <TranscriptEntryRenderer key={`transcript-${index}`} entry={entry} />
+        ))
+      )}
+    </div>
+  );
+}
+
+function TranscriptEntryRenderer({ entry }: { entry: AutomationDisplayEntry }) {
+  if (entry.kind === 'assistant') {
+    return (
+      <TranscriptMessage label="Assistant" timestamp={entry.createdAt} content={entry.content} />
+    );
+  }
+
+  if (entry.kind === 'thinking') {
+    return <TranscriptThinking timestamp={entry.createdAt} content={entry.content} />;
+  }
+
+  if (entry.kind === 'system') {
+    return (
+      <TranscriptMessage label="System" timestamp={entry.createdAt} content={entry.content} muted />
+    );
+  }
+
+  if (entry.kind === 'activity') {
+    return <TranscriptActivityMarker timestamp={entry.createdAt} events={entry.events} />;
+  }
+
+  if (entry.event.type === 'error') {
+    return <ChatEventRenderer event={entry.event} />;
+  }
+
+  return <TranscriptActivityMarker timestamp={entry.createdAt} events={[entry.event]} />;
+}
+
+function TranscriptMessage({
+  label,
+  timestamp,
+  content,
+  muted = false,
+}: {
+  label: string;
+  timestamp: string;
+  content: string;
+  muted?: boolean;
+}) {
+  return (
+    <article
+      className={`rounded-xl border px-4 py-3 shadow-sm ${
+        muted
+          ? 'border-border-subtle bg-bg-primary text-text-secondary'
+          : 'border-border-subtle bg-bg-tertiary/55 text-text-primary'
+      }`}
+    >
+      <div className="mb-2 flex items-center justify-between gap-3 text-xs">
+        <span className="font-semibold uppercase tracking-wide text-text-tertiary">{label}</span>
+        <time className="shrink-0 text-text-tertiary">{formatCompactTimestamp(timestamp)}</time>
+      </div>
+      <MarkdownRenderer content={content} />
+    </article>
+  );
+}
+
+function TranscriptThinking({ timestamp, content }: { timestamp: string; content: string }) {
+  return (
+    <details className="rounded-xl border border-border-subtle bg-bg-primary shadow-sm">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary/50">
+        <span className="flex items-center gap-2">
+          <Clock3 size={13} className="text-warning" />
+          Reasoning
+        </span>
+        <time className="text-xs text-text-tertiary">{formatCompactTimestamp(timestamp)}</time>
+      </summary>
+      {content && (
+        <p className="border-t border-border-subtle px-4 py-3 text-sm italic leading-relaxed text-text-tertiary whitespace-pre-wrap">
+          {content}
+        </p>
+      )}
+    </details>
+  );
+}
+
+function TranscriptActivityMarker({
+  timestamp,
+  events,
+}: {
+  timestamp: string;
+  events: CodexEvent[];
+}) {
+  return (
+    <div className="flex items-center gap-3 py-1 text-xs text-text-tertiary">
+      <div className="h-px flex-1 bg-border-subtle" />
+      <span className="rounded-full border border-border-subtle bg-bg-primary px-2 py-1">
+        {summarizeAutomationActivity(events)} · {formatCompactTimestamp(timestamp)}
+      </span>
+      <div className="h-px flex-1 bg-border-subtle" />
+    </div>
+  );
+}
+
+function ActivityTab({ activityEntries }: { activityEntries: AutomationDisplayEntry[] }) {
+  if (activityEntries.length === 0) {
+    return (
+      <div className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-text-secondary">
+        No activity events captured for this run yet.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      {activityEntries.map((entry, index) => {
+        if (entry.kind === 'activity') {
+          return <ActivityGroupMessage key={`activity-${index}`} events={entry.events} />;
+        }
+
+        if (entry.kind === 'event') {
+          return <ChatEventRenderer key={`event-${index}`} event={entry.event} />;
+        }
+
+        return null;
+      })}
+    </div>
+  );
+}
+
+function WorktreesTab({ selectedRun }: { selectedRun: AutomationRun }) {
+  if (selectedRun.worktrees.length === 0) {
+    return (
+      <div className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-text-secondary">
+        No worktrees were retained for this run.
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid gap-2">
+      {selectedRun.worktrees.map((worktree) => (
+        <div
+          key={`${worktree.repoId}-${worktree.branchName}`}
+          className="flex items-center justify-between gap-2 rounded-lg border border-border-subtle bg-bg-primary px-3 py-2"
+        >
+          <div className="min-w-0">
+            <div className="truncate text-sm font-medium text-text-primary">
+              {worktree.repoName}
+            </div>
+            <div className="truncate text-xs text-text-tertiary">{worktree.branchName}</div>
+          </div>
+          {worktree.path ? (
+            <button
+              type="button"
+              onClick={() => window.anvil.repo.openInVSCode(worktree.path!)}
+              className="flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary"
+            >
+              <Wrench size={12} />
+              Open worktree
+            </button>
+          ) : (
+            <span className="shrink-0 text-xs text-text-tertiary">Cleaned up</span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function RawEventsTab({ runEvents }: { runEvents: AutomationRunEvent[] }) {
+  if (runEvents.length === 0) {
+    return (
+      <div className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-text-secondary">
+        No raw events captured for this run yet.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      {runEvents.map((event) => (
+        <div
+          key={event.id}
+          className="rounded-lg border border-border-subtle bg-bg-primary px-3 py-2"
+        >
+          <div className="flex items-center justify-between gap-3 text-xs">
+            <span className="font-mono text-text-secondary">{event.type}</span>
+            <time className="shrink-0 text-text-tertiary">
+              {formatCompactTimestamp(event.createdAt)}
+            </time>
+          </div>
+          {event.content && (
+            <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md bg-bg-secondary p-2 font-mono text-xs leading-relaxed text-text-secondary">
+              {event.content}
+            </pre>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function isTranscriptEntry(entry: AutomationDisplayEntry): boolean {
+  if (entry.kind === 'assistant' || entry.kind === 'thinking' || entry.kind === 'system')
+    return true;
+  if (entry.kind === 'activity') return true;
+  if (entry.kind === 'event') return entry.event.type === 'error';
+  return false;
+}
+
+function isActivityEntry(entry: AutomationDisplayEntry): boolean {
+  return entry.kind === 'activity' || entry.kind === 'event';
+}
+
+function summarizeAutomationActivity(events: CodexEvent[]): string {
+  const counts = events.reduce(
+    (summary, event) => {
+      if (event.type === 'command_exec') summary.commands += 1;
+      else if (event.type === 'tool_call') summary.tools += 1;
+      else if (event.type === 'file_edit') summary.edits += 1;
+      else if (event.type === 'error') summary.errors += 1;
+      else summary.other += 1;
+      return summary;
+    },
+    { commands: 0, tools: 0, edits: 0, errors: 0, other: 0 },
+  );
+
+  const parts = [
+    formatActivityCount(counts.commands, 'command'),
+    formatActivityCount(counts.tools, 'tool'),
+    formatActivityCount(counts.edits, 'edit'),
+    formatActivityCount(counts.errors, 'error'),
+    formatActivityCount(counts.other, 'event'),
+  ].filter(Boolean);
+
+  return parts.join(', ') || 'Activity';
+}
+
+function formatActivityCount(count: number, label: string): string | null {
+  if (count === 0) return null;
+  return `${count} ${label}${count === 1 ? '' : 's'}`;
+}
+
+function formatCompactTimestamp(value?: string): string {
+  if (!value) return 'Never';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat([], {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
 }
