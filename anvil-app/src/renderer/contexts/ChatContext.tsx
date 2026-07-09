@@ -30,9 +30,19 @@ import type {
   WorkItem,
   WorkspaceScaffoldStatus,
 } from '../../shared/types';
+import {
+  CODEX_REASONING_EFFORTS,
+  DEFAULT_CODEX_MODEL,
+  getCodexModelReasoningOptions,
+  resolveCodexReasoningEffort,
+} from '../../shared/codex-models';
 import { useWorkspace } from './WorkspaceContext';
 import { loadDesignModePreference } from '../utils/design-mode';
 import { extractFigmaRefs, formatFigmaRefsForPrompt } from '../utils/figma-url';
+import {
+  CODEX_SELECTION_CHANGED_EVENT,
+  type CodexSelectionChangedDetail,
+} from '../utils/codex-selection';
 
 export type ChatEntry =
   | { kind: 'user'; content: string; attachments?: ChatAttachment[]; id?: string }
@@ -55,6 +65,7 @@ interface ChatContextValue {
   busy: boolean;
   error: string | null;
   reasoningLevel: ReasoningEffort;
+  reasoningOptions: ReasoningEffort[];
   threads: ChatThread[];
   activeThread: ChatThread | null;
   activeThreadId: string | null;
@@ -114,19 +125,6 @@ export function useChatContext(): ChatContextValue {
   return ctx;
 }
 
-function getDefaultReasoningForPersona(personaId?: string): ReasoningEffort {
-  switch (personaId) {
-    case 'architect':
-      return 'high';
-    case 'coder':
-    case 'security':
-    case 'reviewer':
-      return 'medium';
-    default:
-      return 'low';
-  }
-}
-
 export function ChatProvider({ children }: { children: ReactNode }) {
   const { repos, activeWorkspace, activeScaffoldSession, refreshWorkspaces } = useWorkspace();
   const [personas, setPersonas] = useState<Persona[]>([]);
@@ -148,6 +146,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reasoningLevel, setReasoningLevel] = useState<ReasoningEffort>('medium');
+  const [reasoningOptions, setReasoningOptions] =
+    useState<ReasoningEffort[]>(CODEX_REASONING_EFFORTS);
   const reasoningLevelRef = useRef<ReasoningEffort>('medium');
   const [collaborationMode, setCollaborationModeState] = useState<ChatCollaborationMode>(() =>
     loadCollaborationMode(),
@@ -706,10 +706,37 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, [scaffoldModeActive, personas, activePersona?.id]);
 
   useEffect(() => {
-    if (activePersona) {
-      setReasoningLevel(getDefaultReasoningForPersona(activePersona.id));
-    }
-  }, [activePersona?.id]);
+    const applySelection = async (selection?: CodexSelectionChangedDetail) => {
+      const [settings, codexStatus] = await Promise.all([
+        window.anvil.settings.get(),
+        window.anvil.settings.getCodexStatus().catch(() => null),
+      ]);
+      const model = selection?.model ?? settings.openaiModel ?? DEFAULT_CODEX_MODEL;
+      const effort = resolveCodexReasoningEffort(
+        model,
+        selection?.reasoningEffort ?? settings.reasoningLevel,
+        codexStatus?.models,
+      );
+      setReasoningOptions(
+        getCodexModelReasoningOptions(model, codexStatus?.models).supportedReasoningEfforts,
+      );
+      setReasoningLevel(effort);
+    };
+    const handleSelectionChanged = (event: Event) => {
+      void applySelection((event as CustomEvent<CodexSelectionChangedDetail>).detail).catch(
+        console.error,
+      );
+    };
+
+    void applySelection().catch(console.error);
+    window.addEventListener(CODEX_SELECTION_CHANGED_EVENT, handleSelectionChanged);
+    return () => window.removeEventListener(CODEX_SELECTION_CHANGED_EVENT, handleSelectionChanged);
+  }, []);
+
+  const updateReasoningLevel = useCallback((level: ReasoningEffort) => {
+    setReasoningLevel(level);
+    void window.anvil.settings.update({ reasoningLevel: level }).catch(console.error);
+  }, []);
 
   useEffect(() => {
     if (!activeWorkspace) {
@@ -1829,7 +1856,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       setBusy(false);
       setError(null);
       setActivePersona(targetPersona);
-      setReasoningLevel(opts.reasoningLevel ?? getDefaultReasoningForPersona(targetPersona.id));
+      setReasoningLevel(opts.reasoningLevel ?? reasoningLevel);
 
       const useWorkItemThread = chatLayout === 'workitems' && !!opts.workItem;
       const createdThread = useWorkItemThread
@@ -1922,7 +1949,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
         await window.anvil.chat.send(nextSession.id, enrichedMessage, [], {
           collaborationMode,
-          reasoningEffort: opts.reasoningLevel ?? getDefaultReasoningForPersona(targetPersona.id),
+          reasoningEffort: opts.reasoningLevel ?? reasoningLevel,
         });
       } catch (err) {
         setBusy(false);
@@ -1986,6 +2013,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         busy,
         error,
         reasoningLevel,
+        reasoningOptions,
         threads,
         activeThread,
         activeThreadId,
@@ -2005,7 +2033,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         startNewSession,
         loadHistory: loadHistoryFn,
         clearHistory: clearHistoryFn,
-        setReasoningLevel,
+        setReasoningLevel: updateReasoningLevel,
         selectThread,
         renameThread,
         deleteThread,

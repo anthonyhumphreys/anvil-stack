@@ -72,6 +72,7 @@ interface ChatInputProps {
   busy?: boolean;
   personaColour: string;
   reasoningLevel?: ReasoningEffort;
+  reasoningOptions?: ReasoningEffort[];
   onReasoningChange?: (level: ReasoningEffort) => void;
   prefill?: { id: string; text: string } | null;
   draftKey?: string;
@@ -88,6 +89,7 @@ export function ChatInput({
   busy,
   personaColour,
   reasoningLevel = 'medium',
+  reasoningOptions,
   onReasoningChange,
   prefill,
   draftKey,
@@ -814,7 +816,11 @@ export function ChatInput({
 
           <div className="absolute bottom-2.5 right-2.5 flex items-center gap-1.5">
             {onReasoningChange && !busy && (
-              <ReasoningEffortDropdown level={reasoningLevel} onChange={onReasoningChange} />
+              <ReasoningEffortDropdown
+                level={reasoningLevel}
+                options={reasoningOptions}
+                onChange={onReasoningChange}
+              />
             )}
 
             <VoiceInputButton
@@ -1434,16 +1440,21 @@ const REASONING_EFFORT_OPTIONS: { level: ReasoningEffort; description: string }[
 
 function ReasoningEffortDropdown({
   level,
+  options = REASONING_EFFORT_OPTIONS.map((option) => option.level),
   onChange,
 }: {
   level: ReasoningEffort;
+  options?: ReasoningEffort[];
   onChange: (level: ReasoningEffort) => void;
 }) {
+  const availableOptions = REASONING_EFFORT_OPTIONS.filter((option) =>
+    options.includes(option.level),
+  );
   const [open, setOpen] = useState(false);
   const [highlightedIndex, setHighlightedIndex] = useState(() =>
     Math.max(
       0,
-      REASONING_EFFORT_OPTIONS.findIndex((option) => option.level === level),
+      availableOptions.findIndex((option) => option.level === level),
     ),
   );
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1463,7 +1474,7 @@ function ReasoningEffortDropdown({
     setHighlightedIndex(
       Math.max(
         0,
-        REASONING_EFFORT_OPTIONS.findIndex((option) => option.level === level),
+        availableOptions.findIndex((option) => option.level === level),
       ),
     );
     setOpen(true);
@@ -1489,11 +1500,11 @@ function ReasoningEffortDropdown({
     ) {
       event.preventDefault();
       setHighlightedIndex(
-        (prev) => getNextListboxIndex(event.key, prev, REASONING_EFFORT_OPTIONS.length) ?? prev,
+        (prev) => getNextListboxIndex(event.key, prev, availableOptions.length) ?? prev,
       );
     } else if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
-      const option = REASONING_EFFORT_OPTIONS[highlightedIndex];
+      const option = availableOptions[highlightedIndex];
       if (option) {
         onChange(option.level);
         setOpen(false);
@@ -1523,10 +1534,10 @@ function ReasoningEffortDropdown({
           className="absolute bottom-full right-0 z-50 mb-2 w-72 overflow-hidden rounded-xl border border-border bg-bg-elevated shadow-2xl ring-1 ring-black/20"
           role="listbox"
           aria-label="Reasoning effort"
-          aria-activedescendant={`reasoning-effort-option-${REASONING_EFFORT_OPTIONS[highlightedIndex]?.level}`}
+          aria-activedescendant={`reasoning-effort-option-${availableOptions[highlightedIndex]?.level}`}
         >
           <div className="p-1.5">
-            {REASONING_EFFORT_OPTIONS.map((option, index) => {
+            {availableOptions.map((option, index) => {
               const selected = option.level === level;
               const highlighted = index === highlightedIndex;
               return (

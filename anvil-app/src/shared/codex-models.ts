@@ -1,4 +1,4 @@
-import type { ReasoningEffort } from './types.js';
+import type { CodexDetectedModel, ReasoningEffort } from './types.js';
 
 export type CodexModelTier = 'power' | 'balanced' | 'fast' | 'previous' | 'preview';
 
@@ -78,6 +78,40 @@ export const CODEX_MODEL_OPTIONS: CodexModelOption[] = [
 
 export function getCodexModelOption(modelId: string | null | undefined): CodexModelOption | null {
   return CODEX_MODEL_OPTIONS.find((option) => option.id === modelId) ?? null;
+}
+
+export function getCodexModelReasoningOptions(
+  modelId: string | null | undefined,
+  detectedModels?: CodexDetectedModel[],
+): Pick<CodexModelOption, 'defaultReasoningEffort' | 'supportedReasoningEfforts'> {
+  const detectedModel = detectedModels?.find((model) => model.id === modelId && !model.hidden);
+  if (detectedModel?.supportedReasoningEfforts.length) {
+    return {
+      defaultReasoningEffort:
+        detectedModel.defaultReasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT,
+      supportedReasoningEfforts: detectedModel.supportedReasoningEfforts,
+    };
+  }
+
+  const documentedModel = getCodexModelOption(modelId);
+  return {
+    defaultReasoningEffort:
+      documentedModel?.defaultReasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT,
+    supportedReasoningEfforts:
+      documentedModel?.supportedReasoningEfforts ?? CODEX_REASONING_EFFORTS,
+  };
+}
+
+export function resolveCodexReasoningEffort(
+  modelId: string | null | undefined,
+  effort: string | null | undefined,
+  detectedModels?: CodexDetectedModel[],
+): ReasoningEffort {
+  const options = getCodexModelReasoningOptions(modelId, detectedModels);
+  const normalised = normaliseReasoningEffort(effort, options.defaultReasoningEffort);
+  return options.supportedReasoningEfforts.includes(normalised)
+    ? normalised
+    : options.defaultReasoningEffort;
 }
 
 export function normaliseCodexModel(modelId: string | null | undefined): string {

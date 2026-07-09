@@ -112,6 +112,7 @@ export function ChatView() {
     busy,
     error,
     reasoningLevel,
+    reasoningOptions,
     threads,
     activeThread,
     activeThreadId,
@@ -987,6 +988,7 @@ export function ChatView() {
             busy={busy}
             personaColour={personaColour}
             reasoningLevel={reasoningLevel}
+            reasoningOptions={reasoningOptions}
             onReasoningChange={setReasoningLevel}
             prefill={composerPrefill}
             draftKey={composerDraftKey}

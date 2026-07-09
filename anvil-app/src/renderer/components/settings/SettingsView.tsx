@@ -43,9 +43,11 @@ import {
   CODEX_MODEL_OPTIONS,
   CODEX_REASONING_EFFORTS,
   DEFAULT_CODEX_MODEL,
+  resolveCodexReasoningEffort,
   type CodexModelOption,
 } from '../../../shared/codex-models';
 import { useBrand } from '../../contexts/BrandContext';
+import { dispatchCodexSelectionChanged } from '../../utils/codex-selection';
 
 type TestStatus = 'idle' | 'testing' | 'ok' | 'error';
 type SettingsCategoryId = 'profile' | 'ai' | 'delivery' | 'review' | 'devices' | 'danger';
@@ -278,12 +280,25 @@ export function SettingsView({
   const handleSave = async () => {
     setSaving(true);
     try {
-      await window.anvil.settings.update(settings);
-      if (settings.chatLayout === 'classic' || settings.chatLayout === 'workitems') {
+      const model = settings.openaiModel ?? DEFAULT_CODEX_MODEL;
+      const reasoningEffort = resolveCodexReasoningEffort(
+        model,
+        settings.reasoningLevel,
+        codexStatus?.models,
+      );
+      const settingsToSave = {
+        ...settings,
+        openaiModel: model,
+        reasoningLevel: reasoningEffort,
+      };
+      await window.anvil.settings.update(settingsToSave);
+      setSettings(settingsToSave);
+      if (settingsToSave.chatLayout === 'classic' || settingsToSave.chatLayout === 'workitems') {
         window.dispatchEvent(
-          new CustomEvent('anvil:chat-layout-changed', { detail: settings.chatLayout }),
+          new CustomEvent('anvil:chat-layout-changed', { detail: settingsToSave.chatLayout }),
         );
       }
+      dispatchCodexSelectionChanged({ model, reasoningEffort });
       setSaved(true);
       onSettingsSaved?.();
     } finally {
@@ -561,6 +576,20 @@ export function SettingsView({
   const reasoningOptions = selectedModel?.supportedReasoningEfforts?.length
     ? selectedModel.supportedReasoningEfforts
     : CODEX_REASONING_EFFORTS;
+  const selectedReasoningEffort = resolveCodexReasoningEffort(
+    selectedModelId,
+    settings.reasoningLevel,
+    codexStatus?.models,
+  );
+  const updateCodexModel = (modelId: string) => {
+    const reasoningEffort = resolveCodexReasoningEffort(
+      modelId,
+      settings.reasoningLevel,
+      codexStatus?.models,
+    );
+    setSettings((prev) => ({ ...prev, openaiModel: modelId, reasoningLevel: reasoningEffort }));
+    setSaved(false);
+  };
   const deliverySummary = [
     wiProvider === 'none' ? 'No work items' : wiProvider.toUpperCase(),
     selectedDocsProvider === 'none' ? 'No docs' : selectedDocsProvider,
@@ -836,7 +865,7 @@ export function SettingsView({
                       <label className="block text-sm text-text-secondary">Codex Model</label>
                       <select
                         value={selectedModelId}
-                        onChange={(event) => update('openaiModel', event.target.value)}
+                        onChange={(event) => updateCodexModel(event.target.value)}
                         className="w-full rounded-md border border-border bg-bg-secondary px-3 py-2 text-sm text-text-primary outline-none focus:border-accent"
                       >
                         {codexModelOptions.map((model) => (
@@ -888,10 +917,7 @@ export function SettingsView({
                         <button
                           key={model.id}
                           type="button"
-                          onClick={() => {
-                            update('openaiModel', model.id);
-                            update('reasoningLevel', model.defaultReasoningEffort);
-                          }}
+                          onClick={() => updateCodexModel(model.id)}
                           className={`rounded-lg border p-3 text-left transition-colors ${
                             selectedModelId === model.id
                               ? 'border-accent bg-accent/10'
@@ -901,9 +927,7 @@ export function SettingsView({
                           <div className="flex items-center justify-between gap-2">
                             <span
                               className={`text-sm font-medium ${
-                                selectedModelId === model.id
-                                  ? 'text-accent'
-                                  : 'text-text-primary'
+                                selectedModelId === model.id ? 'text-accent' : 'text-text-primary'
                               }`}
                             >
                               {model.label}
@@ -932,7 +956,7 @@ export function SettingsView({
                             key={effort}
                             label={formatReasoningLabel(effort)}
                             description={describeReasoningEffort(effort)}
-                            active={settings.reasoningLevel === effort}
+                            active={selectedReasoningEffort === effort}
                             onClick={() => update('reasoningLevel', effort)}
                           />
                         ))}
