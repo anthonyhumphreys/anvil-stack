@@ -150,6 +150,10 @@ Effect surfaces follow a shared boundary contract:
 - Fan-out work (for example client asset uploads) uses `Effect.all` with a
   bounded concurrency, because input sizes are not bounded by the platform.
 
+## Future adapter planning
+
+Cloudflare is the proposed next adapter after the alpha AWS preview path is stable. See [Cloudflare adapter implementation plan](./cloudflare-adapter-plan.md) for the current evaluation, phased implementation plan, and prompt/skill strategy for third-party adapters.
+
 ## Non-goals
 
 Anvil is not a Pulumi authoring surface. Users should not write Pulumi components for Cells, and generated manifests should not require Pulumi concepts. Future adapters may use Terraform/OpenTofu, CDK, Kubernetes, direct provider APIs, or another engine without changing Cell authoring.
