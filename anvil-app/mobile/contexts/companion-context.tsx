@@ -87,6 +87,7 @@ interface CompanionContextValue {
   disconnect: () => Promise<void>;
   refresh: () => Promise<void>;
   selectWorkspace: (workspaceId: string) => Promise<void>;
+  followDesktopWorkspace: () => Promise<void>;
   selectThread: (threadId: string) => Promise<void>;
   startWorkflow: (input: MobileStartChatInput) => Promise<MobileStartChatResult | null>;
   sendMessage: (
@@ -210,6 +211,12 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
     },
     [connection, selectedWorkspaceId],
   );
+
+  const followDesktopWorkspace = useCallback(async () => {
+    if (!connection || selectedWorkspaceId === null) return;
+    setSelectedWorkspaceId(null);
+    await saveSelectedWorkspaceId(connection.id, null);
+  }, [connection, selectedWorkspaceId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -573,6 +580,7 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
       disconnect,
       refresh,
       selectWorkspace,
+      followDesktopWorkspace,
       selectThread,
       startWorkflow,
       sendMessage,
@@ -602,6 +610,7 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
       refresh,
       resolve,
       forgetHost,
+      followDesktopWorkspace,
       selectThread,
       selectHost,
       selectWorkspace,

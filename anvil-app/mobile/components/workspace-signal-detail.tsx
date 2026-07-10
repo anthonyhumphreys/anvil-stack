@@ -1,4 +1,4 @@
-import MaterialIcons from '@expo/vector-icons/MaterialIcons';
+import { MaterialIcons } from '@react-native-vector-icons/material-icons';
 import { router, type RelativePathString } from 'expo-router';
 import { useEffect, useMemo, useState, type ComponentProps } from 'react';
 import { RefreshControl, ScrollView, Text, View } from 'react-native';
@@ -34,8 +34,15 @@ export function WorkspaceSignalDetail({ signalId }: { signalId?: string }) {
     openOnDesktop,
   } = useCompanion();
   const [launching, setLaunching] = useState(false);
-  const [detail, setDetail] = useState<MobileWorkspaceSignalDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailState, setDetailState] = useState<{
+    signalId?: string;
+    detail: MobileWorkspaceSignalDetail | null;
+    loading: boolean;
+  }>({ detail: null, loading: false });
+  const detail = detailState.signalId === signalId ? detailState.detail : null;
+  const detailLoading = Boolean(
+    signalId && connection && (detailState.signalId !== signalId || detailState.loading),
+  );
   const activeWorkspace = overview?.activeWorkspace;
   const repos = useMemo(() => activeWorkspace?.repos ?? [], [activeWorkspace?.repos]);
   const overviewSignal = overview?.workspaceHealth.signals.find(
@@ -48,16 +55,20 @@ export function WorkspaceSignalDetail({ signalId }: { signalId?: string }) {
 
   useEffect(() => {
     let cancelled = false;
-    setDetail(null);
     if (!signalId || !connection) return;
 
-    setDetailLoading(true);
     void fetchSignalDetail(signalId)
       .then((nextDetail) => {
-        if (!cancelled) setDetail(nextDetail);
+        if (!cancelled) setDetailState({ signalId, detail: nextDetail, loading: false });
       })
       .finally(() => {
-        if (!cancelled) setDetailLoading(false);
+        if (!cancelled) {
+          setDetailState((current) =>
+            current.signalId === signalId
+              ? { ...current, loading: false }
+              : { signalId, detail: null, loading: false },
+          );
+        }
       });
 
     return () => {

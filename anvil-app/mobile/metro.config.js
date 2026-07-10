@@ -27,7 +27,7 @@ function shouldResolveFromProject(moduleName) {
   );
 }
 
-config.watchFolders = [workspaceRoot];
+config.watchFolders = [...new Set([...(config.watchFolders ?? []), workspaceRoot])];
 config.resolver.nodeModulesPaths = [projectNodeModules, workspaceNodeModules];
 config.resolver.extraNodeModules = {
   react: path.join(projectNodeModules, 'react'),

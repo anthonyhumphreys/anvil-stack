@@ -92,43 +92,6 @@ export interface WatchReplyPayload {
   threadsJson: string;
 }
 
-const FALLBACK_ACTIONS: WidgetActionSnapshot[] = [
-  {
-    id: 'status-sweep',
-    title: 'Status sweep',
-    subtitle: 'Check active work',
-    tone: 'blue',
-    destination: 'anvil-companion://workflow/status-sweep',
-  },
-  {
-    id: 'review-diff',
-    title: 'Code review',
-    subtitle: 'Inspect changes',
-    tone: 'purple',
-    destination: 'anvil-companion://workflow/review-diff',
-  },
-  {
-    id: 'security-sweep',
-    title: 'Security sweep',
-    subtitle: 'Inspect risk',
-    tone: 'red',
-    destination: 'anvil-companion://workflow/security-sweep',
-  },
-  {
-    id: 'test-hunt',
-    title: 'Find tests',
-    subtitle: 'Run the right checks',
-    tone: 'green',
-    destination: 'anvil-companion://workflow/test-hunt',
-  },
-  {
-    id: 'ship-handoff',
-    title: 'Ship handoff',
-    subtitle: 'Summarize release state',
-    tone: 'amber',
-    destination: 'anvil-companion://workflow/ship-handoff',
-  },
-];
 const FALLBACK_COUNTS: MobileWorkflowDigest['counts'] = {
   pendingApprovals: 0,
   activeSessions: 0,
@@ -156,7 +119,7 @@ export function buildWidgetSnapshot(overview: MobileOverview): WidgetSnapshot {
     reviewFindings: overview.workspaceHealth?.reviewFindingCount ?? 0,
     securityFindings: overview.workspaceHealth?.securityFindingCount ?? 0,
     workSignals,
-    quickActions: quickActions.length > 0 ? quickActions : FALLBACK_ACTIONS,
+    quickActions,
     primaryDestination: state.destination,
     primaryLabel: state.label,
     attentionLevel: state.attentionLevel,
@@ -207,8 +170,8 @@ export function buildConnectionWidgetSnapshot(
 
 export function buildLiveActivitySnapshot(overview: MobileOverview): LiveActivitySnapshot | null {
   const counts = overview.workflow?.counts ?? FALLBACK_COUNTS;
+  if (counts.pendingApprovals === 0 && counts.busySessions === 0) return null;
   const state = widgetState(overview);
-  if (state.attentionLevel === 'idle' || state.attentionLevel === 'setup') return null;
   const workSignals = countWorkSignals(overview);
 
   return {
@@ -331,20 +294,42 @@ export function buildWatchReplyPayload(overview: MobileOverview | null): WatchRe
   };
 }
 
-function toWidgetAction(action: MobileQuickAction, workspaceId?: string): WidgetActionSnapshot {
-  const query = workspaceId ? `?workspaceId=${encodeURIComponent(workspaceId)}` : '';
-  return {
-    id: action.id,
-    title: action.title,
-    subtitle: action.subtitle,
-    tone: action.tone,
-    destination: `anvil-companion://workflow/${encodeURIComponent(action.id)}${query}`,
-  };
-}
-
 function buildWidgetActions(overview: MobileOverview): WidgetActionSnapshot[] {
   const actions: WidgetActionSnapshot[] = [];
-  const topSignal = overview.workspaceHealth?.signals[0];
+  const topQueueItem = overview.workQueue[0];
+  const topApproval =
+    (topQueueItem?.sessionId
+      ? overview.pendingApprovals.find((approval) => approval.sessionId === topQueueItem.sessionId)
+      : undefined) ?? overview.pendingApprovals[0];
+  const activeThread =
+    (topQueueItem?.threadId
+      ? overview.threads.find(
+          (thread) => thread.id === topQueueItem.threadId && thread.activeSessionId,
+        )
+      : undefined) ?? overview.threads.find((thread) => thread.activeSessionId);
+  const topSignal = overview.workspaceHealth?.signals.find(isAttentionSignal);
+
+  if (topApproval) {
+    actions.push({
+      id: `approval:${topApproval.sessionId}:${topApproval.requestKey}`,
+      title: 'Approval',
+      subtitle: approvalHeadline(topApproval),
+      tone: 'red',
+      destination: topQueueItem?.threadId
+        ? `anvil-companion://chats/${encodeURIComponent(topQueueItem.threadId)}`
+        : 'anvil-companion://approvals',
+    });
+  }
+
+  if (activeThread) {
+    actions.push({
+      id: `thread:${activeThread.id}`,
+      title: 'Active run',
+      subtitle: activeThread.title,
+      tone: 'blue',
+      destination: `anvil-companion://chats/${encodeURIComponent(activeThread.id)}`,
+    });
+  }
 
   if (topSignal) {
     actions.push({
@@ -359,35 +344,10 @@ function buildWidgetActions(overview: MobileOverview): WidgetActionSnapshot[] {
   actions.push({
     id: 'work',
     title: 'Work',
-    subtitle: 'Review signals',
+    subtitle: topQueueItem?.title ?? 'Open current work',
     tone: 'blue',
     destination: 'anvil-companion://work',
   });
-
-  if ((overview.workspaceHealth?.reviewFindingCount ?? 0) > 0) {
-    actions.push({
-      id: 'review-findings',
-      title: 'Review',
-      subtitle: `${overview.workspaceHealth?.reviewFindingCount ?? 0} finding${overview.workspaceHealth?.reviewFindingCount === 1 ? '' : 's'}`,
-      tone: 'amber',
-      destination: 'anvil-companion://work?filter=code_review',
-    });
-  }
-
-  if ((overview.workspaceHealth?.securityFindingCount ?? 0) > 0) {
-    actions.push({
-      id: 'security-findings',
-      title: 'Security',
-      subtitle: `${overview.workspaceHealth?.securityFindingCount ?? 0} finding${overview.workspaceHealth?.securityFindingCount === 1 ? '' : 's'}`,
-      tone: 'red',
-      destination: 'anvil-companion://work?filter=security',
-    });
-  }
-
-  for (const action of overview.quickActions ?? []) {
-    if (actions.length >= 4) break;
-    actions.push(toWidgetAction(action, overview.activeWorkspace?.id));
-  }
 
   return actions.slice(0, 4);
 }

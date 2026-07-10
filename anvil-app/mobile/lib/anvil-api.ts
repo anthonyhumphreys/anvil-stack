@@ -269,12 +269,10 @@ export async function fetchThreadHistory(
 }
 
 export function chatAttachmentUrl(connection: CompanionConnection, attachmentId: string): string {
-  const url = new URL(
+  return new URL(
     `/api/chat/attachments/${encodeURIComponent(attachmentId)}`,
     trimBaseUrl(connection.baseUrl),
-  );
-  url.searchParams.set('access_token', connection.token);
-  return url.toString();
+  ).toString();
 }
 
 export async function sendThreadMessage(
@@ -519,6 +517,9 @@ function normalizeMobileOverview(raw: unknown): MobileOverview {
     threads,
     recentRuns,
     workspaceHealth: normalizeWorkspaceHealth(overview.workspaceHealth),
+    workItems: arrayValue(overview.workItems) as MobileOverview['workItems'],
+    currentIterationPath:
+      typeof overview.currentIterationPath === 'string' ? overview.currentIterationPath : undefined,
     workQueue,
     workflow,
     quickActions,

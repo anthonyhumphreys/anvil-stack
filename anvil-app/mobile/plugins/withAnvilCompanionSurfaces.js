@@ -64,6 +64,7 @@ function withAnvilCompanionSurfaces(config) {
     const bundleId = config.ios?.bundleIdentifier;
     if (!bundleId) return config;
     const appVersion = config.version ?? '1.0.0';
+    const appBuildNumber = config.ios?.buildNumber ?? '1';
 
     ensureTargetDependencySections(project);
 
@@ -84,7 +85,7 @@ function withAnvilCompanionSurfaces(config) {
         appTarget.uuid,
         bridgeGroup.uuid,
       );
-      setAppBridgeBuildSettings(project, bundleId);
+      setAppBridgeBuildSettings(project, bundleId, appBuildNumber);
     }
 
     let watchTarget = findTargetByName(project, WATCH_TARGET_NAME);
@@ -116,7 +117,7 @@ function withAnvilCompanionSurfaces(config) {
         watchGroup.uuid,
       );
     }
-    setWatchBuildSettings(project, watchTarget.uuid, bundleId, appVersion);
+    setWatchBuildSettings(project, watchTarget.uuid, bundleId, appVersion, appBuildNumber);
 
     let widgetTarget = findTargetByName(project, WIDGET_TARGET_NAME);
     if (!widgetTarget) {
@@ -143,7 +144,7 @@ function withAnvilCompanionSurfaces(config) {
         widgetGroup.uuid,
       );
     }
-    setWidgetBuildSettings(project, widgetTarget.uuid, bundleId, appVersion);
+    setWidgetBuildSettings(project, widgetTarget.uuid, bundleId, appVersion, appBuildNumber);
 
     if (appTarget) {
       ensureTargetDependency(project, appTarget.uuid, watchTarget.uuid);
@@ -220,16 +221,17 @@ function hasTargetDependency(project, targetUuid, dependencyTargetUuid) {
   });
 }
 
-function setAppBridgeBuildSettings(project, iosBundleId) {
+function setAppBridgeBuildSettings(project, iosBundleId, appBuildNumber) {
   for (const [, config] of Object.entries(project.pbxXCBuildConfigurationSection())) {
     if (!config || !config.buildSettings) continue;
     const settings = config.buildSettings;
     if (!buildSettingEquals(settings.PRODUCT_BUNDLE_IDENTIFIER, iosBundleId)) continue;
     settings.SWIFT_VERSION = settings.SWIFT_VERSION ?? '5.0';
+    settings.CURRENT_PROJECT_VERSION = appBuildNumber;
   }
 }
 
-function setWatchBuildSettings(project, targetUuid, iosBundleId, appVersion) {
+function setWatchBuildSettings(project, targetUuid, iosBundleId, appVersion, appBuildNumber) {
   const target = project.pbxNativeTargetSection()[targetUuid];
   if (target) target.productType = '"com.apple.product-type.application"';
 
@@ -240,7 +242,7 @@ function setWatchBuildSettings(project, targetUuid, iosBundleId, appVersion) {
     if (!buildSettingEquals(settings.PRODUCT_BUNDLE_IDENTIFIER, watchBundleId)) continue;
     settings.ASSETCATALOG_COMPILER_APPICON_NAME = 'AppIcon';
     settings.CODE_SIGN_ENTITLEMENTS = `${WATCH_TARGET_NAME}/${WATCH_TARGET_NAME}.entitlements`;
-    settings.CURRENT_PROJECT_VERSION = '1';
+    settings.CURRENT_PROJECT_VERSION = appBuildNumber;
     settings.GENERATE_INFOPLIST_FILE = 'NO';
     settings.INFOPLIST_FILE = `${WATCH_TARGET_NAME}/Info.plist`;
     settings.MARKETING_VERSION = appVersion;
@@ -254,7 +256,7 @@ function setWatchBuildSettings(project, targetUuid, iosBundleId, appVersion) {
   }
 }
 
-function setWidgetBuildSettings(project, targetUuid, iosBundleId, appVersion) {
+function setWidgetBuildSettings(project, targetUuid, iosBundleId, appVersion, appBuildNumber) {
   const widgetBundleId = `${iosBundleId}${WIDGET_BUNDLE_SUFFIX}`;
   for (const [, config] of Object.entries(project.pbxXCBuildConfigurationSection())) {
     if (!config || !config.buildSettings) continue;
@@ -262,7 +264,7 @@ function setWidgetBuildSettings(project, targetUuid, iosBundleId, appVersion) {
     if (!buildSettingEquals(settings.PRODUCT_BUNDLE_IDENTIFIER, widgetBundleId)) continue;
     settings.ASSETCATALOG_COMPILER_APPICON_NAME = 'AppIcon';
     settings.CODE_SIGN_ENTITLEMENTS = `${WIDGET_TARGET_NAME}/${WIDGET_TARGET_NAME}.entitlements`;
-    settings.CURRENT_PROJECT_VERSION = '1';
+    settings.CURRENT_PROJECT_VERSION = appBuildNumber;
     settings.GENERATE_INFOPLIST_FILE = 'NO';
     settings.INFOPLIST_FILE = `${WIDGET_TARGET_NAME}/Info.plist`;
     settings.MARKETING_VERSION = appVersion;
@@ -375,7 +377,6 @@ async function patchAppDelegateForSceneLifecycle(appDelegatePath) {
 
     reactNativeDelegate = delegate
     reactNativeFactory = factory
-    bindReactNativeFactory(factory)
 
     return factory
   }
@@ -407,11 +408,29 @@ async function patchPodfileForXcodeBetaFmt(podfilePath) {
         current_target = build_configuration.build_settings['IPHONEOS_DEPLOYMENT_TARGET']`,
   );
 
-  if (nextSource === source) {
+  const modernNeedle = `      :ccache_enabled => ccache_enabled?(podfile_properties),
+    )`;
+  const modernSource =
+    nextSource === source
+      ? source.replace(
+          modernNeedle,
+          `${modernNeedle}
+
+    installer.pods_project.targets.each do |pod_target|
+      next unless pod_target.name == 'fmt'
+
+      pod_target.build_configurations.each do |build_configuration|
+        build_configuration.build_settings['CLANG_CXX_LANGUAGE_STANDARD'] = 'gnu++17'
+      end
+    end`,
+        )
+      : nextSource;
+
+  if (modernSource === source) {
     throw new Error('Unable to patch Podfile for fmt C++ standard support.');
   }
 
-  await fs.writeFile(podfilePath, nextSource, 'utf8');
+  await fs.writeFile(podfilePath, modernSource, 'utf8');
 }
 
 function appSceneDelegateSwift() {
@@ -905,7 +924,7 @@ struct AnvilWidgetProvider: TimelineProvider {
       reviewFindings: 2,
       securityFindings: 1,
       workSignals: 5,
-      quickActions: fallbackActions(),
+      quickActions: [],
       primaryDestination: "anvil-companion://work",
       primaryLabel: "Open",
       attentionLevel: "working"
@@ -1019,7 +1038,7 @@ struct SignalLine: View {
 
   var body: some View {
     HStack(spacing: 7) {
-      SignalDatum(icon: "checkmark.seal", label: "OK", value: snapshot.counts.pendingApprovals, color: approvalColor(snapshot))
+      SignalDatum(icon: "checkmark.seal", label: "Approve", value: snapshot.counts.pendingApprovals, color: approvalColor(snapshot))
       SignalDatum(icon: "bolt", label: "Run", value: snapshot.counts.busySessions, color: runColor(snapshot))
       SignalDatum(icon: "shield", label: "Risk", value: riskCount(snapshot), color: riskColor(snapshot))
     }
@@ -1080,7 +1099,7 @@ func widgetBackground(_ snapshot: AnvilWidgetSnapshot) -> some View {
 
 func primaryMetric(_ snapshot: AnvilWidgetSnapshot) -> String {
   if snapshot.counts.pendingApprovals > 0 {
-    return "\\(snapshot.counts.pendingApprovals) OK"
+    return "\\(snapshot.counts.pendingApprovals) approval\\(snapshot.counts.pendingApprovals == 1 ? "" : "s")"
   }
   if snapshot.counts.busySessions > 0 {
     return "\\(snapshot.counts.busySessions) run"
@@ -1198,20 +1217,11 @@ func fallbackSnapshot() -> AnvilWidgetSnapshot {
     reviewFindings: 0,
     securityFindings: 0,
     workSignals: 0,
-    quickActions: fallbackActions(),
+    quickActions: [],
     primaryDestination: "anvil-companion://settings",
     primaryLabel: "Open",
     attentionLevel: "setup"
   )
-}
-
-func fallbackActions() -> [AnvilWidgetAction] {
-  [
-    AnvilWidgetAction(id: "status-sweep", title: "Status sweep", subtitle: "Check active work", tone: "blue", destination: "anvil-companion://workflow/status-sweep"),
-    AnvilWidgetAction(id: "work", title: "Work", subtitle: "Review signals", tone: "blue", destination: "anvil-companion://work"),
-    AnvilWidgetAction(id: "review-diff", title: "Review", subtitle: "Inspect findings", tone: "amber", destination: "anvil-companion://work?filter=code_review"),
-    AnvilWidgetAction(id: "security-sweep", title: "Security", subtitle: "Inspect risk", tone: "red", destination: "anvil-companion://work?filter=security")
-  ]
 }
 
 struct AnvilLiveActivityAttributes: ActivityAttributes {
@@ -1257,7 +1267,7 @@ struct AnvilLiveActivityWidget: Widget {
             .foregroundStyle(.secondary)
             .lineLimit(2)
           HStack(spacing: 8) {
-            SignalDatum(icon: "checkmark.seal", label: "OK", value: context.state.pendingApprovals, color: context.state.pendingApprovals > 0 ? .red : .secondary)
+            SignalDatum(icon: "checkmark.seal", label: "Approve", value: context.state.pendingApprovals, color: context.state.pendingApprovals > 0 ? .red : .secondary)
             SignalDatum(icon: "bolt", label: "Run", value: context.state.busySessions, color: context.state.busySessions > 0 ? .blue : .secondary)
             SignalDatum(icon: "tray.full", label: "Work", value: context.state.workSignals, color: context.state.workSignals > 0 ? .orange : .secondary)
             Spacer(minLength: 4)
@@ -1291,7 +1301,7 @@ struct AnvilLiveActivityWidget: Widget {
               .font(.headline)
               .lineLimit(1)
             HStack(spacing: 10) {
-              SignalDatum(icon: "checkmark.seal", label: "OK", value: context.state.pendingApprovals, color: context.state.pendingApprovals > 0 ? .red : .secondary)
+              SignalDatum(icon: "checkmark.seal", label: "Approve", value: context.state.pendingApprovals, color: context.state.pendingApprovals > 0 ? .red : .secondary)
               SignalDatum(icon: "bolt", label: "Run", value: context.state.busySessions, color: context.state.busySessions > 0 ? .blue : .secondary)
               SignalDatum(icon: "tray.full", label: "Work", value: context.state.workSignals, color: context.state.workSignals > 0 ? .orange : .secondary)
             }

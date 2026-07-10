@@ -1,11 +1,13 @@
-import MaterialIcons from '@expo/vector-icons/MaterialIcons';
+import { MaterialIcons } from '@react-native-vector-icons/material-icons';
 import { router, type RelativePathString } from 'expo-router';
-import { RefreshControl, ScrollView, Text, Pressable, View } from 'react-native';
+import { useMemo, useState } from 'react';
+import { RefreshControl, ScrollView, Text, TextInput, Pressable, View } from 'react-native';
 import {
   ActionButton,
   EmptyState,
   SectionHeader,
   companionColors,
+  inputStyle,
   screenStyle,
   scrollContentStyle,
 } from '@/components/companion-ui';
@@ -15,6 +17,8 @@ import type { MobileWorkQueueItem } from '../../../src/shared/types';
 
 export default function WorkScreen() {
   const { connection, overview, loading, refresh, interrupt } = useCompanion();
+  const [workQuery, setWorkQuery] = useState('');
+  const [showAllWorkItems, setShowAllWorkItems] = useState(false);
   const workspace = overview?.activeWorkspace;
   const sessions = (overview?.activeSessions ?? []).filter(
     (session) => !workspace || session.workspaceId === workspace.id,
@@ -27,6 +31,21 @@ export default function WorkScreen() {
   const recentThreads = (overview?.threads ?? [])
     .filter((thread) => !workspace || thread.workspaceId === workspace.id)
     .slice(0, 5);
+  const currentIteration = overview?.currentIterationPath;
+  const visibleWorkItems = useMemo(() => {
+    const query = workQuery.trim().toLowerCase();
+    return (overview?.workItems ?? [])
+      .filter(
+        (item) => showAllWorkItems || !currentIteration || item.iterationPath === currentIteration,
+      )
+      .filter(
+        (item) =>
+          !query ||
+          `${item.id} ${item.title} ${item.state ?? ''} ${item.assignee ?? ''} ${item.iterationPath ?? ''}`
+            .toLowerCase()
+            .includes(query),
+      );
+  }, [currentIteration, overview?.workItems, showAllWorkItems, workQuery]);
 
   if (!connection) {
     return (
@@ -79,6 +98,82 @@ export default function WorkScreen() {
       contentContainerStyle={scrollContentStyle}
     >
       <WorkspaceBar />
+
+      <View style={{ gap: 8 }}>
+        <SectionHeader
+          title={showAllWorkItems ? 'Work items' : currentIteration || 'Work items'}
+          count={visibleWorkItems.length}
+        />
+        <TextInput
+          accessibilityLabel="Search work items"
+          value={workQuery}
+          onChangeText={setWorkQuery}
+          placeholder="Search ID, title, state, or assignee"
+          placeholderTextColor={companionColors.faint}
+          returnKeyType="search"
+          style={[inputStyle, { minHeight: 46 }]}
+        />
+        {currentIteration && (
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            <ScopeButton
+              title="Current sprint"
+              selected={!showAllWorkItems}
+              onPress={() => setShowAllWorkItems(false)}
+            />
+            <ScopeButton
+              title="All open"
+              selected={showAllWorkItems}
+              onPress={() => setShowAllWorkItems(true)}
+            />
+          </View>
+        )}
+        {visibleWorkItems.length === 0 ? (
+          <EmptyState
+            title={workQuery ? 'No matching work' : 'No open work items'}
+            body={
+              workQuery
+                ? 'Try a broader search or switch to all open work.'
+                : 'Synced work appears here.'
+            }
+          />
+        ) : (
+          visibleWorkItems.slice(0, 8).map((item) => (
+            <Pressable
+              key={item.id}
+              accessibilityRole="button"
+              onPress={() =>
+                router.push(
+                  `/(tabs)/health/work-item:${encodeURIComponent(item.id)}` as RelativePathString,
+                )
+              }
+              style={rowStyle}
+            >
+              <View style={{ minWidth: 54 }}>
+                <Text
+                  numberOfLines={1}
+                  style={{ color: companionColors.accentInk, fontSize: 12, fontWeight: '900' }}
+                >
+                  {item.id}
+                </Text>
+                <Text numberOfLines={1} style={{ color: companionColors.subtle, fontSize: 11 }}>
+                  {item.state ?? 'Open'}
+                </Text>
+              </View>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text numberOfLines={2} style={rowTitleStyle}>
+                  {item.title}
+                </Text>
+                <Text numberOfLines={1} style={rowDetailStyle}>
+                  {[item.type, item.assignee].filter(Boolean).join(' · ') ||
+                    item.iterationPath ||
+                    'Tracked work'}
+                </Text>
+              </View>
+              <MaterialIcons name="chevron-right" size={22} color={companionColors.faint} />
+            </Pressable>
+          ))
+        )}
+      </View>
 
       <Pressable
         accessibilityRole="button"
@@ -174,6 +269,43 @@ export default function WorkScreen() {
         ))}
       </View>
     </ScrollView>
+  );
+}
+
+function ScopeButton({
+  title,
+  selected,
+  onPress,
+}: {
+  title: string;
+  selected: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="radio"
+      accessibilityState={{ selected }}
+      onPress={onPress}
+      style={{
+        minHeight: 44,
+        flex: 1,
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderRadius: 11,
+        borderCurve: 'continuous',
+        backgroundColor: selected ? companionColors.accentSoft : companionColors.surfaceMuted,
+      }}
+    >
+      <Text
+        style={{
+          color: selected ? companionColors.accentInk : companionColors.subtle,
+          fontSize: 13,
+          fontWeight: '800',
+        }}
+      >
+        {title}
+      </Text>
+    </Pressable>
   );
 }
 

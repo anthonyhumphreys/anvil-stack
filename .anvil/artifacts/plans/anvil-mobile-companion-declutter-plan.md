@@ -1,6 +1,6 @@
 # Anvil mobile companion declutter plan
 
-Status: Implemented in mobile companion 1.2.0
+Status: Review and implementation plan only  
 Goal: Make the companion a focused mobile work surface for selecting a workspace, starting or resuming meaningful work, and steering it away from the main machine.
 
 ## Verdict
@@ -75,46 +75,3 @@ Move pairing, host management, native surfaces, and manual connection into a set
 ### Persistent workspace control
 
 Every primary screen gets a compact header:
-
-- current host and workspace;
-- a one-tap workspace switcher;
-- a visible offline snapshot state;
-- no mutation of the desktop app's selected workspace.
-
-## Delivery milestones
-
-1. **Workspace foundation**
-   - Add workspace-scoped overview reads.
-   - Persist a workspace choice per paired host.
-   - Cache the last overview for read-only offline use.
-
-2. **Focused shell**
-   - Replace five tabs with Work, Threads, and Inbox.
-   - Move Settings to the header.
-   - Move task creation into a focused sheet.
-
-3. **Remote-work reliability**
-   - Refresh active thread output within three seconds.
-   - Preserve message and task drafts after request failure.
-   - Keep approvals and failures globally visible with workspace labels.
-
-4. **Visual and accessibility hardening**
-   - Use restrained tinted neutrals and amber only for selection and primary action.
-   - Remove dashboard duplication and reduce card density.
-   - Support 44-point targets, semantic accessibility roles, dark mode, and large text.
-
-5. **Native-surface alignment**
-   - Include workspace identity in widget and deep-link workflow launches.
-   - Keep Watch, widgets, and Live Activities sourced from the scoped overview.
-
-## Acceptance criteria
-
-- A user can choose a host and workspace without touching the Mac.
-- Work shows only attention, active sessions, a new-task action, and recent resumable threads.
-- New tasks launch in the selected workspace and repository set.
-- Open thread output refreshes within three seconds.
-- Failed sends and launches retain the draft.
-- Navigation exposes no more than three daily destinations.
-- A cached overview remains readable when the host is unreachable.
-- Primary controls have semantic labels and at least 44-point touch targets.
-- The release passes typecheck, lint, service tests, simulator QA, and a physical-device install.

@@ -23,6 +23,7 @@ import type {
   MobileStartChatInput,
   MobileStartChatResult,
   MobileWorkQueueItem,
+  MobileWorkItemSummary,
   MobileWorkspaceHealth,
   MobileWorkspaceSignal,
   MobileWorkspaceSignalDetail,
@@ -170,6 +171,9 @@ interface MobileWorkItemRow {
   state: string | null;
   priority: number | null;
   fetched_at: string | null;
+  assignee?: string | null;
+  iteration_path?: string | null;
+  raw_json?: string | null;
 }
 
 interface MobileWorkItemDetailRow extends MobileWorkItemRow {
@@ -876,6 +880,8 @@ export function getMobileOverview(requestedWorkspaceId?: string): MobileOverview
   const threads = listMobileChatThreads();
   const recentRuns = activeWorkspace ? listAgentRuns(activeWorkspace.id, 8) : [];
   const workspaceHealth = buildMobileWorkspaceHealth(activeWorkspace);
+  const workItems = listMobileWorkItems();
+  const currentIterationPath = resolveCurrentIterationPath();
 
   return {
     generatedAt: new Date().toISOString(),
@@ -886,12 +892,85 @@ export function getMobileOverview(requestedWorkspaceId?: string): MobileOverview
     threads,
     recentRuns,
     workspaceHealth,
+    workItems,
+    currentIterationPath,
     workQueue: buildMobileWorkQueue(activeWorkspace, activeSessions, pendingApprovals, threads),
     workflow: buildWorkflowDigest(activeWorkspace, activeSessions, pendingApprovals, threads),
     quickActions: listMobileQuickActions(),
     companion: buildStatus(ensureMobileCompanionSettings()),
     notifications: listRecentCompanionNotifications(),
   };
+}
+
+function resolveCurrentIterationPath(): string | undefined {
+  if (!databaseHasTables(['work_items_cache'])) return undefined;
+  const rows = getDb()
+    .prepare(
+      `SELECT iteration_path, raw_json
+       FROM work_items_cache
+       WHERE iteration_path IS NOT NULL AND TRIM(iteration_path) != ''
+       ORDER BY fetched_at DESC
+       LIMIT 100`,
+    )
+    .all() as MobileWorkItemRow[];
+
+  for (const row of rows) {
+    if (!row.iteration_path || !row.raw_json) continue;
+    try {
+      const raw = JSON.parse(row.raw_json) as unknown;
+      if (containsActiveIteration(raw)) return row.iteration_path;
+    } catch {
+      // Provider cache payloads are best-effort metadata; malformed JSON should not break mobile.
+    }
+  }
+  return undefined;
+}
+
+function containsActiveIteration(value: unknown, iterationContext = false): boolean {
+  if (Array.isArray(value)) return value.some((item) => containsActiveIteration(item, iterationContext));
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  if (
+    iterationContext &&
+    typeof record.state === 'string' &&
+    record.state.toLowerCase() === 'active'
+  ) {
+    return true;
+  }
+  for (const [key, nested] of Object.entries(record)) {
+    if (containsActiveIteration(nested, iterationContext || /(sprint|cycle|iteration)/i.test(key))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function listMobileWorkItems(): MobileWorkItemSummary[] {
+  if (!databaseHasTables(['work_items_cache'])) return [];
+
+  const rows = getDb()
+    .prepare(
+      `SELECT id, title, type, state, priority, assignee, iteration_path, fetched_at
+       FROM work_items_cache
+       WHERE COALESCE(LOWER(state), '') NOT IN ('done', 'closed', 'resolved', 'complete', 'completed')
+       ORDER BY
+         CASE WHEN iteration_path IS NULL OR TRIM(iteration_path) = '' THEN 1 ELSE 0 END,
+         COALESCE(priority, 999) ASC,
+         fetched_at DESC
+       LIMIT 100`,
+    )
+    .all() as MobileWorkItemRow[];
+
+  return rows.map((row) => ({
+    id: row.id,
+    title: row.title ?? row.id,
+    type: row.type ?? undefined,
+    state: row.state ?? undefined,
+    priority: row.priority ?? undefined,
+    assignee: row.assignee ?? undefined,
+    iterationPath: row.iteration_path ?? undefined,
+    updatedAt: row.fetched_at ?? new Date().toISOString(),
+  }));
 }
 
 function resolveMobileActiveWorkspace(

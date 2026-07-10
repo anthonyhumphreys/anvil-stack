@@ -850,6 +850,17 @@ export interface MobileWorkspaceHealth {
   signals: MobileWorkspaceSignal[];
 }
 
+export interface MobileWorkItemSummary {
+  id: string;
+  title: string;
+  type?: string;
+  state?: string;
+  priority?: number;
+  assignee?: string;
+  iterationPath?: string;
+  updatedAt: string;
+}
+
 export interface MobileQuickAction {
   id: string;
   title: string;
@@ -897,6 +908,8 @@ export interface MobileOverview {
   threads: MobileChatThreadSummary[];
   recentRuns: AgentRunSummary[];
   workspaceHealth: MobileWorkspaceHealth;
+  workItems: MobileWorkItemSummary[];
+  currentIterationPath?: string;
   workQueue: MobileWorkQueueItem[];
   workflow: MobileWorkflowDigest;
   quickActions: MobileQuickAction[];
@@ -1634,7 +1647,18 @@ export interface DiagnosticsSnapshot {
   capturedAt: string;
   mainProcess: {
     pid: number;
-    platform: NodeJS.Platform;
+    platform:
+      | 'aix'
+      | 'android'
+      | 'darwin'
+      | 'freebsd'
+      | 'haiku'
+      | 'linux'
+      | 'openbsd'
+      | 'sunos'
+      | 'win32'
+      | 'cygwin'
+      | 'netbsd';
     arch: string;
     uptimeSeconds: number;
     memory: DiagnosticMemoryUsage;

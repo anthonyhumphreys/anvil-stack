@@ -1,6 +1,6 @@
-import MaterialIcons from '@expo/vector-icons/MaterialIcons';
+import { MaterialIcons } from '@react-native-vector-icons/material-icons';
 import { router, useLocalSearchParams, type RelativePathString } from 'expo-router';
-import { useEffect, useMemo, useState, type ComponentProps } from 'react';
+import { useMemo, useState, type ComponentProps } from 'react';
 import { RefreshControl, ScrollView, Text, TouchableOpacity, View } from 'react-native';
 import {
   ActionButton,
@@ -69,7 +69,7 @@ const QUICK_PLANS: {
 export function WorkspaceHealthBoard() {
   const { connection, overview, loading, refresh, startWorkflow, openOnDesktop } = useCompanion();
   const params = useLocalSearchParams<{ filter?: string }>();
-  const [filter, setFilter] = useState<WorkFilter>('all');
+  const [filter, setFilter] = useState<WorkFilter>(() => parseFilter(params.filter) ?? 'all');
   const [launchingActionId, setLaunchingActionId] = useState<string | null>(null);
 
   const activeWorkspace = overview?.activeWorkspace;
@@ -79,11 +79,6 @@ export function WorkspaceHealthBoard() {
   const filteredSignals = signals.filter((signal) => filter === 'all' || signal.kind === filter);
   const canLaunch = Boolean(connection && activeWorkspace && repos.length > 0);
   const openSignalCount = signals.length;
-
-  useEffect(() => {
-    const nextFilter = parseFilter(params.filter);
-    if (nextFilter) setFilter(nextFilter);
-  }, [params.filter]);
 
   const startPlan = async (input: Omit<MobileStartChatInput, 'workspaceId' | 'repoIds'>) => {
     if (!canLaunch) return;

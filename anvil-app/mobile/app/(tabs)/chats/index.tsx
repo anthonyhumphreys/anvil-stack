@@ -1,4 +1,4 @@
-import MaterialIcons from '@expo/vector-icons/MaterialIcons';
+import { MaterialIcons } from '@react-native-vector-icons/material-icons';
 import { router, type RelativePathString } from 'expo-router';
 import { useMemo, useState } from 'react';
 import { RefreshControl, ScrollView, Text, TextInput, Pressable, View } from 'react-native';

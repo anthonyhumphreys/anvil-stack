@@ -1,11 +1,14 @@
-import MaterialIcons from '@expo/vector-icons/MaterialIcons';
+import { MaterialIcons } from '@react-native-vector-icons/material-icons';
 import { Image } from 'expo-image';
 import { Stack, router, useLocalSearchParams, type RelativePathString } from 'expo-router';
-import { useEffect, useMemo, useRef, useState, type ComponentProps } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from 'react';
 import {
+  Alert,
+  FlatList,
   KeyboardAvoidingView,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
   RefreshControl,
-  ScrollView,
   Text,
   TextInput,
   TouchableOpacity,
@@ -14,20 +17,15 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
-  ActionButton,
-  BlockedNotice,
   EmptyState,
   Panel,
-  StatusPill,
   bodyStyle,
   companionColors,
-  inputStyle,
   monoStyle,
   screenStyle,
   subtleStyle,
   titleStyle,
 } from '@/components/companion-ui';
-import { ReasoningPicker } from '@/components/reasoning-picker';
 import { useCompanion } from '@/contexts/companion-context';
 import { chatAttachmentUrl, type CompanionConnection } from '@/lib/anvil-api';
 import type {
@@ -37,7 +35,6 @@ import type {
   ChatFileMentionSearchResult,
   ChatMessage,
   CodexRegisteredSkill,
-  MobileChatThreadSummary,
   ReasoningEffort,
 } from '../../../../src/shared/types';
 
@@ -45,6 +42,23 @@ type IconName = ComponentProps<typeof MaterialIcons>['name'];
 
 const MAX_ATTACHMENT_COUNT = 10;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+
+interface OptimisticMessage {
+  id: string;
+  content: string;
+  timestamp: string;
+  state: 'sending' | 'failed';
+  input: {
+    message: string;
+    attachments: ChatAttachmentInput[];
+    collaborationMode: ChatCollaborationMode;
+    reasoningEffort: ReasoningEffort;
+  };
+}
+
+type TimelineMessage =
+  | { kind: 'persisted'; message: ChatMessage }
+  | { kind: 'optimistic'; message: OptimisticMessage };
 
 export default function ChatThreadScreen() {
   const { threadId } = useLocalSearchParams<{ threadId: string }>();
@@ -63,7 +77,8 @@ export default function ChatThreadScreen() {
     connection,
   } = useCompanion();
   const insets = useSafeAreaInsets();
-  const scrollRef = useRef<ScrollView | null>(null);
+  const listRef = useRef<FlatList<TimelineMessage> | null>(null);
+  const nearBottomRef = useRef(true);
   const [draft, setDraft] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [mode, setMode] = useState<ChatCollaborationMode>('default');
@@ -73,9 +88,16 @@ export default function ChatThreadScreen() {
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [fileSuggestions, setFileSuggestions] = useState<ChatFileMentionSearchResult[]>([]);
   const [skillSuggestions, setSkillSuggestions] = useState<CodexRegisteredSkill[]>([]);
+  const [optimisticMessages, setOptimisticMessages] = useState<OptimisticMessage[]>([]);
 
   const thread = threads.find((candidate) => candidate.id === threadId);
-  const visibleMessages = useMemo(() => selectedThreadHistory, [selectedThreadHistory]);
+  const visibleMessages = useMemo<TimelineMessage[]>(
+    () => [
+      ...selectedThreadHistory.map((message) => ({ kind: 'persisted' as const, message })),
+      ...optimisticMessages.map((message) => ({ kind: 'optimistic' as const, message })),
+    ],
+    [optimisticMessages, selectedThreadHistory],
+  );
 
   useEffect(() => {
     if (threadId) void selectThread(threadId);
@@ -86,11 +108,6 @@ export default function ChatThreadScreen() {
     const interval = setInterval(() => void selectThread(threadId), 2_000);
     return () => clearInterval(interval);
   }, [selectThread, thread?.activeSessionId, threadId]);
-
-  useEffect(() => {
-    const timer = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 120);
-    return () => clearTimeout(timer);
-  }, [visibleMessages.length]);
 
   const activeTrigger = useMemo(() => activeComposerTrigger(draft), [draft]);
 
@@ -133,39 +150,82 @@ export default function ChatThreadScreen() {
     if (threadId) await selectThread(threadId);
   };
 
-  const submit = async () => {
-    if (!thread || (!draft.trim() && attachments.length === 0)) return;
-    const message = draft.trim() || attachmentOnlyMessage(attachments);
-    setSubmitting(true);
-    setAttachmentError(null);
+  const sendOptimisticMessage = async (optimistic: OptimisticMessage) => {
+    if (!thread) return;
+    setOptimisticMessages((current) =>
+      current.map((message) =>
+        message.id === optimistic.id ? { ...message, state: 'sending' } : message,
+      ),
+    );
     try {
       if (thread.activeSessionId) {
-        await sendMessage(thread.id, thread.activeSessionId, {
-          message,
-          attachments,
-          collaborationMode: mode,
-          reasoningEffort,
-        });
+        await sendMessage(thread.id, thread.activeSessionId, optimistic.input);
       } else {
         const result = await startWorkflow({
-          message,
+          ...optimistic.input,
           title: thread.title,
           personaId: thread.personaId,
           workspaceId: thread.workspaceId,
           repoIds: thread.repoIds ?? [],
-          attachments,
-          collaborationMode: mode,
-          reasoningEffort,
         });
-        if (!result) return;
+        if (!result) throw new Error('Anvil could not start this run.');
         if (result.thread.id !== thread.id) router.replace(threadHref(result.thread.id));
       }
-      setDraft('');
-      setAttachments([]);
-    } finally {
-      setSubmitting(false);
+      setOptimisticMessages((current) => current.filter((message) => message.id !== optimistic.id));
+    } catch {
+      setOptimisticMessages((current) =>
+        current.map((message) =>
+          message.id === optimistic.id ? { ...message, state: 'failed' } : message,
+        ),
+      );
     }
   };
+
+  const submit = async () => {
+    if (!thread || (!draft.trim() && attachments.length === 0)) return;
+    const message = draft.trim() || attachmentOnlyMessage(attachments);
+    const optimistic: OptimisticMessage = {
+      id: `optimistic:${Date.now()}`,
+      content: message,
+      timestamp: new Date().toISOString(),
+      state: 'sending',
+      input: {
+        message,
+        attachments: [...attachments],
+        collaborationMode: mode,
+        reasoningEffort,
+      },
+    };
+    setSubmitting(true);
+    setAttachmentError(null);
+    setDraft('');
+    setAttachments([]);
+    setOptimisticMessages((current) => [...current, optimistic]);
+    nearBottomRef.current = true;
+    await sendOptimisticMessage(optimistic);
+    setSubmitting(false);
+  };
+
+  const openComposerMenu = () => {
+    Alert.alert('Chat options', 'Add context or tune this run.', [
+      { text: 'Add file', onPress: () => void pickFiles() },
+      { text: 'Add photo', onPress: () => void pickPhotos() },
+      {
+        text: mode === 'plan' ? 'Switch to Build' : 'Switch to Plan',
+        onPress: () => setMode((current) => (current === 'plan' ? 'default' : 'plan')),
+      },
+      {
+        text: `Reasoning: ${reasoningEffort}`,
+        onPress: () => setReasoningEffort(nextReasoningEffort(reasoningEffort)),
+      },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
+
+  const handleTimelineScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    nearBottomRef.current = contentSize.height - layoutMeasurement.height - contentOffset.y < 140;
+  }, []);
 
   const selectFileSuggestion = (file: ChatFileMentionSearchResult) => {
     setAttachments((current) =>
@@ -283,17 +343,7 @@ export default function ChatThreadScreen() {
       <Stack.Screen
         options={{
           title: thread?.title ?? 'Thread',
-          headerRight: thread?.activeSessionId
-            ? () => (
-                <TouchableOpacity
-                  activeOpacity={0.72}
-                  onPress={() => void interrupt(thread.activeSessionId!)}
-                  style={headerButtonStyle}
-                >
-                  <MaterialIcons name="stop-circle" size={22} color={companionColors.red} />
-                </TouchableOpacity>
-              )
-            : undefined,
+          headerRight: undefined,
         }}
       />
       <KeyboardAvoidingView
@@ -301,49 +351,68 @@ export default function ChatThreadScreen() {
         behavior={process.env.EXPO_OS === 'ios' ? 'padding' : undefined}
         keyboardVerticalOffset={92}
       >
-        <ScrollView
-          ref={scrollRef}
+        <FlatList
+          ref={listRef}
+          data={visibleMessages}
+          keyExtractor={(item) => item.message.id}
           style={{ flex: 1 }}
           contentInsetAdjustmentBehavior="automatic"
+          keyboardDismissMode="interactive"
+          keyboardShouldPersistTaps="handled"
+          onScroll={handleTimelineScroll}
+          scrollEventThrottle={80}
+          onContentSizeChange={() => {
+            if (nearBottomRef.current) listRef.current?.scrollToEnd({ animated: true });
+          }}
           refreshControl={
             <RefreshControl refreshing={loading} onRefresh={() => void reloadThread()} />
           }
-          contentContainerStyle={[threadContentStyle, { paddingBottom: 18 }]}
-        >
-          {thread ? <ThreadBrief thread={thread} /> : <MissingThread />}
-
-          {error && (
-            <Text selectable style={[subtleStyle, { color: companionColors.red }]}>
-              {error}
-            </Text>
-          )}
-
-          {visibleMessages.length === 0 ? (
+          contentContainerStyle={threadContentStyle}
+          ItemSeparatorComponent={() => <View style={{ height: 12 }} />}
+          ListHeaderComponent={
+            !thread || error || thread.pendingApprovalCount > 0 ? (
+              <View style={{ gap: 8, paddingBottom: 12 }}>
+                {!thread && <MissingThread />}
+                {thread?.pendingApprovalCount ? (
+                  <TouchableOpacity
+                    accessibilityRole="button"
+                    onPress={() => router.push('/(tabs)/approvals')}
+                    style={approvalNoticeStyle}
+                  >
+                    <MaterialIcons name="priority-high" size={18} color={companionColors.red} />
+                    <Text style={approvalNoticeTextStyle}>
+                      {thread.pendingApprovalCount} approval
+                      {thread.pendingApprovalCount === 1 ? '' : 's'} waiting
+                    </Text>
+                  </TouchableOpacity>
+                ) : null}
+                {error && (
+                  <Text selectable accessibilityLiveRegion="polite" style={errorTextStyle}>
+                    {error}
+                  </Text>
+                )}
+              </View>
+            ) : null
+          }
+          ListEmptyComponent={
             <EmptyState
               title="No messages loaded"
               body={thread?.preview || 'Pull to refresh this thread.'}
             />
-          ) : (
-            <View style={messageListStyle}>
-              {visibleMessages.map((message) => (
-                <MessageBubble key={message.id} message={message} connection={connection} />
-              ))}
-            </View>
-          )}
-        </ScrollView>
+          }
+          renderItem={({ item }) =>
+            item.kind === 'persisted' ? (
+              <MessageBubble message={item.message} connection={connection} />
+            ) : (
+              <OptimisticBubble
+                message={item.message}
+                onRetry={() => void sendOptimisticMessage(item.message)}
+              />
+            )
+          }
+        />
 
         <View style={[composerBarStyle, { paddingBottom: Math.max(insets.bottom, 12) }]}>
-          <View style={controlRowStyle}>
-            <SegmentedControl
-              value={mode}
-              options={[
-                { value: 'default', label: 'Build' },
-                { value: 'plan', label: 'Plan' },
-              ]}
-              onChange={(next) => setMode(next as ChatCollaborationMode)}
-            />
-            <ReasoningPicker value={reasoningEffort} onChange={setReasoningEffort} />
-          </View>
           {attachments.length > 0 && (
             <View style={attachmentChipRowStyle}>
               {attachments.map((attachment) => (
@@ -421,79 +490,59 @@ export default function ChatThreadScreen() {
               ))}
             </View>
           )}
-          <TextInput
-            value={draft}
-            onChangeText={setDraft}
-            placeholder={
-              thread?.activeSessionId
-                ? 'Steer the run. Use @files or $skills…'
-                : 'Start a run. Use @files or $skills…'
-            }
-            placeholderTextColor={companionColors.faint}
-            multiline
-            style={[inputStyle, composerInputStyle]}
-          />
-          <View style={composerActionRowStyle}>
+          <View style={composerShellStyle}>
             <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel="Chat options"
               activeOpacity={0.72}
-              onPress={() => void pickFiles()}
+              onPress={openComposerMenu}
               disabled={pickingAttachment || attachments.length >= MAX_ATTACHMENT_COUNT}
-              style={[composerToolButtonStyle, pickingAttachment && disabledToolButtonStyle]}
+              style={[composerIconButtonStyle, pickingAttachment && disabledToolButtonStyle]}
             >
-              <MaterialIcons name="attach-file" size={18} color={companionColors.ink} />
-              <Text style={composerToolButtonTextStyle}>File</Text>
+              <MaterialIcons name="add" size={22} color={companionColors.ink} />
             </TouchableOpacity>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <TextInput
+                accessibilityLabel="Message"
+                value={draft}
+                onChangeText={setDraft}
+                placeholder={thread?.activeSessionId ? 'Message Anvil…' : 'Start a run…'}
+                placeholderTextColor={companionColors.faint}
+                multiline
+                style={composerInputStyle}
+              />
+              <Text style={composerContextStyle}>
+                {mode === 'plan' ? 'Plan' : 'Build'} · {reasoningEffort}
+              </Text>
+            </View>
+            {thread?.activeSessionId && (
+              <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel="Stop run"
+                activeOpacity={0.72}
+                onPress={() => void interrupt(thread.activeSessionId!)}
+                style={composerIconButtonStyle}
+              >
+                <MaterialIcons name="stop" size={20} color={companionColors.red} />
+              </TouchableOpacity>
+            )}
             <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel={thread?.activeSessionId ? 'Send message' : 'Launch run'}
+              accessibilityState={{
+                disabled: submitting || (!draft.trim() && attachments.length === 0),
+              }}
               activeOpacity={0.72}
-              onPress={() => void pickPhotos()}
-              disabled={pickingAttachment || attachments.length >= MAX_ATTACHMENT_COUNT}
-              style={[composerToolButtonStyle, pickingAttachment && disabledToolButtonStyle]}
+              onPress={() => void submit()}
+              disabled={submitting || (!draft.trim() && attachments.length === 0)}
+              style={[sendIconButtonStyle, submitting && disabledToolButtonStyle]}
             >
-              <MaterialIcons name="image" size={18} color={companionColors.ink} />
-              <Text style={composerToolButtonTextStyle}>Photo</Text>
+              <MaterialIcons name="arrow-upward" size={20} color={companionColors.onDark} />
             </TouchableOpacity>
-            <Text numberOfLines={1} style={composerHintStyle}>
-              @ workspace files, $ skills
-            </Text>
           </View>
-          <ActionButton
-            label={submitting ? 'Sending…' : thread?.activeSessionId ? 'Send' : 'Launch'}
-            onPress={() => void submit()}
-            disabled={!thread || (!draft.trim() && attachments.length === 0) || submitting}
-            style={sendButtonStyle}
-          />
         </View>
       </KeyboardAvoidingView>
     </>
-  );
-}
-
-function ThreadBrief({ thread }: { thread: MobileChatThreadSummary }) {
-  const status = threadStatus(thread);
-  return (
-    <Panel compact style={threadBriefStyle}>
-      <View style={threadBriefHeaderStyle}>
-        <View style={{ flex: 1, gap: 4 }}>
-          <Text selectable style={titleStyle}>
-            {thread.title}
-          </Text>
-          <Text style={subtleStyle}>
-            {thread.personaId} / {thread.messageCount} messages / {relativeTime(thread.updatedAt)}
-          </Text>
-        </View>
-        <StatusPill label={status.label} color={status.color} background={status.background} />
-      </View>
-      {thread.preview && (
-        <Text selectable numberOfLines={3} style={bodyStyle}>
-          {thread.preview}
-        </Text>
-      )}
-      {thread.pendingApprovalCount > 0 && (
-        <BlockedNotice
-          body={`${thread.pendingApprovalCount} approval${thread.pendingApprovalCount === 1 ? '' : 's'} waiting. Open Approvals if the run is blocked.`}
-        />
-      )}
-    </Panel>
   );
 }
 
@@ -528,9 +577,7 @@ function MessageBubble({
           {message.repoContext}
         </Text>
       )}
-      <Text selectable style={messageTextStyle}>
-        {message.content}
-      </Text>
+      <MarkdownBody content={message.content} />
       {message.attachments?.length ? (
         <MessageAttachmentGrid attachments={message.attachments} connection={connection} />
       ) : null}
@@ -543,6 +590,142 @@ function MessageBubble({
       )}
     </View>
   );
+}
+
+function OptimisticBubble({
+  message,
+  onRetry,
+}: {
+  message: OptimisticMessage;
+  onRetry: () => void;
+}) {
+  return (
+    <View
+      style={[messageBubbleStyle, userBubbleStyle, message.state === 'failed' && failedBubbleStyle]}
+    >
+      <MarkdownBody content={message.content} />
+      <View style={optimisticStatusStyle}>
+        <Text accessibilityLiveRegion="polite" style={messageTimeStyle}>
+          {message.state === 'sending' ? 'Sending…' : 'Not sent'}
+        </Text>
+        {message.state === 'failed' && (
+          <TouchableOpacity accessibilityRole="button" onPress={onRetry} hitSlop={8}>
+            <Text style={retryTextStyle}>Retry</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+    </View>
+  );
+}
+
+function MarkdownBody({ content }: { content: string }) {
+  const blocks = parseMarkdownBlocks(content);
+  return (
+    <View style={{ gap: 8 }}>
+      {blocks.map((block, index) => {
+        if (block.kind === 'code') {
+          return (
+            <View key={`${index}:${block.content.slice(0, 12)}`} style={codeBlockStyle}>
+              {block.language ? <Text style={codeLanguageStyle}>{block.language}</Text> : null}
+              <Text selectable style={codeTextStyle}>
+                {block.content}
+              </Text>
+            </View>
+          );
+        }
+        if (block.kind === 'heading') {
+          return (
+            <Text key={`${index}:${block.content}`} selectable style={markdownHeadingStyle}>
+              {renderInlineMarkdown(block.content)}
+            </Text>
+          );
+        }
+        if (block.kind === 'list') {
+          return (
+            <View key={`${index}:${block.content}`} style={markdownListRowStyle}>
+              <Text style={markdownBulletStyle}>•</Text>
+              <Text selectable style={[messageTextStyle, { flex: 1 }]}>
+                {renderInlineMarkdown(block.content)}
+              </Text>
+            </View>
+          );
+        }
+        return (
+          <Text key={`${index}:${block.content.slice(0, 12)}`} selectable style={messageTextStyle}>
+            {renderInlineMarkdown(block.content)}
+          </Text>
+        );
+      })}
+    </View>
+  );
+}
+
+type MarkdownBlock = {
+  kind: 'paragraph' | 'heading' | 'list' | 'code';
+  content: string;
+  language?: string;
+};
+
+function parseMarkdownBlocks(content: string): MarkdownBlock[] {
+  const blocks: MarkdownBlock[] = [];
+  const lines = content.split('\n');
+  let paragraph: string[] = [];
+  let code: string[] | null = null;
+  let language = '';
+  const flushParagraph = () => {
+    if (paragraph.length > 0) blocks.push({ kind: 'paragraph', content: paragraph.join('\n') });
+    paragraph = [];
+  };
+  for (const line of lines) {
+    if (line.startsWith('```')) {
+      if (code) {
+        blocks.push({ kind: 'code', content: code.join('\n'), language });
+        code = null;
+        language = '';
+      } else {
+        flushParagraph();
+        code = [];
+        language = line.slice(3).trim();
+      }
+      continue;
+    }
+    if (code) {
+      code.push(line);
+      continue;
+    }
+    const heading = line.match(/^#{1,3}\s+(.+)/);
+    const list = line.match(/^\s*[-*]\s+(.+)/);
+    if (heading || list || !line.trim()) {
+      flushParagraph();
+      if (heading) blocks.push({ kind: 'heading', content: heading[1] });
+      if (list) blocks.push({ kind: 'list', content: list[1] });
+      continue;
+    }
+    paragraph.push(line);
+  }
+  flushParagraph();
+  if (code) blocks.push({ kind: 'code', content: code.join('\n'), language });
+  return blocks;
+}
+
+function renderInlineMarkdown(content: string) {
+  return content.split(/(`[^`]+`|\*\*[^*]+\*\*)/g).map((part, index) => {
+    if (part.startsWith('`') && part.endsWith('`')) {
+      return (
+        <Text key={index} style={inlineCodeStyle}>
+          {part.slice(1, -1)}
+        </Text>
+      );
+    }
+    if (part.startsWith('**') && part.endsWith('**')) {
+      return (
+        <Text key={index} style={{ fontWeight: '800' }}>
+          {part.slice(2, -2)}
+        </Text>
+      );
+    }
+    return part;
+  });
 }
 
 function MessageAttachmentGrid({
@@ -577,7 +760,10 @@ function MessageAttachmentCard({
     <View style={messageAttachmentCardStyle}>
       {isImage ? (
         <Image
-          source={chatAttachmentUrl(connection, attachment.id)}
+          source={{
+            uri: chatAttachmentUrl(connection, attachment.id),
+            headers: { Authorization: `Bearer ${connection.token}` },
+          }}
           contentFit="cover"
           transition={140}
           style={messageAttachmentImageStyle}
@@ -601,24 +787,6 @@ function MessageAttachmentCard({
       </View>
     </View>
   );
-}
-
-function threadStatus(thread: MobileChatThreadSummary) {
-  if (thread.pendingApprovalCount > 0) {
-    return {
-      label: 'blocked',
-      color: companionColors.red,
-      background: companionColors.redSoft,
-    };
-  }
-  if (thread.activeSessionId) {
-    return {
-      label: thread.activeSessionStatus ?? 'live',
-      color: companionColors.blue,
-      background: companionColors.blueSoft,
-    };
-  }
-  return { label: 'ready', color: companionColors.green, background: companionColors.greenSoft };
 }
 
 function relativeTime(value: string): string {
@@ -705,50 +873,13 @@ function formatBytes(bytes: number): string {
   return `${Math.round((bytes / (1024 * 1024)) * 10) / 10} MB`;
 }
 
-function SegmentedControl({
-  value,
-  options,
-  onChange,
-}: {
-  value: string;
-  options: { value: string; label: string }[];
-  onChange: (value: string) => void;
-}) {
-  return (
-    <View style={segmentedStyle}>
-      {options.map((option) => {
-        const selected = option.value === value;
-        return (
-          <TouchableOpacity
-            key={option.value}
-            activeOpacity={0.74}
-            onPress={() => onChange(option.value)}
-            style={[segmentStyle, selected && segmentActiveStyle]}
-          >
-            <Text style={[segmentTextStyle, selected && segmentTextActiveStyle]}>
-              {option.label}
-            </Text>
-          </TouchableOpacity>
-        );
-      })}
-    </View>
-  );
+function nextReasoningEffort(value: ReasoningEffort): ReasoningEffort {
+  if (value === 'low') return 'medium';
+  if (value === 'medium') return 'high';
+  return 'low';
 }
 
-const headerButtonStyle = {
-  width: 34,
-  height: 34,
-  alignItems: 'center' as const,
-  justifyContent: 'center' as const,
-};
-const threadContentStyle = { padding: 16, gap: 14 };
-const threadBriefStyle = { gap: 10 };
-const threadBriefHeaderStyle = {
-  flexDirection: 'row' as const,
-  alignItems: 'flex-start' as const,
-  gap: 12,
-};
-const messageListStyle = { gap: 12 };
+const threadContentStyle = { padding: 16, paddingBottom: 18, flexGrow: 1 };
 const messageBubbleStyle = {
   maxWidth: '94%' as const,
   alignSelf: 'flex-start' as const,
@@ -764,6 +895,7 @@ const userBubbleStyle = {
   backgroundColor: companionColors.cyanSoft,
   borderColor: companionColors.cyanBorder,
 };
+const failedBubbleStyle = { borderColor: companionColors.redBorder };
 const systemBubbleStyle = {
   maxWidth: '100%' as const,
   alignSelf: 'stretch' as const,
@@ -787,6 +919,50 @@ const messageTimeStyle = {
   fontVariant: ['tabular-nums'],
 } satisfies TextStyle;
 const messageTextStyle = { color: companionColors.ink, lineHeight: 20, fontSize: 15 };
+const markdownHeadingStyle = {
+  color: companionColors.ink,
+  fontSize: 17,
+  lineHeight: 22,
+  fontWeight: '900' as const,
+};
+const markdownListRowStyle = {
+  flexDirection: 'row' as const,
+  gap: 8,
+  alignItems: 'flex-start' as const,
+};
+const markdownBulletStyle = { color: companionColors.subtle, fontSize: 17, lineHeight: 20 };
+const codeBlockStyle = {
+  padding: 11,
+  gap: 6,
+  borderRadius: 8,
+  borderCurve: 'continuous' as const,
+  backgroundColor: companionColors.dark,
+};
+const codeLanguageStyle = {
+  color: companionColors.darkMuted,
+  fontSize: 11,
+  fontWeight: '800' as const,
+  textTransform: 'uppercase' as const,
+};
+const codeTextStyle = {
+  color: companionColors.onDark,
+  fontFamily: 'Menlo',
+  fontSize: 13,
+  lineHeight: 19,
+};
+const inlineCodeStyle = {
+  color: companionColors.ink,
+  fontFamily: 'Menlo',
+  fontSize: 13,
+  backgroundColor: companionColors.surfaceMuted,
+};
+const optimisticStatusStyle = {
+  flexDirection: 'row' as const,
+  justifyContent: 'flex-end' as const,
+  alignItems: 'center' as const,
+  gap: 12,
+};
+const retryTextStyle = { color: companionColors.red, fontSize: 12, fontWeight: '900' as const };
 const messageAttachmentGridStyle = {
   gap: 8,
 };
@@ -841,32 +1017,6 @@ const composerBarStyle = {
   paddingTop: 10,
   gap: 8,
 };
-const controlRowStyle = {
-  flexDirection: 'row' as const,
-  alignItems: 'center' as const,
-  gap: 8,
-  flexWrap: 'wrap' as const,
-};
-const segmentedStyle = {
-  flexDirection: 'row' as const,
-  backgroundColor: companionColors.surfaceMuted,
-  borderColor: companionColors.borderSubtle,
-  borderWidth: 1,
-  borderRadius: 8,
-  padding: 2,
-};
-const segmentStyle = {
-  paddingHorizontal: 10,
-  paddingVertical: 7,
-  borderRadius: 6,
-};
-const segmentActiveStyle = { backgroundColor: companionColors.dark };
-const segmentTextStyle = {
-  color: companionColors.subtle,
-  fontSize: 12,
-  fontWeight: '900' as const,
-};
-const segmentTextActiveStyle = { color: companionColors.onDark };
 const attachmentChipRowStyle = {
   flexDirection: 'row' as const,
   gap: 6,
@@ -922,36 +1072,56 @@ const suggestionHintStyle = {
 };
 const composerInputStyle = {
   minHeight: 44,
-  maxHeight: 132,
-  textAlignVertical: 'top' as const,
+  maxHeight: 112,
+  paddingHorizontal: 4,
+  paddingTop: 10,
+  paddingBottom: 2,
+  color: companionColors.ink,
+  fontSize: 16,
+  textAlignVertical: 'center' as const,
 };
-const composerActionRowStyle = {
+const composerShellStyle = {
   flexDirection: 'row' as const,
-  gap: 8,
-};
-const composerToolButtonStyle = {
-  flexDirection: 'row' as const,
-  alignItems: 'center' as const,
-  justifyContent: 'center' as const,
+  alignItems: 'flex-end' as const,
   gap: 6,
-  flex: 1,
-  minHeight: 38,
   borderWidth: 1,
-  borderRadius: 8,
-  borderColor: companionColors.borderSubtle,
+  borderColor: companionColors.border,
+  borderRadius: 22,
+  borderCurve: 'continuous' as const,
+  padding: 5,
   backgroundColor: companionColors.surfaceMuted,
 };
-const composerToolButtonTextStyle = {
-  color: companionColors.ink,
-  fontSize: 13,
-  fontWeight: '900' as const,
+const composerIconButtonStyle = {
+  width: 38,
+  height: 38,
+  alignItems: 'center' as const,
+  justifyContent: 'center' as const,
+  borderRadius: 19,
 };
-const composerHintStyle = {
-  flex: 1,
-  alignSelf: 'center' as const,
+const sendIconButtonStyle = {
+  width: 38,
+  height: 38,
+  alignItems: 'center' as const,
+  justifyContent: 'center' as const,
+  borderRadius: 19,
+  backgroundColor: companionColors.dark,
+};
+const composerContextStyle = {
+  paddingHorizontal: 4,
+  paddingBottom: 5,
   color: companionColors.subtle,
-  fontSize: 12,
-  fontWeight: '700' as const,
+  fontSize: 11,
+  textTransform: 'capitalize' as const,
 };
 const disabledToolButtonStyle = { opacity: 0.5 };
-const sendButtonStyle = { minHeight: 44 };
+const approvalNoticeStyle = {
+  minHeight: 44,
+  paddingHorizontal: 12,
+  flexDirection: 'row' as const,
+  alignItems: 'center' as const,
+  gap: 8,
+  borderRadius: 10,
+  backgroundColor: companionColors.redSoft,
+};
+const approvalNoticeTextStyle = { flex: 1, color: companionColors.red, fontWeight: '800' as const };
+const errorTextStyle = { ...subtleStyle, color: companionColors.red };

@@ -19,8 +19,12 @@ export async function loadSelectedWorkspaceId(connectionId: string): Promise<str
 
 export async function saveSelectedWorkspaceId(
   connectionId: string,
-  workspaceId: string,
+  workspaceId: string | null,
 ): Promise<void> {
+  if (!workspaceId) {
+    await SecureStore.deleteItemAsync(workspaceKey(connectionId));
+    return;
+  }
   await SecureStore.setItemAsync(workspaceKey(connectionId), workspaceId);
 }
 

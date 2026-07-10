@@ -1,11 +1,18 @@
-import MaterialIcons from '@expo/vector-icons/MaterialIcons';
+import { MaterialIcons } from '@react-native-vector-icons/material-icons';
 import { useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 import { useCompanion } from '@/contexts/companion-context';
 import { companionColors } from '@/components/companion-ui';
 
 export function WorkspaceBar() {
-  const { connection, overview, selectWorkspace, usingCachedOverview } = useCompanion();
+  const {
+    connection,
+    overview,
+    selectedWorkspaceId,
+    selectWorkspace,
+    followDesktopWorkspace,
+    usingCachedOverview,
+  } = useCompanion();
   const [expanded, setExpanded] = useState(false);
   const workspace = overview?.activeWorkspace;
 
@@ -40,6 +47,7 @@ export function WorkspaceBar() {
             {workspace?.name ?? 'Choose a workspace'}
           </Text>
           <Text numberOfLines={1} style={{ color: companionColors.subtle, fontSize: 12 }}>
+            {selectedWorkspaceId ? 'Pinned' : 'Following Mac'} ·{' '}
             {connection?.deviceName ?? 'No host'}
             {usingCachedOverview ? ' · Offline snapshot' : ''}
           </Text>
@@ -63,8 +71,43 @@ export function WorkspaceBar() {
             backgroundColor: companionColors.surface,
           }}
         >
+          <Pressable
+            accessibilityRole="menuitem"
+            accessibilityLabel="Follow workspace selected on Mac"
+            accessibilityState={{ selected: selectedWorkspaceId === null }}
+            onPress={() => {
+              setExpanded(false);
+              void followDesktopWorkspace();
+            }}
+            style={({ pressed }) => ({
+              minHeight: 56,
+              paddingHorizontal: 14,
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 10,
+              backgroundColor:
+                selectedWorkspaceId === null
+                  ? companionColors.accentSoft
+                  : pressed
+                    ? companionColors.surfaceMuted
+                    : companionColors.surface,
+            })}
+          >
+            <MaterialIcons name="sync" size={20} color={companionColors.subtle} />
+            <View style={{ flex: 1 }}>
+              <Text style={{ color: companionColors.ink, fontSize: 15, fontWeight: '700' }}>
+                Follow Mac
+              </Text>
+              <Text style={{ color: companionColors.subtle, fontSize: 12 }}>
+                Use the workspace currently selected on the host
+              </Text>
+            </View>
+            {selectedWorkspaceId === null && (
+              <MaterialIcons name="check" size={20} color={companionColors.accentInk} />
+            )}
+          </Pressable>
           {(overview?.workspaces ?? []).map((candidate) => {
-            const selected = candidate.id === workspace?.id;
+            const selected = candidate.id === selectedWorkspaceId;
             return (
               <Pressable
                 key={candidate.id}
