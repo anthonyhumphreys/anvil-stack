@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import {
   AlertCircle,
+  Bot,
   Check,
   ChevronDown,
   ChevronRight,
@@ -24,6 +25,7 @@ import type {
 import { VoiceInputButton } from './VoiceInputButton';
 import { slugForDomId } from '../../utils/dom-id';
 import { getNextListboxIndex } from '../../utils/list-navigation';
+import { EXECUTION_STRATEGIES, type ExecutionStrategy } from '../../utils/execution-strategy';
 
 const MAX_ATTACHMENT_COUNT = 10;
 const MAX_RENDERER_ATTACHMENT_BYTES = 25 * 1024 * 1024;
@@ -74,6 +76,8 @@ interface ChatInputProps {
   reasoningLevel?: ReasoningEffort;
   reasoningOptions?: ReasoningEffort[];
   onReasoningChange?: (level: ReasoningEffort) => void;
+  executionStrategy?: ExecutionStrategy;
+  onExecutionStrategyChange?: (strategy: ExecutionStrategy) => void;
   prefill?: { id: string; text: string } | null;
   draftKey?: string;
   mentionRepoIds?: string[];
@@ -91,6 +95,8 @@ export function ChatInput({
   reasoningLevel = 'medium',
   reasoningOptions,
   onReasoningChange,
+  executionStrategy = 'adaptive',
+  onExecutionStrategyChange,
   prefill,
   draftKey,
   mentionRepoIds = [],
@@ -810,11 +816,33 @@ export function ChatInput({
                   : 'Ask anything, paste images, or drop files here...'
             }
             rows={1}
-            className="chat-input-focus w-full resize-none rounded-2xl bg-transparent px-5 py-3.5 pr-48 text-sm text-text-primary placeholder:text-text-muted focus:outline-none disabled:opacity-50"
+            className="chat-input-focus w-full resize-none rounded-2xl bg-transparent px-5 py-3.5 pr-72 text-sm text-text-primary placeholder:text-text-muted focus:outline-none disabled:opacity-50"
             style={{ maxHeight: '300px', minHeight: '48px' }}
           />
 
           <div className="absolute bottom-2.5 right-2.5 flex items-center gap-1.5">
+            {onExecutionStrategyChange && !busy && (
+              <label className="flex h-9 items-center rounded-xl border border-border bg-bg-secondary px-2 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary">
+                <Bot size={13} className="mr-1.5 text-text-tertiary" />
+                <span className="sr-only">Execution strategy</span>
+                <select
+                  value={executionStrategy}
+                  onChange={(event) =>
+                    onExecutionStrategyChange(event.target.value as ExecutionStrategy)
+                  }
+                  className="max-w-24 bg-transparent outline-none"
+                  aria-label="Execution strategy"
+                  title="Guides how Codex delegates work to subagents"
+                >
+                  {EXECUTION_STRATEGIES.map((strategy) => (
+                    <option key={strategy.id} value={strategy.id} title={strategy.description}>
+                      {strategy.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+
             {onReasoningChange && !busy && (
               <ReasoningEffortDropdown
                 level={reasoningLevel}

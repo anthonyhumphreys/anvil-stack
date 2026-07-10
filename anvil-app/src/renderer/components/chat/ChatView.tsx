@@ -27,7 +27,6 @@ import {
   Loader2,
   Bot,
   SendHorizontal,
-  Activity,
   FileText,
   Braces,
   PanelRightOpen,
@@ -75,6 +74,10 @@ import {
 import { DesignSidebar } from '../design/DesignSidebar';
 import { ResizableSidebarPanel } from '../layout/ResizableSidebarPanel';
 import { isEditableShortcutTarget } from '../../utils/keyboard';
+import {
+  buildExecutionStrategyPrompt,
+  type ExecutionStrategy,
+} from '../../utils/execution-strategy';
 
 const PERSONA_ICONS: Record<string, React.ReactNode> = {
   Code: <Code size={14} />,
@@ -146,8 +149,8 @@ export function ChatView() {
   const [composerPrefill, setComposerPrefill] = useState<{ id: string; text: string } | null>(null);
   const [codexMode, setCodexMode] = useState<CodexMode>('on-request');
   const [goalPopoverOpen, setGoalPopoverOpen] = useState(false);
-  const [agentsOpen, setAgentsOpen] = useState(false);
-  const [runsOpen, setRunsOpen] = useState(false);
+  const [workOpen, setWorkOpen] = useState(false);
+  const [executionStrategy, setExecutionStrategy] = useState<ExecutionStrategy>('adaptive');
   const [canvasOpen, setCanvasOpen] = useState(true);
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [recentRuns, setRecentRuns] = useState<AgentRunSummary[]>([]);
@@ -370,9 +373,9 @@ export function ChatView() {
         return;
       }
 
-      void send(message, attachments);
+      void send(message, attachments, buildExecutionStrategyPrompt(executionStrategy) ?? undefined);
     },
-    [send, startNewSession],
+    [executionStrategy, send, startNewSession],
   );
 
   const handleCodexModeChange = useCallback(async (mode: CodexMode) => {
@@ -663,19 +666,11 @@ export function ChatView() {
           )}
 
           {!scaffoldModeActive && (
-            <AgentRunsControl
-              open={runsOpen}
+            <AgentWorkControl
+              open={workOpen}
               runs={recentRuns}
-              onOpenChange={setRunsOpen}
-              onOpenThread={(threadId) => void selectThread(threadId)}
-            />
-          )}
-
-          {!scaffoldModeActive && (
-            <ActiveAgentsControl
-              open={agentsOpen}
               sessions={activeSessions}
-              onOpenChange={setAgentsOpen}
+              onOpenChange={setWorkOpen}
               onOpenThread={(threadId) => void selectThread(threadId)}
               onStop={(sessionId) => void window.anvil.chat.stopSession(sessionId)}
             />
@@ -990,6 +985,8 @@ export function ChatView() {
             reasoningLevel={reasoningLevel}
             reasoningOptions={reasoningOptions}
             onReasoningChange={setReasoningLevel}
+            executionStrategy={executionStrategy}
+            onExecutionStrategyChange={setExecutionStrategy}
             prefill={composerPrefill}
             draftKey={composerDraftKey}
             mentionRepoIds={mentionRepoIds}
@@ -1146,20 +1143,27 @@ function isGroupedActivityEvent(event: CodexEvent): boolean {
   return GROUPED_ACTIVITY_EVENT_TYPES.includes(event.type);
 }
 
-function AgentRunsControl({
+function AgentWorkControl({
   open,
   runs,
+  sessions,
   onOpenChange,
   onOpenThread,
+  onStop,
 }: {
   open: boolean;
   runs: AgentRunSummary[];
+  sessions: CodexSession[];
   onOpenChange: (open: boolean) => void;
   onOpenThread: (threadId: string) => void;
+  onStop: (sessionId: string) => void;
 }) {
-  const activeCount = runs.filter(
-    (run) => run.status === 'queued' || run.status === 'running',
-  ).length;
+  const [section, setSection] = useState<'active' | 'recent'>('active');
+  const activeSessions = sessions.filter(
+    (session) => session.status === 'starting' || session.status === 'busy',
+  );
+  const activeRuns = runs.filter((run) => run.status === 'queued' || run.status === 'running');
+  const activeCount = Math.max(activeSessions.length, activeRuns.length);
 
   return (
     <div className="relative">
@@ -1168,14 +1172,15 @@ function AgentRunsControl({
         onClick={() => onOpenChange(!open)}
         className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-medium transition-colors ${
           activeCount > 0
-            ? 'border-info/30 bg-info/10 text-info hover:bg-info/15'
+            ? 'border-accent/30 bg-accent/10 text-accent hover:bg-accent/15'
             : 'border-border text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary'
         }`}
-        title="Recent agent runs"
-        aria-label="Recent agent runs"
+        title="Agent work"
+        aria-label="Agent work"
+        aria-expanded={open}
       >
-        <Activity size={13} />
-        <span>Runs</span>
+        <Bot size={13} />
+        <span>Work</span>
         {activeCount > 0 && (
           <span className="rounded-full bg-bg-primary px-1.5 text-[10px] text-text-primary">
             {activeCount}
@@ -1183,23 +1188,96 @@ function AgentRunsControl({
         )}
       </button>
       {open && (
-        <div className="absolute right-0 top-full z-50 mt-2 w-96 rounded-xl border border-border bg-bg-elevated p-2 shadow-xl">
-          <div className="border-b border-border-subtle px-2 pb-2">
-            <div className="text-sm font-semibold text-text-primary">Recent agent runs</div>
+        <div className="absolute right-0 top-full z-50 mt-2 w-[28rem] rounded-xl border border-border bg-bg-elevated p-2 shadow-xl">
+          <div className="px-2 pb-2">
+            <div className="text-sm font-semibold text-text-primary">Agent work</div>
             <div className="mt-1 text-xs text-text-tertiary">
-              Chat, automation, and code-review work in this workspace.
+              Live sessions and durable run history for this workspace.
             </div>
           </div>
-          <div className="max-h-80 overflow-y-auto py-2">
-            {runs.length === 0 ? (
+          <div className="flex gap-1 border-b border-border-subtle px-2 pb-2" role="tablist">
+            {(['active', 'recent'] as const).map((item) => (
+              <button
+                key={item}
+                type="button"
+                role="tab"
+                aria-selected={section === item}
+                onClick={() => setSection(item)}
+                className={`rounded-md px-2.5 py-1 text-xs font-medium capitalize transition-colors ${
+                  section === item
+                    ? 'bg-bg-tertiary text-text-primary'
+                    : 'text-text-tertiary hover:text-text-primary'
+                }`}
+              >
+                {item}
+                {item === 'active' && activeCount > 0 ? ` ${activeCount}` : ''}
+              </button>
+            ))}
+          </div>
+          <div className="max-h-96 overflow-y-auto py-2">
+            {section === 'active' && activeSessions.length === 0 ? (
+              <div className="px-3 py-6 text-center">
+                <Bot size={20} className="mx-auto text-text-muted" />
+                <p className="mt-2 text-sm text-text-secondary">No work is running.</p>
+                <p className="mt-1 text-xs text-text-tertiary">
+                  Adaptive and parallel strategies can delegate bounded tasks when useful.
+                </p>
+              </div>
+            ) : section === 'active' ? (
+              activeSessions.map((session) => (
+                <div
+                  key={session.id}
+                  className="mb-1 border-b border-border-subtle px-3 py-2.5 last:border-b-0"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
+                        <span className="truncate text-sm font-medium text-text-primary">
+                          {session.personaId}
+                        </span>
+                      </div>
+                      <div className="mt-1 text-xs text-text-tertiary">
+                        {session.status} · {session.kind ?? 'session'}
+                        {session.mode ? ` · ${session.mode}` : ''}
+                      </div>
+                      {session.providerThreadId && (
+                        <div className="mt-1 truncate font-mono text-[10px] text-text-muted">
+                          {session.providerThreadId}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => onStop(session.id)}
+                      className="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-text-secondary hover:bg-bg-tertiary hover:text-text-primary"
+                    >
+                      Stop
+                    </button>
+                  </div>
+                  {session.appThreadId && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onOpenThread(session.appThreadId!);
+                        onOpenChange(false);
+                      }}
+                      className="mt-2 text-xs font-medium text-accent hover:underline"
+                    >
+                      Open thread
+                    </button>
+                  )}
+                </div>
+              ))
+            ) : runs.length === 0 ? (
               <p className="px-2 py-4 text-center text-sm text-text-tertiary">
-                No agent runs captured yet.
+                No run history captured yet.
               </p>
             ) : (
               runs.map((run) => (
                 <div
                   key={run.id}
-                  className="mb-1 rounded-lg border border-border-subtle bg-bg-secondary/70 px-3 py-2"
+                  className="mb-1 border-b border-border-subtle px-3 py-2.5 last:border-b-0"
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
@@ -1281,108 +1359,6 @@ function formatTimestamp(value: string): string {
     hour: '2-digit',
     minute: '2-digit',
   });
-}
-
-function ActiveAgentsControl({
-  open,
-  sessions,
-  onOpenChange,
-  onOpenThread,
-  onStop,
-}: {
-  open: boolean;
-  sessions: CodexSession[];
-  onOpenChange: (open: boolean) => void;
-  onOpenThread: (threadId: string) => void;
-  onStop: (sessionId: string) => void;
-}) {
-  const activeCount = sessions.filter(
-    (session) => session.status === 'starting' || session.status === 'busy',
-  ).length;
-
-  return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={() => onOpenChange(!open)}
-        className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-medium transition-colors ${
-          activeCount > 0
-            ? 'border-accent/30 bg-accent/10 text-accent hover:bg-accent/15'
-            : 'border-border text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary'
-        }`}
-        title="Active Codex sessions"
-        aria-label="Active Codex sessions"
-      >
-        <Bot size={13} />
-        <span>Agents</span>
-        {activeCount > 0 && (
-          <span className="rounded-full bg-bg-primary px-1.5 text-[10px] text-text-primary">
-            {activeCount}
-          </span>
-        )}
-      </button>
-      {open && (
-        <div className="absolute right-0 top-full z-50 mt-2 w-80 rounded-xl border border-border bg-bg-elevated p-2 shadow-xl">
-          <div className="border-b border-border-subtle px-2 pb-2">
-            <div className="text-sm font-semibold text-text-primary">Active Codex Work</div>
-            <div className="mt-1 text-xs text-text-tertiary">
-              Live sessions across this desktop app.
-            </div>
-          </div>
-          <div className="max-h-72 overflow-y-auto py-2">
-            {sessions.length === 0 ? (
-              <p className="px-2 py-4 text-center text-sm text-text-tertiary">
-                No active sessions.
-              </p>
-            ) : (
-              sessions.map((session) => (
-                <div
-                  key={session.id}
-                  className="mb-1 rounded-lg border border-border-subtle bg-bg-secondary/70 px-3 py-2"
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-medium text-text-primary">
-                        {session.personaId}
-                      </div>
-                      <div className="mt-0.5 text-xs text-text-tertiary">
-                        {session.status} · {session.kind}
-                        {session.mode ? ` · ${session.mode}` : ''}
-                      </div>
-                      {session.providerThreadId && (
-                        <div className="mt-1 truncate font-mono text-[10px] text-text-tertiary">
-                          {session.providerThreadId}
-                        </div>
-                      )}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => onStop(session.id)}
-                      className="rounded-md border border-border px-2 py-1 text-xs text-text-secondary hover:bg-bg-tertiary hover:text-text-primary"
-                    >
-                      Stop
-                    </button>
-                  </div>
-                  {session.appThreadId && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onOpenThread(session.appThreadId!);
-                        onOpenChange(false);
-                      }}
-                      className="mt-2 text-xs font-medium text-accent hover:underline"
-                    >
-                      Open thread
-                    </button>
-                  )}
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
 }
 
 function GoalControl({

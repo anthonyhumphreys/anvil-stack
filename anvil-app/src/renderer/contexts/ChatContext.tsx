@@ -78,7 +78,7 @@ interface ChatContextValue {
   setActiveRepo: (repo: RepoInfo) => void;
   setActiveRepos: (repos: RepoInfo[]) => void;
   setSelectedGovernanceDocs: (docs: GovernanceDocument[]) => void;
-  send: (message: string, attachments?: ChatAttachment[]) => Promise<void>;
+  send: (message: string, attachments?: ChatAttachment[], modelContext?: string) => Promise<void>;
   steer: (message: string, attachments?: ChatAttachment[]) => Promise<void>;
   switchPersona: (persona: Persona) => Promise<void>;
   interrupt: () => Promise<void>;
@@ -1369,9 +1369,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   );
 
   const send = useCallback(
-    async (message: string, attachments: ChatAttachment[] = []) => {
+    async (message: string, attachments: ChatAttachment[] = [], modelContext?: string) => {
       const displayMessage = normaliseOutgoingMessage(message, attachments);
-      const modelMessage = buildAttachmentPrompt(displayMessage, attachments);
+      const attachmentPrompt = buildAttachmentPrompt(displayMessage, attachments);
+      const modelMessage = modelContext
+        ? `${modelContext}\n\n${attachmentPrompt}`
+        : attachmentPrompt;
       let nextArtifacts = dbInsightArtifacts;
       let nextAnalysis = dbInsightAnalysis;
 
