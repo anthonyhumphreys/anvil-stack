@@ -297,6 +297,7 @@ export interface CodexCliStatus {
   configuredModel?: string;
   configuredProvider?: string;
   configuredReasoningEffort?: string;
+  agentMaxThreads?: number;
   webSearchMode?: 'disabled' | 'cached' | 'indexed' | 'live';
   features?: Record<string, { stage: string; enabled: boolean }>;
   models?: CodexDetectedModel[];

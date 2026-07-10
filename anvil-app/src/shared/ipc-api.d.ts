@@ -461,6 +461,7 @@ export interface AnvilAPI {
     get: () => Promise<AppSettings>;
     update: (settings: Partial<AppSettings>) => Promise<void>;
     getCodexStatus: () => Promise<CodexCliStatus>;
+    setCodexAgentMaxThreads: (maxThreads: number) => Promise<CodexCliStatus>;
     testFoundryConnection: () => Promise<{ ok: boolean; error?: string }>;
     testAppleFoundationModels: () => Promise<{ ok: boolean; error?: string }>;
     testWorkItemProviderConnection: () => Promise<{ ok: boolean; error?: string }>;

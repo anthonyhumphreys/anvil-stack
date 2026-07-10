@@ -95,7 +95,7 @@ export function ChatInput({
   reasoningLevel = 'medium',
   reasoningOptions,
   onReasoningChange,
-  executionStrategy = 'adaptive',
+  executionStrategy = 'auto',
   onExecutionStrategyChange,
   prefill,
   draftKey,

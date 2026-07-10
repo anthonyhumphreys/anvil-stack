@@ -1,10 +1,15 @@
-export type ExecutionStrategy = 'focused' | 'adaptive' | 'parallel' | 'review-team';
+export type ExecutionStrategy = 'auto' | 'focused' | 'adaptive' | 'parallel' | 'review-team';
 
 export const EXECUTION_STRATEGIES: Array<{
   id: ExecutionStrategy;
   label: string;
   description: string;
 }> = [
+  {
+    id: 'auto',
+    label: 'Auto',
+    description: 'Let Codex choose its normal execution strategy.',
+  },
   {
     id: 'focused',
     label: 'Focused',
@@ -28,9 +33,11 @@ export const EXECUTION_STRATEGIES: Array<{
 ];
 
 export function buildExecutionStrategyPrompt(strategy: ExecutionStrategy): string | null {
-  if (strategy === 'focused') return null;
+  if (strategy === 'auto') return null;
 
-  const instructions: Record<Exclude<ExecutionStrategy, 'focused'>, string> = {
+  const instructions: Record<Exclude<ExecutionStrategy, 'auto'>, string> = {
+    focused:
+      'Keep work with the primary agent. Do not use subagents unless the user explicitly asks for delegation.',
     adaptive:
       'Use subagents for concrete, bounded tasks when parallel work would materially improve speed or confidence. Keep tightly coupled work with the primary agent and consolidate delegated results before finishing.',
     parallel:

@@ -15,7 +15,7 @@ import {
   readCodexAgentsFile,
   writeCodexAgentsFile,
 } from '../services/codex-agents-file.service.js';
-import { detectCodexCli } from '../services/codex-bridge.service.js';
+import { detectCodexCli, setCodexAgentMaxThreads } from '../services/codex-bridge.service.js';
 import {
   isNotionMcpInstalled,
   installNotionMcp,
@@ -73,6 +73,11 @@ export function registerSettingsHandlers(): void {
       console.error('[Settings IPC] Error detecting Codex CLI:', err);
       throw err;
     }
+  });
+
+  ipcMain.handle('settings:codex-agent-max-threads', async (_event, maxThreads: number) => {
+    setCodexAgentMaxThreads(maxThreads);
+    return detectCodexCli();
   });
 
   ipcMain.handle('settings:test-foundry', async () => {

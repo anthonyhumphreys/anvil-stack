@@ -46,6 +46,7 @@ export async function detectCodexCli(): Promise<CodexCliStatus> {
       configuredModel: config.configuredModel,
       configuredProvider: config.configuredProvider,
       configuredReasoningEffort: config.configuredReasoningEffort,
+      agentMaxThreads: config.agentMaxThreads,
       webSearchMode: config.webSearchMode,
       features,
       models,
@@ -137,6 +138,7 @@ function readCodexConfigSummary(): Pick<
   | 'configuredModel'
   | 'configuredProvider'
   | 'configuredReasoningEffort'
+  | 'agentMaxThreads'
   | 'webSearchMode'
 > {
   const configPaths = [
@@ -165,6 +167,7 @@ function readCodexConfigSummary(): Pick<
               typeof config.model_reasoning_effort === 'string'
                 ? config.model_reasoning_effort
                 : undefined,
+            agentMaxThreads: readPositiveInteger(config.agents?.max_threads),
             webSearchMode: parseWebSearchMode(config.web_search),
           };
         }
@@ -174,6 +177,7 @@ function readCodexConfigSummary(): Pick<
           configuredModel: readTomlString(content, 'model'),
           configuredProvider: readTomlString(content, 'model_provider'),
           configuredReasoningEffort: readTomlString(content, 'model_reasoning_effort'),
+          agentMaxThreads: readTomlAgentsMaxThreads(content),
           webSearchMode: parseWebSearchMode(readTomlString(content, 'web_search')),
         };
       } catch {
@@ -183,6 +187,61 @@ function readCodexConfigSummary(): Pick<
   }
 
   return {};
+}
+
+function readPositiveInteger(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+export function readTomlAgentsMaxThreads(content: string): number | undefined {
+  const agentsSection = content.match(
+    /^\s*\[agents\]\s*$([\s\S]*?)(?=^\s*\[[^\]]+\]\s*$|(?![\s\S]))/m,
+  )?.[1];
+  if (!agentsSection) return undefined;
+  const value = agentsSection.match(/^\s*max_threads\s*=\s*(\d+)\s*(?:#.*)?$/m)?.[1];
+  return value ? readPositiveInteger(Number(value)) : undefined;
+}
+
+export function setCodexAgentMaxThreads(maxThreads: number): void {
+  const configPath = path.join(getCodexHome(), 'config.toml');
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  const content = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf-8') : '';
+  const updated = updateTomlAgentsMaxThreads(content, maxThreads);
+  const temporaryPath = `${configPath}.anvil-tmp`;
+  fs.writeFileSync(temporaryPath, updated, { encoding: 'utf-8', mode: 0o600 });
+  fs.renameSync(temporaryPath, configPath);
+  cachedStatus = null;
+}
+
+export function updateTomlAgentsMaxThreads(content: string, maxThreads: number): string {
+  if (!Number.isInteger(maxThreads) || maxThreads < 1 || maxThreads > 64) {
+    throw new Error('Maximum concurrent agents must be an integer between 1 and 64.');
+  }
+
+  const sectionMatch = /^\s*\[agents\]\s*$/m.exec(content);
+  let updated: string;
+
+  if (!sectionMatch) {
+    const separator =
+      content.length === 0 || content.endsWith('\n\n')
+        ? ''
+        : content.endsWith('\n')
+          ? '\n'
+          : '\n\n';
+    updated = `${content}${separator}[agents]\nmax_threads = ${maxThreads}\n`;
+  } else {
+    const sectionStart = sectionMatch.index + sectionMatch[0].length;
+    const nextSectionOffset = content.slice(sectionStart).search(/^\s*\[[^\]]+\]\s*$/m);
+    const sectionEnd = nextSectionOffset === -1 ? content.length : sectionStart + nextSectionOffset;
+    const section = content.slice(sectionStart, sectionEnd);
+    const maxThreadsPattern = /^(\s*)max_threads\s*=\s*\d+(\s*(?:#.*)?)$/m;
+    const nextSection = maxThreadsPattern.test(section)
+      ? section.replace(maxThreadsPattern, `$1max_threads = ${maxThreads}$2`)
+      : `${section.replace(/\s*$/, '')}\nmax_threads = ${maxThreads}\n`;
+    updated = content.slice(0, sectionStart) + nextSection + content.slice(sectionEnd);
+  }
+
+  return updated;
 }
 
 function readTomlString(content: string, key: string): string | undefined {

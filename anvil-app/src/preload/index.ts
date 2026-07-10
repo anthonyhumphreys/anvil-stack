@@ -488,6 +488,8 @@ const api: AnvilAPI = {
     get: () => ipcRenderer.invoke('settings:get'),
     update: (settings) => ipcRenderer.invoke('settings:update', settings),
     getCodexStatus: () => ipcRenderer.invoke('settings:codex-status'),
+    setCodexAgentMaxThreads: (maxThreads) =>
+      ipcRenderer.invoke('settings:codex-agent-max-threads', maxThreads),
     testFoundryConnection: () => ipcRenderer.invoke('settings:test-foundry'),
     testAppleFoundationModels: () => ipcRenderer.invoke('settings:test-apple-foundation-models'),
     testWorkItemProviderConnection: () => ipcRenderer.invoke('settings:test-workitem-provider'),

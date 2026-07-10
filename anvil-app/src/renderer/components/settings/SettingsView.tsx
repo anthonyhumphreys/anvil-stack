@@ -210,6 +210,9 @@ export function SettingsView({
   const [codexUsage, setCodexUsage] = useState<CodexUsageSnapshot | null>(null);
   const [codexUsageLoading, setCodexUsageLoading] = useState(false);
   const [codexStatus, setCodexStatus] = useState<CodexCliStatus | null>(null);
+  const [agentMaxThreads, setAgentMaxThreads] = useState(6);
+  const [agentMaxThreadsSaving, setAgentMaxThreadsSaving] = useState(false);
+  const [agentMaxThreadsError, setAgentMaxThreadsError] = useState<string | null>(null);
   const [codexAgentsContent, setCodexAgentsContent] = useState('');
   const [codexAgentsPath, setCodexAgentsPath] = useState('~/.codex/AGENTS.md');
   const [codexAgentsExists, setCodexAgentsExists] = useState(false);
@@ -239,7 +242,13 @@ export function SettingsView({
     window.anvil.settings.getNotionMcpStatus().then((s) => {
       setNotionMcpInstalled(s.installed);
     });
-    window.anvil.settings.getCodexStatus().then(setCodexStatus).catch(console.warn);
+    window.anvil.settings
+      .getCodexStatus()
+      .then((status) => {
+        setCodexStatus(status);
+        setAgentMaxThreads(status.agentMaxThreads ?? 6);
+      })
+      .catch(console.warn);
     refreshMobileCompanion().catch(console.error);
     refreshCodexUsage().catch(console.error);
     refreshCodexAgentsFile().catch(console.error);
@@ -248,6 +257,22 @@ export function SettingsView({
   const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
     setSettings((prev) => ({ ...prev, [key]: value }));
     setSaved(false);
+  };
+
+  const saveAgentMaxThreads = async () => {
+    setAgentMaxThreadsSaving(true);
+    setAgentMaxThreadsError(null);
+    try {
+      const status = await window.anvil.settings.setCodexAgentMaxThreads(agentMaxThreads);
+      setCodexStatus(status);
+      setAgentMaxThreads(status.agentMaxThreads ?? agentMaxThreads);
+    } catch (err) {
+      setAgentMaxThreadsError(
+        err instanceof Error ? err.message : 'Failed to update the Codex agent limit.',
+      );
+    } finally {
+      setAgentMaxThreadsSaving(false);
+    }
   };
 
   const updateCloudFeatures = async (enabled: boolean) => {
@@ -909,6 +934,51 @@ export function SettingsView({
                             }
                           />
                         </div>
+                      )}
+                      <div className="mt-4 flex items-end gap-3">
+                        <div className="min-w-0 flex-1">
+                          <label
+                            htmlFor="codex-agent-max-threads"
+                            className="block text-sm text-text-secondary"
+                          >
+                            Maximum concurrent agents
+                          </label>
+                          <input
+                            id="codex-agent-max-threads"
+                            type="number"
+                            min={1}
+                            max={64}
+                            step={1}
+                            value={agentMaxThreads}
+                            onChange={(event) => setAgentMaxThreads(Number(event.target.value))}
+                            className="mt-1 w-full rounded-md border border-border bg-bg-secondary px-3 py-2 text-sm text-text-primary outline-none focus:border-accent"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={saveAgentMaxThreads}
+                          disabled={
+                            agentMaxThreadsSaving ||
+                            !Number.isInteger(agentMaxThreads) ||
+                            agentMaxThreads < 1 ||
+                            agentMaxThreads > 64
+                          }
+                          className="flex items-center gap-2 rounded-md border border-border bg-bg-secondary px-3 py-2 text-sm text-text-primary transition-colors hover:bg-bg-tertiary disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {agentMaxThreadsSaving ? (
+                            <Loader2 size={14} className="animate-spin" />
+                          ) : (
+                            <Save size={14} />
+                          )}
+                          Apply
+                        </button>
+                      </div>
+                      <p className="mt-1 text-xs text-text-tertiary">
+                        Writes <code>[agents].max_threads</code> in the active Codex config.toml.
+                        The primary agent counts toward this limit.
+                      </p>
+                      {agentMaxThreadsError && (
+                        <p className="mt-1 text-xs text-danger">{agentMaxThreadsError}</p>
                       )}
                     </div>
 

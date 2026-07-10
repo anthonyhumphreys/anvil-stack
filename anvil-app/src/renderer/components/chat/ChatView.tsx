@@ -150,7 +150,7 @@ export function ChatView() {
   const [codexMode, setCodexMode] = useState<CodexMode>('on-request');
   const [goalPopoverOpen, setGoalPopoverOpen] = useState(false);
   const [workOpen, setWorkOpen] = useState(false);
-  const [executionStrategy, setExecutionStrategy] = useState<ExecutionStrategy>('adaptive');
+  const [executionStrategy, setExecutionStrategy] = useState<ExecutionStrategy>('auto');
   const [canvasOpen, setCanvasOpen] = useState(true);
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [recentRuns, setRecentRuns] = useState<AgentRunSummary[]>([]);
