@@ -231,6 +231,14 @@ describe('chat thread persistence', () => {
       threadId: thread.id,
     });
 
+    const history = loadChatHistory(thread.id);
+    expect(
+      history.filter((message) => message.role === 'system').map((message) => message.event),
+    ).toEqual([
+      { type: 'file_edit', filePath: 'src/app.ts', diff: '--- a\n+++ b' },
+      { type: 'command_exec', command: 'pnpm test', output: 'failed', exitCode: 1 },
+    ]);
+
     const summaries = listChatTurnSummaries(thread.id);
     expect(summaries).toHaveLength(1);
     expect(summaries[0].changedFiles).toEqual(['src/app.ts']);

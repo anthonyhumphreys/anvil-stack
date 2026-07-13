@@ -26,6 +26,7 @@ import {
   subtleStyle,
   titleStyle,
 } from '@/components/companion-ui';
+import { ChatActivityGroup } from '@/components/chat-activity-group';
 import { useCompanion } from '@/contexts/companion-context';
 import { chatAttachmentUrl, type CompanionConnection } from '@/lib/anvil-api';
 import { threadHref } from '@/lib/routes';
@@ -59,6 +60,7 @@ interface OptimisticMessage {
 
 type TimelineMessage =
   | { kind: 'persisted'; message: ChatMessage }
+  | { kind: 'activity'; id: string; messages: ChatMessage[] }
   | { kind: 'optimistic'; message: OptimisticMessage };
 
 export default function ChatThreadScreen() {
@@ -93,10 +95,7 @@ export default function ChatThreadScreen() {
 
   const thread = threads.find((candidate) => candidate.id === threadId);
   const visibleMessages = useMemo<TimelineMessage[]>(
-    () => [
-      ...selectedThreadHistory.map((message) => ({ kind: 'persisted' as const, message })),
-      ...optimisticMessages.map((message) => ({ kind: 'optimistic' as const, message })),
-    ],
+    () => buildTimelineMessages(selectedThreadHistory, optimisticMessages),
     [optimisticMessages, selectedThreadHistory],
   );
 
@@ -354,7 +353,7 @@ export default function ChatThreadScreen() {
         <FlatList
           ref={listRef}
           data={visibleMessages}
-          keyExtractor={(item) => item.message.id}
+          keyExtractor={(item) => (item.kind === 'activity' ? item.id : item.message.id)}
           style={{ flex: 1 }}
           contentInsetAdjustmentBehavior="automatic"
           keyboardDismissMode="interactive"
@@ -400,16 +399,19 @@ export default function ChatThreadScreen() {
               body={thread?.preview || 'Pull to refresh this thread.'}
             />
           }
-          renderItem={({ item }) =>
-            item.kind === 'persisted' ? (
+          renderItem={({ item }) => {
+            if (item.kind === 'activity') {
+              return <ChatActivityGroup messages={item.messages} />;
+            }
+            return item.kind === 'persisted' ? (
               <MessageBubble message={item.message} connection={connection} />
             ) : (
               <OptimisticBubble
                 message={item.message}
                 onRetry={() => void sendOptimisticMessage(item.message)}
               />
-            )
-          }
+            );
+          }}
         />
 
         <View style={[composerBarStyle, { paddingBottom: Math.max(insets.bottom, 12) }]}>
@@ -563,11 +565,10 @@ function MessageBubble({
   connection: CompanionConnection | null;
 }) {
   const user = message.role === 'user';
-  const system = message.role === 'system';
   const hasMetadata = Boolean(message.repoContext || message.citations?.length);
 
   return (
-    <View style={[messageBubbleStyle, user && userBubbleStyle, system && systemBubbleStyle]}>
+    <View style={[messageBubbleStyle, user && userBubbleStyle]}>
       <View style={messageHeaderStyle}>
         <Text style={[messageRoleStyle, user && userRoleStyle]}>{user ? 'you' : message.role}</Text>
         <Text style={messageTimeStyle}>{relativeTime(message.timestamp)}</Text>
@@ -789,6 +790,32 @@ function MessageAttachmentCard({
   );
 }
 
+function buildTimelineMessages(
+  history: ChatMessage[],
+  optimisticMessages: OptimisticMessage[],
+): TimelineMessage[] {
+  const timeline: TimelineMessage[] = [];
+
+  for (const message of history) {
+    if (message.role !== 'system') {
+      timeline.push({ kind: 'persisted', message });
+      continue;
+    }
+
+    const previous = timeline[timeline.length - 1];
+    if (previous?.kind === 'activity') {
+      previous.messages.push(message);
+    } else {
+      timeline.push({ kind: 'activity', id: `activity:${message.id}`, messages: [message] });
+    }
+  }
+
+  timeline.push(
+    ...optimisticMessages.map((message): TimelineMessage => ({ kind: 'optimistic', message })),
+  );
+  return timeline;
+}
+
 function relativeTime(value: string): string {
   const timestamp = Date.parse(value);
   if (!Number.isFinite(timestamp)) return 'recently';
@@ -892,11 +919,6 @@ const userBubbleStyle = {
   borderColor: companionColors.cyanBorder,
 };
 const failedBubbleStyle = { borderColor: companionColors.redBorder };
-const systemBubbleStyle = {
-  maxWidth: '100%' as const,
-  alignSelf: 'stretch' as const,
-  backgroundColor: companionColors.surfaceMuted,
-};
 const messageHeaderStyle = {
   flexDirection: 'row' as const,
   justifyContent: 'space-between' as const,

@@ -656,7 +656,8 @@ export function loadChatHistory(threadId: string): ChatMessage[] {
          persona_id,
          session_id,
          thread_id,
-         repo_id
+         repo_id,
+         event_json
        FROM chat_messages
        WHERE thread_id = ?
        ORDER BY timestamp ASC`,
@@ -671,6 +672,7 @@ export function loadChatHistory(threadId: string): ChatMessage[] {
     session_id: string | null;
     thread_id: string | null;
     repo_id: string | null;
+    event_json: string | null;
   }>;
 
   return rows.map((row) => ({
@@ -678,12 +680,23 @@ export function loadChatHistory(threadId: string): ChatMessage[] {
     role: row.role as ChatMessage['role'],
     content: row.content,
     timestamp: row.timestamp,
+    event: parseChatEvent(row.event_json),
     personaId: row.persona_id ?? undefined,
     sessionId: row.session_id ?? undefined,
     threadId: row.thread_id ?? undefined,
     repoContext: row.repo_id ?? undefined,
     attachments: parseAttachments(row.attachments_json),
   }));
+}
+
+function parseChatEvent(value: string | null): ChatMessage['event'] {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as ChatMessage['event'];
+    return parsed && typeof parsed.type === 'string' ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function clearChatHistory(threadId: string): void {

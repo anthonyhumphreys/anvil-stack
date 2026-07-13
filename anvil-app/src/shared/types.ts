@@ -267,6 +267,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: string;
+  event?: CodexEvent;
   repoContext?: string;
   personaId?: string;
   threadId?: string;
