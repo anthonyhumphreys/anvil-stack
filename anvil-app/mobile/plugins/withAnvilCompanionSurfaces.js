@@ -65,6 +65,7 @@ function withAnvilCompanionSurfaces(config) {
     if (!bundleId) return config;
     const appVersion = config.version ?? '1.0.0';
     const appBuildNumber = config.ios?.buildNumber ?? '1';
+    const appleTeamId = config.ios?.appleTeamId;
 
     ensureTargetDependencySections(project);
 
@@ -117,7 +118,14 @@ function withAnvilCompanionSurfaces(config) {
         watchGroup.uuid,
       );
     }
-    setWatchBuildSettings(project, watchTarget.uuid, bundleId, appVersion, appBuildNumber);
+    setWatchBuildSettings(
+      project,
+      watchTarget.uuid,
+      bundleId,
+      appVersion,
+      appBuildNumber,
+      appleTeamId,
+    );
 
     let widgetTarget = findTargetByName(project, WIDGET_TARGET_NAME);
     if (!widgetTarget) {
@@ -144,7 +152,14 @@ function withAnvilCompanionSurfaces(config) {
         widgetGroup.uuid,
       );
     }
-    setWidgetBuildSettings(project, widgetTarget.uuid, bundleId, appVersion, appBuildNumber);
+    setWidgetBuildSettings(
+      project,
+      widgetTarget.uuid,
+      bundleId,
+      appVersion,
+      appBuildNumber,
+      appleTeamId,
+    );
 
     if (appTarget) {
       ensureTargetDependency(project, appTarget.uuid, watchTarget.uuid);
@@ -231,7 +246,14 @@ function setAppBridgeBuildSettings(project, iosBundleId, appBuildNumber) {
   }
 }
 
-function setWatchBuildSettings(project, targetUuid, iosBundleId, appVersion, appBuildNumber) {
+function setWatchBuildSettings(
+  project,
+  targetUuid,
+  iosBundleId,
+  appVersion,
+  appBuildNumber,
+  appleTeamId,
+) {
   const target = project.pbxNativeTargetSection()[targetUuid];
   if (target) target.productType = '"com.apple.product-type.application"';
 
@@ -240,6 +262,7 @@ function setWatchBuildSettings(project, targetUuid, iosBundleId, appVersion, app
     if (!config || !config.buildSettings) continue;
     const settings = config.buildSettings;
     if (!buildSettingEquals(settings.PRODUCT_BUNDLE_IDENTIFIER, watchBundleId)) continue;
+    setAutomaticSigning(settings, appleTeamId);
     settings.ASSETCATALOG_COMPILER_APPICON_NAME = 'AppIcon';
     settings.CODE_SIGN_ENTITLEMENTS = `${WATCH_TARGET_NAME}/${WATCH_TARGET_NAME}.entitlements`;
     settings.CURRENT_PROJECT_VERSION = appBuildNumber;
@@ -256,12 +279,20 @@ function setWatchBuildSettings(project, targetUuid, iosBundleId, appVersion, app
   }
 }
 
-function setWidgetBuildSettings(project, targetUuid, iosBundleId, appVersion, appBuildNumber) {
+function setWidgetBuildSettings(
+  project,
+  targetUuid,
+  iosBundleId,
+  appVersion,
+  appBuildNumber,
+  appleTeamId,
+) {
   const widgetBundleId = `${iosBundleId}${WIDGET_BUNDLE_SUFFIX}`;
   for (const [, config] of Object.entries(project.pbxXCBuildConfigurationSection())) {
     if (!config || !config.buildSettings) continue;
     const settings = config.buildSettings;
     if (!buildSettingEquals(settings.PRODUCT_BUNDLE_IDENTIFIER, widgetBundleId)) continue;
+    setAutomaticSigning(settings, appleTeamId);
     settings.ASSETCATALOG_COMPILER_APPICON_NAME = 'AppIcon';
     settings.CODE_SIGN_ENTITLEMENTS = `${WIDGET_TARGET_NAME}/${WIDGET_TARGET_NAME}.entitlements`;
     settings.CURRENT_PROJECT_VERSION = appBuildNumber;
@@ -276,6 +307,12 @@ function setWidgetBuildSettings(project, targetUuid, iosBundleId, appVersion, ap
     settings.APPLICATION_EXTENSION_API_ONLY = 'YES';
     settings.IPHONEOS_DEPLOYMENT_TARGET = '17.0';
   }
+}
+
+function setAutomaticSigning(settings, appleTeamId) {
+  if (!appleTeamId) return;
+  settings.CODE_SIGN_STYLE = 'Automatic';
+  settings.DEVELOPMENT_TEAM = appleTeamId;
 }
 
 function buildSettingEquals(value, expected) {

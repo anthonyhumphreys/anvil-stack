@@ -9,6 +9,7 @@ import {
   resetOnboardingState,
 } from '../services/settings.service.js';
 import { resetLlmClient } from '../services/llm.service.js';
+import { emitCompanionEvent } from '../services/companion-events.service.js';
 import { testAppleFoundationModels } from '../services/apple-foundation-models.service.js';
 import { getActiveProvider } from '../services/workitem-provider.js';
 import {
@@ -60,6 +61,7 @@ export function registerSettingsHandlers(): void {
 
       updateSettings(cleaned);
       resetLlmClient();
+      emitCompanionEvent('settings');
     } catch (err) {
       console.error('[Settings IPC] Error updating settings:', err);
       throw err;

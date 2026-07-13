@@ -1,6 +1,7 @@
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 
+import { companionColors } from '@/components/companion-ui';
 import { CompanionProvider } from '@/contexts/companion-context';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 
@@ -16,6 +17,15 @@ export default function RootLayout() {
       <CompanionProvider>
         <Stack>
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+          <Stack.Screen
+            name="thread"
+            options={{
+              title: 'Thread',
+              headerLargeTitle: false,
+              headerBackButtonDisplayMode: 'minimal',
+              contentStyle: { backgroundColor: companionColors.screen },
+            }}
+          />
           <Stack.Screen
             name="new-task"
             options={{

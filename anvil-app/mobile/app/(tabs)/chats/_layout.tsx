@@ -1,6 +1,4 @@
-import { MaterialIcons } from '@react-native-vector-icons/material-icons';
-import { Stack, router } from 'expo-router';
-import { Pressable } from 'react-native';
+import { Stack } from 'expo-router';
 import { companionColors } from '@/components/companion-ui';
 
 export default function ChatsLayout() {
@@ -13,28 +11,7 @@ export default function ChatsLayout() {
         contentStyle: { backgroundColor: companionColors.screen },
       }}
     >
-      <Stack.Screen
-        name="index"
-        options={{
-          title: 'Threads',
-          headerRight: () => (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Settings"
-              hitSlop={10}
-              onPress={() => router.push('/(tabs)/settings')}
-              style={{
-                minWidth: 44,
-                minHeight: 44,
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              <MaterialIcons name="settings" size={22} color={companionColors.ink} />
-            </Pressable>
-          ),
-        }}
-      />
+      <Stack.Screen name="index" options={{ title: 'Threads' }} />
       <Stack.Screen
         name="[threadId]"
         options={{

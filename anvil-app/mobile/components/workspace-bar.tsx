@@ -20,8 +20,8 @@ export function WorkspaceBar() {
     <View style={{ gap: 8 }}>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel="Select workspace"
-        accessibilityHint="Shows workspaces available on the current Mac"
+        accessibilityLabel={`${workspace?.name ?? 'No workspace selected'}, ${selectedWorkspaceId ? 'selected on this iPhone' : 'following Mac'}`}
+        accessibilityHint="Choose a workspace or follow the workspace selected on the Mac"
         accessibilityState={{ expanded }}
         onPress={() => setExpanded((value) => !value)}
         style={({ pressed }) => ({
@@ -38,7 +38,11 @@ export function WorkspaceBar() {
           gap: 10,
         })}
       >
-        <MaterialIcons name="computer" size={20} color={companionColors.subtle} />
+        <MaterialIcons
+          name={selectedWorkspaceId ? 'smartphone' : 'sync'}
+          size={20}
+          color={companionColors.subtle}
+        />
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text
             numberOfLines={1}
@@ -47,7 +51,7 @@ export function WorkspaceBar() {
             {workspace?.name ?? 'Choose a workspace'}
           </Text>
           <Text numberOfLines={1} style={{ color: companionColors.subtle, fontSize: 12 }}>
-            {selectedWorkspaceId ? 'Pinned' : 'Following Mac'} ·{' '}
+            {selectedWorkspaceId ? 'Selected on this iPhone' : 'Following Mac'} ·{' '}
             {connection?.deviceName ?? 'No host'}
             {usingCachedOverview ? ' · Offline snapshot' : ''}
           </Text>
