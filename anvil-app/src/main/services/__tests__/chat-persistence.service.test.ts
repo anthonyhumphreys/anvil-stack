@@ -95,6 +95,27 @@ describe('chat thread persistence', () => {
     expect(updated?.activeRepoId).toBeUndefined();
   });
 
+  it('never returns threads owned by another workspace or the global scope', () => {
+    inMemoryDb
+      .prepare(
+        `INSERT INTO workspaces (id, name, created_at, updated_at)
+         VALUES (?, ?, datetime('now'), datetime('now'))`,
+      )
+      .run('ws-2', 'Other workspace');
+
+    const workspaceThread = createChatThread({ workspaceId: 'ws-1', personaId: 'coder' });
+    const otherWorkspaceThread = createChatThread({ workspaceId: 'ws-2', personaId: 'coder' });
+    const globalThread = createChatThread({ workspaceId: null, personaId: 'coder' });
+
+    expect(listChatThreads('ws-1', 'coder').map((thread) => thread.id)).toEqual([
+      workspaceThread.id,
+    ]);
+    expect(listChatThreads('ws-2', 'coder').map((thread) => thread.id)).toEqual([
+      otherWorkspaceThread.id,
+    ]);
+    expect(listChatThreads(null, 'coder').map((thread) => thread.id)).toEqual([globalThread.id]);
+  });
+
   it('keeps work-item threads out of classic persona lists and reuses the ticket thread', () => {
     const first = ensureWorkItemChatThread({
       workspaceId: 'ws-1',

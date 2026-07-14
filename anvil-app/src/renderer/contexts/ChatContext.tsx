@@ -406,7 +406,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       const thread = (availableThreads ?? threadsRef.current).find(
         (candidate) => candidate.id === threadId,
       );
-      if (!thread) return;
+      if (!thread || !threadBelongsToWorkspace(thread, activeWorkspace?.id ?? null)) return;
 
       const [history, artifacts] = await Promise.all([
         window.anvil.chat.loadHistory(threadId),
@@ -911,17 +911,24 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     }
 
     let cancelled = false;
+    const requestedWorkspaceId = activeWorkspace?.id ?? null;
+    setThreads([]);
+    setActiveThreadId(null);
+    setEntries([]);
+    setActiveArtifacts([]);
     void (async () => {
       try {
         threadLoadVersionRef.current += 1;
         detachLiveSession();
         const listedThreads = await window.anvil.chat.listThreads(
-          activeWorkspace?.id ?? null,
+          requestedWorkspaceId,
           activePersona.id,
         );
         if (cancelled) return;
 
-        const nextThreads = sortThreads(listedThreads);
+        const nextThreads = sortThreads(
+          listedThreads.filter((thread) => threadBelongsToWorkspace(thread, requestedWorkspaceId)),
+        );
         const listedThreadIds = new Set(nextThreads.map((thread) => thread.id));
         let activeSessions: CodexSession[] = [];
         try {
@@ -989,16 +996,21 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     }
 
     let cancelled = false;
+    const requestedWorkspaceId = activeWorkspace?.id ?? null;
+    setThreads([]);
+    setActiveThreadId(null);
+    setEntries([]);
+    setActiveArtifacts([]);
     void (async () => {
       try {
         threadLoadVersionRef.current += 1;
         detachLiveSession();
-        const listedThreads = await window.anvil.chat.listWorkItemThreads(
-          activeWorkspace?.id ?? null,
-        );
+        const listedThreads = await window.anvil.chat.listWorkItemThreads(requestedWorkspaceId);
         if (cancelled) return;
 
-        const nextThreads = sortThreads(listedThreads);
+        const nextThreads = sortThreads(
+          listedThreads.filter((thread) => threadBelongsToWorkspace(thread, requestedWorkspaceId)),
+        );
         const listedThreadIds = new Set(nextThreads.map((thread) => thread.id));
         let activeSessions: CodexSession[] = [];
         try {
@@ -1853,7 +1865,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       threadLoadVersionRef.current += 1;
       detachLiveSession();
 
-      suppressNextThreadBootstrapRef.current = true;
+      suppressNextThreadBootstrapRef.current = shouldSuppressPreparedChatBootstrap(
+        activePersona?.id ?? null,
+        targetPersona.id,
+      );
       setSession(null);
       setEntries([]);
       setBusy(false);
@@ -1960,6 +1975,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
     },
     [
+      activePersona?.id,
       activeWorkspace,
       buildEnrichedMessage,
       bumpThreadSummary,
@@ -2171,6 +2187,20 @@ function getThreadPreferenceKey(workspaceId: string | null, personaId: string): 
 
 function getWorkItemThreadPreferenceKey(workspaceId: string | null): string {
   return `${workspaceId ?? 'global'}:workitems`;
+}
+
+export function threadBelongsToWorkspace(
+  thread: Pick<ChatThread, 'workspaceId'>,
+  workspaceId: string | null,
+): boolean {
+  return (thread.workspaceId ?? null) === workspaceId;
+}
+
+export function shouldSuppressPreparedChatBootstrap(
+  activePersonaId: string | null,
+  targetPersonaId: string,
+): boolean {
+  return activePersonaId !== targetPersonaId;
 }
 
 function normaliseOutgoingMessage(message: string, attachments: ChatAttachment[]): string {

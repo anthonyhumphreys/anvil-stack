@@ -81,7 +81,8 @@ export function ActivityGroupMessage({
   const summary = summarizeActivityEvents(events);
   const fileEdits = events.filter((event) => event.type === 'file_edit' && event.filePath);
   const failedCommands = events.filter(
-    (event) => event.type === 'command_exec' && typeof event.exitCode === 'number' && event.exitCode !== 0,
+    (event) =>
+      event.type === 'command_exec' && typeof event.exitCode === 'number' && event.exitCode !== 0,
   );
   const selectedEdit = fileEdits[Math.min(selectedEditIndex, Math.max(fileEdits.length - 1, 0))];
   const preview = events
@@ -92,10 +93,10 @@ export function ActivityGroupMessage({
 
   return (
     <div className="message-bubble flex justify-start">
-      <div className="w-full max-w-4xl rounded-xl border border-border-subtle bg-bg-tertiary/40 shadow-sm">
+      <div className="w-full max-w-3xl rounded-lg border border-border-subtle bg-bg-secondary/45">
         <button
           onClick={() => setExpanded(!expanded)}
-          className="flex w-full items-start gap-2.5 rounded-xl px-4 py-3 text-left transition-colors hover:bg-bg-tertiary/60"
+          className="flex w-full items-start gap-2 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-bg-tertiary/45"
           aria-label={expanded ? 'Collapse activity details' : 'Expand activity details'}
         >
           <span className="mt-0.5 shrink-0 text-text-tertiary">
@@ -104,7 +105,7 @@ export function ActivityGroupMessage({
           <Wrench size={12} className="mt-0.5 shrink-0 text-text-tertiary" />
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-              <span className="text-sm font-medium text-text-secondary">Activity</span>
+              <span className="text-xs font-medium text-text-secondary">Activity</span>
               <span className="text-xs text-text-tertiary">{summary}</span>
               {failedCommands.length > 0 && (
                 <span className="rounded-full bg-error/10 px-2 py-0.5 text-[11px] font-medium text-error">
@@ -742,8 +743,8 @@ export function AssistantMessage({
 
   return (
     <div className="message-bubble group flex justify-start">
-      <div className="relative w-full max-w-4xl">
-        <div className="overflow-hidden rounded-2xl border border-border-subtle bg-bg-tertiary/70 px-5 py-4 shadow-sm transition-colors hover:border-border">
+      <div className="relative w-full max-w-3xl">
+        <div className="overflow-hidden px-1 py-1 text-text-secondary">
           <MarkdownRenderer content={display} />
         </div>
         <div className="message-actions absolute -bottom-7 left-0">
@@ -781,7 +782,7 @@ export function UserMessage({
   return (
     <div className="message-bubble group flex justify-end">
       <div className="relative max-w-[min(760px,100%)]">
-        <div className="overflow-hidden rounded-2xl border border-accent/25 bg-accent/10 px-5 py-4 text-sm text-text-primary shadow-sm shadow-accent/5 transition-colors hover:border-accent/35 hover:bg-accent/15">
+        <div className="overflow-hidden rounded-xl border border-accent/25 bg-accent/10 px-4 py-3 text-sm text-text-primary transition-colors hover:border-accent/35 hover:bg-accent/15">
           {attachments && attachments.length > 0 && (
             <MessageAttachmentList attachments={attachments} />
           )}

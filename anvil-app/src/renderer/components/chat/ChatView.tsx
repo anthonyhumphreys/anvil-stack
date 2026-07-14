@@ -781,7 +781,7 @@ export function ChatView() {
                 className={`w-full px-3 lg:px-4 ${
                   showCenteredEmptyPane
                     ? 'flex min-h-full flex-1 items-center justify-center py-6'
-                    : 'flex flex-col pb-4 pt-5'
+                    : 'mx-auto flex max-w-5xl flex-col pb-4 pt-5'
                 }`}
               >
                 {!scaffoldModeActive && !featureAvailability.chatEnabled && (
@@ -947,11 +947,12 @@ export function ChatView() {
 
           {busy && session && (
             <div className="border-t border-border/60 bg-bg-secondary/80 px-3 py-2">
-              <div className="flex items-center gap-2 rounded-xl border border-warning/25 bg-warning/5 px-3 py-2">
+              <div className="flex items-center gap-2 rounded-lg border border-warning/20 bg-warning/5 px-3 py-2">
                 <Sparkles size={14} className="shrink-0 text-warning" />
                 <input
                   value={steerDraft}
                   onChange={(event) => setSteerDraft(event.target.value)}
+                  aria-label="Steer the active turn"
                   onKeyDown={(event) => {
                     if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
                       event.preventDefault();
@@ -971,29 +972,40 @@ export function ChatView() {
                   <SendHorizontal size={13} />
                   Steer
                 </button>
+                <button
+                  type="button"
+                  onClick={interrupt}
+                  className="flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium text-text-secondary transition-colors hover:bg-error/10 hover:text-error"
+                  title="Stop the active Codex turn"
+                >
+                  <X size={13} />
+                  Stop
+                </button>
               </div>
             </div>
           )}
 
           {/* Input */}
-          <ChatInput
-            onSend={handleComposerSend}
-            onStop={interrupt}
-            disabled={chatInputDisabled}
-            busy={busy}
-            personaColour={personaColour}
-            reasoningLevel={reasoningLevel}
-            reasoningOptions={reasoningOptions}
-            onReasoningChange={setReasoningLevel}
-            executionStrategy={executionStrategy}
-            onExecutionStrategyChange={setExecutionStrategy}
-            prefill={composerPrefill}
-            draftKey={composerDraftKey}
-            mentionRepoIds={mentionRepoIds}
-            quickPrompts={quickPrompts}
-            slashCommands={slashCommands}
-            focusRequest={composerFocusRequest}
-          />
+          {!busy && (
+            <ChatInput
+              onSend={handleComposerSend}
+              onStop={interrupt}
+              disabled={chatInputDisabled}
+              busy={busy}
+              personaColour={personaColour}
+              reasoningLevel={reasoningLevel}
+              reasoningOptions={reasoningOptions}
+              onReasoningChange={setReasoningLevel}
+              executionStrategy={executionStrategy}
+              onExecutionStrategyChange={setExecutionStrategy}
+              prefill={composerPrefill}
+              draftKey={composerDraftKey}
+              mentionRepoIds={mentionRepoIds}
+              quickPrompts={quickPrompts}
+              slashCommands={slashCommands}
+              focusRequest={composerFocusRequest}
+            />
+          )}
         </div>
 
         {/* Findings sidebar - BA persona only */}
@@ -1107,35 +1119,60 @@ const GROUPED_ACTIVITY_EVENT_TYPES: CodexEvent['type'][] = [
   'goal_cleared',
 ];
 
-function groupChatEntries(entries: ChatEntry[]): DisplayEntry[] {
+export function groupChatEntries(entries: ChatEntry[]): DisplayEntry[] {
   const grouped: DisplayEntry[] = [];
-  let pendingEvents: EventEntry[] = [];
+  let pendingTurn: Array<SourceIndexedEntry<ChatEntry>> = [];
 
-  const flushPendingEvents = () => {
-    if (pendingEvents.length === 0) return;
-    if (pendingEvents.length === 1) {
-      grouped.push(pendingEvents[0]);
-    } else {
+  const flushPendingTurn = () => {
+    if (pendingTurn.length === 0) return;
+
+    const activityEvents: EventEntry[] = [];
+    const assistantEntries: Array<SourceIndexedEntry<Extract<ChatEntry, { kind: 'assistant' }>>> =
+      [];
+
+    for (const entry of pendingTurn) {
+      if (entry.kind === 'event' && isGroupedActivityEvent(entry.event)) {
+        activityEvents.push(entry as EventEntry);
+      } else if (entry.kind === 'assistant') {
+        assistantEntries.push(
+          entry as SourceIndexedEntry<Extract<ChatEntry, { kind: 'assistant' }>>,
+        );
+      } else {
+        grouped.push(entry as DisplayEntry);
+      }
+    }
+
+    if (activityEvents.length === 1) {
+      grouped.push(activityEvents[0]);
+    } else if (activityEvents.length > 1) {
       grouped.push({
         kind: 'activity-group',
-        events: pendingEvents.map((entry) => entry.event),
+        events: activityEvents.map((entry) => entry.event),
       });
     }
-    pendingEvents = [];
+
+    if (assistantEntries.length > 0) {
+      const lastAssistant = assistantEntries[assistantEntries.length - 1];
+      grouped.push({
+        ...lastAssistant,
+        content: assistantEntries.map((entry) => entry.content).join(''),
+      });
+    }
+
+    pendingTurn = [];
   };
 
   for (const [sourceIndex, entry] of entries.entries()) {
     const indexedEntry = { ...entry, sourceIndex } as SourceIndexedEntry<ChatEntry>;
-    if (entry.kind === 'event' && isGroupedActivityEvent(entry.event)) {
-      pendingEvents.push(indexedEntry as EventEntry);
-      continue;
+    if (entry.kind === 'user') {
+      flushPendingTurn();
+      grouped.push(indexedEntry as DisplayEntry);
+    } else {
+      pendingTurn.push(indexedEntry);
     }
-
-    flushPendingEvents();
-    grouped.push(indexedEntry as DisplayEntry);
   }
 
-  flushPendingEvents();
+  flushPendingTurn();
   return grouped;
 }
 
