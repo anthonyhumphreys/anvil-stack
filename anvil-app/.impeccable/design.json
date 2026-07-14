@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-07-14T12:00:00.000Z",
+  "title": "Design System: Anvil",
+  "extensions": {
+    "colorMeta": {
+      "canvas": {
+        "role": "neutral",
+        "displayName": "Night Canvas",
+        "canonical": "#0b1020"
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "Workbench Surface",
+        "canonical": "#111827"
+      },
+      "accent": {
+        "role": "primary",
+        "displayName": "Forge Orange",
+        "canonical": "#ff8a3d"
+      }
+    },
+    "typographyMeta": {
+      "title": { "displayName": "Title", "purpose": "Panel and row titles." },
+      "body": { "displayName": "Body", "purpose": "Conversation and descriptive copy." },
+      "label": { "displayName": "Label", "purpose": "Metadata and compact controls." }
+    },
+    "shadows": [],
+    "motion": [
+      {
+        "name": "state-transition",
+        "value": "180ms ease-out",
+        "purpose": "Hover, focus, and disclosure state changes only."
+      }
+    ],
+    "breakpoints": [
+      { "name": "sm", "value": "640px" },
+      { "name": "lg", "value": "1024px" },
+      { "name": "xl", "value": "1280px" }
+    ]
+  },
+  "components": [],
+  "narrative": {
+    "northStar": "The Quiet Workbench",
+    "overview": "A restrained dark desktop system for sustained technical work. Conversation and current task stay dominant while operational detail is progressively disclosed.",
+    "keyCharacteristics": [
+      "Cool navy tonal layers",
+      "Restrained forge-orange accent",
+      "Flat by default",
+      "Compact and keyboard-friendly"
+    ],
+    "rules": [
+      {
+        "name": "The One Accent Rule",
+        "body": "Orange marks selection or action, never decoration.",
+        "section": "colors"
+      },
+      {
+        "name": "The Conversation Rule",
+        "body": "Tool metadata must not fracture assistant prose.",
+        "section": "typography"
+      }
+    ],
+    "dos": [
+      "Do keep workspace-scoped state correct before rendering it.",
+      "Do group operational events by turn and reveal details on demand."
+    ],
+    "donts": [
+      "Don't use dashboard clutter, nested-card sprawl, or decorative status chrome.",
+      "Don't allow stale cross-workspace content or fragmented assistant prose."
+    ]
+  }
+}

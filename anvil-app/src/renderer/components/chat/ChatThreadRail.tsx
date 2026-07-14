@@ -61,17 +61,14 @@ export function ChatThreadRail({
       autoCollapseBelow={1200}
       className="border-r border-border/60 bg-bg-secondary/50"
     >
-      <div className="border-b border-border/60 px-3 py-3 pr-14">
+      <div className="border-b border-border/60 px-3 py-2.5 pr-14">
         <div className="flex items-center justify-between gap-2">
-          <div className="min-w-0">
-            <h3 className="text-sm font-semibold text-text-primary">Threads</h3>
-            <p className="mt-1 truncate text-xs text-text-tertiary">
-              {persona ? `${persona.name} conversations` : 'Saved conversations'}
-            </p>
-          </div>
+          <h3 className="truncate text-sm font-semibold text-text-primary">
+            {persona ? `${persona.name} threads` : 'Threads'}
+          </h3>
           <button
             onClick={onCreateThread}
-            className="flex h-9 w-9 items-center justify-center rounded-xl border border-border text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+            className="flex h-8 w-8 items-center justify-center rounded-lg text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
             title="New thread"
             aria-label="New thread"
           >
@@ -80,9 +77,9 @@ export function ChatThreadRail({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-2.5">
+      <div className="min-h-0 flex-1 overflow-y-auto">
         {threads.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-border px-4 py-5 text-center">
+          <div className="m-3 rounded-xl border border-dashed border-border px-4 py-5 text-center">
             <p className="text-sm font-medium text-text-primary">{emptyLabel}</p>
             <p className="mt-2 text-xs leading-relaxed text-text-tertiary">
               Start a new thread to keep separate investigations, follow-ups, and alternate
@@ -90,7 +87,7 @@ export function ChatThreadRail({
             </p>
           </div>
         ) : (
-          <div className="space-y-2">
+          <div className="divide-y divide-border-subtle">
             {threads.map((thread) => {
               const active = thread.id === activeThreadId;
               const preview = thread.preview?.replace(/\s+/g, ' ').trim();
@@ -99,10 +96,8 @@ export function ChatThreadRail({
               return (
                 <div
                   key={thread.id}
-                  className={`group rounded-2xl border transition-all ${
-                    active
-                      ? 'border-accent/30 bg-accent/5 shadow-sm'
-                      : 'border-border/60 bg-bg-primary/70 hover:border-border hover:bg-bg-primary'
+                  className={`group transition-colors ${
+                    active ? 'bg-accent/10' : 'hover:bg-bg-tertiary/55'
                   }`}
                 >
                   <div
@@ -115,7 +110,7 @@ export function ChatThreadRail({
                       event.preventDefault();
                       onSelectThread(thread.id);
                     }}
-                    className="flex w-full cursor-pointer flex-col items-start gap-2 px-3.5 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                    className="flex w-full cursor-pointer flex-col items-start gap-1.5 px-3 py-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
                   >
                     <div className="flex w-full items-start gap-2">
                       <div className="min-w-0 flex-1">
@@ -138,7 +133,7 @@ export function ChatThreadRail({
                             className="w-full rounded-lg border border-border bg-bg-secondary px-2.5 py-1.5 text-sm text-text-primary outline-none focus:border-accent/40"
                           />
                         ) : (
-                          <p className="line-clamp-2 text-sm font-medium leading-snug text-text-primary">
+                          <p className="truncate text-sm font-medium leading-snug text-text-primary">
                             {thread.title}
                           </p>
                         )}
@@ -224,7 +219,7 @@ export function ChatThreadRail({
                       <span>{formatThreadTimestamp(thread.lastMessageAt ?? thread.updatedAt)}</span>
                     </div>
 
-                    <p className="line-clamp-2 min-h-[2.5rem] text-xs leading-relaxed text-text-tertiary">
+                    <p className="w-full truncate text-xs text-text-tertiary">
                       {preview || 'Empty thread. Add a prompt to get this conversation started.'}
                     </p>
                   </div>
@@ -265,9 +260,7 @@ function formatThreadTimestamp(value: string): string {
   }).format(new Date(timestamp));
 }
 
-export function shouldSelectThreadFromKey(
-  event: Pick<KeyboardEvent, 'key' | 'target'>,
-): boolean {
+export function shouldSelectThreadFromKey(event: Pick<KeyboardEvent, 'key' | 'target'>): boolean {
   if (isEditableShortcutTarget(event.target)) return false;
   return event.key === 'Enter' || event.key === ' ';
 }
