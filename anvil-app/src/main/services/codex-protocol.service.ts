@@ -2,6 +2,7 @@ import type { ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import type {
   ChatGoalSnapshot,
+  ChatAssistantPhase,
   ChatPlanSnapshot,
   ChatPlanStepStatus,
   CodexEvent,
@@ -14,6 +15,7 @@ export interface CodexProtocolState {
   turnId: string | null;
   initialized: boolean;
   pendingFileChanges?: Map<string, Map<string, PendingFileChange>>;
+  assistantPhases?: Map<string, ChatAssistantPhase>;
 }
 
 interface PendingFileChange {
@@ -170,7 +172,9 @@ export function handleCodexServerLine(
     case 'item/agentMessage/delta': {
       const params = msg.params as Record<string, unknown>;
       const delta = params?.delta as string;
-      if (delta) callbacks.onEvent?.({ type: 'text', text: delta });
+      const itemId = getItemId(params);
+      const assistantPhase = parseAssistantPhase(params?.phase) ?? getAssistantPhase(state, itemId);
+      if (delta) callbacks.onEvent?.({ type: 'text', text: delta, itemId, assistantPhase });
       break;
     }
 
@@ -178,7 +182,13 @@ export function handleCodexServerLine(
       const params = msg.params as Record<string, unknown>;
       const item = params?.item as Record<string, unknown> | undefined;
       const itemType = (item?.type ?? params?.type) as string;
-      if (itemType === 'commandExecution') {
+      if (itemType === 'agentMessage') {
+        const itemId = getItemId(params, item);
+        const assistantPhase = parseAssistantPhase(item?.phase ?? params?.phase);
+        if (itemId && assistantPhase) {
+          getAssistantPhaseMap(state).set(itemId, assistantPhase);
+        }
+      } else if (itemType === 'commandExecution') {
         callbacks.onEvent?.({
           type: 'command_exec',
           command: (item?.command as string) ?? '',
@@ -304,7 +314,9 @@ export function handleCodexServerLine(
     case 'codex/event/agent_message_content_delta': {
       const params = msg.params as Record<string, unknown>;
       const delta = params?.delta as string;
-      if (delta) callbacks.onEvent?.({ type: 'text', text: delta });
+      const itemId = getItemId(params);
+      const assistantPhase = parseAssistantPhase(params?.phase) ?? getAssistantPhase(state, itemId);
+      if (delta) callbacks.onEvent?.({ type: 'text', text: delta, itemId, assistantPhase });
       break;
     }
 
@@ -325,6 +337,32 @@ export function handleCodexServerLine(
       callbacks.onLog?.(method ?? 'unknown');
       break;
   }
+}
+
+function getItemId(
+  params: Record<string, unknown>,
+  item?: Record<string, unknown>,
+): string | undefined {
+  const rawId = params.itemId ?? params.item_id ?? item?.id;
+  return typeof rawId === 'string' && rawId.length > 0 ? rawId : undefined;
+}
+
+function parseAssistantPhase(value: unknown): ChatAssistantPhase | undefined {
+  if (value === 'commentary' || value === 'progress') return 'progress';
+  if (value === 'final_answer' || value === 'finalAnswer' || value === 'final') return 'final';
+  return undefined;
+}
+
+function getAssistantPhaseMap(state: CodexProtocolState): Map<string, ChatAssistantPhase> {
+  if (!state.assistantPhases) state.assistantPhases = new Map();
+  return state.assistantPhases;
+}
+
+function getAssistantPhase(
+  state: CodexProtocolState,
+  itemId: string | undefined,
+): ChatAssistantPhase | undefined {
+  return itemId ? state.assistantPhases?.get(itemId) : undefined;
 }
 
 function isJsonRpcRequestId(value: unknown): value is JsonRpcRequestId {

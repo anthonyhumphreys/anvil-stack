@@ -6,9 +6,17 @@ import {
   findActiveSlashCommand,
   getSkillMentionResults,
   getSlashCommandResults,
+  getRunSettingsLabel,
   shouldSendChatMessageFromKey,
   type ChatSlashCommand,
 } from '../ChatInput';
+
+describe('getRunSettingsLabel', () => {
+  it('summarises execution and reasoning settings in one compact label', () => {
+    expect(getRunSettingsLabel('auto', 'medium')).toBe('Auto · medium');
+    expect(getRunSettingsLabel('adaptive', 'high')).toBe('Adaptive · high');
+  });
+});
 
 describe('shouldSendChatMessageFromKey', () => {
   it('sends on Enter with or without command modifiers', () => {

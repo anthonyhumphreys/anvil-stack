@@ -23,6 +23,51 @@ function collectEvents(state: CodexProtocolState, messages: unknown[]): CodexEve
 }
 
 describe('codex protocol service', () => {
+  it('preserves agent message item boundaries and normalises phases', () => {
+    const events = collectEvents(createState(), [
+      {
+        method: 'item/started',
+        params: {
+          item: { id: 'message-1', type: 'agentMessage', phase: 'commentary' },
+        },
+      },
+      {
+        method: 'item/agentMessage/delta',
+        params: { itemId: 'message-1', delta: 'Checking the tests.' },
+      },
+      {
+        method: 'item/agentMessage/delta',
+        params: { itemId: 'message-2', phase: 'final_answer', delta: 'All tests pass.' },
+      },
+    ]);
+
+    expect(events).toEqual([
+      {
+        type: 'text',
+        text: 'Checking the tests.',
+        itemId: 'message-1',
+        assistantPhase: 'progress',
+      },
+      {
+        type: 'text',
+        text: 'All tests pass.',
+        itemId: 'message-2',
+        assistantPhase: 'final',
+      },
+    ]);
+  });
+
+  it('keeps legacy agent message deltas compatible when metadata is absent', () => {
+    const events = collectEvents(createState(), [
+      {
+        method: 'codex/event/agent_message_content_delta',
+        params: { delta: 'Legacy output' },
+      },
+    ]);
+
+    expect(events).toEqual([{ type: 'text', text: 'Legacy output' }]);
+  });
+
   it('coalesces repeated file patch updates into one final file edit event', () => {
     const state = createState();
     const events = collectEvents(state, [

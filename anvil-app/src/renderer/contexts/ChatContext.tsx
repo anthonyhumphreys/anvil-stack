@@ -13,10 +13,12 @@ import type {
   ChatArtifact,
   ChatArtifactInput,
   ChatArtifactKind,
+  ChatAssistantPhase,
   ChatCollaborationMode,
   ChatStartOptions,
   ChatGoalSnapshot,
   ChatLayout,
+  ChatMessage,
   ChatPlanSnapshot,
   ChatThread,
   CodexEvent,
@@ -46,7 +48,13 @@ import {
 
 export type ChatEntry =
   | { kind: 'user'; content: string; attachments?: ChatAttachment[]; id?: string }
-  | { kind: 'assistant'; content: string; id?: string }
+  | {
+      kind: 'assistant';
+      content: string;
+      id?: string;
+      itemId?: string;
+      phase?: ChatAssistantPhase;
+    }
   | { kind: 'thinking'; content: string; id?: string }
   | { kind: 'event'; event: CodexEvent };
 
@@ -114,9 +122,18 @@ type LiveStreamEntryKind = Extract<ChatEntry, { kind: 'assistant' | 'thinking' }
 
 interface LiveAssistantOutput {
   threadId: string;
-  assistantText: string;
-  assistantMessageId: string;
-  persistedAssistantText?: string;
+  segments: LiveAssistantSegment[];
+  activeLegacySegmentId?: string;
+}
+
+interface LiveAssistantSegment {
+  id: string;
+  itemId?: string;
+  phase?: ChatAssistantPhase;
+  content: string;
+  persistedContent?: string;
+  persistedPhase?: ChatAssistantPhase;
+  createdAt: string;
 }
 
 export function useChatContext(): ChatContextValue {
@@ -188,7 +205,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const livePersistQueueBySessionIdRef = useRef<Record<string, Promise<void>>>({});
   const threadLoadVersionRef = useRef(0);
   const suppressNextThreadBootstrapRef = useRef(false);
-  const pendingStreamEntryRef = useRef<{ kind: LiveStreamEntryKind; content: string } | null>(null);
+  const pendingStreamEntryRef = useRef<{
+    kind: LiveStreamEntryKind;
+    content: string;
+    itemId?: string;
+    phase?: ChatAssistantPhase;
+  } | null>(null);
   const pendingStreamFlushRef = useRef<number | null>(null);
 
   const clearPendingStreamFlush = useCallback(() => {
@@ -208,7 +230,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
     pendingStreamEntryRef.current = null;
     clearPendingStreamFlush();
-    setEntries((prev) => appendLiveStreamEntry(prev, pending.kind, pending.content));
+    setEntries((prev) => appendLiveStreamEntry(prev, pending.kind, pending.content, pending));
   }, [clearPendingStreamFlush]);
 
   const schedulePendingStreamFlush = useCallback(() => {
@@ -220,15 +242,23 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, [flushPendingStreamEntry]);
 
   const queueStreamEntry = useCallback(
-    (kind: LiveStreamEntryKind, content: string) => {
+    (
+      kind: LiveStreamEntryKind,
+      content: string,
+      metadata?: { itemId?: string; phase?: ChatAssistantPhase },
+    ) => {
       if (!content) return;
 
       const pending = pendingStreamEntryRef.current;
-      if (pending?.kind === kind) {
+      if (
+        pending?.kind === kind &&
+        (kind !== 'assistant' ||
+          (pending.itemId === metadata?.itemId && pending.phase === metadata?.phase))
+      ) {
         pending.content += content;
       } else {
         flushPendingStreamEntry();
-        pendingStreamEntryRef.current = { kind, content };
+        pendingStreamEntryRef.current = { kind, content, ...metadata };
       }
 
       schedulePendingStreamFlush();
@@ -324,8 +354,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
       return {
         threadId,
-        assistantText: '',
-        assistantMessageId: generateId(),
+        segments: [],
       };
     },
     [],
@@ -421,29 +450,20 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         resolvedRepos.find((repo) => repo.id === thread.activeRepoId) ?? resolvedRepos[0] ?? null;
 
       setActiveThreadId(thread.id);
-      const nextEntries: ChatEntry[] = history
-        .filter((message) => message.role === 'user' || message.role === 'assistant')
-        .map(
-          (message): ChatEntry =>
-            message.role === 'user'
-              ? {
-                  kind: 'user',
-                  content: message.content,
-                  attachments: message.attachments,
-                  id: message.id,
-                }
-              : { kind: 'assistant', content: message.content, id: message.id },
-        );
+      const nextEntries = chatMessagesToEntries(history);
       const liveSession = liveSessionsByThreadIdRef.current[thread.id];
       const liveOutput = liveSession ? liveOutputBySessionIdRef.current[liveSession.id] : null;
-      if (liveOutput?.assistantText.trim()) {
+      for (const segment of liveOutput?.segments ?? []) {
+        if (!segment.content.trim()) continue;
         const existingLiveEntryIndex = nextEntries.findIndex(
-          (entry) => entry.kind === 'assistant' && entry.id === liveOutput.assistantMessageId,
+          (entry) => entry.kind === 'assistant' && entry.id === segment.id,
         );
         const liveEntry: ChatEntry = {
           kind: 'assistant',
-          content: liveOutput.assistantText,
-          id: liveOutput.assistantMessageId,
+          content: segment.content,
+          id: segment.id,
+          itemId: segment.itemId,
+          phase: segment.phase,
         };
         if (existingLiveEntryIndex >= 0) {
           nextEntries[existingLiveEntryIndex] = liveEntry;
@@ -589,17 +609,27 @@ export function ChatProvider({ children }: { children: ReactNode }) {
               (candidate) => candidate.id === sessionId,
             );
       const threadId = liveOutput?.threadId ?? currentSession?.appThreadId;
-      const content = liveOutput?.assistantText.trim();
-      if (!currentSession || !threadId || !liveOutput || !content) return;
-      if (!options?.final && liveOutput.persistedAssistantText === content) return;
+      if (!currentSession || !threadId || !liveOutput || liveOutput.segments.length === 0) return;
 
-      const isNewAssistantMessage = !liveOutput.persistedAssistantText;
+      const resolvedSegments = resolveAssistantSegmentPhases(liveOutput.segments, !!options?.final);
+      const changedSegments = resolvedSegments.filter((segment) => {
+        const content = segment.content.trim();
+        return (
+          content &&
+          (segment.persistedContent !== content || segment.persistedPhase !== segment.phase)
+        );
+      });
+      if (changedSegments.length === 0) return;
+
       liveOutputBySessionIdRef.current[sessionId] = {
         ...liveOutput,
-        persistedAssistantText: content,
+        segments: resolvedSegments.map((segment) => ({
+          ...segment,
+          persistedContent: segment.content.trim(),
+          persistedPhase: segment.phase,
+        })),
       };
 
-      const timestamp = new Date().toISOString();
       const artifactRepoId =
         currentSession.repoId ??
         threadsRef.current.find((thread) => thread.id === threadId)?.activeRepoId ??
@@ -610,26 +640,44 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           // Keep later snapshots moving even if an earlier write failed.
         })
         .then(async () => {
-          await window.anvil.chat.saveEntry(
-            threadId,
-            currentSession.repoId ?? null,
-            currentSession.id,
-            {
-              id: liveOutput.assistantMessageId,
-              role: 'assistant',
-              content,
-              timestamp,
-              personaId: currentSession.personaId,
+          for (const segment of changedSegments) {
+            const content = segment.content.trim();
+            const phase = segment.phase ?? 'progress';
+            await window.anvil.chat.saveEntry(
               threadId,
-            },
-          );
-          await persistArtifactsForAssistantMessage(
-            threadId,
-            artifactRepoId,
-            liveOutput.assistantMessageId,
-            content,
-          );
-          bumpThreadSummary(threadId, content, timestamp, isNewAssistantMessage);
+              currentSession.repoId ?? null,
+              currentSession.id,
+              {
+                id: segment.id,
+                role: phase === 'final' ? 'assistant' : 'system',
+                content,
+                timestamp: segment.createdAt,
+                personaId: currentSession.personaId,
+                threadId,
+                event: {
+                  type: 'text',
+                  text: content,
+                  itemId: segment.itemId,
+                  assistantPhase: phase,
+                },
+              },
+            );
+
+            if (phase === 'final') {
+              await persistArtifactsForAssistantMessage(
+                threadId,
+                artifactRepoId,
+                segment.id,
+                content,
+              );
+              bumpThreadSummary(
+                threadId,
+                content,
+                segment.createdAt,
+                segment.persistedPhase !== 'final',
+              );
+            }
+          }
         })
         .catch(console.error);
 
@@ -641,8 +689,15 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         activeWorkspace?.id &&
         activeScaffoldSession?.status === 'active'
       ) {
+        const finalContent =
+          [...resolvedSegments]
+            .reverse()
+            .find((segment) => segment.phase === 'final')
+            ?.content.trim() ?? '';
         persistTask
-          .then(() => window.anvil.workspaceScaffold.maybeComplete(activeWorkspace.id, content))
+          .then(() =>
+            window.anvil.workspaceScaffold.maybeComplete(activeWorkspace.id, finalContent),
+          )
           .then((result) => {
             if (result.triggered) {
               void refreshWorkspaces();
@@ -1148,16 +1203,31 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           }
         } else if (event.type === 'text' && event.text) {
           const liveOutput = getLiveAssistantOutput(eventSessionId, eventThreadId);
-          liveOutputBySessionIdRef.current[eventSessionId] = {
-            ...liveOutput,
-            assistantText: liveOutput.assistantText + event.text,
-          };
+          liveOutputBySessionIdRef.current[eventSessionId] = appendLiveAssistantSegment(
+            liveOutput,
+            event,
+          );
+        } else {
+          const liveOutput = liveOutputBySessionIdRef.current[eventSessionId];
+          if (liveOutput?.activeLegacySegmentId) {
+            liveOutputBySessionIdRef.current[eventSessionId] = {
+              ...liveOutput,
+              activeLegacySegmentId: undefined,
+            };
+          }
         }
       }
 
       if (eventSessionId && !isActiveSession) {
         if (event.type === 'status' && event.status === 'complete') {
           persistAssistantForSession(eventSessionId, { final: true });
+          const completedOutput = liveOutputBySessionIdRef.current[eventSessionId];
+          if (completedOutput) {
+            liveOutputBySessionIdRef.current[eventSessionId] = {
+              ...completedOutput,
+              activeLegacySegmentId: undefined,
+            };
+          }
         } else if (event.type === 'plan_update' && event.plan && eventThreadId) {
           persistThreadPlan(eventThreadId, event.plan);
         } else if (event.type === 'goal_update' && event.goal && eventThreadId) {
@@ -1170,16 +1240,27 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
       if (event.type === 'status' && event.status === 'complete') {
         flushPendingStreamEntry();
+        setEntries((prev) => resolveCompletedAssistantEntries(prev));
         setBusy(false);
         if (eventSessionId) {
           persistAssistantForSession(eventSessionId, { final: true });
+          const completedOutput = liveOutputBySessionIdRef.current[eventSessionId];
+          if (completedOutput) {
+            liveOutputBySessionIdRef.current[eventSessionId] = {
+              ...completedOutput,
+              activeLegacySegmentId: undefined,
+            };
+          }
         }
       } else if (event.type === 'status') {
         // Ignore intermediate status events.
       } else if (event.type === 'thinking' && event.text) {
         queueStreamEntry('thinking', event.text);
       } else if (event.type === 'text' && event.text) {
-        queueStreamEntry('assistant', event.text);
+        queueStreamEntry('assistant', event.text, {
+          itemId: event.itemId,
+          phase: event.assistantPhase,
+        });
       } else if (event.type === 'plan_update' && event.plan) {
         flushPendingStreamEntry();
         const targetThreadId = eventThreadId ?? activeThreadRef.current?.id;
@@ -1797,12 +1878,22 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       for (const [index, entry] of ancestorEntries.entries()) {
         await window.anvil.chat.saveEntry(forkedThread.id, primaryRepo?.id ?? null, null, {
           id: generateId(),
-          role: entry.kind,
+          role: entry.kind === 'assistant' && entry.phase === 'progress' ? 'system' : entry.kind,
           content: entry.content,
           timestamp: new Date(forkTimestampBase + index).toISOString(),
           personaId: activePersona.id,
           threadId: forkedThread.id,
           ...(entry.kind === 'user' && entry.attachments ? { attachments: entry.attachments } : {}),
+          ...(entry.kind === 'assistant'
+            ? {
+                event: {
+                  type: 'text' as const,
+                  text: entry.content,
+                  itemId: entry.itemId,
+                  assistantPhase: entry.phase,
+                },
+              }
+            : {}),
         });
       }
 
@@ -2094,19 +2185,151 @@ function shouldPersistEvidenceEvent(event: CodexEvent): boolean {
   );
 }
 
+export function chatMessagesToEntries(history: ChatMessage[]): ChatEntry[] {
+  return history.flatMap((message): ChatEntry[] => {
+    if (message.role === 'user') {
+      return [
+        {
+          kind: 'user',
+          content: message.content,
+          attachments: message.attachments,
+          id: message.id,
+        },
+      ];
+    }
+
+    if (message.event?.type === 'text') {
+      return [
+        {
+          kind: 'assistant',
+          content: message.event.text ?? message.content,
+          id: message.id,
+          itemId: message.event.itemId,
+          phase: message.event.assistantPhase,
+        },
+      ];
+    }
+
+    if (message.role === 'assistant') {
+      // Legacy history was persisted as one flattened assistant row without metadata.
+      return [{ kind: 'assistant', content: message.content, id: message.id }];
+    }
+
+    return message.event ? [{ kind: 'event', event: message.event }] : [];
+  });
+}
+
 function appendLiveStreamEntry(
   entries: ChatEntry[],
   kind: LiveStreamEntryKind,
   content: string,
+  metadata?: { itemId?: string; phase?: ChatAssistantPhase },
 ): ChatEntry[] {
   const last = entries[entries.length - 1];
-  if (last?.kind === kind) {
+  if (
+    last?.kind === kind &&
+    (kind !== 'assistant' ||
+      (last.kind === 'assistant' &&
+        last.itemId === metadata?.itemId &&
+        last.phase === metadata?.phase))
+  ) {
     const updated = [...entries];
     updated[updated.length - 1] = { ...last, content: last.content + content };
     return updated;
   }
 
-  return [...entries, { kind, content }];
+  return [
+    ...entries,
+    kind === 'assistant'
+      ? { kind, content, itemId: metadata?.itemId, phase: metadata?.phase }
+      : { kind, content },
+  ];
+}
+
+function appendLiveAssistantSegment(
+  output: LiveAssistantOutput,
+  event: CodexEvent,
+): LiveAssistantOutput {
+  const itemId = event.itemId;
+  const existingIndex = itemId
+    ? output.segments.findIndex((segment) => segment.itemId === itemId)
+    : output.activeLegacySegmentId
+      ? output.segments.findIndex((segment) => segment.id === output.activeLegacySegmentId)
+      : -1;
+
+  if (existingIndex >= 0) {
+    const segments = [...output.segments];
+    const existing = segments[existingIndex];
+    segments[existingIndex] = {
+      ...existing,
+      phase: event.assistantPhase ?? existing.phase,
+      content: existing.content + (event.text ?? ''),
+    };
+    return { ...output, segments };
+  }
+
+  const segment: LiveAssistantSegment = {
+    id: generateId(),
+    itemId,
+    phase: event.assistantPhase,
+    content: event.text ?? '',
+    createdAt: new Date().toISOString(),
+  };
+  return {
+    ...output,
+    segments: [...output.segments, segment],
+    activeLegacySegmentId: itemId ? output.activeLegacySegmentId : segment.id,
+  };
+}
+
+function resolveAssistantSegmentPhases(
+  segments: LiveAssistantSegment[],
+  completed: boolean,
+): LiveAssistantSegment[] {
+  if (!completed || segments.length === 0) return segments;
+
+  const firstUnresolvedIndex = segments.findIndex((segment) => !segment.phase);
+  if (firstUnresolvedIndex < 0) return segments;
+
+  const hasExplicitFinalAfterUnresolved = segments.some(
+    (segment, index) => index > firstUnresolvedIndex && segment.phase === 'final',
+  );
+  let fallbackFinalIndex = -1;
+  if (!hasExplicitFinalAfterUnresolved) {
+    for (let index = segments.length - 1; index >= firstUnresolvedIndex; index -= 1) {
+      if (!segments[index].phase) {
+        fallbackFinalIndex = index;
+        break;
+      }
+    }
+  }
+
+  return segments.map((segment, index) => ({
+    ...segment,
+    phase: segment.phase ?? (index === fallbackFinalIndex ? 'final' : 'progress'),
+  }));
+}
+
+function resolveCompletedAssistantEntries(entries: ChatEntry[]): ChatEntry[] {
+  let turnStart = entries.length - 1;
+  while (turnStart >= 0 && entries[turnStart].kind !== 'user') turnStart -= 1;
+
+  const turnEntries = entries.slice(turnStart + 1);
+  const hasFinal = turnEntries.some(
+    (entry) => entry.kind === 'assistant' && entry.phase === 'final',
+  );
+  if (hasFinal) return entries;
+
+  const lastAssistantOffset = turnEntries.findLastIndex((entry) => entry.kind === 'assistant');
+  if (lastAssistantOffset < 0) return entries;
+
+  return entries.map((entry, index) => {
+    if (index <= turnStart || entry.kind !== 'assistant' || entry.phase) return entry;
+    return {
+      ...entry,
+      phase: index === turnStart + 1 + lastAssistantOffset ? 'final' : 'progress',
+    };
+  });
 }
 
 function appendBoundedTail(current: string, addition: string): string {

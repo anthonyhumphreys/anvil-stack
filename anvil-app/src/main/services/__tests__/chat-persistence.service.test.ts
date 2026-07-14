@@ -273,6 +273,83 @@ describe('chat thread persistence', () => {
     expect(refreshed?.messageCount).toBe(2);
   });
 
+  it('round-trips segmented assistant metadata alongside activity in chronological order', () => {
+    const thread = createChatThread({
+      workspaceId: 'ws-1',
+      personaId: 'coder',
+      title: 'Segmented output',
+      repoIds: ['repo-1'],
+      activeRepoId: 'repo-1',
+    });
+    const sessionId = createChatSession(thread.id, 'repo-1', 'coder');
+
+    saveChatEntry(thread.id, 'repo-1', sessionId, {
+      id: 'assistant-progress',
+      role: 'system',
+      content: 'I am checking the failing test.',
+      timestamp: '2026-04-27T10:00:00.000Z',
+      event: {
+        type: 'text',
+        text: 'I am checking the failing test.',
+        itemId: 'provider-message-1',
+        assistantPhase: 'progress',
+      },
+    });
+    saveChatEvent(
+      thread.id,
+      'repo-1',
+      sessionId,
+      { type: 'command_exec', command: 'pnpm test', output: 'passed', exitCode: 0 },
+      '2026-04-27T10:00:00.000Z',
+    );
+    saveChatEntry(thread.id, 'repo-1', sessionId, {
+      id: 'assistant-progress',
+      role: 'system',
+      content: 'I checked the failing test.',
+      timestamp: '2026-04-27T10:00:00.000Z',
+      event: {
+        type: 'text',
+        text: 'I checked the failing test.',
+        itemId: 'provider-message-1',
+        assistantPhase: 'progress',
+      },
+    });
+    saveChatEntry(thread.id, 'repo-1', sessionId, {
+      id: 'assistant-final',
+      role: 'assistant',
+      content: 'The test now passes.',
+      timestamp: '2026-04-27T10:00:00.000Z',
+      event: {
+        type: 'text',
+        text: 'The test now passes.',
+        itemId: 'provider-message-2',
+        assistantPhase: 'final',
+      },
+    });
+
+    const history = loadChatHistory(thread.id);
+    expect(history.map((message) => message.id)).toEqual([
+      'assistant-progress',
+      expect.any(String),
+      'assistant-final',
+    ]);
+    expect(history.map((message) => message.event)).toEqual([
+      {
+        type: 'text',
+        text: 'I checked the failing test.',
+        itemId: 'provider-message-1',
+        assistantPhase: 'progress',
+      },
+      { type: 'command_exec', command: 'pnpm test', output: 'passed', exitCode: 0 },
+      {
+        type: 'text',
+        text: 'The test now passes.',
+        itemId: 'provider-message-2',
+        assistantPhase: 'final',
+      },
+    ]);
+  });
+
   it('clears history without deleting the thread and can delete the thread completely', () => {
     const thread = createChatThread({
       workspaceId: 'ws-1',

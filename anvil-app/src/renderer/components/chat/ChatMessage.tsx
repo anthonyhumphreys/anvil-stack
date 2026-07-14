@@ -30,6 +30,7 @@ import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { buildEditorUrl } from '../../utils/editor-link';
 import { copyTextToClipboard } from '../../utils/clipboard';
 import { isAbsoluteEditorPath } from '../../../shared/editor-file-link';
+import type { ChatTurnWorkItem } from './chat-turns';
 
 interface ChatEventProps {
   event: CodexEvent & { sessionId?: string };
@@ -169,6 +170,103 @@ export function ActivityGroupMessage({
             {events.map((event, index) => (
               <ChatEventRenderer key={buildActivityEventKey(event, index)} event={event} />
             ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function TurnWorkMessage({
+  items,
+  active = false,
+}: {
+  items: ChatTurnWorkItem[];
+  active?: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const showDetails = active || expanded;
+  const progressCount = items.filter((item) => item.kind === 'progress').length;
+  const activityEvents = items
+    .filter((item): item is Extract<ChatTurnWorkItem, { kind: 'event' }> => item.kind === 'event')
+    .map((item) => item.event);
+  const failedCount = activityEvents.filter(
+    (event) =>
+      event.type === 'error' ||
+      (event.type === 'command_exec' && typeof event.exitCode === 'number' && event.exitCode !== 0),
+  ).length;
+  const summaryParts = [
+    progressCount > 0 ? `${progressCount} update${progressCount === 1 ? '' : 's'}` : null,
+    activityEvents.length > 0
+      ? `${activityEvents.length} action${activityEvents.length === 1 ? '' : 's'}`
+      : null,
+  ].filter((part): part is string => Boolean(part));
+
+  if (items.length === 0) return null;
+
+  return (
+    <div className="message-bubble flex justify-start">
+      <div className="w-full max-w-3xl border-y border-border-subtle/80">
+        <button
+          type="button"
+          onClick={() => setExpanded((current) => !current)}
+          className="flex min-h-10 w-full items-center gap-2.5 py-2 text-left text-xs transition-colors hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          aria-expanded={showDetails}
+          aria-label={showDetails ? 'Collapse work details' : 'Expand work details'}
+        >
+          <span className="shrink-0 text-text-tertiary">
+            {showDetails ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          </span>
+          {active ? (
+            <Loader2 size={12} className="shrink-0 animate-spin text-warning" />
+          ) : (
+            <Wrench size={12} className="shrink-0 text-text-tertiary" />
+          )}
+          <span className="font-medium text-text-secondary">{active ? 'Working' : 'Work'}</span>
+          <span className="min-w-0 flex-1 truncate text-text-tertiary">
+            {summaryParts.join(' · ') || 'Reasoning update'}
+          </span>
+          {failedCount > 0 && (
+            <span className="rounded-full bg-error/10 px-2 py-0.5 font-medium text-error">
+              {failedCount} failed
+            </span>
+          )}
+        </button>
+
+        {showDetails && (
+          <div className="space-y-3 border-t border-border-subtle/70 py-3 pl-6">
+            {items.map((item, index) => {
+              if (item.kind === 'progress') {
+                return (
+                  <div key={`progress-${item.sourceIndex}`} className="pr-2">
+                    <p className="mb-1 text-[11px] font-medium uppercase tracking-[0.08em] text-text-muted">
+                      Update
+                    </p>
+                    <div className="text-text-secondary">
+                      <MarkdownRenderer content={item.content} />
+                    </div>
+                  </div>
+                );
+              }
+
+              if (item.kind === 'thinking') {
+                return (
+                  <div
+                    key={`thinking-${item.sourceIndex}`}
+                    className="pr-2 text-xs italic leading-relaxed text-text-tertiary"
+                  >
+                    {item.content}
+                  </div>
+                );
+              }
+
+              return (
+                <ChatEventRenderer
+                  key={buildActivityEventKey(item.event, index)}
+                  event={item.event}
+                />
+              );
+            })}
           </div>
         )}
       </div>
@@ -726,11 +824,15 @@ export function AssistantMessage({
   transformContent,
   onBranch,
   onRegenerate,
+  label = 'Assistant',
+  colour,
 }: {
   content: string;
   transformContent?: (c: string) => string;
   onBranch?: () => void;
   onRegenerate?: () => void;
+  label?: string;
+  colour?: string;
 }) {
   const display = transformContent ? transformContent(content) : content;
   const [copied, setCopied] = useState(false);
@@ -744,7 +846,15 @@ export function AssistantMessage({
   return (
     <div className="message-bubble group flex justify-start">
       <div className="relative w-full max-w-3xl">
-        <div className="overflow-hidden px-1 py-1 text-text-secondary">
+        <div className="mb-1.5 flex items-center gap-2 px-1 text-xs font-medium text-text-tertiary">
+          <span
+            className="h-1.5 w-1.5 rounded-full bg-text-tertiary"
+            style={colour ? { backgroundColor: colour } : undefined}
+            aria-hidden="true"
+          />
+          {label}
+        </div>
+        <div className="overflow-hidden px-1 py-1 text-text-secondary [&_.markdown-body>p]:text-[15px] [&_.markdown-body>p]:leading-7">
           <MarkdownRenderer content={display} />
         </div>
         <div className="message-actions absolute -bottom-7 left-0">
@@ -781,7 +891,8 @@ export function UserMessage({
 
   return (
     <div className="message-bubble group flex justify-end">
-      <div className="relative max-w-[min(760px,100%)]">
+      <div className="relative max-w-[88%] sm:max-w-[72%]">
+        <p className="mb-1.5 text-right text-xs font-medium text-text-tertiary">You</p>
         <div className="overflow-hidden rounded-xl border border-accent/25 bg-accent/10 px-4 py-3 text-sm text-text-primary transition-colors hover:border-accent/35 hover:bg-accent/15">
           {attachments && attachments.length > 0 && (
             <MessageAttachmentList attachments={attachments} />

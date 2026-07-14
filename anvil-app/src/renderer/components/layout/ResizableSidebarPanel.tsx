@@ -26,12 +26,22 @@ interface AutoCollapseInput {
   persistedCollapsed: boolean;
 }
 
+interface PanelWidthInput {
+  width: number;
+  collapsedWidth: number;
+  collapsed: boolean;
+}
+
 export function shouldAutoCollapsePanel({
   viewportWidth,
   threshold,
   persistedCollapsed,
 }: AutoCollapseInput): boolean {
   return Boolean(threshold && viewportWidth < threshold && !persistedCollapsed);
+}
+
+export function resolvePanelWidth({ width, collapsedWidth, collapsed }: PanelWidthInput): number {
+  return collapsed ? collapsedWidth : width;
 }
 
 export function ResizableSidebarPanel({
@@ -60,6 +70,7 @@ export function ResizableSidebarPanel({
   });
   const [autoCollapsed, setAutoCollapsed] = useState(false);
   const effectiveCollapsed = collapsed || autoCollapsed;
+  const isWidthZeroCollapsed = effectiveCollapsed && collapsedWidth === 0;
 
   const collapseManually = useCallback(() => {
     setAutoCollapsed(false);
@@ -134,11 +145,29 @@ export function ResizableSidebarPanel({
   return (
     <div
       className="relative flex min-h-0 shrink-0"
-      style={{ width: effectiveCollapsed ? collapsedWidth : width }}
+      style={{
+        width: resolvePanelWidth({
+          width,
+          collapsedWidth,
+          collapsed: effectiveCollapsed,
+        }),
+      }}
     >
       {effectiveCollapsed ? (
         renderCollapsed ? (
           renderCollapsed({ expand: expandManually })
+        ) : isWidthZeroCollapsed ? (
+          <button
+            type="button"
+            onClick={expandManually}
+            className={`absolute top-3 z-20 flex h-8 w-8 items-center justify-center rounded-lg border border-border/70 bg-bg-elevated text-text-secondary shadow-sm transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 ${
+              side === 'left' ? 'left-2' : 'right-2'
+            }`}
+            title={`Expand ${title}`}
+            aria-label={`Expand ${title}`}
+          >
+            {expandButton}
+          </button>
         ) : (
           <div
             className={`flex min-h-0 w-full flex-col items-center justify-start border-border bg-bg-secondary py-2 ${

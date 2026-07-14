@@ -515,6 +515,7 @@ export interface AutomationTriageItem {
 }
 
 export type JsonRpcRequestId = string | number;
+export type ChatAssistantPhase = 'progress' | 'final';
 
 export interface CodexEvent {
   type:
@@ -549,6 +550,10 @@ export interface CodexEvent {
   goal?: ChatGoalSnapshot;
   status?: 'thinking' | 'executing' | 'complete' | 'error';
   errorMessage?: string;
+  /** Stable app-server item identity for composing streamed assistant messages. */
+  itemId?: string;
+  /** Normalised assistant-message phase when the provider exposes it. */
+  assistantPhase?: ChatAssistantPhase;
 }
 
 export interface Persona {

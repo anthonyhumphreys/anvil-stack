@@ -26,7 +26,6 @@ import {
   CheckCircle2,
   Loader2,
   Bot,
-  SendHorizontal,
   FileText,
   Braces,
   PanelRightOpen,
@@ -34,6 +33,7 @@ import {
   Copy,
   Check,
   ExternalLink,
+  SlidersHorizontal,
 } from 'lucide-react';
 import type {
   AgentRunSummary,
@@ -42,7 +42,6 @@ import type {
   ChatGoalSnapshot,
   ChatPlanSnapshot,
   ChatPlanStep,
-  CodexEvent,
   CodexMode,
   CodexSession,
   Persona,
@@ -50,17 +49,11 @@ import type {
 import { ChatInput, type ChatQuickPrompt, type ChatSlashCommand } from './ChatInput';
 import { ChatThreadRail } from './ChatThreadRail';
 import { WorkItemThreadRail } from './WorkItemThreadRail';
-import {
-  ActivityGroupMessage,
-  AssistantMessage,
-  ChatEventRenderer,
-  ThinkingMessage,
-  UserMessage,
-} from './ChatMessage';
+import { AssistantMessage, TurnWorkMessage, UserMessage } from './ChatMessage';
+import { composeChatTurns } from './chat-turns';
 import { ChatEmptyState } from './ChatEmptyState';
-import { ChatStatusBar } from './ChatStatusBar';
 import { MarkdownRenderer } from './MarkdownRenderer';
-import { useChatContext, type ChatEntry } from '../../contexts/ChatContext';
+import { useChatContext } from '../../contexts/ChatContext';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { DesignProvider } from '../../contexts/DesignContext';
 import { RepoSelector } from '../shared/RepoSelector';
@@ -144,6 +137,7 @@ export function ChatView() {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [showPersonaDropdown, setShowPersonaDropdown] = useState(false);
+  const [showContextSettings, setShowContextSettings] = useState(false);
   const [showFindings, setShowFindings] = useState(true);
   const [dismissedFindings, setDismissedFindings] = useState<Set<number>>(new Set());
   const [composerPrefill, setComposerPrefill] = useState<{ id: string; text: string } | null>(null);
@@ -155,7 +149,6 @@ export function ChatView() {
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [recentRuns, setRecentRuns] = useState<AgentRunSummary[]>([]);
   const [activeSessions, setActiveSessions] = useState<CodexSession[]>([]);
-  const [steerDraft, setSteerDraft] = useState('');
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [composerFocusRequest, setComposerFocusRequest] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -322,7 +315,7 @@ export function ChatView() {
   }, [entries, isBaPersona]);
 
   const openFindings = findings.filter((f) => !dismissedFindings.has(f.idx));
-  const displayEntries = useMemo(() => groupChatEntries(entries), [entries]);
+  const composedTurns = useMemo(() => composeChatTurns(entries, { active: busy }), [busy, entries]);
 
   useEffect(() => {
     const container = messagesContainerRef.current;
@@ -378,6 +371,17 @@ export function ChatView() {
     [executionStrategy, send, startNewSession],
   );
 
+  const handleChatInputSend = useCallback(
+    (message: string, attachments: ChatAttachment[] = []) => {
+      if (busy) {
+        void steer(message, attachments);
+        return;
+      }
+      handleComposerSend(message, attachments);
+    },
+    [busy, handleComposerSend, steer],
+  );
+
   const handleCodexModeChange = useCallback(async (mode: CodexMode) => {
     setCodexMode(mode);
     try {
@@ -430,18 +434,11 @@ export function ChatView() {
     void send('Mark the active goal complete.');
   }, [send]);
 
-  const handleSteerSubmit = useCallback(() => {
-    const message = steerDraft.trim();
-    if (!message) return;
-    setSteerDraft('');
-    void steer(message);
-  }, [steer, steerDraft]);
-
   const personaColour = activePersona?.colour ?? '#b5121b';
   const scaffoldBusy = scaffoldStatus === 'syncing' || scaffoldStatus === 'indexing';
   const workspaceChatReady = scaffoldModeActive || featureAvailability.chatEnabled;
   const chatInputDisabled =
-    busy || scaffoldBusy || !workspaceChatReady || (isWorkItemLayout && !activeThread?.workItemId);
+    scaffoldBusy || !workspaceChatReady || (isWorkItemLayout && !activeThread?.workItemId);
   const composerDraftKey = [
     'anvil:chat-draft',
     activeThreadId ?? 'no-thread',
@@ -491,190 +488,238 @@ export function ChatView() {
   const content = (
     <div className="flex h-full flex-col">
       {/* Header */}
-      <div className="relative z-40 flex flex-wrap items-center gap-2 border-b border-border/60 bg-bg-secondary/90 px-4 py-2.5 shadow-sm backdrop-blur-sm">
-        <div className="flex min-w-[360px] flex-1 flex-wrap items-center gap-2 lg:gap-3">
+      <div className="relative z-40 flex min-h-14 items-center gap-3 border-b border-border/60 bg-bg-secondary px-4 py-2">
+        <div className="flex min-w-0 flex-1 items-center gap-3">
           <div
-            className="flex h-8 w-8 items-center justify-center rounded-xl shadow-sm"
+            className="flex h-8 w-8 items-center justify-center rounded-xl"
             style={{ backgroundColor: `${personaColour}15` }}
           >
             <MessageSquare size={16} style={{ color: personaColour }} className="shrink-0" />
           </div>
-          <div className="min-w-0">
-            <h2 className="shrink-0 text-base font-semibold tracking-tight">Chat</h2>
-            {activeThread && !scaffoldModeActive && (
-              <p className="truncate text-xs text-text-tertiary">{activeThread.title}</p>
-            )}
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[11px] font-medium uppercase tracking-[0.08em] text-text-muted">
+              {activeWorkspace?.name ?? 'No workspace'}
+            </p>
+            <div className="flex min-w-0 items-baseline gap-2">
+              <h2 className="shrink-0 text-sm font-semibold tracking-tight text-text-primary">
+                Chat
+              </h2>
+              {activeThread && !scaffoldModeActive && (
+                <>
+                  <span className="text-text-muted">/</span>
+                  <p className="truncate text-sm text-text-secondary">{activeThread.title}</p>
+                </>
+              )}
+            </div>
           </div>
 
-          {/* Persona selector */}
-          <div className="relative">
+          <div className="relative ml-auto shrink-0">
             <button
-              onClick={() => {
-                if (!scaffoldModeActive) setShowPersonaDropdown(!showPersonaDropdown);
-              }}
-              className="flex items-center gap-2 rounded-xl border border-border px-3 py-1.5 text-sm transition-all hover:bg-bg-tertiary hover:shadow-sm"
-              style={{ borderColor: personaColour + '40' }}
-              aria-label="Select persona"
-              aria-expanded={showPersonaDropdown}
-              disabled={scaffoldModeActive}
+              type="button"
+              onClick={() => setShowContextSettings((open) => !open)}
+              className="flex h-9 items-center gap-2 rounded-lg border border-border px-2.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+              aria-expanded={showContextSettings}
+              aria-label="Chat context and mode settings"
             >
-              <span
-                className="inline-block h-2 w-2 rounded-full shadow-sm"
-                style={{ backgroundColor: personaColour }}
-              />
-              {activePersona ? PERSONA_ICONS[activePersona.icon] : null}
-              <span className="text-text-primary">{activePersona?.name ?? 'Select persona'}</span>
-              <ChevronDown size={12} className="text-text-tertiary" />
+              <SlidersHorizontal size={13} />
+              <span className="hidden lg:inline">Context</span>
             </button>
 
-            {showPersonaDropdown && !scaffoldModeActive && (
-              <div className="absolute left-0 top-full z-50 mt-1.5 w-72 overflow-hidden rounded-xl border border-border bg-bg-elevated shadow-2xl ring-1 ring-black/10">
-                <div className="p-1.5">
-                  {personas.map((p) => (
+            {showContextSettings && (
+              <div className="absolute right-0 top-full z-50 mt-2 w-[min(680px,calc(100vw-2rem))] rounded-xl border border-border bg-bg-elevated p-3 shadow-2xl">
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* Persona selector */}
+                  <div className="relative">
                     <button
-                      key={p.id}
-                      onClick={() => handleSwitchPersona(p)}
-                      className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-colors hover:bg-bg-tertiary ${
-                        activePersona?.id === p.id ? 'bg-bg-tertiary' : ''
-                      }`}
+                      onClick={() => {
+                        if (!scaffoldModeActive) setShowPersonaDropdown(!showPersonaDropdown);
+                      }}
+                      className="flex items-center gap-2 rounded-xl border border-border px-3 py-1.5 text-sm transition-all hover:bg-bg-tertiary hover:shadow-sm"
+                      style={{ borderColor: personaColour + '40' }}
+                      aria-label="Select persona"
+                      aria-expanded={showPersonaDropdown}
+                      disabled={scaffoldModeActive}
                     >
                       <span
-                        className="inline-block h-2.5 w-2.5 shrink-0 rounded-full shadow-sm"
-                        style={{ backgroundColor: p.colour }}
+                        className="inline-block h-2 w-2 rounded-full shadow-sm"
+                        style={{ backgroundColor: personaColour }}
                       />
-                      <span className="shrink-0 text-text-secondary">{PERSONA_ICONS[p.icon]}</span>
-                      <div className="min-w-0">
-                        <div className="font-medium text-text-primary">{p.name}</div>
-                        <div className="truncate text-xs text-text-tertiary">{p.description}</div>
-                      </div>
+                      {activePersona ? PERSONA_ICONS[activePersona.icon] : null}
+                      <span className="text-text-primary">
+                        {activePersona?.name ?? 'Select persona'}
+                      </span>
+                      <ChevronDown size={12} className="text-text-tertiary" />
                     </button>
-                  ))}
+
+                    {showPersonaDropdown && !scaffoldModeActive && (
+                      <div className="absolute left-0 top-full z-50 mt-1.5 w-72 overflow-hidden rounded-xl border border-border bg-bg-elevated shadow-2xl ring-1 ring-black/10">
+                        <div className="p-1.5">
+                          {personas.map((p) => (
+                            <button
+                              key={p.id}
+                              onClick={() => handleSwitchPersona(p)}
+                              className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-colors hover:bg-bg-tertiary ${
+                                activePersona?.id === p.id ? 'bg-bg-tertiary' : ''
+                              }`}
+                            >
+                              <span
+                                className="inline-block h-2.5 w-2.5 shrink-0 rounded-full shadow-sm"
+                                style={{ backgroundColor: p.colour }}
+                              />
+                              <span className="shrink-0 text-text-secondary">
+                                {PERSONA_ICONS[p.icon]}
+                              </span>
+                              <div className="min-w-0">
+                                <div className="font-medium text-text-primary">{p.name}</div>
+                                <div className="truncate text-xs text-text-tertiary">
+                                  {p.description}
+                                </div>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Repo selector */}
+                  {!scaffoldModeActive && (
+                    <RepoSelector
+                      variant="dropdown"
+                      mode="multi"
+                      selectedRepoIds={activeRepos.map((r) => r.id)}
+                      onMultiSelect={setActiveRepos}
+                    />
+                  )}
+
+                  {!scaffoldModeActive && (
+                    <div className="flex items-center gap-1 rounded-xl border border-border bg-bg-primary/60 p-0.5">
+                      <button
+                        onClick={() => handleChatLayoutChange('classic')}
+                        className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
+                          chatLayout === 'classic'
+                            ? 'bg-accent/15 text-accent'
+                            : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary'
+                        }`}
+                        aria-pressed={chatLayout === 'classic'}
+                        title="Classic chat threads"
+                      >
+                        <MessageSquare size={12} />
+                        <span className="hidden 2xl:inline">Classic</span>
+                      </button>
+                      <button
+                        onClick={() => handleChatLayoutChange('workitems')}
+                        className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
+                          chatLayout === 'workitems'
+                            ? 'bg-info/15 text-info'
+                            : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary'
+                        }`}
+                        aria-pressed={chatLayout === 'workitems'}
+                        title="Work-item chat threads"
+                      >
+                        <ClipboardList size={12} />
+                        <span className="hidden 2xl:inline">Tickets</span>
+                      </button>
+                    </div>
+                  )}
+
+                  {!scaffoldModeActive && (
+                    <div className="flex items-center gap-1 rounded-xl border border-border bg-bg-primary/60 p-0.5">
+                      <button
+                        onClick={() => setCollaborationMode('default')}
+                        className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
+                          collaborationMode === 'default'
+                            ? 'bg-accent/15 text-accent'
+                            : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary'
+                        }`}
+                        aria-pressed={collaborationMode === 'default'}
+                        title="Implementation mode"
+                      >
+                        <Hammer size={12} />
+                        <span className="hidden xl:inline">Build</span>
+                      </button>
+                      <button
+                        onClick={() => setCollaborationMode('plan')}
+                        className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
+                          collaborationMode === 'plan'
+                            ? 'bg-info/15 text-info'
+                            : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary'
+                        }`}
+                        aria-pressed={collaborationMode === 'plan'}
+                        title="Planning mode"
+                      >
+                        <ListChecks size={12} />
+                        <span className="hidden xl:inline">Plan</span>
+                      </button>
+                    </div>
+                  )}
+
+                  {!scaffoldModeActive && (
+                    <label className="flex items-center gap-2 rounded-xl border border-border px-2.5 py-1.5 text-sm text-text-secondary">
+                      <span className="hidden text-xs text-text-tertiary xl:inline">Mode</span>
+                      <select
+                        value={codexMode}
+                        onChange={(event) =>
+                          void handleCodexModeChange(event.target.value as CodexMode)
+                        }
+                        className="max-w-28 bg-transparent text-sm text-text-primary outline-none xl:max-w-none"
+                        aria-label="Codex mode"
+                      >
+                        <option value="read-only">Read Only</option>
+                        <option value="on-request">Ask First</option>
+                        <option value="workspace-auto">Auto</option>
+                        <option value="full-access">Full Access</option>
+                      </select>
+                    </label>
+                  )}
+
+                  {/* Governance document selector */}
+                  <GovernanceSelector
+                    selectedDocIds={selectedGovernanceDocs.map((d) => d.id)}
+                    onSelectionChange={setSelectedGovernanceDocs}
+                  />
+
+                  {!scaffoldModeActive && (
+                    <WorkspaceGitActions
+                      repos={repos}
+                      onPullRequestCreated={(result) => {
+                        const target =
+                          result.pullRequestUrl ?? `${result.repoName} ${result.branch}`;
+                        setComposerPrefill({
+                          id: `pr-${Date.now()}`,
+                          text: `Created PR for ${result.repoName}: ${target}`,
+                        });
+                      }}
+                      onError={(message) => {
+                        setComposerPrefill({ id: `git-error-${Date.now()}`, text: message });
+                      }}
+                    />
+                  )}
+
+                  {!scaffoldModeActive && (
+                    <AgentWorkControl
+                      open={workOpen}
+                      runs={recentRuns}
+                      sessions={activeSessions}
+                      onOpenChange={setWorkOpen}
+                      onOpenThread={(threadId) => void selectThread(threadId)}
+                      onStop={(sessionId) => void window.anvil.chat.stopSession(sessionId)}
+                    />
+                  )}
+                  {!scaffoldModeActive && (
+                    <GoalControl
+                      activeGoal={activeGoal}
+                      busy={busy}
+                      open={goalPopoverOpen}
+                      onOpenChange={setGoalPopoverOpen}
+                      onSetGoal={handleSetGoal}
+                      onCompleteGoal={handleCompleteGoal}
+                    />
+                  )}
                 </div>
               </div>
             )}
           </div>
-
-          {/* Repo selector */}
-          {!scaffoldModeActive && (
-            <RepoSelector
-              variant="dropdown"
-              mode="multi"
-              selectedRepoIds={activeRepos.map((r) => r.id)}
-              onMultiSelect={setActiveRepos}
-            />
-          )}
-
-          {!scaffoldModeActive && (
-            <div className="flex items-center gap-1 rounded-xl border border-border bg-bg-primary/60 p-0.5">
-              <button
-                onClick={() => handleChatLayoutChange('classic')}
-                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
-                  chatLayout === 'classic'
-                    ? 'bg-accent/15 text-accent'
-                    : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary'
-                }`}
-                aria-pressed={chatLayout === 'classic'}
-                title="Classic chat threads"
-              >
-                <MessageSquare size={12} />
-                <span className="hidden 2xl:inline">Classic</span>
-              </button>
-              <button
-                onClick={() => handleChatLayoutChange('workitems')}
-                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
-                  chatLayout === 'workitems'
-                    ? 'bg-info/15 text-info'
-                    : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary'
-                }`}
-                aria-pressed={chatLayout === 'workitems'}
-                title="Work-item chat threads"
-              >
-                <ClipboardList size={12} />
-                <span className="hidden 2xl:inline">Tickets</span>
-              </button>
-            </div>
-          )}
-
-          {!scaffoldModeActive && (
-            <div className="flex items-center gap-1 rounded-xl border border-border bg-bg-primary/60 p-0.5">
-              <button
-                onClick={() => setCollaborationMode('default')}
-                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
-                  collaborationMode === 'default'
-                    ? 'bg-accent/15 text-accent'
-                    : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary'
-                }`}
-                aria-pressed={collaborationMode === 'default'}
-                title="Implementation mode"
-              >
-                <Hammer size={12} />
-                <span className="hidden xl:inline">Build</span>
-              </button>
-              <button
-                onClick={() => setCollaborationMode('plan')}
-                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
-                  collaborationMode === 'plan'
-                    ? 'bg-info/15 text-info'
-                    : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary'
-                }`}
-                aria-pressed={collaborationMode === 'plan'}
-                title="Planning mode"
-              >
-                <ListChecks size={12} />
-                <span className="hidden xl:inline">Plan</span>
-              </button>
-            </div>
-          )}
-
-          {!scaffoldModeActive && (
-            <label className="flex items-center gap-2 rounded-xl border border-border px-2.5 py-1.5 text-sm text-text-secondary">
-              <span className="hidden text-xs text-text-tertiary xl:inline">Mode</span>
-              <select
-                value={codexMode}
-                onChange={(event) => void handleCodexModeChange(event.target.value as CodexMode)}
-                className="max-w-28 bg-transparent text-sm text-text-primary outline-none xl:max-w-none"
-                aria-label="Codex mode"
-              >
-                <option value="read-only">Read Only</option>
-                <option value="on-request">Ask First</option>
-                <option value="workspace-auto">Auto</option>
-                <option value="full-access">Full Access</option>
-              </select>
-            </label>
-          )}
-
-          {/* Governance document selector */}
-          <GovernanceSelector
-            selectedDocIds={selectedGovernanceDocs.map((d) => d.id)}
-            onSelectionChange={setSelectedGovernanceDocs}
-          />
-
-          {!scaffoldModeActive && (
-            <WorkspaceGitActions
-              repos={repos}
-              onPullRequestCreated={(result) => {
-                const target = result.pullRequestUrl ?? `${result.repoName} ${result.branch}`;
-                setComposerPrefill({
-                  id: `pr-${Date.now()}`,
-                  text: `Created PR for ${result.repoName}: ${target}`,
-                });
-              }}
-              onError={(message) => {
-                setComposerPrefill({ id: `git-error-${Date.now()}`, text: message });
-              }}
-            />
-          )}
-
-          {!scaffoldModeActive && (
-            <AgentWorkControl
-              open={workOpen}
-              runs={recentRuns}
-              sessions={activeSessions}
-              onOpenChange={setWorkOpen}
-              onOpenThread={(threadId) => void selectThread(threadId)}
-              onStop={(sessionId) => void window.anvil.chat.stopSession(sessionId)}
-            />
-          )}
 
           {/* Session status */}
           {scaffoldModeActive && (
@@ -701,22 +746,11 @@ export function ChatView() {
         </div>
 
         <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">
-          {!scaffoldModeActive && (
-            <GoalControl
-              activeGoal={activeGoal}
-              busy={busy}
-              open={goalPopoverOpen}
-              onOpenChange={setGoalPopoverOpen}
-              onSetGoal={handleSetGoal}
-              onCompleteGoal={handleCompleteGoal}
-            />
-          )}
-
           {!isWorkItemLayout && (
             <button
               onClick={() => void startNewSession()}
               disabled={scaffoldModeActive}
-              className="flex items-center gap-1.5 rounded-xl border border-border px-3 py-1.5 text-sm text-text-secondary transition-all hover:bg-bg-tertiary hover:text-text-primary hover:shadow-sm disabled:opacity-50"
+              className="flex items-center gap-1.5 rounded-xl border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
               title={getNewChatThreadActionLabel()}
               aria-label={getNewChatThreadActionLabel()}
             >
@@ -730,7 +764,7 @@ export function ChatView() {
               type="button"
               onClick={() => setCanvasOpen((open) => !open)}
               disabled={activeArtifacts.length === 0 && !activePlan && !activeGoal}
-              className="flex items-center gap-1.5 rounded-xl border border-border px-3 py-1.5 text-sm text-text-secondary transition-all hover:bg-bg-tertiary hover:text-text-primary hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-45"
+              className="flex items-center gap-1.5 rounded-xl border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-45"
               title={canvasOpen ? 'Hide canvas' : 'Show canvas'}
               aria-label={canvasOpen ? 'Hide canvas' : 'Show canvas'}
               aria-pressed={canvasOpen}
@@ -781,7 +815,7 @@ export function ChatView() {
                 className={`w-full px-3 lg:px-4 ${
                   showCenteredEmptyPane
                     ? 'flex min-h-full flex-1 items-center justify-center py-6'
-                    : 'mx-auto flex max-w-5xl flex-col pb-4 pt-5'
+                    : 'mx-auto flex max-w-[78ch] flex-col pb-6 pt-6'
                 }`}
               >
                 {!scaffoldModeActive && !featureAvailability.chatEnabled && (
@@ -877,40 +911,49 @@ export function ChatView() {
                   </div>
                 )}
 
-                {displayEntries.length > 0 && (
-                  <div className="space-y-5">
-                    {displayEntries.map((entry, i) =>
-                      entry.kind === 'user' ? (
-                        <UserMessage
-                          key={`msg-${i}`}
-                          content={entry.content}
-                          attachments={entry.attachments}
-                          onEdit={() => handleReuseMessage(entry.sourceIndex, entry.content)}
-                          onBranch={
-                            isWorkItemLayout ? undefined : () => handleBranch(entry.sourceIndex)
-                          }
-                        />
-                      ) : entry.kind === 'assistant' ? (
-                        <AssistantMessage
-                          key={`msg-${i}`}
-                          content={entry.content}
-                          transformContent={isBaPersona ? stripFindingMarkers : undefined}
-                          onBranch={
-                            isWorkItemLayout ? undefined : () => handleBranch(entry.sourceIndex)
-                          }
-                        />
-                      ) : entry.kind === 'thinking' ? (
-                        <ThinkingMessage key={`think-${i}`} content={entry.content} />
-                      ) : entry.kind === 'activity-group' ? (
-                        <ActivityGroupMessage key={`act-${i}`} events={entry.events} />
-                      ) : (
-                        <div key={`evt-${i}`} className="flex justify-start">
-                          <div className="w-full max-w-4xl">
-                            <ChatEventRenderer event={entry.event} />
-                          </div>
-                        </div>
-                      ),
-                    )}
+                {composedTurns.length > 0 && (
+                  <div className="space-y-8">
+                    {composedTurns.map((turn, turnIndex) => (
+                      <section
+                        key={turn.key}
+                        className="space-y-3"
+                        aria-label={`Turn ${turnIndex + 1}`}
+                      >
+                        {turn.user && (
+                          <UserMessage
+                            content={turn.user.content}
+                            attachments={turn.user.attachments}
+                            onEdit={() =>
+                              handleReuseMessage(turn.user!.sourceIndex, turn.user!.content)
+                            }
+                            onBranch={
+                              isWorkItemLayout
+                                ? undefined
+                                : () => handleBranch(turn.user!.sourceIndex)
+                            }
+                          />
+                        )}
+                        {turn.work.length > 0 && (
+                          <TurnWorkMessage
+                            items={turn.work}
+                            active={busy && turnIndex === composedTurns.length - 1}
+                          />
+                        )}
+                        {turn.answer && (
+                          <AssistantMessage
+                            content={turn.answer.content}
+                            transformContent={isBaPersona ? stripFindingMarkers : undefined}
+                            label={activePersona?.name ?? 'Assistant'}
+                            colour={personaColour}
+                            onBranch={
+                              isWorkItemLayout
+                                ? undefined
+                                : () => handleBranch(turn.answer!.sourceIndex)
+                            }
+                          />
+                        )}
+                      </section>
+                    ))}
                   </div>
                 )}
 
@@ -925,7 +968,7 @@ export function ChatView() {
               </div>
               <div ref={messagesEndRef} />
             </div>
-            {showJumpToLatest && displayEntries.length > 0 && (
+            {showJumpToLatest && composedTurns.length > 0 && (
               <button
                 type="button"
                 onClick={handleJumpToLatest}
@@ -937,75 +980,25 @@ export function ChatView() {
             )}
           </div>
 
-          {/* Status bar */}
-          <ChatStatusBar
-            events={entries
-              .filter((e) => e.kind === 'event')
-              .map((e) => (e as { event: CodexEvent }).event)}
-            isBusy={busy}
-          />
-
-          {busy && session && (
-            <div className="border-t border-border/60 bg-bg-secondary/80 px-3 py-2">
-              <div className="flex items-center gap-2 rounded-lg border border-warning/20 bg-warning/5 px-3 py-2">
-                <Sparkles size={14} className="shrink-0 text-warning" />
-                <input
-                  value={steerDraft}
-                  onChange={(event) => setSteerDraft(event.target.value)}
-                  aria-label="Steer the active turn"
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
-                      event.preventDefault();
-                      handleSteerSubmit();
-                    }
-                  }}
-                  placeholder="Steer the active turn..."
-                  className="min-w-0 flex-1 bg-transparent text-sm text-text-primary outline-none placeholder:text-text-tertiary"
-                />
-                <button
-                  type="button"
-                  onClick={handleSteerSubmit}
-                  disabled={!steerDraft.trim()}
-                  className="flex items-center gap-1.5 rounded-lg border border-warning/30 bg-warning/10 px-2.5 py-1 text-xs font-medium text-warning transition-colors hover:bg-warning/15 disabled:cursor-not-allowed disabled:opacity-40"
-                  title="Send steering input to the current Codex turn"
-                >
-                  <SendHorizontal size={13} />
-                  Steer
-                </button>
-                <button
-                  type="button"
-                  onClick={interrupt}
-                  className="flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium text-text-secondary transition-colors hover:bg-error/10 hover:text-error"
-                  title="Stop the active Codex turn"
-                >
-                  <X size={13} />
-                  Stop
-                </button>
-              </div>
-            </div>
-          )}
-
           {/* Input */}
-          {!busy && (
-            <ChatInput
-              onSend={handleComposerSend}
-              onStop={interrupt}
-              disabled={chatInputDisabled}
-              busy={busy}
-              personaColour={personaColour}
-              reasoningLevel={reasoningLevel}
-              reasoningOptions={reasoningOptions}
-              onReasoningChange={setReasoningLevel}
-              executionStrategy={executionStrategy}
-              onExecutionStrategyChange={setExecutionStrategy}
-              prefill={composerPrefill}
-              draftKey={composerDraftKey}
-              mentionRepoIds={mentionRepoIds}
-              quickPrompts={quickPrompts}
-              slashCommands={slashCommands}
-              focusRequest={composerFocusRequest}
-            />
-          )}
+          <ChatInput
+            onSend={handleChatInputSend}
+            onStop={interrupt}
+            disabled={chatInputDisabled}
+            busy={busy}
+            personaColour={personaColour}
+            reasoningLevel={reasoningLevel}
+            reasoningOptions={reasoningOptions}
+            onReasoningChange={setReasoningLevel}
+            executionStrategy={executionStrategy}
+            onExecutionStrategyChange={setExecutionStrategy}
+            prefill={composerPrefill}
+            draftKey={composerDraftKey}
+            mentionRepoIds={mentionRepoIds}
+            quickPrompts={isEmpty ? quickPrompts : []}
+            slashCommands={slashCommands}
+            focusRequest={composerFocusRequest}
+          />
         </div>
 
         {/* Findings sidebar - BA persona only */}
@@ -1075,6 +1068,7 @@ export function ChatView() {
             defaultWidth={460}
             minWidth={360}
             maxWidth={720}
+            collapsedWidth={0}
             className="border-l border-border/60 bg-bg-secondary/50"
           >
             <ChatCanvasSidebar
@@ -1095,89 +1089,6 @@ export function ChatView() {
   }
 
   return content;
-}
-
-type SourceIndexedEntry<T extends ChatEntry> = T & { sourceIndex: number };
-type EventEntry = SourceIndexedEntry<Extract<ChatEntry, { kind: 'event' }>>;
-type ActivityGroupEntry = {
-  kind: 'activity-group';
-  events: CodexEvent[];
-};
-type DisplayEntry =
-  | SourceIndexedEntry<Exclude<ChatEntry, { kind: 'event' }>>
-  | EventEntry
-  | ActivityGroupEntry;
-
-const GROUPED_ACTIVITY_EVENT_TYPES: CodexEvent['type'][] = [
-  'tool_call',
-  'command_exec',
-  'file_read',
-  'file_edit',
-  'approval_request',
-  'plan_update',
-  'goal_update',
-  'goal_cleared',
-];
-
-export function groupChatEntries(entries: ChatEntry[]): DisplayEntry[] {
-  const grouped: DisplayEntry[] = [];
-  let pendingTurn: Array<SourceIndexedEntry<ChatEntry>> = [];
-
-  const flushPendingTurn = () => {
-    if (pendingTurn.length === 0) return;
-
-    const activityEvents: EventEntry[] = [];
-    const assistantEntries: Array<SourceIndexedEntry<Extract<ChatEntry, { kind: 'assistant' }>>> =
-      [];
-
-    for (const entry of pendingTurn) {
-      if (entry.kind === 'event' && isGroupedActivityEvent(entry.event)) {
-        activityEvents.push(entry as EventEntry);
-      } else if (entry.kind === 'assistant') {
-        assistantEntries.push(
-          entry as SourceIndexedEntry<Extract<ChatEntry, { kind: 'assistant' }>>,
-        );
-      } else {
-        grouped.push(entry as DisplayEntry);
-      }
-    }
-
-    if (activityEvents.length === 1) {
-      grouped.push(activityEvents[0]);
-    } else if (activityEvents.length > 1) {
-      grouped.push({
-        kind: 'activity-group',
-        events: activityEvents.map((entry) => entry.event),
-      });
-    }
-
-    if (assistantEntries.length > 0) {
-      const lastAssistant = assistantEntries[assistantEntries.length - 1];
-      grouped.push({
-        ...lastAssistant,
-        content: assistantEntries.map((entry) => entry.content).join(''),
-      });
-    }
-
-    pendingTurn = [];
-  };
-
-  for (const [sourceIndex, entry] of entries.entries()) {
-    const indexedEntry = { ...entry, sourceIndex } as SourceIndexedEntry<ChatEntry>;
-    if (entry.kind === 'user') {
-      flushPendingTurn();
-      grouped.push(indexedEntry as DisplayEntry);
-    } else {
-      pendingTurn.push(indexedEntry);
-    }
-  }
-
-  flushPendingTurn();
-  return grouped;
-}
-
-function isGroupedActivityEvent(event: CodexEvent): boolean {
-  return GROUPED_ACTIVITY_EVENT_TYPES.includes(event.type);
 }
 
 function AgentWorkControl({

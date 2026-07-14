@@ -97,6 +97,7 @@ export function WorkItemThreadRail({
         defaultWidth={320}
         minWidth={260}
         maxWidth={480}
+        collapsedWidth={0}
         autoCollapseBelow={1200}
         className="border-r border-border/60 bg-bg-secondary/50"
       >

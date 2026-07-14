@@ -1,5 +1,78 @@
 import { describe, expect, it } from 'vitest';
-import { shouldSuppressPreparedChatBootstrap, threadBelongsToWorkspace } from '../ChatContext';
+import {
+  chatMessagesToEntries,
+  shouldSuppressPreparedChatBootstrap,
+  threadBelongsToWorkspace,
+} from '../ChatContext';
+
+describe('chatMessagesToEntries', () => {
+  it('restores segmented assistant output and persisted activity', () => {
+    expect(
+      chatMessagesToEntries([
+        {
+          id: 'progress-1',
+          role: 'system',
+          content: 'Checking the tests.',
+          timestamp: '2026-07-14T10:00:00.000Z',
+          event: {
+            type: 'text',
+            text: 'Checking the tests.',
+            itemId: 'provider-message-1',
+            assistantPhase: 'progress',
+          },
+        },
+        {
+          id: 'command-1',
+          role: 'system',
+          content: 'Ran pnpm test',
+          timestamp: '2026-07-14T10:00:01.000Z',
+          event: { type: 'command_exec', command: 'pnpm test', exitCode: 0 },
+        },
+        {
+          id: 'final-1',
+          role: 'assistant',
+          content: 'The tests pass.',
+          timestamp: '2026-07-14T10:00:02.000Z',
+          event: {
+            type: 'text',
+            text: 'The tests pass.',
+            itemId: 'provider-message-2',
+            assistantPhase: 'final',
+          },
+        },
+      ]),
+    ).toEqual([
+      {
+        kind: 'assistant',
+        content: 'Checking the tests.',
+        id: 'progress-1',
+        itemId: 'provider-message-1',
+        phase: 'progress',
+      },
+      { kind: 'event', event: { type: 'command_exec', command: 'pnpm test', exitCode: 0 } },
+      {
+        kind: 'assistant',
+        content: 'The tests pass.',
+        id: 'final-1',
+        itemId: 'provider-message-2',
+        phase: 'final',
+      },
+    ]);
+  });
+
+  it('keeps legacy flattened assistant history readable', () => {
+    expect(
+      chatMessagesToEntries([
+        {
+          id: 'legacy-1',
+          role: 'assistant',
+          content: 'Existing flattened output',
+          timestamp: '2026-07-14T10:00:00.000Z',
+        },
+      ]),
+    ).toEqual([{ kind: 'assistant', content: 'Existing flattened output', id: 'legacy-1' }]);
+  });
+});
 
 describe('threadBelongsToWorkspace', () => {
   it('matches only the active workspace', () => {

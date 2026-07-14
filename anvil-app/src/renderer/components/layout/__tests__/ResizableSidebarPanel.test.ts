@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { shouldAutoCollapsePanel } from '../ResizableSidebarPanel';
+import { resolvePanelWidth, shouldAutoCollapsePanel } from '../ResizableSidebarPanel';
 
 describe('shouldAutoCollapsePanel', () => {
   it('auto-collapses below the threshold when the panel is not manually collapsed', () => {
@@ -30,5 +30,15 @@ describe('shouldAutoCollapsePanel', () => {
         persistedCollapsed: true,
       }),
     ).toBe(false);
+  });
+});
+
+describe('resolvePanelWidth', () => {
+  it('allows a collapsed panel to consume no layout width', () => {
+    expect(resolvePanelWidth({ width: 320, collapsedWidth: 0, collapsed: true })).toBe(0);
+  });
+
+  it('uses the stored width while expanded', () => {
+    expect(resolvePanelWidth({ width: 320, collapsedWidth: 0, collapsed: false })).toBe(320);
   });
 });

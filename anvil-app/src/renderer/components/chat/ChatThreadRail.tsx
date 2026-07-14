@@ -58,6 +58,7 @@ export function ChatThreadRail({
       defaultWidth={280}
       minWidth={220}
       maxWidth={420}
+      collapsedWidth={0}
       autoCollapseBelow={1200}
       className="border-r border-border/60 bg-bg-secondary/50"
     >

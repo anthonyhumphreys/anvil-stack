@@ -621,7 +621,18 @@ export function saveChatEntry(
        event_json,
        timestamp
      )
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       thread_id = excluded.thread_id,
+       repo_id = excluded.repo_id,
+       persona_id = excluded.persona_id,
+       session_id = excluded.session_id,
+       kind = excluded.kind,
+       role = excluded.role,
+       content = excluded.content,
+       attachments_json = excluded.attachments_json,
+       event_json = excluded.event_json,
+       timestamp = excluded.timestamp`,
   ).run(
     entry.id,
     threadId,
@@ -632,7 +643,7 @@ export function saveChatEntry(
     entry.role,
     entry.content,
     serialiseAttachments(entry.attachments),
-    null,
+    entry.event ? JSON.stringify(entry.event) : null,
     entry.timestamp,
   );
 
@@ -660,7 +671,7 @@ export function loadChatHistory(threadId: string): ChatMessage[] {
          event_json
        FROM chat_messages
        WHERE thread_id = ?
-       ORDER BY timestamp ASC`,
+       ORDER BY timestamp ASC, rowid ASC`,
     )
     .all(threadId) as Array<{
     id: string;
