@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { threadBelongsToWorkspace } from '../ChatContext';
+import { shouldSuppressPreparedChatBootstrap, threadBelongsToWorkspace } from '../ChatContext';
 
 describe('threadBelongsToWorkspace', () => {
   it('matches only the active workspace', () => {
@@ -11,5 +11,16 @@ describe('threadBelongsToWorkspace', () => {
     expect(threadBelongsToWorkspace({}, null)).toBe(true);
     expect(threadBelongsToWorkspace({}, 'workspace-a')).toBe(false);
     expect(threadBelongsToWorkspace({ workspaceId: 'workspace-a' }, null)).toBe(false);
+  });
+});
+
+describe('shouldSuppressPreparedChatBootstrap', () => {
+  it('does not leave suppression armed when launching with the active persona', () => {
+    expect(shouldSuppressPreparedChatBootstrap('coder', 'coder')).toBe(false);
+  });
+
+  it('suppresses the bootstrap triggered by an actual persona change', () => {
+    expect(shouldSuppressPreparedChatBootstrap('coder', 'architect')).toBe(true);
+    expect(shouldSuppressPreparedChatBootstrap(null, 'coder')).toBe(true);
   });
 });

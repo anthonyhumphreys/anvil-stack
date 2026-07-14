@@ -1865,7 +1865,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       threadLoadVersionRef.current += 1;
       detachLiveSession();
 
-      suppressNextThreadBootstrapRef.current = true;
+      suppressNextThreadBootstrapRef.current = shouldSuppressPreparedChatBootstrap(
+        activePersona?.id ?? null,
+        targetPersona.id,
+      );
       setSession(null);
       setEntries([]);
       setBusy(false);
@@ -1972,6 +1975,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
     },
     [
+      activePersona?.id,
       activeWorkspace,
       buildEnrichedMessage,
       bumpThreadSummary,
@@ -2190,6 +2194,13 @@ export function threadBelongsToWorkspace(
   workspaceId: string | null,
 ): boolean {
   return (thread.workspaceId ?? null) === workspaceId;
+}
+
+export function shouldSuppressPreparedChatBootstrap(
+  activePersonaId: string | null,
+  targetPersonaId: string,
+): boolean {
+  return activePersonaId !== targetPersonaId;
 }
 
 function normaliseOutgoingMessage(message: string, attachments: ChatAttachment[]): string {
