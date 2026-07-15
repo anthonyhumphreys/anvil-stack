@@ -854,7 +854,7 @@ export function AssistantMessage({
           />
           {label}
         </div>
-        <div className="overflow-hidden px-1 py-1 text-text-secondary [&_.markdown-body>p]:text-[15px] [&_.markdown-body>p]:leading-7">
+        <div className="overflow-hidden rounded-xl border border-border-subtle bg-bg-secondary/45 px-4 py-3.5 text-text-secondary transition-colors group-hover:border-border [&_.markdown-body>p]:text-[15px] [&_.markdown-body>p]:leading-7">
           <MarkdownRenderer content={display} />
         </div>
         <div className="message-actions absolute -bottom-7 left-0">
