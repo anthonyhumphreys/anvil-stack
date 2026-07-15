@@ -276,7 +276,28 @@ export interface ChatMessage {
   attachments?: ChatAttachment[];
 }
 
-export type ChatArtifactKind = 'markdown' | 'code' | 'html' | 'diagram' | 'data' | 'text';
+export type ChatArtifactKind =
+  | 'markdown'
+  | 'mermaid'
+  | 'html'
+  | 'docx'
+  | 'pptx'
+  | 'pdf'
+  | 'csv'
+  | 'xlsx'
+  | 'code'
+  | 'diagram'
+  | 'data'
+  | 'text';
+
+export type ChatArtifactContentEncoding = 'utf8' | 'base64' | 'file';
+
+export interface ChatArtifactFile {
+  name: string;
+  mimeType: string;
+  size: number;
+  dataBase64: string;
+}
 
 export interface CodexDetectedModel {
   id: string;
@@ -332,6 +353,7 @@ export interface ChatArtifactInput {
   kind: ChatArtifactKind;
   relativePath: string;
   content: string;
+  contentEncoding?: ChatArtifactContentEncoding;
   status?: ChatArtifact['status'];
   visibility?: ChatArtifact['visibility'];
   source?: ChatArtifact['source'];

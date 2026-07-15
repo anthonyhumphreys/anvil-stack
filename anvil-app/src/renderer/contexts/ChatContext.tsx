@@ -2466,8 +2466,9 @@ function buildArtifactCanvasPrompt(threadTitle?: string): string {
     '```artifact:path/to/name.md kind=markdown title="Short title"',
     'content here',
     '```',
-    'Supported kinds: markdown, code, html, diagram, data, text.',
-    'Use artifacts for plans, review packs, diagrams, HTML prototypes, dashboards, specs, migration notes, and handover documents.',
+    'Supported kinds: markdown, mermaid, html, docx, pptx, pdf, csv, xlsx, code, data, text.',
+    'Use artifacts for plans, review packs, diagrams, HTML prototypes, dashboards, documents, presentations, spreadsheets, specs, migration notes, and handover documents.',
+    'For a binary docx, pptx, pdf, or xlsx already created under .anvil/artifacts, add encoding=file to the fence header and put a short description inside the fence. Do not inline binary data.',
     'Keep ordinary commentary outside artifact fences.',
     threadTitle ? `Current thread: ${threadTitle}` : null,
   ]
@@ -2538,6 +2539,8 @@ interface ArtifactExtractionContext {
   reasoningEffort?: ReasoningEffort;
 }
 
+type ArtifactContentEncoding = NonNullable<ChatArtifactInput['contentEncoding']>;
+
 function extractChatArtifactInputs(
   content: string,
   context: ArtifactExtractionContext,
@@ -2564,6 +2567,7 @@ function extractChatArtifactInputs(
       kind,
       relativePath,
       content: artifactContent,
+      contentEncoding: metadata.encoding,
       status: 'draft',
       visibility: 'local',
       source: 'assistant',
@@ -2579,8 +2583,14 @@ function parseArtifactMetadata(value: string): {
   path?: string;
   title?: string;
   kind?: ChatArtifactKind;
+  encoding?: ArtifactContentEncoding;
 } {
-  const metadata: { path?: string; title?: string; kind?: ChatArtifactKind } = {};
+  const metadata: {
+    path?: string;
+    title?: string;
+    kind?: ChatArtifactKind;
+    encoding?: ArtifactContentEncoding;
+  } = {};
   const tokenPattern = /(\w+)=(?:"([^"]+)"|'([^']+)'|([^\s]+))/g;
   let match: RegExpExecArray | null;
 
@@ -2590,6 +2600,9 @@ function parseArtifactMetadata(value: string): {
     if (key === 'path') metadata.path = tokenValue;
     if (key === 'title') metadata.title = tokenValue;
     if (key === 'kind' && isChatArtifactKind(tokenValue)) metadata.kind = tokenValue;
+    if (key === 'encoding' && isArtifactContentEncoding(tokenValue)) {
+      metadata.encoding = tokenValue;
+    }
   }
 
   return metadata;
@@ -2598,20 +2611,35 @@ function parseArtifactMetadata(value: string): {
 function isChatArtifactKind(value: string): value is ChatArtifactKind {
   return (
     value === 'markdown' ||
+    value === 'mermaid' ||
     value === 'code' ||
     value === 'html' ||
+    value === 'docx' ||
+    value === 'pptx' ||
+    value === 'pdf' ||
+    value === 'csv' ||
+    value === 'xlsx' ||
     value === 'diagram' ||
     value === 'data' ||
     value === 'text'
   );
 }
 
+function isArtifactContentEncoding(value: string): value is ArtifactContentEncoding {
+  return value === 'utf8' || value === 'base64' || value === 'file';
+}
+
 function inferArtifactKind(relativePath: string): ChatArtifactKind {
   const lower = relativePath.toLowerCase();
   if (lower.endsWith('.md') || lower.endsWith('.mdx')) return 'markdown';
   if (lower.endsWith('.html') || lower.endsWith('.htm')) return 'html';
-  if (lower.endsWith('.mmd') || lower.endsWith('.mermaid')) return 'diagram';
-  if (lower.endsWith('.json') || lower.endsWith('.csv') || lower.endsWith('.yaml')) return 'data';
+  if (lower.endsWith('.mmd') || lower.endsWith('.mermaid')) return 'mermaid';
+  if (lower.endsWith('.docx')) return 'docx';
+  if (lower.endsWith('.pptx')) return 'pptx';
+  if (lower.endsWith('.pdf')) return 'pdf';
+  if (lower.endsWith('.csv')) return 'csv';
+  if (lower.endsWith('.xlsx')) return 'xlsx';
+  if (lower.endsWith('.json') || lower.endsWith('.yaml')) return 'data';
   if (/\.(ts|tsx|js|jsx|css|sql|py|go|rs|java|cs)$/.test(lower)) return 'code';
   return 'text';
 }

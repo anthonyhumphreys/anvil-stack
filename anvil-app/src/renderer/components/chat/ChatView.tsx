@@ -34,6 +34,9 @@ import {
   Check,
   ExternalLink,
   SlidersHorizontal,
+  Maximize2,
+  Minimize2,
+  PictureInPicture2,
 } from 'lucide-react';
 import type {
   AgentRunSummary,
@@ -52,7 +55,8 @@ import { WorkItemThreadRail } from './WorkItemThreadRail';
 import { AssistantMessage, TurnWorkMessage, UserMessage } from './ChatMessage';
 import { composeChatTurns } from './chat-turns';
 import { ChatEmptyState } from './ChatEmptyState';
-import { MarkdownRenderer } from './MarkdownRenderer';
+import { ArtifactPreview } from './ArtifactPreview';
+import { DetachedCanvasWindow } from './DetachedCanvasWindow';
 import { useChatContext } from '../../contexts/ChatContext';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { DesignProvider } from '../../contexts/DesignContext';
@@ -146,6 +150,8 @@ export function ChatView() {
   const [workOpen, setWorkOpen] = useState(false);
   const [executionStrategy, setExecutionStrategy] = useState<ExecutionStrategy>('auto');
   const [canvasOpen, setCanvasOpen] = useState(true);
+  const [canvasExpanded, setCanvasExpanded] = useState(false);
+  const [canvasDetached, setCanvasDetached] = useState(false);
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [recentRuns, setRecentRuns] = useState<AgentRunSummary[]>([]);
   const [activeSessions, setActiveSessions] = useState<CodexSession[]>([]);
@@ -455,6 +461,8 @@ export function ChatView() {
     !isDesignPersona &&
     !isBaPersona &&
     canvasOpen &&
+    !canvasExpanded &&
+    !canvasDetached &&
     (activeArtifacts.length > 0 || activePlan || activeGoal);
 
   useEffect(() => {
@@ -469,6 +477,26 @@ export function ChatView() {
         : activeArtifacts[0].id,
     );
   }, [activeArtifacts]);
+
+  useEffect(() => {
+    if (activeArtifacts.length > 0 || activePlan || activeGoal) return;
+    setCanvasExpanded(false);
+    setCanvasDetached(false);
+  }, [activeArtifacts.length, activeGoal, activePlan]);
+
+  useEffect(() => {
+    if (!canvasExpanded) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setCanvasExpanded(false);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [canvasExpanded]);
+
+  const handleDetachedCanvasClose = useCallback(() => {
+    setCanvasDetached(false);
+    setCanvasOpen(true);
+  }, []);
 
   const handleBranch = useCallback(
     (messageIndex: number) => {
@@ -762,14 +790,31 @@ export function ChatView() {
           {!isDesignPersona && !isBaPersona && (
             <button
               type="button"
-              onClick={() => setCanvasOpen((open) => !open)}
+              onClick={() => {
+                if (canvasDetached) {
+                  setCanvasDetached(false);
+                  setCanvasOpen(true);
+                  return;
+                }
+                setCanvasOpen((open) => !open);
+              }}
               disabled={activeArtifacts.length === 0 && !activePlan && !activeGoal}
               className="flex items-center gap-1.5 rounded-xl border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-45"
-              title={canvasOpen ? 'Hide canvas' : 'Show canvas'}
-              aria-label={canvasOpen ? 'Hide canvas' : 'Show canvas'}
+              title={
+                canvasDetached ? 'Reattach canvas' : canvasOpen ? 'Hide canvas' : 'Show canvas'
+              }
+              aria-label={
+                canvasDetached ? 'Reattach canvas' : canvasOpen ? 'Hide canvas' : 'Show canvas'
+              }
               aria-pressed={canvasOpen}
             >
-              {canvasOpen ? <PanelRightClose size={13} /> : <PanelRightOpen size={13} />}
+              {canvasDetached ? (
+                <PictureInPicture2 size={13} />
+              ) : canvasOpen ? (
+                <PanelRightClose size={13} />
+              ) : (
+                <PanelRightOpen size={13} />
+              )}
               <span className="hidden xl:inline">Canvas</span>
               {activeArtifacts.length > 0 && (
                 <span className="rounded-full bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold text-accent">
@@ -1077,8 +1122,44 @@ export function ChatView() {
               activePlan={activePlan}
               activeGoal={activeGoal}
               onSelectArtifact={setSelectedArtifactId}
+              presentation="sidebar"
+              onExpand={() => setCanvasExpanded(true)}
+              onDetach={() => setCanvasDetached(true)}
             />
           </ResizableSidebarPanel>
+        )}
+
+        {canvasExpanded && !canvasDetached && (selectedArtifact || activePlan || activeGoal) && (
+          <div className="fixed inset-3 z-50 flex min-h-0 overflow-hidden rounded-xl border border-border bg-bg-secondary shadow-2xl">
+            <ChatCanvasSidebar
+              artifacts={activeArtifacts}
+              selectedArtifact={selectedArtifact}
+              activePlan={activePlan}
+              activeGoal={activeGoal}
+              onSelectArtifact={setSelectedArtifactId}
+              presentation="expanded"
+              onExpand={() => setCanvasExpanded(false)}
+              onDetach={() => {
+                setCanvasExpanded(false);
+                setCanvasDetached(true);
+              }}
+            />
+          </div>
+        )}
+
+        {canvasDetached && (selectedArtifact || activePlan || activeGoal) && (
+          <DetachedCanvasWindow title="Anvil Canvas" onClose={handleDetachedCanvasClose}>
+            <ChatCanvasSidebar
+              artifacts={activeArtifacts}
+              selectedArtifact={selectedArtifact}
+              activePlan={activePlan}
+              activeGoal={activeGoal}
+              onSelectArtifact={setSelectedArtifactId}
+              presentation="detached"
+              onExpand={handleDetachedCanvasClose}
+              onDetach={handleDetachedCanvasClose}
+            />
+          </DetachedCanvasWindow>
         )}
       </div>
     </div>
@@ -1448,12 +1529,18 @@ function ChatCanvasSidebar({
   activePlan,
   activeGoal,
   onSelectArtifact,
+  presentation,
+  onExpand,
+  onDetach,
 }: {
   artifacts: ChatArtifact[];
   selectedArtifact: ChatArtifact | null;
   activePlan: ChatPlanSnapshot | null;
   activeGoal: ChatGoalSnapshot | null;
   onSelectArtifact: (artifactId: string) => void;
+  presentation: 'sidebar' | 'expanded' | 'detached';
+  onExpand: () => void;
+  onDetach: () => void;
 }) {
   const [mode, setMode] = useState<'preview' | 'source'>('preview');
   const [copied, setCopied] = useState(false);
@@ -1473,13 +1560,35 @@ function ChatCanvasSidebar({
           <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-accent/20 bg-accent/10 text-accent">
             <Braces size={15} />
           </div>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <h3 className="truncate text-sm font-semibold text-text-primary">Canvas</h3>
             <p className="truncate text-xs text-text-tertiary">
               {artifacts.length > 0
                 ? `${artifacts.length} artifact${artifacts.length === 1 ? '' : 's'}`
                 : 'Plan and goal context'}
             </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              onClick={onExpand}
+              className="rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+              title={presentation === 'sidebar' ? 'Expand canvas' : 'Reattach canvas'}
+              aria-label={presentation === 'sidebar' ? 'Expand canvas' : 'Reattach canvas'}
+            >
+              {presentation === 'sidebar' ? <Maximize2 size={14} /> : <Minimize2 size={14} />}
+            </button>
+            {presentation !== 'detached' && (
+              <button
+                type="button"
+                onClick={onDetach}
+                className="rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+                title="Detach canvas"
+                aria-label="Detach canvas"
+              >
+                <PictureInPicture2 size={14} />
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -1601,8 +1710,11 @@ function ChatCanvasSidebar({
 }
 
 function ArtifactIcon({ kind }: { kind: ChatArtifact['kind'] }) {
-  if (kind === 'markdown' || kind === 'text') return <FileText size={13} className="shrink-0" />;
-  if (kind === 'html') return <Eye size={13} className="shrink-0" />;
+  if (kind === 'markdown' || kind === 'text' || kind === 'docx' || kind === 'pdf') {
+    return <FileText size={13} className="shrink-0" />;
+  }
+  if (kind === 'html' || kind === 'pptx') return <Eye size={13} className="shrink-0" />;
+  if (kind === 'csv' || kind === 'xlsx') return <Database size={13} className="shrink-0" />;
   return <Braces size={13} className="shrink-0" />;
 }
 
@@ -1615,38 +1727,7 @@ function ArtifactMetaChip({ label }: { label: string }) {
 }
 
 function ArtifactBody({ artifact, mode }: { artifact: ChatArtifact; mode: 'preview' | 'source' }) {
-  if (mode === 'source' || artifact.kind === 'code' || artifact.kind === 'data') {
-    return (
-      <pre className="min-h-full overflow-auto p-4 font-mono text-xs leading-relaxed text-text-secondary">
-        <code>{artifact.content}</code>
-      </pre>
-    );
-  }
-
-  if (artifact.kind === 'html') {
-    return (
-      <iframe
-        title={artifact.title}
-        sandbox=""
-        srcDoc={artifact.content}
-        className="h-full min-h-[520px] w-full bg-white"
-      />
-    );
-  }
-
-  if (artifact.kind === 'markdown') {
-    return (
-      <div className="mx-auto max-w-3xl px-5 py-4">
-        <MarkdownRenderer content={artifact.content} />
-      </div>
-    );
-  }
-
-  return (
-    <pre className="min-h-full whitespace-pre-wrap p-4 text-sm leading-relaxed text-text-secondary">
-      {artifact.content}
-    </pre>
-  );
+  return <ArtifactPreview artifact={artifact} mode={mode} />;
 }
 
 function PlanGoalSidebar({

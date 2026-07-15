@@ -2,6 +2,7 @@ import { ipcMain } from 'electron';
 import type {
   ChatMessage,
   ChatArtifact,
+  ChatArtifactFile,
   ChatArtifactInput,
   ChatAttachment,
   ChatAttachmentInput,
@@ -62,7 +63,11 @@ import {
 } from '../services/chat-attachment.service.js';
 import { listChatTurnSummaries, saveChatEvent } from '../services/chat-evidence.service.js';
 import { searchChatFileMentions } from '../services/chat-file-mention.service.js';
-import { listChatArtifacts, upsertChatArtifact } from '../services/chat-artifact.service.js';
+import {
+  listChatArtifacts,
+  readChatArtifactFile,
+  upsertChatArtifact,
+} from '../services/chat-artifact.service.js';
 
 const APPLE_FOUNDATION_CHAT_MAX_PROMPT_CHARS = 8_000;
 
@@ -392,6 +397,10 @@ export function registerChatHandlers(): void {
 
   ipcMain.handle('chat:upsert-artifact', (_event, input: ChatArtifactInput): ChatArtifact => {
     return upsertChatArtifact(input);
+  });
+
+  ipcMain.handle('chat:read-artifact-file', (_event, id: string): ChatArtifactFile => {
+    return readChatArtifactFile(id);
   });
 
   ipcMain.handle('chat:detect-codex', async () => {

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SCHEMA_SQL } from '../../db/schema.js';
@@ -29,7 +29,11 @@ import {
   updateChatThread,
 } from '../chat-persistence.service.js';
 import { listChatTurnSummaries, saveChatEvent } from '../chat-evidence.service.js';
-import { listChatArtifacts, upsertChatArtifact } from '../chat-artifact.service.js';
+import {
+  listChatArtifacts,
+  readChatArtifactFile,
+  upsertChatArtifact,
+} from '../chat-artifact.service.js';
 
 beforeEach(() => {
   inMemoryDb.exec('DELETE FROM chat_artifacts');
@@ -484,6 +488,42 @@ describe('chat thread persistence', () => {
       .prepare('SELECT COUNT(*) AS count FROM chat_artifact_revisions WHERE artifact_id = ?')
       .get(first.id) as { count: number };
     expect(revisionCount.count).toBe(2);
+
+    rmSync(repo.path, { recursive: true, force: true });
+  });
+
+  it('references and safely reads binary files already created in the artifact directory', () => {
+    const thread = createChatThread({
+      workspaceId: 'ws-1',
+      personaId: 'coder',
+      title: 'Presentation',
+      repoIds: ['repo-1'],
+      activeRepoId: 'repo-1',
+    });
+    const repo = inMemoryDb.prepare('SELECT path FROM repos WHERE id = ?').get('repo-1') as {
+      path: string;
+    };
+    const target = join(repo.path, '.anvil/artifacts/decks/demo.pptx');
+    mkdirSync(join(repo.path, '.anvil/artifacts/decks'), { recursive: true });
+    writeFileSync(target, Buffer.from([0x50, 0x4b, 0x03, 0x04]));
+
+    const artifact = upsertChatArtifact({
+      threadId: thread.id,
+      repoId: 'repo-1',
+      title: 'Demo deck',
+      kind: 'pptx',
+      relativePath: 'decks/demo.pptx',
+      content: 'Generated PowerPoint deck.',
+      contentEncoding: 'file',
+    });
+
+    expect(readFileSync(target)).toEqual(Buffer.from([0x50, 0x4b, 0x03, 0x04]));
+    expect(readChatArtifactFile(artifact.id)).toMatchObject({
+      name: 'demo.pptx',
+      mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      size: 4,
+      dataBase64: 'UEsDBA==',
+    });
 
     rmSync(repo.path, { recursive: true, force: true });
   });
