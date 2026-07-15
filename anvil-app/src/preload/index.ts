@@ -213,6 +213,25 @@ const api: AnvilAPI = {
       ipcRenderer.invoke('chat:save-thread-goal', threadId, goal),
   },
 
+  workflow: {
+    listTemplates: () => ipcRenderer.invoke('workflow:list-templates'),
+    draftTemplate: (request: string) => ipcRenderer.invoke('workflow:draft-template', request),
+    saveTemplate: (input: import('../shared/types.js').WorkflowTemplateInput, id?: string) =>
+      ipcRenderer.invoke('workflow:save-template', input, id),
+    deleteTemplate: (id: string) => ipcRenderer.invoke('workflow:delete-template', id),
+    listRuns: (workspaceId: string) => ipcRenderer.invoke('workflow:list-runs', workspaceId),
+    getRun: (id: string) => ipcRenderer.invoke('workflow:get-run', id),
+    startRun: (input: {
+      templateId: string;
+      workspaceId: string;
+      repoIds: string[];
+      kickoff: string;
+    }) => ipcRenderer.invoke('workflow:start-run', input),
+    askSupervisor: (runId: string, question: string) =>
+      ipcRenderer.invoke('workflow:ask-supervisor', runId, question),
+    cancelRun: (runId: string) => ipcRenderer.invoke('workflow:cancel-run', runId),
+  },
+
   dbInsights: {
     listArtifacts: (workspaceId: string) =>
       ipcRenderer.invoke('db-insights:list-artifacts', workspaceId),

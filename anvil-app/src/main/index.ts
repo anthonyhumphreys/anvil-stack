@@ -31,6 +31,7 @@ import { registerTerminalHandlers, cleanupTerminals } from './ipc/terminal.ipc.j
 import { registerGovernanceHandlers } from './ipc/governance.ipc.js';
 import { registerDbInsightsHandlers } from './ipc/db-insights.ipc.js';
 import { registerAutomationHandlers } from './ipc/automation.ipc.js';
+import { registerWorkflowHandlers } from './ipc/workflow.ipc.js';
 import { registerAgentRunHandlers } from './ipc/agent-run.ipc.js';
 import { registerDesignHandlers } from './ipc/design.ipc.js';
 import { registerAdrHandlers } from './ipc/adr.ipc.js';
@@ -312,6 +313,7 @@ app.whenReady().then(() => {
   registerGovernanceHandlers();
   registerDbInsightsHandlers();
   registerAutomationHandlers();
+  registerWorkflowHandlers();
   registerAgentRunHandlers();
   registerDesignHandlers();
   registerAdrHandlers();

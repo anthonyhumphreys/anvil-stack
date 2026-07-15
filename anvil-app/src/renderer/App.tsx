@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, type ReactNode } from 'react';
+import { lazy, Suspense, useEffect, useState, useCallback, type ReactNode } from 'react';
 import { HashRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { Shell } from './components/layout/Shell';
 import { ErrorBoundary } from './components/layout/ErrorBoundary';
@@ -41,6 +41,11 @@ import type { UserRole, Feature, AppTheme } from '../shared/types';
 import { ROLE_FEATURES } from '../shared/types';
 
 const STARTUP_SPLASH_MIN_DURATION_MS = 1500;
+const WorkflowsView = lazy(() =>
+  import('./components/workflows/WorkflowsView').then((module) => ({
+    default: module.WorkflowsView,
+  })),
+);
 
 function WorkspaceGate({ children }: { children: ReactNode }) {
   const { workspaces, loading, refreshWorkspaces } = useWorkspace();
@@ -444,6 +449,19 @@ export function App() {
                     <WorkspaceGate>
                       <ErrorBoundary>
                         <AutomationsView />
+                      </ErrorBoundary>
+                    </WorkspaceGate>,
+                  )}
+                />
+                <Route
+                  path="/workflows"
+                  element={guard(
+                    'workflows',
+                    <WorkspaceGate>
+                      <ErrorBoundary>
+                        <Suspense fallback={<SplashScreen label="Loading workflows" />}>
+                          <WorkflowsView />
+                        </Suspense>
                       </ErrorBoundary>
                     </WorkspaceGate>,
                   )}

@@ -391,6 +391,92 @@ export type ReasoningEffort =
   | 'max'
   | 'ultra';
 
+export type WorkflowExecutionStrategy = 'focused' | 'adaptive' | 'parallel' | 'review-team';
+
+export interface WorkflowPosition {
+  x: number;
+  y: number;
+}
+
+export interface WorkflowNode {
+  id: string;
+  name: string;
+  prompt: string;
+  personaId: string;
+  model: string;
+  reasoningEffort: ReasoningEffort;
+  executionStrategy: WorkflowExecutionStrategy;
+  position: WorkflowPosition;
+}
+
+export interface WorkflowEdge {
+  id: string;
+  source: string;
+  target: string;
+}
+
+export interface WorkflowTemplate {
+  id: string;
+  name: string;
+  description: string;
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WorkflowTemplateInput {
+  name: string;
+  description?: string;
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+}
+
+export type WorkflowRunStatus =
+  | 'queued'
+  | 'running'
+  | 'paused'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export type WorkflowNodeRunStatus =
+  | 'queued'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'skipped'
+  | 'cancelled';
+
+export interface WorkflowNodeRun {
+  nodeId: string;
+  status: WorkflowNodeRunStatus;
+  threadId?: string;
+  sessionId?: string;
+  output?: string;
+  error?: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface WorkflowRun {
+  id: string;
+  templateId: string;
+  templateName: string;
+  workspaceId: string;
+  repoIds: string[];
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+  kickoff: string;
+  status: WorkflowRunStatus;
+  supervisorThreadId: string;
+  nodeRuns: WorkflowNodeRun[];
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  error?: string;
+}
+
 export interface ChatSendOptions {
   collaborationMode?: ChatCollaborationMode;
   reasoningEffort?: ReasoningEffort;
@@ -1741,6 +1827,7 @@ export type Feature =
   | 'chat'
   | 'editor'
   | 'automations'
+  | 'workflows'
   | 'dbinsights'
   | 'onboard'
   | 'workitems'
@@ -1766,6 +1853,7 @@ export const ROLE_FEATURES: Record<UserRole, readonly Feature[]> = {
     'chat',
     'editor',
     'automations',
+    'workflows',
     'dbinsights',
     'onboard',
     'workitems',
@@ -1788,6 +1876,7 @@ export const ROLE_FEATURES: Record<UserRole, readonly Feature[]> = {
   'ba-brm': [
     'repos',
     'chat',
+    'workflows',
     'editor',
     'dbinsights',
     'workitems',
@@ -1805,6 +1894,7 @@ export const ROLE_FEATURES: Record<UserRole, readonly Feature[]> = {
   design: [
     'repos',
     'chat',
+    'workflows',
     'dbinsights',
     'docs',
     'diagrams',

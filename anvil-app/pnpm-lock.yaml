@@ -54,6 +54,9 @@ importers:
       '@xterm/xterm':
         specifier: ^6.0.0
         version: 6.0.0
+      '@xyflow/react':
+        specifier: ^12.11.2
+        version: 12.11.2(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       abort-controller:
         specifier: ^3.0.0
         version: 3.0.0
@@ -2624,6 +2627,22 @@ packages:
   '@xterm/xterm@6.0.0':
     resolution: {integrity: sha512-TQwDdQGtwwDt+2cgKDLn0IRaSxYu1tSUjgKarSDkUM0ZNiSRXFpjxEsvc/Zgc5kq5omJ+V0a8/kIM2WD3sMOYg==}
 
+  '@xyflow/react@12.11.2':
+    resolution: {integrity: sha512-eLAlDWJfWnQEhJwGMjlWdAXO9eYllKpliUmPQlAmOLxz6mExXuzMVDUKLMquixgkrtmMFFtug3jGKmYYld12cA==}
+    peerDependencies:
+      '@types/react': '>=17'
+      '@types/react-dom': '>=17'
+      react: '>=17'
+      react-dom: '>=17'
+    peerDependenciesMeta:
+      '@types/react':
+        optional: true
+      '@types/react-dom':
+        optional: true
+
+  '@xyflow/system@0.0.79':
+    resolution: {integrity: sha512-czLyOh91NF0hIzbNzwi8I6GlqG23BHh2435OddfI6uiaLH3xdrdygO93gqgH1Bv9mhy8XPFQJOBn1FTq4LvEWA==}
+
   abbrev@4.0.0:
     resolution: {integrity: sha512-a1wflyaL0tHtJSmLSOVybYhy22vRih4eduhhrkcjgrWGnRfrZtovJ2FRjxuTtkkj47O/baf0R86QU5OuYpz8fA==}
     engines: {node: ^20.17.0 || >=22.9.0}
@@ -3064,6 +3083,9 @@ packages:
   ci-info@4.4.0:
     resolution: {integrity: sha512-77PSwercCZU2Fc4sX94eF8k8Pxte6JAwL4/ICZLFjJLqegs7kCuAsqqj/70NQF6TvDpgFjkubQB2FW2ZZddvQg==}
     engines: {node: '>=8'}
+
+  classcat@5.0.5:
+    resolution: {integrity: sha512-JhZUT7JFcQy/EzW605k/ktHtncoo9vnyW/2GspNYwFlN1C/WmjuV/xtS04e9SOkL2sTdw0VAZ2UGCcQ9lR6p6w==}
 
   classnames@2.5.1:
     resolution: {integrity: sha512-saHYOzhIQs6wy2sVxTM6bUDsQO4F50V9RQ22qBpEdCW+I+/Wmke2HOl6lS6dTpdxVhb88/I6+Hs+438c3lfUow==}
@@ -6697,6 +6719,11 @@ packages:
       '@types/react':
         optional: true
 
+  use-sync-external-store@1.6.0:
+    resolution: {integrity: sha512-Pp6GSwGP/NrPIrxVFAIkOQeyw8lFenOHijQWkUTrDvrF4ALqylP2C/KCkeS9dpUM3KvYRQhna5vt7IL95+ZQ9w==}
+    peerDependencies:
+      react: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
+
   utf8-byte-length@1.0.5:
     resolution: {integrity: sha512-Xn0w3MtiQ6zoz2vFyUVruaCL53O/DwUvkEeOvj+uulMm0BkUGYWmBYVyElqZaSLhY6ZD0ulfU3aBra2aVT4xfA==}
 
@@ -6995,6 +7022,21 @@ packages:
 
   zrender@6.1.0:
     resolution: {integrity: sha512-oEGMDB6pOP2S6OwRR4PdVv610zrjnA3Bh+JnSG12fYJlBKjtNAoEb5fSUoCOOINlH96I2fU38/A2UpRKs67xYQ==}
+
+  zustand@4.5.7:
+    resolution: {integrity: sha512-CHOUy7mu3lbD6o6LJLfllpjkzhHXSBlX8B9+qPddUsIfeF5S/UZ5q0kmCsnRqT1UHFQZchNFDDzMbQsuesHWlw==}
+    engines: {node: '>=12.7.0'}
+    peerDependencies:
+      '@types/react': '>=16.8'
+      immer: '>=9.0.6'
+      react: '>=16.8'
+    peerDependenciesMeta:
+      '@types/react':
+        optional: true
+      immer:
+        optional: true
+      react:
+        optional: true
 
   zwitch@2.0.4:
     resolution: {integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==}
@@ -9931,6 +9973,31 @@ snapshots:
 
   '@xterm/xterm@6.0.0': {}
 
+  '@xyflow/react@12.11.2(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)':
+    dependencies:
+      '@xyflow/system': 0.0.79
+      classcat: 5.0.5
+      react: 19.2.4
+      react-dom: 19.2.4(react@19.2.4)
+      zustand: 4.5.7(@types/react@19.2.14)(react@19.2.4)
+    optionalDependencies:
+      '@types/react': 19.2.14
+      '@types/react-dom': 19.2.3(@types/react@19.2.14)
+    transitivePeerDependencies:
+      - immer
+
+  '@xyflow/system@0.0.79':
+    dependencies:
+      '@types/d3-drag': 3.0.7
+      '@types/d3-interpolate': 3.0.4
+      '@types/d3-selection': 3.0.11
+      '@types/d3-transition': 3.0.9
+      '@types/d3-zoom': 3.0.8
+      d3-drag: 3.0.0
+      d3-interpolate: 3.0.1
+      d3-selection: 3.0.0
+      d3-zoom: 3.0.0
+
   abbrev@4.0.0: {}
 
   abort-controller@3.0.0:
@@ -10476,6 +10543,8 @@ snapshots:
   ci-info@4.3.1: {}
 
   ci-info@4.4.0: {}
+
+  classcat@5.0.5: {}
 
   classnames@2.5.1: {}
 
@@ -11226,7 +11295,7 @@ snapshots:
       eslint: 9.39.4(jiti@2.6.1)
       eslint-import-resolver-typescript: 3.10.1(eslint-plugin-import@2.32.0(@typescript-eslint/parser@8.59.4(eslint@9.39.4(jiti@2.6.1))(typescript@6.0.3))(eslint@9.39.4(jiti@2.6.1)))(eslint@9.39.4(jiti@2.6.1))
       eslint-plugin-expo: 1.1.0(eslint@9.39.4(jiti@2.6.1))(typescript@6.0.3)
-      eslint-plugin-import: 2.32.0(@typescript-eslint/parser@8.59.4(eslint@9.39.4(jiti@2.6.1))(typescript@6.0.3))(eslint-import-resolver-typescript@3.10.1)(eslint@9.39.4(jiti@2.6.1))
+      eslint-plugin-import: 2.32.0(@typescript-eslint/parser@8.59.4(eslint@9.39.4(jiti@2.6.1))(typescript@6.0.3))(eslint-import-resolver-typescript@3.10.1(eslint-plugin-import@2.32.0(@typescript-eslint/parser@8.59.4(eslint@9.39.4(jiti@2.6.1))(typescript@6.0.3))(eslint@9.39.4(jiti@2.6.1)))(eslint@9.39.4(jiti@2.6.1)))(eslint@9.39.4(jiti@2.6.1))
       eslint-plugin-react: 7.37.5(eslint@9.39.4(jiti@2.6.1))
       eslint-plugin-react-hooks: 7.1.1(eslint@9.39.4(jiti@2.6.1))
       globals: 16.5.0
@@ -11259,7 +11328,7 @@ snapshots:
       tinyglobby: 0.2.15
       unrs-resolver: 1.11.1
     optionalDependencies:
-      eslint-plugin-import: 2.32.0(@typescript-eslint/parser@8.59.4(eslint@9.39.4(jiti@2.6.1))(typescript@6.0.3))(eslint-import-resolver-typescript@3.10.1)(eslint@9.39.4(jiti@2.6.1))
+      eslint-plugin-import: 2.32.0(@typescript-eslint/parser@8.59.4(eslint@9.39.4(jiti@2.6.1))(typescript@6.0.3))(eslint-import-resolver-typescript@3.10.1(eslint-plugin-import@2.32.0(@typescript-eslint/parser@8.59.4(eslint@9.39.4(jiti@2.6.1))(typescript@6.0.3))(eslint@9.39.4(jiti@2.6.1)))(eslint@9.39.4(jiti@2.6.1)))(eslint@9.39.4(jiti@2.6.1))
     transitivePeerDependencies:
       - supports-color
 
@@ -11283,7 +11352,7 @@ snapshots:
       - supports-color
       - typescript
 
-  eslint-plugin-import@2.32.0(@typescript-eslint/parser@8.59.4(eslint@9.39.4(jiti@2.6.1))(typescript@6.0.3))(eslint-import-resolver-typescript@3.10.1)(eslint@9.39.4(jiti@2.6.1)):
+  eslint-plugin-import@2.32.0(@typescript-eslint/parser@8.59.4(eslint@9.39.4(jiti@2.6.1))(typescript@6.0.3))(eslint-import-resolver-typescript@3.10.1(eslint-plugin-import@2.32.0(@typescript-eslint/parser@8.59.4(eslint@9.39.4(jiti@2.6.1))(typescript@6.0.3))(eslint@9.39.4(jiti@2.6.1)))(eslint@9.39.4(jiti@2.6.1)))(eslint@9.39.4(jiti@2.6.1)):
     dependencies:
       '@rtsao/scc': 1.1.0
       array-includes: 3.1.9
@@ -14941,6 +15010,10 @@ snapshots:
     optionalDependencies:
       '@types/react': 19.2.14
 
+  use-sync-external-store@1.6.0(react@19.2.4):
+    dependencies:
+      react: 19.2.4
+
   utf8-byte-length@1.0.5: {}
 
   util-deprecate@1.0.2: {}
@@ -15211,6 +15284,13 @@ snapshots:
   zrender@6.1.0:
     dependencies:
       tslib: 2.3.0
+
+  zustand@4.5.7(@types/react@19.2.14)(react@19.2.4):
+    dependencies:
+      use-sync-external-store: 1.6.0(react@19.2.4)
+    optionalDependencies:
+      '@types/react': 19.2.14
+      react: 19.2.4
 
   zwitch@2.0.4: {}
 

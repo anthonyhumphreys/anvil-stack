@@ -85,6 +85,13 @@ const navItems: NavItem[] = [
     feature: 'automations',
   },
   {
+    path: '/workflows',
+    label: 'Workflows',
+    icon: <GitFork size={20} />,
+    feature: 'workflows',
+    requiresChat: true,
+  },
+  {
     path: '/db-insights',
     label: 'DB Insights',
     icon: <Database size={20} />,
@@ -204,7 +211,11 @@ export function Sidebar({
   const navigate = useNavigate();
   const brand = useBrand();
   const { activeWorkspace, featureAvailability } = useWorkspace();
-  const { items: activityItems, indicators: activityIndicators, activeCount } = useSidebarActivity();
+  const {
+    items: activityItems,
+    indicators: activityIndicators,
+    activeCount,
+  } = useSidebarActivity();
   const { width, setWidth, collapsed, toggleCollapsed } = useStoredPanelState({
     storageKey: 'layout:main-sidebar:v2',
     defaultWidth: 252,

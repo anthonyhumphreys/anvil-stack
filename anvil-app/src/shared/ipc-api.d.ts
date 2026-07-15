@@ -99,6 +99,9 @@ import type {
   SecurityAudit,
   SecurityFinding,
   WorkItem,
+  WorkflowRun,
+  WorkflowTemplate,
+  WorkflowTemplateInput,
   WorkItemCreateInput,
   WorkItemFilters,
   WorkItemProvider,
@@ -272,6 +275,23 @@ export interface AnvilAPI {
     clearHistory: (threadId: string) => Promise<void>;
     saveThreadPlan: (threadId: string, plan: ChatPlanSnapshot) => Promise<ChatThread | null>;
     saveThreadGoal: (threadId: string, goal: ChatGoalSnapshot | null) => Promise<ChatThread | null>;
+  };
+
+  workflow: {
+    listTemplates: () => Promise<WorkflowTemplate[]>;
+    draftTemplate: (request: string) => Promise<WorkflowTemplateInput>;
+    saveTemplate: (input: WorkflowTemplateInput, id?: string) => Promise<WorkflowTemplate>;
+    deleteTemplate: (id: string) => Promise<void>;
+    listRuns: (workspaceId: string) => Promise<WorkflowRun[]>;
+    getRun: (id: string) => Promise<WorkflowRun | null>;
+    startRun: (input: {
+      templateId: string;
+      workspaceId: string;
+      repoIds: string[];
+      kickoff: string;
+    }) => Promise<WorkflowRun>;
+    askSupervisor: (runId: string, question: string) => Promise<string>;
+    cancelRun: (runId: string) => Promise<WorkflowRun | null>;
   };
 
   dbInsights: {

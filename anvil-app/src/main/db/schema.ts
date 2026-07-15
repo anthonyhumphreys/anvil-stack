@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 42;
+export const SCHEMA_VERSION = 44;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -107,6 +107,35 @@ CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_timestamp
 
 CREATE INDEX IF NOT EXISTS idx_chat_threads_provider_thread
   ON chat_threads(provider_thread_id);
+
+CREATE TABLE IF NOT EXISTS workflow_templates (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  graph_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS workflow_runs (
+  id TEXT PRIMARY KEY,
+  template_id TEXT NOT NULL,
+  template_name TEXT NOT NULL,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  repo_ids_json TEXT NOT NULL DEFAULT '[]',
+  graph_json TEXT NOT NULL,
+  kickoff TEXT NOT NULL,
+  status TEXT NOT NULL,
+  supervisor_thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+  node_runs_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  started_at TEXT,
+  completed_at TEXT,
+  error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_workspace_created
+  ON workflow_runs(workspace_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS chat_artifacts (
   id TEXT PRIMARY KEY,
@@ -1443,5 +1472,38 @@ export const MIGRATIONS: Record<number, string> = {
       WHERE llm_provider = 'openai' AND openai_api_key IS NULL;
     UPDATE settings SET openai_model = 'gpt-5.6-sol'
       WHERE openai_model IS NULL OR openai_model IN ('gpt-5.4', 'gpt-5.5');
+  `,
+  43: `
+    CREATE TABLE IF NOT EXISTS workflow_templates (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      graph_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS workflow_runs (
+      id TEXT PRIMARY KEY,
+      template_id TEXT NOT NULL,
+      template_name TEXT NOT NULL,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      repo_ids_json TEXT NOT NULL DEFAULT '[]',
+      kickoff TEXT NOT NULL,
+      status TEXT NOT NULL,
+      supervisor_thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+      node_runs_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      started_at TEXT,
+      completed_at TEXT,
+      error TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_workflow_runs_workspace_created
+      ON workflow_runs(workspace_id, created_at DESC);
+  `,
+  44: `
+    ALTER TABLE workflow_runs
+      ADD COLUMN graph_json TEXT NOT NULL DEFAULT '{"nodes":[],"edges":[]}';
   `,
 };

@@ -141,6 +141,66 @@ body,
   border-radius: 4px;
 }
 
+.workflow-input {
+  width: 100%;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-tertiary);
+  padding: 0.65rem 0.75rem;
+  color: var(--color-text-primary);
+  font-size: 0.875rem;
+  line-height: 1.45;
+  outline: none;
+  transition:
+    border-color 180ms cubic-bezier(0.25, 1, 0.5, 1),
+    background-color 180ms cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+.workflow-input:focus {
+  border-color: color-mix(in srgb, var(--color-accent) 65%, var(--color-border));
+  background: var(--color-bg-elevated);
+}
+
+.workflow-step-node {
+  transition:
+    transform 180ms cubic-bezier(0.25, 1, 0.5, 1),
+    border-color 180ms cubic-bezier(0.25, 1, 0.5, 1),
+    box-shadow 180ms cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+.workflow-step-node:hover {
+  transform: translateY(-2px);
+}
+
+.react-flow__node.dragging .workflow-step-node {
+  transform: scale(1.025) rotate(0.2deg);
+  box-shadow: 0 18px 45px rgba(3, 7, 18, 0.38);
+}
+
+.workflow-running-icon {
+  animation: workflow-pulse 900ms ease-in-out infinite alternate;
+}
+
+@keyframes workflow-pulse {
+  from {
+    opacity: 0.55;
+    transform: scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1.04);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workflow-step-node,
+  .workflow-running-icon,
+  .react-flow__edge-path {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
 /* macOS titlebar drag region */
 .titlebar-drag {
   -webkit-app-region: drag;

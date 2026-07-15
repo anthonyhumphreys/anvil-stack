@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ArrowDown,
   MessageSquare,
@@ -75,6 +75,7 @@ import {
   buildExecutionStrategyPrompt,
   type ExecutionStrategy,
 } from '../../utils/execution-strategy';
+import { parseWorkflowChatIntent } from '../../utils/workflow-chat-intent';
 
 const PERSONA_ICONS: Record<string, React.ReactNode> = {
   Code: <Code size={14} />,
@@ -138,6 +139,7 @@ export function ChatView() {
     selectWorkItemThread,
   } = useChatContext();
   const { repos, featureAvailability, activeScaffoldSession, activeWorkspace } = useWorkspace();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [showPersonaDropdown, setShowPersonaDropdown] = useState(false);
@@ -306,6 +308,17 @@ export function ChatView() {
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams, personas, activePersona, switchPersona]);
 
+  useEffect(() => {
+    const threadId = searchParams.get('thread');
+    if (!threadId) return;
+    if (!threads.some((thread) => thread.id === threadId)) return;
+
+    void selectThread(threadId);
+    const next = new URLSearchParams(searchParams);
+    next.delete('thread');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, selectThread, setSearchParams, threads]);
+
   const findings = useMemo(() => {
     if (!isBaPersona) return [];
     const all: (ExtractedFinding & { idx: number })[] = [];
@@ -372,9 +385,49 @@ export function ChatView() {
         return;
       }
 
+      const mayBeWorkflowIntent =
+        /\bworkflow\b/i.test(message) &&
+        /\b(?:use|run|start|launch|create|build|make|design|draft)\b/i.test(message);
+      if (attachments.length === 0 && activeWorkspace && mayBeWorkflowIntent) {
+        void window.anvil.workflow
+          .listTemplates()
+          .then(async (templates) => {
+            const intent = parseWorkflowChatIntent(message, templates);
+            if (!intent) {
+              await send(
+                message,
+                attachments,
+                buildExecutionStrategyPrompt(executionStrategy) ?? undefined,
+              );
+              return;
+            }
+            if (intent.kind === 'run') {
+              const run = await window.anvil.workflow.startRun({
+                templateId: intent.template.id,
+                workspaceId: activeWorkspace.id,
+                repoIds: activeWorkspace.repos.map((repo) => repo.id),
+                kickoff: intent.kickoff,
+              });
+              navigate(`/workflows?run=${encodeURIComponent(run.id)}`);
+              return;
+            }
+            const params = new URLSearchParams({ kickoff: intent.kickoff });
+            if (intent.kind === 'draft') params.set('draft', intent.request);
+            navigate(`/workflows?${params.toString()}`);
+          })
+          .catch(() => {
+            void send(
+              message,
+              attachments,
+              buildExecutionStrategyPrompt(executionStrategy) ?? undefined,
+            );
+          });
+        return;
+      }
+
       void send(message, attachments, buildExecutionStrategyPrompt(executionStrategy) ?? undefined);
     },
-    [executionStrategy, send, startNewSession],
+    [activeWorkspace, executionStrategy, navigate, send, startNewSession],
   );
 
   const handleChatInputSend = useCallback(
