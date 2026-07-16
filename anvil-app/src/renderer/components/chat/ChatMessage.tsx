@@ -905,6 +905,9 @@ export function UserMessage({
   onBranch?: () => void;
 }) {
   const [copied, setCopied] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const collapsible = shouldCollapseUserMessage(content);
+  const lineCount = content.split('\n').length;
 
   const handleCopy = useCallback(async () => {
     await copyTextToClipboard(content);
@@ -914,13 +917,38 @@ export function UserMessage({
 
   return (
     <div className="message-bubble group flex justify-end">
-      <div className="relative w-fit max-w-[88%] sm:max-w-[72ch]">
+      <div
+        className={`relative ${
+          collapsible ? 'w-full max-w-[88%] sm:max-w-[90ch]' : 'w-fit max-w-[88%] sm:max-w-[72ch]'
+        }`}
+      >
         <p className="mb-1.5 text-right text-xs font-medium text-text-tertiary">You</p>
-        <div className="overflow-hidden rounded-xl border border-accent/25 bg-accent/10 px-4 py-3 text-sm text-text-primary transition-colors hover:border-accent/35 hover:bg-accent/15">
-          {attachments && attachments.length > 0 && (
-            <MessageAttachmentList attachments={attachments} />
+        <div
+          className={`overflow-hidden rounded-xl border px-4 py-3 text-sm text-text-primary transition-colors ${
+            collapsible
+              ? 'border-border-subtle bg-bg-secondary/45 hover:border-border'
+              : 'border-accent/25 bg-accent/10 hover:border-accent/35 hover:bg-accent/15'
+          }`}
+        >
+          <div className={collapsible && !expanded ? 'max-h-64 overflow-hidden' : undefined}>
+            {attachments && attachments.length > 0 && (
+              <MessageAttachmentList attachments={attachments} />
+            )}
+            <p className="whitespace-pre-wrap break-words leading-relaxed">{content}</p>
+          </div>
+          {collapsible && (
+            <button
+              type="button"
+              onClick={() => setExpanded((current) => !current)}
+              className="mt-3 flex w-full items-center gap-1.5 border-t border-border-subtle pt-2 text-left text-xs font-medium text-text-secondary transition-colors hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+              aria-expanded={expanded}
+            >
+              {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+              {expanded
+                ? 'Show less'
+                : `Show full request${lineCount > 1 ? ` (${lineCount} lines)` : ''}`}
+            </button>
           )}
-          <p className="whitespace-pre-wrap break-words leading-relaxed">{content}</p>
         </div>
         <div className="message-actions absolute -bottom-7 right-0">
           <MessageActionsToolbar
@@ -934,6 +962,10 @@ export function UserMessage({
       </div>
     </div>
   );
+}
+
+export function shouldCollapseUserMessage(content: string): boolean {
+  return content.length > 1_600 || content.split('\n').length > 24;
 }
 
 function MessageAttachmentList({ attachments }: { attachments: ChatAttachment[] }) {

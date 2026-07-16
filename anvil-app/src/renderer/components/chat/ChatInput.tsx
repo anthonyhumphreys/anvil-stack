@@ -693,7 +693,7 @@ export function ChatInput({
 
   return (
     <div className="border-t border-border/50 bg-bg-secondary px-3 py-3 lg:px-4">
-      <div className="w-full max-w-[1120px]">
+      <div className="w-full">
         <div
           className={`relative rounded-2xl border bg-bg-primary transition-colors duration-200 ${
             disabled && !busy ? 'opacity-60' : ''

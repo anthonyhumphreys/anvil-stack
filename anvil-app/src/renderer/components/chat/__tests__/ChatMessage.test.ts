@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildChatFileReference } from '../ChatMessage';
+import { buildChatFileReference, shouldCollapseUserMessage } from '../ChatMessage';
 
 describe('buildChatFileReference', () => {
   it('returns the file path when no line range is available', () => {
@@ -12,5 +12,18 @@ describe('buildChatFileReference', () => {
 
   it('returns null for missing paths', () => {
     expect(buildChatFileReference('')).toBeNull();
+  });
+});
+
+describe('shouldCollapseUserMessage', () => {
+  it('keeps ordinary requests immediately readable', () => {
+    expect(shouldCollapseUserMessage('Please review the current changes.')).toBe(false);
+  });
+
+  it('progressively discloses large payloads by length or line count', () => {
+    expect(shouldCollapseUserMessage('x'.repeat(1_601))).toBe(true);
+    expect(
+      shouldCollapseUserMessage(Array.from({ length: 25 }, (_, index) => `${index}`).join('\n')),
+    ).toBe(true);
   });
 });

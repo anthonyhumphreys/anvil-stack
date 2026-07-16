@@ -913,7 +913,7 @@ export function ChatView() {
                 className={`w-full px-3 lg:px-4 ${
                   showCenteredEmptyPane
                     ? 'flex min-h-full flex-1 items-center justify-center py-6'
-                    : 'flex max-w-[1120px] flex-col pb-8 pt-6'
+                    : 'flex flex-col pb-8 pt-6'
                 }`}
               >
                 {!scaffoldModeActive && !featureAvailability.chatEnabled && (
