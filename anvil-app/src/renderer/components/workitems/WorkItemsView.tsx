@@ -13,7 +13,7 @@ import {
   Search,
   X,
 } from 'lucide-react';
-import type { Iteration, RepoInfo, WorkItem, WorkItemProvider } from '../../../shared/types';
+import type { Iteration, RepoInfo, WorkItem, WorkItemConnection } from '../../../shared/types';
 import { SprintSelector } from './SprintSelector';
 import { TagFilter } from './TagFilter';
 import { WorkItemCard } from './WorkItemCard';
@@ -63,6 +63,8 @@ export function WorkItemsView() {
 
   // Active work item provider
   const [activeProvider, setActiveProvider] = useState<string>('ado');
+  const [activeConnectionId, setActiveConnectionId] = useState('');
+  const [connections, setConnections] = useState<WorkItemConnection[]>([]);
   const [switchingProvider, setSwitchingProvider] = useState(false);
 
   // Generated content panel
@@ -73,34 +75,42 @@ export function WorkItemsView() {
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    window.anvil.settings.get().then((s) => setActiveProvider(s.workItemProvider ?? 'ado'));
+    window.anvil.settings.get().then((settings) => {
+      setActiveProvider(settings.workItemProvider ?? 'none');
+      setActiveConnectionId(settings.activeWorkItemConnectionId ?? '');
+      setConnections(settings.workItemConnections ?? []);
+    });
   }, []);
 
-  const handleProviderChange = useCallback(async (provider: string) => {
-    setSwitchingProvider(true);
-    setActiveProvider(provider);
-    setItems([]);
-    setIterations([]);
-    setSelectedIterations([]);
-    setSelectedTags([]);
-    try {
-      await window.anvil.settings.update({
-        workItemProvider: provider as WorkItemProvider | 'none',
-      });
-      if (provider !== 'none') {
+  const handleConnectionChange = useCallback(
+    async (connectionId: string) => {
+      const connection = connections.find((candidate) => candidate.id === connectionId);
+      if (!connection) return;
+      setSwitchingProvider(true);
+      setActiveConnectionId(connectionId);
+      setActiveProvider(connection.provider);
+      setItems([]);
+      setIterations([]);
+      setSelectedIterations([]);
+      setSelectedTags([]);
+      try {
+        await window.anvil.settings.update({
+          activeWorkItemConnectionId: connectionId,
+        });
         const [newItems, newIterations] = await Promise.all([
           window.anvil.workitems.list(),
           window.anvil.workitems.listIterations().catch(() => [] as Iteration[]),
         ]);
         setItems(newItems);
         setIterations(newIterations);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to switch provider');
+      } finally {
+        setSwitchingProvider(false);
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to switch provider');
-    } finally {
-      setSwitchingProvider(false);
-    }
-  }, []);
+    },
+    [connections],
+  );
 
   // Sync iteration selection FROM workspace preferences on workspace switch
   useEffect(() => {
@@ -281,15 +291,17 @@ export function WorkItemsView() {
             {items.length} items
           </span>
           <select
-            value={activeProvider}
-            onChange={(e) => handleProviderChange(e.target.value)}
+            value={activeConnectionId}
+            onChange={(e) => handleConnectionChange(e.target.value)}
             disabled={switchingProvider}
             className="rounded-md border border-border bg-bg-primary px-2 py-1 text-sm text-text-primary focus:border-accent focus:outline-none disabled:opacity-50"
           >
-            <option value="none">None</option>
-            <option value="ado">Azure DevOps</option>
-            <option value="linear">Linear</option>
-            <option value="jira">JIRA</option>
+            {connections.length === 0 && <option value="">No connections</option>}
+            {connections.map((connection) => (
+              <option key={connection.id} value={connection.id}>
+                {connection.name} · {connection.provider.toUpperCase()}
+              </option>
+            ))}
           </select>
           <SprintSelector
             iterations={iterations}
@@ -346,8 +358,8 @@ export function WorkItemsView() {
                 <TicketCheck size={32} className="mx-auto mb-3 text-text-tertiary" />
                 <p className="text-sm text-text-secondary">
                   {items.length === 0
-                    ? activeProvider === 'none'
-                      ? 'Configure a work item provider in Settings.'
+                    ? connections.length === 0
+                      ? 'Configure a work item connection in Settings.'
                       : 'No work items found. Check settings.'
                     : 'No items match your filter.'}
                 </p>

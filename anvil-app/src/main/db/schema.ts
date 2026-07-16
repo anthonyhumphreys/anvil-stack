@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 44;
+export const SCHEMA_VERSION = 45;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -232,6 +232,8 @@ CREATE TABLE IF NOT EXISTS settings (
   ado_team TEXT,
   ado_pat BLOB,
   work_item_provider TEXT DEFAULT 'ado',
+  work_item_connections BLOB,
+  active_work_item_connection_id TEXT,
   linear_api_key BLOB,
   linear_team_id TEXT,
   jira_host TEXT,
@@ -1505,5 +1507,9 @@ export const MIGRATIONS: Record<number, string> = {
   44: `
     ALTER TABLE workflow_runs
       ADD COLUMN graph_json TEXT NOT NULL DEFAULT '{"nodes":[],"edges":[]}';
+  `,
+  45: `
+    ALTER TABLE settings ADD COLUMN work_item_connections BLOB;
+    ALTER TABLE settings ADD COLUMN active_work_item_connection_id TEXT;
   `,
 };

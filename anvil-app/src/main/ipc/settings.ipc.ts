@@ -31,6 +31,12 @@ export function registerSettingsHandlers(): void {
       // Strip secrets from the response — renderer gets masked values
       return {
         ...settings,
+        workItemConnections: settings.workItemConnections.map((connection) => ({
+          ...connection,
+          adoPat: connection.adoPat ? '••••••••' : undefined,
+          linearApiKey: connection.linearApiKey ? '••••••••' : undefined,
+          jiraApiToken: connection.jiraApiToken ? '••••••••' : undefined,
+        })),
         foundryApiKey: settings.foundryApiKey ? '••••••••' : undefined,
         openaiApiKey: settings.openaiApiKey ? '••••••••' : undefined,
         adoPat: settings.adoPat ? '••••••••' : undefined,

@@ -168,6 +168,24 @@ export type OnboardAction =
   | 'generate-readme';
 
 export type WorkItemProvider = 'ado' | 'linear' | 'jira';
+
+export interface WorkItemConnection {
+  id: string;
+  name: string;
+  provider: WorkItemProvider;
+  adoOrganizationUrl?: string;
+  adoProject?: string;
+  adoTeam?: string;
+  adoPat?: string;
+  linearApiKey?: string;
+  linearTeamId?: string;
+  jiraHost?: string;
+  jiraAuthMode?: 'cloud' | 'server';
+  jiraProject?: string;
+  jiraBoardId?: string;
+  jiraEmail?: string;
+  jiraApiToken?: string;
+}
 export type DocsProvider = 'confluence' | 'notion';
 
 export interface WorkItem {
@@ -1489,6 +1507,8 @@ export interface AppSettings {
 
   // Work Item Provider
   workItemProvider: WorkItemProvider | 'none';
+  workItemConnections: WorkItemConnection[];
+  activeWorkItemConnectionId?: string;
 
   // ADO
   adoOrganizationUrl: string;

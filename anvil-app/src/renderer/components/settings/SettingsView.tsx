@@ -15,6 +15,7 @@ import {
   Loader2,
   MonitorSmartphone,
   Palette,
+  Plus,
   Puzzle,
   RefreshCcw,
   Save,
@@ -38,6 +39,7 @@ import type {
   RaycastCompanionToken,
   ReasoningEffort,
   UserRole,
+  WorkItemConnection,
 } from '../../../shared/types';
 import {
   CODEX_MODEL_OPTIONS,
@@ -257,6 +259,94 @@ export function SettingsView({
   const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
     setSettings((prev) => ({ ...prev, [key]: value }));
     setSaved(false);
+  };
+
+  const activateWorkItemConnection = (connection: WorkItemConnection) => {
+    setSettings((prev) => ({
+      ...prev,
+      activeWorkItemConnectionId: connection.id,
+      workItemProvider: connection.provider,
+      adoOrganizationUrl: connection.adoOrganizationUrl ?? '',
+      adoProject: connection.adoProject ?? '',
+      adoTeam: connection.adoTeam,
+      adoPat: connection.adoPat,
+      linearApiKey: connection.linearApiKey,
+      linearTeamId: connection.linearTeamId,
+      jiraHost: connection.jiraHost,
+      jiraAuthMode: connection.jiraAuthMode,
+      jiraProject: connection.jiraProject,
+      jiraBoardId: connection.jiraBoardId,
+      jiraEmail: connection.jiraEmail,
+      jiraApiToken: connection.jiraApiToken,
+    }));
+    setWiStatus('idle');
+    setSaved(false);
+  };
+
+  const addWorkItemConnection = () => {
+    const connection: WorkItemConnection = {
+      id: crypto.randomUUID(),
+      name: `Work items ${(settings.workItemConnections?.length ?? 0) + 1}`,
+      provider: 'ado',
+      jiraAuthMode: 'cloud',
+    };
+    setSettings((prev) => ({
+      ...prev,
+      workItemConnections: [...(prev.workItemConnections ?? []), connection],
+    }));
+    activateWorkItemConnection(connection);
+  };
+
+  const updateWorkItemConnection = <K extends keyof WorkItemConnection>(
+    key: K,
+    value: WorkItemConnection[K],
+  ) => {
+    setSettings((prev) => {
+      const activeId = prev.activeWorkItemConnectionId;
+      const connections = (prev.workItemConnections ?? []).map((connection) =>
+        connection.id === activeId ? { ...connection, [key]: value } : connection,
+      );
+      const active = connections.find((connection) => connection.id === activeId);
+      return active
+        ? {
+            ...prev,
+            workItemConnections: connections,
+            workItemProvider: active.provider,
+            adoOrganizationUrl: active.adoOrganizationUrl ?? '',
+            adoProject: active.adoProject ?? '',
+            adoTeam: active.adoTeam,
+            adoPat: active.adoPat,
+            linearApiKey: active.linearApiKey,
+            linearTeamId: active.linearTeamId,
+            jiraHost: active.jiraHost,
+            jiraAuthMode: active.jiraAuthMode,
+            jiraProject: active.jiraProject,
+            jiraBoardId: active.jiraBoardId,
+            jiraEmail: active.jiraEmail,
+            jiraApiToken: active.jiraApiToken,
+          }
+        : { ...prev, workItemConnections: connections };
+    });
+    setWiStatus('idle');
+    setSaved(false);
+  };
+
+  const removeActiveWorkItemConnection = () => {
+    const remaining = (settings.workItemConnections ?? []).filter(
+      (connection) => connection.id !== settings.activeWorkItemConnectionId,
+    );
+    setSettings((prev) => ({ ...prev, workItemConnections: remaining }));
+    if (remaining[0]) {
+      activateWorkItemConnection(remaining[0]);
+    } else {
+      setSettings((prev) => ({
+        ...prev,
+        workItemConnections: [],
+        activeWorkItemConnectionId: undefined,
+        workItemProvider: 'none',
+      }));
+      setSaved(false);
+    }
   };
 
   const saveAgentMaxThreads = async () => {
@@ -580,7 +670,11 @@ export function SettingsView({
   };
 
   const provider = settings.llmProvider ?? 'codex';
-  const wiProvider = settings.workItemProvider ?? 'ado';
+  const workItemConnections = settings.workItemConnections ?? [];
+  const activeWorkItemConnection = workItemConnections.find(
+    (connection) => connection.id === settings.activeWorkItemConnectionId,
+  );
+  const wiProvider = activeWorkItemConnection?.provider ?? 'none';
   const selectedDocsProvider = docsProvider;
   const themeOptions = THEME_OPTIONS;
   const persistedTheme = settings.theme ?? brand.defaultTheme;
@@ -616,7 +710,7 @@ export function SettingsView({
     setSaved(false);
   };
   const deliverySummary = [
-    wiProvider === 'none' ? 'No work items' : wiProvider.toUpperCase(),
+    activeWorkItemConnection?.name ?? 'No work items',
     selectedDocsProvider === 'none' ? 'No docs' : selectedDocsProvider,
     gitProvider === 'ado' ? 'ADO Git' : 'GitHub',
   ];
@@ -1278,60 +1372,108 @@ export function SettingsView({
             >
               <SettingsPanel
                 title="Work Items"
-                description="Connect backlog and issue providers used by planning workflows."
+                description="Keep multiple named backlog and issue connections, with one active at a time."
               >
                 <div className="space-y-3">
-                  <label className="block text-sm text-text-secondary">Provider</label>
-                  <ButtonGrid>
-                    <ProviderButton
-                      label="None"
-                      description="No work item tracking"
-                      active={wiProvider === 'none'}
-                      onClick={() => update('workItemProvider', 'none')}
+                  <div className="flex flex-wrap items-end gap-2">
+                    <div className="min-w-52 flex-1 space-y-1">
+                      <label className="block text-sm text-text-secondary">Active connection</label>
+                      <select
+                        value={settings.activeWorkItemConnectionId ?? ''}
+                        onChange={(event) => {
+                          const connection = workItemConnections.find(
+                            (candidate) => candidate.id === event.target.value,
+                          );
+                          if (connection) activateWorkItemConnection(connection);
+                        }}
+                        className="w-full rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary focus:border-accent focus:outline-none"
+                      >
+                        {workItemConnections.length === 0 && (
+                          <option value="">No connections configured</option>
+                        )}
+                        {workItemConnections.map((connection) => (
+                          <option key={connection.id} value={connection.id}>
+                            {connection.name} · {connection.provider.toUpperCase()}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={addWorkItemConnection}
+                      className="flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm text-text-secondary transition-colors hover:border-accent hover:text-text-primary"
+                    >
+                      <Plus size={14} /> Add
+                    </button>
+                    {activeWorkItemConnection && (
+                      <button
+                        type="button"
+                        onClick={removeActiveWorkItemConnection}
+                        className="flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm text-text-secondary transition-colors hover:border-error hover:text-error"
+                      >
+                        <Trash2 size={14} /> Remove
+                      </button>
+                    )}
+                  </div>
+
+                  {activeWorkItemConnection && (
+                    <Field
+                      label="Connection name"
+                      value={activeWorkItemConnection.name}
+                      onChange={(value) => updateWorkItemConnection('name', value)}
+                      placeholder="e.g. Product Linear"
                     />
-                    <ProviderButton
-                      label="Azure DevOps"
-                      description="ADO boards and backlogs"
-                      active={wiProvider === 'ado'}
-                      onClick={() => update('workItemProvider', 'ado')}
-                    />
-                    <ProviderButton
-                      label="Linear"
-                      description="Modern issue tracking"
-                      active={wiProvider === 'linear'}
-                      onClick={() => update('workItemProvider', 'linear')}
-                    />
-                    <ProviderButton
-                      label="JIRA"
-                      description="Atlassian project tracking"
-                      active={wiProvider === 'jira'}
-                      onClick={() => update('workItemProvider', 'jira')}
-                    />
-                  </ButtonGrid>
+                  )}
+
+                  {activeWorkItemConnection && (
+                    <>
+                      <label className="block text-sm text-text-secondary">Provider</label>
+                      <ButtonGrid>
+                        <ProviderButton
+                          label="Azure DevOps"
+                          description="ADO boards and backlogs"
+                          active={wiProvider === 'ado'}
+                          onClick={() => updateWorkItemConnection('provider', 'ado')}
+                        />
+                        <ProviderButton
+                          label="Linear"
+                          description="Modern issue tracking"
+                          active={wiProvider === 'linear'}
+                          onClick={() => updateWorkItemConnection('provider', 'linear')}
+                        />
+                        <ProviderButton
+                          label="JIRA"
+                          description="Atlassian project tracking"
+                          active={wiProvider === 'jira'}
+                          onClick={() => updateWorkItemConnection('provider', 'jira')}
+                        />
+                      </ButtonGrid>
+                    </>
+                  )}
                 </div>
 
                 {wiProvider === 'ado' && (
                   <>
                     <Field
                       label="Organisation URL"
-                      value={settings.adoOrganizationUrl ?? ''}
-                      onChange={(v) => update('adoOrganizationUrl', v)}
+                      value={activeWorkItemConnection?.adoOrganizationUrl ?? ''}
+                      onChange={(v) => updateWorkItemConnection('adoOrganizationUrl', v)}
                       placeholder="https://dev.azure.com/your-org"
                     />
                     <Field
                       label="Project"
-                      value={settings.adoProject ?? ''}
-                      onChange={(v) => update('adoProject', v)}
+                      value={activeWorkItemConnection?.adoProject ?? ''}
+                      onChange={(v) => updateWorkItemConnection('adoProject', v)}
                     />
                     <Field
                       label="Team (optional)"
-                      value={settings.adoTeam ?? ''}
-                      onChange={(v) => update('adoTeam', v)}
+                      value={activeWorkItemConnection?.adoTeam ?? ''}
+                      onChange={(v) => updateWorkItemConnection('adoTeam', v)}
                     />
                     <Field
                       label="Personal Access Token"
-                      value={settings.adoPat ?? ''}
-                      onChange={(v) => update('adoPat', v)}
+                      value={activeWorkItemConnection?.adoPat ?? ''}
+                      onChange={(v) => updateWorkItemConnection('adoPat', v)}
                       type="password"
                     />
                   </>
@@ -1341,8 +1483,8 @@ export function SettingsView({
                   <>
                     <Field
                       label="API Key"
-                      value={settings.linearApiKey ?? ''}
-                      onChange={(v) => update('linearApiKey', v)}
+                      value={activeWorkItemConnection?.linearApiKey ?? ''}
+                      onChange={(v) => updateWorkItemConnection('linearApiKey', v)}
                       type="password"
                       placeholder="lin_api_..."
                     />
@@ -1350,8 +1492,8 @@ export function SettingsView({
                       <label className="block text-sm text-text-secondary">Team (optional)</label>
                       <div className="flex gap-2">
                         <select
-                          value={settings.linearTeamId ?? ''}
-                          onChange={(e) => update('linearTeamId', e.target.value)}
+                          value={activeWorkItemConnection?.linearTeamId ?? ''}
+                          onChange={(e) => updateWorkItemConnection('linearTeamId', e.target.value)}
                           className="flex-1 rounded-md border border-border bg-bg-primary px-3 py-1.5 text-sm text-text-primary focus:border-accent focus:outline-none"
                         >
                           <option value="">All teams</option>
@@ -1374,7 +1516,7 @@ export function SettingsView({
                               setLoadingTeams(false);
                             }
                           }}
-                          disabled={loadingTeams || !settings.linearApiKey}
+                          disabled={loadingTeams || !activeWorkItemConnection?.linearApiKey}
                           className="flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-sm text-text-secondary transition-colors hover:border-text-tertiary hover:text-text-primary disabled:opacity-50"
                         >
                           {loadingTeams && <Loader2 size={12} className="animate-spin" />}
@@ -1392,8 +1534,8 @@ export function SettingsView({
                   <>
                     <Field
                       label="Host"
-                      value={settings.jiraHost ?? ''}
-                      onChange={(v) => update('jiraHost', v)}
+                      value={activeWorkItemConnection?.jiraHost ?? ''}
+                      onChange={(v) => updateWorkItemConnection('jiraHost', v)}
                       placeholder="mycompany.atlassian.net"
                     />
                     <div className="space-y-1">
@@ -1402,41 +1544,41 @@ export function SettingsView({
                         <ProviderButton
                           label="Cloud"
                           description="Atlassian Cloud"
-                          active={(settings.jiraAuthMode ?? 'cloud') === 'cloud'}
-                          onClick={() => update('jiraAuthMode', 'cloud')}
+                          active={(activeWorkItemConnection?.jiraAuthMode ?? 'cloud') === 'cloud'}
+                          onClick={() => updateWorkItemConnection('jiraAuthMode', 'cloud')}
                         />
                         <ProviderButton
                           label="Server"
                           description="Data Center / Server"
-                          active={settings.jiraAuthMode === 'server'}
-                          onClick={() => update('jiraAuthMode', 'server')}
+                          active={activeWorkItemConnection?.jiraAuthMode === 'server'}
+                          onClick={() => updateWorkItemConnection('jiraAuthMode', 'server')}
                         />
                       </div>
                     </div>
                     <Field
                       label="Project Key"
-                      value={settings.jiraProject ?? ''}
-                      onChange={(v) => update('jiraProject', v)}
+                      value={activeWorkItemConnection?.jiraProject ?? ''}
+                      onChange={(v) => updateWorkItemConnection('jiraProject', v)}
                       placeholder="ENG"
                     />
                     <Field
                       label="Board ID (optional)"
-                      value={settings.jiraBoardId ?? ''}
-                      onChange={(v) => update('jiraBoardId', v)}
+                      value={activeWorkItemConnection?.jiraBoardId ?? ''}
+                      onChange={(v) => updateWorkItemConnection('jiraBoardId', v)}
                       placeholder="Auto-discovered if blank"
                     />
-                    {(settings.jiraAuthMode ?? 'cloud') === 'cloud' && (
+                    {(activeWorkItemConnection?.jiraAuthMode ?? 'cloud') === 'cloud' && (
                       <Field
                         label="Email"
-                        value={settings.jiraEmail ?? ''}
-                        onChange={(v) => update('jiraEmail', v)}
+                        value={activeWorkItemConnection?.jiraEmail ?? ''}
+                        onChange={(v) => updateWorkItemConnection('jiraEmail', v)}
                         placeholder="you@company.com"
                       />
                     )}
                     <Field
                       label="API Token"
-                      value={settings.jiraApiToken ?? ''}
-                      onChange={(v) => update('jiraApiToken', v)}
+                      value={activeWorkItemConnection?.jiraApiToken ?? ''}
+                      onChange={(v) => updateWorkItemConnection('jiraApiToken', v)}
                       type="password"
                     />
                   </>
