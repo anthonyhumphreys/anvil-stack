@@ -206,7 +206,7 @@ export function TurnWorkMessage({
 
   return (
     <div className="message-bubble flex justify-start">
-      <div className="w-full max-w-3xl border-y border-border-subtle/80">
+      <div className="w-full max-w-[960px] border-y border-border-subtle/80">
         <button
           type="button"
           onClick={() => setExpanded((current) => !current)}
@@ -269,6 +269,18 @@ export function TurnWorkMessage({
             })}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+export function TurnPendingMessage({ label = 'Thinking' }: { label?: string }) {
+  return (
+    <div className="message-bubble flex justify-start" role="status" aria-live="polite">
+      <div className="flex min-h-10 items-center gap-2.5 text-xs text-text-tertiary">
+        <Loader2 size={13} className="shrink-0 animate-spin text-warning" />
+        <span className="font-medium text-text-secondary">{label}</span>
+        <span>Preparing a response...</span>
       </div>
     </div>
   );
@@ -826,6 +838,7 @@ export function AssistantMessage({
   onRegenerate,
   label = 'Assistant',
   colour,
+  active = false,
 }: {
   content: string;
   transformContent?: (c: string) => string;
@@ -833,6 +846,7 @@ export function AssistantMessage({
   onRegenerate?: () => void;
   label?: string;
   colour?: string;
+  active?: boolean;
 }) {
   const display = transformContent ? transformContent(content) : content;
   const [copied, setCopied] = useState(false);
@@ -845,14 +859,23 @@ export function AssistantMessage({
 
   return (
     <div className="message-bubble group flex justify-start">
-      <div className="relative w-full max-w-3xl">
-        <div className="mb-1.5 flex items-center gap-2 px-1 text-xs font-medium text-text-tertiary">
-          <span
-            className="h-1.5 w-1.5 rounded-full bg-text-tertiary"
-            style={colour ? { backgroundColor: colour } : undefined}
-            aria-hidden="true"
-          />
-          {label}
+      <div className="relative w-full max-w-[75ch]">
+        <div
+          className="mb-1.5 flex items-center gap-2 px-1 text-xs font-medium text-text-tertiary"
+          role={active ? 'status' : undefined}
+          aria-live={active ? 'polite' : undefined}
+        >
+          {active ? (
+            <Loader2 size={12} className="shrink-0 animate-spin text-warning" aria-hidden="true" />
+          ) : (
+            <span
+              className="h-1.5 w-1.5 rounded-full bg-text-tertiary"
+              style={colour ? { backgroundColor: colour } : undefined}
+              aria-hidden="true"
+            />
+          )}
+          <span>{label}</span>
+          {active && <span className="font-normal text-text-muted">Responding</span>}
         </div>
         <div className="overflow-hidden rounded-xl border border-border-subtle bg-bg-secondary/45 px-4 py-3.5 text-text-secondary transition-colors group-hover:border-border [&_.markdown-body>p]:text-[15px] [&_.markdown-body>p]:leading-7">
           <MarkdownRenderer content={display} />
@@ -891,7 +914,7 @@ export function UserMessage({
 
   return (
     <div className="message-bubble group flex justify-end">
-      <div className="relative max-w-[88%] sm:max-w-[72%]">
+      <div className="relative w-fit max-w-[88%] sm:max-w-[72ch]">
         <p className="mb-1.5 text-right text-xs font-medium text-text-tertiary">You</p>
         <div className="overflow-hidden rounded-xl border border-accent/25 bg-accent/10 px-4 py-3 text-sm text-text-primary transition-colors hover:border-accent/35 hover:bg-accent/15">
           {attachments && attachments.length > 0 && (

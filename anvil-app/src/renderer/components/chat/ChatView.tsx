@@ -52,7 +52,7 @@ import type {
 import { ChatInput, type ChatQuickPrompt, type ChatSlashCommand } from './ChatInput';
 import { ChatThreadRail } from './ChatThreadRail';
 import { WorkItemThreadRail } from './WorkItemThreadRail';
-import { AssistantMessage, TurnWorkMessage, UserMessage } from './ChatMessage';
+import { AssistantMessage, TurnPendingMessage, TurnWorkMessage, UserMessage } from './ChatMessage';
 import { composeChatTurns } from './chat-turns';
 import { ChatEmptyState } from './ChatEmptyState';
 import { ArtifactPreview } from './ArtifactPreview';
@@ -913,7 +913,7 @@ export function ChatView() {
                 className={`w-full px-3 lg:px-4 ${
                   showCenteredEmptyPane
                     ? 'flex min-h-full flex-1 items-center justify-center py-6'
-                    : 'mx-auto flex max-w-[78ch] flex-col pb-6 pt-6'
+                    : 'flex max-w-[1120px] flex-col pb-8 pt-6'
                 }`}
               >
                 {!scaffoldModeActive && !featureAvailability.chatEnabled && (
@@ -1010,48 +1010,56 @@ export function ChatView() {
                 )}
 
                 {composedTurns.length > 0 && (
-                  <div className="space-y-8">
-                    {composedTurns.map((turn, turnIndex) => (
-                      <section
-                        key={turn.key}
-                        className="space-y-3"
-                        aria-label={`Turn ${turnIndex + 1}`}
-                      >
-                        {turn.user && (
-                          <UserMessage
-                            content={turn.user.content}
-                            attachments={turn.user.attachments}
-                            onEdit={() =>
-                              handleReuseMessage(turn.user!.sourceIndex, turn.user!.content)
-                            }
-                            onBranch={
-                              isWorkItemLayout
-                                ? undefined
-                                : () => handleBranch(turn.user!.sourceIndex)
-                            }
-                          />
-                        )}
-                        {turn.work.length > 0 && (
-                          <TurnWorkMessage
-                            items={turn.work}
-                            active={busy && turnIndex === composedTurns.length - 1}
-                          />
-                        )}
-                        {turn.answer && (
-                          <AssistantMessage
-                            content={turn.answer.content}
-                            transformContent={isBaPersona ? stripFindingMarkers : undefined}
-                            label={activePersona?.name ?? 'Assistant'}
-                            colour={personaColour}
-                            onBranch={
-                              isWorkItemLayout
-                                ? undefined
-                                : () => handleBranch(turn.answer!.sourceIndex)
-                            }
-                          />
-                        )}
-                      </section>
-                    ))}
+                  <div className="space-y-10">
+                    {composedTurns.map((turn, turnIndex) => {
+                      const liveState = getChatTurnLiveState({
+                        busy,
+                        isLatest: turnIndex === composedTurns.length - 1,
+                        hasWork: turn.work.length > 0,
+                        hasAnswer: Boolean(turn.answer),
+                      });
+
+                      return (
+                        <section
+                          key={turn.key}
+                          className="space-y-4"
+                          aria-label={`Turn ${turnIndex + 1}`}
+                        >
+                          {turn.user && (
+                            <UserMessage
+                              content={turn.user.content}
+                              attachments={turn.user.attachments}
+                              onEdit={() =>
+                                handleReuseMessage(turn.user!.sourceIndex, turn.user!.content)
+                              }
+                              onBranch={
+                                isWorkItemLayout
+                                  ? undefined
+                                  : () => handleBranch(turn.user!.sourceIndex)
+                              }
+                            />
+                          )}
+                          {liveState === 'thinking' && <TurnPendingMessage label="Thinking" />}
+                          {turn.work.length > 0 && (
+                            <TurnWorkMessage items={turn.work} active={liveState === 'working'} />
+                          )}
+                          {turn.answer && (
+                            <AssistantMessage
+                              content={turn.answer.content}
+                              transformContent={isBaPersona ? stripFindingMarkers : undefined}
+                              label={activePersona?.name ?? 'Assistant'}
+                              colour={personaColour}
+                              active={liveState === 'responding'}
+                              onBranch={
+                                isWorkItemLayout
+                                  ? undefined
+                                  : () => handleBranch(turn.answer!.sourceIndex)
+                              }
+                            />
+                          )}
+                        </section>
+                      );
+                    })}
                   </div>
                 )}
 
@@ -1880,6 +1888,25 @@ export function getNewChatThreadActionLabel(): string {
 
 export function buildMessageReusePrefill(content: string): string {
   return content.trimEnd();
+}
+
+export type ChatTurnLiveState = 'thinking' | 'working' | 'responding' | null;
+
+export function getChatTurnLiveState({
+  busy,
+  isLatest,
+  hasWork,
+  hasAnswer,
+}: {
+  busy: boolean;
+  isLatest: boolean;
+  hasWork: boolean;
+  hasAnswer: boolean;
+}): ChatTurnLiveState {
+  if (!busy || !isLatest) return null;
+  if (hasAnswer) return 'responding';
+  if (hasWork) return 'working';
+  return 'thinking';
 }
 
 function formatGoalStatus(status: ChatGoalSnapshot['status']): string {

@@ -692,8 +692,8 @@ export function ChatInput({
         : undefined;
 
   return (
-    <div className="border-t border-border/50 bg-bg-secondary px-3 py-4 lg:px-4">
-      <div className="w-full">
+    <div className="border-t border-border/50 bg-bg-secondary px-3 py-3 lg:px-4">
+      <div className="w-full max-w-[1120px]">
         <div
           className={`relative rounded-2xl border bg-bg-primary transition-colors duration-200 ${
             disabled && !busy ? 'opacity-60' : ''
@@ -819,11 +819,11 @@ export function ChatInput({
                     : 'Ask anything, paste images, or drop files here...'
             }
             rows={1}
-            className="chat-input-focus w-full resize-none rounded-2xl bg-transparent px-4 pb-2 pt-4 text-[15px] leading-6 text-text-primary placeholder:text-text-muted focus:outline-none disabled:opacity-50"
+            className="chat-input-focus w-full resize-none rounded-2xl bg-transparent px-4 py-3 text-[15px] leading-6 text-text-primary placeholder:text-text-muted focus:outline-none disabled:opacity-50 sm:pr-[19rem]"
             style={{ maxHeight: '200px', minHeight: '56px' }}
           />
 
-          <div className="flex min-h-11 items-center justify-end gap-1.5 px-2.5 pb-2.5">
+          <div className="flex min-h-11 items-center justify-end gap-1.5 border-t border-border-subtle px-2.5 py-2 sm:absolute sm:bottom-2 sm:right-2 sm:min-h-0 sm:border-0 sm:p-0">
             {(onExecutionStrategyChange || onReasoningChange) && !busy && (
               <RunSettingsDropdown
                 executionStrategy={executionStrategy}
