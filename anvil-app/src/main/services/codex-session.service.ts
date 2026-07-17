@@ -7,6 +7,7 @@ import type {
   ChatSendOptions,
   ChatStartOptions,
   CodexEvent,
+  CodexInputResponse,
   CodexMode,
   CodexSession,
   MobileApprovalRequest,
@@ -61,7 +62,25 @@ export interface CodexTurnSteerParams {
 }
 
 const sessions = new Map<string, ManagedSession>();
-const pendingApprovals = new Map<string, string>();
+type PendingServerRequest =
+  | {
+      sessionId: string;
+      requestId: JsonRpcRequestId;
+      kind: 'command' | 'file_change';
+    }
+  | {
+      sessionId: string;
+      requestId: JsonRpcRequestId;
+      kind: 'permissions';
+      permissions: Record<string, unknown>;
+    }
+  | {
+      sessionId: string;
+      requestId: JsonRpcRequestId;
+      kind: 'user_input' | 'mcp_elicitation';
+    };
+
+const pendingServerRequests = new Map<string, PendingServerRequest>();
 const pendingApprovalDetails = new Map<string, MobileApprovalRequest>();
 
 /**
@@ -342,10 +361,10 @@ export function stopSession(sessionId: string): void {
     /* already dead */
   }
   sessions.delete(sessionId);
-  for (const [requestId, ownerSessionId] of pendingApprovals) {
-    if (ownerSessionId === sessionId) {
-      pendingApprovals.delete(requestId);
-      pendingApprovalDetails.delete(requestId);
+  for (const [requestKey, request] of pendingServerRequests) {
+    if (request.sessionId === sessionId) {
+      pendingServerRequests.delete(requestKey);
+      pendingApprovalDetails.delete(requestKey);
     }
   }
 }
@@ -398,7 +417,12 @@ export function getCodexSessionDiagnostics(): {
 
   return {
     activeSessions: sessions.size,
-    pendingApprovals: pendingApprovals.size,
+    pendingApprovals: [...pendingServerRequests.values()].filter(
+      (request) =>
+        request.kind === 'command' ||
+        request.kind === 'file_change' ||
+        request.kind === 'permissions',
+    ).length,
     bufferedBytes,
   };
 }
@@ -410,16 +434,68 @@ export function resolveApproval(
 ): void {
   const session = sessions.get(sessionId);
   if (!session) throw new Error(`Session not found: ${sessionId}`);
-  const requestKey = String(requestId);
-  const ownerSessionId = pendingApprovals.get(requestKey);
-  if (ownerSessionId !== sessionId) {
+  const requestKey = buildPendingRequestKey(sessionId, requestId);
+  const request = pendingServerRequests.get(requestKey);
+  if (
+    !request ||
+    (request.kind !== 'command' && request.kind !== 'file_change' && request.kind !== 'permissions')
+  ) {
     throw new Error('Approval request is no longer active for this session.');
   }
 
-  pendingApprovals.delete(requestKey);
+  pendingServerRequests.delete(requestKey);
   pendingApprovalDetails.delete(requestKey);
-  sendCodexJsonRpcResult(session.process, requestId, { decision });
+  const result = buildApprovalResponse(
+    request.kind,
+    request.kind === 'permissions' ? request.permissions : undefined,
+    decision,
+  );
+  sendCodexJsonRpcResult(session.process, requestId, result);
   emitCompanionEvent('approvals');
+}
+
+export function resolveInputRequest(
+  sessionId: string,
+  requestId: JsonRpcRequestId,
+  response: CodexInputResponse,
+): void {
+  const session = sessions.get(sessionId);
+  if (!session) throw new Error(`Session not found: ${sessionId}`);
+  const requestKey = buildPendingRequestKey(sessionId, requestId);
+  const request = pendingServerRequests.get(requestKey);
+  if (!request || request.kind !== response.kind) {
+    throw new Error('Input request is no longer active for this session.');
+  }
+
+  pendingServerRequests.delete(requestKey);
+  sendCodexJsonRpcResult(session.process, requestId, buildInputResponse(response));
+}
+
+export function buildApprovalResponse(
+  kind: 'command' | 'file_change' | 'permissions',
+  permissions: Record<string, unknown> | undefined,
+  decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel',
+): Record<string, unknown> {
+  if (kind !== 'permissions') return { decision };
+  return {
+    permissions:
+      decision === 'accept' || decision === 'acceptForSession' ? (permissions ?? {}) : {},
+    scope: decision === 'acceptForSession' ? 'session' : 'turn',
+  };
+}
+
+export function buildInputResponse(response: CodexInputResponse): Record<string, unknown> {
+  if (response.kind === 'user_input') {
+    return {
+      answers: Object.fromEntries(
+        Object.entries(response.answers).map(([questionId, answers]) => [questionId, { answers }]),
+      ),
+    };
+  }
+  return {
+    action: response.action,
+    ...(response.content === undefined ? {} : { content: response.content }),
+  };
 }
 
 // --- Internal helpers ---
@@ -453,21 +529,48 @@ function handleServerMessage(session: ManagedSession, line: string): void {
       session.turnId = turnId;
     },
     onEvent: (event) => {
-      if (event.type === 'approval_request' && event.approvalRequestId) {
-        const requestKey = String(event.approvalRequestId);
-        pendingApprovals.set(requestKey, session.id);
-        pendingApprovalDetails.set(requestKey, {
-          sessionId: session.id,
+      if (event.type === 'approval_request' && event.approvalRequestId !== undefined) {
+        const requestKey = buildPendingRequestKey(session.id, event.approvalRequestId);
+        const kind = event.approvalKind ?? 'command';
+        pendingServerRequests.set(
           requestKey,
-          requestId: event.approvalRequestId,
-          kind: event.approvalKind ?? 'command',
-          reason: event.approvalReason,
-          command: event.approvalCommand,
-          cwd: event.approvalCwd,
-          grantRoot: event.approvalGrantRoot,
-          createdAt: new Date().toISOString(),
-        });
+          kind === 'permissions'
+            ? {
+                sessionId: session.id,
+                requestId: event.approvalRequestId,
+                kind,
+                permissions: event.approvalPermissions ?? {},
+              }
+            : {
+                sessionId: session.id,
+                requestId: event.approvalRequestId,
+                kind,
+              },
+        );
+        if (kind === 'command' || kind === 'file_change') {
+          pendingApprovalDetails.set(requestKey, {
+            sessionId: session.id,
+            requestKey,
+            requestId: event.approvalRequestId,
+            kind,
+            reason: event.approvalReason,
+            command: event.approvalCommand,
+            cwd: event.approvalCwd,
+            grantRoot: event.approvalGrantRoot,
+            createdAt: new Date().toISOString(),
+          });
+        }
         emitCompanionEvent('approvals');
+      }
+      if (event.type === 'input_request' && event.inputRequestId !== undefined) {
+        const kind = event.inputRequest?.kind;
+        if (kind === 'user_input' || kind === 'mcp_elicitation') {
+          pendingServerRequests.set(buildPendingRequestKey(session.id, event.inputRequestId), {
+            sessionId: session.id,
+            requestId: event.inputRequestId,
+            kind,
+          });
+        }
       }
       if (event.type === 'status' && event.status === 'complete') {
         session.status = 'ready';
@@ -482,8 +585,8 @@ function handleServerMessage(session: ManagedSession, line: string): void {
       console.log(`[Codex:${session.id.slice(0, 8)}] ${message}`);
     },
     onServerRequestResolved: (requestId) => {
-      const requestKey = String(requestId);
-      pendingApprovals.delete(requestKey);
+      const requestKey = buildPendingRequestKey(session.id, requestId);
+      pendingServerRequests.delete(requestKey);
       pendingApprovalDetails.delete(requestKey);
       emitCompanionEvent('approvals');
     },
@@ -499,6 +602,10 @@ function broadcastEvent(sessionId: string, event: CodexEvent): void {
       ...event,
     });
   }
+}
+
+function buildPendingRequestKey(sessionId: string, requestId: JsonRpcRequestId): string {
+  return `${sessionId}:${typeof requestId}:${String(requestId)}`;
 }
 
 function sessionToPublic(session: ManagedSession): CodexSession {

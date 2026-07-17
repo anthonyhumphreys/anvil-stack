@@ -1184,6 +1184,18 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           .catch(console.error);
       }
 
+      if (eventThreadId && event.type === 'subagent_update') {
+        const result = getCompletedSubagentResult(event);
+        if (result) {
+          void persistArtifactsForAssistantMessage(
+            eventThreadId,
+            eventSession?.repoId ?? null,
+            `subagent-${event.subagent?.id ?? generateId()}`,
+            result,
+          ).catch(console.error);
+        }
+      }
+
       if (eventSessionId && eventThreadId) {
         if (event.type === 'status') {
           const nextStatus: CodexSession['status'] =
@@ -1331,6 +1343,15 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           }
           return [...prev, { kind: 'event', event }];
         });
+      } else if (event.type === 'subagent_update' && event.subagent) {
+        flushPendingStreamEntry();
+        setEntries((prev) => upsertSubagentEntry(prev, event));
+      } else if (event.type === 'thread_status') {
+        flushPendingStreamEntry();
+        setEntries((prev) => upsertThreadStatusEntry(prev, event));
+      } else if (event.type === 'request_resolved' && event.resolvedRequestId !== undefined) {
+        flushPendingStreamEntry();
+        setEntries((prev) => removeResolvedRequestEntry(prev, event.resolvedRequestId));
       } else {
         flushPendingStreamEntry();
         setEntries((prev) => [...prev, { kind: 'event', event }]);
@@ -1342,6 +1363,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     flushPendingStreamEntry,
     getLiveAssistantOutput,
     persistAssistantForSession,
+    persistArtifactsForAssistantMessage,
     persistThreadGoal,
     persistThreadPlan,
     queueStreamEntry,
@@ -2173,15 +2195,71 @@ function boundEventPayload<T extends CodexEvent>(event: T): T {
 
 function shouldPersistEvidenceEvent(event: CodexEvent): boolean {
   if (event.type === 'command_exec') return !!event.command;
+  if (event.type === 'subagent_update') {
+    return event.subagent?.status === 'completed' || event.subagent?.status === 'failed';
+  }
   return (
     event.type === 'file_read' ||
     event.type === 'file_edit' ||
     event.type === 'tool_call' ||
     event.type === 'approval_request' ||
+    event.type === 'input_request' ||
     event.type === 'plan_update' ||
     event.type === 'goal_update' ||
     event.type === 'goal_cleared' ||
     event.type === 'error'
+  );
+}
+
+function upsertSubagentEntry(entries: ChatEntry[], event: CodexEvent): ChatEntry[] {
+  const subagentId = event.subagent?.id;
+  if (!subagentId) return [...entries, { kind: 'event', event }];
+  const existingIndex = entries.findIndex(
+    (entry) =>
+      entry.kind === 'event' &&
+      entry.event.type === 'subagent_update' &&
+      entry.event.subagent?.id === subagentId,
+  );
+  if (existingIndex < 0) return [...entries, { kind: 'event', event }];
+  const updated = [...entries];
+  updated[existingIndex] = { kind: 'event', event };
+  return updated;
+}
+
+function upsertThreadStatusEntry(entries: ChatEntry[], event: CodexEvent): ChatEntry[] {
+  const filtered = entries.filter(
+    (entry) =>
+      !(
+        entry.kind === 'event' &&
+        entry.event.type === 'thread_status' &&
+        entry.event.protocolThreadId === event.protocolThreadId
+      ),
+  );
+  if (!event.threadActiveFlags || event.threadActiveFlags.length === 0) return filtered;
+  return [...filtered, { kind: 'event', event }];
+}
+
+function getCompletedSubagentResult(event: CodexEvent): string | null {
+  if (
+    event.type !== 'subagent_update' ||
+    (event.subagent?.status !== 'completed' && event.subagent?.status !== 'failed')
+  ) {
+    return null;
+  }
+  const messages = event.subagent.agents
+    .map((agent) => agent.message?.trim())
+    .filter((message): message is string => Boolean(message));
+  return messages.length > 0 ? messages.join('\n\n') : null;
+}
+
+function removeResolvedRequestEntry(entries: ChatEntry[], requestId: string | number): ChatEntry[] {
+  return entries.filter(
+    (entry) =>
+      !(
+        entry.kind === 'event' &&
+        ((entry.event.type === 'approval_request' && entry.event.approvalRequestId === requestId) ||
+          (entry.event.type === 'input_request' && entry.event.inputRequestId === requestId))
+      ),
   );
 }
 

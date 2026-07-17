@@ -15,6 +15,7 @@ import type {
   ChatThread,
   ChatTurnSummary,
   CodexEvent,
+  CodexInputResponse,
   CodexSession,
   Persona,
   WorkItemProvider,
@@ -32,6 +33,7 @@ import {
   getSessionForRepo,
   listActiveCodexSessions,
   resolveApproval,
+  resolveInputRequest,
 } from '../services/codex-session.service.js';
 import {
   callAppleFoundationModel,
@@ -280,6 +282,13 @@ export function registerChatHandlers(): void {
       decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel',
     ): void => {
       resolveApproval(sessionId, requestId, decision);
+    },
+  );
+
+  ipcMain.handle(
+    'chat:resolve-input-request',
+    (_event, sessionId: string, requestId: string | number, response: CodexInputResponse): void => {
+      resolveInputRequest(sessionId, requestId, response);
     },
   );
 

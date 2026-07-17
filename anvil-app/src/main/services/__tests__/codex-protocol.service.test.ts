@@ -213,6 +213,200 @@ describe('codex protocol service', () => {
     ]);
   });
 
+  it('surfaces permission approvals, including JSON-RPC request id zero', () => {
+    const events = collectEvents(createState(), [
+      {
+        id: 0,
+        method: 'item/permissions/requestApproval',
+        params: {
+          threadId: 'thread-child',
+          turnId: 'turn-1',
+          itemId: 'permission-1',
+          cwd: '/repo',
+          reason: 'Needs network access',
+          permissions: { network: { enabled: true } },
+        },
+      },
+    ]);
+
+    expect(events).toEqual([
+      {
+        type: 'approval_request',
+        approvalRequestId: 0,
+        approvalKind: 'permissions',
+        approvalReason: 'Needs network access',
+        approvalCwd: '/repo',
+        approvalPermissions: { network: { enabled: true } },
+        protocolThreadId: 'thread-child',
+      },
+    ]);
+  });
+
+  it('maps user input and MCP elicitation requests into blocking chat events', () => {
+    const events = collectEvents(createState(), [
+      {
+        id: 'question-1',
+        method: 'item/tool/requestUserInput',
+        params: {
+          threadId: 'thread-child',
+          turnId: 'turn-1',
+          itemId: 'input-1',
+          autoResolutionMs: 60_000,
+          questions: [
+            {
+              id: 'provider',
+              header: 'Provider',
+              question: 'Which provider?',
+              isOther: true,
+              isSecret: false,
+              options: [{ label: 'Linear', description: 'Use the Linear connection.' }],
+            },
+          ],
+        },
+      },
+      {
+        id: 'elicitation-1',
+        method: 'mcpServer/elicitation/request',
+        params: {
+          threadId: 'thread-1',
+          turnId: 'turn-1',
+          serverName: 'impeccable',
+          mode: 'form',
+          message: 'Choose the design direction.',
+          requestedSchema: { type: 'object' },
+        },
+      },
+    ]);
+
+    expect(events).toEqual([
+      {
+        type: 'input_request',
+        inputRequestId: 'question-1',
+        protocolThreadId: 'thread-child',
+        inputRequest: {
+          kind: 'user_input',
+          autoResolutionMs: 60_000,
+          questions: [
+            {
+              id: 'provider',
+              header: 'Provider',
+              question: 'Which provider?',
+              isOther: true,
+              isSecret: false,
+              options: [{ label: 'Linear', description: 'Use the Linear connection.' }],
+            },
+          ],
+        },
+      },
+      {
+        type: 'input_request',
+        inputRequestId: 'elicitation-1',
+        protocolThreadId: 'thread-1',
+        inputRequest: {
+          kind: 'mcp_elicitation',
+          message: 'Choose the design direction.',
+          serverName: 'impeccable',
+          mode: 'form',
+          requestedSchema: { type: 'object' },
+          url: undefined,
+        },
+      },
+    ]);
+  });
+
+  it('surfaces subagent lifecycle, results, and waiting states', () => {
+    const events = collectEvents(createState(), [
+      {
+        method: 'item/started',
+        params: {
+          item: {
+            id: 'collab-1',
+            type: 'collabAgentToolCall',
+            tool: 'spawnAgent',
+            status: 'inProgress',
+            senderThreadId: 'thread-1',
+            receiverThreadIds: ['thread-child'],
+            prompt: 'Audit the chat UI.',
+            model: 'gpt-5.4',
+            reasoningEffort: 'high',
+            agentsStates: {
+              'thread-child': { status: 'running', message: null },
+            },
+          },
+        },
+      },
+      {
+        method: 'thread/status/changed',
+        params: {
+          threadId: 'thread-child',
+          status: { type: 'active', activeFlags: ['waitingOnApproval'] },
+        },
+      },
+      {
+        method: 'item/completed',
+        params: {
+          item: {
+            id: 'collab-1',
+            type: 'collabAgentToolCall',
+            tool: 'spawnAgent',
+            status: 'completed',
+            senderThreadId: 'thread-1',
+            receiverThreadIds: ['thread-child'],
+            prompt: 'Audit the chat UI.',
+            model: 'gpt-5.4',
+            reasoningEffort: 'high',
+            agentsStates: {
+              'thread-child': { status: 'completed', message: 'Found the missing event.' },
+            },
+          },
+        },
+      },
+    ]);
+
+    expect(events).toHaveLength(3);
+    expect(events[0]).toMatchObject({
+      type: 'subagent_update',
+      subagent: {
+        id: 'collab-1',
+        kind: 'tool_call',
+        tool: 'spawnAgent',
+        status: 'inProgress',
+        receiverThreadIds: ['thread-child'],
+        agents: [{ threadId: 'thread-child', status: 'running' }],
+      },
+    });
+    expect(events[1]).toEqual({
+      type: 'thread_status',
+      protocolThreadId: 'thread-child',
+      threadActiveFlags: ['waitingOnApproval'],
+    });
+    expect(events[2]).toMatchObject({
+      type: 'subagent_update',
+      subagent: {
+        id: 'collab-1',
+        status: 'completed',
+        agents: [
+          {
+            threadId: 'thread-child',
+            status: 'completed',
+            message: 'Found the missing event.',
+          },
+        ],
+      },
+    });
+  });
+
+  it('surfaces server request resolution so stale blocking cards can be removed', () => {
+    const events = collectEvents(createState(), [
+      {
+        method: 'serverRequest/resolved',
+        params: { requestId: 0 },
+      },
+    ]);
+
+    expect(events).toEqual([{ type: 'request_resolved', resolvedRequestId: 0 }]);
+  });
+
   it('maps plan and goal notifications into structured chat events', () => {
     const events = collectEvents(createState(), [
       {

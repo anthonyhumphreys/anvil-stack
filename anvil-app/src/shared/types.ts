@@ -643,6 +643,76 @@ export interface AutomationTriageItem {
 export type JsonRpcRequestId = string | number;
 export type ChatAssistantPhase = 'progress' | 'final';
 
+export type CodexSubagentTool = 'spawnAgent' | 'sendInput' | 'resumeAgent' | 'wait' | 'closeAgent';
+export type CodexSubagentToolStatus = 'inProgress' | 'completed' | 'failed';
+export type CodexSubagentStatus =
+  | 'pendingInit'
+  | 'running'
+  | 'interrupted'
+  | 'completed'
+  | 'errored'
+  | 'shutdown'
+  | 'notFound';
+export type CodexSubagentActivityKind = 'started' | 'interacted' | 'interrupted';
+
+export interface CodexSubagentState {
+  threadId: string;
+  status: CodexSubagentStatus;
+  message?: string;
+}
+
+export interface CodexSubagentUpdate {
+  id: string;
+  kind: 'tool_call' | 'activity';
+  tool?: CodexSubagentTool;
+  status?: CodexSubagentToolStatus;
+  senderThreadId?: string;
+  receiverThreadIds: string[];
+  prompt?: string;
+  model?: string;
+  reasoningEffort?: ReasoningEffort;
+  agents: CodexSubagentState[];
+  activityKind?: CodexSubagentActivityKind;
+  agentThreadId?: string;
+  agentPath?: string;
+}
+
+export interface CodexUserInputOption {
+  label: string;
+  description: string;
+}
+
+export interface CodexUserInputQuestion {
+  id: string;
+  header: string;
+  question: string;
+  isOther: boolean;
+  isSecret: boolean;
+  options?: CodexUserInputOption[];
+}
+
+export interface CodexInputRequest {
+  kind: 'user_input' | 'mcp_elicitation';
+  questions?: CodexUserInputQuestion[];
+  autoResolutionMs?: number;
+  message?: string;
+  serverName?: string;
+  mode?: 'form' | 'openai/form' | 'url';
+  requestedSchema?: unknown;
+  url?: string;
+}
+
+export type CodexInputResponse =
+  | {
+      kind: 'user_input';
+      answers: Record<string, string[]>;
+    }
+  | {
+      kind: 'mcp_elicitation';
+      action: 'accept' | 'decline' | 'cancel';
+      content?: unknown;
+    };
+
 export interface CodexEvent {
   type:
     | 'text'
@@ -652,6 +722,10 @@ export interface CodexEvent {
     | 'command_exec'
     | 'tool_call'
     | 'approval_request'
+    | 'input_request'
+    | 'subagent_update'
+    | 'thread_status'
+    | 'request_resolved'
     | 'plan_update'
     | 'goal_update'
     | 'goal_cleared'
@@ -667,11 +741,18 @@ export interface CodexEvent {
   toolName?: string;
   toolInput?: Record<string, unknown>;
   approvalRequestId?: JsonRpcRequestId;
-  approvalKind?: 'command' | 'file_change';
+  approvalKind?: 'command' | 'file_change' | 'permissions';
   approvalReason?: string;
   approvalCommand?: string;
   approvalCwd?: string;
   approvalGrantRoot?: string;
+  approvalPermissions?: Record<string, unknown>;
+  inputRequestId?: JsonRpcRequestId;
+  resolvedRequestId?: JsonRpcRequestId;
+  inputRequest?: CodexInputRequest;
+  protocolThreadId?: string;
+  threadActiveFlags?: Array<'waitingOnApproval' | 'waitingOnUserInput'>;
+  subagent?: CodexSubagentUpdate;
   plan?: ChatPlanSnapshot;
   goal?: ChatGoalSnapshot;
   status?: 'thinking' | 'executing' | 'complete' | 'error';

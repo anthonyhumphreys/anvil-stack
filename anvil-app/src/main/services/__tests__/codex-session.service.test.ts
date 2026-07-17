@@ -10,7 +10,11 @@ vi.mock('electron', () => ({
   },
 }));
 
-import { buildTurnSteerParams } from '../codex-session.service.js';
+import {
+  buildApprovalResponse,
+  buildInputResponse,
+  buildTurnSteerParams,
+} from '../codex-session.service.js';
 
 describe('codex session service', () => {
   it('builds turn steering params using the Codex app-server expected turn precondition', () => {
@@ -43,5 +47,40 @@ describe('codex session service', () => {
       ],
     });
     expect(params).not.toHaveProperty('turnId');
+  });
+
+  it('returns requested permission profiles only for accepted permission approvals', () => {
+    const permissions = { network: { enabled: true } };
+
+    expect(buildApprovalResponse('permissions', permissions, 'acceptForSession')).toEqual({
+      permissions,
+      scope: 'session',
+    });
+    expect(buildApprovalResponse('permissions', permissions, 'decline')).toEqual({
+      permissions: {},
+      scope: 'turn',
+    });
+    expect(buildApprovalResponse('command', undefined, 'accept')).toEqual({ decision: 'accept' });
+  });
+
+  it('maps user answers and MCP elicitation responses to app-server response shapes', () => {
+    expect(
+      buildInputResponse({
+        kind: 'user_input',
+        answers: { provider: ['Linear'], scope: ['Current workspace'] },
+      }),
+    ).toEqual({
+      answers: {
+        provider: { answers: ['Linear'] },
+        scope: { answers: ['Current workspace'] },
+      },
+    });
+    expect(
+      buildInputResponse({
+        kind: 'mcp_elicitation',
+        action: 'accept',
+        content: { project: 'Anvil' },
+      }),
+    ).toEqual({ action: 'accept', content: { project: 'Anvil' } });
   });
 });

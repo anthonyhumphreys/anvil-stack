@@ -22,6 +22,9 @@ import {
   CheckCircle2,
   ListChecks,
   Target,
+  Users,
+  MessageSquare,
+  ShieldAlert,
 } from 'lucide-react';
 import type { ChatAttachment, ChatPlanStep, CodexEvent } from '../../../shared/types';
 import { MarkdownRenderer } from './MarkdownRenderer';
@@ -56,6 +59,12 @@ export function ChatEventRenderer({ event }: ChatEventProps) {
       return <ToolCallEvent toolName={event.toolName ?? ''} toolInput={event.toolInput} />;
     case 'approval_request':
       return <ApprovalRequestEvent event={event} />;
+    case 'input_request':
+      return <InputRequestEvent event={event} />;
+    case 'subagent_update':
+      return <SubagentUpdateEvent event={event} />;
+    case 'thread_status':
+      return <ThreadStatusEvent event={event} />;
     case 'plan_update':
       return event.plan ? <PlanUpdateEvent plan={event.plan} /> : null;
     case 'goal_update':
@@ -190,10 +199,19 @@ export function TurnWorkMessage({
   const activityEvents = items
     .filter((item): item is Extract<ChatTurnWorkItem, { kind: 'event' }> => item.kind === 'event')
     .map((item) => item.event);
+  const blockingItems = items.filter(
+    (item): item is Extract<ChatTurnWorkItem, { kind: 'event' }> =>
+      item.kind === 'event' &&
+      (item.event.type === 'approval_request' || item.event.type === 'input_request'),
+  );
+  const blockingSourceIndexes = new Set(blockingItems.map((item) => item.sourceIndex));
   const failedCount = activityEvents.filter(
     (event) =>
       event.type === 'error' ||
-      (event.type === 'command_exec' && typeof event.exitCode === 'number' && event.exitCode !== 0),
+      (event.type === 'command_exec' &&
+        typeof event.exitCode === 'number' &&
+        event.exitCode !== 0) ||
+      (event.type === 'subagent_update' && event.subagent?.status === 'failed'),
   ).length;
   const summaryParts = [
     progressCount > 0 ? `${progressCount} update${progressCount === 1 ? '' : 's'}` : null,
@@ -233,9 +251,21 @@ export function TurnWorkMessage({
           )}
         </button>
 
+        {blockingItems.length > 0 && (
+          <div className="space-y-2 border-t border-warning/20 py-3 pl-6 pr-2">
+            {blockingItems.map((item, index) => (
+              <ChatEventRenderer
+                key={buildActivityEventKey(item.event, index)}
+                event={item.event}
+              />
+            ))}
+          </div>
+        )}
+
         {showDetails && (
           <div className="space-y-3 border-t border-border-subtle/70 py-3 pl-6">
             {items.map((item, index) => {
+              if (blockingSourceIndexes.has(item.sourceIndex)) return null;
               if (item.kind === 'progress') {
                 return (
                   <div key={`progress-${item.sourceIndex}`} className="pr-2">
@@ -451,15 +481,22 @@ function ApprovalRequestEvent({ event }: { event: CodexEvent & { sessionId?: str
   const [resolved, setResolved] = useState<'accepted' | 'declined' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const isCommand = event.approvalKind === 'command';
-  const title = isCommand ? 'Approve command' : 'Approve file change';
+  const isPermissions = event.approvalKind === 'permissions';
+  const title = isCommand
+    ? 'Approve command'
+    : isPermissions
+      ? 'Approve additional permissions'
+      : 'Approve file change';
   const detail = isCommand
     ? event.approvalCommand
-    : event.approvalGrantRoot
-      ? `Allow writes under ${event.approvalGrantRoot}`
-      : 'Codex wants permission to apply a file change.';
+    : isPermissions
+      ? formatRequestedPermissions(event.approvalPermissions)
+      : event.approvalGrantRoot
+        ? `Allow writes under ${event.approvalGrantRoot}`
+        : 'Codex wants permission to apply a file change.';
 
   const decide = async (decision: 'accept' | 'acceptForSession' | 'decline') => {
-    if (!event.sessionId || !event.approvalRequestId) return;
+    if (!event.sessionId || event.approvalRequestId === undefined) return;
     setError(null);
     try {
       await window.anvil.chat.resolveApproval(event.sessionId, event.approvalRequestId, decision);
@@ -477,6 +514,11 @@ function ApprovalRequestEvent({ event }: { event: CodexEvent & { sessionId?: str
           <p className="text-sm font-medium text-text-primary">{title}</p>
           {detail && (
             <p className="mt-1 truncate font-mono text-xs text-text-secondary">{detail}</p>
+          )}
+          {isPermissions && event.approvalPermissions && (
+            <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg border border-border-subtle bg-bg-primary/60 p-2 font-mono text-[11px] text-text-secondary">
+              {JSON.stringify(event.approvalPermissions, null, 2)}
+            </pre>
           )}
           {event.approvalReason && (
             <p className="mt-1 text-xs text-text-tertiary">{event.approvalReason}</p>
@@ -516,6 +558,376 @@ function ApprovalRequestEvent({ event }: { event: CodexEvent & { sessionId?: str
       )}
     </div>
   );
+}
+
+function InputRequestEvent({ event }: { event: CodexEvent & { sessionId?: string } }) {
+  if (!event.inputRequest) return null;
+  return event.inputRequest.kind === 'user_input' ? (
+    <UserInputRequestEvent event={event} />
+  ) : (
+    <McpElicitationRequestEvent event={event} />
+  );
+}
+
+function UserInputRequestEvent({ event }: { event: CodexEvent & { sessionId?: string } }) {
+  const questions = event.inputRequest?.questions ?? [];
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [resolved, setResolved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const complete =
+    questions.length > 0 && questions.every((question) => answers[question.id]?.trim());
+
+  const submit = async () => {
+    if (!event.sessionId || event.inputRequestId === undefined || !complete) return;
+    setError(null);
+    try {
+      await window.anvil.chat.resolveInputRequest(event.sessionId, event.inputRequestId, {
+        kind: 'user_input',
+        answers: Object.fromEntries(
+          questions.map((question) => [question.id, [answers[question.id].trim()]]),
+        ),
+      });
+      setResolved(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to send answers');
+    }
+  };
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-warning/30 bg-warning/5 shadow-sm">
+      <div className="flex items-start gap-2.5 px-4 py-3">
+        <MessageSquare size={14} className="mt-0.5 shrink-0 text-warning" />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium text-text-primary">Codex needs your input</p>
+          {event.inputRequest?.autoResolutionMs && (
+            <p className="mt-1 text-xs text-text-tertiary">
+              Codex may continue automatically after{' '}
+              {Math.ceil(event.inputRequest.autoResolutionMs / 1000)} seconds.
+            </p>
+          )}
+          <div className="mt-3 space-y-4">
+            {questions.map((question) => {
+              const options = question.options ?? [];
+              const current = answers[question.id] ?? '';
+              const isCustom = !options.some((option) => option.label === current);
+              return (
+                <fieldset key={question.id} disabled={resolved} className="space-y-2">
+                  <legend className="text-xs font-medium text-text-primary">
+                    {question.header}
+                  </legend>
+                  <p className="text-xs text-text-secondary">{question.question}</p>
+                  {options.length > 0 && (
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {options.map((option) => {
+                        const selected = current === option.label;
+                        return (
+                          <button
+                            key={option.label}
+                            type="button"
+                            onClick={() =>
+                              setAnswers((previous) => ({
+                                ...previous,
+                                [question.id]: option.label,
+                              }))
+                            }
+                            className={`rounded-lg border px-3 py-2 text-left transition-colors ${
+                              selected
+                                ? 'border-accent/60 bg-accent/10'
+                                : 'border-border-subtle bg-bg-primary/40 hover:bg-bg-tertiary/60'
+                            }`}
+                          >
+                            <span className="block text-xs font-medium text-text-primary">
+                              {option.label}
+                            </span>
+                            {option.description && (
+                              <span className="mt-0.5 block text-[11px] text-text-tertiary">
+                                {option.description}
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {(question.isOther || options.length === 0) && (
+                    <input
+                      type={question.isSecret ? 'password' : 'text'}
+                      value={isCustom ? current : ''}
+                      onChange={(inputEvent) =>
+                        setAnswers((previous) => ({
+                          ...previous,
+                          [question.id]: inputEvent.target.value,
+                        }))
+                      }
+                      placeholder={options.length > 0 ? 'Or enter another answer' : 'Your answer'}
+                      className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-xs text-text-primary outline-none placeholder:text-text-muted focus:border-accent"
+                    />
+                  )}
+                </fieldset>
+              );
+            })}
+          </div>
+          {questions.length === 0 && (
+            <p className="mt-2 text-xs text-error">Codex sent an empty input request.</p>
+          )}
+          {error && <p className="mt-2 text-xs text-error">{error}</p>}
+          {resolved && <p className="mt-3 text-xs text-success">Answers sent</p>}
+        </div>
+      </div>
+      {!resolved && questions.length > 0 && (
+        <div className="border-t border-border-subtle px-4 py-2.5">
+          <button
+            type="button"
+            disabled={!complete}
+            onClick={() => void submit()}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-success/40 px-3 py-1.5 text-sm text-success transition-colors hover:bg-success/10 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Check size={12} /> Send answers
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function McpElicitationRequestEvent({ event }: { event: CodexEvent & { sessionId?: string } }) {
+  const request = event.inputRequest;
+  const [content, setContent] = useState('{}');
+  const [resolved, setResolved] = useState<'accepted' | 'declined' | 'cancelled' | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const decide = async (action: 'accept' | 'decline' | 'cancel') => {
+    if (!event.sessionId || event.inputRequestId === undefined) return;
+    setError(null);
+    let parsedContent: unknown;
+    if (action === 'accept' && request?.mode !== 'url') {
+      try {
+        parsedContent = JSON.parse(content);
+      } catch {
+        setError('Enter valid JSON before continuing.');
+        return;
+      }
+    }
+    try {
+      await window.anvil.chat.resolveInputRequest(event.sessionId, event.inputRequestId, {
+        kind: 'mcp_elicitation',
+        action,
+        ...(parsedContent === undefined ? {} : { content: parsedContent }),
+      });
+      setResolved(
+        action === 'accept' ? 'accepted' : action === 'decline' ? 'declined' : 'cancelled',
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to resolve request');
+    }
+  };
+
+  const copyUrl = () => {
+    if (!request?.url) return;
+    void copyTextToClipboard(request.url).then(() => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    });
+  };
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-warning/30 bg-warning/5 shadow-sm">
+      <div className="flex items-start gap-2.5 px-4 py-3">
+        <ShieldAlert size={14} className="mt-0.5 shrink-0 text-warning" />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium text-text-primary">
+            {request?.serverName
+              ? `${request.serverName} needs input`
+              : 'Connected tool needs input'}
+          </p>
+          {request?.message && (
+            <p className="mt-1 text-xs text-text-secondary">{request.message}</p>
+          )}
+          {request?.mode === 'url' && request.url ? (
+            <div className="mt-2 flex items-center gap-2 rounded-lg border border-border-subtle bg-bg-primary/50 p-2">
+              <code className="min-w-0 flex-1 truncate text-[11px] text-text-secondary">
+                {request.url}
+              </code>
+              <button
+                type="button"
+                onClick={copyUrl}
+                className="rounded-md border border-border px-2 py-1 text-xs text-text-secondary hover:bg-bg-tertiary"
+              >
+                {copied ? 'Copied' : 'Copy URL'}
+              </button>
+            </div>
+          ) : (
+            <div className="mt-3">
+              <label className="mb-1 block text-xs font-medium text-text-secondary">
+                Response JSON
+              </label>
+              <textarea
+                value={content}
+                disabled={resolved !== null}
+                onChange={(inputEvent) => setContent(inputEvent.target.value)}
+                className="min-h-24 w-full resize-y rounded-lg border border-border bg-bg-primary p-2 font-mono text-xs text-text-primary outline-none focus:border-accent"
+              />
+              {request?.requestedSchema !== undefined && (
+                <details className="mt-2 text-xs text-text-tertiary">
+                  <summary className="cursor-pointer">Requested schema</summary>
+                  <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-bg-primary/60 p-2 text-[11px]">
+                    {JSON.stringify(request.requestedSchema, null, 2)}
+                  </pre>
+                </details>
+              )}
+            </div>
+          )}
+          {error && <p className="mt-2 text-xs text-error">{error}</p>}
+          {resolved && <p className="mt-2 text-xs text-text-tertiary">Request {resolved}</p>}
+        </div>
+      </div>
+      {!resolved && (
+        <div className="flex flex-wrap gap-2 border-t border-border-subtle px-4 py-2.5">
+          <button
+            type="button"
+            onClick={() => void decide('accept')}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-success/40 px-3 py-1.5 text-sm text-success hover:bg-success/10"
+          >
+            <Check size={12} /> Continue
+          </button>
+          <button
+            type="button"
+            onClick={() => void decide('decline')}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-error/40 px-3 py-1.5 text-sm text-error hover:bg-error/10"
+          >
+            <X size={12} /> Decline
+          </button>
+          <button
+            type="button"
+            onClick={() => void decide('cancel')}
+            className="rounded-lg border border-border px-3 py-1.5 text-sm text-text-secondary hover:bg-bg-tertiary"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SubagentUpdateEvent({ event }: { event: CodexEvent }) {
+  const update = event.subagent;
+  if (!update) return null;
+  const active =
+    update.status === 'inProgress' || update.agents.some((agent) => agent.status === 'running');
+  const failed =
+    update.status === 'failed' || update.agents.some((agent) => agent.status === 'errored');
+  const results = update.agents.filter((agent) => agent.message?.trim());
+  const label = formatSubagentAction(update.tool, update.activityKind);
+
+  return (
+    <div className="rounded-xl border border-border-subtle bg-bg-secondary/45 px-4 py-3">
+      <div className="flex items-start gap-2.5">
+        {active ? (
+          <Loader2 size={14} className="mt-0.5 shrink-0 animate-spin text-warning" />
+        ) : failed ? (
+          <AlertCircle size={14} className="mt-0.5 shrink-0 text-error" />
+        ) : (
+          <Users size={14} className="mt-0.5 shrink-0 text-info" />
+        )}
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-xs font-medium text-text-primary">{label}</p>
+            <span className="rounded-full bg-bg-tertiary px-2 py-0.5 text-[10px] text-text-tertiary">
+              {formatSubagentStatus(update.status, update.agents)}
+            </span>
+            {update.model && <span className="text-[10px] text-text-muted">{update.model}</span>}
+          </div>
+          {update.prompt && (
+            <p className="mt-1 line-clamp-2 text-xs text-text-tertiary">{update.prompt}</p>
+          )}
+          {update.agents.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {update.agents.map((agent) => (
+                <span
+                  key={agent.threadId}
+                  className="rounded-md border border-border-subtle bg-bg-primary/50 px-2 py-1 font-mono text-[10px] text-text-secondary"
+                  title={agent.threadId}
+                >
+                  {agent.threadId.slice(0, 8)} · {agent.status}
+                </span>
+              ))}
+            </div>
+          )}
+          {results.map((agent) => (
+            <div
+              key={`${agent.threadId}-result`}
+              className="mt-3 max-h-96 overflow-auto border-t border-border-subtle pt-3 text-text-secondary"
+            >
+              <p className="mb-2 text-[11px] font-medium uppercase tracking-[0.08em] text-text-muted">
+                Agent result
+              </p>
+              <MarkdownRenderer content={agent.message ?? ''} />
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ThreadStatusEvent({ event }: { event: CodexEvent }) {
+  const flags = event.threadActiveFlags ?? [];
+  if (flags.length === 0) return null;
+  const waitingForInput = flags.includes('waitingOnUserInput');
+  return (
+    <div className="flex items-center gap-2 rounded-lg border border-warning/20 bg-warning/5 px-3 py-2 text-xs text-warning">
+      <AlertCircle size={13} />
+      <span>
+        {waitingForInput ? 'Agent is waiting for your input' : 'Agent is waiting for approval'}
+      </span>
+    </div>
+  );
+}
+
+function formatRequestedPermissions(permissions: Record<string, unknown> | undefined): string {
+  if (!permissions) return 'Codex requested additional runtime permissions.';
+  const scopes = [
+    permissions.fileSystem ? 'filesystem' : null,
+    permissions.network ? 'network' : null,
+  ]
+    .filter((scope): scope is string => Boolean(scope))
+    .join(' and ');
+  return scopes ? `Additional ${scopes} access requested.` : 'Additional permissions requested.';
+}
+
+function formatSubagentAction(
+  tool: NonNullable<CodexEvent['subagent']>['tool'],
+  activityKind: NonNullable<CodexEvent['subagent']>['activityKind'],
+): string {
+  if (activityKind) return `Subagent ${activityKind}`;
+  switch (tool) {
+    case 'spawnAgent':
+      return 'Spawn subagent';
+    case 'sendInput':
+      return 'Send input to subagent';
+    case 'resumeAgent':
+      return 'Resume subagent';
+    case 'wait':
+      return 'Wait for subagents';
+    case 'closeAgent':
+      return 'Close subagent';
+    default:
+      return 'Subagent activity';
+  }
+}
+
+function formatSubagentStatus(
+  status: NonNullable<CodexEvent['subagent']>['status'],
+  agents: NonNullable<CodexEvent['subagent']>['agents'],
+): string {
+  if (status === 'inProgress') return 'running';
+  if (status === 'completed') return 'complete';
+  if (status === 'failed') return 'failed';
+  if (agents.some((agent) => agent.status === 'running')) return 'running';
+  if (agents.some((agent) => agent.status === 'errored')) return 'failed';
+  return agents[0]?.status ?? 'updated';
 }
 
 function CommandExecEvent({
@@ -1022,6 +1434,8 @@ function summarizeActivityEvents(events: Array<CodexEvent & { sessionId?: string
     summarizeActivityCount(events, 'file_read', 'file read'),
     summarizeActivityCount(events, 'file_edit', 'file edit'),
     summarizeActivityCount(events, 'approval_request', 'approval'),
+    summarizeActivityCount(events, 'input_request', 'input request'),
+    summarizeActivityCount(events, 'subagent_update', 'agent update'),
     summarizeActivityCount(events, 'plan_update', 'plan update'),
     summarizeActivityCount(events, 'goal_update', 'goal update'),
     summarizeActivityCount(events, 'goal_cleared', 'goal clear'),
@@ -1051,9 +1465,22 @@ function formatActivityPreview(event: CodexEvent & { sessionId?: string }): stri
     case 'file_edit':
       return event.filePath ? `Edit ${event.filePath}` : 'File edit';
     case 'approval_request':
-      return event.approvalKind === 'command'
-        ? `Approval: ${event.approvalCommand ?? 'command'}`
+      if (event.approvalKind === 'command') {
+        return `Approval: ${event.approvalCommand ?? 'command'}`;
+      }
+      return event.approvalKind === 'permissions'
+        ? 'Approval: additional permissions'
         : 'Approval: file change';
+    case 'input_request':
+      return event.inputRequest?.kind === 'mcp_elicitation'
+        ? `Input: ${event.inputRequest.serverName ?? 'connected tool'}`
+        : 'Input requested';
+    case 'subagent_update':
+      return formatSubagentAction(event.subagent?.tool, event.subagent?.activityKind);
+    case 'thread_status':
+      return event.threadActiveFlags?.includes('waitingOnUserInput')
+        ? 'Waiting for input'
+        : 'Waiting for approval';
     case 'plan_update':
       return event.plan ? `Plan: ${event.plan.steps.length} steps` : 'Plan update';
     case 'goal_update':
@@ -1072,6 +1499,9 @@ function buildActivityEventKey(event: CodexEvent & { sessionId?: string }, index
     event.command,
     event.filePath,
     event.approvalRequestId === undefined ? undefined : String(event.approvalRequestId),
+    event.inputRequestId === undefined ? undefined : String(event.inputRequestId),
+    event.subagent?.id,
+    event.protocolThreadId,
     event.plan?.updatedAt,
     event.goal?.updatedAt,
     event.status,

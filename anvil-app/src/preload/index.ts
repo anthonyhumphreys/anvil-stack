@@ -16,6 +16,7 @@ import type {
   ChatGoalSnapshot,
   ChatPlanSnapshot,
   ChatSendOptions,
+  CodexInputResponse,
   CodeReviewMode,
   CodeReviewScopeRef,
   CodeReviewScopeType,
@@ -143,6 +144,11 @@ const api: AnvilAPI = {
       requestId: string | number,
       decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel',
     ) => ipcRenderer.invoke('chat:resolve-approval', sessionId, requestId, decision),
+    resolveInputRequest: (
+      sessionId: string,
+      requestId: string | number,
+      response: CodexInputResponse,
+    ) => ipcRenderer.invoke('chat:resolve-input-request', sessionId, requestId, response),
     switchPersona: (repoId: string, personaId: string) =>
       ipcRenderer.invoke('chat:switch-persona', repoId, personaId),
     getPersonas: () => ipcRenderer.invoke('chat:get-personas'),

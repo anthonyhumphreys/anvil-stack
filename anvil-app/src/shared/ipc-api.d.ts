@@ -61,6 +61,7 @@ import type {
   CodexSkillSearchResult,
   CodexUsageSnapshot,
   CodexEvent,
+  CodexInputResponse,
   CodexSession,
   DocPage,
   DesignReadiness,
@@ -212,6 +213,11 @@ export interface AnvilAPI {
       sessionId: string,
       requestId: string | number,
       decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel',
+    ) => Promise<void>;
+    resolveInputRequest: (
+      sessionId: string,
+      requestId: string | number,
+      response: CodexInputResponse,
     ) => Promise<void>;
     switchPersona: (repoId: string, personaId: string) => Promise<CodexSession>;
     getPersonas: () => Promise<Persona[]>;
