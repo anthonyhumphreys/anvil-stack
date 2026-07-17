@@ -1242,9 +1242,11 @@ export interface Workspace {
 export interface WorkspaceCreateOptions {
   name: string;
   repoIds?: string[];
+  workItemConnectionId?: string;
 }
 
 export interface WorkspaceWorkItemsPreferences {
+  workItemConnectionId?: string;
   iterationIds?: string[];
   iterationNames?: string[];
 }

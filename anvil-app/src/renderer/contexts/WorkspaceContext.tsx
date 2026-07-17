@@ -142,14 +142,25 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
     const loadVersion = ++activeWorkspaceLoadVersionRef.current;
     const ws = await window.anvil.workspace.get(id);
-    if (
-      shouldApplyWorkspaceLoad(
+    let shouldApply = shouldApplyWorkspaceLoad(
+      loadVersion,
+      activeWorkspaceLoadVersionRef.current,
+      id,
+      desiredWorkspaceIdRef.current,
+    );
+    if (shouldApply && select) {
+      await window.anvil.settings.update({
+        activeWorkspaceId: id,
+        activeWorkItemConnectionId: ws.preferences?.workitems.workItemConnectionId,
+      });
+      shouldApply = shouldApplyWorkspaceLoad(
         loadVersion,
         activeWorkspaceLoadVersionRef.current,
         id,
         desiredWorkspaceIdRef.current,
-      )
-    ) {
+      );
+    }
+    if (shouldApply) {
       setActiveWorkspace(ws);
     }
     return ws;

@@ -72,7 +72,7 @@ export function WorkItemThreadRail({
     } finally {
       setLoading(false);
     }
-  }, [selectedIterations]);
+  }, [activeWorkspace?.id, selectedIterations]);
 
   useEffect(() => {
     void loadItems();

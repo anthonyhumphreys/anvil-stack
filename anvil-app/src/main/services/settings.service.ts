@@ -99,6 +99,15 @@ function normaliseAppleFoundationModelsMode(
 
 const MASKED_SECRET = '••••••••';
 
+function safeParseSettingsJson<T>(value: string | null | undefined, fallback: T): T {
+  if (!value) return fallback;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
+}
+
 function parseWorkItemConnections(value: Buffer | null): WorkItemConnection[] {
   const json = decryptSecret(value, 'settings.workItemConnections');
   if (!json) return [];
@@ -207,8 +216,29 @@ export function getSettings(): AppSettings {
       },
     ];
   }
+  const storedActiveWorkItemConnectionId = row.active_work_item_connection_id ?? undefined;
+  const configuredActiveWorkItemConnectionId = workItemConnections.some(
+    (connection) => connection.id === storedActiveWorkItemConnectionId,
+  )
+    ? storedActiveWorkItemConnectionId
+    : workItemConnections[0]?.id;
+  let workspaceWorkItemConnectionId: string | undefined;
+  if (row.active_workspace_id) {
+    const workspacePreferences = db
+      .prepare('SELECT workitems_json FROM workspace_preferences WHERE workspace_id = ?')
+      .get(row.active_workspace_id) as { workitems_json: string | null } | undefined;
+    const workitems = safeParseSettingsJson<{ workItemConnectionId?: string }>(
+      workspacePreferences?.workitems_json,
+      {},
+    );
+    if (
+      workItemConnections.some((connection) => connection.id === workitems.workItemConnectionId)
+    ) {
+      workspaceWorkItemConnectionId = workitems.workItemConnectionId;
+    }
+  }
   const activeWorkItemConnectionId =
-    row.active_work_item_connection_id ?? workItemConnections[0]?.id;
+    workspaceWorkItemConnectionId ?? configuredActiveWorkItemConnectionId;
   const settings: AppSettings = {
     llmProvider: (row.llm_provider as 'azure' | 'openai' | 'codex') ?? 'codex',
     appleFoundationModelsMode: normaliseAppleFoundationModelsMode(row.apple_foundation_models_mode),

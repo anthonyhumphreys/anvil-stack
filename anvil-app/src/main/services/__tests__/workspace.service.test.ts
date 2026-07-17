@@ -11,7 +11,18 @@ vi.mock('../../db/database.js', () => ({
   getDb: () => inMemoryDb,
 }));
 
-import { deleteWorkspace } from '../workspace.service.js';
+const settingsState = vi.hoisted(() => ({
+  current: {
+    workItemConnections: [] as Array<{ id: string; name: string; provider: 'linear' }>,
+    activeWorkItemConnectionId: undefined as string | undefined,
+  },
+}));
+
+vi.mock('../settings.service.js', () => ({
+  getSettings: () => settingsState.current,
+}));
+
+import { createWorkspace, deleteWorkspace, getWorkspacePreferences } from '../workspace.service.js';
 
 function seedWorkspace(id: string): void {
   inMemoryDb
@@ -28,6 +39,53 @@ beforeEach(() => {
   inMemoryDb.exec('DELETE FROM chat_threads');
   inMemoryDb.exec('DELETE FROM workspaces');
   inMemoryDb.exec('UPDATE settings SET active_workspace_id = NULL WHERE id = 1');
+  settingsState.current = {
+    workItemConnections: [],
+    activeWorkItemConnectionId: undefined,
+  };
+});
+
+describe('workspace work item connections', () => {
+  it('persists the selected connection during workspace creation', () => {
+    settingsState.current = {
+      workItemConnections: [{ id: 'client-linear', name: 'Client Linear', provider: 'linear' }],
+      activeWorkItemConnectionId: 'client-linear',
+    };
+
+    const workspace = createWorkspace({
+      name: 'Client app',
+      workItemConnectionId: 'client-linear',
+    });
+
+    expect(getWorkspacePreferences(workspace.id)?.workitems.workItemConnectionId).toBe(
+      'client-linear',
+    );
+  });
+
+  it('adopts the active connection for an existing workspace without a binding', () => {
+    settingsState.current = {
+      workItemConnections: [{ id: 'internal-linear', name: 'Internal', provider: 'linear' }],
+      activeWorkItemConnectionId: 'internal-linear',
+    };
+    seedWorkspace('legacy-workspace');
+    inMemoryDb
+      .prepare(
+        `INSERT INTO workspace_preferences
+          (workspace_id, workitems_json, docs_json, launch_json, updated_at)
+         VALUES (?, '{}', '{}', '{}', datetime('now'))`,
+      )
+      .run('legacy-workspace');
+
+    expect(getWorkspacePreferences('legacy-workspace')?.workitems.workItemConnectionId).toBe(
+      'internal-linear',
+    );
+  });
+
+  it('rejects an unknown connection during workspace creation', () => {
+    expect(() =>
+      createWorkspace({ name: 'Haunted workspace', workItemConnectionId: 'missing' }),
+    ).toThrow('Work item connection not found: missing');
+  });
 });
 
 describe('workspace deletion', () => {

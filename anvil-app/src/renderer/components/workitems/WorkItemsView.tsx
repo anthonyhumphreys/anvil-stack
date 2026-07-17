@@ -75,12 +75,20 @@ export function WorkItemsView() {
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    window.anvil.settings.get().then((settings) => {
+    void Promise.all([
+      window.anvil.settings.get(),
+      window.anvil.workitems.listIterations().catch(() => [] as Iteration[]),
+    ]).then(([settings, nextIterations]) => {
       setActiveProvider(settings.workItemProvider ?? 'none');
-      setActiveConnectionId(settings.activeWorkItemConnectionId ?? '');
+      setActiveConnectionId(
+        activeWorkspace?.preferences?.workitems.workItemConnectionId ??
+          settings.activeWorkItemConnectionId ??
+          '',
+      );
       setConnections(settings.workItemConnections ?? []);
+      setIterations(nextIterations);
     });
-  }, []);
+  }, [activeWorkspace?.id]);
 
   const handleConnectionChange = useCallback(
     async (connectionId: string) => {
@@ -94,6 +102,13 @@ export function WorkItemsView() {
       setSelectedIterations([]);
       setSelectedTags([]);
       try {
+        await updatePreferences({
+          workitems: {
+            workItemConnectionId: connectionId,
+            iterationIds: [],
+            iterationNames: [],
+          },
+        });
         await window.anvil.settings.update({
           activeWorkItemConnectionId: connectionId,
         });
@@ -109,7 +124,7 @@ export function WorkItemsView() {
         setSwitchingProvider(false);
       }
     },
-    [connections],
+    [connections, updatePreferences],
   );
 
   // Sync iteration selection FROM workspace preferences on workspace switch
@@ -142,16 +157,6 @@ export function WorkItemsView() {
     });
   }, [selectedIterations, iterations]);
 
-  // Fetch iterations on mount
-  useEffect(() => {
-    window.anvil.workitems
-      .listIterations()
-      .then(setIterations)
-      .catch(() => {
-        // Non-fatal — just means no sprint selector
-      });
-  }, []);
-
   const loadItems = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -165,7 +170,7 @@ export function WorkItemsView() {
     } finally {
       setLoading(false);
     }
-  }, [selectedIterations]);
+  }, [activeWorkspace?.id, selectedIterations]);
 
   useEffect(() => {
     loadItems();

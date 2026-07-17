@@ -14,6 +14,7 @@ import type {
   RepoInfo,
 } from '../../shared/types.js';
 import { getDb } from '../db/database.js';
+import { getSettings } from './settings.service.js';
 
 // ---------------------------------------------------------------------------
 // Internal row types (snake_case columns from SQLite)
@@ -106,6 +107,25 @@ function mapWorkspacePreferences(row: WorkspacePreferencesRow): WorkspacePrefere
   };
 }
 
+function adoptDefaultWorkItemConnection(preferences: WorkspacePreferences): WorkspacePreferences {
+  if (preferences.workitems.workItemConnectionId) return preferences;
+
+  const settings = getSettings();
+  const connectionId = settings.activeWorkItemConnectionId;
+  if (!connectionId) return preferences;
+
+  const workitems = { ...preferences.workitems, workItemConnectionId: connectionId };
+  getDb()
+    .prepare(
+      `UPDATE workspace_preferences
+       SET workitems_json = ?, updated_at = datetime('now')
+       WHERE workspace_id = ?`,
+    )
+    .run(JSON.stringify(workitems), preferences.workspaceId);
+
+  return { ...preferences, workitems, updatedAt: new Date().toISOString() };
+}
+
 function mapWorkspaceScaffoldSession(row: WorkspaceScaffoldSessionRow): WorkspaceScaffoldSession {
   return {
     id: row.id,
@@ -191,7 +211,9 @@ export function getWorkspace(id: string): WorkspaceWithRepos {
   return {
     ...mapWorkspace(row),
     repos: repoRows.map(mapRepo),
-    preferences: prefsRow ? mapWorkspacePreferences(prefsRow) : undefined,
+    preferences: prefsRow
+      ? adoptDefaultWorkItemConnection(mapWorkspacePreferences(prefsRow))
+      : undefined,
     scaffoldSession: scaffoldRow ? mapWorkspaceScaffoldSession(scaffoldRow) : undefined,
   };
 }
@@ -204,6 +226,17 @@ export function createWorkspace(opts: WorkspaceCreateOptions): Workspace {
   const db = getDb();
   const id = randomUUID();
   const repoIds = opts.repoIds ?? [];
+  const settings = getSettings();
+  const workItemConnectionId = opts.workItemConnectionId ?? settings.activeWorkItemConnectionId;
+  if (
+    workItemConnectionId &&
+    !settings.workItemConnections.some((connection) => connection.id === workItemConnectionId)
+  ) {
+    throw new Error(`Work item connection not found: ${workItemConnectionId}`);
+  }
+  const workItemsPreferences: WorkspaceWorkItemsPreferences = workItemConnectionId
+    ? { workItemConnectionId }
+    : {};
 
   const txn = db.transaction(() => {
     db.prepare(
@@ -213,8 +246,8 @@ export function createWorkspace(opts: WorkspaceCreateOptions): Workspace {
 
     db.prepare(
       `INSERT INTO workspace_preferences (workspace_id, workitems_json, docs_json, launch_json, updated_at)
-       VALUES (?, '{}', '{}', '{}', datetime('now'))`,
-    ).run(id);
+       VALUES (?, ?, '{}', '{}', datetime('now'))`,
+    ).run(id, JSON.stringify(workItemsPreferences));
 
     const insertRepo = db.prepare(
       `INSERT INTO workspace_repos (workspace_id, repo_id, added_at)
@@ -236,7 +269,7 @@ export function getWorkspacePreferences(workspaceId: string): WorkspacePreferenc
     .prepare('SELECT * FROM workspace_preferences WHERE workspace_id = ?')
     .get(workspaceId) as WorkspacePreferencesRow | undefined;
 
-  return row ? mapWorkspacePreferences(row) : null;
+  return row ? adoptDefaultWorkItemConnection(mapWorkspacePreferences(row)) : null;
 }
 
 export function updateWorkspacePreferences(
