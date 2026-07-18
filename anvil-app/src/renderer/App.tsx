@@ -310,7 +310,7 @@ export function App() {
                     'chat',
                     <WorkspaceGate>
                       <ErrorBoundary>
-                        <ChatView />
+                        <ChatView userRole={userRole} />
                       </ErrorBoundary>
                     </WorkspaceGate>,
                   )}

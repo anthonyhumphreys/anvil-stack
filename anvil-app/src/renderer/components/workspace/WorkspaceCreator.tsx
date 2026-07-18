@@ -43,6 +43,7 @@ export function WorkspaceCreator({ onCreated, onCancel }: WorkspaceCreatorProps)
   const [workItemConnections, setWorkItemConnections] = useState<WorkItemConnection[]>([]);
   const [workItemConnectionId, setWorkItemConnectionId] = useState('');
   const [workItemConnectionsLoaded, setWorkItemConnectionsLoaded] = useState(false);
+  const [isItsmRole, setIsItsmRole] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -66,6 +67,11 @@ export function WorkspaceCreator({ onCreated, onCancel }: WorkspaceCreatorProps)
         setWorkItemConnectionId(
           s.workItemConnections.length === 1 ? s.workItemConnections[0].id : '',
         );
+        const itsmRole = s.userRole === 'itsm';
+        setIsItsmRole(itsmRole);
+        if (itsmRole) {
+          setCreationMode('empty');
+        }
       } catch (err) {
         console.warn('[WorkspaceCreator] Failed to load settings:', err);
       } finally {
@@ -288,7 +294,9 @@ export function WorkspaceCreator({ onCreated, onCancel }: WorkspaceCreatorProps)
               {
                 id: 'empty',
                 title: 'Empty workspace',
-                description: 'Create the workspace now and add repositories later.',
+                description: isItsmRole
+                  ? 'Explore a service or issue with chat, evidence, and notes. Add repositories when useful.'
+                  : 'Create the workspace now and add repositories later.',
               },
               {
                 id: 'existing',
@@ -312,7 +320,14 @@ export function WorkspaceCreator({ onCreated, onCancel }: WorkspaceCreatorProps)
                   : 'border-border text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
               }`}
             >
-              <div className="text-sm font-medium">{option.title}</div>
+              <div className="flex items-center justify-between gap-2 text-sm font-medium">
+                <span>{option.title}</span>
+                {option.id === 'empty' && isItsmRole && (
+                  <span className="rounded-full bg-accent/15 px-2 py-0.5 text-[10px] font-semibold text-accent">
+                    Recommended
+                  </span>
+                )}
+              </div>
               <div className="mt-1 text-xs leading-relaxed text-text-tertiary">
                 {option.description}
               </div>

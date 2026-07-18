@@ -37,6 +37,13 @@ import {
   Maximize2,
   Minimize2,
   PictureInPicture2,
+  Headphones,
+  Wrench,
+  Radio,
+  SearchCheck,
+  GitPullRequest,
+  Gauge,
+  LifeBuoy,
 } from 'lucide-react';
 import type {
   AgentRunSummary,
@@ -48,7 +55,9 @@ import type {
   CodexMode,
   CodexSession,
   Persona,
+  UserRole,
 } from '../../../shared/types';
+import { ROLE_RECOMMENDED_PERSONAS } from '../../../shared/types';
 import { ChatInput, type ChatQuickPrompt, type ChatSlashCommand } from './ChatInput';
 import { ChatThreadRail } from './ChatThreadRail';
 import { WorkItemThreadRail } from './WorkItemThreadRail';
@@ -76,6 +85,8 @@ import {
   type ExecutionStrategy,
 } from '../../utils/execution-strategy';
 import { parseWorkflowChatIntent } from '../../utils/workflow-chat-intent';
+import { groupPersonasForRole } from '../../utils/persona-groups';
+import { ItsmWorkbench } from './ItsmWorkbench';
 
 const PERSONA_ICONS: Record<string, React.ReactNode> = {
   Code: <Code size={14} />,
@@ -88,6 +99,12 @@ const PERSONA_ICONS: Record<string, React.ReactNode> = {
   Palette: <Palette size={14} />,
   GraduationCap: <GraduationCap size={14} />,
   Database: <Database size={14} />,
+  Headphones: <Headphones size={14} />,
+  Wrench: <Wrench size={14} />,
+  Radio: <Radio size={14} />,
+  SearchCheck: <SearchCheck size={14} />,
+  GitPullRequest: <GitPullRequest size={14} />,
+  Gauge: <Gauge size={14} />,
 };
 
 interface ScrollMetrics {
@@ -98,8 +115,13 @@ interface ScrollMetrics {
 
 const CHAT_BOTTOM_THRESHOLD_PX = 96;
 const NEW_CHAT_THREAD_LABEL = 'New thread';
+const ITSM_PERSONA_IDS = new Set(ROLE_RECOMMENDED_PERSONAS.itsm ?? []);
 
-export function ChatView() {
+interface ChatViewProps {
+  userRole: UserRole;
+}
+
+export function ChatView({ userRole }: ChatViewProps) {
   const {
     personas,
     activePersona,
@@ -159,13 +181,16 @@ export function ChatView() {
   const [activeSessions, setActiveSessions] = useState<CodexSession[]>([]);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [composerFocusRequest, setComposerFocusRequest] = useState(0);
+  const [itsmWorkbenchOpen, setItsmWorkbenchOpen] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
+  const appliedItsmDefaultRef = useRef(false);
 
   const isBaPersona = activePersona?.id === 'ba';
   const isDesignPersona = activePersona?.id === 'design';
   const isDbExpertPersona = activePersona?.id === 'db-expert';
+  const isItsmPersona = activePersona ? ITSM_PERSONA_IDS.has(activePersona.id) : false;
   const isWorkItemLayout = chatLayout === 'workitems';
   const mentionRepoIds = useMemo(() => activeRepos.map((repo) => repo.id), [activeRepos]);
   const slashCommands = useMemo<ChatSlashCommand[]>(
@@ -201,6 +226,18 @@ export function ChatView() {
     ],
     [],
   );
+
+  useEffect(() => {
+    if (userRole !== 'itsm') {
+      appliedItsmDefaultRef.current = false;
+      return;
+    }
+    if (appliedItsmDefaultRef.current || personas.length === 0 || !activePersona) return;
+    appliedItsmDefaultRef.current = true;
+    if (activePersona.id !== 'coder') return;
+    const serviceDesk = personas.find((persona) => persona.id === 'service-desk');
+    if (serviceDesk) void switchPersona(serviceDesk);
+  }, [activePersona, personas, switchPersona, userRole]);
   const quickPrompts = useMemo<ChatQuickPrompt[]>(() => {
     const repoContext =
       activeRepos.length > 0
@@ -510,9 +547,11 @@ export function ChatView() {
     activeArtifacts.find((artifact) => artifact.id === selectedArtifactId) ??
     activeArtifacts[0] ??
     null;
+  const showItsmWorkbench = userRole === 'itsm' && isItsmPersona && itsmWorkbenchOpen;
   const showCanvasSidebar =
     !isDesignPersona &&
     !isBaPersona &&
+    !showItsmWorkbench &&
     canvasOpen &&
     !canvasExpanded &&
     !canvasDetached &&
@@ -633,30 +672,44 @@ export function ChatView() {
                     </button>
 
                     {showPersonaDropdown && !scaffoldModeActive && (
-                      <div className="absolute left-0 top-full z-50 mt-1.5 w-72 overflow-hidden rounded-xl border border-border bg-bg-elevated shadow-2xl ring-1 ring-black/10">
+                      <div className="absolute left-0 top-full z-50 mt-1.5 max-h-[min(32rem,calc(100vh-8rem))] w-72 overflow-y-auto rounded-xl border border-border bg-bg-elevated shadow-2xl ring-1 ring-black/10">
                         <div className="p-1.5">
-                          {personas.map((p) => (
-                            <button
-                              key={p.id}
-                              onClick={() => handleSwitchPersona(p)}
-                              className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-colors hover:bg-bg-tertiary ${
-                                activePersona?.id === p.id ? 'bg-bg-tertiary' : ''
-                              }`}
+                          {groupPersonasForRole(personas, userRole).map((group, groupIndex) => (
+                            <div
+                              key={group.id}
+                              className={
+                                groupIndex > 0 ? 'mt-1 border-t border-border/60 pt-1' : ''
+                              }
                             >
-                              <span
-                                className="inline-block h-2.5 w-2.5 shrink-0 rounded-full shadow-sm"
-                                style={{ backgroundColor: p.colour }}
-                              />
-                              <span className="shrink-0 text-text-secondary">
-                                {PERSONA_ICONS[p.icon]}
-                              </span>
-                              <div className="min-w-0">
-                                <div className="font-medium text-text-primary">{p.name}</div>
-                                <div className="truncate text-xs text-text-tertiary">
-                                  {p.description}
-                                </div>
-                              </div>
-                            </button>
+                              {group.label && (
+                                <p className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+                                  {group.label}
+                                </p>
+                              )}
+                              {group.personas.map((p) => (
+                                <button
+                                  key={p.id}
+                                  onClick={() => handleSwitchPersona(p)}
+                                  className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-colors hover:bg-bg-tertiary ${
+                                    activePersona?.id === p.id ? 'bg-bg-tertiary' : ''
+                                  }`}
+                                >
+                                  <span
+                                    className="inline-block h-2.5 w-2.5 shrink-0 rounded-full shadow-sm"
+                                    style={{ backgroundColor: p.colour }}
+                                  />
+                                  <span className="shrink-0 text-text-secondary">
+                                    {PERSONA_ICONS[p.icon]}
+                                  </span>
+                                  <div className="min-w-0">
+                                    <div className="font-medium text-text-primary">{p.name}</div>
+                                    <div className="truncate text-xs text-text-tertiary">
+                                      {p.description}
+                                    </div>
+                                  </div>
+                                </button>
+                              ))}
+                            </div>
                           ))}
                         </div>
                       </div>
@@ -739,12 +792,22 @@ export function ChatView() {
                     <label className="flex items-center gap-2 rounded-xl border border-border px-2.5 py-1.5 text-sm text-text-secondary">
                       <span className="hidden text-xs text-text-tertiary xl:inline">Mode</span>
                       <select
-                        value={codexMode}
+                        value={isItsmPersona ? 'read-only' : codexMode}
                         onChange={(event) =>
                           void handleCodexModeChange(event.target.value as CodexMode)
                         }
+                        disabled={isItsmPersona}
+                        title={
+                          isItsmPersona
+                            ? 'ITSM personas are enforced read only'
+                            : 'Choose Codex access mode'
+                        }
                         className="max-w-28 bg-transparent text-sm text-text-primary outline-none xl:max-w-none"
-                        aria-label="Codex mode"
+                        aria-label={
+                          isItsmPersona
+                            ? 'Codex mode, enforced read only for ITSM personas'
+                            : 'Codex mode'
+                        }
                       >
                         <option value="read-only">Read Only</option>
                         <option value="on-request">Ask First</option>
@@ -841,40 +904,71 @@ export function ChatView() {
           )}
 
           {!isDesignPersona && !isBaPersona && (
-            <button
-              type="button"
-              onClick={() => {
-                if (canvasDetached) {
-                  setCanvasDetached(false);
-                  setCanvasOpen(true);
-                  return;
+            <>
+              {userRole === 'itsm' && isItsmPersona && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!itsmWorkbenchOpen) setCanvasOpen(false);
+                    setItsmWorkbenchOpen((open) => !open);
+                  }}
+                  className="flex items-center gap-1.5 rounded-xl border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                  title={itsmWorkbenchOpen ? 'Hide ITSM workbench' : 'Show ITSM workbench'}
+                  aria-pressed={showItsmWorkbench}
+                >
+                  <LifeBuoy size={13} />
+                  <span className="hidden xl:inline">ITSM workbench</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  if (canvasDetached) {
+                    setCanvasDetached(false);
+                    setCanvasOpen(true);
+                    setItsmWorkbenchOpen(false);
+                    return;
+                  }
+                  if (!showCanvasSidebar) {
+                    setItsmWorkbenchOpen(false);
+                    setCanvasOpen(true);
+                    return;
+                  }
+                  setCanvasOpen(false);
+                }}
+                disabled={activeArtifacts.length === 0 && !activePlan && !activeGoal}
+                className="flex items-center gap-1.5 rounded-xl border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-45"
+                title={
+                  canvasDetached
+                    ? 'Reattach canvas'
+                    : showCanvasSidebar
+                      ? 'Hide canvas'
+                      : 'Show canvas'
                 }
-                setCanvasOpen((open) => !open);
-              }}
-              disabled={activeArtifacts.length === 0 && !activePlan && !activeGoal}
-              className="flex items-center gap-1.5 rounded-xl border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-45"
-              title={
-                canvasDetached ? 'Reattach canvas' : canvasOpen ? 'Hide canvas' : 'Show canvas'
-              }
-              aria-label={
-                canvasDetached ? 'Reattach canvas' : canvasOpen ? 'Hide canvas' : 'Show canvas'
-              }
-              aria-pressed={canvasOpen}
-            >
-              {canvasDetached ? (
-                <PictureInPicture2 size={13} />
-              ) : canvasOpen ? (
-                <PanelRightClose size={13} />
-              ) : (
-                <PanelRightOpen size={13} />
-              )}
-              <span className="hidden xl:inline">Canvas</span>
-              {activeArtifacts.length > 0 && (
-                <span className="rounded-full bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold text-accent">
-                  {activeArtifacts.length}
-                </span>
-              )}
-            </button>
+                aria-label={
+                  canvasDetached
+                    ? 'Reattach canvas'
+                    : showCanvasSidebar
+                      ? 'Hide canvas'
+                      : 'Show canvas'
+                }
+                aria-pressed={showCanvasSidebar}
+              >
+                {canvasDetached ? (
+                  <PictureInPicture2 size={13} />
+                ) : showCanvasSidebar ? (
+                  <PanelRightClose size={13} />
+                ) : (
+                  <PanelRightOpen size={13} />
+                )}
+                <span className="hidden xl:inline">Canvas</span>
+                {activeArtifacts.length > 0 && (
+                  <span className="rounded-full bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold text-accent">
+                    {activeArtifacts.length}
+                  </span>
+                )}
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -1164,6 +1258,27 @@ export function ChatView() {
             collapsed={designSidebarCollapsed}
             onToggleCollapse={() => setDesignSidebarCollapsed((c) => !c)}
           />
+        )}
+
+        {showItsmWorkbench && (
+          <ResizableSidebarPanel
+            storageKey="chat:itsm-workbench"
+            side="right"
+            title="ITSM workbench"
+            defaultWidth={380}
+            minWidth={320}
+            maxWidth={560}
+            collapsedWidth={0}
+            className="border-l border-border/60 bg-bg-secondary/50"
+          >
+            <ItsmWorkbench
+              workspaceId={activeWorkspace?.id ?? null}
+              onPrompt={(prompt) => {
+                setComposerPrefill({ id: `itsm-${Date.now()}`, text: prompt });
+                setComposerFocusRequest((current) => current + 1);
+              }}
+            />
+          </ResizableSidebarPanel>
         )}
 
         {showCanvasSidebar && (

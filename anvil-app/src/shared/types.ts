@@ -1923,7 +1923,7 @@ export interface LicenseAuditResult {
 // Roles
 // ---------------------------------------------------------------------------
 
-export type UserRole = 'developer' | 'ba-brm' | 'design';
+export type UserRole = 'developer' | 'ba-brm' | 'design' | 'itsm';
 
 export type Feature =
   | 'repos'
@@ -2006,6 +2006,34 @@ export const ROLE_FEATURES: Record<UserRole, readonly Feature[]> = {
     'cloud',
     'meeting-notes',
     'workspace-notes',
+  ],
+  itsm: [
+    'repos',
+    'chat',
+    'workflows',
+    'dbinsights',
+    'workitems',
+    'dependencies',
+    'security',
+    'cicd',
+    'docs',
+    'adrs',
+    'diagrams',
+    'governance',
+    'compliance',
+    'meeting-notes',
+    'workspace-notes',
+  ],
+} as const;
+
+export const ROLE_RECOMMENDED_PERSONAS: Partial<Record<UserRole, readonly string[]>> = {
+  itsm: [
+    'service-desk',
+    'technical-support',
+    'incident-manager',
+    'problem-manager',
+    'change-manager',
+    'service-manager',
   ],
 } as const;
 
