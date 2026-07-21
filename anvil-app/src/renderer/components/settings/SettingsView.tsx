@@ -686,7 +686,13 @@ export function SettingsView({
   const selectedChatLayout = settings.chatLayout ?? 'classic';
   const selectedChatLayoutLabel = selectedChatLayout === 'workitems' ? 'Work items' : 'Classic';
   const roleLabel =
-    userRole === 'ba-brm' ? 'BA / BRM' : userRole === 'design' ? 'Design' : 'Developer';
+    userRole === 'ba-brm'
+      ? 'BA / BRM'
+      : userRole === 'design'
+        ? 'Design'
+        : userRole === 'itsm'
+          ? 'ITSM'
+          : 'Developer';
   const aiProviderLabel =
     provider === 'codex' ? 'Codex CLI' : provider === 'azure' ? 'Azure AI Foundry' : 'OpenAI API';
   const codexModelOptions = buildCodexModelOptions(codexStatus);
@@ -877,6 +883,19 @@ export function SettingsView({
                       try {
                         await window.anvil.settings.update({ userRole: 'design' });
                         onRoleChange?.('design');
+                      } catch (err) {
+                        console.error('[Settings] Failed to update role:', err);
+                      }
+                    }}
+                  />
+                  <ProviderButton
+                    label="ITSM"
+                    description="Service support, incidents, changes & service improvement"
+                    active={userRole === 'itsm'}
+                    onClick={async () => {
+                      try {
+                        await window.anvil.settings.update({ userRole: 'itsm' });
+                        onRoleChange?.('itsm');
                       } catch (err) {
                         console.error('[Settings] Failed to update role:', err);
                       }

@@ -50,6 +50,7 @@ import { addWorktree, getFullStatus, removeWorktree } from './git.service.js';
 import { notifyIfUnfocused } from './notification.service.js';
 import { buildSystemPrompt, getPersonaById } from './persona.service.js';
 import { getSettings } from './settings.service.js';
+import { resolvePersonaCodexPolicy } from './codex-session.service.js';
 
 interface RepoRow {
   id: string;
@@ -447,11 +448,12 @@ async function runCodexAutomation(
     sendCodexJsonRpc(proc, 'initialize', {
       clientInfo: { name: 'anvil-automation', version: '0.1.0' },
     });
+    const personaPolicy = resolvePersonaCodexPolicy(settings.codexMode ?? 'on-request', personaId);
     sendCodexJsonRpc(proc, 'thread/start', {
       cwd,
       developerInstructions: systemPrompt,
-      approvalPolicy: 'never',
-      sandbox: 'danger-full-access',
+      approvalPolicy: personaPolicy.approvalPolicy,
+      sandbox: personaPolicy.sandbox,
     });
   });
 }

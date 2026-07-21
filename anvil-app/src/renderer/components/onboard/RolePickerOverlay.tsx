@@ -28,6 +28,11 @@ const ROLES: RoleOption[] = [
   { role: 'developer', label: 'Developer', description: 'Full access to all tools' },
   { role: 'ba-brm', label: 'BA / BRM', description: 'Docs, diagrams, chat & work items' },
   { role: 'design', label: 'Design', description: 'Design companion with Figma & diagrams' },
+  {
+    role: 'itsm',
+    label: 'ITSM',
+    description: 'Service support, incident coordination & continual improvement',
+  },
 ];
 
 interface RolePickerOverlayProps {
@@ -47,7 +52,7 @@ export function RolePickerOverlay({ onRoleSelected }: RolePickerOverlayProps) {
   };
 
   return (
-    <div className="flex h-screen items-center justify-center bg-bg-primary">
+    <div className="flex h-screen items-start justify-center overflow-y-auto bg-bg-primary py-14 sm:items-center">
       <div className="titlebar-drag fixed inset-x-0 top-0 h-10" />
       <div className="w-full max-w-md space-y-6 px-6">
         <div className="text-center">

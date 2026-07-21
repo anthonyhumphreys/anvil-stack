@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { app } from 'electron';
 import type {
   ChatMessage,
   CodexEvent,
@@ -19,14 +20,11 @@ import {
   saveChatEntry,
   setChatThreadProviderThreadId,
 } from './chat-persistence.service.js';
-import {
-  commonParentDir,
-  handleCodexServerLine,
-  sendCodexJsonRpc,
-} from './codex-protocol.service.js';
+import { handleCodexServerLine, sendCodexJsonRpc } from './codex-protocol.service.js';
 import { buildSystemPrompt, getPersonaById } from './persona.service.js';
 import { getSettings } from './settings.service.js';
 import { callLlm } from './llm.service.js';
+import { resolvePersonaCodexPolicy, resolveSessionCwd } from './codex-session.service.js';
 
 interface WorkflowTemplateRow {
   id: string;
@@ -195,7 +193,7 @@ export async function draftWorkflowTemplate(request: string): Promise<WorkflowTe
       'Return one object with: name, description, and steps.',
       'Each step has: id, name, prompt, personaId, model, reasoningEffort, executionStrategy, dependsOn.',
       'dependsOn is an array of step ids. Build a directed acyclic graph. Branch and merge when the work benefits from it.',
-      'Allowed personas: coder, mentor, architect, security, reviewer, docs, ba, design.',
+      'Allowed personas: coder, mentor, architect, security, reviewer, docs, ba, workshop-planner, design, db-expert, service-desk, technical-support, incident-manager, problem-manager, change-manager, service-manager.',
       'Allowed models: gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-5.5, gpt-5.3-codex-spark.',
       'Allowed reasoning: none, minimal, low, medium, high, xhigh, max, ultra.',
       'Allowed execution strategies: focused, adaptive, parallel, review-team.',
@@ -352,6 +350,7 @@ async function runCodexThread(input: {
   key: string;
   threadId: string;
   repoRows: RepoRow[];
+  workspaceId: string;
   personaId: string;
   model: string;
   reasoningEffort: WorkflowNode['reasoningEffort'];
@@ -364,10 +363,11 @@ async function runCodexThread(input: {
   if (!status.installed) throw new Error('Codex CLI is not installed.');
 
   const settings = getSettings();
-  const cwd =
-    input.repoRows.length > 0
-      ? commonParentDir(input.repoRows.map((repo) => repo.path))
-      : process.cwd();
+  const cwd = resolveSessionCwd(
+    input.repoRows.map((repo) => repo.path),
+    { workspace: { workspaceId: input.workspaceId } },
+    app.getPath('userData'),
+  );
   const env: Record<string, string> = { ...(process.env as Record<string, string>) };
   if (settings.llmProvider === 'openai' && settings.openaiApiKey) {
     env.OPENAI_API_KEY = settings.openaiApiKey;
@@ -477,16 +477,15 @@ async function runCodexThread(input: {
     sendCodexJsonRpc(proc, 'initialize', {
       clientInfo: { name: 'anvil-workflow', version: '1.0.0' },
     });
+    const personaPolicy = resolvePersonaCodexPolicy(
+      settings.codexMode ?? 'on-request',
+      input.personaId,
+    );
     const threadParams = {
       cwd,
       developerInstructions: input.systemPrompt,
-      approvalPolicy: 'never',
-      sandbox:
-        settings.codexMode === 'full-access'
-          ? 'danger-full-access'
-          : settings.codexMode === 'read-only'
-            ? 'read-only'
-            : 'workspace-write',
+      approvalPolicy: personaPolicy.approvalPolicy,
+      sandbox: personaPolicy.sandbox,
       model: input.model,
     };
     sendCodexJsonRpc(
@@ -540,6 +539,7 @@ async function executeNode(
       key: `${run.id}:${node.id}`,
       threadId: thread.id,
       repoRows: getRepoRows(run.repoIds),
+      workspaceId: run.workspaceId,
       personaId: node.personaId,
       model: node.model,
       reasoningEffort: node.reasoningEffort,
@@ -699,6 +699,7 @@ export async function askWorkflowSupervisor(runId: string, question: string): Pr
     key: `${run.id}:supervisor`,
     threadId: run.supervisorThreadId,
     repoRows: getRepoRows(run.repoIds),
+    workspaceId: run.workspaceId,
     personaId: 'coder',
     model: getSettings().openaiModel,
     reasoningEffort: getSettings().reasoningLevel,

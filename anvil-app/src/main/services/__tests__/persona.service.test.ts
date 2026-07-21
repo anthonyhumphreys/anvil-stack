@@ -170,6 +170,32 @@ describe('getPersonas', () => {
       }),
     );
   });
+
+  it('includes the ITSM specialist personas with distinct prompt templates', () => {
+    const itsmPersonas = getPersonas().filter((persona) =>
+      [
+        'service-desk',
+        'technical-support',
+        'incident-manager',
+        'problem-manager',
+        'change-manager',
+        'service-manager',
+      ].includes(persona.id),
+    );
+
+    expect(itsmPersonas.map(({ id }) => id)).toEqual([
+      'service-desk',
+      'technical-support',
+      'incident-manager',
+      'problem-manager',
+      'change-manager',
+      'service-manager',
+    ]);
+    expect(new Set(itsmPersonas.map(({ systemPromptTemplate }) => systemPromptTemplate)).size).toBe(
+      6,
+    );
+    expect(itsmPersonas.every(({ capabilities }) => !capabilities.canWriteFiles)).toBe(true);
+  });
 });
 
 describe('buildSystemPrompt', () => {

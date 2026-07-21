@@ -1,7 +1,9 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 
 import { randomUUID } from 'node:crypto';
-import { BrowserWindow } from 'electron';
+import { mkdirSync } from 'node:fs';
+import path from 'node:path';
+import { app, BrowserWindow } from 'electron';
 import type {
   ChatAttachment,
   ChatSendOptions,
@@ -16,6 +18,7 @@ import {
   buildSystemPrompt,
   buildDesignSystemPrompt,
   buildScaffoldSystemPrompt,
+  getPersonaById,
 } from './persona.service.js';
 import { getSettings } from './settings.service.js';
 import {
@@ -97,13 +100,13 @@ export async function startSession(
   const settings = getSettings();
   const mode = settings.codexMode ?? 'on-request';
   const model = normaliseCodexModel(settings.openaiModel);
-  const codexPolicy = codexModeToPolicy(mode);
+  const codexPolicy = resolvePersonaCodexPolicy(mode, personaId);
   const systemPrompt = options?.scaffold
     ? buildScaffoldSystemPrompt(personaId, options.scaffold.rootPath)
     : personaId === 'design'
       ? buildDesignSystemPrompt(repoIds, options?.designMode ?? 'design', options?.figmaContext)
       : buildSystemPrompt(personaId, repoIds, options?.workspace?.workspaceId);
-  const cwd = resolveSessionCwd(repoPaths, options);
+  const cwd = resolveSessionCwd(repoPaths, options, app.getPath('userData'));
 
   // Build environment
   const env: Record<string, string> = {
@@ -145,7 +148,7 @@ export async function startSession(
     appThreadId: options?.threadId,
     kind: options?.scaffold ? 'scaffold' : repoIds.length > 0 ? 'repo' : 'workspace',
     personaId,
-    mode,
+    mode: codexPolicy.sandbox === 'read-only' ? 'read-only' : mode,
     process: proc,
     status: 'starting',
     startedAt: new Date().toISOString(),
@@ -257,11 +260,10 @@ export async function sendMessage(
   const settings = getSettings();
   const mode = settings.codexMode ?? session.mode;
   const model = normaliseCodexModel(options?.model ?? settings.openaiModel);
-  const codexPolicy =
-    options?.collaborationMode === 'plan'
-      ? { approvalPolicy: 'on-request' as const, sandbox: 'read-only' as const }
-      : codexModeToPolicy(mode);
-  session.mode = mode;
+  const codexPolicy = resolvePersonaCodexPolicy(mode, session.personaId, {
+    planMode: options?.collaborationMode === 'plan',
+  });
+  session.mode = codexPolicy.sandbox === 'read-only' ? 'read-only' : mode;
 
   sendCodexJsonRpc(session.process, 'turn/start', {
     threadId: session.threadId,
@@ -500,10 +502,23 @@ export function buildInputResponse(response: CodexInputResponse): Record<string,
 
 // --- Internal helpers ---
 
-function resolveSessionCwd(repoPaths: string[], options?: ChatStartOptions): string {
+export function resolveSessionCwd(
+  repoPaths: string[],
+  options: ChatStartOptions | undefined,
+  userDataPath: string,
+): string {
   if (options?.scaffold?.rootPath) return options.scaffold.rootPath;
   if (options?.workspace?.cwd) return options.workspace.cwd;
   if (repoPaths.length > 0) return commonParentDir(repoPaths);
+  if (options?.workspace?.workspaceId) {
+    const workspaceId = options.workspace.workspaceId;
+    if (!/^[a-zA-Z0-9_-]+$/.test(workspaceId)) {
+      throw new Error('Invalid workspace ID for chat working directory.');
+    }
+    const workspaceCwd = path.join(userDataPath, 'workspace-chat', workspaceId);
+    mkdirSync(workspaceCwd, { recursive: true });
+    return workspaceCwd;
+  }
   return process.cwd();
 }
 
@@ -665,6 +680,24 @@ function codexModeToPolicy(mode: CodexMode): {
     default:
       return { approvalPolicy: 'on-request', sandbox: 'workspace-write' };
   }
+}
+
+export function resolvePersonaCodexPolicy(
+  mode: CodexMode,
+  personaId: string,
+  options?: { planMode?: boolean },
+): {
+  approvalPolicy: 'on-request' | 'never';
+  sandbox: 'read-only' | 'workspace-write' | 'danger-full-access';
+} {
+  const persona = getPersonaById(personaId);
+  if (persona?.capabilities.canWriteFiles === false) {
+    return { approvalPolicy: 'never', sandbox: 'read-only' };
+  }
+  if (options?.planMode) {
+    return { approvalPolicy: 'on-request', sandbox: 'read-only' };
+  }
+  return codexModeToPolicy(mode);
 }
 
 function sandboxModeToTurnPolicy(

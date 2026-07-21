@@ -1,10 +1,16 @@
-import { describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
 }));
 
 vi.mock('electron', () => ({
+  app: {
+    getPath: () => '/tmp/anvil-test',
+  },
   BrowserWindow: {
     getAllWindows: () => [],
   },
@@ -14,7 +20,17 @@ import {
   buildApprovalResponse,
   buildInputResponse,
   buildTurnSteerParams,
+  resolvePersonaCodexPolicy,
+  resolveSessionCwd,
 } from '../codex-session.service.js';
+
+const tempDirs: string[] = [];
+
+afterEach(() => {
+  for (const tempDir of tempDirs.splice(0)) {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
 
 describe('codex session service', () => {
   it('builds turn steering params using the Codex app-server expected turn precondition', () => {
@@ -82,5 +98,40 @@ describe('codex session service', () => {
         content: { project: 'Anvil' },
       }),
     ).toEqual({ action: 'accept', content: { project: 'Anvil' } });
+  });
+
+  it('forces non-writing personas into the read-only sandbox', () => {
+    expect(resolvePersonaCodexPolicy('full-access', 'technical-support')).toEqual({
+      approvalPolicy: 'never',
+      sandbox: 'read-only',
+    });
+    expect(resolvePersonaCodexPolicy('workspace-auto', 'incident-manager')).toEqual({
+      approvalPolicy: 'never',
+      sandbox: 'read-only',
+    });
+    expect(resolvePersonaCodexPolicy('full-access', 'coder')).toEqual({
+      approvalPolicy: 'never',
+      sandbox: 'danger-full-access',
+    });
+  });
+
+  it('creates an isolated working directory for an empty workspace', () => {
+    const userDataPath = fs.mkdtempSync(path.join(os.tmpdir(), 'anvil-session-cwd-'));
+    tempDirs.push(userDataPath);
+
+    const cwd = resolveSessionCwd(
+      [],
+      { workspace: { workspaceId: 'workspace-123' } },
+      userDataPath,
+    );
+
+    expect(cwd).toBe(path.join(userDataPath, 'workspace-chat', 'workspace-123'));
+    expect(fs.statSync(cwd).isDirectory()).toBe(true);
+  });
+
+  it('rejects unsafe workspace IDs when creating an isolated working directory', () => {
+    expect(() =>
+      resolveSessionCwd([], { workspace: { workspaceId: '../outside' } }, '/tmp/anvil-test'),
+    ).toThrow('Invalid workspace ID');
   });
 });
