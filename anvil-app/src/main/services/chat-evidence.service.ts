@@ -10,6 +10,13 @@ interface ChatEvidenceRow {
   timestamp: string;
 }
 
+interface PersistedEventRow {
+  id: string;
+  event_json: string;
+}
+
+const MAX_PERSISTED_COMMAND_OUTPUT_CHARS = 120_000;
+
 interface ActiveTurn {
   id: string;
   threadId: string;
@@ -34,6 +41,28 @@ export function saveChatEvent(
   timestamp: string,
 ): void {
   const db = getDb();
+  const existingCommand = findCommandEventToUpdate(threadId, sessionId, event);
+  if (existingCommand) {
+    const existingEvent = parseEvent(existingCommand.event_json);
+    if (existingEvent?.type === 'command_exec') {
+      const output = event.command
+        ? (event.output ?? existingEvent.output)
+        : limitCommandOutput((existingEvent.output ?? '') + (event.output ?? ''));
+      const mergedEvent: CodexEvent = {
+        ...existingEvent,
+        ...event,
+        command: event.command || existingEvent.command,
+        output,
+      };
+      db.prepare(
+        `UPDATE chat_messages
+         SET content = ?, event_json = ?, timestamp = ?
+         WHERE id = ?`,
+      ).run(describeEvent(mergedEvent), JSON.stringify(mergedEvent), timestamp, existingCommand.id);
+      return;
+    }
+  }
+
   db.prepare(
     `INSERT INTO chat_messages
      (
@@ -50,13 +79,56 @@ export function saveChatEvent(
        timestamp
      )
      VALUES (?, ?, ?, NULL, ?, 'event', 'system', ?, NULL, ?, ?)`,
-  ).run(randomUUID(), threadId, repoId, sessionId, describeEvent(event), JSON.stringify(event), timestamp);
+  ).run(
+    randomUUID(),
+    threadId,
+    repoId,
+    sessionId,
+    describeEvent(event),
+    JSON.stringify(event),
+    timestamp,
+  );
 
   db.prepare(
     `UPDATE chat_threads
-     SET updated_at = ?
+     SET updated_at = CASE WHEN updated_at < ? THEN ? ELSE updated_at END
      WHERE id = ?`,
-  ).run(timestamp, threadId);
+  ).run(timestamp, timestamp, threadId);
+}
+
+function findCommandEventToUpdate(
+  threadId: string,
+  sessionId: string | null,
+  event: CodexEvent,
+): PersistedEventRow | null {
+  if (event.type !== 'command_exec') return null;
+
+  const rows = getDb()
+    .prepare(
+      `SELECT id, event_json
+       FROM chat_messages
+       WHERE thread_id = ?
+         AND session_id IS ?
+         AND event_json IS NOT NULL
+       ORDER BY rowid DESC
+       LIMIT 20`,
+    )
+    .all(threadId, sessionId) as PersistedEventRow[];
+
+  for (const row of rows) {
+    const candidate = parseEvent(row.event_json);
+    if (candidate?.type !== 'command_exec') continue;
+    if (!event.command) return candidate.exitCode === undefined ? row : null;
+    if (candidate.command === event.command && candidate.exitCode === undefined) return row;
+    return null;
+  }
+
+  return null;
+}
+
+function limitCommandOutput(output: string): string {
+  if (output.length <= MAX_PERSISTED_COMMAND_OUTPUT_CHARS) return output;
+  return output.slice(-MAX_PERSISTED_COMMAND_OUTPUT_CHARS);
 }
 
 export function listChatTurnSummaries(threadId: string): ChatTurnSummary[] {

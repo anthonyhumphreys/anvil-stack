@@ -105,7 +105,7 @@ function composeTurn(entries: Array<IndexedChatEntry>, active: boolean): Compose
   }
 
   return {
-    key: `turn-${entries[0]?.sourceIndex ?? 0}`,
+    key: userEntry?.id ?? answerSegment?.entry.id ?? `turn-${entries[0]?.sourceIndex ?? 0}`,
     user: userEntry ?? null,
     work,
     answer: answerSegment?.entry ?? null,

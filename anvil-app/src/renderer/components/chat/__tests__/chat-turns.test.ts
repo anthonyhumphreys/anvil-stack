@@ -49,6 +49,15 @@ describe('composeChatTurns', () => {
     expect(turns[1].answer?.content).toBe('Done.');
   });
 
+  it('uses persisted message identity for stateful turn keys', () => {
+    const [turn] = composeChatTurns([
+      { kind: 'user', id: 'message-from-thread-a', content: 'Keep this state in this thread' },
+      { kind: 'assistant', id: 'answer-from-thread-a', content: 'Done.', phase: 'final' },
+    ]);
+
+    expect(turn.key).toBe('message-from-thread-a');
+  });
+
   it('repairs legacy sentence fragments without flattening complete progress updates', () => {
     const turns = composeChatTurns([
       { kind: 'user', content: 'Deploy it' },

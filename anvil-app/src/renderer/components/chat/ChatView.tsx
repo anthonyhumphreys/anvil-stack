@@ -360,6 +360,12 @@ export function ChatView({ userRole }: ChatViewProps) {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [entries]);
 
+  useEffect(() => {
+    shouldStickToBottomRef.current = true;
+    setShowJumpToLatest(false);
+    messagesEndRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
+  }, [activeThreadId]);
+
   const handleJumpToLatest = useCallback(() => {
     shouldStickToBottomRef.current = true;
     setShowJumpToLatest(false);
@@ -1056,7 +1062,7 @@ export function ChatView({ userRole }: ChatViewProps) {
 
                       return (
                         <section
-                          key={turn.key}
+                          key={`${activeThreadId ?? 'new'}:${turn.key}`}
                           className="space-y-4"
                           aria-label={`Turn ${turnIndex + 1}`}
                         >

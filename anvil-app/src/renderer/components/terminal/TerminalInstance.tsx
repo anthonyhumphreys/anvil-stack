@@ -9,7 +9,8 @@ interface TerminalInstanceProps {
   repoId: string;
   repoPath: string;
   visible: boolean;
-  onReady?: () => void;
+  onReady?: (terminalId: string) => void;
+  onClosed?: () => void;
 }
 
 export function TerminalInstance({
@@ -18,17 +19,23 @@ export function TerminalInstance({
   repoPath,
   visible,
   onReady,
+  onClosed,
 }: TerminalInstanceProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const terminalIdRef = useRef<string | null>(null);
+  const lastSequenceRef = useRef(0);
   const initializedRef = useRef(false);
 
   // Create terminal once on mount
   useEffect(() => {
     if (!containerRef.current || initializedRef.current) return;
     initializedRef.current = true;
+    let cancelled = false;
+    let replayComplete = false;
+    let pendingExitCode: number | null = null;
+    const pendingOutput: Array<{ sequence: number; data: string }> = [];
 
     const terminal = new Terminal({
       theme: {
@@ -86,17 +93,6 @@ export function TerminalInstance({
     });
     resizeObserver.observe(containerRef.current);
 
-    // Spawn PTY
-    window.anvil.terminal
-      .create(workspaceId, repoId, repoPath)
-      .then(({ terminalId }) => {
-        terminalIdRef.current = terminalId;
-        onReady?.();
-      })
-      .catch((err) => {
-        terminal.write(`\r\n\x1b[31mFailed to create terminal: ${err.message}\x1b[0m\r\n`);
-      });
-
     // User input → main process
     const inputDisposable = terminal.onData((data) => {
       if (terminalIdRef.current) {
@@ -105,27 +101,82 @@ export function TerminalInstance({
     });
 
     // PTY output → terminal
-    const removeDataListener = window.anvil.terminal.onData(({ terminalId, data }) => {
+    const removeDataListener = window.anvil.terminal.onData(({ terminalId, sequence, data }) => {
       if (terminalId === terminalIdRef.current) {
+        if (!replayComplete) {
+          pendingOutput.push({ sequence, data });
+          return;
+        }
+        if (sequence <= lastSequenceRef.current) return;
         terminal.write(data);
+        lastSequenceRef.current = sequence;
       }
     });
 
     // PTY exit
     const removeExitListener = window.anvil.terminal.onExit(({ terminalId, exitCode }) => {
       if (terminalId === terminalIdRef.current) {
+        if (!replayComplete) {
+          pendingExitCode = exitCode;
+          return;
+        }
         terminal.write(`\r\n\x1b[90m[Process exited with code ${exitCode}]\x1b[0m\r\n`);
-        terminalIdRef.current = null;
+      }
+    });
+    const removeClosedListener = window.anvil.terminal.onClosed(({ terminalId }) => {
+      if (terminalId === terminalIdRef.current) {
+        terminal.write('\r\n\x1b[90m[Terminal closed]\x1b[0m\r\n');
+        onClosed?.();
       }
     });
 
+    // Spawn or reconnect to the workspace/repository PTY. The PTY is owned by the
+    // main process; this renderer merely attaches while it is visible.
+    window.anvil.terminal
+      .create(workspaceId, repoId, repoPath)
+      .then(async ({ terminalId }) => {
+        if (cancelled) return;
+        terminalIdRef.current = terminalId;
+        const attachment = await window.anvil.terminal.attach(terminalId);
+        if (cancelled) {
+          window.anvil.terminal.detach(terminalId);
+          return;
+        }
+
+        for (const chunk of attachment.output) {
+          if (chunk.sequence <= lastSequenceRef.current) continue;
+          terminal.write(chunk.data);
+          lastSequenceRef.current = chunk.sequence;
+        }
+        for (const chunk of pendingOutput.sort((left, right) => left.sequence - right.sequence)) {
+          if (chunk.sequence <= lastSequenceRef.current) continue;
+          terminal.write(chunk.data);
+          lastSequenceRef.current = chunk.sequence;
+        }
+        replayComplete = true;
+
+        if (attachment.session.status === 'exited' || pendingExitCode !== null) {
+          terminal.write(
+            `\r\n\x1b[90m[Process exited with code ${pendingExitCode ?? attachment.session.exitCode ?? 0}]\x1b[0m\r\n`,
+          );
+        }
+        onReady?.(terminalId);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          terminal.write(`\r\n\x1b[31mFailed to create terminal: ${err.message}\x1b[0m\r\n`);
+        }
+      });
+
     return () => {
+      cancelled = true;
       resizeObserver.disconnect();
       inputDisposable.dispose();
       removeDataListener();
       removeExitListener();
+      removeClosedListener();
       if (terminalIdRef.current) {
-        window.anvil.terminal.close(terminalIdRef.current);
+        window.anvil.terminal.detach(terminalIdRef.current);
       }
       terminal.dispose();
     };
