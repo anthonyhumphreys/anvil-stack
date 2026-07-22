@@ -693,7 +693,7 @@ export function ChatInput({
 
   return (
     <div className="border-t border-border/50 bg-bg-secondary px-3 py-3 lg:px-4">
-      <div className="w-full">
+      <div className="mx-auto w-full max-w-4xl">
         <div
           className={`relative rounded-2xl border bg-bg-primary transition-colors duration-200 ${
             disabled && !busy ? 'opacity-60' : ''
@@ -819,7 +819,7 @@ export function ChatInput({
                     : 'Ask anything, paste images, or drop files here...'
             }
             rows={1}
-            className="chat-input-focus w-full resize-none rounded-2xl bg-transparent px-4 py-3 text-[15px] leading-6 text-text-primary placeholder:text-text-muted focus:outline-none disabled:opacity-50 sm:pr-[19rem]"
+            className="chat-input-focus w-full resize-none rounded-2xl bg-transparent px-4 py-3 text-[15px] leading-6 text-text-primary placeholder:text-text-tertiary focus:outline-none disabled:opacity-50 sm:pr-[19rem]"
             style={{ maxHeight: '200px', minHeight: '56px' }}
           />
 
@@ -867,7 +867,7 @@ export function ChatInput({
               <button
                 onClick={handleSend}
                 disabled={disabled || !hasContent || preparingAttachments}
-                className="flex h-9 w-9 items-center justify-center rounded-xl transition-colors duration-200 disabled:opacity-30"
+                className="composer-send flex h-9 w-9 items-center justify-center rounded-xl transition-[transform,filter,opacity] duration-200 disabled:opacity-30"
                 style={{
                   backgroundColor: hasContent ? personaColour : `${personaColour}40`,
                 }}
