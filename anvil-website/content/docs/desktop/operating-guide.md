@@ -17,7 +17,8 @@ order: 110
 4. Connect delivery providers such as GitHub, Azure DevOps, Linear, Jira, Confluence, Notion, Draw.io, Figma, or Repobase.
 5. Create a workspace.
 6. Add and index local repositories.
-7. Start read-only before asking for edits.
+7. Start a conversation from Chat; it is the primary workspace surface.
+8. Start read-only before asking for edits.
 
 The read-only step is not ceremony. Ask Anvil to explain the current code path with file references before asking it to change code. Ambition is cheaper after context exists.
 
@@ -31,6 +32,12 @@ The read-only step is not ceremony. Ask Anvil to explain the current code path w
 6. Run focused checks.
 7. Run Code Review and Security if the change touches auth, data, permissions, payments, production workflows, dependencies, or release gates.
 8. Prepare the PR handover with what changed, what passed, and what could not be verified.
+
+## Keep more than one workspace moving
+
+You can switch workspaces while a conversation or terminal is active. Use the sidebar activity centre to return to running work or a thread waiting for approval or input. When Anvil is in the background, desktop notifications can open the originating workspace and thread directly.
+
+Closing a terminal tab stops that terminal process. Switching workspaces or hiding the terminal panel does not; Anvil reattaches to the process and replays its buffered output when you return.
 
 ## Review playbook
 
