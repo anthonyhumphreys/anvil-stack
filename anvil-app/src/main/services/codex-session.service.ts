@@ -30,6 +30,7 @@ import {
 } from './codex-protocol.service.js';
 import { emitCompanionEvent } from './companion-events.service.js';
 import { normaliseCodexModel, normaliseReasoningEffort } from '../../shared/codex-models.js';
+import { notifyChatActivity, type ChatActivityKind } from './notification.service.js';
 
 interface ManagedSession {
   id: string;
@@ -595,6 +596,7 @@ function handleServerMessage(session: ManagedSession, line: string): void {
         emitCompanionEvent('sessions');
       }
       broadcastEvent(session.id, event);
+      notifyForChatEvent(session, event);
     },
     onLog: (message) => {
       console.log(`[Codex:${session.id.slice(0, 8)}] ${message}`);
@@ -604,6 +606,25 @@ function handleServerMessage(session: ManagedSession, line: string): void {
       pendingServerRequests.delete(requestKey);
       pendingApprovalDetails.delete(requestKey);
       emitCompanionEvent('approvals');
+    },
+  });
+}
+
+function notifyForChatEvent(session: ManagedSession, event: CodexEvent): void {
+  if (!session.workspaceId || !session.appThreadId) return;
+
+  let kind: ChatActivityKind | null = null;
+  if (event.type === 'approval_request') kind = 'approval';
+  else if (event.type === 'input_request') kind = 'input';
+  else if (event.type === 'status' && event.status === 'complete') kind = 'complete';
+
+  if (!kind) return;
+  notifyChatActivity({
+    kind,
+    target: {
+      workspaceId: session.workspaceId,
+      threadId: session.appThreadId,
+      personaId: session.personaId,
     },
   });
 }

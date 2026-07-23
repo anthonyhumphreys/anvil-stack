@@ -6,6 +6,12 @@ import {
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { TerminalTabs } from './TerminalTabs';
 import { TerminalInstance } from './TerminalInstance';
+import {
+  closeTerminalRepo,
+  EMPTY_WORKSPACE_TERMINAL_STATE,
+  selectTerminalRepo,
+  type WorkspaceTerminalState,
+} from './terminal-state';
 
 const MIN_HEIGHT = 100;
 const DEFAULT_HEIGHT = 300;
@@ -15,10 +21,12 @@ interface TerminalPanelProps {
   onClose: () => void;
 }
 
-export function TerminalPanel({ isOpen, onClose }: TerminalPanelProps) {
+export function TerminalPanel({ isOpen }: TerminalPanelProps) {
   const { activeWorkspace, repos } = useWorkspace();
-  const [activeRepoId, setActiveRepoId] = useState<string | null>(null);
-  const [createdTabs, setCreatedTabs] = useState<Set<string>>(new Set());
+  const [workspaceStates, setWorkspaceStates] = useState<Record<string, WorkspaceTerminalState>>(
+    {},
+  );
+  const [terminalIds, setTerminalIds] = useState<Record<string, Record<string, string>>>({});
   const [height, setHeight] = useState(() => {
     const stored =
       localStorage.getItem(PRIMARY_TERMINAL_STORAGE_KEY) ??
@@ -27,38 +35,106 @@ export function TerminalPanel({ isOpen, onClose }: TerminalPanelProps) {
   });
   const panelRef = useRef<HTMLDivElement>(null);
   const isDragging = useRef(false);
-
-  // repos from useWorkspace() is already filtered to active workspace
+  const workspaceId = activeWorkspace?.id ?? null;
+  const workspaceState = workspaceId
+    ? (workspaceStates[workspaceId] ?? EMPTY_WORKSPACE_TERMINAL_STATE)
+    : EMPTY_WORKSPACE_TERMINAL_STATE;
+  const createdRepoIds = new Set(workspaceState.createdRepoIds);
   const workspaceRepos = repos;
   const firstRepoId = workspaceRepos[0]?.id ?? null;
-  const repoCount = workspaceRepos.length;
 
-  // Reset when workspace changes — close panel and kill all PTYs
-  useEffect(() => {
-    setActiveRepoId(null);
-    setCreatedTabs(new Set());
-    onClose();
-    window.anvil.terminal.closeAll().catch(console.error);
-  }, [activeWorkspace?.id]);
+  const updateWorkspaceState = useCallback(
+    (update: (current: WorkspaceTerminalState) => WorkspaceTerminalState) => {
+      if (!workspaceId) return;
+      setWorkspaceStates((current) => ({
+        ...current,
+        [workspaceId]: update(current[workspaceId] ?? EMPTY_WORKSPACE_TERMINAL_STATE),
+      }));
+    },
+    [workspaceId],
+  );
 
-  // Auto-select first tab if none selected
+  // Recover terminals owned by the main process when entering a workspace or
+  // opening it in another window. Workspace selection never tears them down.
   useEffect(() => {
-    if (isOpen && !activeRepoId && firstRepoId) {
-      setActiveRepoId(firstRepoId);
+    if (!workspaceId) return;
+    let cancelled = false;
+    const repoIds = new Set(workspaceRepos.map((repo) => repo.id));
+
+    window.anvil.terminal
+      .list(workspaceId)
+      .then((sessions) => {
+        if (cancelled) return;
+        const availableSessions = sessions.filter((session) => repoIds.has(session.repoId));
+        setTerminalIds((current) => ({
+          ...current,
+          [workspaceId]: Object.fromEntries(
+            availableSessions.map((session) => [session.repoId, session.terminalId]),
+          ),
+        }));
+        setWorkspaceStates((current) => {
+          const previous = current[workspaceId] ?? EMPTY_WORKSPACE_TERMINAL_STATE;
+          const sessionRepoIds = availableSessions.map((session) => session.repoId);
+          const createdRepoIds = [
+            ...new Set([...previous.createdRepoIds, ...sessionRepoIds]),
+          ].filter((repoId) => repoIds.has(repoId));
+          return {
+            ...current,
+            [workspaceId]: {
+              activeRepoId:
+                previous.activeRepoId && repoIds.has(previous.activeRepoId)
+                  ? previous.activeRepoId
+                  : (createdRepoIds[0] ?? null),
+              createdRepoIds,
+            },
+          };
+        });
+      })
+      .catch(console.error);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [workspaceId, workspaceRepos]);
+
+  // Open the first repository on first use. Closing a terminal leaves its tab
+  // selected but stopped, so this does not immediately resurrect it.
+  useEffect(() => {
+    if (isOpen && !workspaceState.activeRepoId && firstRepoId) {
+      updateWorkspaceState((current) => selectTerminalRepo(current, firstRepoId));
     }
-  }, [isOpen, activeRepoId, firstRepoId]);
+  }, [isOpen, workspaceState.activeRepoId, firstRepoId, updateWorkspaceState]);
 
-  // Mark tab as created (lazy spawn)
-  useEffect(() => {
-    if (activeRepoId) {
-      setCreatedTabs((prev) => {
-        if (prev.has(activeRepoId)) return prev;
-        return new Set(prev).add(activeRepoId);
+  const handleSelectTab = useCallback(
+    (repoId: string) => {
+      updateWorkspaceState((current) => selectTerminalRepo(current, repoId));
+    },
+    [updateWorkspaceState],
+  );
+
+  const removeLocalTerminal = useCallback(
+    (repoId: string) => {
+      if (!workspaceId) return;
+      updateWorkspaceState((current) => closeTerminalRepo(current, repoId));
+      setTerminalIds((current) => {
+        const nextWorkspaceTerminals = { ...(current[workspaceId] ?? {}) };
+        delete nextWorkspaceTerminals[repoId];
+        return { ...current, [workspaceId]: nextWorkspaceTerminals };
       });
-    }
-  }, [activeRepoId]);
+    },
+    [updateWorkspaceState, workspaceId],
+  );
 
-  // Drag resize
+  const handleCloseTab = useCallback(
+    async (repoId: string) => {
+      if (!workspaceId) return;
+      const terminalId = terminalIds[workspaceId]?.[repoId] ?? `${workspaceId}-${repoId}`;
+      await window.anvil.terminal.close(terminalId);
+      removeLocalTerminal(repoId);
+    },
+    [removeLocalTerminal, terminalIds, workspaceId],
+  );
+
   const handleDragStart = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault();
@@ -71,8 +147,7 @@ export function TerminalPanel({ isOpen, onClose }: TerminalPanelProps) {
         const parentHeight = panelRef.current?.parentElement?.clientHeight ?? 600;
         const maxHeight = parentHeight * 0.7;
         const delta = startY - moveEvent.clientY;
-        const newHeight = Math.min(maxHeight, Math.max(MIN_HEIGHT, startHeight + delta));
-        setHeight(newHeight);
+        setHeight(Math.min(maxHeight, Math.max(MIN_HEIGHT, startHeight + delta)));
       };
 
       const onMouseUp = () => {
@@ -87,12 +162,11 @@ export function TerminalPanel({ isOpen, onClose }: TerminalPanelProps) {
     [height],
   );
 
-  // Persist height to localStorage
   useEffect(() => {
     localStorage.setItem(PRIMARY_TERMINAL_STORAGE_KEY, String(height));
   }, [height]);
 
-  if (!isOpen || repoCount === 0) return null;
+  if (!isOpen || workspaceRepos.length === 0 || !workspaceId) return null;
 
   return (
     <div
@@ -100,31 +174,48 @@ export function TerminalPanel({ isOpen, onClose }: TerminalPanelProps) {
       className="flex shrink-0 flex-col border-t border-border-subtle bg-bg-primary"
       style={{ height }}
     >
-      {/* Drag handle */}
       <div
         className="h-1 cursor-row-resize bg-bg-secondary hover:bg-accent/30 transition-colors"
         onMouseDown={handleDragStart}
       />
 
-      {/* Tabs */}
       <TerminalTabs
         repos={workspaceRepos}
-        activeRepoId={activeRepoId}
-        onSelectTab={setActiveRepoId}
+        activeRepoId={workspaceState.activeRepoId}
+        openRepoIds={workspaceState.createdRepoIds}
+        onSelectTab={handleSelectTab}
+        onCloseTab={(repoId) => void handleCloseTab(repoId)}
       />
 
-      {/* Terminal instances */}
       <div className="relative flex-1 overflow-hidden">
         {workspaceRepos.map((repo) =>
-          createdTabs.has(repo.id) ? (
+          createdRepoIds.has(repo.id) ? (
             <TerminalInstance
-              key={`${activeWorkspace?.id}-${repo.id}`}
-              workspaceId={activeWorkspace?.id ?? ''}
+              key={`${workspaceId}-${repo.id}`}
+              workspaceId={workspaceId}
               repoId={repo.id}
               repoPath={repo.path}
-              visible={activeRepoId === repo.id}
+              visible={workspaceState.activeRepoId === repo.id}
+              onReady={(terminalId) =>
+                setTerminalIds((current) => ({
+                  ...current,
+                  [workspaceId]: { ...(current[workspaceId] ?? {}), [repo.id]: terminalId },
+                }))
+              }
+              onClosed={() => removeLocalTerminal(repo.id)}
             />
           ) : null,
+        )}
+        {workspaceState.activeRepoId && !createdRepoIds.has(workspaceState.activeRepoId) && (
+          <div className="flex h-full items-center justify-center">
+            <button
+              type="button"
+              onClick={() => handleSelectTab(workspaceState.activeRepoId!)}
+              className="rounded-md border border-border-subtle bg-bg-secondary px-3 py-1.5 text-xs text-text-secondary transition-colors hover:text-text-primary"
+            >
+              Start terminal
+            </button>
+          </div>
         )}
       </div>
     </div>

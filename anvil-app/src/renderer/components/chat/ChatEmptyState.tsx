@@ -359,13 +359,10 @@ export function ChatEmptyState({
 
   return (
     <div className="flex h-full flex-col items-center justify-center px-4 py-8">
-      <div className="relative mb-5">
+      <div className="relative mb-4">
         <div
-          className="flex h-16 w-16 items-center justify-center rounded-2xl shadow-lg"
-          style={{
-            background: `linear-gradient(135deg, ${personaColour}20 0%, ${personaColour}08 100%)`,
-            boxShadow: `0 8px 32px ${personaColour}15`,
-          }}
+          className="flex h-12 w-12 items-center justify-center rounded-xl"
+          style={{ backgroundColor: `${personaColour}14` }}
         >
           <span style={{ color: personaColour }}>{icon}</span>
         </div>
@@ -381,7 +378,7 @@ export function ChatEmptyState({
         Start a conversation with {personaName}
       </h3>
 
-      <p className="mb-8 max-w-md text-center text-sm leading-relaxed text-text-tertiary">
+      <p className="mb-5 max-w-md text-center text-sm leading-relaxed text-text-tertiary">
         {isDbExpertPersona
           ? 'Import SSMS schema or stored procedure exports in DB Insights, then ask questions about the database design here.'
           : isItsmPersona && !hasRepos
@@ -393,14 +390,14 @@ export function ChatEmptyState({
                 : 'Add repositories or governance documents to give Chat more context, or ask questions directly.'}
       </p>
 
-      <div className="grid w-full max-w-2xl grid-cols-1 gap-2.5 sm:grid-cols-2">
+      <div className="grid w-full max-w-2xl grid-cols-1 gap-2 sm:grid-cols-2">
         {suggestions.map((suggestion) => (
           <button
             key={suggestion.label}
             onClick={() => onSuggestionClick(suggestion.prompt)}
             className={getSuggestionCardClassName()}
           >
-            <div className="mb-1.5 flex w-full items-center justify-between">
+            <div className="flex w-full items-center justify-between gap-2">
               <span
                 className="text-xs font-semibold uppercase tracking-wider transition-colors"
                 style={{ color: personaColour }}
@@ -409,7 +406,7 @@ export function ChatEmptyState({
               </span>
               <ArrowRight size={12} className={getSuggestionArrowClassName()} />
             </div>
-            <span className="line-clamp-2 text-sm leading-relaxed text-text-secondary transition-colors group-hover:text-text-primary group-focus-visible:text-text-primary">
+            <span className="mt-1 line-clamp-1 text-sm text-text-secondary transition-colors group-hover:text-text-primary group-focus-visible:text-text-primary">
               {suggestion.prompt}
             </span>
           </button>
@@ -420,7 +417,7 @@ export function ChatEmptyState({
 }
 
 export function getSuggestionCardClassName(): string {
-  return 'group flex flex-col items-start rounded-xl border border-border bg-bg-secondary px-4 py-3.5 text-left transition-all duration-200 hover:border-border hover:bg-bg-tertiary hover:shadow-md focus-visible:border-border focus-visible:bg-bg-tertiary focus-visible:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35';
+  return 'suggestion-card group flex flex-col items-start rounded-lg border border-border-subtle bg-bg-secondary/45 px-3 py-2.5 text-left transition-colors duration-200 hover:border-border hover:bg-bg-tertiary focus-visible:border-border focus-visible:bg-bg-tertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35';
 }
 
 export function getSuggestionArrowClassName(): string {

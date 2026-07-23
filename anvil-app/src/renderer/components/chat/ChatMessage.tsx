@@ -194,7 +194,7 @@ export function TurnWorkMessage({
   active?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const showDetails = active || expanded;
+  const showDetails = expanded;
   const progressCount = items.filter((item) => item.kind === 'progress').length;
   const activityEvents = items
     .filter((item): item is Extract<ChatTurnWorkItem, { kind: 'event' }> => item.kind === 'event')
@@ -236,7 +236,7 @@ export function TurnWorkMessage({
             {showDetails ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
           </span>
           {active ? (
-            <Loader2 size={12} className="shrink-0 animate-spin text-warning" />
+            <WorkingDots compact />
           ) : (
             <Wrench size={12} className="shrink-0 text-text-tertiary" />
           )}
@@ -307,12 +307,21 @@ export function TurnWorkMessage({
 export function TurnPendingMessage({ label = 'Thinking' }: { label?: string }) {
   return (
     <div className="message-bubble flex justify-start" role="status" aria-live="polite">
-      <div className="flex min-h-10 items-center gap-2.5 text-xs text-text-tertiary">
-        <Loader2 size={13} className="shrink-0 animate-spin text-warning" />
+      <div className="flex min-h-9 items-center gap-2.5 text-xs text-text-tertiary">
+        <WorkingDots />
         <span className="font-medium text-text-secondary">{label}</span>
-        <span>Preparing a response...</span>
       </div>
     </div>
+  );
+}
+
+function WorkingDots({ compact = false }: { compact?: boolean }) {
+  return (
+    <span className={`working-dots ${compact ? 'working-dots--compact' : ''}`} aria-hidden="true">
+      <span />
+      <span />
+      <span />
+    </span>
   );
 }
 
@@ -1278,7 +1287,7 @@ export function AssistantMessage({
           aria-live={active ? 'polite' : undefined}
         >
           {active ? (
-            <Loader2 size={12} className="shrink-0 animate-spin text-warning" aria-hidden="true" />
+            <WorkingDots compact />
           ) : (
             <span
               className="h-1.5 w-1.5 rounded-full bg-text-tertiary"
@@ -1287,12 +1296,12 @@ export function AssistantMessage({
             />
           )}
           <span>{label}</span>
-          {active && <span className="font-normal text-text-muted">Responding</span>}
+          {active && <span className="font-normal text-text-tertiary">Responding</span>}
         </div>
-        <div className="overflow-hidden rounded-xl border border-border-subtle bg-bg-secondary/45 px-4 py-3.5 text-text-secondary transition-colors group-hover:border-border [&_.markdown-body>p]:text-[15px] [&_.markdown-body>p]:leading-7">
+        <div className="px-1 text-text-secondary [&_.markdown-body>p]:text-[15px] [&_.markdown-body>p]:leading-7">
           <MarkdownRenderer content={display} />
         </div>
-        <div className="message-actions absolute -bottom-7 left-0">
+        <div className="message-actions mt-1">
           <MessageActionsToolbar
             onCopy={handleCopy}
             onBranch={onBranch}
@@ -1362,7 +1371,7 @@ export function UserMessage({
             </button>
           )}
         </div>
-        <div className="message-actions absolute -bottom-7 right-0">
+        <div className="message-actions mt-1 flex justify-end">
           <MessageActionsToolbar
             onCopy={handleCopy}
             onEdit={onEdit}

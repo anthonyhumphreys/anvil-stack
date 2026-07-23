@@ -252,7 +252,10 @@ export function listChatThreads(workspaceId: string | null, personaId: string): 
          AND t.persona_id = ?
          AND t.work_item_id IS NULL
        GROUP BY t.id
-       ORDER BY COALESCE(t.last_message_at, t.updated_at, t.created_at) DESC`,
+       ORDER BY
+         COALESCE(t.last_message_at, t.updated_at, t.created_at) DESC,
+         t.created_at DESC,
+         t.id DESC`,
     )
     .all(workspaceId, workspaceId, personaId) as ChatThreadRow[];
 
@@ -297,7 +300,10 @@ export function listWorkItemChatThreads(workspaceId: string | null): ChatThread[
          )
          AND t.work_item_id IS NOT NULL
        GROUP BY t.id
-       ORDER BY COALESCE(t.last_message_at, t.updated_at, t.created_at) DESC`,
+       ORDER BY
+         COALESCE(t.last_message_at, t.updated_at, t.created_at) DESC,
+         t.created_at DESC,
+         t.id DESC`,
     )
     .all(workspaceId, workspaceId) as ChatThreadRow[];
 
@@ -647,11 +653,23 @@ export function saveChatEntry(
     entry.timestamp,
   );
 
-  db.prepare(
-    `UPDATE chat_threads
-     SET updated_at = ?, last_message_at = ?
-     WHERE id = ?`,
-  ).run(entry.timestamp, entry.timestamp, threadId);
+  const advancesConversation =
+    entry.role === 'user' ||
+    (entry.role === 'assistant' &&
+      (!entry.event || entry.event.type !== 'text' || entry.event.assistantPhase !== 'progress'));
+
+  if (advancesConversation) {
+    db.prepare(
+      `UPDATE chat_threads
+       SET
+         updated_at = CASE WHEN updated_at < ? THEN ? ELSE updated_at END,
+         last_message_at = CASE
+           WHEN last_message_at IS NULL OR last_message_at < ? THEN ?
+           ELSE last_message_at
+         END
+       WHERE id = ?`,
+    ).run(entry.timestamp, entry.timestamp, entry.timestamp, entry.timestamp, threadId);
+  }
 }
 
 export function loadChatHistory(threadId: string): ChatMessage[] {

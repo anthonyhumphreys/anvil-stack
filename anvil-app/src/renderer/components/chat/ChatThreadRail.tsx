@@ -59,7 +59,7 @@ export function ChatThreadRail({
       minWidth={220}
       maxWidth={420}
       collapsedWidth={0}
-      autoCollapseBelow={1200}
+      autoCollapseBelow={1500}
       className="border-r border-border/60 bg-bg-secondary/50"
     >
       <div className="border-b border-border/60 px-3 py-2.5 pr-14">

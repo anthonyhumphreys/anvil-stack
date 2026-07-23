@@ -16,6 +16,42 @@ export interface RepoInfo {
   indexWarnings?: string[];
 }
 
+export type TerminalSessionStatus = 'running' | 'exited';
+
+export interface TerminalSessionSummary {
+  terminalId: string;
+  workspaceId: string;
+  repoId: string;
+  cwd: string;
+  status: TerminalSessionStatus;
+  exitCode?: number;
+  createdAt: string;
+  sequence: number;
+}
+
+export interface TerminalOutputChunk {
+  sequence: number;
+  data: string;
+}
+
+export interface TerminalAttachResult {
+  session: TerminalSessionSummary;
+  output: TerminalOutputChunk[];
+}
+
+export interface TerminalDataEvent extends TerminalOutputChunk {
+  terminalId: string;
+}
+
+export interface TerminalExitEvent {
+  terminalId: string;
+  exitCode: number;
+}
+
+export interface TerminalClosedEvent {
+  terminalId: string;
+}
+
 export interface LanguageBreakdown {
   language: string;
   percentage: number;
@@ -534,6 +570,12 @@ export interface ChatThread {
   providerThreadId?: string;
   activePlan?: ChatPlanSnapshot;
   activeGoal?: ChatGoalSnapshot;
+}
+
+export interface ChatNavigationTarget {
+  workspaceId: string;
+  threadId: string;
+  personaId: string;
 }
 
 export type ChatCollaborationMode = 'default' | 'plan';

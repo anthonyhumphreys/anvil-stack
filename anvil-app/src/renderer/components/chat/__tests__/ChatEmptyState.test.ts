@@ -4,7 +4,7 @@ import { getSuggestionArrowClassName, getSuggestionCardClassName } from '../Chat
 describe('Chat empty-state suggestion styling', () => {
   it('shows suggestion affordances for both hover and keyboard focus', () => {
     expect(getSuggestionCardClassName()).toContain('focus-visible:ring-2');
-    expect(getSuggestionCardClassName()).toContain('hover:shadow-md');
+    expect(getSuggestionCardClassName()).toContain('hover:bg-bg-tertiary');
     expect(getSuggestionArrowClassName()).toContain('group-hover:opacity-100');
     expect(getSuggestionArrowClassName()).toContain('group-focus-visible:opacity-100');
   });

@@ -60,6 +60,41 @@ describe('chatMessagesToEntries', () => {
     ]);
   });
 
+  it('does not restore approval and input cards after their requests were resolved', () => {
+    expect(
+      chatMessagesToEntries([
+        {
+          id: 'approval',
+          role: 'system',
+          content: 'Approval needed',
+          timestamp: '2026-04-27T10:00:00.000Z',
+          event: { type: 'approval_request', approvalRequestId: 7 },
+        },
+        {
+          id: 'input',
+          role: 'system',
+          content: 'Input needed',
+          timestamp: '2026-04-27T10:00:01.000Z',
+          event: { type: 'input_request', inputRequestId: 'question-1' },
+        },
+        {
+          id: 'approval-resolved',
+          role: 'system',
+          content: 'Request resolved',
+          timestamp: '2026-04-27T10:00:02.000Z',
+          event: { type: 'request_resolved', resolvedRequestId: 7 },
+        },
+        {
+          id: 'input-resolved',
+          role: 'system',
+          content: 'Request resolved',
+          timestamp: '2026-04-27T10:00:03.000Z',
+          event: { type: 'request_resolved', resolvedRequestId: 'question-1' },
+        },
+      ]),
+    ).toEqual([]);
+  });
+
   it('keeps legacy flattened assistant history readable', () => {
     expect(
       chatMessagesToEntries([
