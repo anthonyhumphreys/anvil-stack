@@ -129,6 +129,29 @@ describe('codex protocol service', () => {
     expect(events[1]).toEqual({ type: 'status', status: 'complete' });
   });
 
+  it('preserves a failed Codex turn instead of reporting successful completion', () => {
+    const events = collectEvents(createState(), [
+      {
+        method: 'turn/completed',
+        params: {
+          turn: {
+            id: 'turn-1',
+            status: 'failed',
+            error: { message: 'The command was rejected.' },
+          },
+        },
+      },
+    ]);
+
+    expect(events).toEqual([
+      {
+        type: 'status',
+        status: 'error',
+        errorMessage: 'The command was rejected.',
+      },
+    ]);
+  });
+
   it('uses the buffered patch when a completed file change only contains paths', () => {
     const state = createState();
     const events = collectEvents(state, [

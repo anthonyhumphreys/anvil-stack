@@ -343,6 +343,8 @@ export function registerChatHandlers(): void {
         workItemTitle?: string;
         repoIds?: string[];
         activeRepoId?: string | null;
+        settled?: boolean;
+        viewed?: boolean;
       },
     ): ChatThread => {
       return createChatThread(input);

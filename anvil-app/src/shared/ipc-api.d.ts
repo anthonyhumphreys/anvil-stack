@@ -263,6 +263,8 @@ export interface AnvilAPI {
         workItemTitle?: string;
         repoIds?: string[];
         activeRepoId?: string | null;
+        settled?: boolean;
+        viewed?: boolean;
       },
     ) => Promise<ChatThread | null>;
     deleteThread: (threadId: string) => Promise<void>;

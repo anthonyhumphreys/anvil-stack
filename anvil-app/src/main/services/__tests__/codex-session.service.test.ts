@@ -97,7 +97,13 @@ describe('codex session service', () => {
         action: 'accept',
         content: { project: 'Anvil' },
       }),
-    ).toEqual({ action: 'accept', content: { project: 'Anvil' } });
+    ).toEqual({ action: 'accept', content: { project: 'Anvil' }, _meta: null });
+    expect(
+      buildInputResponse({
+        kind: 'mcp_elicitation',
+        action: 'decline',
+      }),
+    ).toEqual({ action: 'decline', content: null, _meta: null });
   });
 
   it('forces non-writing personas into the read-only sandbox', () => {

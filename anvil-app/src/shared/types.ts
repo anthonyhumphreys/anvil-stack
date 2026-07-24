@@ -570,7 +570,20 @@ export interface ChatThread {
   providerThreadId?: string;
   activePlan?: ChatPlanSnapshot;
   activeGoal?: ChatGoalSnapshot;
+  attentionState: ChatThreadAttentionState;
+  attentionUpdatedAt?: string;
+  activeTurnStartedAt?: string;
+  lastViewedAt?: string;
+  settledAt?: string;
 }
+
+export type ChatThreadAttentionState =
+  | 'idle'
+  | 'working'
+  | 'approval'
+  | 'input'
+  | 'failed'
+  | 'complete';
 
 export interface ChatNavigationTarget {
   workspaceId: string;

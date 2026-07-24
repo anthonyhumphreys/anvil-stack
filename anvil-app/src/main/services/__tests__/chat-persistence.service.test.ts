@@ -27,6 +27,7 @@ import {
   saveChatThreadGoal,
   saveChatThreadPlan,
   updateChatThread,
+  updateChatThreadAttention,
 } from '../chat-persistence.service.js';
 import { listChatTurnSummaries, saveChatEvent } from '../chat-evidence.service.js';
 import {
@@ -97,6 +98,31 @@ describe('chat thread persistence', () => {
     expect(updated?.title).toBe('Renamed impact review');
     expect(updated?.repoIds).toEqual([]);
     expect(updated?.activeRepoId).toBeUndefined();
+  });
+
+  it('tracks inbox attention and prevents active work from being settled', () => {
+    const thread = createChatThread({ workspaceId: 'ws-1', personaId: 'coder' });
+
+    expect(thread.attentionState).toBe('idle');
+    const settled = updateChatThread(thread.id, { settled: true });
+    expect(settled?.settledAt).toBeTruthy();
+
+    const working = updateChatThreadAttention(thread.id, 'working');
+    expect(working).toMatchObject({
+      attentionState: 'working',
+      settledAt: undefined,
+    });
+    expect(working?.activeTurnStartedAt).toBeTruthy();
+    expect(() => updateChatThread(thread.id, { settled: true })).toThrow('cannot be settled yet');
+
+    const complete = updateChatThreadAttention(thread.id, 'complete');
+    expect(complete?.attentionState).toBe('complete');
+    expect(complete?.activeTurnStartedAt).toBeUndefined();
+    expect(updateChatThread(thread.id, { settled: true })?.settledAt).toBeTruthy();
+    expect(updateChatThread(thread.id, { settled: false, viewed: true })).toMatchObject({
+      settledAt: undefined,
+    });
+    expect(getChatThread(thread.id)?.lastViewedAt).toBeTruthy();
   });
 
   it('never returns threads owned by another workspace or the global scope', () => {

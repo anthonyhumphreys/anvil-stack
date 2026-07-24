@@ -96,6 +96,7 @@ interface ChatContextValue {
   setReasoningLevel: (level: ReasoningEffort) => void;
   selectThread: (threadId: string) => Promise<void>;
   renameThread: (threadId: string, title: string) => Promise<void>;
+  settleThread: (threadId: string, settled: boolean) => Promise<void>;
   deleteThread: (threadId: string) => Promise<void>;
   forkThread: (messageIndex: number) => Promise<void>;
   setCollaborationMode: (mode: ChatCollaborationMode) => void;
@@ -1199,6 +1200,22 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
 
       if (eventSessionId && eventThreadId) {
+        const attentionUpdate = getThreadAttentionUpdate(event);
+        if (attentionUpdate) {
+          setThreads((prev) =>
+            sortThreads(
+              prev.map((thread) =>
+                thread.id === eventThreadId
+                  ? {
+                      ...thread,
+                      ...attentionUpdate,
+                      settledAt: attentionUpdate.settledAt,
+                    }
+                  : thread,
+              ),
+            ),
+          );
+        }
         if (event.type === 'status') {
           const nextStatus: CodexSession['status'] =
             event.status === 'complete' ? 'ready' : event.status === 'error' ? 'error' : 'busy';
@@ -1266,6 +1283,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             };
           }
         }
+      } else if (event.type === 'status' && event.status === 'error') {
+        flushPendingStreamEntry();
+        setBusy(false);
+        setError(event.errorMessage ?? 'Codex could not complete this turn.');
       } else if (event.type === 'status') {
         // Ignore intermediate status events.
       } else if (event.type === 'thinking' && event.text) {
@@ -1840,9 +1861,41 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const selectThread = useCallback(
     async (threadId: string) => {
       if (scaffoldModeActive) return;
+      const viewedAt = new Date().toISOString();
+      setThreads((prev) =>
+        prev.map((thread) =>
+          thread.id === threadId ? { ...thread, lastViewedAt: viewedAt } : thread,
+        ),
+      );
+      void window.anvil.chat
+        .updateThread(threadId, { viewed: true })
+        .then((updated) => {
+          if (updated) applyThreadState(updated);
+        })
+        .catch((error) => console.error('Failed to mark thread as viewed:', error));
       await loadThreadIntoState(threadId);
     },
-    [loadThreadIntoState, scaffoldModeActive],
+    [applyThreadState, loadThreadIntoState, scaffoldModeActive],
+  );
+
+  const settleThread = useCallback(
+    async (threadId: string, settled: boolean) => {
+      const updated = await window.anvil.chat.updateThread(threadId, { settled });
+      if (!updated) return;
+
+      const nextThreads = sortThreads([
+        updated,
+        ...threadsRef.current.filter((thread) => thread.id !== threadId),
+      ]);
+      setThreads(nextThreads);
+
+      if (!settled || activeThreadRef.current?.id !== threadId) return;
+      const nextActiveThread = nextThreads.find((thread) => !thread.settledAt);
+      if (nextActiveThread) {
+        await loadThreadIntoState(nextActiveThread.id, nextThreads);
+      }
+    },
+    [loadThreadIntoState],
   );
 
   const deleteThread = useCallback(
@@ -2174,6 +2227,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         setReasoningLevel: updateReasoningLevel,
         selectThread,
         renameThread,
+        settleThread,
         deleteThread,
         forkThread,
         setCollaborationMode,
@@ -2490,14 +2544,84 @@ function upsertThread(threads: ChatThread[], thread: ChatThread): ChatThread[] {
 
 function sortThreads(threads: ChatThread[]): ChatThread[] {
   return [...threads].sort((left, right) => {
-    const leftTime = Date.parse(left.lastMessageAt ?? left.updatedAt ?? left.createdAt);
-    const rightTime = Date.parse(right.lastMessageAt ?? right.updatedAt ?? right.createdAt);
-    if (rightTime !== leftTime) return rightTime - leftTime;
+    if (Boolean(left.settledAt) !== Boolean(right.settledAt)) {
+      return left.settledAt ? 1 : -1;
+    }
+
+    if (left.settledAt && right.settledAt) {
+      const settledDifference = Date.parse(right.settledAt) - Date.parse(left.settledAt);
+      if (settledDifference !== 0) return settledDifference;
+    }
 
     const createdTimeDifference = Date.parse(right.createdAt) - Date.parse(left.createdAt);
     if (createdTimeDifference !== 0) return createdTimeDifference;
     return right.id.localeCompare(left.id);
   });
+}
+
+function getThreadAttentionUpdate(
+  event: CodexEvent,
+): Partial<
+  Pick<ChatThread, 'attentionState' | 'attentionUpdatedAt' | 'activeTurnStartedAt' | 'settledAt'>
+> | null {
+  const now = new Date().toISOString();
+  if (event.type === 'approval_request') {
+    return {
+      attentionState: 'approval',
+      attentionUpdatedAt: now,
+      activeTurnStartedAt: undefined,
+      settledAt: undefined,
+    };
+  }
+  if (event.type === 'input_request') {
+    return {
+      attentionState: 'input',
+      attentionUpdatedAt: now,
+      activeTurnStartedAt: undefined,
+      settledAt: undefined,
+    };
+  }
+  if (event.type === 'error' || (event.type === 'status' && event.status === 'error')) {
+    return {
+      attentionState: 'failed',
+      attentionUpdatedAt: now,
+      activeTurnStartedAt: undefined,
+    };
+  }
+  if (event.type === 'status' && (event.status === 'thinking' || event.status === 'executing')) {
+    return {
+      attentionState: 'working',
+      attentionUpdatedAt: now,
+      activeTurnStartedAt: now,
+      settledAt: undefined,
+    };
+  }
+  if (event.type === 'status' && event.status === 'complete') {
+    return {
+      attentionState: 'complete',
+      attentionUpdatedAt: now,
+      activeTurnStartedAt: undefined,
+    };
+  }
+  if (event.type === 'thread_status') {
+    if (event.threadActiveFlags?.includes('waitingOnApproval')) {
+      return {
+        attentionState: 'approval',
+        attentionUpdatedAt: now,
+        activeTurnStartedAt: undefined,
+        settledAt: undefined,
+      };
+    }
+    if (event.threadActiveFlags?.includes('waitingOnUserInput')) {
+      return {
+        attentionState: 'input',
+        attentionUpdatedAt: now,
+        activeTurnStartedAt: undefined,
+        settledAt: undefined,
+      };
+    }
+  }
+  return null;
 }
 
 function sameIdList(left: string[], right: string[]): boolean {

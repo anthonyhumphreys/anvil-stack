@@ -200,6 +200,8 @@ const api: AnvilAPI = {
         workItemTitle?: string;
         repoIds?: string[];
         activeRepoId?: string | null;
+        settled?: boolean;
+        viewed?: boolean;
       },
     ) => ipcRenderer.invoke('chat:update-thread', threadId, updates),
     deleteThread: (threadId: string) => ipcRenderer.invoke('chat:delete-thread', threadId),

@@ -152,6 +152,7 @@ export function ChatView({ userRole }: ChatViewProps) {
     setReasoningLevel,
     selectThread,
     renameThread,
+    settleThread,
     deleteThread,
     forkThread,
     setCollaborationMode,
@@ -932,12 +933,14 @@ export function ChatView({ userRole }: ChatViewProps) {
           ) : (
             <ChatThreadRail
               persona={activePersona}
+              repos={repos}
               threads={threads}
               activeThreadId={activeThreadId}
               liveThreadStatuses={liveThreadStatuses}
               onSelectThread={(threadId) => void selectThread(threadId)}
               onCreateThread={() => void startNewSession()}
               onRenameThread={(threadId, title) => void renameThread(threadId, title)}
+              onSettleThread={(threadId, settled) => void settleThread(threadId, settled)}
               onDeleteThread={(threadId) => void deleteThread(threadId)}
             />
           ))}
