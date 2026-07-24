@@ -10,7 +10,6 @@ import type {
   AgentSandboxProvider,
   AgentSandboxSession,
   AgentSandboxStartInput,
-  AgentSandboxStatus,
 } from "@anvil-cloud/runtime";
 
 const execFileAsync = promisify(execFile);

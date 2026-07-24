@@ -23,18 +23,16 @@ async function main() {
 
   assert(
     result.code === 6,
-    `deploy --preview --wait --json exited ${result.code}, expected 6 while notes workflows are gated`,
+    `deploy --preview --wait --json exited ${result.code}, expected 6 without configured AWS provisioning`,
   );
   assert(
     payload?.ok === false &&
-      payload?.code === "AWS_PREVIEW_UNSUPPORTED_FEATURE" &&
-      Array.isArray(payload?.diagnostics) &&
-      payload.diagnostics.some(
-        (diagnostic) =>
-          diagnostic?.code === "AWS_PREVIEW_UNSUPPORTED_FEATURE" &&
-          diagnostic?.feature === "workflows",
-      ),
-    "deploy --preview --wait --json did not return the expected workflow support gate",
+      payload?.code === "AWS_PROVISIONER_NOT_CONFIGURED" &&
+      payload?.plan?.changes?.some(
+        (change) => change?.concept === "workflows",
+      ) &&
+      typeof payload?.artifacts?.lambda?.sha256 === "string",
+    "deploy --preview --wait --json did not reach the packaged AWS plan and artifact boundary",
   );
 
   process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);

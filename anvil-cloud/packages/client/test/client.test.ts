@@ -607,7 +607,7 @@ describe("AnvilClient", () => {
       { id: string; title: string }
     >;
     const successes: string[] = [];
-    const [query, mutation] = runtime.render(() => {
+    const [_query, mutation] = runtime.render(() => {
       const queryResult = hooks.useQuery(
         listNotes,
         { archived: false },
