@@ -156,9 +156,7 @@ async function runVerifier() {
     assert(workflowList.ok === true, "workflows list --json failed");
     assert(
       Array.isArray(workflowList.runs) &&
-        workflowList.runs.some(
-          (run) => run.runId === workflowRun.run.runId,
-        ),
+        workflowList.runs.some((run) => run.runId === workflowRun.run.runId),
       "workflows list --json did not include the completed run",
     );
 
@@ -221,8 +219,7 @@ async function runVerifier() {
     assert(
       dbDumpResult.rows.some(
         (row) =>
-          row?.title === "Welcome to Anvil Notes" &&
-          row?.ownerId === userId,
+          row?.title === "Welcome to Anvil Notes" && row?.ownerId === userId,
       ),
       "db dump notes --local --json did not include the workflow-created welcome note",
     );
@@ -289,18 +286,16 @@ async function runVerifier() {
     );
     assert(
       deployGate.code === 0,
-      `deploy:preview:gate exited ${deployGate.code}, expected 0 after verifying the workflow support gate`,
+      `deploy:preview:gate exited ${deployGate.code}, expected 0 after verifying the packaged preview boundary`,
     );
     assert(
       deployGate.payload?.ok === false &&
-        deployGate.payload?.code === "AWS_PREVIEW_UNSUPPORTED_FEATURE" &&
-        Array.isArray(deployGate.payload?.diagnostics) &&
-        deployGate.payload.diagnostics.some(
-          (diagnostic) =>
-            diagnostic?.code === "AWS_PREVIEW_UNSUPPORTED_FEATURE" &&
-            diagnostic?.feature === "workflows",
-        ),
-      "deploy --preview --wait --json did not return the expected workflow support gate",
+        deployGate.payload?.code === "AWS_PROVISIONER_NOT_CONFIGURED" &&
+        deployGate.payload?.plan?.changes?.some(
+          (change) => change?.concept === "workflows",
+        ) &&
+        typeof deployGate.payload?.artifacts?.lambda?.sha256 === "string",
+      "deploy --preview --wait --json did not reach the packaged AWS plan and artifact boundary",
     );
 
     const destroyDryRun = await runJson(
@@ -364,6 +359,7 @@ async function acquireVerifierLock() {
       if (Date.now() - startedAt > timeoutMs) {
         throw new Error(
           "Timed out waiting for another Notes golden path verifier run to finish.",
+          { cause: error },
         );
       }
 
@@ -414,8 +410,7 @@ async function verifyNewScaffoldContract() {
       "new scaffold did not include inspect --local --json script",
     );
     assert(
-      packageJson.scripts?.["logs:local"] ===
-        "anvil-cloud logs --local --json",
+      packageJson.scripts?.["logs:local"] === "anvil-cloud logs --local --json",
       "new scaffold did not include logs --local --json script",
     );
     assert(

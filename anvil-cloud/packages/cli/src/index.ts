@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFile, spawn, type StdioOptions } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import {
   mkdir,
   mkdtemp,
@@ -1833,7 +1833,12 @@ async function loadNextManifestForDiff(
     const toResult = await readManifestForDiff(toPath);
 
     if (toResult.ok) {
-      return { ok: true, manifest: toResult.manifest, path: toPath, diagnostics: [] };
+      return {
+        ok: true,
+        manifest: toResult.manifest,
+        path: toPath,
+        diagnostics: [],
+      };
     }
 
     if (toResult.kind === "invalid-json") {
@@ -2091,6 +2096,7 @@ async function commandDev(context: CliContext): Promise<void> {
 
   const app = await importApp(result.output.serverBundle);
   const manifest = result.manifest as CellManifest;
+  const host = context.values.get("host");
   const port = Number(context.values.get("port") ?? "8787");
   const clientPort = Number(context.values.get("client-port") ?? "5173");
   const databaseBranch = context.values.get("db-branch");
@@ -2099,6 +2105,7 @@ async function commandDev(context: CliContext): Promise<void> {
     manifest,
     rootDir: context.cwd,
     cellName: manifest.cell.name,
+    ...(host === undefined ? {} : { host }),
     port,
     clientPort,
     ...(databaseBranch === undefined ? {} : { databaseBranch }),
@@ -2584,7 +2591,10 @@ async function commandDb(
       : undefined;
 
     if (context.values.has("ttl") && ttlSeconds === undefined) {
-      writeInvalidUsage(context, "--ttl must be a positive integer in seconds.");
+      writeInvalidUsage(
+        context,
+        "--ttl must be a positive integer in seconds.",
+      );
       return;
     }
 
@@ -2655,7 +2665,10 @@ async function commandDb(
 
   if (subcommand === "diff" && table) {
     await writeDbOperation(context, async () => {
-      const diff = await manager.diffBranch(table, context.values.get("against"));
+      const diff = await manager.diffBranch(
+        table,
+        context.values.get("against"),
+      );
 
       return {
         payload: { ok: true, diff },
@@ -2679,10 +2692,7 @@ async function commandDb(
 
   if (subcommand === "delete" && table) {
     if (!context.flags.has("yes")) {
-      writeInvalidUsage(
-        context,
-        "Deleting a database branch requires --yes.",
-      );
+      writeInvalidUsage(context, "Deleting a database branch requires --yes.");
       return;
     }
 
@@ -3310,8 +3320,6 @@ async function commandDestroy(context: CliContext): Promise<void> {
     }
 
     const destroyer = createAwsSdkPreviewDestroyerFromEnv();
-    let result: Awaited<ReturnType<typeof destroyer.destroy>>;
-
     const destroyInput: {
       cell: string;
       environment: "preview";
@@ -3326,7 +3334,7 @@ async function commandDestroy(context: CliContext): Promise<void> {
       destroyInput.previewName = previewName;
     }
 
-    result = await destroyer.destroy(destroyInput);
+    const result = await destroyer.destroy(destroyInput);
 
     writeJsonOrHuman(
       context,
@@ -3438,7 +3446,7 @@ export async function waitForRemoteRuntime(
   const deadline = Date.now() + timeoutMs;
   let attempts = 0;
   let lastStatus: number | undefined;
-  let lastMessage = "Runtime health check did not complete.";
+  let lastMessage: string;
 
   do {
     attempts += 1;

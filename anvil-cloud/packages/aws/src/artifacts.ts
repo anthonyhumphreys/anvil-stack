@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -277,31 +278,60 @@ function awsRuntimeEntryPlugin(): Plugin {
           path: source,
         };
       });
+      buildApi.onResolve({ filter: /^@anvil-cloud\/auth$/ }, () => {
+        const source = packageSources.get("@anvil-cloud/auth");
+
+        if (!source) {
+          return undefined;
+        }
+
+        return {
+          path: source,
+        };
+      });
     },
   };
 }
 
 function resolveWorkspacePackageSources(): Map<string, string> {
   const currentFile = fileURLToPath(import.meta.url);
-  const packageRoot = path.resolve(path.dirname(currentFile), "..");
-  const packagesRoot = path.resolve(packageRoot, "..");
+  const sourcePackagesRoot = path.resolve(
+    path.dirname(currentFile),
+    "..",
+    "..",
+  );
+  const packedPackagesRoot = path.resolve(
+    path.dirname(currentFile),
+    "packages",
+  );
+  const packagesRoot = [sourcePackagesRoot, packedPackagesRoot].find((root) =>
+    existsSync(path.join(root, "aws", "src", "host.ts")),
+  );
   const sources = new Map<string, string>();
+
+  if (!packagesRoot) {
+    return sources;
+  }
 
   sources.set(
     "@anvil-cloud/aws/host",
-    path.join(packageRoot, "src", "host.ts"),
+    path.join(packagesRoot, "aws", "src", "host.ts"),
   );
   sources.set(
     "@anvil-cloud/aws/http",
-    path.join(packageRoot, "src", "http.ts"),
+    path.join(packagesRoot, "aws", "src", "http.ts"),
   );
   sources.set(
     "@anvil-cloud/aws/lambda",
-    path.join(packageRoot, "src", "lambda.ts"),
+    path.join(packagesRoot, "aws", "src", "lambda.ts"),
   );
   sources.set(
     "@anvil-cloud/runtime",
     path.join(packagesRoot, "runtime", "src", "index.ts"),
+  );
+  sources.set(
+    "@anvil-cloud/auth",
+    path.join(packagesRoot, "auth", "src", "index.ts"),
   );
 
   return sources;

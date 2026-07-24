@@ -114,11 +114,10 @@ Each state invokes the shared runtime Lambda with an `anvil.workflows` event for
 the current step, run id, input, and accumulated step state. Deployment plans add
 `workflow-preview-review` so this mutation is visible before provisioning.
 
-Service-bearing Cells synthesize adapter-owned ECS/Fargate preview resources:
-one cluster for the Cell, one task definition and ECS service per declared
-service, and a CloudWatch log group. The template requires `ServiceSubnetIds`.
-This is preview support for adapter resource shape and review; full execution of
-the exact Cell service handler inside Fargate remains a hardening step.
+The adapter can synthesize ECS/Fargate resource shape for service-bearing Cells,
+but preview deploy blocks those manifests before provisioning. The current task
+definition does not execute the exact Cell service handler, so creating billable
+idle resources would be misleading.
 
 ## Static asset flow
 
@@ -375,9 +374,9 @@ metadata key; named previews add a normalized name to the adapter-owned stack
 and deployment metadata key.
 
 `anvil-cloud rollback --preview --app <name> --to-deployment <id> --dry-run`
-returns stable rollback intent JSON for a previous deployment id. Preview
-deployments are versioned in adapter metadata; direct AWS artifact pointer
-promotion remains adapter-owned in alpha.
+returns stable rollback intent JSON for a previous deployment id. Current
+metadata stores the active deployment only and client assets are not archived as
+a restorable set, so automated artifact promotion is explicitly unsupported.
 
 `anvil-cloud usage --preview --json` returns declared preview resource counts,
 cost-driver hints, and cleanup commands from the built manifest and AWS preview

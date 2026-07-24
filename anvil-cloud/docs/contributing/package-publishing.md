@@ -82,16 +82,16 @@ contract honest.
 
 ## Current boundary matrix
 
-| Package | Current status | Public role now | Promotion note |
-| --- | --- | --- | --- |
-| `@anvilstack/cloud-cli` | Public | Owns `anvil-cloud` commands and examples. | Keep public. |
-| `@anvil-cloud/runtime` | Private | Workspace authoring DSL used by examples and generated Cells. | First runtime API candidate. |
-| `@anvil-cloud/client` | Private | Generated client runtime used by starter clients. | First client SDK candidate. |
-| `@anvil-cloud/builder` | Private | Manifest, Guard, generated-client, and bundle implementation. | Promote only if Builder becomes a supported library API. |
-| `@anvil-cloud/local` | Private | Local runtime host and dev server implementation. | Keep behind CLI/local commands. |
-| `@anvil-cloud/aws` | Private | AWS preview adapter, plans, remote inspection, logs, and cleanup. | Keep adapter-specific. |
-| `@anvil-cloud/auth` | Private | Local and OIDC auth implementation used by hosts. | Promote only with a documented auth API. |
-| `@anvil-cloud/control-plane` | Private | Control-plane implementation detail. | Keep internal. |
+| Package                      | Current status | Public role now                                                   | Promotion note                                           |
+| ---------------------------- | -------------- | ----------------------------------------------------------------- | -------------------------------------------------------- |
+| `@anvilstack/cloud-cli`      | Public         | Owns `anvil-cloud` commands and examples.                         | Keep public.                                             |
+| `@anvil-cloud/runtime`       | Private        | Workspace authoring DSL used by examples and generated Cells.     | First runtime API candidate.                             |
+| `@anvil-cloud/client`        | Private        | Generated client runtime used by starter clients.                 | First client SDK candidate.                              |
+| `@anvil-cloud/builder`       | Private        | Manifest, Guard, generated-client, and bundle implementation.     | Promote only if Builder becomes a supported library API. |
+| `@anvil-cloud/local`         | Private        | Local runtime host and dev server implementation.                 | Keep behind CLI/local commands.                          |
+| `@anvil-cloud/aws`           | Private        | AWS preview adapter, plans, remote inspection, logs, and cleanup. | Keep adapter-specific.                                   |
+| `@anvil-cloud/auth`          | Private        | Local and OIDC auth implementation used by hosts.                 | Promote only with a documented auth API.                 |
+| `@anvil-cloud/control-plane` | Private        | Control-plane implementation detail.                              | Keep internal.                                           |
 
 ## Guardrail
 

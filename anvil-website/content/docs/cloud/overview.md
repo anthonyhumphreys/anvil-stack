@@ -71,7 +71,8 @@ Current alpha limits include:
 
 - AWS is the first adapter, not the application contract.
 - Workflows execute end-to-end locally and map to Step Functions in AWS preview, but remote workflow run inspection is still maturing.
-- Services execute fully locally; AWS preview synthesizes ECS/Fargate service resources, but exact Cell service-handler execution inside Fargate is still a hardening step.
+- Services execute fully locally; AWS preview blocks service-bearing deploys
+  until the Fargate runner executes the exact Cell service handler.
 - Outbound fetch policy is checked by Guard and enforced by the AWS Lambda runtime allow-list guard.
 - Production use needs wider operational validation beyond the preview verifier.
 - Agents are a contract/runtime foundation, not a hosted agent platform. Project-agent discovery and deterministic Guardian review exist; AWS Lambda MicroVM-backed Agent Sandboxes cover sandbox-required agents when configured. Production approval UI, durable multi-step orchestration, hosted memory, streamed sandbox tools, workspace snapshots, and sandbox-aware Lens views are future work.

@@ -274,7 +274,7 @@ async function traceWorkflowStepFailed(
 function durationField(
   startedAt: string | undefined,
   completedAt: string | undefined,
-): { durationMs: number } | {} {
+): { durationMs: number } | Record<never, never> {
   const durationMs = durationBetween(startedAt, completedAt);
 
   return durationMs === undefined ? {} : { durationMs };
