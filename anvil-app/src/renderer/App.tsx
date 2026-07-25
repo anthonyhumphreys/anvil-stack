@@ -138,8 +138,8 @@ export function App() {
       const hasLlm =
         settings.llmProvider === 'azure'
           ? true // Azure is configured via Codex CLI's config.toml
-          : settings.llmProvider === 'codex'
-            ? true // Codex uses tokens from ~/.codex/auth.json — always test
+          : settings.llmProvider === 'codex' || settings.llmProvider === 'cursor'
+            ? true // CLI-backed providers use their own local auth — always test
             : !!settings.openaiApiKey;
       const hasAdo = !!settings.adoOrganizationUrl && !!settings.adoPat;
       const hasConfluence = !!settings.confluenceBaseUrl && !!settings.confluencePat;

@@ -240,7 +240,7 @@ export function getSettings(): AppSettings {
   const activeWorkItemConnectionId =
     workspaceWorkItemConnectionId ?? configuredActiveWorkItemConnectionId;
   const settings: AppSettings = {
-    llmProvider: (row.llm_provider as 'azure' | 'openai' | 'codex') ?? 'codex',
+    llmProvider: (row.llm_provider as 'azure' | 'openai' | 'codex' | 'cursor') ?? 'codex',
     appleFoundationModelsMode: normaliseAppleFoundationModelsMode(row.apple_foundation_models_mode),
     foundryEndpoint: row.foundry_endpoint ?? '',
     foundryDeploymentName: row.foundry_deployment ?? '',

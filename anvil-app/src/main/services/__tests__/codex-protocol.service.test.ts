@@ -470,4 +470,61 @@ describe('codex protocol service', () => {
     });
     expect(events[2]).toEqual({ type: 'goal_cleared' });
   });
+
+  it('normalises Cursor ACP session updates into chat events', () => {
+    const events = collectEvents(createState(), [
+      {
+        method: 'session/update',
+        params: {
+          sessionId: 'cursor-session-1',
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: [{ type: 'text', text: 'Cursor response' }],
+          },
+        },
+      },
+      {
+        method: 'session/update',
+        params: {
+          sessionId: 'cursor-session-1',
+          update: {
+            sessionUpdate: 'plan',
+            entries: [
+              { content: 'Inspect Cursor ACP output', status: 'in_progress' },
+              { content: 'Report result', status: 'pending' },
+            ],
+          },
+        },
+      },
+    ]);
+
+    expect(events).toEqual([
+      { type: 'text', text: 'Cursor response' },
+      {
+        type: 'plan_update',
+        plan: {
+          steps: [
+            { id: 'cursor-plan-0', text: 'Inspect Cursor ACP output', status: 'in_progress' },
+            { id: 'cursor-plan-1', text: 'Report result', status: 'pending' },
+          ],
+        },
+      },
+    ]);
+  });
+
+  it('marks Cursor ACP session/new results as thread ready', () => {
+    const state: CodexProtocolState = { threadId: null, turnId: null, initialized: false };
+    let ready = false;
+
+    handleCodexServerLine(
+      state,
+      JSON.stringify({ jsonrpc: '2.0', id: 'session-new', result: { sessionId: 'cursor-1' } }),
+      { onThreadReady: () => (ready = true) },
+    );
+
+    expect(ready).toBe(true);
+    expect(state.threadId).toBe('cursor-1');
+    expect(state.initialized).toBe(true);
+  });
+
 });
