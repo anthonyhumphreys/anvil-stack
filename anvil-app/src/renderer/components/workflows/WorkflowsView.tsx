@@ -32,6 +32,9 @@ import {
   Zap,
 } from 'lucide-react';
 import type {
+  AgentProvider,
+  AppSettings,
+  CursorCliStatus,
   Persona,
   WorkflowExecutionStrategy,
   WorkflowNode,
@@ -74,6 +77,13 @@ const EMPTY_TEMPLATE: WorkflowTemplate = {
   edges: [],
   createdAt: '',
   updatedAt: '',
+};
+
+const PROVIDER_LABELS: Record<AgentProvider, string> = {
+  codex: 'Codex',
+  cursor: 'Cursor',
+  openai: 'OpenAI',
+  azure: 'Azure',
 };
 
 function WorkflowStepNode({ data, selected }: NodeProps<Node<WorkflowCanvasData>>) {
@@ -119,7 +129,13 @@ function WorkflowStepNode({ data, selected }: NodeProps<Node<WorkflowCanvasData>
           <div className="mt-1 flex flex-wrap gap-1.5 text-[10px] uppercase tracking-[0.08em] text-text-tertiary">
             <span>{data.node.personaId}</span>
             <span aria-hidden="true">·</span>
-            <span>{data.node.reasoningEffort}</span>
+            <span>{PROVIDER_LABELS[data.node.provider ?? 'codex']}</span>
+            {(data.node.provider ?? 'codex') !== 'cursor' && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span>{data.node.reasoningEffort}</span>
+              </>
+            )}
             <span aria-hidden="true">·</span>
             <span>{data.node.executionStrategy}</span>
           </div>
@@ -150,6 +166,8 @@ export function WorkflowsView() {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [personas, setPersonas] = useState<Persona[]>([]);
+  const [agentSettings, setAgentSettings] = useState<AppSettings | null>(null);
+  const [cursorStatus, setCursorStatus] = useState<CursorCliStatus | null>(null);
   const [kickoff, setKickoff] = useState('');
   const [supervisorQuestion, setSupervisorQuestion] = useState('');
   const [supervisorReplies, setSupervisorReplies] = useState<
@@ -178,14 +196,16 @@ export function WorkflowsView() {
   const canvasTemplate = runTemplate ?? draft;
 
   const refresh = useCallback(async () => {
-    const [nextTemplates, nextPersonas, nextRuns] = await Promise.all([
+    const [nextTemplates, nextPersonas, nextRuns, nextSettings] = await Promise.all([
       window.anvil.workflow.listTemplates(),
       window.anvil.chat.getPersonas(),
       activeWorkspace ? window.anvil.workflow.listRuns(activeWorkspace.id) : Promise.resolve([]),
+      window.anvil.settings.get(),
     ]);
     setTemplates(nextTemplates);
     setPersonas(nextPersonas);
     setRuns(nextRuns);
+    setAgentSettings(nextSettings);
     setDraft((current) => {
       if (current.id) return nextTemplates.find((item) => item.id === current.id) ?? current;
       return nextTemplates[0] ?? current;
@@ -195,6 +215,10 @@ export function WorkflowsView() {
   useEffect(() => {
     void refresh().catch((caught) => setError(messageFrom(caught)));
   }, [refresh]);
+
+  useEffect(() => {
+    void window.anvil.settings.getCursorStatus().then(setCursorStatus).catch(console.warn);
+  }, []);
 
   useEffect(() => {
     const runId = searchParams.get('run');
@@ -296,12 +320,14 @@ export function WorkflowsView() {
   const addStep = () => {
     const id = crypto.randomUUID();
     const count = draft.nodes.length;
+    const provider = agentSettings?.llmProvider ?? 'codex';
     const node: WorkflowNode = {
       id,
       name: `Step ${count + 1}`,
       prompt: 'Describe what this step should accomplish and what it should hand off.',
       personaId: 'coder',
-      model: DEFAULT_CODEX_MODEL,
+      provider,
+      model: provider === 'cursor' ? 'auto' : (agentSettings?.openaiModel ?? DEFAULT_CODEX_MODEL),
       reasoningEffort: 'medium',
       executionStrategy: 'adaptive',
       position: { x: 120 + (count % 3) * 330, y: 100 + Math.floor(count / 3) * 210 },
@@ -698,6 +724,12 @@ export function WorkflowsView() {
             <Inspector
               node={selectedNode}
               personas={personas}
+              enabledProviders={
+                agentSettings?.enabledLlmProviders?.length
+                  ? agentSettings.enabledLlmProviders
+                  : [agentSettings?.llmProvider ?? 'codex']
+              }
+              cursorStatus={cursorStatus}
               onChange={updateNode}
               onDelete={() => {
                 setDraft((current) => ({
@@ -720,15 +752,24 @@ export function WorkflowsView() {
 function Inspector({
   node,
   personas,
+  enabledProviders,
+  cursorStatus,
   onChange,
   onDelete,
 }: {
   node: WorkflowNode;
   personas: Persona[];
+  enabledProviders: AgentProvider[];
+  cursorStatus: CursorCliStatus | null;
   onChange: (updates: Partial<WorkflowNode>) => void;
   onDelete: () => void;
 }) {
+  const provider = node.provider ?? 'codex';
   const reasoning = getCodexModelReasoningOptions(node.model).supportedReasoningEfforts;
+  const modelOptions =
+    provider === 'cursor'
+      ? (cursorStatus?.models ?? []).map((model) => ({ id: model.id, label: model.label }))
+      : CODEX_MODEL_OPTIONS;
   return (
     <div className="min-h-0 flex-1 overflow-y-auto p-5">
       <div className="flex items-center justify-between">
@@ -775,41 +816,84 @@ function Inspector({
             ))}
           </select>
         </Field>
-        <Field label="Model">
+        <Field label="Provider">
           <select
-            value={node.model}
+            value={provider}
             onChange={(event) => {
-              const model = event.target.value;
-              const options = getCodexModelReasoningOptions(model);
+              const nextProvider = event.target.value as AgentProvider;
               onChange({
-                model,
-                reasoningEffort: options.supportedReasoningEfforts.includes(node.reasoningEffort)
-                  ? node.reasoningEffort
-                  : options.defaultReasoningEffort,
+                provider: nextProvider,
+                model: nextProvider === 'cursor' ? 'auto' : DEFAULT_CODEX_MODEL,
+                reasoningEffort: 'medium',
               });
             }}
             className="workflow-input"
           >
-            {CODEX_MODEL_OPTIONS.map((model) => (
+            {enabledProviders.map((providerId) => (
+              <option key={providerId} value={providerId}>
+                {PROVIDER_LABELS[providerId]}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 text-xs text-text-tertiary">
+            Only providers activated in Settings are available here.
+          </p>
+        </Field>
+        <Field label="Model">
+          <input
+            list={`workflow-models-${node.id}`}
+            value={node.model}
+            onChange={(event) => {
+              const model = event.target.value;
+              if (provider === 'cursor') {
+                onChange({ model });
+              } else {
+                const options = getCodexModelReasoningOptions(model);
+                onChange({
+                  model,
+                  reasoningEffort: options.supportedReasoningEfforts.includes(node.reasoningEffort)
+                    ? node.reasoningEffort
+                    : options.defaultReasoningEffort,
+                });
+              }
+            }}
+            className="workflow-input"
+          />
+          <datalist id={`workflow-models-${node.id}`}>
+            {modelOptions.map((model) => (
               <option key={model.id} value={model.id}>
                 {model.label}
               </option>
             ))}
-          </select>
+          </datalist>
+          {provider === 'cursor' && (
+            <p className="mt-1 text-xs text-text-tertiary">
+              {cursorStatus?.models.length
+                ? `${cursorStatus.models.length} models detected from Cursor CLI.`
+                : 'Enter a Cursor model id, or use auto.'}
+            </p>
+          )}
         </Field>
-        <Field label="Reasoning">
-          <div className="grid grid-cols-4 gap-1.5">
-            {reasoning.map((effort) => (
-              <ChoiceButton
-                key={effort}
-                active={node.reasoningEffort === effort}
-                onClick={() => onChange({ reasoningEffort: effort })}
-              >
-                {effort}
-              </ChoiceButton>
-            ))}
-          </div>
-        </Field>
+        {provider === 'cursor' ? (
+          <p className="text-xs text-text-tertiary">
+            Cursor model ids carry their own reasoning level, such as <code>-high</code> or{' '}
+            <code>-xhigh</code>.
+          </p>
+        ) : (
+          <Field label="Reasoning">
+            <div className="grid grid-cols-4 gap-1.5">
+              {reasoning.map((effort) => (
+                <ChoiceButton
+                  key={effort}
+                  active={node.reasoningEffort === effort}
+                  onClick={() => onChange({ reasoningEffort: effort })}
+                >
+                  {effort}
+                </ChoiceButton>
+              ))}
+            </div>
+          </Field>
+        )}
         <Field label="Subagents">
           <div className="space-y-1.5">
             {STRATEGIES.map((strategy) => (

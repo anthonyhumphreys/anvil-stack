@@ -379,6 +379,19 @@ export interface CodexCliStatus {
   models?: CodexDetectedModel[];
 }
 
+export interface CursorDetectedModel {
+  id: string;
+  label: string;
+}
+
+export interface CursorCliStatus {
+  installed: boolean;
+  version?: string;
+  path?: string;
+  models: CursorDetectedModel[];
+  error?: string;
+}
+
 export interface ChatArtifact {
   id: string;
   threadId: string;
@@ -446,6 +459,7 @@ export type ReasoningEffort =
   | 'ultra';
 
 export type WorkflowExecutionStrategy = 'focused' | 'adaptive' | 'parallel' | 'review-team';
+export type AgentProvider = 'azure' | 'openai' | 'codex' | 'cursor';
 
 export interface WorkflowPosition {
   x: number;
@@ -457,6 +471,8 @@ export interface WorkflowNode {
   name: string;
   prompt: string;
   personaId: string;
+  /** Defaults to Codex for templates created before provider-aware workflows. */
+  provider?: AgentProvider;
   model: string;
   reasoningEffort: ReasoningEffort;
   executionStrategy: WorkflowExecutionStrategy;
@@ -1627,7 +1643,10 @@ export type AppTheme =
   | 'agent-after-hours';
 
 export interface AppSettings {
-  llmProvider: 'azure' | 'openai' | 'codex' | 'cursor';
+  /** Primary provider for new chats and app-level AI tasks. */
+  llmProvider: AgentProvider;
+  /** Providers available to workflows and agent-authored shell commands. */
+  enabledLlmProviders?: AgentProvider[];
   appleFoundationModelsMode: 'off' | 'prefer-simple';
 
   // Azure AI Foundry

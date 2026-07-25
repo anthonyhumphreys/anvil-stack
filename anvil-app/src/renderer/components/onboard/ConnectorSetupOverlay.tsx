@@ -50,7 +50,7 @@ export function ConnectorSetupOverlay({ onContinue }: ConnectorSetupOverlayProps
   };
 
   // --- LLM ---
-  const llmProvider = settings.llmProvider ?? 'openai';
+  const llmProvider = settings.llmProvider ?? 'codex';
   const testLlm = async () => {
     setLlmStatus('testing');
     setTestError(null);
@@ -136,8 +136,8 @@ export function ConnectorSetupOverlay({ onContinue }: ConnectorSetupOverlayProps
           <ConnectorCard
             id="llm"
             icon="🧠"
-            title="LLM Provider"
-            description="Power chat and code assistance"
+            title="Primary agent"
+            description="Choose who starts new chats and app-level AI work"
             expanded={expandedCard === 'llm'}
             status={llmStatus}
             isConfigured={configured.has('llm')}
@@ -148,11 +148,19 @@ export function ConnectorSetupOverlay({ onContinue }: ConnectorSetupOverlayProps
             }}
           >
             <div className="space-y-3">
-              <div className="flex gap-2">
+              <p className="text-xs text-text-secondary">
+                Choose the primary agent for new chats. You can activate more providers in Settings.
+              </p>
+              <div className="grid grid-cols-2 gap-2">
                 <ProviderButton
                   label="Codex CLI"
                   active={llmProvider === 'codex'}
                   onClick={() => update('llmProvider', 'codex')}
+                />
+                <ProviderButton
+                  label="Cursor CLI"
+                  active={llmProvider === 'cursor'}
+                  onClick={() => update('llmProvider', 'cursor')}
                 />
                 <ProviderButton
                   label="OpenAI"
@@ -168,6 +176,11 @@ export function ConnectorSetupOverlay({ onContinue }: ConnectorSetupOverlayProps
               {llmProvider === 'codex' && (
                 <p className="text-xs text-text-tertiary">
                   Uses your local Codex CLI — no API key needed.
+                </p>
+              )}
+              {llmProvider === 'cursor' && (
+                <p className="text-xs text-text-tertiary">
+                  Uses your local Cursor CLI login. Run <code>cursor-agent login</code> first.
                 </p>
               )}
               {llmProvider === 'openai' && (

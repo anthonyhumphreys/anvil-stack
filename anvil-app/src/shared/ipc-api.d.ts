@@ -55,6 +55,7 @@ import type {
   CodeReviewScopeRef,
   CodeReviewScopeType,
   CodexCliStatus,
+  CursorCliStatus,
   CodexMcpRegisterInput,
   CodexRegistryActionResult,
   CodexRegistrySnapshot,
@@ -498,6 +499,7 @@ export interface AnvilAPI {
     get: () => Promise<AppSettings>;
     update: (settings: Partial<AppSettings>) => Promise<void>;
     getCodexStatus: () => Promise<CodexCliStatus>;
+    getCursorStatus: () => Promise<CursorCliStatus>;
     setCodexAgentMaxThreads: (maxThreads: number) => Promise<CodexCliStatus>;
     testFoundryConnection: () => Promise<{ ok: boolean; error?: string }>;
     testAppleFoundationModels: () => Promise<{ ok: boolean; error?: string }>;

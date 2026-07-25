@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { WorkflowNode } from '../../../shared/types';
-import { validateWorkflowGraph } from '../workflow.service';
+import {
+  buildCodexWorkflowArgs,
+  normaliseWorkflowNodes,
+  validateWorkflowGraph,
+} from '../workflow.service';
 
 function node(id: string): WorkflowNode {
   return {
@@ -40,5 +44,29 @@ describe('validateWorkflowGraph', () => {
         ],
       ),
     ).toThrow('cycles');
+  });
+});
+
+describe('normaliseWorkflowNodes', () => {
+  it('keeps legacy workflows on Codex', () => {
+    expect(normaliseWorkflowNodes([node('legacy')])[0].provider).toBe('codex');
+  });
+
+  it('preserves an explicit enabled provider identity', () => {
+    expect(normaliseWorkflowNodes([{ ...node('review'), provider: 'cursor' }])[0].provider).toBe(
+      'cursor',
+    );
+  });
+});
+
+describe('workflow provider routing', () => {
+  it('selects the configured Codex model provider for Azure and OpenAI steps', () => {
+    expect(buildCodexWorkflowArgs('codex')).toEqual(['app-server']);
+    expect(buildCodexWorkflowArgs('azure')).toEqual(['app-server', '-c', 'model_provider="azure"']);
+    expect(buildCodexWorkflowArgs('openai')).toEqual([
+      'app-server',
+      '-c',
+      'model_provider="openai"',
+    ]);
   });
 });

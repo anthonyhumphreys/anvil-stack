@@ -28,10 +28,12 @@ import {
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type {
+  AgentProvider,
   AppSettings,
   AppTheme,
   CodexCliStatus,
   CodexUsageSnapshot,
+  CursorCliStatus,
   DocsProvider,
   MobileCompanionDevice,
   MobileCompanionStatus,
@@ -56,6 +58,33 @@ type SettingsCategoryId = 'profile' | 'ai' | 'delivery' | 'review' | 'devices' |
 type CodexAgentsStatus = { tone: 'success' | 'error'; message: string };
 type CodexModelPickerOption = CodexModelOption & { source: 'docs' | 'cli' };
 
+const AGENT_PROVIDER_OPTIONS: Array<{
+  id: AgentProvider;
+  label: string;
+  description: string;
+}> = [
+  {
+    id: 'codex',
+    label: 'Codex CLI',
+    description: 'Local Codex login, tools, skills, and app-server sessions.',
+  },
+  {
+    id: 'cursor',
+    label: 'Cursor CLI',
+    description: 'Cursor models and agent tools through cursor-agent.',
+  },
+  {
+    id: 'openai',
+    label: 'OpenAI API',
+    description: 'Direct API-key route for app utilities and Codex sessions.',
+  },
+  {
+    id: 'azure',
+    label: 'Azure AI Foundry',
+    description: 'Azure-hosted models registered through your Codex configuration.',
+  },
+];
+
 const SETTINGS_CATEGORIES: Array<{
   id: SettingsCategoryId;
   label: string;
@@ -70,8 +99,8 @@ const SETTINGS_CATEGORIES: Array<{
   },
   {
     id: 'ai',
-    label: 'AI & Codex',
-    description: 'Model backend, reasoning, skills, and MCPs.',
+    label: 'AI & agents',
+    description: 'Primary agent, active providers, models, skills, and MCPs.',
     icon: Bot,
   },
   {
@@ -212,6 +241,7 @@ export function SettingsView({
   const [codexUsage, setCodexUsage] = useState<CodexUsageSnapshot | null>(null);
   const [codexUsageLoading, setCodexUsageLoading] = useState(false);
   const [codexStatus, setCodexStatus] = useState<CodexCliStatus | null>(null);
+  const [cursorStatus, setCursorStatus] = useState<CursorCliStatus | null>(null);
   const [agentMaxThreads, setAgentMaxThreads] = useState(6);
   const [agentMaxThreadsSaving, setAgentMaxThreadsSaving] = useState(false);
   const [agentMaxThreadsError, setAgentMaxThreadsError] = useState<string | null>(null);
@@ -251,6 +281,7 @@ export function SettingsView({
         setAgentMaxThreads(status.agentMaxThreads ?? 6);
       })
       .catch(console.warn);
+    window.anvil.settings.getCursorStatus().then(setCursorStatus).catch(console.warn);
     refreshMobileCompanion().catch(console.error);
     refreshCodexUsage().catch(console.error);
     refreshCodexAgentsFile().catch(console.error);
@@ -670,6 +701,43 @@ export function SettingsView({
   };
 
   const provider = settings.llmProvider ?? 'codex';
+  const enabledProviders = [
+    ...new Set<AgentProvider>([provider, ...(settings.enabledLlmProviders ?? [])]),
+  ];
+  const setPrimaryProvider = (nextProvider: AgentProvider) => {
+    setSettings((prev) => {
+      const currentModel = prev.openaiModel ?? DEFAULT_CODEX_MODEL;
+      const cursorModels = cursorStatus?.models.map((model) => model.id) ?? [];
+      const model =
+        nextProvider === 'cursor'
+          ? cursorModels.includes(currentModel)
+            ? currentModel
+            : 'auto'
+          : provider === 'cursor' && cursorModels.includes(currentModel)
+            ? DEFAULT_CODEX_MODEL
+            : currentModel;
+      return {
+        ...prev,
+        llmProvider: nextProvider,
+        enabledLlmProviders: [
+          ...new Set<AgentProvider>([nextProvider, ...(prev.enabledLlmProviders ?? [provider])]),
+        ],
+        openaiModel: model,
+      };
+    });
+    setSaved(false);
+  };
+  const toggleProvider = (providerId: AgentProvider) => {
+    if (providerId === provider) return;
+    setSettings((prev) => {
+      const current = new Set(prev.enabledLlmProviders ?? [provider]);
+      if (current.has(providerId)) current.delete(providerId);
+      else current.add(providerId);
+      current.add(provider);
+      return { ...prev, enabledLlmProviders: [...current] };
+    });
+    setSaved(false);
+  };
   const workItemConnections = settings.workItemConnections ?? [];
   const activeWorkItemConnection = workItemConnections.find(
     (connection) => connection.id === settings.activeWorkItemConnectionId,
@@ -756,7 +824,10 @@ export function SettingsView({
                 <SummaryChip label="Role" value={roleLabel} />
                 <SummaryChip label="Theme" value={selectedThemeLabel} />
                 <SummaryChip label="Chat" value={selectedChatLayoutLabel} />
-                <SummaryChip label="AI" value={aiProviderLabel} />
+                <SummaryChip
+                  label="AI"
+                  value={`${aiProviderLabel} primary · ${enabledProviders.length} active`}
+                />
                 <SummaryChip label="Cloud" value={settings.cloudFeaturesEnabled ? 'On' : 'Off'} />
                 <SummaryChip label="Mobile" value={mobileStatus?.enabled ? 'Enabled' : 'Off'} />
               </div>
@@ -951,61 +1022,40 @@ export function SettingsView({
 
             <SettingsCategory
               id="ai"
-              title="AI & Codex"
-              description="Model routing, reasoning behaviour, skills, and MCP registry access."
+              title="AI & agents"
+              description="Primary-agent routing, provider availability, models, skills, and MCP access."
               icon={Bot}
             >
               <SettingsPanel
-                title="LLM Provider"
-                description="Select the backend used for AI calls."
+                title="Agent providers"
+                description="Choose the primary agent for new chats, then activate any additional providers that workflows may use."
               >
-                <div className="space-y-3">
-                  <label className="block text-sm text-text-secondary">Backend</label>
-                  <ButtonGrid>
-                    <ProviderButton
-                      label="Codex CLI"
-                      description="Zero-config — uses your existing Codex login"
-                      active={provider === 'codex'}
-                      onClick={() => update('llmProvider', 'codex')}
-                    />
-                    <ProviderButton
-                      label="Cursor CLI"
-                      description="Alternate agent via cursor-agent acp"
-                      active={provider === 'cursor'}
-                      onClick={() => update('llmProvider', 'cursor')}
-                    />
-                    <ProviderButton
-                      label="OpenAI API Key"
-                      description="Use a separate API key"
-                      active={provider === 'openai'}
-                      onClick={() => update('llmProvider', 'openai')}
-                    />
-                    <ProviderButton
-                      label="Azure AI Foundry"
-                      description="Enterprise Azure — configured via Codex"
-                      active={provider === 'azure'}
-                      onClick={() => update('llmProvider', 'azure')}
-                    />
-                  </ButtonGrid>
-                </div>
+                <AgentProviderManager
+                  primaryProvider={provider}
+                  enabledProviders={enabledProviders}
+                  onSetPrimary={setPrimaryProvider}
+                  onToggle={toggleProvider}
+                />
+                <p className="text-xs text-text-tertiary">
+                  Primary controls new chats and app-level AI tasks. Active providers can be
+                  assigned independently to workflow steps; agents can also invoke their CLIs from
+                  prompts when appropriate.
+                </p>
 
-                {provider === 'codex' && (
+                {enabledProviders.includes('codex') && (
                   <p className="text-sm text-text-secondary">
-                    Preferred path. Routes requests through your local Codex CLI using ChatGPT
-                    sign-in and the same local app-server protocol as Codex surfaces. API keys stay
-                    optional for direct OpenAI utility calls.
+                    Codex CLI uses your local ChatGPT sign-in and app-server configuration.
                   </p>
                 )}
 
-                {provider === 'cursor' && (
+                {enabledProviders.includes('cursor') && (
                   <p className="text-sm text-text-secondary">
-                    Routes agentic chat through Cursor CLI using <code>cursor-agent acp</code> and
-                    Cursor's local login. Install Cursor CLI and run <code>cursor-agent login</code>
-                    before starting a session.
+                    Cursor CLI uses <code>cursor-agent acp</code> for chat and the local Cursor
+                    login. Install Cursor CLI and run <code>cursor-agent login</code> before use.
                   </p>
                 )}
 
-                {provider === 'openai' && (
+                {enabledProviders.includes('openai') && (
                   <>
                     <Field
                       label="API Key"
@@ -1017,7 +1067,35 @@ export function SettingsView({
                   </>
                 )}
 
-                {(provider === 'codex' || provider === 'cursor' || provider === 'openai') && (
+                {provider === 'cursor' && (
+                  <div className="space-y-2 rounded-md border border-border bg-bg-primary p-4">
+                    <label className="block text-sm text-text-secondary">
+                      Primary Cursor model
+                    </label>
+                    <input
+                      list="settings-cursor-models"
+                      value={settings.openaiModel ?? 'auto'}
+                      onChange={(event) => update('openaiModel', event.target.value)}
+                      className="w-full rounded-md border border-border bg-bg-secondary px-3 py-2 text-sm text-text-primary outline-none focus:border-accent"
+                    />
+                    <datalist id="settings-cursor-models">
+                      {(cursorStatus?.models ?? []).map((model) => (
+                        <option key={model.id} value={model.id}>
+                          {model.label}
+                        </option>
+                      ))}
+                    </datalist>
+                    <p className="text-xs text-text-tertiary">
+                      {cursorStatus?.installed
+                        ? `${cursorStatus.version ?? 'Cursor CLI installed'} · ${
+                            cursorStatus.models.length
+                          } models detected`
+                        : 'Cursor CLI was not detected. Install it or enter a model id manually.'}
+                    </p>
+                  </div>
+                )}
+
+                {(provider === 'codex' || provider === 'openai') && (
                   <div className="space-y-4 rounded-md border border-border bg-bg-primary p-4">
                     <div className="space-y-1">
                       <label className="block text-sm text-text-secondary">Codex Model</label>
@@ -1172,7 +1250,7 @@ export function SettingsView({
                   </div>
                 )}
 
-                {provider === 'azure' && (
+                {enabledProviders.includes('azure') && (
                   <div className="rounded-md border border-border bg-bg-primary p-4 space-y-3">
                     <p className="text-sm text-text-primary">
                       Azure AI Foundry is configured through the Codex CLI's{' '}
@@ -2407,6 +2485,82 @@ function ProviderButton({
       </div>
       <div className="mt-0.5 text-sm text-text-tertiary">{description}</div>
     </button>
+  );
+}
+
+function AgentProviderManager({
+  primaryProvider,
+  enabledProviders,
+  onSetPrimary,
+  onToggle,
+}: {
+  primaryProvider: AgentProvider;
+  enabledProviders: AgentProvider[];
+  onSetPrimary: (provider: AgentProvider) => void;
+  onToggle: (provider: AgentProvider) => void;
+}) {
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Primary agent provider"
+      className="overflow-hidden rounded-lg border border-border bg-bg-primary"
+    >
+      <div className="grid grid-cols-[minmax(0,1fr)_7rem_7rem] items-center border-b border-border-subtle bg-bg-secondary px-3 py-2 text-xs font-medium text-text-tertiary">
+        <span>Provider</span>
+        <span className="text-center">Primary</span>
+        <span className="text-center">Available</span>
+      </div>
+      {AGENT_PROVIDER_OPTIONS.map((option, index) => {
+        const isPrimary = primaryProvider === option.id;
+        const isEnabled = enabledProviders.includes(option.id);
+        return (
+          <div
+            key={option.id}
+            className={`grid grid-cols-[minmax(0,1fr)_7rem_7rem] items-center gap-2 px-3 py-3 ${
+              index > 0 ? 'border-t border-border-subtle' : ''
+            }`}
+          >
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-text-primary">{option.label}</div>
+              <div className="mt-0.5 text-xs text-text-tertiary">{option.description}</div>
+            </div>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={isPrimary}
+              onClick={() => onSetPrimary(option.id)}
+              className={`mx-auto inline-flex min-h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors ${
+                isPrimary
+                  ? 'bg-accent/12 text-accent'
+                  : 'text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
+              }`}
+            >
+              <span
+                className={`h-3 w-3 rounded-full border ${
+                  isPrimary ? 'border-accent bg-accent' : 'border-text-tertiary'
+                }`}
+                aria-hidden="true"
+              />
+              {isPrimary ? 'Primary' : 'Make primary'}
+            </button>
+            <button
+              type="button"
+              aria-pressed={isEnabled}
+              disabled={isPrimary}
+              onClick={() => onToggle(option.id)}
+              className={`mx-auto min-h-8 rounded-md px-2.5 text-xs font-medium transition-colors ${
+                isEnabled
+                  ? 'bg-success/10 text-success'
+                  : 'bg-bg-secondary text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
+              } disabled:cursor-default`}
+              title={isPrimary ? 'The primary provider is always available.' : undefined}
+            >
+              {isPrimary ? 'Required' : isEnabled ? 'Active' : 'Inactive'}
+            </button>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 

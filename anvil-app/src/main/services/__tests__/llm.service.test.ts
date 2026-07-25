@@ -39,7 +39,7 @@ vi.mock('openai', () => ({
   }),
 }));
 
-import { callLlm, resetLlmClient } from '../llm.service.js';
+import { buildCursorPrintArgs, callLlm, resetLlmClient } from '../llm.service.js';
 
 function openAiSettings() {
   return {
@@ -151,5 +151,16 @@ describe('callLlm Apple Foundation Models routing', () => {
     expect(mocks.classifyPromptForOnDeviceModel).not.toHaveBeenCalled();
     expect(mocks.callAppleFoundationModel).not.toHaveBeenCalled();
     expect(mocks.completionCreate).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Cursor CLI routing', () => {
+  it('passes the selected Cursor model without shell interpolation', () => {
+    expect(buildCursorPrintArgs('Review this change', 'cursor-grok-4.5-medium')).toEqual([
+      '-p',
+      '--model',
+      'cursor-grok-4.5-medium',
+      'Review this change',
+    ]);
   });
 });

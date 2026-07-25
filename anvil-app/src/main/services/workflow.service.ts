@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { app } from 'electron';
 import type {
+  AgentProvider,
   ChatMessage,
   CodexEvent,
   WorkflowEdge,
@@ -65,6 +66,19 @@ interface CodexThreadResult {
 
 const activeProcesses = new Map<string, ChildProcess>();
 const cancelledRunIds = new Set<string>();
+const AGENT_PROVIDERS: AgentProvider[] = ['codex', 'cursor', 'openai', 'azure'];
+
+export function normaliseWorkflowNodes(
+  nodes: WorkflowNode[],
+  fallbackProvider: AgentProvider = 'codex',
+): WorkflowNode[] {
+  return nodes.map((node) => ({
+    ...node,
+    provider: AGENT_PROVIDERS.includes(node.provider as AgentProvider)
+      ? node.provider
+      : fallbackProvider,
+  }));
+}
 
 export function validateWorkflowGraph(nodes: WorkflowNode[], edges: WorkflowEdge[]): void {
   if (nodes.length === 0) throw new Error('Add at least one step before saving this workflow.');
@@ -107,7 +121,7 @@ function mapTemplate(row: WorkflowTemplateRow): WorkflowTemplate {
     id: row.id,
     name: row.name,
     description: row.description,
-    nodes: graph.nodes,
+    nodes: normaliseWorkflowNodes(graph.nodes),
     edges: graph.edges,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -122,7 +136,7 @@ function mapRun(row: WorkflowRunRow): WorkflowRun {
     templateName: row.template_name,
     workspaceId: row.workspace_id,
     repoIds: JSON.parse(row.repo_ids_json) as string[],
-    nodes: graph.nodes,
+    nodes: normaliseWorkflowNodes(graph.nodes),
     edges: graph.edges,
     kickoff: row.kickoff,
     status: row.status,
@@ -187,14 +201,19 @@ export function deleteWorkflowTemplate(id: string): void {
 
 export async function draftWorkflowTemplate(request: string): Promise<WorkflowTemplateInput> {
   if (!request.trim()) throw new Error('Describe the workflow you want Anvil to draft.');
+  const settings = getSettings();
+  const enabledProviders = settings.enabledLlmProviders?.length
+    ? settings.enabledLlmProviders
+    : [settings.llmProvider];
   const response = await callLlm(
     [
       'Design a reusable developer workflow as strict JSON.',
       'Return one object with: name, description, and steps.',
-      'Each step has: id, name, prompt, personaId, model, reasoningEffort, executionStrategy, dependsOn.',
+      'Each step has: id, name, prompt, personaId, provider, model, reasoningEffort, executionStrategy, dependsOn.',
       'dependsOn is an array of step ids. Build a directed acyclic graph. Branch and merge when the work benefits from it.',
       'Allowed personas: coder, mentor, architect, security, reviewer, docs, ba, workshop-planner, design, db-expert, service-desk, technical-support, incident-manager, problem-manager, change-manager, service-manager.',
       'Allowed models: gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-5.5, gpt-5.3-codex-spark.',
+      `Allowed providers: ${enabledProviders.join(', ')}. Use ${settings.llmProvider} unless another enabled provider materially improves a step.`,
       'Allowed reasoning: none, minimal, low, medium, high, xhigh, max, ultra.',
       'Allowed execution strategies: focused, adaptive, parallel, review-team.',
       'Prompts must be concrete and end with a useful downstream handoff.',
@@ -215,6 +234,7 @@ export async function draftWorkflowTemplate(request: string): Promise<WorkflowTe
       name?: string;
       prompt?: string;
       personaId?: string;
+      provider?: string;
       model?: string;
       reasoningEffort?: string;
       executionStrategy?: string;
@@ -241,6 +261,9 @@ export async function draftWorkflowTemplate(request: string): Promise<WorkflowTe
       name: step.name?.trim() || `Step ${index + 1}`,
       prompt: step.prompt?.trim() || 'Complete this workflow step and provide a concise handoff.',
       personaId: getPersonaById(step.personaId ?? '') ? step.personaId! : 'coder',
+      provider: enabledProviders.includes(step.provider as AgentProvider)
+        ? (step.provider as AgentProvider)
+        : settings.llmProvider,
       model,
       reasoningEffort: resolveCodexReasoningEffort(model, step.reasoningEffort),
       executionStrategy: strategy,
@@ -352,6 +375,7 @@ async function runCodexThread(input: {
   repoRows: RepoRow[];
   workspaceId: string;
   personaId: string;
+  provider: Exclude<AgentProvider, 'cursor'>;
   model: string;
   reasoningEffort: WorkflowNode['reasoningEffort'];
   systemPrompt: string;
@@ -369,11 +393,12 @@ async function runCodexThread(input: {
     app.getPath('userData'),
   );
   const env: Record<string, string> = { ...(process.env as Record<string, string>) };
-  if (settings.llmProvider === 'openai' && settings.openaiApiKey) {
+  if (input.provider === 'openai' && settings.openaiApiKey) {
     env.OPENAI_API_KEY = settings.openaiApiKey;
   }
 
-  const proc = spawn('codex', ['app-server'], { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
+  const args = buildCodexWorkflowArgs(input.provider);
+  const proc = spawn('codex', args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
   activeProcesses.set(input.key, proc);
   const sessionId = randomUUID();
   createChatSession(
@@ -498,6 +523,134 @@ async function runCodexThread(input: {
   });
 }
 
+export function buildCodexWorkflowArgs(provider: Exclude<AgentProvider, 'cursor'>): string[] {
+  return provider === 'azure'
+    ? ['app-server', '-c', 'model_provider="azure"']
+    : provider === 'openai'
+      ? ['app-server', '-c', 'model_provider="openai"']
+      : ['app-server'];
+}
+
+async function runCursorThread(input: {
+  key: string;
+  threadId: string;
+  repoRows: RepoRow[];
+  workspaceId: string;
+  personaId: string;
+  model: string;
+  systemPrompt: string;
+  prompt: string;
+  displayPrompt?: string;
+}): Promise<CodexThreadResult> {
+  const cwd = resolveSessionCwd(
+    input.repoRows.map((repo) => repo.path),
+    { workspace: { workspaceId: input.workspaceId } },
+    app.getPath('userData'),
+  );
+  const sessionId = randomUUID();
+  createChatSession(
+    input.threadId,
+    input.repoRows[0]?.id ?? null,
+    input.personaId,
+    sessionId,
+    null,
+  );
+  saveMessage(input.threadId, input.repoRows[0]?.id ?? null, sessionId, {
+    id: randomUUID(),
+    role: 'user',
+    content: input.displayPrompt ?? input.prompt,
+    timestamp: new Date().toISOString(),
+    personaId: input.personaId,
+    threadId: input.threadId,
+  });
+
+  const combinedPrompt = [input.systemPrompt, input.prompt].join('\n\n');
+  const proc = spawn(
+    'cursor-agent',
+    ['-p', '--output-format', 'text', '--model', input.model || 'auto', combinedPrompt],
+    {
+      cwd,
+      env: { ...(process.env as Record<string, string>) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  );
+  activeProcesses.set(input.key, proc);
+
+  return new Promise((resolve, reject) => {
+    let output = '';
+    let stderr = '';
+    let completed = false;
+    const timeout = setTimeout(() => {
+      if (!proc.killed) proc.kill('SIGTERM');
+      finish(new Error('Cursor workflow step timed out after 5 minutes.'));
+    }, 300_000);
+    const finish = (error?: Error) => {
+      if (completed) return;
+      completed = true;
+      clearTimeout(timeout);
+      activeProcesses.delete(input.key);
+      if (error) {
+        reject(error);
+        return;
+      }
+      const finalOutput = output.trim();
+      if (!finalOutput) {
+        reject(new Error(stderr.trim() || 'Cursor returned no workflow output.'));
+        return;
+      }
+      saveMessage(input.threadId, input.repoRows[0]?.id ?? null, sessionId, {
+        id: randomUUID(),
+        role: 'assistant',
+        content: finalOutput,
+        timestamp: new Date().toISOString(),
+        personaId: input.personaId,
+        threadId: input.threadId,
+      });
+      resolve({ output: finalOutput, sessionId });
+    };
+
+    proc.stdout?.on('data', (chunk: Buffer) => {
+      output += chunk.toString();
+    });
+    proc.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    proc.on('error', (error) =>
+      finish(new Error(`Failed to start Cursor workflow step: ${error.message}`)),
+    );
+    proc.on('exit', (code, signal) => {
+      if (code === 0) finish();
+      else
+        finish(
+          new Error(
+            stderr.trim() || `Cursor workflow step exited early (code=${code}, signal=${signal}).`,
+          ),
+        );
+    });
+  });
+}
+
+async function runAgentThread(
+  input: Omit<Parameters<typeof runCodexThread>[0], 'provider'> & { provider: AgentProvider },
+): Promise<CodexThreadResult> {
+  const settings = getSettings();
+  const enabledProviders = settings.enabledLlmProviders?.length
+    ? settings.enabledLlmProviders
+    : [settings.llmProvider];
+  if (!enabledProviders.includes(input.provider)) {
+    throw new Error(
+      `${input.provider} is not enabled. Activate it in Settings before running this workflow.`,
+    );
+  }
+  if (input.provider === 'cursor') {
+    return runCursorThread(input);
+  }
+  return runCodexThread({
+    ...input,
+    provider: input.provider,
+  });
+}
+
 function buildNodePrompt(run: WorkflowRun, node: WorkflowNode, incoming: WorkflowEdge[]): string {
   const handoffs = incoming
     .map((edge) => {
@@ -535,12 +688,13 @@ async function executeNode(
   persistRun(run);
 
   try {
-    const result = await runCodexThread({
+    const result = await runAgentThread({
       key: `${run.id}:${node.id}`,
       threadId: thread.id,
       repoRows: getRepoRows(run.repoIds),
       workspaceId: run.workspaceId,
       personaId: node.personaId,
+      provider: node.provider ?? 'codex',
       model: node.model,
       reasoningEffort: node.reasoningEffort,
       systemPrompt: workflowSystemPrompt(node, run.workspaceId, run.repoIds),
@@ -695,14 +849,16 @@ export async function askWorkflowSupervisor(runId: string, question: string): Pr
   const providerThreadId = getDb()
     .prepare('SELECT provider_thread_id FROM chat_threads WHERE id = ?')
     .get(run.supervisorThreadId) as { provider_thread_id: string | null } | undefined;
-  const result = await runCodexThread({
+  const settings = getSettings();
+  const result = await runAgentThread({
     key: `${run.id}:supervisor`,
     threadId: run.supervisorThreadId,
     repoRows: getRepoRows(run.repoIds),
     workspaceId: run.workspaceId,
     personaId: 'coder',
-    model: getSettings().openaiModel,
-    reasoningEffort: getSettings().reasoningLevel,
+    provider: settings.llmProvider,
+    model: settings.openaiModel,
+    reasoningEffort: settings.reasoningLevel,
     systemPrompt: [
       buildSystemPrompt('coder', run.repoIds, run.workspaceId),
       'You are the supervisor for an Anvil workflow run.',
