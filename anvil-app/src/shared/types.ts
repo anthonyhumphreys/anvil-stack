@@ -1627,7 +1627,7 @@ export type AppTheme =
   | 'agent-after-hours';
 
 export interface AppSettings {
-  llmProvider: 'azure' | 'openai' | 'codex';
+  llmProvider: 'azure' | 'openai' | 'codex' | 'cursor';
   appleFoundationModelsMode: 'off' | 'prefer-simple';
 
   // Azure AI Foundry

@@ -694,7 +694,13 @@ export function SettingsView({
           ? 'ITSM'
           : 'Developer';
   const aiProviderLabel =
-    provider === 'codex' ? 'Codex CLI' : provider === 'azure' ? 'Azure AI Foundry' : 'OpenAI API';
+    provider === 'codex'
+      ? 'Codex CLI'
+      : provider === 'cursor'
+        ? 'Cursor CLI'
+        : provider === 'azure'
+          ? 'Azure AI Foundry'
+          : 'OpenAI API';
   const codexModelOptions = buildCodexModelOptions(codexStatus);
   const selectedModelId = settings.openaiModel ?? DEFAULT_CODEX_MODEL;
   const selectedModel = codexModelOptions.find((model) => model.id === selectedModelId);
@@ -963,6 +969,12 @@ export function SettingsView({
                       onClick={() => update('llmProvider', 'codex')}
                     />
                     <ProviderButton
+                      label="Cursor CLI"
+                      description="Alternate agent via cursor-agent acp"
+                      active={provider === 'cursor'}
+                      onClick={() => update('llmProvider', 'cursor')}
+                    />
+                    <ProviderButton
                       label="OpenAI API Key"
                       description="Use a separate API key"
                       active={provider === 'openai'}
@@ -985,6 +997,14 @@ export function SettingsView({
                   </p>
                 )}
 
+                {provider === 'cursor' && (
+                  <p className="text-sm text-text-secondary">
+                    Routes agentic chat through Cursor CLI using <code>cursor-agent acp</code> and
+                    Cursor's local login. Install Cursor CLI and run <code>cursor-agent login</code>
+                    before starting a session.
+                  </p>
+                )}
+
                 {provider === 'openai' && (
                   <>
                     <Field
@@ -997,7 +1017,7 @@ export function SettingsView({
                   </>
                 )}
 
-                {(provider === 'codex' || provider === 'openai') && (
+                {(provider === 'codex' || provider === 'cursor' || provider === 'openai') && (
                   <div className="space-y-4 rounded-md border border-border bg-bg-primary p-4">
                     <div className="space-y-1">
                       <label className="block text-sm text-text-secondary">Codex Model</label>

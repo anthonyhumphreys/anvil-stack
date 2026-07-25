@@ -42,6 +42,7 @@ interface ManagedSession {
   personaId: string;
   mode: CodexMode;
   process: ChildProcess;
+  provider: 'codex' | 'cursor';
   status: CodexSession['status'];
   startedAt: string;
   cwd: string;
@@ -116,24 +117,26 @@ export async function startSession(
     ...(process.env as Record<string, string>),
   };
 
-  const args = ['app-server'];
+  const provider = settings.llmProvider === 'cursor' ? 'cursor' : 'codex';
+  const command = provider === 'cursor' ? 'cursor-agent' : 'codex';
+  const args = provider === 'cursor' ? ['acp'] : ['app-server'];
 
   // Azure AI Foundry: Codex reads config from ~/.codex/config.toml (set up by user).
   // OpenAI: pass the API key via environment.
-  if (settings.llmProvider === 'openai') {
+  if (provider === 'codex' && settings.llmProvider === 'openai') {
     if (settings.openaiApiKey) env['OPENAI_API_KEY'] = settings.openaiApiKey;
   }
 
   let proc: ChildProcess;
   try {
-    proc = spawn('codex', args, {
+    proc = spawn(command, args, {
       cwd,
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
   } catch (err) {
     throw new Error(
-      `Failed to spawn codex app-server: ${err instanceof Error ? err.message : err}`,
+      `Failed to spawn ${provider === 'cursor' ? 'cursor-agent acp' : 'codex app-server'}: ${err instanceof Error ? err.message : err}`,
     );
   }
 
@@ -153,6 +156,7 @@ export async function startSession(
     personaId,
     mode: codexPolicy.sandbox === 'read-only' ? 'read-only' : mode,
     process: proc,
+    provider,
     status: 'starting',
     startedAt: new Date().toISOString(),
     cwd,
@@ -215,36 +219,50 @@ export async function startSession(
     broadcastEvent(id, { type: 'error', errorMessage: `Codex process error: ${err.message}` });
   });
 
-  // Step 1: Send initialize
-  sendCodexJsonRpc(proc, 'initialize', {
-    clientInfo: { name: 'anvil', version: app.getVersion() },
-    capabilities: {
-      experimentalApi: true,
-      mcpServerOpenaiFormElicitation: true,
-    },
-  });
-  sendCodexJsonRpcNotification(proc, 'initialized', {});
-
-  // Step 2: Start, resume, or fork a thread with system prompt and cwd.
-  const threadParams = {
-    model,
-    cwd,
-    developerInstructions: systemPrompt,
-    approvalPolicy: codexPolicy.approvalPolicy,
-    sandbox: codexPolicy.sandbox,
-  };
-  if (options?.forkFromProviderThreadId) {
-    sendCodexJsonRpc(proc, 'thread/fork', {
-      threadId: options.forkFromProviderThreadId,
-      ...threadParams,
+  if (provider === 'cursor') {
+    sendCodexJsonRpc(proc, 'initialize', {
+      protocolVersion: 1,
+      clientCapabilities: {
+        fs: { readTextFile: false, writeTextFile: false },
+        terminal: false,
+        _meta: { parameterizedModelPicker: true },
+      },
+      clientInfo: { name: 'anvil', version: app.getVersion() },
     });
-  } else if (options?.providerThreadId) {
-    sendCodexJsonRpc(proc, 'thread/resume', {
-      threadId: options.providerThreadId,
-      ...threadParams,
-    });
+    sendCodexJsonRpc(proc, 'authenticate', { methodId: 'cursor_login' });
+    sendCodexJsonRpc(proc, 'session/new', { cwd, mcpServers: [] });
   } else {
-    sendCodexJsonRpc(proc, 'thread/start', threadParams);
+    // Step 1: Send initialize
+    sendCodexJsonRpc(proc, 'initialize', {
+      clientInfo: { name: 'anvil', version: app.getVersion() },
+      capabilities: {
+        experimentalApi: true,
+        mcpServerOpenaiFormElicitation: true,
+      },
+    });
+    sendCodexJsonRpcNotification(proc, 'initialized', {});
+
+    // Step 2: Start, resume, or fork a thread with system prompt and cwd.
+    const threadParams = {
+      model,
+      cwd,
+      developerInstructions: systemPrompt,
+      approvalPolicy: codexPolicy.approvalPolicy,
+      sandbox: codexPolicy.sandbox,
+    };
+    if (options?.forkFromProviderThreadId) {
+      sendCodexJsonRpc(proc, 'thread/fork', {
+        threadId: options.forkFromProviderThreadId,
+        ...threadParams,
+      });
+    } else if (options?.providerThreadId) {
+      sendCodexJsonRpc(proc, 'thread/resume', {
+        threadId: options.providerThreadId,
+        ...threadParams,
+      });
+    } else {
+      sendCodexJsonRpc(proc, 'thread/start', threadParams);
+    }
   }
 
   // Wait for thread/started before marking ready
@@ -284,6 +302,20 @@ export async function sendMessage(
   });
   session.mode = codexPolicy.sandbox === 'read-only' ? 'read-only' : mode;
 
+  if (session.provider === 'cursor') {
+    if (!session.threadId) throw new Error('Cursor ACP session is not ready.');
+    sendCodexJsonRpc(session.process, 'session/set_config', {
+      sessionId: session.threadId,
+      configId: 'model',
+      value: model,
+    });
+    sendCodexJsonRpc(session.process, 'session/prompt', {
+      sessionId: session.threadId,
+      prompt: buildCursorPrompt(message, attachments),
+    });
+    return;
+  }
+
   sendCodexJsonRpc(session.process, 'turn/start', {
     threadId: session.threadId,
     input: buildUserInput(message, attachments),
@@ -313,6 +345,17 @@ export async function steerTurn(
     'turn/steer',
     buildTurnSteerParams(session.threadId, session.turnId, message, attachments),
   );
+}
+
+function buildCursorPrompt(
+  message: string,
+  attachments: ChatAttachment[],
+): Array<Record<string, unknown>> {
+  return buildUserInput(message, attachments).map((item) => {
+    if (item.type === 'text') return { type: 'text', text: item.text };
+    if (item.type === 'localImage') return { type: 'resource_link', uri: `file://${item.path}` };
+    return { type: 'resource_link', uri: `file://${item.path}`, name: item.name };
+  });
 }
 
 function buildUserInput(message: string, attachments: ChatAttachment[]): CodexUserInput[] {
@@ -363,7 +406,16 @@ export function emitLocalAssistantTurn(sessionId: string, text: string): void {
 export function interruptTurn(sessionId: string): void {
   const session = sessions.get(sessionId);
   if (!session) return;
-  if (!session.threadId || !session.turnId) return;
+  if (!session.threadId) return;
+  if (session.provider === 'cursor') {
+    sendCodexJsonRpcNotification(session.process, 'session/cancel', {
+      sessionId: session.threadId,
+    });
+    session.status = 'ready';
+    broadcastEvent(sessionId, { type: 'status', status: 'complete' });
+    return;
+  }
+  if (!session.turnId) return;
 
   sendCodexJsonRpc(session.process, 'turn/interrupt', {
     threadId: session.threadId,
@@ -504,6 +556,17 @@ export function buildApprovalResponse(
   decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel',
 ): Record<string, unknown> {
   if (kind !== 'permissions') return { decision };
+  const acpOptions = Array.isArray(permissions?.options) ? permissions.options : [];
+  const acpOption = acpOptions.find((option) => {
+    if (typeof option !== 'object' || option === null) return false;
+    const optionKind = (option as { kind?: unknown }).kind;
+    return decision === 'decline' || decision === 'cancel'
+      ? optionKind === 'reject_once' || optionKind === 'reject_always'
+      : optionKind === 'allow_once' || optionKind === 'allow_always';
+  }) as { optionId?: unknown } | undefined;
+  if (typeof acpOption?.optionId === 'string') {
+    return { outcome: { outcome: 'selected', optionId: acpOption.optionId } };
+  }
   return {
     permissions:
       decision === 'accept' || decision === 'acceptForSession' ? (permissions ?? {}) : {},

@@ -119,15 +119,70 @@ export function handleCodexServerLine(
 
     const result = msg.result as Record<string, unknown> | undefined;
     const thread = result?.thread as Record<string, unknown> | undefined;
-    const threadId = (thread?.id ?? result?.threadId) as string | null;
+    const threadId = (thread?.id ?? result?.threadId ?? result?.sessionId) as string | null;
     if (threadId && !state.threadId) {
       state.threadId = threadId;
+      state.initialized = true;
       callbacks.onThreadReady?.();
+    }
+    if (result?.stopReason) {
+      callbacks.onEvent?.({ type: 'status', status: 'complete' });
+      callbacks.onTurnCompleted?.();
     }
     return;
   }
 
   switch (method) {
+    case 'session/update': {
+      const params = msg.params as Record<string, unknown>;
+      const update = params?.update as Record<string, unknown> | undefined;
+      const kind = update?.sessionUpdate;
+      if (kind === 'agent_message_chunk') {
+        const text = extractAcpText(update?.content);
+        if (text) callbacks.onEvent?.({ type: 'text', text });
+      } else if (kind === 'agent_thought_chunk') {
+        const text = extractAcpText(update?.content);
+        if (text) callbacks.onEvent?.({ type: 'thinking', text });
+      } else if (kind === 'plan') {
+        const entries = Array.isArray(update?.entries) ? update.entries : [];
+        callbacks.onEvent?.({
+          type: 'plan_update',
+          plan: {
+            steps: entries.flatMap((entry, index) => {
+              if (!isRecord(entry) || typeof entry.content !== 'string') return [];
+              return [
+                {
+                  id: `cursor-plan-${index}`,
+                  text: entry.content,
+                  status: parseAcpPlanStatus(entry.status),
+                },
+              ];
+            }),
+          },
+        });
+      } else if (kind === 'tool_call' || kind === 'tool_call_update') {
+        callbacks.onEvent?.({
+          type: 'tool_call',
+          toolName: (update?.title as string) ?? (update?.kind as string) ?? 'Cursor tool',
+          toolInput: isRecord(update?.rawInput) ? update.rawInput : {},
+        });
+      }
+      break;
+    }
+
+    case 'session/request_permission': {
+      const params = msg.params as Record<string, unknown>;
+      const toolCall = params?.toolCall as Record<string, unknown> | undefined;
+      callbacks.onEvent?.({
+        type: 'approval_request',
+        approvalRequestId: requestId,
+        approvalKind: 'permissions',
+        approvalReason: typeof toolCall?.title === 'string' ? toolCall.title : undefined,
+        approvalPermissions: { options: Array.isArray(params?.options) ? params.options : [] },
+      });
+      break;
+    }
+
     case 'thread/started': {
       const params = msg.params as Record<string, unknown>;
       const thread = params?.thread as Record<string, unknown> | undefined;
@@ -443,6 +498,31 @@ function getItemId(
 ): string | undefined {
   const rawId = params.itemId ?? params.item_id ?? item?.id;
   return typeof rawId === 'string' && rawId.length > 0 ? rawId : undefined;
+}
+
+function extractAcpText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((item) => {
+      if (!isRecord(item)) return '';
+      if (item.type === 'text' && typeof item.text === 'string') return item.text;
+      return '';
+    })
+    .join('');
+}
+
+function parseAcpPlanStatus(value: unknown): ChatPlanStepStatus {
+  switch (value) {
+    case 'pending':
+      return 'pending';
+    case 'in_progress':
+      return 'in_progress';
+    case 'completed':
+      return 'completed';
+    default:
+      return 'pending';
+  }
 }
 
 function parseSubagentUpdate(

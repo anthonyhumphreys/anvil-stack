@@ -237,7 +237,7 @@ function enqueueCodexExec<T>(
   });
 }
 
-function summariseCodexStderr(stderr: string): string | null {
+function summariseCliStderr(stderr: string): string | null {
   const lines = stderr
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -248,6 +248,63 @@ function summariseCodexStderr(stderr: string): string | null {
 
   const summary = lines.slice(-3).join(' | ');
   return summary.length > 280 ? `${summary.slice(0, 277)}...` : summary;
+}
+
+async function callCursor(prompt: string, options?: LlmCallOptions): Promise<string> {
+  const cleanPrompt = prompt.replace(/\0/g, '');
+  const cwd = options?.cwd;
+  console.log(
+    `[LLM] Cursor CLI: sending prompt (${cleanPrompt.length} chars)${cwd ? ` cwd=${cwd}` : ''}`,
+  );
+
+  return enqueueCodexExec(
+    async () =>
+      new Promise((resolve, reject) => {
+        options?.onProgress?.('Sending request to Cursor CLI...');
+        const child = spawn('cursor-agent', ['-p', cleanPrompt], {
+          ...(cwd && { cwd }),
+          env: { ...process.env },
+          detached: process.platform !== 'win32',
+        });
+        let stdout = '';
+        let stderr = '';
+        const timeout = setTimeout(() => {
+          stderr += '\nCursor CLI timed out after 300 seconds.\n';
+          killProcessTree(child.pid, 'SIGTERM');
+        }, 300_000);
+        child.stdout.on('data', (chunk: Buffer) => {
+          stdout += chunk.toString();
+        });
+        child.stderr.on('data', (chunk: Buffer) => {
+          stderr += chunk.toString();
+        });
+        child.on('error', (err) => {
+          clearTimeout(timeout);
+          reject(new Error(`Cursor CLI error: ${err.message}`));
+        });
+        child.on('close', (code, signal) => {
+          clearTimeout(timeout);
+          const result = stdout.trim();
+          if (code !== 0) {
+            const msg =
+              stderr.trim() || (signal ? `terminated by ${signal}` : `exited with code ${code}`);
+            reject(new Error(`Cursor CLI error: ${msg}`));
+            return;
+          }
+          if (!result) {
+            const detail = summariseCliStderr(stderr);
+            reject(
+              new EmptyLlmResponseError(
+                `Cursor CLI returned an empty response${detail ? `: ${detail}` : ''}`,
+              ),
+            );
+            return;
+          }
+          resolve(result);
+        });
+      }),
+    options?.onProgress,
+  );
 }
 
 async function callCodex(prompt: string, options?: LlmCallOptions): Promise<string> {
@@ -344,7 +401,7 @@ async function callCodex(prompt: string, options?: LlmCallOptions): Promise<stri
         settled = true;
         const fallback = existsSync(outputPath) ? readFileSync(outputPath, 'utf-8').trim() : '';
         const result = stdout.trim() || fallback;
-        const stderrSummary = summariseCodexStderr(stderr);
+        const stderrSummary = summariseCliStderr(stderr);
         cleanup();
 
         if (code !== 0) {
@@ -403,16 +460,19 @@ export async function callLlm(
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     let result: string;
 
-    if (settings.llmProvider === 'codex') {
+    if (settings.llmProvider === 'codex' || settings.llmProvider === 'cursor') {
       try {
-        result = await callCodex(userMessage, options);
+        result =
+          settings.llmProvider === 'cursor'
+            ? await callCursor(userMessage, options)
+            : await callCodex(userMessage, options);
       } catch (err) {
         if (err instanceof EmptyLlmResponseError) {
           lastEmptyResponseMessage = err.message;
 
           if (attempt < maxRetries) {
             const delay = Math.pow(2, attempt) * 1000 + Math.random() * 500;
-            const retryMessage = `Codex returned no content, retrying (${attempt + 2}/${maxRetries + 1})...`;
+            const retryMessage = `CLI provider returned no content, retrying (${attempt + 2}/${maxRetries + 1})...`;
             console.warn(`[LLM] ${retryMessage}`);
             options?.onProgress?.(retryMessage);
             await new Promise((resolve) => setTimeout(resolve, delay));
