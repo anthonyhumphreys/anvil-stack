@@ -30,7 +30,8 @@ Use Anvil Desktop when a change needs more than a chat transcript:
 | Surface | Use it for |
 | --- | --- |
 | Repositories | Add local checkouts, inspect branch state, index modules, and ground sessions in the code that exists. |
-| Chat | Run planning, implementation, review, investigation, documentation, and handover conversations with Codex or another configured LLM provider. Thread history and workspace context stay attached. |
+| Chat | Run planning, implementation, review, investigation, documentation, and handover conversations with the configured primary agent. Thread history and workspace context stay attached. |
+| Workflows | Build reusable graphs whose steps can use different active providers and models, including Codex and the local Cursor model catalog. |
 | Work items | Bring Linear, Jira, Azure DevOps, acceptance criteria, BA findings, and follow-up tasks next to implementation work. |
 | Editor and terminal | Open workspace-scoped editor and real PTY sessions. Running terminals reattach with buffered output when you switch away and return while Anvil remains open. |
 | Git and code review | Inspect diffs, run review workflows, separate blockers from preferences, and prepare PR handover notes. |

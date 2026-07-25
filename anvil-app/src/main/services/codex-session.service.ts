@@ -5,6 +5,7 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { app, BrowserWindow } from 'electron';
 import type {
+  AgentProvider,
   ChatAttachment,
   ChatSendOptions,
   ChatStartOptions,
@@ -90,6 +91,12 @@ type PendingServerRequest =
 const pendingServerRequests = new Map<string, PendingServerRequest>();
 const pendingApprovalDetails = new Map<string, MobileApprovalRequest>();
 
+export function resolveSessionModel(provider: AgentProvider, configuredModel: string): string {
+  return provider === 'cursor'
+    ? configuredModel.trim() || 'auto'
+    : normaliseCodexModel(configuredModel);
+}
+
 /**
  * Start a new Codex app-server session for a repo + persona combo.
  * Protocol: initialize → thread/start → turn/start for each message.
@@ -103,7 +110,7 @@ export async function startSession(
   const id = randomUUID();
   const settings = getSettings();
   const mode = settings.codexMode ?? 'on-request';
-  const model = normaliseCodexModel(settings.openaiModel);
+  const model = resolveSessionModel(settings.llmProvider, settings.openaiModel);
   const codexPolicy = resolvePersonaCodexPolicy(mode, personaId);
   const systemPrompt = options?.scaffold
     ? buildScaffoldSystemPrompt(personaId, options.scaffold.rootPath)

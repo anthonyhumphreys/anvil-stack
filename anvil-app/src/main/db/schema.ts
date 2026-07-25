@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 46;
+export const SCHEMA_VERSION = 47;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -222,6 +222,7 @@ CREATE TABLE IF NOT EXISTS work_items_cache (
 CREATE TABLE IF NOT EXISTS settings (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   llm_provider TEXT DEFAULT 'codex',
+  enabled_llm_providers TEXT,
   foundry_endpoint TEXT,
   foundry_deployment TEXT,
   foundry_api_version TEXT DEFAULT '2024-10-21',
@@ -250,12 +251,18 @@ CREATE TABLE IF NOT EXISTS settings (
   confluence_base_url TEXT,
   confluence_space_key TEXT,
   confluence_pat BLOB,
+  docs_provider TEXT DEFAULT 'confluence',
+  notion_oauth_token BLOB,
+  notion_oauth_expiry TEXT,
+  notion_database_id TEXT,
   default_repo_path TEXT,
   code_review_quick_glance_rubric TEXT,
   code_review_senior_dev_rubric TEXT,
   theme TEXT DEFAULT 'system',
   user_role TEXT,
   active_workspace_id TEXT,
+  github_pat BLOB,
+  github_username TEXT,
   cloud_features_enabled INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -1526,5 +1533,11 @@ export const MIGRATIONS: Record<number, string> = {
 
     CREATE INDEX IF NOT EXISTS idx_chat_threads_inbox
       ON chat_threads(workspace_id, persona_id, settled_at, created_at DESC);
+  `,
+  47: `
+    ALTER TABLE settings ADD COLUMN enabled_llm_providers TEXT;
+    UPDATE settings
+      SET enabled_llm_providers = json_array(COALESCE(llm_provider, 'codex'))
+      WHERE enabled_llm_providers IS NULL;
   `,
 };

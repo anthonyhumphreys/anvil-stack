@@ -4,6 +4,7 @@ import type {
   WorkItemProvider,
   DocsProvider,
   AppTheme,
+  AgentProvider,
   CodexMode,
   WorkItemConnection,
 } from '../../shared/types.js';
@@ -19,6 +20,7 @@ import { testLlmConnection } from './llm.service.js';
 
 interface SettingsRow {
   llm_provider: string | null;
+  enabled_llm_providers: string | null;
   apple_foundation_models_mode: string | null;
   foundry_endpoint: string | null;
   foundry_deployment: string | null;
@@ -76,6 +78,7 @@ const APPLE_FOUNDATION_MODEL_MODES: AppSettings['appleFoundationModelsMode'][] =
   'off',
   'prefer-simple',
 ];
+const AGENT_PROVIDERS: AgentProvider[] = ['codex', 'cursor', 'openai', 'azure'];
 
 function normaliseTheme(theme: string | null | undefined): AppTheme {
   return APP_THEMES.includes(theme as AppTheme) ? (theme as AppTheme) : 'system';
@@ -95,6 +98,23 @@ function normaliseAppleFoundationModelsMode(
   return APPLE_FOUNDATION_MODEL_MODES.includes(mode as AppSettings['appleFoundationModelsMode'])
     ? (mode as AppSettings['appleFoundationModelsMode'])
     : 'off';
+}
+
+function normaliseAgentProvider(value: string | null | undefined): AgentProvider {
+  return AGENT_PROVIDERS.includes(value as AgentProvider) ? (value as AgentProvider) : 'codex';
+}
+
+export function normaliseEnabledLlmProviders(
+  value: string | AgentProvider[] | null | undefined,
+  primaryProvider: AgentProvider,
+): AgentProvider[] {
+  const parsed = Array.isArray(value) ? value : safeParseSettingsJson<unknown>(value, []);
+  const providers = Array.isArray(parsed)
+    ? parsed.filter((provider): provider is AgentProvider =>
+        AGENT_PROVIDERS.includes(provider as AgentProvider),
+      )
+    : [];
+  return [...new Set([primaryProvider, ...providers])];
 }
 
 const MASKED_SECRET = '••••••••';
@@ -239,8 +259,10 @@ export function getSettings(): AppSettings {
   }
   const activeWorkItemConnectionId =
     workspaceWorkItemConnectionId ?? configuredActiveWorkItemConnectionId;
+  const llmProvider = normaliseAgentProvider(row.llm_provider);
   const settings: AppSettings = {
-    llmProvider: (row.llm_provider as 'azure' | 'openai' | 'codex' | 'cursor') ?? 'codex',
+    llmProvider,
+    enabledLlmProviders: normaliseEnabledLlmProviders(row.enabled_llm_providers, llmProvider),
     appleFoundationModelsMode: normaliseAppleFoundationModelsMode(row.apple_foundation_models_mode),
     foundryEndpoint: row.foundry_endpoint ?? '',
     foundryDeploymentName: row.foundry_deployment ?? '',
@@ -297,7 +319,16 @@ export function updateSettings(partial: Partial<AppSettings>): void {
 
   if (partial.llmProvider !== undefined) {
     setClauses.push('llm_provider = ?');
-    values.push(partial.llmProvider);
+    values.push(normaliseAgentProvider(partial.llmProvider));
+  }
+  if (partial.enabledLlmProviders !== undefined || partial.llmProvider !== undefined) {
+    const primaryProvider = normaliseAgentProvider(partial.llmProvider ?? current.llmProvider);
+    const enabledProviders = normaliseEnabledLlmProviders(
+      partial.enabledLlmProviders ?? current.enabledLlmProviders,
+      primaryProvider,
+    );
+    setClauses.push('enabled_llm_providers = ?');
+    values.push(JSON.stringify(enabledProviders));
   }
   if (partial.appleFoundationModelsMode !== undefined) {
     setClauses.push('apple_foundation_models_mode = ?');
@@ -543,6 +574,7 @@ export async function testGitConnection(): Promise<{
 function defaultSettings(): AppSettings {
   return {
     llmProvider: 'codex',
+    enabledLlmProviders: ['codex'],
     appleFoundationModelsMode: 'off',
     foundryEndpoint: '',
     foundryDeploymentName: '',

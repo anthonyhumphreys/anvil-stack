@@ -250,7 +250,15 @@ function summariseCliStderr(stderr: string): string | null {
   return summary.length > 280 ? `${summary.slice(0, 277)}...` : summary;
 }
 
-async function callCursor(prompt: string, options?: LlmCallOptions): Promise<string> {
+export function buildCursorPrintArgs(prompt: string, model = 'auto'): string[] {
+  return ['-p', '--model', model, prompt];
+}
+
+async function callCursor(
+  prompt: string,
+  options?: LlmCallOptions,
+  model = 'auto',
+): Promise<string> {
   const cleanPrompt = prompt.replace(/\0/g, '');
   const cwd = options?.cwd;
   console.log(
@@ -261,7 +269,7 @@ async function callCursor(prompt: string, options?: LlmCallOptions): Promise<str
     async () =>
       new Promise((resolve, reject) => {
         options?.onProgress?.('Sending request to Cursor CLI...');
-        const child = spawn('cursor-agent', ['-p', cleanPrompt], {
+        const child = spawn('cursor-agent', buildCursorPrintArgs(cleanPrompt, model), {
           ...(cwd && { cwd }),
           env: { ...process.env },
           detached: process.platform !== 'win32',
@@ -464,7 +472,7 @@ export async function callLlm(
       try {
         result =
           settings.llmProvider === 'cursor'
-            ? await callCursor(userMessage, options)
+            ? await callCursor(userMessage, options, settings.openaiModel || 'auto')
             : await callCodex(userMessage, options);
       } catch (err) {
         if (err instanceof EmptyLlmResponseError) {
@@ -548,10 +556,14 @@ export async function testLlmConnection(): Promise<{ ok: boolean; error?: string
   console.log('[LLM] Testing connection...');
   try {
     const settings = getSettings();
-    if (settings.llmProvider === 'codex') {
-      console.log('[LLM] Test: running codex exec ping');
-      await callCodex('respond with the word pong');
-      console.log('[LLM] Test: codex connection OK');
+    if (settings.llmProvider === 'codex' || settings.llmProvider === 'cursor') {
+      console.log(`[LLM] Test: running ${settings.llmProvider} CLI ping`);
+      if (settings.llmProvider === 'cursor') {
+        await callCursor('respond with the word pong', undefined, settings.openaiModel || 'auto');
+      } else {
+        await callCodex('respond with the word pong');
+      }
+      console.log(`[LLM] Test: ${settings.llmProvider} connection OK`);
       return { ok: true };
     }
 

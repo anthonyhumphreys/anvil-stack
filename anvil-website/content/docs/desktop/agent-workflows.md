@@ -36,6 +36,20 @@ Anvil Desktop is built around repo-aware conversations. A useful conversation st
 
 The read-only first step is not ceremony. It prevents the model from confidently editing the wrong abstraction, which remains legal in TypeScript but rude in production.
 
+## Mix providers inside a workflow
+
+Settings separates the **primary** agent from the providers that are **active**:
+
+- The primary provider starts new chats and handles app-level AI tasks.
+- Active providers appear in each workflow step's provider selector.
+- Each step stores its own provider and model, so planning, implementation, and independent reviews do not have to use the same runtime.
+- Cursor model choices come from the locally installed `cursor-agent` catalog. Custom Codex, OpenAI, and Azure model or deployment identifiers can be entered directly.
+- Templates created before provider-aware workflows continue to use Codex unless you change the step.
+
+Codex, OpenAI, and Azure workflow steps run through Codex app-server with the selected model-provider route. Cursor workflow steps run through `cursor-agent` with the selected Cursor model. A workflow fails plainly if a saved step names a provider that is no longer active.
+
+Agents can also call another installed provider's CLI from a prompt when that is the simplest handoff. Provider-aware workflow steps are preferable when the runtime choice should be visible, repeatable, and stored with the template.
+
 ## Follow work across workspaces
 
 Starting work in one workspace does not make the rest of the app a waiting room:

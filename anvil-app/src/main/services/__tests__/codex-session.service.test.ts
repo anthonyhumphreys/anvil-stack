@@ -20,6 +20,7 @@ import {
   buildApprovalResponse,
   buildInputResponse,
   buildTurnSteerParams,
+  resolveSessionModel,
   resolvePersonaCodexPolicy,
   resolveSessionCwd,
 } from '../codex-session.service.js';
@@ -33,6 +34,14 @@ afterEach(() => {
 });
 
 describe('codex session service', () => {
+  it('keeps Cursor model ids instead of coercing them into the Codex catalog', () => {
+    expect(resolveSessionModel('cursor', 'claude-fable-5-thinking-high')).toBe(
+      'claude-fable-5-thinking-high',
+    );
+    expect(resolveSessionModel('cursor', '  ')).toBe('auto');
+    expect(resolveSessionModel('codex', '')).toBe('gpt-5.6-sol');
+  });
+
   it('builds turn steering params using the Codex app-server expected turn precondition', () => {
     const params = buildTurnSteerParams('thread-1', 'turn-1', 'Keep going, but keep it small.', [
       {
