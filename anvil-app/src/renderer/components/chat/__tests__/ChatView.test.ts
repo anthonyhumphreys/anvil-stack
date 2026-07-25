@@ -18,6 +18,15 @@ describe('getChatTurnLiveState', () => {
     expect(
       getChatTurnLiveState({ busy: true, isLatest: true, hasWork: true, hasAnswer: true }),
     ).toBe('responding');
+    expect(
+      getChatTurnLiveState({
+        busy: true,
+        isLatest: true,
+        hasWork: true,
+        hasAnswer: true,
+        hasTrailingWork: true,
+      }),
+    ).toBe('working');
   });
 
   it('does not mark completed or historical turns as live', () => {

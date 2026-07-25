@@ -60,7 +60,13 @@ import { ROLE_RECOMMENDED_PERSONAS } from '../../../shared/types';
 import { ChatInput, type ChatSlashCommand } from './ChatInput';
 import { ChatThreadRail } from './ChatThreadRail';
 import { WorkItemThreadRail } from './WorkItemThreadRail';
-import { AssistantMessage, TurnPendingMessage, TurnWorkMessage, UserMessage } from './ChatMessage';
+import {
+  AssistantMessage,
+  TurnActivityStatus,
+  TurnWorkMessage,
+  UserMessage,
+  type TurnActivityState,
+} from './ChatMessage';
 import { composeChatTurns } from './chat-turns';
 import { ChatEmptyState } from './ChatEmptyState';
 import { ArtifactPreview } from './ArtifactPreview';
@@ -340,6 +346,14 @@ export function ChatView({ userRole }: ChatViewProps) {
 
   const openFindings = findings.filter((f) => !dismissedFindings.has(f.idx));
   const composedTurns = useMemo(() => composeChatTurns(entries, { active: busy }), [busy, entries]);
+  const latestComposedTurn = composedTurns[composedTurns.length - 1];
+  const latestTurnLiveState = getChatTurnLiveState({
+    busy,
+    isLatest: true,
+    hasWork: (latestComposedTurn?.work.length ?? 0) > 0,
+    hasAnswer: Boolean(latestComposedTurn?.answer),
+    hasTrailingWork: (latestComposedTurn?.trailingWork.length ?? 0) > 0,
+  });
 
   useEffect(() => {
     const container = messagesContainerRef.current;
@@ -358,8 +372,11 @@ export function ChatView({ userRole }: ChatViewProps) {
 
   useEffect(() => {
     if (!shouldStickToBottomRef.current) return;
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [entries]);
+    messagesEndRef.current?.scrollIntoView({
+      behavior: busy ? 'auto' : 'smooth',
+      block: 'end',
+    });
+  }, [busy, entries]);
 
   useEffect(() => {
     shouldStickToBottomRef.current = true;
@@ -583,9 +600,21 @@ export function ChatView({ userRole }: ChatViewProps) {
       <div className="relative z-40 flex min-h-14 items-center gap-2 border-b border-border/60 bg-bg-secondary px-3 py-2 lg:px-4">
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <div className="min-w-0 flex-1">
-            <h2 className="truncate text-sm font-semibold tracking-tight text-text-primary">
-              {activeThread && !scaffoldModeActive ? activeThread.title : 'New conversation'}
-            </h2>
+            <div className="flex min-w-0 items-center gap-2">
+              <h2 className="truncate text-sm font-semibold tracking-tight text-text-primary">
+                {activeThread && !scaffoldModeActive ? activeThread.title : 'New conversation'}
+              </h2>
+              {latestTurnLiveState && (
+                <span
+                  className="inline-flex shrink-0 items-center gap-1.5 text-[11px] font-medium text-accent"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <Loader2 size={11} className="animate-spin" />
+                  {formatTurnActivityState(latestTurnLiveState)}
+                </span>
+              )}
+            </div>
             <p className="truncate text-xs text-text-tertiary">
               {activeWorkspace?.name ?? 'No workspace'} · {activePersona?.name ?? 'Assistant'}
             </p>
@@ -954,7 +983,7 @@ export function ChatView({ userRole }: ChatViewProps) {
               className={`h-full overflow-y-auto ${showCenteredEmptyPane ? 'flex' : ''}`}
             >
               <div
-                className={`w-full px-3 lg:px-4 ${
+                className={`w-full px-4 xl:px-6 ${
                   showCenteredEmptyPane
                     ? 'flex min-h-full flex-1 items-center justify-center py-6'
                     : 'flex flex-col pb-8 pt-6'
@@ -1054,19 +1083,20 @@ export function ChatView({ userRole }: ChatViewProps) {
                 )}
 
                 {composedTurns.length > 0 && (
-                  <div className="mx-auto w-full max-w-4xl space-y-7">
+                  <div className="w-full space-y-8">
                     {composedTurns.map((turn, turnIndex) => {
                       const liveState = getChatTurnLiveState({
                         busy,
                         isLatest: turnIndex === composedTurns.length - 1,
                         hasWork: turn.work.length > 0,
                         hasAnswer: Boolean(turn.answer),
+                        hasTrailingWork: turn.trailingWork.length > 0,
                       });
 
                       return (
                         <section
                           key={`${activeThreadId ?? 'new'}:${turn.key}`}
-                          className="space-y-4"
+                          className="w-full space-y-4"
                           aria-label={`Turn ${turnIndex + 1}`}
                         >
                           {turn.user && (
@@ -1083,9 +1113,8 @@ export function ChatView({ userRole }: ChatViewProps) {
                               }
                             />
                           )}
-                          {liveState === 'thinking' && <TurnPendingMessage label="Thinking" />}
                           {turn.work.length > 0 && (
-                            <TurnWorkMessage items={turn.work} active={liveState === 'working'} />
+                            <TurnWorkMessage items={turn.work} active={liveState !== null} />
                           )}
                           {turn.answer && (
                             <AssistantMessage
@@ -1098,6 +1127,21 @@ export function ChatView({ userRole }: ChatViewProps) {
                                 isWorkItemLayout
                                   ? undefined
                                   : () => handleBranch(turn.answer!.sourceIndex)
+                              }
+                            />
+                          )}
+                          {turn.trailingWork.length > 0 && (
+                            <TurnWorkMessage
+                              items={turn.trailingWork}
+                              active={liveState !== null}
+                            />
+                          )}
+                          {liveState && (
+                            <TurnActivityStatus
+                              state={liveState}
+                              latestItem={
+                                turn.trailingWork[turn.trailingWork.length - 1] ??
+                                turn.work[turn.work.length - 1]
                               }
                             />
                           )}
@@ -1124,8 +1168,8 @@ export function ChatView({ userRole }: ChatViewProps) {
                 onClick={handleJumpToLatest}
                 className="absolute bottom-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-bg-elevated/95 px-3 py-1.5 text-xs font-medium text-text-secondary shadow-lg backdrop-blur transition-colors hover:border-accent/40 hover:bg-bg-tertiary hover:text-text-primary"
               >
-                <ArrowDown size={13} />
-                Latest
+                {busy ? <Loader2 size={13} className="animate-spin" /> : <ArrowDown size={13} />}
+                {busy ? 'Working · Latest' : 'Latest'}
               </button>
             )}
           </div>
@@ -1954,23 +1998,35 @@ export function buildMessageReusePrefill(content: string): string {
   return content.trimEnd();
 }
 
-export type ChatTurnLiveState = 'thinking' | 'working' | 'responding' | null;
-
 export function getChatTurnLiveState({
   busy,
   isLatest,
   hasWork,
   hasAnswer,
+  hasTrailingWork = false,
 }: {
   busy: boolean;
   isLatest: boolean;
   hasWork: boolean;
   hasAnswer: boolean;
-}): ChatTurnLiveState {
+  hasTrailingWork?: boolean;
+}): TurnActivityState | null {
   if (!busy || !isLatest) return null;
+  if (hasTrailingWork) return 'working';
   if (hasAnswer) return 'responding';
   if (hasWork) return 'working';
   return 'thinking';
+}
+
+function formatTurnActivityState(state: TurnActivityState): string {
+  switch (state) {
+    case 'thinking':
+      return 'Thinking';
+    case 'responding':
+      return 'Responding';
+    case 'working':
+      return 'Working';
+  }
 }
 
 function formatGoalStatus(status: ChatGoalSnapshot['status']): string {

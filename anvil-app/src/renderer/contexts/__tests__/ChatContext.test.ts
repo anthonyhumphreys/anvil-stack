@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import type { ChatThread } from '../../../shared/types';
 import {
   chatMessagesToEntries,
   shouldSuppressPreparedChatBootstrap,
+  threadBelongsToChatList,
   threadBelongsToWorkspace,
+  upsertThreadForChatList,
 } from '../ChatContext';
 
 describe('chatMessagesToEntries', () => {
@@ -122,6 +125,82 @@ describe('threadBelongsToWorkspace', () => {
   });
 });
 
+describe('threadBelongsToChatList', () => {
+  it('rejects threads from another workspace even when they are still receiving updates', () => {
+    expect(
+      threadBelongsToChatList(
+        {
+          workspaceId: 'readingbridge',
+          personaId: 'coder',
+        },
+        {
+          workspaceId: 'anvil',
+          personaId: 'coder',
+          layout: 'classic',
+        },
+      ),
+    ).toBe(false);
+  });
+
+  it('keeps classic and work-item thread lists separate within a workspace', () => {
+    const classicScope = {
+      workspaceId: 'anvil',
+      personaId: 'coder',
+      layout: 'classic' as const,
+    };
+    const workItemScope = { ...classicScope, layout: 'workitems' as const };
+
+    expect(
+      threadBelongsToChatList({ workspaceId: 'anvil', personaId: 'coder' }, classicScope),
+    ).toBe(true);
+    expect(
+      threadBelongsToChatList(
+        {
+          workspaceId: 'anvil',
+          personaId: 'coder',
+          workItemId: 'ANV-1',
+        },
+        classicScope,
+      ),
+    ).toBe(false);
+    expect(
+      threadBelongsToChatList(
+        {
+          workspaceId: 'anvil',
+          personaId: 'architect',
+          workItemId: 'ANV-1',
+        },
+        workItemScope,
+      ),
+    ).toBe(true);
+  });
+});
+
+describe('upsertThreadForChatList', () => {
+  it('does not leak a background update into the visible workspace thread list', () => {
+    const visibleThread = buildThread({
+      id: 'anvil-thread',
+      workspaceId: 'anvil',
+      title: 'Anvil work',
+    });
+    const readingBridgeThread = buildThread({
+      id: 'readingbridge-thread',
+      workspaceId: 'readingbridge',
+      title: 'ReadingBridge work',
+    });
+    const current = [visibleThread];
+
+    const next = upsertThreadForChatList(current, readingBridgeThread, {
+      workspaceId: 'anvil',
+      personaId: 'coder',
+      layout: 'classic',
+    });
+
+    expect(next).toBe(current);
+    expect(next.map((thread) => thread.id)).toEqual(['anvil-thread']);
+  });
+});
+
 describe('shouldSuppressPreparedChatBootstrap', () => {
   it('does not leave suppression armed when launching with the active persona', () => {
     expect(shouldSuppressPreparedChatBootstrap('coder', 'coder')).toBe(false);
@@ -132,3 +211,17 @@ describe('shouldSuppressPreparedChatBootstrap', () => {
     expect(shouldSuppressPreparedChatBootstrap(null, 'coder')).toBe(true);
   });
 });
+
+function buildThread(overrides: Partial<ChatThread> = {}): ChatThread {
+  return {
+    id: 'thread-1',
+    personaId: 'coder',
+    title: 'Thread',
+    repoIds: [],
+    createdAt: '2026-07-25T08:00:00.000Z',
+    updatedAt: '2026-07-25T08:00:00.000Z',
+    messageCount: 0,
+    attentionState: 'idle',
+    ...overrides,
+  };
+}

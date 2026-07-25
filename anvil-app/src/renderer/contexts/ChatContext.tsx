@@ -171,6 +171,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     loadCollaborationMode(),
   );
   const [chatLayout, setChatLayoutState] = useState<ChatLayout>('classic');
+  const chatListScope = useMemo<ChatThreadListScope>(
+    () => ({
+      workspaceId: activeWorkspace?.id ?? null,
+      personaId: activePersona?.id ?? null,
+      layout: chatLayout,
+    }),
+    [activePersona?.id, activeWorkspace?.id, chatLayout],
+  );
+  const chatListScopeRef = useRef(chatListScope);
+  chatListScopeRef.current = chatListScope;
 
   const scaffoldModeActive =
     !!activeScaffoldSession &&
@@ -184,9 +194,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       : []),
   ]);
   const canStartWorkspaceChat = !!activeWorkspace;
+  const scopedThreads = useMemo(
+    () => threads.filter((thread) => threadBelongsToChatList(thread, chatListScope)),
+    [chatListScope, threads],
+  );
   const activeThread = useMemo(
-    () => threads.find((thread) => thread.id === activeThreadId) ?? null,
-    [threads, activeThreadId],
+    () => scopedThreads.find((thread) => thread.id === activeThreadId) ?? null,
+    [scopedThreads, activeThreadId],
   );
   const activePlan = activeThread?.activePlan ?? null;
   const activeGoal = activeThread?.activeGoal ?? null;
@@ -197,7 +211,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const entriesRef = useRef<ChatEntry[]>([]);
   entriesRef.current = entries;
   const threadsRef = useRef<ChatThread[]>([]);
-  threadsRef.current = threads;
+  threadsRef.current = scopedThreads;
   const activeThreadRef = useRef<ChatThread | null>(null);
   activeThreadRef.current = activeThread;
   const lastSelectedThreadIdsRef = useRef<Record<string, string>>(loadThreadSelectionPreferences());
@@ -319,7 +333,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, [discardPendingStreamEntry]);
 
   const applyThreadState = useCallback((thread: ChatThread) => {
-    setThreads((prev) => upsertThread(prev, thread));
+    setThreads((prev) => upsertThreadForChatList(prev, thread, chatListScopeRef.current));
   }, []);
 
   const setLiveThreadStatus = useCallback(
@@ -2205,9 +2219,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         error,
         reasoningLevel,
         reasoningOptions,
-        threads,
+        threads: scopedThreads,
         activeThread,
-        activeThreadId,
+        activeThreadId: activeThread?.id ?? null,
         liveThreadStatuses,
         collaborationMode,
         activePlan,
@@ -2673,6 +2687,29 @@ export function threadBelongsToWorkspace(
   workspaceId: string | null,
 ): boolean {
   return (thread.workspaceId ?? null) === workspaceId;
+}
+
+export interface ChatThreadListScope {
+  workspaceId: string | null;
+  personaId: string | null;
+  layout: ChatLayout;
+}
+
+export function threadBelongsToChatList(
+  thread: Pick<ChatThread, 'workspaceId' | 'personaId' | 'workItemId'>,
+  scope: ChatThreadListScope,
+): boolean {
+  if (!threadBelongsToWorkspace(thread, scope.workspaceId)) return false;
+  if (scope.layout === 'workitems') return Boolean(thread.workItemId);
+  return !thread.workItemId && thread.personaId === scope.personaId;
+}
+
+export function upsertThreadForChatList(
+  threads: ChatThread[],
+  thread: ChatThread,
+  scope: ChatThreadListScope,
+): ChatThread[] {
+  return threadBelongsToChatList(thread, scope) ? upsertThread(threads, thread) : threads;
 }
 
 export function shouldSuppressPreparedChatBootstrap(

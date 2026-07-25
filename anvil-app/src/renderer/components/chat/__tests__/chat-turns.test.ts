@@ -24,6 +24,32 @@ describe('composeChatTurns', () => {
     expect(turns[0].user?.content).toBe('Ship it');
     expect(turns[0].work.map((item) => item.kind)).toEqual(['progress', 'event']);
     expect(turns[0].answer?.content).toBe('The release is published.');
+    expect(turns[0].trailingWork).toEqual([]);
+  });
+
+  it('keeps activity that arrives after the answer below the answer', () => {
+    const turns = composeChatTurns([
+      { kind: 'user', content: 'Ship it' },
+      {
+        kind: 'assistant',
+        content: 'The release is published.',
+        itemId: 'final-1',
+        phase: 'final',
+      },
+      { kind: 'event', event: { type: 'command_exec', command: 'gh pr view', exitCode: 0 } },
+      { kind: 'assistant', content: 'Checking the pull request details.', phase: 'progress' },
+    ]);
+
+    expect(turns[0].work).toEqual([]);
+    expect(turns[0].answer?.content).toBe('The release is published.');
+    expect(turns[0].trailingWork).toEqual([
+      expect.objectContaining({ kind: 'event', sourceIndex: 2 }),
+      expect.objectContaining({
+        kind: 'progress',
+        content: 'Checking the pull request details.',
+        sourceIndex: 3,
+      }),
+    ]);
   });
 
   it('does not promote an unknown live segment until the turn completes', () => {

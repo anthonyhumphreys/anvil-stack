@@ -30,6 +30,7 @@ export interface ComposedChatTurn {
   user: IndexedChatEntry<Extract<ChatEntry, { kind: 'user' }>> | null;
   work: ChatTurnWorkItem[];
   answer: IndexedChatEntry<AssistantEntry> | null;
+  trailingWork: ChatTurnWorkItem[];
 }
 
 interface AssistantSegment {
@@ -74,6 +75,10 @@ function composeTurn(entries: Array<IndexedChatEntry>, active: boolean): Compose
     : [...assistantSegments].reverse().find((segment) => segment.entry.phase !== 'progress');
   const answerSegment = explicitFinal ?? unknownFinal;
   const answerSourceIndexes = new Set(answerSegment?.sourceIndexes ?? []);
+  const answerEndSourceIndex =
+    answerSegment && answerSegment.sourceIndexes.length > 0
+      ? Math.max(...answerSegment.sourceIndexes)
+      : Number.POSITIVE_INFINITY;
   const progressBySourceIndex = new Map<number, AssistantSegment>();
 
   for (const segment of assistantSegments) {
@@ -82,13 +87,16 @@ function composeTurn(entries: Array<IndexedChatEntry>, active: boolean): Compose
   }
 
   const work: ChatTurnWorkItem[] = [];
+  const trailingWork: ChatTurnWorkItem[] = [];
   for (const entry of entries) {
     if (entry.kind === 'user' || answerSourceIndexes.has(entry.sourceIndex)) continue;
+
+    const target = entry.sourceIndex > answerEndSourceIndex ? trailingWork : work;
 
     if (entry.kind === 'assistant') {
       const segment = progressBySourceIndex.get(entry.sourceIndex);
       if (segment) {
-        work.push({
+        target.push({
           kind: 'progress',
           content: segment.entry.content,
           sourceIndex: segment.entry.sourceIndex,
@@ -98,9 +106,9 @@ function composeTurn(entries: Array<IndexedChatEntry>, active: boolean): Compose
     }
 
     if (entry.kind === 'thinking') {
-      work.push({ kind: 'thinking', content: entry.content, sourceIndex: entry.sourceIndex });
+      target.push({ kind: 'thinking', content: entry.content, sourceIndex: entry.sourceIndex });
     } else {
-      work.push({ kind: 'event', event: entry.event, sourceIndex: entry.sourceIndex });
+      target.push({ kind: 'event', event: entry.event, sourceIndex: entry.sourceIndex });
     }
   }
 
@@ -109,6 +117,7 @@ function composeTurn(entries: Array<IndexedChatEntry>, active: boolean): Compose
     user: userEntry ?? null,
     work,
     answer: answerSegment?.entry ?? null,
+    trailingWork,
   };
 }
 

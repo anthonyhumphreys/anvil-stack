@@ -813,6 +813,7 @@ body,
 
 @media (prefers-reduced-motion: reduce) {
   .message-actions,
+  .message-bubble,
   .composer-send,
   .suggestion-card,
   .voice-recording-pulse,
