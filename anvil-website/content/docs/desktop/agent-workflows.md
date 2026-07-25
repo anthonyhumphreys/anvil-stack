@@ -9,7 +9,7 @@ order: 112
 
 # Agent workflows
 
-Anvil Desktop is built around repo-aware sessions. A useful session starts from code and ends with evidence.
+Anvil Desktop is built around repo-aware conversations. A useful conversation starts from code and ends with evidence.
 
 ## Session types
 
@@ -35,6 +35,18 @@ Anvil Desktop is built around repo-aware sessions. A useful session starts from 
 8. Record what passed and what was not verified.
 
 The read-only first step is not ceremony. It prevents the model from confidently editing the wrong abstraction, which remains legal in TypeScript but rude in production.
+
+## Follow work across workspaces
+
+Starting work in one workspace does not make the rest of the app a waiting room:
+
+- Active conversations continue when you switch workspaces.
+- The activity centre shows running work and conversations waiting for approval or input.
+- Desktop notifications open the originating workspace and exact thread.
+- Completion notifications stay quiet while Anvil is focused; approval and input can still surface because they block progress.
+- Workspace terminal processes and buffered output remain available while the desktop process is running.
+
+Notifications are navigation, not approval shortcuts. Open the thread and review the request in context before allowing work to continue.
 
 ## What to include in prompts
 

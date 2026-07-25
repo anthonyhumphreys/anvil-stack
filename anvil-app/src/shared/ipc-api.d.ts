@@ -29,6 +29,7 @@ import type {
   BaRepoLink,
   BaSession,
   ChatAttachment,
+  ChatNavigationTarget,
   ChatAttachmentInput,
   ChatArtifact,
   ChatArtifactFile,
@@ -132,6 +133,11 @@ import type {
   SbomFormat,
   SimulatorPreviewStartOptions,
   SimulatorPreviewStatus,
+  TerminalAttachResult,
+  TerminalClosedEvent,
+  TerminalDataEvent,
+  TerminalExitEvent,
+  TerminalSessionSummary,
 } from './types';
 import type { Brand } from './branding';
 
@@ -139,6 +145,7 @@ export interface AnvilAPI {
   appWindow: {
     getChromeState: () => Promise<{ isFullScreen: boolean }>;
     onChromeStateChanged: (callback: (state: { isFullScreen: boolean }) => void) => () => void;
+    onNavigateToChat: (callback: (target: ChatNavigationTarget) => void) => () => void;
   };
 
   diagnostics: {
@@ -256,6 +263,8 @@ export interface AnvilAPI {
         workItemTitle?: string;
         repoIds?: string[];
         activeRepoId?: string | null;
+        settled?: boolean;
+        viewed?: boolean;
       },
     ) => Promise<ChatThread | null>;
     deleteThread: (threadId: string) => Promise<void>;
@@ -603,12 +612,15 @@ export interface AnvilAPI {
 
   terminal: {
     create(workspaceId: string, repoId: string, cwd: string): Promise<{ terminalId: string }>;
+    list(workspaceId: string): Promise<TerminalSessionSummary[]>;
+    attach(terminalId: string, afterSequence?: number): Promise<TerminalAttachResult>;
+    detach(terminalId: string): void;
     input(terminalId: string, data: string): void;
     resize(terminalId: string, cols: number, rows: number): void;
     close(terminalId: string): Promise<void>;
-    closeAll(): Promise<void>;
-    onData(callback: (data: { terminalId: string; data: string }) => void): () => void;
-    onExit(callback: (data: { terminalId: string; exitCode: number }) => void): () => void;
+    onData(callback: (data: TerminalDataEvent) => void): () => void;
+    onExit(callback: (data: TerminalExitEvent) => void): () => void;
+    onClosed(callback: (data: TerminalClosedEvent) => void): () => void;
   };
 
   browser: {

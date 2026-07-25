@@ -96,6 +96,7 @@ interface ChatContextValue {
   setReasoningLevel: (level: ReasoningEffort) => void;
   selectThread: (threadId: string) => Promise<void>;
   renameThread: (threadId: string, title: string) => Promise<void>;
+  settleThread: (threadId: string, settled: boolean) => Promise<void>;
   deleteThread: (threadId: string) => Promise<void>;
   forkThread: (messageIndex: number) => Promise<void>;
   setCollaborationMode: (mode: ChatCollaborationMode) => void;
@@ -170,6 +171,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     loadCollaborationMode(),
   );
   const [chatLayout, setChatLayoutState] = useState<ChatLayout>('classic');
+  const chatListScope = useMemo<ChatThreadListScope>(
+    () => ({
+      workspaceId: activeWorkspace?.id ?? null,
+      personaId: activePersona?.id ?? null,
+      layout: chatLayout,
+    }),
+    [activePersona?.id, activeWorkspace?.id, chatLayout],
+  );
+  const chatListScopeRef = useRef(chatListScope);
+  chatListScopeRef.current = chatListScope;
 
   const scaffoldModeActive =
     !!activeScaffoldSession &&
@@ -183,9 +194,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       : []),
   ]);
   const canStartWorkspaceChat = !!activeWorkspace;
+  const scopedThreads = useMemo(
+    () => threads.filter((thread) => threadBelongsToChatList(thread, chatListScope)),
+    [chatListScope, threads],
+  );
   const activeThread = useMemo(
-    () => threads.find((thread) => thread.id === activeThreadId) ?? null,
-    [threads, activeThreadId],
+    () => scopedThreads.find((thread) => thread.id === activeThreadId) ?? null,
+    [scopedThreads, activeThreadId],
   );
   const activePlan = activeThread?.activePlan ?? null;
   const activeGoal = activeThread?.activeGoal ?? null;
@@ -196,10 +211,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const entriesRef = useRef<ChatEntry[]>([]);
   entriesRef.current = entries;
   const threadsRef = useRef<ChatThread[]>([]);
-  threadsRef.current = threads;
+  threadsRef.current = scopedThreads;
   const activeThreadRef = useRef<ChatThread | null>(null);
   activeThreadRef.current = activeThread;
-  const lastSelectedThreadIdsRef = useRef<Record<string, string>>({});
+  const lastSelectedThreadIdsRef = useRef<Record<string, string>>(loadThreadSelectionPreferences());
   const liveSessionsByThreadIdRef = useRef<Record<string, CodexSession>>({});
   const liveOutputBySessionIdRef = useRef<Record<string, LiveAssistantOutput>>({});
   const livePersistQueueBySessionIdRef = useRef<Record<string, Promise<void>>>({});
@@ -318,7 +333,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, [discardPendingStreamEntry]);
 
   const applyThreadState = useCallback((thread: ChatThread) => {
-    setThreads((prev) => upsertThread(prev, thread));
+    setThreads((prev) => upsertThreadForChatList(prev, thread, chatListScopeRef.current));
   }, []);
 
   const setLiveThreadStatus = useCallback(
@@ -503,7 +518,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       const threadPreferenceKey = thread.workItemId
         ? getWorkItemThreadPreferenceKey(activeWorkspace?.id ?? null)
         : getThreadPreferenceKey(activeWorkspace?.id ?? null, thread.personaId);
-      lastSelectedThreadIdsRef.current[threadPreferenceKey] = thread.id;
+      rememberThreadSelection(lastSelectedThreadIdsRef.current, threadPreferenceKey, thread.id);
     },
     [activeWorkspace?.id, discardPendingStreamEntry, repos, setLiveThreadStatus],
   );
@@ -533,9 +548,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       setActiveThreadId(created.id);
       setActiveReposState(repoSelection);
       setActiveRepoState(primaryRepo);
-      lastSelectedThreadIdsRef.current[
-        getThreadPreferenceKey(activeWorkspace?.id ?? null, persona.id)
-      ] = created.id;
+      rememberThreadSelection(
+        lastSelectedThreadIdsRef.current,
+        getThreadPreferenceKey(activeWorkspace?.id ?? null, persona.id),
+        created.id,
+      );
 
       return created;
     },
@@ -1197,6 +1214,22 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
 
       if (eventSessionId && eventThreadId) {
+        const attentionUpdate = getThreadAttentionUpdate(event);
+        if (attentionUpdate) {
+          setThreads((prev) =>
+            sortThreads(
+              prev.map((thread) =>
+                thread.id === eventThreadId
+                  ? {
+                      ...thread,
+                      ...attentionUpdate,
+                      settledAt: attentionUpdate.settledAt,
+                    }
+                  : thread,
+              ),
+            ),
+          );
+        }
         if (event.type === 'status') {
           const nextStatus: CodexSession['status'] =
             event.status === 'complete' ? 'ready' : event.status === 'error' ? 'error' : 'busy';
@@ -1264,6 +1297,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             };
           }
         }
+      } else if (event.type === 'status' && event.status === 'error') {
+        flushPendingStreamEntry();
+        setBusy(false);
+        setError(event.errorMessage ?? 'Codex could not complete this turn.');
       } else if (event.type === 'status') {
         // Ignore intermediate status events.
       } else if (event.type === 'thinking' && event.text) {
@@ -1790,9 +1827,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         ]);
         setThreads(nextThreads);
         applyThreadState(thread);
-        lastSelectedThreadIdsRef.current[
-          getWorkItemThreadPreferenceKey(activeWorkspace?.id ?? null)
-        ] = thread.id;
+        rememberThreadSelection(
+          lastSelectedThreadIdsRef.current,
+          getWorkItemThreadPreferenceKey(activeWorkspace?.id ?? null),
+          thread.id,
+        );
         await loadThreadIntoState(thread.id, nextThreads);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to open work item thread');
@@ -1836,9 +1875,41 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const selectThread = useCallback(
     async (threadId: string) => {
       if (scaffoldModeActive) return;
+      const viewedAt = new Date().toISOString();
+      setThreads((prev) =>
+        prev.map((thread) =>
+          thread.id === threadId ? { ...thread, lastViewedAt: viewedAt } : thread,
+        ),
+      );
+      void window.anvil.chat
+        .updateThread(threadId, { viewed: true })
+        .then((updated) => {
+          if (updated) applyThreadState(updated);
+        })
+        .catch((error) => console.error('Failed to mark thread as viewed:', error));
       await loadThreadIntoState(threadId);
     },
-    [loadThreadIntoState, scaffoldModeActive],
+    [applyThreadState, loadThreadIntoState, scaffoldModeActive],
+  );
+
+  const settleThread = useCallback(
+    async (threadId: string, settled: boolean) => {
+      const updated = await window.anvil.chat.updateThread(threadId, { settled });
+      if (!updated) return;
+
+      const nextThreads = sortThreads([
+        updated,
+        ...threadsRef.current.filter((thread) => thread.id !== threadId),
+      ]);
+      setThreads(nextThreads);
+
+      if (!settled || activeThreadRef.current?.id !== threadId) return;
+      const nextActiveThread = nextThreads.find((thread) => !thread.settledAt);
+      if (nextActiveThread) {
+        await loadThreadIntoState(nextActiveThread.id, nextThreads);
+      }
+    },
+    [loadThreadIntoState],
   );
 
   const deleteThread = useCallback(
@@ -2016,11 +2087,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       setActiveThreadId(createdThread.id);
       setActiveReposState(selectedRepos);
       setActiveRepoState(selectedRepos[0] ?? null);
-      lastSelectedThreadIdsRef.current[
+      rememberThreadSelection(
+        lastSelectedThreadIdsRef.current,
         createdThread.workItemId
           ? getWorkItemThreadPreferenceKey(activeWorkspace?.id ?? null)
-          : getThreadPreferenceKey(activeWorkspace?.id ?? null, targetPersona.id)
-      ] = createdThread.id;
+          : getThreadPreferenceKey(activeWorkspace?.id ?? null, targetPersona.id),
+        createdThread.id,
+      );
 
       const enrichedMessage = buildEnrichedMessage(opts.message, {
         personaId: targetPersona.id,
@@ -2146,9 +2219,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         error,
         reasoningLevel,
         reasoningOptions,
-        threads,
+        threads: scopedThreads,
         activeThread,
-        activeThreadId,
+        activeThreadId: activeThread?.id ?? null,
         liveThreadStatuses,
         collaborationMode,
         activePlan,
@@ -2168,6 +2241,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         setReasoningLevel: updateReasoningLevel,
         selectThread,
         renameThread,
+        settleThread,
         deleteThread,
         forkThread,
         setCollaborationMode,
@@ -2194,7 +2268,7 @@ function boundEventPayload<T extends CodexEvent>(event: T): T {
 }
 
 function shouldPersistEvidenceEvent(event: CodexEvent): boolean {
-  if (event.type === 'command_exec') return !!event.command;
+  if (event.type === 'command_exec') return !!event.command || !!event.output;
   if (event.type === 'subagent_update') {
     return event.subagent?.status === 'completed' || event.subagent?.status === 'failed';
   }
@@ -2204,6 +2278,7 @@ function shouldPersistEvidenceEvent(event: CodexEvent): boolean {
     event.type === 'tool_call' ||
     event.type === 'approval_request' ||
     event.type === 'input_request' ||
+    event.type === 'request_resolved' ||
     event.type === 'plan_update' ||
     event.type === 'goal_update' ||
     event.type === 'goal_cleared' ||
@@ -2264,37 +2339,49 @@ function removeResolvedRequestEntry(entries: ChatEntry[], requestId: string | nu
 }
 
 export function chatMessagesToEntries(history: ChatMessage[]): ChatEntry[] {
-  return history.flatMap((message): ChatEntry[] => {
+  const entries: ChatEntry[] = [];
+
+  for (const message of history) {
+    if (
+      message.event?.type === 'request_resolved' &&
+      message.event.resolvedRequestId !== undefined
+    ) {
+      const remaining = removeResolvedRequestEntry(entries, message.event.resolvedRequestId);
+      entries.splice(0, entries.length, ...remaining);
+      continue;
+    }
+
     if (message.role === 'user') {
-      return [
-        {
-          kind: 'user',
-          content: message.content,
-          attachments: message.attachments,
-          id: message.id,
-        },
-      ];
+      entries.push({
+        kind: 'user',
+        content: message.content,
+        attachments: message.attachments,
+        id: message.id,
+      });
+      continue;
     }
 
     if (message.event?.type === 'text') {
-      return [
-        {
-          kind: 'assistant',
-          content: message.event.text ?? message.content,
-          id: message.id,
-          itemId: message.event.itemId,
-          phase: message.event.assistantPhase,
-        },
-      ];
+      entries.push({
+        kind: 'assistant',
+        content: message.event.text ?? message.content,
+        id: message.id,
+        itemId: message.event.itemId,
+        phase: message.event.assistantPhase,
+      });
+      continue;
     }
 
     if (message.role === 'assistant') {
       // Legacy history was persisted as one flattened assistant row without metadata.
-      return [{ kind: 'assistant', content: message.content, id: message.id }];
+      entries.push({ kind: 'assistant', content: message.content, id: message.id });
+      continue;
     }
 
-    return message.event ? [{ kind: 'event', event: message.event }] : [];
-  });
+    if (message.event) entries.push({ kind: 'event', event: message.event });
+  }
+
+  return entries;
 }
 
 function appendLiveStreamEntry(
@@ -2471,10 +2558,84 @@ function upsertThread(threads: ChatThread[], thread: ChatThread): ChatThread[] {
 
 function sortThreads(threads: ChatThread[]): ChatThread[] {
   return [...threads].sort((left, right) => {
-    const leftTime = Date.parse(left.lastMessageAt ?? left.updatedAt ?? left.createdAt);
-    const rightTime = Date.parse(right.lastMessageAt ?? right.updatedAt ?? right.createdAt);
-    return rightTime - leftTime;
+    if (Boolean(left.settledAt) !== Boolean(right.settledAt)) {
+      return left.settledAt ? 1 : -1;
+    }
+
+    if (left.settledAt && right.settledAt) {
+      const settledDifference = Date.parse(right.settledAt) - Date.parse(left.settledAt);
+      if (settledDifference !== 0) return settledDifference;
+    }
+
+    const createdTimeDifference = Date.parse(right.createdAt) - Date.parse(left.createdAt);
+    if (createdTimeDifference !== 0) return createdTimeDifference;
+    return right.id.localeCompare(left.id);
   });
+}
+
+function getThreadAttentionUpdate(
+  event: CodexEvent,
+): Partial<
+  Pick<ChatThread, 'attentionState' | 'attentionUpdatedAt' | 'activeTurnStartedAt' | 'settledAt'>
+> | null {
+  const now = new Date().toISOString();
+  if (event.type === 'approval_request') {
+    return {
+      attentionState: 'approval',
+      attentionUpdatedAt: now,
+      activeTurnStartedAt: undefined,
+      settledAt: undefined,
+    };
+  }
+  if (event.type === 'input_request') {
+    return {
+      attentionState: 'input',
+      attentionUpdatedAt: now,
+      activeTurnStartedAt: undefined,
+      settledAt: undefined,
+    };
+  }
+  if (event.type === 'error' || (event.type === 'status' && event.status === 'error')) {
+    return {
+      attentionState: 'failed',
+      attentionUpdatedAt: now,
+      activeTurnStartedAt: undefined,
+    };
+  }
+  if (event.type === 'status' && (event.status === 'thinking' || event.status === 'executing')) {
+    return {
+      attentionState: 'working',
+      attentionUpdatedAt: now,
+      activeTurnStartedAt: now,
+      settledAt: undefined,
+    };
+  }
+  if (event.type === 'status' && event.status === 'complete') {
+    return {
+      attentionState: 'complete',
+      attentionUpdatedAt: now,
+      activeTurnStartedAt: undefined,
+    };
+  }
+  if (event.type === 'thread_status') {
+    if (event.threadActiveFlags?.includes('waitingOnApproval')) {
+      return {
+        attentionState: 'approval',
+        attentionUpdatedAt: now,
+        activeTurnStartedAt: undefined,
+        settledAt: undefined,
+      };
+    }
+    if (event.threadActiveFlags?.includes('waitingOnUserInput')) {
+      return {
+        attentionState: 'input',
+        attentionUpdatedAt: now,
+        activeTurnStartedAt: undefined,
+        settledAt: undefined,
+      };
+    }
+  }
+  return null;
 }
 
 function sameIdList(left: string[], right: string[]): boolean {
@@ -2490,11 +2651,65 @@ function getWorkItemThreadPreferenceKey(workspaceId: string | null): string {
   return `${workspaceId ?? 'global'}:workitems`;
 }
 
+const THREAD_SELECTION_STORAGE_KEY = 'anvil.chat.last-selected-threads';
+
+function loadThreadSelectionPreferences(): Record<string, string> {
+  try {
+    const parsed = JSON.parse(
+      window.localStorage.getItem(THREAD_SELECTION_STORAGE_KEY) ?? '{}',
+    ) as Record<string, unknown> | null;
+    if (!parsed || typeof parsed !== 'object') return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter(
+        (entry): entry is [string, string] => typeof entry[1] === 'string',
+      ),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function rememberThreadSelection(
+  preferences: Record<string, string>,
+  preferenceKey: string,
+  threadId: string,
+): void {
+  preferences[preferenceKey] = threadId;
+  try {
+    window.localStorage.setItem(THREAD_SELECTION_STORAGE_KEY, JSON.stringify(preferences));
+  } catch {
+    // Thread continuity is useful, but storage failure should not break chat selection.
+  }
+}
+
 export function threadBelongsToWorkspace(
   thread: Pick<ChatThread, 'workspaceId'>,
   workspaceId: string | null,
 ): boolean {
   return (thread.workspaceId ?? null) === workspaceId;
+}
+
+export interface ChatThreadListScope {
+  workspaceId: string | null;
+  personaId: string | null;
+  layout: ChatLayout;
+}
+
+export function threadBelongsToChatList(
+  thread: Pick<ChatThread, 'workspaceId' | 'personaId' | 'workItemId'>,
+  scope: ChatThreadListScope,
+): boolean {
+  if (!threadBelongsToWorkspace(thread, scope.workspaceId)) return false;
+  if (scope.layout === 'workitems') return Boolean(thread.workItemId);
+  return !thread.workItemId && thread.personaId === scope.personaId;
+}
+
+export function upsertThreadForChatList(
+  threads: ChatThread[],
+  thread: ChatThread,
+  scope: ChatThreadListScope,
+): ChatThread[] {
+  return threadBelongsToChatList(thread, scope) ? upsertThread(threads, thread) : threads;
 }
 
 export function shouldSuppressPreparedChatBootstrap(

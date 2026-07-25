@@ -54,7 +54,7 @@ export const productLines = [
     repoName: "anvil-app/",
     eyebrow: "Local delivery workspace",
     description:
-      "An Electron app for repo-aware agent delivery work. It keeps repositories, work items, chat sessions, Git state, reviews, security checks, terminals, docs, diagrams, and handover evidence in one local workspace.",
+      "A chat-first Electron workspace for repo-aware agent delivery. It keeps conversations, repositories, work items, Git state, reviews, terminals, and handover evidence together while active work continues across workspace switches.",
     boundary: "Owns local delivery orchestration and evidence capture.",
     status: "Active desktop app with main, preload, shared IPC, and React renderer surfaces.",
     icon: Terminal,
@@ -67,9 +67,11 @@ export const productLines = [
     command: "pnpm dev",
     points: [
       "Local Electron shell with SQLite persistence and typed IPC boundaries",
+      "Chat-first workspace with focused navigation, thread history, and cross-workspace activity indicators",
       "Codex and LLM workflows grounded in checked-out repositories, with per-turn reasoning controls",
       "Optional Apple Foundation Models routing for short on-device helper prompts",
-      "Work item, review, security, documentation, diagram, and terminal surfaces",
+      "Workspace terminals reattach with buffered output while the desktop process is running",
+      "Desktop notifications open the exact thread waiting for approval or input, or ready after completion",
       "Mobile, Raycast, watch, widget, and menu bar companion controls"
     ],
     links: [
@@ -233,8 +235,9 @@ export const proofPoints = [
 
 export const desktopWorkflow = [
   { title: "Index repos", body: "Start with local checkouts, module summaries, branch state, and architecture context." },
-  { title: "Run the session", body: "Plan, implement, investigate, review, or hand over with workspace context attached." },
+  { title: "Run the conversation", body: "Plan, implement, investigate, review, or hand over in the chat-first workspace with repository context attached." },
   { title: "Verify the change", body: "Use Git, tests, code review, security review, dependency checks, CI, docs, and diagrams where risk calls for it." },
+  { title: "Follow active work", body: "Switch workspaces without losing running chat or terminal activity, then return through the activity centre or a desktop notification." },
   { title: "Leave evidence", body: "Ship with findings, checks, unresolved risk, and handover notes a teammate can use without archaeology." }
 ];
 

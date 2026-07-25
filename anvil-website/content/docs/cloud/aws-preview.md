@@ -50,7 +50,7 @@ The `@anvil-cloud/aws` package currently includes:
 | Scheduled jobs         | EventBridge rules                                                                                                                                               |
 | Events                 | A dedicated EventBridge bus when `capabilities.events` is declared; `ctx.events.publish` maps to `PutEvents` and reports structured EventBridge failure details |
 | Workflows              | Step Functions state machines invoking the shared Lambda runtime                                                                                                |
-| Services               | ECS/Fargate preview service resources with adapter-owned task definitions                                                                                       |
+| Services               | Deploy-gated; intended ECS/Fargate shape exists, but the Cell service runner is not implemented                                                                  |
 | Agent inference        | AWS Bedrock through the `@anvil-cloud/aws` inference provider                                                                                                   |
 | Agent sandboxes        | Lambda MicroVM sessions for sandbox-required agent work when a sandbox image is configured                                                                      |
 | Outbound fetch         | Lambda runtime allow-list guard from `capabilities.outboundFetch.allow`                                                                                         |
@@ -73,10 +73,11 @@ Step Functions topology, includes Step Functions state transitions in cost
 drivers, and adds a `workflow-preview-review` approval gate. Preview deploy no
 longer blocks workflows before provisioning.
 
-For service-bearing manifests, the plan reports a `services` change, includes
-ECS/Fargate service task cost drivers, and adds a `service-preview-review`
-approval gate. The CloudFormation template requires `ServiceSubnetIds`; Cell
-authors still do not write subnet, task, cluster, or container definitions.
+For service-bearing manifests, the plan reports the intended `services` change
+and ECS/Fargate cost drivers, then blocks provisioning with
+`AWS_PREVIEW_UNSUPPORTED_FEATURE`. The current task scaffold does not execute
+the declared Cell service handler, so Anvil does not create billable idle
+resources.
 
 For outbound fetch, Guard still fails closed for undeclared or dynamic targets,
 and AWS preview writes the declared allow-list into the generated Lambda runtime.
@@ -305,9 +306,8 @@ correlation. Malformed JSON query or mutation bodies return a stable
 
 ## Current limits
 
-- Service preview support currently provisions adapter-owned Fargate resources
-  for review and hardening. Running the exact Cell service handler inside the
-  Fargate task remains a hardening step.
+- Service-bearing preview deploys are blocked until the adapter-owned Fargate
+  runner executes the exact Cell service handler.
 - Remote workflow run inspection is not yet mirrored through
   `anvil cloud workflows list/show --app`.
 - AWS Bedrock inference and Lambda MicroVM sandbox lifecycle calls are available

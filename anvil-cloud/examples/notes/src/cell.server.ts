@@ -50,9 +50,7 @@ export default app({
       auth: "required",
       handler: async (ctx) => {
         const ownerId = ctx.auth.requireUser();
-        const rows = await ctx.db.notes
-          .where("ownerId", "=", ownerId)
-          .all();
+        const rows = await ctx.db.notes.where("ownerId", "=", ownerId).all();
 
         return rows
           .filter((row) => row.archived !== true)

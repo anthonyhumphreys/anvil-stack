@@ -224,7 +224,10 @@ export function App() {
     userRole && ROLE_FEATURES[userRole].includes(feature) ? (
       element
     ) : (
-      <Navigate to="/repos" replace />
+      <Navigate
+        to={userRole && ROLE_FEATURES[userRole].includes('chat') ? '/chat' : '/repos'}
+        replace
+      />
     );
 
   if (!roleLoaded || !startupSplashElapsed) {
@@ -594,7 +597,7 @@ export function App() {
                     </ErrorBoundary>
                   }
                 />
-                <Route path="*" element={<Navigate to="/repos" replace />} />
+                <Route path="*" element={<Navigate to="/chat" replace />} />
               </Route>
             </Routes>
           </HashRouter>

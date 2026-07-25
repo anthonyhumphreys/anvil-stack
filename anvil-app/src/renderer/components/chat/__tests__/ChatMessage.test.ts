@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { buildChatFileReference, shouldCollapseUserMessage } from '../ChatMessage';
+import {
+  buildChatFileReference,
+  shouldCollapseUserMessage,
+  shouldShowTurnWorkDetails,
+} from '../ChatMessage';
 
 describe('buildChatFileReference', () => {
   it('returns the file path when no line range is available', () => {
@@ -25,5 +29,16 @@ describe('shouldCollapseUserMessage', () => {
     expect(
       shouldCollapseUserMessage(Array.from({ length: 25 }, (_, index) => `${index}`).join('\n')),
     ).toBe(true);
+  });
+});
+
+describe('shouldShowTurnWorkDetails', () => {
+  it('keeps the current turn visible even before the user expands it', () => {
+    expect(shouldShowTurnWorkDetails(true, false)).toBe(true);
+  });
+
+  it('folds settled work unless the user has expanded it', () => {
+    expect(shouldShowTurnWorkDetails(false, false)).toBe(false);
+    expect(shouldShowTurnWorkDetails(false, true)).toBe(true);
   });
 });

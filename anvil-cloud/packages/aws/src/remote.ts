@@ -127,10 +127,7 @@ export class AwsRemoteReader {
         cell: input.cell,
         environment: input.environment,
         previewName: normalizePreviewName(
-          yield* optionalStringAttributeEffect(
-            item.previewName,
-            "default",
-          ),
+          yield* optionalStringAttributeEffect(item.previewName, "default"),
         ),
         deploymentId: yield* stringAttribute(item.deploymentId, "deploymentId"),
         runtimeUrl,

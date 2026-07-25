@@ -24,6 +24,32 @@ describe('composeChatTurns', () => {
     expect(turns[0].user?.content).toBe('Ship it');
     expect(turns[0].work.map((item) => item.kind)).toEqual(['progress', 'event']);
     expect(turns[0].answer?.content).toBe('The release is published.');
+    expect(turns[0].trailingWork).toEqual([]);
+  });
+
+  it('keeps activity that arrives after the answer below the answer', () => {
+    const turns = composeChatTurns([
+      { kind: 'user', content: 'Ship it' },
+      {
+        kind: 'assistant',
+        content: 'The release is published.',
+        itemId: 'final-1',
+        phase: 'final',
+      },
+      { kind: 'event', event: { type: 'command_exec', command: 'gh pr view', exitCode: 0 } },
+      { kind: 'assistant', content: 'Checking the pull request details.', phase: 'progress' },
+    ]);
+
+    expect(turns[0].work).toEqual([]);
+    expect(turns[0].answer?.content).toBe('The release is published.');
+    expect(turns[0].trailingWork).toEqual([
+      expect.objectContaining({ kind: 'event', sourceIndex: 2 }),
+      expect.objectContaining({
+        kind: 'progress',
+        content: 'Checking the pull request details.',
+        sourceIndex: 3,
+      }),
+    ]);
   });
 
   it('does not promote an unknown live segment until the turn completes', () => {
@@ -47,6 +73,15 @@ describe('composeChatTurns', () => {
     expect(turns.map((turn) => turn.user?.content)).toEqual(['Start', 'Use the smaller scope']);
     expect(turns[0].work[0]).toMatchObject({ kind: 'progress', content: 'Working.' });
     expect(turns[1].answer?.content).toBe('Done.');
+  });
+
+  it('uses persisted message identity for stateful turn keys', () => {
+    const [turn] = composeChatTurns([
+      { kind: 'user', id: 'message-from-thread-a', content: 'Keep this state in this thread' },
+      { kind: 'assistant', id: 'answer-from-thread-a', content: 'Done.', phase: 'final' },
+    ]);
+
+    expect(turn.key).toBe('message-from-thread-a');
   });
 
   it('repairs legacy sentence fragments without flattening complete progress updates', () => {

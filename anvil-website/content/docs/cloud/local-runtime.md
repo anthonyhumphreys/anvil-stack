@@ -15,6 +15,11 @@ It uses the same `handleRuntimeRequest` boundary as deployment adapters, then
 provides local implementations for database, files, env, auth, logs, events,
 jobs, workflows, and supervised services.
 
+The runtime binds to `127.0.0.1` by default. Use `--host <address>` only when a
+native device or another machine must connect. Lens and the `/_anvil/*`
+management actions are development controls, so do not expose that port to an
+untrusted network.
+
 ## What starts with `anvil cloud dev`
 
 `anvil cloud dev` runs a build first. If the build passes, it imports the server bundle, loads the manifest, and starts:

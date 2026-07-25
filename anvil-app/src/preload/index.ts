@@ -10,6 +10,7 @@ import type {
   ArgentCommandId,
   ChatArtifactInput,
   ChatAttachment,
+  ChatNavigationTarget,
   ChatAttachmentInput,
   ChatFileMentionSearchInput,
   ChatMessage,
@@ -28,6 +29,9 @@ import type {
   GateTemplateUpdate,
   CodexUsageSnapshot,
   RepoIndexProgress,
+  TerminalClosedEvent,
+  TerminalDataEvent,
+  TerminalExitEvent,
   WorkItemProvider,
   WorkspaceCreateOptions,
 } from '../shared/types.js';
@@ -42,6 +46,12 @@ const api: AnvilAPI = {
         callback(state);
       ipcRenderer.on('app-window:chrome-state-changed', handler);
       return () => ipcRenderer.removeListener('app-window:chrome-state-changed', handler);
+    },
+    onNavigateToChat: (callback: (target: ChatNavigationTarget) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, target: ChatNavigationTarget) =>
+        callback(target);
+      ipcRenderer.on('app-window:navigate-to-chat', handler);
+      return () => ipcRenderer.removeListener('app-window:navigate-to-chat', handler);
     },
   },
 
@@ -190,6 +200,8 @@ const api: AnvilAPI = {
         workItemTitle?: string;
         repoIds?: string[];
         activeRepoId?: string | null;
+        settled?: boolean;
+        viewed?: boolean;
       },
     ) => ipcRenderer.invoke('chat:update-thread', threadId, updates),
     deleteThread: (threadId: string) => ipcRenderer.invoke('chat:delete-thread', threadId),
@@ -729,25 +741,29 @@ const api: AnvilAPI = {
   terminal: {
     create: (workspaceId: string, repoId: string, cwd: string) =>
       ipcRenderer.invoke('terminal:create', { workspaceId, repoId, cwd }),
+    list: (workspaceId: string) => ipcRenderer.invoke('terminal:list', { workspaceId }),
+    attach: (terminalId: string, afterSequence?: number) =>
+      ipcRenderer.invoke('terminal:attach', { terminalId, afterSequence }),
+    detach: (terminalId: string) => ipcRenderer.send('terminal:detach', { terminalId }),
     input: (terminalId: string, data: string) =>
       ipcRenderer.send('terminal:input', { terminalId, data }),
     resize: (terminalId: string, cols: number, rows: number) =>
       ipcRenderer.send('terminal:resize', { terminalId, cols, rows }),
     close: (terminalId: string) => ipcRenderer.invoke('terminal:close', { terminalId }),
-    closeAll: () => ipcRenderer.invoke('terminal:close-all'),
-    onData: (callback: (data: { terminalId: string; data: string }) => void) => {
-      const handler = (_e: Electron.IpcRendererEvent, data: { terminalId: string; data: string }) =>
-        callback(data);
+    onData: (callback: (data: TerminalDataEvent) => void) => {
+      const handler = (_e: Electron.IpcRendererEvent, data: TerminalDataEvent) => callback(data);
       ipcRenderer.on('terminal:data', handler);
       return () => ipcRenderer.removeListener('terminal:data', handler);
     },
-    onExit: (callback: (data: { terminalId: string; exitCode: number }) => void) => {
-      const handler = (
-        _e: Electron.IpcRendererEvent,
-        data: { terminalId: string; exitCode: number },
-      ) => callback(data);
+    onExit: (callback: (data: TerminalExitEvent) => void) => {
+      const handler = (_e: Electron.IpcRendererEvent, data: TerminalExitEvent) => callback(data);
       ipcRenderer.on('terminal:exit', handler);
       return () => ipcRenderer.removeListener('terminal:exit', handler);
+    },
+    onClosed: (callback: (data: TerminalClosedEvent) => void) => {
+      const handler = (_e: Electron.IpcRendererEvent, data: TerminalClosedEvent) => callback(data);
+      ipcRenderer.on('terminal:closed', handler);
+      return () => ipcRenderer.removeListener('terminal:closed', handler);
     },
   },
 

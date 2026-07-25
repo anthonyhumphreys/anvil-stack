@@ -19,15 +19,17 @@ The terminal runs real shell processes through `node-pty` in the main process. I
 
 - Bash, zsh, or fish depending on the system shell.
 - Full TTY features: colours, cursor movement, tab completion, curses apps.
-- Multiple terminal tabs per workspace.
-- Session restore on app restart where the OS allows it.
-- Working directory tracking per tab.
+- One terminal tab per repository in each workspace.
+- Terminal processes continue when the panel is hidden or another workspace is selected.
+- Reattachment with recent buffered output after a workspace switch or renderer remount, while the desktop process remains running.
+- Explicit tab close stops the underlying terminal process.
 
 ### What does not work yet
 
 - Windows shell selection is still being hardened. The porting guide covers the plan.
 - SSH agent forwarding from inside the terminal is not automatically wired.
-- Very long-running background processes may not survive an app restart.
+- Terminal processes do not survive a full Anvil app restart.
+- Output replay is bounded to the most recent 500,000 characters per terminal.
 
 ### Terminal limits
 
@@ -69,8 +71,9 @@ Treat terminal suggestions from AI sessions with the same scepticism you would a
 1. Open the terminal in the repo directory before running build or test commands.
 2. Use the editor for quick file inspections and small edits.
 3. Switch to your full IDE for large refactors or when you need full debugging.
-4. Keep terminal tabs named by purpose: `build`, `test`, `logs`, `server`.
-5. Copy terminal output into chat sessions when the model needs error context.
+4. Keep one terminal open for each repository that needs a running build, test, log, or server process.
+5. Close the repository tab when the process should actually stop; hiding the panel leaves it running.
+6. Copy terminal output into chat sessions when the model needs error context.
 
 ## Read next
 

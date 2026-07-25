@@ -30,6 +30,8 @@ import {
 } from './codex-protocol.service.js';
 import { emitCompanionEvent } from './companion-events.service.js';
 import { normaliseCodexModel, normaliseReasoningEffort } from '../../shared/codex-models.js';
+import { notifyChatActivity, type ChatActivityKind } from './notification.service.js';
+import { updateChatThreadAttention } from './chat-persistence.service.js';
 
 interface ManagedSession {
   id: string;
@@ -48,6 +50,7 @@ interface ManagedSession {
   threadId: string | null;
   turnId: string | null;
   initialized: boolean;
+  stopping: boolean;
   /** Resolves when thread/started is received from the server */
   threadReady: Promise<void>;
   resolveThreadReady: (() => void) | null;
@@ -161,6 +164,7 @@ export async function startSession(
     threadId: null,
     turnId: null,
     initialized: false,
+    stopping: false,
     threadReady,
     resolveThreadReady,
     rejectThreadReady,
@@ -189,12 +193,21 @@ export async function startSession(
 
   proc.on('exit', (code, signal) => {
     console.log(`[Codex:${id.slice(0, 8)}] exited with code=${code} signal=${signal}`);
+    if (session.stopping) {
+      setSessionThreadAttention(session, 'idle');
+      return;
+    }
     session.status = 'error';
     session.rejectThreadReady?.(
       new Error(`Codex app-server exited before thread was ready (code=${code}, signal=${signal})`),
     );
     session.rejectThreadReady = null;
-    broadcastEvent(id, { type: 'status', status: 'complete' });
+    setSessionThreadAttention(session, 'failed');
+    broadcastEvent(id, {
+      type: 'status',
+      status: 'error',
+      errorMessage: `Codex app-server exited (code=${code}, signal=${signal}).`,
+    });
   });
 
   proc.on('error', (err) => {
@@ -202,6 +215,7 @@ export async function startSession(
     session.status = 'error';
     session.rejectThreadReady?.(err);
     session.rejectThreadReady = null;
+    setSessionThreadAttention(session, 'failed');
     broadcastEvent(id, { type: 'error', errorMessage: `Codex process error: ${err.message}` });
   });
 
@@ -213,14 +227,18 @@ export async function startSession(
         terminal: false,
         _meta: { parameterizedModelPicker: true },
       },
-      clientInfo: { name: 'anvil', version: '0.1.0' },
+      clientInfo: { name: 'anvil', version: app.getVersion() },
     });
     sendCodexJsonRpc(proc, 'authenticate', { methodId: 'cursor_login' });
     sendCodexJsonRpc(proc, 'session/new', { cwd, mcpServers: [] });
   } else {
     // Step 1: Send initialize
     sendCodexJsonRpc(proc, 'initialize', {
-      clientInfo: { name: 'anvil', version: '0.1.0' },
+      clientInfo: { name: 'anvil', version: app.getVersion() },
+      capabilities: {
+        experimentalApi: true,
+        mcpServerOpenaiFormElicitation: true,
+      },
     });
     sendCodexJsonRpcNotification(proc, 'initialized', {});
 
@@ -273,6 +291,7 @@ export async function sendMessage(
   await session.threadReady;
 
   session.status = 'busy';
+  setSessionThreadAttention(session, 'working');
   broadcastEvent(sessionId, { type: 'status', status: 'thinking' });
 
   const settings = getSettings();
@@ -328,7 +347,10 @@ export async function steerTurn(
   );
 }
 
-function buildCursorPrompt(message: string, attachments: ChatAttachment[]): Array<Record<string, unknown>> {
+function buildCursorPrompt(
+  message: string,
+  attachments: ChatAttachment[],
+): Array<Record<string, unknown>> {
   return buildUserInput(message, attachments).map((item) => {
     if (item.type === 'text') return { type: 'text', text: item.text };
     if (item.type === 'localImage') return { type: 'resource_link', uri: `file://${item.path}` };
@@ -373,8 +395,10 @@ export function emitLocalAssistantTurn(sessionId: string, text: string): void {
   if (!session) throw new Error(`Session not found: ${sessionId}`);
 
   broadcastEvent(sessionId, { type: 'status', status: 'thinking' });
+  setSessionThreadAttention(session, 'working');
   broadcastEvent(sessionId, { type: 'text', text });
   session.status = 'ready';
+  setSessionThreadAttention(session, 'complete');
   broadcastEvent(sessionId, { type: 'status', status: 'complete' });
   emitCompanionEvent('sessions');
 }
@@ -384,7 +408,9 @@ export function interruptTurn(sessionId: string): void {
   if (!session) return;
   if (!session.threadId) return;
   if (session.provider === 'cursor') {
-    sendCodexJsonRpcNotification(session.process, 'session/cancel', { sessionId: session.threadId });
+    sendCodexJsonRpcNotification(session.process, 'session/cancel', {
+      sessionId: session.threadId,
+    });
     session.status = 'ready';
     broadcastEvent(sessionId, { type: 'status', status: 'complete' });
     return;
@@ -398,12 +424,14 @@ export function interruptTurn(sessionId: string): void {
 
   session.status = 'ready';
   session.turnId = null;
+  setSessionThreadAttention(session, 'idle');
   broadcastEvent(sessionId, { type: 'status', status: 'complete' });
 }
 
 export function stopSession(sessionId: string): void {
   const session = sessions.get(sessionId);
   if (!session) return;
+  session.stopping = true;
   try {
     session.process.kill('SIGTERM');
   } catch {
@@ -500,6 +528,7 @@ export function resolveApproval(
     decision,
   );
   sendCodexJsonRpcResult(session.process, requestId, result);
+  setSessionThreadAttention(session, 'working');
   emitCompanionEvent('approvals');
 }
 
@@ -518,6 +547,7 @@ export function resolveInputRequest(
 
   pendingServerRequests.delete(requestKey);
   sendCodexJsonRpcResult(session.process, requestId, buildInputResponse(response));
+  setSessionThreadAttention(session, 'working');
 }
 
 export function buildApprovalResponse(
@@ -554,7 +584,8 @@ export function buildInputResponse(response: CodexInputResponse): Record<string,
   }
   return {
     action: response.action,
-    ...(response.content === undefined ? {} : { content: response.content }),
+    content: response.content ?? null,
+    _meta: null,
   };
 }
 
@@ -595,8 +626,12 @@ function handleServerMessage(session: ManagedSession, line: string): void {
     onTurnStarted: () => {
       session.status = 'busy';
     },
-    onTurnCompleted: () => {
+    onTurnCompleted: (status) => {
       session.status = 'ready';
+      setSessionThreadAttention(
+        session,
+        status === 'failed' ? 'failed' : status === 'interrupted' ? 'idle' : 'complete',
+      );
     },
     onTurnIdChanged: (turnId) => {
       session.turnId = turnId;
@@ -645,6 +680,25 @@ function handleServerMessage(session: ManagedSession, line: string): void {
           });
         }
       }
+      if (event.type === 'approval_request') {
+        setSessionThreadAttention(session, 'approval');
+      } else if (event.type === 'input_request') {
+        setSessionThreadAttention(session, 'input');
+      } else if (event.type === 'thread_status') {
+        if (event.threadActiveFlags?.includes('waitingOnApproval')) {
+          setSessionThreadAttention(session, 'approval');
+        } else if (event.threadActiveFlags?.includes('waitingOnUserInput')) {
+          setSessionThreadAttention(session, 'input');
+        } else if (session.status === 'busy') {
+          setSessionThreadAttention(session, 'working');
+        }
+      } else if (event.type === 'error' || (event.type === 'status' && event.status === 'error')) {
+        setSessionThreadAttention(session, 'failed');
+      } else if (event.type === 'status' && event.status === 'complete') {
+        setSessionThreadAttention(session, 'complete');
+      } else if (event.type === 'status' && event.status === 'thinking') {
+        setSessionThreadAttention(session, 'working');
+      }
       if (event.type === 'status' && event.status === 'complete') {
         session.status = 'ready';
         emitCompanionEvent('sessions');
@@ -653,6 +707,7 @@ function handleServerMessage(session: ManagedSession, line: string): void {
         emitCompanionEvent('sessions');
       }
       broadcastEvent(session.id, event);
+      notifyForChatEvent(session, event);
     },
     onLog: (message) => {
       console.log(`[Codex:${session.id.slice(0, 8)}] ${message}`);
@@ -661,7 +716,44 @@ function handleServerMessage(session: ManagedSession, line: string): void {
       const requestKey = buildPendingRequestKey(session.id, requestId);
       pendingServerRequests.delete(requestKey);
       pendingApprovalDetails.delete(requestKey);
+      if (session.status === 'busy') {
+        setSessionThreadAttention(session, 'working');
+      }
       emitCompanionEvent('approvals');
+    },
+  });
+}
+
+function setSessionThreadAttention(
+  session: ManagedSession,
+  state: Parameters<typeof updateChatThreadAttention>[1],
+): void {
+  if (!session.appThreadId) return;
+  try {
+    updateChatThreadAttention(session.appThreadId, state);
+  } catch (error) {
+    console.warn(
+      `[Codex:${session.id.slice(0, 8)}] Failed to persist thread attention state:`,
+      error,
+    );
+  }
+}
+
+function notifyForChatEvent(session: ManagedSession, event: CodexEvent): void {
+  if (!session.workspaceId || !session.appThreadId) return;
+
+  let kind: ChatActivityKind | null = null;
+  if (event.type === 'approval_request') kind = 'approval';
+  else if (event.type === 'input_request') kind = 'input';
+  else if (event.type === 'status' && event.status === 'complete') kind = 'complete';
+
+  if (!kind) return;
+  notifyChatActivity({
+    kind,
+    target: {
+      workspaceId: session.workspaceId,
+      threadId: session.appThreadId,
+      personaId: session.personaId,
     },
   });
 }

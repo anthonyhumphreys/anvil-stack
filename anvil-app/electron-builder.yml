@@ -23,6 +23,8 @@ mac:
   target: [dmg, zip]
   icon: resources/anvil.icns
   category: public.app-category.developer-tools
+  extendInfo:
+    NSUserNotificationAlertStyle: alert
 
 win:
   target: [nsis, portable]

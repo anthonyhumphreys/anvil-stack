@@ -27,6 +27,7 @@ import {
   saveChatThreadGoal,
   saveChatThreadPlan,
   updateChatThread,
+  updateChatThreadAttention,
 } from '../chat-persistence.service.js';
 import { listChatTurnSummaries, saveChatEvent } from '../chat-evidence.service.js';
 import {
@@ -97,6 +98,31 @@ describe('chat thread persistence', () => {
     expect(updated?.title).toBe('Renamed impact review');
     expect(updated?.repoIds).toEqual([]);
     expect(updated?.activeRepoId).toBeUndefined();
+  });
+
+  it('tracks inbox attention and prevents active work from being settled', () => {
+    const thread = createChatThread({ workspaceId: 'ws-1', personaId: 'coder' });
+
+    expect(thread.attentionState).toBe('idle');
+    const settled = updateChatThread(thread.id, { settled: true });
+    expect(settled?.settledAt).toBeTruthy();
+
+    const working = updateChatThreadAttention(thread.id, 'working');
+    expect(working).toMatchObject({
+      attentionState: 'working',
+      settledAt: undefined,
+    });
+    expect(working?.activeTurnStartedAt).toBeTruthy();
+    expect(() => updateChatThread(thread.id, { settled: true })).toThrow('cannot be settled yet');
+
+    const complete = updateChatThreadAttention(thread.id, 'complete');
+    expect(complete?.attentionState).toBe('complete');
+    expect(complete?.activeTurnStartedAt).toBeUndefined();
+    expect(updateChatThread(thread.id, { settled: true })?.settledAt).toBeTruthy();
+    expect(updateChatThread(thread.id, { settled: false, viewed: true })).toMatchObject({
+      settledAt: undefined,
+    });
+    expect(getChatThread(thread.id)?.lastViewedAt).toBeTruthy();
   });
 
   it('never returns threads owned by another workspace or the global scope', () => {
@@ -215,6 +241,63 @@ describe('chat thread persistence', () => {
     expect(refreshed?.lastMessageAt).toBe('2026-04-27T10:01:00.000Z');
   });
 
+  it('does not move conversation recency backwards when an older segment is persisted late', () => {
+    const thread = createChatThread({
+      workspaceId: 'ws-1',
+      personaId: 'coder',
+      title: 'Stable recency',
+    });
+
+    saveChatEntry(thread.id, null, null, {
+      id: 'new-user-message',
+      role: 'user',
+      content: 'This is the newest activity.',
+      timestamp: '2026-04-27T12:00:00.000Z',
+    });
+    saveChatEntry(thread.id, null, null, {
+      id: 'late-progress-segment',
+      role: 'system',
+      content: 'This progress segment was flushed late.',
+      timestamp: '2026-04-27T11:00:00.000Z',
+      event: {
+        type: 'text',
+        text: 'This progress segment was flushed late.',
+        assistantPhase: 'progress',
+      },
+    });
+    saveChatEntry(thread.id, null, null, {
+      id: 'late-final-segment',
+      role: 'assistant',
+      content: 'This final segment was also flushed late.',
+      timestamp: '2026-04-27T11:30:00.000Z',
+      event: {
+        type: 'text',
+        text: 'This final segment was also flushed late.',
+        assistantPhase: 'final',
+      },
+    });
+
+    expect(getChatThread(thread.id)?.lastMessageAt).toBe('2026-04-27T12:00:00.000Z');
+  });
+
+  it('uses deterministic ordering when thread activity timestamps match', () => {
+    const first = createChatThread({ workspaceId: 'ws-1', personaId: 'coder' });
+    const second = createChatThread({ workspaceId: 'ws-1', personaId: 'coder' });
+    const timestamp = '2026-04-27T12:00:00.000Z';
+
+    inMemoryDb
+      .prepare(
+        `UPDATE chat_threads
+         SET created_at = ?, updated_at = ?, last_message_at = ?
+         WHERE id IN (?, ?)`,
+      )
+      .run(timestamp, timestamp, timestamp, first.id, second.id);
+
+    expect(listChatThreads('ws-1', 'coder').map((thread) => thread.id)).toEqual(
+      [first.id, second.id].sort((left, right) => right.localeCompare(left)),
+    );
+  });
+
   it('builds turn evidence from persisted Codex events without inflating message count', () => {
     const thread = createChatThread({
       workspaceId: 'ws-1',
@@ -275,6 +358,37 @@ describe('chat thread persistence', () => {
 
     const refreshed = getChatThread(thread.id);
     expect(refreshed?.messageCount).toBe(2);
+  });
+
+  it('coalesces command progress into one persisted activity card', () => {
+    const thread = createChatThread({ workspaceId: 'ws-1', personaId: 'coder' });
+    const sessionId = createChatSession(thread.id, 'repo-1', 'coder');
+
+    saveChatEvent(
+      thread.id,
+      'repo-1',
+      sessionId,
+      { type: 'command_exec', command: 'pnpm test', output: '' },
+      '2026-04-27T10:00:00.000Z',
+    );
+    saveChatEvent(
+      thread.id,
+      'repo-1',
+      sessionId,
+      { type: 'command_exec', output: 'running\n' },
+      '2026-04-27T10:00:01.000Z',
+    );
+    saveChatEvent(
+      thread.id,
+      'repo-1',
+      sessionId,
+      { type: 'command_exec', command: 'pnpm test', output: 'passed\n', exitCode: 0 },
+      '2026-04-27T10:00:02.000Z',
+    );
+
+    expect(loadChatHistory(thread.id).map((message) => message.event)).toEqual([
+      { type: 'command_exec', command: 'pnpm test', output: 'passed\n', exitCode: 0 },
+    ]);
   });
 
   it('round-trips segmented assistant metadata alongside activity in chronological order', () => {

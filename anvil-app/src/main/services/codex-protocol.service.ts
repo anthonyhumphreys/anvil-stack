@@ -35,7 +35,7 @@ export interface CodexProtocolCallbacks {
   onThreadReady?: () => void;
   onThreadError?: (message: string) => void;
   onTurnStarted?: () => void;
-  onTurnCompleted?: () => void;
+  onTurnCompleted?: (status: 'completed' | 'interrupted' | 'failed' | 'inProgress') => void;
   onTurnIdChanged?: (turnId: string | null) => void;
   onEvent?: (event: CodexEvent) => void;
   onServerRequestResolved?: (requestId: JsonRpcRequestId) => void;
@@ -133,7 +133,6 @@ export function handleCodexServerLine(
   }
 
   switch (method) {
-
     case 'session/update': {
       const params = msg.params as Record<string, unknown>;
       const update = params?.update as Record<string, unknown> | undefined;
@@ -223,13 +222,31 @@ export function handleCodexServerLine(
       break;
     }
 
-    case 'turn/completed':
+    case 'turn/completed': {
+      const params = msg.params as Record<string, unknown>;
+      const turn = params?.turn as Record<string, unknown> | undefined;
+      const rawStatus = turn?.status;
+      const status =
+        rawStatus === 'interrupted' || rawStatus === 'failed' || rawStatus === 'inProgress'
+          ? rawStatus
+          : 'completed';
       flushAllPendingFileChanges(state, callbacks);
       state.turnId = null;
       callbacks.onTurnIdChanged?.(null);
-      callbacks.onEvent?.({ type: 'status', status: 'complete' });
-      callbacks.onTurnCompleted?.();
+      if (status === 'failed') {
+        const error = turn?.error as Record<string, unknown> | undefined;
+        callbacks.onEvent?.({
+          type: 'status',
+          status: 'error',
+          errorMessage:
+            typeof error?.message === 'string' ? error.message : 'Codex turn failed to complete.',
+        });
+      } else {
+        callbacks.onEvent?.({ type: 'status', status: 'complete' });
+      }
+      callbacks.onTurnCompleted?.(status);
       break;
+    }
 
     case 'turn/plan/updated': {
       const params = msg.params as Record<string, unknown>;

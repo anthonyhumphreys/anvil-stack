@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   FileText,
@@ -103,7 +103,7 @@ export function ActivityGroupMessage({
 
   return (
     <div className="message-bubble flex justify-start">
-      <div className="w-full max-w-3xl rounded-lg border border-border-subtle bg-bg-secondary/45">
+      <div className="w-full rounded-lg border border-border-subtle bg-bg-secondary/45">
         <button
           onClick={() => setExpanded(!expanded)}
           className="flex w-full items-start gap-2 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-bg-tertiary/45"
@@ -194,7 +194,7 @@ export function TurnWorkMessage({
   active?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const showDetails = active || expanded;
+  const showDetails = shouldShowTurnWorkDetails(active, expanded);
   const progressCount = items.filter((item) => item.kind === 'progress').length;
   const activityEvents = items
     .filter((item): item is Extract<ChatTurnWorkItem, { kind: 'event' }> => item.kind === 'event')
@@ -219,30 +219,39 @@ export function TurnWorkMessage({
       ? `${activityEvents.length} action${activityEvents.length === 1 ? '' : 's'}`
       : null,
   ].filter((part): part is string => Boolean(part));
+  const latestActivity = describeWorkItem(items[items.length - 1]);
 
   if (items.length === 0) return null;
 
   return (
     <div className="message-bubble flex justify-start">
-      <div className="w-full max-w-[960px] border-y border-border-subtle/80">
+      <div className="w-full border-y border-border-subtle/80">
         <button
           type="button"
           onClick={() => setExpanded((current) => !current)}
-          className="flex min-h-10 w-full items-center gap-2.5 py-2 text-left text-xs transition-colors hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          disabled={active}
+          className="flex min-h-10 w-full items-center gap-2.5 py-2 text-left text-xs transition-colors hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-default"
           aria-expanded={showDetails}
-          aria-label={showDetails ? 'Collapse work details' : 'Expand work details'}
+          aria-label={
+            active
+              ? 'Live work details'
+              : showDetails
+                ? 'Collapse work details'
+                : 'Expand work details'
+          }
         >
           <span className="shrink-0 text-text-tertiary">
             {showDetails ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
           </span>
           {active ? (
-            <Loader2 size={12} className="shrink-0 animate-spin text-warning" />
+            <WorkingDots compact />
           ) : (
             <Wrench size={12} className="shrink-0 text-text-tertiary" />
           )}
-          <span className="font-medium text-text-secondary">{active ? 'Working' : 'Work'}</span>
+          <span className="font-medium text-text-secondary">{active ? 'Live work' : 'Work'}</span>
           <span className="min-w-0 flex-1 truncate text-text-tertiary">
-            {summaryParts.join(' · ') || 'Reasoning update'}
+            {[summaryParts.join(' · '), latestActivity].filter(Boolean).join(' — ') ||
+              'Reasoning update'}
           </span>
           {failedCount > 0 && (
             <span className="rounded-full bg-error/10 px-2 py-0.5 font-medium text-error">
@@ -269,9 +278,7 @@ export function TurnWorkMessage({
               if (item.kind === 'progress') {
                 return (
                   <div key={`progress-${item.sourceIndex}`} className="pr-2">
-                    <p className="mb-1 text-[11px] font-medium uppercase tracking-[0.08em] text-text-muted">
-                      Update
-                    </p>
+                    <p className="mb-1 text-[11px] font-medium text-text-muted">Progress update</p>
                     <div className="text-text-secondary">
                       <MarkdownRenderer content={item.content} />
                     </div>
@@ -304,16 +311,116 @@ export function TurnWorkMessage({
   );
 }
 
-export function TurnPendingMessage({ label = 'Thinking' }: { label?: string }) {
+export type TurnActivityState = 'thinking' | 'working' | 'responding';
+
+export function TurnActivityStatus({
+  state,
+  latestItem,
+}: {
+  state: TurnActivityState;
+  latestItem?: ChatTurnWorkItem;
+}) {
+  const timerRef = useRef<HTMLSpanElement>(null);
+  const startedAtRef = useRef(Date.now());
+  const detail =
+    state === 'thinking'
+      ? 'Preparing the next step'
+      : state === 'responding'
+        ? 'Writing the response'
+        : describeWorkItem(latestItem) || 'Running the next action';
+
+  useEffect(() => {
+    const update = () => {
+      if (timerRef.current) {
+        timerRef.current.textContent = formatElapsedTime(Date.now() - startedAtRef.current);
+      }
+    };
+    update();
+    const interval = window.setInterval(update, 1_000);
+    return () => window.clearInterval(interval);
+  }, []);
+
   return (
-    <div className="message-bubble flex justify-start" role="status" aria-live="polite">
-      <div className="flex min-h-10 items-center gap-2.5 text-xs text-text-tertiary">
-        <Loader2 size={13} className="shrink-0 animate-spin text-warning" />
-        <span className="font-medium text-text-secondary">{label}</span>
-        <span>Preparing a response...</span>
+    <div
+      className="message-bubble flex w-full justify-start"
+      role="status"
+      aria-live="polite"
+      aria-label={`Anvil is working. ${detail}.`}
+    >
+      <div className="flex min-h-11 w-full items-center gap-2.5 border-y border-accent/20 bg-accent/[0.035] px-1 py-2.5">
+        <WorkingDots />
+        <div className="min-w-0 flex-1 text-xs">
+          <span className="font-semibold text-text-primary">Anvil is working</span>
+          <span className="text-text-tertiary"> · {detail}</span>
+        </div>
+        <span
+          ref={timerRef}
+          className="shrink-0 font-mono text-[11px] tabular-nums text-text-muted"
+          aria-hidden="true"
+        >
+          0s
+        </span>
       </div>
     </div>
   );
+}
+
+export function shouldShowTurnWorkDetails(active: boolean, expanded: boolean): boolean {
+  return active || expanded;
+}
+
+function WorkingDots({ compact = false }: { compact?: boolean }) {
+  return (
+    <span className={`working-dots ${compact ? 'working-dots--compact' : ''}`} aria-hidden="true">
+      <span />
+      <span />
+      <span />
+    </span>
+  );
+}
+
+function describeWorkItem(item: ChatTurnWorkItem | undefined): string {
+  if (!item) return '';
+  if (item.kind === 'progress') return 'Processing the latest update';
+  if (item.kind === 'thinking') return 'Reasoning through the next step';
+
+  switch (item.event.type) {
+    case 'command_exec':
+      return item.event.command ? 'Running a command' : 'Reading command output';
+    case 'file_read':
+      return 'Reading files';
+    case 'file_edit':
+      return 'Applying changes';
+    case 'tool_call':
+      return item.event.toolName ? `Using ${item.event.toolName}` : 'Using a tool';
+    case 'approval_request':
+      return 'Waiting for approval';
+    case 'input_request':
+      return 'Waiting for your input';
+    case 'subagent_update':
+      return 'Coordinating agent work';
+    case 'plan_update':
+      return 'Updating the plan';
+    case 'goal_update':
+    case 'goal_cleared':
+      return 'Updating the goal';
+    case 'error':
+      return 'Handling an error';
+    default:
+      return 'Processing the latest activity';
+  }
+}
+
+function formatElapsedTime(elapsedMs: number): string {
+  const seconds = Math.max(0, Math.floor(elapsedMs / 1_000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  if (minutes < 60)
+    return remainingSeconds > 0 ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
 }
 
 function TextEvent({ text }: { text: string }) {
@@ -1278,7 +1385,7 @@ export function AssistantMessage({
           aria-live={active ? 'polite' : undefined}
         >
           {active ? (
-            <Loader2 size={12} className="shrink-0 animate-spin text-warning" aria-hidden="true" />
+            <WorkingDots compact />
           ) : (
             <span
               className="h-1.5 w-1.5 rounded-full bg-text-tertiary"
@@ -1287,12 +1394,12 @@ export function AssistantMessage({
             />
           )}
           <span>{label}</span>
-          {active && <span className="font-normal text-text-muted">Responding</span>}
+          {active && <span className="font-normal text-text-tertiary">Responding</span>}
         </div>
-        <div className="overflow-hidden rounded-xl border border-border-subtle bg-bg-secondary/45 px-4 py-3.5 text-text-secondary transition-colors group-hover:border-border [&_.markdown-body>p]:text-[15px] [&_.markdown-body>p]:leading-7">
+        <div className="px-1 text-text-secondary [&_.markdown-body>p]:text-[15px] [&_.markdown-body>p]:leading-7">
           <MarkdownRenderer content={display} />
         </div>
-        <div className="message-actions absolute -bottom-7 left-0">
+        <div className="message-actions mt-1">
           <MessageActionsToolbar
             onCopy={handleCopy}
             onBranch={onBranch}
@@ -1362,7 +1469,7 @@ export function UserMessage({
             </button>
           )}
         </div>
-        <div className="message-actions absolute -bottom-7 right-0">
+        <div className="message-actions mt-1 flex justify-end">
           <MessageActionsToolbar
             onCopy={handleCopy}
             onEdit={onEdit}

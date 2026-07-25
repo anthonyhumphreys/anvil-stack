@@ -131,6 +131,7 @@ export type LocalRuntimeServerOptions = {
   rootDir?: string;
   stateDir?: string;
   cellName: string;
+  host?: string;
   port?: number;
   clientPort?: number;
   clientDistDir?: string;
@@ -221,12 +222,14 @@ export async function startLocalRuntimeServer(
     options.clientDistDir ?? ".anvil/dist/client",
   );
   const port = options.port ?? 8787;
+  const bindHost = options.host ?? "127.0.0.1";
+  const publicHost = options.host ?? "localhost";
   const clientPort = options.clientPort ?? 5173;
   const clientMode = options.clientMode ?? "static";
   const outboundFetchAllowHosts = outboundFetchAllowListFromManifest(
     options.manifest,
   );
-  let runtimeUrl = `http://localhost:${port}`;
+  let runtimeUrl = `http://${formatUrlHost(publicHost)}:${port}`;
   let clientUrl = `http://localhost:${clientPort}`;
   const hostOptions: {
     stateDir: string;
@@ -298,11 +301,11 @@ export async function startLocalRuntimeServer(
     });
   });
 
-  await listen(server, port);
+  await listen(server, port, bindHost);
   const address = server.address();
 
   if (typeof address === "object" && address !== null) {
-    runtimeUrl = `http://localhost:${address.port}`;
+    runtimeUrl = `http://${formatUrlHost(publicHost)}:${address.port}`;
   }
 
   let clientServer: Server | undefined;
@@ -329,7 +332,7 @@ export async function startLocalRuntimeServer(
           response,
         });
       });
-      await listen(clientServer, clientPort);
+      await listen(clientServer, clientPort, bindHost);
     }
   } catch (error) {
     await host.schedules.stop();
@@ -586,7 +589,9 @@ export class JsonDatabaseBranchManager {
     return this.summarize(metadata, state.active, now);
   }
 
-  async listBranches(now: Date = new Date()): Promise<JsonDatabaseBranchSummary[]> {
+  async listBranches(
+    now: Date = new Date(),
+  ): Promise<JsonDatabaseBranchSummary[]> {
     const state = await this.readState();
     const primary = await this.primarySummary(state.active, now);
     const branches = await Promise.all(
@@ -644,7 +649,10 @@ export class JsonDatabaseBranchManager {
     return { branch: branchName, against: againstName, tables };
   }
 
-  async promoteBranch(name: string, now: Date = new Date()): Promise<JsonDatabaseBranchSummary> {
+  async promoteBranch(
+    name: string,
+    now: Date = new Date(),
+  ): Promise<JsonDatabaseBranchSummary> {
     const state = await this.readState();
     const branchName = this.normalizeExistingBranch(name);
 
@@ -652,7 +660,9 @@ export class JsonDatabaseBranchManager {
       return this.primarySummary(state.active, now);
     }
 
-    const metadata = state.branches.find((branch) => branch.name === branchName);
+    const metadata = state.branches.find(
+      (branch) => branch.name === branchName,
+    );
 
     if (!metadata) {
       throw new Error(`Database branch '${name}' does not exist.`);
@@ -669,7 +679,9 @@ export class JsonDatabaseBranchManager {
     return this.summarize(metadata, state.active, now);
   }
 
-  async deleteBranch(name: string): Promise<{ name: string; deleted: boolean }> {
+  async deleteBranch(
+    name: string,
+  ): Promise<{ name: string; deleted: boolean }> {
     const branchName = this.normalizeExistingBranch(name);
 
     if (branchName === primaryDatabaseBranch) {
@@ -677,13 +689,17 @@ export class JsonDatabaseBranchManager {
     }
 
     const state = await this.readState();
-    const metadata = state.branches.find((branch) => branch.name === branchName);
+    const metadata = state.branches.find(
+      (branch) => branch.name === branchName,
+    );
 
     if (!metadata) {
       return { name: branchName, deleted: false };
     }
 
-    state.branches = state.branches.filter((branch) => branch.name !== branchName);
+    state.branches = state.branches.filter(
+      (branch) => branch.name !== branchName,
+    );
     if (state.active === branchName) {
       state.active = primaryDatabaseBranch;
     }
@@ -854,7 +870,8 @@ export class JsonDatabaseBranchManager {
 
     if (!activeExists) {
       active =
-        branches.find((branch) => branch.name === primaryDatabaseBranch)?.name ??
+        branches.find((branch) => branch.name === primaryDatabaseBranch)
+          ?.name ??
         branches[0]?.name ??
         primaryDatabaseBranch;
     }
@@ -1229,11 +1246,13 @@ export class LocalUsageMeter {
     return readNdjsonFile<LocalUsageEvent>(this.filePath);
   }
 
-  async summarize(options: {
-    sinceMs?: number;
-    budgetUsd?: number;
-    sessionBudgetUsd?: number;
-  } = {}): Promise<LocalUsageSummary> {
+  async summarize(
+    options: {
+      sinceMs?: number;
+      budgetUsd?: number;
+      sessionBudgetUsd?: number;
+    } = {},
+  ): Promise<LocalUsageSummary> {
     const events = (await this.entries()).filter((event) => {
       if (options.sinceMs === undefined) {
         return true;
@@ -1276,7 +1295,7 @@ export class LocalUsageMeter {
       addUsage(consumer.totals, event);
 
       const bucket = hourlyBucket(event.timestamp);
-      addUsage((buckets.get(bucket) ?? setUsageBucket(buckets, bucket)), event);
+      addUsage(buckets.get(bucket) ?? setUsageBucket(buckets, bucket), event);
     }
 
     return {
@@ -1455,9 +1474,11 @@ export class LocalAgentSessionAdapter {
         timestamp: now,
       });
 
-      return (await this.read()).find(
-        (candidate) => candidate.sessionId === session.sessionId,
-      ) ?? session;
+      return (
+        (await this.read()).find(
+          (candidate) => candidate.sessionId === session.sessionId,
+        ) ?? session
+      );
     });
   }
 
@@ -3432,9 +3453,9 @@ function runtimeRequestName(request: RuntimeRequest): string {
     : request.name;
 }
 
-function optionalSessionId(
-  context: Record<string, unknown> | undefined,
-): { sessionId?: string } {
+function optionalSessionId(context: Record<string, unknown> | undefined): {
+  sessionId?: string;
+} {
   const sessionId = context?.sessionId;
 
   return typeof sessionId === "string" ? { sessionId } : {};
@@ -3453,10 +3474,7 @@ function estimateInferenceCostUsd(
   );
 }
 
-function numberFromModelOption(
-  model: AgentModelConfig,
-  key: string,
-): number {
+function numberFromModelOption(model: AgentModelConfig, key: string): number {
   const value = model.options?.[key];
 
   return typeof value === "number" && Number.isFinite(value) && value >= 0
@@ -3481,10 +3499,7 @@ function usageBudgetOptions(env: LocalEnvAdapter): {
   sessionBudgetUsd?: number;
 } {
   const budgetUsd = numberFromEnv(env, "ANVIL_USAGE_DAILY_BUDGET_USD");
-  const sessionBudgetUsd = numberFromEnv(
-    env,
-    "ANVIL_USAGE_SESSION_BUDGET_USD",
-  );
+  const sessionBudgetUsd = numberFromEnv(env, "ANVIL_USAGE_SESSION_BUDGET_USD");
 
   return {
     ...(budgetUsd === undefined ? {} : { budgetUsd }),
@@ -3632,14 +3647,18 @@ async function sendJson(
   response.end(`${JSON.stringify(payload)}\n`);
 }
 
-function listen(server: Server, port: number): Promise<void> {
+function listen(server: Server, port: number, host: string): Promise<void> {
   return new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen(port, () => {
+    server.listen(port, host, () => {
       server.off("error", reject);
       resolve();
     });
   });
+}
+
+function formatUrlHost(host: string): string {
+  return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
 }
 
 function close(server: Server): Promise<void> {

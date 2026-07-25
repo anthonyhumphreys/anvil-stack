@@ -695,12 +695,12 @@ export function SettingsView({
           : 'Developer';
   const aiProviderLabel =
     provider === 'codex'
-    ? 'Codex CLI'
-    : provider === 'cursor'
-      ? 'Cursor CLI'
-      : provider === 'azure'
-        ? 'Azure AI Foundry'
-        : 'OpenAI API';
+      ? 'Codex CLI'
+      : provider === 'cursor'
+        ? 'Cursor CLI'
+        : provider === 'azure'
+          ? 'Azure AI Foundry'
+          : 'OpenAI API';
   const codexModelOptions = buildCodexModelOptions(codexStatus);
   const selectedModelId = settings.openaiModel ?? DEFAULT_CODEX_MODEL;
   const selectedModel = codexModelOptions.find((model) => model.id === selectedModelId);

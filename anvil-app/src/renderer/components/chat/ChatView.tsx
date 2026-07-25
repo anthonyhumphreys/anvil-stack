@@ -18,7 +18,6 @@ import {
   Presentation,
   GraduationCap,
   Database,
-  Sparkles,
   Hammer,
   ListChecks,
   Target,
@@ -58,10 +57,16 @@ import type {
   UserRole,
 } from '../../../shared/types';
 import { ROLE_RECOMMENDED_PERSONAS } from '../../../shared/types';
-import { ChatInput, type ChatQuickPrompt, type ChatSlashCommand } from './ChatInput';
+import { ChatInput, type ChatSlashCommand } from './ChatInput';
 import { ChatThreadRail } from './ChatThreadRail';
 import { WorkItemThreadRail } from './WorkItemThreadRail';
-import { AssistantMessage, TurnPendingMessage, TurnWorkMessage, UserMessage } from './ChatMessage';
+import {
+  AssistantMessage,
+  TurnActivityStatus,
+  TurnWorkMessage,
+  UserMessage,
+  type TurnActivityState,
+} from './ChatMessage';
 import { composeChatTurns } from './chat-turns';
 import { ChatEmptyState } from './ChatEmptyState';
 import { ArtifactPreview } from './ArtifactPreview';
@@ -125,7 +130,6 @@ export function ChatView({ userRole }: ChatViewProps) {
   const {
     personas,
     activePersona,
-    session,
     entries,
     activeRepos,
     selectedGovernanceDocs,
@@ -154,6 +158,7 @@ export function ChatView({ userRole }: ChatViewProps) {
     setReasoningLevel,
     selectThread,
     renameThread,
+    settleThread,
     deleteThread,
     forkThread,
     setCollaborationMode,
@@ -238,37 +243,6 @@ export function ChatView({ userRole }: ChatViewProps) {
     const serviceDesk = personas.find((persona) => persona.id === 'service-desk');
     if (serviceDesk) void switchPersona(serviceDesk);
   }, [activePersona, personas, switchPersona, userRole]);
-  const quickPrompts = useMemo<ChatQuickPrompt[]>(() => {
-    const repoContext =
-      activeRepos.length > 0
-        ? `the selected repo${activeRepos.length === 1 ? '' : 's'}: ${activeRepos
-            .map((repo) => repo.name)
-            .join(', ')}`
-        : 'the active workspace';
-
-    return [
-      {
-        id: 'review-diff',
-        label: 'Review diff',
-        prompt: `Review the current changes in ${repoContext}. Focus on correctness, regressions, missing tests, security risks, and developer workflow issues. Cite files and lines where possible.`,
-      },
-      {
-        id: 'plan-change',
-        label: 'Plan change',
-        prompt: `Help me plan the next implementation in ${repoContext}. Identify the files likely to change, risky assumptions, and the smallest useful verification loop.`,
-      },
-      {
-        id: 'write-tests',
-        label: 'Write tests',
-        prompt: `Find the most important missing tests for ${repoContext}. Prioritise behavior that could regress and suggest focused test cases before implementation.`,
-      },
-      {
-        id: 'map-code',
-        label: 'Map code',
-        prompt: `Map ${repoContext}. Summarise the main modules, runtime entry points, data flow, and the first files a developer should read.`,
-      },
-    ];
-  }, [activeRepos]);
   const [designSidebarCollapsed, setDesignSidebarCollapsed] = useState(false);
 
   useEffect(() => {
@@ -372,6 +346,14 @@ export function ChatView({ userRole }: ChatViewProps) {
 
   const openFindings = findings.filter((f) => !dismissedFindings.has(f.idx));
   const composedTurns = useMemo(() => composeChatTurns(entries, { active: busy }), [busy, entries]);
+  const latestComposedTurn = composedTurns[composedTurns.length - 1];
+  const latestTurnLiveState = getChatTurnLiveState({
+    busy,
+    isLatest: true,
+    hasWork: (latestComposedTurn?.work.length ?? 0) > 0,
+    hasAnswer: Boolean(latestComposedTurn?.answer),
+    hasTrailingWork: (latestComposedTurn?.trailingWork.length ?? 0) > 0,
+  });
 
   useEffect(() => {
     const container = messagesContainerRef.current;
@@ -390,8 +372,17 @@ export function ChatView({ userRole }: ChatViewProps) {
 
   useEffect(() => {
     if (!shouldStickToBottomRef.current) return;
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [entries]);
+    messagesEndRef.current?.scrollIntoView({
+      behavior: busy ? 'auto' : 'smooth',
+      block: 'end',
+    });
+  }, [busy, entries]);
+
+  useEffect(() => {
+    shouldStickToBottomRef.current = true;
+    setShowJumpToLatest(false);
+    messagesEndRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
+  }, [activeThreadId]);
 
   const handleJumpToLatest = useCallback(() => {
     shouldStickToBottomRef.current = true;
@@ -494,12 +485,10 @@ export function ChatView({ userRole }: ChatViewProps) {
     [setChatLayout],
   );
 
-  const handleSuggestionClick = useCallback(
-    (prompt: string) => {
-      send(prompt);
-    },
-    [send],
-  );
+  const handleSuggestionClick = useCallback((prompt: string) => {
+    setComposerPrefill({ id: `suggestion-${Date.now()}`, text: prompt });
+    setComposerFocusRequest((request) => request + 1);
+  }, []);
 
   const handleFindingFollowUp = useCallback((finding: ExtractedFinding & { idx: number }) => {
     setComposerPrefill({
@@ -608,29 +597,27 @@ export function ChatView({ userRole }: ChatViewProps) {
   const content = (
     <div className="flex h-full flex-col">
       {/* Header */}
-      <div className="relative z-40 flex min-h-14 items-center gap-3 border-b border-border/60 bg-bg-secondary px-4 py-2">
-        <div className="flex min-w-0 flex-1 items-center gap-3">
-          <div
-            className="flex h-8 w-8 items-center justify-center rounded-xl"
-            style={{ backgroundColor: `${personaColour}15` }}
-          >
-            <MessageSquare size={16} style={{ color: personaColour }} className="shrink-0" />
-          </div>
+      <div className="relative z-40 flex min-h-14 items-center gap-2 border-b border-border/60 bg-bg-secondary px-3 py-2 lg:px-4">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
           <div className="min-w-0 flex-1">
-            <p className="truncate text-[11px] font-medium uppercase tracking-[0.08em] text-text-muted">
-              {activeWorkspace?.name ?? 'No workspace'}
-            </p>
-            <div className="flex min-w-0 items-baseline gap-2">
-              <h2 className="shrink-0 text-sm font-semibold tracking-tight text-text-primary">
-                Chat
+            <div className="flex min-w-0 items-center gap-2">
+              <h2 className="truncate text-sm font-semibold tracking-tight text-text-primary">
+                {activeThread && !scaffoldModeActive ? activeThread.title : 'New conversation'}
               </h2>
-              {activeThread && !scaffoldModeActive && (
-                <>
-                  <span className="text-text-muted">/</span>
-                  <p className="truncate text-sm text-text-secondary">{activeThread.title}</p>
-                </>
+              {latestTurnLiveState && (
+                <span
+                  className="inline-flex shrink-0 items-center gap-1.5 text-[11px] font-medium text-accent"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <Loader2 size={11} className="animate-spin" />
+                  {formatTurnActivityState(latestTurnLiveState)}
+                </span>
               )}
             </div>
+            <p className="truncate text-xs text-text-tertiary">
+              {activeWorkspace?.name ?? 'No workspace'} · {activePersona?.name ?? 'Assistant'}
+            </p>
           </div>
 
           <div className="relative ml-auto shrink-0">
@@ -877,16 +864,6 @@ export function ChatView({ userRole }: ChatViewProps) {
                     : 'Scaffolding'}
             </span>
           )}
-          {session && (
-            <span
-              className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${
-                busy ? 'bg-warning/10 text-warning' : 'bg-success/10 text-success'
-              }`}
-            >
-              {busy && <Sparkles size={10} className="animate-pulse" />}
-              {busy ? 'Working' : 'Ready'}
-            </span>
-          )}
         </div>
 
         <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">
@@ -985,12 +962,14 @@ export function ChatView({ userRole }: ChatViewProps) {
           ) : (
             <ChatThreadRail
               persona={activePersona}
+              repos={repos}
               threads={threads}
               activeThreadId={activeThreadId}
               liveThreadStatuses={liveThreadStatuses}
               onSelectThread={(threadId) => void selectThread(threadId)}
               onCreateThread={() => void startNewSession()}
               onRenameThread={(threadId, title) => void renameThread(threadId, title)}
+              onSettleThread={(threadId, settled) => void settleThread(threadId, settled)}
               onDeleteThread={(threadId) => void deleteThread(threadId)}
             />
           ))}
@@ -1004,7 +983,7 @@ export function ChatView({ userRole }: ChatViewProps) {
               className={`h-full overflow-y-auto ${showCenteredEmptyPane ? 'flex' : ''}`}
             >
               <div
-                className={`w-full px-3 lg:px-4 ${
+                className={`w-full px-4 xl:px-6 ${
                   showCenteredEmptyPane
                     ? 'flex min-h-full flex-1 items-center justify-center py-6'
                     : 'flex flex-col pb-8 pt-6'
@@ -1104,19 +1083,20 @@ export function ChatView({ userRole }: ChatViewProps) {
                 )}
 
                 {composedTurns.length > 0 && (
-                  <div className="space-y-10">
+                  <div className="w-full space-y-8">
                     {composedTurns.map((turn, turnIndex) => {
                       const liveState = getChatTurnLiveState({
                         busy,
                         isLatest: turnIndex === composedTurns.length - 1,
                         hasWork: turn.work.length > 0,
                         hasAnswer: Boolean(turn.answer),
+                        hasTrailingWork: turn.trailingWork.length > 0,
                       });
 
                       return (
                         <section
-                          key={turn.key}
-                          className="space-y-4"
+                          key={`${activeThreadId ?? 'new'}:${turn.key}`}
+                          className="w-full space-y-4"
                           aria-label={`Turn ${turnIndex + 1}`}
                         >
                           {turn.user && (
@@ -1133,9 +1113,8 @@ export function ChatView({ userRole }: ChatViewProps) {
                               }
                             />
                           )}
-                          {liveState === 'thinking' && <TurnPendingMessage label="Thinking" />}
                           {turn.work.length > 0 && (
-                            <TurnWorkMessage items={turn.work} active={liveState === 'working'} />
+                            <TurnWorkMessage items={turn.work} active={liveState !== null} />
                           )}
                           {turn.answer && (
                             <AssistantMessage
@@ -1148,6 +1127,21 @@ export function ChatView({ userRole }: ChatViewProps) {
                                 isWorkItemLayout
                                   ? undefined
                                   : () => handleBranch(turn.answer!.sourceIndex)
+                              }
+                            />
+                          )}
+                          {turn.trailingWork.length > 0 && (
+                            <TurnWorkMessage
+                              items={turn.trailingWork}
+                              active={liveState !== null}
+                            />
+                          )}
+                          {liveState && (
+                            <TurnActivityStatus
+                              state={liveState}
+                              latestItem={
+                                turn.trailingWork[turn.trailingWork.length - 1] ??
+                                turn.work[turn.work.length - 1]
                               }
                             />
                           )}
@@ -1174,8 +1168,8 @@ export function ChatView({ userRole }: ChatViewProps) {
                 onClick={handleJumpToLatest}
                 className="absolute bottom-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-bg-elevated/95 px-3 py-1.5 text-xs font-medium text-text-secondary shadow-lg backdrop-blur transition-colors hover:border-accent/40 hover:bg-bg-tertiary hover:text-text-primary"
               >
-                <ArrowDown size={13} />
-                Latest
+                {busy ? <Loader2 size={13} className="animate-spin" /> : <ArrowDown size={13} />}
+                {busy ? 'Working · Latest' : 'Latest'}
               </button>
             )}
           </div>
@@ -1195,7 +1189,6 @@ export function ChatView({ userRole }: ChatViewProps) {
             prefill={composerPrefill}
             draftKey={composerDraftKey}
             mentionRepoIds={mentionRepoIds}
-            quickPrompts={isEmpty ? quickPrompts : []}
             slashCommands={slashCommands}
             focusRequest={composerFocusRequest}
           />
@@ -2005,23 +1998,35 @@ export function buildMessageReusePrefill(content: string): string {
   return content.trimEnd();
 }
 
-export type ChatTurnLiveState = 'thinking' | 'working' | 'responding' | null;
-
 export function getChatTurnLiveState({
   busy,
   isLatest,
   hasWork,
   hasAnswer,
+  hasTrailingWork = false,
 }: {
   busy: boolean;
   isLatest: boolean;
   hasWork: boolean;
   hasAnswer: boolean;
-}): ChatTurnLiveState {
+  hasTrailingWork?: boolean;
+}): TurnActivityState | null {
   if (!busy || !isLatest) return null;
+  if (hasTrailingWork) return 'working';
   if (hasAnswer) return 'responding';
   if (hasWork) return 'working';
   return 'thinking';
+}
+
+function formatTurnActivityState(state: TurnActivityState): string {
+  switch (state) {
+    case 'thinking':
+      return 'Thinking';
+    case 'responding':
+      return 'Responding';
+    case 'working':
+      return 'Working';
+  }
 }
 
 function formatGoalStatus(status: ChatGoalSnapshot['status']): string {

@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 45;
+export const SCHEMA_VERSION = 46;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -66,7 +66,12 @@ CREATE TABLE IF NOT EXISTS chat_threads (
   provider_thread_id TEXT,
   active_plan_json TEXT,
   active_plan_updated_at TEXT,
-  active_goal_json TEXT
+  active_goal_json TEXT,
+  attention_state TEXT NOT NULL DEFAULT 'idle',
+  attention_updated_at TEXT,
+  active_turn_started_at TEXT,
+  last_viewed_at TEXT,
+  settled_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS chat_sessions (
@@ -1511,5 +1516,15 @@ export const MIGRATIONS: Record<number, string> = {
   45: `
     ALTER TABLE settings ADD COLUMN work_item_connections BLOB;
     ALTER TABLE settings ADD COLUMN active_work_item_connection_id TEXT;
+  `,
+  46: `
+    ALTER TABLE chat_threads ADD COLUMN attention_state TEXT NOT NULL DEFAULT 'idle';
+    ALTER TABLE chat_threads ADD COLUMN attention_updated_at TEXT;
+    ALTER TABLE chat_threads ADD COLUMN active_turn_started_at TEXT;
+    ALTER TABLE chat_threads ADD COLUMN last_viewed_at TEXT;
+    ALTER TABLE chat_threads ADD COLUMN settled_at TEXT;
+
+    CREATE INDEX IF NOT EXISTS idx_chat_threads_inbox
+      ON chat_threads(workspace_id, persona_id, settled_at, created_at DESC);
   `,
 };

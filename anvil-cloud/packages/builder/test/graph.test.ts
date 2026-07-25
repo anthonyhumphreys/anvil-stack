@@ -1,14 +1,29 @@
 import { describe, expect, it } from "vitest";
-import { createAnvilCellGraph, validateAnvilCellGraph, type AnvilCellGraph, type CellManifest } from "../src/index.js";
+import {
+  createAnvilCellGraph,
+  validateAnvilCellGraph,
+  type AnvilCellGraph,
+  type CellManifest,
+} from "../src/index.js";
 
 const manifest: CellManifest = {
   schemaVersion: "0.1",
   cell: { name: "todo-api", runtime: "nodejs20", target: "dev" },
-  entrypoints: { server: "dist/server/index.mjs", client: "dist/client/index.html" },
+  entrypoints: {
+    server: "dist/server/index.mjs",
+    client: "dist/client/index.html",
+  },
   schema: { tables: { todos: { fields: {} } } },
   queries: [],
   mutations: [],
-  endpoints: [{ name: "getTodos", method: "GET", path: "/todos", auth: { mode: "required" } }],
+  endpoints: [
+    {
+      name: "getTodos",
+      method: "GET",
+      path: "/todos",
+      auth: { mode: "required" },
+    },
+  ],
   jobs: [],
   workflows: [],
   services: [],
@@ -27,8 +42,18 @@ describe("Anvil Cell graph", () => {
       tables: [{ name: "todos", access: "read-write" }],
       secrets: [{ name: "API_TOKEN" }],
       permissions: expect.arrayContaining([
-        { from: "getTodos", action: "read-write", to: "todos", targetKind: "table" },
-        { from: "getTodos", action: "read", to: "API_TOKEN", targetKind: "secret" },
+        {
+          from: "getTodos",
+          action: "read-write",
+          to: "todos",
+          targetKind: "table",
+        },
+        {
+          from: "getTodos",
+          action: "read",
+          to: "API_TOKEN",
+          targetKind: "secret",
+        },
       ]),
     });
     expect(validateAnvilCellGraph(graph)).toEqual([]);

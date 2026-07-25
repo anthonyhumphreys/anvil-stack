@@ -692,7 +692,7 @@ export function ChatInput({
         : undefined;
 
   return (
-    <div className="border-t border-border/50 bg-bg-secondary px-3 py-3 lg:px-4">
+    <div className="border-t border-border/50 bg-bg-secondary px-4 py-3 xl:px-6">
       <div className="w-full">
         <div
           className={`relative rounded-2xl border bg-bg-primary transition-colors duration-200 ${
@@ -811,7 +811,7 @@ export function ChatInput({
             aria-activedescendant={activeDescendant}
             placeholder={
               busy
-                ? 'Steer the active turn...'
+                ? 'Add guidance while Anvil keeps working...'
                 : disabled
                   ? 'Chat is not ready yet...'
                   : mentionRepoIds.length > 0
@@ -819,7 +819,7 @@ export function ChatInput({
                     : 'Ask anything, paste images, or drop files here...'
             }
             rows={1}
-            className="chat-input-focus w-full resize-none rounded-2xl bg-transparent px-4 py-3 text-[15px] leading-6 text-text-primary placeholder:text-text-muted focus:outline-none disabled:opacity-50 sm:pr-[19rem]"
+            className="chat-input-focus w-full resize-none rounded-2xl bg-transparent px-4 py-3 text-[15px] leading-6 text-text-primary placeholder:text-text-tertiary focus:outline-none disabled:opacity-50 sm:pr-[21rem]"
             style={{ maxHeight: '200px', minHeight: '56px' }}
           />
 
@@ -857,17 +857,18 @@ export function ChatInput({
             {busy ? (
               <button
                 onClick={onStop}
-                className="flex h-9 w-9 items-center justify-center rounded-xl bg-error transition-colors duration-200 hover:bg-error/80"
+                className="flex h-9 items-center justify-center gap-1.5 rounded-xl bg-error px-3 text-xs font-semibold text-white transition-colors duration-200 hover:bg-error/80"
                 title="Stop generation"
                 aria-label="Stop generation"
               >
-                <Square size={14} className="text-white" fill="currentColor" />
+                <Square size={12} fill="currentColor" />
+                Stop
               </button>
             ) : (
               <button
                 onClick={handleSend}
                 disabled={disabled || !hasContent || preparingAttachments}
-                className="flex h-9 w-9 items-center justify-center rounded-xl transition-colors duration-200 disabled:opacity-30"
+                className="composer-send flex h-9 w-9 items-center justify-center rounded-xl transition-[transform,filter,opacity] duration-200 disabled:opacity-30"
                 style={{
                   backgroundColor: hasContent ? personaColour : `${personaColour}40`,
                 }}

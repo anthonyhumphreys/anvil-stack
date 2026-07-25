@@ -98,7 +98,7 @@ export function WorkItemThreadRail({
         minWidth={260}
         maxWidth={480}
         collapsedWidth={0}
-        autoCollapseBelow={1200}
+        autoCollapseBelow={1500}
         className="border-r border-border/60 bg-bg-secondary/50"
       >
         <div className="border-b border-border/60 px-3 py-3 pr-14">

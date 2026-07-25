@@ -257,47 +257,54 @@ async function callCursor(prompt: string, options?: LlmCallOptions): Promise<str
     `[LLM] Cursor CLI: sending prompt (${cleanPrompt.length} chars)${cwd ? ` cwd=${cwd}` : ''}`,
   );
 
-  return enqueueCodexExec(async () =>
-    new Promise((resolve, reject) => {
-      options?.onProgress?.('Sending request to Cursor CLI...');
-      const child = spawn('cursor-agent', ['-p', cleanPrompt], {
-        ...(cwd && { cwd }),
-        env: { ...process.env },
-        detached: process.platform !== 'win32',
-      });
-      let stdout = '';
-      let stderr = '';
-      const timeout = setTimeout(() => {
-        stderr += '\nCursor CLI timed out after 300 seconds.\n';
-        killProcessTree(child.pid, 'SIGTERM');
-      }, 300_000);
-      child.stdout.on('data', (chunk: Buffer) => {
-        stdout += chunk.toString();
-      });
-      child.stderr.on('data', (chunk: Buffer) => {
-        stderr += chunk.toString();
-      });
-      child.on('error', (err) => {
-        clearTimeout(timeout);
-        reject(new Error(`Cursor CLI error: ${err.message}`));
-      });
-      child.on('close', (code, signal) => {
-        clearTimeout(timeout);
-        const result = stdout.trim();
-        if (code !== 0) {
-          const msg = stderr.trim() || (signal ? `terminated by ${signal}` : `exited with code ${code}`);
-          reject(new Error(`Cursor CLI error: ${msg}`));
-          return;
-        }
-        if (!result) {
-          const detail = summariseCliStderr(stderr);
-          reject(new EmptyLlmResponseError(`Cursor CLI returned an empty response${detail ? `: ${detail}` : ''}`));
-          return;
-        }
-        resolve(result);
-      });
-    }),
-  options?.onProgress);
+  return enqueueCodexExec(
+    async () =>
+      new Promise((resolve, reject) => {
+        options?.onProgress?.('Sending request to Cursor CLI...');
+        const child = spawn('cursor-agent', ['-p', cleanPrompt], {
+          ...(cwd && { cwd }),
+          env: { ...process.env },
+          detached: process.platform !== 'win32',
+        });
+        let stdout = '';
+        let stderr = '';
+        const timeout = setTimeout(() => {
+          stderr += '\nCursor CLI timed out after 300 seconds.\n';
+          killProcessTree(child.pid, 'SIGTERM');
+        }, 300_000);
+        child.stdout.on('data', (chunk: Buffer) => {
+          stdout += chunk.toString();
+        });
+        child.stderr.on('data', (chunk: Buffer) => {
+          stderr += chunk.toString();
+        });
+        child.on('error', (err) => {
+          clearTimeout(timeout);
+          reject(new Error(`Cursor CLI error: ${err.message}`));
+        });
+        child.on('close', (code, signal) => {
+          clearTimeout(timeout);
+          const result = stdout.trim();
+          if (code !== 0) {
+            const msg =
+              stderr.trim() || (signal ? `terminated by ${signal}` : `exited with code ${code}`);
+            reject(new Error(`Cursor CLI error: ${msg}`));
+            return;
+          }
+          if (!result) {
+            const detail = summariseCliStderr(stderr);
+            reject(
+              new EmptyLlmResponseError(
+                `Cursor CLI returned an empty response${detail ? `: ${detail}` : ''}`,
+              ),
+            );
+            return;
+          }
+          resolve(result);
+        });
+      }),
+    options?.onProgress,
+  );
 }
 
 async function callCodex(prompt: string, options?: LlmCallOptions): Promise<string> {
@@ -455,9 +462,10 @@ export async function callLlm(
 
     if (settings.llmProvider === 'codex' || settings.llmProvider === 'cursor') {
       try {
-        result = settings.llmProvider === 'cursor'
-          ? await callCursor(userMessage, options)
-          : await callCodex(userMessage, options);
+        result =
+          settings.llmProvider === 'cursor'
+            ? await callCursor(userMessage, options)
+            : await callCodex(userMessage, options);
       } catch (err) {
         if (err instanceof EmptyLlmResponseError) {
           lastEmptyResponseMessage = err.message;

@@ -1964,7 +1964,7 @@ describe("main", () => {
           approvalRequired: 1,
           reviewGates: 1,
           blockingGates: 0,
-          rollbackSupported: true,
+          rollbackSupported: false,
         },
         guard: {
           ok: true,
@@ -2411,7 +2411,11 @@ describe("main", () => {
         ok: boolean;
         target: { adapter: string };
         usage: {
-          totals: { invocations: number; totalTokens: number; estimatedCostUsd: number };
+          totals: {
+            invocations: number;
+            totalTokens: number;
+            estimatedCostUsd: number;
+          };
           byAgent: Record<string, { invocations: number }>;
           budgets: Array<{ id: string; status: string }>;
         };
