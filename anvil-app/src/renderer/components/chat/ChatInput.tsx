@@ -15,6 +15,7 @@ import {
   X,
 } from 'lucide-react';
 import type {
+  AgentProvider,
   ChatAttachment,
   ChatAttachmentInput,
   ChatFileMentionSearchResult,
@@ -72,6 +73,10 @@ interface ChatInputProps {
   disabled: boolean;
   busy?: boolean;
   personaColour: string;
+  model?: string;
+  modelProvider?: AgentProvider;
+  modelOptions?: ChatInputModelOption[];
+  onModelChange?: (model: string) => void;
   reasoningLevel?: ReasoningEffort;
   reasoningOptions?: ReasoningEffort[];
   onReasoningChange?: (level: ReasoningEffort) => void;
@@ -85,12 +90,22 @@ interface ChatInputProps {
   focusRequest?: number;
 }
 
+interface ChatInputModelOption {
+  id: string;
+  label: string;
+  description: string;
+}
+
 export function ChatInput({
   onSend,
   onStop,
   disabled,
   busy,
   personaColour,
+  model = 'gpt-5.6-sol',
+  modelProvider = 'codex',
+  modelOptions = [],
+  onModelChange,
   reasoningLevel = 'medium',
   reasoningOptions,
   onReasoningChange,
@@ -824,8 +839,12 @@ export function ChatInput({
           />
 
           <div className="flex min-h-11 items-center justify-end gap-1.5 border-t border-border-subtle px-2.5 py-2 sm:absolute sm:bottom-2 sm:right-2 sm:min-h-0 sm:border-0 sm:p-0">
-            {(onExecutionStrategyChange || onReasoningChange) && !busy && (
+            {(onModelChange || onExecutionStrategyChange || onReasoningChange) && !busy && (
               <RunSettingsDropdown
+                model={model}
+                modelProvider={modelProvider}
+                modelOptions={modelOptions}
+                onModelChange={onModelChange}
                 executionStrategy={executionStrategy}
                 onExecutionStrategyChange={onExecutionStrategyChange}
                 reasoningLevel={reasoningLevel}
@@ -1439,21 +1458,62 @@ const REASONING_EFFORT_OPTIONS: { level: ReasoningEffort; description: string }[
   { level: 'ultra', description: 'Subagent-backed effort for splittable work' },
 ];
 
+function formatReasoningLabel(level: ReasoningEffort): string {
+  if (level === 'xhigh') return 'Extra high';
+  return `${level.charAt(0).toUpperCase()}${level.slice(1)}`;
+}
+
+export function getCursorModelReasoningEffort(model: string): ReasoningEffort | undefined {
+  return REASONING_EFFORT_OPTIONS.find((option) => model.endsWith(`-${option.level}`))?.level;
+}
+
+export function getCompactModelLabel(
+  model: string,
+  label: string,
+  provider: AgentProvider,
+): string {
+  if (provider !== 'cursor') return label;
+  if (model === 'auto') return 'Cursor auto';
+
+  const reasoning = getCursorModelReasoningEffort(model);
+  const reasoningSuffix = reasoning ? new RegExp(`\\s+${reasoning}$`, 'i') : null;
+  return label
+    .replace(/\s+\([^)]*\)$/, '')
+    .replace(/\s+1M(?:\s+Thinking)?(?:\s+\S+)?$/i, '')
+    .replace(reasoningSuffix ?? /$^/, '')
+    .trim();
+}
+
 export function getRunSettingsLabel(
+  modelLabel: string,
   executionStrategy: ExecutionStrategy,
-  reasoningLevel: ReasoningEffort,
+  reasoningLevel?: ReasoningEffort,
 ): string {
   const strategy = EXECUTION_STRATEGIES.find((option) => option.id === executionStrategy);
-  return `${strategy?.label ?? executionStrategy} · ${reasoningLevel}`;
+  return [
+    modelLabel,
+    reasoningLevel ? formatReasoningLabel(reasoningLevel) : null,
+    strategy?.label ?? executionStrategy,
+  ]
+    .filter(Boolean)
+    .join(' · ');
 }
 
 function RunSettingsDropdown({
+  model,
+  modelProvider,
+  modelOptions,
+  onModelChange,
   executionStrategy,
   onExecutionStrategyChange,
   reasoningLevel,
   reasoningOptions = REASONING_EFFORT_OPTIONS.map((option) => option.level),
   onReasoningChange,
 }: {
+  model: string;
+  modelProvider: AgentProvider;
+  modelOptions: ChatInputModelOption[];
+  onModelChange?: (model: string) => void;
   executionStrategy: ExecutionStrategy;
   onExecutionStrategyChange?: (strategy: ExecutionStrategy) => void;
   reasoningLevel: ReasoningEffort;
@@ -1463,6 +1523,7 @@ function RunSettingsDropdown({
   const availableOptions = REASONING_EFFORT_OPTIONS.filter((option) =>
     reasoningOptions.includes(option.level),
   );
+  const selectedModel = modelOptions.find((option) => option.id === model);
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -1486,7 +1547,12 @@ function RunSettingsDropdown({
     }
   };
 
-  const label = getRunSettingsLabel(executionStrategy, reasoningLevel);
+  const modelLabel = getCompactModelLabel(model, selectedModel?.label ?? model, modelProvider);
+  const label = getRunSettingsLabel(
+    modelLabel,
+    executionStrategy,
+    modelProvider === 'cursor' ? getCursorModelReasoningEffort(model) : reasoningLevel,
+  );
 
   return (
     <div ref={containerRef} className="relative" onKeyDown={handleKeyDown}>
@@ -1494,7 +1560,7 @@ function RunSettingsDropdown({
         ref={triggerRef}
         type="button"
         onClick={() => setOpen((current) => !current)}
-        className="flex h-9 max-w-36 items-center gap-1.5 rounded-xl border border-border bg-bg-secondary px-2.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
+        className="flex h-9 max-w-52 items-center gap-1.5 rounded-xl border border-border bg-bg-secondary px-2.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
         title="Run settings"
         aria-label={`Run settings: ${label}`}
         aria-haspopup="dialog"
@@ -1502,7 +1568,7 @@ function RunSettingsDropdown({
         aria-controls={open ? RUN_SETTINGS_MENU_ID : undefined}
       >
         <SlidersHorizontal size={13} className="shrink-0 text-text-tertiary" />
-        <span className="truncate capitalize">{label}</span>
+        <span className="truncate">{label}</span>
         <ChevronDown
           size={12}
           className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
@@ -1512,15 +1578,76 @@ function RunSettingsDropdown({
       {open && (
         <div
           id={RUN_SETTINGS_MENU_ID}
-          className="absolute bottom-full right-0 z-50 mb-2 w-72 rounded-xl border border-border bg-bg-elevated p-3 shadow-2xl ring-1 ring-black/20"
+          className="absolute bottom-full right-0 z-50 mb-2 w-72 rounded-xl border border-border bg-bg-elevated p-3 shadow-lg ring-1 ring-black/20"
           role="dialog"
           aria-label="Run settings"
         >
           <div className="space-y-3">
+            {onModelChange && modelOptions.length > 0 && (
+              <label className="block">
+                <span className="mb-1 block text-[11px] font-medium text-text-muted">Model</span>
+                <select
+                  value={model}
+                  onChange={(event) => onModelChange(event.target.value)}
+                  className="h-9 w-full rounded-lg border border-border bg-bg-secondary px-2.5 text-xs text-text-primary outline-none focus:border-accent focus:ring-2 focus:ring-accent/30"
+                >
+                  {modelOptions.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <span className="mt-1 block text-[11px] leading-4 text-text-tertiary">
+                  {selectedModel?.description ??
+                    `Selected for new turns through the ${modelProvider} provider.`}
+                </span>
+              </label>
+            )}
+
+            {modelProvider === 'cursor' ? (
+              <div>
+                <span className="mb-1 block text-[11px] font-medium text-text-muted">
+                  Reasoning
+                </span>
+                <div className="rounded-lg border border-border-subtle bg-bg-secondary px-2.5 py-2 text-xs text-text-secondary">
+                  Set by the Cursor model
+                </div>
+                <span className="mt-1 block text-[11px] leading-4 text-text-tertiary">
+                  Cursor model IDs include their reasoning level where supported.
+                </span>
+              </div>
+            ) : (
+              onReasoningChange &&
+              availableOptions.length > 0 && (
+                <label className="block">
+                  <span className="mb-1 block text-[11px] font-medium text-text-muted">
+                    Reasoning
+                  </span>
+                  <select
+                    value={reasoningLevel}
+                    onChange={(event) => onReasoningChange(event.target.value as ReasoningEffort)}
+                    className="h-9 w-full rounded-lg border border-border bg-bg-secondary px-2.5 text-xs capitalize text-text-primary outline-none focus:border-accent focus:ring-2 focus:ring-accent/30"
+                  >
+                    {availableOptions.map((option) => (
+                      <option key={option.level} value={option.level}>
+                        {option.level}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="mt-1 block text-[11px] leading-4 text-text-tertiary">
+                    {
+                      availableOptions.find((option) => option.level === reasoningLevel)
+                        ?.description
+                    }
+                  </span>
+                </label>
+              )
+            )}
+
             {onExecutionStrategyChange && (
               <label className="block">
                 <span className="mb-1 block text-[11px] font-medium text-text-muted">
-                  Execution
+                  Subagents
                 </span>
                 <select
                   value={executionStrategy}
@@ -1540,28 +1667,6 @@ function RunSettingsDropdown({
                     EXECUTION_STRATEGIES.find((strategy) => strategy.id === executionStrategy)
                       ?.description
                   }
-                </span>
-              </label>
-            )}
-
-            {onReasoningChange && availableOptions.length > 0 && (
-              <label className="block">
-                <span className="mb-1 block text-[11px] font-medium text-text-muted">
-                  Reasoning
-                </span>
-                <select
-                  value={reasoningLevel}
-                  onChange={(event) => onReasoningChange(event.target.value as ReasoningEffort)}
-                  className="h-9 w-full rounded-lg border border-border bg-bg-secondary px-2.5 text-xs capitalize text-text-primary outline-none focus:border-accent focus:ring-2 focus:ring-accent/30"
-                >
-                  {availableOptions.map((option) => (
-                    <option key={option.level} value={option.level}>
-                      {option.level}
-                    </option>
-                  ))}
-                </select>
-                <span className="mt-1 block text-[11px] leading-4 text-text-tertiary">
-                  {availableOptions.find((option) => option.level === reasoningLevel)?.description}
                 </span>
               </label>
             )}
