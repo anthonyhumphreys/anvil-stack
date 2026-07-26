@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from 'react';
 import type {
+  AgentProvider,
   ChatAttachment,
   ChatArtifact,
   ChatArtifactInput,
@@ -45,6 +46,7 @@ import {
   CODEX_SELECTION_CHANGED_EVENT,
   type CodexSelectionChangedDetail,
 } from '../utils/codex-selection';
+import { buildChatModelOptions, type ChatModelOption } from '../utils/chat-model-options';
 
 export type ChatEntry =
   | { kind: 'user'; content: string; attachments?: ChatAttachment[]; id?: string }
@@ -72,6 +74,9 @@ interface ChatContextValue {
   scaffoldStatus: WorkspaceScaffoldStatus | null;
   busy: boolean;
   error: string | null;
+  model: string;
+  modelProvider: AgentProvider;
+  modelOptions: ChatModelOption[];
   reasoningLevel: ReasoningEffort;
   reasoningOptions: ReasoningEffort[];
   threads: ChatThread[];
@@ -93,6 +98,7 @@ interface ChatContextValue {
   startNewSession: () => Promise<void>;
   loadHistory: () => Promise<void>;
   clearHistory: () => Promise<void>;
+  setModel: (model: string) => void;
   setReasoningLevel: (level: ReasoningEffort) => void;
   selectThread: (threadId: string) => Promise<void>;
   renameThread: (threadId: string, title: string) => Promise<void>;
@@ -163,6 +169,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [activeArtifacts, setActiveArtifacts] = useState<ChatArtifact[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [model, setModelState] = useState(DEFAULT_CODEX_MODEL);
+  const [modelProvider, setModelProvider] = useState<AgentProvider>('codex');
+  const [modelOptions, setModelOptions] = useState<ChatModelOption[]>(() =>
+    buildChatModelOptions('codex', DEFAULT_CODEX_MODEL, null, null),
+  );
   const [reasoningLevel, setReasoningLevel] = useState<ReasoningEffort>('medium');
   const [reasoningOptions, setReasoningOptions] =
     useState<ReasoningEffort[]>(CODEX_REASONING_EFFORTS);
@@ -779,19 +790,34 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const applySelection = async (selection?: CodexSelectionChangedDetail) => {
-      const [settings, codexStatus] = await Promise.all([
-        window.anvil.settings.get(),
-        window.anvil.settings.getCodexStatus().catch(() => null),
-      ]);
+      const settings = await window.anvil.settings.get();
+      const codexStatus =
+        settings.llmProvider === 'cursor'
+          ? null
+          : await window.anvil.settings.getCodexStatus().catch(() => null);
+      const cursorStatus =
+        settings.llmProvider === 'cursor'
+          ? await window.anvil.settings.getCursorStatus().catch(() => null)
+          : null;
       const model = selection?.model ?? settings.openaiModel ?? DEFAULT_CODEX_MODEL;
-      const effort = resolveCodexReasoningEffort(
-        model,
-        selection?.reasoningEffort ?? settings.reasoningLevel,
-        codexStatus?.models,
-      );
-      setReasoningOptions(
-        getCodexModelReasoningOptions(model, codexStatus?.models).supportedReasoningEfforts,
-      );
+      const provider = settings.llmProvider;
+      const options = buildChatModelOptions(provider, model, codexStatus, cursorStatus);
+      const reasoning =
+        provider === 'cursor'
+          ? []
+          : getCodexModelReasoningOptions(model, codexStatus?.models).supportedReasoningEfforts;
+      const effort =
+        provider === 'cursor'
+          ? (selection?.reasoningEffort ?? settings.reasoningLevel)
+          : resolveCodexReasoningEffort(
+              model,
+              selection?.reasoningEffort ?? settings.reasoningLevel,
+              codexStatus?.models,
+            );
+      setModelState(model);
+      setModelProvider(provider);
+      setModelOptions(options);
+      setReasoningOptions(reasoning);
       setReasoningLevel(effort);
     };
     const handleSelectionChanged = (event: Event) => {
@@ -804,6 +830,30 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     window.addEventListener(CODEX_SELECTION_CHANGED_EVENT, handleSelectionChanged);
     return () => window.removeEventListener(CODEX_SELECTION_CHANGED_EVENT, handleSelectionChanged);
   }, []);
+
+  const updateModel = useCallback(
+    (nextModel: string) => {
+      const option = modelOptions.find((candidate) => candidate.id === nextModel);
+      const nextReasoning =
+        modelProvider === 'cursor'
+          ? reasoningLevelRef.current
+          : option?.supportedReasoningEfforts.includes(reasoningLevelRef.current)
+            ? reasoningLevelRef.current
+            : (option?.defaultReasoningEffort ?? 'medium');
+      setModelState(nextModel);
+      if (modelProvider !== 'cursor') {
+        setReasoningOptions(option?.supportedReasoningEfforts ?? CODEX_REASONING_EFFORTS);
+        setReasoningLevel(nextReasoning);
+      }
+      void window.anvil.settings
+        .update({
+          openaiModel: nextModel,
+          ...(modelProvider === 'cursor' ? {} : { reasoningLevel: nextReasoning }),
+        })
+        .catch(console.error);
+    },
+    [modelOptions, modelProvider],
+  );
 
   const updateReasoningLevel = useCallback((level: ReasoningEffort) => {
     setReasoningLevel(level);
@@ -1671,6 +1721,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
           await window.anvil.chat.send(startedSession.id, enriched, attachments, {
             collaborationMode,
+            model,
             reasoningEffort: reasoningLevel,
           });
         } catch (err) {
@@ -1706,6 +1757,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         bumpThreadSummary(thread.id, buildThreadPreview(displayMessage, attachments), timestamp);
         await window.anvil.chat.send(currentSessionForThread.id, enriched, attachments, {
           collaborationMode,
+          model,
           reasoningEffort: reasoningLevel,
         });
       } catch (err) {
@@ -1729,6 +1781,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       dbInsightArtifacts,
       dbInsightAnalysis,
       findThreadIdForSession,
+      model,
       reasoningLevel,
       rememberLiveSession,
       scaffoldModeActive,
@@ -2153,6 +2206,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
         await window.anvil.chat.send(nextSession.id, enrichedMessage, [], {
           collaborationMode,
+          model,
           reasoningEffort: opts.reasoningLevel ?? reasoningLevel,
         });
       } catch (err) {
@@ -2168,6 +2222,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       canStartWorkspaceChat,
       chatLayout,
       collaborationMode,
+      model,
       personas,
       rememberLiveSession,
       repos,
@@ -2217,6 +2272,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         scaffoldStatus,
         busy,
         error,
+        model,
+        modelProvider,
+        modelOptions,
         reasoningLevel,
         reasoningOptions,
         threads: scopedThreads,
@@ -2238,6 +2296,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         startNewSession,
         loadHistory: loadHistoryFn,
         clearHistory: clearHistoryFn,
+        setModel: updateModel,
         setReasoningLevel: updateReasoningLevel,
         selectThread,
         renameThread,

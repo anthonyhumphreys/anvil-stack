@@ -138,6 +138,9 @@ export function ChatView({ userRole }: ChatViewProps) {
     scaffoldStatus,
     busy,
     error,
+    model,
+    modelProvider,
+    modelOptions,
     reasoningLevel,
     reasoningOptions,
     threads,
@@ -155,6 +158,7 @@ export function ChatView({ userRole }: ChatViewProps) {
     switchPersona,
     interrupt,
     startNewSession,
+    setModel,
     setReasoningLevel,
     selectThread,
     renameThread,
@@ -1181,6 +1185,10 @@ export function ChatView({ userRole }: ChatViewProps) {
             disabled={chatInputDisabled}
             busy={busy}
             personaColour={personaColour}
+            model={model}
+            modelProvider={modelProvider}
+            modelOptions={modelOptions}
+            onModelChange={setModel}
             reasoningLevel={reasoningLevel}
             reasoningOptions={reasoningOptions}
             onReasoningChange={setReasoningLevel}

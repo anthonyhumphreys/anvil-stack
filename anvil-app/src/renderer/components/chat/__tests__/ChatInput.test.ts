@@ -4,6 +4,8 @@ import {
   buildFileMentionOptionId,
   findActiveSkillMention,
   findActiveSlashCommand,
+  getCompactModelLabel,
+  getCursorModelReasoningEffort,
   getSkillMentionResults,
   getSlashCommandResults,
   getRunSettingsLabel,
@@ -12,9 +14,47 @@ import {
 } from '../ChatInput';
 
 describe('getRunSettingsLabel', () => {
-  it('summarises execution and reasoning settings in one compact label', () => {
-    expect(getRunSettingsLabel('auto', 'medium')).toBe('Auto · medium');
-    expect(getRunSettingsLabel('adaptive', 'high')).toBe('Adaptive · high');
+  it('summarises model, reasoning, and subagent strategy in one compact label', () => {
+    expect(getRunSettingsLabel('5.6 Sol', 'auto', 'medium')).toBe('5.6 Sol · Medium · Auto');
+    expect(getRunSettingsLabel('5.6 Terra', 'adaptive', 'high')).toBe(
+      '5.6 Terra · High · Adaptive',
+    );
+  });
+
+  it('omits separate reasoning when the selected model controls it', () => {
+    expect(getRunSettingsLabel('Fable 5 Thinking High', 'review-team')).toBe(
+      'Fable 5 Thinking High · Review team',
+    );
+  });
+});
+
+describe('Cursor model labels', () => {
+  it('keeps model, reasoning, and strategy legible in the compact trigger', () => {
+    expect(getCursorModelReasoningEffort('claude-fable-5-thinking-high')).toBe('high');
+    expect(
+      getCompactModelLabel(
+        'claude-fable-5-thinking-high',
+        'Fable 5 1M Thinking (NO ZDR)',
+        'cursor',
+      ),
+    ).toBe('Fable 5');
+    expect(
+      getRunSettingsLabel(
+        getCompactModelLabel(
+          'claude-fable-5-thinking-high',
+          'Fable 5 1M Thinking (NO ZDR)',
+          'cursor',
+        ),
+        'review-team',
+        getCursorModelReasoningEffort('claude-fable-5-thinking-high'),
+      ),
+    ).toBe('Fable 5 · High · Review team');
+  });
+
+  it('distinguishes Cursor automatic model routing from automatic subagent strategy', () => {
+    expect(getCompactModelLabel('auto', 'Auto (current, default)', 'cursor')).toBe('Cursor auto');
+    expect(getCursorModelReasoningEffort('auto')).toBeUndefined();
+    expect(getRunSettingsLabel('Cursor auto', 'auto')).toBe('Cursor auto · Auto');
   });
 });
 
