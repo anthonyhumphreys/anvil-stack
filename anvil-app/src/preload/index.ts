@@ -843,6 +843,7 @@ const api: AnvilAPI = {
   },
 
   voice: {
+    requestPermission: () => ipcRenderer.invoke('voice:request-permission'),
     startListening: () => ipcRenderer.invoke('voice:start-listening'),
     stopListening: () => ipcRenderer.invoke('voice:stop-listening'),
     getStatus: () => ipcRenderer.invoke('voice:get-status'),

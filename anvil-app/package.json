@@ -1,6 +1,6 @@
 {
   "name": "anvil",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Anvil developer mission control",
   "main": "out/main/index.js",
   "type": "module",
@@ -11,7 +11,7 @@
   },
   "packageManager": "pnpm@10.32.1",
   "scripts": {
-    "predev": "pnpm run rebuild:native:electron",
+    "predev": "node scripts/build-apple-speech-helper.mjs && pnpm run rebuild:native:electron",
     "dev": "electron-vite dev",
     "prebuild": "pnpm run rebuild:native:electron",
     "build": "electron-vite build",

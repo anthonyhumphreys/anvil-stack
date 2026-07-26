@@ -690,7 +690,12 @@ export interface AnvilAPI {
   };
 
   voice: {
-    startListening(): Promise<{ success: boolean; error?: string }>;
+    requestPermission(): Promise<{
+      granted: boolean;
+      status: 'not-determined' | 'granted' | 'denied' | 'restricted' | 'unknown';
+      error?: string;
+    }>;
+    startListening(): Promise<{ success: boolean; error?: string; fallback?: boolean }>;
     stopListening(): Promise<{ success: boolean; error?: string }>;
     getStatus(): Promise<{ isListening: boolean }>;
     onResult(callback: (text: string) => void): () => void;
