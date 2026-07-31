@@ -144,6 +144,7 @@ import type { Brand } from './branding';
 
 export interface AnvilAPI {
   appWindow: {
+    getVersion: () => Promise<string>;
     getChromeState: () => Promise<{ isFullScreen: boolean }>;
     onChromeStateChanged: (callback: (state: { isFullScreen: boolean }) => void) => () => void;
     onNavigateToChat: (callback: (target: ChatNavigationTarget) => void) => () => void;
@@ -690,7 +691,12 @@ export interface AnvilAPI {
   };
 
   voice: {
-    startListening(): Promise<{ success: boolean; error?: string }>;
+    requestPermission(): Promise<{
+      granted: boolean;
+      status: 'not-determined' | 'granted' | 'denied' | 'restricted' | 'unknown';
+      error?: string;
+    }>;
+    startListening(): Promise<{ success: boolean; error?: string; fallback?: boolean }>;
     stopListening(): Promise<{ success: boolean; error?: string }>;
     getStatus(): Promise<{ isListening: boolean }>;
     onResult(callback: (text: string) => void): () => void;

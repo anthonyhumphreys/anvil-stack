@@ -6,6 +6,8 @@ directories:
   output: dist
   buildResources: resources
 
+afterPack: scripts/build-apple-speech-helper.mjs
+
 files:
   - 'out/**/*'
   - 'prompts/**/*'
@@ -23,8 +25,12 @@ mac:
   target: [dmg, zip]
   icon: resources/anvil.icns
   category: public.app-category.developer-tools
+  entitlements: resources/entitlements.mac.plist
+  entitlementsInherit: resources/entitlements.mac.plist
   extendInfo:
     NSUserNotificationAlertStyle: alert
+    NSMicrophoneUsageDescription: Anvil uses the microphone to turn speech into chat input.
+    NSSpeechRecognitionUsageDescription: Anvil uses speech recognition to turn speech into chat input.
 
 win:
   target: [nsis, portable]

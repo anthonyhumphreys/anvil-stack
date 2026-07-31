@@ -5,6 +5,7 @@ node_modules/
 .sst/
 dist/
 out/
+resources/.build/
 *.db
 *.db-journal
 .env

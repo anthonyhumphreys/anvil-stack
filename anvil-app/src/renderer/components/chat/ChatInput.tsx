@@ -122,6 +122,7 @@ export function ChatInput({
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [attachmentPreviews, setAttachmentPreviews] = useState<Record<string, string>>({});
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
   const [preparingAttachments, setPreparingAttachments] = useState(false);
   const [fileMention, setFileMention] = useState<ActiveFileMention | null>(null);
   const [fileMentionResults, setFileMentionResults] = useState<ChatFileMentionSearchResult[]>([]);
@@ -808,95 +809,119 @@ export function ChatInput({
             />
           )}
 
-          <textarea
-            ref={textareaRef}
-            value={value}
-            onChange={handleTextChange}
-            onKeyDown={handleKeyDown}
-            onClick={handleTextareaSelection}
-            onSelect={handleTextareaSelection}
-            onInput={handleInput}
-            onPaste={handlePaste}
-            disabled={disabled}
-            aria-label="Chat message"
-            aria-describedby="chat-composer-keyboard-hint"
-            aria-autocomplete="list"
-            aria-expanded={Boolean(activeMenuId)}
-            aria-controls={activeMenuId}
-            aria-activedescendant={activeDescendant}
-            placeholder={
-              busy
-                ? 'Add guidance while Anvil keeps working...'
-                : disabled
-                  ? 'Chat is not ready yet...'
-                  : mentionRepoIds.length > 0
-                    ? 'Ask anything, or type /, @, or $...'
-                    : 'Ask anything, paste images, or drop files here...'
-            }
-            rows={1}
-            className="chat-input-focus w-full resize-none rounded-2xl bg-transparent px-4 py-3 text-[15px] leading-6 text-text-primary placeholder:text-text-tertiary focus:outline-none disabled:opacity-50 sm:pr-[21rem]"
-            style={{ maxHeight: '200px', minHeight: '56px' }}
-          />
-
-          <div className="flex min-h-11 items-center justify-end gap-1.5 border-t border-border-subtle px-2.5 py-2 sm:absolute sm:bottom-2 sm:right-2 sm:min-h-0 sm:border-0 sm:p-0">
-            {(onModelChange || onExecutionStrategyChange || onReasoningChange) && !busy && (
-              <RunSettingsDropdown
-                model={model}
-                modelProvider={modelProvider}
-                modelOptions={modelOptions}
-                onModelChange={onModelChange}
-                executionStrategy={executionStrategy}
-                onExecutionStrategyChange={onExecutionStrategyChange}
-                reasoningLevel={reasoningLevel}
-                reasoningOptions={reasoningOptions}
-                onReasoningChange={onReasoningChange}
-              />
-            )}
-
-            <VoiceInputButton
-              onTranscript={handleVoiceTranscript}
+          <div className="flex flex-col sm:flex-row sm:items-end">
+            <textarea
+              ref={textareaRef}
+              value={value}
+              onChange={handleTextChange}
+              onKeyDown={handleKeyDown}
+              onClick={handleTextareaSelection}
+              onSelect={handleTextareaSelection}
+              onInput={handleInput}
+              onPaste={handlePaste}
               disabled={disabled}
-              colour={personaColour}
+              aria-label="Chat message"
+              aria-describedby={
+                voiceError
+                  ? 'chat-composer-keyboard-hint chat-composer-voice-error'
+                  : 'chat-composer-keyboard-hint'
+              }
+              aria-autocomplete="list"
+              aria-expanded={Boolean(activeMenuId)}
+              aria-controls={activeMenuId}
+              aria-activedescendant={activeDescendant}
+              placeholder={
+                busy
+                  ? 'Add guidance while Anvil keeps working...'
+                  : disabled
+                    ? 'Chat is not ready yet...'
+                    : mentionRepoIds.length > 0
+                      ? 'Ask anything, or type /, @, or $...'
+                      : 'Ask anything, paste images, or drop files here...'
+              }
+              rows={1}
+              className="chat-input-focus min-w-0 flex-1 resize-none rounded-2xl bg-transparent px-4 py-4 text-[15px] leading-6 text-text-primary placeholder:text-text-tertiary focus:outline-none disabled:opacity-50"
+              style={{ maxHeight: '200px', minHeight: '56px' }}
             />
 
-            <button
-              onClick={() => void handleSelectAttachments()}
-              disabled={disabled || preparingAttachments}
-              className="flex h-9 w-9 items-center justify-center rounded-xl text-text-tertiary transition-colors duration-200 hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-30"
-              title="Attach files"
-              aria-label="Attach files"
-            >
-              {preparingAttachments ? (
-                <Loader2 size={15} className="animate-spin" />
-              ) : (
-                <Paperclip size={15} />
+            <div className="flex min-h-14 shrink-0 items-center justify-end gap-1.5 border-t border-border-subtle px-2.5 sm:border-0">
+              {(onModelChange || onExecutionStrategyChange || onReasoningChange) && !busy && (
+                <RunSettingsDropdown
+                  model={model}
+                  modelProvider={modelProvider}
+                  modelOptions={modelOptions}
+                  onModelChange={onModelChange}
+                  executionStrategy={executionStrategy}
+                  onExecutionStrategyChange={onExecutionStrategyChange}
+                  reasoningLevel={reasoningLevel}
+                  reasoningOptions={reasoningOptions}
+                  onReasoningChange={onReasoningChange}
+                />
               )}
-            </button>
 
-            {busy ? (
-              <button
-                onClick={onStop}
-                className="flex h-9 items-center justify-center gap-1.5 rounded-xl bg-error px-3 text-xs font-semibold text-white transition-colors duration-200 hover:bg-error/80"
-                title="Stop generation"
-                aria-label="Stop generation"
-              >
-                <Square size={12} fill="currentColor" />
-                Stop
-              </button>
-            ) : (
-              <button
-                onClick={handleSend}
-                disabled={disabled || !hasContent || preparingAttachments}
-                className="composer-send flex h-9 w-9 items-center justify-center rounded-xl transition-[transform,filter,opacity] duration-200 disabled:opacity-30"
-                style={{
-                  backgroundColor: hasContent ? personaColour : `${personaColour}40`,
+              <VoiceInputButton
+                onTranscript={(text) => {
+                  setVoiceError(null);
+                  handleVoiceTranscript(text);
                 }}
-                aria-label="Send message"
+                onError={setVoiceError}
+                disabled={disabled}
+                colour={personaColour}
+              />
+
+              <button
+                type="button"
+                onClick={() => void handleSelectAttachments()}
+                disabled={disabled || preparingAttachments}
+                className="flex h-9 w-9 items-center justify-center rounded-xl text-text-tertiary transition-colors duration-200 hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-30"
+                title="Attach files"
+                aria-label="Attach files"
               >
-                <Send size={16} className="text-white" />
+                {preparingAttachments ? (
+                  <Loader2 size={15} className="animate-spin" />
+                ) : (
+                  <Paperclip size={15} />
+                )}
               </button>
-            )}
+
+              {busy ? (
+                <button
+                  type="button"
+                  onClick={onStop}
+                  className="flex h-9 items-center justify-center gap-1.5 rounded-xl bg-error px-3 text-xs font-semibold text-white transition-colors duration-200 hover:bg-error/80"
+                  title="Stop generation"
+                  aria-label="Stop generation"
+                >
+                  <Square size={12} fill="currentColor" />
+                  Stop
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleSend}
+                  disabled={disabled || !hasContent || preparingAttachments}
+                  className="composer-send flex h-9 w-9 items-center justify-center rounded-xl transition-[transform,filter,opacity] duration-200 disabled:opacity-30"
+                  style={{
+                    backgroundColor: hasContent ? personaColour : `${personaColour}40`,
+                  }}
+                  aria-label="Send message"
+                >
+                  <Send size={16} className="text-white" />
+                </button>
+              )}
+            </div>
           </div>
+
+          {voiceError && (
+            <p
+              id="chat-composer-voice-error"
+              role="alert"
+              className="flex items-start gap-1.5 border-t border-border-subtle px-4 py-2 text-xs leading-5 text-error"
+            >
+              <AlertCircle size={13} className="mt-0.5 shrink-0" />
+              {voiceError}
+            </p>
+          )}
         </div>
 
         <p id="chat-composer-keyboard-hint" className="sr-only">
