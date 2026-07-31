@@ -349,6 +349,7 @@ app.whenReady().then(() => {
   app.setAsDefaultProtocolClient(LEGACY_PROTOCOL);
 
   ipcMain.handle('brand:get', () => brand);
+  ipcMain.handle('app-window:get-version', () => app.getVersion());
   ipcMain.handle('app-window:get-chrome-state', (event) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     return getWindowChromeState(win ?? mainWindow);

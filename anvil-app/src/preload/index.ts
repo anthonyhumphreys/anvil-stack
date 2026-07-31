@@ -40,6 +40,7 @@ import type { RunCommand, RunStatus } from '../shared/run-types.js';
 
 const api: AnvilAPI = {
   appWindow: {
+    getVersion: () => ipcRenderer.invoke('app-window:get-version'),
     getChromeState: () => ipcRenderer.invoke('app-window:get-chrome-state'),
     onChromeStateChanged: (callback: (state: { isFullScreen: boolean }) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, state: { isFullScreen: boolean }) =>

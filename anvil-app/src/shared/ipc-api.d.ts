@@ -144,6 +144,7 @@ import type { Brand } from './branding';
 
 export interface AnvilAPI {
   appWindow: {
+    getVersion: () => Promise<string>;
     getChromeState: () => Promise<{ isFullScreen: boolean }>;
     onChromeStateChanged: (callback: (state: { isFullScreen: boolean }) => void) => () => void;
     onNavigateToChat: (callback: (target: ChatNavigationTarget) => void) => () => void;
