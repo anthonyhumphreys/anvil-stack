@@ -7,6 +7,7 @@ import { onRepoIndexed } from './repobase.service.js';
 import { notifyIfUnfocused } from './notification.service.js';
 import { getSettings } from './settings.service.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
+import { getCurrentCommitSha } from './code-review-git.service.js';
 
 interface DbRepoRow {
   id: string;
@@ -29,6 +30,12 @@ export async function indexRepo(
     | DbRepoRow
     | undefined;
   if (!repoRow) throw new Error(`Repo not found: ${repoId}`);
+  const indexedCommitSha = getCurrentCommitSha(repoRow.path);
+  const existingMapPreferences = db
+    .prepare('SELECT map_refresh_mode FROM repo_summaries WHERE repo_id = ?')
+    .get(repoId) as { map_refresh_mode: string | null } | undefined;
+  const mapRefreshMode =
+    existingMapPreferences?.map_refresh_mode === 'on_commit' ? 'on_commit' : 'manual';
 
   const sendProgress = (
     message: string,
@@ -191,9 +198,11 @@ export async function indexRepo(
         model_version,
         index_mode,
         index_provider,
-        index_warnings
+        index_warnings,
+        map_refresh_mode,
+        generated_commit_sha
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, ?)
     `,
     ).run(
       repoId,
@@ -209,6 +218,8 @@ export async function indexRepo(
       repoSummary.indexMode ?? 'light',
       repoSummary.indexProvider ?? 'local-fallback',
       JSON.stringify(repoSummary.indexWarnings ?? []),
+      mapRefreshMode,
+      indexedCommitSha ?? null,
     );
 
     db.prepare(

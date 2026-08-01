@@ -15,11 +15,17 @@ import {
   isCodeReviewActive,
   runCodeReview,
 } from '../services/code-review.service.js';
-import { listRecentCommits, listBranches } from '../services/code-review-git.service.js';
+import {
+  getScopeChangeSummary,
+  listRecentCommits,
+  listBranches,
+  summarizeDiffFiles,
+} from '../services/code-review-git.service.js';
 import {
   listPullRequests,
   postCommentToPullRequest,
   postFindingCommentToPullRequest,
+  resolvePullRequestForReview,
 } from '../services/code-review-pr.service.js';
 import { getDb } from '../db/database.js';
 import { loadPromptTemplate } from '../utils/prompt-templates.js';
@@ -351,6 +357,29 @@ export function registerCodeReviewHandlers(): void {
       | undefined;
     if (!repo) throw new Error(`Repo not found: ${repoId}`);
     return listPullRequests(repo.remote_url);
+  });
+
+  ipcMain.handle('codereview:get-change-summary', async (_event, reviewId: string) => {
+    const review = getReview(reviewId);
+    if (!review) throw new Error(`Code review not found: ${reviewId}`);
+
+    const repo = getDb()
+      .prepare('SELECT path, remote_url FROM repos WHERE id = ?')
+      .get(review.repoId) as { path: string; remote_url: string | null } | undefined;
+    if (!repo) throw new Error(`Repo not found: ${review.repoId}`);
+
+    if (review.scopeType === 'pull_request') {
+      const pullRequestId = review.scopeRef?.pullRequest?.id;
+      if (!pullRequestId) throw new Error('Pull request scope is missing its pull request ID.');
+      const resolution = await resolvePullRequestForReview(
+        repo.path,
+        repo.remote_url,
+        pullRequestId,
+      );
+      return summarizeDiffFiles(resolution.diffFiles);
+    }
+
+    return getScopeChangeSummary(repo.path, review.scopeType, review.scopeRef);
   });
 }
 

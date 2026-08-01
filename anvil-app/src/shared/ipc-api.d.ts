@@ -97,8 +97,11 @@ import type {
   WorkspaceSummary,
   Persona,
   RepoInfo,
+  RepoMapRefreshMode,
+  RepoMapStatus,
   RepoIndexProgress,
   RepoSummary,
+  RepositoryChangeSummary,
   SecurityAudit,
   SecurityFinding,
   WorkItem,
@@ -177,6 +180,8 @@ export interface AnvilAPI {
     getStatus: (repoId: string) => Promise<RepoInfo['status']>;
     resetStatus: (repoId: string) => Promise<void>;
     getSummary: (repoId: string) => Promise<RepoSummary | null>;
+    getMapStatus: (repoId: string) => Promise<RepoMapStatus>;
+    setMapRefreshMode: (repoId: string, refreshMode: RepoMapRefreshMode) => Promise<RepoMapStatus>;
     getArchitecture: (repoId: string) => Promise<string | null>;
     selectDirectory: () => Promise<string | null>;
     onIndexProgress: (callback: (data: RepoIndexProgress) => void) => () => void;
@@ -446,6 +451,7 @@ export interface AnvilAPI {
     >;
     listBranches: (repoId: string) => Promise<string[]>;
     listPullRequests: (repoId: string) => Promise<CodeReviewPullRequest[]>;
+    getChangeSummary: (reviewId: string) => Promise<RepositoryChangeSummary>;
     onProgress: (
       callback: (data: { repoId: string; message: string; percent: number }) => void,
     ) => () => void;

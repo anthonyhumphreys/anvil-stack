@@ -73,6 +73,32 @@ export interface RepoSummary {
   indexWarnings?: string[];
 }
 
+export type RepoMapRefreshMode = 'manual' | 'on_commit';
+
+export interface RepoMapStatus {
+  refreshMode: RepoMapRefreshMode;
+  indexedCommitSha?: string;
+  currentCommitSha?: string;
+  generatedAt?: string;
+  stale: boolean;
+}
+
+export type RepositoryChangeStatus = 'added' | 'modified' | 'deleted' | 'renamed';
+
+export interface RepositoryChangedFile {
+  filePath: string;
+  previousPath?: string;
+  status: RepositoryChangeStatus;
+}
+
+export interface RepositoryChangeSummary {
+  files: RepositoryChangedFile[];
+  additions: number;
+  modifications: number;
+  deletions: number;
+  renames: number;
+}
+
 export type CicdProvider = 'github-actions' | 'azure-pipelines';
 export type CicdNodeType = 'workflow' | 'stage' | 'job' | 'step' | 'gate' | 'template';
 export type CicdValidationSeverity = 'error' | 'warning' | 'info';

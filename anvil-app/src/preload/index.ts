@@ -85,6 +85,9 @@ const api: AnvilAPI = {
     getStatus: (repoId: string) => ipcRenderer.invoke('repo:status', repoId),
     resetStatus: (repoId: string) => ipcRenderer.invoke('repo:reset-status', repoId),
     getSummary: (repoId: string) => ipcRenderer.invoke('repo:summary', repoId),
+    getMapStatus: (repoId: string) => ipcRenderer.invoke('repo:map-status', repoId),
+    setMapRefreshMode: (repoId: string, refreshMode: 'manual' | 'on_commit') =>
+      ipcRenderer.invoke('repo:set-map-refresh-mode', repoId, refreshMode),
     getArchitecture: (repoId: string) => ipcRenderer.invoke('repo:architecture', repoId),
     selectDirectory: () => ipcRenderer.invoke('dialog:selectDirectory'),
     openInVSCode: (repoPath: string) => ipcRenderer.invoke('repo:open-vscode', repoPath),
@@ -458,6 +461,8 @@ const api: AnvilAPI = {
     listBranches: (repoId: string) => ipcRenderer.invoke('codereview:list-branches', repoId),
     listPullRequests: (repoId: string) =>
       ipcRenderer.invoke('codereview:list-pull-requests', repoId),
+    getChangeSummary: (reviewId: string) =>
+      ipcRenderer.invoke('codereview:get-change-summary', reviewId),
     onProgress: (
       callback: (data: { repoId: string; message: string; percent: number }) => void,
     ) => {

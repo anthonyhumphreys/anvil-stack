@@ -1,4 +1,9 @@
 import { execFileSync } from 'node:child_process';
+import type {
+  RepositoryChangedFile,
+  RepositoryChangeSummary,
+  RepositoryChangeStatus,
+} from '../../shared/types.js';
 
 export interface GitCommitInfo {
   sha: string;
@@ -11,6 +16,8 @@ export interface GitCommitInfo {
 export interface GitDiffFile {
   filePath: string;
   diff: string;
+  previousPath?: string;
+  status: RepositoryChangeStatus;
 }
 
 function runGit(
@@ -92,6 +99,39 @@ export function getPullRequestRefDiff(
   return getDiffBetween(repoPath, resolvedTarget, resolvedSource);
 }
 
+export function getCurrentCommitSha(repoPath: string): string | undefined {
+  try {
+    return runGit(repoPath, ['rev-parse', 'HEAD'], { timeout: 5_000 }).trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function getScopeChangeSummary(
+  repoPath: string,
+  scopeType: 'latest_commit' | 'commit_range' | 'branch_diff' | 'full_codebase',
+  scopeRef?: {
+    fromSha?: string;
+    toSha?: string;
+    baseBranch?: string;
+    compareBranch?: string;
+  },
+): RepositoryChangeSummary {
+  switch (scopeType) {
+    case 'commit_range':
+      return summarizeDiffFiles(
+        getCommitRangeDiff(repoPath, scopeRef?.fromSha ?? 'HEAD~5', scopeRef?.toSha ?? 'HEAD'),
+      );
+    case 'branch_diff':
+      return summarizeDiffFiles(
+        getBranchDiff(repoPath, scopeRef?.baseBranch ?? 'main', scopeRef?.compareBranch ?? 'HEAD'),
+      );
+    case 'latest_commit':
+    case 'full_codebase':
+      return summarizeDiffFiles(getLatestCommitDiff(repoPath));
+  }
+}
+
 /**
  * Get diff between two refs, split by file.
  */
@@ -128,14 +168,46 @@ export function splitDiffByFile(diff: string): GitDiffFile[] {
     if (!part.trim()) continue;
     const fullDiff = 'diff --git ' + part;
 
-    // Extract file path from +++ line
-    const match = fullDiff.match(/^\+\+\+ b\/(.+)$/m);
-    if (!match) continue;
+    const headerMatch = fullDiff.match(/^diff --git a\/(.+) b\/(.+)$/m);
+    if (!headerMatch) continue;
 
-    files.push({ filePath: match[1], diff: fullDiff });
+    const previousPath = headerMatch[1];
+    const nextPath = headerMatch[2];
+    const status: RepositoryChangeStatus = fullDiff.includes('\nnew file mode ')
+      ? 'added'
+      : fullDiff.includes('\ndeleted file mode ')
+        ? 'deleted'
+        : fullDiff.includes('\nrename from ')
+          ? 'renamed'
+          : 'modified';
+
+    files.push({
+      filePath: status === 'deleted' ? previousPath : nextPath,
+      previousPath: status === 'renamed' ? previousPath : undefined,
+      status,
+      diff: fullDiff,
+    });
   }
 
   return files;
+}
+
+export function summarizeDiffFiles(
+  diffFiles: Array<Pick<GitDiffFile, 'filePath' | 'previousPath' | 'status'>>,
+): RepositoryChangeSummary {
+  const files: RepositoryChangedFile[] = diffFiles.map(({ filePath, previousPath, status }) => ({
+    filePath,
+    previousPath,
+    status,
+  }));
+
+  return {
+    files,
+    additions: files.filter((file) => file.status === 'added').length,
+    modifications: files.filter((file) => file.status === 'modified').length,
+    deletions: files.filter((file) => file.status === 'deleted').length,
+    renames: files.filter((file) => file.status === 'renamed').length,
+  };
 }
 
 /**

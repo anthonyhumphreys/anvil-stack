@@ -1,6 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Code } from 'lucide-react';
-import type { RepoIndexProgress, RepoInfo, RepoSummary } from '../../../shared/types';
+import type {
+  RepoIndexProgress,
+  RepoInfo,
+  RepoMapRefreshMode,
+  RepoMapStatus,
+  RepoSummary,
+} from '../../../shared/types';
 import { RepoList } from './RepoList';
 import { RepoDetail } from './RepoDetail';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
@@ -17,6 +23,7 @@ export function ReposView() {
   const { repos, addRepos, refreshWorkspaces } = useWorkspace();
   const [selectedRepo, setSelectedRepo] = useState<RepoInfo | null>(null);
   const [summary, setSummary] = useState<RepoSummary | null>(null);
+  const [mapStatus, setMapStatus] = useState<RepoMapStatus | null>(null);
   const [indexingRepoIds, setIndexingRepoIds] = useState<Set<string>>(new Set());
   const [indexProgressMap, setIndexProgressMap] = useState<Map<string, IndexProgressState>>(
     new Map(),
@@ -30,9 +37,24 @@ export function ReposView() {
   useEffect(() => {
     const cleanup = window.anvil.repo.onIndexProgress((data) => {
       setIndexProgressMap((prev) => updateIndexProgress(prev, data));
+      if (data.stage === 'complete' || data.stage === 'error') {
+        void refreshWorkspaces();
+        if (data.repoId === selectedRepo?.id && data.stage === 'complete') {
+          void Promise.all([
+            window.anvil.repo.getSummary(data.repoId),
+            window.anvil.repo.getMapStatus(data.repoId),
+          ]).then(([nextSummary, nextMapStatus]) => {
+            setSummary(nextSummary);
+            setMapStatus(nextMapStatus);
+            setSelectedRepo((prev) =>
+              prev?.id === data.repoId ? { ...prev, status: 'indexed' } : prev,
+            );
+          });
+        }
+      }
     });
     return cleanup;
-  }, []);
+  }, [refreshWorkspaces, selectedRepo?.id]);
 
   // Poll for status updates when a repo is indexing (e.g. user navigated away and back)
   useEffect(() => {
@@ -47,8 +69,12 @@ export function ReposView() {
           await refreshWorkspaces();
           // If this was the selected repo, reload its summary
           if (selectedRepo?.id === indexingRepo.id && status === 'indexed') {
-            const s = await window.anvil.repo.getSummary(indexingRepo.id);
-            setSummary(s);
+            const [nextSummary, nextMapStatus] = await Promise.all([
+              window.anvil.repo.getSummary(indexingRepo.id),
+              window.anvil.repo.getMapStatus(indexingRepo.id),
+            ]);
+            setSummary(nextSummary);
+            setMapStatus(nextMapStatus);
             setSelectedRepo((prev) => (prev ? { ...prev, status } : prev));
           }
         }
@@ -92,52 +118,59 @@ export function ReposView() {
     }
   };
 
-  const handleIndex = async (repoId: string) => {
-    let completed = false;
+  const handleIndex = useCallback(
+    async (repoId: string) => {
+      let completed = false;
 
-    try {
-      setError(null);
-      setIndexingRepoIds((prev) => new Set(prev).add(repoId));
-      setIndexProgressMap((prev) => {
-        const next = new Map(prev);
-        next.set(repoId, {
-          message: 'Starting indexing...',
-          percent: 0,
-          history: ['Starting indexing...'],
-        });
-        return next;
-      });
-      setSelectedRepo((prev) => (prev?.id === repoId ? { ...prev, status: 'indexing' } : prev));
-
-      await window.anvil.repo.index(repoId);
-      completed = true;
-      await refreshWorkspaces();
-
-      // Reload summary if this is the selected repo
-      if (selectedRepo?.id === repoId) {
-        const s = await window.anvil.repo.getSummary(repoId);
-        setSummary(s);
-        setSelectedRepo((prev) => (prev?.id === repoId ? { ...prev, status: 'indexed' } : prev));
-      }
-    } catch (err) {
-      setSelectedRepo((prev) => (prev?.id === repoId ? { ...prev, status: 'error' } : prev));
-      setError(err instanceof Error ? err.message : 'Indexing failed');
-    } finally {
-      setIndexingRepoIds((prev) => {
-        const next = new Set(prev);
-        next.delete(repoId);
-        return next;
-      });
-      if (completed) {
+      try {
+        setError(null);
+        setIndexingRepoIds((prev) => new Set(prev).add(repoId));
         setIndexProgressMap((prev) => {
           const next = new Map(prev);
+          next.set(repoId, {
+            message: 'Starting indexing...',
+            percent: 0,
+            history: ['Starting indexing...'],
+          });
+          return next;
+        });
+        setSelectedRepo((prev) => (prev?.id === repoId ? { ...prev, status: 'indexing' } : prev));
+
+        await window.anvil.repo.index(repoId);
+        completed = true;
+        await refreshWorkspaces();
+
+        // Reload summary if this is the selected repo
+        if (selectedRepo?.id === repoId) {
+          const [nextSummary, nextMapStatus] = await Promise.all([
+            window.anvil.repo.getSummary(repoId),
+            window.anvil.repo.getMapStatus(repoId),
+          ]);
+          setSummary(nextSummary);
+          setMapStatus(nextMapStatus);
+          setSelectedRepo((prev) => (prev?.id === repoId ? { ...prev, status: 'indexed' } : prev));
+        }
+      } catch (err) {
+        setSelectedRepo((prev) => (prev?.id === repoId ? { ...prev, status: 'error' } : prev));
+        setError(err instanceof Error ? err.message : 'Indexing failed');
+      } finally {
+        setIndexingRepoIds((prev) => {
+          const next = new Set(prev);
           next.delete(repoId);
           return next;
         });
+        if (completed) {
+          setIndexProgressMap((prev) => {
+            const next = new Map(prev);
+            next.delete(repoId);
+            return next;
+          });
+        }
+        await refreshWorkspaces();
       }
-      await refreshWorkspaces();
-    }
-  };
+    },
+    [refreshWorkspaces, selectedRepo?.id],
+  );
 
   const handleSelect = async (repo: RepoInfo) => {
     // Refresh status in case it changed while we were away
@@ -150,10 +183,15 @@ export function ReposView() {
 
     setSelectedRepo(repo);
     setSummary(null);
+    setMapStatus(null);
     if (repo.status === 'indexed') {
       try {
-        const s = await window.anvil.repo.getSummary(repo.id);
-        setSummary(s);
+        const [nextSummary, nextMapStatus] = await Promise.all([
+          window.anvil.repo.getSummary(repo.id),
+          window.anvil.repo.getMapStatus(repo.id),
+        ]);
+        setSummary(nextSummary);
+        setMapStatus(nextMapStatus);
       } catch (err) {
         console.error('Failed to load summary:', err);
       }
@@ -172,10 +210,13 @@ export function ReposView() {
     setSelectedRepo((prev) => (prev ? { ...prev, ...workspaceRepo } : prev));
 
     if (workspaceRepo.status === 'indexed') {
-      void window.anvil.repo
-        .getSummary(workspaceRepo.id)
-        .then((nextSummary) => {
+      void Promise.all([
+        window.anvil.repo.getSummary(workspaceRepo.id),
+        window.anvil.repo.getMapStatus(workspaceRepo.id),
+      ])
+        .then(([nextSummary, nextMapStatus]) => {
           setSummary(nextSummary);
+          setMapStatus(nextMapStatus);
         })
         .catch((err) => {
           console.error('Failed to refresh summary:', err);
@@ -184,7 +225,44 @@ export function ReposView() {
     }
 
     setSummary(null);
+    setMapStatus(null);
   }, [repos, selectedRepo]);
+
+  useEffect(() => {
+    const repoId = selectedRepo?.id;
+    if (!repoId || mapStatus?.refreshMode !== 'on_commit') return;
+
+    let cancelled = false;
+    const checkForCommit = async () => {
+      try {
+        const nextStatus = await window.anvil.repo.getMapStatus(repoId);
+        if (cancelled) return;
+        setMapStatus(nextStatus);
+      } catch (err) {
+        if (!cancelled) {
+          console.error('Failed to check repository map freshness:', err);
+        }
+      }
+    };
+
+    void checkForCommit();
+    const interval = window.setInterval(checkForCommit, 15_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [mapStatus?.refreshMode, selectedRepo?.id]);
+
+  const handleMapRefreshModeChange = async (refreshMode: RepoMapRefreshMode) => {
+    if (!selectedRepo) return;
+    try {
+      setError(null);
+      const nextStatus = await window.anvil.repo.setMapRefreshMode(selectedRepo.id, refreshMode);
+      setMapStatus(nextStatus);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update the map refresh policy');
+    }
+  };
 
   const selectedIndexProgress = selectedRepo
     ? (indexProgressMap.get(selectedRepo.id) ?? null)
@@ -229,6 +307,9 @@ export function ReposView() {
               summary={summary}
               isIndexing={selectedRepoIsIndexing}
               indexProgress={selectedIndexProgress}
+              mapStatus={mapStatus}
+              onRefreshMap={() => void handleIndex(selectedRepo.id)}
+              onMapRefreshModeChange={(mode) => void handleMapRefreshModeChange(mode)}
             />
           ) : (
             <div className="flex h-full items-center justify-center">

@@ -5,6 +5,8 @@ import type {
   CodeReviewFinding,
   CodeReviewScopeRef,
   CodeReviewScopeType,
+  RepoSummary,
+  RepositoryChangeSummary,
 } from '../../../shared/types';
 import { CodeReviewSummary } from './CodeReviewSummary';
 import { CodeReviewFindingCard } from './CodeReviewFindingCard';
@@ -23,6 +25,7 @@ import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { buildEditorUrl } from '../../utils/editor-link';
 import { copyTextToClipboard } from '../../utils/clipboard';
 import { WorkspaceGitActions } from '../shared/WorkspaceGitActions';
+import { RepositoryMap } from '../repos/RepositoryMap';
 
 interface Props {
   review: CodeReview;
@@ -43,6 +46,10 @@ export function CodeReviewReport({ review }: Props) {
   const [generatedFixPrompt, setGeneratedFixPrompt] = useState('');
   const [generatingFixFindingId, setGeneratingFixFindingId] = useState<string | null>(null);
   const [copiedFixPrompt, setCopiedFixPrompt] = useState(false);
+  const [repoSummary, setRepoSummary] = useState<RepoSummary | null>(null);
+  const [changeSummary, setChangeSummary] = useState<RepositoryChangeSummary | null>(null);
+  const [changeMapError, setChangeMapError] = useState<string | null>(null);
+  const [loadingChangeMap, setLoadingChangeMap] = useState(false);
 
   useEffect(() => {
     window.anvil.codereview.getFindings(review.id).then(setFindings);
@@ -56,6 +63,44 @@ export function CodeReviewReport({ review }: Props) {
     setGeneratingFixFindingId(null);
     setCopiedFixPrompt(false);
   }, [review.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (review.scopeType !== 'pull_request') {
+      setRepoSummary(null);
+      setChangeSummary(null);
+      setChangeMapError(null);
+      setLoadingChangeMap(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setLoadingChangeMap(true);
+    setChangeMapError(null);
+    Promise.all([
+      window.anvil.repo.getSummary(review.repoId),
+      window.anvil.codereview.getChangeSummary(review.id),
+    ])
+      .then(([nextRepoSummary, nextChangeSummary]) => {
+        if (cancelled) return;
+        setRepoSummary(nextRepoSummary);
+        setChangeSummary(nextChangeSummary);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setChangeMapError(
+          error instanceof Error ? error.message : 'Unable to build the pull request change map.',
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingChangeMap(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [review.id, review.repoId, review.scopeType]);
 
   const handleDismiss = useCallback(async (findingId: string) => {
     await window.anvil.codereview.dismissFinding(findingId);
@@ -273,6 +318,32 @@ export function CodeReviewReport({ review }: Props) {
             </button>
           </div>
         </div>
+
+        {review.scopeType === 'pull_request' && (
+          <section className="mb-5">
+            {loadingChangeMap ? (
+              <ChangeMapSkeleton />
+            ) : repoSummary && changeSummary ? (
+              <RepositoryMap
+                repositoryName={
+                  repos.find((repo) => repo.id === review.repoId)?.name ?? 'Repository'
+                }
+                modules={repoSummary.modules}
+                changedFiles={changeSummary.files}
+                compact
+                changeMode
+              />
+            ) : (
+              <div className="rounded-xl border border-border bg-bg-secondary px-4 py-3">
+                <p className="text-sm font-medium text-text-primary">Change map unavailable</p>
+                <p className="mt-1 text-xs text-text-secondary">
+                  {changeMapError ??
+                    'Index this repository to map pull request files to code areas.'}
+                </p>
+              </div>
+            )}
+          </section>
+        )}
 
         {/* Summary */}
         <CodeReviewSummary findings={findings} summary={review.summary} />
@@ -498,6 +569,24 @@ export function CodeReviewReport({ review }: Props) {
           </div>
         </aside>
       )}
+    </div>
+  );
+}
+
+function ChangeMapSkeleton() {
+  return (
+    <div className="overflow-hidden rounded-xl border border-border bg-bg-secondary">
+      <div className="border-b border-border px-4 py-3">
+        <div className="h-4 w-28 animate-pulse rounded bg-bg-elevated" />
+        <div className="mt-2 h-3 w-48 animate-pulse rounded bg-bg-elevated" />
+      </div>
+      <div className="flex h-[390px] items-center justify-center gap-16 px-8">
+        <div className="h-28 w-56 animate-pulse rounded-xl bg-bg-elevated" />
+        <div className="space-y-5">
+          <div className="h-24 w-56 animate-pulse rounded-xl bg-bg-elevated" />
+          <div className="h-24 w-56 animate-pulse rounded-xl bg-bg-elevated" />
+        </div>
+      </div>
     </div>
   );
 }

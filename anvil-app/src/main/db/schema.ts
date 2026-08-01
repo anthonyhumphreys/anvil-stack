@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 47;
+export const SCHEMA_VERSION = 48;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -35,7 +35,9 @@ CREATE TABLE IF NOT EXISTS repo_summaries (
   model_version TEXT,
   index_mode TEXT DEFAULT 'light',
   index_provider TEXT,
-  index_warnings TEXT
+  index_warnings TEXT,
+  map_refresh_mode TEXT NOT NULL DEFAULT 'manual',
+  generated_commit_sha TEXT
 );
 
 CREATE TABLE IF NOT EXISTS module_summaries (
@@ -1539,5 +1541,10 @@ export const MIGRATIONS: Record<number, string> = {
     UPDATE settings
       SET enabled_llm_providers = json_array(COALESCE(llm_provider, 'codex'))
       WHERE enabled_llm_providers IS NULL;
+  `,
+  48: `
+    ALTER TABLE repo_summaries
+      ADD COLUMN map_refresh_mode TEXT NOT NULL DEFAULT 'manual';
+    ALTER TABLE repo_summaries ADD COLUMN generated_commit_sha TEXT;
   `,
 };
