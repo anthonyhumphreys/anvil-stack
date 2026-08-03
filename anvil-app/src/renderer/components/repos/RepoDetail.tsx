@@ -57,9 +57,18 @@ export function RepoDetail({
 
   useEffect(() => {
     let cancelled = false;
-    window.anvil.repo.getMapGraph(repo.id).then((graph) => {
-      if (!cancelled) setMapGraph(graph);
-    });
+    setMapGraph(null);
+    window.anvil.repo
+      .getMapGraph(repo.id)
+      .then((graph) => {
+        if (!cancelled) setMapGraph(graph);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setMapGraph(null);
+          console.error('Failed to load repository map graph:', error);
+        }
+      });
     return () => {
       cancelled = true;
     };
@@ -250,6 +259,7 @@ export function RepoDetail({
               </div>
             </div>
             <RepositoryMap
+              key={repo.id}
               repoId={repo.id}
               repositoryName={repo.name}
               modules={summary.modules}

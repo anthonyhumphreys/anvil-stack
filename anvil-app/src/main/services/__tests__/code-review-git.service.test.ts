@@ -22,6 +22,22 @@ describe('parseChangedRanges', () => {
       { side: 'current', startLine: 5, endLine: 6 },
     ]);
   });
+
+  it('anchors deletion-only hunks on the current side', () => {
+    expect(
+      parseChangedRanges(`diff --git a/src/example.ts b/src/example.ts
+--- a/src/example.ts
++++ b/src/example.ts
+@@ -10,4 +10,2 @@
+ keep
+-removed one
+-removed two
+ keep`),
+    ).toEqual([
+      { side: 'base', startLine: 11, endLine: 12 },
+      { side: 'current', startLine: 11, endLine: 11 },
+    ]);
+  });
 });
 
 describe('splitDiffByFile', () => {

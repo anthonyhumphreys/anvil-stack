@@ -107,6 +107,7 @@ export interface RepositoryChangeSummary {
   modifications: number;
   deletions: number;
   renames: number;
+  currentCommitSha?: string;
 }
 
 export type CicdProvider = 'github-actions' | 'azure-pipelines';
@@ -1379,6 +1380,7 @@ export interface CodeReviewPullRequestRef {
   url?: string;
   sourceBranch?: string;
   targetBranch?: string;
+  sourceCommitSha?: string;
   provider?: 'github' | 'ado';
 }
 
@@ -1399,6 +1401,7 @@ export interface CodeReviewPullRequest {
   author?: string;
   sourceBranch: string;
   targetBranch: string;
+  sourceCommitSha?: string;
   updatedAt: string;
   url?: string;
 }

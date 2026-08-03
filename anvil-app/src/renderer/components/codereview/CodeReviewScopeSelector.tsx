@@ -200,6 +200,7 @@ export function CodeReviewScopeSelector({
                 url: selectedPullRequest.url,
                 sourceBranch: selectedPullRequest.sourceBranch,
                 targetBranch: selectedPullRequest.targetBranch,
+                sourceCommitSha: selectedPullRequest.sourceCommitSha,
                 provider: selectedPullRequest.provider,
               }
             : { id: pullRequestId },

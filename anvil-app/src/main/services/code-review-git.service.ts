@@ -221,22 +221,25 @@ export function parseChangedRanges(diff: string): NonNullable<RepositoryChangedF
   let currentStart: number | null = null;
   let baseStart: number | null = null;
 
-  const flushCurrent = () => {
-    if (currentStart === null) return;
-    ranges.push({ side: 'current', startLine: currentStart, endLine: newLine - 1 });
+  const flushChanges = () => {
+    if (baseStart !== null) {
+      ranges.push({ side: 'base', startLine: baseStart, endLine: oldLine - 1 });
+    }
+    if (currentStart !== null) {
+      ranges.push({ side: 'current', startLine: currentStart, endLine: newLine - 1 });
+    } else if (baseStart !== null && newLine > 0) {
+      // A deletion has no current-side lines. Anchor it at the point where the
+      // removed lines used to be so symbol overlays remain precise.
+      ranges.push({ side: 'current', startLine: newLine, endLine: newLine });
+    }
     currentStart = null;
-  };
-  const flushBase = () => {
-    if (baseStart === null) return;
-    ranges.push({ side: 'base', startLine: baseStart, endLine: oldLine - 1 });
     baseStart = null;
   };
 
   for (const line of lines) {
     const hunk = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
     if (hunk) {
-      flushCurrent();
-      flushBase();
+      flushChanges();
       oldLine = Number(hunk[1]);
       newLine = Number(hunk[2]);
       continue;
@@ -244,28 +247,24 @@ export function parseChangedRanges(diff: string): NonNullable<RepositoryChangedF
     if (oldLine === 0 && newLine === 0) continue;
 
     if (line.startsWith('+') && !line.startsWith('+++')) {
-      flushBase();
       if (currentStart === null) currentStart = newLine;
       newLine += 1;
       continue;
     }
     if (line.startsWith('-') && !line.startsWith('---')) {
-      flushCurrent();
       if (baseStart === null) baseStart = oldLine;
       oldLine += 1;
       continue;
     }
 
-    flushCurrent();
-    flushBase();
+    flushChanges();
     if (line.startsWith(' ')) {
       oldLine += 1;
       newLine += 1;
     }
   }
 
-  flushCurrent();
-  flushBase();
+  flushChanges();
   return ranges;
 }
 

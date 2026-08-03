@@ -14,6 +14,12 @@ import type { FileEntry } from '../utils/file-walker.js';
 const GRAPH_SCHEMA_VERSION = 1 as const;
 const MAX_SYMBOL_FILE_BYTES = 750_000;
 const MAX_SYMBOLS_PER_FILE = 300;
+export const REPOSITORY_MAP_GRAPH_LIMITS = {
+  nodes: 20_000,
+  edges: 40_000,
+  symbols: 12_000,
+  parsedSourceBytes: 50_000_000,
+} as const;
 const SYMBOL_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']);
 const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'];
 
@@ -50,7 +56,7 @@ export function buildRepositoryMapGraph({
   const edges = new Map<string, RepositoryMapGraphEdge>();
   const warnings = new Set<string>();
   const parsedFiles = new Map<string, ParsedSourceFile>();
-  const normalizedFiles = new Set(files.map((file) => normalizePath(file.relativePath)));
+  const normalizedFiles = new Set<string>();
   const rootId = repositoryNodeId(repoId);
 
   nodes.set(rootId, {
@@ -91,11 +97,24 @@ export function buildRepositoryMapGraph({
     addEdge(edges, 'contains', rootId, moduleNodeId('.'));
   }
 
+  const indexedFiles: FileEntry[] = [];
   for (const file of files.toSorted((a, b) => a.relativePath.localeCompare(b.relativePath))) {
+    if (nodes.size >= REPOSITORY_MAP_GRAPH_LIMITS.nodes) {
+      warnings.add(
+        `Limited repository map to ${REPOSITORY_MAP_GRAPH_LIMITS.nodes.toLocaleString()} nodes; some files and symbols were omitted.`,
+      );
+      break;
+    }
     const filePath = normalizePath(file.relativePath);
     const modulePath = findModulePath(modules, filePath);
     const moduleId = moduleNodeId(modulePath);
     const parentId = ensureDirectoryNodes(nodes, edges, modulePath, filePath, moduleId);
+    if (!parentId || nodes.size >= REPOSITORY_MAP_GRAPH_LIMITS.nodes) {
+      warnings.add(
+        `Limited repository map to ${REPOSITORY_MAP_GRAPH_LIMITS.nodes.toLocaleString()} nodes; some files and symbols were omitted.`,
+      );
+      break;
+    }
     const fileId = fileNodeId(filePath);
     const language = languageForExtension(file.extension);
 
@@ -109,7 +128,17 @@ export function buildRepositoryMapGraph({
       language,
     });
     addEdge(edges, 'contains', parentId, fileId);
+    normalizedFiles.add(filePath);
+    indexedFiles.push(file);
+  }
 
+  let parsedSourceBytes = 0;
+  let symbolNodeCount = 0;
+  for (const file of indexedFiles) {
+    const filePath = normalizePath(file.relativePath);
+    const fileId = fileNodeId(filePath);
+    const modulePath = nodes.get(fileId)?.modulePath ?? '.';
+    const language = languageForExtension(file.extension);
     if (!SYMBOL_EXTENSIONS.has(file.extension)) continue;
     if (file.sizeBytes > MAX_SYMBOL_FILE_BYTES) {
       warnings.add(
@@ -117,17 +146,41 @@ export function buildRepositoryMapGraph({
       );
       continue;
     }
+    if (
+      parsedSourceBytes + file.sizeBytes >
+      REPOSITORY_MAP_GRAPH_LIMITS.parsedSourceBytes
+    ) {
+      warnings.add(
+        `Limited source inspection to ${Math.round(REPOSITORY_MAP_GRAPH_LIMITS.parsedSourceBytes / 1_000_000)} MB.`,
+      );
+      continue;
+    }
 
     try {
+      parsedSourceBytes += file.sizeBytes;
       const source = fs.readFileSync(path.join(repoPath, filePath), 'utf8');
       const parsed = parseSourceFile(filePath, source);
       parsedFiles.set(filePath, parsed);
-      if (parsed.symbols.length >= MAX_SYMBOLS_PER_FILE) {
+      const availableSymbols = Math.max(
+        0,
+        Math.min(
+          MAX_SYMBOLS_PER_FILE,
+          REPOSITORY_MAP_GRAPH_LIMITS.symbols - symbolNodeCount,
+          REPOSITORY_MAP_GRAPH_LIMITS.nodes - nodes.size,
+        ),
+      );
+      if (parsed.symbols.length > MAX_SYMBOLS_PER_FILE) {
         warnings.add(`Limited symbol extraction to ${MAX_SYMBOLS_PER_FILE} symbols per file.`);
       }
-      const visibleSymbols = parsed.symbols.slice(0, MAX_SYMBOLS_PER_FILE);
+      if (parsed.symbols.length > availableSymbols) {
+        warnings.add(
+          `Limited repository map to ${REPOSITORY_MAP_GRAPH_LIMITS.symbols.toLocaleString()} symbol nodes.`,
+        );
+      }
+      const visibleSymbols = parsed.symbols.slice(0, availableSymbols);
       const fileNode = nodes.get(fileId);
       if (fileNode) fileNode.symbolCount = visibleSymbols.length;
+      symbolNodeCount += visibleSymbols.length;
 
       visibleSymbols.forEach((symbol, index) => {
         const symbolId = symbolNodeId(filePath, symbol, index);
@@ -172,6 +225,12 @@ export function buildRepositoryMapGraph({
     addEdge(edges, 'dependency', moduleNodeId(sourceModule), moduleNodeId(targetModule), count);
   }
 
+  if (edges.size >= REPOSITORY_MAP_GRAPH_LIMITS.edges) {
+    warnings.add(
+      `Limited repository map to ${REPOSITORY_MAP_GRAPH_LIMITS.edges.toLocaleString()} relationships.`,
+    );
+  }
+
   return {
     schemaVersion: GRAPH_SCHEMA_VERSION,
     repoId,
@@ -191,7 +250,7 @@ function ensureDirectoryNodes(
   modulePath: string,
   filePath: string,
   moduleId: string,
-): string {
+): string | null {
   const directory = path.posix.dirname(filePath);
   if (directory === '.') return moduleId;
 
@@ -203,6 +262,7 @@ function ensureDirectoryNodes(
     const directoryPath = directoryParts.slice(0, depth).join('/');
     const directoryId = directoryNodeId(directoryPath);
     if (!nodes.has(directoryId)) {
+      if (nodes.size >= REPOSITORY_MAP_GRAPH_LIMITS.nodes) return null;
       nodes.set(directoryId, {
         id: directoryId,
         kind: 'directory',
@@ -428,6 +488,7 @@ function addEdge(
   count?: number,
 ): void {
   const id = `${kind}:${source}->${target}`;
+  if (!edges.has(id) && edges.size >= REPOSITORY_MAP_GRAPH_LIMITS.edges) return;
   edges.set(id, { id, kind, source, target, count });
 }
 

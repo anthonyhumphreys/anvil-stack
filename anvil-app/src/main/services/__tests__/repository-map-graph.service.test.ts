@@ -2,7 +2,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { buildRepositoryMapGraph } from '../repository-map-graph.service.js';
+import {
+  buildRepositoryMapGraph,
+  REPOSITORY_MAP_GRAPH_LIMITS,
+} from '../repository-map-graph.service.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -84,6 +87,37 @@ describe('repository-map-graph.service', () => {
           count: 1,
         }),
       ]),
+    );
+  });
+
+  it('caps the complete graph for very large repositories', () => {
+    const graph = buildRepositoryMapGraph({
+      repoId: 'large-repo',
+      repositoryName: 'Large repository',
+      repoPath: os.tmpdir(),
+      files: Array.from(
+        { length: REPOSITORY_MAP_GRAPH_LIMITS.nodes + 100 },
+        (_, index) => ({
+          relativePath: `file-${String(index).padStart(5, '0')}.md`,
+          extension: '.md',
+          sizeBytes: 10,
+        }),
+      ),
+      modules: [
+        {
+          path: '.',
+          purpose: 'Repository root',
+          fileCount: REPOSITORY_MAP_GRAPH_LIMITS.nodes + 100,
+          keyFiles: [],
+          dependencies: [],
+        },
+      ],
+    });
+
+    expect(graph.nodes.length).toBeLessThanOrEqual(REPOSITORY_MAP_GRAPH_LIMITS.nodes);
+    expect(graph.edges.length).toBeLessThanOrEqual(REPOSITORY_MAP_GRAPH_LIMITS.edges);
+    expect(graph.warnings).toContain(
+      `Limited repository map to ${REPOSITORY_MAP_GRAPH_LIMITS.nodes.toLocaleString()} nodes; some files and symbols were omitted.`,
     );
   });
 });
