@@ -8,6 +8,7 @@ import { notifyIfUnfocused } from './notification.service.js';
 import { getSettings } from './settings.service.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
 import { getCurrentCommitSha } from './code-review-git.service.js';
+import { buildRepositoryMapGraph } from './repository-map-graph.service.js';
 
 interface DbRepoRow {
   id: string;
@@ -167,6 +168,15 @@ export async function indexRepo(
 
     sendProgress('Saving results...', 97, 'saving');
 
+    const repositoryMapGraph = buildRepositoryMapGraph({
+      repoId,
+      repositoryName: repoRow.name,
+      repoPath: repoRow.path,
+      indexedCommitSha,
+      files: analysis.files,
+      modules: moduleSummaries,
+    });
+
     const insertModule = db.prepare(`
       INSERT OR REPLACE INTO module_summaries (repo_id, path, purpose, file_count, key_files, dependencies, generated_at)
       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
@@ -181,6 +191,18 @@ export async function indexRepo(
         JSON.stringify(mod.dependencies),
       );
     }
+
+    db.prepare(
+      `INSERT OR REPLACE INTO repository_map_graphs (
+        repo_id, schema_version, indexed_commit_sha, graph_json, generated_at
+      ) VALUES (?, ?, ?, ?, ?)`,
+    ).run(
+      repoId,
+      repositoryMapGraph.schemaVersion,
+      indexedCommitSha ?? null,
+      JSON.stringify(repositoryMapGraph),
+      repositoryMapGraph.generatedAt,
+    );
 
     db.prepare(
       `

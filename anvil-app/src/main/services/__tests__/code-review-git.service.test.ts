@@ -1,5 +1,28 @@
 import { describe, expect, it } from 'vitest';
-import { splitDiffByFile, summarizeDiffFiles } from '../code-review-git.service';
+import {
+  parseChangedRanges,
+  splitDiffByFile,
+  summarizeDiffFiles,
+} from '../code-review-git.service';
+
+describe('parseChangedRanges', () => {
+  it('records current and base line ranges from a unified diff', () => {
+    expect(
+      parseChangedRanges(`diff --git a/src/example.ts b/src/example.ts
+--- a/src/example.ts
++++ b/src/example.ts
+@@ -4,3 +4,4 @@
+ keep
+-old
++new
++added
+ keep`),
+    ).toEqual([
+      { side: 'base', startLine: 5, endLine: 5 },
+      { side: 'current', startLine: 5, endLine: 6 },
+    ]);
+  });
+});
 
 describe('splitDiffByFile', () => {
   it('retains added and deleted files with their change status', () => {

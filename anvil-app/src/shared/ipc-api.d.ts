@@ -98,6 +98,7 @@ import type {
   Persona,
   RepoInfo,
   RepoMapRefreshMode,
+  RepositoryMapGraph,
   RepoMapStatus,
   RepoIndexProgress,
   RepoSummary,
@@ -181,6 +182,7 @@ export interface AnvilAPI {
     resetStatus: (repoId: string) => Promise<void>;
     getSummary: (repoId: string) => Promise<RepoSummary | null>;
     getMapStatus: (repoId: string) => Promise<RepoMapStatus>;
+    getMapGraph: (repoId: string) => Promise<RepositoryMapGraph | null>;
     setMapRefreshMode: (repoId: string, refreshMode: RepoMapRefreshMode) => Promise<RepoMapStatus>;
     getArchitecture: (repoId: string) => Promise<string | null>;
     selectDirectory: () => Promise<string | null>;

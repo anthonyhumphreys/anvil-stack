@@ -1,9 +1,11 @@
 import type {
   RepoInfo,
   RepoMapRefreshMode,
+  RepositoryMapGraph,
   RepoMapStatus,
   RepoSummary,
 } from '../../../shared/types';
+import { useEffect, useState } from 'react';
 import { RepositoryMap } from './RepositoryMap';
 import { ModuleSummaryCard } from './ModuleSummary';
 import {
@@ -51,6 +53,17 @@ export function RepoDetail({
   const indexWarnings = summary?.indexWarnings ?? repo.indexWarnings ?? [];
   const showDeepBadge = indexMode === 'deep';
   const showIndexWarnings = indexWarnings.length > 0;
+  const [mapGraph, setMapGraph] = useState<RepositoryMapGraph | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    window.anvil.repo.getMapGraph(repo.id).then((graph) => {
+      if (!cancelled) setMapGraph(graph);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [mapStatus?.generatedAt, repo.id]);
 
   if (!summary && !isIndexing) {
     return (
@@ -236,7 +249,12 @@ export function RepoDetail({
                 </button>
               </div>
             </div>
-            <RepositoryMap repositoryName={repo.name} modules={summary.modules} />
+            <RepositoryMap
+              repoId={repo.id}
+              repositoryName={repo.name}
+              modules={summary.modules}
+              graph={mapGraph}
+            />
           </section>
 
           {/* Diagrams */}

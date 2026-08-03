@@ -3,6 +3,7 @@ import type {
   RepoIndexProgress,
   RepoInfo,
   RepoMapRefreshMode,
+  RepositoryMapGraph,
   RepoMapStatus,
   RepoSummary,
 } from '../../shared/types.js';
@@ -128,6 +129,19 @@ export function registerRepoHandlers(): void {
 
   ipcMain.handle('repo:map-status', (_event, repoId: string): RepoMapStatus => {
     return getRepoMapStatus(repoId);
+  });
+
+  ipcMain.handle('repo:map-graph', (_event, repoId: string): RepositoryMapGraph | null => {
+    const row = getDb()
+      .prepare('SELECT graph_json FROM repository_map_graphs WHERE repo_id = ?')
+      .get(repoId) as { graph_json: string } | undefined;
+    if (!row) return null;
+    try {
+      const graph = JSON.parse(row.graph_json) as RepositoryMapGraph;
+      return graph.schemaVersion === 1 ? graph : null;
+    } catch {
+      return null;
+    }
   });
 
   ipcMain.handle(

@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 48;
+export const SCHEMA_VERSION = 49;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -50,6 +50,14 @@ CREATE TABLE IF NOT EXISTS module_summaries (
   dependencies TEXT,
   generated_at TEXT,
   UNIQUE(repo_id, path)
+);
+
+CREATE TABLE IF NOT EXISTS repository_map_graphs (
+  repo_id TEXT PRIMARY KEY REFERENCES repos(id) ON DELETE CASCADE,
+  schema_version INTEGER NOT NULL,
+  indexed_commit_sha TEXT,
+  graph_json TEXT NOT NULL,
+  generated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS chat_threads (
@@ -1546,5 +1554,14 @@ export const MIGRATIONS: Record<number, string> = {
     ALTER TABLE repo_summaries
       ADD COLUMN map_refresh_mode TEXT NOT NULL DEFAULT 'manual';
     ALTER TABLE repo_summaries ADD COLUMN generated_commit_sha TEXT;
+  `,
+  49: `
+    CREATE TABLE IF NOT EXISTS repository_map_graphs (
+      repo_id TEXT PRIMARY KEY REFERENCES repos(id) ON DELETE CASCADE,
+      schema_version INTEGER NOT NULL,
+      indexed_commit_sha TEXT,
+      graph_json TEXT NOT NULL,
+      generated_at TEXT NOT NULL
+    );
   `,
 };

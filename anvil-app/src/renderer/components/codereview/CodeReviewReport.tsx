@@ -7,6 +7,7 @@ import type {
   CodeReviewScopeType,
   RepoSummary,
   RepositoryChangeSummary,
+  RepositoryMapGraph,
 } from '../../../shared/types';
 import { CodeReviewSummary } from './CodeReviewSummary';
 import { CodeReviewFindingCard } from './CodeReviewFindingCard';
@@ -48,6 +49,7 @@ export function CodeReviewReport({ review }: Props) {
   const [copiedFixPrompt, setCopiedFixPrompt] = useState(false);
   const [repoSummary, setRepoSummary] = useState<RepoSummary | null>(null);
   const [changeSummary, setChangeSummary] = useState<RepositoryChangeSummary | null>(null);
+  const [mapGraph, setMapGraph] = useState<RepositoryMapGraph | null>(null);
   const [changeMapError, setChangeMapError] = useState<string | null>(null);
   const [loadingChangeMap, setLoadingChangeMap] = useState(false);
 
@@ -69,6 +71,7 @@ export function CodeReviewReport({ review }: Props) {
     if (review.scopeType !== 'pull_request') {
       setRepoSummary(null);
       setChangeSummary(null);
+      setMapGraph(null);
       setChangeMapError(null);
       setLoadingChangeMap(false);
       return () => {
@@ -80,11 +83,13 @@ export function CodeReviewReport({ review }: Props) {
     setChangeMapError(null);
     Promise.all([
       window.anvil.repo.getSummary(review.repoId),
+      window.anvil.repo.getMapGraph(review.repoId),
       window.anvil.codereview.getChangeSummary(review.id),
     ])
-      .then(([nextRepoSummary, nextChangeSummary]) => {
+      .then(([nextRepoSummary, nextMapGraph, nextChangeSummary]) => {
         if (cancelled) return;
         setRepoSummary(nextRepoSummary);
+        setMapGraph(nextMapGraph);
         setChangeSummary(nextChangeSummary);
       })
       .catch((error) => {
@@ -325,10 +330,12 @@ export function CodeReviewReport({ review }: Props) {
               <ChangeMapSkeleton />
             ) : repoSummary && changeSummary ? (
               <RepositoryMap
+                repoId={review.repoId}
                 repositoryName={
                   repos.find((repo) => repo.id === review.repoId)?.name ?? 'Repository'
                 }
                 modules={repoSummary.modules}
+                graph={mapGraph}
                 changedFiles={changeSummary.files}
                 compact
                 changeMode
