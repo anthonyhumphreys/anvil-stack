@@ -349,10 +349,6 @@ export function RepositoryMap({
                 selectedNodeId={selectedNodeId}
                 compact={compact}
                 onSelectNode={(nodeId) => setSelectedNodeId(nodeId || null)}
-                onOpenNode={(nodeId) => {
-                  setViewMode('map');
-                  openScope(nodeId);
-                }}
               />
             </Suspense>
           </RepositoryGardenBoundary>
