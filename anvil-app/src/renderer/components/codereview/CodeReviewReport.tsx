@@ -7,6 +7,7 @@ import type {
   CodeReviewScopeType,
   RepoSummary,
   RepositoryChangeSummary,
+  RepositoryMapGraph,
 } from '../../../shared/types';
 import { CodeReviewSummary } from './CodeReviewSummary';
 import { CodeReviewFindingCard } from './CodeReviewFindingCard';
@@ -48,6 +49,7 @@ export function CodeReviewReport({ review }: Props) {
   const [copiedFixPrompt, setCopiedFixPrompt] = useState(false);
   const [repoSummary, setRepoSummary] = useState<RepoSummary | null>(null);
   const [changeSummary, setChangeSummary] = useState<RepositoryChangeSummary | null>(null);
+  const [mapGraph, setMapGraph] = useState<RepositoryMapGraph | null>(null);
   const [changeMapError, setChangeMapError] = useState<string | null>(null);
   const [loadingChangeMap, setLoadingChangeMap] = useState(false);
 
@@ -69,6 +71,7 @@ export function CodeReviewReport({ review }: Props) {
     if (review.scopeType !== 'pull_request') {
       setRepoSummary(null);
       setChangeSummary(null);
+      setMapGraph(null);
       setChangeMapError(null);
       setLoadingChangeMap(false);
       return () => {
@@ -76,15 +79,20 @@ export function CodeReviewReport({ review }: Props) {
       };
     }
 
+    setRepoSummary(null);
+    setChangeSummary(null);
+    setMapGraph(null);
     setLoadingChangeMap(true);
     setChangeMapError(null);
     Promise.all([
       window.anvil.repo.getSummary(review.repoId),
+      window.anvil.repo.getMapGraph(review.repoId),
       window.anvil.codereview.getChangeSummary(review.id),
     ])
-      .then(([nextRepoSummary, nextChangeSummary]) => {
+      .then(([nextRepoSummary, nextMapGraph, nextChangeSummary]) => {
         if (cancelled) return;
         setRepoSummary(nextRepoSummary);
+        setMapGraph(nextMapGraph);
         setChangeSummary(nextChangeSummary);
       })
       .catch((error) => {
@@ -281,6 +289,11 @@ export function CodeReviewReport({ review }: Props) {
   const scopeLabel = formatScopeLabel(review.scopeType, review.scopeRef);
   const canPostToPullRequest =
     review.scopeType === 'pull_request' && Boolean(review.scopeRef?.pullRequest?.id);
+  const changeMapCommitMismatch = Boolean(
+    mapGraph &&
+      changeSummary?.currentCommitSha &&
+      mapGraph.indexedCommitSha !== changeSummary.currentCommitSha,
+  );
 
   return (
     <div className="flex min-h-full">
@@ -323,12 +336,32 @@ export function CodeReviewReport({ review }: Props) {
           <section className="mb-5">
             {loadingChangeMap ? (
               <ChangeMapSkeleton />
+            ) : changeMapCommitMismatch && mapGraph && changeSummary?.currentCommitSha ? (
+              <div className="rounded-xl border border-warning/35 bg-warning/10 px-4 py-3">
+                <p className="text-sm font-medium text-text-primary">Change map needs a refresh</p>
+                <p className="mt-1 text-xs leading-5 text-text-secondary">
+                  This map was indexed at {shortCommit(mapGraph.indexedCommitSha)}, but the pull
+                  request currently points to {shortCommit(changeSummary.currentCommitSha)}. Check
+                  out the pull request branch and refresh its repository map before using
+                  source-level overlays.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => navigate('/repos')}
+                  className="mt-3 rounded-md border border-warning/40 px-2.5 py-1.5 text-xs font-medium text-warning hover:bg-warning/10"
+                >
+                  Open Repositories
+                </button>
+              </div>
             ) : repoSummary && changeSummary ? (
               <RepositoryMap
+                key={review.id}
+                repoId={review.repoId}
                 repositoryName={
                   repos.find((repo) => repo.id === review.repoId)?.name ?? 'Repository'
                 }
                 modules={repoSummary.modules}
+                graph={mapGraph}
                 changedFiles={changeSummary.files}
                 compact
                 changeMode
@@ -599,4 +632,8 @@ function formatScopeLabel(scopeType: CodeReviewScopeType, scopeRef?: CodeReviewS
   }
 
   return scopeType.replace(/_/g, ' ');
+}
+
+function shortCommit(commitSha?: string): string {
+  return commitSha ? commitSha.slice(0, 7) : 'an unknown commit';
 }

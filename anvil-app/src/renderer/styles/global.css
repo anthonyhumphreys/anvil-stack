@@ -177,6 +177,64 @@ body,
   box-shadow: 0 18px 45px rgba(3, 7, 18, 0.38);
 }
 
+.repository-explorer .react-flow__controls {
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: none;
+}
+
+.repository-explorer .react-flow__controls-button {
+  width: 32px;
+  height: 32px;
+  border-bottom-color: var(--color-border-subtle);
+  background: var(--color-bg-primary);
+  color: var(--color-text-secondary);
+}
+
+.repository-explorer .react-flow__controls-button:hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+
+.repository-explorer .react-flow__controls-button svg {
+  fill: currentColor;
+}
+
+.repository-explorer .react-flow__minimap {
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-primary);
+}
+
+.repository-explorer-body {
+  container-type: inline-size;
+}
+
+.repository-explorer-inspector {
+  max-height: 440px;
+}
+
+@container (min-width: 780px) {
+  .repository-explorer-body.has-inspector {
+    grid-template-columns: minmax(0, 1fr) 320px;
+  }
+
+  .repository-explorer-inspector {
+    max-height: none;
+    border-top: 0;
+    border-left: 1px solid var(--color-border);
+  }
+}
+
+.repository-node-purpose {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 .workflow-running-icon {
   animation: workflow-pulse 900ms ease-in-out infinite alternate;
 }

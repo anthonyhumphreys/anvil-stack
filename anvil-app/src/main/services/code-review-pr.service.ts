@@ -42,6 +42,7 @@ interface GithubPullRequestResponse {
   url: string;
   author?: { login?: string | null } | null;
   headRefName: string;
+  headRefOid?: string;
   baseRefName: string;
 }
 
@@ -55,6 +56,7 @@ interface AdoPullRequestResponse {
   createdBy?: { displayName?: string };
   sourceRefName: string;
   targetRefName: string;
+  lastMergeSourceCommit?: { commitId?: string };
 }
 
 interface GitHubIssueCommentResponse {
@@ -291,7 +293,7 @@ async function listGithubPullRequests(spec: GitHubRepoSpec): Promise<CodeReviewP
     '--state',
     'all',
     '--json',
-    'number,title,state,isDraft,author,headRefName,baseRefName,updatedAt,url',
+    'number,title,state,isDraft,author,headRefName,headRefOid,baseRefName,updatedAt,url',
   ]);
 
   const pullRequests = JSON.parse(stdout) as GithubPullRequestResponse[];
@@ -311,7 +313,7 @@ async function getGithubPullRequest(
     '--repo',
     formatGhRepoIdentifier(spec),
     '--json',
-    'number,title,state,isDraft,author,headRefName,baseRefName,updatedAt,url',
+    'number,title,state,isDraft,author,headRefName,headRefOid,baseRefName,updatedAt,url',
   ]);
 
   return mapGithubPullRequest(spec, JSON.parse(stdout) as GithubPullRequestResponse);
@@ -418,6 +420,7 @@ function mapGithubPullRequest(
     author: pullRequest.author?.login ?? undefined,
     sourceBranch: normalizeBranchName(pullRequest.headRefName),
     targetBranch: normalizeBranchName(pullRequest.baseRefName),
+    sourceCommitSha: pullRequest.headRefOid,
     updatedAt: pullRequest.updatedAt,
     url: pullRequest.url ?? buildGithubPullRequestUrl(spec, pullRequest.number),
   };
@@ -436,6 +439,7 @@ function mapAdoPullRequest(
     author: pullRequest.createdBy?.displayName ?? undefined,
     sourceBranch: normalizeBranchName(pullRequest.sourceRefName),
     targetBranch: normalizeBranchName(pullRequest.targetRefName),
+    sourceCommitSha: pullRequest.lastMergeSourceCommit?.commitId,
     updatedAt: pullRequest.closedDate ?? pullRequest.creationDate,
     url: buildAdoPullRequestWebUrl(spec, pullRequest.pullRequestId),
   };

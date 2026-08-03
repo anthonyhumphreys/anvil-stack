@@ -193,13 +193,16 @@ export function splitDiffByFile(diff: string): GitDiffFile[] {
 }
 
 export function summarizeDiffFiles(
-  diffFiles: Array<Pick<GitDiffFile, 'filePath' | 'previousPath' | 'status'>>,
+  diffFiles: Array<Pick<GitDiffFile, 'filePath' | 'previousPath' | 'status'> & { diff?: string }>,
 ): RepositoryChangeSummary {
-  const files: RepositoryChangedFile[] = diffFiles.map(({ filePath, previousPath, status }) => ({
-    filePath,
-    previousPath,
-    status,
-  }));
+  const files: RepositoryChangedFile[] = diffFiles.map(
+    ({ filePath, previousPath, status, diff }) => ({
+      filePath,
+      previousPath,
+      status,
+      ranges: diff ? parseChangedRanges(diff) : undefined,
+    }),
+  );
 
   return {
     files,
@@ -208,6 +211,61 @@ export function summarizeDiffFiles(
     deletions: files.filter((file) => file.status === 'deleted').length,
     renames: files.filter((file) => file.status === 'renamed').length,
   };
+}
+
+export function parseChangedRanges(diff: string): NonNullable<RepositoryChangedFile['ranges']> {
+  const ranges: NonNullable<RepositoryChangedFile['ranges']> = [];
+  const lines = diff.split('\n');
+  let oldLine = 0;
+  let newLine = 0;
+  let currentStart: number | null = null;
+  let baseStart: number | null = null;
+
+  const flushChanges = () => {
+    if (baseStart !== null) {
+      ranges.push({ side: 'base', startLine: baseStart, endLine: oldLine - 1 });
+    }
+    if (currentStart !== null) {
+      ranges.push({ side: 'current', startLine: currentStart, endLine: newLine - 1 });
+    } else if (baseStart !== null && newLine > 0) {
+      // A deletion has no current-side lines. Anchor it at the point where the
+      // removed lines used to be so symbol overlays remain precise.
+      ranges.push({ side: 'current', startLine: newLine, endLine: newLine });
+    }
+    currentStart = null;
+    baseStart = null;
+  };
+
+  for (const line of lines) {
+    const hunk = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (hunk) {
+      flushChanges();
+      oldLine = Number(hunk[1]);
+      newLine = Number(hunk[2]);
+      continue;
+    }
+    if (oldLine === 0 && newLine === 0) continue;
+
+    if (line.startsWith('+') && !line.startsWith('+++')) {
+      if (currentStart === null) currentStart = newLine;
+      newLine += 1;
+      continue;
+    }
+    if (line.startsWith('-') && !line.startsWith('---')) {
+      if (baseStart === null) baseStart = oldLine;
+      oldLine += 1;
+      continue;
+    }
+
+    flushChanges();
+    if (line.startsWith(' ')) {
+      oldLine += 1;
+      newLine += 1;
+    }
+  }
+
+  flushChanges();
+  return ranges;
 }
 
 /**

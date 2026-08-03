@@ -86,6 +86,7 @@ const api: AnvilAPI = {
     resetStatus: (repoId: string) => ipcRenderer.invoke('repo:reset-status', repoId),
     getSummary: (repoId: string) => ipcRenderer.invoke('repo:summary', repoId),
     getMapStatus: (repoId: string) => ipcRenderer.invoke('repo:map-status', repoId),
+    getMapGraph: (repoId: string) => ipcRenderer.invoke('repo:map-graph', repoId),
     setMapRefreshMode: (repoId: string, refreshMode: 'manual' | 'on_commit') =>
       ipcRenderer.invoke('repo:set-map-refresh-mode', repoId, refreshMode),
     getArchitecture: (repoId: string) => ipcRenderer.invoke('repo:architecture', repoId),

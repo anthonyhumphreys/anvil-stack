@@ -85,10 +85,20 @@ export interface RepoMapStatus {
 
 export type RepositoryChangeStatus = 'added' | 'modified' | 'deleted' | 'renamed';
 
+export interface RepositorySourceRange {
+  startLine: number;
+  endLine: number;
+}
+
+export interface RepositoryChangedRange extends RepositorySourceRange {
+  side: 'current' | 'base';
+}
+
 export interface RepositoryChangedFile {
   filePath: string;
   previousPath?: string;
   status: RepositoryChangeStatus;
+  ranges?: RepositoryChangedRange[];
 }
 
 export interface RepositoryChangeSummary {
@@ -97,6 +107,7 @@ export interface RepositoryChangeSummary {
   modifications: number;
   deletions: number;
   renames: number;
+  currentCommitSha?: string;
 }
 
 export type CicdProvider = 'github-actions' | 'azure-pipelines';
@@ -198,6 +209,55 @@ export interface ModuleSummary {
   fileCount: number;
   keyFiles: string[];
   dependencies: string[];
+}
+
+export type RepositoryMapNodeKind = 'repository' | 'module' | 'directory' | 'file' | 'symbol';
+
+export type RepositoryMapSymbolKind =
+  | 'class'
+  | 'interface'
+  | 'type'
+  | 'enum'
+  | 'function'
+  | 'method'
+  | 'component'
+  | 'variable'
+  | 'export';
+
+export interface RepositoryMapGraphNode {
+  id: string;
+  kind: RepositoryMapNodeKind;
+  parentId?: string;
+  name: string;
+  path: string;
+  modulePath?: string;
+  purpose?: string;
+  language?: string;
+  sourceRange?: RepositorySourceRange;
+  symbolKind?: RepositoryMapSymbolKind;
+  exported?: boolean;
+  fileCount?: number;
+  symbolCount?: number;
+}
+
+export interface RepositoryMapGraphEdge {
+  id: string;
+  kind: 'contains' | 'dependency';
+  source: string;
+  target: string;
+  count?: number;
+}
+
+export interface RepositoryMapGraph {
+  schemaVersion: 1;
+  repoId: string;
+  repositoryName: string;
+  indexedCommitSha?: string;
+  generatedAt: string;
+  nodes: RepositoryMapGraphNode[];
+  edges: RepositoryMapGraphEdge[];
+  supportedSymbolLanguages: string[];
+  warnings: string[];
 }
 
 export interface OnboardDetection {
@@ -1320,6 +1380,7 @@ export interface CodeReviewPullRequestRef {
   url?: string;
   sourceBranch?: string;
   targetBranch?: string;
+  sourceCommitSha?: string;
   provider?: 'github' | 'ado';
 }
 
@@ -1340,6 +1401,7 @@ export interface CodeReviewPullRequest {
   author?: string;
   sourceBranch: string;
   targetBranch: string;
+  sourceCommitSha?: string;
   updatedAt: string;
   url?: string;
 }

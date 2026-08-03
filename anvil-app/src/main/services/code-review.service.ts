@@ -657,6 +657,7 @@ export async function runCodeReview(opts: RunReviewOptions): Promise<string> {
             url: resolution.pullRequest.url,
             sourceBranch: resolution.pullRequest.sourceBranch,
             targetBranch: resolution.pullRequest.targetBranch,
+            sourceCommitSha: resolution.pullRequest.sourceCommitSha,
             provider: resolution.pullRequest.provider,
           },
         });

@@ -376,7 +376,10 @@ export function registerCodeReviewHandlers(): void {
         repo.remote_url,
         pullRequestId,
       );
-      return summarizeDiffFiles(resolution.diffFiles);
+      return {
+        ...summarizeDiffFiles(resolution.diffFiles),
+        currentCommitSha: resolution.pullRequest.sourceCommitSha,
+      };
     }
 
     return getScopeChangeSummary(repo.path, review.scopeType, review.scopeRef);
