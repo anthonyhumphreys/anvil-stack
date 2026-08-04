@@ -18,6 +18,7 @@ import type {
 import {
   buildRepositoryGardenLayout,
   GARDEN_PAGE_SIZE,
+  hashString,
   type GardenPath,
   type GardenPlot,
 } from '../../utils/repository-garden-layout';
@@ -175,7 +176,11 @@ export function RepositoryGarden({
       <div className="absolute left-3 top-3 max-w-[calc(100%-7rem)] rounded-lg bg-bg-primary/95 px-3 py-2 shadow-md">
         <div className="flex items-center gap-2 text-xs font-medium text-text-primary">
           <MapPinned size={14} className="text-success" />
-          <span>{layout.scopeNode.kind === 'repository' ? 'Archive Garden' : nodeDistrictName(layout.scopeNode)}</span>
+          <span>
+            {layout.scopeNode.kind === 'repository'
+              ? 'Archive Garden'
+              : nodeDistrictName(layout.scopeNode)}
+          </span>
           <span className="text-text-muted">·</span>
           <span className="capitalize text-text-tertiary">{layout.scopeNode.kind}</span>
         </div>
@@ -198,7 +203,9 @@ export function RepositoryGarden({
           ))}
         </nav>
         <p className="mt-1 max-w-[64ch] truncate text-xs text-text-tertiary">
-          {selectedNode ? nodeSummary(selectedNode) : scopeSummary(layout.scopeNode, layout.totalChildren)}
+          {selectedNode
+            ? nodeSummary(selectedNode)
+            : scopeSummary(layout.scopeNode, layout.totalChildren)}
         </p>
       </div>
 
@@ -298,6 +305,11 @@ function GardenWorld({
   return (
     <>
       <GardenGround extent={layout.extent} scopeKind={layout.scopeNode.kind} />
+      <GardenLandmarks
+        extent={layout.extent}
+        scopeKind={layout.scopeNode.kind}
+        seed={hashString(layout.scopeNode.id)}
+      />
       {layout.plots.map((plot) => (
         <WalkingPath key={`walk:${plot.node.id}`} plot={plot} />
       ))}
@@ -311,15 +323,17 @@ function GardenWorld({
         />
       ))}
       {layout.plots.map((plot) => (
-        <ArchivePlot
-          key={plot.node.id}
-          plot={plot}
-          selected={plot.node.id === selectedNodeId}
-          changed={changedNodeIds.has(plot.node.id)}
-          hasChildren={Boolean(childCounts.get(plot.node.id))}
-          onSelect={onSelectNode}
-          onEnter={onEnterNode}
-        />
+        <group key={plot.node.id}>
+          <PlotEnvironment plot={plot} />
+          <ArchivePlot
+            plot={plot}
+            selected={plot.node.id === selectedNodeId}
+            changed={changedNodeIds.has(plot.node.id)}
+            hasChildren={Boolean(childCounts.get(plot.node.id))}
+            onSelect={onSelectNode}
+            onEnter={onEnterNode}
+          />
+        </group>
       ))}
       <GardenAvatar
         active={active}
@@ -363,8 +377,62 @@ function GardenGround({
         <boxGeometry args={[2.3, 0.16, 2.3]} />
         <meshStandardMaterial color="#536057" roughness={0.95} />
       </mesh>
-      <GardenPlant x={-1.8} z={0} seed={11} />
-      <GardenPlant x={1.8} z={0} seed={17} />
+    </group>
+  );
+}
+
+function GardenLandmarks({
+  extent,
+  scopeKind,
+  seed,
+}: {
+  extent: number;
+  scopeKind: RepositoryMapGraphNode['kind'];
+  seed: number;
+}) {
+  const landmarkRadius = Math.max(5.5, extent * 0.58);
+  const showWater = scopeKind === 'repository' || scopeKind === 'module';
+  return (
+    <group>
+      <GardenPlant x={-2} z={0.2} seed={seed + 11} variant="pine" />
+      <GardenPlant x={2} z={-0.2} seed={seed + 17} variant="broadleaf" />
+      <GardenLamp x={-1.15} z={-1.15} />
+      <GardenLamp x={1.15} z={1.15} />
+      <GardenBench x={-3.1} z={2.5} rotation={Math.PI / 4} />
+      <FlowerBed x={3.35} z={-2.2} seed={seed + 23} />
+      <TerrainPatch x={-landmarkRadius * 0.46} z={landmarkRadius * 0.42} seed={seed + 19} />
+      <TerrainPatch x={landmarkRadius * 0.38} z={landmarkRadius * 0.48} seed={seed + 29} />
+      <TerrainPatch x={-landmarkRadius * 0.2} z={-landmarkRadius * 0.55} seed={seed + 37} />
+      <RockCluster x={-landmarkRadius} z={-landmarkRadius * 0.72} seed={seed + 31} />
+      <RockCluster x={landmarkRadius * 0.9} z={landmarkRadius * 0.68} seed={seed + 41} />
+      {showWater && (
+        <GardenPond x={landmarkRadius * 0.72} z={-landmarkRadius * 0.82} seed={seed + 53} />
+      )}
+      {scopeKind === 'file' && (
+        <ReadingNook x={landmarkRadius * 0.68} z={-landmarkRadius * 0.7} seed={seed + 61} />
+      )}
+    </group>
+  );
+}
+
+function PlotEnvironment({ plot }: { plot: GardenPlot }) {
+  const side = (plot.seed >>> 2) % 2 === 0 ? -1 : 1;
+  const x = plot.x + side * (plot.width / 2 + 1.15);
+  const z = plot.z + plot.depth / 2 + 0.5;
+  const detail = (plot.seed >>> 4) % 4;
+  return (
+    <group>
+      {detail === 0 && <FlowerBed x={x} z={z} seed={plot.seed} compact />}
+      {detail === 1 && <GardenBench x={x} z={z} rotation={side * Math.PI * 0.5} />}
+      {detail === 2 && <RockCluster x={x} z={z} seed={plot.seed} compact />}
+      {detail === 3 && (
+        <GardenPlant
+          x={x}
+          z={z}
+          seed={plot.seed}
+          variant={plot.node.kind === 'module' ? 'pine' : 'broadleaf'}
+        />
+      )}
     </group>
   );
 }
@@ -460,9 +528,11 @@ function ModulePavilion({
   selected: boolean;
   changed: boolean;
 }) {
-  const stone = plot.seed % 2 === 0 ? '#273746' : '#303b43';
-  const roof = changed ? '#c9672b' : selected ? '#bd642f' : '#17232c';
+  const palette = modulePalette(plot.seed);
+  const stone = palette.wall;
+  const roof = changed ? '#c9672b' : selected ? '#bd642f' : palette.roof;
   const windowCount = Math.max(3, Math.min(6, Math.round(plot.width)));
+  const architecture = (plot.seed >>> 8) % 4;
   return (
     <group>
       <mesh position={[0, 0.14, 0]} receiveShadow>
@@ -477,24 +547,223 @@ function ModulePavilion({
         <boxGeometry args={[plot.width + 0.5, 0.42, plot.depth + 0.5]} />
         <meshStandardMaterial color={roof} roughness={0.72} />
       </mesh>
+      {architecture === 0 && <RooftopGreenhouse plot={plot} />}
+      {architecture === 1 && <RooftopWorkshop plot={plot} />}
+      {architecture === 2 && <RooftopArchive plot={plot} color={palette.trim} />}
+      {architecture === 3 && <RooftopSignalTower plot={plot} />}
       <mesh position={[0, 0.78, plot.depth / 2 + 0.035]}>
         <boxGeometry args={[0.95, 1.28, 0.12]} />
-        <meshStandardMaterial color="#8e5836" roughness={0.82} />
+        <meshStandardMaterial color={palette.door} roughness={0.82} />
       </mesh>
+      <mesh position={[0, 1.62, plot.depth / 2 + 0.075]}>
+        <boxGeometry args={[1.35, 0.13, 0.1]} />
+        <meshStandardMaterial color={palette.trim} roughness={0.78} />
+      </mesh>
+      <ModuleFacadeDetail plot={plot} architecture={architecture} color={palette.trim} />
       {Array.from({ length: windowCount }, (_, index) => {
         const x = ((index + 1) / (windowCount + 1) - 0.5) * (plot.width - 0.5);
         return (
           <mesh key={index} position={[x, plot.height * 0.58, plot.depth / 2 + 0.07]}>
             <boxGeometry args={[0.42, 0.58, 0.08]} />
-            <meshStandardMaterial color="#ffd49a" emissive="#8a4b1f" emissiveIntensity={0.7} />
+            <meshStandardMaterial
+              color={palette.window}
+              emissive={palette.windowGlow}
+              emissiveIntensity={0.68}
+            />
           </mesh>
         );
       })}
-      <GardenPlant x={-plot.width / 2 - 0.65} z={plot.depth / 2 + 0.55} seed={plot.seed} />
-      <GardenPlant x={plot.width / 2 + 0.7} z={-plot.depth / 2 - 0.45} seed={plot.seed >>> 2} />
+      <GardenPlant
+        x={-plot.width / 2 - 0.65}
+        z={plot.depth / 2 + 0.55}
+        seed={plot.seed}
+        variant="broadleaf"
+      />
+      <GardenPlant
+        x={plot.width / 2 + 0.7}
+        z={-plot.depth / 2 - 0.45}
+        seed={plot.seed >>> 2}
+        variant={architecture === 1 ? 'pine' : 'broadleaf'}
+      />
       {changed && <ChangeScaffold plot={plot} />}
     </group>
   );
+}
+
+function RooftopGreenhouse({ plot }: { plot: GardenPlot }) {
+  return (
+    <group position={[0, plot.height + 0.95, 0]}>
+      <mesh castShadow>
+        <boxGeometry args={[plot.width * 0.58, 0.72, plot.depth * 0.52]} />
+        <meshStandardMaterial
+          color="#71959a"
+          emissive="#29464b"
+          emissiveIntensity={0.22}
+          transparent
+          opacity={0.86}
+          roughness={0.38}
+        />
+      </mesh>
+      <mesh position={[0, 0.48, 0]} castShadow>
+        <boxGeometry args={[plot.width * 0.66, 0.14, plot.depth * 0.6]} />
+        <meshStandardMaterial color="#425c54" />
+      </mesh>
+      <GardenPlant x={-0.75} z={0} seed={plot.seed + 7} variant="shrub" />
+      <GardenPlant x={0.75} z={0} seed={plot.seed + 13} variant="shrub" />
+    </group>
+  );
+}
+
+function ModuleFacadeDetail({
+  plot,
+  architecture,
+  color,
+}: {
+  plot: GardenPlot;
+  architecture: number;
+  color: string;
+}) {
+  if (architecture === 0) {
+    return (
+      <group position={[0, plot.height * 0.35, plot.depth / 2 + 0.14]}>
+        {[-plot.width * 0.31, plot.width * 0.31].map((x) => (
+          <group key={x} position={[x, 0, 0]}>
+            <mesh>
+              <boxGeometry args={[1.15, 0.22, 0.28]} />
+              <meshStandardMaterial color="#6d4a35" roughness={0.88} />
+            </mesh>
+            <mesh position={[0, 0.24, 0]}>
+              <boxGeometry args={[0.95, 0.28, 0.22]} />
+              <meshStandardMaterial color="#4f8056" roughness={0.94} />
+            </mesh>
+          </group>
+        ))}
+      </group>
+    );
+  }
+  if (architecture === 1) {
+    return (
+      <mesh position={[0, 1.55, plot.depth / 2 + 0.38]} rotation={[0.24, 0, 0]} castShadow>
+        <boxGeometry args={[1.85, 0.18, 0.74]} />
+        <meshStandardMaterial color="#a96037" roughness={0.78} />
+      </mesh>
+    );
+  }
+  if (architecture === 2) {
+    return (
+      <group>
+        {[-plot.width * 0.39, plot.width * 0.39].map((x) => (
+          <mesh key={x} position={[x, plot.height * 0.48, plot.depth / 2 + 0.12]} castShadow>
+            <boxGeometry args={[0.26, plot.height * 0.82, 0.26]} />
+            <meshStandardMaterial color={color} roughness={0.84} />
+          </mesh>
+        ))}
+      </group>
+    );
+  }
+  return (
+    <group position={[plot.width / 2 + 0.08, plot.height * 0.55, plot.depth * 0.2]}>
+      {[0, 1, 2].map((index) => (
+        <mesh key={index} position={[0, index * 0.62 - 0.62, 0]}>
+          <boxGeometry args={[0.12, 0.12, plot.depth * 0.42]} />
+          <meshStandardMaterial color="#6eb8c7" emissive="#224c55" emissiveIntensity={0.22} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+function RooftopWorkshop({ plot }: { plot: GardenPlot }) {
+  return (
+    <group>
+      <mesh position={[-plot.width * 0.27, plot.height + 1.18, 0]} castShadow>
+        <boxGeometry args={[0.58, 1.55, 0.72]} />
+        <meshStandardMaterial color="#60483b" roughness={0.88} />
+      </mesh>
+      <mesh position={[-plot.width * 0.27, plot.height + 2.02, 0]} castShadow>
+        <boxGeometry args={[0.82, 0.18, 0.92]} />
+        <meshStandardMaterial color="#302d2d" />
+      </mesh>
+      <mesh position={[plot.width * 0.2, plot.height + 0.88, 0]} castShadow>
+        <boxGeometry args={[plot.width * 0.42, 0.62, plot.depth * 0.48]} />
+        <meshStandardMaterial color="#4d5960" roughness={0.82} />
+      </mesh>
+    </group>
+  );
+}
+
+function RooftopArchive({ plot, color }: { plot: GardenPlot; color: string }) {
+  return (
+    <group>
+      {[0, 1].map((level) => (
+        <mesh key={level} position={[0, plot.height + 0.76 + level * 0.38, 0]} castShadow>
+          <boxGeometry
+            args={[plot.width * (0.7 - level * 0.18), 0.32, plot.depth * (0.68 - level * 0.18)]}
+          />
+          <meshStandardMaterial color={level === 0 ? '#29353d' : color} roughness={0.8} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+function RooftopSignalTower({ plot }: { plot: GardenPlot }) {
+  return (
+    <group position={[0, plot.height + 0.55, 0]}>
+      <mesh position={[0, 1.05, 0]} castShadow>
+        <boxGeometry args={[0.18, 2.1, 0.18]} />
+        <meshStandardMaterial color="#87948d" metalness={0.42} roughness={0.52} />
+      </mesh>
+      {[0.45, 1.05, 1.65].map((height, index) => (
+        <mesh key={height} position={[0, height, 0]} rotation={[0, index * 0.7, 0]}>
+          <boxGeometry args={[1.1 - index * 0.18, 0.12, 0.18]} />
+          <meshStandardMaterial color={index === 2 ? '#ffb16f' : '#64746d'} />
+        </mesh>
+      ))}
+      <mesh position={[0, 2.18, 0]}>
+        <boxGeometry args={[0.34, 0.34, 0.34]} />
+        <meshStandardMaterial color="#ffd166" emissive="#8f4e1f" emissiveIntensity={0.8} />
+      </mesh>
+    </group>
+  );
+}
+
+function modulePalette(seed: number) {
+  const palettes = [
+    {
+      wall: '#2b3d49',
+      roof: '#17232c',
+      trim: '#8aa0aa',
+      door: '#8e5836',
+      window: '#ffd49a',
+      windowGlow: '#8a4b1f',
+    },
+    {
+      wall: '#384138',
+      roof: '#202b24',
+      trim: '#9aa37d',
+      door: '#77513a',
+      window: '#f1d5a2',
+      windowGlow: '#765126',
+    },
+    {
+      wall: '#403944',
+      roof: '#25212b',
+      trim: '#a48da4',
+      door: '#845443',
+      window: '#efc6a3',
+      windowGlow: '#7c4328',
+    },
+    {
+      wall: '#3d4146',
+      roof: '#25292d',
+      trim: '#a0a7a4',
+      door: '#765a42',
+      window: '#c9dfd5',
+      windowGlow: '#42635a',
+    },
+  ];
+  return palettes[(seed >>> 5) % palettes.length] ?? palettes[0]!;
 }
 
 function DirectoryCourtyard({
@@ -819,18 +1088,220 @@ function wrapCanvasText(
   return lines;
 }
 
-function GardenPlant({ x, z, seed }: { x: number; z: number; seed: number }) {
-  const height = 0.55 + (seed % 4) * 0.1;
+function GardenPlant({
+  x,
+  z,
+  seed,
+  variant = 'broadleaf',
+}: {
+  x: number;
+  z: number;
+  seed: number;
+  variant?: 'broadleaf' | 'pine' | 'shrub';
+}) {
+  const height = variant === 'shrub' ? 0.28 : 0.55 + (seed % 4) * 0.1;
+  const leafColor = seed % 2 ? '#3f7146' : '#4c8250';
   return (
     <group position={[x, 0, z]}>
       <mesh position={[0, height / 2, 0]} castShadow>
         <boxGeometry args={[0.18, height, 0.18]} />
         <meshStandardMaterial color="#5a3b29" />
       </mesh>
-      <mesh position={[0, height + 0.3, 0]} castShadow>
-        <boxGeometry args={[0.86, 0.7, 0.86]} />
-        <meshStandardMaterial color={seed % 2 ? '#3f7146' : '#4c8250'} roughness={0.95} />
+      {variant === 'pine' ? (
+        <group>
+          <mesh position={[0, height + 0.24, 0]} rotation={[0, Math.PI / 4, 0]} castShadow>
+            <coneGeometry args={[0.66, 0.9, 4]} />
+            <meshStandardMaterial color="#315e43" roughness={0.96} />
+          </mesh>
+          <mesh position={[0, height + 0.72, 0]} rotation={[0, Math.PI / 4, 0]} castShadow>
+            <coneGeometry args={[0.48, 0.78, 4]} />
+            <meshStandardMaterial color="#3b7150" roughness={0.96} />
+          </mesh>
+        </group>
+      ) : (
+        <group>
+          <mesh position={[0, height + (variant === 'shrub' ? 0.2 : 0.3), 0]} castShadow>
+            <boxGeometry args={variant === 'shrub' ? [0.72, 0.42, 0.72] : [0.86, 0.7, 0.86]} />
+            <meshStandardMaterial color={leafColor} roughness={0.95} />
+          </mesh>
+          {variant === 'broadleaf' && (
+            <mesh position={[0.32, height + 0.54, -0.22]} castShadow>
+              <boxGeometry args={[0.46, 0.42, 0.46]} />
+              <meshStandardMaterial color="#568b55" roughness={0.95} />
+            </mesh>
+          )}
+        </group>
+      )}
+    </group>
+  );
+}
+
+function GardenLamp({ x, z }: { x: number; z: number }) {
+  return (
+    <group position={[x, 0, z]}>
+      <mesh position={[0, 0.72, 0]} castShadow>
+        <boxGeometry args={[0.12, 1.35, 0.12]} />
+        <meshStandardMaterial color="#34433e" metalness={0.35} roughness={0.65} />
       </mesh>
+      <mesh position={[0, 1.48, 0]} castShadow>
+        <boxGeometry args={[0.38, 0.38, 0.38]} />
+        <meshStandardMaterial color="#ffe0a8" emissive="#a85c25" emissiveIntensity={0.9} />
+      </mesh>
+      <mesh position={[0, 1.72, 0]}>
+        <boxGeometry args={[0.48, 0.1, 0.48]} />
+        <meshStandardMaterial color="#28332f" />
+      </mesh>
+    </group>
+  );
+}
+
+function GardenBench({ x, z, rotation = 0 }: { x: number; z: number; rotation?: number }) {
+  return (
+    <group position={[x, 0, z]} rotation={[0, rotation, 0]}>
+      <mesh position={[0, 0.48, 0]} castShadow>
+        <boxGeometry args={[1.5, 0.18, 0.52]} />
+        <meshStandardMaterial color="#815a3c" roughness={0.88} />
+      </mesh>
+      <mesh position={[0, 0.86, 0.22]} castShadow>
+        <boxGeometry args={[1.5, 0.52, 0.14]} />
+        <meshStandardMaterial color="#715038" roughness={0.88} />
+      </mesh>
+      {[-0.54, 0.54].map((offset) => (
+        <mesh key={offset} position={[offset, 0.22, 0]} castShadow>
+          <boxGeometry args={[0.14, 0.48, 0.42]} />
+          <meshStandardMaterial color="#37433f" metalness={0.28} roughness={0.68} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+function FlowerBed({
+  x,
+  z,
+  seed,
+  compact = false,
+}: {
+  x: number;
+  z: number;
+  seed: number;
+  compact?: boolean;
+}) {
+  const width = compact ? 1.2 : 2.1;
+  const flowers = compact ? 4 : 7;
+  const colors = ['#ffd166', '#ff9b70', '#8ed7e8', '#c8a7d8'];
+  return (
+    <group position={[x, 0, z]}>
+      <mesh position={[0, 0.12, 0]} receiveShadow>
+        <boxGeometry args={[width, 0.22, compact ? 0.72 : 0.92]} />
+        <meshStandardMaterial color="#4a3a2b" roughness={1} />
+      </mesh>
+      {Array.from({ length: flowers }, (_, index) => {
+        const offset = ((index + 0.5) / flowers - 0.5) * (width - 0.2);
+        const flowerColor = colors[(seed + index) % colors.length] ?? '#ffd166';
+        return (
+          <group key={index} position={[offset, 0.28, (index % 2 ? -1 : 1) * 0.18]}>
+            <mesh position={[0, 0.14, 0]}>
+              <boxGeometry args={[0.06, 0.28, 0.06]} />
+              <meshStandardMaterial color="#4f7d4d" />
+            </mesh>
+            <mesh position={[0, 0.31, 0]}>
+              <boxGeometry args={[0.16, 0.14, 0.16]} />
+              <meshStandardMaterial
+                color={flowerColor}
+                emissive={flowerColor}
+                emissiveIntensity={0.1}
+              />
+            </mesh>
+          </group>
+        );
+      })}
+    </group>
+  );
+}
+
+function TerrainPatch({ x, z, seed }: { x: number; z: number; seed: number }) {
+  const color = seed % 3 === 0 ? '#26472f' : seed % 3 === 1 ? '#334936' : '#3d4632';
+  return (
+    <group position={[x, 0.055, z]} rotation={[0, (seed % 8) * 0.18, 0]}>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+        <circleGeometry args={[1.65 + (seed % 3) * 0.22, 8]} />
+        <meshStandardMaterial color={color} roughness={1} />
+      </mesh>
+      {[-0.72, 0, 0.72].map((offset, index) => (
+        <mesh key={offset} position={[offset, 0.08, (index % 2 ? -1 : 1) * 0.46]} castShadow>
+          <boxGeometry args={[0.12, 0.16 + index * 0.05, 0.12]} />
+          <meshStandardMaterial color={index === 1 ? '#78945f' : '#668456'} roughness={0.96} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+function RockCluster({
+  x,
+  z,
+  seed,
+  compact = false,
+}: {
+  x: number;
+  z: number;
+  seed: number;
+  compact?: boolean;
+}) {
+  const count = compact ? 2 : 4;
+  return (
+    <group position={[x, 0, z]}>
+      {Array.from({ length: count }, (_, index) => {
+        const size = 0.34 + ((seed + index * 3) % 4) * 0.1;
+        return (
+          <mesh
+            key={index}
+            position={[(index - (count - 1) / 2) * 0.42, size * 0.34, (index % 2) * 0.34]}
+            rotation={[0, ((seed + index) % 5) * 0.22, 0]}
+            castShadow
+          >
+            <dodecahedronGeometry args={[size, 0]} />
+            <meshStandardMaterial color={index % 2 ? '#59645f' : '#6a716c'} roughness={0.98} />
+          </mesh>
+        );
+      })}
+    </group>
+  );
+}
+
+function GardenPond({ x, z, seed }: { x: number; z: number; seed: number }) {
+  return (
+    <group position={[x, 0, z]} rotation={[0, (seed % 7) * 0.14, 0]}>
+      <mesh position={[0, 0.08, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+        <circleGeometry args={[2.1, 10]} />
+        <meshStandardMaterial
+          color="#335e67"
+          emissive="#17333a"
+          emissiveIntensity={0.28}
+          roughness={0.3}
+        />
+      </mesh>
+      {[-1.7, -0.85, 0.1, 1.1, 1.75].map((offset, index) => (
+        <mesh key={offset} position={[offset, 0.18, index % 2 ? -1.25 : 1.05]} castShadow>
+          <dodecahedronGeometry args={[0.34 + (index % 3) * 0.08, 0]} />
+          <meshStandardMaterial color="#69766f" roughness={0.98} />
+        </mesh>
+      ))}
+      <mesh position={[0.62, 0.16, -0.25]} rotation={[-Math.PI / 2, 0, 0]}>
+        <circleGeometry args={[0.34, 8]} />
+        <meshStandardMaterial color="#4f8056" roughness={0.92} />
+      </mesh>
+    </group>
+  );
+}
+
+function ReadingNook({ x, z, seed }: { x: number; z: number; seed: number }) {
+  return (
+    <group position={[x, 0, z]}>
+      <GardenBench x={0} z={0} rotation={-Math.PI / 4} />
+      <GardenLamp x={1.15} z={-0.55} />
+      <GardenPlant x={-1.1} z={0.65} seed={seed} variant="pine" />
     </group>
   );
 }
@@ -853,9 +1324,16 @@ function GardenAvatar({
   onBack: () => void;
 }) {
   const groupRef = useRef<THREE.Group>(null);
+  const bodyRef = useRef<THREE.Group>(null);
+  const leftArmRef = useRef<THREE.Group>(null);
+  const rightArmRef = useRef<THREE.Group>(null);
+  const leftLegRef = useRef<THREE.Group>(null);
+  const rightLegRef = useRef<THREE.Group>(null);
   const keysRef = useRef(new Set<string>());
   const positionRef = useRef(new THREE.Vector3(spawn[0], 0, spawn[1]));
   const cameraTarget = useMemo(() => new THREE.Vector3(), []);
+  const movement = useMemo(() => new THREE.Vector3(), []);
+  const walkPhaseRef = useRef(0);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -885,18 +1363,22 @@ function GardenAvatar({
   }, [active, onBack, onInteract, plots]);
 
   useFrame(({ camera }, delta) => {
+    let isWalking = false;
     if (active) {
       const keys = keysRef.current;
-      const direction = new THREE.Vector3(
+      movement.set(
         Number(keys.has('d') || keys.has('arrowright')) -
           Number(keys.has('a') || keys.has('arrowleft')),
         0,
         Number(keys.has('s') || keys.has('arrowdown')) -
           Number(keys.has('w') || keys.has('arrowup')),
       );
-      if (direction.lengthSq() > 0) {
-        direction.normalize().multiplyScalar(Math.min(delta, 0.05) * 5.2);
-        const candidate = positionRef.current.clone().add(direction);
+      if (movement.lengthSq() > 0) {
+        isWalking = true;
+        movement.normalize();
+        if (groupRef.current) groupRef.current.rotation.y = Math.atan2(movement.x, movement.z);
+        movement.multiplyScalar(Math.min(delta, 0.05) * 5.2);
+        const candidate = positionRef.current.clone().add(movement);
         candidate.x = THREE.MathUtils.clamp(candidate.x, -extent + 1, extent - 1);
         candidate.z = THREE.MathUtils.clamp(candidate.z, -extent + 1, extent - 1);
         if (!collidesWithPlot(candidate, plots)) positionRef.current.copy(candidate);
@@ -905,8 +1387,37 @@ function GardenAvatar({
 
     if (groupRef.current) {
       groupRef.current.position.copy(positionRef.current);
-      groupRef.current.children[0].rotation.y += reducedMotion ? 0 : delta * 0.45;
     }
+    const targetSwing =
+      isWalking && !reducedMotion ? Math.sin((walkPhaseRef.current += delta * 10)) * 0.48 : 0;
+    const animationMix = Math.min(1, delta * 12);
+    if (leftArmRef.current)
+      leftArmRef.current.rotation.x = THREE.MathUtils.lerp(
+        leftArmRef.current.rotation.x,
+        targetSwing,
+        animationMix,
+      );
+    if (rightArmRef.current)
+      rightArmRef.current.rotation.x = THREE.MathUtils.lerp(
+        rightArmRef.current.rotation.x,
+        -targetSwing,
+        animationMix,
+      );
+    if (leftLegRef.current)
+      leftLegRef.current.rotation.x = THREE.MathUtils.lerp(
+        leftLegRef.current.rotation.x,
+        -targetSwing * 0.68,
+        animationMix,
+      );
+    if (rightLegRef.current)
+      rightLegRef.current.rotation.x = THREE.MathUtils.lerp(
+        rightLegRef.current.rotation.x,
+        targetSwing * 0.68,
+        animationMix,
+      );
+    if (bodyRef.current)
+      bodyRef.current.position.y =
+        isWalking && !reducedMotion ? Math.abs(Math.sin(walkPhaseRef.current)) * 0.035 : 0;
     cameraTarget.set(positionRef.current.x + 12, 15, positionRef.current.z + 12);
     if (reducedMotion) camera.position.copy(cameraTarget);
     else camera.position.lerp(cameraTarget, Math.min(1, delta * 5));
@@ -914,23 +1425,100 @@ function GardenAvatar({
   });
 
   return (
-    <group ref={groupRef} position={[spawn[0], 0, spawn[1]]}>
-      <mesh position={[0, 0.92, 0]} castShadow>
-        <boxGeometry args={[0.62, 0.88, 0.5]} />
-        <meshStandardMaterial color="#e27b36" roughness={0.72} />
-      </mesh>
-      <mesh position={[0, 1.58, 0]} castShadow>
-        <boxGeometry args={[0.52, 0.48, 0.48]} />
-        <meshStandardMaterial color="#d7c1a3" roughness={0.8} />
-      </mesh>
-      <mesh position={[-0.2, 0.31, 0]} castShadow>
-        <boxGeometry args={[0.18, 0.55, 0.22]} />
-        <meshStandardMaterial color="#26374b" />
-      </mesh>
-      <mesh position={[0.2, 0.31, 0]} castShadow>
-        <boxGeometry args={[0.18, 0.55, 0.22]} />
-        <meshStandardMaterial color="#26374b" />
-      </mesh>
+    <group ref={groupRef} position={[spawn[0], 0, spawn[1]]} rotation={[0, Math.PI / 4, 0]}>
+      <group ref={bodyRef}>
+        <mesh position={[0, 0.96, 0]} castShadow>
+          <boxGeometry args={[0.68, 0.76, 0.48]} />
+          <meshStandardMaterial color="#df7434" roughness={0.74} />
+        </mesh>
+        <mesh position={[0, 1.02, 0.255]}>
+          <boxGeometry args={[0.16, 0.54, 0.035]} />
+          <meshStandardMaterial color="#f3a36b" />
+        </mesh>
+        <mesh position={[0, 1.29, 0.28]}>
+          <boxGeometry args={[0.38, 0.12, 0.06]} />
+          <meshStandardMaterial color="#24364c" />
+        </mesh>
+        <mesh position={[0, 0.76, -0.32]} castShadow>
+          <boxGeometry args={[0.5, 0.64, 0.24]} />
+          <meshStandardMaterial color="#385064" roughness={0.82} />
+        </mesh>
+        <mesh position={[0, 0.95, -0.455]}>
+          <boxGeometry args={[0.34, 0.1, 0.04]} />
+          <meshStandardMaterial color="#5ec8ff" emissive="#214c5d" emissiveIntensity={0.22} />
+        </mesh>
+
+        <group ref={leftArmRef} position={[-0.43, 1.24, 0]}>
+          <mesh position={[0, -0.29, 0]} castShadow>
+            <boxGeometry args={[0.22, 0.58, 0.25]} />
+            <meshStandardMaterial color="#d96f32" />
+          </mesh>
+          <mesh position={[0, -0.64, 0.02]} castShadow>
+            <boxGeometry args={[0.2, 0.18, 0.22]} />
+            <meshStandardMaterial color="#d7b18e" roughness={0.82} />
+          </mesh>
+        </group>
+        <group ref={rightArmRef} position={[0.43, 1.24, 0]}>
+          <mesh position={[0, -0.29, 0]} castShadow>
+            <boxGeometry args={[0.22, 0.58, 0.25]} />
+            <meshStandardMaterial color="#d96f32" />
+          </mesh>
+          <mesh position={[0, -0.64, 0.02]} castShadow>
+            <boxGeometry args={[0.2, 0.18, 0.22]} />
+            <meshStandardMaterial color="#d7b18e" roughness={0.82} />
+          </mesh>
+        </group>
+
+        <group ref={leftLegRef} position={[-0.2, 0.62, 0]}>
+          <mesh position={[0, -0.31, 0]} castShadow>
+            <boxGeometry args={[0.22, 0.62, 0.25]} />
+            <meshStandardMaterial color="#26374b" />
+          </mesh>
+          <mesh position={[0, -0.63, 0.07]} castShadow>
+            <boxGeometry args={[0.25, 0.16, 0.38]} />
+            <meshStandardMaterial color="#18232e" roughness={0.88} />
+          </mesh>
+        </group>
+        <group ref={rightLegRef} position={[0.2, 0.62, 0]}>
+          <mesh position={[0, -0.31, 0]} castShadow>
+            <boxGeometry args={[0.22, 0.62, 0.25]} />
+            <meshStandardMaterial color="#26374b" />
+          </mesh>
+          <mesh position={[0, -0.63, 0.07]} castShadow>
+            <boxGeometry args={[0.25, 0.16, 0.38]} />
+            <meshStandardMaterial color="#18232e" roughness={0.88} />
+          </mesh>
+        </group>
+
+        <group position={[0, 1.62, 0]}>
+          <mesh castShadow>
+            <boxGeometry args={[0.54, 0.5, 0.5]} />
+            <meshStandardMaterial color="#d7b18e" roughness={0.82} />
+          </mesh>
+          <mesh position={[0, 0.27, -0.03]} castShadow>
+            <boxGeometry args={[0.58, 0.14, 0.54]} />
+            <meshStandardMaterial color="#49372f" roughness={0.9} />
+          </mesh>
+          <mesh position={[-0.2, 0.12, 0.14]} castShadow>
+            <boxGeometry args={[0.12, 0.26, 0.24]} />
+            <meshStandardMaterial color="#49372f" />
+          </mesh>
+          <mesh position={[0.2, 0.12, 0.14]} castShadow>
+            <boxGeometry args={[0.12, 0.26, 0.24]} />
+            <meshStandardMaterial color="#49372f" />
+          </mesh>
+          {[-0.14, 0.14].map((x) => (
+            <mesh key={x} position={[x, 0.04, 0.258]}>
+              <boxGeometry args={[0.07, 0.08, 0.035]} />
+              <meshStandardMaterial color="#172033" />
+            </mesh>
+          ))}
+          <mesh position={[0, -0.12, 0.26]}>
+            <boxGeometry args={[0.16, 0.045, 0.04]} />
+            <meshStandardMaterial color="#8e5d4b" />
+          </mesh>
+        </group>
+      </group>
     </group>
   );
 }
@@ -1027,8 +1615,8 @@ function isTypingTarget(target: EventTarget | null): boolean {
 }
 
 function useReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(() =>
-    window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+  const [reduced, setReduced] = useState(
+    () => window.matchMedia('(prefers-reduced-motion: reduce)').matches,
   );
   useEffect(() => {
     const media = window.matchMedia('(prefers-reduced-motion: reduce)');
