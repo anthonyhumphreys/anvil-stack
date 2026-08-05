@@ -101,6 +101,22 @@ npm config set registry http://localhost:4873
 
 Then install as usual. Scoped packages, tarballs, and npm audit requests should stay routed through the gateway. Because scoped package paths apparently needed their own little tax on human happiness.
 
+### NAS and operator release bundle
+
+Tagged Registry releases include a separate Compose bundle under `infra/docker/release`. It uses published AMD64 and ARM64 images, keeps Postgres, Redis, and MinIO off host ports, requires explicit secrets, and stores durable state beneath `ANVIL_DATA_DIR`.
+
+```bash
+cd infra/docker/release
+cp .env.example .env
+# Set PUBLIC_BASE_URL, ANVIL_DATA_DIR, and every placeholder secret.
+docker compose pull
+docker compose up -d
+```
+
+`PUBLIC_BASE_URL` must be the URL used by remote npm and pnpm clients. Leaving it as `localhost` rewrites tarball URLs back to the client machine and breaks remote installs. Start a pilot in `development` mode, seed representative lockfiles, then move to stricter policy modes after reviewing decisions.
+
+See `infra/docker/release/README.md` for NAS installation, upgrades, backup and restore, reverse-proxy guidance, and Mac client configuration.
+
 ## CLI
 
 Install the published Anvil CLI and Registry product CLI:
@@ -204,7 +220,7 @@ See `devcontainer-base/README.md` for helper commands and image publishing detai
 
 ## Deployment
 
-Docker Compose is the local path. SST is the AWS path and defines the Fastify gateway, worker, Next.js Admin service, migration task, S3, SQS, RDS, secrets, and CloudWatch resources under `infra/sst`.
+The source-building Docker Compose stack is the local development path. Tagged releases provide a hardened image-based Compose bundle for a trusted LAN, NAS, or small Docker host. SST is the AWS path and defines the Fastify gateway, worker, Next.js Admin service, migration task, S3, SQS, RDS, secrets, and CloudWatch resources under `infra/sst`.
 
 Set `PUBLIC_BASE_URL` or `ANVIL_GATEWAY_DOMAIN` for the npm-facing gateway URL before deploying so tarball rewrites point at the real HTTPS endpoint. SST fails fast when neither is configured, because quietly publishing tarball URLs to a placeholder domain is how you build a very small outage machine. Set `ANVIL_API_BASE_URL` only when the admin service should call a different gateway URL; otherwise it inherits `PUBLIC_BASE_URL` or the gateway domain.
 Set `ANVIL_GATEWAY_DOMAIN` or `ANVIL_ADMIN_DOMAIN` to attach custom SST load-balancer domains. Route 53 hosted domains use SST's default DNS/certificate handling; for externally managed DNS, also set `ANVIL_GATEWAY_CERT_ARN` or `ANVIL_ADMIN_CERT_ARN` to a validated ACM certificate ARN.

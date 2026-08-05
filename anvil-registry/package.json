@@ -1,6 +1,6 @@
 {
   "name": "anvil-registry",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "license": "MIT",
   "private": true,
   "type": "module",
@@ -20,6 +20,7 @@
     "smoke:node-base-image-report": "./scripts/smoke-node-base-image-report",
     "smoke:node-base-report": "./scripts/smoke-node-base-report",
     "smoke:scoped-upstream": "tsx scripts/smoke-scoped-upstream.ts",
+    "release:compose:check": "node scripts/validate-release-compose.mjs",
     "sst:preflight": "pnpm --dir infra/sst deploy:preflight",
     "sst:migrate": "pnpm --dir infra/sst sst shell -- pnpm --filter @anvilstack/infra-sst migrate:run",
     "test:node-base": "./devcontainer-base/scripts/test-node-base-scripts",

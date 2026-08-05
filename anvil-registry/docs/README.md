@@ -30,7 +30,7 @@ Current coverage includes:
 - Optional LLM review integration.
 - Node Base safe mode, observed mode, and reports.
 - CI usage.
-- Deployment.
+- Deployment, including the image-based NAS/operator Compose bundle.
 - Troubleshooting.
 
 Build and typecheck the docs site with:
@@ -47,6 +47,7 @@ pnpm --dir ../anvil-website typecheck
 - `SECURITY.md`: vulnerability reporting and security design expectations.
 - `apps/cli/README.md`: CLI package installation and command summary.
 - `devcontainer-base/README.md`: Node Base helper commands, strict mode, network policy, report submission, and image validation.
+- `infra/docker/release/README.md`: released-image installation, NAS configuration, upgrades, backup, restore, and client routing.
 - `../anvil-website/README.md`: public website development and deployment notes.
 
 ## Documentation Expectations

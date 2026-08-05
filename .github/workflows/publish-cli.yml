@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Run npm stage publish with --dry-run instead of staging."
+        description: "Validate the package without publishing it."
         required: false
         type: boolean
         default: true
@@ -68,11 +68,11 @@ jobs:
       - name: Test
         run: pnpm --filter @anvilstack/cli test
 
-      - name: Stage package on npm
+      - name: Publish package to npm
         working-directory: anvil-registry/apps/cli-wrapper
         run: |
           extra_args=""
           if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.dry_run }}" == "true" ]]; then
             extra_args="--dry-run"
           fi
-          npm stage publish --access public ${extra_args}
+          npm publish --access public --provenance ${extra_args}
