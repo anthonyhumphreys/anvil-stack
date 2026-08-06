@@ -104,6 +104,9 @@ jobs:
       - name: Validate Docker Compose config
         run: docker compose -f infra/docker/docker-compose.yml config
 
+      - name: Validate release Docker Compose config
+        run: pnpm release:compose:check
+
       - name: Start local registry stack
         run: docker compose -f infra/docker/docker-compose.yml up -d --build gateway worker admin
 

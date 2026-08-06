@@ -160,6 +160,8 @@ Read:
 
 ## 8) Deploy carefully
 
+For a NAS or small Docker host, use the image-based bundle attached to a `registry-v*` GitHub release. It provides versioned AMD64 and ARM64 images, a one-shot migration service, private data-service networking, explicit secrets, and durable storage beneath `ANVIL_DATA_DIR`.
+
 The AWS deployment path uses SST under `infra/sst`. Run preflight before deployment:
 
 ```bash
@@ -187,6 +189,8 @@ Before a team depends on the registry:
 - smoke tests pass
 - CI behavior is understood
 - Node Base report handling is documented
+- release images are pinned to an immutable `registry-v*` tag
+- `ANVIL_DATA_DIR` is included in backups and restore has been rehearsed
 
 ## Smoke tests
 

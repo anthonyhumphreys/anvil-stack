@@ -1,7 +1,7 @@
 ---
 title: Deployment
 navTitle: Deployment
-description: Run Anvil Registry locally and prepare the registry stack for AWS.
+description: Run Anvil Registry locally, on a NAS or Docker host, or on AWS.
 product: Anvil Registry
 section: Operations
 order: 11
@@ -42,6 +42,55 @@ pnpm smoke:scoped-upstream
 ```
 
 Run these after bringing up the local stack when changing gateway routing, policy decisions, upstream registry handling, or report submission.
+
+## NAS and operator deployment
+
+Each `registry-v*` GitHub release includes a self-contained Compose bundle for Linux AMD64 and ARM64 hosts. It runs versioned gateway, worker, Admin, and migration images from GHCR and stores Postgres, Redis, and MinIO data beneath one configurable directory.
+
+Download and unpack the release bundle, then configure it:
+
+```bash
+cp .env.example .env
+```
+
+Before starting the stack, set:
+
+- `PUBLIC_BASE_URL` to the exact URL npm and pnpm clients use.
+- `ANVIL_DATA_DIR` to a directory covered by the host backup policy.
+- Unique values for `ANVIL_ADMIN_TOKEN`, `POSTGRES_PASSWORD`, and `MINIO_ROOT_PASSWORD`.
+- `ANVIL_BIND_ADDRESS=127.0.0.1` when a host reverse proxy terminates HTTPS, or `0.0.0.0` for a trusted LAN pilot.
+
+Start and verify the release:
+
+```bash
+docker compose pull
+docker compose up -d
+docker compose ps
+curl "$PUBLIC_BASE_URL/-/ready"
+```
+
+Point a pilot repository on the Mac at the NAS with a project-level `.npmrc`:
+
+```ini
+registry=http://anvil-nas.local:4873/
+```
+
+npm and pnpm both read this setting. The server's `PUBLIC_BASE_URL` must match the reachable gateway URL because Anvil rewrites tarball URLs into package metadata.
+
+The bundle starts in `development` mode so unanalysed dependencies warn rather than unexpectedly blocking a first install. Warm representative lockfiles and inspect decisions before switching `RUNTIME_MODE` to `ci` or `production`.
+
+Only gateway and Admin publish host ports. Postgres, Redis, and MinIO remain on the private Compose network. Do not expose the alpha stack directly to the public internet.
+
+### Upgrade and backup
+
+Back up `ANVIL_DATA_DIR` before changing `ANVIL_REGISTRY_VERSION`. Then run:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+The one-shot migration image must complete successfully before gateway and worker start. For a filesystem-level backup, stop the stack first so Postgres and object-store state are consistent.
 
 ## AWS deployment
 

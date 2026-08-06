@@ -52,7 +52,29 @@ Common causes:
 - Queue configuration does not match runtime mode.
 - Upstream registry configuration is malformed.
 
+For a release-bundle deployment, also check that the one-shot `migrate` and `minio-init` services completed successfully:
+
+```bash
+docker compose ps -a
+docker compose logs migrate minio-init
+```
+
 Health can pass while readiness fails. That is normal and useful.
+
+## Remote installs fetch tarballs from localhost
+
+Symptoms:
+
+- Package metadata loads from the NAS or remote Docker host.
+- Tarball downloads then try `localhost:4873` on the developer machine.
+
+Set `PUBLIC_BASE_URL` in the server `.env` to the exact reachable gateway URL, then recreate gateway and worker:
+
+```bash
+docker compose up -d --force-recreate gateway worker
+```
+
+The gateway uses this value when rewriting tarball URLs. Changing only the Mac's npm registry setting is not enough.
 
 ## Package is blocked
 

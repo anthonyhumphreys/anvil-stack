@@ -1,6 +1,17 @@
-name: Anvil Registry Images
+name: Anvil Registry Images and Release
 
 on:
+  pull_request:
+    paths:
+      - ".github/workflows/registry-images.yml"
+      - "anvil-registry/apps/**"
+      - "anvil-registry/infra/docker/release/**"
+      - "anvil-registry/package.json"
+      - "anvil-registry/packages/**"
+      - "anvil-registry/pnpm-lock.yaml"
+      - "anvil-registry/pnpm-workspace.yaml"
+      - "anvil-registry/turbo.json"
+      - "anvil-registry/tsconfig.base.json"
   push:
     branches:
       - main
@@ -9,6 +20,7 @@ on:
     paths:
       - ".github/workflows/registry-images.yml"
       - "anvil-registry/apps/**"
+      - "anvil-registry/infra/docker/release/**"
       - "anvil-registry/package.json"
       - "anvil-registry/packages/**"
       - "anvil-registry/pnpm-lock.yaml"
@@ -27,22 +39,34 @@ concurrency:
 
 jobs:
   publish:
-    name: Build and publish ${{ matrix.app }} image
+    name: Build ${{ matrix.name }} image
     runs-on: ubuntu-latest
 
     strategy:
       fail-fast: false
       matrix:
-        app: [gateway, worker, admin]
+        include:
+          - name: gateway
+            dockerfile: anvil-registry/apps/gateway/Dockerfile
+          - name: worker
+            dockerfile: anvil-registry/apps/worker/Dockerfile
+          - name: admin
+            dockerfile: anvil-registry/apps/admin/Dockerfile
+          - name: migrate
+            dockerfile: anvil-registry/packages/persistence/Dockerfile
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -53,7 +77,10 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/anvil-registry-${{ matrix.app }}
+          images: ghcr.io/${{ github.repository }}/anvil-registry-${{ matrix.name }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=Anvil Registry ${{ matrix.name }} image
           tags: |
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=sha,prefix=sha-
@@ -63,9 +90,98 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: anvil-registry
-          file: anvil-registry/apps/${{ matrix.app }}/Dockerfile
-          push: true
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
+          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=registry-${{ matrix.app }}
-          cache-to: type=gha,mode=max,scope=registry-${{ matrix.app }}
+          cache-from: type=gha,scope=registry-${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=registry-${{ matrix.name }}
+
+      - name: Verify published platforms
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}/anvil-registry-${{ matrix.name }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            published_tag="${GITHUB_REF_NAME}"
+          elif [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            published_tag="latest"
+          else
+            published_tag="sha-${GITHUB_SHA:0:7}"
+          fi
+          manifest="$(docker buildx imagetools inspect "${IMAGE}:${published_tag}")"
+          printf '%s\n' "${manifest}"
+          grep -Fq 'Platform:    linux/amd64' <<< "${manifest}"
+          grep -Fq 'Platform:    linux/arm64' <<< "${manifest}"
+
+  release:
+    name: Publish Registry release bundle
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'registry-v')
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="$(node -p "require('./anvil-registry/package.json').version")"
+          expected_tag="registry-v${package_version}"
+          if [[ "${GITHUB_REF_NAME}" != "${expected_tag}" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match Anvil Registry version ${package_version} (${expected_tag})." >&2
+            exit 1
+          fi
+
+      - name: Build release bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle_name="anvil-registry-${GITHUB_REF_NAME}"
+          bundle_dir="dist/${bundle_name}"
+          mkdir -p "${bundle_dir}"
+          cp anvil-registry/infra/docker/release/docker-compose.yml "${bundle_dir}/docker-compose.yml"
+          cp anvil-registry/infra/docker/release/.env.example "${bundle_dir}/.env.example"
+          cp anvil-registry/infra/docker/release/README.md "${bundle_dir}/README.md"
+          tar -C dist -czf "dist/${bundle_name}.tar.gz" "${bundle_name}"
+          (cd dist && zip -qr "${bundle_name}.zip" "${bundle_name}")
+          (cd dist && sha256sum "${bundle_name}.tar.gz" "${bundle_name}.zip" > SHA256SUMS)
+
+      - name: Create GitHub release
+        shell: bash
+        run: |
+          set -euo pipefail
+          notes_file="$(mktemp)"
+          cat > "${notes_file}" <<EOF
+          Anvil Registry ${GITHUB_REF_NAME} is an alpha release for deliberate local, NAS, and CI pilots.
+
+          The attached release bundle contains a hardened Docker Compose stack for Linux AMD64 and ARM64 hosts. Copy \`.env.example\` to \`.env\`, replace every placeholder secret, set \`PUBLIC_BASE_URL\`, and read the included operator guide before starting the stack.
+
+          Published images:
+
+          - \`ghcr.io/${GITHUB_REPOSITORY}/anvil-registry-gateway:${GITHUB_REF_NAME}\`
+          - \`ghcr.io/${GITHUB_REPOSITORY}/anvil-registry-worker:${GITHUB_REF_NAME}\`
+          - \`ghcr.io/${GITHUB_REPOSITORY}/anvil-registry-admin:${GITHUB_REF_NAME}\`
+          - \`ghcr.io/${GITHUB_REPOSITORY}/anvil-registry-migrate:${GITHUB_REF_NAME}\`
+
+          Keep the gateway on a trusted network, seed representative lockfiles in development mode, and review policy decisions before enabling stricter enforcement.
+          EOF
+
+          gh release create "${GITHUB_REF_NAME}" \
+            "dist/anvil-registry-${GITHUB_REF_NAME}.tar.gz" \
+            "dist/anvil-registry-${GITHUB_REF_NAME}.zip" \
+            "dist/SHA256SUMS" \
+            --title "Anvil Registry ${GITHUB_REF_NAME}" \
+            --notes-file "${notes_file}" \
+            --prerelease
