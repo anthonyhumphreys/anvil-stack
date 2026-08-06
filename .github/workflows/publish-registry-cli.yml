@@ -1,4 +1,4 @@
-name: Publish @anvilstack/registry-cli to npm
+name: Stage @anvilstack/registry-cli for npm approval
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Validate the package without publishing it."
+        description: "Run npm stage publish with --dry-run instead of staging."
         required: false
         type: boolean
         default: true
@@ -22,7 +22,7 @@ defaults:
 
 jobs:
   publish:
-    name: Build, verify, and publish
+    name: Build, verify, and stage
     runs-on: ubuntu-latest
 
     env:
@@ -68,11 +68,22 @@ jobs:
       - name: Test
         run: pnpm --filter @anvilstack/registry-cli test
 
-      - name: Publish package to npm
+      - name: Stage package on npm
         working-directory: anvil-registry/apps/cli
         run: |
           extra_args=""
           if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.dry_run }}" == "true" ]]; then
             extra_args="--dry-run"
           fi
-          npm publish --access public --provenance ${extra_args}
+          npm stage publish --access public ${extra_args}
+
+      - name: Record npm approval requirement
+        if: github.event_name != 'workflow_dispatch' || inputs.dry_run == false
+        run: |
+          package_version="$(node -p "require('./apps/cli/package.json').version")"
+          {
+            echo "## npm approval required"
+            echo
+            echo "\`@anvilstack/registry-cli@${package_version}\` is staged, not yet public."
+            echo "Review and approve it in npm within seven days."
+          } >> "${GITHUB_STEP_SUMMARY}"
