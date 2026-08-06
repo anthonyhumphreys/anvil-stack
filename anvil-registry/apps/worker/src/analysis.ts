@@ -353,9 +353,12 @@ async function maybeReviewWithLlm(
     context.dependencies.llmRiskReviewProvider ??
     createLlmRiskReviewProvider({
       enabled: policy.enabled,
+      provider: policy.provider,
       endpoint: context.dependencies.config.LLM_REVIEW_ENDPOINT,
       apiKey: context.dependencies.config.LLM_REVIEW_API_KEY,
-      model: policy.model
+      model: policy.model,
+      codexCommand: context.dependencies.config.CODEX_CLI_COMMAND,
+      codexTimeoutMs: context.dependencies.config.CODEX_CLI_TIMEOUT_MS
     });
 
   try {

@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const workspaceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const composeFile = resolve(workspaceRoot, "infra/docker/release/docker-compose.yml");
+const codexComposeFile = resolve(workspaceRoot, "infra/docker/release/docker-compose.codex.yml");
 const envFile = resolve(workspaceRoot, "infra/docker/release/.env.example");
 const packageJson = JSON.parse(await readFile(resolve(workspaceRoot, "package.json"), "utf8"));
 const exampleEnv = parseEnv(await readFile(envFile, "utf8"));
@@ -48,6 +49,30 @@ assert(config.services.admin.ports?.length === 1, "admin must publish exactly on
 assert(config.services.gateway.environment.PUBLIC_BASE_URL === exampleEnv.PUBLIC_BASE_URL, "gateway must receive PUBLIC_BASE_URL");
 assert(config.services.gateway.environment.ANVIL_ADMIN_TOKEN === exampleEnv.ANVIL_ADMIN_TOKEN, "gateway must receive ANVIL_ADMIN_TOKEN");
 assert(config.services.admin.environment.ANVIL_ADMIN_TOKEN === exampleEnv.ANVIL_ADMIN_TOKEN, "admin must receive ANVIL_ADMIN_TOKEN");
+
+const codexCompose = spawnSync(
+  "docker",
+  ["compose", "--env-file", envFile, "-f", composeFile, "-f", codexComposeFile, "config", "--format", "json"],
+  { cwd: workspaceRoot, encoding: "utf8", env: { ...process.env, CODEX_AUTH_FILE: "/home/anvil/.codex/auth.json" } }
+);
+
+if (codexCompose.status !== 0) {
+  process.stderr.write(codexCompose.stderr);
+  process.exit(codexCompose.status ?? 1);
+}
+
+const codexConfig = JSON.parse(codexCompose.stdout);
+for (const service of ["gateway", "worker", "admin"]) {
+  assert(codexConfig.services[service].environment.LLM_REVIEW_ENABLED === "true", `${service} must enable Codex review`);
+  assert(codexConfig.services[service].environment.LLM_REVIEW_PROVIDER === "codex-cli", `${service} must select the Codex CLI provider`);
+}
+const codexMount = codexConfig.services.worker.volumes?.find((volume) => volume.target === "/var/lib/anvil-codex/auth.json");
+assert(codexMount?.type === "bind" && codexMount.read_only === true, "worker must mount only auth.json read-only");
+for (const service of ["gateway", "admin"]) {
+  assert(!codexConfig.services[service].volumes?.some((volume) => volume.target?.includes("anvil-codex")), `${service} must not receive Codex credentials`);
+}
+assert(codexConfig.services.worker.cap_drop?.includes("ALL"), "Codex worker override must drop Linux capabilities");
+assert(codexConfig.services.worker.security_opt?.includes("no-new-privileges:true"), "Codex worker override must prevent privilege escalation");
 
 process.stdout.write(`Validated release Compose bundle for ${expectedReleaseTag}.\n`);
 

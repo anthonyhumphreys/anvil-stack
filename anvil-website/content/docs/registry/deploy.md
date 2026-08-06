@@ -81,6 +81,8 @@ The bundle starts in `development` mode so unanalysed dependencies warn rather t
 
 Only gateway and Admin publish host ports. Postgres, Redis, and MinIO remain on the private Compose network. Do not expose the alpha stack directly to the public internet.
 
+For optional Codex-backed package review, the release also includes `docker-compose.codex.yml`. Set `CODEX_AUTH_FILE` to the NAS user's absolute `~/.codex/auth.json` path and apply both Compose files. Only the worker receives the read-only credential mount. See [LLM integration](/docs/registry/llm-integration) before enabling it.
+
 ### Upgrade and backup
 
 Back up `ANVIL_DATA_DIR` before changing `ANVIL_REGISTRY_VERSION`. Then run:

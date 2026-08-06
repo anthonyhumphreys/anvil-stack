@@ -80,6 +80,8 @@ const envSchema = z.object({
   LLM_REVIEW_MODEL: optionalEnvString,
   LLM_REVIEW_ENDPOINT: optionalEnvUrl,
   LLM_REVIEW_API_KEY: optionalEnvString,
+  CODEX_CLI_COMMAND: optionalEnvString.default("codex"),
+  CODEX_CLI_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
   LLM_REVIEW_INCLUDE_PRIVATE_PACKAGES: booleanEnv.default(false),
   LLM_REVIEW_RUN_ON_UNKNOWN_PACKAGES: booleanEnv.default(false),
   LLM_REVIEW_RUN_ON_QUARANTINE: booleanEnv.default(false),

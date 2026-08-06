@@ -29,7 +29,7 @@ The gateway and Admin service can enqueue LLM review jobs. The worker calls the 
 | Gateway | Exposes `POST /-/anvil/llm-review` for admin-token-gated manual review requests. |
 | Admin | Lets reviewers queue LLM review from package detail pages and reads persisted review records. |
 | CLI | Wraps the route with `anvil registry llm-review package@version`. |
-| Worker | Calls the configured LLM endpoint and stores schema-valid review output. |
+| Worker | Calls the configured HTTP provider or isolated Codex CLI provider and stores schema-valid review output. |
 | Policy engine | Treats high or critical LLM risk as quarantine context, not as an allow authority. |
 
 Provider credentials are needed only by the worker. Do not expose `LLM_REVIEW_API_KEY` to the gateway, Admin browser code, public docs routes, or `NEXT_PUBLIC_*` variables.
@@ -80,8 +80,41 @@ ANVIL_REGISTRY_URL=http://localhost:4873 anvil registry explain is-number@7.0.0
 | `LLM_REVIEW_RUN_ON_UNKNOWN_PACKAGES` | `false` | Worker | Automatically run LLM review for unknown package analysis. |
 | `LLM_REVIEW_RUN_ON_QUARANTINE` | `false` | Worker | Automatically run LLM review for quarantined analysis results. |
 | `LLM_REVIEW_INCLUDE_PRIVATE_PACKAGES` | `false` | Worker | Allows private package metadata to be sent to the provider. |
+| `CODEX_AUTH_FILE` | unset | Docker host | Absolute host `auth.json` path used by `docker-compose.codex.yml`. |
+| `CODEX_CLI_COMMAND` | `codex` | Worker | Codex executable used when `LLM_REVIEW_PROVIDER=codex-cli`. |
+| `CODEX_CLI_TIMEOUT_MS` | `120000` | Worker | Maximum duration of one Codex review process. |
 
 Private package metadata is excluded by default. Only enable `LLM_REVIEW_INCLUDE_PRIVATE_PACKAGES=true` when the provider, workspace policy, and package owners all allow that data flow. "The endpoint seemed friendly" is not a data-processing agreement.
+
+## Codex CLI on a NAS
+
+The released operator bundle includes `docker-compose.codex.yml` for a Codex-backed worker. This is opt-in and separate from the default HTTP provider path.
+
+On the NAS, sign in with Codex CLI and restrict its credential file:
+
+```bash
+chmod 700 "$HOME/.codex"
+chmod 600 "$HOME/.codex/auth.json"
+```
+
+Set the absolute host path in the release `.env`:
+
+```dotenv
+CODEX_AUTH_FILE=/home/your-user/.codex/auth.json
+LLM_REVIEW_RUN_ON_QUARANTINE=true
+```
+
+Then apply both Compose files:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.codex.yml config
+docker compose -f docker-compose.yml -f docker-compose.codex.yml pull
+docker compose -f docker-compose.yml -f docker-compose.codex.yml up -d
+```
+
+Only the worker receives `/var/lib/anvil-codex/auth.json`, mounted read-only. The worker invokes Codex with shell and code-execution tools disabled, ignores user configuration and repository rules, uses an ephemeral working directory, constrains the final output with JSON Schema, and removes Registry database, object-store, and admin credentials from the child process environment. Gateway and Admin can enqueue reviews but never receive the Codex credential.
+
+Package evidence is untrusted model input. These controls reduce prompt-injection reach, but the credential still grants use of the signed-in Codex account and the evidence is sent to that account. Mount only `auth.json`, keep the NAS trusted, leave private-package review disabled unless explicitly approved, and retain deterministic policy as the enforcement authority.
 
 ## Provider contract
 
@@ -179,7 +212,7 @@ Before deploying with review enabled, run:
 pnpm --dir infra/sst test
 ```
 
-The preflight catches partially enabled LLM review, such as setting `LLM_REVIEW_ENABLED=true` without a provider endpoint.
+The SST preflight catches partially enabled HTTP review, such as setting `LLM_REVIEW_ENABLED=true` without a provider endpoint. The Codex CLI provider is an operator-managed Docker path, not an SST deployment path.
 
 ## Troubleshooting
 
@@ -187,7 +220,7 @@ The preflight catches partially enabled LLM review, such as setting `LLM_REVIEW_
 | --- | --- |
 | `ANVIL_LLM_REVIEW_DISABLED` | Confirm `LLM_REVIEW_ENABLED=true` is set for gateway, Admin, and worker. |
 | `ANVIL_LLM_REVIEW_INVALID` | Check the request body uses `name` and `version`, or a `targets` array with those fields. |
-| Jobs enqueue but no review appears | Check worker logs, `LLM_REVIEW_ENDPOINT`, and provider response shape. |
+| Jobs enqueue but no review appears | For HTTP, check `LLM_REVIEW_ENDPOINT` and provider output. For Codex, check the worker mount, `CODEX_AUTH_FILE` permissions, and worker logs. |
 | Private package review is skipped | This is the default. Set `LLM_REVIEW_INCLUDE_PRIVATE_PACKAGES=true` only after approving that data flow. |
 | Provider returns text instead of JSON | Make the provider return the schema object directly or inside `review`. |
 
