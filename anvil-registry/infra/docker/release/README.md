@@ -62,6 +62,45 @@ ANVIL_ADMIN_TOKEN=your-token \
 
 Production mode blocks packages that require analysis but do not yet have a report. That is useful after seeding and rather surprising before it.
 
+## Optional Codex CLI review
+
+The release includes an opt-in Compose override that runs Codex CLI only inside the worker. It mounts one host credential file read-only; gateway and Admin never receive the mount.
+
+1. Sign in with Codex CLI on the Docker host and restrict the credential file:
+
+   ```bash
+   chmod 700 "$HOME/.codex"
+   chmod 600 "$HOME/.codex/auth.json"
+   ```
+
+2. Set the absolute host path in `.env`:
+
+   ```dotenv
+   CODEX_AUTH_FILE=/home/your-user/.codex/auth.json
+   LLM_REVIEW_MODEL=
+   LLM_REVIEW_RUN_ON_QUARANTINE=true
+   ```
+
+3. Apply the base bundle plus the Codex override:
+
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.codex.yml config
+   docker compose -f docker-compose.yml -f docker-compose.codex.yml pull
+   docker compose -f docker-compose.yml -f docker-compose.codex.yml up -d
+   ```
+
+4. Queue a deliberate first review:
+
+   ```bash
+   ANVIL_REGISTRY_URL=http://your-nas.example:4873 \
+   ANVIL_ADMIN_TOKEN=your-token \
+     anvil-registry llm-review is-number@7.0.0 --requested-by operator --priority high
+   ```
+
+The worker launches Codex ephemerally with user configuration and repository rules ignored, shell and code-execution tools disabled, a read-only sandbox, schema-constrained output, and a scrubbed environment that omits Registry service secrets. It sends collected package evidence to the Codex account, so private packages remain excluded unless `LLM_REVIEW_INCLUDE_PRIVATE_PACKAGES=true` is explicitly approved.
+
+Mount only `auth.json`, not the whole `.codex` directory. The file grants use of the signed-in Codex account; keep the NAS and worker image within the same trusted boundary as that credential. The model review adds context only and cannot approve a package or override deterministic policy.
+
 ## Upgrade
 
 1. Back up `ANVIL_DATA_DIR`.

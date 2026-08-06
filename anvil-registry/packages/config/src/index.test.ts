@@ -158,6 +158,8 @@ describe("config", () => {
       LLM_REVIEW_MODEL: "risk-reviewer",
       LLM_REVIEW_ENDPOINT: "https://llm.example.test/review",
       LLM_REVIEW_API_KEY: "secret",
+      CODEX_CLI_COMMAND: "/usr/local/bin/codex",
+      CODEX_CLI_TIMEOUT_MS: "45000",
       LLM_REVIEW_RUN_ON_UNKNOWN_PACKAGES: "true",
       LLM_REVIEW_RUN_ON_QUARANTINE: "true",
       LLM_REVIEW_INCLUDE_PRIVATE_PACKAGES: "false"
@@ -173,6 +175,8 @@ describe("config", () => {
     });
     expect(config.LLM_REVIEW_ENDPOINT).toBe("https://llm.example.test/review");
     expect(config.LLM_REVIEW_API_KEY).toBe("secret");
+    expect(config.CODEX_CLI_COMMAND).toBe("/usr/local/bin/codex");
+    expect(config.CODEX_CLI_TIMEOUT_MS).toBe(45_000);
   });
 
   it("loads deterministic policy controls from environment flags", () => {

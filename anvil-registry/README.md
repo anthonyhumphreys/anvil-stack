@@ -182,6 +182,8 @@ docker compose -f infra/docker/docker-compose.yml --profile llm-review up -d --b
 
 Private package metadata is excluded from LLM review unless `LLM_REVIEW_INCLUDE_PRIVATE_PACKAGES=true` is explicitly set.
 
+Released NAS bundles also include `docker-compose.codex.yml`. With `CODEX_AUTH_FILE` set to an absolute host `auth.json` path, the override installs Codex CLI in the worker image, mounts only that file read-only into the worker, disables Codex shell/code tools, and validates the final response against the review schema. See `infra/docker/release/README.md` for the security boundary and exact commands.
+
 ## Smoke Tests
 
 After the local stack is running:

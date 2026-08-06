@@ -152,6 +152,7 @@ jobs:
           bundle_dir="dist/${bundle_name}"
           mkdir -p "${bundle_dir}"
           cp anvil-registry/infra/docker/release/docker-compose.yml "${bundle_dir}/docker-compose.yml"
+          cp anvil-registry/infra/docker/release/docker-compose.codex.yml "${bundle_dir}/docker-compose.codex.yml"
           cp anvil-registry/infra/docker/release/.env.example "${bundle_dir}/.env.example"
           cp anvil-registry/infra/docker/release/README.md "${bundle_dir}/README.md"
           tar -C dist -czf "dist/${bundle_name}.tar.gz" "${bundle_name}"
