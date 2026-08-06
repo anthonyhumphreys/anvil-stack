@@ -7,6 +7,7 @@ const workspaceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const composeFile = resolve(workspaceRoot, "infra/docker/release/docker-compose.yml");
 const codexComposeFile = resolve(workspaceRoot, "infra/docker/release/docker-compose.codex.yml");
 const envFile = resolve(workspaceRoot, "infra/docker/release/.env.example");
+const workerDockerfile = await readFile(resolve(workspaceRoot, "apps/worker/Dockerfile"), "utf8");
 const packageJson = JSON.parse(await readFile(resolve(workspaceRoot, "package.json"), "utf8"));
 const exampleEnv = parseEnv(await readFile(envFile, "utf8"));
 const expectedReleaseTag = `registry-v${packageJson.version}`;
@@ -14,6 +15,8 @@ const expectedReleaseTag = `registry-v${packageJson.version}`;
 assert(exampleEnv.ANVIL_REGISTRY_VERSION === expectedReleaseTag, `.env.example must pin ${expectedReleaseTag}`);
 assert(exampleEnv.PUBLIC_BASE_URL && !exampleEnv.PUBLIC_BASE_URL.includes("localhost"), ".env.example must use a remotely reachable PUBLIC_BASE_URL");
 assert(exampleEnv.RUNTIME_MODE === "development", ".env.example must start alpha pilots in development mode");
+assert(workerDockerfile.includes("install -d -o node -g node -m 700 /var/lib/anvil-codex"), "worker must make CODEX_HOME private to the node user");
+assert(/^USER node$/mu.test(workerDockerfile), "worker image must run as the unprivileged node user");
 
 for (const secret of ["ANVIL_ADMIN_TOKEN", "POSTGRES_PASSWORD", "MINIO_ROOT_PASSWORD"]) {
   assert(exampleEnv[secret]?.startsWith("replace-with-"), `.env.example must make ${secret} an explicit placeholder`);
