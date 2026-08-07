@@ -2328,9 +2328,7 @@ function boundEventPayload<T extends CodexEvent>(event: T): T {
 
 function shouldPersistEvidenceEvent(event: CodexEvent): boolean {
   if (event.type === 'command_exec') return !!event.command || !!event.output;
-  if (event.type === 'subagent_update') {
-    return event.subagent?.status === 'completed' || event.subagent?.status === 'failed';
-  }
+  if (event.type === 'subagent_update') return true;
   return (
     event.type === 'file_read' ||
     event.type === 'file_edit' ||
@@ -2434,6 +2432,12 @@ export function chatMessagesToEntries(history: ChatMessage[]): ChatEntry[] {
     if (message.role === 'assistant') {
       // Legacy history was persisted as one flattened assistant row without metadata.
       entries.push({ kind: 'assistant', content: message.content, id: message.id });
+      continue;
+    }
+
+    if (message.event?.type === 'subagent_update') {
+      const next = upsertSubagentEntry(entries, message.event);
+      entries.splice(0, entries.length, ...next);
       continue;
     }
 

@@ -110,6 +110,70 @@ describe('chatMessagesToEntries', () => {
       ]),
     ).toEqual([{ kind: 'assistant', content: 'Existing flattened output', id: 'legacy-1' }]);
   });
+
+  it('keeps subagent work at its original chronological position while updating its lifecycle', () => {
+    const entries = chatMessagesToEntries([
+      {
+        id: 'user-1',
+        role: 'user',
+        content: 'Review the layout.',
+        timestamp: '2026-08-07T10:00:00.000Z',
+      },
+      {
+        id: 'agent-started',
+        role: 'system',
+        content: 'Subagent started',
+        timestamp: '2026-08-07T10:00:01.000Z',
+        event: {
+          type: 'subagent_update',
+          subagent: {
+            id: 'subagent-1',
+            kind: 'tool_call',
+            tool: 'spawnAgent',
+            status: 'inProgress',
+            receiverThreadIds: ['thread-1'],
+            agents: [{ threadId: 'thread-1', status: 'running' }],
+          },
+        },
+      },
+      {
+        id: 'command-1',
+        role: 'system',
+        content: 'Read the file',
+        timestamp: '2026-08-07T10:00:02.000Z',
+        event: { type: 'file_read', filePath: 'src/App.tsx' },
+      },
+      {
+        id: 'agent-completed',
+        role: 'system',
+        content: 'Subagent completed',
+        timestamp: '2026-08-07T10:00:03.000Z',
+        event: {
+          type: 'subagent_update',
+          subagent: {
+            id: 'subagent-1',
+            kind: 'tool_call',
+            tool: 'spawnAgent',
+            status: 'completed',
+            receiverThreadIds: ['thread-1'],
+            agents: [
+              { threadId: 'thread-1', status: 'completed', message: 'Layout audit complete.' },
+            ],
+          },
+        },
+      },
+    ]);
+
+    expect(entries).toHaveLength(3);
+    expect(entries[1]).toMatchObject({
+      kind: 'event',
+      event: {
+        type: 'subagent_update',
+        subagent: { id: 'subagent-1', status: 'completed' },
+      },
+    });
+    expect(entries[2]).toMatchObject({ kind: 'event', event: { type: 'file_read' } });
+  });
 });
 
 describe('threadBelongsToWorkspace', () => {

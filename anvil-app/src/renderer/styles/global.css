@@ -644,7 +644,11 @@ body,
 
 /* Message actions toolbar */
 .message-actions {
+  position: absolute;
+  top: 100%;
+  z-index: 20;
   opacity: 0;
+  pointer-events: none;
   transform: translateY(4px);
   transition:
     opacity 0.15s cubic-bezier(0.16, 1, 0.3, 1),
@@ -654,7 +658,34 @@ body,
 .message-bubble:hover .message-actions,
 .message-bubble:focus-within .message-actions {
   opacity: 1;
+  pointer-events: auto;
   transform: translateY(0);
+}
+
+.pr-canvas-node {
+  border: 1px solid color-mix(in srgb, var(--pr-node-color) 55%, var(--color-border));
+  box-shadow: 0 8px 28px color-mix(in srgb, var(--pr-node-color) 8%, transparent);
+}
+
+.pr-canvas-node:hover {
+  border-color: var(--pr-node-color);
+  transform: translateY(-1px);
+}
+
+.pr-canvas-flow .react-flow__controls,
+.pr-canvas-flow .react-flow__minimap {
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+  background: var(--color-bg-secondary);
+  box-shadow: none;
+}
+
+.pr-canvas-flow .react-flow__controls-button {
+  border-color: var(--color-border-subtle);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+  fill: currentColor;
 }
 
 .working-dots {

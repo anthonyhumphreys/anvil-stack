@@ -1395,6 +1395,7 @@ export interface CodeReviewScopeRef {
 export interface CodeReviewPullRequest {
   id: string;
   title: string;
+  description?: string;
   provider: 'github' | 'ado';
   state: 'open' | 'closed' | 'merged';
   isDraft: boolean;
@@ -1404,6 +1405,110 @@ export interface CodeReviewPullRequest {
   sourceCommitSha?: string;
   updatedAt: string;
   url?: string;
+}
+
+export type PullRequestVisualisationStatus = 'generating' | 'ready' | 'failed';
+export type PullRequestVisualisationTone =
+  | 'neutral'
+  | 'action'
+  | 'data'
+  | 'verified'
+  | 'risk'
+  | 'logic'
+  | 'uncertainty';
+export type PullRequestVisualisationNodeKind =
+  | 'entry'
+  | 'service'
+  | 'data'
+  | 'file'
+  | 'test'
+  | 'external'
+  | 'risk';
+export type PullRequestVisualisationChangeState = 'before' | 'after' | 'both';
+
+export interface PullRequestVisualisationNode {
+  id: string;
+  label: string;
+  detail?: string;
+  kind: PullRequestVisualisationNodeKind;
+  tone: PullRequestVisualisationTone;
+  changeState: PullRequestVisualisationChangeState;
+  chapterId?: string;
+  filePath?: string;
+  line?: number;
+}
+
+export interface PullRequestVisualisationEdge {
+  id: string;
+  source: string;
+  target: string;
+  label?: string;
+  tone: PullRequestVisualisationTone;
+  changeState: PullRequestVisualisationChangeState;
+  changed: boolean;
+}
+
+export interface PullRequestVisualisationChapter {
+  id: string;
+  title: string;
+  summary: string;
+  nodeIds: string[];
+  riskCount: number;
+  verifiedCount: number;
+}
+
+export interface PullRequestVisualisationRisk {
+  id: string;
+  title: string;
+  severity: 'critical' | 'major' | 'minor' | 'unknown';
+  explanation: string;
+  nodeId?: string;
+  filePath?: string;
+  line?: number;
+  evidence?: string;
+}
+
+export interface PullRequestVisualisationEvidence {
+  id: string;
+  label: string;
+  kind: 'file' | 'test' | 'finding' | 'verification' | 'pull_request';
+  status: 'verified' | 'risk' | 'changed' | 'unknown';
+  detail?: string;
+  nodeId?: string;
+  filePath?: string;
+  line?: number;
+}
+
+export interface PullRequestVisualisation {
+  id: string;
+  repoId: string;
+  reviewId?: string;
+  pullRequest: CodeReviewPullRequest;
+  headSha: string;
+  status: PullRequestVisualisationStatus;
+  summary?: string;
+  intent?: string;
+  chapters: PullRequestVisualisationChapter[];
+  nodes: PullRequestVisualisationNode[];
+  edges: PullRequestVisualisationEdge[];
+  risks: PullRequestVisualisationRisk[];
+  evidence: PullRequestVisualisationEvidence[];
+  error?: string;
+  createdAt: string;
+  generatedAt?: string;
+}
+
+export interface PullRequestDiffFile {
+  filePath: string;
+  previousPath?: string;
+  status: RepositoryChangeStatus;
+  diff: string;
+}
+
+export interface PullRequestDiff {
+  pullRequest: CodeReviewPullRequest;
+  files: PullRequestDiffFile[];
+  summary: RepositoryChangeSummary;
 }
 
 export interface CodeReviewPullRequestComment {

@@ -52,6 +52,8 @@ import type {
   CodeReviewMode,
   CodeReviewPullRequest,
   CodeReviewPullRequestComment,
+  PullRequestDiff,
+  PullRequestVisualisation,
   CodeReviewScopeRef,
   CodeReviewScopeType,
   CodexCliStatus,
@@ -453,6 +455,17 @@ export interface AnvilAPI {
     >;
     listBranches: (repoId: string) => Promise<string[]>;
     listPullRequests: (repoId: string) => Promise<CodeReviewPullRequest[]>;
+    visualisePullRequest: (
+      repoId: string,
+      pullRequestId: string,
+      options?: { force?: boolean; reviewId?: string },
+    ) => Promise<PullRequestVisualisation>;
+    getPullRequestVisualisation: (
+      repoId: string,
+      pullRequestId: string,
+    ) => Promise<PullRequestVisualisation | null>;
+    exportPullRequestVisualisation: (repoId: string, pullRequestId: string) => Promise<string>;
+    getPullRequestDiff: (repoId: string, pullRequestId: string) => Promise<PullRequestDiff>;
     getChangeSummary: (reviewId: string) => Promise<RepositoryChangeSummary>;
     onProgress: (
       callback: (data: { repoId: string; message: string; percent: number }) => void,

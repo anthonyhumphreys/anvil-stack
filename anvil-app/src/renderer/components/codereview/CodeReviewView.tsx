@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { GitPullRequest, Play, Loader2, Zap, GraduationCap } from 'lucide-react';
 import type {
   CodeReview,
@@ -10,10 +10,14 @@ import type {
 import { CodeReviewReport } from './CodeReviewReport';
 import { CodeReviewScopeSelector } from './CodeReviewScopeSelector';
 import { RepoSelector } from '../shared/RepoSelector';
+import { PullRequestCanvas } from './PullRequestCanvas';
 
 export function CodeReviewView() {
   const { repoId } = useParams<{ repoId: string }>();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const visualisePullRequestId = searchParams.get('pr');
+  const initialCanvasMode = searchParams.get('view') === 'diff' ? 'diff' : 'map';
 
   // Review state
   const [reviews, setReviews] = useState<CodeReview[]>([]);
@@ -155,6 +159,22 @@ export function CodeReviewView() {
           </p>
         </div>
       </div>
+    );
+  }
+
+  if (repoId && visualisePullRequestId) {
+    return (
+      <PullRequestCanvas
+        repoId={repoId}
+        pullRequestId={visualisePullRequestId}
+        reviewId={
+          selectedReview?.scopeRef?.pullRequest?.id === visualisePullRequestId
+            ? selectedReview.id
+            : undefined
+        }
+        initialMode={initialCanvasMode}
+        onClose={() => setSearchParams({})}
+      />
     );
   }
 
@@ -313,7 +333,12 @@ export function CodeReviewView() {
           </div>
         )}
         {selectedReview ? (
-          <CodeReviewReport review={selectedReview} />
+          <CodeReviewReport
+            review={selectedReview}
+            onVisualisePullRequest={(pullRequestId) =>
+              setSearchParams({ pr: pullRequestId, view: 'map' })
+            }
+          />
         ) : (
           <div className="flex h-full items-center justify-center">
             <div className="text-center">

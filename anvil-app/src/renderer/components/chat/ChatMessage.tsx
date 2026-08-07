@@ -230,7 +230,7 @@ export function TurnWorkMessage({
           type="button"
           onClick={() => setExpanded((current) => !current)}
           disabled={active}
-          className="flex min-h-10 w-full items-center gap-2.5 py-2 text-left text-xs transition-colors hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-default"
+          className="flex min-h-10 w-full items-center gap-2.5 px-3 py-2 text-left text-xs transition-colors hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-default"
           aria-expanded={showDetails}
           aria-label={
             active
@@ -261,7 +261,7 @@ export function TurnWorkMessage({
         </button>
 
         {blockingItems.length > 0 && (
-          <div className="space-y-2 border-t border-warning/20 py-3 pl-6 pr-2">
+          <div className="space-y-2 border-t border-warning/20 px-3 py-3">
             {blockingItems.map((item, index) => (
               <ChatEventRenderer
                 key={buildActivityEventKey(item.event, index)}
@@ -272,7 +272,7 @@ export function TurnWorkMessage({
         )}
 
         {showDetails && (
-          <div className="space-y-3 border-t border-border-subtle/70 py-3 pl-6">
+          <div className="space-y-3 border-t border-border-subtle/70 px-3 py-3">
             {items.map((item, index) => {
               if (blockingSourceIndexes.has(item.sourceIndex)) return null;
               if (item.kind === 'progress') {
@@ -679,14 +679,18 @@ function InputRequestEvent({ event }: { event: CodexEvent & { sessionId?: string
 function UserInputRequestEvent({ event }: { event: CodexEvent & { sessionId?: string } }) {
   const questions = event.inputRequest?.questions ?? [];
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [activeIndex, setActiveIndex] = useState(0);
   const [resolved, setResolved] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const activeQuestion = questions[activeIndex];
   const complete =
     questions.length > 0 && questions.every((question) => answers[question.id]?.trim());
 
   const submit = async () => {
     if (!event.sessionId || event.inputRequestId === undefined || !complete) return;
     setError(null);
+    setSubmitting(true);
     try {
       await window.anvil.chat.resolveInputRequest(event.sessionId, event.inputRequestId, {
         kind: 'user_input',
@@ -697,103 +701,187 @@ function UserInputRequestEvent({ event }: { event: CodexEvent & { sessionId?: st
       setResolved(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send answers');
+    } finally {
+      setSubmitting(false);
     }
   };
 
-  return (
-    <div className="overflow-hidden rounded-xl border border-warning/30 bg-warning/5 shadow-sm">
-      <div className="flex items-start gap-2.5 px-4 py-3">
-        <MessageSquare size={14} className="mt-0.5 shrink-0 text-warning" />
+  if (resolved) {
+    return (
+      <div className="flex items-center gap-3 border-y border-success/20 bg-success/[0.035] px-3 py-3">
+        <CheckCircle2 size={14} className="shrink-0 text-success" />
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium text-text-primary">Codex needs your input</p>
-          {event.inputRequest?.autoResolutionMs && (
-            <p className="mt-1 text-xs text-text-tertiary">
-              Codex may continue automatically after{' '}
-              {Math.ceil(event.inputRequest.autoResolutionMs / 1000)} seconds.
-            </p>
-          )}
-          <div className="mt-3 space-y-4">
-            {questions.map((question) => {
-              const options = question.options ?? [];
-              const current = answers[question.id] ?? '';
-              const isCustom = !options.some((option) => option.label === current);
+          <p className="text-xs font-semibold text-text-primary">Answers sent</p>
+          <p className="mt-1 text-xs leading-5 text-text-tertiary">
+            {questions
+              .map((question) =>
+                question.isSecret
+                  ? `${question.header}: answer provided`
+                  : `${question.header}: ${answers[question.id]}`,
+              )
+              .join(' · ')}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <form
+      onSubmit={(submitEvent) => {
+        submitEvent.preventDefault();
+        if (activeIndex < questions.length - 1) setActiveIndex((current) => current + 1);
+        else void submit();
+      }}
+      className="overflow-hidden rounded-xl border border-warning/35 bg-bg-secondary"
+    >
+      <div className="flex items-center gap-3 border-b border-border-subtle px-4 py-3">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-warning/10 text-warning">
+          <MessageSquare size={14} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold text-text-primary">Codex needs your input</p>
+          <p className="mt-0.5 text-xs text-text-tertiary">
+            {questions.length > 0
+              ? `Question ${activeIndex + 1} of ${questions.length}`
+              : 'No questions were provided'}
+            {event.inputRequest?.autoResolutionMs
+              ? ` · may continue after ${Math.ceil(event.inputRequest.autoResolutionMs / 1000)}s`
+              : ''}
+          </p>
+        </div>
+        {questions.length > 1 && (
+          <div className="flex gap-1" aria-hidden="true">
+            {questions.map((question, index) => (
+              <span
+                key={question.id}
+                className={`h-1.5 w-6 rounded-full ${
+                  index < activeIndex || answers[question.id]?.trim()
+                    ? 'bg-success'
+                    : index === activeIndex
+                      ? 'bg-warning'
+                      : 'bg-border'
+                }`}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {activeQuestion ? (
+        <fieldset className="p-4">
+          <legend className="text-xs font-semibold text-warning">{activeQuestion.header}</legend>
+          <p className="mt-2 max-w-[68ch] text-sm leading-6 text-text-primary">
+            {activeQuestion.question}
+          </p>
+          <div className="mt-4 grid gap-2">
+            {(activeQuestion.options ?? []).map((option, optionIndex) => {
+              const selected = answers[activeQuestion.id] === option.label;
+              const recommended = /\(recommended\)/i.test(option.label);
               return (
-                <fieldset key={question.id} disabled={resolved} className="space-y-2">
-                  <legend className="text-xs font-medium text-text-primary">
-                    {question.header}
-                  </legend>
-                  <p className="text-xs text-text-secondary">{question.question}</p>
-                  {options.length > 0 && (
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      {options.map((option) => {
-                        const selected = current === option.label;
-                        return (
-                          <button
-                            key={option.label}
-                            type="button"
-                            onClick={() =>
-                              setAnswers((previous) => ({
-                                ...previous,
-                                [question.id]: option.label,
-                              }))
-                            }
-                            className={`rounded-lg border px-3 py-2 text-left transition-colors ${
-                              selected
-                                ? 'border-accent/60 bg-accent/10'
-                                : 'border-border-subtle bg-bg-primary/40 hover:bg-bg-tertiary/60'
-                            }`}
-                          >
-                            <span className="block text-xs font-medium text-text-primary">
-                              {option.label}
-                            </span>
-                            {option.description && (
-                              <span className="mt-0.5 block text-[11px] text-text-tertiary">
-                                {option.description}
-                              </span>
-                            )}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                  {(question.isOther || options.length === 0) && (
-                    <input
-                      type={question.isSecret ? 'password' : 'text'}
-                      value={isCustom ? current : ''}
-                      onChange={(inputEvent) =>
-                        setAnswers((previous) => ({
-                          ...previous,
-                          [question.id]: inputEvent.target.value,
-                        }))
-                      }
-                      placeholder={options.length > 0 ? 'Or enter another answer' : 'Your answer'}
-                      className="w-full rounded-lg border border-border bg-bg-primary px-3 py-2 text-xs text-text-primary outline-none placeholder:text-text-muted focus:border-accent"
-                    />
-                  )}
-                </fieldset>
+                <button
+                  key={option.label}
+                  type="button"
+                  onClick={() =>
+                    setAnswers((previous) => ({
+                      ...previous,
+                      [activeQuestion.id]: option.label,
+                    }))
+                  }
+                  className={`group flex items-start gap-3 rounded-lg border px-3 py-3 text-left transition-colors ${
+                    selected
+                      ? 'border-accent/60 bg-accent/10'
+                      : 'border-border-subtle hover:border-border hover:bg-bg-tertiary/55'
+                  }`}
+                >
+                  <span
+                    className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md border font-mono text-xs ${
+                      selected
+                        ? 'border-accent bg-accent text-white'
+                        : 'border-border text-text-tertiary group-hover:text-text-primary'
+                    }`}
+                  >
+                    {optionIndex + 1}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-2 text-sm font-semibold text-text-primary">
+                      {option.label.replace(/\s*\(recommended\)/i, '')}
+                      {recommended && (
+                        <span className="rounded-full bg-info/10 px-2 py-0.5 text-xs font-medium text-info">
+                          Recommended
+                        </span>
+                      )}
+                    </span>
+                    {option.description && (
+                      <span className="mt-1 block text-sm leading-5 text-text-tertiary">
+                        {option.description}
+                      </span>
+                    )}
+                  </span>
+                  {selected && <Check size={14} className="mt-1 shrink-0 text-accent" />}
+                </button>
               );
             })}
           </div>
-          {questions.length === 0 && (
-            <p className="mt-2 text-xs text-error">Codex sent an empty input request.</p>
+          {(activeQuestion.isOther || (activeQuestion.options ?? []).length === 0) && (
+            <label className="mt-3 block">
+              <span className="sr-only">Custom answer</span>
+              <input
+                type={activeQuestion.isSecret ? 'password' : 'text'}
+                value={
+                  (activeQuestion.options ?? []).some(
+                    (option) => option.label === answers[activeQuestion.id],
+                  )
+                    ? ''
+                    : (answers[activeQuestion.id] ?? '')
+                }
+                onChange={(inputEvent) =>
+                  setAnswers((previous) => ({
+                    ...previous,
+                    [activeQuestion.id]: inputEvent.target.value,
+                  }))
+                }
+                placeholder={
+                  (activeQuestion.options ?? []).length > 0
+                    ? 'Or enter another answer…'
+                    : 'Type your answer…'
+                }
+                className="w-full rounded-lg border border-border bg-bg-primary px-3 py-3 text-sm text-text-primary outline-none placeholder:text-text-muted focus:border-accent"
+              />
+            </label>
           )}
-          {error && <p className="mt-2 text-xs text-error">{error}</p>}
-          {resolved && <p className="mt-3 text-xs text-success">Answers sent</p>}
-        </div>
-      </div>
-      {!resolved && questions.length > 0 && (
-        <div className="border-t border-border-subtle px-4 py-2.5">
+          {error && <p className="mt-3 text-xs text-error">{error}</p>}
+        </fieldset>
+      ) : (
+        <p className="p-4 text-sm text-error">Codex sent an empty input request.</p>
+      )}
+
+      {activeQuestion && (
+        <div className="flex items-center gap-2 border-t border-border-subtle px-4 py-3">
+          {activeIndex > 0 && (
+            <button
+              type="button"
+              onClick={() => setActiveIndex((current) => current - 1)}
+              className="rounded-md px-3 py-2 text-xs font-medium text-text-secondary hover:bg-bg-tertiary hover:text-text-primary"
+            >
+              Back
+            </button>
+          )}
           <button
-            type="button"
-            disabled={!complete}
-            onClick={() => void submit()}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-success/40 px-3 py-1.5 text-sm text-success transition-colors hover:bg-success/10 disabled:cursor-not-allowed disabled:opacity-40"
+            type="submit"
+            disabled={
+              !answers[activeQuestion.id]?.trim() ||
+              submitting ||
+              (activeIndex === questions.length - 1 && !complete)
+            }
+            className="ml-auto inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-accent/85 disabled:cursor-not-allowed disabled:opacity-40"
           >
-            <Check size={12} /> Send answers
+            {submitting && <Loader2 size={13} className="animate-spin" />}
+            {activeIndex < questions.length - 1 ? 'Next question' : 'Send answers'}
           </button>
         </div>
       )}
-    </div>
+    </form>
   );
 }
 
@@ -947,17 +1035,23 @@ function SubagentUpdateEvent({ event }: { event: CodexEvent }) {
             {update.model && <span className="text-[10px] text-text-muted">{update.model}</span>}
           </div>
           {update.prompt && (
-            <p className="mt-1 line-clamp-2 text-xs text-text-tertiary">{update.prompt}</p>
+            <details className="mt-1 text-xs text-text-tertiary">
+              <summary className="cursor-pointer line-clamp-2 hover:text-text-secondary">
+                {update.prompt}
+              </summary>
+              <p className="mt-2 whitespace-pre-wrap leading-5">{update.prompt}</p>
+            </details>
           )}
           {update.agents.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1.5">
-              {update.agents.map((agent) => (
+              {update.agents.map((agent, index) => (
                 <span
                   key={agent.threadId}
-                  className="rounded-md border border-border-subtle bg-bg-primary/50 px-2 py-1 font-mono text-[10px] text-text-secondary"
+                  className="rounded-md border border-border-subtle bg-bg-primary/50 px-2 py-1 text-xs font-medium text-text-secondary"
                   title={agent.threadId}
                 >
-                  {agent.threadId.slice(0, 8)} · {agent.status}
+                  {update.agentPath?.split('/').filter(Boolean).pop() ?? `Agent ${index + 1}`} ·{' '}
+                  {agent.status}
                 </span>
               ))}
             </div>
@@ -967,9 +1061,7 @@ function SubagentUpdateEvent({ event }: { event: CodexEvent }) {
               key={`${agent.threadId}-result`}
               className="mt-3 max-h-96 overflow-auto border-t border-border-subtle pt-3 text-text-secondary"
             >
-              <p className="mb-2 text-[11px] font-medium uppercase tracking-[0.08em] text-text-muted">
-                Agent result
-              </p>
+              <p className="mb-2 text-xs font-medium text-text-muted">Agent result</p>
               <MarkdownRenderer content={agent.message ?? ''} />
             </div>
           ))}
@@ -1396,10 +1488,10 @@ export function AssistantMessage({
           <span>{label}</span>
           {active && <span className="font-normal text-text-tertiary">Responding</span>}
         </div>
-        <div className="px-1 text-text-secondary [&_.markdown-body>p]:text-[15px] [&_.markdown-body>p]:leading-7">
+        <div className="px-1 text-sm leading-6 text-text-primary/90">
           <MarkdownRenderer content={display} />
         </div>
-        <div className="message-actions mt-1">
+        <div className="message-actions left-0 mt-1">
           <MessageActionsToolbar
             onCopy={handleCopy}
             onBranch={onBranch}
@@ -1438,7 +1530,7 @@ export function UserMessage({
     <div className="message-bubble group flex justify-end">
       <div
         className={`relative ${
-          collapsible ? 'w-full max-w-[88%] sm:max-w-[90ch]' : 'w-fit max-w-[88%] sm:max-w-[72ch]'
+          collapsible ? 'w-full max-w-[88%] sm:max-w-[75ch]' : 'w-fit max-w-[88%] sm:max-w-[72ch]'
         }`}
       >
         <p className="mb-1.5 text-right text-xs font-medium text-text-tertiary">You</p>
@@ -1446,7 +1538,7 @@ export function UserMessage({
           className={`overflow-hidden rounded-xl border px-4 py-3 text-sm text-text-primary transition-colors ${
             collapsible
               ? 'border-border-subtle bg-bg-secondary/45 hover:border-border'
-              : 'border-accent/25 bg-accent/10 hover:border-accent/35 hover:bg-accent/15'
+              : 'border-border bg-bg-secondary/70 hover:border-accent/30'
           }`}
         >
           <div className={collapsible && !expanded ? 'max-h-64 overflow-hidden' : undefined}>
@@ -1469,7 +1561,7 @@ export function UserMessage({
             </button>
           )}
         </div>
-        <div className="message-actions mt-1 flex justify-end">
+        <div className="message-actions right-0 mt-1 flex justify-end">
           <MessageActionsToolbar
             onCopy={handleCopy}
             onEdit={onEdit}

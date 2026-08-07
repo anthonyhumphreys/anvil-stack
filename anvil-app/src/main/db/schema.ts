@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 49;
+export const SCHEMA_VERSION = 50;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -414,6 +414,27 @@ CREATE TABLE IF NOT EXISTS code_review_findings (
   pr_commented_at TEXT,
   dismissed     INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS pull_request_visualisations (
+  id              TEXT PRIMARY KEY,
+  repo_id         TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  review_id       TEXT REFERENCES code_reviews(id) ON DELETE SET NULL,
+  provider        TEXT NOT NULL,
+  pull_request_id TEXT NOT NULL,
+  head_sha        TEXT NOT NULL,
+  status          TEXT NOT NULL DEFAULT 'generating',
+  pull_request_json TEXT NOT NULL,
+  summary         TEXT,
+  intent          TEXT,
+  data_json       TEXT NOT NULL DEFAULT '{}',
+  error           TEXT,
+  created_at      TEXT NOT NULL,
+  generated_at    TEXT,
+  UNIQUE(repo_id, provider, pull_request_id, head_sha)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pr_visualisations_lookup
+  ON pull_request_visualisations(repo_id, provider, pull_request_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS security_audits (
   id            TEXT PRIMARY KEY,
@@ -1563,5 +1584,27 @@ export const MIGRATIONS: Record<number, string> = {
       graph_json TEXT NOT NULL,
       generated_at TEXT NOT NULL
     );
+  `,
+  50: `
+    CREATE TABLE IF NOT EXISTS pull_request_visualisations (
+      id TEXT PRIMARY KEY,
+      repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+      review_id TEXT REFERENCES code_reviews(id) ON DELETE SET NULL,
+      provider TEXT NOT NULL,
+      pull_request_id TEXT NOT NULL,
+      head_sha TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'generating',
+      pull_request_json TEXT NOT NULL,
+      summary TEXT,
+      intent TEXT,
+      data_json TEXT NOT NULL DEFAULT '{}',
+      error TEXT,
+      created_at TEXT NOT NULL,
+      generated_at TEXT,
+      UNIQUE(repo_id, provider, pull_request_id, head_sha)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_pr_visualisations_lookup
+      ON pull_request_visualisations(repo_id, provider, pull_request_id, created_at DESC);
   `,
 };

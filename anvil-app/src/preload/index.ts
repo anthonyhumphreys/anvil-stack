@@ -462,6 +462,17 @@ const api: AnvilAPI = {
     listBranches: (repoId: string) => ipcRenderer.invoke('codereview:list-branches', repoId),
     listPullRequests: (repoId: string) =>
       ipcRenderer.invoke('codereview:list-pull-requests', repoId),
+    visualisePullRequest: (
+      repoId: string,
+      pullRequestId: string,
+      options?: { force?: boolean; reviewId?: string },
+    ) => ipcRenderer.invoke('codereview:visualise-pull-request', repoId, pullRequestId, options),
+    getPullRequestVisualisation: (repoId: string, pullRequestId: string) =>
+      ipcRenderer.invoke('codereview:get-pull-request-visualisation', repoId, pullRequestId),
+    exportPullRequestVisualisation: (repoId: string, pullRequestId: string) =>
+      ipcRenderer.invoke('codereview:export-pull-request-visualisation', repoId, pullRequestId),
+    getPullRequestDiff: (repoId: string, pullRequestId: string) =>
+      ipcRenderer.invoke('codereview:get-pull-request-diff', repoId, pullRequestId),
     getChangeSummary: (reviewId: string) =>
       ipcRenderer.invoke('codereview:get-change-summary', reviewId),
     onProgress: (

@@ -350,14 +350,6 @@ export function ChatView({ userRole }: ChatViewProps) {
 
   const openFindings = findings.filter((f) => !dismissedFindings.has(f.idx));
   const composedTurns = useMemo(() => composeChatTurns(entries, { active: busy }), [busy, entries]);
-  const latestComposedTurn = composedTurns[composedTurns.length - 1];
-  const latestTurnLiveState = getChatTurnLiveState({
-    busy,
-    isLatest: true,
-    hasWork: (latestComposedTurn?.work.length ?? 0) > 0,
-    hasAnswer: Boolean(latestComposedTurn?.answer),
-    hasTrailingWork: (latestComposedTurn?.trailingWork.length ?? 0) > 0,
-  });
 
   useEffect(() => {
     const container = messagesContainerRef.current;
@@ -608,16 +600,6 @@ export function ChatView({ userRole }: ChatViewProps) {
               <h2 className="truncate text-sm font-semibold tracking-tight text-text-primary">
                 {activeThread && !scaffoldModeActive ? activeThread.title : 'New conversation'}
               </h2>
-              {latestTurnLiveState && (
-                <span
-                  className="inline-flex shrink-0 items-center gap-1.5 text-[11px] font-medium text-accent"
-                  role="status"
-                  aria-live="polite"
-                >
-                  <Loader2 size={11} className="animate-spin" />
-                  {formatTurnActivityState(latestTurnLiveState)}
-                </span>
-              )}
             </div>
             <p className="truncate text-xs text-text-tertiary">
               {activeWorkspace?.name ?? 'No workspace'} · {activePersona?.name ?? 'Assistant'}
@@ -871,6 +853,17 @@ export function ChatView({ userRole }: ChatViewProps) {
         </div>
 
         <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">
+          {!scaffoldModeActive && activeRepos.length > 0 && (
+            <button
+              type="button"
+              onClick={() => navigate('/git?tab=pull_requests')}
+              className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+              title="Browse and visualise pull requests"
+            >
+              <GitPullRequest size={13} />
+              <span className="hidden xl:inline">PRs</span>
+            </button>
+          )}
           {!isWorkItemLayout && (
             <button
               onClick={() => void startNewSession()}
@@ -987,7 +980,7 @@ export function ChatView({ userRole }: ChatViewProps) {
               className={`h-full overflow-y-auto ${showCenteredEmptyPane ? 'flex' : ''}`}
             >
               <div
-                className={`w-full px-4 xl:px-6 ${
+                className={`mx-auto w-full max-w-[1120px] px-4 xl:px-6 ${
                   showCenteredEmptyPane
                     ? 'flex min-h-full flex-1 items-center justify-center py-6'
                     : 'flex flex-col pb-8 pt-6'
@@ -1087,7 +1080,7 @@ export function ChatView({ userRole }: ChatViewProps) {
                 )}
 
                 {composedTurns.length > 0 && (
-                  <div className="w-full space-y-8">
+                  <div className="w-full space-y-6">
                     {composedTurns.map((turn, turnIndex) => {
                       const liveState = getChatTurnLiveState({
                         busy,
@@ -2024,17 +2017,6 @@ export function getChatTurnLiveState({
   if (hasAnswer) return 'responding';
   if (hasWork) return 'working';
   return 'thinking';
-}
-
-function formatTurnActivityState(state: TurnActivityState): string {
-  switch (state) {
-    case 'thinking':
-      return 'Thinking';
-    case 'responding':
-      return 'Responding';
-    case 'working':
-      return 'Working';
-  }
 }
 
 function formatGoalStatus(status: ChatGoalSnapshot['status']): string {

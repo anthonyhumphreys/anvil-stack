@@ -21,6 +21,7 @@ import {
   X,
   MessageSquarePlus,
   Send,
+  Sparkles,
 } from 'lucide-react';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { buildEditorUrl } from '../../utils/editor-link';
@@ -30,9 +31,10 @@ import { RepositoryMap } from '../repos/RepositoryMap';
 
 interface Props {
   review: CodeReview;
+  onVisualisePullRequest?: (pullRequestId: string) => void;
 }
 
-export function CodeReviewReport({ review }: Props) {
+export function CodeReviewReport({ review, onVisualisePullRequest }: Props) {
   const navigate = useNavigate();
   const { activeWorkspace, repos } = useWorkspace();
   const [findings, setFindings] = useState<CodeReviewFinding[]>([]);
@@ -291,8 +293,8 @@ export function CodeReviewReport({ review }: Props) {
     review.scopeType === 'pull_request' && Boolean(review.scopeRef?.pullRequest?.id);
   const changeMapCommitMismatch = Boolean(
     mapGraph &&
-      changeSummary?.currentCommitSha &&
-      mapGraph.indexedCommitSha !== changeSummary.currentCommitSha,
+    changeSummary?.currentCommitSha &&
+    mapGraph.indexedCommitSha !== changeSummary.currentCommitSha,
   );
 
   return (
@@ -308,6 +310,15 @@ export function CodeReviewReport({ review }: Props) {
           </div>
           <div className="flex items-center gap-2">
             <WorkspaceGitActions repos={repos} compact onError={setActionError} />
+            {review.scopeRef?.pullRequest?.id && onVisualisePullRequest && (
+              <button
+                type="button"
+                onClick={() => onVisualisePullRequest(review.scopeRef!.pullRequest!.id)}
+                className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-accent/85"
+              >
+                <Sparkles size={14} /> Visualise PR
+              </button>
+            )}
             {canPostToPullRequest && (
               <button
                 onClick={handlePostReviewToPullRequest}

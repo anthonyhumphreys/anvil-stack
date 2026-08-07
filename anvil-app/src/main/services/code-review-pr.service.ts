@@ -36,6 +36,7 @@ type RemoteRepoSpec = GitHubRepoSpec | AdoRepoSpec;
 interface GithubPullRequestResponse {
   number: number;
   title: string;
+  body?: string | null;
   state: string;
   isDraft: boolean;
   updatedAt: string;
@@ -49,6 +50,7 @@ interface GithubPullRequestResponse {
 interface AdoPullRequestResponse {
   pullRequestId: number;
   title: string;
+  description?: string;
   status: string;
   creationDate: string;
   closedDate?: string;
@@ -293,7 +295,7 @@ async function listGithubPullRequests(spec: GitHubRepoSpec): Promise<CodeReviewP
     '--state',
     'all',
     '--json',
-    'number,title,state,isDraft,author,headRefName,headRefOid,baseRefName,updatedAt,url',
+    'number,title,body,state,isDraft,author,headRefName,headRefOid,baseRefName,updatedAt,url',
   ]);
 
   const pullRequests = JSON.parse(stdout) as GithubPullRequestResponse[];
@@ -313,7 +315,7 @@ async function getGithubPullRequest(
     '--repo',
     formatGhRepoIdentifier(spec),
     '--json',
-    'number,title,state,isDraft,author,headRefName,headRefOid,baseRefName,updatedAt,url',
+    'number,title,body,state,isDraft,author,headRefName,headRefOid,baseRefName,updatedAt,url',
   ]);
 
   return mapGithubPullRequest(spec, JSON.parse(stdout) as GithubPullRequestResponse);
@@ -414,6 +416,7 @@ function mapGithubPullRequest(
   return {
     id: String(pullRequest.number),
     title: pullRequest.title,
+    description: pullRequest.body?.trim() || undefined,
     provider: 'github',
     state: mapGithubState(pullRequest.state),
     isDraft: pullRequest.isDraft,
@@ -433,6 +436,7 @@ function mapAdoPullRequest(
   return {
     id: String(pullRequest.pullRequestId),
     title: pullRequest.title,
+    description: pullRequest.description?.trim() || undefined,
     provider: 'ado',
     state: mapAdoState(pullRequest.status),
     isDraft: pullRequest.isDraft ?? false,
