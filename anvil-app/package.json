@@ -1,6 +1,6 @@
 {
   "name": "anvil",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Anvil developer mission control",
   "main": "out/main/index.js",
   "type": "module",
@@ -41,6 +41,7 @@
     "@aiden0z/pptx-renderer": "1.2.4",
     "@anvilstack/cloud-cli": "^0.1.1",
     "@anvilstack/registry-cli": "^0.1.1",
+    "@dagrejs/dagre": "^3.1.0",
     "@react-three/fiber": "^9.7.0",
     "@shikijs/langs": "^4.0.2",
     "@xterm/addon-fit": "^0.11.0",

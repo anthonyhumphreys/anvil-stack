@@ -36,6 +36,10 @@ import type {
 } from '../../../shared/types';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { buildEditorUrl } from '../../utils/editor-link';
+import {
+  isRenderablePullRequestEdge,
+  layoutPullRequestNodes,
+} from '../../utils/pull-request-layout';
 import { PullRequestDiffView } from './PullRequestDiffView';
 
 type ExperienceMode = 'story' | 'map' | 'diff';
@@ -50,6 +54,7 @@ interface PullRequestCanvasProps {
 
 interface CanvasNodeData extends Record<string, unknown> {
   item: PullRequestVisualisationNode;
+  dimmed: boolean;
 }
 
 type CanvasNode = Node<CanvasNodeData, 'pullRequest'>;
@@ -129,10 +134,30 @@ export function PullRequestCanvas({
     (evidence) => evidence.nodeId === selectedNodeId,
   );
 
-  const { nodes, edges } = useMemo(
-    () => buildFlow(visualisation, changeState, selectedChapterId),
-    [changeState, selectedChapterId, visualisation],
+  useEffect(() => {
+    const visibleNodes = visualisation?.nodes.filter(
+      (node) =>
+        (node.changeState === 'both' || node.changeState === changeState) &&
+        (!selectedChapterId || node.chapterId === selectedChapterId || !node.chapterId),
+    );
+    if (
+      visibleNodes &&
+      visibleNodes.length > 0 &&
+      !visibleNodes.some((node) => node.id === selectedNodeId)
+    ) {
+      setSelectedNodeId(visibleNodes[0].id);
+    }
+  }, [changeState, selectedChapterId, selectedNodeId, visualisation]);
+
+  const layoutPositions = useMemo(
+    () => buildChapterLayoutPositions(visualisation, selectedChapterId),
+    [selectedChapterId, visualisation],
   );
+  const { nodes, edges } = useMemo(
+    () => buildFlow(visualisation, changeState, selectedChapterId, selectedNodeId, layoutPositions),
+    [changeState, layoutPositions, selectedChapterId, selectedNodeId, visualisation],
+  );
+  const visibleNodeCount = nodes.filter((node) => !node.hidden).length;
 
   const openNode = useCallback(
     (node: PullRequestVisualisationNode) => {
@@ -382,24 +407,32 @@ export function PullRequestCanvas({
                 <ArrowLeftRight size={13} className="mx-1 text-text-muted" />
               </div>
               <ReactFlow
+                key={selectedChapterId ?? 'all-chapters'}
                 nodes={nodes}
                 edges={edges}
                 nodeTypes={nodeTypes}
                 fitView
-                fitViewOptions={{ padding: 0.22 }}
-                minZoom={0.55}
-                maxZoom={1.8}
+                fitViewOptions={{
+                  padding: 0.18,
+                  minZoom: 0.3,
+                  maxZoom: 1.05,
+                  includeHiddenNodes: true,
+                }}
+                minZoom={0.3}
+                maxZoom={1.6}
                 onNodeClick={(_event, node) => setSelectedNodeId(node.id)}
                 className="pr-canvas-flow"
               >
                 <Background color="var(--color-border-subtle)" gap={32} size={1} />
                 <Controls position="top-right" showInteractive={false} />
-                <MiniMap
-                  pannable
-                  zoomable
-                  nodeColor={(node) => toneColor(node.data.item.tone)}
-                  maskColor="color-mix(in srgb, var(--color-bg-primary) 78%, transparent)"
-                />
+                {visibleNodeCount > 6 && (
+                  <MiniMap
+                    pannable
+                    zoomable
+                    nodeColor={(node) => toneColor(node.data.item.tone)}
+                    maskColor="color-mix(in srgb, var(--color-bg-primary) 78%, transparent)"
+                  />
+                )}
               </ReactFlow>
             </main>
 
@@ -526,21 +559,19 @@ function PullRequestNode({ data, selected }: NodeProps<CanvasNode>) {
   const color = toneColor(item.tone);
   return (
     <div
-      className={`pr-canvas-node min-w-44 rounded-lg bg-bg-secondary px-3 py-2.5 transition-[border-color,background-color,transform] duration-200 ${
-        selected ? 'bg-bg-elevated' : ''
-      }`}
+      className={`pr-canvas-node flex h-20 w-60 flex-col justify-center rounded-lg bg-bg-secondary px-4 py-3 transition-[border-color,background-color,opacity,transform] duration-200 ${
+        selected ? 'bg-bg-elevated ring-2 ring-accent/60 ring-offset-2 ring-offset-bg-primary' : ''
+      } ${data.dimmed ? 'opacity-35' : 'opacity-100'}`}
       style={{ '--pr-node-color': color } as CSSProperties}
     >
       <Handle type="target" position={Position.Left} />
       <div className="flex items-center gap-2">
         <span className="h-2 w-2 shrink-0 rounded-sm" style={{ backgroundColor: color }} />
-        <span className="text-xs font-semibold text-text-primary">{item.label}</span>
+        <span className="truncate text-sm font-semibold text-text-primary">{item.label}</span>
       </div>
-      {item.filePath && (
-        <p className="mt-1 max-w-48 truncate font-mono text-xs text-text-tertiary">
-          {item.filePath}
-        </p>
-      )}
+      <p className="mt-1 truncate font-mono text-xs text-text-tertiary">
+        {item.filePath ?? item.kind}
+      </p>
       <Handle type="source" position={Position.Right} />
     </div>
   );
@@ -550,48 +581,106 @@ function buildFlow(
   visualisation: PullRequestVisualisation | null,
   changeState: PullRequestVisualisationChangeState,
   chapterId: string | null,
+  selectedNodeId: string | null,
+  positions: Map<string, { x: number; y: number }>,
 ): { nodes: CanvasNode[]; edges: Edge[] } {
   if (!visualisation) return { nodes: [], edges: [] };
-  const visible = visualisation.nodes.filter(
-    (node) =>
-      (node.changeState === 'both' || node.changeState === changeState) &&
-      (!chapterId || node.chapterId === chapterId || !node.chapterId),
+  const chapterNodes = visualisation.nodes.filter(
+    (node) => !chapterId || node.chapterId === chapterId || !node.chapterId,
   );
-  const visibleIds = new Set(visible.map((node) => node.id));
-  const columns = Math.max(2, Math.ceil(Math.sqrt(visible.length)));
-  const nodes = visible.map<CanvasNode>((item, index) => ({
+  const chapterNodeIds = new Set(chapterNodes.map((node) => node.id));
+  const chapterEdges = visualisation.edges.filter((edge) =>
+    isRenderablePullRequestEdge(edge, chapterNodeIds),
+  );
+  const visibleIds = new Set(
+    chapterNodes
+      .filter((node) => node.changeState === 'both' || node.changeState === changeState)
+      .map((node) => node.id),
+  );
+  const visibleEdges = chapterEdges.filter(
+    (edge) =>
+      visibleIds.has(edge.source) &&
+      visibleIds.has(edge.target) &&
+      (edge.changeState === 'both' || edge.changeState === changeState),
+  );
+  const activeSelectedNodeId =
+    selectedNodeId && visibleIds.has(selectedNodeId) ? selectedNodeId : null;
+  const selectedRoute = getSelectedRoute(activeSelectedNodeId, visibleEdges);
+  const hasSelectedRoute = activeSelectedNodeId !== null && selectedRoute.nodeIds.size > 0;
+  const nodes = chapterNodes.map<CanvasNode>((item) => ({
     id: item.id,
     type: 'pullRequest',
-    position: {
-      x: (index % columns) * 260,
-      y: Math.floor(index / columns) * 150 + ((index % columns) % 2) * 26,
+    position: positions.get(item.id) ?? { x: 0, y: 0 },
+    hidden: !visibleIds.has(item.id),
+    selected: item.id === activeSelectedNodeId,
+    data: {
+      item,
+      dimmed: hasSelectedRoute && !selectedRoute.nodeIds.has(item.id),
     },
-    data: { item },
   }));
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const edges = visualisation.edges
-    .filter(
-      (edge) =>
-        visibleIds.has(edge.source) &&
-        visibleIds.has(edge.target) &&
-        (edge.changeState === 'both' || edge.changeState === changeState),
-    )
-    .map<Edge>((edge) => ({
+  const edges = visibleEdges.map<Edge>((edge) => {
+    const onSelectedRoute = !hasSelectedRoute || selectedRoute.edgeIds.has(edge.id);
+    return {
       id: edge.id,
       source: edge.source,
       target: edge.target,
       type: 'smoothstep',
-      animated: edge.changed && edge.tone === 'action' && !reduceMotion,
-      label: edge.label,
+      animated: onSelectedRoute && edge.changed && edge.tone === 'action' && !reduceMotion,
+      label: onSelectedRoute ? edge.label : undefined,
+      zIndex: onSelectedRoute ? 2 : 0,
       style: {
         stroke: toneColor(edge.tone),
-        strokeWidth: edge.changed ? 2.2 : 1.2,
-        opacity: edge.changed ? 1 : 0.56,
+        strokeWidth: onSelectedRoute ? (edge.changed ? 2.4 : 1.8) : 1,
+        opacity: onSelectedRoute ? 1 : 0.24,
       },
       labelStyle: { fill: 'var(--color-text-secondary)', fontSize: 12 },
       labelBgStyle: { fill: 'var(--color-bg-secondary)', fillOpacity: 0.92 },
-    }));
+      labelBgPadding: [8, 4],
+      labelBgBorderRadius: 6,
+    };
+  });
   return { nodes, edges };
+}
+
+function buildChapterLayoutPositions(
+  visualisation: PullRequestVisualisation | null,
+  chapterId: string | null,
+): Map<string, { x: number; y: number }> {
+  if (!visualisation) return new Map();
+  const chapterNodes = visualisation.nodes.filter(
+    (node) => !chapterId || node.chapterId === chapterId || !node.chapterId,
+  );
+  const nodeIds = new Set(chapterNodes.map((node) => node.id));
+  const chapterEdges = visualisation.edges.filter((edge) =>
+    isRenderablePullRequestEdge(edge, nodeIds),
+  );
+  return layoutPullRequestNodes(chapterNodes, chapterEdges);
+}
+
+function getSelectedRoute(
+  selectedNodeId: string | null,
+  edges: PullRequestVisualisation['edges'],
+): { nodeIds: Set<string>; edgeIds: Set<string> } {
+  const nodeIds = new Set<string>();
+  const edgeIds = new Set<string>();
+  if (!selectedNodeId) return { nodeIds, edgeIds };
+  nodeIds.add(selectedNodeId);
+
+  const visit = (nodeId: string, direction: 'incoming' | 'outgoing'): void => {
+    for (const edge of edges) {
+      const connects = direction === 'incoming' ? edge.target === nodeId : edge.source === nodeId;
+      if (!connects || edgeIds.has(edge.id)) continue;
+      edgeIds.add(edge.id);
+      const nextId = direction === 'incoming' ? edge.source : edge.target;
+      nodeIds.add(nextId);
+      visit(nextId, direction);
+    }
+  };
+
+  visit(selectedNodeId, 'incoming');
+  visit(selectedNodeId, 'outgoing');
+  return { nodeIds, edgeIds };
 }
 
 function toneColor(tone: PullRequestVisualisationTone): string {
