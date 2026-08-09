@@ -1,5 +1,4 @@
 import { MaterialIcons } from '@react-native-vector-icons/material-icons';
-import { router, type RelativePathString } from 'expo-router';
 import { useMemo, useState } from 'react';
 import { RefreshControl, ScrollView, Text, TextInput, Pressable, View } from 'react-native';
 import {
@@ -11,9 +10,11 @@ import {
 } from '@/components/companion-ui';
 import { WorkspaceBar } from '@/components/workspace-bar';
 import { useCompanion } from '@/contexts/companion-context';
+import { useOpenThread } from '@/lib/routes';
 
 export default function ThreadsScreen() {
   const { overview, threads, loading, refresh } = useCompanion();
+  const openThread = useOpenThread();
   const [query, setQuery] = useState('');
   const [allWorkspaces, setAllWorkspaces] = useState(false);
   const workspace = overview?.activeWorkspace;
@@ -81,7 +82,7 @@ export default function ThreadsScreen() {
               key={thread.id}
               accessibilityRole="button"
               accessibilityLabel={`${thread.title}${thread.pendingApprovalCount ? `, ${thread.pendingApprovalCount} approvals waiting` : ''}`}
-              onPress={() => router.push(threadHref(thread.id))}
+              onPress={() => openThread(thread.id)}
               style={({ pressed }) => ({
                 minHeight: 70,
                 padding: 14,
@@ -117,7 +118,12 @@ export default function ThreadsScreen() {
                 <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
                   <Text
                     numberOfLines={1}
-                    style={{ flex: 1, color: companionColors.ink, fontSize: 15, fontWeight: '800' }}
+                    style={{
+                      flex: 1,
+                      color: companionColors.ink,
+                      fontSize: 15,
+                      fontWeight: '800',
+                    }}
                   >
                     {thread.title}
                   </Text>
@@ -177,8 +183,4 @@ function ScopeButton({
       </Text>
     </Pressable>
   );
-}
-
-function threadHref(threadId: string): RelativePathString {
-  return `/(tabs)/chats/${encodeURIComponent(threadId)}` as RelativePathString;
 }

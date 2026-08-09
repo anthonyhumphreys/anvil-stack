@@ -267,19 +267,22 @@ export class LocalScheduleAdapter {
 
     this.timers.set(
       name,
-      setTimeout(() => {
-        if (Date.now() < dueAt.getTime()) {
-          this.armTimer(name, dueAt);
-          return;
-        }
+      setTimeout(
+        () => {
+          if (Date.now() < dueAt.getTime()) {
+            this.armTimer(name, dueAt);
+            return;
+          }
 
-        void this.trigger(name, {
-          trigger: "scheduled",
-          scheduledFor: dueAt,
-        }).catch(() => {
-          // Failures are recorded on the persisted schedule run.
-        });
-      }, Math.min(delay, MAX_TIMEOUT_MS)),
+          void this.trigger(name, {
+            trigger: "scheduled",
+            scheduledFor: dueAt,
+          }).catch(() => {
+            // Failures are recorded on the persisted schedule run.
+          });
+        },
+        Math.min(delay, MAX_TIMEOUT_MS),
+      ),
     );
   }
 

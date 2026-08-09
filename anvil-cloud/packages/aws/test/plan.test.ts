@@ -101,9 +101,9 @@ describe("createAwsPreviewDeploymentPlan", () => {
     );
     expect(plan.operations).toMatchObject({
       rollback: {
-        supported: true,
+        supported: false,
         commands: expect.arrayContaining([
-          "anvil-cloud rollback --preview --app notes --to-deployment <deploymentId> --json",
+          "anvil-cloud rollback --preview --app notes --to-deployment <deploymentId> --dry-run --json",
           "anvil-cloud deploy --preview --name <preview> --json",
         ]),
       },
@@ -339,13 +339,19 @@ describe("createAwsPreviewDeploymentPlan", () => {
 });
 
 describe("checkAwsPreviewSupport", () => {
-  it("does not block service declarations because AWS preview maps them to Fargate", () => {
+  it("blocks service declarations until AWS preview can execute the handler", () => {
     const diagnostics = checkAwsPreviewSupport({
       ...manifest,
       services: [{ name: "heartbeat", restart: "always", maxRestarts: 3 }],
     });
 
-    expect(diagnostics).toEqual([]);
+    expect(diagnostics).toEqual([
+      expect.objectContaining({
+        code: "AWS_PREVIEW_UNSUPPORTED_FEATURE",
+        feature: "services",
+        names: ["heartbeat"],
+      }),
+    ]);
   });
 
   it("does not block workflow declarations because AWS preview maps them to Step Functions", () => {
@@ -496,7 +502,7 @@ describe("AwsPreviewDeploymentAdapter", () => {
     });
   });
 
-  it("continues to provisioning when services are declared", async () => {
+  it("blocks provisioning when services are declared", async () => {
     const adapter = new AwsPreviewDeploymentAdapter({
       provisioner: {
         async provision() {
@@ -514,13 +520,19 @@ describe("AwsPreviewDeploymentAdapter", () => {
 
     expect(result).toMatchObject({
       ok: false,
-      code: "AWS_BUILD_OUTPUT_REQUIRED",
+      code: "AWS_PREVIEW_UNSUPPORTED_FEATURE",
+      diagnostics: [
+        expect.objectContaining({
+          feature: "services",
+          names: ["heartbeat"],
+        }),
+      ],
       plan: {
         review: {
           approvalGates: expect.arrayContaining([
             expect.objectContaining({
-              id: "service-preview-review",
-              severity: "review",
+              id: "aws-preview-support-gate",
+              severity: "block",
             }),
           ]),
         },

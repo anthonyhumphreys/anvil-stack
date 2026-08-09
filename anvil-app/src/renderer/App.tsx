@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, type ReactNode } from 'react';
+import { lazy, Suspense, useEffect, useState, useCallback, type ReactNode } from 'react';
 import { HashRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { Shell } from './components/layout/Shell';
 import { ErrorBoundary } from './components/layout/ErrorBoundary';
@@ -41,6 +41,11 @@ import type { UserRole, Feature, AppTheme } from '../shared/types';
 import { ROLE_FEATURES } from '../shared/types';
 
 const STARTUP_SPLASH_MIN_DURATION_MS = 1500;
+const WorkflowsView = lazy(() =>
+  import('./components/workflows/WorkflowsView').then((module) => ({
+    default: module.WorkflowsView,
+  })),
+);
 
 function WorkspaceGate({ children }: { children: ReactNode }) {
   const { workspaces, loading, refreshWorkspaces } = useWorkspace();
@@ -133,8 +138,8 @@ export function App() {
       const hasLlm =
         settings.llmProvider === 'azure'
           ? true // Azure is configured via Codex CLI's config.toml
-          : settings.llmProvider === 'codex'
-            ? true // Codex uses tokens from ~/.codex/auth.json — always test
+          : settings.llmProvider === 'codex' || settings.llmProvider === 'cursor'
+            ? true // CLI-backed providers use their own local auth — always test
             : !!settings.openaiApiKey;
       const hasAdo = !!settings.adoOrganizationUrl && !!settings.adoPat;
       const hasConfluence = !!settings.confluenceBaseUrl && !!settings.confluencePat;
@@ -219,7 +224,10 @@ export function App() {
     userRole && ROLE_FEATURES[userRole].includes(feature) ? (
       element
     ) : (
-      <Navigate to="/repos" replace />
+      <Navigate
+        to={userRole && ROLE_FEATURES[userRole].includes('chat') ? '/chat' : '/repos'}
+        replace
+      />
     );
 
   if (!roleLoaded || !startupSplashElapsed) {
@@ -305,7 +313,7 @@ export function App() {
                     'chat',
                     <WorkspaceGate>
                       <ErrorBoundary>
-                        <ChatView />
+                        <ChatView userRole={userRole} />
                       </ErrorBoundary>
                     </WorkspaceGate>,
                   )}
@@ -449,6 +457,19 @@ export function App() {
                   )}
                 />
                 <Route
+                  path="/workflows"
+                  element={guard(
+                    'workflows',
+                    <WorkspaceGate>
+                      <ErrorBoundary>
+                        <Suspense fallback={<SplashScreen label="Loading workflows" />}>
+                          <WorkflowsView />
+                        </Suspense>
+                      </ErrorBoundary>
+                    </WorkspaceGate>,
+                  )}
+                />
+                <Route
                   path="/docs"
                   element={guard(
                     'docs',
@@ -576,7 +597,7 @@ export function App() {
                     </ErrorBoundary>
                   }
                 />
-                <Route path="*" element={<Navigate to="/repos" replace />} />
+                <Route path="*" element={<Navigate to="/chat" replace />} />
               </Route>
             </Routes>
           </HashRouter>

@@ -1,7 +1,11 @@
 **/node_modules
 **/dist
+**/.next
 **/.turbo
 **/.DS_Store
+.ci-artifacts
+.env
+infra/docker/release/data
 .git
 .gitignore
 infra/docker/postgres/init/*.tmp

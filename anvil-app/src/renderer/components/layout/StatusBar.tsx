@@ -16,7 +16,23 @@ interface StatusBarProps {
 export function StatusBar({ connectionStatus, onToggleTerminal, terminalOpen }: StatusBarProps) {
   const brand = useBrand();
   const { repos } = useWorkspace();
+  const [appVersion, setAppVersion] = useState<string | null>(null);
   const [activeBranch, setActiveBranch] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    window.anvil.appWindow
+      .getVersion()
+      .then((version) => {
+        if (!cancelled) setAppVersion(version);
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Poll the first repo's active branch
   useEffect(() => {
@@ -53,7 +69,8 @@ export function StatusBar({ connectionStatus, onToggleTerminal, terminalOpen }: 
     <footer className="flex h-8 items-center justify-between border-t border-border-subtle bg-bg-secondary px-4 text-sm text-text-secondary">
       <div className="flex items-center gap-3">
         <span>
-          <BrandName name={brand.appName} /> v0.1.0
+          <BrandName name={brand.appName} />
+          {appVersion && ` v${appVersion}`}
         </span>
         {activeBranch && (
           <span className="flex items-center gap-1 text-accent">

@@ -5,6 +5,7 @@ import { KeyboardAvoidingView, Pressable, ScrollView, Text, TextInput, View } fr
 import { ActionButton, companionColors, inputStyle, screenStyle } from '@/components/companion-ui';
 import { WorkspaceBar } from '@/components/workspace-bar';
 import { useCompanion } from '@/contexts/companion-context';
+import { threadHref } from '@/lib/routes';
 import type { ChatCollaborationMode, ReasoningEffort } from '../../src/shared/types';
 
 export default function NewTaskScreen() {
@@ -34,7 +35,7 @@ export default function NewTaskScreen() {
       });
       if (!result) return;
       setDraft('');
-      router.replace(`/(tabs)/chats/${encodeURIComponent(result.thread.id)}`);
+      router.replace(threadHref(result.thread.id));
     } finally {
       setSubmitting(false);
     }

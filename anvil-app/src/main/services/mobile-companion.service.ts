@@ -36,7 +36,7 @@ import {
   isCarPlayApprovable,
 } from '../../shared/companion-policy.js';
 import { getDb } from '../db/database.js';
-import { getSettings, updateSettings } from './settings.service.js';
+import { getSettings } from './settings.service.js';
 import { getWorkspace, listWorkspaces } from './workspace.service.js';
 import { emitCompanionEvent, onCompanionEvent } from './companion-events.service.js';
 import {
@@ -870,7 +870,7 @@ export function getMobileOverview(requestedWorkspaceId?: string): MobileOverview
     requestedWorkspaceId,
     settings.activeWorkspaceId,
     workspaces,
-    activeSessions,
+    activeSessions.map((session) => session.workspaceId),
   );
   const pendingApprovals = enrichMobileApprovalRequests(
     listPendingApprovalRequests(),
@@ -927,7 +927,8 @@ function resolveCurrentIterationPath(): string | undefined {
 }
 
 function containsActiveIteration(value: unknown, iterationContext = false): boolean {
-  if (Array.isArray(value)) return value.some((item) => containsActiveIteration(item, iterationContext));
+  if (Array.isArray(value))
+    return value.some((item) => containsActiveIteration(item, iterationContext));
   if (!value || typeof value !== 'object') return false;
   const record = value as Record<string, unknown>;
   if (
@@ -938,7 +939,9 @@ function containsActiveIteration(value: unknown, iterationContext = false): bool
     return true;
   }
   for (const [key, nested] of Object.entries(record)) {
-    if (containsActiveIteration(nested, iterationContext || /(sprint|cycle|iteration)/i.test(key))) {
+    if (
+      containsActiveIteration(nested, iterationContext || /(sprint|cycle|iteration)/i.test(key))
+    ) {
       return true;
     }
   }
@@ -973,17 +976,18 @@ function listMobileWorkItems(): MobileWorkItemSummary[] {
   }));
 }
 
-function resolveMobileActiveWorkspace(
+export function resolveMobileActiveWorkspace(
   requestedWorkspaceId: string | undefined,
   activeWorkspaceId: string | undefined,
   workspaces: MobileOverview['workspaces'],
-  activeSessions: ReturnType<typeof listActiveCodexSessions> = [],
+  activeSessionWorkspaceIds: Array<string | undefined> = [],
+  desktopWindowWorkspaceId = getDesktopWindowWorkspaceId(),
 ): MobileOverview['activeWorkspace'] {
   const candidateIds = [
     requestedWorkspaceId,
-    getDesktopWindowWorkspaceId(),
-    ...activeSessions.map((session) => session.workspaceId),
     activeWorkspaceId,
+    desktopWindowWorkspaceId,
+    ...activeSessionWorkspaceIds,
     workspaces[0]?.id,
   ].filter((workspaceId): workspaceId is string => Boolean(workspaceId));
 

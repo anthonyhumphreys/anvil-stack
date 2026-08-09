@@ -90,14 +90,12 @@ This reads the `.anvil/local/services.json` snapshot — the last recorded state
 
 ## Current limits
 
-Services execute fully on the local runtime. AWS preview now synthesizes
-adapter-owned ECS/Fargate resources for service-bearing manifests: a Cell
-cluster, one task definition and ECS service per declared service, and a
-CloudWatch log group. The template requires `ServiceSubnetIds`; Cell code still
-does not author containers, tasks, clusters, or provider networking.
+Services execute fully on the local runtime. The AWS adapter can synthesize the
+intended ECS/Fargate resource shape, but preview deploy blocks service-bearing
+manifests with `AWS_PREVIEW_UNSUPPORTED_FEATURE`.
 
-Running the exact Cell service handler inside the Fargate task is still a
-hardening step. Current AWS preview support is useful for review, resource
-shape, and cleanup evidence, not production service hosting.
+The current task scaffold does not run the exact Cell service handler. Blocking
+before provisioning avoids creating an idle, billable service while that runner
+is incomplete.
 
 Single instance per service: no horizontal scaling, leader election, or distributed coordination in alpha.

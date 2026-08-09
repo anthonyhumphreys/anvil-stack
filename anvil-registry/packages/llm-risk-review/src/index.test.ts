@@ -1,6 +1,14 @@
 import { createServer } from "node:http";
+import { writeFile } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DisabledLlmRiskReviewProvider, HttpLlmRiskReviewProvider, createLlmRiskReviewProvider, llmRiskReviewSchema } from "./index.js";
+import {
+  CodexCliLlmRiskReviewProvider,
+  type CodexCliRunRequest,
+  DisabledLlmRiskReviewProvider,
+  HttpLlmRiskReviewProvider,
+  createLlmRiskReviewProvider,
+  llmRiskReviewSchema
+} from "./index.js";
 
 const servers: Array<ReturnType<typeof createServer>> = [];
 
@@ -191,6 +199,65 @@ describe("llmRiskReviewSchema", () => {
         deterministicSignals: []
       })
     ).resolves.toBeUndefined();
+  });
+
+  it("runs Codex CLI without tools and validates its structured output", async () => {
+    const calls: CodexCliRunRequest[] = [];
+    const runner = vi.fn(async (request) => {
+      calls.push(request);
+      await writeFile(request.outputPath, JSON.stringify(mockReview()));
+      return { exitCode: 0, stderr: "", timedOut: false };
+    });
+    const provider = new CodexCliLlmRiskReviewProvider({
+      command: "/usr/local/bin/codex",
+      model: "gpt-test",
+      env: {
+        CODEX_HOME: "/var/lib/anvil-codex",
+        PATH: "/usr/local/bin:/usr/bin",
+        DATABASE_URL: "postgres://secret",
+        S3_SECRET_ACCESS_KEY: "also-secret"
+      },
+      runner
+    });
+
+    await expect(
+      provider.review({
+        packageName: "pkg",
+        version: "1.0.0",
+        similarPopularPackages: [],
+        deterministicSignals: ["OBFUSCATED_CODE_DETECTED"]
+      })
+    ).resolves.toMatchObject({ riskLevel: "high", recommendedAction: "quarantine" });
+
+    const call = calls[0];
+    expect(call?.command).toBe("/usr/local/bin/codex");
+    expect(call?.args).toEqual(
+      expect.arrayContaining(["--ephemeral", "--ignore-user-config", "--ignore-rules", "--strict-config", "shell_tool", "code_mode_host", "apps", "plugins", "gpt-test"])
+    );
+    expect(call?.stdin).toContain('"packageName":"pkg"');
+    expect(call?.env).toMatchObject({ CODEX_HOME: "/var/lib/anvil-codex", PATH: "/usr/local/bin:/usr/bin" });
+    expect(call?.env.DATABASE_URL).toBeUndefined();
+    expect(call?.env.S3_SECRET_ACCESS_KEY).toBeUndefined();
+  });
+
+  it("fails open when Codex CLI times out or returns malformed output", async () => {
+    const timedOut = new CodexCliLlmRiskReviewProvider({
+      runner: async () => ({ exitCode: null, stderr: "timed out", timedOut: true })
+    });
+    const malformed = new CodexCliLlmRiskReviewProvider({
+      runner: async (request) => {
+        await writeFile(request.outputPath, JSON.stringify({ riskLevel: "catastrophic" }));
+        return { exitCode: 0, stderr: "", timedOut: false };
+      }
+    });
+    const input = { packageName: "pkg", version: "1.0.0", similarPopularPackages: [], deterministicSignals: [] };
+
+    await expect(timedOut.review(input)).resolves.toBeUndefined();
+    await expect(malformed.review(input)).resolves.toBeUndefined();
+  });
+
+  it("creates the Codex CLI provider without an HTTP endpoint", () => {
+    expect(createLlmRiskReviewProvider({ enabled: true, provider: "codex-cli" })).toBeInstanceOf(CodexCliLlmRiskReviewProvider);
   });
 });
 

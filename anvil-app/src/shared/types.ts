@@ -16,6 +16,42 @@ export interface RepoInfo {
   indexWarnings?: string[];
 }
 
+export type TerminalSessionStatus = 'running' | 'exited';
+
+export interface TerminalSessionSummary {
+  terminalId: string;
+  workspaceId: string;
+  repoId: string;
+  cwd: string;
+  status: TerminalSessionStatus;
+  exitCode?: number;
+  createdAt: string;
+  sequence: number;
+}
+
+export interface TerminalOutputChunk {
+  sequence: number;
+  data: string;
+}
+
+export interface TerminalAttachResult {
+  session: TerminalSessionSummary;
+  output: TerminalOutputChunk[];
+}
+
+export interface TerminalDataEvent extends TerminalOutputChunk {
+  terminalId: string;
+}
+
+export interface TerminalExitEvent {
+  terminalId: string;
+  exitCode: number;
+}
+
+export interface TerminalClosedEvent {
+  terminalId: string;
+}
+
 export interface LanguageBreakdown {
   language: string;
   percentage: number;
@@ -35,6 +71,43 @@ export interface RepoSummary {
   indexMode?: 'deep' | 'light';
   indexProvider?: string;
   indexWarnings?: string[];
+}
+
+export type RepoMapRefreshMode = 'manual' | 'on_commit';
+
+export interface RepoMapStatus {
+  refreshMode: RepoMapRefreshMode;
+  indexedCommitSha?: string;
+  currentCommitSha?: string;
+  generatedAt?: string;
+  stale: boolean;
+}
+
+export type RepositoryChangeStatus = 'added' | 'modified' | 'deleted' | 'renamed';
+
+export interface RepositorySourceRange {
+  startLine: number;
+  endLine: number;
+}
+
+export interface RepositoryChangedRange extends RepositorySourceRange {
+  side: 'current' | 'base';
+}
+
+export interface RepositoryChangedFile {
+  filePath: string;
+  previousPath?: string;
+  status: RepositoryChangeStatus;
+  ranges?: RepositoryChangedRange[];
+}
+
+export interface RepositoryChangeSummary {
+  files: RepositoryChangedFile[];
+  additions: number;
+  modifications: number;
+  deletions: number;
+  renames: number;
+  currentCommitSha?: string;
 }
 
 export type CicdProvider = 'github-actions' | 'azure-pipelines';
@@ -138,6 +211,55 @@ export interface ModuleSummary {
   dependencies: string[];
 }
 
+export type RepositoryMapNodeKind = 'repository' | 'module' | 'directory' | 'file' | 'symbol';
+
+export type RepositoryMapSymbolKind =
+  | 'class'
+  | 'interface'
+  | 'type'
+  | 'enum'
+  | 'function'
+  | 'method'
+  | 'component'
+  | 'variable'
+  | 'export';
+
+export interface RepositoryMapGraphNode {
+  id: string;
+  kind: RepositoryMapNodeKind;
+  parentId?: string;
+  name: string;
+  path: string;
+  modulePath?: string;
+  purpose?: string;
+  language?: string;
+  sourceRange?: RepositorySourceRange;
+  symbolKind?: RepositoryMapSymbolKind;
+  exported?: boolean;
+  fileCount?: number;
+  symbolCount?: number;
+}
+
+export interface RepositoryMapGraphEdge {
+  id: string;
+  kind: 'contains' | 'dependency';
+  source: string;
+  target: string;
+  count?: number;
+}
+
+export interface RepositoryMapGraph {
+  schemaVersion: 1;
+  repoId: string;
+  repositoryName: string;
+  indexedCommitSha?: string;
+  generatedAt: string;
+  nodes: RepositoryMapGraphNode[];
+  edges: RepositoryMapGraphEdge[];
+  supportedSymbolLanguages: string[];
+  warnings: string[];
+}
+
 export interface OnboardDetection {
   repoId: string;
   agentsMdExists: boolean;
@@ -168,6 +290,24 @@ export type OnboardAction =
   | 'generate-readme';
 
 export type WorkItemProvider = 'ado' | 'linear' | 'jira';
+
+export interface WorkItemConnection {
+  id: string;
+  name: string;
+  provider: WorkItemProvider;
+  adoOrganizationUrl?: string;
+  adoProject?: string;
+  adoTeam?: string;
+  adoPat?: string;
+  linearApiKey?: string;
+  linearTeamId?: string;
+  jiraHost?: string;
+  jiraAuthMode?: 'cloud' | 'server';
+  jiraProject?: string;
+  jiraBoardId?: string;
+  jiraEmail?: string;
+  jiraApiToken?: string;
+}
 export type DocsProvider = 'confluence' | 'notion';
 
 export interface WorkItem {
@@ -267,6 +407,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: string;
+  event?: CodexEvent;
   repoContext?: string;
   personaId?: string;
   threadId?: string;
@@ -275,7 +416,28 @@ export interface ChatMessage {
   attachments?: ChatAttachment[];
 }
 
-export type ChatArtifactKind = 'markdown' | 'code' | 'html' | 'diagram' | 'data' | 'text';
+export type ChatArtifactKind =
+  | 'markdown'
+  | 'mermaid'
+  | 'html'
+  | 'docx'
+  | 'pptx'
+  | 'pdf'
+  | 'csv'
+  | 'xlsx'
+  | 'code'
+  | 'diagram'
+  | 'data'
+  | 'text';
+
+export type ChatArtifactContentEncoding = 'utf8' | 'base64' | 'file';
+
+export interface ChatArtifactFile {
+  name: string;
+  mimeType: string;
+  size: number;
+  dataBase64: string;
+}
 
 export interface CodexDetectedModel {
   id: string;
@@ -301,6 +463,19 @@ export interface CodexCliStatus {
   webSearchMode?: 'disabled' | 'cached' | 'indexed' | 'live';
   features?: Record<string, { stage: string; enabled: boolean }>;
   models?: CodexDetectedModel[];
+}
+
+export interface CursorDetectedModel {
+  id: string;
+  label: string;
+}
+
+export interface CursorCliStatus {
+  installed: boolean;
+  version?: string;
+  path?: string;
+  models: CursorDetectedModel[];
+  error?: string;
 }
 
 export interface ChatArtifact {
@@ -331,6 +506,7 @@ export interface ChatArtifactInput {
   kind: ChatArtifactKind;
   relativePath: string;
   content: string;
+  contentEncoding?: ChatArtifactContentEncoding;
   status?: ChatArtifact['status'];
   visibility?: ChatArtifact['visibility'];
   source?: ChatArtifact['source'];
@@ -367,6 +543,95 @@ export type ReasoningEffort =
   | 'xhigh'
   | 'max'
   | 'ultra';
+
+export type WorkflowExecutionStrategy = 'focused' | 'adaptive' | 'parallel' | 'review-team';
+export type AgentProvider = 'azure' | 'openai' | 'codex' | 'cursor';
+
+export interface WorkflowPosition {
+  x: number;
+  y: number;
+}
+
+export interface WorkflowNode {
+  id: string;
+  name: string;
+  prompt: string;
+  personaId: string;
+  /** Defaults to Codex for templates created before provider-aware workflows. */
+  provider?: AgentProvider;
+  model: string;
+  reasoningEffort: ReasoningEffort;
+  executionStrategy: WorkflowExecutionStrategy;
+  position: WorkflowPosition;
+}
+
+export interface WorkflowEdge {
+  id: string;
+  source: string;
+  target: string;
+}
+
+export interface WorkflowTemplate {
+  id: string;
+  name: string;
+  description: string;
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WorkflowTemplateInput {
+  name: string;
+  description?: string;
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+}
+
+export type WorkflowRunStatus =
+  | 'queued'
+  | 'running'
+  | 'paused'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export type WorkflowNodeRunStatus =
+  | 'queued'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'skipped'
+  | 'cancelled';
+
+export interface WorkflowNodeRun {
+  nodeId: string;
+  status: WorkflowNodeRunStatus;
+  threadId?: string;
+  sessionId?: string;
+  output?: string;
+  error?: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface WorkflowRun {
+  id: string;
+  templateId: string;
+  templateName: string;
+  workspaceId: string;
+  repoIds: string[];
+  nodes: WorkflowNode[];
+  edges: WorkflowEdge[];
+  kickoff: string;
+  status: WorkflowRunStatus;
+  supervisorThreadId: string;
+  nodeRuns: WorkflowNodeRun[];
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  error?: string;
+}
 
 export interface ChatSendOptions {
   collaborationMode?: ChatCollaborationMode;
@@ -407,6 +672,25 @@ export interface ChatThread {
   providerThreadId?: string;
   activePlan?: ChatPlanSnapshot;
   activeGoal?: ChatGoalSnapshot;
+  attentionState: ChatThreadAttentionState;
+  attentionUpdatedAt?: string;
+  activeTurnStartedAt?: string;
+  lastViewedAt?: string;
+  settledAt?: string;
+}
+
+export type ChatThreadAttentionState =
+  | 'idle'
+  | 'working'
+  | 'approval'
+  | 'input'
+  | 'failed'
+  | 'complete';
+
+export interface ChatNavigationTarget {
+  workspaceId: string;
+  threadId: string;
+  personaId: string;
 }
 
 export type ChatCollaborationMode = 'default' | 'plan';
@@ -514,6 +798,77 @@ export interface AutomationTriageItem {
 }
 
 export type JsonRpcRequestId = string | number;
+export type ChatAssistantPhase = 'progress' | 'final';
+
+export type CodexSubagentTool = 'spawnAgent' | 'sendInput' | 'resumeAgent' | 'wait' | 'closeAgent';
+export type CodexSubagentToolStatus = 'inProgress' | 'completed' | 'failed';
+export type CodexSubagentStatus =
+  | 'pendingInit'
+  | 'running'
+  | 'interrupted'
+  | 'completed'
+  | 'errored'
+  | 'shutdown'
+  | 'notFound';
+export type CodexSubagentActivityKind = 'started' | 'interacted' | 'interrupted';
+
+export interface CodexSubagentState {
+  threadId: string;
+  status: CodexSubagentStatus;
+  message?: string;
+}
+
+export interface CodexSubagentUpdate {
+  id: string;
+  kind: 'tool_call' | 'activity';
+  tool?: CodexSubagentTool;
+  status?: CodexSubagentToolStatus;
+  senderThreadId?: string;
+  receiverThreadIds: string[];
+  prompt?: string;
+  model?: string;
+  reasoningEffort?: ReasoningEffort;
+  agents: CodexSubagentState[];
+  activityKind?: CodexSubagentActivityKind;
+  agentThreadId?: string;
+  agentPath?: string;
+}
+
+export interface CodexUserInputOption {
+  label: string;
+  description: string;
+}
+
+export interface CodexUserInputQuestion {
+  id: string;
+  header: string;
+  question: string;
+  isOther: boolean;
+  isSecret: boolean;
+  options?: CodexUserInputOption[];
+}
+
+export interface CodexInputRequest {
+  kind: 'user_input' | 'mcp_elicitation';
+  questions?: CodexUserInputQuestion[];
+  autoResolutionMs?: number;
+  message?: string;
+  serverName?: string;
+  mode?: 'form' | 'openai/form' | 'url';
+  requestedSchema?: unknown;
+  url?: string;
+}
+
+export type CodexInputResponse =
+  | {
+      kind: 'user_input';
+      answers: Record<string, string[]>;
+    }
+  | {
+      kind: 'mcp_elicitation';
+      action: 'accept' | 'decline' | 'cancel';
+      content?: unknown;
+    };
 
 export interface CodexEvent {
   type:
@@ -524,6 +879,10 @@ export interface CodexEvent {
     | 'command_exec'
     | 'tool_call'
     | 'approval_request'
+    | 'input_request'
+    | 'subagent_update'
+    | 'thread_status'
+    | 'request_resolved'
     | 'plan_update'
     | 'goal_update'
     | 'goal_cleared'
@@ -539,15 +898,26 @@ export interface CodexEvent {
   toolName?: string;
   toolInput?: Record<string, unknown>;
   approvalRequestId?: JsonRpcRequestId;
-  approvalKind?: 'command' | 'file_change';
+  approvalKind?: 'command' | 'file_change' | 'permissions';
   approvalReason?: string;
   approvalCommand?: string;
   approvalCwd?: string;
   approvalGrantRoot?: string;
+  approvalPermissions?: Record<string, unknown>;
+  inputRequestId?: JsonRpcRequestId;
+  resolvedRequestId?: JsonRpcRequestId;
+  inputRequest?: CodexInputRequest;
+  protocolThreadId?: string;
+  threadActiveFlags?: Array<'waitingOnApproval' | 'waitingOnUserInput'>;
+  subagent?: CodexSubagentUpdate;
   plan?: ChatPlanSnapshot;
   goal?: ChatGoalSnapshot;
   status?: 'thinking' | 'executing' | 'complete' | 'error';
   errorMessage?: string;
+  /** Stable app-server item identity for composing streamed assistant messages. */
+  itemId?: string;
+  /** Normalised assistant-message phase when the provider exposes it. */
+  assistantPhase?: ChatAssistantPhase;
 }
 
 export interface Persona {
@@ -1010,6 +1380,7 @@ export interface CodeReviewPullRequestRef {
   url?: string;
   sourceBranch?: string;
   targetBranch?: string;
+  sourceCommitSha?: string;
   provider?: 'github' | 'ado';
 }
 
@@ -1024,14 +1395,120 @@ export interface CodeReviewScopeRef {
 export interface CodeReviewPullRequest {
   id: string;
   title: string;
+  description?: string;
   provider: 'github' | 'ado';
   state: 'open' | 'closed' | 'merged';
   isDraft: boolean;
   author?: string;
   sourceBranch: string;
   targetBranch: string;
+  sourceCommitSha?: string;
   updatedAt: string;
   url?: string;
+}
+
+export type PullRequestVisualisationStatus = 'generating' | 'ready' | 'failed';
+export type PullRequestVisualisationTone =
+  | 'neutral'
+  | 'action'
+  | 'data'
+  | 'verified'
+  | 'risk'
+  | 'logic'
+  | 'uncertainty';
+export type PullRequestVisualisationNodeKind =
+  | 'entry'
+  | 'service'
+  | 'data'
+  | 'file'
+  | 'test'
+  | 'external'
+  | 'risk';
+export type PullRequestVisualisationChangeState = 'before' | 'after' | 'both';
+
+export interface PullRequestVisualisationNode {
+  id: string;
+  label: string;
+  detail?: string;
+  kind: PullRequestVisualisationNodeKind;
+  tone: PullRequestVisualisationTone;
+  changeState: PullRequestVisualisationChangeState;
+  chapterId?: string;
+  filePath?: string;
+  line?: number;
+}
+
+export interface PullRequestVisualisationEdge {
+  id: string;
+  source: string;
+  target: string;
+  label?: string;
+  tone: PullRequestVisualisationTone;
+  changeState: PullRequestVisualisationChangeState;
+  changed: boolean;
+}
+
+export interface PullRequestVisualisationChapter {
+  id: string;
+  title: string;
+  summary: string;
+  nodeIds: string[];
+  riskCount: number;
+  verifiedCount: number;
+}
+
+export interface PullRequestVisualisationRisk {
+  id: string;
+  title: string;
+  severity: 'critical' | 'major' | 'minor' | 'unknown';
+  explanation: string;
+  nodeId?: string;
+  filePath?: string;
+  line?: number;
+  evidence?: string;
+}
+
+export interface PullRequestVisualisationEvidence {
+  id: string;
+  label: string;
+  kind: 'file' | 'test' | 'finding' | 'verification' | 'pull_request';
+  status: 'verified' | 'risk' | 'changed' | 'unknown';
+  detail?: string;
+  nodeId?: string;
+  filePath?: string;
+  line?: number;
+}
+
+export interface PullRequestVisualisation {
+  id: string;
+  repoId: string;
+  reviewId?: string;
+  pullRequest: CodeReviewPullRequest;
+  headSha: string;
+  status: PullRequestVisualisationStatus;
+  summary?: string;
+  intent?: string;
+  chapters: PullRequestVisualisationChapter[];
+  nodes: PullRequestVisualisationNode[];
+  edges: PullRequestVisualisationEdge[];
+  risks: PullRequestVisualisationRisk[];
+  evidence: PullRequestVisualisationEvidence[];
+  error?: string;
+  createdAt: string;
+  generatedAt?: string;
+}
+
+export interface PullRequestDiffFile {
+  filePath: string;
+  previousPath?: string;
+  status: RepositoryChangeStatus;
+  diff: string;
+}
+
+export interface PullRequestDiff {
+  pullRequest: CodeReviewPullRequest;
+  files: PullRequestDiffFile[];
+  summary: RepositoryChangeSummary;
 }
 
 export interface CodeReviewPullRequestComment {
@@ -1110,9 +1587,11 @@ export interface Workspace {
 export interface WorkspaceCreateOptions {
   name: string;
   repoIds?: string[];
+  workItemConnectionId?: string;
 }
 
 export interface WorkspaceWorkItemsPreferences {
+  workItemConnectionId?: string;
   iterationIds?: string[];
   iterationNames?: string[];
 }
@@ -1357,7 +1836,10 @@ export type AppTheme =
   | 'agent-after-hours';
 
 export interface AppSettings {
-  llmProvider: 'azure' | 'openai' | 'codex';
+  /** Primary provider for new chats and app-level AI tasks. */
+  llmProvider: AgentProvider;
+  /** Providers available to workflows and agent-authored shell commands. */
+  enabledLlmProviders?: AgentProvider[];
   appleFoundationModelsMode: 'off' | 'prefer-simple';
 
   // Azure AI Foundry
@@ -1375,6 +1857,8 @@ export interface AppSettings {
 
   // Work Item Provider
   workItemProvider: WorkItemProvider | 'none';
+  workItemConnections: WorkItemConnection[];
+  activeWorkItemConnectionId?: string;
 
   // ADO
   adoOrganizationUrl: string;
@@ -1706,13 +2190,14 @@ export interface LicenseAuditResult {
 // Roles
 // ---------------------------------------------------------------------------
 
-export type UserRole = 'developer' | 'ba-brm' | 'design';
+export type UserRole = 'developer' | 'ba-brm' | 'design' | 'itsm';
 
 export type Feature =
   | 'repos'
   | 'chat'
   | 'editor'
   | 'automations'
+  | 'workflows'
   | 'dbinsights'
   | 'onboard'
   | 'workitems'
@@ -1738,6 +2223,7 @@ export const ROLE_FEATURES: Record<UserRole, readonly Feature[]> = {
     'chat',
     'editor',
     'automations',
+    'workflows',
     'dbinsights',
     'onboard',
     'workitems',
@@ -1760,6 +2246,7 @@ export const ROLE_FEATURES: Record<UserRole, readonly Feature[]> = {
   'ba-brm': [
     'repos',
     'chat',
+    'workflows',
     'editor',
     'dbinsights',
     'workitems',
@@ -1777,6 +2264,7 @@ export const ROLE_FEATURES: Record<UserRole, readonly Feature[]> = {
   design: [
     'repos',
     'chat',
+    'workflows',
     'dbinsights',
     'docs',
     'diagrams',
@@ -1785,6 +2273,34 @@ export const ROLE_FEATURES: Record<UserRole, readonly Feature[]> = {
     'cloud',
     'meeting-notes',
     'workspace-notes',
+  ],
+  itsm: [
+    'repos',
+    'chat',
+    'workflows',
+    'dbinsights',
+    'workitems',
+    'dependencies',
+    'security',
+    'cicd',
+    'docs',
+    'adrs',
+    'diagrams',
+    'governance',
+    'compliance',
+    'meeting-notes',
+    'workspace-notes',
+  ],
+} as const;
+
+export const ROLE_RECOMMENDED_PERSONAS: Partial<Record<UserRole, readonly string[]>> = {
+  itsm: [
+    'service-desk',
+    'technical-support',
+    'incident-manager',
+    'problem-manager',
+    'change-manager',
+    'service-manager',
   ],
 } as const;
 

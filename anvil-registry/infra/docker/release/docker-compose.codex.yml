@@ -1,0 +1,27 @@
+services:
+  gateway:
+    environment:
+      LLM_REVIEW_ENABLED: "true"
+      LLM_REVIEW_PROVIDER: codex-cli
+
+  worker:
+    environment:
+      CODEX_HOME: /var/lib/anvil-codex
+      CODEX_CLI_COMMAND: codex
+      CODEX_CLI_TIMEOUT_MS: ${CODEX_CLI_TIMEOUT_MS:-120000}
+      LLM_REVIEW_ENABLED: "true"
+      LLM_REVIEW_PROVIDER: codex-cli
+    volumes:
+      - type: bind
+        source: ${CODEX_AUTH_FILE:?Set CODEX_AUTH_FILE to an absolute auth.json path on the Docker host}
+        target: /var/lib/anvil-codex/auth.json
+        read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  admin:
+    environment:
+      LLM_REVIEW_ENABLED: "true"
+      LLM_REVIEW_PROVIDER: codex-cli

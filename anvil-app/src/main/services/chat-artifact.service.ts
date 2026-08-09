@@ -1,8 +1,16 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, join, normalize, relative, sep } from 'node:path';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { basename, dirname, extname, join, normalize, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type {
   ChatArtifact,
+  ChatArtifactFile,
   ChatArtifactInput,
   ChatArtifactKind,
   ReasoningEffort,
@@ -31,6 +39,7 @@ interface ChatArtifactRow {
 }
 
 const ARTIFACT_ROOT = '.anvil/artifacts';
+const MAX_PREVIEW_FILE_BYTES = 50 * 1024 * 1024;
 
 function mapArtifactRow(row: ChatArtifactRow): ChatArtifact {
   return {
@@ -59,8 +68,14 @@ function mapArtifactRow(row: ChatArtifactRow): ChatArtifact {
 function parseArtifactKind(value: string): ChatArtifactKind {
   if (
     value === 'markdown' ||
+    value === 'mermaid' ||
     value === 'code' ||
     value === 'html' ||
+    value === 'docx' ||
+    value === 'pptx' ||
+    value === 'pdf' ||
+    value === 'csv' ||
+    value === 'xlsx' ||
     value === 'diagram' ||
     value === 'data' ||
     value === 'text'
@@ -118,8 +133,20 @@ function extensionForKind(kind: ChatArtifactKind): string {
   switch (kind) {
     case 'markdown':
       return 'md';
+    case 'mermaid':
+      return 'mmd';
     case 'html':
       return 'html';
+    case 'docx':
+      return 'docx';
+    case 'pptx':
+      return 'pptx';
+    case 'pdf':
+      return 'pdf';
+    case 'csv':
+      return 'csv';
+    case 'xlsx':
+      return 'xlsx';
     case 'diagram':
       return 'mmd';
     case 'data':
@@ -135,6 +162,7 @@ function writeRepoArtifact(
   repoId: string | null | undefined,
   relativePath: string,
   content: string,
+  encoding: ChatArtifactInput['contentEncoding'] = 'utf8',
 ) {
   const repoPath = getRepoPath(repoId);
   if (!repoPath) return null;
@@ -147,8 +175,82 @@ function writeRepoArtifact(
   }
 
   mkdirSync(dirname(targetPath), { recursive: true });
+  assertRealPathWithinRoot(rootPath, dirname(targetPath));
+  if (existsSync(targetPath)) assertRealPathWithinRoot(rootPath, targetPath);
+  if (encoding === 'file') {
+    if (!existsSync(targetPath)) {
+      throw new Error(`Referenced artifact file does not exist: ${relativePath}`);
+    }
+    return targetPath;
+  }
+
+  if (encoding === 'base64') {
+    const payload = content.replace(/^data:[^;]+;base64,/, '').replace(/\s+/g, '');
+    writeFileSync(targetPath, Buffer.from(payload, 'base64'));
+    return targetPath;
+  }
+
   writeFileSync(targetPath, content, 'utf8');
   return targetPath;
+}
+
+function assertRealPathWithinRoot(rootPath: string, candidatePath: string): void {
+  const rootRealPath = realpathSync(rootPath);
+  const candidateRealPath = realpathSync(candidatePath);
+  const candidateRelative = relative(rootRealPath, candidateRealPath);
+  if (candidateRelative.startsWith('..') || candidateRelative.split(sep).includes('..')) {
+    throw new Error('Artifact path resolves outside the repository artifact directory');
+  }
+}
+
+function mimeTypeForPath(filePath: string): string {
+  switch (extname(filePath).toLowerCase()) {
+    case '.docx':
+      return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    case '.pptx':
+      return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+    case '.pdf':
+      return 'application/pdf';
+    case '.xlsx':
+      return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    case '.csv':
+      return 'text/csv';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
+export function readChatArtifactFile(id: string): ChatArtifactFile {
+  const row = getDb()
+    .prepare('SELECT repo_id, relative_path, file_path FROM chat_artifacts WHERE id = ?')
+    .get(id) as
+    | { repo_id: string | null; relative_path: string; file_path: string | null }
+    | undefined;
+
+  if (!row?.file_path || !row.repo_id) throw new Error('Artifact has no persisted file');
+
+  const repoPath = getRepoPath(row.repo_id);
+  if (!repoPath) throw new Error('Artifact repository is no longer connected');
+
+  const rootPath = join(repoPath, ARTIFACT_ROOT);
+  const fileRelative = relative(rootPath, row.file_path);
+  if (fileRelative.startsWith('..') || fileRelative.split(sep).includes('..')) {
+    throw new Error('Artifact file is outside the repository artifact directory');
+  }
+  if (!existsSync(row.file_path)) throw new Error('Artifact file no longer exists');
+  assertRealPathWithinRoot(rootPath, row.file_path);
+
+  const size = statSync(row.file_path).size;
+  if (size > MAX_PREVIEW_FILE_BYTES) {
+    throw new Error('Artifact is too large to preview (50 MB maximum)');
+  }
+
+  return {
+    name: basename(row.file_path),
+    mimeType: mimeTypeForPath(row.file_path),
+    size,
+    dataBase64: readFileSync(row.file_path).toString('base64'),
+  };
 }
 
 export function listChatArtifacts(threadId: string): ChatArtifact[] {
@@ -185,7 +287,12 @@ export function upsertChatArtifact(input: ChatArtifactInput): ChatArtifact {
   const db = getDb();
   const relativePath = normaliseArtifactPath(input.relativePath, input.kind);
   const now = new Date().toISOString();
-  const filePath = writeRepoArtifact(input.repoId, relativePath, input.content);
+  const filePath = writeRepoArtifact(
+    input.repoId,
+    relativePath,
+    input.content,
+    input.contentEncoding,
+  );
   const status = parseArtifactStatus(input.status);
   const visibility = parseArtifactVisibility(input.visibility);
   const source = parseArtifactSource(input.source);

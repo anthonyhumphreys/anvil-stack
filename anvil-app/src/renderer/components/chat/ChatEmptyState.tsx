@@ -10,6 +10,12 @@ import {
   Building2,
   Sparkles,
   ArrowRight,
+  Headphones,
+  Wrench,
+  Radio,
+  SearchCheck,
+  GitPullRequest,
+  Gauge,
 } from 'lucide-react';
 
 interface Suggestion {
@@ -184,6 +190,123 @@ const PERSONA_SUGGESTIONS: Record<string, Suggestion[]> = {
       prompt: 'What indexes should I add to improve the performance of our most common queries?',
     },
   ],
+  'service-desk': [
+    {
+      label: 'Triage an issue',
+      prompt:
+        'Help me capture and classify this issue, assess impact and urgency, and identify safe first-line checks.',
+    },
+    {
+      label: 'Clarify a request',
+      prompt: 'Turn this request into a clear outcome with the missing information and next owner.',
+    },
+    {
+      label: 'Escalation pack',
+      prompt:
+        'Prepare a second-line escalation pack with symptoms, scope, evidence, actions tried, and results.',
+    },
+    {
+      label: 'User update',
+      prompt: 'Draft a concise user update that states what is known, what is next, and when.',
+    },
+  ],
+  'technical-support': [
+    {
+      label: 'Diagnose issue',
+      prompt:
+        'Turn this support report into evidence-backed hypotheses and safe diagnostic checks.',
+    },
+    {
+      label: 'Inspect repository',
+      prompt:
+        'Inspect the selected repositories for likely ownership, configuration, and failure paths.',
+    },
+    {
+      label: 'Build reproduction',
+      prompt: 'Help me define a safe, repeatable reproduction with expected and observed results.',
+    },
+    {
+      label: 'Escalate clearly',
+      prompt:
+        'Prepare an engineering or vendor escalation with evidence, eliminated causes, and risk.',
+    },
+  ],
+  'incident-manager': [
+    {
+      label: 'Open incident',
+      prompt: 'Structure the incident objective, impact, roles, workstreams, and next update time.',
+    },
+    {
+      label: 'Incident update',
+      prompt: 'Draft a factual stakeholder update with knowns, unknowns, actions, and timing.',
+    },
+    {
+      label: 'Decision log',
+      prompt: 'Create a timestamped decision and action log with owners and evidence.',
+    },
+    {
+      label: 'Handover',
+      prompt: 'Prepare a clean incident handover covering state, risks, owners, and next actions.',
+    },
+  ],
+  'problem-manager': [
+    {
+      label: 'Problem statement',
+      prompt: 'Define the recurring problem, affected services, evidence, and impact pattern.',
+    },
+    {
+      label: 'Root cause analysis',
+      prompt: 'Build an evidence-led causal analysis without promoting hypotheses to facts.',
+    },
+    {
+      label: 'Known error',
+      prompt: 'Draft a known-error record with detection, impact, workaround, and residual risk.',
+    },
+    {
+      label: 'Corrective actions',
+      prompt: 'Turn the findings into owned corrective and preventive actions with validation.',
+    },
+  ],
+  'change-manager': [
+    {
+      label: 'Assess change',
+      prompt:
+        'Assess this change for scope, customer impact, dependencies, risk, and evidence gaps.',
+    },
+    {
+      label: 'Challenge plan',
+      prompt: 'Review implementation, test, communication, monitoring, and approval readiness.',
+    },
+    {
+      label: 'Backout review',
+      prompt: 'Challenge the backout plan, stop conditions, authority, and recovery validation.',
+    },
+    {
+      label: 'Post-change review',
+      prompt: 'Prepare post-change validation and learning questions from the available evidence.',
+    },
+  ],
+  'service-manager': [
+    {
+      label: 'Service snapshot',
+      prompt:
+        'Map this service, its customers, outcomes, ownership, dependencies, and support model.',
+    },
+    {
+      label: 'Service review',
+      prompt:
+        'Prepare a service review with sourced measures, themes, risks, and decisions needed.',
+    },
+    {
+      label: 'Improvement plan',
+      prompt: 'Turn these service themes into measurable, owned continual-improvement actions.',
+    },
+    {
+      label: 'Stakeholder brief',
+      prompt:
+        'Draft a concise service brief that separates evidence, interpretation, and decisions.',
+    },
+  ],
 };
 
 const PERSONA_ICONS: Record<string, React.ReactNode> = {
@@ -196,6 +319,12 @@ const PERSONA_ICONS: Record<string, React.ReactNode> = {
   design: <Palette size={22} />,
   mentor: <GraduationCap size={22} />,
   'db-expert': <Database size={22} />,
+  'service-desk': <Headphones size={22} />,
+  'technical-support': <Wrench size={22} />,
+  'incident-manager': <Radio size={22} />,
+  'problem-manager': <SearchCheck size={22} />,
+  'change-manager': <GitPullRequest size={22} />,
+  'service-manager': <Gauge size={22} />,
 };
 
 interface ChatEmptyStateProps {
@@ -219,16 +348,21 @@ export function ChatEmptyState({
 }: ChatEmptyStateProps) {
   const suggestions = PERSONA_SUGGESTIONS[personaId] ?? PERSONA_SUGGESTIONS.coder;
   const icon = PERSONA_ICONS[personaId] ?? <MessageSquare size={22} />;
+  const isItsmPersona = [
+    'service-desk',
+    'technical-support',
+    'incident-manager',
+    'problem-manager',
+    'change-manager',
+    'service-manager',
+  ].includes(personaId);
 
   return (
     <div className="flex h-full flex-col items-center justify-center px-4 py-8">
-      <div className="relative mb-5">
+      <div className="relative mb-4">
         <div
-          className="flex h-16 w-16 items-center justify-center rounded-2xl shadow-lg"
-          style={{
-            background: `linear-gradient(135deg, ${personaColour}20 0%, ${personaColour}08 100%)`,
-            boxShadow: `0 8px 32px ${personaColour}15`,
-          }}
+          className="flex h-12 w-12 items-center justify-center rounded-xl"
+          style={{ backgroundColor: `${personaColour}14` }}
         >
           <span style={{ color: personaColour }}>{icon}</span>
         </div>
@@ -244,36 +378,35 @@ export function ChatEmptyState({
         Start a conversation with {personaName}
       </h3>
 
-      <p className="mb-8 max-w-md text-center text-sm leading-relaxed text-text-tertiary">
+      <p className="mb-5 max-w-md text-center text-sm leading-relaxed text-text-tertiary">
         {isDbExpertPersona
           ? 'Import SSMS schema or stored procedure exports in DB Insights, then ask questions about the database design here.'
-          : hasRepos
-            ? 'Ask about your code, request changes, or get help understanding the codebase.'
-            : hasGovernanceDocs
-              ? 'Ask questions using the governance documents as context.'
-              : 'Add repositories or governance documents to give Chat more context, or ask questions directly.'}
+          : isItsmPersona && !hasRepos
+            ? 'Use Chat and the ITSM workbench to explore the service, issue, evidence, and handover. Add repositories when technical context would help.'
+            : hasRepos
+              ? 'Ask about your code, request changes, or get help understanding the codebase.'
+              : hasGovernanceDocs
+                ? 'Ask questions using the governance documents as context.'
+                : 'Add repositories or governance documents to give Chat more context, or ask questions directly.'}
       </p>
 
-      <div className="grid w-full max-w-2xl grid-cols-1 gap-2.5 sm:grid-cols-2">
+      <div className="grid w-full max-w-2xl grid-cols-1 gap-2 sm:grid-cols-2">
         {suggestions.map((suggestion) => (
           <button
             key={suggestion.label}
             onClick={() => onSuggestionClick(suggestion.prompt)}
             className={getSuggestionCardClassName()}
           >
-            <div className="mb-1.5 flex w-full items-center justify-between">
+            <div className="flex w-full items-center justify-between gap-2">
               <span
                 className="text-xs font-semibold uppercase tracking-wider transition-colors"
                 style={{ color: personaColour }}
               >
                 {suggestion.label}
               </span>
-              <ArrowRight
-                size={12}
-                className={getSuggestionArrowClassName()}
-              />
+              <ArrowRight size={12} className={getSuggestionArrowClassName()} />
             </div>
-            <span className="line-clamp-2 text-sm leading-relaxed text-text-secondary transition-colors group-hover:text-text-primary group-focus-visible:text-text-primary">
+            <span className="mt-1 line-clamp-1 text-sm text-text-secondary transition-colors group-hover:text-text-primary group-focus-visible:text-text-primary">
               {suggestion.prompt}
             </span>
           </button>
@@ -284,7 +417,7 @@ export function ChatEmptyState({
 }
 
 export function getSuggestionCardClassName(): string {
-  return 'group flex flex-col items-start rounded-xl border border-border bg-bg-secondary px-4 py-3.5 text-left transition-all duration-200 hover:border-border hover:bg-bg-tertiary hover:shadow-md focus-visible:border-border focus-visible:bg-bg-tertiary focus-visible:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35';
+  return 'suggestion-card group flex flex-col items-start rounded-lg border border-border-subtle bg-bg-secondary/45 px-3 py-2.5 text-left transition-colors duration-200 hover:border-border hover:bg-bg-tertiary focus-visible:border-border focus-visible:bg-bg-tertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35';
 }
 
 export function getSuggestionArrowClassName(): string {

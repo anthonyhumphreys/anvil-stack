@@ -1,4 +1,4 @@
-name: Publish @anvilstack/cli to npm
+name: Stage @anvilstack/cli for npm approval
 
 on:
   push:
@@ -22,7 +22,7 @@ defaults:
 
 jobs:
   publish:
-    name: Build, verify, and publish
+    name: Build, verify, and stage
     runs-on: ubuntu-latest
 
     env:
@@ -30,15 +30,15 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
-          version: 10.11.0
+          version: 10.34.5
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -76,3 +76,14 @@ jobs:
             extra_args="--dry-run"
           fi
           npm stage publish --access public ${extra_args}
+
+      - name: Record npm approval requirement
+        if: github.event_name != 'workflow_dispatch' || inputs.dry_run == false
+        run: |
+          package_version="$(node -p "require('./apps/cli-wrapper/package.json').version")"
+          {
+            echo "## npm approval required"
+            echo
+            echo "\`@anvilstack/cli@${package_version}\` is staged, not yet public."
+            echo "Review and approve it in npm within seven days."
+          } >> "${GITHUB_STEP_SUMMARY}"

@@ -7,7 +7,7 @@ Anvil is the brain; your coding agents are the hands.
 ## Features
 
 - **Repository Intelligence** — connect local repos or clone from GitHub/Azure DevOps, then index them for architecture diagrams, module summaries, and language breakdowns
-- **AI Chat** — converse with six specialised personas (Coder, Architect, Security, Reviewer, Docs, BA), each scoped with the right context and tools
+- **AI Chat**: converse with specialised personas for coding, design, analysis, and IT service management, each scoped with relevant context and guidance
 - **Onboarding** — auto-generate `AGENTS.md`, `devcontainer.json`, and environment setup guides for any repo
 - **Work Items** — unified interface for Azure DevOps, Linear, and Jira — list, filter, plan, and estimate without leaving the app
 - **Security Audits** — LLM-driven vulnerability analysis with OWASP/CWE mapping, finding severity levels, and one-click work-item creation

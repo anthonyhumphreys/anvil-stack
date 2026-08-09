@@ -62,15 +62,15 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
-          version: 10.11.0
+          version: 10.34.5
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -103,6 +103,9 @@ jobs:
 
       - name: Validate Docker Compose config
         run: docker compose -f infra/docker/docker-compose.yml config
+
+      - name: Validate release Docker Compose config
+        run: pnpm release:compose:check
 
       - name: Start local registry stack
         run: docker compose -f infra/docker/docker-compose.yml up -d --build gateway worker admin
@@ -137,7 +140,7 @@ jobs:
 
       - name: Upload failure logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: anvil-registry-ci-logs
           path: anvil-registry/.ci-artifacts

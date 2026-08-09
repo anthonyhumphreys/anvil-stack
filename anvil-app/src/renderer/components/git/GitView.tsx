@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   GitBranch,
   GitCommitHorizontal,
@@ -19,6 +19,9 @@ import {
   RefreshCw,
   AlertCircle,
   MessageSquare,
+  GitPullRequest,
+  Sparkles,
+  ExternalLink,
 } from 'lucide-react';
 import type {
   GitStatusResult,
@@ -26,14 +29,16 @@ import type {
   GitLogEntry,
   GitBranchInfo,
   GitDiffResult,
+  CodeReviewPullRequest,
 } from '../../../shared/types';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { WorkspaceGitActions } from '../shared/WorkspaceGitActions';
 
-type Tab = 'changes' | 'log' | 'branches';
+type Tab = 'changes' | 'pull_requests' | 'log' | 'branches';
 
 export function GitView() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { repos } = useWorkspace();
   const indexedRepos = useMemo(() => repos.filter((r) => r.status !== 'error'), [repos]);
 
@@ -42,6 +47,9 @@ export function GitView() {
   const [status, setStatus] = useState<GitStatusResult | null>(null);
   const [log, setLog] = useState<GitLogEntry[]>([]);
   const [branches, setBranches] = useState<GitBranchInfo[]>([]);
+  const [pullRequests, setPullRequests] = useState<CodeReviewPullRequest[]>([]);
+  const [pullRequestsLoading, setPullRequestsLoading] = useState(false);
+  const [pullRequestsError, setPullRequestsError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -62,6 +70,11 @@ export function GitView() {
   // Push/pull
   const [syncing, setSyncing] = useState<'push' | 'pull' | 'fetch' | null>(null);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    const requestedTab = searchParams.get('tab');
+    if (requestedTab === 'pull_requests') setTab('pull_requests');
+  }, [searchParams]);
 
   // Auto-select first repo
   useEffect(() => {
@@ -93,6 +106,28 @@ export function GitView() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    if (!selectedRepoId || tab !== 'pull_requests') return;
+    let cancelled = false;
+    setPullRequestsLoading(true);
+    setPullRequestsError(null);
+    void window.anvil.codereview
+      .listPullRequests(selectedRepoId)
+      .then((nextPullRequests) => {
+        if (!cancelled) setPullRequests(nextPullRequests);
+      })
+      .catch((reason) => {
+        if (!cancelled)
+          setPullRequestsError(reason instanceof Error ? reason.message : String(reason));
+      })
+      .finally(() => {
+        if (!cancelled) setPullRequestsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedRepoId, tab]);
 
   // Auto-refresh every 5s
   useEffect(() => {
@@ -402,7 +437,7 @@ export function GitView() {
 
       {/* Tabs */}
       <div className="flex border-b border-border bg-bg-secondary">
-        {(['changes', 'log', 'branches'] as Tab[]).map((t) => (
+        {(['changes', 'pull_requests', 'log', 'branches'] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -412,7 +447,7 @@ export function GitView() {
                 : 'text-text-secondary hover:text-text-primary'
             }`}
           >
-            {t}
+            {t === 'pull_requests' ? 'Pull requests' : t}
             {t === 'changes' && status && status.files.length > 0 && (
               <span className="ml-1.5 rounded-full bg-accent/20 px-1.5 py-0.5 text-xs text-accent">
                 {status.files.length}
@@ -447,6 +482,19 @@ export function GitView() {
           />
         )}
         {tab === 'log' && <LogTab log={log} />}
+        {tab === 'pull_requests' && (
+          <PullRequestsTab
+            pullRequests={pullRequests}
+            loading={pullRequestsLoading}
+            error={pullRequestsError}
+            onVisualise={(pullRequest) =>
+              navigate(`/codereview/${selectedRepoId}?pr=${pullRequest.id}&view=map`)
+            }
+            onViewDiff={(pullRequest) =>
+              navigate(`/codereview/${selectedRepoId}?pr=${pullRequest.id}&view=diff`)
+            }
+          />
+        )}
         {tab === 'branches' && (
           <BranchesTab
             branches={branches}
@@ -459,6 +507,95 @@ export function GitView() {
             onCreateBranch={handleCreateBranch}
           />
         )}
+      </div>
+    </div>
+  );
+}
+
+function PullRequestsTab({
+  pullRequests,
+  loading,
+  error,
+  onVisualise,
+  onViewDiff,
+}: {
+  pullRequests: CodeReviewPullRequest[];
+  loading: boolean;
+  error: string | null;
+  onVisualise: (pullRequest: CodeReviewPullRequest) => void;
+  onViewDiff: (pullRequest: CodeReviewPullRequest) => void;
+}) {
+  if (loading) {
+    return (
+      <div className="flex flex-1 items-center justify-center gap-2 text-sm text-text-secondary">
+        <Loader2 size={16} className="animate-spin text-accent" /> Loading pull requests…
+      </div>
+    );
+  }
+  if (error) return <div className="p-6 text-sm text-error">{error}</div>;
+  if (pullRequests.length === 0) {
+    return (
+      <div className="flex flex-1 items-center justify-center text-sm text-text-tertiary">
+        No pull requests found for this repository.
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto">
+      <div className="divide-y divide-border-subtle">
+        {pullRequests.map((pullRequest) => (
+          <article
+            key={`${pullRequest.provider}:${pullRequest.id}`}
+            className="flex items-center gap-4 px-5 py-4 hover:bg-bg-secondary/55"
+          >
+            <GitPullRequest
+              size={16}
+              className={pullRequest.state === 'open' ? 'text-success' : 'text-text-tertiary'}
+            />
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-xs text-accent">#{pullRequest.id}</span>
+                <h3 className="truncate text-sm font-semibold text-text-primary">
+                  {pullRequest.title}
+                </h3>
+                {pullRequest.isDraft && (
+                  <span className="rounded-full border border-border px-2 py-0.5 text-xs text-text-tertiary">
+                    Draft
+                  </span>
+                )}
+              </div>
+              <p className="mt-1 truncate font-mono text-xs text-text-tertiary">
+                {pullRequest.sourceBranch} → {pullRequest.targetBranch}
+                {pullRequest.author ? ` · ${pullRequest.author}` : ''}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => onViewDiff(pullRequest)}
+              className="rounded-md border border-border px-3 py-2 text-xs text-text-secondary hover:bg-bg-tertiary hover:text-text-primary"
+            >
+              Diff
+            </button>
+            <button
+              type="button"
+              onClick={() => onVisualise(pullRequest)}
+              className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-white hover:bg-accent/85"
+            >
+              <Sparkles size={13} /> Visualise PR
+            </button>
+            {pullRequest.url && (
+              <button
+                type="button"
+                onClick={() => window.open(pullRequest.url, '_blank')}
+                className="rounded-md p-2 text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary"
+                aria-label={`Open pull request ${pullRequest.id} in ${pullRequest.provider}`}
+              >
+                <ExternalLink size={14} />
+              </button>
+            )}
+          </article>
+        ))}
       </div>
     </div>
   );

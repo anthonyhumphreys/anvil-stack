@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { FolderOpen, Loader2, Search } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { RepoScanner } from '../shared/RepoScanner';
-import type { RemoteRepo, WorkspaceCreationMode } from '../../../shared/types';
+import type { RemoteRepo, WorkItemConnection, WorkspaceCreationMode } from '../../../shared/types';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 
 // ---------------------------------------------------------------------------
@@ -40,19 +40,43 @@ export function WorkspaceCreator({ onCreated, onCancel }: WorkspaceCreatorProps)
   const [remoteSearch, setRemoteSearch] = useState('');
   const [selectedRemoteRepos, setSelectedRemoteRepos] = useState<Set<string>>(new Set());
   const [cloneStatuses, setCloneStatuses] = useState<Record<string, string>>({});
+  const [workItemConnections, setWorkItemConnections] = useState<WorkItemConnection[]>([]);
+  const [workItemConnectionId, setWorkItemConnectionId] = useState('');
+  const [workItemConnectionsLoaded, setWorkItemConnectionsLoaded] = useState(false);
+  const [isItsmRole, setIsItsmRole] = useState(false);
 
   useEffect(() => {
     (async () => {
       const providers: Array<'github' | 'ado'> = [];
 
       // Check gh CLI auth for GitHub
-      const ghStatus = await window.anvil.repo.ghAuthStatus();
-      if (ghStatus.authenticated) providers.push('github');
+      try {
+        const ghStatus = await window.anvil.repo.ghAuthStatus();
+        if (ghStatus.authenticated) providers.push('github');
+      } catch {
+        // Remote GitHub browsing is optional during workspace creation.
+      }
 
-      // Check ADO PAT
-      const s = await window.anvil.settings.get();
-      const hasAdo = !!s.adoPat && !!s.adoOrganizationUrl && !!s.adoProject;
-      if (hasAdo) providers.push('ado');
+      try {
+        // Check ADO PAT and load the independently configured work item connections.
+        const s = await window.anvil.settings.get();
+        const hasAdo = !!s.adoPat && !!s.adoOrganizationUrl && !!s.adoProject;
+        if (hasAdo) providers.push('ado');
+
+        setWorkItemConnections(s.workItemConnections);
+        setWorkItemConnectionId(
+          s.workItemConnections.length === 1 ? s.workItemConnections[0].id : '',
+        );
+        const itsmRole = s.userRole === 'itsm';
+        setIsItsmRole(itsmRole);
+        if (itsmRole) {
+          setCreationMode('empty');
+        }
+      } catch (err) {
+        console.warn('[WorkspaceCreator] Failed to load settings:', err);
+      } finally {
+        setWorkItemConnectionsLoaded(true);
+      }
 
       setAvailableProviders(providers);
       if (providers.length > 0) setRemoteProvider(providers[0]);
@@ -116,6 +140,8 @@ export function WorkspaceCreator({ onCreated, onCancel }: WorkspaceCreatorProps)
   const canCreate =
     name.trim().length > 0 &&
     !creating &&
+    workItemConnectionsLoaded &&
+    (workItemConnections.length <= 1 || Boolean(workItemConnectionId)) &&
     (creationMode === 'empty' ||
       (creationMode === 'existing' && hasExistingRepos) ||
       (creationMode === 'scaffold' &&
@@ -138,11 +164,15 @@ export function WorkspaceCreator({ onCreated, onCancel }: WorkspaceCreatorProps)
 
     try {
       let workspace;
+      const workspaceOptions = {
+        name: name.trim(),
+        workItemConnectionId: workItemConnectionId || undefined,
+      };
 
       if (creationMode === 'empty') {
-        workspace = await createWorkspace({ name: name.trim() });
+        workspace = await createWorkspace(workspaceOptions);
       } else if (creationMode === 'scaffold') {
-        workspace = await createWorkspace({ name: name.trim() });
+        workspace = await createWorkspace(workspaceOptions);
         await window.anvil.workspaceScaffold.start(workspace.id, scaffoldRootPath);
         await refreshWorkspaces();
         navigate('/chat');
@@ -192,7 +222,7 @@ export function WorkspaceCreator({ onCreated, onCancel }: WorkspaceCreatorProps)
           }
         }
 
-        workspace = await createWorkspace({ name: name.trim(), repoIds });
+        workspace = await createWorkspace({ ...workspaceOptions, repoIds });
       }
 
       if (exportVSCode && creationMode !== 'scaffold') {
@@ -235,13 +265,38 @@ export function WorkspaceCreator({ onCreated, onCancel }: WorkspaceCreatorProps)
           />
         </div>
 
+        {workItemConnections.length > 1 && (
+          <div className="mt-4">
+            <label className="mb-1 block text-sm font-medium text-text-secondary">
+              Work item connection
+            </label>
+            <select
+              value={workItemConnectionId}
+              onChange={(event) => setWorkItemConnectionId(event.target.value)}
+              className="w-full rounded-md border border-border bg-bg-primary px-3 py-1.5 text-sm text-text-primary focus:border-accent focus:outline-none"
+            >
+              <option value="">Choose a connection…</option>
+              {workItemConnections.map((connection) => (
+                <option key={connection.id} value={connection.id}>
+                  {connection.name} · {connection.provider.toUpperCase()}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-text-tertiary">
+              Work items and agent planning in this workspace will use this connection.
+            </p>
+          </div>
+        )}
+
         <div className="mt-5 grid gap-2 sm:grid-cols-3">
           {(
             [
               {
                 id: 'empty',
                 title: 'Empty workspace',
-                description: 'Create the workspace now and add repositories later.',
+                description: isItsmRole
+                  ? 'Explore a service or issue with chat, evidence, and notes. Add repositories when useful.'
+                  : 'Create the workspace now and add repositories later.',
               },
               {
                 id: 'existing',
@@ -265,7 +320,14 @@ export function WorkspaceCreator({ onCreated, onCancel }: WorkspaceCreatorProps)
                   : 'border-border text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
               }`}
             >
-              <div className="text-sm font-medium">{option.title}</div>
+              <div className="flex items-center justify-between gap-2 text-sm font-medium">
+                <span>{option.title}</span>
+                {option.id === 'empty' && isItsmRole && (
+                  <span className="rounded-full bg-accent/15 px-2 py-0.5 text-[10px] font-semibold text-accent">
+                    Recommended
+                  </span>
+                )}
+              </div>
               <div className="mt-1 text-xs leading-relaxed text-text-tertiary">
                 {option.description}
               </div>

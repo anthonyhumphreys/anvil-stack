@@ -9,14 +9,17 @@ import {
   type ReactNode,
 } from 'react';
 import type {
+  AgentProvider,
   ChatAttachment,
   ChatArtifact,
   ChatArtifactInput,
   ChatArtifactKind,
+  ChatAssistantPhase,
   ChatCollaborationMode,
   ChatStartOptions,
   ChatGoalSnapshot,
   ChatLayout,
+  ChatMessage,
   ChatPlanSnapshot,
   ChatThread,
   CodexEvent,
@@ -43,10 +46,17 @@ import {
   CODEX_SELECTION_CHANGED_EVENT,
   type CodexSelectionChangedDetail,
 } from '../utils/codex-selection';
+import { buildChatModelOptions, type ChatModelOption } from '../utils/chat-model-options';
 
 export type ChatEntry =
   | { kind: 'user'; content: string; attachments?: ChatAttachment[]; id?: string }
-  | { kind: 'assistant'; content: string; id?: string }
+  | {
+      kind: 'assistant';
+      content: string;
+      id?: string;
+      itemId?: string;
+      phase?: ChatAssistantPhase;
+    }
   | { kind: 'thinking'; content: string; id?: string }
   | { kind: 'event'; event: CodexEvent };
 
@@ -64,6 +74,9 @@ interface ChatContextValue {
   scaffoldStatus: WorkspaceScaffoldStatus | null;
   busy: boolean;
   error: string | null;
+  model: string;
+  modelProvider: AgentProvider;
+  modelOptions: ChatModelOption[];
   reasoningLevel: ReasoningEffort;
   reasoningOptions: ReasoningEffort[];
   threads: ChatThread[];
@@ -85,9 +98,11 @@ interface ChatContextValue {
   startNewSession: () => Promise<void>;
   loadHistory: () => Promise<void>;
   clearHistory: () => Promise<void>;
+  setModel: (model: string) => void;
   setReasoningLevel: (level: ReasoningEffort) => void;
   selectThread: (threadId: string) => Promise<void>;
   renameThread: (threadId: string, title: string) => Promise<void>;
+  settleThread: (threadId: string, settled: boolean) => Promise<void>;
   deleteThread: (threadId: string) => Promise<void>;
   forkThread: (messageIndex: number) => Promise<void>;
   setCollaborationMode: (mode: ChatCollaborationMode) => void;
@@ -114,9 +129,18 @@ type LiveStreamEntryKind = Extract<ChatEntry, { kind: 'assistant' | 'thinking' }
 
 interface LiveAssistantOutput {
   threadId: string;
-  assistantText: string;
-  assistantMessageId: string;
-  persistedAssistantText?: string;
+  segments: LiveAssistantSegment[];
+  activeLegacySegmentId?: string;
+}
+
+interface LiveAssistantSegment {
+  id: string;
+  itemId?: string;
+  phase?: ChatAssistantPhase;
+  content: string;
+  persistedContent?: string;
+  persistedPhase?: ChatAssistantPhase;
+  createdAt: string;
 }
 
 export function useChatContext(): ChatContextValue {
@@ -145,6 +169,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [activeArtifacts, setActiveArtifacts] = useState<ChatArtifact[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [model, setModelState] = useState(DEFAULT_CODEX_MODEL);
+  const [modelProvider, setModelProvider] = useState<AgentProvider>('codex');
+  const [modelOptions, setModelOptions] = useState<ChatModelOption[]>(() =>
+    buildChatModelOptions('codex', DEFAULT_CODEX_MODEL, null, null),
+  );
   const [reasoningLevel, setReasoningLevel] = useState<ReasoningEffort>('medium');
   const [reasoningOptions, setReasoningOptions] =
     useState<ReasoningEffort[]>(CODEX_REASONING_EFFORTS);
@@ -153,6 +182,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     loadCollaborationMode(),
   );
   const [chatLayout, setChatLayoutState] = useState<ChatLayout>('classic');
+  const chatListScope = useMemo<ChatThreadListScope>(
+    () => ({
+      workspaceId: activeWorkspace?.id ?? null,
+      personaId: activePersona?.id ?? null,
+      layout: chatLayout,
+    }),
+    [activePersona?.id, activeWorkspace?.id, chatLayout],
+  );
+  const chatListScopeRef = useRef(chatListScope);
+  chatListScopeRef.current = chatListScope;
 
   const scaffoldModeActive =
     !!activeScaffoldSession &&
@@ -166,9 +205,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       : []),
   ]);
   const canStartWorkspaceChat = !!activeWorkspace;
+  const scopedThreads = useMemo(
+    () => threads.filter((thread) => threadBelongsToChatList(thread, chatListScope)),
+    [chatListScope, threads],
+  );
   const activeThread = useMemo(
-    () => threads.find((thread) => thread.id === activeThreadId) ?? null,
-    [threads, activeThreadId],
+    () => scopedThreads.find((thread) => thread.id === activeThreadId) ?? null,
+    [scopedThreads, activeThreadId],
   );
   const activePlan = activeThread?.activePlan ?? null;
   const activeGoal = activeThread?.activeGoal ?? null;
@@ -179,16 +222,21 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const entriesRef = useRef<ChatEntry[]>([]);
   entriesRef.current = entries;
   const threadsRef = useRef<ChatThread[]>([]);
-  threadsRef.current = threads;
+  threadsRef.current = scopedThreads;
   const activeThreadRef = useRef<ChatThread | null>(null);
   activeThreadRef.current = activeThread;
-  const lastSelectedThreadIdsRef = useRef<Record<string, string>>({});
+  const lastSelectedThreadIdsRef = useRef<Record<string, string>>(loadThreadSelectionPreferences());
   const liveSessionsByThreadIdRef = useRef<Record<string, CodexSession>>({});
   const liveOutputBySessionIdRef = useRef<Record<string, LiveAssistantOutput>>({});
   const livePersistQueueBySessionIdRef = useRef<Record<string, Promise<void>>>({});
   const threadLoadVersionRef = useRef(0);
   const suppressNextThreadBootstrapRef = useRef(false);
-  const pendingStreamEntryRef = useRef<{ kind: LiveStreamEntryKind; content: string } | null>(null);
+  const pendingStreamEntryRef = useRef<{
+    kind: LiveStreamEntryKind;
+    content: string;
+    itemId?: string;
+    phase?: ChatAssistantPhase;
+  } | null>(null);
   const pendingStreamFlushRef = useRef<number | null>(null);
 
   const clearPendingStreamFlush = useCallback(() => {
@@ -208,7 +256,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
     pendingStreamEntryRef.current = null;
     clearPendingStreamFlush();
-    setEntries((prev) => appendLiveStreamEntry(prev, pending.kind, pending.content));
+    setEntries((prev) => appendLiveStreamEntry(prev, pending.kind, pending.content, pending));
   }, [clearPendingStreamFlush]);
 
   const schedulePendingStreamFlush = useCallback(() => {
@@ -220,15 +268,23 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, [flushPendingStreamEntry]);
 
   const queueStreamEntry = useCallback(
-    (kind: LiveStreamEntryKind, content: string) => {
+    (
+      kind: LiveStreamEntryKind,
+      content: string,
+      metadata?: { itemId?: string; phase?: ChatAssistantPhase },
+    ) => {
       if (!content) return;
 
       const pending = pendingStreamEntryRef.current;
-      if (pending?.kind === kind) {
+      if (
+        pending?.kind === kind &&
+        (kind !== 'assistant' ||
+          (pending.itemId === metadata?.itemId && pending.phase === metadata?.phase))
+      ) {
         pending.content += content;
       } else {
         flushPendingStreamEntry();
-        pendingStreamEntryRef.current = { kind, content };
+        pendingStreamEntryRef.current = { kind, content, ...metadata };
       }
 
       schedulePendingStreamFlush();
@@ -288,7 +344,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, [discardPendingStreamEntry]);
 
   const applyThreadState = useCallback((thread: ChatThread) => {
-    setThreads((prev) => upsertThread(prev, thread));
+    setThreads((prev) => upsertThreadForChatList(prev, thread, chatListScopeRef.current));
   }, []);
 
   const setLiveThreadStatus = useCallback(
@@ -324,8 +380,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
       return {
         threadId,
-        assistantText: '',
-        assistantMessageId: generateId(),
+        segments: [],
       };
     },
     [],
@@ -406,7 +461,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       const thread = (availableThreads ?? threadsRef.current).find(
         (candidate) => candidate.id === threadId,
       );
-      if (!thread) return;
+      if (!thread || !threadBelongsToWorkspace(thread, activeWorkspace?.id ?? null)) return;
 
       const [history, artifacts] = await Promise.all([
         window.anvil.chat.loadHistory(threadId),
@@ -421,29 +476,20 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         resolvedRepos.find((repo) => repo.id === thread.activeRepoId) ?? resolvedRepos[0] ?? null;
 
       setActiveThreadId(thread.id);
-      const nextEntries: ChatEntry[] = history
-        .filter((message) => message.role === 'user' || message.role === 'assistant')
-        .map(
-          (message): ChatEntry =>
-            message.role === 'user'
-              ? {
-                  kind: 'user',
-                  content: message.content,
-                  attachments: message.attachments,
-                  id: message.id,
-                }
-              : { kind: 'assistant', content: message.content, id: message.id },
-        );
+      const nextEntries = chatMessagesToEntries(history);
       const liveSession = liveSessionsByThreadIdRef.current[thread.id];
       const liveOutput = liveSession ? liveOutputBySessionIdRef.current[liveSession.id] : null;
-      if (liveOutput?.assistantText.trim()) {
+      for (const segment of liveOutput?.segments ?? []) {
+        if (!segment.content.trim()) continue;
         const existingLiveEntryIndex = nextEntries.findIndex(
-          (entry) => entry.kind === 'assistant' && entry.id === liveOutput.assistantMessageId,
+          (entry) => entry.kind === 'assistant' && entry.id === segment.id,
         );
         const liveEntry: ChatEntry = {
           kind: 'assistant',
-          content: liveOutput.assistantText,
-          id: liveOutput.assistantMessageId,
+          content: segment.content,
+          id: segment.id,
+          itemId: segment.itemId,
+          phase: segment.phase,
         };
         if (existingLiveEntryIndex >= 0) {
           nextEntries[existingLiveEntryIndex] = liveEntry;
@@ -483,7 +529,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       const threadPreferenceKey = thread.workItemId
         ? getWorkItemThreadPreferenceKey(activeWorkspace?.id ?? null)
         : getThreadPreferenceKey(activeWorkspace?.id ?? null, thread.personaId);
-      lastSelectedThreadIdsRef.current[threadPreferenceKey] = thread.id;
+      rememberThreadSelection(lastSelectedThreadIdsRef.current, threadPreferenceKey, thread.id);
     },
     [activeWorkspace?.id, discardPendingStreamEntry, repos, setLiveThreadStatus],
   );
@@ -513,9 +559,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       setActiveThreadId(created.id);
       setActiveReposState(repoSelection);
       setActiveRepoState(primaryRepo);
-      lastSelectedThreadIdsRef.current[
-        getThreadPreferenceKey(activeWorkspace?.id ?? null, persona.id)
-      ] = created.id;
+      rememberThreadSelection(
+        lastSelectedThreadIdsRef.current,
+        getThreadPreferenceKey(activeWorkspace?.id ?? null, persona.id),
+        created.id,
+      );
 
       return created;
     },
@@ -589,17 +637,27 @@ export function ChatProvider({ children }: { children: ReactNode }) {
               (candidate) => candidate.id === sessionId,
             );
       const threadId = liveOutput?.threadId ?? currentSession?.appThreadId;
-      const content = liveOutput?.assistantText.trim();
-      if (!currentSession || !threadId || !liveOutput || !content) return;
-      if (!options?.final && liveOutput.persistedAssistantText === content) return;
+      if (!currentSession || !threadId || !liveOutput || liveOutput.segments.length === 0) return;
 
-      const isNewAssistantMessage = !liveOutput.persistedAssistantText;
+      const resolvedSegments = resolveAssistantSegmentPhases(liveOutput.segments, !!options?.final);
+      const changedSegments = resolvedSegments.filter((segment) => {
+        const content = segment.content.trim();
+        return (
+          content &&
+          (segment.persistedContent !== content || segment.persistedPhase !== segment.phase)
+        );
+      });
+      if (changedSegments.length === 0) return;
+
       liveOutputBySessionIdRef.current[sessionId] = {
         ...liveOutput,
-        persistedAssistantText: content,
+        segments: resolvedSegments.map((segment) => ({
+          ...segment,
+          persistedContent: segment.content.trim(),
+          persistedPhase: segment.phase,
+        })),
       };
 
-      const timestamp = new Date().toISOString();
       const artifactRepoId =
         currentSession.repoId ??
         threadsRef.current.find((thread) => thread.id === threadId)?.activeRepoId ??
@@ -610,26 +668,44 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           // Keep later snapshots moving even if an earlier write failed.
         })
         .then(async () => {
-          await window.anvil.chat.saveEntry(
-            threadId,
-            currentSession.repoId ?? null,
-            currentSession.id,
-            {
-              id: liveOutput.assistantMessageId,
-              role: 'assistant',
-              content,
-              timestamp,
-              personaId: currentSession.personaId,
+          for (const segment of changedSegments) {
+            const content = segment.content.trim();
+            const phase = segment.phase ?? 'progress';
+            await window.anvil.chat.saveEntry(
               threadId,
-            },
-          );
-          await persistArtifactsForAssistantMessage(
-            threadId,
-            artifactRepoId,
-            liveOutput.assistantMessageId,
-            content,
-          );
-          bumpThreadSummary(threadId, content, timestamp, isNewAssistantMessage);
+              currentSession.repoId ?? null,
+              currentSession.id,
+              {
+                id: segment.id,
+                role: phase === 'final' ? 'assistant' : 'system',
+                content,
+                timestamp: segment.createdAt,
+                personaId: currentSession.personaId,
+                threadId,
+                event: {
+                  type: 'text',
+                  text: content,
+                  itemId: segment.itemId,
+                  assistantPhase: phase,
+                },
+              },
+            );
+
+            if (phase === 'final') {
+              await persistArtifactsForAssistantMessage(
+                threadId,
+                artifactRepoId,
+                segment.id,
+                content,
+              );
+              bumpThreadSummary(
+                threadId,
+                content,
+                segment.createdAt,
+                segment.persistedPhase !== 'final',
+              );
+            }
+          }
         })
         .catch(console.error);
 
@@ -641,8 +717,15 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         activeWorkspace?.id &&
         activeScaffoldSession?.status === 'active'
       ) {
+        const finalContent =
+          [...resolvedSegments]
+            .reverse()
+            .find((segment) => segment.phase === 'final')
+            ?.content.trim() ?? '';
         persistTask
-          .then(() => window.anvil.workspaceScaffold.maybeComplete(activeWorkspace.id, content))
+          .then(() =>
+            window.anvil.workspaceScaffold.maybeComplete(activeWorkspace.id, finalContent),
+          )
           .then((result) => {
             if (result.triggered) {
               void refreshWorkspaces();
@@ -707,19 +790,34 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const applySelection = async (selection?: CodexSelectionChangedDetail) => {
-      const [settings, codexStatus] = await Promise.all([
-        window.anvil.settings.get(),
-        window.anvil.settings.getCodexStatus().catch(() => null),
-      ]);
+      const settings = await window.anvil.settings.get();
+      const codexStatus =
+        settings.llmProvider === 'cursor'
+          ? null
+          : await window.anvil.settings.getCodexStatus().catch(() => null);
+      const cursorStatus =
+        settings.llmProvider === 'cursor'
+          ? await window.anvil.settings.getCursorStatus().catch(() => null)
+          : null;
       const model = selection?.model ?? settings.openaiModel ?? DEFAULT_CODEX_MODEL;
-      const effort = resolveCodexReasoningEffort(
-        model,
-        selection?.reasoningEffort ?? settings.reasoningLevel,
-        codexStatus?.models,
-      );
-      setReasoningOptions(
-        getCodexModelReasoningOptions(model, codexStatus?.models).supportedReasoningEfforts,
-      );
+      const provider = settings.llmProvider;
+      const options = buildChatModelOptions(provider, model, codexStatus, cursorStatus);
+      const reasoning =
+        provider === 'cursor'
+          ? []
+          : getCodexModelReasoningOptions(model, codexStatus?.models).supportedReasoningEfforts;
+      const effort =
+        provider === 'cursor'
+          ? (selection?.reasoningEffort ?? settings.reasoningLevel)
+          : resolveCodexReasoningEffort(
+              model,
+              selection?.reasoningEffort ?? settings.reasoningLevel,
+              codexStatus?.models,
+            );
+      setModelState(model);
+      setModelProvider(provider);
+      setModelOptions(options);
+      setReasoningOptions(reasoning);
       setReasoningLevel(effort);
     };
     const handleSelectionChanged = (event: Event) => {
@@ -732,6 +830,30 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     window.addEventListener(CODEX_SELECTION_CHANGED_EVENT, handleSelectionChanged);
     return () => window.removeEventListener(CODEX_SELECTION_CHANGED_EVENT, handleSelectionChanged);
   }, []);
+
+  const updateModel = useCallback(
+    (nextModel: string) => {
+      const option = modelOptions.find((candidate) => candidate.id === nextModel);
+      const nextReasoning =
+        modelProvider === 'cursor'
+          ? reasoningLevelRef.current
+          : option?.supportedReasoningEfforts.includes(reasoningLevelRef.current)
+            ? reasoningLevelRef.current
+            : (option?.defaultReasoningEffort ?? 'medium');
+      setModelState(nextModel);
+      if (modelProvider !== 'cursor') {
+        setReasoningOptions(option?.supportedReasoningEfforts ?? CODEX_REASONING_EFFORTS);
+        setReasoningLevel(nextReasoning);
+      }
+      void window.anvil.settings
+        .update({
+          openaiModel: nextModel,
+          ...(modelProvider === 'cursor' ? {} : { reasoningLevel: nextReasoning }),
+        })
+        .catch(console.error);
+    },
+    [modelOptions, modelProvider],
+  );
 
   const updateReasoningLevel = useCallback((level: ReasoningEffort) => {
     setReasoningLevel(level);
@@ -911,17 +1033,24 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     }
 
     let cancelled = false;
+    const requestedWorkspaceId = activeWorkspace?.id ?? null;
+    setThreads([]);
+    setActiveThreadId(null);
+    setEntries([]);
+    setActiveArtifacts([]);
     void (async () => {
       try {
         threadLoadVersionRef.current += 1;
         detachLiveSession();
         const listedThreads = await window.anvil.chat.listThreads(
-          activeWorkspace?.id ?? null,
+          requestedWorkspaceId,
           activePersona.id,
         );
         if (cancelled) return;
 
-        const nextThreads = sortThreads(listedThreads);
+        const nextThreads = sortThreads(
+          listedThreads.filter((thread) => threadBelongsToWorkspace(thread, requestedWorkspaceId)),
+        );
         const listedThreadIds = new Set(nextThreads.map((thread) => thread.id));
         let activeSessions: CodexSession[] = [];
         try {
@@ -989,16 +1118,21 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     }
 
     let cancelled = false;
+    const requestedWorkspaceId = activeWorkspace?.id ?? null;
+    setThreads([]);
+    setActiveThreadId(null);
+    setEntries([]);
+    setActiveArtifacts([]);
     void (async () => {
       try {
         threadLoadVersionRef.current += 1;
         detachLiveSession();
-        const listedThreads = await window.anvil.chat.listWorkItemThreads(
-          activeWorkspace?.id ?? null,
-        );
+        const listedThreads = await window.anvil.chat.listWorkItemThreads(requestedWorkspaceId);
         if (cancelled) return;
 
-        const nextThreads = sortThreads(listedThreads);
+        const nextThreads = sortThreads(
+          listedThreads.filter((thread) => threadBelongsToWorkspace(thread, requestedWorkspaceId)),
+        );
         const listedThreadIds = new Set(nextThreads.map((thread) => thread.id));
         let activeSessions: CodexSession[] = [];
         try {
@@ -1117,7 +1251,35 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           .catch(console.error);
       }
 
+      if (eventThreadId && event.type === 'subagent_update') {
+        const result = getCompletedSubagentResult(event);
+        if (result) {
+          void persistArtifactsForAssistantMessage(
+            eventThreadId,
+            eventSession?.repoId ?? null,
+            `subagent-${event.subagent?.id ?? generateId()}`,
+            result,
+          ).catch(console.error);
+        }
+      }
+
       if (eventSessionId && eventThreadId) {
+        const attentionUpdate = getThreadAttentionUpdate(event);
+        if (attentionUpdate) {
+          setThreads((prev) =>
+            sortThreads(
+              prev.map((thread) =>
+                thread.id === eventThreadId
+                  ? {
+                      ...thread,
+                      ...attentionUpdate,
+                      settledAt: attentionUpdate.settledAt,
+                    }
+                  : thread,
+              ),
+            ),
+          );
+        }
         if (event.type === 'status') {
           const nextStatus: CodexSession['status'] =
             event.status === 'complete' ? 'ready' : event.status === 'error' ? 'error' : 'busy';
@@ -1136,16 +1298,31 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           }
         } else if (event.type === 'text' && event.text) {
           const liveOutput = getLiveAssistantOutput(eventSessionId, eventThreadId);
-          liveOutputBySessionIdRef.current[eventSessionId] = {
-            ...liveOutput,
-            assistantText: liveOutput.assistantText + event.text,
-          };
+          liveOutputBySessionIdRef.current[eventSessionId] = appendLiveAssistantSegment(
+            liveOutput,
+            event,
+          );
+        } else {
+          const liveOutput = liveOutputBySessionIdRef.current[eventSessionId];
+          if (liveOutput?.activeLegacySegmentId) {
+            liveOutputBySessionIdRef.current[eventSessionId] = {
+              ...liveOutput,
+              activeLegacySegmentId: undefined,
+            };
+          }
         }
       }
 
       if (eventSessionId && !isActiveSession) {
         if (event.type === 'status' && event.status === 'complete') {
           persistAssistantForSession(eventSessionId, { final: true });
+          const completedOutput = liveOutputBySessionIdRef.current[eventSessionId];
+          if (completedOutput) {
+            liveOutputBySessionIdRef.current[eventSessionId] = {
+              ...completedOutput,
+              activeLegacySegmentId: undefined,
+            };
+          }
         } else if (event.type === 'plan_update' && event.plan && eventThreadId) {
           persistThreadPlan(eventThreadId, event.plan);
         } else if (event.type === 'goal_update' && event.goal && eventThreadId) {
@@ -1158,16 +1335,31 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
       if (event.type === 'status' && event.status === 'complete') {
         flushPendingStreamEntry();
+        setEntries((prev) => resolveCompletedAssistantEntries(prev));
         setBusy(false);
         if (eventSessionId) {
           persistAssistantForSession(eventSessionId, { final: true });
+          const completedOutput = liveOutputBySessionIdRef.current[eventSessionId];
+          if (completedOutput) {
+            liveOutputBySessionIdRef.current[eventSessionId] = {
+              ...completedOutput,
+              activeLegacySegmentId: undefined,
+            };
+          }
         }
+      } else if (event.type === 'status' && event.status === 'error') {
+        flushPendingStreamEntry();
+        setBusy(false);
+        setError(event.errorMessage ?? 'Codex could not complete this turn.');
       } else if (event.type === 'status') {
         // Ignore intermediate status events.
       } else if (event.type === 'thinking' && event.text) {
         queueStreamEntry('thinking', event.text);
       } else if (event.type === 'text' && event.text) {
-        queueStreamEntry('assistant', event.text);
+        queueStreamEntry('assistant', event.text, {
+          itemId: event.itemId,
+          phase: event.assistantPhase,
+        });
       } else if (event.type === 'plan_update' && event.plan) {
         flushPendingStreamEntry();
         const targetThreadId = eventThreadId ?? activeThreadRef.current?.id;
@@ -1238,6 +1430,15 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           }
           return [...prev, { kind: 'event', event }];
         });
+      } else if (event.type === 'subagent_update' && event.subagent) {
+        flushPendingStreamEntry();
+        setEntries((prev) => upsertSubagentEntry(prev, event));
+      } else if (event.type === 'thread_status') {
+        flushPendingStreamEntry();
+        setEntries((prev) => upsertThreadStatusEntry(prev, event));
+      } else if (event.type === 'request_resolved' && event.resolvedRequestId !== undefined) {
+        flushPendingStreamEntry();
+        setEntries((prev) => removeResolvedRequestEntry(prev, event.resolvedRequestId));
       } else {
         flushPendingStreamEntry();
         setEntries((prev) => [...prev, { kind: 'event', event }]);
@@ -1249,6 +1450,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     flushPendingStreamEntry,
     getLiveAssistantOutput,
     persistAssistantForSession,
+    persistArtifactsForAssistantMessage,
     persistThreadGoal,
     persistThreadPlan,
     queueStreamEntry,
@@ -1519,6 +1721,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
           await window.anvil.chat.send(startedSession.id, enriched, attachments, {
             collaborationMode,
+            model,
             reasoningEffort: reasoningLevel,
           });
         } catch (err) {
@@ -1554,6 +1757,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         bumpThreadSummary(thread.id, buildThreadPreview(displayMessage, attachments), timestamp);
         await window.anvil.chat.send(currentSessionForThread.id, enriched, attachments, {
           collaborationMode,
+          model,
           reasoningEffort: reasoningLevel,
         });
       } catch (err) {
@@ -1577,6 +1781,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       dbInsightArtifacts,
       dbInsightAnalysis,
       findThreadIdForSession,
+      model,
       reasoningLevel,
       rememberLiveSession,
       scaffoldModeActive,
@@ -1675,9 +1880,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         ]);
         setThreads(nextThreads);
         applyThreadState(thread);
-        lastSelectedThreadIdsRef.current[
-          getWorkItemThreadPreferenceKey(activeWorkspace?.id ?? null)
-        ] = thread.id;
+        rememberThreadSelection(
+          lastSelectedThreadIdsRef.current,
+          getWorkItemThreadPreferenceKey(activeWorkspace?.id ?? null),
+          thread.id,
+        );
         await loadThreadIntoState(thread.id, nextThreads);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to open work item thread');
@@ -1721,9 +1928,41 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const selectThread = useCallback(
     async (threadId: string) => {
       if (scaffoldModeActive) return;
+      const viewedAt = new Date().toISOString();
+      setThreads((prev) =>
+        prev.map((thread) =>
+          thread.id === threadId ? { ...thread, lastViewedAt: viewedAt } : thread,
+        ),
+      );
+      void window.anvil.chat
+        .updateThread(threadId, { viewed: true })
+        .then((updated) => {
+          if (updated) applyThreadState(updated);
+        })
+        .catch((error) => console.error('Failed to mark thread as viewed:', error));
       await loadThreadIntoState(threadId);
     },
-    [loadThreadIntoState, scaffoldModeActive],
+    [applyThreadState, loadThreadIntoState, scaffoldModeActive],
+  );
+
+  const settleThread = useCallback(
+    async (threadId: string, settled: boolean) => {
+      const updated = await window.anvil.chat.updateThread(threadId, { settled });
+      if (!updated) return;
+
+      const nextThreads = sortThreads([
+        updated,
+        ...threadsRef.current.filter((thread) => thread.id !== threadId),
+      ]);
+      setThreads(nextThreads);
+
+      if (!settled || activeThreadRef.current?.id !== threadId) return;
+      const nextActiveThread = nextThreads.find((thread) => !thread.settledAt);
+      if (nextActiveThread) {
+        await loadThreadIntoState(nextActiveThread.id, nextThreads);
+      }
+    },
+    [loadThreadIntoState],
   );
 
   const deleteThread = useCallback(
@@ -1785,12 +2024,22 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       for (const [index, entry] of ancestorEntries.entries()) {
         await window.anvil.chat.saveEntry(forkedThread.id, primaryRepo?.id ?? null, null, {
           id: generateId(),
-          role: entry.kind,
+          role: entry.kind === 'assistant' && entry.phase === 'progress' ? 'system' : entry.kind,
           content: entry.content,
           timestamp: new Date(forkTimestampBase + index).toISOString(),
           personaId: activePersona.id,
           threadId: forkedThread.id,
           ...(entry.kind === 'user' && entry.attachments ? { attachments: entry.attachments } : {}),
+          ...(entry.kind === 'assistant'
+            ? {
+                event: {
+                  type: 'text' as const,
+                  text: entry.content,
+                  itemId: entry.itemId,
+                  assistantPhase: entry.phase,
+                },
+              }
+            : {}),
         });
       }
 
@@ -1853,7 +2102,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       threadLoadVersionRef.current += 1;
       detachLiveSession();
 
-      suppressNextThreadBootstrapRef.current = true;
+      suppressNextThreadBootstrapRef.current = shouldSuppressPreparedChatBootstrap(
+        activePersona?.id ?? null,
+        targetPersona.id,
+      );
       setSession(null);
       setEntries([]);
       setBusy(false);
@@ -1888,11 +2140,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       setActiveThreadId(createdThread.id);
       setActiveReposState(selectedRepos);
       setActiveRepoState(selectedRepos[0] ?? null);
-      lastSelectedThreadIdsRef.current[
+      rememberThreadSelection(
+        lastSelectedThreadIdsRef.current,
         createdThread.workItemId
           ? getWorkItemThreadPreferenceKey(activeWorkspace?.id ?? null)
-          : getThreadPreferenceKey(activeWorkspace?.id ?? null, targetPersona.id)
-      ] = createdThread.id;
+          : getThreadPreferenceKey(activeWorkspace?.id ?? null, targetPersona.id),
+        createdThread.id,
+      );
 
       const enrichedMessage = buildEnrichedMessage(opts.message, {
         personaId: targetPersona.id,
@@ -1952,6 +2206,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
         await window.anvil.chat.send(nextSession.id, enrichedMessage, [], {
           collaborationMode,
+          model,
           reasoningEffort: opts.reasoningLevel ?? reasoningLevel,
         });
       } catch (err) {
@@ -1960,12 +2215,14 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
     },
     [
+      activePersona?.id,
       activeWorkspace,
       buildEnrichedMessage,
       bumpThreadSummary,
       canStartWorkspaceChat,
       chatLayout,
       collaborationMode,
+      model,
       personas,
       rememberLiveSession,
       repos,
@@ -2015,11 +2272,14 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         scaffoldStatus,
         busy,
         error,
+        model,
+        modelProvider,
+        modelOptions,
         reasoningLevel,
         reasoningOptions,
-        threads,
+        threads: scopedThreads,
         activeThread,
-        activeThreadId,
+        activeThreadId: activeThread?.id ?? null,
         liveThreadStatuses,
         collaborationMode,
         activePlan,
@@ -2036,9 +2296,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         startNewSession,
         loadHistory: loadHistoryFn,
         clearHistory: clearHistoryFn,
+        setModel: updateModel,
         setReasoningLevel: updateReasoningLevel,
         selectThread,
         renameThread,
+        settleThread,
         deleteThread,
         forkThread,
         setCollaborationMode,
@@ -2065,12 +2327,15 @@ function boundEventPayload<T extends CodexEvent>(event: T): T {
 }
 
 function shouldPersistEvidenceEvent(event: CodexEvent): boolean {
-  if (event.type === 'command_exec') return !!event.command;
+  if (event.type === 'command_exec') return !!event.command || !!event.output;
+  if (event.type === 'subagent_update') return true;
   return (
     event.type === 'file_read' ||
     event.type === 'file_edit' ||
     event.type === 'tool_call' ||
     event.type === 'approval_request' ||
+    event.type === 'input_request' ||
+    event.type === 'request_resolved' ||
     event.type === 'plan_update' ||
     event.type === 'goal_update' ||
     event.type === 'goal_cleared' ||
@@ -2078,19 +2343,221 @@ function shouldPersistEvidenceEvent(event: CodexEvent): boolean {
   );
 }
 
+function upsertSubagentEntry(entries: ChatEntry[], event: CodexEvent): ChatEntry[] {
+  const subagentId = event.subagent?.id;
+  if (!subagentId) return [...entries, { kind: 'event', event }];
+  const existingIndex = entries.findIndex(
+    (entry) =>
+      entry.kind === 'event' &&
+      entry.event.type === 'subagent_update' &&
+      entry.event.subagent?.id === subagentId,
+  );
+  if (existingIndex < 0) return [...entries, { kind: 'event', event }];
+  const updated = [...entries];
+  updated[existingIndex] = { kind: 'event', event };
+  return updated;
+}
+
+function upsertThreadStatusEntry(entries: ChatEntry[], event: CodexEvent): ChatEntry[] {
+  const filtered = entries.filter(
+    (entry) =>
+      !(
+        entry.kind === 'event' &&
+        entry.event.type === 'thread_status' &&
+        entry.event.protocolThreadId === event.protocolThreadId
+      ),
+  );
+  if (!event.threadActiveFlags || event.threadActiveFlags.length === 0) return filtered;
+  return [...filtered, { kind: 'event', event }];
+}
+
+function getCompletedSubagentResult(event: CodexEvent): string | null {
+  if (
+    event.type !== 'subagent_update' ||
+    (event.subagent?.status !== 'completed' && event.subagent?.status !== 'failed')
+  ) {
+    return null;
+  }
+  const messages = event.subagent.agents
+    .map((agent) => agent.message?.trim())
+    .filter((message): message is string => Boolean(message));
+  return messages.length > 0 ? messages.join('\n\n') : null;
+}
+
+function removeResolvedRequestEntry(entries: ChatEntry[], requestId: string | number): ChatEntry[] {
+  return entries.filter(
+    (entry) =>
+      !(
+        entry.kind === 'event' &&
+        ((entry.event.type === 'approval_request' && entry.event.approvalRequestId === requestId) ||
+          (entry.event.type === 'input_request' && entry.event.inputRequestId === requestId))
+      ),
+  );
+}
+
+export function chatMessagesToEntries(history: ChatMessage[]): ChatEntry[] {
+  const entries: ChatEntry[] = [];
+
+  for (const message of history) {
+    if (
+      message.event?.type === 'request_resolved' &&
+      message.event.resolvedRequestId !== undefined
+    ) {
+      const remaining = removeResolvedRequestEntry(entries, message.event.resolvedRequestId);
+      entries.splice(0, entries.length, ...remaining);
+      continue;
+    }
+
+    if (message.role === 'user') {
+      entries.push({
+        kind: 'user',
+        content: message.content,
+        attachments: message.attachments,
+        id: message.id,
+      });
+      continue;
+    }
+
+    if (message.event?.type === 'text') {
+      entries.push({
+        kind: 'assistant',
+        content: message.event.text ?? message.content,
+        id: message.id,
+        itemId: message.event.itemId,
+        phase: message.event.assistantPhase,
+      });
+      continue;
+    }
+
+    if (message.role === 'assistant') {
+      // Legacy history was persisted as one flattened assistant row without metadata.
+      entries.push({ kind: 'assistant', content: message.content, id: message.id });
+      continue;
+    }
+
+    if (message.event?.type === 'subagent_update') {
+      const next = upsertSubagentEntry(entries, message.event);
+      entries.splice(0, entries.length, ...next);
+      continue;
+    }
+
+    if (message.event) entries.push({ kind: 'event', event: message.event });
+  }
+
+  return entries;
+}
+
 function appendLiveStreamEntry(
   entries: ChatEntry[],
   kind: LiveStreamEntryKind,
   content: string,
+  metadata?: { itemId?: string; phase?: ChatAssistantPhase },
 ): ChatEntry[] {
   const last = entries[entries.length - 1];
-  if (last?.kind === kind) {
+  if (
+    last?.kind === kind &&
+    (kind !== 'assistant' ||
+      (last.kind === 'assistant' &&
+        last.itemId === metadata?.itemId &&
+        last.phase === metadata?.phase))
+  ) {
     const updated = [...entries];
     updated[updated.length - 1] = { ...last, content: last.content + content };
     return updated;
   }
 
-  return [...entries, { kind, content }];
+  return [
+    ...entries,
+    kind === 'assistant'
+      ? { kind, content, itemId: metadata?.itemId, phase: metadata?.phase }
+      : { kind, content },
+  ];
+}
+
+function appendLiveAssistantSegment(
+  output: LiveAssistantOutput,
+  event: CodexEvent,
+): LiveAssistantOutput {
+  const itemId = event.itemId;
+  const existingIndex = itemId
+    ? output.segments.findIndex((segment) => segment.itemId === itemId)
+    : output.activeLegacySegmentId
+      ? output.segments.findIndex((segment) => segment.id === output.activeLegacySegmentId)
+      : -1;
+
+  if (existingIndex >= 0) {
+    const segments = [...output.segments];
+    const existing = segments[existingIndex];
+    segments[existingIndex] = {
+      ...existing,
+      phase: event.assistantPhase ?? existing.phase,
+      content: existing.content + (event.text ?? ''),
+    };
+    return { ...output, segments };
+  }
+
+  const segment: LiveAssistantSegment = {
+    id: generateId(),
+    itemId,
+    phase: event.assistantPhase,
+    content: event.text ?? '',
+    createdAt: new Date().toISOString(),
+  };
+  return {
+    ...output,
+    segments: [...output.segments, segment],
+    activeLegacySegmentId: itemId ? output.activeLegacySegmentId : segment.id,
+  };
+}
+
+function resolveAssistantSegmentPhases(
+  segments: LiveAssistantSegment[],
+  completed: boolean,
+): LiveAssistantSegment[] {
+  if (!completed || segments.length === 0) return segments;
+
+  const firstUnresolvedIndex = segments.findIndex((segment) => !segment.phase);
+  if (firstUnresolvedIndex < 0) return segments;
+
+  const hasExplicitFinalAfterUnresolved = segments.some(
+    (segment, index) => index > firstUnresolvedIndex && segment.phase === 'final',
+  );
+  let fallbackFinalIndex = -1;
+  if (!hasExplicitFinalAfterUnresolved) {
+    for (let index = segments.length - 1; index >= firstUnresolvedIndex; index -= 1) {
+      if (!segments[index].phase) {
+        fallbackFinalIndex = index;
+        break;
+      }
+    }
+  }
+
+  return segments.map((segment, index) => ({
+    ...segment,
+    phase: segment.phase ?? (index === fallbackFinalIndex ? 'final' : 'progress'),
+  }));
+}
+
+function resolveCompletedAssistantEntries(entries: ChatEntry[]): ChatEntry[] {
+  let turnStart = entries.length - 1;
+  while (turnStart >= 0 && entries[turnStart].kind !== 'user') turnStart -= 1;
+
+  const turnEntries = entries.slice(turnStart + 1);
+  const hasFinal = turnEntries.some(
+    (entry) => entry.kind === 'assistant' && entry.phase === 'final',
+  );
+  if (hasFinal) return entries;
+
+  const lastAssistantOffset = turnEntries.findLastIndex((entry) => entry.kind === 'assistant');
+  if (lastAssistantOffset < 0) return entries;
+
+  return entries.map((entry, index) => {
+    if (index <= turnStart || entry.kind !== 'assistant' || entry.phase) return entry;
+    return {
+      ...entry,
+      phase: index === turnStart + 1 + lastAssistantOffset ? 'final' : 'progress',
+    };
+  });
 }
 
 function appendBoundedTail(current: string, addition: string): string {
@@ -2154,10 +2621,84 @@ function upsertThread(threads: ChatThread[], thread: ChatThread): ChatThread[] {
 
 function sortThreads(threads: ChatThread[]): ChatThread[] {
   return [...threads].sort((left, right) => {
-    const leftTime = Date.parse(left.lastMessageAt ?? left.updatedAt ?? left.createdAt);
-    const rightTime = Date.parse(right.lastMessageAt ?? right.updatedAt ?? right.createdAt);
-    return rightTime - leftTime;
+    if (Boolean(left.settledAt) !== Boolean(right.settledAt)) {
+      return left.settledAt ? 1 : -1;
+    }
+
+    if (left.settledAt && right.settledAt) {
+      const settledDifference = Date.parse(right.settledAt) - Date.parse(left.settledAt);
+      if (settledDifference !== 0) return settledDifference;
+    }
+
+    const createdTimeDifference = Date.parse(right.createdAt) - Date.parse(left.createdAt);
+    if (createdTimeDifference !== 0) return createdTimeDifference;
+    return right.id.localeCompare(left.id);
   });
+}
+
+function getThreadAttentionUpdate(
+  event: CodexEvent,
+): Partial<
+  Pick<ChatThread, 'attentionState' | 'attentionUpdatedAt' | 'activeTurnStartedAt' | 'settledAt'>
+> | null {
+  const now = new Date().toISOString();
+  if (event.type === 'approval_request') {
+    return {
+      attentionState: 'approval',
+      attentionUpdatedAt: now,
+      activeTurnStartedAt: undefined,
+      settledAt: undefined,
+    };
+  }
+  if (event.type === 'input_request') {
+    return {
+      attentionState: 'input',
+      attentionUpdatedAt: now,
+      activeTurnStartedAt: undefined,
+      settledAt: undefined,
+    };
+  }
+  if (event.type === 'error' || (event.type === 'status' && event.status === 'error')) {
+    return {
+      attentionState: 'failed',
+      attentionUpdatedAt: now,
+      activeTurnStartedAt: undefined,
+    };
+  }
+  if (event.type === 'status' && (event.status === 'thinking' || event.status === 'executing')) {
+    return {
+      attentionState: 'working',
+      attentionUpdatedAt: now,
+      activeTurnStartedAt: now,
+      settledAt: undefined,
+    };
+  }
+  if (event.type === 'status' && event.status === 'complete') {
+    return {
+      attentionState: 'complete',
+      attentionUpdatedAt: now,
+      activeTurnStartedAt: undefined,
+    };
+  }
+  if (event.type === 'thread_status') {
+    if (event.threadActiveFlags?.includes('waitingOnApproval')) {
+      return {
+        attentionState: 'approval',
+        attentionUpdatedAt: now,
+        activeTurnStartedAt: undefined,
+        settledAt: undefined,
+      };
+    }
+    if (event.threadActiveFlags?.includes('waitingOnUserInput')) {
+      return {
+        attentionState: 'input',
+        attentionUpdatedAt: now,
+        activeTurnStartedAt: undefined,
+        settledAt: undefined,
+      };
+    }
+  }
+  return null;
 }
 
 function sameIdList(left: string[], right: string[]): boolean {
@@ -2171,6 +2712,74 @@ function getThreadPreferenceKey(workspaceId: string | null, personaId: string): 
 
 function getWorkItemThreadPreferenceKey(workspaceId: string | null): string {
   return `${workspaceId ?? 'global'}:workitems`;
+}
+
+const THREAD_SELECTION_STORAGE_KEY = 'anvil.chat.last-selected-threads';
+
+function loadThreadSelectionPreferences(): Record<string, string> {
+  try {
+    const parsed = JSON.parse(
+      window.localStorage.getItem(THREAD_SELECTION_STORAGE_KEY) ?? '{}',
+    ) as Record<string, unknown> | null;
+    if (!parsed || typeof parsed !== 'object') return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter(
+        (entry): entry is [string, string] => typeof entry[1] === 'string',
+      ),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function rememberThreadSelection(
+  preferences: Record<string, string>,
+  preferenceKey: string,
+  threadId: string,
+): void {
+  preferences[preferenceKey] = threadId;
+  try {
+    window.localStorage.setItem(THREAD_SELECTION_STORAGE_KEY, JSON.stringify(preferences));
+  } catch {
+    // Thread continuity is useful, but storage failure should not break chat selection.
+  }
+}
+
+export function threadBelongsToWorkspace(
+  thread: Pick<ChatThread, 'workspaceId'>,
+  workspaceId: string | null,
+): boolean {
+  return (thread.workspaceId ?? null) === workspaceId;
+}
+
+export interface ChatThreadListScope {
+  workspaceId: string | null;
+  personaId: string | null;
+  layout: ChatLayout;
+}
+
+export function threadBelongsToChatList(
+  thread: Pick<ChatThread, 'workspaceId' | 'personaId' | 'workItemId'>,
+  scope: ChatThreadListScope,
+): boolean {
+  if (!threadBelongsToWorkspace(thread, scope.workspaceId)) return false;
+  if (scope.layout === 'workitems') return Boolean(thread.workItemId);
+  return !thread.workItemId && thread.personaId === scope.personaId;
+}
+
+export function upsertThreadForChatList(
+  threads: ChatThread[],
+  thread: ChatThread,
+  scope: ChatThreadListScope,
+): ChatThread[] {
+  return threadBelongsToChatList(thread, scope) ? upsertThread(threads, thread) : threads;
+}
+
+export function shouldSuppressPreparedChatBootstrap(
+  activePersonaId: string | null,
+  targetPersonaId: string,
+): boolean {
+  return activePersonaId !== targetPersonaId;
 }
 
 function normaliseOutgoingMessage(message: string, attachments: ChatAttachment[]): string {
@@ -2213,8 +2822,9 @@ function buildArtifactCanvasPrompt(threadTitle?: string): string {
     '```artifact:path/to/name.md kind=markdown title="Short title"',
     'content here',
     '```',
-    'Supported kinds: markdown, code, html, diagram, data, text.',
-    'Use artifacts for plans, review packs, diagrams, HTML prototypes, dashboards, specs, migration notes, and handover documents.',
+    'Supported kinds: markdown, mermaid, html, docx, pptx, pdf, csv, xlsx, code, data, text.',
+    'Use artifacts for plans, review packs, diagrams, HTML prototypes, dashboards, documents, presentations, spreadsheets, specs, migration notes, and handover documents.',
+    'For a binary docx, pptx, pdf, or xlsx already created under .anvil/artifacts, add encoding=file to the fence header and put a short description inside the fence. Do not inline binary data.',
     'Keep ordinary commentary outside artifact fences.',
     threadTitle ? `Current thread: ${threadTitle}` : null,
   ]
@@ -2285,6 +2895,8 @@ interface ArtifactExtractionContext {
   reasoningEffort?: ReasoningEffort;
 }
 
+type ArtifactContentEncoding = NonNullable<ChatArtifactInput['contentEncoding']>;
+
 function extractChatArtifactInputs(
   content: string,
   context: ArtifactExtractionContext,
@@ -2311,6 +2923,7 @@ function extractChatArtifactInputs(
       kind,
       relativePath,
       content: artifactContent,
+      contentEncoding: metadata.encoding,
       status: 'draft',
       visibility: 'local',
       source: 'assistant',
@@ -2326,8 +2939,14 @@ function parseArtifactMetadata(value: string): {
   path?: string;
   title?: string;
   kind?: ChatArtifactKind;
+  encoding?: ArtifactContentEncoding;
 } {
-  const metadata: { path?: string; title?: string; kind?: ChatArtifactKind } = {};
+  const metadata: {
+    path?: string;
+    title?: string;
+    kind?: ChatArtifactKind;
+    encoding?: ArtifactContentEncoding;
+  } = {};
   const tokenPattern = /(\w+)=(?:"([^"]+)"|'([^']+)'|([^\s]+))/g;
   let match: RegExpExecArray | null;
 
@@ -2337,6 +2956,9 @@ function parseArtifactMetadata(value: string): {
     if (key === 'path') metadata.path = tokenValue;
     if (key === 'title') metadata.title = tokenValue;
     if (key === 'kind' && isChatArtifactKind(tokenValue)) metadata.kind = tokenValue;
+    if (key === 'encoding' && isArtifactContentEncoding(tokenValue)) {
+      metadata.encoding = tokenValue;
+    }
   }
 
   return metadata;
@@ -2345,20 +2967,35 @@ function parseArtifactMetadata(value: string): {
 function isChatArtifactKind(value: string): value is ChatArtifactKind {
   return (
     value === 'markdown' ||
+    value === 'mermaid' ||
     value === 'code' ||
     value === 'html' ||
+    value === 'docx' ||
+    value === 'pptx' ||
+    value === 'pdf' ||
+    value === 'csv' ||
+    value === 'xlsx' ||
     value === 'diagram' ||
     value === 'data' ||
     value === 'text'
   );
 }
 
+function isArtifactContentEncoding(value: string): value is ArtifactContentEncoding {
+  return value === 'utf8' || value === 'base64' || value === 'file';
+}
+
 function inferArtifactKind(relativePath: string): ChatArtifactKind {
   const lower = relativePath.toLowerCase();
   if (lower.endsWith('.md') || lower.endsWith('.mdx')) return 'markdown';
   if (lower.endsWith('.html') || lower.endsWith('.htm')) return 'html';
-  if (lower.endsWith('.mmd') || lower.endsWith('.mermaid')) return 'diagram';
-  if (lower.endsWith('.json') || lower.endsWith('.csv') || lower.endsWith('.yaml')) return 'data';
+  if (lower.endsWith('.mmd') || lower.endsWith('.mermaid')) return 'mermaid';
+  if (lower.endsWith('.docx')) return 'docx';
+  if (lower.endsWith('.pptx')) return 'pptx';
+  if (lower.endsWith('.pdf')) return 'pdf';
+  if (lower.endsWith('.csv')) return 'csv';
+  if (lower.endsWith('.xlsx')) return 'xlsx';
+  if (lower.endsWith('.json') || lower.endsWith('.yaml')) return 'data';
   if (/\.(ts|tsx|js|jsx|css|sql|py|go|rs|java|cs)$/.test(lower)) return 'code';
   return 'text';
 }

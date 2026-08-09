@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 42;
+export const SCHEMA_VERSION = 50;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -35,7 +35,9 @@ CREATE TABLE IF NOT EXISTS repo_summaries (
   model_version TEXT,
   index_mode TEXT DEFAULT 'light',
   index_provider TEXT,
-  index_warnings TEXT
+  index_warnings TEXT,
+  map_refresh_mode TEXT NOT NULL DEFAULT 'manual',
+  generated_commit_sha TEXT
 );
 
 CREATE TABLE IF NOT EXISTS module_summaries (
@@ -48,6 +50,14 @@ CREATE TABLE IF NOT EXISTS module_summaries (
   dependencies TEXT,
   generated_at TEXT,
   UNIQUE(repo_id, path)
+);
+
+CREATE TABLE IF NOT EXISTS repository_map_graphs (
+  repo_id TEXT PRIMARY KEY REFERENCES repos(id) ON DELETE CASCADE,
+  schema_version INTEGER NOT NULL,
+  indexed_commit_sha TEXT,
+  graph_json TEXT NOT NULL,
+  generated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS chat_threads (
@@ -66,7 +76,12 @@ CREATE TABLE IF NOT EXISTS chat_threads (
   provider_thread_id TEXT,
   active_plan_json TEXT,
   active_plan_updated_at TEXT,
-  active_goal_json TEXT
+  active_goal_json TEXT,
+  attention_state TEXT NOT NULL DEFAULT 'idle',
+  attention_updated_at TEXT,
+  active_turn_started_at TEXT,
+  last_viewed_at TEXT,
+  settled_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS chat_sessions (
@@ -107,6 +122,35 @@ CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_timestamp
 
 CREATE INDEX IF NOT EXISTS idx_chat_threads_provider_thread
   ON chat_threads(provider_thread_id);
+
+CREATE TABLE IF NOT EXISTS workflow_templates (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  graph_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS workflow_runs (
+  id TEXT PRIMARY KEY,
+  template_id TEXT NOT NULL,
+  template_name TEXT NOT NULL,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  repo_ids_json TEXT NOT NULL DEFAULT '[]',
+  graph_json TEXT NOT NULL,
+  kickoff TEXT NOT NULL,
+  status TEXT NOT NULL,
+  supervisor_thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+  node_runs_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  started_at TEXT,
+  completed_at TEXT,
+  error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_workspace_created
+  ON workflow_runs(workspace_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS chat_artifacts (
   id TEXT PRIMARY KEY,
@@ -188,6 +232,7 @@ CREATE TABLE IF NOT EXISTS work_items_cache (
 CREATE TABLE IF NOT EXISTS settings (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   llm_provider TEXT DEFAULT 'codex',
+  enabled_llm_providers TEXT,
   foundry_endpoint TEXT,
   foundry_deployment TEXT,
   foundry_api_version TEXT DEFAULT '2024-10-21',
@@ -203,6 +248,8 @@ CREATE TABLE IF NOT EXISTS settings (
   ado_team TEXT,
   ado_pat BLOB,
   work_item_provider TEXT DEFAULT 'ado',
+  work_item_connections BLOB,
+  active_work_item_connection_id TEXT,
   linear_api_key BLOB,
   linear_team_id TEXT,
   jira_host TEXT,
@@ -214,12 +261,18 @@ CREATE TABLE IF NOT EXISTS settings (
   confluence_base_url TEXT,
   confluence_space_key TEXT,
   confluence_pat BLOB,
+  docs_provider TEXT DEFAULT 'confluence',
+  notion_oauth_token BLOB,
+  notion_oauth_expiry TEXT,
+  notion_database_id TEXT,
   default_repo_path TEXT,
   code_review_quick_glance_rubric TEXT,
   code_review_senior_dev_rubric TEXT,
   theme TEXT DEFAULT 'system',
   user_role TEXT,
   active_workspace_id TEXT,
+  github_pat BLOB,
+  github_username TEXT,
   cloud_features_enabled INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -361,6 +414,27 @@ CREATE TABLE IF NOT EXISTS code_review_findings (
   pr_commented_at TEXT,
   dismissed     INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS pull_request_visualisations (
+  id              TEXT PRIMARY KEY,
+  repo_id         TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  review_id       TEXT REFERENCES code_reviews(id) ON DELETE SET NULL,
+  provider        TEXT NOT NULL,
+  pull_request_id TEXT NOT NULL,
+  head_sha        TEXT NOT NULL,
+  status          TEXT NOT NULL DEFAULT 'generating',
+  pull_request_json TEXT NOT NULL,
+  summary         TEXT,
+  intent          TEXT,
+  data_json       TEXT NOT NULL DEFAULT '{}',
+  error           TEXT,
+  created_at      TEXT NOT NULL,
+  generated_at    TEXT,
+  UNIQUE(repo_id, provider, pull_request_id, head_sha)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pr_visualisations_lookup
+  ON pull_request_visualisations(repo_id, provider, pull_request_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS security_audits (
   id            TEXT PRIMARY KEY,
@@ -1443,5 +1517,94 @@ export const MIGRATIONS: Record<number, string> = {
       WHERE llm_provider = 'openai' AND openai_api_key IS NULL;
     UPDATE settings SET openai_model = 'gpt-5.6-sol'
       WHERE openai_model IS NULL OR openai_model IN ('gpt-5.4', 'gpt-5.5');
+  `,
+  43: `
+    CREATE TABLE IF NOT EXISTS workflow_templates (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      graph_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS workflow_runs (
+      id TEXT PRIMARY KEY,
+      template_id TEXT NOT NULL,
+      template_name TEXT NOT NULL,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      repo_ids_json TEXT NOT NULL DEFAULT '[]',
+      kickoff TEXT NOT NULL,
+      status TEXT NOT NULL,
+      supervisor_thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+      node_runs_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      started_at TEXT,
+      completed_at TEXT,
+      error TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_workflow_runs_workspace_created
+      ON workflow_runs(workspace_id, created_at DESC);
+  `,
+  44: `
+    ALTER TABLE workflow_runs
+      ADD COLUMN graph_json TEXT NOT NULL DEFAULT '{"nodes":[],"edges":[]}';
+  `,
+  45: `
+    ALTER TABLE settings ADD COLUMN work_item_connections BLOB;
+    ALTER TABLE settings ADD COLUMN active_work_item_connection_id TEXT;
+  `,
+  46: `
+    ALTER TABLE chat_threads ADD COLUMN attention_state TEXT NOT NULL DEFAULT 'idle';
+    ALTER TABLE chat_threads ADD COLUMN attention_updated_at TEXT;
+    ALTER TABLE chat_threads ADD COLUMN active_turn_started_at TEXT;
+    ALTER TABLE chat_threads ADD COLUMN last_viewed_at TEXT;
+    ALTER TABLE chat_threads ADD COLUMN settled_at TEXT;
+
+    CREATE INDEX IF NOT EXISTS idx_chat_threads_inbox
+      ON chat_threads(workspace_id, persona_id, settled_at, created_at DESC);
+  `,
+  47: `
+    ALTER TABLE settings ADD COLUMN enabled_llm_providers TEXT;
+    UPDATE settings
+      SET enabled_llm_providers = json_array(COALESCE(llm_provider, 'codex'))
+      WHERE enabled_llm_providers IS NULL;
+  `,
+  48: `
+    ALTER TABLE repo_summaries
+      ADD COLUMN map_refresh_mode TEXT NOT NULL DEFAULT 'manual';
+    ALTER TABLE repo_summaries ADD COLUMN generated_commit_sha TEXT;
+  `,
+  49: `
+    CREATE TABLE IF NOT EXISTS repository_map_graphs (
+      repo_id TEXT PRIMARY KEY REFERENCES repos(id) ON DELETE CASCADE,
+      schema_version INTEGER NOT NULL,
+      indexed_commit_sha TEXT,
+      graph_json TEXT NOT NULL,
+      generated_at TEXT NOT NULL
+    );
+  `,
+  50: `
+    CREATE TABLE IF NOT EXISTS pull_request_visualisations (
+      id TEXT PRIMARY KEY,
+      repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+      review_id TEXT REFERENCES code_reviews(id) ON DELETE SET NULL,
+      provider TEXT NOT NULL,
+      pull_request_id TEXT NOT NULL,
+      head_sha TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'generating',
+      pull_request_json TEXT NOT NULL,
+      summary TEXT,
+      intent TEXT,
+      data_json TEXT NOT NULL DEFAULT '{}',
+      error TEXT,
+      created_at TEXT NOT NULL,
+      generated_at TEXT,
+      UNIQUE(repo_id, provider, pull_request_id, head_sha)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_pr_visualisations_lookup
+      ON pull_request_visualisations(repo_id, provider, pull_request_id, created_at DESC);
   `,
 };

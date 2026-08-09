@@ -1,0 +1,212 @@
+name: anvil-registry
+
+services:
+  gateway:
+    image: ${ANVIL_REGISTRY_IMAGE_PREFIX:?Set ANVIL_REGISTRY_IMAGE_PREFIX}/anvil-registry-gateway:${ANVIL_REGISTRY_VERSION:?Set ANVIL_REGISTRY_VERSION}
+    restart: unless-stopped
+    ports:
+      - "${ANVIL_BIND_ADDRESS:-127.0.0.1}:${ANVIL_GATEWAY_PORT:-4873}:4873"
+    environment:
+      RUNTIME_MODE: ${RUNTIME_MODE:-development}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?Set PUBLIC_BASE_URL to the URL used by npm and pnpm clients}
+      ANVIL_ADMIN_TOKEN: ${ANVIL_ADMIN_TOKEN:?Set ANVIL_ADMIN_TOKEN}
+      DATABASE_URL: postgres://anvil:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/anvil
+      PERSISTENCE_DRIVER: postgres
+      QUEUE_DRIVER: bullmq
+      REDIS_URL: redis://redis:6379
+      OBJECT_STORE_DRIVER: s3
+      POPULAR_PACKAGE_INDEX_OBJECT_KEY: popular-index/npm/latest.json
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: anvil-package-cache
+      S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER}
+      S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD}
+      AWS_REGION: us-east-1
+      UPSTREAM_NPM_REGISTRY: ${UPSTREAM_NPM_REGISTRY:-https://registry.npmjs.org}
+      UPSTREAM_NPM_REGISTRIES_JSON: ${UPSTREAM_NPM_REGISTRIES_JSON:-}
+      NPM_DOWNLOADS_API: https://api.npmjs.org/downloads
+      POLICY_MINIMUM_PACKAGE_AGE_DAYS: ${POLICY_MINIMUM_PACKAGE_AGE_DAYS:-3}
+      POLICY_HIDE_QUARANTINED_METADATA: ${POLICY_HIDE_QUARANTINED_METADATA:-false}
+      LLM_REVIEW_ENABLED: ${LLM_REVIEW_ENABLED:-false}
+      LLM_REVIEW_PROVIDER: ${LLM_REVIEW_PROVIDER:-}
+      LLM_REVIEW_MODEL: ${LLM_REVIEW_MODEL:-}
+      LLM_REVIEW_ENDPOINT: ${LLM_REVIEW_ENDPOINT:-}
+      LLM_REVIEW_RUN_ON_UNKNOWN_PACKAGES: ${LLM_REVIEW_RUN_ON_UNKNOWN_PACKAGES:-false}
+      LLM_REVIEW_RUN_ON_QUARANTINE: ${LLM_REVIEW_RUN_ON_QUARANTINE:-false}
+      LLM_REVIEW_INCLUDE_PRIVATE_PACKAGES: ${LLM_REVIEW_INCLUDE_PRIVATE_PACKAGES:-false}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:4873/-/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  worker:
+    image: ${ANVIL_REGISTRY_IMAGE_PREFIX:?Set ANVIL_REGISTRY_IMAGE_PREFIX}/anvil-registry-worker:${ANVIL_REGISTRY_VERSION:?Set ANVIL_REGISTRY_VERSION}
+    restart: unless-stopped
+    environment:
+      RUNTIME_MODE: ${RUNTIME_MODE:-development}
+      DATABASE_URL: postgres://anvil:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/anvil
+      PERSISTENCE_DRIVER: postgres
+      QUEUE_DRIVER: bullmq
+      REDIS_URL: redis://redis:6379
+      OBJECT_STORE_DRIVER: s3
+      POPULAR_PACKAGE_INDEX_OBJECT_KEY: popular-index/npm/latest.json
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: anvil-package-cache
+      S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER}
+      S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD}
+      AWS_REGION: us-east-1
+      UPSTREAM_NPM_REGISTRY: ${UPSTREAM_NPM_REGISTRY:-https://registry.npmjs.org}
+      UPSTREAM_NPM_REGISTRIES_JSON: ${UPSTREAM_NPM_REGISTRIES_JSON:-}
+      NPM_DOWNLOADS_API: https://api.npmjs.org/downloads
+      POLICY_MINIMUM_PACKAGE_AGE_DAYS: ${POLICY_MINIMUM_PACKAGE_AGE_DAYS:-3}
+      POLICY_HIDE_QUARANTINED_METADATA: ${POLICY_HIDE_QUARANTINED_METADATA:-false}
+      LLM_REVIEW_ENABLED: ${LLM_REVIEW_ENABLED:-false}
+      LLM_REVIEW_PROVIDER: ${LLM_REVIEW_PROVIDER:-}
+      LLM_REVIEW_MODEL: ${LLM_REVIEW_MODEL:-}
+      LLM_REVIEW_ENDPOINT: ${LLM_REVIEW_ENDPOINT:-}
+      LLM_REVIEW_API_KEY: ${LLM_REVIEW_API_KEY:-}
+      CODEX_CLI_COMMAND: ${CODEX_CLI_COMMAND:-codex}
+      CODEX_CLI_TIMEOUT_MS: ${CODEX_CLI_TIMEOUT_MS:-120000}
+      LLM_REVIEW_RUN_ON_UNKNOWN_PACKAGES: ${LLM_REVIEW_RUN_ON_UNKNOWN_PACKAGES:-false}
+      LLM_REVIEW_RUN_ON_QUARANTINE: ${LLM_REVIEW_RUN_ON_QUARANTINE:-false}
+      LLM_REVIEW_INCLUDE_PRIVATE_PACKAGES: ${LLM_REVIEW_INCLUDE_PRIVATE_PACKAGES:-false}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "apps/worker/dist/index.js", "--health-check"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  admin:
+    image: ${ANVIL_REGISTRY_IMAGE_PREFIX:?Set ANVIL_REGISTRY_IMAGE_PREFIX}/anvil-registry-admin:${ANVIL_REGISTRY_VERSION:?Set ANVIL_REGISTRY_VERSION}
+    restart: unless-stopped
+    ports:
+      - "${ANVIL_BIND_ADDRESS:-127.0.0.1}:${ANVIL_ADMIN_PORT:-3000}:3000"
+    environment:
+      RUNTIME_MODE: ${RUNTIME_MODE:-development}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?Set PUBLIC_BASE_URL}
+      ANVIL_API_BASE_URL: http://gateway:4873
+      ANVIL_ADMIN_TOKEN: ${ANVIL_ADMIN_TOKEN:?Set ANVIL_ADMIN_TOKEN}
+      DATABASE_URL: postgres://anvil:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/anvil
+      PERSISTENCE_DRIVER: postgres
+      OBJECT_STORE_DRIVER: s3
+      POPULAR_PACKAGE_INDEX_OBJECT_KEY: popular-index/npm/latest.json
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: anvil-package-cache
+      S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER}
+      S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD}
+      AWS_REGION: us-east-1
+      POLICY_MINIMUM_PACKAGE_AGE_DAYS: ${POLICY_MINIMUM_PACKAGE_AGE_DAYS:-3}
+      POLICY_HIDE_QUARANTINED_METADATA: ${POLICY_HIDE_QUARANTINED_METADATA:-false}
+      LLM_REVIEW_ENABLED: ${LLM_REVIEW_ENABLED:-false}
+      LLM_REVIEW_PROVIDER: ${LLM_REVIEW_PROVIDER:-}
+      LLM_REVIEW_MODEL: ${LLM_REVIEW_MODEL:-}
+      LLM_REVIEW_ENDPOINT: ${LLM_REVIEW_ENDPOINT:-}
+      LLM_REVIEW_RUN_ON_UNKNOWN_PACKAGES: ${LLM_REVIEW_RUN_ON_UNKNOWN_PACKAGES:-false}
+      LLM_REVIEW_RUN_ON_QUARANTINE: ${LLM_REVIEW_RUN_ON_QUARANTINE:-false}
+      LLM_REVIEW_INCLUDE_PRIVATE_PACKAGES: ${LLM_REVIEW_INCLUDE_PRIVATE_PACKAGES:-false}
+    depends_on:
+      gateway:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/-/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  migrate:
+    image: ${ANVIL_REGISTRY_IMAGE_PREFIX:?Set ANVIL_REGISTRY_IMAGE_PREFIX}/anvil-registry-migrate:${ANVIL_REGISTRY_VERSION:?Set ANVIL_REGISTRY_VERSION}
+    restart: "no"
+    environment:
+      DATABASE_URL: postgres://anvil:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/anvil
+      DATABASE_READY_ATTEMPTS: 60
+      DATABASE_READY_DELAY_MS: 1000
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: anvil
+      POSTGRES_USER: anvil
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - ${ANVIL_DATA_DIR:?Set ANVIL_DATA_DIR}/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U anvil -d anvil"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: ${REDIS_IMAGE:-redis:7}
+    restart: unless-stopped
+    volumes:
+      - ${ANVIL_DATA_DIR:?Set ANVIL_DATA_DIR}/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: ${MINIO_IMAGE:-minio/minio}
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD}
+    volumes:
+      - ${ANVIL_DATA_DIR:?Set ANVIL_DATA_DIR}/minio:/data
+
+  minio-init:
+    image: ${MINIO_MC_IMAGE:-minio/mc}
+    restart: "no"
+    depends_on:
+      - minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        until mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"; do sleep 1; done
+        mc mb --ignore-existing local/anvil-package-cache
+        mc anonymous set none local/anvil-package-cache
+
+networks:
+  default:
+    name: anvil-registry

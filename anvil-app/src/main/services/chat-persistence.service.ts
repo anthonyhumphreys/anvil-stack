@@ -5,6 +5,7 @@ import type {
   ChatMessage,
   ChatPlanSnapshot,
   ChatThread,
+  ChatThreadAttentionState,
   WorkItemProvider,
 } from '../../shared/types.js';
 import { getDb } from '../db/database.js';
@@ -26,6 +27,8 @@ interface UpdateChatThreadInput {
   workItemTitle?: string;
   repoIds?: string[];
   activeRepoId?: string | null;
+  settled?: boolean;
+  viewed?: boolean;
 }
 
 interface EnsureWorkItemThreadInput {
@@ -57,6 +60,11 @@ interface ChatThreadRow {
   active_plan_json: string | null;
   active_plan_updated_at: string | null;
   active_goal_json: string | null;
+  attention_state: string;
+  attention_updated_at: string | null;
+  active_turn_started_at: string | null;
+  last_viewed_at: string | null;
+  settled_at: string | null;
 }
 
 function defaultThreadTitle(personaId: string): string {
@@ -206,7 +214,22 @@ function mapThreadRow(row: ChatThreadRow): ChatThread {
     providerThreadId: row.provider_thread_id ?? undefined,
     activePlan: parsePlanSnapshot(row.active_plan_json),
     activeGoal: parseGoalSnapshot(row.active_goal_json),
+    attentionState: parseAttentionState(row.attention_state),
+    attentionUpdatedAt: row.attention_updated_at ?? undefined,
+    activeTurnStartedAt: row.active_turn_started_at ?? undefined,
+    lastViewedAt: row.last_viewed_at ?? undefined,
+    settledAt: row.settled_at ?? undefined,
   };
+}
+
+function parseAttentionState(value: string | null | undefined): ChatThreadAttentionState {
+  return value === 'working' ||
+    value === 'approval' ||
+    value === 'input' ||
+    value === 'failed' ||
+    value === 'complete'
+    ? value
+    : 'idle';
 }
 
 function parseWorkItemProvider(value: string | null | undefined): WorkItemProvider | undefined {
@@ -234,6 +257,11 @@ export function listChatThreads(workspaceId: string | null, personaId: string): 
          t.active_plan_json,
          t.active_plan_updated_at,
          t.active_goal_json,
+         t.attention_state,
+         t.attention_updated_at,
+         t.active_turn_started_at,
+         t.last_viewed_at,
+         t.settled_at,
          (
            SELECT m2.content
            FROM chat_messages m2
@@ -252,7 +280,10 @@ export function listChatThreads(workspaceId: string | null, personaId: string): 
          AND t.persona_id = ?
          AND t.work_item_id IS NULL
        GROUP BY t.id
-       ORDER BY COALESCE(t.last_message_at, t.updated_at, t.created_at) DESC`,
+       ORDER BY
+         COALESCE(t.last_message_at, t.updated_at, t.created_at) DESC,
+         t.created_at DESC,
+         t.id DESC`,
     )
     .all(workspaceId, workspaceId, personaId) as ChatThreadRow[];
 
@@ -280,6 +311,11 @@ export function listWorkItemChatThreads(workspaceId: string | null): ChatThread[
          t.active_plan_json,
          t.active_plan_updated_at,
          t.active_goal_json,
+         t.attention_state,
+         t.attention_updated_at,
+         t.active_turn_started_at,
+         t.last_viewed_at,
+         t.settled_at,
          (
            SELECT m2.content
            FROM chat_messages m2
@@ -297,7 +333,10 @@ export function listWorkItemChatThreads(workspaceId: string | null): ChatThread[
          )
          AND t.work_item_id IS NOT NULL
        GROUP BY t.id
-       ORDER BY COALESCE(t.last_message_at, t.updated_at, t.created_at) DESC`,
+       ORDER BY
+         COALESCE(t.last_message_at, t.updated_at, t.created_at) DESC,
+         t.created_at DESC,
+         t.id DESC`,
     )
     .all(workspaceId, workspaceId) as ChatThreadRow[];
 
@@ -325,6 +364,11 @@ export function getChatThread(threadId: string): ChatThread | null {
          t.active_plan_json,
          t.active_plan_updated_at,
          t.active_goal_json,
+         t.attention_state,
+         t.attention_updated_at,
+         t.active_turn_started_at,
+         t.last_viewed_at,
+         t.settled_at,
          (
            SELECT m2.content
            FROM chat_messages m2
@@ -368,6 +412,11 @@ export function findWorkItemChatThread(
          t.active_plan_json,
          t.active_plan_updated_at,
          t.active_goal_json,
+         t.attention_state,
+         t.attention_updated_at,
+         t.active_turn_started_at,
+         t.last_viewed_at,
+         t.settled_at,
          (
            SELECT m2.content
            FROM chat_messages m2
@@ -495,10 +544,53 @@ export function updateChatThread(
     values.push(updates.activeRepoId ?? null);
   }
 
+  if (updates.settled === true) {
+    const row = db
+      .prepare('SELECT attention_state FROM chat_threads WHERE id = ?')
+      .get(threadId) as { attention_state: string } | undefined;
+    if (row && ['working', 'approval', 'input'].includes(row.attention_state)) {
+      throw new Error('This thread still needs attention and cannot be settled yet.');
+    }
+    assignments.push('settled_at = ?');
+    values.push(new Date().toISOString());
+  } else if (updates.settled === false) {
+    assignments.push('settled_at = NULL');
+  }
+
+  if (updates.viewed) {
+    assignments.push('last_viewed_at = ?');
+    values.push(new Date().toISOString());
+  }
+
   db.prepare(`UPDATE chat_threads SET ${assignments.join(', ')} WHERE id = ?`).run(
     ...values,
     threadId,
   );
+
+  return getChatThread(threadId);
+}
+
+export function updateChatThreadAttention(
+  threadId: string,
+  attentionState: ChatThreadAttentionState,
+): ChatThread | null {
+  const now = new Date().toISOString();
+  const requiresAttention =
+    attentionState === 'working' || attentionState === 'approval' || attentionState === 'input';
+  getDb()
+    .prepare(
+      `UPDATE chat_threads
+       SET attention_state = ?,
+           attention_updated_at = ?,
+           active_turn_started_at = CASE
+             WHEN ? = 'working' THEN COALESCE(active_turn_started_at, ?)
+             ELSE NULL
+           END,
+           settled_at = CASE WHEN ? THEN NULL ELSE settled_at END,
+           updated_at = ?
+       WHERE id = ?`,
+    )
+    .run(attentionState, now, attentionState, now, requiresAttention ? 1 : 0, now, threadId);
 
   return getChatThread(threadId);
 }
@@ -621,7 +713,18 @@ export function saveChatEntry(
        event_json,
        timestamp
      )
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       thread_id = excluded.thread_id,
+       repo_id = excluded.repo_id,
+       persona_id = excluded.persona_id,
+       session_id = excluded.session_id,
+       kind = excluded.kind,
+       role = excluded.role,
+       content = excluded.content,
+       attachments_json = excluded.attachments_json,
+       event_json = excluded.event_json,
+       timestamp = excluded.timestamp`,
   ).run(
     entry.id,
     threadId,
@@ -632,15 +735,27 @@ export function saveChatEntry(
     entry.role,
     entry.content,
     serialiseAttachments(entry.attachments),
-    null,
+    entry.event ? JSON.stringify(entry.event) : null,
     entry.timestamp,
   );
 
-  db.prepare(
-    `UPDATE chat_threads
-     SET updated_at = ?, last_message_at = ?
-     WHERE id = ?`,
-  ).run(entry.timestamp, entry.timestamp, threadId);
+  const advancesConversation =
+    entry.role === 'user' ||
+    (entry.role === 'assistant' &&
+      (!entry.event || entry.event.type !== 'text' || entry.event.assistantPhase !== 'progress'));
+
+  if (advancesConversation) {
+    db.prepare(
+      `UPDATE chat_threads
+       SET
+         updated_at = CASE WHEN updated_at < ? THEN ? ELSE updated_at END,
+         last_message_at = CASE
+           WHEN last_message_at IS NULL OR last_message_at < ? THEN ?
+           ELSE last_message_at
+         END
+       WHERE id = ?`,
+    ).run(entry.timestamp, entry.timestamp, entry.timestamp, entry.timestamp, threadId);
+  }
 }
 
 export function loadChatHistory(threadId: string): ChatMessage[] {
@@ -656,10 +771,11 @@ export function loadChatHistory(threadId: string): ChatMessage[] {
          persona_id,
          session_id,
          thread_id,
-         repo_id
+         repo_id,
+         event_json
        FROM chat_messages
        WHERE thread_id = ?
-       ORDER BY timestamp ASC`,
+       ORDER BY timestamp ASC, rowid ASC`,
     )
     .all(threadId) as Array<{
     id: string;
@@ -671,6 +787,7 @@ export function loadChatHistory(threadId: string): ChatMessage[] {
     session_id: string | null;
     thread_id: string | null;
     repo_id: string | null;
+    event_json: string | null;
   }>;
 
   return rows.map((row) => ({
@@ -678,12 +795,23 @@ export function loadChatHistory(threadId: string): ChatMessage[] {
     role: row.role as ChatMessage['role'],
     content: row.content,
     timestamp: row.timestamp,
+    event: parseChatEvent(row.event_json),
     personaId: row.persona_id ?? undefined,
     sessionId: row.session_id ?? undefined,
     threadId: row.thread_id ?? undefined,
     repoContext: row.repo_id ?? undefined,
     attachments: parseAttachments(row.attachments_json),
   }));
+}
+
+function parseChatEvent(value: string | null): ChatMessage['event'] {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as ChatMessage['event'];
+    return parsed && typeof parsed.type === 'string' ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function clearChatHistory(threadId: string): void {

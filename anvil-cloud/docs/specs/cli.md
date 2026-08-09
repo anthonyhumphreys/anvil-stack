@@ -108,9 +108,14 @@ Options:
 ```txt
 --json     machine-readable startup result
 --agent    JSONL event stream, no rich UI
+--host     bind address, default 127.0.0.1
 --port     runtime port, default 8787
 --client-port client port, default 5173
 ```
+
+Use `--host` only for a trusted local network or native-device workflow. Lens
+and `/_anvil/*` include development management actions and are not a hosted
+authentication boundary.
 
 ### `anvil-cloud check`
 
@@ -521,10 +526,11 @@ structured `plan.review.cost.drivers`, rollback/cleanup notes, and
 preview deploys include
 `resources.deploymentMetadataTable` and `resources.deploymentMetadataKey` so
 automation can connect deploy output to remote inspect, logs, and destroy
-cleanup state. During alpha, Cells with services, workflows, or outbound fetch
-are reviewable before provisioning: workflows add `workflow-preview-review`,
-services add `service-preview-review`, and outbound fetch allow-lists are
-written into the generated AWS runtime guard.
+cleanup state. During alpha, workflows and outbound fetch are reviewable before
+provisioning: workflows add `workflow-preview-review`, and outbound fetch
+allow-lists are written into the generated AWS runtime guard. Service-bearing
+Cells are blocked with `AWS_PREVIEW_UNSUPPORTED_FEATURE` until the Fargate path
+executes the declared Cell service handler instead of an adapter scaffold.
 
 If CloudFormation does not reach a terminal stack status within the provisioner
 polling limit, deploy returns `AWS_STACK_TIMEOUT` with the last observed stack
@@ -544,10 +550,10 @@ Returns rollback intent for a previous preview deployment.
 anvil-cloud rollback --preview --app notes --to-deployment dep_123 --dry-run --json
 ```
 
-The deployment plan reports rollback as supported at the adapter contract layer
-because preview deployments carry versioned metadata. In alpha, the CLI still
-emits rollback intent and validation output rather than directly promoting an S3
-artifact pointer; AWS artifact promotion remains provider-owned.
+The deployment plan reports rollback as unsupported/manual. Current preview
+metadata stores the active deployment and client assets are not archived as a
+restorable set, so the CLI emits dry-run recovery intent rather than pretending
+it can safely promote an earlier deployment.
 
 ### `anvil-cloud destroy --preview --app <name> --yes [--dry-run]`
 

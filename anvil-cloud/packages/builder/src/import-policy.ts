@@ -640,12 +640,14 @@ function inspectHandlerCapabilities(
       diagnostics,
       policyContext,
       contextEnvAliases,
-      contextEnvMethodAliases,
     );
   }
 
   const inspect = (node: ts.Node) => {
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(contextParameter.name)) {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(contextParameter.name)
+    ) {
       inspectContextAliasDeclaration(
         node,
         contextName,
@@ -925,7 +927,6 @@ function inspectContextAliasDeclaration(
     diagnostics,
     policyContext,
     contextEnvAliases,
-    contextEnvMethodAliases,
   );
 }
 
@@ -936,7 +937,6 @@ function inspectContextBindingPattern(
   diagnostics: BuilderDiagnostic[],
   policyContext: PolicyContext,
   contextEnvAliases: Set<string>,
-  contextEnvMethodAliases: Map<string, "get" | "require">,
 ): void {
   for (const element of binding.elements) {
     if (element.dotDotDotToken || !ts.isIdentifier(element.name)) {

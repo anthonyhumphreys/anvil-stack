@@ -1633,7 +1633,7 @@ function resolveAgentPath(
 }
 
 async function readTextFile(filePath: string): Promise<string> {
-  // @ts-ignore Cell project typechecks may not install Node types.
+  // @ts-ignore -- Cell project typechecks may not install Node types.
   const fs = (await import("node:fs/promises")) as {
     readFile: (path: string, encoding: "utf8") => Promise<string>;
   };

@@ -1,10 +1,43 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildMessageReusePrefill,
+  getChatTurnLiveState,
   getNewChatThreadActionLabel,
   isNearChatBottom,
   shouldFocusChatComposerFromKey,
 } from '../ChatView';
+
+describe('getChatTurnLiveState', () => {
+  it('keeps the latest busy turn visibly progressing through each streaming phase', () => {
+    expect(
+      getChatTurnLiveState({ busy: true, isLatest: true, hasWork: false, hasAnswer: false }),
+    ).toBe('thinking');
+    expect(
+      getChatTurnLiveState({ busy: true, isLatest: true, hasWork: true, hasAnswer: false }),
+    ).toBe('working');
+    expect(
+      getChatTurnLiveState({ busy: true, isLatest: true, hasWork: true, hasAnswer: true }),
+    ).toBe('responding');
+    expect(
+      getChatTurnLiveState({
+        busy: true,
+        isLatest: true,
+        hasWork: true,
+        hasAnswer: true,
+        hasTrailingWork: true,
+      }),
+    ).toBe('working');
+  });
+
+  it('does not mark completed or historical turns as live', () => {
+    expect(
+      getChatTurnLiveState({ busy: false, isLatest: true, hasWork: true, hasAnswer: true }),
+    ).toBeNull();
+    expect(
+      getChatTurnLiveState({ busy: true, isLatest: false, hasWork: true, hasAnswer: false }),
+    ).toBeNull();
+  });
+});
 
 describe('isNearChatBottom', () => {
   it('treats scroll positions within the threshold as near the latest message', () => {

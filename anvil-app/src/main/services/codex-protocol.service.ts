@@ -2,9 +2,18 @@ import type { ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import type {
   ChatGoalSnapshot,
+  ChatAssistantPhase,
   ChatPlanSnapshot,
   ChatPlanStepStatus,
   CodexEvent,
+  CodexSubagentActivityKind,
+  CodexSubagentState,
+  CodexSubagentStatus,
+  CodexSubagentTool,
+  CodexSubagentToolStatus,
+  CodexSubagentUpdate,
+  CodexUserInputQuestion,
+  ReasoningEffort,
 } from '../../shared/types.js';
 
 export type JsonRpcRequestId = string | number;
@@ -14,6 +23,7 @@ export interface CodexProtocolState {
   turnId: string | null;
   initialized: boolean;
   pendingFileChanges?: Map<string, Map<string, PendingFileChange>>;
+  assistantPhases?: Map<string, ChatAssistantPhase>;
 }
 
 interface PendingFileChange {
@@ -25,7 +35,7 @@ export interface CodexProtocolCallbacks {
   onThreadReady?: () => void;
   onThreadError?: (message: string) => void;
   onTurnStarted?: () => void;
-  onTurnCompleted?: () => void;
+  onTurnCompleted?: (status: 'completed' | 'interrupted' | 'failed' | 'inProgress') => void;
   onTurnIdChanged?: (turnId: string | null) => void;
   onEvent?: (event: CodexEvent) => void;
   onServerRequestResolved?: (requestId: JsonRpcRequestId) => void;
@@ -94,7 +104,7 @@ export function handleCodexServerLine(
   const method = msg.method as string | undefined;
   const requestId = isJsonRpcRequestId(msg.id) ? msg.id : undefined;
 
-  if (!method && msg.id) {
+  if (!method && requestId !== undefined) {
     if (msg.error) {
       const err = msg.error as { message?: string };
       if (!state.threadId) {
@@ -109,15 +119,70 @@ export function handleCodexServerLine(
 
     const result = msg.result as Record<string, unknown> | undefined;
     const thread = result?.thread as Record<string, unknown> | undefined;
-    const threadId = (thread?.id ?? result?.threadId) as string | null;
+    const threadId = (thread?.id ?? result?.threadId ?? result?.sessionId) as string | null;
     if (threadId && !state.threadId) {
       state.threadId = threadId;
+      state.initialized = true;
       callbacks.onThreadReady?.();
+    }
+    if (result?.stopReason) {
+      callbacks.onEvent?.({ type: 'status', status: 'complete' });
+      callbacks.onTurnCompleted?.();
     }
     return;
   }
 
   switch (method) {
+    case 'session/update': {
+      const params = msg.params as Record<string, unknown>;
+      const update = params?.update as Record<string, unknown> | undefined;
+      const kind = update?.sessionUpdate;
+      if (kind === 'agent_message_chunk') {
+        const text = extractAcpText(update?.content);
+        if (text) callbacks.onEvent?.({ type: 'text', text });
+      } else if (kind === 'agent_thought_chunk') {
+        const text = extractAcpText(update?.content);
+        if (text) callbacks.onEvent?.({ type: 'thinking', text });
+      } else if (kind === 'plan') {
+        const entries = Array.isArray(update?.entries) ? update.entries : [];
+        callbacks.onEvent?.({
+          type: 'plan_update',
+          plan: {
+            steps: entries.flatMap((entry, index) => {
+              if (!isRecord(entry) || typeof entry.content !== 'string') return [];
+              return [
+                {
+                  id: `cursor-plan-${index}`,
+                  text: entry.content,
+                  status: parseAcpPlanStatus(entry.status),
+                },
+              ];
+            }),
+          },
+        });
+      } else if (kind === 'tool_call' || kind === 'tool_call_update') {
+        callbacks.onEvent?.({
+          type: 'tool_call',
+          toolName: (update?.title as string) ?? (update?.kind as string) ?? 'Cursor tool',
+          toolInput: isRecord(update?.rawInput) ? update.rawInput : {},
+        });
+      }
+      break;
+    }
+
+    case 'session/request_permission': {
+      const params = msg.params as Record<string, unknown>;
+      const toolCall = params?.toolCall as Record<string, unknown> | undefined;
+      callbacks.onEvent?.({
+        type: 'approval_request',
+        approvalRequestId: requestId,
+        approvalKind: 'permissions',
+        approvalReason: typeof toolCall?.title === 'string' ? toolCall.title : undefined,
+        approvalPermissions: { options: Array.isArray(params?.options) ? params.options : [] },
+      });
+      break;
+    }
+
     case 'thread/started': {
       const params = msg.params as Record<string, unknown>;
       const thread = params?.thread as Record<string, unknown> | undefined;
@@ -131,6 +196,22 @@ export function handleCodexServerLine(
       break;
     }
 
+    case 'thread/status/changed': {
+      const params = msg.params as Record<string, unknown>;
+      const status = params?.status as Record<string, unknown> | undefined;
+      const rawFlags = Array.isArray(status?.activeFlags) ? status.activeFlags : [];
+      const threadActiveFlags = rawFlags.filter(
+        (flag): flag is 'waitingOnApproval' | 'waitingOnUserInput' =>
+          flag === 'waitingOnApproval' || flag === 'waitingOnUserInput',
+      );
+      callbacks.onEvent?.({
+        type: 'thread_status',
+        protocolThreadId: typeof params?.threadId === 'string' ? params.threadId : undefined,
+        threadActiveFlags,
+      });
+      break;
+    }
+
     case 'turn/started': {
       const params = msg.params as Record<string, unknown>;
       const turn = params?.turn as Record<string, unknown> | undefined;
@@ -141,13 +222,31 @@ export function handleCodexServerLine(
       break;
     }
 
-    case 'turn/completed':
+    case 'turn/completed': {
+      const params = msg.params as Record<string, unknown>;
+      const turn = params?.turn as Record<string, unknown> | undefined;
+      const rawStatus = turn?.status;
+      const status =
+        rawStatus === 'interrupted' || rawStatus === 'failed' || rawStatus === 'inProgress'
+          ? rawStatus
+          : 'completed';
       flushAllPendingFileChanges(state, callbacks);
       state.turnId = null;
       callbacks.onTurnIdChanged?.(null);
-      callbacks.onEvent?.({ type: 'status', status: 'complete' });
-      callbacks.onTurnCompleted?.();
+      if (status === 'failed') {
+        const error = turn?.error as Record<string, unknown> | undefined;
+        callbacks.onEvent?.({
+          type: 'status',
+          status: 'error',
+          errorMessage:
+            typeof error?.message === 'string' ? error.message : 'Codex turn failed to complete.',
+        });
+      } else {
+        callbacks.onEvent?.({ type: 'status', status: 'complete' });
+      }
+      callbacks.onTurnCompleted?.(status);
       break;
+    }
 
     case 'turn/plan/updated': {
       const params = msg.params as Record<string, unknown>;
@@ -170,7 +269,9 @@ export function handleCodexServerLine(
     case 'item/agentMessage/delta': {
       const params = msg.params as Record<string, unknown>;
       const delta = params?.delta as string;
-      if (delta) callbacks.onEvent?.({ type: 'text', text: delta });
+      const itemId = getItemId(params);
+      const assistantPhase = parseAssistantPhase(params?.phase) ?? getAssistantPhase(state, itemId);
+      if (delta) callbacks.onEvent?.({ type: 'text', text: delta, itemId, assistantPhase });
       break;
     }
 
@@ -178,7 +279,13 @@ export function handleCodexServerLine(
       const params = msg.params as Record<string, unknown>;
       const item = params?.item as Record<string, unknown> | undefined;
       const itemType = (item?.type ?? params?.type) as string;
-      if (itemType === 'commandExecution') {
+      if (itemType === 'agentMessage') {
+        const itemId = getItemId(params, item);
+        const assistantPhase = parseAssistantPhase(item?.phase ?? params?.phase);
+        if (itemId && assistantPhase) {
+          getAssistantPhaseMap(state).set(itemId, assistantPhase);
+        }
+      } else if (itemType === 'commandExecution') {
         callbacks.onEvent?.({
           type: 'command_exec',
           command: (item?.command as string) ?? '',
@@ -195,6 +302,9 @@ export function handleCodexServerLine(
             (item?.arguments as Record<string, unknown>) ??
             {},
         });
+      } else if (itemType === 'collabAgentToolCall' || itemType === 'subAgentActivity') {
+        const subagent = parseSubagentUpdate(item);
+        if (subagent) callbacks.onEvent?.({ type: 'subagent_update', subagent });
       }
       break;
     }
@@ -216,6 +326,9 @@ export function handleCodexServerLine(
       } else if (itemType === 'fileChange') {
         const itemKey = buildItemKey(state, params, item);
         emitCompletedFileChanges(state, itemKey, getChanges(item), callbacks);
+      } else if (itemType === 'collabAgentToolCall' || itemType === 'subAgentActivity') {
+        const subagent = parseSubagentUpdate(item);
+        if (subagent) callbacks.onEvent?.({ type: 'subagent_update', subagent });
       }
       break;
     }
@@ -251,10 +364,60 @@ export function handleCodexServerLine(
       break;
     }
 
+    case 'item/permissions/requestApproval': {
+      const params = msg.params as Record<string, unknown>;
+      callbacks.onEvent?.({
+        type: 'approval_request',
+        approvalRequestId: requestId,
+        approvalKind: 'permissions',
+        approvalReason: typeof params?.reason === 'string' ? params.reason : undefined,
+        approvalCwd: typeof params?.cwd === 'string' ? params.cwd : undefined,
+        approvalPermissions: isRecord(params?.permissions) ? params.permissions : {},
+        protocolThreadId: typeof params?.threadId === 'string' ? params.threadId : undefined,
+      });
+      break;
+    }
+
+    case 'item/tool/requestUserInput': {
+      const params = msg.params as Record<string, unknown>;
+      callbacks.onEvent?.({
+        type: 'input_request',
+        inputRequestId: requestId,
+        protocolThreadId: typeof params?.threadId === 'string' ? params.threadId : undefined,
+        inputRequest: {
+          kind: 'user_input',
+          questions: parseUserInputQuestions(params?.questions),
+          autoResolutionMs:
+            typeof params?.autoResolutionMs === 'number' ? params.autoResolutionMs : undefined,
+        },
+      });
+      break;
+    }
+
+    case 'mcpServer/elicitation/request': {
+      const params = msg.params as Record<string, unknown>;
+      const mode = parseElicitationMode(params?.mode);
+      callbacks.onEvent?.({
+        type: 'input_request',
+        inputRequestId: requestId,
+        protocolThreadId: typeof params?.threadId === 'string' ? params.threadId : undefined,
+        inputRequest: {
+          kind: 'mcp_elicitation',
+          message: typeof params?.message === 'string' ? params.message : undefined,
+          serverName: typeof params?.serverName === 'string' ? params.serverName : undefined,
+          mode,
+          requestedSchema: params?.requestedSchema,
+          url: typeof params?.url === 'string' ? params.url : undefined,
+        },
+      });
+      break;
+    }
+
     case 'serverRequest/resolved': {
       const params = msg.params as Record<string, unknown>;
       const resolvedRequestId = params?.requestId;
       if (isJsonRpcRequestId(resolvedRequestId)) {
+        callbacks.onEvent?.({ type: 'request_resolved', resolvedRequestId });
         callbacks.onServerRequestResolved?.(resolvedRequestId);
       }
       break;
@@ -304,7 +467,9 @@ export function handleCodexServerLine(
     case 'codex/event/agent_message_content_delta': {
       const params = msg.params as Record<string, unknown>;
       const delta = params?.delta as string;
-      if (delta) callbacks.onEvent?.({ type: 'text', text: delta });
+      const itemId = getItemId(params);
+      const assistantPhase = parseAssistantPhase(params?.phase) ?? getAssistantPhase(state, itemId);
+      if (delta) callbacks.onEvent?.({ type: 'text', text: delta, itemId, assistantPhase });
       break;
     }
 
@@ -325,6 +490,225 @@ export function handleCodexServerLine(
       callbacks.onLog?.(method ?? 'unknown');
       break;
   }
+}
+
+function getItemId(
+  params: Record<string, unknown>,
+  item?: Record<string, unknown>,
+): string | undefined {
+  const rawId = params.itemId ?? params.item_id ?? item?.id;
+  return typeof rawId === 'string' && rawId.length > 0 ? rawId : undefined;
+}
+
+function extractAcpText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((item) => {
+      if (!isRecord(item)) return '';
+      if (item.type === 'text' && typeof item.text === 'string') return item.text;
+      return '';
+    })
+    .join('');
+}
+
+function parseAcpPlanStatus(value: unknown): ChatPlanStepStatus {
+  switch (value) {
+    case 'pending':
+      return 'pending';
+    case 'in_progress':
+      return 'in_progress';
+    case 'completed':
+      return 'completed';
+    default:
+      return 'pending';
+  }
+}
+
+function parseSubagentUpdate(
+  item: Record<string, unknown> | undefined,
+): CodexSubagentUpdate | null {
+  if (!item || typeof item.id !== 'string') return null;
+
+  if (item.type === 'subAgentActivity') {
+    const activityKind = parseSubagentActivityKind(item.kind);
+    const agentThreadId = typeof item.agentThreadId === 'string' ? item.agentThreadId : undefined;
+    if (!activityKind || !agentThreadId) return null;
+    const status: CodexSubagentStatus = activityKind === 'interrupted' ? 'interrupted' : 'running';
+    return {
+      id: item.id,
+      kind: 'activity',
+      receiverThreadIds: [agentThreadId],
+      agents: [{ threadId: agentThreadId, status }],
+      activityKind,
+      agentThreadId,
+      agentPath: typeof item.agentPath === 'string' ? item.agentPath : undefined,
+    };
+  }
+
+  if (item.type !== 'collabAgentToolCall') return null;
+  const tool = parseSubagentTool(item.tool);
+  const status = parseSubagentToolStatus(item.status);
+  if (!tool || !status) return null;
+
+  const receiverThreadIds = Array.isArray(item.receiverThreadIds)
+    ? item.receiverThreadIds.filter((threadId): threadId is string => typeof threadId === 'string')
+    : [];
+  const rawAgentStates = isRecord(item.agentsStates) ? item.agentsStates : {};
+  const agents: CodexSubagentState[] = Object.entries(rawAgentStates).flatMap(
+    ([threadId, value]) => {
+      if (!isRecord(value)) return [];
+      const agentStatus = parseSubagentStatus(value.status);
+      if (!agentStatus) return [];
+      return [
+        {
+          threadId,
+          status: agentStatus,
+          message: typeof value.message === 'string' ? value.message : undefined,
+        },
+      ];
+    },
+  );
+
+  return {
+    id: item.id,
+    kind: 'tool_call',
+    tool,
+    status,
+    senderThreadId: typeof item.senderThreadId === 'string' ? item.senderThreadId : undefined,
+    receiverThreadIds,
+    prompt: typeof item.prompt === 'string' ? item.prompt : undefined,
+    model: typeof item.model === 'string' ? item.model : undefined,
+    reasoningEffort: parseReasoningEffort(item.reasoningEffort),
+    agents,
+  };
+}
+
+function parseSubagentTool(value: unknown): CodexSubagentTool | undefined {
+  switch (value) {
+    case 'spawnAgent':
+    case 'sendInput':
+    case 'resumeAgent':
+    case 'wait':
+    case 'closeAgent':
+      return value;
+    default:
+      return undefined;
+  }
+}
+
+function parseSubagentToolStatus(value: unknown): CodexSubagentToolStatus | undefined {
+  switch (value) {
+    case 'inProgress':
+    case 'completed':
+    case 'failed':
+      return value;
+    default:
+      return undefined;
+  }
+}
+
+function parseSubagentStatus(value: unknown): CodexSubagentStatus | undefined {
+  switch (value) {
+    case 'pendingInit':
+    case 'running':
+    case 'interrupted':
+    case 'completed':
+    case 'errored':
+    case 'shutdown':
+    case 'notFound':
+      return value;
+    default:
+      return undefined;
+  }
+}
+
+function parseSubagentActivityKind(value: unknown): CodexSubagentActivityKind | undefined {
+  switch (value) {
+    case 'started':
+    case 'interacted':
+    case 'interrupted':
+      return value;
+    default:
+      return undefined;
+  }
+}
+
+function parseReasoningEffort(value: unknown): ReasoningEffort | undefined {
+  switch (value) {
+    case 'none':
+    case 'minimal':
+    case 'low':
+    case 'medium':
+    case 'high':
+    case 'xhigh':
+    case 'max':
+    case 'ultra':
+      return value;
+    default:
+      return undefined;
+  }
+}
+
+function parseUserInputQuestions(value: unknown): CodexUserInputQuestion[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((candidate) => {
+    if (!isRecord(candidate)) return [];
+    if (
+      typeof candidate.id !== 'string' ||
+      typeof candidate.header !== 'string' ||
+      typeof candidate.question !== 'string'
+    ) {
+      return [];
+    }
+    const options = Array.isArray(candidate.options)
+      ? candidate.options.flatMap((option) => {
+          if (!isRecord(option) || typeof option.label !== 'string') return [];
+          return [
+            {
+              label: option.label,
+              description: typeof option.description === 'string' ? option.description : '',
+            },
+          ];
+        })
+      : undefined;
+    return [
+      {
+        id: candidate.id,
+        header: candidate.header,
+        question: candidate.question,
+        isOther: candidate.isOther === true,
+        isSecret: candidate.isSecret === true,
+        options,
+      },
+    ];
+  });
+}
+
+function parseElicitationMode(value: unknown): 'form' | 'openai/form' | 'url' | undefined {
+  return value === 'form' || value === 'openai/form' || value === 'url' ? value : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseAssistantPhase(value: unknown): ChatAssistantPhase | undefined {
+  if (value === 'commentary' || value === 'progress') return 'progress';
+  if (value === 'final_answer' || value === 'finalAnswer' || value === 'final') return 'final';
+  return undefined;
+}
+
+function getAssistantPhaseMap(state: CodexProtocolState): Map<string, ChatAssistantPhase> {
+  if (!state.assistantPhases) state.assistantPhases = new Map();
+  return state.assistantPhases;
+}
+
+function getAssistantPhase(
+  state: CodexProtocolState,
+  itemId: string | undefined,
+): ChatAssistantPhase | undefined {
+  return itemId ? state.assistantPhases?.get(itemId) : undefined;
 }
 
 function isJsonRpcRequestId(value: unknown): value is JsonRpcRequestId {

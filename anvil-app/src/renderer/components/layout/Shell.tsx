@@ -82,6 +82,28 @@ export function Shell({ connectionStatus, userRole, cloudFeaturesEnabled }: Shel
 
   useEffect(() => {
     let cancelled = false;
+    const cleanup = window.anvil.appWindow.onNavigateToChat(
+      async ({ workspaceId, threadId, personaId }) => {
+        try {
+          await switchWorkspace(workspaceId);
+          if (!cancelled) {
+            const params = new URLSearchParams({ thread: threadId, persona: personaId });
+            navigate(`/chat?${params.toString()}`);
+          }
+        } catch (err) {
+          console.error('[Notification] Failed to open chat thread:', err);
+        }
+      },
+    );
+
+    return () => {
+      cancelled = true;
+      cleanup();
+    };
+  }, [navigate, switchWorkspace]);
+
+  useEffect(() => {
+    let cancelled = false;
 
     window.anvil.appWindow
       .getChromeState()

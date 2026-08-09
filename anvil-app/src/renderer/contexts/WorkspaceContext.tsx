@@ -1,4 +1,12 @@
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import type {
   RepoInfo,
   Workspace,
@@ -61,6 +69,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceWithRepos | null>(null);
   const [loading, setLoading] = useState(true);
   const [initialWorkspaceId] = useState(() => readInitialWorkspaceIdFromLocation(window.location));
+  const activeWorkspaceLoadVersionRef = useRef(0);
+  const desiredWorkspaceIdRef = useRef<string | null>(null);
 
   const repos = activeWorkspace?.repos ?? [];
   const activeScaffoldSession = activeWorkspace?.scaffoldSession ?? null;
@@ -123,9 +133,36 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     };
   })();
 
-  const loadActiveWorkspace = useCallback(async (id: string) => {
+  const loadActiveWorkspace = useCallback(async (id: string, select = false) => {
+    if (select) {
+      desiredWorkspaceIdRef.current = id;
+    } else if (desiredWorkspaceIdRef.current !== id) {
+      return null;
+    }
+
+    const loadVersion = ++activeWorkspaceLoadVersionRef.current;
     const ws = await window.anvil.workspace.get(id);
-    setActiveWorkspace(ws);
+    let shouldApply = shouldApplyWorkspaceLoad(
+      loadVersion,
+      activeWorkspaceLoadVersionRef.current,
+      id,
+      desiredWorkspaceIdRef.current,
+    );
+    if (shouldApply && select) {
+      await window.anvil.settings.update({
+        activeWorkspaceId: id,
+        activeWorkItemConnectionId: ws.preferences?.workitems.workItemConnectionId,
+      });
+      shouldApply = shouldApplyWorkspaceLoad(
+        loadVersion,
+        activeWorkspaceLoadVersionRef.current,
+        id,
+        desiredWorkspaceIdRef.current,
+      );
+    }
+    if (shouldApply) {
+      setActiveWorkspace(ws);
+    }
     return ws;
   }, []);
 
@@ -150,20 +187,20 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         setWorkspaces(list);
 
         if (initialWorkspaceId && list.some((ws) => ws.id === initialWorkspaceId)) {
-          await loadActiveWorkspace(initialWorkspaceId);
+          await loadActiveWorkspace(initialWorkspaceId, true);
         } else if (settings.activeWorkspaceId) {
           // Verify the saved workspace still exists
           const exists = list.some((ws) => ws.id === settings.activeWorkspaceId);
           if (exists) {
-            await loadActiveWorkspace(settings.activeWorkspaceId);
+            await loadActiveWorkspace(settings.activeWorkspaceId, true);
           } else if (list.length > 0) {
             // Saved workspace was deleted; fall back to first
-            await loadActiveWorkspace(list[0].id);
+            await loadActiveWorkspace(list[0].id, true);
             await window.anvil.settings.update({ activeWorkspaceId: list[0].id });
           }
         } else if (list.length > 0) {
           // No saved preference; auto-select first
-          await loadActiveWorkspace(list[0].id);
+          await loadActiveWorkspace(list[0].id, true);
           await window.anvil.settings.update({ activeWorkspaceId: list[0].id });
         }
       } catch (err) {
@@ -204,7 +241,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   const switchWorkspace = useCallback(
     async (id: string) => {
-      await loadActiveWorkspace(id);
+      await loadActiveWorkspace(id, true);
+      if (desiredWorkspaceIdRef.current !== id) return;
       await window.anvil.settings.update({ activeWorkspaceId: id });
     },
     [loadActiveWorkspace],
@@ -215,7 +253,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       const ws = await window.anvil.workspace.create(opts);
       await loadWorkspaces();
       // Auto-switch to the newly created workspace
-      await loadActiveWorkspace(ws.id);
+      await loadActiveWorkspace(ws.id, true);
       await window.anvil.settings.update({ activeWorkspaceId: ws.id });
       return ws;
     },
@@ -241,9 +279,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
       if (activeWorkspace?.id === id) {
         if (list.length > 0) {
-          await loadActiveWorkspace(list[0].id);
+          await loadActiveWorkspace(list[0].id, true);
           await window.anvil.settings.update({ activeWorkspaceId: list[0].id });
         } else {
+          desiredWorkspaceIdRef.current = null;
           setActiveWorkspace(null);
           await window.anvil.settings.update({ activeWorkspaceId: undefined });
         }
@@ -324,4 +363,13 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       {children}
     </WorkspaceContext.Provider>
   );
+}
+
+export function shouldApplyWorkspaceLoad(
+  loadVersion: number,
+  currentLoadVersion: number,
+  requestedWorkspaceId: string,
+  desiredWorkspaceId: string | null,
+): boolean {
+  return loadVersion === currentLoadVersion && requestedWorkspaceId === desiredWorkspaceId;
 }

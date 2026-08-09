@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { MobileOverview } from '../../../shared/types.js';
+import { getWorkspace } from '../workspace.service.js';
 
 vi.mock('electron', () => ({
   BrowserWindow: { getAllWindows: () => [] },
@@ -44,7 +45,11 @@ vi.mock('../chat-persistence.service.js', () => ({
   saveChatEntry: vi.fn(),
 }));
 
-import { buildMobileWorkQueue, buildWorkflowDigest } from '../mobile-companion.service.js';
+import {
+  buildMobileWorkQueue,
+  buildWorkflowDigest,
+  resolveMobileActiveWorkspace,
+} from '../mobile-companion.service.js';
 
 const workspace = {
   id: 'ws-1',
@@ -64,6 +69,41 @@ const workspace = {
     },
   ],
 } as MobileOverview['activeWorkspace'];
+
+describe('mobile companion workspace selection', () => {
+  const getWorkspaceMock = vi.mocked(getWorkspace);
+
+  it('keeps an explicit mobile selection ahead of the Mac workspace', () => {
+    getWorkspaceMock.mockImplementation((workspaceId) => ({
+      ...workspace,
+      id: workspaceId,
+      name: workspaceId,
+    }));
+
+    expect(
+      resolveMobileActiveWorkspace('mobile-workspace', 'mac-workspace', [], [], 'launch-workspace')
+        ?.id,
+    ).toBe('mobile-workspace');
+  });
+
+  it('follows the Mac active workspace ahead of stale window and session state', () => {
+    getWorkspaceMock.mockImplementation((workspaceId) => ({
+      ...workspace,
+      id: workspaceId,
+      name: workspaceId,
+    }));
+
+    expect(
+      resolveMobileActiveWorkspace(
+        undefined,
+        'mac-workspace',
+        [],
+        ['session-workspace'],
+        'launch-workspace',
+      )?.id,
+    ).toBe('mac-workspace');
+  });
+});
 
 describe('mobile companion workflow digest', () => {
   it('marks an unselected workspace as unconfigured', () => {

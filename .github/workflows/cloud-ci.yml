@@ -62,3 +62,9 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+      - name: Verify packaged Notes golden path
+        run: pnpm verify:notes-golden-path
+
+      - name: Check formatting
+        run: pnpm format:check

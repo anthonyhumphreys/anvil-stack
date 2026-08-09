@@ -29,8 +29,10 @@ import type {
   BaRepoLink,
   BaSession,
   ChatAttachment,
+  ChatNavigationTarget,
   ChatAttachmentInput,
   ChatArtifact,
+  ChatArtifactFile,
   ChatArtifactInput,
   ChatFileMentionSearchInput,
   ChatFileMentionSearchResult,
@@ -50,9 +52,12 @@ import type {
   CodeReviewMode,
   CodeReviewPullRequest,
   CodeReviewPullRequestComment,
+  PullRequestDiff,
+  PullRequestVisualisation,
   CodeReviewScopeRef,
   CodeReviewScopeType,
   CodexCliStatus,
+  CursorCliStatus,
   CodexMcpRegisterInput,
   CodexRegistryActionResult,
   CodexRegistrySnapshot,
@@ -60,6 +65,7 @@ import type {
   CodexSkillSearchResult,
   CodexUsageSnapshot,
   CodexEvent,
+  CodexInputResponse,
   CodexSession,
   DocPage,
   DesignReadiness,
@@ -93,11 +99,18 @@ import type {
   WorkspaceSummary,
   Persona,
   RepoInfo,
+  RepoMapRefreshMode,
+  RepositoryMapGraph,
+  RepoMapStatus,
   RepoIndexProgress,
   RepoSummary,
+  RepositoryChangeSummary,
   SecurityAudit,
   SecurityFinding,
   WorkItem,
+  WorkflowRun,
+  WorkflowTemplate,
+  WorkflowTemplateInput,
   WorkItemCreateInput,
   WorkItemFilters,
   WorkItemProvider,
@@ -127,13 +140,20 @@ import type {
   SbomFormat,
   SimulatorPreviewStartOptions,
   SimulatorPreviewStatus,
+  TerminalAttachResult,
+  TerminalClosedEvent,
+  TerminalDataEvent,
+  TerminalExitEvent,
+  TerminalSessionSummary,
 } from './types';
 import type { Brand } from './branding';
 
 export interface AnvilAPI {
   appWindow: {
+    getVersion: () => Promise<string>;
     getChromeState: () => Promise<{ isFullScreen: boolean }>;
     onChromeStateChanged: (callback: (state: { isFullScreen: boolean }) => void) => () => void;
+    onNavigateToChat: (callback: (target: ChatNavigationTarget) => void) => () => void;
   };
 
   diagnostics: {
@@ -163,6 +183,9 @@ export interface AnvilAPI {
     getStatus: (repoId: string) => Promise<RepoInfo['status']>;
     resetStatus: (repoId: string) => Promise<void>;
     getSummary: (repoId: string) => Promise<RepoSummary | null>;
+    getMapStatus: (repoId: string) => Promise<RepoMapStatus>;
+    getMapGraph: (repoId: string) => Promise<RepositoryMapGraph | null>;
+    setMapRefreshMode: (repoId: string, refreshMode: RepoMapRefreshMode) => Promise<RepoMapStatus>;
     getArchitecture: (repoId: string) => Promise<string | null>;
     selectDirectory: () => Promise<string | null>;
     onIndexProgress: (callback: (data: RepoIndexProgress) => void) => () => void;
@@ -209,6 +232,11 @@ export interface AnvilAPI {
       requestId: string | number,
       decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel',
     ) => Promise<void>;
+    resolveInputRequest: (
+      sessionId: string,
+      requestId: string | number,
+      response: CodexInputResponse,
+    ) => Promise<void>;
     switchPersona: (repoId: string, personaId: string) => Promise<CodexSession>;
     getPersonas: () => Promise<Persona[]>;
     getSessionStatus: (sessionId: string) => Promise<CodexSession['status']>;
@@ -216,6 +244,7 @@ export interface AnvilAPI {
     listTurnSummaries: (threadId: string) => Promise<ChatTurnSummary[]>;
     listArtifacts: (threadId: string) => Promise<ChatArtifact[]>;
     upsertArtifact: (input: ChatArtifactInput) => Promise<ChatArtifact>;
+    readArtifactFile: (id: string) => Promise<ChatArtifactFile>;
     listThreads: (workspaceId: string | null, personaId: string) => Promise<ChatThread[]>;
     listWorkItemThreads: (workspaceId: string | null) => Promise<ChatThread[]>;
     createThread: (input: {
@@ -245,6 +274,8 @@ export interface AnvilAPI {
         workItemTitle?: string;
         repoIds?: string[];
         activeRepoId?: string | null;
+        settled?: boolean;
+        viewed?: boolean;
       },
     ) => Promise<ChatThread | null>;
     deleteThread: (threadId: string) => Promise<void>;
@@ -270,6 +301,23 @@ export interface AnvilAPI {
     clearHistory: (threadId: string) => Promise<void>;
     saveThreadPlan: (threadId: string, plan: ChatPlanSnapshot) => Promise<ChatThread | null>;
     saveThreadGoal: (threadId: string, goal: ChatGoalSnapshot | null) => Promise<ChatThread | null>;
+  };
+
+  workflow: {
+    listTemplates: () => Promise<WorkflowTemplate[]>;
+    draftTemplate: (request: string) => Promise<WorkflowTemplateInput>;
+    saveTemplate: (input: WorkflowTemplateInput, id?: string) => Promise<WorkflowTemplate>;
+    deleteTemplate: (id: string) => Promise<void>;
+    listRuns: (workspaceId: string) => Promise<WorkflowRun[]>;
+    getRun: (id: string) => Promise<WorkflowRun | null>;
+    startRun: (input: {
+      templateId: string;
+      workspaceId: string;
+      repoIds: string[];
+      kickoff: string;
+    }) => Promise<WorkflowRun>;
+    askSupervisor: (runId: string, question: string) => Promise<string>;
+    cancelRun: (runId: string) => Promise<WorkflowRun | null>;
   };
 
   dbInsights: {
@@ -407,6 +455,18 @@ export interface AnvilAPI {
     >;
     listBranches: (repoId: string) => Promise<string[]>;
     listPullRequests: (repoId: string) => Promise<CodeReviewPullRequest[]>;
+    visualisePullRequest: (
+      repoId: string,
+      pullRequestId: string,
+      options?: { force?: boolean; reviewId?: string },
+    ) => Promise<PullRequestVisualisation>;
+    getPullRequestVisualisation: (
+      repoId: string,
+      pullRequestId: string,
+    ) => Promise<PullRequestVisualisation | null>;
+    exportPullRequestVisualisation: (repoId: string, pullRequestId: string) => Promise<string>;
+    getPullRequestDiff: (repoId: string, pullRequestId: string) => Promise<PullRequestDiff>;
+    getChangeSummary: (reviewId: string) => Promise<RepositoryChangeSummary>;
     onProgress: (
       callback: (data: { repoId: string; message: string; percent: number }) => void,
     ) => () => void;
@@ -461,6 +521,7 @@ export interface AnvilAPI {
     get: () => Promise<AppSettings>;
     update: (settings: Partial<AppSettings>) => Promise<void>;
     getCodexStatus: () => Promise<CodexCliStatus>;
+    getCursorStatus: () => Promise<CursorCliStatus>;
     setCodexAgentMaxThreads: (maxThreads: number) => Promise<CodexCliStatus>;
     testFoundryConnection: () => Promise<{ ok: boolean; error?: string }>;
     testAppleFoundationModels: () => Promise<{ ok: boolean; error?: string }>;
@@ -575,12 +636,15 @@ export interface AnvilAPI {
 
   terminal: {
     create(workspaceId: string, repoId: string, cwd: string): Promise<{ terminalId: string }>;
+    list(workspaceId: string): Promise<TerminalSessionSummary[]>;
+    attach(terminalId: string, afterSequence?: number): Promise<TerminalAttachResult>;
+    detach(terminalId: string): void;
     input(terminalId: string, data: string): void;
     resize(terminalId: string, cols: number, rows: number): void;
     close(terminalId: string): Promise<void>;
-    closeAll(): Promise<void>;
-    onData(callback: (data: { terminalId: string; data: string }) => void): () => void;
-    onExit(callback: (data: { terminalId: string; exitCode: number }) => void): () => void;
+    onData(callback: (data: TerminalDataEvent) => void): () => void;
+    onExit(callback: (data: TerminalExitEvent) => void): () => void;
+    onClosed(callback: (data: TerminalClosedEvent) => void): () => void;
   };
 
   browser: {
@@ -648,7 +712,12 @@ export interface AnvilAPI {
   };
 
   voice: {
-    startListening(): Promise<{ success: boolean; error?: string }>;
+    requestPermission(): Promise<{
+      granted: boolean;
+      status: 'not-determined' | 'granted' | 'denied' | 'restricted' | 'unknown';
+      error?: string;
+    }>;
+    startListening(): Promise<{ success: boolean; error?: string; fallback?: boolean }>;
     stopListening(): Promise<{ success: boolean; error?: string }>;
     getStatus(): Promise<{ isListening: boolean }>;
     onResult(callback: (text: string) => void): () => void;

@@ -3,3 +3,16 @@ node_modules/
 *.log
 .env
 .env.local
+
+# Local package-manager caches
+.pnpm-store/
+
+# Generated tool caches and build metadata
+.cache/
+.turbo/
+coverage/
+*.tsbuildinfo
+
+# Canvas artifacts belong in .anvil/artifacts/<category>/, never a nested
+# .anvil working directory created from an already-prefixed artifact path.
+/.anvil/artifacts/.anvil/

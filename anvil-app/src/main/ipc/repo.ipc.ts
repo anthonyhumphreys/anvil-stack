@@ -1,5 +1,12 @@
 import { BrowserWindow, dialog, ipcMain, shell } from 'electron';
-import type { RepoIndexProgress, RepoInfo, RepoSummary } from '../../shared/types.js';
+import type {
+  RepoIndexProgress,
+  RepoInfo,
+  RepoMapRefreshMode,
+  RepositoryMapGraph,
+  RepoMapStatus,
+  RepoSummary,
+} from '../../shared/types.js';
 import { getDb } from '../db/database.js';
 import {
   listGithubRepos,
@@ -9,6 +16,11 @@ import {
 } from '../services/remote-repo.service.js';
 import { connectRepoPath } from '../services/repo-connect.service.js';
 import { indexRepo } from '../services/repo-index.service.js';
+import { getCurrentCommitSha } from '../services/code-review-git.service.js';
+
+const MAP_REFRESH_INTERVAL_MS = 15_000;
+let mapRefreshTimer: ReturnType<typeof setInterval> | undefined;
+let checkingMapRefreshes = false;
 
 /** On startup, reset repos stuck in 'indexing' from a previous crash back to 'connected'. */
 export function handleStaleIndexingRepos(): void {
@@ -27,6 +39,8 @@ export function handleStaleIndexingRepos(): void {
 }
 
 export function registerRepoHandlers(): void {
+  startAutomaticMapRefreshes();
+
   ipcMain.handle('dialog:selectDirectory', async () => {
     const win = BrowserWindow.getFocusedWindow();
     if (!win) return null;
@@ -113,6 +127,41 @@ export function registerRepoHandlers(): void {
     };
   });
 
+  ipcMain.handle('repo:map-status', (_event, repoId: string): RepoMapStatus => {
+    return getRepoMapStatus(repoId);
+  });
+
+  ipcMain.handle('repo:map-graph', (_event, repoId: string): RepositoryMapGraph | null => {
+    const row = getDb()
+      .prepare('SELECT graph_json FROM repository_map_graphs WHERE repo_id = ?')
+      .get(repoId) as { graph_json: string } | undefined;
+    if (!row) return null;
+    try {
+      const graph = JSON.parse(row.graph_json) as RepositoryMapGraph;
+      return graph.schemaVersion === 1 ? graph : null;
+    } catch {
+      return null;
+    }
+  });
+
+  ipcMain.handle(
+    'repo:set-map-refresh-mode',
+    (_event, repoId: string, refreshMode: RepoMapRefreshMode): RepoMapStatus => {
+      if (refreshMode !== 'manual' && refreshMode !== 'on_commit') {
+        throw new Error(`Unsupported repository map refresh mode: ${refreshMode}`);
+      }
+
+      const db = getDb();
+      const result = db
+        .prepare('UPDATE repo_summaries SET map_refresh_mode = ? WHERE repo_id = ?')
+        .run(refreshMode, repoId);
+      if (result.changes === 0) {
+        throw new Error('Index this repository before changing its map refresh setting.');
+      }
+      return getRepoMapStatus(repoId);
+    },
+  );
+
   ipcMain.handle('repo:architecture', (_event, repoId: string): string | null => {
     const db = getDb();
     const row = db
@@ -173,6 +222,54 @@ export function registerRepoHandlers(): void {
   );
 }
 
+function startAutomaticMapRefreshes(): void {
+  if (mapRefreshTimer) return;
+
+  mapRefreshTimer = setInterval(() => {
+    void refreshStaleRepositoryMaps();
+  }, MAP_REFRESH_INTERVAL_MS);
+  mapRefreshTimer.unref?.();
+}
+
+async function refreshStaleRepositoryMaps(): Promise<void> {
+  if (checkingMapRefreshes) return;
+  checkingMapRefreshes = true;
+
+  try {
+    const repos = getDb()
+      .prepare(
+        `SELECT r.id, r.path, s.generated_commit_sha
+         FROM repos r
+         JOIN repo_summaries s ON s.repo_id = r.id
+         WHERE s.map_refresh_mode = 'on_commit' AND r.status != 'indexing'`,
+      )
+      .all() as Array<{ id: string; path: string; generated_commit_sha: string | null }>;
+
+    for (const repo of repos) {
+      const currentCommitSha = getCurrentCommitSha(repo.path);
+      if (!currentCommitSha || currentCommitSha === repo.generated_commit_sha) continue;
+
+      try {
+        await indexRepo(repo.id, (message, percent, stage, detail) => {
+          for (const win of BrowserWindow.getAllWindows()) {
+            win.webContents.send('repo:index-progress', {
+              repoId: repo.id,
+              message,
+              percent,
+              stage,
+              detail,
+            });
+          }
+        });
+      } catch (error) {
+        console.error(`[Repo] Automatic map refresh failed for ${repo.id}:`, error);
+      }
+    }
+  } finally {
+    checkingMapRefreshes = false;
+  }
+}
+
 // --- DB row types ---
 
 interface DbRepoRow {
@@ -201,6 +298,13 @@ interface DbSummaryRow {
   index_mode: string | null;
   index_provider: string | null;
   index_warnings: string | null;
+}
+
+interface DbMapStatusRow {
+  path: string;
+  map_refresh_mode: string | null;
+  generated_commit_sha: string | null;
+  generated_at: string | null;
 }
 
 interface DbModuleRow {
@@ -257,4 +361,27 @@ function safeParseJson<T>(json: string | null, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+function getRepoMapStatus(repoId: string): RepoMapStatus {
+  const row = getDb()
+    .prepare(
+      `SELECT r.path, s.map_refresh_mode, s.generated_commit_sha, s.generated_at
+       FROM repos r
+       LEFT JOIN repo_summaries s ON s.repo_id = r.id
+       WHERE r.id = ?`,
+    )
+    .get(repoId) as DbMapStatusRow | undefined;
+  if (!row) throw new Error(`Repo not found: ${repoId}`);
+
+  const currentCommitSha = getCurrentCommitSha(row.path);
+  const indexedCommitSha = row.generated_commit_sha ?? undefined;
+
+  return {
+    refreshMode: row.map_refresh_mode === 'on_commit' ? 'on_commit' : 'manual',
+    indexedCommitSha,
+    currentCommitSha,
+    generatedAt: row.generated_at ?? undefined,
+    stale: Boolean(currentCommitSha && currentCommitSha !== indexedCommitSha),
+  };
 }

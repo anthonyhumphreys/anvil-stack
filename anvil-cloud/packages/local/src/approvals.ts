@@ -169,9 +169,7 @@ export class LocalApprovalStore implements AgentApprovalProvider {
           ...approval.audit,
           {
             type:
-              status === "approved"
-                ? "approval.approved"
-                : "approval.rejected",
+              status === "approved" ? "approval.approved" : "approval.rejected",
             approvalId: id,
             at,
             ...(actor === undefined ? {} : { actor }),

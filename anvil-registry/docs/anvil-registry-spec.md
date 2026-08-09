@@ -249,6 +249,10 @@ Actual npm scoped package paths can be quirky, so route handling must be tested 
 9. Gateway rewrites tarball URLs to route through Anvil.
 10. Gateway returns npm-compatible metadata.
 
+Metadata policy is evaluated for every published version so filtering remains npm-compatible. Automatic deep-analysis enqueue is limited to the version behind the `latest` dist-tag. Arbitrary historical, compatibility, and prerelease tags are analysed only when their tarball is requested or an operator explicitly queues the exact version. This prevents client update checks and large dist-tag maps from flooding the worker queue.
+
+Download counts are best-effort enrichment rather than an availability dependency. The npm downloads client caches results for 15 minutes, coalesces concurrent lookups for the same package, bounds upstream concurrency to four requests, and retries transient network and `5xx` responses with exponential backoff. A `429` must open a shared cooldown using `Retry-After` when valid and a 60-second fallback otherwise. Lookups during that cooldown return unavailable without another upstream request or a per-package warning. Exhausted non-rate-limit lookups must preserve the underlying error in structured logs and must not fail static analysis.
+
 ### Tarball request flow
 
 1. Client requests tarball.
@@ -317,6 +321,8 @@ export type AnalysisJob = {
 11. Persist report.
 12. Compute final policy decision.
 
+Large base64-like strings remain an obfuscation signal unless they are a verified inline PNG, JPEG, GIF, WebP, or passive SVG data URI whose decoded bytes match the declared image type. SVG containing scripts, event handlers, JavaScript URLs, or `foreignObject` remains suspicious. A MIME label alone is not sufficient to suppress the signal.
+
 ### Worker health check
 
 The worker image should support:
@@ -331,7 +337,7 @@ The command must exit `0` only when the worker can reach required runtime depend
 
 The gateway exposes `POST /-/anvil/analyze` so developer tools can enqueue explicit package analysis without waiting for a blocked metadata or tarball request. It accepts either a single `packageName`/`version` pair or a `targets` array, deduplicates exact package/version pairs, and enqueues `AnalysisJob` messages with `manual_review` by default. CLI lockfile warming uses `reason: "lockfile_scan"` so worker output can be traced back to preinstall review rather than install-path enforcement. `anvil-registry scan --queue-analysis` uses the same route for risky or not-yet-reviewed lockfile targets after printing the policy verdict.
 
-`anvil-registry queue status` calls `GET /-/anvil/queue` with the admin token and prints current queue depth so local operators can see backlog before blaming policy, npm, or whatever else is closest to hand.
+`anvil-registry queue status` calls `GET /-/anvil/queue` with the admin token and prints current queue depth so local operators can see backlog before blaming policy, npm, or whatever else is closest to hand. BullMQ operators can inspect failures with `queue failed`, retry selected job IDs, or remove selected historical failures. Listing and mutation endpoints remain admin-token protected, mutations emit audit events, and removal requires the CLI's explicit `--confirm` flag. Memory and SQS drivers report that failed-job inspection is unsupported rather than pretending aggregate counts are actionable records.
 
 The gateway also exposes token-gated `POST /-/anvil/llm-review` for reviewer-requested model context when LLM review is enabled. It accepts the same single-target or `targets` array shape as `/analyze`, deduplicates exact package/version pairs, enqueues high-priority `manual_review` jobs with `runLlmReview: true`, and records `llm_review.enqueued` audit events. The worker must still respect the private-package opt-in; this route is a review trigger, not a permission slip to leak private source because someone got enthusiastic.
 
@@ -396,6 +402,9 @@ anvil-registry approve package@version --reason "intentional dependency" --appro
 anvil-registry revoke package@version --revoked-by reviewer
 anvil-registry llm-review package@version --requested-by reviewer
 anvil-registry queue status
+anvil-registry queue failed --limit 20
+anvil-registry queue retry <job-id> [job-id...] --requested-by reviewer
+anvil-registry queue remove <job-id> [job-id...] --confirm --requested-by reviewer
 anvil-registry popular-index show
 anvil-registry popular-index upload popular-index.json --generated-at 2026-05-20T00:00:00Z
 anvil-registry policy test package.json
@@ -1081,6 +1090,8 @@ volumes:
 ```
 
 The local Compose file passes optional `LLM_REVIEW_*` values through to gateway, worker, and admin. Set `LLM_REVIEW_ENABLED=true`, `LLM_REVIEW_ENDPOINT`, and optionally `LLM_REVIEW_API_KEY`, `LLM_REVIEW_PROVIDER`, `LLM_REVIEW_MODEL`, `LLM_REVIEW_RUN_ON_UNKNOWN_PACKAGES`, `LLM_REVIEW_RUN_ON_QUARANTINE`, or `LLM_REVIEW_INCLUDE_PRIVATE_PACKAGES` before `docker compose up` to exercise the MVP LLM review route locally. Empty optional values are treated as unset so a default Compose run does not fail config parsing just because no model endpoint exists yet. Provider credentials are passed only to the worker.
+
+The image-based NAS release also supports `LLM_REVIEW_PROVIDER=codex-cli` through a separate `docker-compose.codex.yml` override. Only the worker may receive the host's read-only `auth.json` bind mount. Codex runs ephemerally with user configuration and repository rules ignored, shell and code-execution tools disabled, schema-constrained output, and a child environment that omits Registry service secrets. The HTTP endpoint remains the portable provider contract and the only LLM review path supported by SST; the Codex CLI override is an operator-managed Docker path.
 
 ### 11.2 Database migrations
 

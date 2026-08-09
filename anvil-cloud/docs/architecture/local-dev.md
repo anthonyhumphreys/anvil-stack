@@ -30,6 +30,10 @@ Anvil local runtime server  http://localhost:8787
 Anvil client server         http://localhost:5173
 ```
 
+The runtime binds to `127.0.0.1` by default. Pass `--host <address>` only when a
+native device or another machine must connect; the `/_anvil/*` management routes
+are local development controls and must not be exposed to an untrusted network.
+
 The alpha implementation runs a Vite-backed React client server for
 `vite-react` Cells during `anvil-cloud dev` and proxies runtime requests to
 Anvil Local. `expo-router` and `headless` Cells run the local runtime only;

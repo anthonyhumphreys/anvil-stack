@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ArrowDown,
   MessageSquare,
@@ -18,7 +18,6 @@ import {
   Presentation,
   GraduationCap,
   Database,
-  Sparkles,
   Hammer,
   ListChecks,
   Target,
@@ -26,7 +25,6 @@ import {
   CheckCircle2,
   Loader2,
   Bot,
-  SendHorizontal,
   FileText,
   Braces,
   PanelRightOpen,
@@ -34,6 +32,17 @@ import {
   Copy,
   Check,
   ExternalLink,
+  SlidersHorizontal,
+  Maximize2,
+  Minimize2,
+  PictureInPicture2,
+  Headphones,
+  Wrench,
+  Radio,
+  SearchCheck,
+  GitPullRequest,
+  Gauge,
+  LifeBuoy,
 } from 'lucide-react';
 import type {
   AgentRunSummary,
@@ -42,25 +51,27 @@ import type {
   ChatGoalSnapshot,
   ChatPlanSnapshot,
   ChatPlanStep,
-  CodexEvent,
   CodexMode,
   CodexSession,
   Persona,
+  UserRole,
 } from '../../../shared/types';
-import { ChatInput, type ChatQuickPrompt, type ChatSlashCommand } from './ChatInput';
+import { ROLE_RECOMMENDED_PERSONAS } from '../../../shared/types';
+import { ChatInput, type ChatSlashCommand } from './ChatInput';
 import { ChatThreadRail } from './ChatThreadRail';
 import { WorkItemThreadRail } from './WorkItemThreadRail';
 import {
-  ActivityGroupMessage,
   AssistantMessage,
-  ChatEventRenderer,
-  ThinkingMessage,
+  TurnActivityStatus,
+  TurnWorkMessage,
   UserMessage,
+  type TurnActivityState,
 } from './ChatMessage';
+import { composeChatTurns } from './chat-turns';
 import { ChatEmptyState } from './ChatEmptyState';
-import { ChatStatusBar } from './ChatStatusBar';
-import { MarkdownRenderer } from './MarkdownRenderer';
-import { useChatContext, type ChatEntry } from '../../contexts/ChatContext';
+import { ArtifactPreview } from './ArtifactPreview';
+import { DetachedCanvasWindow } from './DetachedCanvasWindow';
+import { useChatContext } from '../../contexts/ChatContext';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { DesignProvider } from '../../contexts/DesignContext';
 import { RepoSelector } from '../shared/RepoSelector';
@@ -78,6 +89,9 @@ import {
   buildExecutionStrategyPrompt,
   type ExecutionStrategy,
 } from '../../utils/execution-strategy';
+import { parseWorkflowChatIntent } from '../../utils/workflow-chat-intent';
+import { groupPersonasForRole } from '../../utils/persona-groups';
+import { ItsmWorkbench } from './ItsmWorkbench';
 
 const PERSONA_ICONS: Record<string, React.ReactNode> = {
   Code: <Code size={14} />,
@@ -90,6 +104,12 @@ const PERSONA_ICONS: Record<string, React.ReactNode> = {
   Palette: <Palette size={14} />,
   GraduationCap: <GraduationCap size={14} />,
   Database: <Database size={14} />,
+  Headphones: <Headphones size={14} />,
+  Wrench: <Wrench size={14} />,
+  Radio: <Radio size={14} />,
+  SearchCheck: <SearchCheck size={14} />,
+  GitPullRequest: <GitPullRequest size={14} />,
+  Gauge: <Gauge size={14} />,
 };
 
 interface ScrollMetrics {
@@ -100,12 +120,16 @@ interface ScrollMetrics {
 
 const CHAT_BOTTOM_THRESHOLD_PX = 96;
 const NEW_CHAT_THREAD_LABEL = 'New thread';
+const ITSM_PERSONA_IDS = new Set(ROLE_RECOMMENDED_PERSONAS.itsm ?? []);
 
-export function ChatView() {
+interface ChatViewProps {
+  userRole: UserRole;
+}
+
+export function ChatView({ userRole }: ChatViewProps) {
   const {
     personas,
     activePersona,
-    session,
     entries,
     activeRepos,
     selectedGovernanceDocs,
@@ -114,6 +138,9 @@ export function ChatView() {
     scaffoldStatus,
     busy,
     error,
+    model,
+    modelProvider,
+    modelOptions,
     reasoningLevel,
     reasoningOptions,
     threads,
@@ -131,9 +158,11 @@ export function ChatView() {
     switchPersona,
     interrupt,
     startNewSession,
+    setModel,
     setReasoningLevel,
     selectThread,
     renameThread,
+    settleThread,
     deleteThread,
     forkThread,
     setCollaborationMode,
@@ -141,9 +170,11 @@ export function ChatView() {
     selectWorkItemThread,
   } = useChatContext();
   const { repos, featureAvailability, activeScaffoldSession, activeWorkspace } = useWorkspace();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [showPersonaDropdown, setShowPersonaDropdown] = useState(false);
+  const [showContextSettings, setShowContextSettings] = useState(false);
   const [showFindings, setShowFindings] = useState(true);
   const [dismissedFindings, setDismissedFindings] = useState<Set<number>>(new Set());
   const [composerPrefill, setComposerPrefill] = useState<{ id: string; text: string } | null>(null);
@@ -152,19 +183,23 @@ export function ChatView() {
   const [workOpen, setWorkOpen] = useState(false);
   const [executionStrategy, setExecutionStrategy] = useState<ExecutionStrategy>('auto');
   const [canvasOpen, setCanvasOpen] = useState(true);
+  const [canvasExpanded, setCanvasExpanded] = useState(false);
+  const [canvasDetached, setCanvasDetached] = useState(false);
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [recentRuns, setRecentRuns] = useState<AgentRunSummary[]>([]);
   const [activeSessions, setActiveSessions] = useState<CodexSession[]>([]);
-  const [steerDraft, setSteerDraft] = useState('');
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [composerFocusRequest, setComposerFocusRequest] = useState(0);
+  const [itsmWorkbenchOpen, setItsmWorkbenchOpen] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
+  const appliedItsmDefaultRef = useRef(false);
 
   const isBaPersona = activePersona?.id === 'ba';
   const isDesignPersona = activePersona?.id === 'design';
   const isDbExpertPersona = activePersona?.id === 'db-expert';
+  const isItsmPersona = activePersona ? ITSM_PERSONA_IDS.has(activePersona.id) : false;
   const isWorkItemLayout = chatLayout === 'workitems';
   const mentionRepoIds = useMemo(() => activeRepos.map((repo) => repo.id), [activeRepos]);
   const slashCommands = useMemo<ChatSlashCommand[]>(
@@ -200,37 +235,18 @@ export function ChatView() {
     ],
     [],
   );
-  const quickPrompts = useMemo<ChatQuickPrompt[]>(() => {
-    const repoContext =
-      activeRepos.length > 0
-        ? `the selected repo${activeRepos.length === 1 ? '' : 's'}: ${activeRepos
-            .map((repo) => repo.name)
-            .join(', ')}`
-        : 'the active workspace';
 
-    return [
-      {
-        id: 'review-diff',
-        label: 'Review diff',
-        prompt: `Review the current changes in ${repoContext}. Focus on correctness, regressions, missing tests, security risks, and developer workflow issues. Cite files and lines where possible.`,
-      },
-      {
-        id: 'plan-change',
-        label: 'Plan change',
-        prompt: `Help me plan the next implementation in ${repoContext}. Identify the files likely to change, risky assumptions, and the smallest useful verification loop.`,
-      },
-      {
-        id: 'write-tests',
-        label: 'Write tests',
-        prompt: `Find the most important missing tests for ${repoContext}. Prioritise behavior that could regress and suggest focused test cases before implementation.`,
-      },
-      {
-        id: 'map-code',
-        label: 'Map code',
-        prompt: `Map ${repoContext}. Summarise the main modules, runtime entry points, data flow, and the first files a developer should read.`,
-      },
-    ];
-  }, [activeRepos]);
+  useEffect(() => {
+    if (userRole !== 'itsm') {
+      appliedItsmDefaultRef.current = false;
+      return;
+    }
+    if (appliedItsmDefaultRef.current || personas.length === 0 || !activePersona) return;
+    appliedItsmDefaultRef.current = true;
+    if (activePersona.id !== 'coder') return;
+    const serviceDesk = personas.find((persona) => persona.id === 'service-desk');
+    if (serviceDesk) void switchPersona(serviceDesk);
+  }, [activePersona, personas, switchPersona, userRole]);
   const [designSidebarCollapsed, setDesignSidebarCollapsed] = useState(false);
 
   useEffect(() => {
@@ -307,6 +323,17 @@ export function ChatView() {
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams, personas, activePersona, switchPersona]);
 
+  useEffect(() => {
+    const threadId = searchParams.get('thread');
+    if (!threadId) return;
+    if (!threads.some((thread) => thread.id === threadId)) return;
+
+    void selectThread(threadId);
+    const next = new URLSearchParams(searchParams);
+    next.delete('thread');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, selectThread, setSearchParams, threads]);
+
   const findings = useMemo(() => {
     if (!isBaPersona) return [];
     const all: (ExtractedFinding & { idx: number })[] = [];
@@ -322,7 +349,7 @@ export function ChatView() {
   }, [entries, isBaPersona]);
 
   const openFindings = findings.filter((f) => !dismissedFindings.has(f.idx));
-  const displayEntries = useMemo(() => groupChatEntries(entries), [entries]);
+  const composedTurns = useMemo(() => composeChatTurns(entries, { active: busy }), [busy, entries]);
 
   useEffect(() => {
     const container = messagesContainerRef.current;
@@ -341,8 +368,17 @@ export function ChatView() {
 
   useEffect(() => {
     if (!shouldStickToBottomRef.current) return;
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [entries]);
+    messagesEndRef.current?.scrollIntoView({
+      behavior: busy ? 'auto' : 'smooth',
+      block: 'end',
+    });
+  }, [busy, entries]);
+
+  useEffect(() => {
+    shouldStickToBottomRef.current = true;
+    setShowJumpToLatest(false);
+    messagesEndRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' });
+  }, [activeThreadId]);
 
   const handleJumpToLatest = useCallback(() => {
     shouldStickToBottomRef.current = true;
@@ -373,9 +409,60 @@ export function ChatView() {
         return;
       }
 
+      const mayBeWorkflowIntent =
+        /\bworkflow\b/i.test(message) &&
+        /\b(?:use|run|start|launch|create|build|make|design|draft)\b/i.test(message);
+      if (attachments.length === 0 && activeWorkspace && mayBeWorkflowIntent) {
+        void window.anvil.workflow
+          .listTemplates()
+          .then(async (templates) => {
+            const intent = parseWorkflowChatIntent(message, templates);
+            if (!intent) {
+              await send(
+                message,
+                attachments,
+                buildExecutionStrategyPrompt(executionStrategy) ?? undefined,
+              );
+              return;
+            }
+            if (intent.kind === 'run') {
+              const run = await window.anvil.workflow.startRun({
+                templateId: intent.template.id,
+                workspaceId: activeWorkspace.id,
+                repoIds: activeWorkspace.repos.map((repo) => repo.id),
+                kickoff: intent.kickoff,
+              });
+              navigate(`/workflows?run=${encodeURIComponent(run.id)}`);
+              return;
+            }
+            const params = new URLSearchParams({ kickoff: intent.kickoff });
+            if (intent.kind === 'draft') params.set('draft', intent.request);
+            navigate(`/workflows?${params.toString()}`);
+          })
+          .catch(() => {
+            void send(
+              message,
+              attachments,
+              buildExecutionStrategyPrompt(executionStrategy) ?? undefined,
+            );
+          });
+        return;
+      }
+
       void send(message, attachments, buildExecutionStrategyPrompt(executionStrategy) ?? undefined);
     },
-    [executionStrategy, send, startNewSession],
+    [activeWorkspace, executionStrategy, navigate, send, startNewSession],
+  );
+
+  const handleChatInputSend = useCallback(
+    (message: string, attachments: ChatAttachment[] = []) => {
+      if (busy) {
+        void steer(message, attachments);
+        return;
+      }
+      handleComposerSend(message, attachments);
+    },
+    [busy, handleComposerSend, steer],
   );
 
   const handleCodexModeChange = useCallback(async (mode: CodexMode) => {
@@ -394,12 +481,10 @@ export function ChatView() {
     [setChatLayout],
   );
 
-  const handleSuggestionClick = useCallback(
-    (prompt: string) => {
-      send(prompt);
-    },
-    [send],
-  );
+  const handleSuggestionClick = useCallback((prompt: string) => {
+    setComposerPrefill({ id: `suggestion-${Date.now()}`, text: prompt });
+    setComposerFocusRequest((request) => request + 1);
+  }, []);
 
   const handleFindingFollowUp = useCallback((finding: ExtractedFinding & { idx: number }) => {
     setComposerPrefill({
@@ -430,18 +515,11 @@ export function ChatView() {
     void send('Mark the active goal complete.');
   }, [send]);
 
-  const handleSteerSubmit = useCallback(() => {
-    const message = steerDraft.trim();
-    if (!message) return;
-    setSteerDraft('');
-    void steer(message);
-  }, [steer, steerDraft]);
-
   const personaColour = activePersona?.colour ?? '#b5121b';
   const scaffoldBusy = scaffoldStatus === 'syncing' || scaffoldStatus === 'indexing';
   const workspaceChatReady = scaffoldModeActive || featureAvailability.chatEnabled;
   const chatInputDisabled =
-    busy || scaffoldBusy || !workspaceChatReady || (isWorkItemLayout && !activeThread?.workItemId);
+    scaffoldBusy || !workspaceChatReady || (isWorkItemLayout && !activeThread?.workItemId);
   const composerDraftKey = [
     'anvil:chat-draft',
     activeThreadId ?? 'no-thread',
@@ -454,10 +532,14 @@ export function ChatView() {
     activeArtifacts.find((artifact) => artifact.id === selectedArtifactId) ??
     activeArtifacts[0] ??
     null;
+  const showItsmWorkbench = userRole === 'itsm' && isItsmPersona && itsmWorkbenchOpen;
   const showCanvasSidebar =
     !isDesignPersona &&
     !isBaPersona &&
+    !showItsmWorkbench &&
     canvasOpen &&
+    !canvasExpanded &&
+    !canvasDetached &&
     (activeArtifacts.length > 0 || activePlan || activeGoal);
 
   useEffect(() => {
@@ -472,6 +554,26 @@ export function ChatView() {
         : activeArtifacts[0].id,
     );
   }, [activeArtifacts]);
+
+  useEffect(() => {
+    if (activeArtifacts.length > 0 || activePlan || activeGoal) return;
+    setCanvasExpanded(false);
+    setCanvasDetached(false);
+  }, [activeArtifacts.length, activeGoal, activePlan]);
+
+  useEffect(() => {
+    if (!canvasExpanded) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setCanvasExpanded(false);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [canvasExpanded]);
+
+  const handleDetachedCanvasClose = useCallback(() => {
+    setCanvasDetached(false);
+    setCanvasOpen(true);
+  }, []);
 
   const handleBranch = useCallback(
     (messageIndex: number) => {
@@ -491,190 +593,221 @@ export function ChatView() {
   const content = (
     <div className="flex h-full flex-col">
       {/* Header */}
-      <div className="relative z-40 flex flex-wrap items-center gap-2 border-b border-border/60 bg-bg-secondary/90 px-4 py-2.5 shadow-sm backdrop-blur-sm">
-        <div className="flex min-w-[360px] flex-1 flex-wrap items-center gap-2 lg:gap-3">
-          <div
-            className="flex h-8 w-8 items-center justify-center rounded-xl shadow-sm"
-            style={{ backgroundColor: `${personaColour}15` }}
-          >
-            <MessageSquare size={16} style={{ color: personaColour }} className="shrink-0" />
-          </div>
-          <div className="min-w-0">
-            <h2 className="shrink-0 text-base font-semibold tracking-tight">Chat</h2>
-            {activeThread && !scaffoldModeActive && (
-              <p className="truncate text-xs text-text-tertiary">{activeThread.title}</p>
-            )}
+      <div className="relative z-40 flex min-h-14 items-center gap-2 border-b border-border/60 bg-bg-secondary px-3 py-2 lg:px-4">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-2">
+              <h2 className="truncate text-sm font-semibold tracking-tight text-text-primary">
+                {activeThread && !scaffoldModeActive ? activeThread.title : 'New conversation'}
+              </h2>
+            </div>
+            <p className="truncate text-xs text-text-tertiary">
+              {activeWorkspace?.name ?? 'No workspace'} · {activePersona?.name ?? 'Assistant'}
+            </p>
           </div>
 
-          {/* Persona selector */}
-          <div className="relative">
+          <div className="relative ml-auto shrink-0">
             <button
-              onClick={() => {
-                if (!scaffoldModeActive) setShowPersonaDropdown(!showPersonaDropdown);
-              }}
-              className="flex items-center gap-2 rounded-xl border border-border px-3 py-1.5 text-sm transition-all hover:bg-bg-tertiary hover:shadow-sm"
-              style={{ borderColor: personaColour + '40' }}
-              aria-label="Select persona"
-              aria-expanded={showPersonaDropdown}
-              disabled={scaffoldModeActive}
+              type="button"
+              onClick={() => setShowContextSettings((open) => !open)}
+              className="flex h-9 items-center gap-2 rounded-lg border border-border px-2.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+              aria-expanded={showContextSettings}
+              aria-label="Chat context and mode settings"
             >
-              <span
-                className="inline-block h-2 w-2 rounded-full shadow-sm"
-                style={{ backgroundColor: personaColour }}
-              />
-              {activePersona ? PERSONA_ICONS[activePersona.icon] : null}
-              <span className="text-text-primary">{activePersona?.name ?? 'Select persona'}</span>
-              <ChevronDown size={12} className="text-text-tertiary" />
+              <SlidersHorizontal size={13} />
+              <span className="hidden lg:inline">Context</span>
             </button>
 
-            {showPersonaDropdown && !scaffoldModeActive && (
-              <div className="absolute left-0 top-full z-50 mt-1.5 w-72 overflow-hidden rounded-xl border border-border bg-bg-elevated shadow-2xl ring-1 ring-black/10">
-                <div className="p-1.5">
-                  {personas.map((p) => (
+            {showContextSettings && (
+              <div className="absolute right-0 top-full z-50 mt-2 w-[min(680px,calc(100vw-2rem))] rounded-xl border border-border bg-bg-elevated p-3 shadow-2xl">
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* Persona selector */}
+                  <div className="relative">
                     <button
-                      key={p.id}
-                      onClick={() => handleSwitchPersona(p)}
-                      className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-colors hover:bg-bg-tertiary ${
-                        activePersona?.id === p.id ? 'bg-bg-tertiary' : ''
-                      }`}
+                      onClick={() => {
+                        if (!scaffoldModeActive) setShowPersonaDropdown(!showPersonaDropdown);
+                      }}
+                      className="flex items-center gap-2 rounded-xl border border-border px-3 py-1.5 text-sm transition-all hover:bg-bg-tertiary hover:shadow-sm"
+                      style={{ borderColor: personaColour + '40' }}
+                      aria-label="Select persona"
+                      aria-expanded={showPersonaDropdown}
+                      disabled={scaffoldModeActive}
                     >
                       <span
-                        className="inline-block h-2.5 w-2.5 shrink-0 rounded-full shadow-sm"
-                        style={{ backgroundColor: p.colour }}
+                        className="inline-block h-2 w-2 rounded-full shadow-sm"
+                        style={{ backgroundColor: personaColour }}
                       />
-                      <span className="shrink-0 text-text-secondary">{PERSONA_ICONS[p.icon]}</span>
-                      <div className="min-w-0">
-                        <div className="font-medium text-text-primary">{p.name}</div>
-                        <div className="truncate text-xs text-text-tertiary">{p.description}</div>
-                      </div>
+                      {activePersona ? PERSONA_ICONS[activePersona.icon] : null}
+                      <span className="text-text-primary">
+                        {activePersona?.name ?? 'Select persona'}
+                      </span>
+                      <ChevronDown size={12} className="text-text-tertiary" />
                     </button>
-                  ))}
+
+                    {showPersonaDropdown && !scaffoldModeActive && (
+                      <div className="absolute left-0 top-full z-50 mt-1.5 max-h-[min(32rem,calc(100vh-8rem))] w-72 overflow-y-auto rounded-xl border border-border bg-bg-elevated shadow-2xl ring-1 ring-black/10">
+                        <div className="p-1.5">
+                          {groupPersonasForRole(personas, userRole).map((group, groupIndex) => (
+                            <div
+                              key={group.id}
+                              className={
+                                groupIndex > 0 ? 'mt-1 border-t border-border/60 pt-1' : ''
+                              }
+                            >
+                              {group.label && (
+                                <p className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+                                  {group.label}
+                                </p>
+                              )}
+                              {group.personas.map((p) => (
+                                <button
+                                  key={p.id}
+                                  onClick={() => handleSwitchPersona(p)}
+                                  className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-colors hover:bg-bg-tertiary ${
+                                    activePersona?.id === p.id ? 'bg-bg-tertiary' : ''
+                                  }`}
+                                >
+                                  <span
+                                    className="inline-block h-2.5 w-2.5 shrink-0 rounded-full shadow-sm"
+                                    style={{ backgroundColor: p.colour }}
+                                  />
+                                  <span className="shrink-0 text-text-secondary">
+                                    {PERSONA_ICONS[p.icon]}
+                                  </span>
+                                  <div className="min-w-0">
+                                    <div className="font-medium text-text-primary">{p.name}</div>
+                                    <div className="truncate text-xs text-text-tertiary">
+                                      {p.description}
+                                    </div>
+                                  </div>
+                                </button>
+                              ))}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Repo selector */}
+                  {!scaffoldModeActive && (
+                    <RepoSelector
+                      variant="dropdown"
+                      mode="multi"
+                      selectedRepoIds={activeRepos.map((r) => r.id)}
+                      onMultiSelect={setActiveRepos}
+                    />
+                  )}
+
+                  {!scaffoldModeActive && (
+                    <div className="flex items-center gap-1 rounded-xl border border-border bg-bg-primary/60 p-0.5">
+                      <button
+                        onClick={() => handleChatLayoutChange('classic')}
+                        className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
+                          chatLayout === 'classic'
+                            ? 'bg-accent/15 text-accent'
+                            : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary'
+                        }`}
+                        aria-pressed={chatLayout === 'classic'}
+                        title="Classic chat threads"
+                      >
+                        <MessageSquare size={12} />
+                        <span className="hidden 2xl:inline">Classic</span>
+                      </button>
+                      <button
+                        onClick={() => handleChatLayoutChange('workitems')}
+                        className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
+                          chatLayout === 'workitems'
+                            ? 'bg-info/15 text-info'
+                            : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary'
+                        }`}
+                        aria-pressed={chatLayout === 'workitems'}
+                        title="Work-item chat threads"
+                      >
+                        <ClipboardList size={12} />
+                        <span className="hidden 2xl:inline">Tickets</span>
+                      </button>
+                    </div>
+                  )}
+
+                  {!scaffoldModeActive && (
+                    <div className="flex items-center gap-1 rounded-xl border border-border bg-bg-primary/60 p-0.5">
+                      <button
+                        onClick={() => setCollaborationMode('default')}
+                        className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
+                          collaborationMode === 'default'
+                            ? 'bg-accent/15 text-accent'
+                            : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary'
+                        }`}
+                        aria-pressed={collaborationMode === 'default'}
+                        title="Implementation mode"
+                      >
+                        <Hammer size={12} />
+                        <span className="hidden xl:inline">Build</span>
+                      </button>
+                      <button
+                        onClick={() => setCollaborationMode('plan')}
+                        className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
+                          collaborationMode === 'plan'
+                            ? 'bg-info/15 text-info'
+                            : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary'
+                        }`}
+                        aria-pressed={collaborationMode === 'plan'}
+                        title="Planning mode"
+                      >
+                        <ListChecks size={12} />
+                        <span className="hidden xl:inline">Plan</span>
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Governance document selector */}
+                  <GovernanceSelector
+                    selectedDocIds={selectedGovernanceDocs.map((d) => d.id)}
+                    onSelectionChange={setSelectedGovernanceDocs}
+                  />
+
+                  {!scaffoldModeActive && (
+                    <WorkspaceGitActions
+                      repos={repos}
+                      onPullRequestCreated={(result) => {
+                        const target =
+                          result.pullRequestUrl ?? `${result.repoName} ${result.branch}`;
+                        setComposerPrefill({
+                          id: `pr-${Date.now()}`,
+                          text: `Created PR for ${result.repoName}: ${target}`,
+                        });
+                      }}
+                      onError={(message) => {
+                        setComposerPrefill({ id: `git-error-${Date.now()}`, text: message });
+                      }}
+                    />
+                  )}
+
+                  {!scaffoldModeActive && (
+                    <AgentWorkControl
+                      open={workOpen}
+                      runs={recentRuns}
+                      sessions={activeSessions}
+                      onOpenChange={setWorkOpen}
+                      onOpenThread={(threadId) => void selectThread(threadId)}
+                      onStop={(sessionId) => void window.anvil.chat.stopSession(sessionId)}
+                    />
+                  )}
+                  {!scaffoldModeActive && (
+                    <GoalControl
+                      activeGoal={activeGoal}
+                      busy={busy}
+                      open={goalPopoverOpen}
+                      onOpenChange={setGoalPopoverOpen}
+                      onSetGoal={handleSetGoal}
+                      onCompleteGoal={handleCompleteGoal}
+                    />
+                  )}
                 </div>
               </div>
             )}
           </div>
-
-          {/* Repo selector */}
-          {!scaffoldModeActive && (
-            <RepoSelector
-              variant="dropdown"
-              mode="multi"
-              selectedRepoIds={activeRepos.map((r) => r.id)}
-              onMultiSelect={setActiveRepos}
-            />
-          )}
-
-          {!scaffoldModeActive && (
-            <div className="flex items-center gap-1 rounded-xl border border-border bg-bg-primary/60 p-0.5">
-              <button
-                onClick={() => handleChatLayoutChange('classic')}
-                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
-                  chatLayout === 'classic'
-                    ? 'bg-accent/15 text-accent'
-                    : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary'
-                }`}
-                aria-pressed={chatLayout === 'classic'}
-                title="Classic chat threads"
-              >
-                <MessageSquare size={12} />
-                <span className="hidden 2xl:inline">Classic</span>
-              </button>
-              <button
-                onClick={() => handleChatLayoutChange('workitems')}
-                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
-                  chatLayout === 'workitems'
-                    ? 'bg-info/15 text-info'
-                    : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary'
-                }`}
-                aria-pressed={chatLayout === 'workitems'}
-                title="Work-item chat threads"
-              >
-                <ClipboardList size={12} />
-                <span className="hidden 2xl:inline">Tickets</span>
-              </button>
-            </div>
-          )}
-
-          {!scaffoldModeActive && (
-            <div className="flex items-center gap-1 rounded-xl border border-border bg-bg-primary/60 p-0.5">
-              <button
-                onClick={() => setCollaborationMode('default')}
-                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
-                  collaborationMode === 'default'
-                    ? 'bg-accent/15 text-accent'
-                    : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary'
-                }`}
-                aria-pressed={collaborationMode === 'default'}
-                title="Implementation mode"
-              >
-                <Hammer size={12} />
-                <span className="hidden xl:inline">Build</span>
-              </button>
-              <button
-                onClick={() => setCollaborationMode('plan')}
-                className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
-                  collaborationMode === 'plan'
-                    ? 'bg-info/15 text-info'
-                    : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary'
-                }`}
-                aria-pressed={collaborationMode === 'plan'}
-                title="Planning mode"
-              >
-                <ListChecks size={12} />
-                <span className="hidden xl:inline">Plan</span>
-              </button>
-            </div>
-          )}
-
-          {!scaffoldModeActive && (
-            <label className="flex items-center gap-2 rounded-xl border border-border px-2.5 py-1.5 text-sm text-text-secondary">
-              <span className="hidden text-xs text-text-tertiary xl:inline">Mode</span>
-              <select
-                value={codexMode}
-                onChange={(event) => void handleCodexModeChange(event.target.value as CodexMode)}
-                className="max-w-28 bg-transparent text-sm text-text-primary outline-none xl:max-w-none"
-                aria-label="Codex mode"
-              >
-                <option value="read-only">Read Only</option>
-                <option value="on-request">Ask First</option>
-                <option value="workspace-auto">Auto</option>
-                <option value="full-access">Full Access</option>
-              </select>
-            </label>
-          )}
-
-          {/* Governance document selector */}
-          <GovernanceSelector
-            selectedDocIds={selectedGovernanceDocs.map((d) => d.id)}
-            onSelectionChange={setSelectedGovernanceDocs}
-          />
-
-          {!scaffoldModeActive && (
-            <WorkspaceGitActions
-              repos={repos}
-              onPullRequestCreated={(result) => {
-                const target = result.pullRequestUrl ?? `${result.repoName} ${result.branch}`;
-                setComposerPrefill({
-                  id: `pr-${Date.now()}`,
-                  text: `Created PR for ${result.repoName}: ${target}`,
-                });
-              }}
-              onError={(message) => {
-                setComposerPrefill({ id: `git-error-${Date.now()}`, text: message });
-              }}
-            />
-          )}
-
-          {!scaffoldModeActive && (
-            <AgentWorkControl
-              open={workOpen}
-              runs={recentRuns}
-              sessions={activeSessions}
-              onOpenChange={setWorkOpen}
-              onOpenThread={(threadId) => void selectThread(threadId)}
-              onStop={(sessionId) => void window.anvil.chat.stopSession(sessionId)}
-            />
-          )}
 
           {/* Session status */}
           {scaffoldModeActive && (
@@ -688,35 +821,25 @@ export function ChatView() {
                     : 'Scaffolding'}
             </span>
           )}
-          {session && (
-            <span
-              className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${
-                busy ? 'bg-warning/10 text-warning' : 'bg-success/10 text-success'
-              }`}
-            >
-              {busy && <Sparkles size={10} className="animate-pulse" />}
-              {busy ? 'Working' : 'Ready'}
-            </span>
-          )}
         </div>
 
         <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">
-          {!scaffoldModeActive && (
-            <GoalControl
-              activeGoal={activeGoal}
-              busy={busy}
-              open={goalPopoverOpen}
-              onOpenChange={setGoalPopoverOpen}
-              onSetGoal={handleSetGoal}
-              onCompleteGoal={handleCompleteGoal}
-            />
+          {!scaffoldModeActive && activeRepos.length > 0 && (
+            <button
+              type="button"
+              onClick={() => navigate('/git?tab=pull_requests')}
+              className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+              title="Browse and visualise pull requests"
+            >
+              <GitPullRequest size={13} />
+              <span className="hidden xl:inline">PRs</span>
+            </button>
           )}
-
           {!isWorkItemLayout && (
             <button
               onClick={() => void startNewSession()}
               disabled={scaffoldModeActive}
-              className="flex items-center gap-1.5 rounded-xl border border-border px-3 py-1.5 text-sm text-text-secondary transition-all hover:bg-bg-tertiary hover:text-text-primary hover:shadow-sm disabled:opacity-50"
+              className="flex items-center gap-1.5 rounded-xl border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
               title={getNewChatThreadActionLabel()}
               aria-label={getNewChatThreadActionLabel()}
             >
@@ -726,23 +849,71 @@ export function ChatView() {
           )}
 
           {!isDesignPersona && !isBaPersona && (
-            <button
-              type="button"
-              onClick={() => setCanvasOpen((open) => !open)}
-              disabled={activeArtifacts.length === 0 && !activePlan && !activeGoal}
-              className="flex items-center gap-1.5 rounded-xl border border-border px-3 py-1.5 text-sm text-text-secondary transition-all hover:bg-bg-tertiary hover:text-text-primary hover:shadow-sm disabled:cursor-not-allowed disabled:opacity-45"
-              title={canvasOpen ? 'Hide canvas' : 'Show canvas'}
-              aria-label={canvasOpen ? 'Hide canvas' : 'Show canvas'}
-              aria-pressed={canvasOpen}
-            >
-              {canvasOpen ? <PanelRightClose size={13} /> : <PanelRightOpen size={13} />}
-              <span className="hidden xl:inline">Canvas</span>
-              {activeArtifacts.length > 0 && (
-                <span className="rounded-full bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold text-accent">
-                  {activeArtifacts.length}
-                </span>
+            <>
+              {userRole === 'itsm' && isItsmPersona && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!itsmWorkbenchOpen) setCanvasOpen(false);
+                    setItsmWorkbenchOpen((open) => !open);
+                  }}
+                  className="flex items-center gap-1.5 rounded-xl border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                  title={itsmWorkbenchOpen ? 'Hide ITSM workbench' : 'Show ITSM workbench'}
+                  aria-pressed={showItsmWorkbench}
+                >
+                  <LifeBuoy size={13} />
+                  <span className="hidden xl:inline">ITSM workbench</span>
+                </button>
               )}
-            </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (canvasDetached) {
+                    setCanvasDetached(false);
+                    setCanvasOpen(true);
+                    setItsmWorkbenchOpen(false);
+                    return;
+                  }
+                  if (!showCanvasSidebar) {
+                    setItsmWorkbenchOpen(false);
+                    setCanvasOpen(true);
+                    return;
+                  }
+                  setCanvasOpen(false);
+                }}
+                disabled={activeArtifacts.length === 0 && !activePlan && !activeGoal}
+                className="flex items-center gap-1.5 rounded-xl border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-45"
+                title={
+                  canvasDetached
+                    ? 'Reattach canvas'
+                    : showCanvasSidebar
+                      ? 'Hide canvas'
+                      : 'Show canvas'
+                }
+                aria-label={
+                  canvasDetached
+                    ? 'Reattach canvas'
+                    : showCanvasSidebar
+                      ? 'Hide canvas'
+                      : 'Show canvas'
+                }
+                aria-pressed={showCanvasSidebar}
+              >
+                {canvasDetached ? (
+                  <PictureInPicture2 size={13} />
+                ) : showCanvasSidebar ? (
+                  <PanelRightClose size={13} />
+                ) : (
+                  <PanelRightOpen size={13} />
+                )}
+                <span className="hidden xl:inline">Canvas</span>
+                {activeArtifacts.length > 0 && (
+                  <span className="rounded-full bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold text-accent">
+                    {activeArtifacts.length}
+                  </span>
+                )}
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -759,12 +930,14 @@ export function ChatView() {
           ) : (
             <ChatThreadRail
               persona={activePersona}
+              repos={repos}
               threads={threads}
               activeThreadId={activeThreadId}
               liveThreadStatuses={liveThreadStatuses}
               onSelectThread={(threadId) => void selectThread(threadId)}
               onCreateThread={() => void startNewSession()}
               onRenameThread={(threadId, title) => void renameThread(threadId, title)}
+              onSettleThread={(threadId, settled) => void settleThread(threadId, settled)}
               onDeleteThread={(threadId) => void deleteThread(threadId)}
             />
           ))}
@@ -778,10 +951,10 @@ export function ChatView() {
               className={`h-full overflow-y-auto ${showCenteredEmptyPane ? 'flex' : ''}`}
             >
               <div
-                className={`w-full px-3 lg:px-4 ${
+                className={`mx-auto w-full max-w-[1120px] px-4 xl:px-6 ${
                   showCenteredEmptyPane
                     ? 'flex min-h-full flex-1 items-center justify-center py-6'
-                    : 'flex flex-col pb-4 pt-5'
+                    : 'flex flex-col pb-8 pt-6'
                 }`}
               >
                 {!scaffoldModeActive && !featureAvailability.chatEnabled && (
@@ -877,40 +1050,72 @@ export function ChatView() {
                   </div>
                 )}
 
-                {displayEntries.length > 0 && (
-                  <div className="space-y-5">
-                    {displayEntries.map((entry, i) =>
-                      entry.kind === 'user' ? (
-                        <UserMessage
-                          key={`msg-${i}`}
-                          content={entry.content}
-                          attachments={entry.attachments}
-                          onEdit={() => handleReuseMessage(entry.sourceIndex, entry.content)}
-                          onBranch={
-                            isWorkItemLayout ? undefined : () => handleBranch(entry.sourceIndex)
-                          }
-                        />
-                      ) : entry.kind === 'assistant' ? (
-                        <AssistantMessage
-                          key={`msg-${i}`}
-                          content={entry.content}
-                          transformContent={isBaPersona ? stripFindingMarkers : undefined}
-                          onBranch={
-                            isWorkItemLayout ? undefined : () => handleBranch(entry.sourceIndex)
-                          }
-                        />
-                      ) : entry.kind === 'thinking' ? (
-                        <ThinkingMessage key={`think-${i}`} content={entry.content} />
-                      ) : entry.kind === 'activity-group' ? (
-                        <ActivityGroupMessage key={`act-${i}`} events={entry.events} />
-                      ) : (
-                        <div key={`evt-${i}`} className="flex justify-start">
-                          <div className="w-full max-w-4xl">
-                            <ChatEventRenderer event={entry.event} />
-                          </div>
-                        </div>
-                      ),
-                    )}
+                {composedTurns.length > 0 && (
+                  <div className="w-full space-y-6">
+                    {composedTurns.map((turn, turnIndex) => {
+                      const liveState = getChatTurnLiveState({
+                        busy,
+                        isLatest: turnIndex === composedTurns.length - 1,
+                        hasWork: turn.work.length > 0,
+                        hasAnswer: Boolean(turn.answer),
+                        hasTrailingWork: turn.trailingWork.length > 0,
+                      });
+
+                      return (
+                        <section
+                          key={`${activeThreadId ?? 'new'}:${turn.key}`}
+                          className="w-full space-y-4"
+                          aria-label={`Turn ${turnIndex + 1}`}
+                        >
+                          {turn.user && (
+                            <UserMessage
+                              content={turn.user.content}
+                              attachments={turn.user.attachments}
+                              onEdit={() =>
+                                handleReuseMessage(turn.user!.sourceIndex, turn.user!.content)
+                              }
+                              onBranch={
+                                isWorkItemLayout
+                                  ? undefined
+                                  : () => handleBranch(turn.user!.sourceIndex)
+                              }
+                            />
+                          )}
+                          {turn.work.length > 0 && (
+                            <TurnWorkMessage items={turn.work} active={liveState !== null} />
+                          )}
+                          {turn.answer && (
+                            <AssistantMessage
+                              content={turn.answer.content}
+                              transformContent={isBaPersona ? stripFindingMarkers : undefined}
+                              label={activePersona?.name ?? 'Assistant'}
+                              colour={personaColour}
+                              active={liveState === 'responding'}
+                              onBranch={
+                                isWorkItemLayout
+                                  ? undefined
+                                  : () => handleBranch(turn.answer!.sourceIndex)
+                              }
+                            />
+                          )}
+                          {turn.trailingWork.length > 0 && (
+                            <TurnWorkMessage
+                              items={turn.trailingWork}
+                              active={liveState !== null}
+                            />
+                          )}
+                          {liveState && (
+                            <TurnActivityStatus
+                              state={liveState}
+                              latestItem={
+                                turn.trailingWork[turn.trailingWork.length - 1] ??
+                                turn.work[turn.work.length - 1]
+                              }
+                            />
+                          )}
+                        </section>
+                      );
+                    })}
                   </div>
                 )}
 
@@ -925,72 +1130,42 @@ export function ChatView() {
               </div>
               <div ref={messagesEndRef} />
             </div>
-            {showJumpToLatest && displayEntries.length > 0 && (
+            {showJumpToLatest && composedTurns.length > 0 && (
               <button
                 type="button"
                 onClick={handleJumpToLatest}
                 className="absolute bottom-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-bg-elevated/95 px-3 py-1.5 text-xs font-medium text-text-secondary shadow-lg backdrop-blur transition-colors hover:border-accent/40 hover:bg-bg-tertiary hover:text-text-primary"
               >
-                <ArrowDown size={13} />
-                Latest
+                {busy ? <Loader2 size={13} className="animate-spin" /> : <ArrowDown size={13} />}
+                {busy ? 'Working · Latest' : 'Latest'}
               </button>
             )}
           </div>
 
-          {/* Status bar */}
-          <ChatStatusBar
-            events={entries
-              .filter((e) => e.kind === 'event')
-              .map((e) => (e as { event: CodexEvent }).event)}
-            isBusy={busy}
-          />
-
-          {busy && session && (
-            <div className="border-t border-border/60 bg-bg-secondary/80 px-3 py-2">
-              <div className="flex items-center gap-2 rounded-xl border border-warning/25 bg-warning/5 px-3 py-2">
-                <Sparkles size={14} className="shrink-0 text-warning" />
-                <input
-                  value={steerDraft}
-                  onChange={(event) => setSteerDraft(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
-                      event.preventDefault();
-                      handleSteerSubmit();
-                    }
-                  }}
-                  placeholder="Steer the active turn..."
-                  className="min-w-0 flex-1 bg-transparent text-sm text-text-primary outline-none placeholder:text-text-tertiary"
-                />
-                <button
-                  type="button"
-                  onClick={handleSteerSubmit}
-                  disabled={!steerDraft.trim()}
-                  className="flex items-center gap-1.5 rounded-lg border border-warning/30 bg-warning/10 px-2.5 py-1 text-xs font-medium text-warning transition-colors hover:bg-warning/15 disabled:cursor-not-allowed disabled:opacity-40"
-                  title="Send steering input to the current Codex turn"
-                >
-                  <SendHorizontal size={13} />
-                  Steer
-                </button>
-              </div>
-            </div>
-          )}
-
           {/* Input */}
           <ChatInput
-            onSend={handleComposerSend}
+            onSend={handleChatInputSend}
             onStop={interrupt}
             disabled={chatInputDisabled}
             busy={busy}
             personaColour={personaColour}
+            model={model}
+            modelProvider={modelProvider}
+            modelOptions={modelOptions}
+            onModelChange={setModel}
             reasoningLevel={reasoningLevel}
             reasoningOptions={reasoningOptions}
             onReasoningChange={setReasoningLevel}
             executionStrategy={executionStrategy}
             onExecutionStrategyChange={setExecutionStrategy}
+            codexMode={isItsmPersona ? 'read-only' : codexMode}
+            onCodexModeChange={
+              scaffoldModeActive ? undefined : (mode) => void handleCodexModeChange(mode)
+            }
+            codexModeDisabled={isItsmPersona}
             prefill={composerPrefill}
             draftKey={composerDraftKey}
             mentionRepoIds={mentionRepoIds}
-            quickPrompts={quickPrompts}
             slashCommands={slashCommands}
             focusRequest={composerFocusRequest}
           />
@@ -1055,6 +1230,27 @@ export function ChatView() {
           />
         )}
 
+        {showItsmWorkbench && (
+          <ResizableSidebarPanel
+            storageKey="chat:itsm-workbench"
+            side="right"
+            title="ITSM workbench"
+            defaultWidth={380}
+            minWidth={320}
+            maxWidth={560}
+            collapsedWidth={0}
+            className="border-l border-border/60 bg-bg-secondary/50"
+          >
+            <ItsmWorkbench
+              workspaceId={activeWorkspace?.id ?? null}
+              onPrompt={(prompt) => {
+                setComposerPrefill({ id: `itsm-${Date.now()}`, text: prompt });
+                setComposerFocusRequest((current) => current + 1);
+              }}
+            />
+          </ResizableSidebarPanel>
+        )}
+
         {showCanvasSidebar && (
           <ResizableSidebarPanel
             storageKey="chat:canvas"
@@ -1063,6 +1259,7 @@ export function ChatView() {
             defaultWidth={460}
             minWidth={360}
             maxWidth={720}
+            collapsedWidth={0}
             className="border-l border-border/60 bg-bg-secondary/50"
           >
             <ChatCanvasSidebar
@@ -1071,8 +1268,44 @@ export function ChatView() {
               activePlan={activePlan}
               activeGoal={activeGoal}
               onSelectArtifact={setSelectedArtifactId}
+              presentation="sidebar"
+              onExpand={() => setCanvasExpanded(true)}
+              onDetach={() => setCanvasDetached(true)}
             />
           </ResizableSidebarPanel>
+        )}
+
+        {canvasExpanded && !canvasDetached && (selectedArtifact || activePlan || activeGoal) && (
+          <div className="fixed inset-3 z-50 flex min-h-0 overflow-hidden rounded-xl border border-border bg-bg-secondary shadow-2xl">
+            <ChatCanvasSidebar
+              artifacts={activeArtifacts}
+              selectedArtifact={selectedArtifact}
+              activePlan={activePlan}
+              activeGoal={activeGoal}
+              onSelectArtifact={setSelectedArtifactId}
+              presentation="expanded"
+              onExpand={() => setCanvasExpanded(false)}
+              onDetach={() => {
+                setCanvasExpanded(false);
+                setCanvasDetached(true);
+              }}
+            />
+          </div>
+        )}
+
+        {canvasDetached && (selectedArtifact || activePlan || activeGoal) && (
+          <DetachedCanvasWindow title="Anvil Canvas" onClose={handleDetachedCanvasClose}>
+            <ChatCanvasSidebar
+              artifacts={activeArtifacts}
+              selectedArtifact={selectedArtifact}
+              activePlan={activePlan}
+              activeGoal={activeGoal}
+              onSelectArtifact={setSelectedArtifactId}
+              presentation="detached"
+              onExpand={handleDetachedCanvasClose}
+              onDetach={handleDetachedCanvasClose}
+            />
+          </DetachedCanvasWindow>
         )}
       </div>
     </div>
@@ -1083,64 +1316,6 @@ export function ChatView() {
   }
 
   return content;
-}
-
-type SourceIndexedEntry<T extends ChatEntry> = T & { sourceIndex: number };
-type EventEntry = SourceIndexedEntry<Extract<ChatEntry, { kind: 'event' }>>;
-type ActivityGroupEntry = {
-  kind: 'activity-group';
-  events: CodexEvent[];
-};
-type DisplayEntry =
-  | SourceIndexedEntry<Exclude<ChatEntry, { kind: 'event' }>>
-  | EventEntry
-  | ActivityGroupEntry;
-
-const GROUPED_ACTIVITY_EVENT_TYPES: CodexEvent['type'][] = [
-  'tool_call',
-  'command_exec',
-  'file_read',
-  'file_edit',
-  'approval_request',
-  'plan_update',
-  'goal_update',
-  'goal_cleared',
-];
-
-function groupChatEntries(entries: ChatEntry[]): DisplayEntry[] {
-  const grouped: DisplayEntry[] = [];
-  let pendingEvents: EventEntry[] = [];
-
-  const flushPendingEvents = () => {
-    if (pendingEvents.length === 0) return;
-    if (pendingEvents.length === 1) {
-      grouped.push(pendingEvents[0]);
-    } else {
-      grouped.push({
-        kind: 'activity-group',
-        events: pendingEvents.map((entry) => entry.event),
-      });
-    }
-    pendingEvents = [];
-  };
-
-  for (const [sourceIndex, entry] of entries.entries()) {
-    const indexedEntry = { ...entry, sourceIndex } as SourceIndexedEntry<ChatEntry>;
-    if (entry.kind === 'event' && isGroupedActivityEvent(entry.event)) {
-      pendingEvents.push(indexedEntry as EventEntry);
-      continue;
-    }
-
-    flushPendingEvents();
-    grouped.push(indexedEntry as DisplayEntry);
-  }
-
-  flushPendingEvents();
-  return grouped;
-}
-
-function isGroupedActivityEvent(event: CodexEvent): boolean {
-  return GROUPED_ACTIVITY_EVENT_TYPES.includes(event.type);
 }
 
 function AgentWorkControl({
@@ -1500,12 +1675,18 @@ function ChatCanvasSidebar({
   activePlan,
   activeGoal,
   onSelectArtifact,
+  presentation,
+  onExpand,
+  onDetach,
 }: {
   artifacts: ChatArtifact[];
   selectedArtifact: ChatArtifact | null;
   activePlan: ChatPlanSnapshot | null;
   activeGoal: ChatGoalSnapshot | null;
   onSelectArtifact: (artifactId: string) => void;
+  presentation: 'sidebar' | 'expanded' | 'detached';
+  onExpand: () => void;
+  onDetach: () => void;
 }) {
   const [mode, setMode] = useState<'preview' | 'source'>('preview');
   const [copied, setCopied] = useState(false);
@@ -1525,13 +1706,35 @@ function ChatCanvasSidebar({
           <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-accent/20 bg-accent/10 text-accent">
             <Braces size={15} />
           </div>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <h3 className="truncate text-sm font-semibold text-text-primary">Canvas</h3>
             <p className="truncate text-xs text-text-tertiary">
               {artifacts.length > 0
                 ? `${artifacts.length} artifact${artifacts.length === 1 ? '' : 's'}`
                 : 'Plan and goal context'}
             </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              onClick={onExpand}
+              className="rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+              title={presentation === 'sidebar' ? 'Expand canvas' : 'Reattach canvas'}
+              aria-label={presentation === 'sidebar' ? 'Expand canvas' : 'Reattach canvas'}
+            >
+              {presentation === 'sidebar' ? <Maximize2 size={14} /> : <Minimize2 size={14} />}
+            </button>
+            {presentation !== 'detached' && (
+              <button
+                type="button"
+                onClick={onDetach}
+                className="rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+                title="Detach canvas"
+                aria-label="Detach canvas"
+              >
+                <PictureInPicture2 size={14} />
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -1653,8 +1856,11 @@ function ChatCanvasSidebar({
 }
 
 function ArtifactIcon({ kind }: { kind: ChatArtifact['kind'] }) {
-  if (kind === 'markdown' || kind === 'text') return <FileText size={13} className="shrink-0" />;
-  if (kind === 'html') return <Eye size={13} className="shrink-0" />;
+  if (kind === 'markdown' || kind === 'text' || kind === 'docx' || kind === 'pdf') {
+    return <FileText size={13} className="shrink-0" />;
+  }
+  if (kind === 'html' || kind === 'pptx') return <Eye size={13} className="shrink-0" />;
+  if (kind === 'csv' || kind === 'xlsx') return <Database size={13} className="shrink-0" />;
   return <Braces size={13} className="shrink-0" />;
 }
 
@@ -1667,38 +1873,7 @@ function ArtifactMetaChip({ label }: { label: string }) {
 }
 
 function ArtifactBody({ artifact, mode }: { artifact: ChatArtifact; mode: 'preview' | 'source' }) {
-  if (mode === 'source' || artifact.kind === 'code' || artifact.kind === 'data') {
-    return (
-      <pre className="min-h-full overflow-auto p-4 font-mono text-xs leading-relaxed text-text-secondary">
-        <code>{artifact.content}</code>
-      </pre>
-    );
-  }
-
-  if (artifact.kind === 'html') {
-    return (
-      <iframe
-        title={artifact.title}
-        sandbox=""
-        srcDoc={artifact.content}
-        className="h-full min-h-[520px] w-full bg-white"
-      />
-    );
-  }
-
-  if (artifact.kind === 'markdown') {
-    return (
-      <div className="mx-auto max-w-3xl px-5 py-4">
-        <MarkdownRenderer content={artifact.content} />
-      </div>
-    );
-  }
-
-  return (
-    <pre className="min-h-full whitespace-pre-wrap p-4 text-sm leading-relaxed text-text-secondary">
-      {artifact.content}
-    </pre>
-  );
+  return <ArtifactPreview artifact={artifact} mode={mode} />;
 }
 
 function PlanGoalSidebar({
@@ -1798,6 +1973,26 @@ export function getNewChatThreadActionLabel(): string {
 
 export function buildMessageReusePrefill(content: string): string {
   return content.trimEnd();
+}
+
+export function getChatTurnLiveState({
+  busy,
+  isLatest,
+  hasWork,
+  hasAnswer,
+  hasTrailingWork = false,
+}: {
+  busy: boolean;
+  isLatest: boolean;
+  hasWork: boolean;
+  hasAnswer: boolean;
+  hasTrailingWork?: boolean;
+}): TurnActivityState | null {
+  if (!busy || !isLatest) return null;
+  if (hasTrailingWork) return 'working';
+  if (hasAnswer) return 'responding';
+  if (hasWork) return 'working';
+  return 'thinking';
 }
 
 function formatGoalStatus(status: ChatGoalSnapshot['status']): string {

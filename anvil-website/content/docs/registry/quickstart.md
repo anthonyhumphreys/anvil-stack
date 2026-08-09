@@ -34,6 +34,8 @@ The local stack includes:
 - Worker process for queued analysis.
 - Postgres, Redis, and MinIO for local persistence, queueing, and object storage.
 
+For a NAS or an always-on Docker host, use the Compose bundle attached to a `registry-v*` GitHub release instead of cloning the build workspace. The release bundle uses published AMD64 and ARM64 images, requires explicit secrets, and keeps internal data services off host ports. See [Deployment](/docs/registry/deploy).
+
 Check that the gateway is alive and ready:
 
 ```bash
@@ -64,6 +66,8 @@ yarn add is-number@7.0.0 --registry http://localhost:4873 --ignore-scripts
 ```
 
 The gateway rewrites tarball URLs so package bytes continue through Anvil Registry instead of leaking back to the upstream registry.
+
+When the gateway runs on another machine, both the client registry URL and the gateway's `PUBLIC_BASE_URL` must use the reachable hostname, for example `http://anvil-nas.local:4873`. A server-side value of `localhost` produces tarball URLs that point back at the Mac rather than the NAS.
 
 ## Explain a package
 

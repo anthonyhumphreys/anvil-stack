@@ -27,7 +27,7 @@ import {
   StickyNote,
   MonitorSmartphone,
 } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useBrand } from '../../contexts/BrandContext';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { RunButton } from './RunButton';
@@ -83,6 +83,13 @@ const navItems: NavItem[] = [
     label: 'Automations',
     icon: <Bot size={20} />,
     feature: 'automations',
+  },
+  {
+    path: '/workflows',
+    label: 'Workflows',
+    icon: <GitFork size={20} />,
+    feature: 'workflows',
+    requiresChat: true,
   },
   {
     path: '/db-insights',
@@ -183,6 +190,11 @@ const navItems: NavItem[] = [
   },
 ];
 
+const PRIMARY_NAV_PATHS = new Set(['/chat', '/repos', '/editor']);
+const WORK_NAV_PATHS = new Set(['/workitems', '/automations', '/workflows', '/codereview']);
+const PRIMARY_NAV_ORDER = ['/chat', '/repos', '/editor'];
+const WORK_NAV_ORDER = ['/workitems', '/automations', '/workflows', '/codereview'];
+
 interface SidebarProps {
   connectionStatus: {
     foundry: boolean | null;
@@ -204,13 +216,62 @@ export function Sidebar({
   const navigate = useNavigate();
   const brand = useBrand();
   const { activeWorkspace, featureAvailability } = useWorkspace();
-  const { items: activityItems, indicators: activityIndicators, activeCount } = useSidebarActivity();
+  const {
+    items: activityItems,
+    indicators: activityIndicators,
+    activeCount,
+  } = useSidebarActivity();
   const { width, setWidth, collapsed, toggleCollapsed } = useStoredPanelState({
     storageKey: 'layout:main-sidebar:v2',
     defaultWidth: 252,
     minWidth: 224,
     maxWidth: 340,
   });
+  const [autoCompact, setAutoCompact] = useState(false);
+  const [narrowExpansion, setNarrowExpansion] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const compact = collapsed || (autoCompact && !narrowExpansion);
+
+  useEffect(() => {
+    const updateCompactMode = () => {
+      const shouldCompact = location.pathname.startsWith('/chat') && window.innerWidth < 1500;
+      setAutoCompact(shouldCompact);
+      if (!shouldCompact) setNarrowExpansion(false);
+    };
+
+    updateCompactMode();
+    window.addEventListener('resize', updateCompactMode);
+    return () => window.removeEventListener('resize', updateCompactMode);
+  }, [location.pathname]);
+
+  const availableNavItems = navItems.filter(
+    (item) =>
+      ROLE_FEATURES[userRole].includes(item.feature) &&
+      (item.feature !== 'cloud' || cloudFeaturesEnabled),
+  );
+  const primaryNavItems = orderNavItems(availableNavItems, PRIMARY_NAV_ORDER);
+  const workNavItems = orderNavItems(availableNavItems, WORK_NAV_ORDER);
+  const moreNavItems = availableNavItems.filter(
+    (item) => !PRIMARY_NAV_PATHS.has(item.path) && !WORK_NAV_PATHS.has(item.path),
+  );
+  const moreActive = moreNavItems.some((item) => location.pathname.startsWith(item.path));
+
+  useEffect(() => {
+    if (moreActive) setMoreOpen(true);
+  }, [moreActive]);
+
+  const handleCollapseToggle = () => {
+    if (autoCompact) {
+      if (collapsed) {
+        toggleCollapsed();
+        setNarrowExpansion(true);
+      } else {
+        setNarrowExpansion((expanded) => !expanded);
+      }
+      return;
+    }
+    toggleCollapsed();
+  };
 
   const statusLabel =
     featureAvailability.statusLabel === 'scaffolding'
@@ -222,7 +283,7 @@ export function Sidebar({
           : 'Ready';
 
   const handleResizeStart = (event: React.MouseEvent<HTMLDivElement>) => {
-    if (collapsed) return;
+    if (compact) return;
 
     event.preventDefault();
     const startX = event.clientX;
@@ -251,7 +312,7 @@ export function Sidebar({
   return (
     <aside
       className="relative flex h-full min-h-0 shrink-0 flex-col bg-bg-secondary transition-[width] duration-200"
-      style={{ width: collapsed ? 88 : width }}
+      style={{ width: compact ? 72 : width }}
     >
       {/* Titlebar drag region — clears macOS traffic lights outside fullscreen. */}
       {reserveTitlebarSpace && <div className="titlebar-drag h-14" />}
@@ -259,34 +320,33 @@ export function Sidebar({
       {/* Border starts below the traffic lights */}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden border-r border-border">
         {/* Branding */}
-        <div className={`${collapsed ? 'px-3 pb-4' : 'px-5 pb-5'} shrink-0 pt-2.5`}>
-          <div className={`flex items-center ${collapsed ? 'justify-center' : 'justify-between'}`}>
-            <div className={`flex min-w-0 items-center ${collapsed ? '' : 'gap-3'}`}>
-              <AnvilLogo size={collapsed ? 42 : 46} showGlow />
-              {!collapsed && (
-                <h1 className="min-w-0 truncate text-xl font-semibold tracking-tight text-accent">
-                  <BrandName name={brand.appName} collapsed={collapsed} />
+        <div className={`${compact ? 'px-3 pb-3' : 'px-4 pb-3'} shrink-0 pt-2.5`}>
+          <div className={`flex items-center ${compact ? 'justify-center' : 'justify-between'}`}>
+            <div className={`flex min-w-0 items-center ${compact ? '' : 'gap-2.5'}`}>
+              <AnvilLogo size={compact ? 36 : 38} showGlow />
+              {!compact && (
+                <h1 className="min-w-0 truncate text-base font-semibold tracking-tight text-text-primary">
+                  <BrandName name={brand.appName} collapsed={compact} />
                 </h1>
               )}
             </div>
-            {!collapsed && (
+            {!compact && (
               <button
-                onClick={toggleCollapsed}
+                onClick={handleCollapseToggle}
                 className="titlebar-no-drag rounded-lg p-1.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-                title="Collapse sidebar"
-                aria-label="Collapse sidebar"
+                title="Collapse navigation"
+                aria-label="Collapse navigation"
               >
                 <ChevronLeft size={14} />
               </button>
             )}
           </div>
-          {!collapsed && <p className="mt-1 text-sm text-text-secondary">{brand.subtitle}</p>}
-          {collapsed && (
+          {compact && (
             <button
-              onClick={toggleCollapsed}
-              className="titlebar-no-drag mt-3 flex w-full items-center justify-center rounded-lg border border-border-subtle px-2 py-2 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-              title="Expand sidebar"
-              aria-label="Expand sidebar"
+              onClick={handleCollapseToggle}
+              className="titlebar-no-drag mt-2 flex w-full items-center justify-center rounded-lg px-2 py-1.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+              title="Expand navigation"
+              aria-label="Expand navigation"
             >
               <ChevronRight size={14} />
             </button>
@@ -294,8 +354,8 @@ export function Sidebar({
         </div>
 
         {/* Active Workspace */}
-        {!collapsed && (
-          <div className="shrink-0 border-b border-border-subtle px-5 pb-4">
+        {!compact && (
+          <div className="shrink-0 border-b border-border-subtle px-4 pb-3">
             <div className="flex items-center gap-2">
               <div className="text-base font-semibold text-text-primary">
                 {activeWorkspace?.name ?? 'No workspace selected'}
@@ -321,103 +381,144 @@ export function Sidebar({
 
         {/* Run Button */}
         <div className="shrink-0">
-          <RunButton compact={collapsed} />
+          <RunButton compact={compact} />
         </div>
 
         {/* Navigation */}
-        <div className="min-h-0 flex-1 px-3 py-3">
+        <div className="min-h-0 flex-1 px-2.5 py-2.5">
           <nav className="h-full overflow-y-auto pr-1">
             <div className="flex flex-col gap-1">
-              {navItems
-                .filter(
-                  (item) =>
-                    ROLE_FEATURES[userRole].includes(item.feature) &&
-                    (item.feature !== 'cloud' || cloudFeaturesEnabled),
-                )
-                .map((item) => {
-                  const active = location.pathname.startsWith(item.path);
-                  const disabled = item.requiresChat
-                    ? !featureAvailability.chatEnabled
-                    : item.requiresRepoFeature
-                      ? !featureAvailability.repoFeaturesEnabled
-                      : false;
-                  return (
-                    <button
-                      key={item.path}
-                      onClick={() => {
-                        if (!disabled) navigate(item.path);
-                      }}
-                      disabled={disabled}
-                      className={`titlebar-no-drag relative flex w-full items-center rounded-lg border py-3 text-base font-medium transition-colors ${
-                        active
-                          ? 'border-accent/35 bg-accent/12 text-text-primary shadow-[0_0_0_1px_var(--color-accent-glow)]'
-                          : disabled
-                            ? 'cursor-not-allowed border-transparent text-text-tertiary opacity-50'
-                            : 'border-transparent text-text-secondary hover:border-border hover:bg-bg-tertiary hover:text-text-primary'
-                      } ${collapsed ? 'justify-center px-2.5' : 'gap-3 px-3.5'}`}
-                      aria-label={item.label}
-                      title={disabled ? featureAvailability.repoFeatureReason : item.label}
-                    >
-                      {item.icon}
-                      {!collapsed && <span className="truncate">{item.label}</span>}
-                      <SidebarActivityBadge
-                        indicator={activityIndicators[item.feature]}
-                        collapsed={collapsed}
-                      />
-                    </button>
-                  );
-                })}
+              {[...primaryNavItems, ...workNavItems].map((item, index) => {
+                const active = location.pathname.startsWith(item.path);
+                const disabled = item.requiresChat
+                  ? !featureAvailability.chatEnabled
+                  : item.requiresRepoFeature
+                    ? !featureAvailability.repoFeaturesEnabled
+                    : false;
+                return (
+                  <button
+                    key={item.path}
+                    onClick={() => {
+                      if (!disabled) navigate(item.path);
+                    }}
+                    disabled={disabled}
+                    className={`titlebar-no-drag relative flex w-full items-center rounded-lg border py-2 text-sm font-medium transition-colors ${
+                      active
+                        ? 'border-accent/30 bg-accent/12 text-text-primary'
+                        : disabled
+                          ? 'cursor-not-allowed border-transparent text-text-tertiary opacity-50'
+                          : item.path === '/chat'
+                            ? 'border-border-subtle bg-bg-tertiary/45 text-text-primary hover:border-border hover:bg-bg-tertiary'
+                            : 'border-transparent text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
+                    } ${compact ? 'justify-center px-2.5' : 'gap-3 px-3'} ${index === primaryNavItems.length && !compact ? 'mt-2 border-t-0' : ''}`}
+                    aria-label={item.label}
+                    title={disabled ? featureAvailability.repoFeatureReason : item.label}
+                  >
+                    {item.icon}
+                    {!compact && <span className="truncate">{item.label}</span>}
+                    <SidebarActivityBadge
+                      indicator={activityIndicators[item.feature]}
+                      collapsed={compact}
+                    />
+                  </button>
+                );
+              })}
+
+              {moreNavItems.length > 0 && !compact && (
+                <div className="mt-2 border-t border-border-subtle pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setMoreOpen((open) => !open)}
+                    className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+                    aria-expanded={moreOpen}
+                  >
+                    {moreOpen ? (
+                      <ChevronLeft size={13} className="-rotate-90" />
+                    ) : (
+                      <ChevronRight size={13} />
+                    )}
+                    <span>More tools</span>
+                    <span className="ml-auto text-[11px]">{moreNavItems.length}</span>
+                  </button>
+                  {moreOpen && (
+                    <div className="mt-1 flex flex-col gap-0.5">
+                      {moreNavItems.map((item) => {
+                        const active = location.pathname.startsWith(item.path);
+                        const disabled = item.requiresChat
+                          ? !featureAvailability.chatEnabled
+                          : item.requiresRepoFeature
+                            ? !featureAvailability.repoFeaturesEnabled
+                            : false;
+                        return (
+                          <button
+                            key={item.path}
+                            onClick={() => !disabled && navigate(item.path)}
+                            disabled={disabled}
+                            className={`relative flex w-full items-center gap-3 rounded-lg px-3 py-1.5 text-sm transition-colors ${
+                              active
+                                ? 'bg-accent/10 text-text-primary'
+                                : disabled
+                                  ? 'cursor-not-allowed text-text-tertiary opacity-45'
+                                  : 'text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
+                            }`}
+                            title={disabled ? featureAvailability.repoFeatureReason : item.label}
+                          >
+                            {item.icon}
+                            <span className="truncate">{item.label}</span>
+                            <SidebarActivityBadge
+                              indicator={activityIndicators[item.feature]}
+                              collapsed={false}
+                            />
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </nav>
         </div>
 
         {/* Footer — connection status + settings */}
-        <div className="shrink-0 border-t border-border-subtle p-4">
+        <div className="shrink-0 border-t border-border-subtle p-2.5">
           <SidebarActivityCenter
             items={activityItems}
             activeCount={activeCount}
-            collapsed={collapsed}
+            collapsed={compact}
           />
-          <div className={`${collapsed ? 'space-y-3' : 'space-y-2'} text-sm`}>
-            <StatusDot label="Foundry" status={connectionStatus.foundry} compact={collapsed} />
-            <StatusDot label="ADO" status={connectionStatus.ado} compact={collapsed} />
-            <StatusDot
-              label="Confluence"
-              status={connectionStatus.confluence}
-              compact={collapsed}
-            />
-          </div>
+          {!compact && <ConnectionSummary connectionStatus={connectionStatus} />}
           <button
             onClick={() => navigate('/settings')}
-            className={`titlebar-no-drag mt-4 flex w-full items-center rounded-lg border py-2.5 text-sm font-medium transition-colors ${
+            className={`titlebar-no-drag mt-2 flex w-full items-center rounded-lg py-2 text-sm font-medium transition-colors ${
               location.pathname.startsWith('/settings')
                 ? 'border-accent/30 bg-accent/10 text-text-primary'
-                : 'border-border-subtle text-text-secondary hover:border-border hover:bg-bg-tertiary hover:text-text-primary'
-            } ${collapsed ? 'justify-center px-2' : 'gap-2 px-3'}`}
+                : 'border-transparent text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
+            } ${compact ? 'justify-center px-2' : 'gap-2 px-3'}`}
             aria-label="Settings"
             title="Settings"
           >
             <Settings size={16} />
-            {!collapsed && 'Settings'}
+            {!compact && 'Settings'}
           </button>
           <button
             onClick={() => navigate('/diagnostics')}
-            className={`titlebar-no-drag mt-2 flex w-full items-center rounded-lg border py-2.5 text-sm font-medium transition-colors ${
+            className={`titlebar-no-drag mt-1 flex w-full items-center rounded-lg py-2 text-sm font-medium transition-colors ${
               location.pathname.startsWith('/diagnostics')
                 ? 'border-accent/30 bg-accent/10 text-text-primary'
-                : 'border-border-subtle text-text-secondary hover:border-border hover:bg-bg-tertiary hover:text-text-primary'
-            } ${collapsed ? 'justify-center px-2' : 'gap-2 px-3'}`}
+                : 'border-transparent text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
+            } ${compact ? 'justify-center px-2' : 'gap-2 px-3'}`}
             aria-label="Diagnostics"
             title="Diagnostics"
           >
             <Activity size={16} />
-            {!collapsed && 'Diagnostics'}
+            {!compact && 'Diagnostics'}
           </button>
         </div>
       </div>
       {/* end border wrapper */}
 
-      {!collapsed && (
+      {!compact && (
         <div
           onMouseDown={handleResizeStart}
           className="absolute -right-1 bottom-0 top-0 z-10 w-2 cursor-col-resize"
@@ -430,21 +531,30 @@ export function Sidebar({
   );
 }
 
-function StatusDot({
-  label,
-  status,
-  compact = false,
+function ConnectionSummary({
+  connectionStatus,
 }: {
-  label: string;
-  status: boolean | null;
-  compact?: boolean;
+  connectionStatus: SidebarProps['connectionStatus'];
 }) {
-  const colour =
-    status === true ? 'bg-success' : status === false ? 'bg-error' : 'bg-text-tertiary';
+  const services = Object.values(connectionStatus);
+  const connected = services.filter((status) => status === true).length;
+  const failed = services.filter((status) => status === false).length;
+  const label =
+    failed > 0
+      ? `${failed} connection issue${failed === 1 ? '' : 's'}`
+      : connected > 0
+        ? `${connected} connected`
+        : 'Connections';
+
   return (
-    <div className={`flex items-center ${compact ? 'justify-center' : 'gap-2'}`} title={label}>
-      <span className={`inline-block h-2.5 w-2.5 rounded-full ${colour}`} />
-      {!compact && <span className="text-sm text-text-secondary">{label}</span>}
+    <div
+      className="flex items-center gap-2 px-3 py-1.5 text-xs text-text-tertiary"
+      title="Foundry, work items, and Confluence connection health"
+    >
+      <span
+        className={`h-2 w-2 rounded-full ${failed > 0 ? 'bg-error' : connected > 0 ? 'bg-success' : 'bg-text-tertiary'}`}
+      />
+      <span>{label}</span>
     </div>
   );
 }
@@ -452,4 +562,11 @@ function StatusDot({
 function BrandName({ name, collapsed = false }: { name: string; collapsed?: boolean }) {
   if (collapsed) return <>{name.slice(0, 3)}</>;
   return <>{name}</>;
+}
+
+function orderNavItems(items: NavItem[], paths: string[]): NavItem[] {
+  return paths.flatMap((path) => {
+    const item = items.find((candidate) => candidate.path === path);
+    return item ? [item] : [];
+  });
 }

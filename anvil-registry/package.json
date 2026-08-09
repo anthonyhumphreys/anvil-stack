@@ -1,10 +1,10 @@
 {
   "name": "anvil-registry",
-  "version": "0.1.0",
+  "version": "0.1.7",
   "license": "MIT",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@10.11.0",
+  "packageManager": "pnpm@10.34.5",
   "scripts": {
     "build": "turbo run build",
     "db:migrate": "pnpm --filter @anvilstack/persistence db:migrate",
@@ -20,6 +20,7 @@
     "smoke:node-base-image-report": "./scripts/smoke-node-base-image-report",
     "smoke:node-base-report": "./scripts/smoke-node-base-report",
     "smoke:scoped-upstream": "tsx scripts/smoke-scoped-upstream.ts",
+    "release:compose:check": "node scripts/validate-release-compose.mjs",
     "sst:preflight": "pnpm --dir infra/sst deploy:preflight",
     "sst:migrate": "pnpm --dir infra/sst sst shell -- pnpm --filter @anvilstack/infra-sst migrate:run",
     "test:node-base": "./devcontainer-base/scripts/test-node-base-scripts",
@@ -37,7 +38,10 @@
   "pnpm": {
     "overrides": {
       "esbuild": "0.28.1",
-      "postcss": "8.5.15",
+      "fast-uri": "3.1.5",
+      "find-my-way": "9.7.0",
+      "postcss": "8.5.26",
+      "sharp": "0.35.0",
       "vite": "7.3.5"
     }
   }

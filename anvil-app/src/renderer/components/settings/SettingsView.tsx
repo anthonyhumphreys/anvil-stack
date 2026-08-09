@@ -15,6 +15,7 @@ import {
   Loader2,
   MonitorSmartphone,
   Palette,
+  Plus,
   Puzzle,
   RefreshCcw,
   Save,
@@ -27,10 +28,12 @@ import {
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type {
+  AgentProvider,
   AppSettings,
   AppTheme,
   CodexCliStatus,
   CodexUsageSnapshot,
+  CursorCliStatus,
   DocsProvider,
   MobileCompanionDevice,
   MobileCompanionStatus,
@@ -38,6 +41,7 @@ import type {
   RaycastCompanionToken,
   ReasoningEffort,
   UserRole,
+  WorkItemConnection,
 } from '../../../shared/types';
 import {
   CODEX_MODEL_OPTIONS,
@@ -54,6 +58,33 @@ type SettingsCategoryId = 'profile' | 'ai' | 'delivery' | 'review' | 'devices' |
 type CodexAgentsStatus = { tone: 'success' | 'error'; message: string };
 type CodexModelPickerOption = CodexModelOption & { source: 'docs' | 'cli' };
 
+const AGENT_PROVIDER_OPTIONS: Array<{
+  id: AgentProvider;
+  label: string;
+  description: string;
+}> = [
+  {
+    id: 'codex',
+    label: 'Codex CLI',
+    description: 'Local Codex login, tools, skills, and app-server sessions.',
+  },
+  {
+    id: 'cursor',
+    label: 'Cursor CLI',
+    description: 'Cursor models and agent tools through cursor-agent.',
+  },
+  {
+    id: 'openai',
+    label: 'OpenAI API',
+    description: 'Direct API-key route for app utilities and Codex sessions.',
+  },
+  {
+    id: 'azure',
+    label: 'Azure AI Foundry',
+    description: 'Azure-hosted models registered through your Codex configuration.',
+  },
+];
+
 const SETTINGS_CATEGORIES: Array<{
   id: SettingsCategoryId;
   label: string;
@@ -68,8 +99,8 @@ const SETTINGS_CATEGORIES: Array<{
   },
   {
     id: 'ai',
-    label: 'AI & Codex',
-    description: 'Model backend, reasoning, skills, and MCPs.',
+    label: 'AI & agents',
+    description: 'Primary agent, active providers, models, skills, and MCPs.',
     icon: Bot,
   },
   {
@@ -210,6 +241,7 @@ export function SettingsView({
   const [codexUsage, setCodexUsage] = useState<CodexUsageSnapshot | null>(null);
   const [codexUsageLoading, setCodexUsageLoading] = useState(false);
   const [codexStatus, setCodexStatus] = useState<CodexCliStatus | null>(null);
+  const [cursorStatus, setCursorStatus] = useState<CursorCliStatus | null>(null);
   const [agentMaxThreads, setAgentMaxThreads] = useState(6);
   const [agentMaxThreadsSaving, setAgentMaxThreadsSaving] = useState(false);
   const [agentMaxThreadsError, setAgentMaxThreadsError] = useState<string | null>(null);
@@ -249,6 +281,7 @@ export function SettingsView({
         setAgentMaxThreads(status.agentMaxThreads ?? 6);
       })
       .catch(console.warn);
+    window.anvil.settings.getCursorStatus().then(setCursorStatus).catch(console.warn);
     refreshMobileCompanion().catch(console.error);
     refreshCodexUsage().catch(console.error);
     refreshCodexAgentsFile().catch(console.error);
@@ -257,6 +290,94 @@ export function SettingsView({
   const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {
     setSettings((prev) => ({ ...prev, [key]: value }));
     setSaved(false);
+  };
+
+  const activateWorkItemConnection = (connection: WorkItemConnection) => {
+    setSettings((prev) => ({
+      ...prev,
+      activeWorkItemConnectionId: connection.id,
+      workItemProvider: connection.provider,
+      adoOrganizationUrl: connection.adoOrganizationUrl ?? '',
+      adoProject: connection.adoProject ?? '',
+      adoTeam: connection.adoTeam,
+      adoPat: connection.adoPat,
+      linearApiKey: connection.linearApiKey,
+      linearTeamId: connection.linearTeamId,
+      jiraHost: connection.jiraHost,
+      jiraAuthMode: connection.jiraAuthMode,
+      jiraProject: connection.jiraProject,
+      jiraBoardId: connection.jiraBoardId,
+      jiraEmail: connection.jiraEmail,
+      jiraApiToken: connection.jiraApiToken,
+    }));
+    setWiStatus('idle');
+    setSaved(false);
+  };
+
+  const addWorkItemConnection = () => {
+    const connection: WorkItemConnection = {
+      id: crypto.randomUUID(),
+      name: `Work items ${(settings.workItemConnections?.length ?? 0) + 1}`,
+      provider: 'ado',
+      jiraAuthMode: 'cloud',
+    };
+    setSettings((prev) => ({
+      ...prev,
+      workItemConnections: [...(prev.workItemConnections ?? []), connection],
+    }));
+    activateWorkItemConnection(connection);
+  };
+
+  const updateWorkItemConnection = <K extends keyof WorkItemConnection>(
+    key: K,
+    value: WorkItemConnection[K],
+  ) => {
+    setSettings((prev) => {
+      const activeId = prev.activeWorkItemConnectionId;
+      const connections = (prev.workItemConnections ?? []).map((connection) =>
+        connection.id === activeId ? { ...connection, [key]: value } : connection,
+      );
+      const active = connections.find((connection) => connection.id === activeId);
+      return active
+        ? {
+            ...prev,
+            workItemConnections: connections,
+            workItemProvider: active.provider,
+            adoOrganizationUrl: active.adoOrganizationUrl ?? '',
+            adoProject: active.adoProject ?? '',
+            adoTeam: active.adoTeam,
+            adoPat: active.adoPat,
+            linearApiKey: active.linearApiKey,
+            linearTeamId: active.linearTeamId,
+            jiraHost: active.jiraHost,
+            jiraAuthMode: active.jiraAuthMode,
+            jiraProject: active.jiraProject,
+            jiraBoardId: active.jiraBoardId,
+            jiraEmail: active.jiraEmail,
+            jiraApiToken: active.jiraApiToken,
+          }
+        : { ...prev, workItemConnections: connections };
+    });
+    setWiStatus('idle');
+    setSaved(false);
+  };
+
+  const removeActiveWorkItemConnection = () => {
+    const remaining = (settings.workItemConnections ?? []).filter(
+      (connection) => connection.id !== settings.activeWorkItemConnectionId,
+    );
+    setSettings((prev) => ({ ...prev, workItemConnections: remaining }));
+    if (remaining[0]) {
+      activateWorkItemConnection(remaining[0]);
+    } else {
+      setSettings((prev) => ({
+        ...prev,
+        workItemConnections: [],
+        activeWorkItemConnectionId: undefined,
+        workItemProvider: 'none',
+      }));
+      setSaved(false);
+    }
   };
 
   const saveAgentMaxThreads = async () => {
@@ -580,7 +701,48 @@ export function SettingsView({
   };
 
   const provider = settings.llmProvider ?? 'codex';
-  const wiProvider = settings.workItemProvider ?? 'ado';
+  const enabledProviders = [
+    ...new Set<AgentProvider>([provider, ...(settings.enabledLlmProviders ?? [])]),
+  ];
+  const setPrimaryProvider = (nextProvider: AgentProvider) => {
+    setSettings((prev) => {
+      const currentModel = prev.openaiModel ?? DEFAULT_CODEX_MODEL;
+      const cursorModels = cursorStatus?.models.map((model) => model.id) ?? [];
+      const model =
+        nextProvider === 'cursor'
+          ? cursorModels.includes(currentModel)
+            ? currentModel
+            : 'auto'
+          : provider === 'cursor' && cursorModels.includes(currentModel)
+            ? DEFAULT_CODEX_MODEL
+            : currentModel;
+      return {
+        ...prev,
+        llmProvider: nextProvider,
+        enabledLlmProviders: [
+          ...new Set<AgentProvider>([nextProvider, ...(prev.enabledLlmProviders ?? [provider])]),
+        ],
+        openaiModel: model,
+      };
+    });
+    setSaved(false);
+  };
+  const toggleProvider = (providerId: AgentProvider) => {
+    if (providerId === provider) return;
+    setSettings((prev) => {
+      const current = new Set(prev.enabledLlmProviders ?? [provider]);
+      if (current.has(providerId)) current.delete(providerId);
+      else current.add(providerId);
+      current.add(provider);
+      return { ...prev, enabledLlmProviders: [...current] };
+    });
+    setSaved(false);
+  };
+  const workItemConnections = settings.workItemConnections ?? [];
+  const activeWorkItemConnection = workItemConnections.find(
+    (connection) => connection.id === settings.activeWorkItemConnectionId,
+  );
+  const wiProvider = activeWorkItemConnection?.provider ?? 'none';
   const selectedDocsProvider = docsProvider;
   const themeOptions = THEME_OPTIONS;
   const persistedTheme = settings.theme ?? brand.defaultTheme;
@@ -592,9 +754,21 @@ export function SettingsView({
   const selectedChatLayout = settings.chatLayout ?? 'classic';
   const selectedChatLayoutLabel = selectedChatLayout === 'workitems' ? 'Work items' : 'Classic';
   const roleLabel =
-    userRole === 'ba-brm' ? 'BA / BRM' : userRole === 'design' ? 'Design' : 'Developer';
+    userRole === 'ba-brm'
+      ? 'BA / BRM'
+      : userRole === 'design'
+        ? 'Design'
+        : userRole === 'itsm'
+          ? 'ITSM'
+          : 'Developer';
   const aiProviderLabel =
-    provider === 'codex' ? 'Codex CLI' : provider === 'azure' ? 'Azure AI Foundry' : 'OpenAI API';
+    provider === 'codex'
+      ? 'Codex CLI'
+      : provider === 'cursor'
+        ? 'Cursor CLI'
+        : provider === 'azure'
+          ? 'Azure AI Foundry'
+          : 'OpenAI API';
   const codexModelOptions = buildCodexModelOptions(codexStatus);
   const selectedModelId = settings.openaiModel ?? DEFAULT_CODEX_MODEL;
   const selectedModel = codexModelOptions.find((model) => model.id === selectedModelId);
@@ -616,7 +790,7 @@ export function SettingsView({
     setSaved(false);
   };
   const deliverySummary = [
-    wiProvider === 'none' ? 'No work items' : wiProvider.toUpperCase(),
+    activeWorkItemConnection?.name ?? 'No work items',
     selectedDocsProvider === 'none' ? 'No docs' : selectedDocsProvider,
     gitProvider === 'ado' ? 'ADO Git' : 'GitHub',
   ];
@@ -650,7 +824,10 @@ export function SettingsView({
                 <SummaryChip label="Role" value={roleLabel} />
                 <SummaryChip label="Theme" value={selectedThemeLabel} />
                 <SummaryChip label="Chat" value={selectedChatLayoutLabel} />
-                <SummaryChip label="AI" value={aiProviderLabel} />
+                <SummaryChip
+                  label="AI"
+                  value={`${aiProviderLabel} primary · ${enabledProviders.length} active`}
+                />
                 <SummaryChip label="Cloud" value={settings.cloudFeaturesEnabled ? 'On' : 'Off'} />
                 <SummaryChip label="Mobile" value={mobileStatus?.enabled ? 'Enabled' : 'Off'} />
               </div>
@@ -788,6 +965,19 @@ export function SettingsView({
                       }
                     }}
                   />
+                  <ProviderButton
+                    label="ITSM"
+                    description="Service support, incidents, changes & service improvement"
+                    active={userRole === 'itsm'}
+                    onClick={async () => {
+                      try {
+                        await window.anvil.settings.update({ userRole: 'itsm' });
+                        onRoleChange?.('itsm');
+                      } catch (err) {
+                        console.error('[Settings] Failed to update role:', err);
+                      }
+                    }}
+                  />
                 </ButtonGrid>
               </SettingsPanel>
 
@@ -832,47 +1022,40 @@ export function SettingsView({
 
             <SettingsCategory
               id="ai"
-              title="AI & Codex"
-              description="Model routing, reasoning behaviour, skills, and MCP registry access."
+              title="AI & agents"
+              description="Primary-agent routing, provider availability, models, skills, and MCP access."
               icon={Bot}
             >
               <SettingsPanel
-                title="LLM Provider"
-                description="Select the backend used for AI calls."
+                title="Agent providers"
+                description="Choose the primary agent for new chats, then activate any additional providers that workflows may use."
               >
-                <div className="space-y-3">
-                  <label className="block text-sm text-text-secondary">Backend</label>
-                  <ButtonGrid>
-                    <ProviderButton
-                      label="Codex CLI"
-                      description="Zero-config — uses your existing Codex login"
-                      active={provider === 'codex'}
-                      onClick={() => update('llmProvider', 'codex')}
-                    />
-                    <ProviderButton
-                      label="OpenAI API Key"
-                      description="Use a separate API key"
-                      active={provider === 'openai'}
-                      onClick={() => update('llmProvider', 'openai')}
-                    />
-                    <ProviderButton
-                      label="Azure AI Foundry"
-                      description="Enterprise Azure — configured via Codex"
-                      active={provider === 'azure'}
-                      onClick={() => update('llmProvider', 'azure')}
-                    />
-                  </ButtonGrid>
-                </div>
+                <AgentProviderManager
+                  primaryProvider={provider}
+                  enabledProviders={enabledProviders}
+                  onSetPrimary={setPrimaryProvider}
+                  onToggle={toggleProvider}
+                />
+                <p className="text-xs text-text-tertiary">
+                  Primary controls new chats and app-level AI tasks. Active providers can be
+                  assigned independently to workflow steps; agents can also invoke their CLIs from
+                  prompts when appropriate.
+                </p>
 
-                {provider === 'codex' && (
+                {enabledProviders.includes('codex') && (
                   <p className="text-sm text-text-secondary">
-                    Preferred path. Routes requests through your local Codex CLI using ChatGPT
-                    sign-in and the same local app-server protocol as Codex surfaces. API keys stay
-                    optional for direct OpenAI utility calls.
+                    Codex CLI uses your local ChatGPT sign-in and app-server configuration.
                   </p>
                 )}
 
-                {provider === 'openai' && (
+                {enabledProviders.includes('cursor') && (
+                  <p className="text-sm text-text-secondary">
+                    Cursor CLI uses <code>cursor-agent acp</code> for chat and the local Cursor
+                    login. Install Cursor CLI and run <code>cursor-agent login</code> before use.
+                  </p>
+                )}
+
+                {enabledProviders.includes('openai') && (
                   <>
                     <Field
                       label="API Key"
@@ -882,6 +1065,34 @@ export function SettingsView({
                       placeholder="sk-..."
                     />
                   </>
+                )}
+
+                {provider === 'cursor' && (
+                  <div className="space-y-2 rounded-md border border-border bg-bg-primary p-4">
+                    <label className="block text-sm text-text-secondary">
+                      Primary Cursor model
+                    </label>
+                    <input
+                      list="settings-cursor-models"
+                      value={settings.openaiModel ?? 'auto'}
+                      onChange={(event) => update('openaiModel', event.target.value)}
+                      className="w-full rounded-md border border-border bg-bg-secondary px-3 py-2 text-sm text-text-primary outline-none focus:border-accent"
+                    />
+                    <datalist id="settings-cursor-models">
+                      {(cursorStatus?.models ?? []).map((model) => (
+                        <option key={model.id} value={model.id}>
+                          {model.label}
+                        </option>
+                      ))}
+                    </datalist>
+                    <p className="text-xs text-text-tertiary">
+                      {cursorStatus?.installed
+                        ? `${cursorStatus.version ?? 'Cursor CLI installed'} · ${
+                            cursorStatus.models.length
+                          } models detected`
+                        : 'Cursor CLI was not detected. Install it or enter a model id manually.'}
+                    </p>
+                  </div>
                 )}
 
                 {(provider === 'codex' || provider === 'openai') && (
@@ -1039,7 +1250,7 @@ export function SettingsView({
                   </div>
                 )}
 
-                {provider === 'azure' && (
+                {enabledProviders.includes('azure') && (
                   <div className="rounded-md border border-border bg-bg-primary p-4 space-y-3">
                     <p className="text-sm text-text-primary">
                       Azure AI Foundry is configured through the Codex CLI's{' '}
@@ -1278,60 +1489,108 @@ export function SettingsView({
             >
               <SettingsPanel
                 title="Work Items"
-                description="Connect backlog and issue providers used by planning workflows."
+                description="Keep multiple named backlog and issue connections, with one active at a time."
               >
                 <div className="space-y-3">
-                  <label className="block text-sm text-text-secondary">Provider</label>
-                  <ButtonGrid>
-                    <ProviderButton
-                      label="None"
-                      description="No work item tracking"
-                      active={wiProvider === 'none'}
-                      onClick={() => update('workItemProvider', 'none')}
+                  <div className="flex flex-wrap items-end gap-2">
+                    <div className="min-w-52 flex-1 space-y-1">
+                      <label className="block text-sm text-text-secondary">Active connection</label>
+                      <select
+                        value={settings.activeWorkItemConnectionId ?? ''}
+                        onChange={(event) => {
+                          const connection = workItemConnections.find(
+                            (candidate) => candidate.id === event.target.value,
+                          );
+                          if (connection) activateWorkItemConnection(connection);
+                        }}
+                        className="w-full rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary focus:border-accent focus:outline-none"
+                      >
+                        {workItemConnections.length === 0 && (
+                          <option value="">No connections configured</option>
+                        )}
+                        {workItemConnections.map((connection) => (
+                          <option key={connection.id} value={connection.id}>
+                            {connection.name} · {connection.provider.toUpperCase()}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={addWorkItemConnection}
+                      className="flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm text-text-secondary transition-colors hover:border-accent hover:text-text-primary"
+                    >
+                      <Plus size={14} /> Add
+                    </button>
+                    {activeWorkItemConnection && (
+                      <button
+                        type="button"
+                        onClick={removeActiveWorkItemConnection}
+                        className="flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm text-text-secondary transition-colors hover:border-error hover:text-error"
+                      >
+                        <Trash2 size={14} /> Remove
+                      </button>
+                    )}
+                  </div>
+
+                  {activeWorkItemConnection && (
+                    <Field
+                      label="Connection name"
+                      value={activeWorkItemConnection.name}
+                      onChange={(value) => updateWorkItemConnection('name', value)}
+                      placeholder="e.g. Product Linear"
                     />
-                    <ProviderButton
-                      label="Azure DevOps"
-                      description="ADO boards and backlogs"
-                      active={wiProvider === 'ado'}
-                      onClick={() => update('workItemProvider', 'ado')}
-                    />
-                    <ProviderButton
-                      label="Linear"
-                      description="Modern issue tracking"
-                      active={wiProvider === 'linear'}
-                      onClick={() => update('workItemProvider', 'linear')}
-                    />
-                    <ProviderButton
-                      label="JIRA"
-                      description="Atlassian project tracking"
-                      active={wiProvider === 'jira'}
-                      onClick={() => update('workItemProvider', 'jira')}
-                    />
-                  </ButtonGrid>
+                  )}
+
+                  {activeWorkItemConnection && (
+                    <>
+                      <label className="block text-sm text-text-secondary">Provider</label>
+                      <ButtonGrid>
+                        <ProviderButton
+                          label="Azure DevOps"
+                          description="ADO boards and backlogs"
+                          active={wiProvider === 'ado'}
+                          onClick={() => updateWorkItemConnection('provider', 'ado')}
+                        />
+                        <ProviderButton
+                          label="Linear"
+                          description="Modern issue tracking"
+                          active={wiProvider === 'linear'}
+                          onClick={() => updateWorkItemConnection('provider', 'linear')}
+                        />
+                        <ProviderButton
+                          label="JIRA"
+                          description="Atlassian project tracking"
+                          active={wiProvider === 'jira'}
+                          onClick={() => updateWorkItemConnection('provider', 'jira')}
+                        />
+                      </ButtonGrid>
+                    </>
+                  )}
                 </div>
 
                 {wiProvider === 'ado' && (
                   <>
                     <Field
                       label="Organisation URL"
-                      value={settings.adoOrganizationUrl ?? ''}
-                      onChange={(v) => update('adoOrganizationUrl', v)}
+                      value={activeWorkItemConnection?.adoOrganizationUrl ?? ''}
+                      onChange={(v) => updateWorkItemConnection('adoOrganizationUrl', v)}
                       placeholder="https://dev.azure.com/your-org"
                     />
                     <Field
                       label="Project"
-                      value={settings.adoProject ?? ''}
-                      onChange={(v) => update('adoProject', v)}
+                      value={activeWorkItemConnection?.adoProject ?? ''}
+                      onChange={(v) => updateWorkItemConnection('adoProject', v)}
                     />
                     <Field
                       label="Team (optional)"
-                      value={settings.adoTeam ?? ''}
-                      onChange={(v) => update('adoTeam', v)}
+                      value={activeWorkItemConnection?.adoTeam ?? ''}
+                      onChange={(v) => updateWorkItemConnection('adoTeam', v)}
                     />
                     <Field
                       label="Personal Access Token"
-                      value={settings.adoPat ?? ''}
-                      onChange={(v) => update('adoPat', v)}
+                      value={activeWorkItemConnection?.adoPat ?? ''}
+                      onChange={(v) => updateWorkItemConnection('adoPat', v)}
                       type="password"
                     />
                   </>
@@ -1341,8 +1600,8 @@ export function SettingsView({
                   <>
                     <Field
                       label="API Key"
-                      value={settings.linearApiKey ?? ''}
-                      onChange={(v) => update('linearApiKey', v)}
+                      value={activeWorkItemConnection?.linearApiKey ?? ''}
+                      onChange={(v) => updateWorkItemConnection('linearApiKey', v)}
                       type="password"
                       placeholder="lin_api_..."
                     />
@@ -1350,8 +1609,8 @@ export function SettingsView({
                       <label className="block text-sm text-text-secondary">Team (optional)</label>
                       <div className="flex gap-2">
                         <select
-                          value={settings.linearTeamId ?? ''}
-                          onChange={(e) => update('linearTeamId', e.target.value)}
+                          value={activeWorkItemConnection?.linearTeamId ?? ''}
+                          onChange={(e) => updateWorkItemConnection('linearTeamId', e.target.value)}
                           className="flex-1 rounded-md border border-border bg-bg-primary px-3 py-1.5 text-sm text-text-primary focus:border-accent focus:outline-none"
                         >
                           <option value="">All teams</option>
@@ -1374,7 +1633,7 @@ export function SettingsView({
                               setLoadingTeams(false);
                             }
                           }}
-                          disabled={loadingTeams || !settings.linearApiKey}
+                          disabled={loadingTeams || !activeWorkItemConnection?.linearApiKey}
                           className="flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-sm text-text-secondary transition-colors hover:border-text-tertiary hover:text-text-primary disabled:opacity-50"
                         >
                           {loadingTeams && <Loader2 size={12} className="animate-spin" />}
@@ -1392,8 +1651,8 @@ export function SettingsView({
                   <>
                     <Field
                       label="Host"
-                      value={settings.jiraHost ?? ''}
-                      onChange={(v) => update('jiraHost', v)}
+                      value={activeWorkItemConnection?.jiraHost ?? ''}
+                      onChange={(v) => updateWorkItemConnection('jiraHost', v)}
                       placeholder="mycompany.atlassian.net"
                     />
                     <div className="space-y-1">
@@ -1402,41 +1661,41 @@ export function SettingsView({
                         <ProviderButton
                           label="Cloud"
                           description="Atlassian Cloud"
-                          active={(settings.jiraAuthMode ?? 'cloud') === 'cloud'}
-                          onClick={() => update('jiraAuthMode', 'cloud')}
+                          active={(activeWorkItemConnection?.jiraAuthMode ?? 'cloud') === 'cloud'}
+                          onClick={() => updateWorkItemConnection('jiraAuthMode', 'cloud')}
                         />
                         <ProviderButton
                           label="Server"
                           description="Data Center / Server"
-                          active={settings.jiraAuthMode === 'server'}
-                          onClick={() => update('jiraAuthMode', 'server')}
+                          active={activeWorkItemConnection?.jiraAuthMode === 'server'}
+                          onClick={() => updateWorkItemConnection('jiraAuthMode', 'server')}
                         />
                       </div>
                     </div>
                     <Field
                       label="Project Key"
-                      value={settings.jiraProject ?? ''}
-                      onChange={(v) => update('jiraProject', v)}
+                      value={activeWorkItemConnection?.jiraProject ?? ''}
+                      onChange={(v) => updateWorkItemConnection('jiraProject', v)}
                       placeholder="ENG"
                     />
                     <Field
                       label="Board ID (optional)"
-                      value={settings.jiraBoardId ?? ''}
-                      onChange={(v) => update('jiraBoardId', v)}
+                      value={activeWorkItemConnection?.jiraBoardId ?? ''}
+                      onChange={(v) => updateWorkItemConnection('jiraBoardId', v)}
                       placeholder="Auto-discovered if blank"
                     />
-                    {(settings.jiraAuthMode ?? 'cloud') === 'cloud' && (
+                    {(activeWorkItemConnection?.jiraAuthMode ?? 'cloud') === 'cloud' && (
                       <Field
                         label="Email"
-                        value={settings.jiraEmail ?? ''}
-                        onChange={(v) => update('jiraEmail', v)}
+                        value={activeWorkItemConnection?.jiraEmail ?? ''}
+                        onChange={(v) => updateWorkItemConnection('jiraEmail', v)}
                         placeholder="you@company.com"
                       />
                     )}
                     <Field
                       label="API Token"
-                      value={settings.jiraApiToken ?? ''}
-                      onChange={(v) => update('jiraApiToken', v)}
+                      value={activeWorkItemConnection?.jiraApiToken ?? ''}
+                      onChange={(v) => updateWorkItemConnection('jiraApiToken', v)}
                       type="password"
                     />
                   </>
@@ -2226,6 +2485,82 @@ function ProviderButton({
       </div>
       <div className="mt-0.5 text-sm text-text-tertiary">{description}</div>
     </button>
+  );
+}
+
+function AgentProviderManager({
+  primaryProvider,
+  enabledProviders,
+  onSetPrimary,
+  onToggle,
+}: {
+  primaryProvider: AgentProvider;
+  enabledProviders: AgentProvider[];
+  onSetPrimary: (provider: AgentProvider) => void;
+  onToggle: (provider: AgentProvider) => void;
+}) {
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Primary agent provider"
+      className="overflow-hidden rounded-lg border border-border bg-bg-primary"
+    >
+      <div className="grid grid-cols-[minmax(0,1fr)_7rem_7rem] items-center border-b border-border-subtle bg-bg-secondary px-3 py-2 text-xs font-medium text-text-tertiary">
+        <span>Provider</span>
+        <span className="text-center">Primary</span>
+        <span className="text-center">Available</span>
+      </div>
+      {AGENT_PROVIDER_OPTIONS.map((option, index) => {
+        const isPrimary = primaryProvider === option.id;
+        const isEnabled = enabledProviders.includes(option.id);
+        return (
+          <div
+            key={option.id}
+            className={`grid grid-cols-[minmax(0,1fr)_7rem_7rem] items-center gap-2 px-3 py-3 ${
+              index > 0 ? 'border-t border-border-subtle' : ''
+            }`}
+          >
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-text-primary">{option.label}</div>
+              <div className="mt-0.5 text-xs text-text-tertiary">{option.description}</div>
+            </div>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={isPrimary}
+              onClick={() => onSetPrimary(option.id)}
+              className={`mx-auto inline-flex min-h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors ${
+                isPrimary
+                  ? 'bg-accent/12 text-accent'
+                  : 'text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
+              }`}
+            >
+              <span
+                className={`h-3 w-3 rounded-full border ${
+                  isPrimary ? 'border-accent bg-accent' : 'border-text-tertiary'
+                }`}
+                aria-hidden="true"
+              />
+              {isPrimary ? 'Primary' : 'Make primary'}
+            </button>
+            <button
+              type="button"
+              aria-pressed={isEnabled}
+              disabled={isPrimary}
+              onClick={() => onToggle(option.id)}
+              className={`mx-auto min-h-8 rounded-md px-2.5 text-xs font-medium transition-colors ${
+                isEnabled
+                  ? 'bg-success/10 text-success'
+                  : 'bg-bg-secondary text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
+              } disabled:cursor-default`}
+              title={isPrimary ? 'The primary provider is always available.' : undefined}
+            >
+              {isPrimary ? 'Required' : isEnabled ? 'Active' : 'Inactive'}
+            </button>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 

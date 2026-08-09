@@ -31,7 +31,7 @@ export async function runWorkerCli(argv: string[] = process.argv.slice(2)): Prom
         objectKey: config.POPULAR_PACKAGE_INDEX_OBJECT_KEY,
         indexPath: config.POPULAR_PACKAGE_INDEX_PATH
       });
-      const result = await analysePackageTarget(command, { config, registry, persistence, downloadStats, objectStore, popularPackageIndex });
+      const result = await analysePackageTarget(command, { config, registry, persistence, downloadStats, objectStore, popularPackageIndex, onDownloadStatsError });
       logger.info({ target: `${result.packageName}@${result.version}`, action: result.decision.action, score: result.decision.score }, "analysis complete");
       return 0;
     }
@@ -63,7 +63,7 @@ export async function startWorker(): Promise<AnalysisWorkerHandle | undefined> {
   });
 
   const handler = async (job: AnalysisJob) => {
-    const result = await analyseAnalysisJob(job, { config, registry, persistence, downloadStats, objectStore, popularPackageIndex });
+    const result = await analyseAnalysisJob(job, { config, registry, persistence, downloadStats, objectStore, popularPackageIndex, onDownloadStatsError });
     logger.info(
       {
         jobId: job.id,
@@ -113,6 +113,10 @@ export async function healthCheckWorkerDependencies(config = loadConfig()): Prom
     await closeIfSupported(objectStore);
     await closeIfSupported(queue);
   }
+}
+
+function onDownloadStatsError(packageName: string, error: unknown) {
+  logger.warn({ packageName, err: error }, "Failed to fetch npm download stats");
 }
 
 async function closeIfSupported(resource: unknown): Promise<void> {

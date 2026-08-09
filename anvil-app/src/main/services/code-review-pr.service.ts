@@ -36,18 +36,21 @@ type RemoteRepoSpec = GitHubRepoSpec | AdoRepoSpec;
 interface GithubPullRequestResponse {
   number: number;
   title: string;
+  body?: string | null;
   state: string;
   isDraft: boolean;
   updatedAt: string;
   url: string;
   author?: { login?: string | null } | null;
   headRefName: string;
+  headRefOid?: string;
   baseRefName: string;
 }
 
 interface AdoPullRequestResponse {
   pullRequestId: number;
   title: string;
+  description?: string;
   status: string;
   creationDate: string;
   closedDate?: string;
@@ -55,6 +58,7 @@ interface AdoPullRequestResponse {
   createdBy?: { displayName?: string };
   sourceRefName: string;
   targetRefName: string;
+  lastMergeSourceCommit?: { commitId?: string };
 }
 
 interface GitHubIssueCommentResponse {
@@ -291,7 +295,7 @@ async function listGithubPullRequests(spec: GitHubRepoSpec): Promise<CodeReviewP
     '--state',
     'all',
     '--json',
-    'number,title,state,isDraft,author,headRefName,baseRefName,updatedAt,url',
+    'number,title,body,state,isDraft,author,headRefName,headRefOid,baseRefName,updatedAt,url',
   ]);
 
   const pullRequests = JSON.parse(stdout) as GithubPullRequestResponse[];
@@ -311,7 +315,7 @@ async function getGithubPullRequest(
     '--repo',
     formatGhRepoIdentifier(spec),
     '--json',
-    'number,title,state,isDraft,author,headRefName,baseRefName,updatedAt,url',
+    'number,title,body,state,isDraft,author,headRefName,headRefOid,baseRefName,updatedAt,url',
   ]);
 
   return mapGithubPullRequest(spec, JSON.parse(stdout) as GithubPullRequestResponse);
@@ -412,12 +416,14 @@ function mapGithubPullRequest(
   return {
     id: String(pullRequest.number),
     title: pullRequest.title,
+    description: pullRequest.body?.trim() || undefined,
     provider: 'github',
     state: mapGithubState(pullRequest.state),
     isDraft: pullRequest.isDraft,
     author: pullRequest.author?.login ?? undefined,
     sourceBranch: normalizeBranchName(pullRequest.headRefName),
     targetBranch: normalizeBranchName(pullRequest.baseRefName),
+    sourceCommitSha: pullRequest.headRefOid,
     updatedAt: pullRequest.updatedAt,
     url: pullRequest.url ?? buildGithubPullRequestUrl(spec, pullRequest.number),
   };
@@ -430,12 +436,14 @@ function mapAdoPullRequest(
   return {
     id: String(pullRequest.pullRequestId),
     title: pullRequest.title,
+    description: pullRequest.description?.trim() || undefined,
     provider: 'ado',
     state: mapAdoState(pullRequest.status),
     isDraft: pullRequest.isDraft ?? false,
     author: pullRequest.createdBy?.displayName ?? undefined,
     sourceBranch: normalizeBranchName(pullRequest.sourceRefName),
     targetBranch: normalizeBranchName(pullRequest.targetRefName),
+    sourceCommitSha: pullRequest.lastMergeSourceCommit?.commitId,
     updatedAt: pullRequest.closedDate ?? pullRequest.creationDate,
     url: buildAdoPullRequestWebUrl(spec, pullRequest.pullRequestId),
   };

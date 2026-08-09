@@ -234,10 +234,14 @@ ANVIL_ADMIN_TOKEN=local-dev-token \
 
 ANVIL_REGISTRY_URL=http://localhost:4873 \
 ANVIL_ADMIN_TOKEN=local-dev-token \
+  anvil registry queue failed --limit 20
+
+ANVIL_REGISTRY_URL=http://localhost:4873 \
+ANVIL_ADMIN_TOKEN=local-dev-token \
   anvil registry warm ./pnpm-lock.yaml
 ```
 
-`anvil registry warm` queues exact package versions from lockfiles and records the reason as `lockfile_scan`.
+`anvil registry warm` queues exact package versions from lockfiles and records the reason as `lockfile_scan`. BullMQ deployments also support selected failed-job retries and explicit, audited removal through `queue retry` and `queue remove ... --confirm`.
 
 ## Authentication model
 

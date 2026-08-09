@@ -10,12 +10,14 @@ import type {
   ArgentCommandId,
   ChatArtifactInput,
   ChatAttachment,
+  ChatNavigationTarget,
   ChatAttachmentInput,
   ChatFileMentionSearchInput,
   ChatMessage,
   ChatGoalSnapshot,
   ChatPlanSnapshot,
   ChatSendOptions,
+  CodexInputResponse,
   CodeReviewMode,
   CodeReviewScopeRef,
   CodeReviewScopeType,
@@ -27,6 +29,9 @@ import type {
   GateTemplateUpdate,
   CodexUsageSnapshot,
   RepoIndexProgress,
+  TerminalClosedEvent,
+  TerminalDataEvent,
+  TerminalExitEvent,
   WorkItemProvider,
   WorkspaceCreateOptions,
 } from '../shared/types.js';
@@ -35,12 +40,19 @@ import type { RunCommand, RunStatus } from '../shared/run-types.js';
 
 const api: AnvilAPI = {
   appWindow: {
+    getVersion: () => ipcRenderer.invoke('app-window:get-version'),
     getChromeState: () => ipcRenderer.invoke('app-window:get-chrome-state'),
     onChromeStateChanged: (callback: (state: { isFullScreen: boolean }) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, state: { isFullScreen: boolean }) =>
         callback(state);
       ipcRenderer.on('app-window:chrome-state-changed', handler);
       return () => ipcRenderer.removeListener('app-window:chrome-state-changed', handler);
+    },
+    onNavigateToChat: (callback: (target: ChatNavigationTarget) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, target: ChatNavigationTarget) =>
+        callback(target);
+      ipcRenderer.on('app-window:navigate-to-chat', handler);
+      return () => ipcRenderer.removeListener('app-window:navigate-to-chat', handler);
     },
   },
 
@@ -73,6 +85,10 @@ const api: AnvilAPI = {
     getStatus: (repoId: string) => ipcRenderer.invoke('repo:status', repoId),
     resetStatus: (repoId: string) => ipcRenderer.invoke('repo:reset-status', repoId),
     getSummary: (repoId: string) => ipcRenderer.invoke('repo:summary', repoId),
+    getMapStatus: (repoId: string) => ipcRenderer.invoke('repo:map-status', repoId),
+    getMapGraph: (repoId: string) => ipcRenderer.invoke('repo:map-graph', repoId),
+    setMapRefreshMode: (repoId: string, refreshMode: 'manual' | 'on_commit') =>
+      ipcRenderer.invoke('repo:set-map-refresh-mode', repoId, refreshMode),
     getArchitecture: (repoId: string) => ipcRenderer.invoke('repo:architecture', repoId),
     selectDirectory: () => ipcRenderer.invoke('dialog:selectDirectory'),
     openInVSCode: (repoPath: string) => ipcRenderer.invoke('repo:open-vscode', repoPath),
@@ -143,6 +159,11 @@ const api: AnvilAPI = {
       requestId: string | number,
       decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel',
     ) => ipcRenderer.invoke('chat:resolve-approval', sessionId, requestId, decision),
+    resolveInputRequest: (
+      sessionId: string,
+      requestId: string | number,
+      response: CodexInputResponse,
+    ) => ipcRenderer.invoke('chat:resolve-input-request', sessionId, requestId, response),
     switchPersona: (repoId: string, personaId: string) =>
       ipcRenderer.invoke('chat:switch-persona', repoId, personaId),
     getPersonas: () => ipcRenderer.invoke('chat:get-personas'),
@@ -152,6 +173,7 @@ const api: AnvilAPI = {
       ipcRenderer.invoke('chat:list-turn-summaries', threadId),
     listArtifacts: (threadId: string) => ipcRenderer.invoke('chat:list-artifacts', threadId),
     upsertArtifact: (input: ChatArtifactInput) => ipcRenderer.invoke('chat:upsert-artifact', input),
+    readArtifactFile: (id: string) => ipcRenderer.invoke('chat:read-artifact-file', id),
     listThreads: (workspaceId: string | null, personaId: string) =>
       ipcRenderer.invoke('chat:list-threads', workspaceId, personaId),
     listWorkItemThreads: (workspaceId: string | null) =>
@@ -183,6 +205,8 @@ const api: AnvilAPI = {
         workItemTitle?: string;
         repoIds?: string[];
         activeRepoId?: string | null;
+        settled?: boolean;
+        viewed?: boolean;
       },
     ) => ipcRenderer.invoke('chat:update-thread', threadId, updates),
     deleteThread: (threadId: string) => ipcRenderer.invoke('chat:delete-thread', threadId),
@@ -210,6 +234,25 @@ const api: AnvilAPI = {
       ipcRenderer.invoke('chat:save-thread-plan', threadId, plan),
     saveThreadGoal: (threadId: string, goal: ChatGoalSnapshot | null) =>
       ipcRenderer.invoke('chat:save-thread-goal', threadId, goal),
+  },
+
+  workflow: {
+    listTemplates: () => ipcRenderer.invoke('workflow:list-templates'),
+    draftTemplate: (request: string) => ipcRenderer.invoke('workflow:draft-template', request),
+    saveTemplate: (input: import('../shared/types.js').WorkflowTemplateInput, id?: string) =>
+      ipcRenderer.invoke('workflow:save-template', input, id),
+    deleteTemplate: (id: string) => ipcRenderer.invoke('workflow:delete-template', id),
+    listRuns: (workspaceId: string) => ipcRenderer.invoke('workflow:list-runs', workspaceId),
+    getRun: (id: string) => ipcRenderer.invoke('workflow:get-run', id),
+    startRun: (input: {
+      templateId: string;
+      workspaceId: string;
+      repoIds: string[];
+      kickoff: string;
+    }) => ipcRenderer.invoke('workflow:start-run', input),
+    askSupervisor: (runId: string, question: string) =>
+      ipcRenderer.invoke('workflow:ask-supervisor', runId, question),
+    cancelRun: (runId: string) => ipcRenderer.invoke('workflow:cancel-run', runId),
   },
 
   dbInsights: {
@@ -419,6 +462,19 @@ const api: AnvilAPI = {
     listBranches: (repoId: string) => ipcRenderer.invoke('codereview:list-branches', repoId),
     listPullRequests: (repoId: string) =>
       ipcRenderer.invoke('codereview:list-pull-requests', repoId),
+    visualisePullRequest: (
+      repoId: string,
+      pullRequestId: string,
+      options?: { force?: boolean; reviewId?: string },
+    ) => ipcRenderer.invoke('codereview:visualise-pull-request', repoId, pullRequestId, options),
+    getPullRequestVisualisation: (repoId: string, pullRequestId: string) =>
+      ipcRenderer.invoke('codereview:get-pull-request-visualisation', repoId, pullRequestId),
+    exportPullRequestVisualisation: (repoId: string, pullRequestId: string) =>
+      ipcRenderer.invoke('codereview:export-pull-request-visualisation', repoId, pullRequestId),
+    getPullRequestDiff: (repoId: string, pullRequestId: string) =>
+      ipcRenderer.invoke('codereview:get-pull-request-diff', repoId, pullRequestId),
+    getChangeSummary: (reviewId: string) =>
+      ipcRenderer.invoke('codereview:get-change-summary', reviewId),
     onProgress: (
       callback: (data: { repoId: string; message: string; percent: number }) => void,
     ) => {
@@ -488,6 +544,7 @@ const api: AnvilAPI = {
     get: () => ipcRenderer.invoke('settings:get'),
     update: (settings) => ipcRenderer.invoke('settings:update', settings),
     getCodexStatus: () => ipcRenderer.invoke('settings:codex-status'),
+    getCursorStatus: () => ipcRenderer.invoke('settings:cursor-status'),
     setCodexAgentMaxThreads: (maxThreads) =>
       ipcRenderer.invoke('settings:codex-agent-max-threads', maxThreads),
     testFoundryConnection: () => ipcRenderer.invoke('settings:test-foundry'),
@@ -703,25 +760,29 @@ const api: AnvilAPI = {
   terminal: {
     create: (workspaceId: string, repoId: string, cwd: string) =>
       ipcRenderer.invoke('terminal:create', { workspaceId, repoId, cwd }),
+    list: (workspaceId: string) => ipcRenderer.invoke('terminal:list', { workspaceId }),
+    attach: (terminalId: string, afterSequence?: number) =>
+      ipcRenderer.invoke('terminal:attach', { terminalId, afterSequence }),
+    detach: (terminalId: string) => ipcRenderer.send('terminal:detach', { terminalId }),
     input: (terminalId: string, data: string) =>
       ipcRenderer.send('terminal:input', { terminalId, data }),
     resize: (terminalId: string, cols: number, rows: number) =>
       ipcRenderer.send('terminal:resize', { terminalId, cols, rows }),
     close: (terminalId: string) => ipcRenderer.invoke('terminal:close', { terminalId }),
-    closeAll: () => ipcRenderer.invoke('terminal:close-all'),
-    onData: (callback: (data: { terminalId: string; data: string }) => void) => {
-      const handler = (_e: Electron.IpcRendererEvent, data: { terminalId: string; data: string }) =>
-        callback(data);
+    onData: (callback: (data: TerminalDataEvent) => void) => {
+      const handler = (_e: Electron.IpcRendererEvent, data: TerminalDataEvent) => callback(data);
       ipcRenderer.on('terminal:data', handler);
       return () => ipcRenderer.removeListener('terminal:data', handler);
     },
-    onExit: (callback: (data: { terminalId: string; exitCode: number }) => void) => {
-      const handler = (
-        _e: Electron.IpcRendererEvent,
-        data: { terminalId: string; exitCode: number },
-      ) => callback(data);
+    onExit: (callback: (data: TerminalExitEvent) => void) => {
+      const handler = (_e: Electron.IpcRendererEvent, data: TerminalExitEvent) => callback(data);
       ipcRenderer.on('terminal:exit', handler);
       return () => ipcRenderer.removeListener('terminal:exit', handler);
+    },
+    onClosed: (callback: (data: TerminalClosedEvent) => void) => {
+      const handler = (_e: Electron.IpcRendererEvent, data: TerminalClosedEvent) => callback(data);
+      ipcRenderer.on('terminal:closed', handler);
+      return () => ipcRenderer.removeListener('terminal:closed', handler);
     },
   },
 
@@ -800,6 +861,7 @@ const api: AnvilAPI = {
   },
 
   voice: {
+    requestPermission: () => ipcRenderer.invoke('voice:request-permission'),
     startListening: () => ipcRenderer.invoke('voice:start-listening'),
     stopListening: () => ipcRenderer.invoke('voice:stop-listening'),
     getStatus: () => ipcRenderer.invoke('voice:get-status'),

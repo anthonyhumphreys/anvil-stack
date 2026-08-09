@@ -2,12 +2,6 @@ import { createAnvilHooks, createClient } from "@anvil-cloud/client";
 import { api } from "@anvil/generated/client";
 import * as React from "react";
 
-type Note = {
-  id?: string;
-  title: string;
-  body: string;
-};
-
 type SubmitState = "idle" | "saving";
 
 const client = createClient({

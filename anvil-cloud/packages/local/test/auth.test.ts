@@ -276,11 +276,14 @@ describe("local auth flow", () => {
         },
       });
 
-      const invalidToken = await fetch(`${server.runtimeUrl}/_anvil/auth/token`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ email: "missing-user-id@example.test" }),
-      });
+      const invalidToken = await fetch(
+        `${server.runtimeUrl}/_anvil/auth/token`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ email: "missing-user-id@example.test" }),
+        },
+      );
       const invalidTokenPayload = (await invalidToken.json()) as {
         ok: boolean;
         error?: { code: string; message: string };

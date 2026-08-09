@@ -25,6 +25,7 @@ import {
   buildAnvilError,
   buildPolicyDecisionAuditEvent,
   isDecisionBlockingInstall,
+  STATIC_ANALYSER_VERSION,
   nodeBaseReportSubmissionSchema,
   overrideCreateRequestSchema,
   overrideRevokeRequestSchema,
@@ -94,6 +95,36 @@ export function buildGateway(dependencies: GatewayDependencies = {}): FastifyIns
     }
 
     return { queue: await queue.getStats() };
+  });
+  app.get<{ Querystring: { limit?: string } }>("/-/anvil/queue/failed", async (request, reply) => {
+    if (config.ADMIN_TOKEN && request.headers.authorization !== `Bearer ${config.ADMIN_TOKEN}`) {
+      return reply.code(401).send({ error: "ANVIL_ADMIN_TOKEN_REQUIRED" });
+    }
+    if (!queue.listFailedJobs) return reply.code(409).send({ error: "ANVIL_QUEUE_FAILED_JOBS_UNSUPPORTED" });
+    const limit = boundedQueueLimit(request.query.limit);
+    return { jobs: await queue.listFailedJobs(limit) };
+  });
+  app.post<{ Body: unknown }>("/-/anvil/queue/failed/retry", async (request, reply) => {
+    if (config.ADMIN_TOKEN && request.headers.authorization !== `Bearer ${config.ADMIN_TOKEN}`) {
+      return reply.code(401).send({ error: "ANVIL_ADMIN_TOKEN_REQUIRED" });
+    }
+    if (!queue.retryFailedJobs) return reply.code(409).send({ error: "ANVIL_QUEUE_FAILED_JOBS_UNSUPPORTED" });
+    const body = queueMutationBody(request.body);
+    if (!body) return reply.code(400).send({ error: "ANVIL_QUEUE_JOB_IDS_REQUIRED" });
+    const jobIds = await queue.retryFailedJobs(body.jobIds);
+    await recordQueueMutation("analysis.failed.retried", jobIds, body.requestedBy);
+    return { ok: true, jobIds };
+  });
+  app.post<{ Body: unknown }>("/-/anvil/queue/failed/remove", async (request, reply) => {
+    if (config.ADMIN_TOKEN && request.headers.authorization !== `Bearer ${config.ADMIN_TOKEN}`) {
+      return reply.code(401).send({ error: "ANVIL_ADMIN_TOKEN_REQUIRED" });
+    }
+    if (!queue.removeFailedJobs) return reply.code(409).send({ error: "ANVIL_QUEUE_FAILED_JOBS_UNSUPPORTED" });
+    const body = queueMutationBody(request.body);
+    if (!body) return reply.code(400).send({ error: "ANVIL_QUEUE_JOB_IDS_REQUIRED" });
+    const jobIds = await queue.removeFailedJobs(body.jobIds);
+    await recordQueueMutation("analysis.failed.removed", jobIds, body.requestedBy);
+    return { ok: true, jobIds };
   });
   app.post<{ Body: unknown }>("/-/npm/v1/security/advisories/bulk", async (request, reply) => {
     return proxyNpmSecurityRequest("/-/npm/v1/security/advisories/bulk", request.body, reply);
@@ -436,9 +467,9 @@ export function buildGateway(dependencies: GatewayDependencies = {}): FastifyIns
       tarballIntegrity: versionMetadata?.integrity,
       tarballShasum: versionMetadata?.shasum
     };
-    const analysisReport = await persistence.getAnalysisReport(packageName, version, analysisIdentity);
+    const analysisReport = await persistence.getAnalysisReport(packageName, version, { ...analysisIdentity, analyserVersion: STATIC_ANALYSER_VERSION });
     const [llmRiskReviews, override] = await Promise.all([
-      persistence.listLlmRiskReviews({ packageName, version, limit: 5, identity: { ...analysisIdentity, analyserVersion: analysisReport?.analyserVersion } }),
+      persistence.listLlmRiskReviews({ packageName, version, limit: 5, identity: { ...analysisIdentity, analyserVersion: analysisReport?.analyserVersion ?? STATIC_ANALYSER_VERSION } }),
       persistence.getOverride(packageName, version)
     ]);
 
@@ -465,13 +496,13 @@ export function buildGateway(dependencies: GatewayDependencies = {}): FastifyIns
       tarballIntegrity: versionMetadata?.integrity,
       tarballShasum: versionMetadata?.shasum
     };
-    const analysisReport = await persistence.getAnalysisReport(packageName, version, analysisIdentity);
+    const analysisReport = await persistence.getAnalysisReport(packageName, version, { ...analysisIdentity, analyserVersion: STATIC_ANALYSER_VERSION });
     const latestLlmReview = config.policy.llmReview.enabled
       ? await persistence.listLlmRiskReviews({
           packageName,
           version,
           limit: 1,
-          identity: { ...analysisIdentity, analyserVersion: analysisReport?.analyserVersion }
+          identity: { ...analysisIdentity, analyserVersion: analysisReport?.analyserVersion ?? STATIC_ANALYSER_VERSION }
         })
       : [];
     const analysisRequired = shouldRequireAnalysisBeforeInstall(reason, analysisReport);
@@ -591,9 +622,23 @@ export function buildGateway(dependencies: GatewayDependencies = {}): FastifyIns
     try {
       return await downloadStats.getWeeklyDownloads(packageName);
     } catch (error) {
-      app.log.warn({ packageName, error }, "Failed to fetch npm download stats");
+      app.log.warn({ packageName, err: error }, "Failed to fetch npm download stats");
       return undefined;
     }
+  }
+
+  async function recordQueueMutation(eventType: string, jobIds: string[], actor: string) {
+    await Promise.all(
+      jobIds.map((jobId) =>
+        persistence.putAuditEvent({
+          actor,
+          eventType,
+          targetType: "queue_job",
+          targetId: jobId,
+          metadata: { source: "gateway" }
+        })
+      )
+    );
   }
 
   async function readinessChecks(): Promise<Array<{ component: ReadinessComponent; ok: boolean; error?: string }>> {
@@ -724,12 +769,25 @@ function analysisTargetsFromBody(body: PackageTargetRequest) {
 
 function metadataInstallRelevantVersions(metadata: NpmPackageMetadata) {
   const versions = new Set<string>();
-  for (const version of Object.values(metadata["dist-tags"] ?? {})) {
-    if (typeof version === "string" && version) versions.add(version);
-  }
+  const latest = metadata["dist-tags"]?.latest;
+  if (typeof latest === "string" && latest) versions.add(latest);
   return versions;
 }
 
 function validationIssues(error: { issues: Array<{ path: Array<string | number>; message: string }> }) {
   return error.issues.map((issue) => ({ path: issue.path.join("."), message: issue.message }));
+}
+
+function boundedQueueLimit(value: string | undefined) {
+  const parsed = Number(value ?? 20);
+  return Number.isInteger(parsed) ? Math.min(100, Math.max(1, parsed)) : 20;
+}
+
+function queueMutationBody(value: unknown): { jobIds: string[]; requestedBy: string } | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const body = value as Record<string, unknown>;
+  if (!Array.isArray(body.jobIds) || body.jobIds.length === 0 || body.jobIds.length > 100) return undefined;
+  const jobIds = [...new Set(body.jobIds.filter((jobId): jobId is string => typeof jobId === "string" && jobId.trim().length > 0).map((jobId) => jobId.trim()))];
+  if (jobIds.length === 0 || jobIds.length !== body.jobIds.length) return undefined;
+  return { jobIds, requestedBy: typeof body.requestedBy === "string" && body.requestedBy.trim() ? body.requestedBy.trim() : "anvil-registry-cli" };
 }

@@ -1,5 +1,12 @@
-import type { RepoInfo, RepoSummary } from '../../../shared/types';
-import { ArchitectureDiagram } from './ArchitectureDiagram';
+import type {
+  RepoInfo,
+  RepoMapRefreshMode,
+  RepositoryMapGraph,
+  RepoMapStatus,
+  RepoSummary,
+} from '../../../shared/types';
+import { useEffect, useState } from 'react';
+import { RepositoryMap } from './RepositoryMap';
 import { ModuleSummaryCard } from './ModuleSummary';
 import {
   GitBranch,
@@ -10,6 +17,7 @@ import {
   GitFork,
   ExternalLink,
   AlertTriangle,
+  RefreshCw,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
@@ -25,15 +33,46 @@ interface RepoDetailProps {
     detail?: string;
     history: string[];
   } | null;
+  mapStatus: RepoMapStatus | null;
+  onRefreshMap: () => void;
+  onMapRefreshModeChange: (mode: RepoMapRefreshMode) => void;
 }
 
-export function RepoDetail({ repo, summary, isIndexing, indexProgress }: RepoDetailProps) {
+export function RepoDetail({
+  repo,
+  summary,
+  isIndexing,
+  indexProgress,
+  mapStatus,
+  onRefreshMap,
+  onMapRefreshModeChange,
+}: RepoDetailProps) {
   const navigate = useNavigate();
   const { activeWorkspace } = useWorkspace();
   const indexMode = summary?.indexMode ?? repo.indexMode;
   const indexWarnings = summary?.indexWarnings ?? repo.indexWarnings ?? [];
   const showDeepBadge = indexMode === 'deep';
   const showIndexWarnings = indexWarnings.length > 0;
+  const [mapGraph, setMapGraph] = useState<RepositoryMapGraph | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setMapGraph(null);
+    window.anvil.repo
+      .getMapGraph(repo.id)
+      .then((graph) => {
+        if (!cancelled) setMapGraph(graph);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setMapGraph(null);
+          console.error('Failed to load repository map graph:', error);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mapStatus?.generatedAt, repo.id]);
 
   if (!summary && !isIndexing) {
     return (
@@ -162,10 +201,70 @@ export function RepoDetail({ repo, summary, isIndexing, indexProgress }: RepoDet
             </p>
           </section>
 
-          {/* Architecture Diagram */}
+          {/* Repository map */}
           <section>
-            <h3 className="mb-2 text-base font-semibold text-text-primary">Architecture</h3>
-            <ArchitectureDiagram mermaidSource={summary.mermaidDiagram} />
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="text-base font-semibold text-text-primary">Architecture</h3>
+                <p className="mt-0.5 text-xs text-text-tertiary">
+                  {mapStatus?.stale
+                    ? 'A newer commit is available than the map below.'
+                    : mapStatus?.generatedAt
+                      ? `Mapped ${formatRelativeDate(mapStatus.generatedAt)}`
+                      : 'Built from the latest repository index.'}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <div
+                  className="flex rounded-lg border border-border bg-bg-primary p-0.5"
+                  role="group"
+                  aria-label="Repository map refresh policy"
+                >
+                  <button
+                    type="button"
+                    onClick={() => onMapRefreshModeChange('manual')}
+                    aria-pressed={mapStatus?.refreshMode !== 'on_commit'}
+                    title="Refresh this repository map only when you ask"
+                    className={`rounded-md px-2.5 py-1.5 text-xs transition-colors ${
+                      mapStatus?.refreshMode !== 'on_commit'
+                        ? 'bg-bg-elevated text-text-primary'
+                        : 'text-text-tertiary hover:text-text-primary'
+                    }`}
+                  >
+                    Manual
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onMapRefreshModeChange('on_commit')}
+                    aria-pressed={mapStatus?.refreshMode === 'on_commit'}
+                    title="Automatically re-index this repository when its HEAD commit changes"
+                    className={`rounded-md px-2.5 py-1.5 text-xs transition-colors ${
+                      mapStatus?.refreshMode === 'on_commit'
+                        ? 'bg-bg-elevated text-text-primary'
+                        : 'text-text-tertiary hover:text-text-primary'
+                    }`}
+                  >
+                    On commit
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={onRefreshMap}
+                  disabled={isIndexing}
+                  className="flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-wait disabled:opacity-50"
+                >
+                  <RefreshCw size={13} className={isIndexing ? 'animate-spin' : ''} />
+                  {isIndexing ? 'Refreshing' : 'Refresh map'}
+                </button>
+              </div>
+            </div>
+            <RepositoryMap
+              key={repo.id}
+              repoId={repo.id}
+              repositoryName={repo.name}
+              modules={summary.modules}
+              graph={mapGraph}
+            />
           </section>
 
           {/* Diagrams */}
@@ -225,6 +324,17 @@ export function RepoDetail({ repo, summary, isIndexing, indexProgress }: RepoDet
       )}
     </div>
   );
+}
+
+function formatRelativeDate(value: string): string {
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) return 'from the last index';
+  const minutes = Math.max(0, Math.round((Date.now() - timestamp) / 60_000));
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return new Date(value).toLocaleDateString();
 }
 
 function IndexingProgressPanel({

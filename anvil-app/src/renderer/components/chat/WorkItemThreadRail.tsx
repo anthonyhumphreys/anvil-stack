@@ -72,7 +72,7 @@ export function WorkItemThreadRail({
     } finally {
       setLoading(false);
     }
-  }, [selectedIterations]);
+  }, [activeWorkspace?.id, selectedIterations]);
 
   useEffect(() => {
     void loadItems();
@@ -97,7 +97,8 @@ export function WorkItemThreadRail({
         defaultWidth={320}
         minWidth={260}
         maxWidth={480}
-        autoCollapseBelow={1200}
+        collapsedWidth={0}
+        autoCollapseBelow={1500}
         className="border-r border-border/60 bg-bg-secondary/50"
       >
         <div className="border-b border-border/60 px-3 py-3 pr-14">

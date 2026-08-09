@@ -101,6 +101,22 @@ npm config set registry http://localhost:4873
 
 Then install as usual. Scoped packages, tarballs, and npm audit requests should stay routed through the gateway. Because scoped package paths apparently needed their own little tax on human happiness.
 
+### NAS and operator release bundle
+
+Tagged Registry releases include a separate Compose bundle under `infra/docker/release`. It uses published AMD64 and ARM64 images, keeps Postgres, Redis, and MinIO off host ports, requires explicit secrets, and stores durable state beneath `ANVIL_DATA_DIR`.
+
+```bash
+cd infra/docker/release
+cp .env.example .env
+# Set PUBLIC_BASE_URL, ANVIL_DATA_DIR, and every placeholder secret.
+docker compose pull
+docker compose up -d
+```
+
+`PUBLIC_BASE_URL` must be the URL used by remote npm and pnpm clients. Leaving it as `localhost` rewrites tarball URLs back to the client machine and breaks remote installs. Start a pilot in `development` mode, seed representative lockfiles, then move to stricter policy modes after reviewing decisions.
+
+See `infra/docker/release/README.md` for NAS installation, upgrades, backup and restore, reverse-proxy guidance, and Mac client configuration.
+
 ## CLI
 
 Install the published Anvil CLI and Registry product CLI:
@@ -120,6 +136,7 @@ ANVIL_REGISTRY_URL=http://localhost:4873 anvil registry scan pnpm-lock.yaml --qu
 ANVIL_REGISTRY_URL=http://localhost:4873 anvil registry scan yarn.lock --queue-analysis
 ANVIL_REGISTRY_URL=http://localhost:4873 anvil registry warm package-lock.json
 ANVIL_REGISTRY_URL=http://localhost:4873 ANVIL_ADMIN_TOKEN=local-dev-token anvil registry queue status
+ANVIL_REGISTRY_URL=http://localhost:4873 ANVIL_ADMIN_TOKEN=local-dev-token anvil registry queue failed --limit 20
 ANVIL_ADMIN_URL=http://localhost:3000 anvil registry reports is-number@7.0.0
 ANVIL_ADMIN_URL=http://localhost:3000 anvil registry reports compare is-number@7.0.0
 ANVIL_ADMIN_URL=http://localhost:3000 anvil registry node-base reports --limit 20
@@ -144,6 +161,10 @@ Additional policy knobs use the same `POLICY_` prefix for install scripts, prove
 
 SST forwards any configured `POLICY_*` values into gateway, worker, and admin so deployed enforcement, worker analysis, and policy inspection stay on the same version of reality.
 
+Metadata requests evaluate every published version with cheap policy, but only the `latest` dist-tag is automatically queued for deep analysis. Exact versions are queued when their tarballs are requested or when an operator warms a lockfile. This keeps historical and prerelease tags from turning a routine install into an archaeological expedition.
+
+npm download statistics are optional policy enrichment. The client coalesces duplicate lookups, caches results for 15 minutes, limits upstream concurrency to four requests, and retries transient network and `5xx` failures. A `429` opens one shared cooldown using npm's `Retry-After` guidance (or 60 seconds by default), so later packages skip enrichment quietly instead of amplifying the rate limit. Exhausted non-rate-limit lookups retain their real error in logs and never stop gateway or worker analysis.
+
 ## LLM Review
 
 LLM risk review is optional and never the enforcement authority. Deterministic policy still makes the final decision; LLM output is schema-validated context that can add quarantine-level risk signals.
@@ -165,6 +186,8 @@ docker compose -f infra/docker/docker-compose.yml --profile llm-review up -d --b
 ```
 
 Private package metadata is excluded from LLM review unless `LLM_REVIEW_INCLUDE_PRIVATE_PACKAGES=true` is explicitly set.
+
+Released NAS bundles also include `docker-compose.codex.yml`. With `CODEX_AUTH_FILE` set to an absolute host `auth.json` path, the override installs Codex CLI in the worker image, mounts only that file read-only into the worker, disables Codex shell/code tools, and validates the final response against the review schema. See `infra/docker/release/README.md` for the security boundary and exact commands.
 
 ## Smoke Tests
 
@@ -204,7 +227,7 @@ See `devcontainer-base/README.md` for helper commands and image publishing detai
 
 ## Deployment
 
-Docker Compose is the local path. SST is the AWS path and defines the Fastify gateway, worker, Next.js Admin service, migration task, S3, SQS, RDS, secrets, and CloudWatch resources under `infra/sst`.
+The source-building Docker Compose stack is the local development path. Tagged releases provide a hardened image-based Compose bundle for a trusted LAN, NAS, or small Docker host. SST is the AWS path and defines the Fastify gateway, worker, Next.js Admin service, migration task, S3, SQS, RDS, secrets, and CloudWatch resources under `infra/sst`.
 
 Set `PUBLIC_BASE_URL` or `ANVIL_GATEWAY_DOMAIN` for the npm-facing gateway URL before deploying so tarball rewrites point at the real HTTPS endpoint. SST fails fast when neither is configured, because quietly publishing tarball URLs to a placeholder domain is how you build a very small outage machine. Set `ANVIL_API_BASE_URL` only when the admin service should call a different gateway URL; otherwise it inherits `PUBLIC_BASE_URL` or the gateway domain.
 Set `ANVIL_GATEWAY_DOMAIN` or `ANVIL_ADMIN_DOMAIN` to attach custom SST load-balancer domains. Route 53 hosted domains use SST's default DNS/certificate handling; for externally managed DNS, also set `ANVIL_GATEWAY_CERT_ARN` or `ANVIL_ADMIN_CERT_ARN` to a validated ACM certificate ARN.

@@ -28,6 +28,7 @@ export type WorkerAnalysisDependencies = {
   downloadStats?: {
     getWeeklyDownloads(packageName: string): Promise<number | undefined>;
   };
+  onDownloadStatsError?: (packageName: string, error: unknown) => void;
   objectStore?: ObjectStore;
   provenanceVerifier?: ProvenanceVerifier;
   llmRiskReviewProvider?: LlmRiskReviewProvider;
@@ -93,7 +94,7 @@ async function analysePackageVersion(
   const staticReport = targetMetadata.tarballUrl
     ? mergeAnalysisReports(manifestReport, analyseFileTree(targetFileTree, baselineFileTrees, { lifecycleScripts: targetMetadata.scripts }))
     : manifestReport;
-  const weeklyDownloads = await dependencies.downloadStats?.getWeeklyDownloads(target.packageName);
+  const weeklyDownloads = await safeWeeklyDownloads(dependencies.downloadStats, target.packageName, dependencies.onDownloadStatsError);
   await dependencies.persistence.putPackageVersion({
     packageName: target.packageName,
     version,
@@ -269,6 +270,19 @@ async function analysePackageVersion(
   return { report: storedReport, decision, packageName: target.packageName, version };
 }
 
+async function safeWeeklyDownloads(
+  downloadStats: WorkerAnalysisDependencies["downloadStats"],
+  packageName: string,
+  onError?: WorkerAnalysisDependencies["onDownloadStatsError"]
+): Promise<number | undefined> {
+  try {
+    return await downloadStats?.getWeeklyDownloads(packageName);
+  } catch (error) {
+    onError?.(packageName, error);
+    return undefined;
+  }
+}
+
 type AnalysisArtifactObjectKeys = {
   report: string;
   manifestDiff: string;
@@ -353,9 +367,12 @@ async function maybeReviewWithLlm(
     context.dependencies.llmRiskReviewProvider ??
     createLlmRiskReviewProvider({
       enabled: policy.enabled,
+      provider: policy.provider,
       endpoint: context.dependencies.config.LLM_REVIEW_ENDPOINT,
       apiKey: context.dependencies.config.LLM_REVIEW_API_KEY,
-      model: policy.model
+      model: policy.model,
+      codexCommand: context.dependencies.config.CODEX_CLI_COMMAND,
+      codexTimeoutMs: context.dependencies.config.CODEX_CLI_TIMEOUT_MS
     });
 
   try {

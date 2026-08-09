@@ -73,10 +73,10 @@ would re-implement a scheduler badly and break the `AbortSignal` stop
 semantics. Services therefore use the ECS/Fargate preview resource path below
 instead of Lambda.
 
-## ECS/Fargate mapping (preview implemented)
+## ECS/Fargate mapping (planned, deploy-gated)
 
-AWS preview synthesizes ECS/Fargate resources entirely from the manifest's
-`services` list:
+The AWS adapter can synthesize the intended ECS/Fargate resource shape from the
+manifest's `services` list:
 
 - **One ECS cluster per preview Cell** when services are declared.
 - **One Fargate task definition and ECS service per Anvil service** with
@@ -85,14 +85,12 @@ AWS preview synthesizes ECS/Fargate resources entirely from the manifest's
   subnets used by preview tasks. Cell authors do not write VPC, subnet, task,
   image, or cluster definitions.
 - **Logs.** Service tasks write to a Cell-owned CloudWatch log group.
-- **Review gate.** Deployment plans add `service-preview-review` so subnet and
-  cleanup expectations are reviewed before provisioning.
+- **Support gate.** Deployment returns `AWS_PREVIEW_UNSUPPORTED_FEATURE` before
+  provisioning while exact handler execution is unavailable.
 
-The current preview task definition is an adapter-owned scaffold for service
-resource provisioning and operational review. Running the exact Cell service
-handler inside the Fargate task is the next hardening step. That limitation is
-intentional in the docs because pretending the adapter is done would be
-decorative infrastructure, which is the least useful kind.
+The current task definition is an adapter-owned scaffold, so service-bearing
+preview deploys are deliberately blocked. This keeps users from paying for an
+idle container that does not execute their handler.
 
 This keeps the service contract provider-neutral: Cell code, the manifest shape, `ServiceStatus`, and CLI commands are identical across local and future container-backed execution. ECS remains invisible to Cell authors — it is an adapter implementation detail, consistent with the "no provider primitives in Cell code" constraint.
 
@@ -100,6 +98,6 @@ This keeps the service contract provider-neutral: Cell code, the manifest shape,
 
 - Container, Kubernetes, or Docker authoring in Cell code.
 - Horizontal scaling (`desiredCount > 1`), leader election, or distributed coordination.
-- Production-grade cloud execution of service handlers; AWS preview currently
-  provisions adapter-owned Fargate service resources for review and hardening.
+- Cloud execution of service handlers; AWS preview blocks service-bearing
+  deploys until the adapter-owned runner is complete.
 - Health-check probes beyond handler exit/failure observation.

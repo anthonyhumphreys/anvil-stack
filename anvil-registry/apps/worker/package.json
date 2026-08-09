@@ -23,6 +23,7 @@
     "@anvilstack/provenance": "workspace:*",
     "@anvilstack/queue": "workspace:*",
     "@anvilstack/shared": "workspace:*",
+    "@openai/codex": "0.147.0",
     "semver": "^7.7.2"
   },
   "devDependencies": {

@@ -747,15 +747,15 @@ function createOperations(
 ): DeploymentPlanOperations {
   return {
     rollback: {
-      supported: true,
-      strategy: "redeploy-previous-artifact",
+      supported: false,
+      strategy: "manual",
       commands: [
-        `anvil-cloud rollback --preview --app ${manifest.cell.name} --to-deployment <deploymentId> --json`,
+        `anvil-cloud rollback --preview --app ${manifest.cell.name} --to-deployment <deploymentId> --dry-run --json`,
         "anvil-cloud deploy --preview --name <preview> --json",
       ],
       notes: [
-        "Preview deployments are versioned in adapter metadata.",
-        "Rollback is exposed through the provider-neutral CLI contract; AWS artifact promotion remains adapter-owned.",
+        "Preview metadata currently stores the active deployment only.",
+        "Automated artifact rollback remains unavailable until deployment history and client assets are archived durably.",
       ],
     },
     cost: {
@@ -1057,6 +1057,17 @@ export function checkAwsPreviewSupport(
 ): AwsPreviewSupportDiagnostic[] {
   const diagnostics: AwsPreviewSupportDiagnostic[] = [];
   const sandboxAgents = sandboxRequiredAgents(manifest);
+
+  if (manifest.services.length > 0) {
+    diagnostics.push({
+      code: "AWS_PREVIEW_UNSUPPORTED_FEATURE",
+      feature: "services",
+      message:
+        "AWS preview cannot execute declared service handlers in Fargate yet.",
+      hint: "Run services locally or remove them from this preview Cell until the adapter-owned service runner is available.",
+      names: manifest.services.map((service) => service.name),
+    });
+  }
 
   if (sandboxAgents.length > 0 && !isAgentSandboxImageConfigured()) {
     diagnostics.push({

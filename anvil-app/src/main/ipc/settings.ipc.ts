@@ -9,6 +9,7 @@ import {
   resetOnboardingState,
 } from '../services/settings.service.js';
 import { resetLlmClient } from '../services/llm.service.js';
+import { emitCompanionEvent } from '../services/companion-events.service.js';
 import { testAppleFoundationModels } from '../services/apple-foundation-models.service.js';
 import { getActiveProvider } from '../services/workitem-provider.js';
 import {
@@ -16,6 +17,7 @@ import {
   writeCodexAgentsFile,
 } from '../services/codex-agents-file.service.js';
 import { detectCodexCli, setCodexAgentMaxThreads } from '../services/codex-bridge.service.js';
+import { detectCursorCli } from '../services/cursor-bridge.service.js';
 import {
   isNotionMcpInstalled,
   installNotionMcp,
@@ -30,6 +32,12 @@ export function registerSettingsHandlers(): void {
       // Strip secrets from the response — renderer gets masked values
       return {
         ...settings,
+        workItemConnections: settings.workItemConnections.map((connection) => ({
+          ...connection,
+          adoPat: connection.adoPat ? '••••••••' : undefined,
+          linearApiKey: connection.linearApiKey ? '••••••••' : undefined,
+          jiraApiToken: connection.jiraApiToken ? '••••••••' : undefined,
+        })),
         foundryApiKey: settings.foundryApiKey ? '••••••••' : undefined,
         openaiApiKey: settings.openaiApiKey ? '••••••••' : undefined,
         adoPat: settings.adoPat ? '••••••••' : undefined,
@@ -60,6 +68,7 @@ export function registerSettingsHandlers(): void {
 
       updateSettings(cleaned);
       resetLlmClient();
+      emitCompanionEvent('settings');
     } catch (err) {
       console.error('[Settings IPC] Error updating settings:', err);
       throw err;
@@ -71,6 +80,15 @@ export function registerSettingsHandlers(): void {
       return await detectCodexCli();
     } catch (err) {
       console.error('[Settings IPC] Error detecting Codex CLI:', err);
+      throw err;
+    }
+  });
+
+  ipcMain.handle('settings:cursor-status', async () => {
+    try {
+      return await detectCursorCli();
+    } catch (err) {
+      console.error('[Settings IPC] Error detecting Cursor CLI:', err);
       throw err;
     }
   });

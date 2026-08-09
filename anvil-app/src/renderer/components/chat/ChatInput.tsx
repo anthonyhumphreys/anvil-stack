@@ -1,8 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import {
   AlertCircle,
-  Bot,
-  Check,
   ChevronDown,
   ChevronRight,
   File as FileIcon,
@@ -11,15 +9,19 @@ import {
   Loader2,
   Paperclip,
   Send,
+  Shield,
+  SlidersHorizontal,
   Sparkles,
   Square,
   X,
 } from 'lucide-react';
 import type {
+  AgentProvider,
   ChatAttachment,
   ChatAttachmentInput,
   ChatFileMentionSearchResult,
   CodexRegisteredSkill,
+  CodexMode,
   ReasoningEffort,
 } from '../../../shared/types';
 import { VoiceInputButton } from './VoiceInputButton';
@@ -73,11 +75,18 @@ interface ChatInputProps {
   disabled: boolean;
   busy?: boolean;
   personaColour: string;
+  model?: string;
+  modelProvider?: AgentProvider;
+  modelOptions?: ChatInputModelOption[];
+  onModelChange?: (model: string) => void;
   reasoningLevel?: ReasoningEffort;
   reasoningOptions?: ReasoningEffort[];
   onReasoningChange?: (level: ReasoningEffort) => void;
   executionStrategy?: ExecutionStrategy;
   onExecutionStrategyChange?: (strategy: ExecutionStrategy) => void;
+  codexMode?: CodexMode;
+  onCodexModeChange?: (mode: CodexMode) => void;
+  codexModeDisabled?: boolean;
   prefill?: { id: string; text: string } | null;
   draftKey?: string;
   mentionRepoIds?: string[];
@@ -86,17 +95,30 @@ interface ChatInputProps {
   focusRequest?: number;
 }
 
+interface ChatInputModelOption {
+  id: string;
+  label: string;
+  description: string;
+}
+
 export function ChatInput({
   onSend,
   onStop,
   disabled,
   busy,
   personaColour,
+  model = 'gpt-5.6-sol',
+  modelProvider = 'codex',
+  modelOptions = [],
+  onModelChange,
   reasoningLevel = 'medium',
   reasoningOptions,
   onReasoningChange,
   executionStrategy = 'auto',
   onExecutionStrategyChange,
+  codexMode = 'on-request',
+  onCodexModeChange,
+  codexModeDisabled = false,
   prefill,
   draftKey,
   mentionRepoIds = [],
@@ -108,6 +130,7 @@ export function ChatInput({
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [attachmentPreviews, setAttachmentPreviews] = useState<Record<string, string>>({});
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
   const [preparingAttachments, setPreparingAttachments] = useState(false);
   const [fileMention, setFileMention] = useState<ActiveFileMention | null>(null);
   const [fileMentionResults, setFileMentionResults] = useState<ChatFileMentionSearchResult[]>([]);
@@ -693,10 +716,10 @@ export function ChatInput({
         : undefined;
 
   return (
-    <div className="border-t border-border/50 bg-bg-secondary/80 px-3 py-3 backdrop-blur-sm lg:px-4">
-      <div className="w-full">
+    <div className="border-t border-border/50 bg-bg-secondary px-4 py-3 xl:px-6">
+      <div className="mx-auto w-full max-w-[1120px]">
         <div
-          className={`relative rounded-2xl border bg-bg-primary shadow-sm transition-all duration-200 ${
+          className={`relative rounded-xl border bg-bg-primary transition-[border-color,background-color,box-shadow] duration-200 focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/30 ${
             disabled && !busy ? 'opacity-60' : ''
           } ${
             draggingFiles
@@ -743,13 +766,16 @@ export function ChatInput({
           )}
 
           {showQuickPrompts && (
-            <div className="flex flex-wrap gap-1.5 border-b border-border-subtle px-3 py-2">
-              {quickPrompts.slice(0, 5).map((quickPrompt) => (
+            <div
+              className="flex gap-1 overflow-x-auto px-3 pt-2"
+              aria-label="Conversation starters"
+            >
+              {quickPrompts.slice(0, 4).map((quickPrompt) => (
                 <button
                   key={quickPrompt.id}
                   type="button"
                   onClick={() => handleQuickPrompt(quickPrompt.prompt)}
-                  className="rounded-lg border border-border-subtle bg-bg-secondary px-2.5 py-1 text-xs font-medium text-text-secondary transition-colors hover:border-accent/40 hover:bg-accent/10 hover:text-text-primary"
+                  className="shrink-0 rounded-md px-2 py-1 text-[11px] font-medium text-text-muted transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
                 >
                   {quickPrompt.label}
                 </button>
@@ -802,117 +828,141 @@ export function ChatInput({
             onPaste={handlePaste}
             disabled={disabled}
             aria-label="Chat message"
+            aria-describedby={
+              voiceError
+                ? 'chat-composer-keyboard-hint chat-composer-voice-error'
+                : 'chat-composer-keyboard-hint'
+            }
             aria-autocomplete="list"
             aria-expanded={Boolean(activeMenuId)}
             aria-controls={activeMenuId}
             aria-activedescendant={activeDescendant}
             placeholder={
-              disabled
-                ? busy
-                  ? 'Codex is working...'
-                  : 'Chat is not ready yet...'
-                : mentionRepoIds.length > 0
-                  ? 'Ask anything, or type /, @, or $...'
-                  : 'Ask anything, paste images, or drop files here...'
+              busy
+                ? 'Add guidance while Anvil keeps working...'
+                : disabled
+                  ? 'Chat is not ready yet...'
+                  : mentionRepoIds.length > 0
+                    ? 'Ask anything, or type /, @, or $...'
+                    : 'Ask anything, paste images, or drop files here...'
             }
             rows={1}
-            className="chat-input-focus w-full resize-none rounded-2xl bg-transparent px-5 py-3.5 pr-72 text-sm text-text-primary placeholder:text-text-muted focus:outline-none disabled:opacity-50"
-            style={{ maxHeight: '300px', minHeight: '48px' }}
+            className="block w-full resize-none bg-transparent px-4 py-3.5 text-sm leading-6 text-text-primary placeholder:text-text-tertiary focus:outline-none disabled:opacity-50"
+            style={{ maxHeight: '200px', minHeight: '56px' }}
           />
 
-          <div className="absolute bottom-2.5 right-2.5 flex items-center gap-1.5">
-            {onExecutionStrategyChange && !busy && (
-              <label className="flex h-9 items-center rounded-xl border border-border bg-bg-secondary px-2 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary">
-                <Bot size={13} className="mr-1.5 text-text-tertiary" />
-                <span className="sr-only">Execution strategy</span>
-                <select
-                  value={executionStrategy}
-                  onChange={(event) =>
-                    onExecutionStrategyChange(event.target.value as ExecutionStrategy)
-                  }
-                  className="max-w-24 bg-transparent outline-none"
-                  aria-label="Execution strategy"
-                  title="Guides how Codex delegates work to subagents"
-                >
-                  {EXECUTION_STRATEGIES.map((strategy) => (
-                    <option key={strategy.id} value={strategy.id} title={strategy.description}>
-                      {strategy.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
+          <div className="flex min-h-12 flex-wrap items-center justify-between gap-2 px-2.5 pb-1.5">
+            <div className="flex min-w-0 items-center gap-1">
+              <button
+                type="button"
+                onClick={() => void handleSelectAttachments()}
+                disabled={disabled || preparingAttachments}
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-text-tertiary transition-colors duration-200 hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-30"
+                title="Attach files"
+                aria-label="Attach files"
+              >
+                {preparingAttachments ? (
+                  <Loader2 size={15} className="animate-spin" />
+                ) : (
+                  <Paperclip size={15} />
+                )}
+              </button>
 
-            {onReasoningChange && !busy && (
-              <ReasoningEffortDropdown
-                level={reasoningLevel}
-                options={reasoningOptions}
-                onChange={onReasoningChange}
-              />
-            )}
-
-            <VoiceInputButton
-              onTranscript={handleVoiceTranscript}
-              disabled={disabled}
-              colour={personaColour}
-            />
-
-            <button
-              onClick={() => void handleSelectAttachments()}
-              disabled={disabled || preparingAttachments}
-              className="flex h-9 w-9 items-center justify-center rounded-xl text-text-tertiary transition-all duration-200 hover:bg-bg-tertiary hover:text-text-primary hover:scale-105 active:scale-95 disabled:opacity-30 disabled:hover:scale-100 disabled:active:scale-100"
-              title="Attach files"
-              aria-label="Attach files"
-            >
-              {preparingAttachments ? (
-                <Loader2 size={15} className="animate-spin" />
-              ) : (
-                <Paperclip size={15} />
+              {onCodexModeChange && (
+                <label className="flex h-9 min-w-0 items-center gap-1.5 rounded-xl px-2 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-within:ring-2 focus-within:ring-accent/70">
+                  <Shield size={13} className="shrink-0 text-text-tertiary" />
+                  <select
+                    value={codexMode}
+                    onChange={(event) => onCodexModeChange(event.target.value as CodexMode)}
+                    disabled={codexModeDisabled}
+                    className="min-w-0 max-w-36 bg-transparent text-xs text-text-secondary outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                    aria-label="Codex access mode"
+                    title={
+                      codexModeDisabled
+                        ? 'This access mode is enforced for the current persona'
+                        : 'Choose when Codex should ask for approval'
+                    }
+                  >
+                    <option value="read-only">Read only</option>
+                    <option value="on-request">Approve for me</option>
+                    <option value="workspace-auto">Auto approve</option>
+                    <option value="full-access">Full access</option>
+                  </select>
+                </label>
               )}
-            </button>
+            </div>
 
-            {busy ? (
-              <button
-                onClick={onStop}
-                className="flex h-9 w-9 items-center justify-center rounded-xl bg-error transition-all duration-200 hover:bg-error/80 hover:scale-105 active:scale-95"
-                title="Stop generation"
-                aria-label="Stop generation"
-              >
-                <Square size={14} className="text-white" fill="currentColor" />
-              </button>
-            ) : (
-              <button
-                onClick={handleSend}
-                disabled={disabled || !hasContent || preparingAttachments}
-                className="flex h-9 w-9 items-center justify-center rounded-xl transition-all duration-200 hover:scale-105 active:scale-95 disabled:opacity-30 disabled:hover:scale-100 disabled:active:scale-100"
-                style={{
-                  backgroundColor: hasContent ? personaColour : `${personaColour}40`,
-                  boxShadow: hasContent ? `0 0 12px ${personaColour}30` : 'none',
+            <div className="ml-auto flex min-w-0 items-center justify-end gap-1.5">
+              {(onModelChange || onExecutionStrategyChange || onReasoningChange) && !busy && (
+                <RunSettingsDropdown
+                  model={model}
+                  modelProvider={modelProvider}
+                  modelOptions={modelOptions}
+                  onModelChange={onModelChange}
+                  executionStrategy={executionStrategy}
+                  onExecutionStrategyChange={onExecutionStrategyChange}
+                  reasoningLevel={reasoningLevel}
+                  reasoningOptions={reasoningOptions}
+                  onReasoningChange={onReasoningChange}
+                />
+              )}
+
+              <VoiceInputButton
+                onTranscript={(text) => {
+                  setVoiceError(null);
+                  handleVoiceTranscript(text);
                 }}
-                aria-label="Send message"
-              >
-                <Send size={16} className="text-white" />
-              </button>
-            )}
+                onError={setVoiceError}
+                disabled={disabled}
+                colour={personaColour}
+              />
+
+              {busy ? (
+                <button
+                  type="button"
+                  onClick={onStop}
+                  className="flex h-9 items-center justify-center gap-1.5 rounded-xl bg-error px-3 text-xs font-semibold text-white transition-colors duration-200 hover:bg-error/80"
+                  title="Stop generation"
+                  aria-label="Stop generation"
+                >
+                  <Square size={12} fill="currentColor" />
+                  Stop
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleSend}
+                  disabled={disabled || !hasContent || preparingAttachments}
+                  className="composer-send flex h-9 w-9 items-center justify-center rounded-xl transition-[transform,filter,opacity] duration-200 disabled:opacity-30"
+                  style={{
+                    backgroundColor: hasContent ? personaColour : `${personaColour}40`,
+                  }}
+                  aria-label="Send message"
+                >
+                  <Send size={16} className="text-white" />
+                </button>
+              )}
+            </div>
           </div>
+
+          {voiceError && (
+            <p
+              id="chat-composer-voice-error"
+              role="alert"
+              className="flex items-start gap-1.5 border-t border-border-subtle px-4 py-2 text-xs leading-5 text-error"
+            >
+              <AlertCircle size={13} className="mt-0.5 shrink-0" />
+              {voiceError}
+            </p>
+          )}
         </div>
 
-        {!busy && (
-          <div className="mt-1.5 flex items-center justify-between px-1">
-            <p className="text-[11px] text-text-muted">
-              Enter or Cmd/Ctrl+Enter sends. Shift+Enter adds a line.
-              {mentionRepoIds.length > 0
-                ? ' Type / for commands, @ for files, or $ for skills.'
-                : ' Type / for commands or $ for skills.'}
-            </p>
-            {reasoningLevel && (
-              <p className="flex items-center gap-1 text-[11px] text-text-muted">
-                <Sparkles size={10} />
-                Reasoning: {reasoningLevel}
-              </p>
-            )}
-          </div>
-        )}
+        <p id="chat-composer-keyboard-hint" className="sr-only">
+          Enter sends. Shift plus Enter adds a line.
+          {mentionRepoIds.length > 0
+            ? ' Type slash for commands, at for files, or dollar for skills.'
+            : ' Type slash for commands or dollar for skills.'}
+        </p>
       </div>
     </div>
   );
@@ -1453,7 +1503,7 @@ function scopeLabel(scope: CodexRegisteredSkill['scope']): string {
   }
 }
 
-const REASONING_EFFORT_MENU_ID = 'chat-reasoning-effort-menu';
+const RUN_SETTINGS_MENU_ID = 'chat-run-settings-menu';
 
 const REASONING_EFFORT_OPTIONS: { level: ReasoningEffort; description: string }[] = [
   { level: 'none', description: 'Fastest; no extended reasoning' },
@@ -1466,26 +1516,75 @@ const REASONING_EFFORT_OPTIONS: { level: ReasoningEffort; description: string }[
   { level: 'ultra', description: 'Subagent-backed effort for splittable work' },
 ];
 
-function ReasoningEffortDropdown({
-  level,
-  options = REASONING_EFFORT_OPTIONS.map((option) => option.level),
-  onChange,
+function formatReasoningLabel(level: ReasoningEffort): string {
+  if (level === 'xhigh') return 'Extra high';
+  return `${level.charAt(0).toUpperCase()}${level.slice(1)}`;
+}
+
+export function getCursorModelReasoningEffort(model: string): ReasoningEffort | undefined {
+  return REASONING_EFFORT_OPTIONS.find((option) => model.endsWith(`-${option.level}`))?.level;
+}
+
+export function getCompactModelLabel(
+  model: string,
+  label: string,
+  provider: AgentProvider,
+): string {
+  if (provider !== 'cursor') return label;
+  if (model === 'auto') return 'Cursor auto';
+
+  const reasoning = getCursorModelReasoningEffort(model);
+  const reasoningSuffix = reasoning ? new RegExp(`\\s+${reasoning}$`, 'i') : null;
+  return label
+    .replace(/\s+\([^)]*\)$/, '')
+    .replace(/\s+1M(?:\s+Thinking)?(?:\s+\S+)?$/i, '')
+    .replace(reasoningSuffix ?? /$^/, '')
+    .trim();
+}
+
+export function getRunSettingsLabel(
+  modelLabel: string,
+  executionStrategy: ExecutionStrategy,
+  reasoningLevel?: ReasoningEffort,
+): string {
+  const strategy = EXECUTION_STRATEGIES.find((option) => option.id === executionStrategy);
+  return [
+    modelLabel,
+    reasoningLevel ? formatReasoningLabel(reasoningLevel) : null,
+    strategy?.label ?? executionStrategy,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+}
+
+function RunSettingsDropdown({
+  model,
+  modelProvider,
+  modelOptions,
+  onModelChange,
+  executionStrategy,
+  onExecutionStrategyChange,
+  reasoningLevel,
+  reasoningOptions = REASONING_EFFORT_OPTIONS.map((option) => option.level),
+  onReasoningChange,
 }: {
-  level: ReasoningEffort;
-  options?: ReasoningEffort[];
-  onChange: (level: ReasoningEffort) => void;
+  model: string;
+  modelProvider: AgentProvider;
+  modelOptions: ChatInputModelOption[];
+  onModelChange?: (model: string) => void;
+  executionStrategy: ExecutionStrategy;
+  onExecutionStrategyChange?: (strategy: ExecutionStrategy) => void;
+  reasoningLevel: ReasoningEffort;
+  reasoningOptions?: ReasoningEffort[];
+  onReasoningChange?: (level: ReasoningEffort) => void;
 }) {
   const availableOptions = REASONING_EFFORT_OPTIONS.filter((option) =>
-    options.includes(option.level),
+    reasoningOptions.includes(option.level),
   );
+  const selectedModel = modelOptions.find((option) => option.id === model);
   const [open, setOpen] = useState(false);
-  const [highlightedIndex, setHighlightedIndex] = useState(() =>
-    Math.max(
-      0,
-      availableOptions.findIndex((option) => option.level === level),
-    ),
-  );
   const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -1498,101 +1597,137 @@ function ReasoningEffortDropdown({
     return () => document.removeEventListener('mousedown', handlePointerDown);
   }, [open]);
 
-  const openMenu = () => {
-    setHighlightedIndex(
-      Math.max(
-        0,
-        availableOptions.findIndex((option) => option.level === level),
-      ),
-    );
-    setOpen(true);
-  };
-
-  const handleKeyDown = (event: React.KeyboardEvent) => {
-    if (!open) {
-      if (event.key === 'Enter' || event.key === ' ' || event.key === 'ArrowUp') {
-        event.preventDefault();
-        openMenu();
-      }
-      return;
-    }
-
-    if (event.key === 'Escape') {
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (open && event.key === 'Escape') {
       event.preventDefault();
       setOpen(false);
-    } else if (
-      event.key === 'ArrowDown' ||
-      event.key === 'ArrowUp' ||
-      event.key === 'Home' ||
-      event.key === 'End'
-    ) {
-      event.preventDefault();
-      setHighlightedIndex(
-        (prev) => getNextListboxIndex(event.key, prev, availableOptions.length) ?? prev,
-      );
-    } else if (event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault();
-      const option = availableOptions[highlightedIndex];
-      if (option) {
-        onChange(option.level);
-        setOpen(false);
-      }
+      window.requestAnimationFrame(() => triggerRef.current?.focus());
     }
   };
+
+  const modelLabel = getCompactModelLabel(model, selectedModel?.label ?? model, modelProvider);
+  const label = getRunSettingsLabel(
+    modelLabel,
+    executionStrategy,
+    modelProvider === 'cursor' ? getCursorModelReasoningEffort(model) : reasoningLevel,
+  );
 
   return (
     <div ref={containerRef} className="relative" onKeyDown={handleKeyDown}>
       <button
-        onClick={() => (open ? setOpen(false) : openMenu())}
-        className="flex h-7 items-center gap-1 rounded-lg border border-border-subtle bg-bg-secondary/80 px-2 text-[11px] font-medium text-text-secondary transition-all hover:bg-bg-tertiary hover:text-text-primary"
-        title="Reasoning effort"
-        aria-label={`Reasoning effort: ${level}`}
-        aria-haspopup="listbox"
+        ref={triggerRef}
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        className="flex h-9 max-w-52 items-center gap-1.5 rounded-xl border border-border bg-bg-secondary px-2.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
+        title="Run settings"
+        aria-label={`Run settings: ${label}`}
+        aria-haspopup="dialog"
         aria-expanded={open}
-        aria-controls={open ? REASONING_EFFORT_MENU_ID : undefined}
+        aria-controls={open ? RUN_SETTINGS_MENU_ID : undefined}
       >
-        <Sparkles size={11} />
-        <span className="capitalize">{level}</span>
-        <ChevronDown size={11} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
+        <SlidersHorizontal size={13} className="shrink-0 text-text-tertiary" />
+        <span className="truncate">{label}</span>
+        <ChevronDown
+          size={12}
+          className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
+        />
       </button>
 
       {open && (
         <div
-          id={REASONING_EFFORT_MENU_ID}
-          className="absolute bottom-full right-0 z-50 mb-2 w-72 overflow-hidden rounded-xl border border-border bg-bg-elevated shadow-2xl ring-1 ring-black/20"
-          role="listbox"
-          aria-label="Reasoning effort"
-          aria-activedescendant={`reasoning-effort-option-${availableOptions[highlightedIndex]?.level}`}
+          id={RUN_SETTINGS_MENU_ID}
+          className="absolute bottom-full right-0 z-50 mb-2 w-72 rounded-xl border border-border bg-bg-elevated p-3 shadow-lg ring-1 ring-black/20"
+          role="dialog"
+          aria-label="Run settings"
         >
-          <div className="p-1.5">
-            {availableOptions.map((option, index) => {
-              const selected = option.level === level;
-              const highlighted = index === highlightedIndex;
-              return (
-                <button
-                  key={option.level}
-                  id={`reasoning-effort-option-${option.level}`}
-                  role="option"
-                  aria-selected={selected}
-                  onClick={() => {
-                    onChange(option.level);
-                    setOpen(false);
-                  }}
-                  onMouseEnter={() => setHighlightedIndex(index)}
-                  className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left transition-colors ${
-                    highlighted ? 'bg-bg-tertiary' : ''
-                  }`}
+          <div className="space-y-3">
+            {onModelChange && modelOptions.length > 0 && (
+              <label className="block">
+                <span className="mb-1 block text-[11px] font-medium text-text-muted">Model</span>
+                <select
+                  value={model}
+                  onChange={(event) => onModelChange(event.target.value)}
+                  className="h-9 w-full rounded-lg border border-border bg-bg-secondary px-2.5 text-xs text-text-primary outline-none focus:border-accent focus:ring-2 focus:ring-accent/30"
                 >
-                  <div className="min-w-0 flex-1">
-                    <p className="text-xs font-medium capitalize text-text-primary">
-                      {option.level}
-                    </p>
-                    <p className="truncate text-[11px] text-text-tertiary">{option.description}</p>
-                  </div>
-                  {selected && <Check size={13} className="shrink-0 text-text-secondary" />}
-                </button>
-              );
-            })}
+                  {modelOptions.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <span className="mt-1 block text-[11px] leading-4 text-text-tertiary">
+                  {selectedModel?.description ??
+                    `Selected for new turns through the ${modelProvider} provider.`}
+                </span>
+              </label>
+            )}
+
+            {modelProvider === 'cursor' ? (
+              <div>
+                <span className="mb-1 block text-[11px] font-medium text-text-muted">
+                  Reasoning
+                </span>
+                <div className="rounded-lg border border-border-subtle bg-bg-secondary px-2.5 py-2 text-xs text-text-secondary">
+                  Set by the Cursor model
+                </div>
+                <span className="mt-1 block text-[11px] leading-4 text-text-tertiary">
+                  Cursor model IDs include their reasoning level where supported.
+                </span>
+              </div>
+            ) : (
+              onReasoningChange &&
+              availableOptions.length > 0 && (
+                <label className="block">
+                  <span className="mb-1 block text-[11px] font-medium text-text-muted">
+                    Reasoning
+                  </span>
+                  <select
+                    value={reasoningLevel}
+                    onChange={(event) => onReasoningChange(event.target.value as ReasoningEffort)}
+                    className="h-9 w-full rounded-lg border border-border bg-bg-secondary px-2.5 text-xs capitalize text-text-primary outline-none focus:border-accent focus:ring-2 focus:ring-accent/30"
+                  >
+                    {availableOptions.map((option) => (
+                      <option key={option.level} value={option.level}>
+                        {option.level}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="mt-1 block text-[11px] leading-4 text-text-tertiary">
+                    {
+                      availableOptions.find((option) => option.level === reasoningLevel)
+                        ?.description
+                    }
+                  </span>
+                </label>
+              )
+            )}
+
+            {onExecutionStrategyChange && (
+              <label className="block">
+                <span className="mb-1 block text-[11px] font-medium text-text-muted">
+                  Subagents
+                </span>
+                <select
+                  value={executionStrategy}
+                  onChange={(event) =>
+                    onExecutionStrategyChange(event.target.value as ExecutionStrategy)
+                  }
+                  className="h-9 w-full rounded-lg border border-border bg-bg-secondary px-2.5 text-xs text-text-primary outline-none focus:border-accent focus:ring-2 focus:ring-accent/30"
+                >
+                  {EXECUTION_STRATEGIES.map((strategy) => (
+                    <option key={strategy.id} value={strategy.id}>
+                      {strategy.label}
+                    </option>
+                  ))}
+                </select>
+                <span className="mt-1 block text-[11px] leading-4 text-text-tertiary">
+                  {
+                    EXECUTION_STRATEGIES.find((strategy) => strategy.id === executionStrategy)
+                      ?.description
+                  }
+                </span>
+              </label>
+            )}
           </div>
         </div>
       )}

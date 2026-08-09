@@ -67,6 +67,17 @@ type PopularPackageIndex = {
   knownConfusions: Record<string, string>;
 };
 
+type FailedAnalysisJob = {
+  jobId: string;
+  analysisJobId?: string;
+  packageName?: string;
+  version?: string;
+  failedReason?: string;
+  attemptsMade: number;
+  createdAt?: string;
+  failedAt?: string;
+};
+
 export type CliDependencies = {
   fetch: typeof fetch;
   readFile: ReadTextFile;
@@ -94,6 +105,9 @@ export async function run(argv: string[], dependencies: CliDependencies = defaul
     if (command === "revoke") return await revoke(args, dependencies);
     if (command === "llm-review") return await llmReview(args, dependencies);
     if (command === "queue" && args[0] === "status") return await queueStatus(args.slice(1), dependencies);
+    if (command === "queue" && args[0] === "failed") return await queueFailed(args.slice(1), dependencies);
+    if (command === "queue" && args[0] === "retry") return await queueMutate("retry", args.slice(1), dependencies);
+    if (command === "queue" && args[0] === "remove") return await queueMutate("remove", args.slice(1), dependencies);
     if (command === "overrides") return await overrides(args, dependencies);
     if (command === "audit-events") return await auditEvents(args, dependencies);
     if (command === "reports" && args[0] === "compare") return await analysisReportCompare(args.slice(1), dependencies);
@@ -480,6 +494,36 @@ async function queueStatus(_args: string[], dependencies: CliDependencies): Prom
     headers: adminAuthHeader(dependencies.env)
   });
   printQueueStatus(result.queue, dependencies);
+  return 0;
+}
+
+async function queueFailed(args: string[], dependencies: CliDependencies): Promise<number> {
+  const registryUrl = registryBaseUrl(dependencies.env);
+  const limit = readFlag(args, "--limit") ?? "20";
+  const result = await requestJson<{ jobs: FailedAnalysisJob[] }>(dependencies, `${registryUrl}/-/anvil/queue/failed?limit=${encodeURIComponent(limit)}`, {
+    headers: adminAuthHeader(dependencies.env)
+  });
+  dependencies.stdout.write(`Failed analysis jobs: ${result.jobs.length}\n`);
+  for (const job of result.jobs) {
+    const target = job.packageName ? ` ${job.packageName}${job.version ? `@${job.version}` : ""}` : "";
+    const failedAt = job.failedAt ? ` failed=${job.failedAt}` : "";
+    dependencies.stdout.write(`- ${job.jobId}${target} attempts=${job.attemptsMade}${failedAt}${job.failedReason ? `: ${job.failedReason}` : ""}\n`);
+  }
+  return 0;
+}
+
+async function queueMutate(action: "retry" | "remove", args: string[], dependencies: CliDependencies): Promise<number> {
+  const jobIds = positionalArgsBeforeFlags(args);
+  if (jobIds.length === 0) throw new Error(`Usage: anvil-registry queue ${action} <job-id> [job-id...]${action === "remove" ? " --confirm" : ""}`);
+  if (action === "remove" && !hasFlag(args, "--confirm")) throw new Error("Removing failed jobs is irreversible; repeat with --confirm after inspecting them.");
+  const requestedBy = readFlag(args, "--requested-by") ?? "anvil-registry-cli";
+  const registryUrl = registryBaseUrl(dependencies.env);
+  const result = await requestJson<{ jobIds: string[] }>(dependencies, `${registryUrl}/-/anvil/queue/failed/${action}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...adminAuthHeader(dependencies.env) },
+    body: JSON.stringify({ jobIds, requestedBy })
+  });
+  dependencies.stdout.write(`${action === "retry" ? "Retried" : "Removed"} ${result.jobIds.length} failed analysis job${result.jobIds.length === 1 ? "" : "s"}.\n`);
   return 0;
 }
 
@@ -1078,6 +1122,11 @@ function firstPositionalArg(args: string[]): string | undefined {
   return args.find((arg) => !arg.startsWith("--"));
 }
 
+function positionalArgsBeforeFlags(args: string[]): string[] {
+  const firstFlag = args.findIndex((arg) => arg.startsWith("--"));
+  return args.slice(0, firstFlag === -1 ? args.length : firstFlag);
+}
+
 function hasFlag(args: string[], flag: string): boolean {
   return args.includes(flag);
 }
@@ -1229,6 +1278,9 @@ function usage() {
   anvil-registry revoke package@version [--revoked-by reviewer]
   anvil-registry llm-review package@version [--requested-by reviewer] [--priority high]
   anvil-registry queue status
+  anvil-registry queue failed [--limit 20]
+  anvil-registry queue retry <job-id> [job-id...] [--requested-by operator]
+  anvil-registry queue remove <job-id> [job-id...] --confirm [--requested-by operator]
   anvil-registry overrides [--target package@version] [--package package] [--version version] [--limit 20]
   anvil-registry audit-events [--target package@version] [--limit 20]
   anvil-registry popular-index show

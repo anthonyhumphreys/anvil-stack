@@ -4,7 +4,9 @@ import type {
   WorkItemProvider,
   DocsProvider,
   AppTheme,
+  AgentProvider,
   CodexMode,
+  WorkItemConnection,
 } from '../../shared/types.js';
 import {
   DEFAULT_CODEX_MODEL,
@@ -18,6 +20,7 @@ import { testLlmConnection } from './llm.service.js';
 
 interface SettingsRow {
   llm_provider: string | null;
+  enabled_llm_providers: string | null;
   apple_foundation_models_mode: string | null;
   foundry_endpoint: string | null;
   foundry_deployment: string | null;
@@ -41,6 +44,8 @@ interface SettingsRow {
   notion_database_id: string | null;
   default_repo_path: string | null;
   work_item_provider: string | null;
+  work_item_connections: Buffer | null;
+  active_work_item_connection_id: string | null;
   linear_api_key: Buffer | null;
   linear_team_id: string | null;
   jira_host: string | null;
@@ -73,6 +78,7 @@ const APPLE_FOUNDATION_MODEL_MODES: AppSettings['appleFoundationModelsMode'][] =
   'off',
   'prefer-simple',
 ];
+const AGENT_PROVIDERS: AgentProvider[] = ['codex', 'cursor', 'openai', 'azure'];
 
 function normaliseTheme(theme: string | null | undefined): AppTheme {
   return APP_THEMES.includes(theme as AppTheme) ? (theme as AppTheme) : 'system';
@@ -94,6 +100,97 @@ function normaliseAppleFoundationModelsMode(
     : 'off';
 }
 
+function normaliseAgentProvider(value: string | null | undefined): AgentProvider {
+  return AGENT_PROVIDERS.includes(value as AgentProvider) ? (value as AgentProvider) : 'codex';
+}
+
+export function normaliseEnabledLlmProviders(
+  value: string | AgentProvider[] | null | undefined,
+  primaryProvider: AgentProvider,
+): AgentProvider[] {
+  const parsed = Array.isArray(value) ? value : safeParseSettingsJson<unknown>(value, []);
+  const providers = Array.isArray(parsed)
+    ? parsed.filter((provider): provider is AgentProvider =>
+        AGENT_PROVIDERS.includes(provider as AgentProvider),
+      )
+    : [];
+  return [...new Set([primaryProvider, ...providers])];
+}
+
+const MASKED_SECRET = '••••••••';
+
+function safeParseSettingsJson<T>(value: string | null | undefined, fallback: T): T {
+  if (!value) return fallback;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function parseWorkItemConnections(value: Buffer | null): WorkItemConnection[] {
+  const json = decryptSecret(value, 'settings.workItemConnections');
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json) as WorkItemConnection[];
+    return Array.isArray(parsed)
+      ? parsed.filter(
+          (connection) =>
+            typeof connection?.id === 'string' &&
+            typeof connection?.name === 'string' &&
+            ['ado', 'linear', 'jira'].includes(connection.provider),
+        )
+      : [];
+  } catch {
+    console.warn('[Settings] Ignoring invalid work item connections data');
+    return [];
+  }
+}
+
+function applyWorkItemConnection(
+  settings: AppSettings,
+  connection: WorkItemConnection | undefined,
+): AppSettings {
+  if (!connection) return settings;
+  return {
+    ...settings,
+    workItemProvider: connection.provider,
+    adoOrganizationUrl: connection.adoOrganizationUrl ?? '',
+    adoProject: connection.adoProject ?? '',
+    adoTeam: connection.adoTeam,
+    adoPat: connection.adoPat,
+    linearApiKey: connection.linearApiKey,
+    linearTeamId: connection.linearTeamId,
+    jiraHost: connection.jiraHost,
+    jiraAuthMode: connection.jiraAuthMode,
+    jiraProject: connection.jiraProject,
+    jiraBoardId: connection.jiraBoardId,
+    jiraEmail: connection.jiraEmail,
+    jiraApiToken: connection.jiraApiToken,
+  };
+}
+
+function mergeMaskedConnectionSecrets(
+  connections: WorkItemConnection[],
+  existing: WorkItemConnection[],
+): WorkItemConnection[] {
+  return connections.map((connection) => {
+    const previous = existing.find((candidate) => candidate.id === connection.id);
+    return {
+      ...connection,
+      adoPat: connection.adoPat === MASKED_SECRET ? previous?.adoPat : connection.adoPat,
+      linearApiKey:
+        connection.linearApiKey === MASKED_SECRET
+          ? previous?.linearApiKey
+          : connection.linearApiKey,
+      jiraApiToken:
+        connection.jiraApiToken === MASKED_SECRET
+          ? previous?.jiraApiToken
+          : connection.jiraApiToken,
+    };
+  });
+}
+
 export function getSettings(): AppSettings {
   const db = getDb();
   const row = db.prepare('SELECT * FROM settings WHERE id = 1').get() as SettingsRow | undefined;
@@ -102,8 +199,70 @@ export function getSettings(): AppSettings {
     return defaultSettings();
   }
 
-  return {
-    llmProvider: (row.llm_provider as 'azure' | 'openai' | 'codex') ?? 'codex',
+  let workItemConnections = parseWorkItemConnections(row.work_item_connections);
+  const legacyProvider = row.work_item_provider as WorkItemProvider | 'none' | null;
+  const hasLegacyConnection =
+    (legacyProvider === 'ado' && Boolean(row.ado_org_url || row.ado_project || row.ado_pat)) ||
+    (legacyProvider === 'linear' && Boolean(row.linear_api_key)) ||
+    (legacyProvider === 'jira' && Boolean(row.jira_host || row.jira_api_token));
+  if (
+    workItemConnections.length === 0 &&
+    legacyProvider &&
+    legacyProvider !== 'none' &&
+    hasLegacyConnection
+  ) {
+    workItemConnections = [
+      {
+        id: `legacy-${legacyProvider}`,
+        name:
+          legacyProvider === 'ado'
+            ? 'Azure DevOps'
+            : legacyProvider === 'linear'
+              ? 'Linear'
+              : 'JIRA',
+        provider: legacyProvider,
+        adoOrganizationUrl: row.ado_org_url ?? undefined,
+        adoProject: row.ado_project ?? undefined,
+        adoTeam: row.ado_team ?? undefined,
+        adoPat: decryptSecret(row.ado_pat, 'settings.adoPat'),
+        linearApiKey: decryptSecret(row.linear_api_key, 'settings.linearApiKey'),
+        linearTeamId: row.linear_team_id ?? undefined,
+        jiraHost: row.jira_host ?? undefined,
+        jiraAuthMode: (row.jira_auth_mode as 'cloud' | 'server') ?? undefined,
+        jiraProject: row.jira_project ?? undefined,
+        jiraBoardId: row.jira_board_id ?? undefined,
+        jiraEmail: row.jira_email ?? undefined,
+        jiraApiToken: decryptSecret(row.jira_api_token, 'settings.jiraApiToken'),
+      },
+    ];
+  }
+  const storedActiveWorkItemConnectionId = row.active_work_item_connection_id ?? undefined;
+  const configuredActiveWorkItemConnectionId = workItemConnections.some(
+    (connection) => connection.id === storedActiveWorkItemConnectionId,
+  )
+    ? storedActiveWorkItemConnectionId
+    : workItemConnections[0]?.id;
+  let workspaceWorkItemConnectionId: string | undefined;
+  if (row.active_workspace_id) {
+    const workspacePreferences = db
+      .prepare('SELECT workitems_json FROM workspace_preferences WHERE workspace_id = ?')
+      .get(row.active_workspace_id) as { workitems_json: string | null } | undefined;
+    const workitems = safeParseSettingsJson<{ workItemConnectionId?: string }>(
+      workspacePreferences?.workitems_json,
+      {},
+    );
+    if (
+      workItemConnections.some((connection) => connection.id === workitems.workItemConnectionId)
+    ) {
+      workspaceWorkItemConnectionId = workitems.workItemConnectionId;
+    }
+  }
+  const activeWorkItemConnectionId =
+    workspaceWorkItemConnectionId ?? configuredActiveWorkItemConnectionId;
+  const llmProvider = normaliseAgentProvider(row.llm_provider);
+  const settings: AppSettings = {
+    llmProvider,
+    enabledLlmProviders: normaliseEnabledLlmProviders(row.enabled_llm_providers, llmProvider),
     appleFoundationModelsMode: normaliseAppleFoundationModelsMode(row.apple_foundation_models_mode),
     foundryEndpoint: row.foundry_endpoint ?? '',
     foundryDeploymentName: row.foundry_deployment ?? '',
@@ -119,6 +278,8 @@ export function getSettings(): AppSettings {
     adoTeam: row.ado_team ?? undefined,
     adoPat: decryptSecret(row.ado_pat, 'settings.adoPat'),
     workItemProvider: (row.work_item_provider as WorkItemProvider | 'none') ?? 'ado',
+    workItemConnections,
+    activeWorkItemConnectionId,
     linearApiKey: decryptSecret(row.linear_api_key, 'settings.linearApiKey'),
     linearTeamId: row.linear_team_id ?? undefined,
     jiraHost: row.jira_host ?? undefined,
@@ -144,16 +305,30 @@ export function getSettings(): AppSettings {
     defaultRepoPath: row.default_repo_path ?? undefined,
     theme: normaliseTheme(row.theme),
   };
+  return applyWorkItemConnection(
+    settings,
+    workItemConnections.find((connection) => connection.id === activeWorkItemConnectionId),
+  );
 }
 
 export function updateSettings(partial: Partial<AppSettings>): void {
   const db = getDb();
+  const current = getSettings();
   const setClauses: string[] = [];
   const values: unknown[] = [];
 
   if (partial.llmProvider !== undefined) {
     setClauses.push('llm_provider = ?');
-    values.push(partial.llmProvider);
+    values.push(normaliseAgentProvider(partial.llmProvider));
+  }
+  if (partial.enabledLlmProviders !== undefined || partial.llmProvider !== undefined) {
+    const primaryProvider = normaliseAgentProvider(partial.llmProvider ?? current.llmProvider);
+    const enabledProviders = normaliseEnabledLlmProviders(
+      partial.enabledLlmProviders ?? current.enabledLlmProviders,
+      primaryProvider,
+    );
+    setClauses.push('enabled_llm_providers = ?');
+    values.push(JSON.stringify(enabledProviders));
   }
   if (partial.appleFoundationModelsMode !== undefined) {
     setClauses.push('apple_foundation_models_mode = ?');
@@ -245,12 +420,26 @@ export function updateSettings(partial: Partial<AppSettings>): void {
   }
   if (partial.workItemProvider !== undefined) {
     // If provider changed, clear cached work items
-    const current = getSettings();
     if (current.workItemProvider !== partial.workItemProvider) {
       db.prepare('DELETE FROM work_items_cache').run();
     }
     setClauses.push('work_item_provider = ?');
     values.push(partial.workItemProvider);
+  }
+  if (partial.workItemConnections !== undefined) {
+    const connections = mergeMaskedConnectionSecrets(
+      partial.workItemConnections,
+      current.workItemConnections,
+    );
+    setClauses.push('work_item_connections = ?');
+    values.push(connections.length > 0 ? encryptSecret(JSON.stringify(connections)) : null);
+  }
+  if (partial.activeWorkItemConnectionId !== undefined) {
+    if (current.activeWorkItemConnectionId !== partial.activeWorkItemConnectionId) {
+      db.prepare('DELETE FROM work_items_cache').run();
+    }
+    setClauses.push('active_work_item_connection_id = ?');
+    values.push(partial.activeWorkItemConnectionId || null);
   }
   if (partial.linearApiKey !== undefined) {
     setClauses.push('linear_api_key = ?');
@@ -385,6 +574,7 @@ export async function testGitConnection(): Promise<{
 function defaultSettings(): AppSettings {
   return {
     llmProvider: 'codex',
+    enabledLlmProviders: ['codex'],
     appleFoundationModelsMode: 'off',
     foundryEndpoint: '',
     foundryDeploymentName: '',
@@ -394,6 +584,8 @@ function defaultSettings(): AppSettings {
     codexMode: 'on-request',
     chatLayout: 'classic',
     workItemProvider: 'ado',
+    workItemConnections: [],
+    activeWorkItemConnectionId: undefined,
     docsProvider: 'confluence',
     adoOrganizationUrl: '',
     adoProject: '',

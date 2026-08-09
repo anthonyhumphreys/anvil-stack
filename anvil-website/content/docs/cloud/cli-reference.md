@@ -137,9 +137,13 @@ Options:
 ```txt
 --json
 --agent
+--host <address>
 --port <port>
 --client-port <port>
 ```
+
+The runtime binds to `127.0.0.1` by default. Only use `--host` on a trusted
+network; it also exposes local Lens management actions.
 
 Human output:
 
@@ -407,8 +411,9 @@ anvil-cloud rollback --preview --app notes --to-deployment dep_previous --dry-ru
 ```
 
 Returns stable rollback intent: target deployment id, inspection/log commands,
-and redeploy guidance. Preview deployments are versioned in adapter metadata;
-direct AWS artifact pointer promotion remains adapter-owned in alpha.
+and redeploy guidance. Automated promotion is unsupported because current
+metadata stores only the active deployment and client assets are not archived
+as a restorable set.
 
 If CloudFormation reaches a failed terminal state during provisioning, deploy
 returns `ok: false` with `code: "AWS_STACK_FAILED"` and structured stack event

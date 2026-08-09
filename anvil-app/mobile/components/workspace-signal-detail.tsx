@@ -1,5 +1,5 @@
 import { MaterialIcons } from '@react-native-vector-icons/material-icons';
-import { router, type RelativePathString } from 'expo-router';
+import { router } from 'expo-router';
 import { useEffect, useMemo, useState, type ComponentProps } from 'react';
 import { RefreshControl, ScrollView, Text, View } from 'react-native';
 import {
@@ -19,6 +19,7 @@ import {
   type CompanionColor,
 } from '@/components/companion-ui';
 import { useCompanion } from '@/contexts/companion-context';
+import { threadHref } from '@/lib/routes';
 import type { MobileWorkspaceSignal, MobileWorkspaceSignalDetail } from '../../src/shared/types';
 
 type IconName = ComponentProps<typeof MaterialIcons>['name'];
@@ -423,10 +424,6 @@ function relativeTime(value: string): string {
   if (diff < 3_600_000) return `${Math.max(1, Math.floor(diff / 60_000))}m ago`;
   if (diff < 86_400_000) return `${Math.max(1, Math.floor(diff / 3_600_000))}h ago`;
   return `${Math.max(1, Math.floor(diff / 86_400_000))}d ago`;
-}
-
-function threadHref(threadId: string): RelativePathString {
-  return `/(tabs)/chats/${encodeURIComponent(threadId)}` as RelativePathString;
 }
 
 const headerRowStyle = {

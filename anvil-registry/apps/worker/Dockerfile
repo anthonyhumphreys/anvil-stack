@@ -26,10 +26,17 @@ RUN pnpm --filter @anvilstack/worker... build
 
 FROM node:22-bookworm-slim
 WORKDIR /app
-ENV NODE_ENV=production
-RUN corepack enable
+ENV NODE_ENV=production \
+  SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends bubblewrap ca-certificates \
+  && rm -rf /var/lib/apt/lists/* \
+  && corepack enable
 COPY --from=deps /app/node_modules /app/node_modules
 COPY --from=deps /app/apps/worker/node_modules /app/apps/worker/node_modules
 COPY --from=build /app/packages /app/packages
 COPY --from=build /app/apps/worker /app/apps/worker
+RUN install -d -o node -g node -m 700 /var/lib/anvil-codex \
+  && ln -s /app/apps/worker/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex
+USER node
 CMD ["node", "apps/worker/dist/index.js"]

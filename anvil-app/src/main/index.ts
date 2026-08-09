@@ -31,6 +31,7 @@ import { registerTerminalHandlers, cleanupTerminals } from './ipc/terminal.ipc.j
 import { registerGovernanceHandlers } from './ipc/governance.ipc.js';
 import { registerDbInsightsHandlers } from './ipc/db-insights.ipc.js';
 import { registerAutomationHandlers } from './ipc/automation.ipc.js';
+import { registerWorkflowHandlers } from './ipc/workflow.ipc.js';
 import { registerAgentRunHandlers } from './ipc/agent-run.ipc.js';
 import { registerDesignHandlers } from './ipc/design.ipc.js';
 import { registerAdrHandlers } from './ipc/adr.ipc.js';
@@ -68,6 +69,9 @@ import { cleanupSimulatorPreview } from './services/simulator-preview.service.js
 
 const brandId = parseBrandFromArgs(process.argv);
 const brand = getBrand(brandId);
+const isolatedDevProfileActive = Boolean(
+  process.env.ELECTRON_RENDERER_URL && process.env.ANVIL_DEV_USER_DATA_PATH?.trim(),
+);
 
 function getAppIconPath(): string {
   return app.isPackaged
@@ -76,6 +80,12 @@ function getAppIconPath(): string {
 }
 
 function configureUserDataPath(): void {
+  const isolatedDevPath = process.env.ANVIL_DEV_USER_DATA_PATH?.trim();
+  if (process.env.ELECTRON_RENDERER_URL && isolatedDevPath) {
+    app.setPath('userData', path.resolve(isolatedDevPath));
+    return;
+  }
+
   const targetPath = getPrimaryUserDataPath();
   if (!existsSync(targetPath)) {
     const legacyPath = getLegacyUserDataPaths().find((candidate) => existsSync(candidate));
@@ -86,7 +96,7 @@ function configureUserDataPath(): void {
   app.setPath('userData', targetPath);
 }
 
-app.setName(brand.appName);
+app.setName(isolatedDevProfileActive ? `${brand.appName} UI Lab` : brand.appName);
 configureUserDataPath();
 
 let mainWindow: BrowserWindow | null = null;
@@ -152,7 +162,7 @@ function createWindow(options: { workspaceId?: string } = {}): BrowserWindow {
     height: 900,
     minWidth: 1024,
     minHeight: 700,
-    title: brand.appName,
+    title: app.getName(),
     titleBarStyle: 'hidden',
     trafficLightPosition: { x: 16, y: 16 },
     backgroundColor: '#0b1020',
@@ -312,6 +322,7 @@ app.whenReady().then(() => {
   registerGovernanceHandlers();
   registerDbInsightsHandlers();
   registerAutomationHandlers();
+  registerWorkflowHandlers();
   registerAgentRunHandlers();
   registerDesignHandlers();
   registerAdrHandlers();
@@ -338,6 +349,7 @@ app.whenReady().then(() => {
   app.setAsDefaultProtocolClient(LEGACY_PROTOCOL);
 
   ipcMain.handle('brand:get', () => brand);
+  ipcMain.handle('app-window:get-version', () => app.getVersion());
   ipcMain.handle('app-window:get-chrome-state', (event) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     return getWindowChromeState(win ?? mainWindow);

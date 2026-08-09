@@ -13,10 +13,12 @@ import {
 } from '@/components/companion-ui';
 import { WorkspaceBar } from '@/components/workspace-bar';
 import { useCompanion } from '@/contexts/companion-context';
+import { useOpenThread } from '@/lib/routes';
 import type { MobileWorkQueueItem } from '../../../src/shared/types';
 
 export default function WorkScreen() {
   const { connection, overview, loading, refresh, interrupt } = useCompanion();
+  const openThread = useOpenThread();
   const [workQuery, setWorkQuery] = useState('');
   const [showAllWorkItems, setShowAllWorkItems] = useState(false);
   const workspace = overview?.activeWorkspace;
@@ -208,7 +210,14 @@ export default function WorkScreen() {
         ) : (
           attention
             .slice(0, 4)
-            .map((item) => <WorkRow key={item.id} item={item} onInterrupt={interrupt} />)
+            .map((item) => (
+              <WorkRow
+                key={item.id}
+                item={item}
+                onInterrupt={interrupt}
+                onOpenThread={openThread}
+              />
+            ))
         )}
       </View>
 
@@ -221,7 +230,7 @@ export default function WorkScreen() {
             <Pressable
               key={session.id}
               accessibilityRole="button"
-              onPress={() => session.appThreadId && router.push(threadHref(session.appThreadId))}
+              onPress={() => session.appThreadId && openThread(session.appThreadId)}
               style={rowStyle}
             >
               <StatusDot active={session.status === 'busy' || session.status === 'starting'} />
@@ -252,7 +261,7 @@ export default function WorkScreen() {
           <Pressable
             key={thread.id}
             accessibilityRole="button"
-            onPress={() => router.push(threadHref(thread.id))}
+            onPress={() => openThread(thread.id)}
             style={rowStyle}
           >
             <MaterialIcons name="chat-bubble-outline" size={20} color={companionColors.subtle} />
@@ -312,13 +321,22 @@ function ScopeButton({
 function WorkRow({
   item,
   onInterrupt,
+  onOpenThread,
 }: {
   item: MobileWorkQueueItem;
   onInterrupt: (id: string) => Promise<void>;
+  onOpenThread: (id: string) => void;
 }) {
-  const href = item.threadId ? threadHref(item.threadId) : '/(tabs)/approvals';
+  const openItem = () => {
+    if (item.threadId) {
+      onOpenThread(item.threadId);
+      return;
+    }
+    router.push('/(tabs)/approvals');
+  };
+
   return (
-    <Pressable accessibilityRole="button" onPress={() => router.push(href)} style={rowStyle}>
+    <Pressable accessibilityRole="button" onPress={openItem} style={rowStyle}>
       <MaterialIcons
         name={item.kind === 'approval' ? 'priority-high' : 'error-outline'}
         size={21}
@@ -359,22 +377,18 @@ function StatusDot({ active }: { active: boolean }) {
   );
 }
 
-const rowStyle = {
+const rowStyle = ({ pressed }: { pressed: boolean }) => ({
   minHeight: 62,
   paddingHorizontal: 14,
   paddingVertical: 10,
   borderRadius: 14,
   borderCurve: 'continuous' as const,
-  backgroundColor: companionColors.surface,
+  backgroundColor: pressed ? companionColors.surfaceMuted : companionColors.surface,
   borderWidth: 1,
   borderColor: companionColors.borderSubtle,
   flexDirection: 'row' as const,
   alignItems: 'center' as const,
   gap: 11,
-};
+});
 const rowTitleStyle = { color: companionColors.ink, fontSize: 15, fontWeight: '800' as const };
 const rowDetailStyle = { color: companionColors.subtle, fontSize: 13, lineHeight: 18 };
-
-function threadHref(threadId: string): RelativePathString {
-  return `/(tabs)/chats/${encodeURIComponent(threadId)}` as RelativePathString;
-}
