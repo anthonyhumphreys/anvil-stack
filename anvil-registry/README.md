@@ -136,6 +136,7 @@ ANVIL_REGISTRY_URL=http://localhost:4873 anvil registry scan pnpm-lock.yaml --qu
 ANVIL_REGISTRY_URL=http://localhost:4873 anvil registry scan yarn.lock --queue-analysis
 ANVIL_REGISTRY_URL=http://localhost:4873 anvil registry warm package-lock.json
 ANVIL_REGISTRY_URL=http://localhost:4873 ANVIL_ADMIN_TOKEN=local-dev-token anvil registry queue status
+ANVIL_REGISTRY_URL=http://localhost:4873 ANVIL_ADMIN_TOKEN=local-dev-token anvil registry queue failed --limit 20
 ANVIL_ADMIN_URL=http://localhost:3000 anvil registry reports is-number@7.0.0
 ANVIL_ADMIN_URL=http://localhost:3000 anvil registry reports compare is-number@7.0.0
 ANVIL_ADMIN_URL=http://localhost:3000 anvil registry node-base reports --limit 20
@@ -162,7 +163,7 @@ SST forwards any configured `POLICY_*` values into gateway, worker, and admin so
 
 Metadata requests evaluate every published version with cheap policy, but only the `latest` dist-tag is automatically queued for deep analysis. Exact versions are queued when their tarballs are requested or when an operator warms a lockfile. This keeps historical and prerelease tags from turning a routine install into an archaeological expedition.
 
-npm download statistics are optional policy enrichment. The client coalesces duplicate lookups, caches results for 15 minutes, limits upstream concurrency to four requests, and retries transient network, `429`, and `5xx` failures. Exhausted lookups are logged with their real error and do not stop gateway or worker analysis.
+npm download statistics are optional policy enrichment. The client coalesces duplicate lookups, caches results for 15 minutes, limits upstream concurrency to four requests, and retries transient network and `5xx` failures. A `429` opens one shared cooldown using npm's `Retry-After` guidance (or 60 seconds by default), so later packages skip enrichment quietly instead of amplifying the rate limit. Exhausted non-rate-limit lookups retain their real error in logs and never stop gateway or worker analysis.
 
 ## LLM Review
 

@@ -101,10 +101,9 @@ describe("npm registry helpers", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  it("retries throttled and unavailable download-stat requests", async () => {
+  it("retries unavailable download-stat requests", async () => {
     const fetch = vi
       .fn<() => Promise<Response>>()
-      .mockResolvedValueOnce(new Response("slow down", { status: 429 }))
       .mockResolvedValueOnce(new Response("unavailable", { status: 503 }))
       .mockResolvedValueOnce(Response.json({ downloads: 73 }));
     const sleep = vi.fn(async () => undefined);
@@ -112,9 +111,28 @@ describe("npm registry helpers", () => {
 
     await expect(client.getWeeklyDownloads("pkg")).resolves.toBe(73);
 
-    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(fetch).toHaveBeenCalledTimes(2);
     expect(sleep).toHaveBeenNthCalledWith(1, 10);
-    expect(sleep).toHaveBeenNthCalledWith(2, 20);
+  });
+
+  it("opens a shared quiet cooldown when npm rate limits download stats", async () => {
+    let now = Date.parse("2026-08-09T12:00:00.000Z");
+    const fetch = vi
+      .fn<() => Promise<Response>>()
+      .mockResolvedValueOnce(new Response("slow down", { status: 429, headers: { "retry-after": "120" } }))
+      .mockResolvedValueOnce(Response.json({ downloads: 73 }));
+    const sleep = vi.fn(async () => undefined);
+    const client = new NpmDownloadsClient({ baseUrl: "https://api.npmjs.org/downloads", fetch, sleep, now: () => now });
+
+    await expect(client.getWeeklyDownloads("first-package")).resolves.toBeUndefined();
+    await expect(client.getWeeklyDownloads("another-package")).resolves.toBeUndefined();
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+
+    now += 120_001;
+    await expect(client.getWeeklyDownloads("another-package")).resolves.toBe(73);
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it("retries transient network errors while fetching download stats", async () => {

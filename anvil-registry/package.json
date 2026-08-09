@@ -1,10 +1,10 @@
 {
   "name": "anvil-registry",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "license": "MIT",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@10.11.0",
+  "packageManager": "pnpm@10.34.5",
   "scripts": {
     "build": "turbo run build",
     "db:migrate": "pnpm --filter @anvilstack/persistence db:migrate",
@@ -38,7 +38,10 @@
   "pnpm": {
     "overrides": {
       "esbuild": "0.28.1",
-      "postcss": "8.5.15",
+      "fast-uri": "3.1.5",
+      "find-my-way": "9.7.0",
+      "postcss": "8.5.26",
+      "sharp": "0.35.0",
       "vite": "7.3.5"
     }
   }

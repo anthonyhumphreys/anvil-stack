@@ -20,6 +20,6 @@
     "@anvilstack/policy-engine": "workspace:*",
     "@anvilstack/queue": "workspace:*",
     "@anvilstack/shared": "workspace:*",
-    "fastify": "^5.3.3"
+    "fastify": "^5.11.3"
   }
 }

@@ -21,6 +21,17 @@ export type AnalysisQueueStats = {
   checkedAt: string;
 };
 
+export type FailedAnalysisJob = {
+  jobId: string;
+  analysisJobId?: string;
+  packageName?: string;
+  version?: string;
+  failedReason?: string;
+  attemptsMade: number;
+  createdAt?: string;
+  failedAt?: string;
+};
+
 export interface JobQueue {
   healthCheck?(): Promise<void>;
   getStats(): Promise<AnalysisQueueStats>;
@@ -28,6 +39,9 @@ export interface JobQueue {
   receiveAnalysisJobs(): AsyncIterable<AnalysisJob>;
   acknowledge(jobId: string): Promise<void>;
   fail(jobId: string, reason: string): Promise<void>;
+  listFailedJobs?(limit: number): Promise<FailedAnalysisJob[]>;
+  retryFailedJobs?(jobIds: string[]): Promise<string[]>;
+  removeFailedJobs?(jobIds: string[]): Promise<string[]>;
 }
 
 export class MemoryJobQueue implements JobQueue {
@@ -92,6 +106,39 @@ export class BullMqJobQueue implements JobQueue {
       failed,
       completed: count(counts.completed)
     });
+  }
+
+  async listFailedJobs(limit: number): Promise<FailedAnalysisJob[]> {
+    const jobs = await this.queue.getJobs(["failed"], 0, Math.max(0, limit - 1), false);
+    return jobs.map((job) => ({
+      jobId: String(job.id),
+      analysisJobId: job.data.id,
+      packageName: job.data.packageName,
+      version: job.data.version,
+      failedReason: job.failedReason || undefined,
+      attemptsMade: job.attemptsMade,
+      createdAt: job.timestamp ? new Date(job.timestamp).toISOString() : undefined,
+      failedAt: job.finishedOn ? new Date(job.finishedOn).toISOString() : undefined
+    }));
+  }
+
+  async retryFailedJobs(jobIds: string[]): Promise<string[]> {
+    return this.mutateFailedJobs(jobIds, async (job) => job.retry());
+  }
+
+  async removeFailedJobs(jobIds: string[]): Promise<string[]> {
+    return this.mutateFailedJobs(jobIds, async (job) => job.remove());
+  }
+
+  private async mutateFailedJobs(jobIds: string[], mutate: (job: Job<AnalysisJob>) => Promise<void>): Promise<string[]> {
+    const changed: string[] = [];
+    for (const jobId of jobIds) {
+      const job = await this.queue.getJob(jobId);
+      if (!job || (await job.getState()) !== "failed") continue;
+      await mutate(job);
+      changed.push(jobId);
+    }
+    return changed;
   }
 
   receiveAnalysisJobs(): AsyncIterable<AnalysisJob> {

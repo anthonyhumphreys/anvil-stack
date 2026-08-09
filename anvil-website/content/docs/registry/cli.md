@@ -218,6 +218,14 @@ Watch the queue:
 
 ```bash
 anvil registry queue status
+anvil registry queue failed --limit 20
+```
+
+For BullMQ deployments, retry only the failed job IDs you have inspected. Remove obsolete failures only when they are no longer useful for diagnosis; removal is irreversible and therefore requires `--confirm`. Both mutations are recorded in the Registry audit log.
+
+```bash
+anvil registry queue retry 41 42 --requested-by operator
+anvil registry queue remove 17 --confirm --requested-by operator
 ```
 
 ## Smoke test the gateway
@@ -420,6 +428,9 @@ anvil registry approve package@version --reason "intentional dependency" [--appr
 anvil registry revoke package@version [--revoked-by reviewer]
 anvil registry llm-review package@version [--requested-by reviewer] [--priority high]
 anvil registry queue status
+anvil registry queue failed [--limit 20]
+anvil registry queue retry <job-id> [job-id...] [--requested-by operator]
+anvil registry queue remove <job-id> [job-id...] --confirm [--requested-by operator]
 anvil registry overrides [--target package@version] [--package package] [--version version] [--limit 20]
 anvil registry audit-events [--target package@version] [--limit 20]
 anvil registry popular-index show

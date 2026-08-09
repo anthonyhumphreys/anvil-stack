@@ -744,6 +744,38 @@ alias-left-pad@npm:left-pad@^1.3.0:
     expect(writes.join("")).toContain("- total pending: 6");
   });
 
+  it("lists failed analysis jobs and retries selected IDs", async () => {
+    const writes: string[] = [];
+    const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes("/failed?")) {
+        return jsonResponse({ jobs: [{ jobId: "41", packageName: "eslint", version: "9.32.0", attemptsMade: 3, failedReason: "historical failure" }] });
+      }
+      expect(JSON.parse(String(init?.body))).toEqual({ jobIds: ["41", "42"], requestedBy: "operator" });
+      return jsonResponse({ ok: true, jobIds: ["41", "42"] });
+    });
+    const dependencies = fakeDependencies({
+      fetch: fetch as unknown as typeof globalThis.fetch,
+      env: { ANVIL_REGISTRY_URL: "http://anvil.test", ADMIN_TOKEN: "secret" },
+      stdout: { write: (value: string) => (writes.push(value), true) }
+    });
+
+    expect(await run(["queue", "failed", "--limit", "10"], dependencies)).toBe(0);
+    expect(await run(["queue", "retry", "41", "42", "--requested-by", "operator"], dependencies)).toBe(0);
+
+    expect(fetch).toHaveBeenNthCalledWith(1, "http://anvil.test/-/anvil/queue/failed?limit=10", expect.any(Object));
+    expect(fetch).toHaveBeenNthCalledWith(2, "http://anvil.test/-/anvil/queue/failed/retry", expect.objectContaining({ method: "POST" }));
+    expect(writes.join("")).toContain("- 41 eslint@9.32.0 attempts=3: historical failure");
+    expect(writes.join("")).toContain("Retried 2 failed analysis jobs.");
+  });
+
+  it("requires explicit confirmation before removing failed jobs", async () => {
+    const dependencies = fakeDependencies();
+
+    expect(await run(["queue", "remove", "41"], dependencies)).toBe(1);
+    expect(dependencies.fetch).not.toHaveBeenCalled();
+    expect(dependencies.stderr.write).toHaveBeenCalledWith(expect.stringContaining("repeat with --confirm"));
+  });
+
   it("lists overrides through the admin API", async () => {
     const writes: string[] = [];
     const dependencies = fakeDependencies({

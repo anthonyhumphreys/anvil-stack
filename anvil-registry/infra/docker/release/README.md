@@ -127,6 +127,16 @@ docker compose up -d
 
 Restore only to the same or a compatible Registry release. Keep the `.env` file in a secret store separate from the data archive.
 
+Inspect BullMQ failures before retrying or removing them:
+
+```bash
+ANVIL_REGISTRY_URL=http://localhost:4873 ANVIL_ADMIN_TOKEN="$ANVIL_ADMIN_TOKEN" anvil registry queue failed --limit 50
+ANVIL_REGISTRY_URL=http://localhost:4873 ANVIL_ADMIN_TOKEN="$ANVIL_ADMIN_TOKEN" anvil registry queue retry <job-id> --requested-by operator
+ANVIL_REGISTRY_URL=http://localhost:4873 ANVIL_ADMIN_TOKEN="$ANVIL_ADMIN_TOKEN" anvil registry queue remove <obsolete-job-id> --confirm --requested-by operator
+```
+
+Retry and removal affect only the selected IDs and write audit events. Removal is irreversible; retain the failure listing in incident notes before pruning historical records.
+
 ## Network boundary
 
 Only gateway and Admin publish host ports. Postgres, Redis, and MinIO remain inside the Compose network. Set `ANVIL_BIND_ADDRESS=127.0.0.1` when a reverse proxy on the host terminates HTTPS; use `0.0.0.0` only for a trusted LAN. Do not expose the alpha stack directly to the public internet.

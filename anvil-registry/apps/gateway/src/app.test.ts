@@ -5,7 +5,7 @@ import type { NpmPackageMetadata } from "@anvilstack/npm-registry";
 import type { ObjectStore } from "@anvilstack/object-store";
 import { STATIC_ANALYSER_VERSION, type AnalysisReport } from "@anvilstack/shared";
 import { MemoryPersistence } from "@anvilstack/persistence";
-import { MemoryJobQueue } from "@anvilstack/queue";
+import { MemoryJobQueue, type JobQueue } from "@anvilstack/queue";
 import { buildGateway } from "./app.js";
 
 function testConfig(runtimeMode: "development" | "ci" | "production" = "ci") {
@@ -113,6 +113,42 @@ describe("gateway policy enforcement", () => {
         checkedAt: expect.any(String)
       }
     });
+
+    await app.close();
+  });
+
+  it("inspects and explicitly mutates failed BullMQ jobs with audit events", async () => {
+    const queue = new MemoryJobQueue() as JobQueue;
+    queue.listFailedJobs = vi.fn(async () => [
+      { jobId: "41", packageName: "eslint", version: "9.32.0", attemptsMade: 3, failedReason: "historical failure" }
+    ]);
+    queue.retryFailedJobs = vi.fn(async (jobIds) => jobIds);
+    queue.removeFailedJobs = vi.fn(async (jobIds) => jobIds);
+    const persistence = new MemoryPersistence();
+    const app = buildGateway({
+      config: loadConfig({ ...process.env, RUNTIME_MODE: "development", ADMIN_TOKEN: "secret", PERSISTENCE_DRIVER: "memory" }),
+      persistence,
+      queue,
+      registry: { fetchMetadata: vi.fn(), fetchTarball: vi.fn() },
+      downloadStats: noDownloadStats()
+    });
+    const headers = { authorization: "Bearer secret" };
+
+    expect((await app.inject({ method: "GET", url: "/-/anvil/queue/failed" })).statusCode).toBe(401);
+    const listed = await app.inject({ method: "GET", url: "/-/anvil/queue/failed?limit=10", headers });
+    const retried = await app.inject({ method: "POST", url: "/-/anvil/queue/failed/retry", headers, payload: { jobIds: ["41"], requestedBy: "operator" } });
+    const removed = await app.inject({ method: "POST", url: "/-/anvil/queue/failed/remove", headers, payload: { jobIds: ["42"], requestedBy: "operator" } });
+
+    expect(listed.json()).toMatchObject({ jobs: [{ jobId: "41", packageName: "eslint", version: "9.32.0" }] });
+    expect(queue.listFailedJobs).toHaveBeenCalledWith(10);
+    expect(retried.json()).toEqual({ ok: true, jobIds: ["41"] });
+    expect(removed.json()).toEqual({ ok: true, jobIds: ["42"] });
+    expect(await persistence.listAuditEvents({ limit: 10 })).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ eventType: "analysis.failed.retried", targetId: "41", actor: "operator" }),
+        expect.objectContaining({ eventType: "analysis.failed.removed", targetId: "42", actor: "operator" })
+      ])
+    );
 
     await app.close();
   });
