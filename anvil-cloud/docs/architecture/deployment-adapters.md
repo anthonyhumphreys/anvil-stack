@@ -150,9 +150,20 @@ Effect surfaces follow a shared boundary contract:
 - Fan-out work (for example client asset uploads) uses `Effect.all` with a
   bounded concurrency, because input sizes are not bounded by the platform.
 
-## Future adapter planning
+## Cloudflare preview planning
 
-Cloudflare is the proposed next adapter after the alpha AWS preview path is stable. See [Cloudflare adapter implementation plan](./cloudflare-adapter-plan.md) for the current evaluation, phased implementation plan, and prompt/skill strategy for third-party adapters.
+Cloudflare is registered as a plan-only preview adapter. Use
+`anvil-cloud plan --stage dev --adapter cloudflare --json` or
+`anvil-cloud review --adapter cloudflare --env preview --json` to inspect
+provider mappings and blocking compatibility gates. Deploy and remove remain
+disabled until the Worker runtime bridge and provider lifecycle smoke tests
+land. See [Cloudflare adapter implementation plan](./cloudflare-adapter-plan.md)
+for the remaining phases and adapter-authoring strategy.
+
+Add `--temporary` to model Cloudflare's unauthenticated Temporary Account flow.
+The plan records the Wrangler 4.102.0 minimum, 60-minute claim window, and
+temporary-resource compatibility gates without creating an account or exposing
+claim credentials.
 
 ## Non-goals
 

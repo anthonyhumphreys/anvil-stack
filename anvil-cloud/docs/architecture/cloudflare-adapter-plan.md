@@ -2,17 +2,24 @@
 
 ## Purpose
 
-This document evaluates the current Anvil Cloud deployment architecture and lays
-out a staged plan for making Cloudflare the next supported deployment adapter.
-It is a planning document, not approval to ship a second production adapter
-inside the current alpha milestone. The alpha contract still prioritises the
-local runtime, builder, provider-neutral deployment contract, and AWS preview
-adapter before broad provider expansion.
+This document records the staged implementation of Cloudflare as Anvil Cloud's
+next deployment adapter. Cloudflare is currently a **plan-only preview target**:
+`plan` and `review` expose stable provider mappings, cost drivers, and blocking
+gates, but deploy and remove remain disabled. This does not ship a second
+production adapter inside the current alpha milestone.
 
 Cloudflare is a good next adapter candidate because Workers, Durable Objects,
 D1, R2, Queues, Cron Triggers, Workers AI, and Pages map naturally onto many
 Anvil concepts while keeping the Cell authoring model small and
 provider-neutral.
+
+For agent-created previews, the adapter also models [Cloudflare Temporary
+Accounts](https://developers.cloudflare.com/workers/platform/claim-deployments/).
+`anvil-cloud plan --stage preview --adapter cloudflare --temporary --json`
+selects that authentication mode. It requires Wrangler 4.102.0 or later when
+deployment lands, needs no existing Cloudflare credentials, and produces a
+claim URL that must be completed within 60 minutes. The current plan-only phase
+does not invoke Wrangler or create an account.
 
 ## Current state assessment
 
@@ -34,22 +41,25 @@ provider-neutral.
 - **Guard rails exist for portability.** Import policy and graph validation keep
   Pulumi, AWS, Terraform, CDK, and similar provider concepts out of Cell code
   and provider-neutral manifests.
-- **Conformance checks have started.** `runPreviewAdapterConformance` validates
+- **The planning contract is shared.** `@anvil-cloud/deployment` owns the
+  provider-neutral plan/review types and conformance harness rather than making
+  new adapters depend on `@anvil-cloud/aws`.
+- **Conformance checks cover AWS and Cloudflare.** `runPreviewAdapterConformance` validates
   stable adapter plan metadata, sorted ids, approval gates, cost metadata,
   rollback commands, and cleanup commands.
+- **CLI planning is registered by adapter name.** `plan` and `review` resolve
+  `aws` and `cloudflare` through one registry. Unknown providers and unsupported
+  lifecycle operations fail with explicit machine-readable usage errors.
 
 ### What is not ready
 
-- **Adapter contracts are still AWS-shaped in places.** Some shared types live
-  in `@anvil-cloud/aws` and use literal `adapter: "aws"`, so Cloudflare work
-  should first extract provider-neutral deployment types and conformance tests
-  into a shared package or builder/runtime-facing module.
-- **CLI adapter selection is hard-coded.** `plan`, `deploy`, `remove`, and
-  `review` currently reject non-AWS cloud adapters. Cloudflare support needs an
-  adapter registry rather than ad hoc conditionals.
 - **The AWS adapter has two deployment paths.** The newer manifest-based preview
-  adapter and older graph/Pulumi adapter overlap. Cloudflare should target one
-  provider-neutral contract before implementation starts.
+  adapter and older graph/Pulumi adapter overlap. Cloudflare targets only the
+  provider-neutral manifest planning contract; AWS compatibility keeps the
+  legacy stage deploy/remove path in place for now.
+- **Cloudflare lifecycle operations are intentionally blocked.** The adapter
+  makes no provider calls and creates no resources until the Worker runtime
+  bridge, bundling compatibility gates, and deploy/remove smoke tests exist.
 - **Cloud runtime assumptions differ from Lambda.** Cloudflare Workers are
   V8-isolate based, not Node.js processes. Bundling, module format, unsupported
   Node APIs, binary handling, background work, and environment bindings need
@@ -80,6 +90,35 @@ provider-neutral.
 | Deploy metadata                  | D1 table, KV namespace, or R2 metadata object                   | Preview target                                |
 | Audit events                     | D1/KV append records                                            | Follow-up                                     |
 
+## Temporary Account contract
+
+Temporary Accounts are the preferred first-run path for interactive or
+agent-created previews, not a production or CI credential strategy. The
+implementation must preserve these provider constraints:
+
+- invoke `wrangler deploy --temporary` only when no OAuth login, API token, or
+  global API key is already active;
+- require Wrangler 4.102.0 or later;
+- keep Wrangler's global temporary configuration isolated per operating-system
+  user; never share it between Anvil users;
+- treat both the temporary API token and claim URL as bearer credentials: never
+  include them in logs, analytics, plan JSON, support telemetry, or client-side
+  responses;
+- deliver the claim URL only to the intended user and delete any stored copy by
+  the account or claim expiry;
+- allow redeploy during the claim window, then require normal authenticated
+  deployment after claim;
+- fail closed when a Cell needs an unsupported temporary-account resource.
+
+Cloudflare currently documents Workers, Workers Static Assets, KV, one D1
+database, Durable Objects, Hyperdrive, Queues, and selected certificate
+operations for Temporary Accounts. R2 is not in that supported-resource list,
+so `capabilities.files` produces a blocking diagnostic in temporary mode even
+though permanent-account planning maps files to R2. Secret-binding operations
+are also not documented in that list, so Cells declaring
+`capabilities.secrets` fail closed in temporary mode until that path is
+provider-verified.
+
 ## Compatibility policy
 
 The first Cloudflare adapter should be called a **preview adapter**, not a broad
@@ -100,7 +139,7 @@ Initial blocking diagnostics should include:
 
 ## Implementation plan
 
-### Phase 0: Stabilise the shared adapter contract
+### Phase 0: Stabilise the shared adapter contract — complete
 
 1. Extract provider-neutral deployment plan, review, operations, result, and
    conformance types out of `@anvil-cloud/aws` into a shared module such as
@@ -120,12 +159,12 @@ Initial blocking diagnostics should include:
 5. Update AWS to implement the extracted contract without changing CLI JSON
    shapes.
 
-### Phase 1: Add an adapter registry and Cloudflare package shell
+### Phase 1: Add an adapter registry and Cloudflare package shell — complete
 
 1. Add `packages/cloudflare` with no provider deployment side effects at import
    time.
-2. Export a `CloudflarePreviewDeploymentAdapter` that can plan and synthesize
-   without network access.
+2. Export a `CloudflarePreviewDeploymentAdapter` that plans without network
+   access and blocks lifecycle operations explicitly.
 3. Add CLI adapter registry resolution for `aws` and `cloudflare` while keeping
    AWS as the default during alpha.
 4. Add `anvil-cloud plan --stage dev --adapter cloudflare --json` support before
@@ -184,7 +223,9 @@ Initial blocking diagnostics should include:
 ### Phase 5: Deploy, remove, inspect, and logs
 
 1. Implement `deploy` with artifact upload, Worker publication, binding setup,
-   and metadata write.
+   and metadata write. Use `wrangler deploy --temporary` for explicitly selected
+   first-run previews and normal OAuth/API-token auth for permanent accounts and
+   CI.
 2. Implement `remove` with deterministic cleanup and review output.
 3. Implement `inspect --adapter cloudflare` from adapter metadata without
    requiring direct dashboard access.
@@ -192,6 +233,9 @@ Initial blocking diagnostics should include:
    source for preview environments.
 5. Return stable error classes and error codes for account, token, API, quota,
    and propagation failures.
+6. Parse temporary-account URL/expiry output into a secret-bearing handoff
+   object, redact it from normal JSON/log surfaces, and verify the deployed URL
+   before presenting the one-time claim action to the intended user.
 
 ### Phase 6: Hardening and feature expansion
 

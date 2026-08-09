@@ -1,4 +1,17 @@
 import type { BuildOutput, CellManifest } from "@anvil-cloud/builder";
+import type {
+  DeploymentEnvironment,
+  DeploymentPlan,
+  DeploymentPlanApprovalGate,
+  DeploymentPlanApprovalSummary,
+  DeploymentPlanCapabilityDiff,
+  DeploymentPlanChange,
+  DeploymentPlanCostDriver,
+  DeploymentPlanOperations,
+  DeploymentPlanReview,
+  DeploymentPlanReviewChange,
+  DeploymentPlanReviewConceptSummary,
+} from "@anvil-cloud/deployment";
 import { AwsPreviewProvisioningError } from "./aws-provisioner.js";
 import {
   createAwsPreviewDeployArtifacts,
@@ -60,7 +73,19 @@ export {
   runPreviewAdapterConformance,
   type AdapterConformanceDiagnostic,
   type AdapterConformanceResult,
-} from "./conformance.js";
+  type DeploymentEnvironment,
+  type DeploymentPlan,
+  type DeploymentPlanAdapter,
+  type DeploymentPlanApprovalGate,
+  type DeploymentPlanApprovalSummary,
+  type DeploymentPlanCapabilityDiff,
+  type DeploymentPlanChange,
+  type DeploymentPlanCostDriver,
+  type DeploymentPlanOperations,
+  type DeploymentPlanReview,
+  type DeploymentPlanReviewChange,
+  type DeploymentPlanReviewConceptSummary,
+} from "@anvil-cloud/deployment";
 export {
   awsHttpEventToRuntimeRequest,
   createAwsRuntimeHandler,
@@ -101,126 +126,6 @@ export {
   type AwsRemoteReaderErrorCode,
   type AwsRemoteReaderOptions,
 } from "./remote.js";
-
-export type DeploymentEnvironment = "preview";
-
-export type DeploymentPlanChange = {
-  kind: "create" | "update" | "reuse";
-  concept:
-    | "audit"
-    | "client-assets"
-    | "database"
-    | "environment"
-    | "events"
-    | "files"
-    | "http-ingress"
-    | "agent-sandboxes"
-    | "jobs"
-    | "logs"
-    | "runtime"
-    | "services"
-    | "workflows";
-  name: string;
-  details?: Record<string, unknown>;
-};
-
-export type DeploymentPlan = {
-  schemaVersion: "0.1";
-  adapter: "aws";
-  environment: DeploymentEnvironment;
-  cell: string;
-  changes: DeploymentPlanChange[];
-  review: DeploymentPlanReview;
-  warnings: string[];
-  operations: DeploymentPlanOperations;
-};
-
-export type DeploymentPlanReview = {
-  stableId: string;
-  operation: "deploy";
-  summary: {
-    creates: number;
-    updates: number;
-    reuses: number;
-    total: number;
-  };
-  changeSummary: DeploymentPlanReviewConceptSummary[];
-  changeSet: DeploymentPlanReviewChange[];
-  capabilityDiffs: DeploymentPlanCapabilityDiff[];
-  cost: {
-    drivers: DeploymentPlanCostDriver[];
-    notes: string[];
-  };
-  rollback: DeploymentPlanOperations["rollback"];
-  cleanup: DeploymentPlanOperations["cleanup"];
-  approvalSummary: DeploymentPlanApprovalSummary;
-  approvalGates: DeploymentPlanApprovalGate[];
-};
-
-export type DeploymentPlanReviewConceptSummary = {
-  concept: DeploymentPlanChange["concept"];
-  creates: number;
-  updates: number;
-  reuses: number;
-  total: number;
-  changeIds: string[];
-};
-
-export type DeploymentPlanReviewChange = {
-  id: string;
-  action: DeploymentPlanChange["kind"];
-  concept: DeploymentPlanChange["concept"];
-  name: string;
-  details?: Record<string, unknown>;
-};
-
-export type DeploymentPlanCapabilityDiff = {
-  id: string;
-  action: "add" | "update" | "unchanged";
-  capability: DeploymentPlanChange["concept"];
-  name: string;
-  details?: Record<string, unknown>;
-};
-
-export type DeploymentPlanCostDriver = {
-  id: string;
-  label: string;
-  reason: string;
-};
-
-export type DeploymentPlanApprovalGate = {
-  id: string;
-  required: boolean;
-  severity: "info" | "review" | "block";
-  reason: string;
-  changeIds: string[];
-};
-
-export type DeploymentPlanApprovalSummary = {
-  required: number;
-  info: number;
-  review: number;
-  block: number;
-  hasBlockingGate: boolean;
-};
-
-export type DeploymentPlanOperations = {
-  rollback: {
-    supported: boolean;
-    strategy: "redeploy-previous-artifact" | "manual";
-    commands: string[];
-    notes: string[];
-  };
-  cost: {
-    billingMode: "usage-based-preview";
-    drivers: string[];
-    notes: string[];
-  };
-  cleanup: {
-    commands: string[];
-    notes: string[];
-  };
-};
 
 export type AwsPreviewSupportDiagnostic = {
   code: "AWS_PREVIEW_UNSUPPORTED_FEATURE";

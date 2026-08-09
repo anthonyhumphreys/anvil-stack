@@ -101,6 +101,9 @@ importers:
       "@anvil-cloud/builder":
         specifier: workspace:*
         version: link:../builder
+      "@anvil-cloud/deployment":
+        specifier: workspace:*
+        version: link:../deployment
       "@anvil-cloud/runtime":
         specifier: workspace:*
         version: link:../runtime
@@ -152,6 +155,15 @@ importers:
       vite:
         specifier: ^6.4.3
         version: 6.4.3(@types/node@22.19.20)(tsx@4.22.4)
+
+  packages/cloudflare:
+    dependencies:
+      "@anvil-cloud/builder":
+        specifier: workspace:*
+        version: link:../builder
+      "@anvil-cloud/deployment":
+        specifier: workspace:*
+        version: link:../deployment
 
   packages/cli:
     dependencies:
@@ -207,6 +219,12 @@ importers:
       "@anvil-cloud/builder":
         specifier: workspace:*
         version: link:../builder
+      "@anvil-cloud/cloudflare":
+        specifier: workspace:*
+        version: link:../cloudflare
+      "@anvil-cloud/deployment":
+        specifier: workspace:*
+        version: link:../deployment
       "@anvil-cloud/local":
         specifier: workspace:*
         version: link:../local
@@ -231,6 +249,12 @@ importers:
       "@anvil-cloud/runtime":
         specifier: workspace:*
         version: link:../runtime
+
+  packages/deployment:
+    dependencies:
+      "@anvil-cloud/builder":
+        specifier: workspace:*
+        version: link:../builder
 
   packages/local:
     dependencies:

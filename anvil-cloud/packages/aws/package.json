@@ -13,6 +13,7 @@
   "dependencies": {
     "@anvil-cloud/auth": "workspace:^",
     "@anvil-cloud/builder": "workspace:*",
+    "@anvil-cloud/deployment": "workspace:*",
     "@anvil-cloud/runtime": "workspace:*",
     "@aws-sdk/client-bedrock-runtime": "^3.1063.0",
     "@aws-sdk/client-cloudformation": "^3.1063.0",

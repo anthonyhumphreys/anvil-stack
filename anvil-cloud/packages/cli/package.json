@@ -48,6 +48,8 @@
     "@anvil-cloud/auth": "workspace:^",
     "@anvil-cloud/aws": "workspace:*",
     "@anvil-cloud/builder": "workspace:*",
+    "@anvil-cloud/cloudflare": "workspace:*",
+    "@anvil-cloud/deployment": "workspace:*",
     "@anvil-cloud/local": "workspace:*",
     "@anvil-cloud/runtime": "workspace:*",
     "tsx": "^4.22.4"

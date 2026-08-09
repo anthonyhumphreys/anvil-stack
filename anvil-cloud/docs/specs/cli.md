@@ -191,12 +191,14 @@ command exits with code `5` when any error-severity diff is present.
 
 ### `anvil-cloud review`
 
-Aggregates Guard diagnostics and AWS preview deployment review into one trust
-report.
+Aggregates Guard diagnostics and the selected preview adapter plan into one
+trust report.
 
 ```sh
 anvil-cloud review --json
 anvil-cloud review --adapter aws --env preview --json
+anvil-cloud review --adapter cloudflare --env preview --json
+anvil-cloud review --adapter cloudflare --temporary --env preview --json
 ```
 
 JSON output includes:
@@ -204,7 +206,7 @@ JSON output includes:
 - `summary.guardErrors` and `summary.guardWarnings`;
 - the built manifest capabilities and handler lists;
 - `review.changeSet`, `review.capabilityDiffs`, cost drivers, cleanup notes,
-  rollback notes, and approval gates from the AWS preview plan;
+  rollback notes, and approval gates from the selected preview plan;
 - `status: "pass" | "review" | "block"`;
 - stable next-step commands.
 
@@ -472,13 +474,15 @@ anvil-cloud db cleanup --expired --json
 changing the stored active branch. Cell code continues to see the same `ctx.db`
 contract.
 
-### `anvil-cloud plan --stage <stage> --adapter aws`
+### `anvil-cloud plan --stage <stage> --adapter <adapter>`
 
 Builds the Cell, compiles the provider-neutral Cell graph, and asks the adapter
 for an Anvil-first deployment plan.
 
 ```sh
 anvil-cloud plan --stage dev --adapter aws --json
+anvil-cloud plan --stage dev --adapter cloudflare --json
+anvil-cloud plan --stage preview --adapter cloudflare --temporary --json
 ```
 
 JSON output includes:
@@ -500,7 +504,15 @@ JSON output includes:
 
 Human output shows Anvil concepts first, followed by review gates, cost drivers,
 and rollback notes. `--verbose` or `--debug` may include underlying Pulumi
-resource mappings for adapter debugging only.
+resource mappings for AWS adapter debugging only. Cloudflare currently provides
+offline plan/review support and returns a blocking gate until its Worker runtime
+bridge and deploy/remove lifecycle pass provider smoke tests.
+
+`--temporary` models Cloudflare's first-run Temporary Account path. Plan JSON
+includes the Wrangler minimum version and claim-window duration, but never a
+temporary API token or claim URL. Temporary mode is for interactive previews,
+not CI or production; unsupported temporary-account resources are blocking
+review diagnostics.
 
 ### `anvil-cloud deploy --preview`
 
