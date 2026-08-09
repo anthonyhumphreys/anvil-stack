@@ -761,35 +761,6 @@ export function ChatView({ userRole }: ChatViewProps) {
                     </div>
                   )}
 
-                  {!scaffoldModeActive && (
-                    <label className="flex items-center gap-2 rounded-xl border border-border px-2.5 py-1.5 text-sm text-text-secondary">
-                      <span className="hidden text-xs text-text-tertiary xl:inline">Mode</span>
-                      <select
-                        value={isItsmPersona ? 'read-only' : codexMode}
-                        onChange={(event) =>
-                          void handleCodexModeChange(event.target.value as CodexMode)
-                        }
-                        disabled={isItsmPersona}
-                        title={
-                          isItsmPersona
-                            ? 'ITSM personas are enforced read only'
-                            : 'Choose Codex access mode'
-                        }
-                        className="max-w-28 bg-transparent text-sm text-text-primary outline-none xl:max-w-none"
-                        aria-label={
-                          isItsmPersona
-                            ? 'Codex mode, enforced read only for ITSM personas'
-                            : 'Codex mode'
-                        }
-                      >
-                        <option value="read-only">Read Only</option>
-                        <option value="on-request">Ask First</option>
-                        <option value="workspace-auto">Auto</option>
-                        <option value="full-access">Full Access</option>
-                      </select>
-                    </label>
-                  )}
-
                   {/* Governance document selector */}
                   <GovernanceSelector
                     selectedDocIds={selectedGovernanceDocs.map((d) => d.id)}
@@ -1187,6 +1158,11 @@ export function ChatView({ userRole }: ChatViewProps) {
             onReasoningChange={setReasoningLevel}
             executionStrategy={executionStrategy}
             onExecutionStrategyChange={setExecutionStrategy}
+            codexMode={isItsmPersona ? 'read-only' : codexMode}
+            onCodexModeChange={
+              scaffoldModeActive ? undefined : (mode) => void handleCodexModeChange(mode)
+            }
+            codexModeDisabled={isItsmPersona}
             prefill={composerPrefill}
             draftKey={composerDraftKey}
             mentionRepoIds={mentionRepoIds}

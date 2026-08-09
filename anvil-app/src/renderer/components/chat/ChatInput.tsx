@@ -9,6 +9,7 @@ import {
   Loader2,
   Paperclip,
   Send,
+  Shield,
   SlidersHorizontal,
   Sparkles,
   Square,
@@ -20,6 +21,7 @@ import type {
   ChatAttachmentInput,
   ChatFileMentionSearchResult,
   CodexRegisteredSkill,
+  CodexMode,
   ReasoningEffort,
 } from '../../../shared/types';
 import { VoiceInputButton } from './VoiceInputButton';
@@ -82,6 +84,9 @@ interface ChatInputProps {
   onReasoningChange?: (level: ReasoningEffort) => void;
   executionStrategy?: ExecutionStrategy;
   onExecutionStrategyChange?: (strategy: ExecutionStrategy) => void;
+  codexMode?: CodexMode;
+  onCodexModeChange?: (mode: CodexMode) => void;
+  codexModeDisabled?: boolean;
   prefill?: { id: string; text: string } | null;
   draftKey?: string;
   mentionRepoIds?: string[];
@@ -111,6 +116,9 @@ export function ChatInput({
   onReasoningChange,
   executionStrategy = 'auto',
   onExecutionStrategyChange,
+  codexMode = 'on-request',
+  onCodexModeChange,
+  codexModeDisabled = false,
   prefill,
   draftKey,
   mentionRepoIds = [],
@@ -711,7 +719,7 @@ export function ChatInput({
     <div className="border-t border-border/50 bg-bg-secondary px-4 py-3 xl:px-6">
       <div className="mx-auto w-full max-w-[1120px]">
         <div
-          className={`relative rounded-xl border bg-bg-primary transition-colors duration-200 ${
+          className={`relative rounded-xl border bg-bg-primary transition-[border-color,background-color,box-shadow] duration-200 focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/30 ${
             disabled && !busy ? 'opacity-60' : ''
           } ${
             draggingFiles
@@ -809,42 +817,82 @@ export function ChatInput({
             />
           )}
 
-          <div className="flex flex-col sm:flex-row sm:items-end">
-            <textarea
-              ref={textareaRef}
-              value={value}
-              onChange={handleTextChange}
-              onKeyDown={handleKeyDown}
-              onClick={handleTextareaSelection}
-              onSelect={handleTextareaSelection}
-              onInput={handleInput}
-              onPaste={handlePaste}
-              disabled={disabled}
-              aria-label="Chat message"
-              aria-describedby={
-                voiceError
-                  ? 'chat-composer-keyboard-hint chat-composer-voice-error'
-                  : 'chat-composer-keyboard-hint'
-              }
-              aria-autocomplete="list"
-              aria-expanded={Boolean(activeMenuId)}
-              aria-controls={activeMenuId}
-              aria-activedescendant={activeDescendant}
-              placeholder={
-                busy
-                  ? 'Add guidance while Anvil keeps working...'
-                  : disabled
-                    ? 'Chat is not ready yet...'
-                    : mentionRepoIds.length > 0
-                      ? 'Ask anything, or type /, @, or $...'
-                      : 'Ask anything, paste images, or drop files here...'
-              }
-              rows={1}
-              className="chat-input-focus min-w-0 flex-1 resize-none rounded-xl bg-transparent px-4 py-3.5 text-sm leading-6 text-text-primary placeholder:text-text-tertiary focus:outline-none disabled:opacity-50"
-              style={{ maxHeight: '200px', minHeight: '56px' }}
-            />
+          <textarea
+            ref={textareaRef}
+            value={value}
+            onChange={handleTextChange}
+            onKeyDown={handleKeyDown}
+            onClick={handleTextareaSelection}
+            onSelect={handleTextareaSelection}
+            onInput={handleInput}
+            onPaste={handlePaste}
+            disabled={disabled}
+            aria-label="Chat message"
+            aria-describedby={
+              voiceError
+                ? 'chat-composer-keyboard-hint chat-composer-voice-error'
+                : 'chat-composer-keyboard-hint'
+            }
+            aria-autocomplete="list"
+            aria-expanded={Boolean(activeMenuId)}
+            aria-controls={activeMenuId}
+            aria-activedescendant={activeDescendant}
+            placeholder={
+              busy
+                ? 'Add guidance while Anvil keeps working...'
+                : disabled
+                  ? 'Chat is not ready yet...'
+                  : mentionRepoIds.length > 0
+                    ? 'Ask anything, or type /, @, or $...'
+                    : 'Ask anything, paste images, or drop files here...'
+            }
+            rows={1}
+            className="block w-full resize-none bg-transparent px-4 py-3.5 text-sm leading-6 text-text-primary placeholder:text-text-tertiary focus:outline-none disabled:opacity-50"
+            style={{ maxHeight: '200px', minHeight: '56px' }}
+          />
 
-            <div className="flex min-h-14 shrink-0 items-center justify-end gap-1.5 border-t border-border-subtle px-2.5 sm:border-0">
+          <div className="flex min-h-12 flex-wrap items-center justify-between gap-2 px-2.5 pb-1.5">
+            <div className="flex min-w-0 items-center gap-1">
+              <button
+                type="button"
+                onClick={() => void handleSelectAttachments()}
+                disabled={disabled || preparingAttachments}
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-text-tertiary transition-colors duration-200 hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-30"
+                title="Attach files"
+                aria-label="Attach files"
+              >
+                {preparingAttachments ? (
+                  <Loader2 size={15} className="animate-spin" />
+                ) : (
+                  <Paperclip size={15} />
+                )}
+              </button>
+
+              {onCodexModeChange && (
+                <label className="flex h-9 min-w-0 items-center gap-1.5 rounded-xl px-2 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-within:ring-2 focus-within:ring-accent/70">
+                  <Shield size={13} className="shrink-0 text-text-tertiary" />
+                  <select
+                    value={codexMode}
+                    onChange={(event) => onCodexModeChange(event.target.value as CodexMode)}
+                    disabled={codexModeDisabled}
+                    className="min-w-0 max-w-36 bg-transparent text-xs text-text-secondary outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                    aria-label="Codex access mode"
+                    title={
+                      codexModeDisabled
+                        ? 'This access mode is enforced for the current persona'
+                        : 'Choose when Codex should ask for approval'
+                    }
+                  >
+                    <option value="read-only">Read only</option>
+                    <option value="on-request">Approve for me</option>
+                    <option value="workspace-auto">Auto approve</option>
+                    <option value="full-access">Full access</option>
+                  </select>
+                </label>
+              )}
+            </div>
+
+            <div className="ml-auto flex min-w-0 items-center justify-end gap-1.5">
               {(onModelChange || onExecutionStrategyChange || onReasoningChange) && !busy && (
                 <RunSettingsDropdown
                   model={model}
@@ -868,21 +916,6 @@ export function ChatInput({
                 disabled={disabled}
                 colour={personaColour}
               />
-
-              <button
-                type="button"
-                onClick={() => void handleSelectAttachments()}
-                disabled={disabled || preparingAttachments}
-                className="flex h-9 w-9 items-center justify-center rounded-xl text-text-tertiary transition-colors duration-200 hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-30"
-                title="Attach files"
-                aria-label="Attach files"
-              >
-                {preparingAttachments ? (
-                  <Loader2 size={15} className="animate-spin" />
-                ) : (
-                  <Paperclip size={15} />
-                )}
-              </button>
 
               {busy ? (
                 <button
