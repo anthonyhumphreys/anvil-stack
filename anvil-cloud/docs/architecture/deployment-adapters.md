@@ -156,14 +156,23 @@ Cloudflare is registered as a plan-only preview adapter. Use
 `anvil-cloud plan --stage dev --adapter cloudflare --json` or
 `anvil-cloud review --adapter cloudflare --env preview --json` to inspect
 provider mappings and blocking compatibility gates. Deploy and remove remain
-disabled until the Worker runtime bridge and provider lifecycle smoke tests
-land. See [Cloudflare adapter implementation plan](./cloudflare-adapter-plan.md)
-for the remaining phases and adapter-authoring strategy.
+disabled until the opt-in provider lifecycle smoke tests pass. The experimental
+verification seam now generates a workerd-compatible module Worker, bridges
+HTTP requests into Anvil Runtime, emits Wrangler configuration, and supports a
+credential-safe dry run. See
+[Cloudflare adapter implementation plan](./cloudflare-adapter-plan.md) for the
+remaining phases and adapter-authoring strategy.
 
 Add `--temporary` to model Cloudflare's unauthenticated Temporary Account flow.
 The plan records the Wrangler 4.102.0 minimum, 60-minute claim window, and
 temporary-resource compatibility gates without creating an account or exposing
 claim credentials.
+
+`pnpm verify:cloudflare-preview` is non-mutating by default. Live verification
+requires `ANVIL_CLOUDFLARE_LIVE=1`; Temporary Account mode strips inherited
+Cloudflare and Wrangler environment variables, redacts the bearer claim URL
+from captured output, and hands it only to an interactive terminal without
+persisting it.
 
 ## Non-goals
 

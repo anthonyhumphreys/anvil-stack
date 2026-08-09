@@ -9,25 +9,51 @@ import type {
   DeploymentPlanReviewChange,
 } from "@anvil-cloud/deployment";
 
-export type CloudflarePreviewSupportDiagnostic = {
-  code: "CLOUDFLARE_PREVIEW_UNSUPPORTED_FEATURE";
-  feature:
-    | "agentSandboxes"
-    | "files"
-    | "jobs"
-    | "secrets"
-    | "services"
-    | "workflows";
-  message: string;
-  hint: string;
-  names: string[];
-};
+import { createCloudflareWorkerName } from "./naming.js";
+import {
+  checkCloudflarePreviewSupport,
+  type CloudflareAuthenticationMode,
+  type CloudflarePreviewDeploymentAdapterOptions,
+  type CloudflarePreviewSupportDiagnostic,
+} from "./support.js";
 
-export type CloudflareAuthenticationMode = "permanent" | "temporary";
-
-export type CloudflarePreviewDeploymentAdapterOptions = {
-  authentication?: CloudflareAuthenticationMode;
-};
+export {
+  CLOUDFLARE_COMPATIBILITY_DATE,
+  CloudflareWorkerCompatibilityError,
+  createCloudflareWorkerArtifacts,
+  type CloudflareWorkerArtifacts,
+  type CreateCloudflareWorkerArtifactsOptions,
+} from "./artifacts.js";
+export {
+  cloudflareRequestToRuntimeRequest,
+  createCloudflareWorkerHandler,
+  runtimeResponseToCloudflareResponse,
+  type CloudflareWorkerHandler,
+  type CreateCloudflareWorkerHandlerOptions,
+  type ExecutionContext,
+} from "./http.js";
+export {
+  createCloudflareRuntimeHost,
+  type CloudflareWorkerBindings,
+} from "./host.js";
+export { createCloudflareWorkerName } from "./naming.js";
+export {
+  checkCloudflarePreviewSupport,
+  type CloudflareAuthenticationMode,
+  type CloudflarePreviewDeploymentAdapterOptions,
+  type CloudflarePreviewSupportDiagnostic,
+} from "./support.js";
+export {
+  MINIMUM_TEMPORARY_WRANGLER_VERSION,
+  redactCloudflareSecrets,
+  runCloudflareWranglerDeploy,
+  runWranglerCommand,
+  sanitizeTemporaryCloudflareEnvironment,
+  type CloudflareWranglerDeployResult,
+  type RunCloudflareWranglerDeployOptions,
+  type WranglerCommandResult,
+  type WranglerCommandRunner,
+} from "./wrangler.js";
 
 export class CloudflarePreviewDeploymentAdapter implements DeploymentPlanAdapter {
   readonly name = "cloudflare";
@@ -53,7 +79,10 @@ export function createCloudflarePreviewDeploymentPlan(
 ): DeploymentPlan {
   const authentication = options.authentication ?? "permanent";
   const declaredSecrets = readStringArray(manifest.capabilities.secrets);
-  const resourceName = `${slug(manifest.cell.name)}-${environment}`;
+  const resourceName = createCloudflareWorkerName(
+    manifest.cell.name,
+    environment,
+  );
   const changes: DeploymentPlanChange[] = [
     change("runtime", resourceName, {
       service: "workers",
@@ -139,6 +168,7 @@ export function createCloudflarePreviewDeploymentPlan(
   const sandboxAgents = Object.values(manifest.agents ?? {}).filter(
     (agent) => agent.requires.sandbox,
   );
+
   if (sandboxAgents.length > 0) {
     changes.push(
       change("agent-sandboxes", resourceName, {
@@ -222,80 +252,6 @@ export function createCloudflarePreviewDeploymentPlan(
     warnings: supportDiagnostics.map((diagnostic) => diagnostic.message),
     operations,
   };
-}
-
-export function checkCloudflarePreviewSupport(
-  manifest: CellManifest,
-  options: CloudflarePreviewDeploymentAdapterOptions = {},
-): CloudflarePreviewSupportDiagnostic[] {
-  const diagnostics: CloudflarePreviewSupportDiagnostic[] = [];
-  const declaredSecrets = readStringArray(manifest.capabilities.secrets);
-  const sandboxAgents = Object.values(manifest.agents ?? {}).filter(
-    (agent) => agent.requires.sandbox,
-  );
-
-  if (manifest.services.length > 0) {
-    diagnostics.push(
-      unsupported(
-        "services",
-        manifest.services.map((item) => item.name),
-        "Cloudflare preview cannot execute long-running Cell services.",
-        "Run services locally or move the handler behind a request or queue boundary.",
-      ),
-    );
-  }
-  if (manifest.workflows.length > 0) {
-    diagnostics.push(
-      unsupported(
-        "workflows",
-        manifest.workflows.map((item) => item.name),
-        "Cloudflare preview does not yet implement the Anvil workflow durability contract.",
-        "Run workflows locally until a durable Cloudflare workflow host passes conformance.",
-      ),
-    );
-  }
-  if (manifest.jobs.length > 0) {
-    diagnostics.push(
-      unsupported(
-        "jobs",
-        manifest.jobs.map((item) => item.name),
-        "Cloudflare preview does not yet execute scheduled or queued jobs.",
-        "Run jobs locally until Queues and Cron Trigger runtime bridges are implemented.",
-      ),
-    );
-  }
-  if (sandboxAgents.length > 0) {
-    diagnostics.push(
-      unsupported(
-        "agentSandboxes",
-        sandboxAgents.map((item) => item.name),
-        "Cloudflare preview cannot provide Anvil Agent Sandbox isolation.",
-        "Use an agent without required sandbox execution for this target.",
-      ),
-    );
-  }
-  if (options.authentication === "temporary" && manifest.capabilities.files) {
-    diagnostics.push(
-      unsupported(
-        "files",
-        [manifest.cell.name],
-        "Cloudflare Temporary Accounts do not currently list R2 as a supported resource.",
-        "Use permanent Cloudflare authentication for Cells with files, or remove the files capability from this temporary preview.",
-      ),
-    );
-  }
-  if (options.authentication === "temporary" && declaredSecrets.length > 0) {
-    diagnostics.push(
-      unsupported(
-        "secrets",
-        declaredSecrets,
-        "Cloudflare Temporary Accounts do not document secret-binding operations as supported.",
-        "Use permanent Cloudflare authentication for Cells with secrets until temporary secret binding is provider-verified.",
-      ),
-    );
-  }
-
-  return diagnostics;
 }
 
 function createApprovalGates(
@@ -427,21 +383,6 @@ function toReviewChange(
     concept: item.concept,
     name: item.name,
     ...(item.details === undefined ? {} : { details: item.details }),
-  };
-}
-
-function unsupported(
-  feature: CloudflarePreviewSupportDiagnostic["feature"],
-  names: string[],
-  message: string,
-  hint: string,
-): CloudflarePreviewSupportDiagnostic {
-  return {
-    code: "CLOUDFLARE_PREVIEW_UNSUPPORTED_FEATURE",
-    feature,
-    message,
-    hint,
-    names,
   };
 }
 

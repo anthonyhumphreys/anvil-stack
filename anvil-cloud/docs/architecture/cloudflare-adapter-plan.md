@@ -18,8 +18,9 @@ Accounts](https://developers.cloudflare.com/workers/platform/claim-deployments/)
 `anvil-cloud plan --stage preview --adapter cloudflare --temporary --json`
 selects that authentication mode. It requires Wrangler 4.102.0 or later when
 deployment lands, needs no existing Cloudflare credentials, and produces a
-claim URL that must be completed within 60 minutes. The current plan-only phase
-does not invoke Wrangler or create an account.
+claim URL that must be completed within 60 minutes. Plan and review do not
+invoke Wrangler or create an account. The separate opt-in verifier can exercise
+that provider path without enabling normal CLI deployment.
 
 ## Current state assessment
 
@@ -50,6 +51,14 @@ does not invoke Wrangler or create an account.
 - **CLI planning is registered by adapter name.** `plan` and `review` resolve
   `aws` and `cloudflare` through one registry. Unknown providers and unsupported
   lifecycle operations fail with explicit machine-readable usage errors.
+- **The Worker execution seam is locally verifiable.** The adapter generates a
+  module Worker, uses a workerd-only runtime barrel, translates HTTP requests,
+  serves built client assets, and passes `wrangler deploy --dry-run` without
+  provider credentials.
+- **Provider smoke is explicit and credential-safe.** The live verifier supports
+  permanent credentials or Wrangler Temporary Accounts, isolates temporary mode
+  from inherited auth, redacts claim URLs, verifies live routes, and cleans up a
+  permanent-account Worker unless retention is explicitly requested.
 
 ### What is not ready
 
@@ -57,13 +66,12 @@ does not invoke Wrangler or create an account.
   adapter and older graph/Pulumi adapter overlap. Cloudflare targets only the
   provider-neutral manifest planning contract; AWS compatibility keeps the
   legacy stage deploy/remove path in place for now.
-- **Cloudflare lifecycle operations are intentionally blocked.** The adapter
-  makes no provider calls and creates no resources until the Worker runtime
-  bridge, bundling compatibility gates, and deploy/remove smoke tests exist.
-- **Cloud runtime assumptions differ from Lambda.** Cloudflare Workers are
-  V8-isolate based, not Node.js processes. Bundling, module format, unsupported
-  Node APIs, binary handling, background work, and environment bindings need
-  explicit compatibility gates.
+- **Cloudflare lifecycle operations are intentionally blocked in the CLI.** The
+  experimental verifier is ready to collect provider evidence, but `deploy`,
+  `remove`, `inspect`, and `logs` remain unavailable for Cloudflare.
+- **Stateful runtime hosts are not implemented.** D1, R2, Queues, durable jobs,
+  workflows, provider auth, secret provisioning, and outbound-fetch enforcement
+  remain blocking capabilities even though planning shows their intended maps.
 - **Some Anvil features need Cloudflare-specific policy decisions.** Services,
   workflows, agent sandboxes, brokered credentials, file public-read policy,
   auth verification, and outbound fetch enforcement do not all have one-to-one
@@ -172,22 +180,24 @@ Initial blocking diagnostics should include:
 5. Add docs and tests showing unsupported features are review-gated rather than
    ignored.
 
-### Phase 2: Worker runtime bridge and bundling
+### Phase 2: Worker runtime bridge and bundling — core bridge complete
 
-1. Add a generated Cloudflare Worker entrypoint that converts Worker `Request`
+1. **Complete:** Add a generated Cloudflare Worker entrypoint that converts Worker `Request`
    events into `RuntimeRequest` values and converts `RuntimeResponse` back into
    Web `Response` values.
-2. Ensure the runtime path does not rely on Node-only APIs in the Worker target.
-3. Extend builder targets to produce a Worker-compatible server bundle when the
-   Cloudflare adapter is selected.
+2. **Complete:** Ensure the runtime path does not rely on Node-only APIs in the Worker target.
+3. **Complete in the adapter artifact boundary:** Re-bundle Builder output for
+   workerd and fail compilation when a Cell carries unsupported Node APIs.
 4. Install the outbound fetch allow-list guard in the Worker environment.
-5. Add tests for:
+5. **Complete for the HTTP bridge:** Add tests for:
    - `POST /_anvil/query/:name`;
    - `POST /_anvil/mutation/:name`;
    - `/api/*` endpoint routing;
    - CORS preflight;
    - binary/body preservation;
    - stable request ids and structured log fields.
+
+The outbound-fetch allow-list guard remains before Phase 2 is fully complete.
 
 ### Phase 3: Cloudflare resource synthesis
 

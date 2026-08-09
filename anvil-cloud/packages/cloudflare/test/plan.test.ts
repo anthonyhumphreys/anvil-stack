@@ -89,6 +89,9 @@ describe("Cloudflare preview planning", () => {
     });
 
     expect(diagnostics.map((item) => item.feature)).toEqual([
+      "database",
+      "files",
+      "secrets",
       "services",
       "workflows",
       "jobs",
@@ -111,10 +114,10 @@ describe("Cloudflare preview planning", () => {
       }),
     );
     expect(plan.warnings).toContain(
-      "Cloudflare Temporary Accounts do not currently list R2 as a supported resource.",
+      "Cloudflare Temporary Accounts do not currently list R2 as a supported resource, and the Anvil files host is not implemented.",
     );
     expect(plan.warnings).toContain(
-      "Cloudflare Temporary Accounts do not document secret-binding operations as supported.",
+      "Cloudflare Temporary Accounts do not document secret-binding operations as supported, and Anvil secret provisioning is not implemented.",
     );
     expect(JSON.stringify(plan)).not.toContain("apiToken");
     expect(JSON.stringify(plan)).not.toContain("claim.url");

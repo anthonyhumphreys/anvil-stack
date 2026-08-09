@@ -2143,12 +2143,16 @@ describe("main", () => {
           cell: "edge-review",
         },
         summary: {
-          blockingGates: 1,
+          blockingGates: 2,
         },
         review: {
           approvalGates: expect.arrayContaining([
             expect.objectContaining({
               id: "cloudflare-plan-only-gate",
+              severity: "block",
+            }),
+            expect.objectContaining({
+              id: "cloudflare-preview-support-gate",
               severity: "block",
             }),
           ]),
