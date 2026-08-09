@@ -42,6 +42,32 @@ describe("verifyMetadataProvenance", () => {
     });
   });
 
+  it("matches hexadecimal attestation digests against base64 npm integrity", () => {
+    const digest = Buffer.from("provenance digest encoding regression".padEnd(64, "."));
+
+    expect(
+      verifyMetadataProvenance({
+        packageName: "@anvilstack/registry-cli",
+        version: "0.1.4",
+        integrity: `sha512-${digest.toString("base64")}`,
+        provenance: {
+          present: true,
+          source: "dist.attestations",
+          raw: {
+            subject: {
+              name: "pkg:npm/%40anvilstack/registry-cli@0.1.4",
+              digest: { sha512: digest.toString("hex") }
+            }
+          }
+        }
+      })
+    ).toMatchObject({
+      status: "subject_matched",
+      subjectDigest: { sha512: digest.toString("hex") },
+      evidence: { subjectNameMatches: true, subjectDigestMatches: true }
+    });
+  });
+
   it("flags attestation subject mismatches", () => {
     expect(
       verifyMetadataProvenance({

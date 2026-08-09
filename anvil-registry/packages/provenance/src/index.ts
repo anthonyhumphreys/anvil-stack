@@ -60,7 +60,7 @@ export function verifyMetadataProvenance(input: ProvenanceVerificationInput): Pr
     return {
       status: "missing",
       verified: false,
-      verifier: "metadata-provenance-2026-05-20.1",
+      verifier: "metadata-provenance-2026-08-09.1",
       summary: "No provenance metadata was published for this package version.",
       expectedSubjectName,
       expectedDigest
@@ -70,7 +70,7 @@ export function verifyMetadataProvenance(input: ProvenanceVerificationInput): Pr
   const subject = extractSubject(input.provenance.raw);
   const base = {
     verified: false,
-    verifier: "metadata-provenance-2026-05-20.1",
+    verifier: "metadata-provenance-2026-08-09.1",
     source: input.provenance.source,
     attestationUrl: input.provenance.attestationUrl,
     expectedSubjectName,
@@ -162,11 +162,36 @@ function digestMatches(subjectDigest: Record<string, string> | undefined, expect
 
   for (const [algorithm, expected] of Object.entries(expectedDigest)) {
     const actual = subjectDigest[algorithm];
-    if (actual && actual !== expected) return false;
-    if (actual && actual === expected) return true;
+    if (actual && digestValuesMatch(algorithm, actual, expected)) return true;
+    if (actual) return false;
   }
 
   return undefined;
+}
+
+function digestValuesMatch(algorithm: string, actual: string, expected: string): boolean {
+  if (actual === expected) return true;
+
+  const byteLength = digestByteLength(algorithm);
+  if (!byteLength) return false;
+  const actualHex = digestAsHex(actual, byteLength);
+  const expectedHex = digestAsHex(expected, byteLength);
+  return actualHex !== undefined && expectedHex !== undefined && actualHex === expectedHex;
+}
+
+function digestByteLength(algorithm: string): number | undefined {
+  return { sha1: 20, sha256: 32, sha384: 48, sha512: 64 }[algorithm.toLowerCase()];
+}
+
+function digestAsHex(value: string, byteLength: number): string | undefined {
+  const trimmed = value.trim();
+  if (new RegExp(`^[a-fA-F0-9]{${byteLength * 2}}$`).test(trimmed)) return trimmed.toLowerCase();
+
+  const decoded = Buffer.from(trimmed, "base64");
+  if (decoded.length !== byteLength) return undefined;
+  const canonicalInput = trimmed.replace(/=+$/, "");
+  const canonicalDecoded = decoded.toString("base64").replace(/=+$/, "");
+  return canonicalInput === canonicalDecoded ? decoded.toString("hex") : undefined;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
