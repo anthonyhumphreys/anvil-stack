@@ -452,15 +452,7 @@ function isNodeErrorWithCode(error, code) {
 function startDevServer() {
   const child = spawn(
     process.execPath,
-    [
-      cliPath,
-      "dev",
-      "--agent",
-      "--port",
-      "0",
-      "--client-port",
-      "0",
-    ],
+    [cliPath, "dev", "--agent", "--port", "0", "--client-port", "0"],
     {
       cwd: exampleDir,
       env: process.env,
