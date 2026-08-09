@@ -9,15 +9,15 @@
     "render:gif": "remotion render AnvilSizzle out/anvil-sizzle.gif"
   },
   "dependencies": {
-    "@remotion/cli": "^4.0.481",
-    "@remotion/google-fonts": "^4.0.462",
-    "@remotion/transitions": "^4.0.462",
+    "@remotion/cli": "4.0.507",
+    "@remotion/google-fonts": "4.0.507",
+    "@remotion/transitions": "4.0.507",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
-    "remotion": "^4.0.462"
+    "remotion": "4.0.507"
   },
   "overrides": {
-    "ws": "8.20.1"
+    "ws": "8.21.3"
   },
   "devDependencies": {
     "@types/react": "^19.0.0",
