@@ -160,6 +160,10 @@ Additional policy knobs use the same `POLICY_` prefix for install scripts, prove
 
 SST forwards any configured `POLICY_*` values into gateway, worker, and admin so deployed enforcement, worker analysis, and policy inspection stay on the same version of reality.
 
+Metadata requests evaluate every published version with cheap policy, but only the `latest` dist-tag is automatically queued for deep analysis. Exact versions are queued when their tarballs are requested or when an operator warms a lockfile. This keeps historical and prerelease tags from turning a routine install into an archaeological expedition.
+
+npm download statistics are optional policy enrichment. The client coalesces duplicate lookups, caches results for 15 minutes, limits upstream concurrency to four requests, and retries transient network, `429`, and `5xx` failures. Exhausted lookups are logged with their real error and do not stop gateway or worker analysis.
+
 ## LLM Review
 
 LLM risk review is optional and never the enforcement authority. Deterministic policy still makes the final decision; LLM output is schema-validated context that can add quarantine-level risk signals.

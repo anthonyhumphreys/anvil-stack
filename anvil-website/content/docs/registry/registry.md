@@ -38,6 +38,8 @@ When a client requests package metadata, the gateway:
 8. Rewrites dist-tags to the newest allowed version.
 9. Rewrites tarball URLs back through Anvil Registry.
 
+Cheap metadata policy covers every published version, but automatic deep-analysis work is intentionally narrower: metadata requests queue only the version behind `latest`. Exact historical or prerelease versions enter deep analysis when their tarball is requested or a lockfile/manual review explicitly names them. This avoids queue floods from package-manager update checks and packages with large compatibility-tag maps.
+
 Tarball URL rewriting is important. If metadata points clients back to the upstream registry, package bytes bypass policy and the gateway becomes decorative plumbing.
 
 ## Tarball requests

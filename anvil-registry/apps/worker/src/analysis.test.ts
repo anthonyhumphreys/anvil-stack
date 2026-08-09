@@ -277,6 +277,32 @@ describe("worker analysis", () => {
     ).toBe("block");
   });
 
+  it("continues static analysis when download statistics are unavailable", async () => {
+    const persistence = new MemoryPersistence();
+    const config = loadConfig({ ...process.env, RUNTIME_MODE: "ci" });
+    const registry = {
+      fetchMetadata: vi.fn(async () => metadata()),
+      fetchTarball: vi.fn(async (url: string) => tarballs[url])
+    };
+
+    const onDownloadStatsError = vi.fn();
+    const result = await analysePackageTarget("pkg@1.0.1", {
+      config,
+      registry,
+      persistence,
+      downloadStats: {
+        getWeeklyDownloads: vi.fn(async () => {
+          throw new Error("stats unavailable");
+        })
+      },
+      onDownloadStatsError
+    });
+
+    expect(result.report.signals.length).toBeGreaterThan(0);
+    expect(await persistence.getPackageVersion("pkg", "1.0.1")).toMatchObject({ packageName: "pkg", version: "1.0.1" });
+    expect(onDownloadStatsError).toHaveBeenCalledWith("pkg", expect.objectContaining({ message: "stats unavailable" }));
+  });
+
   it("quarantines high-download packages without provenance metadata", async () => {
     const persistence = new MemoryPersistence();
     const config = loadConfig({ ...process.env, RUNTIME_MODE: "ci" });

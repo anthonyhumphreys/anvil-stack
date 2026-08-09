@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "@anvilstack/config";
 import type { NpmPackageMetadata } from "@anvilstack/npm-registry";
 import type { ObjectStore } from "@anvilstack/object-store";
-import type { AnalysisReport } from "@anvilstack/shared";
+import { STATIC_ANALYSER_VERSION, type AnalysisReport } from "@anvilstack/shared";
 import { MemoryPersistence } from "@anvilstack/persistence";
 import { MemoryJobQueue } from "@anvilstack/queue";
 import { buildGateway } from "./app.js";
@@ -663,6 +663,46 @@ describe("gateway policy enforcement", () => {
     await app.close();
   });
 
+  it("does not treat reports from an older analyser as current coverage", async () => {
+    const persistence = new MemoryPersistence();
+    await persistence.putAnalysisReport({
+      packageName: "stable-package",
+      version: "1.0.0",
+      analyserVersion: "static-analysis-old",
+      policyVersion: testConfig("development").policy.version,
+      tarballIntegrity: "sha512-test",
+      score: 0,
+      signals: [],
+      createdAt: "2026-05-20T12:00:00.000Z"
+    });
+    const queue = new MemoryJobQueue();
+    const app = buildGateway({
+      config: testConfig("development"),
+      persistence,
+      queue,
+      registry: {
+        fetchMetadata: vi.fn(async () => packageMetadata("stable-package", "2020-01-01T00:00:00.000Z")),
+        fetchTarball: vi.fn(async () => new Uint8Array([1, 2, 3]))
+      },
+      downloadStats: noDownloadStats()
+    });
+
+    const response = await app.inject({ method: "GET", url: "/stable-package/-/stable-package-1.0.0.tgz" });
+    const queuedJobs = [];
+    for await (const job of queue.receiveAnalysisJobs()) queuedJobs.push(job);
+
+    expect(response.statusCode).toBe(200);
+    expect(queuedJobs).toEqual([
+      expect.objectContaining({
+        packageName: "stable-package",
+        version: "1.0.0",
+        reason: "tarball_request"
+      })
+    ]);
+
+    await app.close();
+  });
+
   it("does not reuse cached policy decisions when tarball integrity changes", async () => {
     const persistence = new MemoryPersistence();
     await persistence.putPolicyDecision(
@@ -778,10 +818,11 @@ describe("gateway policy enforcement", () => {
   it("limits metadata-triggered deep analysis to install-relevant dist-tag versions", async () => {
     const publishedAt = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
     const metadata = packageMetadata("fresh-package", publishedAt);
-    metadata["dist-tags"] = { latest: "2.0.0" };
+    metadata["dist-tags"] = { latest: "2.0.0", legacy: "1.0.0", next: "3.0.0-next.1" };
     metadata.time = {
       ...metadata.time,
-      "2.0.0": publishedAt
+      "2.0.0": publishedAt,
+      "3.0.0-next.1": publishedAt
     };
     metadata.versions = {
       ...metadata.versions,
@@ -791,6 +832,14 @@ describe("gateway policy enforcement", () => {
         dist: {
           tarball: "https://registry.npmjs.org/fresh-package/-/fresh-package-2.0.0.tgz",
           integrity: "sha512-new"
+        }
+      },
+      "3.0.0-next.1": {
+        name: "fresh-package",
+        version: "3.0.0-next.1",
+        dist: {
+          tarball: "https://registry.npmjs.org/fresh-package/-/fresh-package-3.0.0-next.1.tgz",
+          integrity: "sha512-next"
         }
       }
     };
@@ -926,7 +975,7 @@ describe("gateway policy enforcement", () => {
     const report = {
       packageName: "stable-package",
       version: "1.0.0",
-      analyserVersion: "static-analysis-test",
+      analyserVersion: STATIC_ANALYSER_VERSION,
       policyVersion: testConfig("ci").policy.version,
       tarballIntegrity: "sha512-test",
       score: 25,
@@ -938,7 +987,7 @@ describe("gateway policy enforcement", () => {
       packageName: "stable-package",
       version: "1.0.0",
       tarballIntegrity: "sha512-test",
-      analyserVersion: "static-analysis-test",
+      analyserVersion: STATIC_ANALYSER_VERSION,
       provider: "test-provider",
       model: "risk-reviewer",
       review: {
@@ -982,7 +1031,7 @@ describe("gateway policy enforcement", () => {
         reasons: expect.arrayContaining([expect.objectContaining({ code: "LLM_RISK_REVIEW_FLAGGED" })])
       },
       analysisReport: expect.objectContaining({
-        analyserVersion: "static-analysis-test",
+        analyserVersion: STATIC_ANALYSER_VERSION,
         signals: [expect.objectContaining({ code: "USES_PROCESS_ENV" })]
       }),
       llmRiskReviews: [
@@ -1002,7 +1051,7 @@ describe("gateway policy enforcement", () => {
     const report = {
       packageName: "stable-package",
       version: "1.0.0",
-      analyserVersion: "static-analysis-test",
+      analyserVersion: STATIC_ANALYSER_VERSION,
       policyVersion: testConfig("ci").policy.version,
       tarballIntegrity: "sha512-test",
       score: 0,
@@ -1028,7 +1077,7 @@ describe("gateway policy enforcement", () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ packageName: "stable-package", version: "1.0.0", analysisReport: expect.objectContaining({ analyserVersion: "static-analysis-test" }) });
+    expect(response.json()).toMatchObject({ packageName: "stable-package", version: "1.0.0", analysisReport: expect.objectContaining({ analyserVersion: STATIC_ANALYSER_VERSION }) });
 
     await app.close();
   });
@@ -1092,7 +1141,7 @@ describe("gateway policy enforcement", () => {
       packageName: "stable-package",
       version: "1.0.0",
       tarballIntegrity: "sha512-test",
-      analyserVersion: "static-analysis-v2",
+      analyserVersion: STATIC_ANALYSER_VERSION,
       policyVersion: testConfig("ci").policy.version,
       score: 0,
       signals: [],
@@ -1143,7 +1192,7 @@ describe("gateway policy enforcement", () => {
         action: "allow",
         reasons: expect.not.arrayContaining([expect.objectContaining({ code: "LLM_RISK_REVIEW_FLAGGED" })])
       },
-      analysisReport: expect.objectContaining({ analyserVersion: "static-analysis-v2" }),
+      analysisReport: expect.objectContaining({ analyserVersion: STATIC_ANALYSER_VERSION }),
       llmRiskReviews: []
     });
 

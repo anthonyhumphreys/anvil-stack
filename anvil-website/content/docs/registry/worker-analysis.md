@@ -52,7 +52,7 @@ Static analysis of the unpacked tarball looks for:
 - New binary or executable files.
 - Unexpected size changes.
 - Minified or obfuscated files.
-- Encoded blobs (base64 strings in non-binary files).
+- Encoded blobs (base64 strings in non-binary files). Verified inline PNG, JPEG, GIF, WebP, and passive SVG data URIs are treated as assets rather than executable obfuscation; malformed, falsely labelled, or active SVG content is still flagged.
 - Hidden files (dot-prefixed).
 - Unusual paths (traversal attempts, temp directories).
 - Credential-looking files (`.npmrc`, `.ssh`, `.aws`, `.env`).
@@ -103,6 +103,14 @@ Analysis reports are cached by:
 - Policy version.
 
 If any of these change, the cached report is not reused. This prevents a decision for one artifact from silently applying to a different artifact.
+
+Registry releases advance the analysis engine version when detector behaviour changes. The gateway then treats reports from the older analyser as stale and queues current analysis when the exact tarball is requested.
+
+## Queue targeting and reputation data
+
+Metadata policy still evaluates every published version, but automatic deep analysis from a metadata request is limited to the version behind `latest`. Historical, compatibility, and prerelease dist-tags are analysed when their exact tarball is requested or an operator explicitly queues them through a lockfile scan or manual review.
+
+npm download counts are optional reputation context. Anvil caches them for 15 minutes, coalesces duplicate package lookups, limits concurrent upstream requests, and retries transient failures. If the downloads API remains unavailable, analysis continues without that signal.
 
 ## Limitations
 

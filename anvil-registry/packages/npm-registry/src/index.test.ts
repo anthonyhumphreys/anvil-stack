@@ -91,6 +91,60 @@ describe("npm registry helpers", () => {
     expect(fetch).toHaveBeenCalledWith("https://api.npmjs.org/downloads/point/last-week/%40scope%2Fpkg");
   });
 
+  it("coalesces concurrent download-stat requests and caches the result", async () => {
+    const fetch = vi.fn(async () => Response.json({ downloads: 42 }));
+    const client = new NpmDownloadsClient({ baseUrl: "https://api.npmjs.org/downloads", fetch });
+
+    await expect(Promise.all([client.getWeeklyDownloads("pkg"), client.getWeeklyDownloads("pkg")])).resolves.toEqual([42, 42]);
+    await expect(client.getWeeklyDownloads("pkg")).resolves.toBe(42);
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries throttled and unavailable download-stat requests", async () => {
+    const fetch = vi
+      .fn<() => Promise<Response>>()
+      .mockResolvedValueOnce(new Response("slow down", { status: 429 }))
+      .mockResolvedValueOnce(new Response("unavailable", { status: 503 }))
+      .mockResolvedValueOnce(Response.json({ downloads: 73 }));
+    const sleep = vi.fn(async () => undefined);
+    const client = new NpmDownloadsClient({ baseUrl: "https://api.npmjs.org/downloads", fetch, sleep, retryBaseDelayMs: 10 });
+
+    await expect(client.getWeeklyDownloads("pkg")).resolves.toBe(73);
+
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(sleep).toHaveBeenNthCalledWith(1, 10);
+    expect(sleep).toHaveBeenNthCalledWith(2, 20);
+  });
+
+  it("retries transient network errors while fetching download stats", async () => {
+    const fetch = vi.fn<() => Promise<Response>>().mockRejectedValueOnce(new Error("socket closed")).mockResolvedValueOnce(Response.json({ downloads: 91 }));
+    const sleep = vi.fn(async () => undefined);
+    const client = new NpmDownloadsClient({ baseUrl: "https://api.npmjs.org/downloads", fetch, sleep });
+
+    await expect(client.getWeeklyDownloads("pkg")).resolves.toBe(91);
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledOnce();
+  });
+
+  it("bounds concurrent download-stat requests", async () => {
+    let active = 0;
+    let maximumActive = 0;
+    const fetch = vi.fn(async () => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      return Response.json({ downloads: 1 });
+    });
+    const client = new NpmDownloadsClient({ baseUrl: "https://api.npmjs.org/downloads", fetch, maxConcurrency: 2 });
+
+    await Promise.all(Array.from({ length: 6 }, (_, index) => client.getWeeklyDownloads(`pkg-${index}`)));
+
+    expect(maximumActive).toBe(2);
+  });
+
   it("routes scoped package metadata to matching upstream registries", async () => {
     const fetch = vi.fn(async (url: string) => Response.json({ name: url.includes("npm.pkg.example.test") ? "@internal/pkg" : "left-pad" }));
     vi.stubGlobal("fetch", fetch);

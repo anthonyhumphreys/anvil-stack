@@ -1,6 +1,6 @@
 import semver from "semver";
 import { gunzipSync } from "node:zlib";
-import type { AnalysisReport, PackageVersionMetadata, PolicyReason } from "@anvilstack/shared";
+import { STATIC_ANALYSER_VERSION, type AnalysisReport, type PackageVersionMetadata, type PolicyReason } from "@anvilstack/shared";
 
 const lifecycleScripts = new Set(["preinstall", "install", "postinstall", "prepare", "prepublish", "prepublishOnly"]);
 type DependencyGroup = "runtime" | "dev" | "optional" | "peer";
@@ -311,7 +311,7 @@ export function mergeAnalysisReports(report: AnalysisReport, fileAnalysis: { sig
   const signals = [...report.signals, ...fileAnalysis.signals];
   return {
     ...report,
-    analyserVersion: "static-2026-05-21.1",
+    analyserVersion: STATIC_ANALYSER_VERSION,
     signals,
     score: signals.reduce((total, signal) => total + (signal.severity === "critical" ? 95 : signal.severity === "high" ? 70 : signal.severity === "medium" ? 35 : signal.severity === "low" ? 10 : 0), 0),
     fileFindings: fileAnalysis.fileFindings
@@ -828,7 +828,30 @@ function longestLineLength(text: string) {
 }
 
 function containsEncodedBlob(text: string): boolean {
-  return /[A-Za-z0-9+/]{512,}={0,2}/.test(text);
+  const encodedBlobPattern = /[A-Za-z0-9+/]{512,}={0,2}/g;
+  for (const match of text.matchAll(encodedBlobPattern)) {
+    if (!isVerifiedInlineImage(text, match)) return true;
+  }
+  return false;
+}
+
+function isVerifiedInlineImage(text: string, match: RegExpMatchArray): boolean {
+  if (match.index === undefined) return false;
+  const prefix = text.slice(Math.max(0, match.index - 64), match.index);
+  const mimeType = prefix.match(/data:(image\/(?:png|jpeg|gif|webp|svg\+xml));base64,$/i)?.[1]?.toLowerCase();
+  if (!mimeType) return false;
+
+  const bytes = Buffer.from(match[0], "base64");
+  if (mimeType === "image/png") return bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  if (mimeType === "image/jpeg") return bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[bytes.length - 2] === 0xff && bytes[bytes.length - 1] === 0xd9;
+  if (mimeType === "image/gif") return bytes.subarray(0, 6).toString("ascii") === "GIF87a" || bytes.subarray(0, 6).toString("ascii") === "GIF89a";
+  if (mimeType === "image/webp") return bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP";
+  if (mimeType === "image/svg+xml") {
+    const decoded = bytes.toString("utf8").trimStart();
+    const isSvg = decoded.startsWith("<svg") || (decoded.startsWith("<?xml") && decoded.includes("<svg"));
+    return isSvg && !/(<script\b|<foreignObject\b|\bon\w+\s*=|javascript:)/i.test(decoded);
+  }
+  return false;
 }
 
 function isPatchVersionBump(previous: string, target: string): boolean {

@@ -249,6 +249,10 @@ Actual npm scoped package paths can be quirky, so route handling must be tested 
 9. Gateway rewrites tarball URLs to route through Anvil.
 10. Gateway returns npm-compatible metadata.
 
+Metadata policy is evaluated for every published version so filtering remains npm-compatible. Automatic deep-analysis enqueue is limited to the version behind the `latest` dist-tag. Arbitrary historical, compatibility, and prerelease tags are analysed only when their tarball is requested or an operator explicitly queues the exact version. This prevents client update checks and large dist-tag maps from flooding the worker queue.
+
+Download counts are best-effort enrichment rather than an availability dependency. The npm downloads client caches results for 15 minutes, coalesces concurrent lookups for the same package, bounds upstream concurrency to four requests, and retries transient network, `429`, and `5xx` responses with exponential backoff. Exhausted lookups must preserve the underlying error in structured logs and must not fail static analysis.
+
 ### Tarball request flow
 
 1. Client requests tarball.
@@ -316,6 +320,8 @@ export type AnalysisJob = {
 10. Optionally request LLM structured review.
 11. Persist report.
 12. Compute final policy decision.
+
+Large base64-like strings remain an obfuscation signal unless they are a verified inline PNG, JPEG, GIF, WebP, or passive SVG data URI whose decoded bytes match the declared image type. SVG containing scripts, event handlers, JavaScript URLs, or `foreignObject` remains suspicious. A MIME label alone is not sufficient to suppress the signal.
 
 ### Worker health check
 

@@ -272,6 +272,50 @@ describe("analyseManifestChange", () => {
     expect(result.fileFindings).toContainEqual(expect.objectContaining({ path: "package.json", code: "PACKAGE_MANIFEST_CHANGED", evidence: expect.objectContaining({ changedKeys: ["version"] }) }));
   });
 
+  it("does not treat verified inline image data as an encoded executable blob", () => {
+    const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(700)]).toString("base64");
+    const svg = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg"><text>${"safe".repeat(180)}</text></svg>`).toString("base64");
+    const html = `<link rel="icon" href="data:image/png;base64,${png}"><link rel="icon" href="data:image/svg+xml;base64,${svg}">`;
+    const baseline = parseNpmTarball(
+      makeTarball([
+        { path: "package/package.json", content: JSON.stringify({ name: "pkg", version: "1.0.0" }) },
+        { path: "package/formatter.html", content: html }
+      ])
+    );
+    const target = parseNpmTarball(
+      makeTarball([
+        { path: "package/package.json", content: JSON.stringify({ name: "pkg", version: "1.0.1" }) },
+        { path: "package/formatter.html", content: html }
+      ])
+    );
+
+    const result = analyseFileTree(target, [baseline]);
+
+    expect(result.fileFindings).not.toContainEqual(expect.objectContaining({ path: "formatter.html", code: "OBFUSCATED_CODE_DETECTED" }));
+  });
+
+  it("still flags bare blobs and invalid image data URIs", () => {
+    const activeSvg = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"><text>${"unsafe".repeat(120)}</text></svg>`).toString("base64");
+    const target = parseNpmTarball(
+      makeTarball([
+        { path: "package/package.json", content: JSON.stringify({ name: "pkg", version: "1.0.0" }) },
+        { path: "package/bare.js", content: `const payload = '${"A".repeat(700)}'` },
+        { path: "package/fake-image.html", content: `data:image/png;base64,${Buffer.from("not a png".repeat(100)).toString("base64")}` },
+        { path: "package/active-svg.html", content: `data:image/svg+xml;base64,${activeSvg}` }
+      ])
+    );
+
+    const result = analyseFileTree(target);
+
+    expect(result.fileFindings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: "bare.js", code: "OBFUSCATED_CODE_DETECTED" }),
+        expect.objectContaining({ path: "fake-image.html", code: "OBFUSCATED_CODE_DETECTED" }),
+        expect.objectContaining({ path: "active-svg.html", code: "OBFUSCATED_CODE_DETECTED" })
+      ])
+    );
+  });
+
   it("flags unsafe tar paths, symlinks, and large size deltas while scoping code checks to install paths", () => {
     const baseline = parseNpmTarball(
       makeTarball([

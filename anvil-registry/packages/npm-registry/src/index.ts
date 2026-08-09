@@ -42,6 +42,13 @@ export type UpstreamRegistryConfig = {
 
 export type NpmDownloadsClientConfig = {
   baseUrl: string;
+  cacheTtlMs?: number;
+  maxConcurrency?: number;
+  maxAttempts?: number;
+  retryBaseDelayMs?: number;
+  fetch?: typeof globalThis.fetch;
+  now?: () => number;
+  sleep?: (milliseconds: number) => Promise<void>;
 };
 
 export type DownloadStatsClient = {
@@ -114,20 +121,90 @@ export class NpmRegistryRouter {
 }
 
 export class NpmDownloadsClient implements DownloadStatsClient {
-  constructor(private readonly config: NpmDownloadsClientConfig) {}
+  private readonly cache = new Map<string, { value: number | undefined; expiresAt: number }>();
+  private readonly inFlight = new Map<string, Promise<number | undefined>>();
+  private readonly fetch: typeof globalThis.fetch;
+  private readonly now: () => number;
+  private readonly sleep: (milliseconds: number) => Promise<void>;
+  private readonly cacheTtlMs: number;
+  private readonly maxConcurrency: number;
+  private readonly maxAttempts: number;
+  private readonly retryBaseDelayMs: number;
+  private activeRequests = 0;
+  private readonly waitingForSlot: Array<() => void> = [];
+
+  constructor(private readonly config: NpmDownloadsClientConfig) {
+    this.fetch = config.fetch ?? globalThis.fetch;
+    this.now = config.now ?? Date.now;
+    this.sleep = config.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+    this.cacheTtlMs = config.cacheTtlMs ?? 15 * 60 * 1000;
+    this.maxConcurrency = Math.max(1, config.maxConcurrency ?? 4);
+    this.maxAttempts = Math.max(1, config.maxAttempts ?? 3);
+    this.retryBaseDelayMs = Math.max(0, config.retryBaseDelayMs ?? 100);
+  }
 
   async getWeeklyDownloads(packageName: string): Promise<number | undefined> {
-    const url = `${trimTrailingSlash(this.config.baseUrl)}/point/last-week/${encodeURIComponent(packageName)}`;
-    const response = await fetch(url);
+    const cached = this.cache.get(packageName);
+    if (cached && cached.expiresAt > this.now()) return cached.value;
 
-    if (response.status === 404) return undefined;
+    const current = this.inFlight.get(packageName);
+    if (current) return current;
+
+    const request = this.fetchWeeklyDownloads(packageName).finally(() => this.inFlight.delete(packageName));
+    this.inFlight.set(packageName, request);
+    return request;
+  }
+
+  private async fetchWeeklyDownloads(packageName: string): Promise<number | undefined> {
+    const url = `${trimTrailingSlash(this.config.baseUrl)}/point/last-week/${encodeURIComponent(packageName)}`;
+    let response: Response | undefined;
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
+      try {
+        response = await this.withRequestSlot(() => this.fetch(url));
+        lastError = undefined;
+      } catch (error) {
+        lastError = error;
+      }
+      if (lastError) {
+        if (attempt === this.maxAttempts) throw lastError;
+        await this.sleep(this.retryBaseDelayMs * 2 ** (attempt - 1));
+        continue;
+      }
+      if (!response) throw new Error(`npm downloads fetch failed for ${packageName}: no response`);
+      if (response.ok || response.status === 404 || !isRetryableDownloadStatsStatus(response.status) || attempt === this.maxAttempts) break;
+      await this.sleep(this.retryBaseDelayMs * 2 ** (attempt - 1));
+    }
+
+    if (!response) throw new Error(`npm downloads fetch failed for ${packageName}: no response`);
+    if (response.status === 404) return this.cacheValue(packageName, undefined);
     if (!response.ok) {
       throw new Error(`npm downloads fetch failed for ${packageName}: ${response.status} ${response.statusText}`);
     }
 
     const body = (await response.json()) as { downloads?: unknown };
-    return typeof body.downloads === "number" ? body.downloads : undefined;
+    return this.cacheValue(packageName, typeof body.downloads === "number" ? body.downloads : undefined);
   }
+
+  private cacheValue(packageName: string, value: number | undefined): number | undefined {
+    this.cache.set(packageName, { value, expiresAt: this.now() + this.cacheTtlMs });
+    return value;
+  }
+
+  private async withRequestSlot<T>(request: () => Promise<T>): Promise<T> {
+    if (this.activeRequests >= this.maxConcurrency) await new Promise<void>((resolve) => this.waitingForSlot.push(resolve));
+    this.activeRequests += 1;
+    try {
+      return await request();
+    } finally {
+      this.activeRequests -= 1;
+      this.waitingForSlot.shift()?.();
+    }
+  }
+}
+
+function isRetryableDownloadStatsStatus(status: number): boolean {
+  return status === 429 || status >= 500;
 }
 
 export function encodePackagePath(packageName: string): string {

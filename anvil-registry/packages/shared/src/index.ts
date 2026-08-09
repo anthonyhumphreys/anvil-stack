@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+export const STATIC_ANALYSER_VERSION = "static-2026-08-09.1";
+
 export const runtimeModeSchema = z.enum(["development", "ci", "production"]);
 export type RuntimeMode = z.infer<typeof runtimeModeSchema>;
 

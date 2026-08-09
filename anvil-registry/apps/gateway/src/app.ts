@@ -25,6 +25,7 @@ import {
   buildAnvilError,
   buildPolicyDecisionAuditEvent,
   isDecisionBlockingInstall,
+  STATIC_ANALYSER_VERSION,
   nodeBaseReportSubmissionSchema,
   overrideCreateRequestSchema,
   overrideRevokeRequestSchema,
@@ -436,9 +437,9 @@ export function buildGateway(dependencies: GatewayDependencies = {}): FastifyIns
       tarballIntegrity: versionMetadata?.integrity,
       tarballShasum: versionMetadata?.shasum
     };
-    const analysisReport = await persistence.getAnalysisReport(packageName, version, analysisIdentity);
+    const analysisReport = await persistence.getAnalysisReport(packageName, version, { ...analysisIdentity, analyserVersion: STATIC_ANALYSER_VERSION });
     const [llmRiskReviews, override] = await Promise.all([
-      persistence.listLlmRiskReviews({ packageName, version, limit: 5, identity: { ...analysisIdentity, analyserVersion: analysisReport?.analyserVersion } }),
+      persistence.listLlmRiskReviews({ packageName, version, limit: 5, identity: { ...analysisIdentity, analyserVersion: analysisReport?.analyserVersion ?? STATIC_ANALYSER_VERSION } }),
       persistence.getOverride(packageName, version)
     ]);
 
@@ -465,13 +466,13 @@ export function buildGateway(dependencies: GatewayDependencies = {}): FastifyIns
       tarballIntegrity: versionMetadata?.integrity,
       tarballShasum: versionMetadata?.shasum
     };
-    const analysisReport = await persistence.getAnalysisReport(packageName, version, analysisIdentity);
+    const analysisReport = await persistence.getAnalysisReport(packageName, version, { ...analysisIdentity, analyserVersion: STATIC_ANALYSER_VERSION });
     const latestLlmReview = config.policy.llmReview.enabled
       ? await persistence.listLlmRiskReviews({
           packageName,
           version,
           limit: 1,
-          identity: { ...analysisIdentity, analyserVersion: analysisReport?.analyserVersion }
+          identity: { ...analysisIdentity, analyserVersion: analysisReport?.analyserVersion ?? STATIC_ANALYSER_VERSION }
         })
       : [];
     const analysisRequired = shouldRequireAnalysisBeforeInstall(reason, analysisReport);
@@ -591,7 +592,7 @@ export function buildGateway(dependencies: GatewayDependencies = {}): FastifyIns
     try {
       return await downloadStats.getWeeklyDownloads(packageName);
     } catch (error) {
-      app.log.warn({ packageName, error }, "Failed to fetch npm download stats");
+      app.log.warn({ packageName, err: error }, "Failed to fetch npm download stats");
       return undefined;
     }
   }
@@ -724,9 +725,8 @@ function analysisTargetsFromBody(body: PackageTargetRequest) {
 
 function metadataInstallRelevantVersions(metadata: NpmPackageMetadata) {
   const versions = new Set<string>();
-  for (const version of Object.values(metadata["dist-tags"] ?? {})) {
-    if (typeof version === "string" && version) versions.add(version);
-  }
+  const latest = metadata["dist-tags"]?.latest;
+  if (typeof latest === "string" && latest) versions.add(latest);
   return versions;
 }
 
