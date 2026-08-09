@@ -57,7 +57,7 @@ describe("Cloudflare Wrangler execution", () => {
       })
       .mockResolvedValueOnce({
         exitCode: 0,
-        stdout: `Claim URL: ${claimUrl}\nhttps://smoke.example.workers.dev`,
+        stdout: `Claim URL: ${claimUrl}\nhttps://smoke.example.workers.dev/`,
         stderr: "",
       });
     let capturedClaimUrl: string | undefined;

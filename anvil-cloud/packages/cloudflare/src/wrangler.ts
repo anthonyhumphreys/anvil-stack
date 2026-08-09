@@ -172,7 +172,9 @@ function extractClaimUrl(output: string): string | undefined {
 }
 
 function extractPreviewUrl(output: string): string | undefined {
-  return output.match(/https:\/\/[^\s]+\.workers\.dev\/?/g)?.[0];
+  const matched = output.match(/https:\/\/[^\s]+\.workers\.dev\/?/g)?.[0];
+
+  return matched?.endsWith("/") ? matched.slice(0, -1) : matched;
 }
 
 function extractWranglerVersion(output: string): string | undefined {

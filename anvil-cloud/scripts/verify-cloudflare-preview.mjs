@@ -104,12 +104,16 @@ try {
     );
   }
 
-  await verifyJson(`${deployment.previewUrl}/_anvil/health`, undefined, {
-    ok: true,
-    runtime: "cloudflare-preview",
-  });
   await verifyJson(
-    `${deployment.previewUrl}/_anvil/query/ping`,
+    providerUrl(deployment.previewUrl, "/_anvil/health"),
+    undefined,
+    {
+      ok: true,
+      runtime: "cloudflare-preview",
+    },
+  );
+  await verifyJson(
+    providerUrl(deployment.previewUrl, "/_anvil/query/ping"),
     {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -117,11 +121,15 @@ try {
     },
     { ok: true, result: { pong: "live" } },
   );
-  await verifyJson(`${deployment.previewUrl}/api/status`, undefined, {
-    ok: true,
-    result: { ok: true, cell: "cloudflare-smoke" },
-  });
-  const asset = await fetchWithRetry(`${deployment.previewUrl}/`);
+  await verifyJson(
+    providerUrl(deployment.previewUrl, "/api/status"),
+    undefined,
+    {
+      ok: true,
+      result: { ok: true, cell: "cloudflare-smoke" },
+    },
+  );
+  const asset = await fetchWithRetry(providerUrl(deployment.previewUrl, "/"));
   const assetBody = await asset.text();
   if (!asset.ok || !assetBody.includes("cell.client.js")) {
     throw new Error(`Static asset smoke failed with status ${asset.status}.`);
@@ -157,13 +165,27 @@ printResult(liveResult);
 
 async function verifyJson(url, init, expected) {
   const response = await fetchWithRetry(url, init);
-  const body = await response.json();
+  const responseText = await response.text();
+  let body;
+
+  try {
+    body = JSON.parse(responseText);
+  } catch {
+    const contentType = response.headers.get("content-type") ?? "unknown";
+    throw new Error(
+      `Provider smoke expected JSON from ${url}, received ${contentType}: ${responseText.slice(0, 120)}`,
+    );
+  }
 
   if (!response.ok || JSON.stringify(body) !== JSON.stringify(expected)) {
     throw new Error(
       `Provider smoke mismatch for ${url}: ${response.status} ${JSON.stringify(body)}`,
     );
   }
+}
+
+function providerUrl(previewUrl, pathname) {
+  return new URL(pathname, previewUrl).toString();
 }
 
 async function fetchWithRetry(url, init) {
