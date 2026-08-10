@@ -41,9 +41,11 @@ import { normalizePreviewName } from "./preview-name.js";
 import type { AwsPreviewProvisioner } from "./provisioner.js";
 
 export {
+  AwsAgentExecutionTransportError,
   AwsLambdaMicroVmSandboxError,
   AwsLambdaMicroVmSandboxProvider,
   createAwsLambdaMicroVmSandboxProviderFromEnv,
+  type AwsAgentExecutionFetch,
   type AwsLambdaMicroVmSandboxProviderOptions,
 } from "./sandbox.js";
 export {

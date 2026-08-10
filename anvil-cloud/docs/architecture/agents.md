@@ -469,29 +469,40 @@ untrusted-code isolation still belong to Docker/prod adapter execution work.
 
 ## Target Agent Delivery Loop
 
-The current implemented slice gives AWS-backed agents:
+The current implemented slice gives execution clients and AWS-backed agents:
 
 - provider-neutral sandbox session types in `@anvil-cloud/runtime`;
+- provider-neutral execution source, policy, event, result, and provider I/O
+  contracts in `@anvil-cloud/runtime`;
+- idempotent leases, durable cursor events, approval/input/steering controls,
+  TTL and budget enforcement, results, and cleanup receipts in
+  `@anvil-cloud/control-plane`;
+- in-memory and JSON-file execution stores plus a framework-neutral hosted HTTP
+  router/client;
+- a deterministic conformance provider that pauses for approval, resumes from
+  a cursor, returns a patch, and proves teardown;
 - `AwsLambdaMicroVmSandboxProvider` in `@anvil-cloud/aws`;
+- a token-scoped AWS read-only execution transport for compatible MicroVM
+  worker images;
 - AWS compatibility reporting that treats sandbox-required agents as supported
   when a sandbox image is configured;
 - AWS preview plan changes, review gates, and cost drivers for sandbox-required
   mounted agents;
-- `anvil-cloud agents sandboxes --json` for CLI/agent inspection.
+- `anvil-cloud agents sandboxes --json` for CLI/agent inspection;
+- `anvil-cloud executions conformance --json` for the provider-neutral exit
+  gate.
 
-The fuller delivery loop still needs to:
+The hosted delivery loop still needs to:
 
-1. start from a provider-neutral agent manifest;
-2. launch or resume a sandbox with a workspace snapshot;
-3. inspect the Cell manifest and declared capabilities;
-4. run tests, typechecks, browser checks, package analysis, or build commands;
-5. stream evidence into Anvil Lens and CLI JSON output;
+1. authenticate the user and authorise the workspace at the hosted HTTP edge;
+2. ingest and serve immutable source snapshots through one-time sandbox access;
+3. run the execution worker protocol in a deployed AWS MicroVM image;
+4. broker model and provider credentials at the network boundary;
+5. stream execution evidence into Anvil Lens and Desktop Work topology;
 6. request approval before protected actions such as external email, branch
    pushes, preview deploys, or production changes;
-7. call brokered Anvil control-plane actions after approval;
-8. suspend when waiting on a human;
-9. resume with the same workspace state;
-10. terminate with logs, diffs, artifacts, cost metadata, and audit history.
+7. return signed patch and artifact bundles to a disposable local worktree;
+8. verify real-account cleanup and orphan reaping under provider failures.
 
 That is the product-shaped version of "agent sandboxing": not merely safer code
 execution, but inspectable agent workspaces with policy in front and receipts

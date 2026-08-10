@@ -44,6 +44,8 @@ Full agent instructions: `llms-full.txt`.
 - Anvil Local: local development runtime.
 - Anvil Guard: policy and capability checks.
 - Anvil Lens: inspection and diagnostics.
+- Agent Execution Control Plane: provider-neutral, resumable sandbox work with
+  cursor events, approvals, budgets, results, and cleanup receipts.
 
 ## Current implementation priority
 
@@ -55,6 +57,7 @@ Implement in this order:
 4. CLI with stable `--json` output.
 5. Client SDK and generated metadata.
 6. AWS preview deployment.
+7. Provider-neutral agent execution contracts and AWS read-only transport.
 
 ## Non-Negotiable Rules
 

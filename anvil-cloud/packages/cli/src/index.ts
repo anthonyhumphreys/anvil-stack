@@ -78,6 +78,7 @@ import {
   type WorkflowRun,
   type WorkflowRunSummary,
 } from "@anvil-cloud/runtime";
+import { runAgentExecutionConformance } from "@anvil-cloud/control-plane";
 import {
   resolveDeploymentAdapter,
   supportedDeploymentAdapters,
@@ -228,6 +229,9 @@ export async function main(argv: string[]): Promise<void> {
     case "agents":
       await commandAgents(context, subcommand, maybeArg);
       return;
+    case "executions":
+      await commandExecutions(context, subcommand);
+      return;
     case "eval":
       await commandEval(context, subcommand);
       return;
@@ -259,6 +263,56 @@ export async function main(argv: string[]): Promise<void> {
         `Unknown command '${command}'.`,
       );
       process.exitCode = 2;
+  }
+}
+
+async function commandExecutions(
+  context: CliContext,
+  subcommand: string | undefined,
+): Promise<void> {
+  if (subcommand !== "conformance") {
+    writeJsonOrHuman(
+      context,
+      {
+        ok: false,
+        errors: [
+          {
+            code: "INVALID_USAGE",
+            message: "Usage: anvil-cloud executions conformance [--json]",
+          },
+        ],
+      },
+      "Usage: anvil-cloud executions conformance [--json]",
+    );
+    process.exitCode = 2;
+    return;
+  }
+
+  const result = await runAgentExecutionConformance();
+  const payload = {
+    ...result,
+    summary: {
+      passed: result.checks.filter((check) => check.ok).length,
+      failed: result.checks.filter((check) => !check.ok).length,
+      total: result.checks.length,
+    },
+  };
+
+  writeJsonOrHuman(
+    context,
+    payload,
+    [
+      payload.ok
+        ? "Agent execution conformance passed."
+        : "Agent execution conformance failed.",
+      ...payload.checks.map(
+        (check) => `  ${check.ok ? "✓" : "✗"} ${check.id}: ${check.message}`,
+      ),
+    ].join("\n"),
+  );
+
+  if (!payload.ok) {
+    process.exitCode = 1;
   }
 }
 
@@ -4830,6 +4884,7 @@ function writeHelp(): void {
       "  anvil-cloud agents discover [--json]",
       "  anvil-cloud agents guardian [--json]",
       "  anvil-cloud agents sandboxes [--sandbox-backend auto|docker|process] [--json]",
+      "  anvil-cloud executions conformance [--json]",
       "  anvil-cloud channels simulate --channel <name> --input <text> [--sender <id>] [--thread <id>] [--json]",
       "  anvil-cloud workflows list [--json]",
       "  anvil-cloud workflows show <runId> [--json]",

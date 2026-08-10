@@ -228,6 +228,9 @@ importers:
       "@anvil-cloud/cloudflare":
         specifier: workspace:*
         version: link:../cloudflare
+      "@anvil-cloud/control-plane":
+        specifier: workspace:*
+        version: link:../control-plane
       "@anvil-cloud/deployment":
         specifier: workspace:*
         version: link:../deployment

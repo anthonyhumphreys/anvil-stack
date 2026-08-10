@@ -127,3 +127,81 @@ Behavior that must hold after any reconciliation:
   should be classified `reject`.
 - An `effect` major version bump is `adapt`: re-verify `Effect.runPromiseExit`
   boundary behavior and `Schedule` semantics before merging.
+
+### C2: Provider-neutral agent execution control plane
+
+Status: active
+Owner project: `anvil-cloud`
+
+#### Intent
+
+Turn Agent Sandbox lifecycle primitives into resumable, inspectable executions
+without exposing provider APIs, local OAuth files, raw credentials, or shared
+writable workspaces to callers. Keep AWS as the only production-target adapter
+during alpha; other providers must implement the same execution conformance
+contract later.
+
+#### Owner modules
+
+- `anvil-cloud/packages/runtime/src/agent-execution.ts` — JSON-friendly source,
+  policy, event, result, and provider I/O contracts.
+- `anvil-cloud/packages/control-plane/src/execution*.ts` and
+  `fake-execution-provider.ts` — leases, stores, HTTP boundary, conformance,
+  budgets, and cleanup receipts.
+- `anvil-cloud/packages/aws/src/sandbox.ts` — Lambda MicroVM lifecycle and
+  read-only execution transport.
+- `anvil-cloud/packages/cli/src/index.ts` — execution conformance command.
+- Docs: `anvil-cloud/docs/architecture/agent-execution-control-plane.md`,
+  `anvil-cloud/docs/architecture/agents.md`, and the Anvil Website Cloud mirror.
+
+#### Required behavior
+
+1. `clientToken` makes execution creation idempotent.
+2. Provider events are de-duplicated and receive durable, monotonically
+   increasing control-plane cursors.
+3. Closing and reconnecting a client cannot duplicate events after its last
+   cursor.
+4. Git sources are credential-free HTTPS URLs pinned to hexadecimal commits;
+   snapshot sources use opaque ids and SHA-256 digests. Source selection records
+   the exclusion of `.git`, ignored files, secrets, and unrelated untracked
+   files.
+5. Model authentication is control-plane-brokered by credential name. Local
+   Codex OAuth state and credential values have no protocol field and must not
+   be persisted in leases or events.
+6. Network policy matches the compiled agent manifest. Read-write execution
+   requires the agent filesystem capability. AWS remains read-only and rejects
+   working-tree patches in this slice.
+7. TTL, provider-event, and estimated-cost ceilings fail the lease and request
+   sandbox cleanup.
+8. Collection and cancellation emit cleanup receipts. Teardown is `verified`
+   only after provider inspection reports a terminal sandbox.
+9. The fake provider conformance loop must pause for approval, resume the same
+   run from a cursor, return a patch, and prove teardown.
+10. The AWS execution transport uses short-lived MicroVM auth tokens for each
+    request and does not persist them.
+
+#### Verification
+
+Run from `anvil-cloud/`:
+
+```sh
+pnpm --filter @anvil-cloud/runtime --filter @anvil-cloud/control-plane --filter @anvil-cloud/aws --filter @anvilstack/cloud-cli typecheck
+pnpm --filter @anvil-cloud/control-plane test
+pnpm --filter @anvil-cloud/aws test -- agent.test.ts
+pnpm --filter @anvilstack/cloud-cli test -- cli.test.ts
+anvil-cloud executions conformance --json
+```
+
+#### Upstream break risks
+
+- A provider-specific field in the Runtime execution request is `reject`.
+- Persisting pre-signed source URLs, auth tokens, credential values, or local
+  agent OAuth state is `reject`.
+- Replacing cursor reads with an unresumable stream is `adapt`: preserve the
+  durable cursor as the recovery boundary even if live delivery uses SSE or
+  WebSocket.
+- Treating a terminate request as verified cleanup without provider inspection
+  is `reject`.
+- Enabling AWS writes before patch signing, result review, approval gates, and
+  cleanup evidence are implemented is `adapt` or `reject` depending on whether
+  it can be restored behind read-only policy.

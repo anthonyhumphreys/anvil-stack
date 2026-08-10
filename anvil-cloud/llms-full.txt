@@ -305,6 +305,23 @@ anvil-cloud destroy --preview --app <name> --yes --json
 Missing AWS configuration should produce stable JSON errors and reviewable
 plans, not half-mutated infrastructure.
 
+## Agent Execution Boundary
+
+Agent Sandbox lifecycle becomes remote work through the provider-neutral
+`AgentExecutionProvider` contract. The control plane owns idempotent leases,
+durable cursor events, approvals, input, steering, TTL and budget enforcement,
+results, and cleanup receipts. Providers own sandbox lifecycle and private I/O.
+
+Use the deterministic exit gate before changing execution providers:
+
+```sh
+anvil-cloud executions conformance --json
+```
+
+AWS execution is read-only in the current slice and requires a compatible
+Lambda MicroVM worker image. Never persist MicroVM auth tokens, pre-signed
+source URLs, credential values, or local Codex OAuth state in leases or events.
+
 ## Verification
 
 For narrow package work, run focused filters from `anvil-cloud/`:
@@ -318,8 +335,8 @@ For runtime, AWS adapter, or CLI orchestration changes, use the owned Effect
 verification set from root `PATCH.md`:
 
 ```sh
-pnpm --filter @anvil-cloud/runtime --filter @anvil-cloud/aws --filter @anvilstack/cloud-cli typecheck
-pnpm --filter @anvil-cloud/runtime --filter @anvil-cloud/aws --filter @anvilstack/cloud-cli test
+pnpm --filter @anvil-cloud/runtime --filter @anvil-cloud/control-plane --filter @anvil-cloud/aws --filter @anvilstack/cloud-cli typecheck
+pnpm --filter @anvil-cloud/runtime --filter @anvil-cloud/control-plane --filter @anvil-cloud/aws --filter @anvilstack/cloud-cli test
 ```
 
 Before a broad PR, prefer:

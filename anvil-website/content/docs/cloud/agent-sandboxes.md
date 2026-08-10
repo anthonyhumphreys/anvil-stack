@@ -13,12 +13,13 @@ Agent Sandboxes are the runtime shape for serious Anvil Agent execution: isolate
 inspectable, sessionful workspaces where an agent can run tools, operate a repo,
 wait for approval, resume with state, and leave evidence behind.
 
-The first implementation slice exists: Anvil has a provider-neutral sandbox
-contract, an AWS Lambda MicroVM sandbox provider, AWS compatibility checks,
-preview-plan entries, and CLI readiness output. The full hosted experience still
-needs live network-bound credential injection, streamed tools, workspace
-snapshots, Lens views, and remote inspect. Technically functional, not yet
-wearing a cape.
+The execution foundation now exists: Anvil has provider-neutral sandbox and
+execution contracts, resumable cursor events, durable local lease storage, a
+deterministic conformance provider, a hosted HTTP boundary, and an AWS Lambda
+MicroVM read-only transport. The full hosted experience still needs authenticated
+route wiring, source snapshot storage, live credential brokering, a compatible
+deployed worker image, Lens views, and real-account verification. Technically
+functional, not yet wearing a cape.
 
 ## Why sandboxes exist
 
@@ -194,6 +195,39 @@ type AgentSandboxProvider = {
 The important part is the boundary: Anvil owns the contract, policy, approval
 checks, and inspection; the adapter owns provider resources.
 
+## Execution control plane
+
+`@anvil-cloud/runtime` also defines the `AgentExecutionProvider` contract and
+stable source, policy, event, result, artifact, usage, and cleanup shapes.
+`@anvil-cloud/control-plane` turns those provider operations into idempotent
+execution leases with:
+
+- client-token idempotency
+- cursor-based replay without duplicate provider events
+- approval decisions, structured input, and steering
+- suspend, resume, collect, terminate, and TTL reaping
+- event-count and estimated-cost ceilings
+- JSON-file or in-memory state stores
+- cleanup receipts that distinguish requested teardown from verified teardown
+- a `/v1/executions` HTTP router and matching client
+
+The deterministic exit gate needs no cloud account:
+
+```bash
+anvil cloud executions conformance --json
+```
+
+It starts a fake writable execution, pauses for approval, resumes from the same
+cursor, returns a patch, and verifies that the sandbox was terminated. This is a
+real contract test, not a simulated claim that AWS credentials or a hosted
+service exist.
+
+AWS implements the same interface in read-only mode. A compatible Lambda
+MicroVM image receives source preparation, run, cursor event, approval, input,
+steering, and result requests under `/_anvil/execution/*`. Every request uses a
+short-lived MicroVM auth token. The token is not stored in the execution lease
+or event log.
+
 ## What sandboxes should run
 
 Good sandbox workloads:
@@ -235,10 +269,11 @@ The MicroVM contains the work. Anvil decides what work is allowed.
 
 ## Inspection model
 
-The CLI exposes sandbox readiness today:
+The CLI exposes sandbox readiness and execution conformance today:
 
 ```bash
 anvil cloud agents sandboxes --json
+anvil cloud executions conformance --json
 ```
 
 Anvil Lens and remote inspect should eventually expose:
@@ -285,20 +320,33 @@ Implemented today:
 - AWS Bedrock inference provider
 - AWS compatibility reporting
 - provider-neutral Agent Sandbox types in `@anvil-cloud/runtime`
+- provider-neutral execution request, source, policy, event, result, artifact,
+  and provider I/O types in `@anvil-cloud/runtime`
+- idempotent execution leases, durable cursors, approval/input/steering
+  controls, budgets, results, and cleanup receipts in
+  `@anvil-cloud/control-plane`
+- in-memory and atomic JSON-file execution stores
+- framework-neutral hosted execution HTTP router and client
+- deterministic fake-provider conformance with approval, patch, cursor, and
+  teardown proof
 - brokered credential declarations in agent manifests and sandbox startup
   payloads
 - local Docker and process sandbox providers in `@anvil-cloud/local`
 - local sandbox backend selection and inspect JSON session reporting
 - `AwsLambdaMicroVmSandboxProvider` in `@anvil-cloud/aws`
+- token-scoped AWS read-only execution transport for compatible MicroVM worker
+  images
 - `ANVIL_AWS_AGENT_SANDBOX_IMAGE`-gated AWS support for sandbox-required agents
 - AWS preview plan changes, review gates, and cost drivers for `agent-sandboxes`
 - `anvil cloud agents sandboxes --json`
+- `anvil cloud executions conformance --json`
 
 Not implemented yet:
 
 - live network-bound credential injection around sandbox tools
-- session streaming transport
 - workspace snapshot storage
+- authenticated hosted route wiring and workspace authorisation
+- compatible deployed AWS execution worker image and real-account smoke
 - production approval UI
 - sandbox-aware Lens views
 - remote sandbox inspect/logs

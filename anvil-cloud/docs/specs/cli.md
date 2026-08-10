@@ -134,6 +134,19 @@ Checks:
 - manifest extraction safety;
 - declared capabilities.
 
+### `anvil-cloud executions conformance`
+
+Runs the deterministic execution-provider exit gate without a cloud account:
+
+```sh
+anvil-cloud executions conformance --json
+```
+
+The command verifies idempotent lease creation, an approval pause, cursor-safe
+resume, patch/result collection, and inspected sandbox teardown. It exercises
+the provider-neutral control-plane contract; it does not claim that a hosted
+AWS worker image or credential broker is deployed.
+
 ### `anvil-cloud build`
 
 Builds local artefacts into `.anvil/dist` and `.anvil/generated`.

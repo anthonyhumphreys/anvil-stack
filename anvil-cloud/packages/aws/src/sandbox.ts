@@ -11,12 +11,33 @@ import {
   type RunMicrovmCommandOutput,
 } from "@aws-sdk/client-lambda-microvms";
 import type {
+  AgentExecutionApprovalDecision,
+  AgentExecutionEventBatch,
+  AgentExecutionHandle,
+  AgentExecutionInputSubmission,
+  AgentExecutionProvider,
+  AgentExecutionProviderResult,
+  AgentExecutionRequest,
+  AgentExecutionStartInput,
+  AgentExecutionWorkspace,
   AgentSandboxAuthToken,
-  AgentSandboxProvider,
   AgentSandboxSession,
   AgentSandboxStartInput,
   AgentSandboxStatus,
 } from "@anvil-cloud/runtime";
+
+export type AwsAgentExecutionFetch = (
+  input: string,
+  init?: {
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+  },
+) => Promise<{
+  ok: boolean;
+  status: number;
+  json(): Promise<unknown>;
+}>;
 
 export type AwsLambdaMicroVmSandboxProviderOptions = {
   region?: string;
@@ -30,6 +51,7 @@ export type AwsLambdaMicroVmSandboxProviderOptions = {
   maximumDurationInSeconds?: number;
   logGroup?: string;
   client?: Pick<LambdaMicrovmsClient, "send">;
+  executionFetch?: AwsAgentExecutionFetch;
 };
 
 export class AwsLambdaMicroVmSandboxError extends Error {
@@ -42,9 +64,35 @@ export class AwsLambdaMicroVmSandboxError extends Error {
   }
 }
 
-export class AwsLambdaMicroVmSandboxProvider implements AgentSandboxProvider {
+export class AwsAgentExecutionTransportError extends Error {
+  constructor(
+    readonly code:
+      | "AWS_AGENT_EXECUTION_ENDPOINT_REQUIRED"
+      | "AWS_AGENT_EXECUTION_REQUEST_FAILED"
+      | "AWS_AGENT_EXECUTION_INVALID_RESPONSE",
+    message: string,
+    readonly details: Record<string, unknown> = {},
+  ) {
+    super(message);
+    this.name = "AwsAgentExecutionTransportError";
+  }
+}
+
+export class AwsLambdaMicroVmSandboxProvider implements AgentExecutionProvider {
   readonly id = "aws-lambda-microvm";
+  readonly executionCapabilities = {
+    modes: ["read-only"],
+    maxTtlSeconds: 28_800,
+    resumableEvents: true,
+    approvals: true,
+    input: true,
+    steering: true,
+    artifacts: true,
+    patches: false,
+  } as const;
   private readonly client: Pick<LambdaMicrovmsClient, "send">;
+  private readonly executionFetch: AwsAgentExecutionFetch;
+  private readonly sessions = new Map<string, AgentSandboxSession>();
 
   constructor(
     private readonly options: AwsLambdaMicroVmSandboxProviderOptions = {},
@@ -54,6 +102,31 @@ export class AwsLambdaMicroVmSandboxProvider implements AgentSandboxProvider {
       new LambdaMicrovmsClient(
         options.region === undefined ? {} : { region: options.region },
       );
+    this.executionFetch =
+      options.executionFetch ?? (fetch as unknown as AwsAgentExecutionFetch);
+  }
+
+  supports(request: AgentExecutionRequest) {
+    const reasons: string[] = [];
+    const imageIdentifier =
+      this.options.imageIdentifier ?? process.env.ANVIL_AWS_AGENT_SANDBOX_IMAGE;
+
+    if (!imageIdentifier) {
+      reasons.push("AWS Agent Sandbox image is not configured");
+    }
+    if (request.policy.mode !== "read-only") {
+      reasons.push("AWS execution is read-only in the current vertical slice");
+    }
+    if (request.policy.ttlSeconds > this.executionCapabilities.maxTtlSeconds) {
+      reasons.push("requested TTL exceeds the AWS sandbox maximum");
+    }
+    if (request.source.selection.includesWorkingTreePatch) {
+      reasons.push(
+        "working-tree patches are not accepted by the AWS read-only slice",
+      );
+    }
+
+    return { supported: reasons.length === 0, reasons };
   }
 
   async start(input: AgentSandboxStartInput): Promise<AgentSandboxSession> {
@@ -90,6 +163,13 @@ export class AwsLambdaMicroVmSandboxProvider implements AgentSandboxProvider {
         credentialBroker:
           input.credentialBroker ?? input.manifest.credentialBroker,
         workspace: input.workspace,
+        executionProtocol: {
+          schemaVersion: "0.1",
+          transport: "https",
+          basePath: "/_anvil/execution",
+          resumableEvents: true,
+          modelAuth: "control-plane-brokered",
+        },
       }),
     };
 
@@ -123,7 +203,7 @@ export class AwsLambdaMicroVmSandboxProvider implements AgentSandboxProvider {
       new RunMicrovmCommand(commandInput),
     );
 
-    return sessionFromMicrovm(
+    const session = sessionFromMicrovm(
       response,
       compactContext({
         agent: input.manifest.name,
@@ -131,6 +211,9 @@ export class AwsLambdaMicroVmSandboxProvider implements AgentSandboxProvider {
         region: this.options.region,
       }),
     );
+    this.sessions.set(session.id, session);
+
+    return session;
   }
 
   async inspect(sessionId: string): Promise<AgentSandboxSession> {
@@ -138,7 +221,7 @@ export class AwsLambdaMicroVmSandboxProvider implements AgentSandboxProvider {
       new GetMicrovmCommand({ microvmIdentifier: sessionId }),
     );
 
-    return sessionFromMicrovm(
+    const session = sessionFromMicrovm(
       response,
       compactContext({
         agent: "unknown",
@@ -146,6 +229,9 @@ export class AwsLambdaMicroVmSandboxProvider implements AgentSandboxProvider {
         region: this.options.region,
       }),
     );
+    this.sessions.set(session.id, session);
+
+    return session;
   }
 
   async suspend(sessionId: string): Promise<void> {
@@ -186,6 +272,207 @@ export class AwsLambdaMicroVmSandboxProvider implements AgentSandboxProvider {
       sessionId,
       tokenParts: response.authToken ?? {},
     };
+  }
+
+  async prepareWorkspace(
+    session: AgentSandboxSession,
+    input: { executionId: string; source: AgentExecutionStartInput["source"] },
+  ): Promise<AgentExecutionWorkspace> {
+    const payload = await this.executionRequest(session.id, "/workspace", {
+      method: "POST",
+      body: input,
+    });
+
+    if (
+      !isObject(payload.workspace) ||
+      typeof payload.workspace.id !== "string"
+    ) {
+      throw invalidExecutionResponse(
+        "Workspace preparation returned no workspace id.",
+      );
+    }
+
+    return {
+      id: payload.workspace.id,
+      source: input.source,
+      writable: false,
+      metadata: isObject(payload.workspace.metadata)
+        ? payload.workspace.metadata
+        : {},
+    };
+  }
+
+  async startExecution(
+    session: AgentSandboxSession,
+    input: AgentExecutionStartInput,
+  ): Promise<AgentExecutionHandle> {
+    const payload = await this.executionRequest(session.id, "/runs", {
+      method: "POST",
+      body: input,
+    });
+
+    if (typeof payload.runId !== "string" || payload.runId.length === 0) {
+      throw invalidExecutionResponse("Execution start returned no run id.");
+    }
+
+    return { sessionId: session.id, runId: payload.runId };
+  }
+
+  async readEvents(
+    handle: AgentExecutionHandle,
+    options: { cursor?: string; limit?: number } = {},
+  ): Promise<AgentExecutionEventBatch> {
+    const query = new URLSearchParams();
+
+    if (options.cursor !== undefined) {
+      query.set("cursor", options.cursor);
+    }
+    if (options.limit !== undefined) {
+      query.set("limit", String(options.limit));
+    }
+
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    const payload = await this.executionRequest(
+      handle.sessionId,
+      `/runs/${encodeURIComponent(handle.runId)}/events${suffix}`,
+    );
+
+    if (!Array.isArray(payload.events) || typeof payload.done !== "boolean") {
+      throw invalidExecutionResponse("Execution event response is invalid.");
+    }
+
+    return {
+      events: payload.events as AgentExecutionEventBatch["events"],
+      done: payload.done,
+      ...(typeof payload.cursor === "string" ? { cursor: payload.cursor } : {}),
+    };
+  }
+
+  async resolveApproval(
+    handle: AgentExecutionHandle,
+    decision: AgentExecutionApprovalDecision,
+  ): Promise<void> {
+    await this.executionRequest(
+      handle.sessionId,
+      `/runs/${encodeURIComponent(handle.runId)}/approvals/${encodeURIComponent(
+        decision.requestId,
+      )}`,
+      { method: "POST", body: decision },
+    );
+  }
+
+  async submitInput(
+    handle: AgentExecutionHandle,
+    input: AgentExecutionInputSubmission,
+  ): Promise<void> {
+    await this.executionRequest(
+      handle.sessionId,
+      `/runs/${encodeURIComponent(handle.runId)}/input/${encodeURIComponent(
+        input.requestId,
+      )}`,
+      { method: "POST", body: input },
+    );
+  }
+
+  async steer(handle: AgentExecutionHandle, message: string): Promise<void> {
+    await this.executionRequest(
+      handle.sessionId,
+      `/runs/${encodeURIComponent(handle.runId)}/steer`,
+      { method: "POST", body: { message } },
+    );
+  }
+
+  async collectResult(
+    handle: AgentExecutionHandle,
+  ): Promise<AgentExecutionProviderResult> {
+    const payload = await this.executionRequest(
+      handle.sessionId,
+      `/runs/${encodeURIComponent(handle.runId)}/result`,
+    );
+
+    if (
+      !isObject(payload.result) ||
+      typeof payload.result.status !== "string"
+    ) {
+      throw invalidExecutionResponse("Execution result response is invalid.");
+    }
+
+    return payload.result as AgentExecutionProviderResult;
+  }
+
+  private async executionRequest(
+    sessionId: string,
+    path: string,
+    init?: { method?: string; body?: unknown },
+  ): Promise<Record<string, unknown>> {
+    const session =
+      this.sessions.get(sessionId) ?? (await this.inspect(sessionId));
+
+    if (!session.endpointUrl) {
+      throw new AwsAgentExecutionTransportError(
+        "AWS_AGENT_EXECUTION_ENDPOINT_REQUIRED",
+        `AWS Agent Sandbox '${sessionId}' has no execution endpoint.`,
+        { sessionId },
+      );
+    }
+
+    const auth = await this.createAuthToken(sessionId, {
+      expirationMinutes: 5,
+      ports: [443],
+    });
+    let response: Awaited<ReturnType<AwsAgentExecutionFetch>>;
+
+    try {
+      response = await this.executionFetch(
+        `${session.endpointUrl.replace(/\/+$/, "")}/_anvil/execution${path}`,
+        {
+          method: init?.method ?? "GET",
+          headers: {
+            "content-type": "application/json",
+            ...auth.tokenParts,
+          },
+          ...(init?.body === undefined
+            ? {}
+            : { body: JSON.stringify(init.body) }),
+        },
+      );
+    } catch (error) {
+      throw new AwsAgentExecutionTransportError(
+        "AWS_AGENT_EXECUTION_REQUEST_FAILED",
+        `AWS Agent Sandbox execution request failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        { sessionId, path },
+      );
+    }
+
+    const payload = (await response.json().catch(() => ({}))) as unknown;
+
+    if (!response.ok) {
+      const record = isObject(payload) ? payload : {};
+      const error = isObject(record.error) ? record.error : {};
+
+      throw new AwsAgentExecutionTransportError(
+        "AWS_AGENT_EXECUTION_REQUEST_FAILED",
+        typeof error.message === "string"
+          ? error.message
+          : `AWS Agent Sandbox request returned status ${response.status}.`,
+        {
+          sessionId,
+          path,
+          status: response.status,
+          providerCode: typeof error.code === "string" ? error.code : "UNKNOWN",
+        },
+      );
+    }
+
+    if (!isObject(payload)) {
+      throw invalidExecutionResponse(
+        "AWS Agent Sandbox returned non-object JSON.",
+      );
+    }
+
+    return payload;
   }
 }
 
@@ -311,4 +598,17 @@ function mapMicrovmState(state: string | undefined): AgentSandboxStatus {
     default:
       return "failed";
   }
+}
+
+function invalidExecutionResponse(
+  message: string,
+): AwsAgentExecutionTransportError {
+  return new AwsAgentExecutionTransportError(
+    "AWS_AGENT_EXECUTION_INVALID_RESPONSE",
+    message,
+  );
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
