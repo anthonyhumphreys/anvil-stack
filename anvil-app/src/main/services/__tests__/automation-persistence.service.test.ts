@@ -19,6 +19,8 @@ import {
   listAutomationRunEvents,
   listAutomationRuns,
   listAutomations,
+  listDueAutomations,
+  listWatchtowerAutomations,
   updateAutomationRecord,
   updateAutomationRunWorktrees,
 } from '../automation-persistence.service.js';
@@ -212,6 +214,43 @@ describe('automation persistence', () => {
     expect(listAutomationRunEvents(run.id)).toHaveLength(2);
     expect(getAutomationRun(run.id)?.assistantMessage).toBe('No issues found.');
     expect(getAutomation(automation.id)?.lastRunStatus).toBe('completed');
+  });
+
+  it('keeps Watchtower listeners out of the cron queue and records event context', () => {
+    const automation = createAutomationRecord(
+      'ws-1',
+      {
+        name: 'Workflow follow-up',
+        personaId: 'coder',
+        prompt: 'Review the completed workflow output.',
+        repoIds: ['repo-1'],
+        triggerMode: 'watchtower',
+        watchEvent: 'workflow.completed',
+        scheduleCron: '0 9 * * 1-5',
+        timezone: 'UTC',
+        enabled: true,
+        allowRepoWrite: false,
+        allowCommandRun: false,
+      },
+      null,
+    );
+
+    expect(listDueAutomations('2099-01-01T00:00:00.000Z')).toEqual([]);
+    expect(listWatchtowerAutomations('ws-1', 'workflow.completed')).toEqual([automation]);
+
+    const event = {
+      id: 'workflow-1:completed',
+      type: 'workflow.completed' as const,
+      workspaceId: 'ws-1',
+      repoIds: ['repo-1'],
+      sourceId: 'workflow-1',
+      sourceLabel: 'Ship feature',
+      occurredAt: '2026-08-10T12:00:00.000Z',
+    };
+    const run = createAutomationRun(automation, 'watchtower', event);
+
+    expect(run.trigger).toBe('watchtower');
+    expect(run.triggerContext).toEqual(event);
   });
 
   it('coalesces adjacent streamed text-like events for the same run', () => {

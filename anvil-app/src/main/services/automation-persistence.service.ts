@@ -10,6 +10,8 @@ import type {
   AutomationRunTrigger,
   AutomationRunWorktree,
   AutomationTriageItem,
+  WatchtowerEvent,
+  WatchtowerEventType,
 } from '../../shared/types.js';
 import { getDb } from '../db/database.js';
 
@@ -20,6 +22,8 @@ interface AutomationDefinitionRow {
   persona_id: string;
   prompt: string;
   repo_ids_json: string;
+  trigger_mode: string;
+  watch_event: string | null;
   schedule_cron: string;
   timezone: string;
   enabled: number;
@@ -39,6 +43,7 @@ interface AutomationRunRow {
   automation_id: string;
   workspace_id: string;
   trigger: string;
+  trigger_context_json: string | null;
   status: string;
   assistant_message: string | null;
   error_message: string | null;
@@ -72,6 +77,18 @@ function parseMetadata(value: string | null | undefined): Record<string, unknown
   try {
     const parsed = JSON.parse(value);
     return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseWatchtowerEvent(value: string | null | undefined): WatchtowerEvent | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as WatchtowerEvent;
+    return parsed && typeof parsed === 'object' && typeof parsed.id === 'string'
+      ? parsed
+      : undefined;
   } catch {
     return undefined;
   }
@@ -123,6 +140,11 @@ function mapAutomationDefinition(row: AutomationDefinitionRow): AutomationDefini
     personaId: row.persona_id,
     prompt: row.prompt,
     repoIds: parseJsonArray<string>(row.repo_ids_json),
+    triggerMode: row.trigger_mode === 'watchtower' ? 'watchtower' : 'schedule',
+    watchEvent:
+      row.watch_event === 'workflow.completed' || row.watch_event === 'workflow.failed'
+        ? row.watch_event
+        : undefined,
     scheduleCron: row.schedule_cron,
     timezone: row.timezone,
     enabled: row.enabled === 1,
@@ -144,6 +166,7 @@ function mapAutomationRun(row: AutomationRunRow): AutomationRun {
     automationId: row.automation_id,
     workspaceId: row.workspace_id,
     trigger: row.trigger as AutomationRunTrigger,
+    triggerContext: parseWatchtowerEvent(row.trigger_context_json),
     status: row.status as AutomationRunStatus,
     assistantMessage: row.assistant_message ?? undefined,
     errorMessage: row.error_message ?? undefined,
@@ -203,6 +226,8 @@ export function createAutomationRecord(
        persona_id,
        prompt,
        repo_ids_json,
+       trigger_mode,
+       watch_event,
        schedule_cron,
        timezone,
        enabled,
@@ -213,7 +238,7 @@ export function createAutomationRecord(
        next_run_at,
        created_at,
        updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'disposable-worktree', ?, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'disposable-worktree', ?, ?, ?)`,
   ).run(
     id,
     workspaceId,
@@ -221,6 +246,8 @@ export function createAutomationRecord(
     input.personaId,
     input.prompt.trim(),
     JSON.stringify(input.repoIds),
+    input.triggerMode ?? 'schedule',
+    input.watchEvent ?? null,
     input.scheduleCron.trim(),
     input.timezone.trim(),
     input.enabled ? 1 : 0,
@@ -248,6 +275,8 @@ export function updateAutomationRecord(
        persona_id = ?,
        prompt = ?,
        repo_ids_json = ?,
+       trigger_mode = ?,
+       watch_event = ?,
        schedule_cron = ?,
        timezone = ?,
        enabled = ?,
@@ -262,6 +291,8 @@ export function updateAutomationRecord(
     input.personaId,
     input.prompt.trim(),
     JSON.stringify(input.repoIds),
+    input.triggerMode ?? 'schedule',
+    input.watchEvent ?? null,
     input.scheduleCron.trim(),
     input.timezone.trim(),
     input.enabled ? 1 : 0,
@@ -284,7 +315,9 @@ export function deleteAutomationRecord(automationId: string): void {
 export function countEnabledAutomations(): number {
   const db = getDb();
   const row = db
-    .prepare('SELECT COUNT(*) AS count FROM automation_definitions WHERE enabled = 1')
+    .prepare(
+      "SELECT COUNT(*) AS count FROM automation_definitions WHERE enabled = 1 AND trigger_mode = 'schedule'",
+    )
     .get() as { count: number };
   return Number(row.count ?? 0);
 }
@@ -292,6 +325,7 @@ export function countEnabledAutomations(): number {
 export function createAutomationRun(
   automation: AutomationDefinition,
   trigger: AutomationRunTrigger,
+  triggerContext?: WatchtowerEvent,
 ): AutomationRun {
   const db = getDb();
   const id = randomUUID();
@@ -315,11 +349,19 @@ export function createAutomationRun(
          automation_id,
          workspace_id,
          trigger,
+         trigger_context_json,
          status,
          worktrees_json,
          started_at
-       ) VALUES (?, ?, ?, ?, 'running', '[]', ?)`,
-    ).run(id, automation.id, automation.workspaceId, trigger, now);
+       ) VALUES (?, ?, ?, ?, ?, 'running', '[]', ?)`,
+    ).run(
+      id,
+      automation.id,
+      automation.workspaceId,
+      trigger,
+      triggerContext ? JSON.stringify(triggerContext) : null,
+      now,
+    );
 
     db.prepare(
       `UPDATE automation_definitions
@@ -509,11 +551,30 @@ export function listDueAutomations(referenceTime: string): AutomationDefinition[
       `SELECT *
        FROM automation_definitions
        WHERE enabled = 1
+         AND trigger_mode = 'schedule'
          AND next_run_at IS NOT NULL
          AND next_run_at <= ?
        ORDER BY next_run_at ASC`,
     )
     .all(referenceTime) as AutomationDefinitionRow[];
+  return rows.map(mapAutomationDefinition);
+}
+
+export function listWatchtowerAutomations(
+  workspaceId: string,
+  eventType: WatchtowerEventType,
+): AutomationDefinition[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT *
+       FROM automation_definitions
+       WHERE workspace_id = ?
+         AND enabled = 1
+         AND trigger_mode = 'watchtower'
+         AND watch_event = ?
+       ORDER BY updated_at DESC`,
+    )
+    .all(workspaceId, eventType) as AutomationDefinitionRow[];
   return rows.map(mapAutomationDefinition);
 }
 

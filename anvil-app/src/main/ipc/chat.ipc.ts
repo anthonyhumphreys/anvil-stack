@@ -66,6 +66,7 @@ import {
 import { listChatTurnSummaries, saveChatEvent } from '../services/chat-evidence.service.js';
 import { searchChatFileMentions } from '../services/chat-file-mention.service.js';
 import {
+  discardChatArtifact,
   listChatArtifacts,
   readChatArtifactFile,
   upsertChatArtifact,
@@ -408,6 +409,10 @@ export function registerChatHandlers(): void {
 
   ipcMain.handle('chat:upsert-artifact', (_event, input: ChatArtifactInput): ChatArtifact => {
     return upsertChatArtifact(input);
+  });
+
+  ipcMain.handle('chat:discard-artifact', (_event, id: string): boolean => {
+    return discardChatArtifact(id);
   });
 
   ipcMain.handle('chat:read-artifact-file', (_event, id: string): ChatArtifactFile => {

@@ -173,6 +173,7 @@ const api: AnvilAPI = {
       ipcRenderer.invoke('chat:list-turn-summaries', threadId),
     listArtifacts: (threadId: string) => ipcRenderer.invoke('chat:list-artifacts', threadId),
     upsertArtifact: (input: ChatArtifactInput) => ipcRenderer.invoke('chat:upsert-artifact', input),
+    discardArtifact: (id: string) => ipcRenderer.invoke('chat:discard-artifact', id),
     readArtifactFile: (id: string) => ipcRenderer.invoke('chat:read-artifact-file', id),
     listThreads: (workspaceId: string | null, personaId: string) =>
       ipcRenderer.invoke('chat:list-threads', workspaceId, personaId),

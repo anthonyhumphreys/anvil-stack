@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 50;
+export const SCHEMA_VERSION = 52;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -159,6 +159,7 @@ CREATE TABLE IF NOT EXISTS chat_artifacts (
   source_message_id TEXT,
   title TEXT NOT NULL,
   kind TEXT NOT NULL,
+  storage_scope TEXT NOT NULL DEFAULT 'repository',
   relative_path TEXT NOT NULL,
   file_path TEXT,
   content TEXT NOT NULL,
@@ -183,6 +184,7 @@ CREATE TABLE IF NOT EXISTS chat_artifact_revisions (
   source_message_id TEXT,
   title TEXT NOT NULL,
   kind TEXT NOT NULL,
+  storage_scope TEXT NOT NULL DEFAULT 'repository',
   relative_path TEXT NOT NULL,
   file_path TEXT,
   content TEXT NOT NULL,
@@ -554,6 +556,8 @@ CREATE TABLE IF NOT EXISTS automation_definitions (
   persona_id TEXT NOT NULL,
   prompt TEXT NOT NULL,
   repo_ids_json TEXT NOT NULL DEFAULT '[]',
+  trigger_mode TEXT NOT NULL DEFAULT 'schedule',
+  watch_event TEXT,
   schedule_cron TEXT NOT NULL,
   timezone TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 0,
@@ -574,11 +578,15 @@ CREATE INDEX IF NOT EXISTS idx_automation_definitions_workspace
 CREATE INDEX IF NOT EXISTS idx_automation_definitions_due
   ON automation_definitions(enabled, next_run_at);
 
+CREATE INDEX IF NOT EXISTS idx_automation_definitions_watchtower
+  ON automation_definitions(workspace_id, enabled, trigger_mode, watch_event);
+
 CREATE TABLE IF NOT EXISTS automation_runs (
   id TEXT PRIMARY KEY,
   automation_id TEXT NOT NULL REFERENCES automation_definitions(id) ON DELETE CASCADE,
   workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
   trigger TEXT NOT NULL,
+  trigger_context_json TEXT,
   status TEXT NOT NULL DEFAULT 'queued',
   assistant_message TEXT,
   error_message TEXT,
@@ -1606,5 +1614,20 @@ export const MIGRATIONS: Record<number, string> = {
 
     CREATE INDEX IF NOT EXISTS idx_pr_visualisations_lookup
       ON pull_request_visualisations(repo_id, provider, pull_request_id, created_at DESC);
+  `,
+  51: `
+    ALTER TABLE chat_artifacts
+      ADD COLUMN storage_scope TEXT NOT NULL DEFAULT 'repository';
+    ALTER TABLE chat_artifact_revisions
+      ADD COLUMN storage_scope TEXT NOT NULL DEFAULT 'repository';
+  `,
+  52: `
+    ALTER TABLE automation_definitions
+      ADD COLUMN trigger_mode TEXT NOT NULL DEFAULT 'schedule';
+    ALTER TABLE automation_definitions ADD COLUMN watch_event TEXT;
+    ALTER TABLE automation_runs ADD COLUMN trigger_context_json TEXT;
+
+    CREATE INDEX IF NOT EXISTS idx_automation_definitions_watchtower
+      ON automation_definitions(workspace_id, enabled, trigger_mode, watch_event);
   `,
 };

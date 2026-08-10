@@ -431,6 +431,7 @@ export type ChatArtifactKind =
   | 'text';
 
 export type ChatArtifactContentEncoding = 'utf8' | 'base64' | 'file';
+export type ChatArtifactStorage = 'repository' | 'session';
 
 export interface ChatArtifactFile {
   name: string;
@@ -485,6 +486,7 @@ export interface ChatArtifact {
   sourceMessageId?: string;
   title: string;
   kind: ChatArtifactKind;
+  storage: ChatArtifactStorage;
   relativePath: string;
   filePath?: string;
   content: string;
@@ -504,6 +506,7 @@ export interface ChatArtifactInput {
   sourceMessageId?: string;
   title: string;
   kind: ChatArtifactKind;
+  storage?: ChatArtifactStorage;
   relativePath: string;
   content: string;
   contentEncoding?: ChatArtifactContentEncoding;
@@ -1662,7 +1665,9 @@ export interface WorkspaceScaffoldMaybeCompleteResult {
 // ---------------------------------------------------------------------------
 
 export type AutomationExecutionMode = 'disposable-worktree';
-export type AutomationRunTrigger = 'manual' | 'schedule';
+export type AutomationTriggerMode = 'schedule' | 'watchtower';
+export type WatchtowerEventType = 'workflow.completed' | 'workflow.failed';
+export type AutomationRunTrigger = 'manual' | 'schedule' | 'watchtower';
 export type AutomationRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type AutomationLoopMode = 'sequence' | 'dynamic';
 export type AutomationEventType =
@@ -1684,11 +1689,24 @@ export interface AutomationLoopConfig {
   stopCondition: string;
 }
 
+export interface WatchtowerEvent {
+  id: string;
+  type: WatchtowerEventType;
+  workspaceId: string;
+  repoIds: string[];
+  sourceId: string;
+  sourceLabel: string;
+  occurredAt: string;
+  metadata?: Record<string, unknown>;
+}
+
 export interface AutomationDefinitionInput {
   name: string;
   personaId: string;
   prompt: string;
   repoIds: string[];
+  triggerMode?: AutomationTriggerMode;
+  watchEvent?: WatchtowerEventType;
   scheduleCron: string;
   timezone: string;
   enabled: boolean;
@@ -1697,9 +1715,14 @@ export interface AutomationDefinitionInput {
   loopConfig?: AutomationLoopConfig;
 }
 
-export interface AutomationDefinition extends AutomationDefinitionInput {
+export interface AutomationDefinition extends Omit<
+  AutomationDefinitionInput,
+  'triggerMode' | 'watchEvent'
+> {
   id: string;
   workspaceId: string;
+  triggerMode: AutomationTriggerMode;
+  watchEvent?: WatchtowerEventType;
   executionMode: AutomationExecutionMode;
   lastRunAt?: string;
   nextRunAt?: string;
@@ -1721,6 +1744,7 @@ export interface AutomationRun {
   automationId: string;
   workspaceId: string;
   trigger: AutomationRunTrigger;
+  triggerContext?: WatchtowerEvent;
   status: AutomationRunStatus;
   startedAt: string;
   completedAt?: string;

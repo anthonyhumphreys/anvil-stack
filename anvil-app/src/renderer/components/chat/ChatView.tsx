@@ -43,6 +43,7 @@ import {
   GitPullRequest,
   Gauge,
   LifeBuoy,
+  Trash2,
 } from 'lucide-react';
 import type {
   AgentRunSummary,
@@ -92,6 +93,8 @@ import {
 import { parseWorkflowChatIntent } from '../../utils/workflow-chat-intent';
 import { groupPersonasForRole } from '../../utils/persona-groups';
 import { ItsmWorkbench } from './ItsmWorkbench';
+import { ExecutionTopologyPanel } from './ExecutionTopologyPanel';
+import { buildExecutionTopology, type ExecutionTopology } from '../../utils/execution-topology';
 
 const PERSONA_ICONS: Record<string, React.ReactNode> = {
   Code: <Code size={14} />,
@@ -119,7 +122,7 @@ interface ScrollMetrics {
 }
 
 const CHAT_BOTTOM_THRESHOLD_PX = 96;
-const NEW_CHAT_THREAD_LABEL = 'New thread';
+const NEW_CHAT_THREAD_LABEL = 'New outcome';
 const ITSM_PERSONA_IDS = new Set(ROLE_RECOMMENDED_PERSONAS.itsm ?? []);
 
 interface ChatViewProps {
@@ -151,6 +154,7 @@ export function ChatView({ userRole }: ChatViewProps) {
     activePlan,
     activeGoal,
     activeArtifacts,
+    discardArtifact,
     chatLayout,
     send,
     steer,
@@ -207,8 +211,8 @@ export function ChatView({ userRole }: ChatViewProps) {
       {
         id: 'new',
         command: '/new',
-        label: 'New thread',
-        description: 'Start a fresh chat thread.',
+        label: 'New outcome',
+        description: 'Start a fresh outcome room.',
         insertText: '/new',
       },
       {
@@ -532,6 +536,16 @@ export function ChatView({ userRole }: ChatViewProps) {
     activeArtifacts.find((artifact) => artifact.id === selectedArtifactId) ??
     activeArtifacts[0] ??
     null;
+  const executionTopology = useMemo(
+    () =>
+      buildExecutionTopology({
+        entries,
+        sessions: activeSessions,
+        threadId: activeThreadId,
+        rootLabel: activeThread?.title ?? 'New outcome',
+      }),
+    [activeSessions, activeThread?.title, activeThreadId, entries],
+  );
   const showItsmWorkbench = userRole === 'itsm' && isItsmPersona && itsmWorkbenchOpen;
   const showCanvasSidebar =
     !isDesignPersona &&
@@ -598,7 +612,7 @@ export function ChatView({ userRole }: ChatViewProps) {
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-2">
               <h2 className="truncate text-sm font-semibold tracking-tight text-text-primary">
-                {activeThread && !scaffoldModeActive ? activeThread.title : 'New conversation'}
+                {activeThread && !scaffoldModeActive ? activeThread.title : 'New outcome'}
               </h2>
             </div>
             <p className="truncate text-xs text-text-tertiary">
@@ -709,7 +723,7 @@ export function ChatView({ userRole }: ChatViewProps) {
                             : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary'
                         }`}
                         aria-pressed={chatLayout === 'classic'}
-                        title="Classic chat threads"
+                        title="Outcome rooms"
                       >
                         <MessageSquare size={12} />
                         <span className="hidden 2xl:inline">Classic</span>
@@ -789,6 +803,7 @@ export function ChatView({ userRole }: ChatViewProps) {
                       open={workOpen}
                       runs={recentRuns}
                       sessions={activeSessions}
+                      topology={executionTopology}
                       onOpenChange={setWorkOpen}
                       onOpenThread={(threadId) => void selectThread(threadId)}
                       onStop={(sessionId) => void window.anvil.chat.stopSession(sessionId)}
@@ -1268,6 +1283,7 @@ export function ChatView({ userRole }: ChatViewProps) {
               activePlan={activePlan}
               activeGoal={activeGoal}
               onSelectArtifact={setSelectedArtifactId}
+              onDiscardArtifact={discardArtifact}
               presentation="sidebar"
               onExpand={() => setCanvasExpanded(true)}
               onDetach={() => setCanvasDetached(true)}
@@ -1283,6 +1299,7 @@ export function ChatView({ userRole }: ChatViewProps) {
               activePlan={activePlan}
               activeGoal={activeGoal}
               onSelectArtifact={setSelectedArtifactId}
+              onDiscardArtifact={discardArtifact}
               presentation="expanded"
               onExpand={() => setCanvasExpanded(false)}
               onDetach={() => {
@@ -1301,6 +1318,7 @@ export function ChatView({ userRole }: ChatViewProps) {
               activePlan={activePlan}
               activeGoal={activeGoal}
               onSelectArtifact={setSelectedArtifactId}
+              onDiscardArtifact={discardArtifact}
               presentation="detached"
               onExpand={handleDetachedCanvasClose}
               onDetach={handleDetachedCanvasClose}
@@ -1322,6 +1340,7 @@ function AgentWorkControl({
   open,
   runs,
   sessions,
+  topology,
   onOpenChange,
   onOpenThread,
   onStop,
@@ -1329,11 +1348,12 @@ function AgentWorkControl({
   open: boolean;
   runs: AgentRunSummary[];
   sessions: CodexSession[];
+  topology: ExecutionTopology;
   onOpenChange: (open: boolean) => void;
   onOpenThread: (threadId: string) => void;
   onStop: (sessionId: string) => void;
 }) {
-  const [section, setSection] = useState<'active' | 'recent'>('active');
+  const [section, setSection] = useState<'active' | 'recent' | 'topology'>('active');
   const activeSessions = sessions.filter(
     (session) => session.status === 'starting' || session.status === 'busy',
   );
@@ -1367,11 +1387,11 @@ function AgentWorkControl({
           <div className="px-2 pb-2">
             <div className="text-sm font-semibold text-text-primary">Agent work</div>
             <div className="mt-1 text-xs text-text-tertiary">
-              Live sessions and durable run history for this workspace.
+              Live sessions, optional topology, and durable run history for this workspace.
             </div>
           </div>
           <div className="flex gap-1 border-b border-border-subtle px-2 pb-2" role="tablist">
-            {(['active', 'recent'] as const).map((item) => (
+            {(['active', 'topology', 'recent'] as const).map((item) => (
               <button
                 key={item}
                 type="button"
@@ -1390,7 +1410,9 @@ function AgentWorkControl({
             ))}
           </div>
           <div className="max-h-96 overflow-y-auto py-2">
-            {section === 'active' && activeSessions.length === 0 ? (
+            {section === 'topology' ? (
+              <ExecutionTopologyPanel topology={topology} />
+            ) : section === 'active' && activeSessions.length === 0 ? (
               <div className="px-3 py-6 text-center">
                 <Bot size={20} className="mx-auto text-text-muted" />
                 <p className="mt-2 text-sm text-text-secondary">No work is running.</p>
@@ -1439,7 +1461,7 @@ function AgentWorkControl({
                       }}
                       className="mt-2 text-xs font-medium text-accent hover:underline"
                     >
-                      Open thread
+                      Open outcome
                     </button>
                   )}
                 </div>
@@ -1485,7 +1507,7 @@ function AgentWorkControl({
                         }}
                         className="ml-auto font-medium text-accent hover:underline"
                       >
-                        Open thread
+                        Open outcome
                       </button>
                     )}
                   </div>
@@ -1675,6 +1697,7 @@ function ChatCanvasSidebar({
   activePlan,
   activeGoal,
   onSelectArtifact,
+  onDiscardArtifact,
   presentation,
   onExpand,
   onDetach,
@@ -1684,6 +1707,7 @@ function ChatCanvasSidebar({
   activePlan: ChatPlanSnapshot | null;
   activeGoal: ChatGoalSnapshot | null;
   onSelectArtifact: (artifactId: string) => void;
+  onDiscardArtifact: (artifactId: string) => Promise<void>;
   presentation: 'sidebar' | 'expanded' | 'detached';
   onExpand: () => void;
   onDetach: () => void;
@@ -1698,6 +1722,12 @@ function ChatCanvasSidebar({
       window.setTimeout(() => setCopied(false), 1400);
     });
   }, [selectedArtifact]);
+
+  const handleDiscard = useCallback(() => {
+    if (!selectedArtifact || selectedArtifact.storage !== 'session') return;
+    if (!window.confirm(`Discard the session-only artifact “${selectedArtifact.title}”?`)) return;
+    void onDiscardArtifact(selectedArtifact.id);
+  }, [onDiscardArtifact, selectedArtifact]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -1773,9 +1803,15 @@ function ChatCanvasSidebar({
                   {selectedArtifact.title}
                 </div>
                 <div className="mt-0.5 truncate font-mono text-[11px] text-text-tertiary">
-                  {selectedArtifact.filePath ?? `.anvil/artifacts/${selectedArtifact.relativePath}`}
+                  {selectedArtifact.storage === 'session'
+                    ? `Session only · ${selectedArtifact.relativePath}`
+                    : (selectedArtifact.filePath ??
+                      `.anvil/artifacts/${selectedArtifact.relativePath}`)}
                 </div>
                 <div className="mt-1 flex flex-wrap gap-1.5">
+                  <ArtifactMetaChip
+                    label={selectedArtifact.storage === 'session' ? 'throwaway' : 'repository'}
+                  />
                   <ArtifactMetaChip label={selectedArtifact.status} />
                   <ArtifactMetaChip label={selectedArtifact.visibility} />
                   <ArtifactMetaChip label={selectedArtifact.source} />
@@ -1832,6 +1868,17 @@ function ChatCanvasSidebar({
                     aria-label="Open artifact file"
                   >
                     <ExternalLink size={13} />
+                  </button>
+                )}
+                {selectedArtifact.storage === 'session' && (
+                  <button
+                    type="button"
+                    onClick={handleDiscard}
+                    className="rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-error/10 hover:text-error"
+                    title="Discard session-only artifact"
+                    aria-label="Discard session-only artifact"
+                  >
+                    <Trash2 size={13} />
                   </button>
                 )}
               </div>

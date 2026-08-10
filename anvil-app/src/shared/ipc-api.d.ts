@@ -244,6 +244,7 @@ export interface AnvilAPI {
     listTurnSummaries: (threadId: string) => Promise<ChatTurnSummary[]>;
     listArtifacts: (threadId: string) => Promise<ChatArtifact[]>;
     upsertArtifact: (input: ChatArtifactInput) => Promise<ChatArtifact>;
+    discardArtifact: (id: string) => Promise<boolean>;
     readArtifactFile: (id: string) => Promise<ChatArtifactFile>;
     listThreads: (workspaceId: string | null, personaId: string) => Promise<ChatThread[]>;
     listWorkItemThreads: (workspaceId: string | null) => Promise<ChatThread[]>;

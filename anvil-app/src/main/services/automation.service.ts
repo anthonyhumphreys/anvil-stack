@@ -12,6 +12,7 @@ import type {
   AutomationTriageItem,
   AutomationRunWorktree,
   CodexEvent,
+  WatchtowerEvent,
 } from '../../shared/types.js';
 import { getDb } from '../db/database.js';
 import { detectCodexCli } from './codex-bridge.service.js';
@@ -29,6 +30,7 @@ import {
   listAutomationTriageItems,
   listAutomations,
   listDueAutomations,
+  listWatchtowerAutomations,
   markStaleAutomationRunsFailed,
   updateAutomationRecord,
   updateAutomationRunWorktrees,
@@ -105,7 +107,34 @@ function validateAutomationInput(input: AutomationDefinitionInput): void {
   if (input.repoIds.length === 0) {
     throw new Error('Select at least one repository for this automation.');
   }
-  validateAutomationCron(input.scheduleCron, input.timezone);
+  if ((input.triggerMode ?? 'schedule') === 'watchtower') {
+    if (input.watchEvent !== 'workflow.completed' && input.watchEvent !== 'workflow.failed') {
+      throw new Error('Choose a Watchtower event.');
+    }
+  } else {
+    validateAutomationCron(input.scheduleCron, input.timezone);
+  }
+}
+
+function withWatchtowerContext(
+  automation: AutomationDefinition,
+  event: WatchtowerEvent | undefined,
+): AutomationDefinition {
+  if (!event) return automation;
+  return {
+    ...automation,
+    prompt: [
+      automation.prompt,
+      '',
+      '## Watchtower event',
+      `Event: ${event.type}`,
+      `Source: ${event.sourceLabel} (${event.sourceId})`,
+      `Occurred at: ${event.occurredAt}`,
+      event.metadata ? `Metadata: ${JSON.stringify(event.metadata)}` : null,
+    ]
+      .filter((line): line is string => Boolean(line))
+      .join('\n'),
+  };
 }
 
 function getActiveLoopConfig(automation: AutomationDefinition): AutomationLoopConfig | null {
@@ -557,8 +586,8 @@ async function runLoopAutomation(
 }
 
 async function executeAutomationRun(run: AutomationRun): Promise<void> {
-  const automation = getAutomation(run.automationId);
-  if (!automation) {
+  const storedAutomation = getAutomation(run.automationId);
+  if (!storedAutomation) {
     completeAutomationRun(run.id, {
       status: 'failed',
       errorMessage: 'Automation definition was deleted before the run started.',
@@ -567,6 +596,7 @@ async function executeAutomationRun(run: AutomationRun): Promise<void> {
     });
     return;
   }
+  const automation = withWatchtowerContext(storedAutomation, run.triggerContext);
 
   if (activeAutomationIds.has(automation.id)) return;
   activeAutomationIds.add(automation.id);
@@ -704,9 +734,10 @@ export function createWorkspaceAutomation(
   input: AutomationDefinitionInput,
 ): AutomationDefinition {
   validateAutomationInput(input);
-  const nextRunAt = input.enabled
-    ? getNextAutomationRunAt(input.scheduleCron, input.timezone)
-    : null;
+  const nextRunAt =
+    input.enabled && (input.triggerMode ?? 'schedule') === 'schedule'
+      ? getNextAutomationRunAt(input.scheduleCron, input.timezone)
+      : null;
   const automation = createAutomationRecord(workspaceId, input, nextRunAt);
   void reconcileAutomationDaemon();
   return automation;
@@ -717,9 +748,10 @@ export function updateWorkspaceAutomation(
   input: AutomationDefinitionInput,
 ): AutomationDefinition | null {
   validateAutomationInput(input);
-  const nextRunAt = input.enabled
-    ? getNextAutomationRunAt(input.scheduleCron, input.timezone)
-    : null;
+  const nextRunAt =
+    input.enabled && (input.triggerMode ?? 'schedule') === 'schedule'
+      ? getNextAutomationRunAt(input.scheduleCron, input.timezone)
+      : null;
   const automation = updateAutomationRecord(automationId, input, nextRunAt);
   void reconcileAutomationDaemon();
   return automation;
@@ -737,6 +769,28 @@ export function runAutomationNow(automationId: string): AutomationRun {
   const run = createAutomationRun(automation, 'manual');
   void executeAutomationRun(run);
   return run;
+}
+
+export function triggerWatchtowerEvent(event: WatchtowerEvent): AutomationRun[] {
+  const runs: AutomationRun[] = [];
+  for (const automation of listWatchtowerAutomations(event.workspaceId, event.type)) {
+    if (
+      event.repoIds.length > 0 &&
+      !automation.repoIds.some((repoId) => event.repoIds.includes(repoId))
+    ) {
+      continue;
+    }
+    try {
+      const run = createAutomationRun(automation, 'watchtower', event);
+      runs.push(run);
+      void executeAutomationRun(run);
+    } catch (error) {
+      if (!(error instanceof Error && error.message.includes('already has an active run'))) {
+        console.error(`[Watchtower] Failed to start ${automation.name}:`, error);
+      }
+    }
+  }
+  return runs;
 }
 
 export function listRunsForAutomation(automationId: string): AutomationRun[] {

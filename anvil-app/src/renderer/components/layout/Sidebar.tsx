@@ -51,10 +51,10 @@ interface NavItem {
 }
 
 const navItems: NavItem[] = [
-  { path: '/repos', label: 'Repositories', icon: <Code size={20} />, feature: 'repos' },
+  { path: '/repos', label: 'Workspace', icon: <Code size={20} />, feature: 'repos' },
   {
     path: '/chat',
-    label: 'Chat',
+    label: 'Outcomes',
     icon: <MessageSquare size={20} />,
     feature: 'chat',
     requiresChat: true,

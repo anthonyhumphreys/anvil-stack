@@ -9,6 +9,7 @@ import {
   GitBranch,
   Loader2,
   Play,
+  RadioTower,
   RefreshCw,
   Save,
   Trash2,
@@ -61,6 +62,8 @@ function emptyDraft(repoIds: string[]): AutomationDefinitionInput {
     personaId: 'coder',
     prompt: '',
     repoIds,
+    triggerMode: 'schedule',
+    watchEvent: 'workflow.completed',
     scheduleCron: DEFAULT_CRON,
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
     enabled: true,
@@ -76,6 +79,8 @@ function automationToDraft(automation: AutomationDefinition): AutomationDefiniti
     personaId: automation.personaId,
     prompt: automation.prompt,
     repoIds: automation.repoIds,
+    triggerMode: automation.triggerMode,
+    watchEvent: automation.watchEvent ?? 'workflow.completed',
     scheduleCron: automation.scheduleCron,
     timezone: automation.timezone,
     enabled: automation.enabled,
@@ -107,6 +112,16 @@ function formatTimestamp(value?: string): string {
 
 function isLoopAutomation(automation: AutomationDefinition): boolean {
   return automation.loopConfig?.enabled === true;
+}
+
+function watchEventLabel(event: AutomationDefinition['watchEvent']): string {
+  return event === 'workflow.failed' ? 'Workflow failed' : 'Workflow completed';
+}
+
+function runTriggerLabel(trigger: AutomationRun['trigger']): string {
+  if (trigger === 'manual') return 'Manual';
+  if (trigger === 'watchtower') return 'Watchtower';
+  return 'Scheduled';
 }
 
 export function AutomationsView() {
@@ -339,7 +354,7 @@ export function AutomationsView() {
           <div>
             <h2 className="text-xl font-semibold text-text-primary">Automations</h2>
             <p className="text-sm text-text-secondary">
-              Schedule autonomous Codex runs in disposable worktrees.
+              Schedule runs or let Watchtower react to events. Workflows remain reusable flows.
             </p>
           </div>
         </div>
@@ -509,8 +524,16 @@ export function AutomationsView() {
                       </span>
                     </div>
                     <div className="mt-1 text-xs text-text-secondary">
-                      {automation.scheduleCron}
+                      {automation.triggerMode === 'watchtower'
+                        ? watchEventLabel(automation.watchEvent)
+                        : automation.scheduleCron}
                     </div>
+                    {automation.triggerMode === 'watchtower' && (
+                      <div className="mt-2 inline-flex items-center gap-1 rounded-full border border-info/30 bg-info/10 px-2 py-0.5 text-xs text-info">
+                        <RadioTower size={11} />
+                        Watchtower
+                      </div>
+                    )}
                     {isLoopAutomation(automation) && (
                       <div className="mt-2 inline-flex items-center gap-1 rounded-full border border-accent/30 bg-accent/10 px-2 py-0.5 text-xs text-accent">
                         <GitBranch size={11} />
@@ -518,7 +541,11 @@ export function AutomationsView() {
                       </div>
                     )}
                     <div className="mt-2 text-xs text-text-tertiary">
-                      Next: {formatTimestamp(automation.nextRunAt)}
+                      {automation.triggerMode === 'watchtower'
+                        ? automation.enabled
+                          ? 'Listening for matching events'
+                          : 'Listener disabled'
+                        : `Next: ${formatTimestamp(automation.nextRunAt)}`}
                     </div>
                   </button>
                 ))
@@ -571,17 +598,68 @@ export function AutomationsView() {
                   </select>
                 </label>
 
-                <label className="grid gap-1">
-                  <span className="text-sm font-medium text-text-secondary">Timezone</span>
-                  <input
-                    value={draft.timezone}
-                    onChange={(event) =>
-                      setDraft((current) => ({ ...current, timezone: event.target.value }))
-                    }
-                    className="rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary"
-                    placeholder="Europe/London"
-                  />
-                </label>
+                {(draft.triggerMode ?? 'schedule') === 'schedule' ? (
+                  <label className="grid gap-1">
+                    <span className="text-sm font-medium text-text-secondary">Timezone</span>
+                    <input
+                      value={draft.timezone}
+                      onChange={(event) =>
+                        setDraft((current) => ({ ...current, timezone: event.target.value }))
+                      }
+                      className="rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary"
+                      placeholder="Europe/London"
+                    />
+                  </label>
+                ) : (
+                  <div className="grid gap-1">
+                    <span className="text-sm font-medium text-text-secondary">Delivery</span>
+                    <div className="flex items-center gap-2 rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary">
+                      <RadioTower size={14} className="text-info" />
+                      In-app · immediate
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <div className="text-sm font-medium text-text-secondary">Trigger</div>
+                <div className="mt-2 grid gap-2 md:grid-cols-2">
+                  {[
+                    {
+                      mode: 'schedule' as const,
+                      label: 'Schedule',
+                      description: 'Run from the existing cron scheduler.',
+                      icon: <Clock3 size={15} />,
+                    },
+                    {
+                      mode: 'watchtower' as const,
+                      label: 'Watchtower',
+                      description: 'React when an Anvil workflow finishes.',
+                      icon: <RadioTower size={15} />,
+                    },
+                  ].map((option) => (
+                    <button
+                      key={option.mode}
+                      type="button"
+                      onClick={() =>
+                        setDraft((current) => ({ ...current, triggerMode: option.mode }))
+                      }
+                      className={`rounded-lg border px-3 py-3 text-left transition-colors ${
+                        (draft.triggerMode ?? 'schedule') === option.mode
+                          ? 'border-accent bg-accent/10'
+                          : 'border-border-subtle bg-bg-primary hover:border-border'
+                      }`}
+                    >
+                      <span className="flex items-center gap-2 text-sm font-medium text-text-primary">
+                        {option.icon}
+                        {option.label}
+                      </span>
+                      <span className="mt-1 block text-xs text-text-secondary">
+                        {option.description}
+                      </span>
+                    </button>
+                  ))}
+                </div>
               </div>
 
               <div className="rounded-lg border border-border-subtle bg-bg-primary p-4">
@@ -751,20 +829,43 @@ export function AutomationsView() {
                 )}
               </div>
 
-              <label className="grid gap-1">
-                <span className="text-sm font-medium text-text-secondary">Schedule (cron)</span>
-                <input
-                  value={draft.scheduleCron}
-                  onChange={(event) =>
-                    setDraft((current) => ({ ...current, scheduleCron: event.target.value }))
-                  }
-                  className="rounded-md border border-border bg-bg-primary px-3 py-2 font-mono text-sm text-text-primary"
-                  placeholder="0 9 * * 1-5"
-                />
-                <span className="text-xs text-text-tertiary">
-                  Examples: `0 9 * * 1-5` weekdays at 09:00, `*/30 * * * *` every 30 minutes.
-                </span>
-              </label>
+              {(draft.triggerMode ?? 'schedule') === 'schedule' ? (
+                <label className="grid gap-1">
+                  <span className="text-sm font-medium text-text-secondary">Schedule (cron)</span>
+                  <input
+                    value={draft.scheduleCron}
+                    onChange={(event) =>
+                      setDraft((current) => ({ ...current, scheduleCron: event.target.value }))
+                    }
+                    className="rounded-md border border-border bg-bg-primary px-3 py-2 font-mono text-sm text-text-primary"
+                    placeholder="0 9 * * 1-5"
+                  />
+                  <span className="text-xs text-text-tertiary">
+                    Examples: `0 9 * * 1-5` weekdays at 09:00, `*/30 * * * *` every 30 minutes.
+                  </span>
+                </label>
+              ) : (
+                <label className="grid gap-1">
+                  <span className="text-sm font-medium text-text-secondary">Watch event</span>
+                  <select
+                    value={draft.watchEvent ?? 'workflow.completed'}
+                    onChange={(event) =>
+                      setDraft((current) => ({
+                        ...current,
+                        watchEvent: event.target.value as AutomationDefinitionInput['watchEvent'],
+                      }))
+                    }
+                    className="rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary"
+                  >
+                    <option value="workflow.completed">Workflow completed</option>
+                    <option value="workflow.failed">Workflow failed</option>
+                  </select>
+                  <span className="text-xs text-text-tertiary">
+                    The selected repositories act as the event filter. Existing workflows are not
+                    changed.
+                  </span>
+                </label>
+              )}
 
               <label className="grid gap-1">
                 <span className="text-sm font-medium text-text-secondary">Prompt</span>
@@ -945,9 +1046,7 @@ function RunPickerItem({
           ) : (
             <Loader2 size={14} className="shrink-0 animate-spin text-accent" />
           )}
-          <span className="truncate">
-            {run.trigger === 'manual' ? 'Manual run' : 'Scheduled run'}
-          </span>
+          <span className="truncate">{runTriggerLabel(run.trigger)} run</span>
         </div>
         <span className={`shrink-0 text-xs ${statusTone(run.status)}`}>{run.status}</span>
       </div>
@@ -999,7 +1098,10 @@ function AutomationRunDetail({
                 {selectedRun.completedAt && (
                   <span>Completed {formatCompactTimestamp(selectedRun.completedAt)}</span>
                 )}
-                <span>{selectedRun.trigger === 'manual' ? 'Manual' : 'Scheduled'}</span>
+                <span>{runTriggerLabel(selectedRun.trigger)}</span>
+                {selectedRun.triggerContext && (
+                  <span>From {selectedRun.triggerContext.sourceLabel}</span>
+                )}
                 <span>{runEvents.length} events</span>
               </div>
             )}

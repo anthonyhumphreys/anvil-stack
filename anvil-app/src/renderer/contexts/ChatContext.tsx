@@ -87,6 +87,7 @@ interface ChatContextValue {
   activePlan: ChatPlanSnapshot | null;
   activeGoal: ChatGoalSnapshot | null;
   activeArtifacts: ChatArtifact[];
+  discardArtifact: (artifactId: string) => Promise<void>;
   chatLayout: ChatLayout;
   setActiveRepo: (repo: RepoInfo) => void;
   setActiveRepos: (repos: RepoInfo[]) => void;
@@ -2256,6 +2257,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     }
   }, [activeThreadId, scaffoldModeActive]);
 
+  const discardArtifact = useCallback(async (artifactId: string) => {
+    const discarded = await window.anvil.chat.discardArtifact(artifactId);
+    if (discarded) {
+      setActiveArtifacts((prev) => prev.filter((artifact) => artifact.id !== artifactId));
+    }
+  }, []);
+
   return (
     <ChatContext.Provider
       value={{
@@ -2285,6 +2293,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         activePlan,
         activeGoal,
         activeArtifacts,
+        discardArtifact,
         chatLayout,
         setActiveRepo,
         setActiveRepos,
@@ -2824,6 +2833,7 @@ function buildArtifactCanvasPrompt(threadTitle?: string): string {
     '```',
     'Supported kinds: markdown, mermaid, html, docx, pptx, pdf, csv, xlsx, code, data, text.',
     'Use artifacts for plans, review packs, diagrams, HTML prototypes, dashboards, documents, presentations, spreadsheets, specs, migration notes, and handover documents.',
+    'For throwaway output that should stay in this Anvil session instead of being written to the repository, add storage=session to the fence header.',
     'For a binary docx, pptx, pdf, or xlsx already created under .anvil/artifacts, add encoding=file to the fence header and put a short description inside the fence. Do not inline binary data.',
     'Keep ordinary commentary outside artifact fences.',
     threadTitle ? `Current thread: ${threadTitle}` : null,
@@ -2921,6 +2931,7 @@ function extractChatArtifactInputs(
       sourceMessageId: context.sourceMessageId,
       title,
       kind,
+      storage: metadata.storage,
       relativePath,
       content: artifactContent,
       contentEncoding: metadata.encoding,
@@ -2940,12 +2951,14 @@ function parseArtifactMetadata(value: string): {
   title?: string;
   kind?: ChatArtifactKind;
   encoding?: ArtifactContentEncoding;
+  storage?: ChatArtifactInput['storage'];
 } {
   const metadata: {
     path?: string;
     title?: string;
     kind?: ChatArtifactKind;
     encoding?: ArtifactContentEncoding;
+    storage?: ChatArtifactInput['storage'];
   } = {};
   const tokenPattern = /(\w+)=(?:"([^"]+)"|'([^']+)'|([^\s]+))/g;
   let match: RegExpExecArray | null;
@@ -2959,9 +2972,16 @@ function parseArtifactMetadata(value: string): {
     if (key === 'encoding' && isArtifactContentEncoding(tokenValue)) {
       metadata.encoding = tokenValue;
     }
+    if ((key === 'storage' || key === 'persist') && isArtifactStorage(tokenValue)) {
+      metadata.storage = tokenValue;
+    }
   }
 
   return metadata;
+}
+
+function isArtifactStorage(value: string): value is NonNullable<ChatArtifactInput['storage']> {
+  return value === 'repository' || value === 'session';
 }
 
 function isChatArtifactKind(value: string): value is ChatArtifactKind {

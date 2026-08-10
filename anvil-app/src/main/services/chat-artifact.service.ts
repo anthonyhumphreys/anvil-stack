@@ -13,6 +13,7 @@ import type {
   ChatArtifactFile,
   ChatArtifactInput,
   ChatArtifactKind,
+  ChatArtifactStorage,
   ReasoningEffort,
 } from '../../shared/types.js';
 import { normaliseReasoningEffort } from '../../shared/codex-models.js';
@@ -25,6 +26,7 @@ interface ChatArtifactRow {
   source_message_id: string | null;
   title: string;
   kind: string;
+  storage_scope: string;
   relative_path: string;
   file_path: string | null;
   content: string;
@@ -49,6 +51,7 @@ function mapArtifactRow(row: ChatArtifactRow): ChatArtifact {
     sourceMessageId: row.source_message_id ?? undefined,
     title: row.title,
     kind: parseArtifactKind(row.kind),
+    storage: parseArtifactStorage(row.storage_scope),
     relativePath: row.relative_path,
     filePath: row.file_path ?? undefined,
     content: row.content,
@@ -83,6 +86,10 @@ function parseArtifactKind(value: string): ChatArtifactKind {
     return value;
   }
   return 'text';
+}
+
+function parseArtifactStorage(value: string | null | undefined): ChatArtifactStorage {
+  return value === 'session' ? 'session' : 'repository';
 }
 
 function parseArtifactStatus(value: string | null | undefined): ChatArtifact['status'] {
@@ -263,6 +270,7 @@ export function listChatArtifacts(threadId: string): ChatArtifact[] {
          source_message_id,
          title,
          kind,
+         storage_scope,
          relative_path,
          file_path,
          content,
@@ -286,27 +294,33 @@ export function listChatArtifacts(threadId: string): ChatArtifact[] {
 export function upsertChatArtifact(input: ChatArtifactInput): ChatArtifact {
   const db = getDb();
   const relativePath = normaliseArtifactPath(input.relativePath, input.kind);
+  const storage = parseArtifactStorage(input.storage);
+  if (storage === 'session' && input.contentEncoding === 'file') {
+    throw new Error('Session-only artifacts cannot reference repository files');
+  }
   const now = new Date().toISOString();
-  const filePath = writeRepoArtifact(
-    input.repoId,
-    relativePath,
-    input.content,
-    input.contentEncoding,
-  );
+  const existing = db
+    .prepare(
+      'SELECT id, version, storage_scope, created_at FROM chat_artifacts WHERE thread_id = ? AND relative_path = ?',
+    )
+    .get(input.threadId, relativePath) as
+    | { id: string; version: number; storage_scope: string; created_at: string }
+    | undefined;
+  if (existing && parseArtifactStorage(existing.storage_scope) !== storage) {
+    throw new Error(
+      'Use a different path when changing an artifact between repository and session storage',
+    );
+  }
+  const filePath =
+    storage === 'repository'
+      ? writeRepoArtifact(input.repoId, relativePath, input.content, input.contentEncoding)
+      : null;
   const status = parseArtifactStatus(input.status);
   const visibility = parseArtifactVisibility(input.visibility);
   const source = parseArtifactSource(input.source);
   const reasoningEffort: ReasoningEffort | undefined = input.reasoningEffort
     ? normaliseReasoningEffort(input.reasoningEffort)
     : undefined;
-  const existing = db
-    .prepare(
-      'SELECT id, version, created_at FROM chat_artifacts WHERE thread_id = ? AND relative_path = ?',
-    )
-    .get(input.threadId, relativePath) as
-    | { id: string; version: number; created_at: string }
-    | undefined;
-
   const id = existing?.id ?? randomUUID();
   const version = existing ? Number(existing.version ?? 1) + 1 : 1;
 
@@ -318,6 +332,7 @@ export function upsertChatArtifact(input: ChatArtifactInput): ChatArtifact {
        source_message_id,
        title,
        kind,
+       storage_scope,
        relative_path,
        file_path,
        content,
@@ -329,12 +344,13 @@ export function upsertChatArtifact(input: ChatArtifactInput): ChatArtifact {
        reasoning_effort,
        created_at,
        updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(thread_id, relative_path) DO UPDATE SET
        repo_id = excluded.repo_id,
        source_message_id = excluded.source_message_id,
        title = excluded.title,
        kind = excluded.kind,
+       storage_scope = excluded.storage_scope,
        file_path = excluded.file_path,
        content = excluded.content,
        version = excluded.version,
@@ -351,6 +367,7 @@ export function upsertChatArtifact(input: ChatArtifactInput): ChatArtifact {
     input.sourceMessageId ?? null,
     input.title.trim() || relativePath,
     input.kind,
+    storage,
     relativePath,
     filePath,
     input.content,
@@ -372,6 +389,7 @@ export function upsertChatArtifact(input: ChatArtifactInput): ChatArtifact {
        source_message_id,
        title,
        kind,
+       storage_scope,
        relative_path,
        file_path,
        content,
@@ -381,7 +399,7 @@ export function upsertChatArtifact(input: ChatArtifactInput): ChatArtifact {
        model,
        reasoning_effort,
        created_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(artifact_id, version) DO NOTHING`,
   ).run(
     randomUUID(),
@@ -390,6 +408,7 @@ export function upsertChatArtifact(input: ChatArtifactInput): ChatArtifact {
     input.sourceMessageId ?? null,
     input.title.trim() || relativePath,
     input.kind,
+    storage,
     relativePath,
     filePath,
     input.content,
@@ -403,4 +422,11 @@ export function upsertChatArtifact(input: ChatArtifactInput): ChatArtifact {
 
   const row = db.prepare('SELECT * FROM chat_artifacts WHERE id = ?').get(id) as ChatArtifactRow;
   return mapArtifactRow(row);
+}
+
+export function discardChatArtifact(id: string): boolean {
+  const result = getDb()
+    .prepare("DELETE FROM chat_artifacts WHERE id = ? AND storage_scope = 'session'")
+    .run(id);
+  return result.changes > 0;
 }

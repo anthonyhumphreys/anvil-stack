@@ -160,14 +160,14 @@ export function ChatThreadRail({
               ) : (
                 <>
                   <ThreadAction
-                    label={compact ? 'Return to active work' : 'Settle thread'}
+                    label={compact ? 'Return to active outcomes' : 'Settle outcome'}
                     disabled={!compact && !settleAllowed}
                     onClick={() => onSettleThread(thread.id, compact ? false : true)}
                   >
                     {compact ? <ArchiveRestore size={13} /> : <Archive size={13} />}
                   </ThreadAction>
                   <ThreadAction
-                    label="Rename thread"
+                    label="Rename outcome"
                     onClick={() => {
                       setEditingThreadId(thread.id);
                       setDraftTitle(thread.title);
@@ -176,7 +176,7 @@ export function ChatThreadRail({
                     <Pencil size={13} />
                   </ThreadAction>
                   <ThreadAction
-                    label="Delete thread"
+                    label="Delete outcome"
                     className="hover:bg-error/10 hover:text-error"
                     onClick={() => {
                       if (window.confirm(`Delete "${thread.title}"?`)) onDeleteThread(thread.id);
@@ -191,7 +191,7 @@ export function ChatThreadRail({
           {!compact && (
             <p className="mt-2 truncate pl-5 text-xs text-text-tertiary">
               {thread.preview?.replace(/\s+/g, ' ').trim() ||
-                'Empty thread. Add a prompt to get this work moving.'}
+                'Empty outcome. Add a prompt to get this work moving.'}
             </p>
           )}
         </div>
@@ -203,7 +203,7 @@ export function ChatThreadRail({
     <ResizableSidebarPanel
       storageKey="chat:threads"
       side="left"
-      title="Work inbox"
+      title="Outcome rooms"
       defaultWidth={300}
       minWidth={240}
       maxWidth={440}
@@ -214,7 +214,7 @@ export function ChatThreadRail({
       <div className="border-b border-border/60 px-3 py-3 pr-14">
         <div className="flex items-center justify-between gap-2">
           <div className="min-w-0">
-            <h3 className="truncate text-sm font-semibold text-text-primary">Work inbox</h3>
+            <h3 className="truncate text-sm font-semibold text-text-primary">Outcome rooms</h3>
             <p className="mt-0.5 text-[11px] text-text-tertiary">
               {activeThreads.length} active · creation order
             </p>
@@ -222,8 +222,8 @@ export function ChatThreadRail({
           <button
             onClick={onCreateThread}
             className="flex h-8 w-8 items-center justify-center rounded-lg text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-            title="New thread"
-            aria-label="New thread"
+            title="New outcome"
+            aria-label="New outcome"
           >
             <MessageSquarePlus size={15} />
           </button>
@@ -235,7 +235,7 @@ export function ChatThreadRail({
           <div className="rounded-xl border border-dashed border-border px-4 py-5 text-center">
             <p className="text-sm font-medium text-text-primary">{emptyLabel}</p>
             <p className="mt-2 text-xs leading-relaxed text-text-tertiary">
-              Start a thread, or return settled work to the inbox when it needs another pass.
+              Start an outcome, or return settled work when it needs another pass.
             </p>
           </div>
         ) : (
@@ -245,7 +245,7 @@ export function ChatThreadRail({
         )}
 
         {settledThreads.length > 0 && (
-          <section className="mt-5 border-t border-border/60 pt-3" aria-label="Settled threads">
+          <section className="mt-5 border-t border-border/60 pt-3" aria-label="Settled outcomes">
             <div className="mb-1.5 flex items-center justify-between px-1">
               <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-tertiary">
                 Settled
@@ -285,7 +285,7 @@ function ThreadAction({
       }}
       disabled={disabled}
       className={`rounded-lg p-1.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-30 ${className}`}
-      title={disabled ? 'Finish or resolve this thread before settling it' : label}
+      title={disabled ? 'Finish or resolve this outcome before settling it' : label}
       aria-label={label}
     >
       {children}
