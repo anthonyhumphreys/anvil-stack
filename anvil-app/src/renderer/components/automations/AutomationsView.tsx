@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
-  Bot,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -14,7 +13,9 @@ import {
   Save,
   Trash2,
   Wrench,
+  Workflow,
 } from 'lucide-react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import type {
   AutomationDaemonStatus,
   AutomationDefinition,
@@ -25,6 +26,7 @@ import type {
   AutomationTriageItem,
   CodexEvent,
   Persona,
+  WatchtowerEventType,
 } from '../../../shared/types';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { useStoredPanelState } from '../../hooks/useStoredPanelState';
@@ -64,6 +66,7 @@ function emptyDraft(repoIds: string[]): AutomationDefinitionInput {
     repoIds,
     triggerMode: 'schedule',
     watchEvent: 'workflow.completed',
+    watchTarget: repoIds[0] ? { repoId: repoIds[0] } : undefined,
     scheduleCron: DEFAULT_CRON,
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
     enabled: true,
@@ -81,6 +84,7 @@ function automationToDraft(automation: AutomationDefinition): AutomationDefiniti
     repoIds: automation.repoIds,
     triggerMode: automation.triggerMode,
     watchEvent: automation.watchEvent ?? 'workflow.completed',
+    watchTarget: automation.watchTarget,
     scheduleCron: automation.scheduleCron,
     timezone: automation.timezone,
     enabled: automation.enabled,
@@ -115,7 +119,27 @@ function isLoopAutomation(automation: AutomationDefinition): boolean {
 }
 
 function watchEventLabel(event: AutomationDefinition['watchEvent']): string {
-  return event === 'workflow.failed' ? 'Workflow failed' : 'Workflow completed';
+  const labels: Record<WatchtowerEventType, string> = {
+    'workflow.completed': 'Workflow completed',
+    'workflow.failed': 'Workflow failed',
+    'pull_request.merged': 'Pull request merged',
+    'pull_request.closed': 'Pull request closed',
+    'pipeline.completed': 'Pipeline completed',
+    'pipeline.failed': 'Pipeline failed',
+  };
+  return event ? labels[event] : 'Choose an event';
+}
+
+function isPullRequestWatch(event: WatchtowerEventType | undefined): boolean {
+  return event === 'pull_request.merged' || event === 'pull_request.closed';
+}
+
+function isPipelineWatch(event: WatchtowerEventType | undefined): boolean {
+  return event === 'pipeline.completed' || event === 'pipeline.failed';
+}
+
+function isExternalWatch(event: WatchtowerEventType | undefined): boolean {
+  return isPullRequestWatch(event) || isPipelineWatch(event);
 }
 
 function runTriggerLabel(trigger: AutomationRun['trigger']): string {
@@ -125,17 +149,23 @@ function runTriggerLabel(trigger: AutomationRun['trigger']): string {
 }
 
 export function AutomationsView() {
+  const navigate = useNavigate();
+  const [initialSearchParams, setSearchParams] = useSearchParams();
   const { activeWorkspace } = useWorkspace();
   const workspaceId = activeWorkspace?.id;
   const repos = activeWorkspace?.repos ?? [];
 
   const [personas, setPersonas] = useState<Persona[]>([]);
   const [automations, setAutomations] = useState<AutomationDefinition[]>([]);
-  const [selectedAutomationId, setSelectedAutomationId] = useState<string | null>(null);
+  const [selectedAutomationId, setSelectedAutomationId] = useState<string | null>(() =>
+    initialSearchParams.get('automation'),
+  );
   const [draft, setDraft] = useState<AutomationDefinitionInput>(() => emptyDraft([]));
   const [runs, setRuns] = useState<AutomationRun[]>([]);
   const [triageItems, setTriageItems] = useState<AutomationTriageItem[]>([]);
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(() =>
+    initialSearchParams.get('run'),
+  );
   const [runEvents, setRunEvents] = useState<AutomationRunEvent[]>([]);
   const [runDetailTab, setRunDetailTab] = useState<AutomationRunDetailTab>('transcript');
   const [daemonStatus, setDaemonStatus] = useState<AutomationDaemonStatus | null>(null);
@@ -256,6 +286,7 @@ export function AutomationsView() {
   const handleSelectAutomation = (automation: AutomationDefinition) => {
     setSelectedAutomationId(automation.id);
     setDraft(automationToDraft(automation));
+    setSearchParams({ automation: automation.id }, { replace: true });
   };
 
   const handleNewAutomation = () => {
@@ -264,6 +295,7 @@ export function AutomationsView() {
     setRunEvents([]);
     setRuns([]);
     setDraft(emptyDraft(repos.map((repo) => repo.id)));
+    setSearchParams({}, { replace: true });
   };
 
   const handleSave = async () => {
@@ -276,6 +308,7 @@ export function AutomationsView() {
       } else {
         const created = await window.anvil.automations.create(workspaceId, draft);
         setSelectedAutomationId(created.id);
+        setSearchParams({ automation: created.id }, { replace: true });
       }
       await loadData();
     } catch (err) {
@@ -308,6 +341,7 @@ export function AutomationsView() {
     try {
       const run = await window.anvil.automations.runNow(selectedAutomationId);
       setSelectedRunId(run.id);
+      setSearchParams({ automation: selectedAutomationId, run: run.id }, { replace: true });
       await loadRuns(selectedAutomationId);
       await loadEvents(run.id);
     } catch (err) {
@@ -333,9 +367,17 @@ export function AutomationsView() {
       setDraft(automationToDraft(automation));
     }
     setSelectedRunId(item.id);
+    setSearchParams({ automation: item.automationId, run: item.id }, { replace: true });
     await loadRuns(item.automationId);
     setSelectedRunId(item.id);
     await loadEvents(item.id);
+  };
+
+  const handleSelectRun = (runId: string) => {
+    setSelectedRunId(runId);
+    if (selectedAutomationId) {
+      setSearchParams({ automation: selectedAutomationId, run: runId }, { replace: true });
+    }
   };
 
   if (!workspaceId) {
@@ -350,11 +392,11 @@ export function AutomationsView() {
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center justify-between border-b border-border bg-bg-secondary px-4 py-3">
         <div className="flex items-center gap-3">
-          <Bot size={20} className="text-accent" />
+          <RadioTower size={20} className="text-accent" />
           <div>
-            <h2 className="text-xl font-semibold text-text-primary">Automations</h2>
+            <h2 className="text-xl font-semibold text-text-primary">Automate</h2>
             <p className="text-sm text-text-secondary">
-              Schedule runs or let Watchtower react to events. Workflows remain reusable flows.
+              Schedule work or let Watchtower babysit workflows, pull requests, and pipelines.
             </p>
           </div>
         </div>
@@ -378,6 +420,14 @@ export function AutomationsView() {
           >
             <RefreshCw size={14} />
             Reconcile daemon
+          </button>
+          <button
+            type="button"
+            onClick={() => navigate('/workflows')}
+            className="flex items-center gap-1 rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary"
+          >
+            <Workflow size={14} />
+            Workflows
           </button>
           <button
             onClick={handleNewAutomation}
@@ -615,7 +665,7 @@ export function AutomationsView() {
                     <span className="text-sm font-medium text-text-secondary">Delivery</span>
                     <div className="flex items-center gap-2 rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary">
                       <RadioTower size={14} className="text-info" />
-                      In-app · immediate
+                      Background listener · every 30 seconds
                     </div>
                   </div>
                 )}
@@ -634,7 +684,7 @@ export function AutomationsView() {
                     {
                       mode: 'watchtower' as const,
                       label: 'Watchtower',
-                      description: 'React when an Anvil workflow finishes.',
+                      description: 'Wait for workflows, pull requests, or pipelines.',
                       icon: <RadioTower size={15} />,
                     },
                   ].map((option) => (
@@ -845,26 +895,169 @@ export function AutomationsView() {
                   </span>
                 </label>
               ) : (
-                <label className="grid gap-1">
-                  <span className="text-sm font-medium text-text-secondary">Watch event</span>
-                  <select
-                    value={draft.watchEvent ?? 'workflow.completed'}
-                    onChange={(event) =>
-                      setDraft((current) => ({
-                        ...current,
-                        watchEvent: event.target.value as AutomationDefinitionInput['watchEvent'],
-                      }))
-                    }
-                    className="rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary"
-                  >
-                    <option value="workflow.completed">Workflow completed</option>
-                    <option value="workflow.failed">Workflow failed</option>
-                  </select>
-                  <span className="text-xs text-text-tertiary">
-                    The selected repositories act as the event filter. Existing workflows are not
-                    changed.
-                  </span>
-                </label>
+                <div className="grid gap-3 rounded-lg border border-border-subtle bg-bg-primary p-4">
+                  <label className="grid gap-1">
+                    <span className="text-sm font-medium text-text-secondary">Watch event</span>
+                    <select
+                      value={draft.watchEvent ?? 'workflow.completed'}
+                      onChange={(event) => {
+                        const watchEvent = event.target.value as WatchtowerEventType;
+                        setDraft((current) => ({
+                          ...current,
+                          watchEvent,
+                          watchTarget: isExternalWatch(watchEvent)
+                            ? (current.watchTarget ?? {
+                                repoId: current.repoIds[0] ?? repos[0]?.id ?? '',
+                              })
+                            : undefined,
+                        }));
+                      }}
+                      className="rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary"
+                    >
+                      <optgroup label="Anvil workflows">
+                        <option value="workflow.completed">Workflow completed</option>
+                        <option value="workflow.failed">Workflow failed</option>
+                      </optgroup>
+                      <optgroup label="Pull requests">
+                        <option value="pull_request.merged">Pull request merged</option>
+                        <option value="pull_request.closed">
+                          Pull request closed without merge
+                        </option>
+                      </optgroup>
+                      <optgroup label="Pipelines">
+                        <option value="pipeline.completed">Pipeline completed</option>
+                        <option value="pipeline.failed">Pipeline failed</option>
+                      </optgroup>
+                    </select>
+                    <span className="text-xs text-text-tertiary">
+                      Existing workflows remain reusable and unchanged.
+                    </span>
+                  </label>
+
+                  {isExternalWatch(draft.watchEvent) && (
+                    <>
+                      <label className="grid gap-1">
+                        <span className="text-sm font-medium text-text-secondary">
+                          Repository to watch
+                        </span>
+                        <select
+                          value={draft.watchTarget?.repoId ?? ''}
+                          onChange={(event) =>
+                            setDraft((current) => ({
+                              ...current,
+                              watchTarget: {
+                                ...current.watchTarget,
+                                repoId: event.target.value,
+                              },
+                            }))
+                          }
+                          className="rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary"
+                        >
+                          <option value="" disabled>
+                            Select a repository
+                          </option>
+                          {repos
+                            .filter((repo) => draft.repoIds.includes(repo.id))
+                            .map((repo) => (
+                              <option key={repo.id} value={repo.id}>
+                                {repo.name}
+                              </option>
+                            ))}
+                        </select>
+                      </label>
+
+                      {isPullRequestWatch(draft.watchEvent) ? (
+                        <label className="grid gap-1">
+                          <span className="text-sm font-medium text-text-secondary">
+                            Pull request number
+                          </span>
+                          <input
+                            type="number"
+                            min={1}
+                            value={draft.watchTarget?.pullRequestNumber ?? ''}
+                            onChange={(event) =>
+                              setDraft((current) => ({
+                                ...current,
+                                watchTarget: {
+                                  ...current.watchTarget,
+                                  repoId: current.watchTarget?.repoId ?? current.repoIds[0] ?? '',
+                                  pullRequestNumber: event.target.value
+                                    ? Number(event.target.value)
+                                    : undefined,
+                                },
+                              }))
+                            }
+                            className="rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary"
+                            placeholder="123"
+                          />
+                        </label>
+                      ) : (
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <label className="grid gap-1">
+                            <span className="text-sm font-medium text-text-secondary">
+                              Pipeline or run
+                            </span>
+                            <input
+                              value={draft.watchTarget?.pipelineIdentifier ?? ''}
+                              onChange={(event) =>
+                                setDraft((current) => ({
+                                  ...current,
+                                  watchTarget: {
+                                    ...current.watchTarget,
+                                    repoId: current.watchTarget?.repoId ?? current.repoIds[0] ?? '',
+                                    pipelineIdentifier: event.target.value,
+                                  },
+                                }))
+                              }
+                              className="rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary"
+                              placeholder="CI, ci.yml, or run ID"
+                            />
+                          </label>
+                          <label className="grid gap-1">
+                            <span className="text-sm font-medium text-text-secondary">
+                              Branch filter <span className="text-text-tertiary">(optional)</span>
+                            </span>
+                            <input
+                              value={draft.watchTarget?.branch ?? ''}
+                              onChange={(event) =>
+                                setDraft((current) => ({
+                                  ...current,
+                                  watchTarget: {
+                                    ...current.watchTarget,
+                                    repoId: current.watchTarget?.repoId ?? current.repoIds[0] ?? '',
+                                    branch: event.target.value,
+                                  },
+                                }))
+                              }
+                              className="rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary"
+                              placeholder="main"
+                            />
+                          </label>
+                        </div>
+                      )}
+
+                      <p className="text-xs leading-relaxed text-text-tertiary">
+                        GitHub uses your authenticated <code>gh</code> session. Azure DevOps uses
+                        the configured PAT. The first check establishes a baseline; later matching
+                        transitions trigger exactly once.
+                      </p>
+
+                      {selectedAutomation?.watchState && (
+                        <div
+                          className={`rounded-md px-3 py-2 text-xs ${
+                            selectedAutomation.watchState.lastError
+                              ? 'bg-error/10 text-error'
+                              : 'bg-bg-secondary text-text-secondary'
+                          }`}
+                        >
+                          {selectedAutomation.watchState.lastError
+                            ? `Last check failed: ${selectedAutomation.watchState.lastError}`
+                            : `Watching ${selectedAutomation.watchState.sourceLabel ?? 'source'} · ${selectedAutomation.watchState.status ?? 'unknown'} · checked ${formatTimestamp(selectedAutomation.watchState.observedAt)}`}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
               )}
 
               <label className="grid gap-1">
@@ -891,12 +1084,20 @@ export function AutomationsView() {
                         type="checkbox"
                         checked={draft.repoIds.includes(repo.id)}
                         onChange={(event) =>
-                          setDraft((current) => ({
-                            ...current,
-                            repoIds: event.target.checked
+                          setDraft((current) => {
+                            const repoIds = event.target.checked
                               ? [...current.repoIds, repo.id]
-                              : current.repoIds.filter((candidate) => candidate !== repo.id),
-                          }))
+                              : current.repoIds.filter((candidate) => candidate !== repo.id);
+                            const watchTarget = current.watchTarget
+                              ? {
+                                  ...current.watchTarget,
+                                  repoId: repoIds.includes(current.watchTarget.repoId)
+                                    ? current.watchTarget.repoId
+                                    : (repoIds[0] ?? ''),
+                                }
+                              : undefined;
+                            return { ...current, repoIds, watchTarget };
+                          })
                         }
                       />
                       <span>{repo.name}</span>
@@ -996,7 +1197,7 @@ export function AutomationsView() {
                         key={run.id}
                         run={run}
                         selected={selectedRunId === run.id}
-                        onSelect={() => setSelectedRunId(run.id)}
+                        onSelect={() => handleSelectRun(run.id)}
                       />
                     ))}
                   </div>

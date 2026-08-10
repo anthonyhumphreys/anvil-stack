@@ -15,7 +15,7 @@ export interface ExecutionTopologyNode {
   label: string;
   detail: string;
   status: ExecutionTopologyNodeStatus;
-  kind: 'outcome' | 'session' | 'subagent';
+  kind: 'thread' | 'session' | 'subagent';
   prompt?: string;
   model?: string;
   reasoningEffort?: string;
@@ -39,18 +39,18 @@ export function buildExecutionTopology({
   threadId,
   rootLabel,
 }: ExecutionTopologyInput): ExecutionTopology {
-  const rootId = `outcome:${threadId ?? 'new'}`;
+  const rootId = `thread:${threadId ?? 'new'}`;
   const nodes = new Map<string, ExecutionTopologyNode>();
   const protocolNodeIds = new Map<string, string>();
 
   nodes.set(rootId, {
     id: rootId,
     label: rootLabel,
-    detail: 'Outcome room',
+    detail: 'Chat thread',
     status: sessions.some((session) => session.status === 'busy' || session.status === 'starting')
       ? 'running'
       : 'idle',
-    kind: 'outcome',
+    kind: 'thread',
   });
 
   for (const session of sessions) {

@@ -79,8 +79,8 @@ describe('shouldFocusChatComposerFromKey', () => {
 });
 
 describe('getNewChatThreadActionLabel', () => {
-  it('uses outcome wording for the new chat action', () => {
-    expect(getNewChatThreadActionLabel()).toBe('New outcome');
+  it('uses thread wording for the new chat action', () => {
+    expect(getNewChatThreadActionLabel()).toBe('New thread');
   });
 });
 

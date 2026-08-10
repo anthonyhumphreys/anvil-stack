@@ -118,7 +118,7 @@ export function RepositoryTwin({
             onClick={askAboutTwin}
             className="flex h-8 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs text-text-secondary hover:bg-bg-tertiary hover:text-text-primary"
           >
-            <MessageSquareText size={13} /> Ask Outcomes
+            <MessageSquareText size={13} /> Ask in Chat
           </button>
           <button
             type="button"

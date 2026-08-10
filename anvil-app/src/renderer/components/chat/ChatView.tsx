@@ -122,7 +122,7 @@ interface ScrollMetrics {
 }
 
 const CHAT_BOTTOM_THRESHOLD_PX = 96;
-const NEW_CHAT_THREAD_LABEL = 'New outcome';
+const NEW_CHAT_THREAD_LABEL = 'New thread';
 const ITSM_PERSONA_IDS = new Set(ROLE_RECOMMENDED_PERSONAS.itsm ?? []);
 
 interface ChatViewProps {
@@ -211,8 +211,8 @@ export function ChatView({ userRole }: ChatViewProps) {
       {
         id: 'new',
         command: '/new',
-        label: 'New outcome',
-        description: 'Start a fresh outcome room.',
+        label: 'New thread',
+        description: 'Start a fresh chat thread.',
         insertText: '/new',
       },
       {
@@ -542,7 +542,7 @@ export function ChatView({ userRole }: ChatViewProps) {
         entries,
         sessions: activeSessions,
         threadId: activeThreadId,
-        rootLabel: activeThread?.title ?? 'New outcome',
+        rootLabel: activeThread?.title ?? 'New thread',
       }),
     [activeSessions, activeThread?.title, activeThreadId, entries],
   );
@@ -612,7 +612,7 @@ export function ChatView({ userRole }: ChatViewProps) {
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-2">
               <h2 className="truncate text-sm font-semibold tracking-tight text-text-primary">
-                {activeThread && !scaffoldModeActive ? activeThread.title : 'New outcome'}
+                {activeThread && !scaffoldModeActive ? activeThread.title : 'New thread'}
               </h2>
             </div>
             <p className="truncate text-xs text-text-tertiary">
@@ -723,7 +723,7 @@ export function ChatView({ userRole }: ChatViewProps) {
                             : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary'
                         }`}
                         aria-pressed={chatLayout === 'classic'}
-                        title="Outcome rooms"
+                        title="Chat threads"
                       >
                         <MessageSquare size={12} />
                         <span className="hidden 2xl:inline">Classic</span>
@@ -1461,7 +1461,7 @@ function AgentWorkControl({
                       }}
                       className="mt-2 text-xs font-medium text-accent hover:underline"
                     >
-                      Open outcome
+                      Open thread
                     </button>
                   )}
                 </div>
@@ -1507,7 +1507,7 @@ function AgentWorkControl({
                         }}
                         className="ml-auto font-medium text-accent hover:underline"
                       >
-                        Open outcome
+                        Open thread
                       </button>
                     )}
                   </div>

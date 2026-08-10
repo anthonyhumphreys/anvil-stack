@@ -1,18 +1,18 @@
-import { useEffect, useMemo, useState } from 'react';
-import {
-  AlertTriangle,
-  Bell,
-  CheckCircle2,
-  Loader2,
-  PlayCircle,
-} from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
-import type { AgentRunSummary, Feature, SimulatorPreviewStatus } from '../../../shared/types';
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { AlertTriangle, CheckCircle2, Loader2, PlayCircle } from 'lucide-react';
+import { useLocation } from 'react-router-dom';
+import type {
+  AgentRunSummary,
+  AutomationTriageItem,
+  ChatThread,
+  Feature,
+  SimulatorPreviewStatus,
+} from '../../../shared/types';
 import type { RunStatus } from '../../../shared/run-types';
 import { useChatContext } from '../../contexts/ChatContext';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 
-type SidebarActivityStatus = 'running' | 'queued' | 'warning' | 'error';
+export type SidebarActivityStatus = 'running' | 'queued' | 'ready' | 'warning' | 'error';
 
 export interface SidebarActivityItem {
   id: string;
@@ -33,14 +33,35 @@ export interface SidebarActivityIndicator {
 const ACTIVE_RUN_STATUSES = new Set(['queued', 'running']);
 const ACTIVE_CHAT_STATUSES = new Set(['starting', 'busy']);
 
-export function useSidebarActivity(): {
+interface SidebarActivityValue {
   items: SidebarActivityItem[];
   indicators: Partial<Record<Feature, SidebarActivityIndicator>>;
   activeCount: number;
-} {
+}
+
+const SidebarActivityContext = createContext<SidebarActivityValue | null>(null);
+
+export function SidebarActivityProvider({ children }: { children: ReactNode }) {
+  const value = useSidebarActivityData();
+  return (
+    <SidebarActivityContext.Provider value={value}>{children}</SidebarActivityContext.Provider>
+  );
+}
+
+export function useSidebarActivity(): SidebarActivityValue {
+  const context = useContext(SidebarActivityContext);
+  if (!context) {
+    throw new Error('useSidebarActivity must be used within SidebarActivityProvider');
+  }
+  return context;
+}
+
+function useSidebarActivityData(): SidebarActivityValue {
+  const location = useLocation();
   const { activeWorkspace, activeScaffoldSession, repos, featureAvailability } = useWorkspace();
-  const { busy, liveThreadStatuses, activeThread } = useChatContext();
+  const { busy, liveThreadStatuses, activeThread, threads } = useChatContext();
   const [agentRuns, setAgentRuns] = useState<AgentRunSummary[]>([]);
+  const [automationTriage, setAutomationTriage] = useState<AutomationTriageItem[]>([]);
   const [runStatuses, setRunStatuses] = useState<RunStatus[]>([]);
   const [simulatorStatus, setSimulatorStatus] = useState<SimulatorPreviewStatus>({
     running: false,
@@ -66,6 +87,32 @@ export function useSidebarActivity(): {
 
     refresh();
     const interval = window.setInterval(refresh, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [activeWorkspace?.id]);
+
+  useEffect(() => {
+    if (!activeWorkspace?.id) {
+      setAutomationTriage([]);
+      return;
+    }
+
+    let cancelled = false;
+    const refresh = () => {
+      window.anvil.automations
+        .triage(activeWorkspace.id)
+        .then((items) => {
+          if (!cancelled) setAutomationTriage(items);
+        })
+        .catch(() => {
+          if (!cancelled) setAutomationTriage([]);
+        });
+    };
+
+    refresh();
+    const interval = window.setInterval(refresh, 10000);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
@@ -206,7 +253,37 @@ export function useSidebarActivity(): {
       });
     }
 
-    for (const run of agentRuns.filter((run) => ACTIVE_RUN_STATUSES.has(run.status))) {
+    for (const thread of threads) {
+      const attentionItem = activityForThread(
+        thread,
+        location.pathname.startsWith('/chat') && activeThread?.id === thread.id,
+      );
+      if (attentionItem) nextItems.push(attentionItem);
+    }
+
+    const automationRunIds = new Set(automationTriage.map((item) => item.id));
+    for (const item of automationTriage) {
+      nextItems.push({
+        id: item.id,
+        feature: 'automations',
+        route: `/automations?automation=${encodeURIComponent(item.automationId)}&run=${encodeURIComponent(item.id)}`,
+        title: item.automationName,
+        detail: automationTriageDetail(item),
+        status:
+          item.attention === 'blocked'
+            ? 'error'
+            : item.attention === 'changes'
+              ? 'ready'
+              : item.status === 'queued'
+                ? 'queued'
+                : 'running',
+        startedAt: item.completedAt ?? item.startedAt,
+      });
+    }
+
+    for (const run of agentRuns.filter(
+      (run) => ACTIVE_RUN_STATUSES.has(run.status) && !automationRunIds.has(run.id),
+    )) {
       nextItems.push({
         id: run.id,
         feature: featureForRun(run),
@@ -243,113 +320,37 @@ export function useSidebarActivity(): {
       });
     }
 
-    return nextItems.sort((a, b) => {
+    const uniqueItems = [...new Map(nextItems.map((item) => [item.id, item])).values()];
+    return uniqueItems.sort((a, b) => {
       const priorityDelta = statusPriority(b.status) - statusPriority(a.status);
       if (priorityDelta !== 0) return priorityDelta;
       return dateValue(b.startedAt) - dateValue(a.startedAt);
     });
   }, [
     activeScaffoldSession,
+    activeThread?.id,
     activeThread?.title,
     agentRuns,
+    automationTriage,
     busy,
     featureAvailability.repoFeatureReason,
     featureAvailability.statusLabel,
     liveThreadStatuses,
+    location.pathname,
     repos,
     runStatuses,
     simulatorStatus.running,
     simulatorStatus.startedAt,
     simulatorStatus.url,
+    threads,
   ]);
 
   const indicators = useMemo(() => buildIndicators(items), [items]);
-  const activeCount = items.filter((item) => item.status === 'running' || item.status === 'queued')
-    .length;
+  const activeCount = items.filter(
+    (item) => item.status === 'running' || item.status === 'queued',
+  ).length;
 
   return { items, indicators, activeCount };
-}
-
-export function SidebarActivityCenter({
-  items,
-  activeCount,
-  collapsed,
-}: {
-  items: SidebarActivityItem[];
-  activeCount: number;
-  collapsed: boolean;
-}) {
-  const navigate = useNavigate();
-  const [open, setOpen] = useState(false);
-  const visibleItems = items.slice(0, 8);
-
-  return (
-    <div className="mb-3">
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        className={`titlebar-no-drag flex w-full items-center rounded-lg border py-2.5 text-sm font-medium transition-colors ${
-          open
-            ? 'border-accent/30 bg-accent/10 text-text-primary'
-            : 'border-border-subtle text-text-secondary hover:border-border hover:bg-bg-tertiary hover:text-text-primary'
-        } ${collapsed ? 'justify-center px-2' : 'gap-2 px-3'}`}
-        aria-label="Activity"
-        title="Activity"
-      >
-        <span className="relative inline-flex">
-          <Bell size={16} />
-          {activeCount > 0 && (
-            <span className="absolute -right-1.5 -top-1.5 h-2.5 w-2.5 rounded-full bg-info ring-2 ring-bg-secondary" />
-          )}
-        </span>
-        {!collapsed && (
-          <>
-            <span>Activity</span>
-            {activeCount > 0 && (
-              <span className="ml-auto rounded-full bg-info/15 px-2 py-0.5 text-xs text-info">
-                {activeCount}
-              </span>
-            )}
-          </>
-        )}
-      </button>
-
-      {open && !collapsed && (
-        <div className="mt-2 max-h-72 overflow-y-auto rounded-lg border border-border bg-bg-primary p-2 shadow-lg">
-          {visibleItems.length === 0 ? (
-            <div className="flex items-center gap-2 px-2 py-3 text-sm text-text-tertiary">
-              <CheckCircle2 size={14} />
-              Nothing in progress.
-            </div>
-          ) : (
-            <div className="space-y-1">
-              {visibleItems.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => {
-                    setOpen(false);
-                    navigate(item.route);
-                  }}
-                  className="flex w-full items-start gap-2 rounded-md px-2 py-2 text-left transition-colors hover:bg-bg-tertiary"
-                >
-                  <ActivityIcon status={item.status} />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-medium text-text-primary">
-                      {item.title}
-                    </span>
-                    <span className="mt-0.5 block truncate text-xs text-text-tertiary">
-                      {item.detail}
-                    </span>
-                  </span>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
 }
 
 export function SidebarActivityBadge({
@@ -366,9 +367,11 @@ export function SidebarActivityBadge({
       ? 'bg-error text-white'
       : indicator.status === 'warning'
         ? 'bg-warning text-bg-primary'
-        : indicator.status === 'queued'
-          ? 'bg-text-tertiary text-bg-primary'
-          : 'bg-info text-white';
+        : indicator.status === 'ready'
+          ? 'bg-success text-bg-primary'
+          : indicator.status === 'queued'
+            ? 'bg-text-tertiary text-bg-primary'
+            : 'bg-info text-white';
 
   if (collapsed) {
     return (
@@ -395,13 +398,32 @@ export function SidebarActivityBadge({
   );
 }
 
-function ActivityIcon({ status }: { status: SidebarActivityStatus }) {
+export function SidebarActivityIcon({ status }: { status: SidebarActivityStatus }) {
   if (status === 'error') return <AlertTriangle size={14} className="mt-0.5 shrink-0 text-error" />;
   if (status === 'warning') {
     return <AlertTriangle size={14} className="mt-0.5 shrink-0 text-warning" />;
   }
-  if (status === 'queued') return <PlayCircle size={14} className="mt-0.5 shrink-0 text-text-tertiary" />;
+  if (status === 'queued')
+    return <PlayCircle size={14} className="mt-0.5 shrink-0 text-text-tertiary" />;
+  if (status === 'ready')
+    return <CheckCircle2 size={14} className="mt-0.5 shrink-0 text-success" />;
   return <Loader2 size={14} className="mt-0.5 shrink-0 animate-spin text-info" />;
+}
+
+export function buildAggregateActivityIndicator(
+  items: SidebarActivityItem[],
+): SidebarActivityIndicator | undefined {
+  if (items.length === 0) return undefined;
+  const status = items.reduce<SidebarActivityStatus>(
+    (highest, item) =>
+      statusPriority(item.status) > statusPriority(highest) ? item.status : highest,
+    'queued',
+  );
+  return {
+    count: items.length,
+    status,
+    label: `${items.length} inbox item${items.length === 1 ? '' : 's'}`,
+  };
 }
 
 function buildIndicators(
@@ -421,7 +443,7 @@ function buildIndicators(
     }
 
     existing.count += 1;
-    existing.label = `${existing.count} active items`;
+    existing.label = `${existing.count} items`;
     if (statusPriority(item.status) > statusPriority(existing.status)) {
       existing.status = item.status;
     }
@@ -445,15 +467,69 @@ function routeForRun(run: AgentRunSummary): string {
 function labelForRun(run: AgentRunSummary): string {
   const status = run.status === 'queued' ? 'Queued' : 'Running';
   const source =
-    run.source === 'automation' ? 'automation' : run.source === 'code_review' ? 'code review' : 'chat';
+    run.source === 'automation'
+      ? 'automation'
+      : run.source === 'code_review'
+        ? 'code review'
+        : 'chat';
   return `${status} ${source}${run.summary ? `: ${run.summary}` : ''}`;
 }
 
 function statusPriority(status: SidebarActivityStatus): number {
-  if (status === 'error') return 4;
-  if (status === 'warning') return 3;
+  if (status === 'error') return 5;
+  if (status === 'warning') return 4;
+  if (status === 'ready') return 3;
   if (status === 'running') return 2;
   return 1;
+}
+
+function activityForThread(
+  thread: ChatThread,
+  currentlyViewing: boolean,
+): SidebarActivityItem | null {
+  if (thread.settledAt) return null;
+  const route = `/chat?thread=${encodeURIComponent(thread.id)}&persona=${encodeURIComponent(thread.personaId)}`;
+  const base = {
+    id: `thread-${thread.id}`,
+    feature: 'chat' as const,
+    route,
+    title: thread.title,
+    startedAt: thread.attentionUpdatedAt ?? thread.lastMessageAt ?? thread.updatedAt,
+  };
+
+  if (thread.attentionState === 'approval') {
+    return { ...base, detail: 'Approval needed in Chat.', status: 'warning' };
+  }
+  if (thread.attentionState === 'input') {
+    return { ...base, detail: 'Your input is needed in Chat.', status: 'warning' };
+  }
+  if (thread.attentionState === 'failed') {
+    return { ...base, detail: 'The last turn failed.', status: 'error' };
+  }
+  if (
+    thread.attentionState === 'complete' &&
+    !currentlyViewing &&
+    isThreadCompletionUnseen(thread)
+  ) {
+    return { ...base, detail: 'Completed work is ready to review.', status: 'ready' };
+  }
+  return null;
+}
+
+function isThreadCompletionUnseen(thread: ChatThread): boolean {
+  if (!thread.attentionUpdatedAt) return false;
+  if (!thread.lastViewedAt) return true;
+  return dateValue(thread.attentionUpdatedAt) > dateValue(thread.lastViewedAt);
+}
+
+function automationTriageDetail(item: AutomationTriageItem): string {
+  if (item.attention === 'blocked') {
+    return item.errorMessage ?? item.summary ?? 'Automation needs attention.';
+  }
+  if (item.attention === 'changes') {
+    return item.summary ?? `${item.changedFileCount} changed files are ready to review.`;
+  }
+  return item.status === 'queued' ? 'Automation is queued.' : 'Automation is running.';
 }
 
 function dateValue(value?: string): number {

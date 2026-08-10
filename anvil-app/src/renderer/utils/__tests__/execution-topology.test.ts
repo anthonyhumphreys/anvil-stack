@@ -4,7 +4,7 @@ import type { ChatEntry } from '../../contexts/ChatContext';
 import { buildExecutionTopology } from '../execution-topology';
 
 describe('buildExecutionTopology', () => {
-  it('keeps the outcome and current session visible without inventing delegation', () => {
+  it('keeps the thread and current session visible without inventing delegation', () => {
     const sessions: CodexSession[] = [
       {
         id: 'session-1',
@@ -20,13 +20,13 @@ describe('buildExecutionTopology', () => {
       entries: [],
       sessions,
       threadId: 'thread-1',
-      rootLabel: 'Ship the outcome',
+      rootLabel: 'Ship the feature',
     });
 
     expect(result.delegatedCount).toBe(0);
     expect(result.nodes).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ kind: 'outcome', label: 'Ship the outcome' }),
+        expect.objectContaining({ kind: 'thread', label: 'Ship the feature' }),
         expect.objectContaining({ kind: 'session', label: 'coder', status: 'running' }),
       ]),
     );
@@ -69,7 +69,7 @@ describe('buildExecutionTopology', () => {
       entries,
       sessions,
       threadId: 'thread-1',
-      rootLabel: 'Ship the outcome',
+      rootLabel: 'Ship the feature',
     });
     const subagent = result.nodes.find((node) => node.kind === 'subagent');
 

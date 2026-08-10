@@ -6,7 +6,7 @@ Yes—this is feasible and strategically strong.
 
 Anvil Desktop should remain local-first. Anvil Cloud becomes an optional execution control plane that can lease an isolated sandbox for:
 
-- an entire Outcome Room;
+- an entire chat thread;
 - one expensive or risky turn;
 - a dynamically spawned specialist subagent;
 - later, an explicitly authorised Watchtower reaction.
@@ -23,7 +23,7 @@ The composer gains a compact execution target:
 - **Cloud · Vercel**
 - **Cloud · Cloudflare**
 
-A workspace may define a default, but every Outcome Room and turn can override it. Nothing cloud-related appears unless Cloud features and at least one provider connection are enabled.
+A workspace may define a default, but every chat thread and turn can override it. Nothing cloud-related appears unless Cloud features and at least one provider connection are enabled.
 
 Dynamic delegation uses an Anvil tool available to the coordinating agent:
 
@@ -158,7 +158,7 @@ Exit gate: a fake provider can run a deterministic turn, pause for approval, res
 - Provision an AWS MicroVM from Desktop.
 - Load a committed repository snapshot.
 - Run a read-only coder session.
-- Stream output, commands, tests, and evidence into the Outcome Room.
+- Stream output, commands, tests, and evidence into the chat thread.
 - Terminate automatically and retain a cleanup receipt.
 
 Exit gate: one real repository inspection works end-to-end without transferring local credentials or granting repository writes.
@@ -178,7 +178,7 @@ Exit gate: implementation plus tests returns a clean patch that can be reviewed 
 - Route bounded specialist tasks to remote leases.
 - Represent them in Work topology.
 - Merge results as patches or handoff reports.
-- Enforce per-outcome concurrency and spend limits.
+- Enforce per-thread concurrency and spend limits.
 
 Exit gate: one local coordinator can run two isolated remote specialists concurrently and reconcile their results without a shared writable checkout.
 
@@ -218,6 +218,6 @@ Remote agent authentication must be solved before Phase 1 is called production-r
 
 Build the fake-provider conformance harness and AWS read-only vertical slice together. The demo should be:
 
-> From an Outcome Room, select “Cloud · AWS”, inspect the current committed repository, stream live evidence into Work topology, return a review artifact, and show a verified teardown receipt.
+> From a chat thread, select “Cloud · AWS”, inspect the current committed repository, stream live evidence into Work topology, return a review artifact, and show a verified teardown receipt.
 
 That proves the differentiating loop before investing in multi-provider UI or autonomous cloud writes.

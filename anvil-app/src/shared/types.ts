@@ -1666,7 +1666,13 @@ export interface WorkspaceScaffoldMaybeCompleteResult {
 
 export type AutomationExecutionMode = 'disposable-worktree';
 export type AutomationTriggerMode = 'schedule' | 'watchtower';
-export type WatchtowerEventType = 'workflow.completed' | 'workflow.failed';
+export type WatchtowerEventType =
+  | 'workflow.completed'
+  | 'workflow.failed'
+  | 'pull_request.merged'
+  | 'pull_request.closed'
+  | 'pipeline.completed'
+  | 'pipeline.failed';
 export type AutomationRunTrigger = 'manual' | 'schedule' | 'watchtower';
 export type AutomationRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type AutomationLoopMode = 'sequence' | 'dynamic';
@@ -1700,6 +1706,22 @@ export interface WatchtowerEvent {
   metadata?: Record<string, unknown>;
 }
 
+export interface WatchtowerTarget {
+  repoId: string;
+  pullRequestNumber?: number;
+  pipelineIdentifier?: string;
+  branch?: string;
+}
+
+export interface WatchtowerState {
+  sourceId?: string;
+  sourceLabel?: string;
+  status?: string;
+  observedAt: string;
+  occurredAt?: string;
+  lastError?: string;
+}
+
 export interface AutomationDefinitionInput {
   name: string;
   personaId: string;
@@ -1707,6 +1729,7 @@ export interface AutomationDefinitionInput {
   repoIds: string[];
   triggerMode?: AutomationTriggerMode;
   watchEvent?: WatchtowerEventType;
+  watchTarget?: WatchtowerTarget;
   scheduleCron: string;
   timezone: string;
   enabled: boolean;
@@ -1717,12 +1740,14 @@ export interface AutomationDefinitionInput {
 
 export interface AutomationDefinition extends Omit<
   AutomationDefinitionInput,
-  'triggerMode' | 'watchEvent'
+  'triggerMode' | 'watchEvent' | 'watchTarget'
 > {
   id: string;
   workspaceId: string;
   triggerMode: AutomationTriggerMode;
   watchEvent?: WatchtowerEventType;
+  watchTarget?: WatchtowerTarget;
+  watchState?: WatchtowerState;
   executionMode: AutomationExecutionMode;
   lastRunAt?: string;
   nextRunAt?: string;

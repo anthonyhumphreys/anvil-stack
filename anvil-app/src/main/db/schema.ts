@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 52;
+export const SCHEMA_VERSION = 53;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -558,6 +558,8 @@ CREATE TABLE IF NOT EXISTS automation_definitions (
   repo_ids_json TEXT NOT NULL DEFAULT '[]',
   trigger_mode TEXT NOT NULL DEFAULT 'schedule',
   watch_event TEXT,
+  watch_target_json TEXT,
+  watch_state_json TEXT,
   schedule_cron TEXT NOT NULL,
   timezone TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 0,
@@ -613,6 +615,22 @@ CREATE TABLE IF NOT EXISTS automation_run_events (
 
 CREATE INDEX IF NOT EXISTS idx_automation_run_events_run
   ON automation_run_events(run_id, created_at ASC);
+
+CREATE TABLE IF NOT EXISTS watchtower_events (
+  id TEXT PRIMARY KEY,
+  automation_id TEXT NOT NULL REFERENCES automation_definitions(id) ON DELETE CASCADE,
+  event_type TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  observed_at TEXT NOT NULL,
+  dispatched_at TEXT,
+  run_id TEXT REFERENCES automation_runs(id) ON DELETE SET NULL,
+  UNIQUE(automation_id, event_type, source_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_watchtower_events_pending
+  ON watchtower_events(status, observed_at ASC);
 
 CREATE TABLE IF NOT EXISTS governance_boards (
   id TEXT PRIMARY KEY,
@@ -1629,5 +1647,25 @@ export const MIGRATIONS: Record<number, string> = {
 
     CREATE INDEX IF NOT EXISTS idx_automation_definitions_watchtower
       ON automation_definitions(workspace_id, enabled, trigger_mode, watch_event);
+  `,
+  53: `
+    ALTER TABLE automation_definitions ADD COLUMN watch_target_json TEXT;
+    ALTER TABLE automation_definitions ADD COLUMN watch_state_json TEXT;
+
+    CREATE TABLE IF NOT EXISTS watchtower_events (
+      id TEXT PRIMARY KEY,
+      automation_id TEXT NOT NULL REFERENCES automation_definitions(id) ON DELETE CASCADE,
+      event_type TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      observed_at TEXT NOT NULL,
+      dispatched_at TEXT,
+      run_id TEXT REFERENCES automation_runs(id) ON DELETE SET NULL,
+      UNIQUE(automation_id, event_type, source_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_watchtower_events_pending
+      ON watchtower_events(status, observed_at ASC);
   `,
 };

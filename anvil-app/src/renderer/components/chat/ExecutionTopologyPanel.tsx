@@ -16,7 +16,7 @@ export function ExecutionTopologyPanel({ topology }: ExecutionTopologyPanelProps
     siblings.push(node);
     childrenByParent.set(node.parentId, siblings);
   }
-  const root = topology.nodes.find((node) => node.kind === 'outcome');
+  const root = topology.nodes.find((node) => node.kind === 'thread');
 
   if (!root) return null;
 
@@ -24,7 +24,7 @@ export function ExecutionTopologyPanel({ topology }: ExecutionTopologyPanelProps
     <div className="px-2 py-2">
       <div className="mb-3 flex items-center justify-between gap-3 px-1">
         <p className="text-xs leading-relaxed text-text-tertiary">
-          Optional live topology for the current outcome. It stays inside Work and never interrupts
+          Optional live topology for the current thread. It stays inside Work and never interrupts
           the transcript.
         </p>
         <span className="shrink-0 rounded-full bg-bg-primary px-2 py-0.5 text-[10px] text-text-tertiary">
@@ -42,7 +42,7 @@ export function ExecutionTopologyPanel({ topology }: ExecutionTopologyPanelProps
       {topology.delegatedCount === 0 && (
         <div className="px-3 py-5 text-center">
           <GitFork size={18} className="mx-auto text-text-muted" />
-          <p className="mt-2 text-sm text-text-secondary">No delegation in this outcome yet.</p>
+          <p className="mt-2 text-sm text-text-secondary">No delegation in this thread yet.</p>
           <p className="mt-1 text-xs text-text-tertiary">
             Subagents appear here only when the selected strategy actually uses them.
           </p>
@@ -118,7 +118,7 @@ function StatusIcon({
   if (status === 'waiting' || status === 'stopped') {
     return <PauseCircle className={`${className} text-warning`} />;
   }
-  if (kind === 'outcome') return <GitFork className={`${className} text-info`} />;
+  if (kind === 'thread') return <GitFork className={`${className} text-info`} />;
   if (kind === 'session') return <Bot className={`${className} text-text-secondary`} />;
   return <Circle className={`${className} text-text-muted`} />;
 }
