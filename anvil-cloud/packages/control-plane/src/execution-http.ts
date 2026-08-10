@@ -88,7 +88,7 @@ export function createHttpAgentExecutionControlPlane(
   baseUrl: string,
   fetchImpl?: AgentExecutionFetch,
 ): AgentExecutionControlPlaneApi {
-  const base = baseUrl.replace(/\/+$/, "");
+  const base = trimTrailingCharacter(baseUrl, "/");
   const fetcher = fetchImpl ?? (fetch as unknown as AgentExecutionFetch);
 
   async function request(
@@ -397,4 +397,14 @@ function notFound(path: string): AgentExecutionHttpResponse {
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function trimTrailingCharacter(value: string, character: string): string {
+  let end = value.length;
+
+  while (end > 0 && value[end - 1] === character) {
+    end -= 1;
+  }
+
+  return value.slice(0, end);
 }

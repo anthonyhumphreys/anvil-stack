@@ -424,7 +424,7 @@ export class AwsLambdaMicroVmSandboxProvider implements AgentExecutionProvider {
 
     try {
       response = await this.executionFetch(
-        `${session.endpointUrl.replace(/\/+$/, "")}/_anvil/execution${path}`,
+        `${trimTrailingCharacter(session.endpointUrl, "/")}/_anvil/execution${path}`,
         {
           method: init?.method ?? "GET",
           headers: {
@@ -611,4 +611,14 @@ function invalidExecutionResponse(
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function trimTrailingCharacter(value: string, character: string): string {
+  let end = value.length;
+
+  while (end > 0 && value[end - 1] === character) {
+    end -= 1;
+  }
+
+  return value.slice(0, end);
 }

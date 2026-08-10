@@ -969,10 +969,10 @@ function sourceIdentity(request: AgentExecutionRequest): string {
 }
 
 function sanitizeId(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+  return trimBoundaryCharacter(
+    value.toLowerCase().replace(/[^a-z0-9_-]+/g, "-"),
+    "-",
+  );
 }
 
 function isTerminal(status: AgentExecutionStatus): boolean {
@@ -1090,6 +1090,20 @@ function canonicalJson(value: unknown): string {
   }
 
   return JSON.stringify(value) ?? "null";
+}
+
+function trimBoundaryCharacter(value: string, character: string): string {
+  let start = 0;
+  let end = value.length;
+
+  while (start < end && value[start] === character) {
+    start += 1;
+  }
+  while (end > start && value[end - 1] === character) {
+    end -= 1;
+  }
+
+  return value.slice(start, end);
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
