@@ -451,18 +451,8 @@ function isNodeErrorWithCode(error, code) {
 
 function startDevServer() {
   const child = spawn(
-    "pnpm",
-    [
-      "--silent",
-      "run",
-      "dev",
-      "--",
-      "--agent",
-      "--port",
-      "0",
-      "--client-port",
-      "0",
-    ],
+    process.execPath,
+    [cliPath, "dev", "--agent", "--port", "0", "--client-port", "0"],
     {
       cwd: exampleDir,
       env: process.env,

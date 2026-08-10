@@ -1,6 +1,132 @@
 import type { CellManifest } from "@anvil-cloud/builder";
 
-import type { DeploymentAdapter, DeploymentEnvironment } from "./index.js";
+export type DeploymentEnvironment = string;
+
+export type DeploymentPlanChange = {
+  kind: "create" | "update" | "reuse";
+  concept:
+    | "audit"
+    | "client-assets"
+    | "database"
+    | "environment"
+    | "events"
+    | "files"
+    | "http-ingress"
+    | "agent-sandboxes"
+    | "jobs"
+    | "logs"
+    | "runtime"
+    | "services"
+    | "workflows";
+  name: string;
+  details?: Record<string, unknown>;
+};
+
+export type DeploymentPlan = {
+  schemaVersion: "0.1";
+  adapter: string;
+  environment: DeploymentEnvironment;
+  cell: string;
+  changes: DeploymentPlanChange[];
+  review: DeploymentPlanReview;
+  warnings: string[];
+  operations: DeploymentPlanOperations;
+};
+
+export type DeploymentPlanReview = {
+  stableId: string;
+  operation: "deploy";
+  summary: {
+    creates: number;
+    updates: number;
+    reuses: number;
+    total: number;
+  };
+  changeSummary: DeploymentPlanReviewConceptSummary[];
+  changeSet: DeploymentPlanReviewChange[];
+  capabilityDiffs: DeploymentPlanCapabilityDiff[];
+  cost: {
+    drivers: DeploymentPlanCostDriver[];
+    notes: string[];
+  };
+  rollback: DeploymentPlanOperations["rollback"];
+  cleanup: DeploymentPlanOperations["cleanup"];
+  approvalSummary: DeploymentPlanApprovalSummary;
+  approvalGates: DeploymentPlanApprovalGate[];
+};
+
+export type DeploymentPlanReviewConceptSummary = {
+  concept: DeploymentPlanChange["concept"];
+  creates: number;
+  updates: number;
+  reuses: number;
+  total: number;
+  changeIds: string[];
+};
+
+export type DeploymentPlanReviewChange = {
+  id: string;
+  action: DeploymentPlanChange["kind"];
+  concept: DeploymentPlanChange["concept"];
+  name: string;
+  details?: Record<string, unknown>;
+};
+
+export type DeploymentPlanCapabilityDiff = {
+  id: string;
+  action: "add" | "update" | "unchanged";
+  capability: DeploymentPlanChange["concept"];
+  name: string;
+  details?: Record<string, unknown>;
+};
+
+export type DeploymentPlanCostDriver = {
+  id: string;
+  label: string;
+  reason: string;
+};
+
+export type DeploymentPlanApprovalGate = {
+  id: string;
+  required: boolean;
+  severity: "info" | "review" | "block";
+  reason: string;
+  changeIds: string[];
+};
+
+export type DeploymentPlanApprovalSummary = {
+  required: number;
+  info: number;
+  review: number;
+  block: number;
+  hasBlockingGate: boolean;
+};
+
+export type DeploymentPlanOperations = {
+  rollback: {
+    supported: boolean;
+    strategy: "redeploy-previous-artifact" | "manual";
+    commands: string[];
+    notes: string[];
+  };
+  cost: {
+    billingMode: "usage-based-preview";
+    drivers: string[];
+    notes: string[];
+  };
+  cleanup: {
+    commands: string[];
+    notes: string[];
+  };
+};
+
+export interface DeploymentPlanAdapter {
+  readonly name: string;
+  plan(
+    manifest: CellManifest,
+    environment: DeploymentEnvironment,
+  ): DeploymentPlan;
+}
 
 export type AdapterConformanceDiagnostic = {
   code: string;
@@ -16,7 +142,7 @@ export type AdapterConformanceResult = {
 };
 
 export function runPreviewAdapterConformance(options: {
-  adapter: DeploymentAdapter;
+  adapter: DeploymentPlanAdapter;
   manifest: CellManifest;
   environment?: DeploymentEnvironment;
 }): AdapterConformanceResult {

@@ -78,6 +78,10 @@ import {
   type WorkflowRun,
   type WorkflowRunSummary,
 } from "@anvil-cloud/runtime";
+import {
+  resolveDeploymentAdapter,
+  supportedDeploymentAdapters,
+} from "./deployment-adapters.js";
 
 type CliContext = {
   cwd: string;
@@ -1996,11 +2000,20 @@ async function commandReview(context: CliContext): Promise<void> {
 
 async function createReviewReport(context: CliContext) {
   const adapterName = context.values.get("adapter") ?? "aws";
-
-  if (adapterName !== "aws") {
+  if (context.flags.has("temporary") && adapterName !== "cloudflare") {
     return createInvalidReviewReport(
       "INVALID_USAGE",
-      "Only --adapter aws is supported for review reports in alpha.",
+      "--temporary is supported only with --adapter cloudflare.",
+    );
+  }
+  const registeredAdapter = resolveDeploymentAdapter(adapterName, {
+    temporary: context.flags.has("temporary"),
+  });
+
+  if (!registeredAdapter) {
+    return createInvalidReviewReport(
+      "INVALID_USAGE",
+      `Unknown deployment adapter '${adapterName}'. Supported adapters: ${supportedDeploymentAdapters().join(", ")}.`,
     );
   }
 
@@ -2020,8 +2033,7 @@ async function createReviewReport(context: CliContext) {
   }
 
   const manifest = result.manifest as CellManifest;
-  const adapter = new AwsPreviewDeploymentAdapter();
-  const plan = adapter.plan(manifest, "preview");
+  const plan = registeredAdapter.previewPlanner.plan(manifest, "preview");
   const guardSummary = summarizeBuilderDiagnostics(result.diagnostics);
   const blocking = plan.review.approvalSummary.hasBlockingGate;
   const requiredReview = plan.review.approvalSummary.required > 0;
@@ -2031,7 +2043,7 @@ async function createReviewReport(context: CliContext) {
     schemaVersion: "0.1",
     command: "review",
     target: {
-      adapter: "aws",
+      adapter: adapterName,
       environment: "preview",
       cell: manifest.cell.name,
     },
@@ -2853,10 +2865,20 @@ function usageBudgetOptionFromEnv(name: string): number | undefined {
 
 async function commandPlan(context: CliContext): Promise<void> {
   const adapterName = context.values.get("adapter") ?? "aws";
-  if (adapterName !== "aws") {
+  if (context.flags.has("temporary") && adapterName !== "cloudflare") {
     writeInvalidUsage(
       context,
-      "Only --adapter aws is supported for cloud plans in alpha.",
+      "--temporary is supported only with --adapter cloudflare.",
+    );
+    return;
+  }
+  const registeredAdapter = resolveDeploymentAdapter(adapterName, {
+    temporary: context.flags.has("temporary"),
+  });
+  if (!registeredAdapter) {
+    writeInvalidUsage(
+      context,
+      `Unknown deployment adapter '${adapterName}'. Supported adapters: ${supportedDeploymentAdapters().join(", ")}.`,
     );
     return;
   }
@@ -2878,12 +2900,17 @@ async function commandPlan(context: CliContext): Promise<void> {
     process.exitCode = 4;
     return;
   }
-  const adapter = new AwsPulumiDeployAdapter();
-  const plan = await adapter.plan({
-    appName: cellGraph.appName,
-    stage,
-    cellGraph,
-  });
+  const plan =
+    adapterName === "aws"
+      ? await new AwsPulumiDeployAdapter().plan({
+          appName: cellGraph.appName,
+          stage,
+          cellGraph,
+        })
+      : registeredAdapter.previewPlanner.plan(
+          result.manifest as CellManifest,
+          stage,
+        );
   writeJsonOrHuman(
     context,
     { ok: true, graph: cellGraph, plan },
@@ -2896,10 +2923,27 @@ async function commandPlan(context: CliContext): Promise<void> {
 
 async function commandRemove(context: CliContext): Promise<void> {
   const adapterName = context.values.get("adapter") ?? "aws";
-  if (adapterName !== "aws") {
+  if (context.flags.has("temporary") && adapterName !== "cloudflare") {
     writeInvalidUsage(
       context,
-      "Only --adapter aws is supported for cloud removes in alpha.",
+      "--temporary is supported only with --adapter cloudflare.",
+    );
+    return;
+  }
+  const registeredAdapter = resolveDeploymentAdapter(adapterName, {
+    temporary: context.flags.has("temporary"),
+  });
+  if (!registeredAdapter) {
+    writeInvalidUsage(
+      context,
+      `Unknown deployment adapter '${adapterName}'. Supported adapters: ${supportedDeploymentAdapters().join(", ")}.`,
+    );
+    return;
+  }
+  if (registeredAdapter.stageOperations === "plan-only") {
+    writeInvalidUsage(
+      context,
+      `Adapter '${adapterName}' is plan-only; remove is not available until provider lifecycle smoke tests pass.`,
     );
     return;
   }
@@ -3005,10 +3049,27 @@ async function commandRollback(context: CliContext): Promise<void> {
 async function commandDeploy(context: CliContext): Promise<void> {
   if (context.values.has("adapter") || context.values.has("stage")) {
     const adapterName = context.values.get("adapter") ?? "aws";
-    if (adapterName !== "aws") {
+    if (context.flags.has("temporary") && adapterName !== "cloudflare") {
       writeInvalidUsage(
         context,
-        "Only --adapter aws is supported for cloud deploys in alpha.",
+        "--temporary is supported only with --adapter cloudflare.",
+      );
+      return;
+    }
+    const registeredAdapter = resolveDeploymentAdapter(adapterName, {
+      temporary: context.flags.has("temporary"),
+    });
+    if (!registeredAdapter) {
+      writeInvalidUsage(
+        context,
+        `Unknown deployment adapter '${adapterName}'. Supported adapters: ${supportedDeploymentAdapters().join(", ")}.`,
+      );
+      return;
+    }
+    if (registeredAdapter.stageOperations === "plan-only") {
+      writeInvalidUsage(
+        context,
+        `Adapter '${adapterName}' is plan-only; deploy is not available until the Worker runtime bridge and provider lifecycle smoke tests pass.`,
       );
       return;
     }
@@ -4729,7 +4790,7 @@ function writeHelp(): void {
       "  anvil-cloud dev [--json] [--agent] [--port 8787] [--client-port 5173] [--db-branch <name>]",
       "  anvil-cloud doctor [--json] [--port 8787] [--client-port 5173]",
       "  anvil-cloud check [--json]",
-      "  anvil-cloud review [--adapter aws] [--env preview] [--json]",
+      "  anvil-cloud review [--adapter aws|cloudflare] [--temporary] [--env preview] [--json]",
       "  anvil-cloud build [--json]",
       "  anvil-cloud eval [agent] [--baseline .anvil/evals/baseline.json] [--write-baseline] [--json]",
       "  anvil-cloud manifest diff [--from .anvil/dist/manifest.json] [--to manifest.json] [--json]",
@@ -4749,7 +4810,7 @@ function writeHelp(): void {
       "  anvil-cloud db promote <name> [--json]",
       "  anvil-cloud db delete <name> --yes [--json]",
       "  anvil-cloud db cleanup --expired [--json]",
-      "  anvil-cloud plan --stage dev --adapter aws [--verbose] [--json]",
+      "  anvil-cloud plan --stage dev --adapter aws|cloudflare [--temporary] [--verbose] [--json]",
       "  anvil-cloud deploy --stage dev --adapter aws [--verbose] [--json]",
       "  anvil-cloud remove --stage dev --adapter aws [--verbose] [--json]",
       "  anvil-cloud deploy --preview [--name branch] [--wait] [--wait-timeout 60] [--json]",

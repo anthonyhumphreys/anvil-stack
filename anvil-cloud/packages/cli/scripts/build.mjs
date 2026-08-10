@@ -34,6 +34,8 @@ await build({
 await Promise.all([
   cp("../auth/src", "dist/packages/auth/src", { recursive: true }),
   cp("../aws/src", "dist/packages/aws/src", { recursive: true }),
+  cp("../cloudflare/src", "dist/packages/cloudflare/src", { recursive: true }),
+  cp("../deployment/src", "dist/packages/deployment/src", { recursive: true }),
   cp("../runtime/src", "dist/packages/runtime/src", { recursive: true }),
   cp("../client/src", "dist/packages/client/src", { recursive: true }),
 ]);
