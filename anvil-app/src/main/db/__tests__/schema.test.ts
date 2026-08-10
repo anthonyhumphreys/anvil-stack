@@ -49,6 +49,8 @@ describe('fresh database schema', () => {
       expect(tableColumns('automation_runs').has('trigger_context_json')).toBe(true);
       expect(tableColumns('watchtower_events').has('source_id')).toBe(true);
       expect(tableColumns('watchtower_events').has('run_id')).toBe(true);
+      expect(tableColumns('cloud_execution_connection').has('token')).toBe(true);
+      expect(tableColumns('cloud_execution_connection').has('endpoint')).toBe(true);
     } finally {
       db.close();
     }

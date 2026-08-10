@@ -59,7 +59,11 @@ On first launch the app walks you through connector setup:
 3. **Repositories**: connect local checkouts or clone from GitHub/Azure DevOps, then let indexing run.
 4. **Optional connectors**: Azure DevOps PAT, Linear API key, or Jira token for work items; a Confluence PAT for documentation features.
 
-Everything is stored locally. There is no hosted backend; deleting the app's data directory resets it completely.
+Desktop state is stored locally. There is no required hosted backend; deleting
+the app's data directory resets it completely. If you explicitly enable the
+optional Cloud Workbench, Desktop can connect to the Anvil Cloud endpoint you
+configure. That bearer is encrypted locally and remote execution state belongs
+to that control plane.
 
 ## Optional extras
 

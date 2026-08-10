@@ -581,6 +581,24 @@ const api: AnvilAPI = {
     snapshot: () => ipcRenderer.invoke('anvil-cloud:snapshot'),
     run: (commandId, cwd) => ipcRenderer.invoke('anvil-cloud:run', commandId, cwd),
     openLens: (cwd) => ipcRenderer.invoke('anvil-cloud:open-lens', cwd),
+    executionConnection: () => ipcRenderer.invoke('anvil-cloud:execution-connection'),
+    saveExecutionConnection: (input) =>
+      ipcRenderer.invoke('anvil-cloud:save-execution-connection', input),
+    clearExecutionConnection: () => ipcRenderer.invoke('anvil-cloud:clear-execution-connection'),
+    testExecutionConnection: () => ipcRenderer.invoke('anvil-cloud:test-execution-connection'),
+    listExecutions: () => ipcRenderer.invoke('anvil-cloud:executions-list'),
+    getExecution: (executionId) => ipcRenderer.invoke('anvil-cloud:execution-get', executionId),
+    startExecution: (input) => ipcRenderer.invoke('anvil-cloud:execution-start', input),
+    executionEvents: (executionId, cursor) =>
+      ipcRenderer.invoke('anvil-cloud:execution-events', executionId, cursor),
+    resolveExecutionApproval: (input) =>
+      ipcRenderer.invoke('anvil-cloud:execution-approval', input),
+    steerExecution: (executionId, message) =>
+      ipcRenderer.invoke('anvil-cloud:execution-steer', executionId, message),
+    collectExecution: (executionId) =>
+      ipcRenderer.invoke('anvil-cloud:execution-collect', executionId),
+    terminateExecution: (executionId) =>
+      ipcRenderer.invoke('anvil-cloud:execution-terminate', executionId),
   },
 
   diagrams: {

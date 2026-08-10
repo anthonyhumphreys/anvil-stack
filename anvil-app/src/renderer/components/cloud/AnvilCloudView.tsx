@@ -24,6 +24,7 @@ import type {
   RepoInfo,
 } from '../../../shared/types';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
+import { RemoteExecutionsPanel } from './RemoteExecutionsPanel';
 
 const CATEGORY_LABELS: Record<AnvilCloudCommandDefinition['category'], string> = {
   health: 'Health',
@@ -228,6 +229,7 @@ export function AnvilCloudView() {
         </aside>
 
         <section className="min-h-0 overflow-y-auto p-6">
+          <RemoteExecutionsPanel repo={selectedRepo} />
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
             <div>
               <h3 className="text-lg font-semibold text-text-primary">Result</h3>

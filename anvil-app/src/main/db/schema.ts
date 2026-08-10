@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 53;
+export const SCHEMA_VERSION = 54;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -277,6 +277,13 @@ CREATE TABLE IF NOT EXISTS settings (
   github_username TEXT,
   cloud_features_enabled INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS cloud_execution_connection (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  endpoint TEXT NOT NULL,
+  token BLOB NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS mobile_companion_settings (
@@ -1667,5 +1674,13 @@ export const MIGRATIONS: Record<number, string> = {
 
     CREATE INDEX IF NOT EXISTS idx_watchtower_events_pending
       ON watchtower_events(status, observed_at ASC);
+  `,
+  54: `
+    CREATE TABLE IF NOT EXISTS cloud_execution_connection (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      endpoint TEXT NOT NULL,
+      token BLOB NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `,
 };

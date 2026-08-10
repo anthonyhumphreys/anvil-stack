@@ -2130,6 +2130,108 @@ export interface AnvilCloudWorkbenchSnapshot {
   commands: AnvilCloudCommandDefinition[];
 }
 
+export interface AnvilCloudExecutionConnection {
+  configured: boolean;
+  endpoint: string;
+  tokenConfigured: boolean;
+  updatedAt?: string;
+}
+
+export interface AnvilCloudExecutionConnectionInput {
+  endpoint: string;
+  token?: string;
+}
+
+export type AnvilCloudExecutionStatus =
+  | 'queued'
+  | 'starting'
+  | 'running'
+  | 'waiting-for-approval'
+  | 'waiting-for-input'
+  | 'suspended'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'expired';
+
+export interface AnvilCloudExecutionLease {
+  schemaVersion: '0.1';
+  id: string;
+  status: AnvilCloudExecutionStatus;
+  provider: string;
+  request: {
+    workspace: string;
+    task: string;
+    cell: string;
+    environment: string;
+    policy: { mode: 'read-only' | 'read-write'; ttlSeconds: number };
+    source: {
+      kind: 'git' | 'snapshot';
+      snapshotId?: string;
+      repository?: string;
+      commit?: string;
+      baseCommit?: string;
+      branch?: string;
+    };
+  };
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string;
+  failure?: { code: string; message: string };
+  result?: {
+    status: 'completed' | 'failed' | 'cancelled';
+    summary: string;
+    changedFiles: string[];
+    evidence: Array<{ label: string; value: string }>;
+    errors: Array<{ code: string; message: string }>;
+  };
+}
+
+export interface AnvilCloudExecutionEvent {
+  id: string;
+  executionId: string;
+  sequence: number;
+  cursor: string;
+  timestamp: string;
+  type: string;
+  data: Record<string, unknown>;
+}
+
+export interface AnvilCloudExecutionEventBatch {
+  executionId: string;
+  events: AnvilCloudExecutionEvent[];
+  cursor: string;
+  done: boolean;
+}
+
+export interface AnvilCloudExecutionStartInput {
+  workspaceId: string;
+  repoId: string;
+  task: string;
+  provider: 'auto' | 'aws-lambda-microvm';
+  agentRuntime?: 'codex-subscription' | 'cursor-subscription' | 'cloud-managed';
+  ttlSeconds?: number;
+  maxCostUsd?: number;
+}
+
+export interface AnvilCloudExecutionStartResult {
+  execution: AnvilCloudExecutionLease;
+  source: {
+    commit: string;
+    branch?: string;
+    repository?: string;
+    archiveBytes: number;
+    excludedWorkingTreeChanges: boolean;
+  };
+}
+
+export interface AnvilCloudExecutionConnectionTest {
+  ok: boolean;
+  endpoint: string;
+  executionCount?: number;
+  error?: string;
+}
+
 export interface CodexRegistryActionResult {
   success: boolean;
   command: string;
