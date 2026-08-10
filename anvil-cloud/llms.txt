@@ -57,7 +57,7 @@ Implement in this order:
 4. CLI with stable `--json` output.
 5. Client SDK and generated metadata.
 6. AWS preview deployment.
-7. Provider-neutral agent execution contracts and AWS read-only transport.
+7. Runnable provider-neutral agent execution control plane and AWS read-only transport.
 
 ## Non-Negotiable Rules
 

@@ -83,9 +83,25 @@ export type AgentExecutionPolicy = {
   requireApprovalForExternalActions: boolean;
 };
 
+export type AgentExecutionModelAuth =
+  | {
+      kind: "control-plane";
+      credential: string;
+    }
+  | {
+      /**
+       * Use an interactive provider login inside the ephemeral execution
+       * session. No API key or reusable local auth cache crosses the boundary.
+       */
+      kind: "provider-subscription";
+      provider: "codex" | "cursor";
+      persistence: "sandbox-session";
+    };
+
 export type AgentExecutionRequest = {
   schemaVersion: typeof AGENT_EXECUTION_SCHEMA_VERSION;
   clientToken: string;
+  workspace: string;
   cell: string;
   environment: string;
   task: string;
@@ -93,10 +109,7 @@ export type AgentExecutionRequest = {
   source: AgentExecutionSource;
   providerPreference: AgentExecutionProviderPreference;
   policy: AgentExecutionPolicy;
-  modelAuth: {
-    kind: "control-plane";
-    credential: string;
-  };
+  modelAuth: AgentExecutionModelAuth;
 };
 
 export type AgentExecutionEventType =
@@ -162,6 +175,18 @@ export type AgentExecutionWorkspace = {
   metadata: Record<string, unknown>;
 };
 
+/**
+ * Ephemeral source access passed directly to a provider. It must never be
+ * written into an execution lease, event, result, or artifact manifest.
+ */
+export type AgentExecutionSourceAccess = {
+  kind: "control-plane-grant";
+  endpoint: string;
+  grantId: string;
+  token: string;
+  expiresAt: string;
+};
+
 export type AgentExecutionStartInput = {
   executionId: string;
   task: string;
@@ -214,6 +239,11 @@ export type AgentExecutionProviderResult = {
 
 export type AgentExecutionProviderCapabilities = {
   modes: readonly AgentExecutionMode[];
+  modelAuth: readonly AgentExecutionModelAuth["kind"][];
+  subscriptionProviders?: readonly Extract<
+    AgentExecutionModelAuth,
+    { kind: "provider-subscription" }
+  >["provider"][];
   maxTtlSeconds: number;
   resumableEvents: boolean;
   approvals: boolean;
@@ -239,7 +269,11 @@ export interface AgentExecutionProvider extends AgentSandboxProvider {
   supports(request: AgentExecutionRequest): AgentExecutionProviderSupport;
   prepareWorkspace(
     session: AgentSandboxSession,
-    input: { executionId: string; source: AgentExecutionSource },
+    input: {
+      executionId: string;
+      source: AgentExecutionSource;
+      access?: AgentExecutionSourceAccess;
+    },
   ): Promise<AgentExecutionWorkspace>;
   startExecution(
     session: AgentSandboxSession,

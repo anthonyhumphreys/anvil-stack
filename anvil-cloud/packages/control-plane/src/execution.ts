@@ -11,6 +11,7 @@ import {
   type AgentExecutionProviderEvent,
   type AgentExecutionProviderResult,
   type AgentExecutionRequest,
+  type AgentExecutionSourceAccess,
   type AgentExecutionSourceSelection,
   type AgentExecutionStatus,
   type AgentExecutionWorkspace,
@@ -60,8 +61,18 @@ export type AgentExecutionCursorBatch = {
 export type AgentExecutionControlPlaneOptions = {
   providers: AgentExecutionProvider[];
   store: AgentExecutionStore;
+  sourceBroker?: AgentExecutionSourceBroker;
   idFactory?: () => string;
   now?: () => Date;
+};
+
+export type AgentExecutionSourceBroker = {
+  prepareAccess(input: {
+    executionId: string;
+    workspace: string;
+    source: AgentExecutionRequest["source"];
+    ttlSeconds: number;
+  }): Promise<AgentExecutionSourceAccess | undefined>;
 };
 
 export interface AgentExecutionControlPlaneApi {
@@ -111,6 +122,7 @@ export class AgentExecutionControlPlaneError extends Error {
 export class AgentExecutionControlPlane implements AgentExecutionControlPlaneApi {
   private readonly providers: Map<string, AgentExecutionProvider>;
   private readonly store: AgentExecutionStore;
+  private readonly sourceBroker: AgentExecutionSourceBroker | undefined;
   private readonly idFactory: () => string;
   private readonly now: () => Date;
 
@@ -119,6 +131,7 @@ export class AgentExecutionControlPlane implements AgentExecutionControlPlaneApi
       options.providers.map((provider) => [provider.id, provider]),
     );
     this.store = options.store;
+    this.sourceBroker = options.sourceBroker;
     this.idFactory = options.idFactory ?? randomUUID;
     this.now = options.now ?? (() => new Date());
   }
@@ -192,9 +205,16 @@ export class AgentExecutionControlPlane implements AgentExecutionControlPlaneApi
           },
         },
       ]);
+      const sourceAccess = await this.sourceBroker?.prepareAccess({
+        executionId: lease.id,
+        workspace: request.workspace,
+        source: request.source,
+        ttlSeconds: request.policy.ttlSeconds,
+      });
       lease.workspace = await provider.prepareWorkspace(lease.sandbox, {
         executionId: lease.id,
         source: request.source,
+        ...(sourceAccess === undefined ? {} : { access: sourceAccess }),
       });
       lease.handle = await provider.startExecution(lease.sandbox, {
         executionId: lease.id,
@@ -288,6 +308,23 @@ export class AgentExecutionControlPlane implements AgentExecutionControlPlaneApi
     executionId: string,
     decision: AgentExecutionApprovalDecision,
   ): Promise<AgentExecutionLease> {
+    if (
+      !isObject(decision) ||
+      typeof decision.requestId !== "string" ||
+      decision.requestId.trim().length === 0 ||
+      decision.requestId.length > 200 ||
+      (decision.decision !== "approved" && decision.decision !== "rejected") ||
+      typeof decision.actor !== "string" ||
+      decision.actor.trim().length === 0 ||
+      decision.actor.length > 200 ||
+      (decision.reason !== undefined &&
+        (typeof decision.reason !== "string" || decision.reason.length > 2_000))
+    ) {
+      throw new AgentExecutionControlPlaneError(
+        "EXECUTION_INVALID_REQUEST",
+        "Execution approval decision is invalid.",
+      );
+    }
     const lease = await this.getRunnable(executionId);
     await this.providerFor(lease).resolveApproval(lease.handle!, decision);
     await this.pullProviderEvents(lease);
@@ -299,6 +336,18 @@ export class AgentExecutionControlPlane implements AgentExecutionControlPlaneApi
     executionId: string,
     input: AgentExecutionInputSubmission,
   ): Promise<AgentExecutionLease> {
+    if (
+      !isObject(input) ||
+      typeof input.requestId !== "string" ||
+      input.requestId.trim().length === 0 ||
+      input.requestId.length > 200 ||
+      !isObject(input.values)
+    ) {
+      throw new AgentExecutionControlPlaneError(
+        "EXECUTION_INVALID_REQUEST",
+        "Execution input submission is invalid.",
+      );
+    }
     const lease = await this.getRunnable(executionId);
     await this.providerFor(lease).submitInput(lease.handle!, input);
     await this.pullProviderEvents(lease);
@@ -310,10 +359,14 @@ export class AgentExecutionControlPlane implements AgentExecutionControlPlaneApi
     executionId: string,
     message: string,
   ): Promise<AgentExecutionLease> {
-    if (message.trim().length === 0) {
+    if (
+      typeof message !== "string" ||
+      message.trim().length === 0 ||
+      message.length > 20_000
+    ) {
       throw new AgentExecutionControlPlaneError(
         "EXECUTION_INVALID_REQUEST",
-        "Steering messages must not be empty.",
+        "Steering messages must contain between 1 and 20000 characters.",
       );
     }
 
@@ -698,23 +751,42 @@ function validateExecutionRequest(request: AgentExecutionRequest): void {
   ) {
     errors.push("clientToken must contain between 1 and 200 characters");
   }
-  if (typeof request.cell !== "string" || request.cell.trim().length === 0) {
-    errors.push("cell must not be empty");
+  if (
+    typeof request.cell !== "string" ||
+    request.cell.trim().length === 0 ||
+    request.cell.length > 200
+  ) {
+    errors.push("cell must contain between 1 and 200 characters");
+  }
+  if (
+    typeof request.workspace !== "string" ||
+    request.workspace.trim().length === 0 ||
+    request.workspace.length > 200
+  ) {
+    errors.push("workspace must contain between 1 and 200 characters");
   }
   if (
     typeof request.environment !== "string" ||
-    request.environment.trim().length === 0
+    request.environment.trim().length === 0 ||
+    request.environment.length > 200
   ) {
-    errors.push("environment must not be empty");
+    errors.push("environment must contain between 1 and 200 characters");
   }
-  if (typeof request.task !== "string" || request.task.trim().length === 0) {
-    errors.push("task must not be empty");
+  if (
+    typeof request.task !== "string" ||
+    request.task.trim().length === 0 ||
+    request.task.length > 100_000
+  ) {
+    errors.push("task must contain between 1 and 100000 characters");
   }
   if (
     typeof request.agent.name !== "string" ||
-    request.agent.name.trim().length === 0
+    request.agent.name.trim().length === 0 ||
+    request.agent.name.length > 200
   ) {
-    errors.push("agent manifest name must not be empty");
+    errors.push(
+      "agent manifest name must contain between 1 and 200 characters",
+    );
   }
   if (
     !["none", "read", "read-write"].includes(
@@ -781,14 +853,30 @@ function validateExecutionRequest(request: AgentExecutionRequest): void {
   ) {
     errors.push("execution network policy must match the agent manifest");
   }
-  if (request.modelAuth.kind !== "control-plane") {
-    errors.push("modelAuth kind must be control-plane");
-  }
-  if (
-    typeof request.modelAuth.credential !== "string" ||
-    !/^[A-Z][A-Z0-9_]*$/.test(request.modelAuth.credential)
-  ) {
-    errors.push("modelAuth credential must be a control-plane credential name");
+  if (request.modelAuth.kind === "control-plane") {
+    if (
+      typeof request.modelAuth.credential !== "string" ||
+      request.modelAuth.credential.length > 200 ||
+      !/^[A-Z][A-Z0-9_]*$/.test(request.modelAuth.credential)
+    ) {
+      errors.push(
+        "modelAuth credential must be a control-plane credential name",
+      );
+    }
+  } else if (request.modelAuth.kind === "provider-subscription") {
+    if (
+      (request.modelAuth.provider !== "codex" &&
+        request.modelAuth.provider !== "cursor") ||
+      request.modelAuth.persistence !== "sandbox-session"
+    ) {
+      errors.push(
+        "provider subscription auth must use codex or cursor with sandbox-session persistence",
+      );
+    }
+  } else {
+    errors.push(
+      "modelAuth kind must be control-plane or provider-subscription",
+    );
   }
 
   if (
@@ -799,7 +887,8 @@ function validateExecutionRequest(request: AgentExecutionRequest): void {
   } else if (
     request.providerPreference.kind === "provider" &&
     (typeof request.providerPreference.provider !== "string" ||
-      request.providerPreference.provider.trim().length === 0)
+      request.providerPreference.provider.trim().length === 0 ||
+      request.providerPreference.provider.length > 200)
   ) {
     errors.push("providerPreference provider must not be empty");
   }

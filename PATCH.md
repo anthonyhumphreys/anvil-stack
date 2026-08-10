@@ -146,11 +146,15 @@ contract later.
 - `anvil-cloud/packages/runtime/src/agent-execution.ts` — JSON-friendly source,
   policy, event, result, and provider I/O contracts.
 - `anvil-cloud/packages/control-plane/src/execution*.ts` and
-  `fake-execution-provider.ts` — leases, stores, HTTP boundary, conformance,
-  budgets, and cleanup receipts.
+  `fake-execution-provider.ts` — leases, stores, authenticated HTTP boundary,
+  immutable snapshot/grant storage, worker protocol, Node service adapter,
+  conformance, budgets, and cleanup receipts.
 - `anvil-cloud/packages/aws/src/sandbox.ts` — Lambda MicroVM lifecycle and
   read-only execution transport.
-- `anvil-cloud/packages/cli/src/index.ts` — execution conformance command.
+- `anvil-cloud/packages/cli/src/index.ts` — execution conformance, durable
+  service, snapshot, and lifecycle client commands.
+- `anvil-app/src/main/services/anvil-cloud-execution.service.ts` and the typed
+  IPC/UI path — opt-in Desktop execution connection and read-only launch flow.
 - Docs: `anvil-cloud/docs/architecture/agent-execution-control-plane.md`,
   `anvil-cloud/docs/architecture/agents.md`, and the Anvil Website Cloud mirror.
 
@@ -165,12 +169,16 @@ contract later.
    snapshot sources use opaque ids and SHA-256 digests. Source selection records
    the exclusion of `.git`, ignored files, secrets, and unrelated untracked
    files.
-5. Model authentication is control-plane-brokered by credential name. Local
-   Codex OAuth state and credential values have no protocol field and must not
-   be persisted in leases or events.
+5. Model authentication is either control-plane-brokered by credential name or
+   an execution-scoped `codex` / `cursor` provider-subscription login. The
+   latter stores only provider and `sandbox-session` persistence intent in the
+   lease. Local OAuth caches, access tokens, API keys, and credential values
+   have no protocol field and must not be copied into snapshots, leases,
+   events, results, or artifacts. A provider must reject subscription auth
+   unless its worker explicitly advertises that provider.
 6. Network policy matches the compiled agent manifest. Read-write execution
    requires the agent filesystem capability. AWS remains read-only and rejects
-   working-tree patches in this slice.
+   working-tree patches in this implementation.
 7. TTL, provider-event, and estimated-cost ceilings fail the lease and request
    sandbox cleanup.
 8. Collection and cancellation emit cleanup receipts. Teardown is `verified`
@@ -179,6 +187,20 @@ contract later.
    run from a cursor, return a patch, and prove teardown.
 10. The AWS execution transport uses short-lived MicroVM auth tokens for each
     request and does not persist them.
+11. Hosted HTTP handlers fail closed without authentication and call workspace
+    authorisation for every user operation. Source-grant downloads use a
+    separate execution-bound bearer and bypass user authentication only for
+    that exact one-time route. Runnable Node services reject invalid user
+    bearer headers before buffering large snapshot request bodies.
+12. Snapshot bytes are content-addressed, size-bounded, and served through
+    short-lived single-use grants whose raw token is returned once and only a
+    SHA-256 verifier is persisted. The worker verifies declared byte counts and
+    SHA-256 digests before preparing the workspace.
+13. Desktop keeps the Anvil Cloud bearer encrypted in the Electron main
+    process. The renderer sees only endpoint and configured state. Desktop
+    uploads a committed Git archive with `.git`, ignored/untracked files,
+    working-tree changes, and known secret-file paths excluded; remote launch
+    remains read-only and behind the existing Cloud feature flag.
 
 #### Verification
 
@@ -190,6 +212,7 @@ pnpm --filter @anvil-cloud/control-plane test
 pnpm --filter @anvil-cloud/aws test -- agent.test.ts
 pnpm --filter @anvilstack/cloud-cli test -- cli.test.ts
 anvil-cloud executions conformance --json
+cd ../anvil-app && pnpm exec tsc --noEmit && pnpm lint && pnpm test
 ```
 
 #### Upstream break risks
@@ -197,6 +220,10 @@ anvil-cloud executions conformance --json
 - A provider-specific field in the Runtime execution request is `reject`.
 - Persisting pre-signed source URLs, auth tokens, credential values, or local
   agent OAuth state is `reject`.
+- Treating a worker image as subscription-capable without an explicit
+  capability advertisement is `reject`.
+- Making the hosted handler authentication-optional or returning the encrypted
+  Desktop bearer to the renderer is `reject`.
 - Replacing cursor reads with an unresumable stream is `adapt`: preserve the
   durable cursor as the recovery boundary even if live delivery uses SSE or
   WebSocket.

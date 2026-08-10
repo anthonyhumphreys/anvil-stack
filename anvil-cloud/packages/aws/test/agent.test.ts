@@ -377,6 +377,7 @@ describe("AwsLambdaMicroVmSandboxProvider", () => {
     const request = {
       schemaVersion: "0.1" as const,
       clientToken: "client_1",
+      workspace: "workspace-1",
       cell: "notes",
       environment: "preview",
       task: "Inspect this repository.",
@@ -408,6 +409,33 @@ describe("AwsLambdaMicroVmSandboxProvider", () => {
         policy: { ...request.policy, mode: "read-write" },
       }),
     ).toMatchObject({ supported: false });
+    expect(
+      provider.supports({
+        ...request,
+        modelAuth: {
+          kind: "provider-subscription",
+          provider: "codex",
+          persistence: "sandbox-session",
+        },
+      }),
+    ).toMatchObject({
+      supported: false,
+      reasons: [expect.stringContaining("does not advertise codex")],
+    });
+    expect(
+      new AwsLambdaMicroVmSandboxProvider({
+        imageIdentifier: "worker-image",
+        subscriptionProviders: ["codex"],
+        client: { send: async () => ({}) },
+      }).supports({
+        ...request,
+        modelAuth: {
+          kind: "provider-subscription",
+          provider: "codex",
+          persistence: "sandbox-session",
+        },
+      }),
+    ).toEqual({ supported: true, reasons: [] });
 
     const session = await provider.start({
       manifest,

@@ -10,10 +10,16 @@ import {
   type AgentExecutionCursorBatch,
   type AgentExecutionLease,
 } from "./execution.js";
+import {
+  AgentExecutionSnapshotStoreError,
+  type AgentExecutionSnapshotStore,
+  type AgentExecutionSnapshotUpload,
+} from "./execution-snapshot-store.js";
 
 export type AgentExecutionHttpRequest = {
   method: string;
   path: string;
+  headers?: Record<string, string | undefined>;
   query?: URLSearchParams;
   body?: unknown;
 };
@@ -32,6 +38,64 @@ export type AgentExecutionFetch = (
   json(): Promise<unknown>;
 }>;
 
+export type AgentExecutionHttpPrincipal = {
+  subject: string;
+  roles?: string[];
+};
+
+export type AgentExecutionHttpAction =
+  | "create"
+  | "list"
+  | "read"
+  | "events"
+  | "approval"
+  | "input"
+  | "steer"
+  | "suspend"
+  | "resume"
+  | "collect"
+  | "terminate"
+  | "reap"
+  | "snapshot.create";
+
+export type AgentExecutionHttpAuthorizationContext = {
+  principal: AgentExecutionHttpPrincipal;
+  action: AgentExecutionHttpAction;
+  httpRequest: AgentExecutionHttpRequest;
+  executionRequest?: AgentExecutionRequest;
+  execution?: AgentExecutionLease;
+  workspace?: string;
+};
+
+export type AgentExecutionHttpSecurity = {
+  authenticate(
+    request: AgentExecutionHttpRequest,
+  ):
+    | AgentExecutionHttpPrincipal
+    | null
+    | Promise<AgentExecutionHttpPrincipal | null>;
+  authorize(
+    context: AgentExecutionHttpAuthorizationContext,
+  ): boolean | Promise<boolean>;
+};
+
+export type AgentExecutionHttpClientOptions = {
+  fetch?: AgentExecutionFetch;
+  headers?:
+    | Record<string, string>
+    | (() => Record<string, string> | Promise<Record<string, string>>);
+};
+
+export type AgentExecutionHttpHandlerOptions = {
+  snapshots?: AgentExecutionSnapshotStore;
+};
+
+export interface AgentExecutionSourceHttpClient {
+  uploadSnapshot(
+    input: AgentExecutionSnapshotUpload,
+  ): Promise<Extract<AgentExecutionRequest["source"], { kind: "snapshot" }>>;
+}
+
 export class AgentExecutionHttpError extends Error {
   constructor(
     readonly code: string,
@@ -44,17 +108,65 @@ export class AgentExecutionHttpError extends Error {
   }
 }
 
+class AgentExecutionHttpAccessError extends Error {
+  constructor(
+    readonly status: 401 | 403,
+    readonly code:
+      | "EXECUTION_AUTHENTICATION_REQUIRED"
+      | "EXECUTION_AUTHORIZATION_DENIED",
+    message: string,
+  ) {
+    super(message);
+    this.name = "AgentExecutionHttpAccessError";
+  }
+}
+
 /**
  * Framework-neutral hosted API router. A server only needs to translate its
  * request into this small shape and serialize the returned body.
  */
 export function createAgentExecutionHttpHandler(
   api: AgentExecutionControlPlaneApi,
+  security: AgentExecutionHttpSecurity,
+  options: AgentExecutionHttpHandlerOptions = {},
 ): (request: AgentExecutionHttpRequest) => Promise<AgentExecutionHttpResponse> {
   return async (request) => {
     try {
-      return await routeAgentExecutionRequest(api, request);
+      if (
+        options.snapshots &&
+        request.method.toUpperCase() === "GET" &&
+        request.path.startsWith("/v1/source-grants/")
+      ) {
+        return await consumeSourceGrant(options.snapshots, request);
+      }
+
+      const principal = await security.authenticate(request);
+
+      if (!principal) {
+        throw new AgentExecutionHttpAccessError(
+          401,
+          "EXECUTION_AUTHENTICATION_REQUIRED",
+          "Execution control-plane authentication is required.",
+        );
+      }
+
+      return await routeAgentExecutionRequest(
+        api,
+        security,
+        principal,
+        request,
+        options,
+      );
     } catch (error) {
+      if (error instanceof AgentExecutionHttpAccessError) {
+        return {
+          status: error.status,
+          body: {
+            ok: false,
+            error: { code: error.code, message: error.message },
+          },
+        };
+      }
       if (error instanceof AgentExecutionControlPlaneError) {
         return {
           status: statusForControlPlaneError(error),
@@ -65,6 +177,15 @@ export function createAgentExecutionHttpHandler(
               message: error.message,
               details: error.details,
             },
+          },
+        };
+      }
+      if (error instanceof AgentExecutionSnapshotStoreError) {
+        return {
+          status: statusForSnapshotError(error),
+          body: {
+            ok: false,
+            error: { code: error.code, message: error.message },
           },
         };
       }
@@ -86,10 +207,10 @@ export function createAgentExecutionHttpHandler(
 /** Creates the Desktop/CLI execution client for a hosted Anvil control plane. */
 export function createHttpAgentExecutionControlPlane(
   baseUrl: string,
-  fetchImpl?: AgentExecutionFetch,
+  options: AgentExecutionHttpClientOptions = {},
 ): AgentExecutionControlPlaneApi {
   const base = trimTrailingCharacter(baseUrl, "/");
-  const fetcher = fetchImpl ?? (fetch as unknown as AgentExecutionFetch);
+  const fetcher = options.fetch ?? (fetch as unknown as AgentExecutionFetch);
 
   async function request(
     path: string,
@@ -98,9 +219,16 @@ export function createHttpAgentExecutionControlPlane(
     let response: Awaited<ReturnType<AgentExecutionFetch>>;
 
     try {
+      const requestHeaders =
+        typeof options.headers === "function"
+          ? await options.headers()
+          : (options.headers ?? {});
       response = await fetcher(`${base}${path}`, {
         method: init?.method ?? "GET",
-        headers: { "content-type": "application/json" },
+        headers: {
+          ...requestHeaders,
+          "content-type": "application/json",
+        },
         ...(init?.body === undefined
           ? {}
           : { body: JSON.stringify(init.body) }),
@@ -248,41 +376,190 @@ export function createHttpAgentExecutionControlPlane(
   };
 }
 
+/** Uploads immutable execution snapshots without exposing storage details. */
+export function createHttpAgentExecutionSourceClient(
+  baseUrl: string,
+  options: AgentExecutionHttpClientOptions = {},
+): AgentExecutionSourceHttpClient {
+  const base = trimTrailingCharacter(baseUrl, "/");
+  const fetcher = options.fetch ?? (fetch as unknown as AgentExecutionFetch);
+
+  return {
+    async uploadSnapshot(input) {
+      const requestHeaders =
+        typeof options.headers === "function"
+          ? await options.headers()
+          : (options.headers ?? {});
+      let response: Awaited<ReturnType<AgentExecutionFetch>>;
+
+      try {
+        response = await fetcher(`${base}/v1/source-snapshots`, {
+          method: "POST",
+          headers: {
+            ...requestHeaders,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            workspace: input.workspace,
+            baseCommit: input.baseCommit,
+            archiveBase64: Buffer.from(input.archive).toString("base64"),
+            ...(input.repository === undefined
+              ? {}
+              : { repository: input.repository }),
+            ...(input.branch === undefined ? {} : { branch: input.branch }),
+            ...(input.workingTreePatch === undefined
+              ? {}
+              : {
+                  workingTreePatchBase64: Buffer.from(
+                    input.workingTreePatch,
+                  ).toString("base64"),
+                }),
+          }),
+        });
+      } catch (error) {
+        throw new AgentExecutionHttpError(
+          "EXECUTION_CONTROL_PLANE_UNREACHABLE",
+          `Could not reach the execution control plane at ${base}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          0,
+        );
+      }
+
+      const payload = (await response.json().catch(() => ({}))) as unknown;
+      const record = isObject(payload) ? payload : {};
+      if (!response.ok) {
+        const error = isObject(record.error) ? record.error : {};
+        throw new AgentExecutionHttpError(
+          typeof error.code === "string"
+            ? error.code
+            : "EXECUTION_CONTROL_PLANE_ERROR",
+          typeof error.message === "string"
+            ? error.message
+            : `Snapshot upload failed with status ${response.status}.`,
+          response.status,
+        );
+      }
+      if (!isObject(record.snapshot) || record.snapshot.kind !== "snapshot") {
+        throw new AgentExecutionHttpError(
+          "EXECUTION_CONTROL_PLANE_INVALID_RESPONSE",
+          "Execution control plane returned no snapshot source.",
+          response.status,
+        );
+      }
+
+      return record.snapshot as Extract<
+        AgentExecutionRequest["source"],
+        { kind: "snapshot" }
+      >;
+    },
+  };
+}
+
 async function routeAgentExecutionRequest(
   api: AgentExecutionControlPlaneApi,
+  security: AgentExecutionHttpSecurity,
+  principal: AgentExecutionHttpPrincipal,
   request: AgentExecutionHttpRequest,
+  options: AgentExecutionHttpHandlerOptions,
 ): Promise<AgentExecutionHttpResponse> {
   const method = request.method.toUpperCase();
 
+  if (request.path === "/v1/source-snapshots" && method === "POST") {
+    if (!options.snapshots) {
+      return notFound(request.path);
+    }
+
+    const upload = readSnapshotUpload(request.body);
+    await requireAuthorization(security, {
+      principal,
+      action: "snapshot.create",
+      httpRequest: request,
+      workspace: upload.workspace,
+    });
+    const record = await options.snapshots.put(upload);
+
+    return ok({ snapshot: record.source });
+  }
+
   if (request.path === "/v1/executions" && method === "POST") {
+    const executionRequest = request.body as AgentExecutionRequest;
+    await requireAuthorization(security, {
+      principal,
+      action: "create",
+      httpRequest: request,
+      executionRequest,
+    });
+
     return ok({
-      execution: await api.createExecution(
-        request.body as AgentExecutionRequest,
-      ),
+      execution: await api.createExecution(executionRequest),
     });
   }
   if (request.path === "/v1/executions" && method === "GET") {
-    return ok({ executions: await api.listExecutions() });
+    const executions: AgentExecutionLease[] = [];
+
+    for (const execution of await api.listExecutions()) {
+      if (
+        await security.authorize({
+          principal,
+          action: "list",
+          httpRequest: request,
+          execution,
+        })
+      ) {
+        executions.push(execution);
+      }
+    }
+
+    return ok({ executions });
   }
   if (request.path === "/v1/executions/reap" && method === "POST") {
+    await requireAuthorization(security, {
+      principal,
+      action: "reap",
+      httpRequest: request,
+    });
+
     return ok({ executions: await api.reapExpired() });
   }
 
-  const match = request.path.match(
-    /^\/v1\/executions\/([^/]+)(?:\/(events|approval|input|steer|suspend|resume|collect|terminate))?$/,
-  );
+  const parts = request.path.split("/");
 
-  if (!match) {
+  if (
+    parts.length < 4 ||
+    parts.length > 5 ||
+    parts[0] !== "" ||
+    parts[1] !== "v1" ||
+    parts[2] !== "executions" ||
+    !parts[3]
+  ) {
     return notFound(request.path);
   }
 
-  const executionId = decodeURIComponent(match[1] ?? "");
-  const action = match[2];
+  const executionId = decodePathSegment(parts[3]);
+  const action = parts[4];
 
   if (!action && method === "GET") {
-    return ok({ execution: await api.getExecution(executionId) });
+    const execution = await authorizedExecution(
+      api,
+      security,
+      principal,
+      request,
+      executionId,
+      "read",
+    );
+
+    return ok({ execution });
   }
   if (action === "events" && method === "GET") {
+    await authorizedExecution(
+      api,
+      security,
+      principal,
+      request,
+      executionId,
+      "events",
+    );
     const limitValue = request.query?.get("limit");
     const limit =
       limitValue === null || limitValue === undefined
@@ -305,6 +582,14 @@ async function routeAgentExecutionRequest(
     });
   }
   if (action === "approval" && method === "POST") {
+    await authorizedExecution(
+      api,
+      security,
+      principal,
+      request,
+      executionId,
+      "approval",
+    );
     return ok({
       execution: await api.resolveApproval(
         executionId,
@@ -313,6 +598,14 @@ async function routeAgentExecutionRequest(
     });
   }
   if (action === "input" && method === "POST") {
+    await authorizedExecution(
+      api,
+      security,
+      principal,
+      request,
+      executionId,
+      "input",
+    );
     return ok({
       execution: await api.submitInput(
         executionId,
@@ -321,6 +614,14 @@ async function routeAgentExecutionRequest(
     });
   }
   if (action === "steer" && method === "POST") {
+    await authorizedExecution(
+      api,
+      security,
+      principal,
+      request,
+      executionId,
+      "steer",
+    );
     const body = isObject(request.body) ? request.body : {};
 
     return ok({
@@ -331,19 +632,216 @@ async function routeAgentExecutionRequest(
     });
   }
   if (action === "suspend" && method === "POST") {
+    await authorizedExecution(
+      api,
+      security,
+      principal,
+      request,
+      executionId,
+      "suspend",
+    );
     return ok({ execution: await api.suspend(executionId) });
   }
   if (action === "resume" && method === "POST") {
+    await authorizedExecution(
+      api,
+      security,
+      principal,
+      request,
+      executionId,
+      "resume",
+    );
     return ok({ execution: await api.resume(executionId) });
   }
   if (action === "collect" && method === "POST") {
+    await authorizedExecution(
+      api,
+      security,
+      principal,
+      request,
+      executionId,
+      "collect",
+    );
     return ok({ execution: await api.collectResult(executionId) });
   }
   if (action === "terminate" && method === "POST") {
+    await authorizedExecution(
+      api,
+      security,
+      principal,
+      request,
+      executionId,
+      "terminate",
+    );
     return ok({ execution: await api.terminate(executionId) });
   }
 
   return notFound(request.path);
+}
+
+async function authorizedExecution(
+  api: AgentExecutionControlPlaneApi,
+  security: AgentExecutionHttpSecurity,
+  principal: AgentExecutionHttpPrincipal,
+  httpRequest: AgentExecutionHttpRequest,
+  executionId: string,
+  action: AgentExecutionHttpAction,
+): Promise<AgentExecutionLease> {
+  const execution = await api.getExecution(executionId);
+  await requireAuthorization(security, {
+    principal,
+    action,
+    httpRequest,
+    execution,
+  });
+
+  return execution;
+}
+
+async function requireAuthorization(
+  security: AgentExecutionHttpSecurity,
+  context: AgentExecutionHttpAuthorizationContext,
+): Promise<void> {
+  if (!(await security.authorize(context))) {
+    throw new AgentExecutionHttpAccessError(
+      403,
+      "EXECUTION_AUTHORIZATION_DENIED",
+      "The authenticated principal cannot perform this execution action.",
+    );
+  }
+}
+
+function decodePathSegment(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    throw new AgentExecutionControlPlaneError(
+      "EXECUTION_INVALID_REQUEST",
+      "Execution path contains invalid URL encoding.",
+    );
+  }
+}
+
+async function consumeSourceGrant(
+  snapshots: AgentExecutionSnapshotStore,
+  request: AgentExecutionHttpRequest,
+): Promise<AgentExecutionHttpResponse> {
+  const prefix = "/v1/source-grants/";
+  const encodedGrantId = request.path.slice(prefix.length);
+  if (encodedGrantId.length === 0 || encodedGrantId.includes("/")) {
+    return notFound(request.path);
+  }
+
+  const authorization = readHeader(request.headers, "authorization");
+  const executionId = readHeader(request.headers, "x-anvil-execution-id");
+  const token = authorization?.startsWith("Bearer ")
+    ? authorization.slice("Bearer ".length)
+    : undefined;
+
+  if (!token || !executionId) {
+    throw new AgentExecutionSnapshotStoreError(
+      "EXECUTION_SNAPSHOT_GRANT_INVALID",
+      "Snapshot grant authentication is required.",
+    );
+  }
+
+  const download = await snapshots.consumeGrant({
+    grantId: decodePathSegment(encodedGrantId),
+    executionId,
+    token,
+  });
+
+  return ok({
+    snapshot: download.record.source,
+    archiveBase64: Buffer.from(download.archive).toString("base64"),
+    ...(download.workingTreePatch === undefined
+      ? {}
+      : {
+          workingTreePatchBase64: Buffer.from(
+            download.workingTreePatch,
+          ).toString("base64"),
+        }),
+  });
+}
+
+function readSnapshotUpload(body: unknown): AgentExecutionSnapshotUpload {
+  if (!isObject(body)) {
+    throw new AgentExecutionSnapshotStoreError(
+      "EXECUTION_SNAPSHOT_INVALID",
+      "Snapshot upload body must be an object.",
+    );
+  }
+  if (
+    typeof body.workspace !== "string" ||
+    typeof body.baseCommit !== "string" ||
+    typeof body.archiveBase64 !== "string"
+  ) {
+    throw new AgentExecutionSnapshotStoreError(
+      "EXECUTION_SNAPSHOT_INVALID",
+      "Snapshot upload requires workspace, baseCommit, and archiveBase64.",
+    );
+  }
+  if (body.repository !== undefined && typeof body.repository !== "string") {
+    throw new AgentExecutionSnapshotStoreError(
+      "EXECUTION_SNAPSHOT_INVALID",
+      "Snapshot repository must be a string.",
+    );
+  }
+  if (body.branch !== undefined && typeof body.branch !== "string") {
+    throw new AgentExecutionSnapshotStoreError(
+      "EXECUTION_SNAPSHOT_INVALID",
+      "Snapshot branch must be a string.",
+    );
+  }
+  if (
+    body.workingTreePatchBase64 !== undefined &&
+    typeof body.workingTreePatchBase64 !== "string"
+  ) {
+    throw new AgentExecutionSnapshotStoreError(
+      "EXECUTION_SNAPSHOT_INVALID",
+      "Snapshot working-tree patch must be base64 text.",
+    );
+  }
+
+  return {
+    workspace: body.workspace,
+    baseCommit: body.baseCommit,
+    archive: decodeBase64(body.archiveBase64, "snapshot archive"),
+    ...(body.repository === undefined ? {} : { repository: body.repository }),
+    ...(body.branch === undefined ? {} : { branch: body.branch }),
+    ...(body.workingTreePatchBase64 === undefined
+      ? {}
+      : {
+          workingTreePatch: decodeBase64(
+            body.workingTreePatchBase64,
+            "working-tree patch",
+          ),
+        }),
+  };
+}
+
+function decodeBase64(value: string, label: string): Uint8Array {
+  const decoded = Buffer.from(value, "base64");
+
+  if (decoded.toString("base64") !== value) {
+    throw new AgentExecutionSnapshotStoreError(
+      "EXECUTION_SNAPSHOT_INVALID",
+      `${label} must use canonical base64 encoding.`,
+    );
+  }
+
+  return decoded;
+}
+
+function readHeader(
+  headers: AgentExecutionHttpRequest["headers"],
+  name: string,
+): string | undefined {
+  for (const [key, value] of Object.entries(headers ?? {})) {
+    if (key.toLowerCase() === name) return value;
+  }
+
+  return undefined;
 }
 
 function readLease(payload: Record<string, unknown>): AgentExecutionLease {
@@ -374,6 +872,25 @@ function statusForControlPlaneError(
       return 502;
     case "EXECUTION_INVALID_CURSOR":
     case "EXECUTION_INVALID_REQUEST":
+      return 400;
+  }
+}
+
+function statusForSnapshotError(
+  error: AgentExecutionSnapshotStoreError,
+): number {
+  switch (error.code) {
+    case "EXECUTION_SNAPSHOT_NOT_FOUND":
+      return 404;
+    case "EXECUTION_SNAPSHOT_TOO_LARGE":
+      return 413;
+    case "EXECUTION_SNAPSHOT_GRANT_USED":
+      return 409;
+    case "EXECUTION_SNAPSHOT_GRANT_EXPIRED":
+      return 410;
+    case "EXECUTION_SNAPSHOT_GRANT_INVALID":
+      return 401;
+    case "EXECUTION_SNAPSHOT_INVALID":
       return 400;
   }
 }

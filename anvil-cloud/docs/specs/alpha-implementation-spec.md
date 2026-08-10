@@ -29,11 +29,14 @@ The alpha product is a local-first TypeScript platform where a developer or codi
 - No perfect JavaScript sandbox. Safety comes from capability scoping, adapter-generated provider policy, runtime adapters, import restrictions, and deployment isolation.
 - No full hosted Agent Sandbox service during alpha. The provider-neutral
   sandbox and execution contracts, durable local execution store, resumable
-  event protocol, conformance provider, hosted HTTP boundary, and AWS Lambda
-  MicroVM read-only transport exist. Hosted authentication, source storage,
-  credential brokering, a compatible deployed worker image, Lens views, and
-  live remote verification remain follow-on work. Sandboxes are not a Cell
-  authoring surface.
+  event protocol, conformance provider, authenticated/workspace-authorised HTTP
+  boundary, immutable snapshot storage, one-time worker grants, worker router,
+  runnable CLI service, optional Desktop workbench, subscription-auth intent,
+  and AWS Lambda MicroVM read-only transport exist. A compatible deployed
+  worker image, concrete subscription-login runners, production persistence,
+  optional cloud-managed credential brokering, Lens topology, and live remote
+  verification remain follow-on work. Sandboxes are not a Cell authoring
+  surface.
 
 ## Product concepts
 

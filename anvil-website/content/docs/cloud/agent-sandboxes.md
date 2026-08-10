@@ -15,11 +15,13 @@ wait for approval, resume with state, and leave evidence behind.
 
 The execution foundation now exists: Anvil has provider-neutral sandbox and
 execution contracts, resumable cursor events, durable local lease storage, a
-deterministic conformance provider, a hosted HTTP boundary, and an AWS Lambda
-MicroVM read-only transport. The full hosted experience still needs authenticated
-route wiring, source snapshot storage, live credential brokering, a compatible
-deployed worker image, Lens views, and real-account verification. Technically
-functional, not yet wearing a cape.
+deterministic conformance provider, an authenticated HTTP boundary,
+content-addressed source snapshots, a provider-neutral worker boundary, a
+runnable CLI service, an opt-in Desktop workbench, and an AWS Lambda MicroVM
+read-only transport. The full hosted experience still needs a compatible
+deployed worker image, subscription-login workers, production persistence,
+Lens topology, and real-account verification. Technically functional, not yet
+wearing a cape.
 
 ## Why sandboxes exist
 
@@ -208,8 +210,14 @@ execution leases with:
 - suspend, resume, collect, terminate, and TTL reaping
 - event-count and estimated-cost ceilings
 - JSON-file or in-memory state stores
+- content-addressed snapshot storage with bounded archive/patch sizes
+- short-lived, execution-bound, single-use worker grants
 - cleanup receipts that distinguish requested teardown from verified teardown
-- a `/v1/executions` HTTP router and matching client
+- an authenticated, workspace-authorised `/v1/executions` HTTP router and
+  matching execution/source clients
+- a provider-neutral worker HTTP router that verifies snapshot size and
+  SHA-256 before workspace preparation
+- a loopback-safe Node service adapter
 
 The deterministic exit gate needs no cloud account:
 
@@ -227,6 +235,58 @@ MicroVM image receives source preparation, run, cursor event, approval, input,
 steering, and result requests under `/_anvil/execution/*`. Every request uses a
 short-lived MicroVM auth token. The token is not stored in the execution lease
 or event log.
+
+Run the durable alpha service and lifecycle clients with:
+
+```bash
+export ANVIL_EXECUTION_CONTROL_TOKEN="$(openssl rand -base64 32)"
+anvil cloud executions serve --provider fake --json
+anvil cloud executions list --json
+anvil cloud executions show <execution-id> --json
+anvil cloud executions events <execution-id> --json
+```
+
+Remote user requests fail closed without authentication and are authorised per
+workspace. Snapshot downloads use a separate one-time bearer bound to the exact
+execution. The Node service rejects invalid control-plane bearer headers before
+buffering snapshot bodies. The raw grant token and the Desktop control-plane
+bearer are never written to leases, events, results, or renderer state.
+
+## Use a Codex or Cursor subscription
+
+The execution contract supports two model-auth modes:
+
+- a cloud-managed credential name, where the control plane owns secret
+  brokering;
+- an execution-scoped `codex` or `cursor` provider subscription login, where
+  no model API key or local OAuth cache crosses the boundary.
+
+[Codex supports ChatGPT subscription login and device-code login on headless
+machines](https://learn.chatgpt.com/docs/auth#login-on-headless-devices). A
+compatible worker can therefore ask the user to approve a one-time device flow,
+keep the refreshed login only inside the sandbox session, and destroy it during
+cleanup. [Cursor CLI supports browser login backed by the user's Cursor
+account](https://docs.cursor.com/en/cli/reference/authentication), but its
+public Background Agents API still uses API keys. Anvil therefore requires each
+worker image to advertise `codex` and/or `cursor` subscription support instead
+of claiming they are interchangeable.
+
+The AWS adapter advertises no subscription providers by default. Operators set
+`ANVIL_AWS_AGENT_SUBSCRIPTION_PROVIDERS=codex,cursor` only for login flows the
+deployed image actually implements.
+
+## Desktop remote executions
+
+The optional Cloud Workbench in Anvil Desktop can save and test a control-plane
+connection, upload a committed read-only repository snapshot, start an
+execution, follow evidence, resolve approvals, steer, and terminate. The bearer
+is encrypted by Electron `safeStorage` in main-process SQLite; the renderer sees
+only endpoint/configured state. Working-tree changes and known secret-file
+paths are excluded and Desktop reports when local changes were left behind.
+
+Codex subscription is the default runtime selector. Cursor subscription and
+cloud-managed credentials remain explicit alternatives, and a worker must
+support the selected login flow before the provider accepts the request.
 
 ## What sandboxes should run
 
@@ -326,7 +386,14 @@ Implemented today:
   controls, budgets, results, and cleanup receipts in
   `@anvil-cloud/control-plane`
 - in-memory and atomic JSON-file execution stores
-- framework-neutral hosted execution HTTP router and client
+- authenticated and workspace-authorised execution HTTP router/clients
+- content-addressed file/in-memory snapshot stores and one-time worker grants
+- authenticated worker HTTP boundary with source-integrity verification
+- runnable execution service plus CLI snapshot and lifecycle commands
+- optional Desktop remote execution connection, event/approval controls, and
+  encrypted main-process token storage
+- execution-scoped Codex/Cursor subscription-auth descriptors without model
+  API keys or copied local OAuth caches
 - deterministic fake-provider conformance with approval, patch, cursor, and
   teardown proof
 - brokered credential declarations in agent manifests and sandbox startup
@@ -344,13 +411,13 @@ Implemented today:
 Not implemented yet:
 
 - live network-bound credential injection around sandbox tools
-- workspace snapshot storage
-- authenticated hosted route wiring and workspace authorisation
 - compatible deployed AWS execution worker image and real-account smoke
+- concrete Codex device-login and Cursor interactive-login worker drivers
+- concurrency-safe hosted persistence beyond the alpha JSON stores
 - production approval UI
 - sandbox-aware Lens views
 - remote sandbox inspect/logs
 - persistent hosted memory
 - durable multi-step orchestration
 
-Treat this as a real first slice, not the finished hosted experience.
+Treat this as a runnable alpha boundary, not the finished hosted experience.

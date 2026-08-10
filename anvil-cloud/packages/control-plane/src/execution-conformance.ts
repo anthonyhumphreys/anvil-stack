@@ -49,6 +49,7 @@ export async function runAgentExecutionConformance(): Promise<AgentExecutionConf
   const request: AgentExecutionRequest = {
     schemaVersion: AGENT_EXECUTION_SCHEMA_VERSION,
     clientToken: "conformance-client-token",
+    workspace: "conformance-workspace",
     cell: "conformance",
     environment: "test",
     task: "Inspect the repository, run tests, and produce a deterministic patch.",

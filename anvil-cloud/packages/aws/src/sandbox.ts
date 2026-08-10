@@ -15,9 +15,11 @@ import type {
   AgentExecutionEventBatch,
   AgentExecutionHandle,
   AgentExecutionInputSubmission,
+  AgentExecutionModelAuth,
   AgentExecutionProvider,
   AgentExecutionProviderResult,
   AgentExecutionRequest,
+  AgentExecutionSourceAccess,
   AgentExecutionStartInput,
   AgentExecutionWorkspace,
   AgentSandboxAuthToken,
@@ -52,6 +54,7 @@ export type AwsLambdaMicroVmSandboxProviderOptions = {
   logGroup?: string;
   client?: Pick<LambdaMicrovmsClient, "send">;
   executionFetch?: AwsAgentExecutionFetch;
+  subscriptionProviders?: Array<"codex" | "cursor">;
 };
 
 export class AwsLambdaMicroVmSandboxError extends Error {
@@ -80,16 +83,6 @@ export class AwsAgentExecutionTransportError extends Error {
 
 export class AwsLambdaMicroVmSandboxProvider implements AgentExecutionProvider {
   readonly id = "aws-lambda-microvm";
-  readonly executionCapabilities = {
-    modes: ["read-only"],
-    maxTtlSeconds: 28_800,
-    resumableEvents: true,
-    approvals: true,
-    input: true,
-    steering: true,
-    artifacts: true,
-    patches: false,
-  } as const;
   private readonly client: Pick<LambdaMicrovmsClient, "send">;
   private readonly executionFetch: AwsAgentExecutionFetch;
   private readonly sessions = new Map<string, AgentSandboxSession>();
@@ -106,6 +99,28 @@ export class AwsLambdaMicroVmSandboxProvider implements AgentExecutionProvider {
       options.executionFetch ?? (fetch as unknown as AwsAgentExecutionFetch);
   }
 
+  get executionCapabilities() {
+    const subscriptionProviders = this.subscriptionProviders();
+
+    return {
+      modes: ["read-only"],
+      modelAuth: [
+        "control-plane",
+        ...(subscriptionProviders.length > 0
+          ? (["provider-subscription"] as const)
+          : []),
+      ] as readonly AgentExecutionModelAuth["kind"][],
+      subscriptionProviders,
+      maxTtlSeconds: 28_800,
+      resumableEvents: true,
+      approvals: true,
+      input: true,
+      steering: true,
+      artifacts: true,
+      patches: false,
+    } as const;
+  }
+
   supports(request: AgentExecutionRequest) {
     const reasons: string[] = [];
     const imageIdentifier =
@@ -115,18 +130,29 @@ export class AwsLambdaMicroVmSandboxProvider implements AgentExecutionProvider {
       reasons.push("AWS Agent Sandbox image is not configured");
     }
     if (request.policy.mode !== "read-only") {
-      reasons.push("AWS execution is read-only in the current vertical slice");
+      reasons.push("AWS execution currently supports read-only mode");
     }
     if (request.policy.ttlSeconds > this.executionCapabilities.maxTtlSeconds) {
       reasons.push("requested TTL exceeds the AWS sandbox maximum");
     }
     if (request.source.selection.includesWorkingTreePatch) {
       reasons.push(
-        "working-tree patches are not accepted by the AWS read-only slice",
+        "working-tree patches are not accepted by the AWS read-only transport",
       );
+    }
+    if (request.modelAuth.kind === "provider-subscription") {
+      if (!this.subscriptionProviders().includes(request.modelAuth.provider)) {
+        reasons.push(
+          `AWS Agent Sandbox worker does not advertise ${request.modelAuth.provider} subscription login`,
+        );
+      }
     }
 
     return { supported: reasons.length === 0, reasons };
+  }
+
+  private subscriptionProviders(): Array<"codex" | "cursor"> {
+    return [...new Set(this.options.subscriptionProviders ?? [])];
   }
 
   async start(input: AgentSandboxStartInput): Promise<AgentSandboxSession> {
@@ -276,7 +302,11 @@ export class AwsLambdaMicroVmSandboxProvider implements AgentExecutionProvider {
 
   async prepareWorkspace(
     session: AgentSandboxSession,
-    input: { executionId: string; source: AgentExecutionStartInput["source"] },
+    input: {
+      executionId: string;
+      source: AgentExecutionStartInput["source"];
+      access?: AgentExecutionSourceAccess;
+    },
   ): Promise<AgentExecutionWorkspace> {
     const payload = await this.executionRequest(session.id, "/workspace", {
       method: "POST",
@@ -495,7 +525,25 @@ export function createAwsLambdaMicroVmSandboxProviderFromEnv(
     envOptions.imageIdentifier = process.env.ANVIL_AWS_AGENT_SANDBOX_IMAGE;
   }
 
+  const subscriptionProviders = parseSubscriptionProviders(
+    process.env.ANVIL_AWS_AGENT_SUBSCRIPTION_PROVIDERS,
+  );
+  if (subscriptionProviders.length > 0) {
+    envOptions.subscriptionProviders = subscriptionProviders;
+  }
+
   return new AwsLambdaMicroVmSandboxProvider(envOptions);
+}
+
+function parseSubscriptionProviders(
+  value: string | undefined,
+): Array<"codex" | "cursor"> {
+  if (!value) return [];
+
+  return [...new Set(value.split(",").map((entry) => entry.trim()))].filter(
+    (entry): entry is "codex" | "cursor" =>
+      entry === "codex" || entry === "cursor",
+  );
 }
 
 function compactContext(context: {

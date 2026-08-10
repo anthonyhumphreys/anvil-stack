@@ -318,9 +318,19 @@ Use the deterministic exit gate before changing execution providers:
 anvil-cloud executions conformance --json
 ```
 
-AWS execution is read-only in the current slice and requires a compatible
-Lambda MicroVM worker image. Never persist MicroVM auth tokens, pre-signed
-source URLs, credential values, or local Codex OAuth state in leases or events.
+The runnable boundary includes authenticated Node HTTP serving, content-addressed
+source snapshots, single-use worker grants, the provider-neutral worker router,
+CLI service/client commands, and the opt-in Desktop workbench. AWS execution is
+read-only and still requires a compatible Lambda MicroVM worker image. Runnable
+Node services reject invalid control-plane bearer headers before buffering a
+snapshot body.
+
+Model authentication is explicit. `provider-subscription` requests let a worker
+offer execution-scoped Codex or Cursor login without accepting a model API key.
+Workers must advertise each supported subscription provider and discard the
+login session during sandbox cleanup. Never persist worker auth tokens,
+pre-signed source URLs, credential values, or local Codex/Cursor OAuth state in
+leases, events, or snapshots.
 
 ## Verification
 

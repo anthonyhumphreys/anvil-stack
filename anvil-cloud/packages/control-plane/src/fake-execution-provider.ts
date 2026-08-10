@@ -45,6 +45,8 @@ export class FakeAgentExecutionProvider implements AgentExecutionProvider {
   readonly id = "fake-execution";
   readonly executionCapabilities = {
     modes: ["read-only", "read-write"],
+    modelAuth: ["control-plane", "provider-subscription"],
+    subscriptionProviders: ["codex", "cursor"],
     maxTtlSeconds: 28_800,
     resumableEvents: true,
     approvals: true,
@@ -69,6 +71,21 @@ export class FakeAgentExecutionProvider implements AgentExecutionProvider {
 
     if (!this.executionCapabilities.modes.includes(request.policy.mode)) {
       reasons.push(`mode ${request.policy.mode} is not supported`);
+    }
+    if (
+      !this.executionCapabilities.modelAuth.includes(request.modelAuth.kind)
+    ) {
+      reasons.push(`model auth ${request.modelAuth.kind} is not supported`);
+    }
+    if (
+      request.modelAuth.kind === "provider-subscription" &&
+      !this.executionCapabilities.subscriptionProviders.includes(
+        request.modelAuth.provider,
+      )
+    ) {
+      reasons.push(
+        `subscription provider ${request.modelAuth.provider} is not supported`,
+      );
     }
     if (request.policy.ttlSeconds > this.executionCapabilities.maxTtlSeconds) {
       reasons.push("requested TTL exceeds the provider maximum");
@@ -162,6 +179,10 @@ export class FakeAgentExecutionProvider implements AgentExecutionProvider {
       this.event("execution.started", {
         task: input.task,
         mode: input.policy.mode,
+        modelAuth: input.modelAuth.kind,
+        ...(input.modelAuth.kind === "provider-subscription"
+          ? { subscriptionProvider: input.modelAuth.provider }
+          : {}),
       }),
       this.event("agent.message", {
         role: "assistant",

@@ -469,7 +469,7 @@ untrusted-code isolation still belong to Docker/prod adapter execution work.
 
 ## Target Agent Delivery Loop
 
-The current implemented slice gives execution clients and AWS-backed agents:
+The current implementation gives execution clients and AWS-backed agents:
 
 - provider-neutral sandbox session types in `@anvil-cloud/runtime`;
 - provider-neutral execution source, policy, event, result, and provider I/O
@@ -478,7 +478,12 @@ The current implemented slice gives execution clients and AWS-backed agents:
   TTL and budget enforcement, results, and cleanup receipts in
   `@anvil-cloud/control-plane`;
 - in-memory and JSON-file execution stores plus a framework-neutral hosted HTTP
-  router/client;
+  router/client with mandatory authentication and workspace authorisation;
+- content-addressed source snapshots plus short-lived, single-use,
+  execution-bound worker grants;
+- a provider-neutral authenticated worker HTTP boundary that verifies source
+  integrity before workspace preparation;
+- a runnable Node control-plane service and CLI lifecycle clients;
 - a deterministic conformance provider that pauses for approval, resumes from
   a cursor, returns a patch, and proves teardown;
 - `AwsLambdaMicroVmSandboxProvider` in `@anvil-cloud/aws`;
@@ -491,13 +496,20 @@ The current implemented slice gives execution clients and AWS-backed agents:
 - `anvil-cloud agents sandboxes --json` for CLI/agent inspection;
 - `anvil-cloud executions conformance --json` for the provider-neutral exit
   gate.
+- an optional Desktop execution connection and read-only remote workbench with
+  encrypted main-process bearer storage;
+- execution-scoped Codex/Cursor subscription auth intent, without model API
+  keys or copied local OAuth caches.
 
 The hosted delivery loop still needs to:
 
-1. authenticate the user and authorise the workspace at the hosted HTTP edge;
-2. ingest and serve immutable source snapshots through one-time sandbox access;
-3. run the execution worker protocol in a deployed AWS MicroVM image;
-4. broker model and provider credentials at the network boundary;
+1. run the implemented execution worker protocol in a deployed AWS MicroVM
+   image and verify it in a real account;
+2. implement and verify Codex device login and Cursor interactive subscription
+   login in worker images that advertise those capabilities;
+3. broker optional cloud-managed model and provider credentials at the network
+   boundary;
+4. replace alpha JSON persistence with concurrency-safe hosted storage;
 5. stream execution evidence into Anvil Lens and Desktop Work topology;
 6. request approval before protected actions such as external email, branch
    pushes, preview deploys, or production changes;

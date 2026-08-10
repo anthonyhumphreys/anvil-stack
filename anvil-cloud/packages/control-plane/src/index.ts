@@ -8,12 +8,25 @@ export {
   type AgentExecutionControlPlaneOptions,
   type AgentExecutionCursorBatch,
   type AgentExecutionLease,
+  type AgentExecutionSourceBroker,
 } from "./execution.js";
 export {
   InMemoryAgentExecutionStore,
   JsonFileAgentExecutionStore,
   type AgentExecutionStore,
 } from "./execution-store.js";
+export {
+  AgentExecutionSnapshotStoreError,
+  FileAgentExecutionSnapshotStore,
+  InMemoryAgentExecutionSnapshotStore,
+  SnapshotStoreAgentExecutionSourceBroker,
+  type AgentExecutionSnapshotDownload,
+  type AgentExecutionSnapshotGrant,
+  type AgentExecutionSnapshotRecord,
+  type AgentExecutionSnapshotStore,
+  type AgentExecutionSnapshotStoreOptions,
+  type AgentExecutionSnapshotUpload,
+} from "./execution-snapshot-store.js";
 export {
   FakeAgentExecutionProvider,
   type FakeAgentExecutionProviderOptions,
@@ -27,10 +40,32 @@ export {
   AgentExecutionHttpError,
   createAgentExecutionHttpHandler,
   createHttpAgentExecutionControlPlane,
+  createHttpAgentExecutionSourceClient,
   type AgentExecutionFetch,
+  type AgentExecutionHttpAction,
+  type AgentExecutionHttpAuthorizationContext,
+  type AgentExecutionHttpClientOptions,
+  type AgentExecutionHttpHandlerOptions,
+  type AgentExecutionHttpPrincipal,
   type AgentExecutionHttpRequest,
   type AgentExecutionHttpResponse,
+  type AgentExecutionHttpSecurity,
+  type AgentExecutionSourceHttpClient,
 } from "./execution-http.js";
+export {
+  AgentExecutionWorkerError,
+  createAgentExecutionWorkerHttpHandler,
+  type AgentExecutionWorkerDriver,
+  type AgentExecutionWorkerFetch,
+  type AgentExecutionWorkerHandlerOptions,
+  type AgentExecutionWorkerSecurity,
+  type AgentExecutionWorkerWorkspaceMaterial,
+} from "./execution-worker.js";
+export {
+  startAgentExecutionNodeHttpServer,
+  type AgentExecutionNodeHttpServer,
+  type AgentExecutionNodeHttpServerOptions,
+} from "./execution-node-http.js";
 
 /**
  * A log entry as reported by a management plane. Local entries carry the
