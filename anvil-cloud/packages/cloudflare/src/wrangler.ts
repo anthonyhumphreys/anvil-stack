@@ -54,6 +54,7 @@ export async function runCloudflareWranglerDeploy(
   const env = {
     ...inheritedEnv,
     FORCE_COLOR: "0",
+    WRANGLER_HIDE_BANNER: "true",
     WRANGLER_LOG_SANITIZE: "true",
     WRANGLER_SEND_ERROR_REPORTS: "false",
     WRANGLER_SEND_METRICS: "false",
