@@ -47,6 +47,7 @@ import {
   type CodexSelectionChangedDetail,
 } from '../utils/codex-selection';
 import { buildChatModelOptions, type ChatModelOption } from '../utils/chat-model-options';
+import { resolveChatFastModeTarget } from '../utils/chat-fast-mode';
 
 export type ChatEntry =
   | { kind: 'user'; content: string; attachments?: ChatAttachment[]; id?: string }
@@ -92,7 +93,12 @@ interface ChatContextValue {
   setActiveRepo: (repo: RepoInfo) => void;
   setActiveRepos: (repos: RepoInfo[]) => void;
   setSelectedGovernanceDocs: (docs: GovernanceDocument[]) => void;
-  send: (message: string, attachments?: ChatAttachment[], modelContext?: string) => Promise<void>;
+  send: (
+    message: string,
+    attachments?: ChatAttachment[],
+    modelContext?: string,
+    fastMode?: boolean,
+  ) => Promise<void>;
   steer: (message: string, attachments?: ChatAttachment[]) => Promise<void>;
   switchPersona: (persona: Persona) => Promise<void>;
   interrupt: () => Promise<void>;
@@ -1572,7 +1578,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   );
 
   const send = useCallback(
-    async (message: string, attachments: ChatAttachment[] = [], modelContext?: string) => {
+    async (
+      message: string,
+      attachments: ChatAttachment[] = [],
+      modelContext?: string,
+      fastMode = false,
+    ) => {
       const displayMessage = normaliseOutgoingMessage(message, attachments);
       const attachmentPrompt = buildAttachmentPrompt(displayMessage, attachments);
       const modelMessage = modelContext
@@ -1602,6 +1613,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         artifacts: nextArtifacts,
         analysis: nextAnalysis,
       });
+      const fastModeTarget = resolveChatFastModeTarget(modelProvider, model, modelOptions);
+      const turnModel = fastMode && fastModeTarget.available ? fastModeTarget.model : model;
+      const serviceTier = fastModeTarget.available
+        ? fastMode
+          ? fastModeTarget.serviceTier
+          : null
+        : undefined;
 
       let thread = activeThreadRef.current;
       if (!thread) {
@@ -1722,8 +1740,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
           await window.anvil.chat.send(startedSession.id, enriched, attachments, {
             collaborationMode,
-            model,
+            model: turnModel,
             reasoningEffort: reasoningLevel,
+            serviceTier,
           });
         } catch (err) {
           setError(err instanceof Error ? err.message : 'Failed to start session');
@@ -1758,8 +1777,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         bumpThreadSummary(thread.id, buildThreadPreview(displayMessage, attachments), timestamp);
         await window.anvil.chat.send(currentSessionForThread.id, enriched, attachments, {
           collaborationMode,
-          model,
+          model: turnModel,
           reasoningEffort: reasoningLevel,
+          serviceTier,
         });
       } catch (err) {
         setBusy(false);
@@ -1783,6 +1803,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       dbInsightAnalysis,
       findThreadIdForSession,
       model,
+      modelOptions,
+      modelProvider,
       reasoningLevel,
       rememberLiveSession,
       scaffoldModeActive,

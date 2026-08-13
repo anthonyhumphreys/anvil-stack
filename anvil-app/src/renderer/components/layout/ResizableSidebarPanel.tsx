@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight, GripVertical } from 'lucide-react';
 import { useStoredPanelState } from '../../hooks/useStoredPanelState';
 
 interface ResizableSidebarPanelProps {
@@ -116,6 +116,26 @@ export function ResizableSidebarPanel({
     [effectiveCollapsed, resizable, setWidth, side, width],
   );
 
+  const resizeByKeyboard = useCallback(
+    (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (!resizable || effectiveCollapsed) return;
+      const growKey = side === 'left' ? 'ArrowRight' : 'ArrowLeft';
+      const shrinkKey = side === 'left' ? 'ArrowLeft' : 'ArrowRight';
+      if (![growKey, shrinkKey, 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      if (event.key === 'Home') {
+        setWidth(minWidth);
+        return;
+      }
+      if (event.key === 'End') {
+        setWidth(maxWidth);
+        return;
+      }
+      setWidth(width + (event.key === growKey ? 24 : -24));
+    },
+    [effectiveCollapsed, maxWidth, minWidth, resizable, setWidth, side, width],
+  );
+
   const collapseButton = side === 'left' ? <ChevronLeft size={14} /> : <ChevronRight size={14} />;
   const expandButton = side === 'left' ? <ChevronRight size={14} /> : <ChevronLeft size={14} />;
 
@@ -209,12 +229,22 @@ export function ResizableSidebarPanel({
           {resizable && (
             <div
               onMouseDown={startResize}
-              className={`absolute bottom-0 top-0 z-10 w-2 cursor-col-resize ${
-                side === 'left' ? '-right-1' : '-left-1'
+              onKeyDown={resizeByKeyboard}
+              className={`group absolute bottom-0 top-0 z-20 flex w-3 cursor-col-resize items-center justify-center ${
+                side === 'left' ? '-right-1.5' : '-left-1.5'
               }`}
-              aria-hidden="true"
+              role="separator"
+              aria-label={`Resize ${title}`}
+              aria-orientation="vertical"
+              aria-valuemin={minWidth}
+              aria-valuemax={maxWidth}
+              aria-valuenow={width}
+              tabIndex={0}
             >
-              <div className="mx-auto h-full w-px bg-border/50 transition-colors hover:bg-accent" />
+              <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-border/60 transition-colors group-hover:bg-accent" />
+              <span className="relative flex h-9 w-3 items-center justify-center rounded-full border border-border bg-bg-elevated text-text-muted shadow-sm transition-colors group-hover:border-accent/50 group-hover:text-accent">
+                <GripVertical size={10} />
+              </span>
             </div>
           )}
         </>

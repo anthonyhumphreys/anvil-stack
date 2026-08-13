@@ -1,10 +1,11 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, type ReactNode } from 'react';
 import {
   AlertCircle,
   ChevronDown,
   ChevronRight,
   File as FileIcon,
   Image as ImageIcon,
+  Hammer,
   ListChecks,
   Loader2,
   Paperclip,
@@ -13,6 +14,7 @@ import {
   SlidersHorizontal,
   Sparkles,
   Square,
+  Zap,
   X,
 } from 'lucide-react';
 import type {
@@ -87,6 +89,12 @@ interface ChatInputProps {
   codexMode?: CodexMode;
   onCodexModeChange?: (mode: CodexMode) => void;
   codexModeDisabled?: boolean;
+  collaborationMode?: 'default' | 'plan';
+  onCollaborationModeChange?: (mode: 'default' | 'plan') => void;
+  fastMode?: boolean;
+  fastModeAvailable?: boolean;
+  onFastModeChange?: (enabled: boolean) => void;
+  contextControls?: ReactNode;
   prefill?: { id: string; text: string } | null;
   draftKey?: string;
   mentionRepoIds?: string[];
@@ -119,6 +127,12 @@ export function ChatInput({
   codexMode = 'on-request',
   onCodexModeChange,
   codexModeDisabled = false,
+  collaborationMode = 'default',
+  onCollaborationModeChange,
+  fastMode = false,
+  fastModeAvailable = false,
+  onFastModeChange,
+  contextControls,
   prefill,
   draftKey,
   mentionRepoIds = [],
@@ -851,8 +865,8 @@ export function ChatInput({
             style={{ maxHeight: '200px', minHeight: '56px' }}
           />
 
-          <div className="flex min-h-12 flex-wrap items-center justify-between gap-2 px-2.5 pb-1.5">
-            <div className="flex min-w-0 items-center gap-1">
+          <div className="flex min-h-12 flex-wrap items-center justify-between gap-2 border-t border-border-subtle/70 px-2.5 py-1.5">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
               <button
                 type="button"
                 onClick={() => void handleSelectAttachments()}
@@ -890,9 +904,72 @@ export function ChatInput({
                   </select>
                 </label>
               )}
+
+              {contextControls}
+
+              {onCollaborationModeChange && (
+                <div
+                  className="flex h-9 items-center rounded-xl bg-bg-secondary/70 p-0.5"
+                  role="group"
+                  aria-label="Collaboration mode"
+                >
+                  <button
+                    type="button"
+                    onClick={() => onCollaborationModeChange('default')}
+                    className={`flex h-8 items-center gap-1.5 rounded-lg px-2 text-xs font-medium transition-colors ${
+                      collaborationMode === 'default'
+                        ? 'bg-bg-elevated text-text-primary shadow-sm'
+                        : 'text-text-tertiary hover:text-text-primary'
+                    }`}
+                    aria-pressed={collaborationMode === 'default'}
+                    title="Build: Codex can implement changes"
+                  >
+                    <Hammer size={12} />
+                    Build
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onCollaborationModeChange('plan')}
+                    className={`flex h-8 items-center gap-1.5 rounded-lg px-2 text-xs font-medium transition-colors ${
+                      collaborationMode === 'plan'
+                        ? 'bg-info/12 text-info shadow-sm'
+                        : 'text-text-tertiary hover:text-text-primary'
+                    }`}
+                    aria-pressed={collaborationMode === 'plan'}
+                    title="Plan: keep this conversation read-only"
+                  >
+                    <ListChecks size={12} />
+                    Plan
+                  </button>
+                </div>
+              )}
             </div>
 
             <div className="ml-auto flex min-w-0 items-center justify-end gap-1.5">
+              {onFastModeChange && !busy && (
+                <button
+                  type="button"
+                  onClick={() => onFastModeChange(!fastMode)}
+                  disabled={!fastModeAvailable}
+                  className={`flex h-9 shrink-0 items-center gap-1.5 rounded-xl border px-2.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 ${
+                    fastMode
+                      ? 'border-warning/35 bg-warning/12 text-warning'
+                      : 'border-border bg-bg-secondary text-text-secondary hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40'
+                  }`}
+                  aria-pressed={fastMode}
+                  title={
+                    fastMode
+                      ? 'Fast provider service is on for new turns.'
+                      : fastModeAvailable
+                        ? "Use the provider's faster service tier without changing model or reasoning."
+                        : 'Fast mode is not available for the selected provider and model.'
+                  }
+                >
+                  <Zap size={13} fill={fastMode ? 'currentColor' : 'none'} />
+                  Fast
+                </button>
+              )}
+
               {(onModelChange || onExecutionStrategyChange || onReasoningChange) && !busy && (
                 <RunSettingsDropdown
                   model={model}
