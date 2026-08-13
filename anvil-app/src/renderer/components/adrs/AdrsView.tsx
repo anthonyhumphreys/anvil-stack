@@ -11,6 +11,7 @@ import {
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { AdrMarkdown } from './AdrMarkdown';
 import type { AdrEntry, RepoAdrs } from '../../../shared/types';
+import { EmptyState, ViewHeader } from '../layout/ViewScaffold';
 
 type StatusVariant = 'accepted' | 'proposed' | 'deprecated' | 'superseded' | 'unknown';
 
@@ -177,35 +178,30 @@ export function AdrsView() {
   // List view
   return (
     <div className="flex h-full flex-col">
-      {/* Header */}
-      <div className="shrink-0 border-b border-border px-6 py-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="rounded-lg bg-accent/10 p-2">
-              <BookOpen size={20} className="text-accent" />
-            </div>
-            <div>
-              <h1 className="text-xl font-semibold text-text-primary">
-                Architecture Decision Records
-              </h1>
-              <p className="text-sm text-text-secondary">
-                {loading
-                  ? 'Scanning repositories...'
-                  : totalAdrs === 0
-                    ? 'No ADRs found in workspace repositories'
-                    : `${totalAdrs} ADR${totalAdrs !== 1 ? 's' : ''} across ${repoAdrs.length} repositor${repoAdrs.length !== 1 ? 'ies' : 'y'}`}
-              </p>
-            </div>
-          </div>
-          <button
-            onClick={loadAdrs}
-            disabled={loading}
-            className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-text-secondary transition-colors hover:border-accent/30 hover:text-text-primary disabled:opacity-50"
-          >
-            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
-            Refresh
-          </button>
-        </div>
+      <div className="shrink-0 border-b border-border">
+        <ViewHeader
+          icon={BookOpen}
+          title="Architecture Decision Records"
+          description="Review the decisions captured across workspace repositories."
+          meta={
+            !loading && totalAdrs > 0 ? (
+              <span className="rounded-md bg-bg-tertiary px-2 py-0.5 text-xs text-text-tertiary">
+                {totalAdrs} across {repoAdrs.length} repos
+              </span>
+            ) : undefined
+          }
+          actions={
+            <button
+              onClick={loadAdrs}
+              disabled={loading}
+              className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-text-secondary transition-colors hover:border-accent/30 hover:text-text-primary disabled:opacity-50"
+            >
+              <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+              Refresh
+            </button>
+          }
+          className="border-b-0"
+        />
 
         {/* Search */}
         {totalAdrs > 0 && (
@@ -233,19 +229,19 @@ export function AdrsView() {
             <p className="mt-3 text-sm text-text-secondary">Scanning repositories for ADRs...</p>
           </div>
         ) : totalAdrs === 0 ? (
-          <div className="flex flex-col items-center justify-center py-20">
-            <div className="rounded-full bg-bg-tertiary p-4">
-              <BookOpen size={32} className="text-text-tertiary" />
-            </div>
-            <h2 className="mt-4 text-base font-medium text-text-primary">No ADRs found</h2>
-            <p className="mt-1 max-w-sm text-center text-sm text-text-secondary">
-              No Architecture Decision Records were found in the workspace repositories. ADRs are
-              typically stored in{' '}
-              <code className="rounded bg-bg-tertiary px-1 py-0.5 text-xs">docs/adr/</code> or{' '}
-              <code className="rounded bg-bg-tertiary px-1 py-0.5 text-xs">docs/adrs/</code>{' '}
-              directories.
-            </p>
-          </div>
+          <EmptyState
+            icon={BookOpen}
+            title="No ADRs found"
+            description={
+              <>
+                No Architecture Decision Records were found in the workspace repositories. ADRs are
+                typically stored in{' '}
+                <code className="rounded bg-bg-tertiary px-1 py-0.5 text-xs">docs/adr/</code> or{' '}
+                <code className="rounded bg-bg-tertiary px-1 py-0.5 text-xs">docs/adrs/</code>{' '}
+                directories.
+              </>
+            }
+          />
         ) : filteredRepoAdrs.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20">
             <Search size={24} className="text-text-tertiary" />

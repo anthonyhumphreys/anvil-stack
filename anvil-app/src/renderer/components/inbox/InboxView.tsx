@@ -6,6 +6,7 @@ import {
   useSidebarActivity,
   type SidebarActivityItem,
 } from '../layout/SidebarActivityCenter';
+import { EmptyState, ViewHeader } from '../layout/ViewScaffold';
 
 export function InboxView() {
   const navigate = useNavigate();
@@ -32,28 +33,19 @@ export function InboxView() {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-bg-primary">
-      <header className="shrink-0 border-b border-border px-8 py-6">
-        <div className="flex items-center gap-2 text-sm text-text-tertiary">
-          <Inbox size={14} />
-          Attention across this workspace
-        </div>
-        <h2 className="mt-2 text-2xl font-semibold tracking-tight text-text-primary">Inbox</h2>
-        <p className="mt-1 text-sm text-text-secondary">
-          One place for work that needs a decision and work you are waiting on.
-        </p>
-      </header>
+      <ViewHeader
+        icon={Inbox}
+        title="Inbox"
+        description="Decisions waiting on you and work still running in this workspace."
+      />
 
       <div className="min-h-0 flex-1 overflow-y-auto px-8 py-6">
         {items.length === 0 ? (
-          <div className="flex min-h-64 flex-col items-center justify-center text-center">
-            <div className="grid h-11 w-11 place-items-center rounded-full bg-success/12 text-success">
-              <CheckCircle2 size={21} />
-            </div>
-            <h3 className="mt-4 text-base font-semibold text-text-primary">You are caught up</h3>
-            <p className="mt-1 max-w-sm text-sm leading-relaxed text-text-secondary">
-              New approvals, questions, failures, completed work, and active runs will appear here.
-            </p>
-          </div>
+          <EmptyState
+            icon={CheckCircle2}
+            title="You are caught up"
+            description="Approvals, questions, failures, completed work, and active runs will appear here."
+          />
         ) : (
           <div className="mx-auto max-w-4xl space-y-8">
             {sections.map((section) => (
@@ -69,7 +61,9 @@ export function InboxView() {
                 </div>
                 {section.items.length === 0 ? (
                   <div className="border-t border-border-subtle py-4 text-sm text-text-tertiary">
-                    Nothing here.
+                    {section.id === 'attention'
+                      ? 'No decisions or completed work need review.'
+                      : 'No work is currently running.'}
                   </div>
                 ) : (
                   <div className="divide-y divide-border-subtle border-y border-border-subtle">

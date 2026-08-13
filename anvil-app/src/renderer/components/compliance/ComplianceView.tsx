@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import type { ComplianceDocType, ComplianceDocument } from '../../../shared/types';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
+import { EmptyState, InlineNotice, ViewHeader } from '../layout/ViewScaffold';
 
 const DOC_TYPES: {
   type: ComplianceDocType;
@@ -120,44 +121,44 @@ export function ComplianceView() {
 
   if (indexedRepos.length === 0) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-4 text-center">
-        <Scale size={48} className="text-text-tertiary" />
-        <h2 className="text-lg font-semibold text-text-primary">Data & Compliance</h2>
-        <p className="max-w-md text-sm text-text-secondary">
-          Index a repository first. The compliance tools analyse your codebase to generate DPIA
-          documents, Privacy Policies, and Terms of Service.
-        </p>
-      </div>
+      <EmptyState
+        icon={Scale}
+        title="Index a repository for compliance work"
+        description="Compliance tools need repository evidence before they can draft a DPIA, privacy policy, or terms of service."
+        className="h-full"
+      />
     );
   }
 
   return (
     <div className="flex h-full flex-col">
-      {/* Header */}
-      <div className="flex items-center gap-3 border-b border-border bg-bg-secondary px-4 py-3">
-        <Scale size={20} className="text-accent" />
-        <h2 className="text-base font-semibold text-text-primary">Data & Compliance</h2>
-        <select
-          value={selectedRepoId}
-          onChange={(e) => setSelectedRepoId(e.target.value)}
-          className="ml-auto rounded-lg border border-border bg-bg-primary px-3 py-1.5 text-sm text-text-primary"
-        >
-          {indexedRepos.map((r) => (
-            <option key={r.id} value={r.id}>
-              {r.name}
-            </option>
-          ))}
-        </select>
-      </div>
+      <ViewHeader
+        icon={Scale}
+        title="Data & Compliance"
+        description="Generate and review compliance documents grounded in an indexed repository."
+        actions={
+          <select
+            aria-label="Compliance repository"
+            value={selectedRepoId}
+            onChange={(e) => setSelectedRepoId(e.target.value)}
+            className="ml-auto rounded-lg border border-border bg-bg-primary px-3 py-1.5 text-sm text-text-primary"
+          >
+            {indexedRepos.map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.name}
+              </option>
+            ))}
+          </select>
+        }
+      />
 
       {error && (
-        <div className="flex items-center gap-2 border-b border-error/20 bg-error/5 px-4 py-2 text-xs text-error">
-          <AlertTriangle size={12} />
-          {error}
+        <InlineNotice icon={AlertTriangle} tone="error" className="m-4 mb-0">
+          <span>{error}</span>
           <button onClick={() => setError(null)} className="ml-auto text-error/60 hover:text-error">
             dismiss
           </button>
-        </div>
+        </InlineNotice>
       )}
 
       {/* Progress bar */}

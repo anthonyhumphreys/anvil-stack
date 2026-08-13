@@ -15,6 +15,7 @@ import type { SecurityAudit } from '../../../shared/types';
 import { SecurityAuditReport } from './SecurityAuditReport';
 import { RepoSelector } from '../shared/RepoSelector';
 import { SecurityTabs } from './SecurityTabs';
+import { EmptyState, InlineNotice, ViewHeader } from '../layout/ViewScaffold';
 
 const auditSteps = [
   { key: 'scope', label: 'Detecting scope', icon: Search, threshold: 5 },
@@ -34,7 +35,7 @@ function SecurityAuditProgress({ message, percent }: { message: string; percent:
         {/* Animated shield */}
         <div className="mb-8 flex justify-center">
           <div className="relative">
-            <div className="absolute inset-0 animate-ping rounded-full bg-accent opacity-10" />
+            <div className="absolute inset-0 animate-ping rounded-full bg-accent opacity-10 motion-reduce:animate-none" />
             <div className="relative flex h-20 w-20 items-center justify-center rounded-full border border-border-subtle bg-bg-secondary">
               <Shield size={36} className="text-accent" />
             </div>
@@ -49,7 +50,7 @@ function SecurityAuditProgress({ message, percent }: { message: string; percent:
         {/* Progress bar */}
         <div className="mb-8 h-2 overflow-hidden rounded-full bg-bg-tertiary">
           <div
-            className="h-full rounded-full bg-gradient-to-r from-accent to-warning transition-all duration-500 ease-out"
+            className="h-full rounded-full bg-accent transition-all duration-500 ease-out motion-reduce:transition-none"
             style={{ width: `${Math.max(2, percent)}%` }}
           />
         </div>
@@ -215,16 +216,12 @@ export function SecurityView() {
     return (
       <div className="flex h-full flex-1 flex-col">
         <SecurityTabs />
-        <div className="flex-1 overflow-auto p-6">
-          <div className="mb-6">
-            <h1 className="flex items-center gap-2 text-xl font-semibold text-text-primary">
-              <Shield size={20} className="text-error" />
-              Security Audit
-            </h1>
-            <p className="mt-1 text-sm text-text-secondary">
-              Select an indexed repository to audit
-            </p>
-          </div>
+        <ViewHeader
+          icon={Shield}
+          title="Security Audit"
+          description="Inspect an indexed repository for security risks and review evidence-backed findings."
+        />
+        <div className="flex-1 overflow-auto p-5">
           <RepoSelector
             selectedRepoId={null}
             onSelect={(repo) => navigate(`/security/${repo.id}`)}
@@ -327,21 +324,20 @@ export function SecurityView() {
         {/* Main content */}
         <div className="flex-1 overflow-auto">
           {error && (
-            <div className="m-4 rounded-md border border-error bg-error/10 p-3 text-sm text-error">
+            <InlineNotice tone="error" className="m-4">
               {error}
-            </div>
+            </InlineNotice>
           )}
           {selectedAudit ? (
             <SecurityAuditReport audit={selectedAudit} />
           ) : running ? (
             <SecurityAuditProgress message={progress.message} percent={progress.percent} />
           ) : (
-            <div className="flex h-full items-center justify-center">
-              <div className="text-center">
-                <Shield size={48} className="mx-auto mb-3 text-text-tertiary opacity-30" />
-                <p className="text-sm text-text-secondary">Select an audit or run a new one</p>
-              </div>
-            </div>
+            <EmptyState
+              icon={Shield}
+              title="Ready for an audit"
+              description="Run a new audit from the left panel, or select a previous result to inspect its evidence."
+            />
           )}
         </div>
       </div>

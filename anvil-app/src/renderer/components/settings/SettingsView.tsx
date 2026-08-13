@@ -52,6 +52,7 @@ import {
 } from '../../../shared/codex-models';
 import { useBrand } from '../../contexts/BrandContext';
 import { dispatchCodexSelectionChanged } from '../../utils/codex-selection';
+import { InlineNotice } from '../layout/ViewScaffold';
 
 type TestStatus = 'idle' | 'testing' | 'ok' | 'error';
 type SettingsCategoryId = 'profile' | 'ai' | 'delivery' | 'review' | 'devices' | 'danger';
@@ -209,6 +210,7 @@ export function SettingsView({
 }: SettingsViewProps) {
   const navigate = useNavigate();
   const brand = useBrand();
+  const [activeCategory, setActiveCategory] = useState<SettingsCategoryId>('profile');
   const [settings, setSettings] = useState<Partial<AppSettings>>({});
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -749,26 +751,7 @@ export function SettingsView({
   const selectedTheme = themeOptions.some((theme) => theme.id === persistedTheme)
     ? persistedTheme
     : brand.defaultTheme;
-  const selectedThemeLabel =
-    themeOptions.find((theme) => theme.id === selectedTheme)?.label ?? selectedTheme;
   const selectedChatLayout = settings.chatLayout ?? 'classic';
-  const selectedChatLayoutLabel = selectedChatLayout === 'workitems' ? 'Work items' : 'Classic';
-  const roleLabel =
-    userRole === 'ba-brm'
-      ? 'BA / BRM'
-      : userRole === 'design'
-        ? 'Design'
-        : userRole === 'itsm'
-          ? 'ITSM'
-          : 'Developer';
-  const aiProviderLabel =
-    provider === 'codex'
-      ? 'Codex CLI'
-      : provider === 'cursor'
-        ? 'Cursor CLI'
-        : provider === 'azure'
-          ? 'Azure AI Foundry'
-          : 'OpenAI API';
   const codexModelOptions = buildCodexModelOptions(codexStatus);
   const selectedModelId = settings.openaiModel ?? DEFAULT_CODEX_MODEL;
   const selectedModel = codexModelOptions.find((model) => model.id === selectedModelId);
@@ -797,39 +780,23 @@ export function SettingsView({
   const saveStateLabel = saving ? 'Saving' : saved ? 'Saved' : 'Unsaved changes';
 
   const jumpToCategory = (id: SettingsCategoryId) => {
-    document.getElementById(`settings-${id}`)?.scrollIntoView({
-      behavior: 'smooth',
-      block: 'start',
-    });
+    setActiveCategory(id);
   };
 
   return (
     <div className="h-full overflow-auto p-4 md:p-6">
       <div className="mx-auto max-w-7xl space-y-5">
-        <header className="rounded-lg border border-border bg-bg-secondary p-5">
+        <header className="border-b border-border pb-5">
           <div className="flex flex-wrap items-start justify-between gap-4">
-            <div className="min-w-0 space-y-2">
+            <div className="min-w-0">
               <div className="flex items-center gap-3">
-                <div className="rounded-md border border-border-subtle bg-bg-primary p-2 text-accent">
-                  <Settings size={20} />
-                </div>
+                <Settings size={18} className="shrink-0 text-accent" />
                 <div>
-                  <h2 className="text-xl font-semibold text-text-primary">Settings</h2>
+                  <h1 className="text-base font-semibold text-text-primary">Settings</h1>
                   <p className="text-sm text-text-secondary">
                     Configure identity, AI backends, delivery tools, and local devices.
                   </p>
                 </div>
-              </div>
-              <div className="flex flex-wrap gap-2 pt-1">
-                <SummaryChip label="Role" value={roleLabel} />
-                <SummaryChip label="Theme" value={selectedThemeLabel} />
-                <SummaryChip label="Chat" value={selectedChatLayoutLabel} />
-                <SummaryChip
-                  label="AI"
-                  value={`${aiProviderLabel} primary · ${enabledProviders.length} active`}
-                />
-                <SummaryChip label="Cloud" value={settings.cloudFeaturesEnabled ? 'On' : 'Off'} />
-                <SummaryChip label="Mobile" value={mobileStatus?.enabled ? 'Enabled' : 'Off'} />
               </div>
             </div>
 
@@ -863,9 +830,9 @@ export function SettingsView({
           </div>
 
           {testError && (
-            <div className="mt-4 rounded-md border border-error/30 bg-error/10 px-4 py-3 text-sm text-error">
+            <InlineNotice tone="error" className="mt-4">
               {testError}
-            </div>
+            </InlineNotice>
           )}
         </header>
 
@@ -876,7 +843,12 @@ export function SettingsView({
               <button
                 key={category.id}
                 onClick={() => jumpToCategory(category.id)}
-                className="inline-flex shrink-0 items-center gap-2 rounded-md border border-border bg-bg-secondary px-3 py-2 text-sm text-text-secondary transition-colors hover:border-text-tertiary hover:text-text-primary"
+                aria-current={activeCategory === category.id ? 'page' : undefined}
+                className={`inline-flex shrink-0 items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors ${
+                  activeCategory === category.id
+                    ? 'border-accent/40 bg-accent/10 text-accent'
+                    : 'border-border bg-bg-secondary text-text-secondary hover:border-text-tertiary hover:text-text-primary'
+                }`}
               >
                 <Icon size={14} />
                 {category.label}
@@ -897,7 +869,10 @@ export function SettingsView({
                   <button
                     key={category.id}
                     onClick={() => jumpToCategory(category.id)}
-                    className="flex w-full items-start gap-3 rounded-md px-3 py-2 text-left transition-colors hover:bg-bg-tertiary"
+                    aria-current={activeCategory === category.id ? 'page' : undefined}
+                    className={`flex w-full items-start gap-3 rounded-md px-3 py-2 text-left transition-colors ${
+                      activeCategory === category.id ? 'bg-accent/10' : 'hover:bg-bg-tertiary'
+                    }`}
                   >
                     <Icon size={16} className="mt-0.5 shrink-0 text-accent" />
                     <span className="min-w-0">
@@ -917,6 +892,7 @@ export function SettingsView({
           <main className="space-y-6">
             <SettingsCategory
               id="profile"
+              hidden={activeCategory !== 'profile'}
               title="Profile & appearance"
               description="Choose who the workspace is optimised for and how the app presents itself."
               icon={Palette}
@@ -928,7 +904,7 @@ export function SettingsView({
                 <ButtonGrid>
                   <ProviderButton
                     label="Developer"
-                    description="Full access to all tools"
+                    description="Build, review, and operate software"
                     active={userRole === 'developer'}
                     onClick={async () => {
                       try {
@@ -941,7 +917,7 @@ export function SettingsView({
                   />
                   <ProviderButton
                     label="BA / BRM"
-                    description="Docs, diagrams, chat & work items"
+                    description="Shape delivery work and decisions"
                     active={userRole === 'ba-brm'}
                     onClick={async () => {
                       try {
@@ -954,7 +930,7 @@ export function SettingsView({
                   />
                   <ProviderButton
                     label="Design"
-                    description="Design companion with Figma & diagrams"
+                    description="Explore and communicate product intent"
                     active={userRole === 'design'}
                     onClick={async () => {
                       try {
@@ -967,7 +943,7 @@ export function SettingsView({
                   />
                   <ProviderButton
                     label="ITSM"
-                    description="Service support, incidents, changes & service improvement"
+                    description="Coordinate service work and improvement"
                     active={userRole === 'itsm'}
                     onClick={async () => {
                       try {
@@ -1022,6 +998,7 @@ export function SettingsView({
 
             <SettingsCategory
               id="ai"
+              hidden={activeCategory !== 'ai'}
               title="AI & agents"
               description="Primary-agent routing, provider availability, models, skills, and MCP access."
               icon={Bot}
@@ -1483,6 +1460,7 @@ export function SettingsView({
 
             <SettingsCategory
               id="delivery"
+              hidden={activeCategory !== 'delivery'}
               title="Delivery integrations"
               description={deliverySummary.join(' / ')}
               icon={FolderGit2}
@@ -1911,6 +1889,7 @@ export function SettingsView({
 
             <SettingsCategory
               id="review"
+              hidden={activeCategory !== 'review'}
               title="Review defaults"
               description="Custom rubrics used when the app asks an agent to inspect code."
               icon={Code2}
@@ -1952,6 +1931,7 @@ export function SettingsView({
 
             <SettingsCategory
               id="devices"
+              hidden={activeCategory !== 'devices'}
               title="Devices & system"
               description="Local defaults, companion devices, and network pairing."
               icon={MonitorSmartphone}
@@ -2155,6 +2135,7 @@ export function SettingsView({
 
             <SettingsCategory
               id="danger"
+              hidden={activeCategory !== 'danger'}
               title="Danger area"
               description="Reset first-run setup and workspace selections. Handle with tongs."
               icon={ShieldAlert}
@@ -2635,7 +2616,7 @@ function CapabilityChip({ label, active }: { label: string; active: boolean }) {
 
 function SummaryChip({ label, value }: { label: string; value: string }) {
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-full border border-border-subtle bg-bg-primary px-2.5 py-1 text-xs text-text-secondary">
+    <span className="inline-flex items-center gap-1.5 rounded-md bg-bg-primary px-2.5 py-1 text-xs text-text-secondary">
       <span className="text-text-tertiary">{label}</span>
       <span className="font-medium text-text-primary">{value}</span>
     </span>
@@ -2715,16 +2696,18 @@ function SettingsCategory({
   title,
   description,
   icon: Icon,
+  hidden = false,
   children,
 }: {
   id: SettingsCategoryId;
   title: string;
   description: string;
   icon: LucideIcon;
+  hidden?: boolean;
   children: ReactNode;
 }) {
   return (
-    <section id={`settings-${id}`} className="scroll-mt-6 space-y-3">
+    <section id={`settings-${id}`} className={hidden ? 'hidden' : 'space-y-3'} aria-hidden={hidden}>
       <div className="flex items-start gap-3">
         <div className="rounded-md border border-border-subtle bg-bg-secondary p-2 text-accent">
           <Icon size={18} />

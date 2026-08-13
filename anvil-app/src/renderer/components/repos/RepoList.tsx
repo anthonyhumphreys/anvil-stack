@@ -1,9 +1,7 @@
 import {
-  Plus,
   Loader2,
   AlertCircle,
   CheckCircle,
-  FolderGit2,
   ExternalLink,
   AlertTriangle,
   SquareTerminal,
@@ -17,7 +15,6 @@ interface RepoListProps {
   repos: RepoInfo[];
   selectedRepoId: string | null;
   onSelect: (repo: RepoInfo) => void;
-  onConnect: () => void;
   onIndex: (repoId: string) => void;
   onForceReindex: (repoId: string) => void;
   indexingRepoIds: Set<string>;
@@ -31,7 +28,6 @@ export function RepoList({
   repos,
   selectedRepoId,
   onSelect,
-  onConnect,
   onIndex,
   onForceReindex,
   indexingRepoIds,
@@ -42,25 +38,12 @@ export function RepoList({
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold text-text-primary">Connected Repos</h3>
-        <button
-          onClick={onConnect}
-          className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm font-medium text-text-secondary transition-colors hover:border-accent/40 hover:bg-bg-tertiary hover:text-text-primary"
-        >
-          <Plus size={14} />
-          Connect Repo
-        </button>
-      </div>
+      <h2 className="px-1 text-sm font-semibold text-text-primary">Connected repositories</h2>
 
       {repos.length === 0 && (
-        <div className="rounded-lg border border-border-subtle bg-bg-secondary p-8 text-center">
-          <FolderGit2 size={32} className="mx-auto mb-3 text-text-secondary" />
-          <p className="text-base text-text-secondary">No repositories connected</p>
-          <p className="mt-1 text-sm text-text-tertiary">
-            Click "Connect Repo" to add a local Git repository
-          </p>
-        </div>
+        <p className="px-1 text-sm leading-relaxed text-text-tertiary">
+          No repositories are connected to this workspace.
+        </p>
       )}
 
       <div className="space-y-2">

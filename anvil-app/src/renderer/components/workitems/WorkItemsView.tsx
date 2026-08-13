@@ -20,6 +20,7 @@ import { WorkItemCard } from './WorkItemCard';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { useChatContext } from '../../contexts/ChatContext';
 import { copyTextToClipboard } from '../../utils/clipboard';
+import { EmptyState, InlineNotice, ViewHeader } from '../layout/ViewScaffold';
 
 type ActionType = 'plan' | 'fix' | 'ba' | 'impact' | null;
 
@@ -287,43 +288,48 @@ export function WorkItemsView() {
 
   return (
     <div className="flex h-full flex-col">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-border bg-bg-secondary px-4 py-2">
-        <div className="flex items-center gap-3">
-          <TicketCheck size={20} className="text-accent" />
-          <h2 className="text-xl font-semibold">Work Items</h2>
-          <span className="rounded bg-bg-tertiary px-2 py-0.5 text-xs text-text-tertiary">
-            {items.length} items
+      <ViewHeader
+        icon={TicketCheck}
+        title="Work Items"
+        description="Browse delivery work and hand selected items to Chat with their source context intact."
+        meta={
+          <span className="rounded-md bg-bg-tertiary px-2 py-0.5 text-xs tabular-nums text-text-tertiary">
+            {items.length}
           </span>
-          <select
-            value={activeConnectionId}
-            onChange={(e) => handleConnectionChange(e.target.value)}
-            disabled={switchingProvider}
-            className="rounded-md border border-border bg-bg-primary px-2 py-1 text-sm text-text-primary focus:border-accent focus:outline-none disabled:opacity-50"
-          >
-            {connections.length === 0 && <option value="">No connections</option>}
-            {connections.map((connection) => (
-              <option key={connection.id} value={connection.id}>
-                {connection.name} · {connection.provider.toUpperCase()}
-              </option>
-            ))}
-          </select>
-          <SprintSelector
-            iterations={iterations}
-            selected={selectedIterations}
-            onChange={setSelectedIterations}
-            label={activeProvider === 'linear' ? 'Cycle' : 'Sprint'}
-          />
-        </div>
-        <button
-          onClick={loadItems}
-          disabled={loading}
-          className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-sm text-text-secondary hover:text-text-primary disabled:opacity-40"
-        >
-          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} aria-hidden="true" />
-          Refresh
-        </button>
-      </div>
+        }
+        actions={
+          <>
+            <select
+              aria-label="Work item connection"
+              value={activeConnectionId}
+              onChange={(e) => handleConnectionChange(e.target.value)}
+              disabled={switchingProvider}
+              className="rounded-md border border-border bg-bg-primary px-2 py-1 text-sm text-text-primary focus:border-accent focus:outline-none disabled:opacity-50"
+            >
+              {connections.length === 0 && <option value="">No connections</option>}
+              {connections.map((connection) => (
+                <option key={connection.id} value={connection.id}>
+                  {connection.name} · {connection.provider.toUpperCase()}
+                </option>
+              ))}
+            </select>
+            <SprintSelector
+              iterations={iterations}
+              selected={selectedIterations}
+              onChange={setSelectedIterations}
+              label={activeProvider === 'linear' ? 'Cycle' : 'Sprint'}
+            />
+            <button
+              onClick={loadItems}
+              disabled={loading}
+              className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-sm text-text-secondary hover:text-text-primary disabled:opacity-40"
+            >
+              <RefreshCw size={12} className={loading ? 'animate-spin' : ''} aria-hidden="true" />
+              Refresh
+            </button>
+          </>
+        }
+      />
 
       {/* Search bar + tag filter */}
       <div className="space-y-2 border-b border-border bg-bg-secondary px-4 py-2">
@@ -347,10 +353,9 @@ export function WorkItemsView() {
         {/* Work items list */}
         <div className="flex-1 overflow-auto">
           {error && (
-            <div className="m-4 flex items-start gap-2 rounded-md border border-error/30 bg-error/10 px-3 py-2">
-              <AlertTriangle size={14} className="mt-0.5 shrink-0 text-error" />
-              <p className="text-sm text-error">{error}</p>
-            </div>
+            <InlineNotice icon={AlertTriangle} tone="error" className="m-4">
+              {error}
+            </InlineNotice>
           )}
 
           {loading && items.length === 0 ? (
@@ -358,18 +363,23 @@ export function WorkItemsView() {
               <Loader2 size={24} className="animate-spin text-accent" />
             </div>
           ) : treeItems.length === 0 ? (
-            <div className="flex h-64 items-center justify-center">
-              <div className="text-center">
-                <TicketCheck size={32} className="mx-auto mb-3 text-text-tertiary" />
-                <p className="text-sm text-text-secondary">
-                  {items.length === 0
-                    ? connections.length === 0
-                      ? 'Configure a work item connection in Settings.'
-                      : 'No work items found. Check settings.'
-                    : 'No items match your filter.'}
-                </p>
-              </div>
-            </div>
+            <EmptyState
+              icon={TicketCheck}
+              title={
+                items.length > 0
+                  ? 'No matching work items'
+                  : connections.length === 0
+                    ? 'Connect a work tracker'
+                    : 'No work items returned'
+              }
+              description={
+                items.length > 0
+                  ? 'Clear or adjust the search, tag, and sprint filters.'
+                  : connections.length === 0
+                    ? 'Add an Azure DevOps, Linear, or GitHub connection in Settings before loading work.'
+                    : 'Refresh the current connection or choose another sprint.'
+              }
+            />
           ) : (
             <div className="divide-y divide-border-subtle">
               {treeItems.map((item) => (

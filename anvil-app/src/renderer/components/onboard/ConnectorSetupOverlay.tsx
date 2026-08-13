@@ -1,5 +1,16 @@
 import { useState, useEffect } from 'react';
-import { CheckCircle, XCircle, Loader2, ChevronDown, ChevronUp } from 'lucide-react';
+import {
+  BrainCircuit,
+  CheckCircle,
+  ChevronDown,
+  ChevronUp,
+  ClipboardList,
+  FileText,
+  GitFork,
+  Loader2,
+  XCircle,
+  type LucideIcon,
+} from 'lucide-react';
 import { useBrand } from '../../contexts/BrandContext';
 import type { AppSettings } from '../../../shared/types';
 
@@ -135,7 +146,7 @@ export function ConnectorSetupOverlay({ onContinue }: ConnectorSetupOverlayProps
           {/* LLM Provider */}
           <ConnectorCard
             id="llm"
-            icon="🧠"
+            icon={BrainCircuit}
             title="Primary agent"
             description="Choose who starts new chats and app-level AI work"
             expanded={expandedCard === 'llm'}
@@ -255,7 +266,7 @@ export function ConnectorSetupOverlay({ onContinue }: ConnectorSetupOverlayProps
           {/* Work Items */}
           <ConnectorCard
             id="workitems"
-            icon="📋"
+            icon={ClipboardList}
             title="Work Items"
             description="Track tasks with ADO, Linear, or Jira"
             expanded={expandedCard === 'workitems'}
@@ -351,7 +362,7 @@ export function ConnectorSetupOverlay({ onContinue }: ConnectorSetupOverlayProps
           {/* Git Provider */}
           <ConnectorCard
             id="git"
-            icon="🔀"
+            icon={GitFork}
             title="Git Provider"
             description="Browse and clone remote repos"
             expanded={expandedCard === 'git'}
@@ -443,7 +454,7 @@ export function ConnectorSetupOverlay({ onContinue }: ConnectorSetupOverlayProps
           {/* Confluence */}
           <ConnectorCard
             id="confluence"
-            icon="📄"
+            icon={FileText}
             title="Confluence"
             description="Search team docs and knowledge base"
             expanded={expandedCard === 'confluence'}
@@ -522,7 +533,7 @@ function ConnectorCard({
   children,
 }: {
   id: string;
-  icon: string;
+  icon: LucideIcon;
   title: string;
   description: string;
   expanded: boolean;
@@ -533,6 +544,7 @@ function ConnectorCard({
   children: React.ReactNode;
 }) {
   const contentId = `${id}-connector-content`;
+  const Icon = icon;
 
   return (
     <div
@@ -545,7 +557,9 @@ function ConnectorCard({
         aria-expanded={expanded}
         aria-controls={contentId}
       >
-        <span className="text-xl">{icon}</span>
+        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-bg-tertiary text-text-secondary">
+          <Icon size={16} aria-hidden="true" />
+        </span>
         <div className="flex-1">
           <div className="flex items-center gap-2">
             <span className="text-sm font-semibold text-text-primary">{title}</span>
