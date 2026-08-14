@@ -12,6 +12,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { useVoiceInput } from '../../hooks/useVoiceInput';
+import { ViewHeader } from '../layout/ViewScaffold';
 
 interface ParsedNotes {
   summary: string[];
@@ -87,22 +88,18 @@ export function MeetingNotesView() {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-bg-primary text-text-primary">
-      <header className="border-b border-border px-6 py-4">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-semibold">Meeting Notes</h1>
-            <p className="mt-1 max-w-2xl text-sm text-text-secondary">
-              Capture the transcript, extract the obvious work, then hand off the unclear bits to
-              chat or BA spike prep.
-            </p>
-          </div>
-          <div className="grid grid-cols-3 overflow-hidden rounded-lg border border-border bg-bg-secondary">
+      <ViewHeader
+        icon={MessageSquareText}
+        title="Meeting Notes"
+        description="Capture notes, extract concrete work, and hand unresolved questions to Chat."
+        actions={
+          <div className="grid grid-cols-3 overflow-hidden rounded-lg border border-border bg-bg-primary">
             <Metric label="Words" value={wordCount} />
             <Metric label="Actions" value={parsed.actions.length} />
             <Metric label="Spikes" value={parsed.spikeCandidates.length} />
           </div>
-        </div>
-      </header>
+        }
+      />
 
       <main className="grid min-h-0 flex-1 gap-4 p-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)]">
         <section className="flex min-h-0 flex-col rounded-lg border border-border bg-bg-secondary">

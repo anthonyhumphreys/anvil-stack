@@ -329,6 +329,7 @@ export async function sendMessage(
     approvalPolicy: codexPolicy.approvalPolicy,
     sandboxPolicy: sandboxModeToTurnPolicy(codexPolicy.sandbox, session.cwd),
     model,
+    ...(options?.serviceTier !== undefined ? { serviceTier: options.serviceTier } : {}),
     effort: normaliseReasoningEffort(options?.reasoningEffort ?? settings.reasoningLevel),
   });
 }

@@ -640,6 +640,7 @@ export interface ChatSendOptions {
   collaborationMode?: ChatCollaborationMode;
   reasoningEffort?: ReasoningEffort;
   model?: string;
+  serviceTier?: string | null;
 }
 
 export interface ChatFileMentionSearchInput {

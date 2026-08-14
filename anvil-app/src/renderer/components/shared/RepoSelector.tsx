@@ -50,6 +50,8 @@ interface DropdownProps extends BaseProps {
   variant: 'dropdown';
   /** Label shown when all repos are selected. */
   allLabel?: string;
+  /** Direction the menu opens from its trigger. */
+  placement?: 'top' | 'bottom';
 }
 
 interface ListProps extends BaseProps {
@@ -192,6 +194,7 @@ export function RepoSelector(props: RepoSelectorProps) {
         showSelectAll={
           mode === 'multi' ? ((props as MultiSelectProps).showSelectAll ?? true) : false
         }
+        placement={dp.placement ?? 'bottom'}
       />
     );
   }
@@ -472,6 +475,7 @@ function DropdownWrapper({
   singleSelectedName,
   multiCount,
   showSelectAll,
+  placement,
 }: {
   allLabel: string;
   repos: RepoInfo[];
@@ -487,6 +491,7 @@ function DropdownWrapper({
   singleSelectedName?: string;
   multiCount: number;
   showSelectAll: boolean;
+  placement: 'top' | 'bottom';
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -522,16 +527,20 @@ function DropdownWrapper({
     <div className="relative z-50" ref={ref}>
       <button
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-sm transition-colors hover:bg-bg-tertiary"
+        className="flex h-9 items-center gap-1.5 rounded-xl border border-border px-2.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
         aria-label="Select repositories"
         aria-expanded={open}
       >
-        <span className="text-text-primary">{label}</span>
+        <span>{label}</span>
         <ChevronDown size={12} className="text-text-tertiary" />
       </button>
 
       {open && (
-        <div className="absolute left-0 top-full z-50 mt-1.5 w-72 overflow-hidden rounded-xl border border-border bg-bg-elevated shadow-2xl ring-1 ring-black/10">
+        <div
+          className={`absolute left-0 z-50 w-72 overflow-hidden rounded-xl border border-border bg-bg-elevated shadow-2xl ring-1 ring-black/10 ${
+            placement === 'top' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'
+          }`}
+        >
           {searchable && (
             <div className="border-b border-border-subtle px-3 py-2">
               <div className="flex items-center gap-2 rounded-md border border-border bg-bg-primary px-2 py-1">

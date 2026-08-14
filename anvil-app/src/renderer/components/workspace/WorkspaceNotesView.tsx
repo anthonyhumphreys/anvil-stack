@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Check, Mic, Plus, RefreshCcw, Trash2 } from 'lucide-react';
 import type { WorkspaceNote } from '../../../shared/types';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
+import { ViewHeader } from '../layout/ViewScaffold';
 
 export function WorkspaceNotesView() {
   const { activeWorkspace } = useWorkspace();
@@ -54,19 +55,12 @@ export function WorkspaceNotesView() {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-bg-primary">
-      <header className="border-b border-border px-8 py-6">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <p className="text-sm font-semibold uppercase tracking-wide text-accent">
-              Workspace notes
-            </p>
-            <h1 className="mt-1 text-2xl font-semibold text-text-primary">Parking-lot review</h1>
-            <p className="mt-2 max-w-3xl text-sm leading-6 text-text-secondary">
-              Review notes captured from desktop, Siri, mobile, and Anvil Drive. CarPlay notes stay
-              here until you accept or dismiss them on the desktop.
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
+      <ViewHeader
+        icon={Mic}
+        title="Workspace Notes"
+        description="Review notes captured from desktop, Siri, mobile, and Anvil Drive before accepting or dismissing them."
+        actions={
+          <>
             <label className="flex items-center gap-2 rounded-lg border border-border-subtle px-3 py-2 text-sm text-text-secondary">
               <input
                 type="checkbox"
@@ -83,9 +77,9 @@ export function WorkspaceNotesView() {
               <RefreshCcw size={15} />
               Refresh
             </button>
-          </div>
-        </div>
-      </header>
+          </>
+        }
+      />
 
       <main className="min-h-0 flex-1 overflow-y-auto px-8 py-6">
         <section className="mb-6 rounded-lg border border-border bg-bg-secondary p-4">

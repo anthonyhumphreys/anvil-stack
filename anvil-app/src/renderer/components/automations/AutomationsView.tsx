@@ -36,6 +36,7 @@ import {
   buildAutomationDisplayEntries,
   type AutomationDisplayEntry,
 } from '../../utils/automation-run-events';
+import { EmptyState, InlineNotice, ViewHeader } from '../layout/ViewScaffold';
 
 const DEFAULT_CRON = '0 9 * * 1-5';
 
@@ -390,58 +391,56 @@ export function AutomationsView() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex items-center justify-between border-b border-border bg-bg-secondary px-4 py-3">
-        <div className="flex items-center gap-3">
-          <RadioTower size={20} className="text-accent" />
-          <div>
-            <h2 className="text-xl font-semibold text-text-primary">Automate</h2>
-            <p className="text-sm text-text-secondary">
-              Schedule work or let Watchtower babysit workflows, pull requests, and pipelines.
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          {daemonStatus && (
-            <span className="rounded-full border border-border px-2.5 py-1 text-xs text-text-secondary">
+      <ViewHeader
+        icon={RadioTower}
+        title="Watchtower"
+        description="Schedule work or babysit workflows, pull requests, and pipelines until their state changes."
+        meta={
+          daemonStatus ? (
+            <span className="rounded-md bg-bg-tertiary px-2 py-0.5 text-xs text-text-tertiary">
               {daemonStatus.mode === 'daemon'
-                ? 'Daemon mode'
+                ? 'Daemon active'
                 : daemonStatus.supported
                   ? daemonStatus.loaded
                     ? 'Daemon loaded'
                     : daemonStatus.installed
                       ? 'Daemon installed'
-                      : 'Daemon not installed'
-                  : 'Daemon unsupported'}
+                      : 'Daemon unavailable'
+                  : 'Local mode'}
             </span>
-          )}
-          <button
-            onClick={handleReconcileDaemon}
-            className="flex items-center gap-1 rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary"
-          >
-            <RefreshCw size={14} />
-            Reconcile daemon
-          </button>
-          <button
-            type="button"
-            onClick={() => navigate('/workflows')}
-            className="flex items-center gap-1 rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary"
-          >
-            <Workflow size={14} />
-            Workflows
-          </button>
-          <button
-            onClick={handleNewAutomation}
-            className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent/90"
-          >
-            New automation
-          </button>
-        </div>
-      </div>
+          ) : undefined
+        }
+        actions={
+          <>
+            <button
+              onClick={handleReconcileDaemon}
+              className="flex items-center gap-1 rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary"
+            >
+              <RefreshCw size={14} />
+              Reconcile daemon
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate('/workflows')}
+              className="flex items-center gap-1 rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary"
+            >
+              <Workflow size={14} />
+              Workflows
+            </button>
+            <button
+              onClick={handleNewAutomation}
+              className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent/90"
+            >
+              New automation
+            </button>
+          </>
+        }
+      />
 
       {error && (
-        <div className="border-b border-error/30 bg-error/10 px-4 py-2 text-sm text-error">
+        <InlineNotice tone="error" className="m-4 mb-0">
           {error}
-        </div>
+        </InlineNotice>
       )}
 
       {triageItems.length > 0 && (
@@ -504,9 +503,7 @@ export function AutomationsView() {
           <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-3">
             {!automationsCollapsed && (
               <div>
-                <div className="text-xs font-semibold uppercase tracking-wide text-text-tertiary">
-                  Saved automations
-                </div>
+                <div className="text-xs font-medium text-text-tertiary">Saved automations</div>
                 <div className="mt-1 text-xs text-text-secondary">{automations.length} saved</div>
               </div>
             )}
@@ -551,9 +548,12 @@ export function AutomationsView() {
                   Loading automations…
                 </div>
               ) : automations.length === 0 ? (
-                <div className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-text-secondary">
-                  No automations yet.
-                </div>
+                <EmptyState
+                  icon={RadioTower}
+                  compact
+                  title="No Watchtower jobs"
+                  description="Create a schedule or monitor an external event."
+                />
               ) : (
                 automations.map((automation) => (
                   <button
