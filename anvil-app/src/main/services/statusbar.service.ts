@@ -22,6 +22,7 @@ import {
 import { onCompanionEvent } from './companion-events.service.js';
 import { getSettings } from './settings.service.js';
 import { getWorkspace } from './workspace.service.js';
+import { initializeAppUpdater } from './app-updater.service.js';
 
 let tray: Tray | null = null;
 let unsubscribeCompanionEvents: (() => void) | null = null;
@@ -30,6 +31,7 @@ let statusBrand: Pick<Brand, 'appName' | 'id'> = { appName: 'Anvil', id: 'anvil'
 export function initializeStatusBar(brand: Pick<Brand, 'appName' | 'id'>): void {
   if (process.platform !== 'darwin' || tray) return;
   statusBrand = brand;
+  initializeAppUpdater();
 
   const image = nativeImage.createFromPath(getStatusIconPath()).resize({ width: 18, height: 18 });
   image.setTemplateImage(true);
