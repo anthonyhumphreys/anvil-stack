@@ -11,7 +11,7 @@ on:
         required: false
         type: string
       notarize:
-        description: 'Build signed and notarized artifacts. Requires Apple Developer ID and notary secrets.'
+        description: 'Build signed and notarized artifacts. Tagged releases are always signed; this controls manual dispatches.'
         required: false
         default: false
         type: boolean
@@ -121,13 +121,13 @@ jobs:
           echo "name=Anvil ${release_tag}" >> "${GITHUB_OUTPUT}"
 
       - name: Build unsigned macOS Apple Silicon artifacts
-        if: ${{ steps.release_scope.outputs.should_release == 'true' && (github.event_name != 'workflow_dispatch' || !inputs.notarize) }}
+        if: ${{ steps.release_scope.outputs.should_release == 'true' && github.event_name == 'workflow_dispatch' && !inputs.notarize }}
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: pnpm run dist:mac:arm64
 
       - name: Build signed and notarized macOS Apple Silicon artifacts
-        if: ${{ steps.release_scope.outputs.should_release == 'true' && github.event_name == 'workflow_dispatch' && inputs.notarize }}
+        if: ${{ steps.release_scope.outputs.should_release == 'true' && (github.event_name != 'workflow_dispatch' || inputs.notarize) }}
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
@@ -153,6 +153,54 @@ jobs:
 
           cp "${dmg_assets[0]}" dist/Anvil-latest-arm64.dmg
 
+      - name: Prepare macOS auto-update feed
+        if: ${{ steps.release_scope.outputs.should_release == 'true' && (github.event_name != 'workflow_dispatch' || inputs.notarize) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          shopt -s nullglob
+          zip_assets=(dist/*-arm64-mac.zip)
+          if [[ "${#zip_assets[@]}" -ne 1 ]]; then
+            echo "Expected exactly one macOS Apple Silicon ZIP, found ${#zip_assets[@]}." >&2
+            printf 'ZIP candidates:\n' >&2
+            printf '  %s\n' "${zip_assets[@]}" >&2
+            exit 1
+          fi
+
+          export ANVIL_UPDATE_VERSION="$(node -p "require('./package.json').version")"
+          export ANVIL_UPDATE_TAG="${{ steps.release.outputs.tag }}"
+          export ANVIL_UPDATE_ZIP="$(basename "${zip_assets[0]}")"
+          export ANVIL_UPDATE_REPOSITORY="${GITHUB_REPOSITORY}"
+
+          node <<'NODE'
+          const fs = require('node:fs');
+
+          const version = process.env.ANVIL_UPDATE_VERSION;
+          const tag = process.env.ANVIL_UPDATE_TAG;
+          const zip = process.env.ANVIL_UPDATE_ZIP;
+          const repository = process.env.ANVIL_UPDATE_REPOSITORY;
+          const url = `https://github.com/${repository}/releases/download/${tag}/${zip}`;
+
+          const feed = {
+            currentRelease: version,
+            releases: [
+              {
+                version,
+                updateTo: {
+                  version,
+                  url,
+                  name: `Anvil ${version}`,
+                  notes: `Anvil ${version}`,
+                  pub_date: new Date().toISOString(),
+                },
+              },
+            ],
+          };
+
+          fs.writeFileSync('dist/anvil-macos-arm64-updates.json', `${JSON.stringify(feed, null, 2)}\n`);
+          NODE
+
       - name: Create or update GitHub Release
         if: steps.release_scope.outputs.should_release == 'true'
         shell: bash
@@ -162,8 +210,11 @@ jobs:
           release_tag="${{ steps.release.outputs.tag }}"
           release_name="${{ steps.release.outputs.name }}"
           release_url="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${release_tag}"
-          notarized_release="${{ github.event_name == 'workflow_dispatch' && inputs.notarize }}"
+          notarized_release="${{ github.event_name != 'workflow_dispatch' || inputs.notarize }}"
           assets=(dist/Anvil-[0-9]*-arm64.dmg dist/Anvil-latest-arm64.dmg dist/*-arm64-mac.zip)
+          if [[ -f dist/anvil-macos-arm64-updates.json ]]; then
+            assets+=(dist/anvil-macos-arm64-updates.json)
+          fi
           notes_file="$(mktemp)"
           changelog_file="$(mktemp)"
           share_file="$(mktemp)"
