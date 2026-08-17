@@ -66,6 +66,7 @@ import {
 } from './services/mobile-companion.service.js';
 import { cleanupStatusBar, initializeStatusBar } from './services/statusbar.service.js';
 import { cleanupSimulatorPreview } from './services/simulator-preview.service.js';
+import { initializeAppUpdater } from './services/app-updater.service.js';
 
 const brandId = parseBrandFromArgs(process.argv);
 const brand = getBrand(brandId);
@@ -291,6 +292,7 @@ app.whenReady().then(() => {
   }
 
   initializeStatusBar(brand);
+  initializeAppUpdater();
 
   registerSettingsHandlers();
   registerMobileCompanionHandlers();
