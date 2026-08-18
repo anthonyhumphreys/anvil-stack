@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 53;
+export const SCHEMA_VERSION = 54;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -245,6 +245,10 @@ CREATE TABLE IF NOT EXISTS settings (
   codex_mode TEXT DEFAULT 'on-request',
   chat_layout TEXT DEFAULT 'classic',
   apple_foundation_models_mode TEXT DEFAULT 'off',
+  local_llm_mode TEXT DEFAULT 'off',
+  local_llm_provider TEXT DEFAULT 'apple',
+  local_llm_endpoint TEXT,
+  local_llm_model TEXT,
   ado_org_url TEXT,
   ado_project TEXT,
   ado_team TEXT,
@@ -1667,5 +1671,15 @@ export const MIGRATIONS: Record<number, string> = {
 
     CREATE INDEX IF NOT EXISTS idx_watchtower_events_pending
       ON watchtower_events(status, observed_at ASC);
+  `,
+  54: `
+    ALTER TABLE settings ADD COLUMN local_llm_mode TEXT DEFAULT 'off';
+    ALTER TABLE settings ADD COLUMN local_llm_provider TEXT DEFAULT 'apple';
+    ALTER TABLE settings ADD COLUMN local_llm_endpoint TEXT;
+    ALTER TABLE settings ADD COLUMN local_llm_model TEXT;
+
+    UPDATE settings
+      SET local_llm_mode = COALESCE(apple_foundation_models_mode, 'off')
+      WHERE local_llm_mode = 'off' AND apple_foundation_models_mode = 'prefer-simple';
   `,
 };

@@ -6,13 +6,22 @@ import path from 'node:path';
 import type { AutomationDaemonStatus } from '../../shared/types.js';
 
 const AUTOMATION_DAEMON_LABEL = 'dev.anthonyhumphreys.anvil.automation-daemon';
+const SYSTEMD_SERVICE_NAME = `${AUTOMATION_DAEMON_LABEL}.service`;
 
 function isMac(): boolean {
   return process.platform === 'darwin';
 }
 
+function isLinux(): boolean {
+  return process.platform === 'linux';
+}
+
 function getLaunchAgentPath(): string {
   return path.join(os.homedir(), 'Library', 'LaunchAgents', `${AUTOMATION_DAEMON_LABEL}.plist`);
+}
+
+function getSystemdServicePath(): string {
+  return path.join(os.homedir(), '.config', 'systemd', 'user', SYSTEMD_SERVICE_NAME);
 }
 
 function getProgramArguments(): string[] {
@@ -51,6 +60,28 @@ ${args}
 </plist>`;
 }
 
+function quoteSystemdArgument(value: string): string {
+  return `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
+}
+
+export function systemdUnit(): string {
+  const command = getProgramArguments().map(quoteSystemdArgument).join(' ');
+  return `[Unit]
+Description=Anvil automation daemon
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=${command}
+WorkingDirectory=${quoteSystemdArgument(app.getPath('userData'))}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+`;
+}
+
 function escapeXml(value: string): string {
   return value
     .replaceAll('&', '&amp;')
@@ -81,12 +112,48 @@ function loadLaunchAgent(plistPath: string): void {
   execFileSync('launchctl', ['load', '-w', plistPath], { stdio: 'ignore' });
 }
 
+function runSystemctl(args: string[], bestEffort = false): boolean {
+  try {
+    execFileSync('systemctl', ['--user', ...args], { stdio: 'ignore' });
+    return true;
+  } catch (error) {
+    if (!bestEffort) throw error;
+    return false;
+  }
+}
+
+function isSystemdAvailable(): boolean {
+  try {
+    execFileSync('systemctl', ['--user', '--version'], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isSystemdServiceLoaded(): boolean {
+  return runSystemctl(['is-active', '--quiet', SYSTEMD_SERVICE_NAME], true);
+}
+
 export function isAutomationDaemonMode(): boolean {
   return process.argv.includes('--automation-daemon');
 }
 
 export function getAutomationDaemonStatus(): AutomationDaemonStatus {
   const plistPath = getLaunchAgentPath();
+  const servicePath = getSystemdServicePath();
+  if (isLinux()) {
+    const supported = isSystemdAvailable();
+    return {
+      supported,
+      installed: fs.existsSync(servicePath),
+      loaded: supported && isSystemdServiceLoaded(),
+      mode: isAutomationDaemonMode() ? 'daemon' : 'app',
+      label: SYSTEMD_SERVICE_NAME,
+      servicePath,
+      lastError: supported ? undefined : 'systemd user services are unavailable.',
+    };
+  }
   if (!isMac()) {
     return {
       supported: false,
@@ -107,6 +174,15 @@ export function getAutomationDaemonStatus(): AutomationDaemonStatus {
 }
 
 export function installAutomationDaemon(): AutomationDaemonStatus {
+  if (isLinux()) {
+    if (!isSystemdAvailable()) return getAutomationDaemonStatus();
+    const servicePath = getSystemdServicePath();
+    fs.mkdirSync(path.dirname(servicePath), { recursive: true });
+    fs.writeFileSync(servicePath, systemdUnit(), 'utf8');
+    runSystemctl(['daemon-reload']);
+    runSystemctl(['enable', '--now', SYSTEMD_SERVICE_NAME]);
+    return getAutomationDaemonStatus();
+  }
   if (!isMac()) return getAutomationDaemonStatus();
 
   const plistPath = getLaunchAgentPath();
@@ -118,6 +194,13 @@ export function installAutomationDaemon(): AutomationDaemonStatus {
 }
 
 export function uninstallAutomationDaemon(): AutomationDaemonStatus {
+  if (isLinux()) {
+    const servicePath = getSystemdServicePath();
+    runSystemctl(['disable', '--now', SYSTEMD_SERVICE_NAME], true);
+    if (fs.existsSync(servicePath)) fs.rmSync(servicePath, { force: true });
+    runSystemctl(['daemon-reload'], true);
+    return getAutomationDaemonStatus();
+  }
   if (!isMac()) return getAutomationDaemonStatus();
 
   const plistPath = getLaunchAgentPath();

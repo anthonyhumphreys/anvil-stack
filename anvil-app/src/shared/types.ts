@@ -1796,6 +1796,7 @@ export interface AutomationDaemonStatus {
   mode: 'app' | 'daemon';
   label?: string;
   plistPath?: string;
+  servicePath?: string;
   lastError?: string;
 }
 
@@ -1885,12 +1886,23 @@ export type AppTheme =
   | 'token-bender'
   | 'agent-after-hours';
 
+export type LocalLlmProvider = 'apple' | 'ollama' | 'lm-studio';
+export type LocalLlmMode = 'off' | 'prefer-simple';
+
+export interface LocalLlmCapabilities {
+  platform: NodeJS.Platform;
+  providers: LocalLlmProvider[];
+}
+
 export interface AppSettings {
   /** Primary provider for new chats and app-level AI tasks. */
   llmProvider: AgentProvider;
   /** Providers available to workflows and agent-authored shell commands. */
   enabledLlmProviders?: AgentProvider[];
-  appleFoundationModelsMode: 'off' | 'prefer-simple';
+  localLlmMode: LocalLlmMode;
+  localLlmProvider: LocalLlmProvider;
+  localLlmEndpoint: string;
+  localLlmModel: string;
 
   // Azure AI Foundry
   foundryEndpoint: string;

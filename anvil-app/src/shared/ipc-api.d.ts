@@ -22,6 +22,7 @@ import type {
   AutomationRunEvent,
   AutomationTriageItem,
   AppSettings,
+  LocalLlmCapabilities,
   BaFinding,
   BaFindingStatus,
   BaFindingType,
@@ -525,7 +526,8 @@ export interface AnvilAPI {
     getCursorStatus: () => Promise<CursorCliStatus>;
     setCodexAgentMaxThreads: (maxThreads: number) => Promise<CodexCliStatus>;
     testFoundryConnection: () => Promise<{ ok: boolean; error?: string }>;
-    testAppleFoundationModels: () => Promise<{ ok: boolean; error?: string }>;
+    getLocalLlmCapabilities: () => Promise<LocalLlmCapabilities>;
+    testLocalLlm: () => Promise<{ ok: boolean; error?: string }>;
     testWorkItemProviderConnection: () => Promise<{ ok: boolean; error?: string }>;
     listLinearTeams: () => Promise<Array<{ id: string; name: string; key: string }>>;
     testConfluenceConnection: () => Promise<{ ok: boolean; error?: string }>;

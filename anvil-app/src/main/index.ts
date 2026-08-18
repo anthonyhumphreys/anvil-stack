@@ -102,6 +102,10 @@ configureUserDataPath();
 let mainWindow: BrowserWindow | null = null;
 let rendererCspRegistered = false;
 const daemonMode = isAutomationDaemonMode();
+if (daemonMode && process.platform === 'linux') {
+  app.commandLine.appendSwitch('headless');
+  app.commandLine.appendSwitch('disable-gpu');
+}
 const gotSingleInstanceLock = daemonMode ? true : app.requestSingleInstanceLock();
 
 function getWindowChromeState(targetWindow = mainWindow): { isFullScreen: boolean } {
