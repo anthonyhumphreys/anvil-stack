@@ -26,7 +26,8 @@
     "format": "prettier --write \"src/**/*.{ts,tsx,css,json}\"",
     "postinstall": "pnpm run rebuild:native:node",
     "rebuild:native:electron": "electron-rebuild -f -w better-sqlite3,node-pty",
-    "rebuild:native:node": "pnpm rebuild better-sqlite3 node-pty"
+    "rebuild:native:node": "pnpm rebuild better-sqlite3 node-pty",
+    "dist:linux:x64": "node scripts/dist.mjs --linux AppImage deb --x64 --publish never --brand=anvil"
   },
   "keywords": [
     "electron",
