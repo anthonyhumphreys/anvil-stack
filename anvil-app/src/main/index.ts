@@ -163,8 +163,10 @@ function createWindow(options: { workspaceId?: string } = {}): BrowserWindow {
     minWidth: 1024,
     minHeight: 700,
     title: app.getName(),
-    titleBarStyle: 'hidden',
-    trafficLightPosition: { x: 16, y: 16 },
+    titleBarStyle: process.platform === 'darwin' ? 'hidden' : 'default',
+    ...(process.platform === 'darwin'
+      ? { trafficLightPosition: { x: 16, y: 16 } }
+      : {}),
     backgroundColor: '#0b1020',
     icon: getAppIconPath(),
     webPreferences: {
