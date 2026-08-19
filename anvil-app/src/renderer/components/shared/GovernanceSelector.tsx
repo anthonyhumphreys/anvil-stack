@@ -11,9 +11,14 @@ export interface GovernanceSelection {
 interface GovernanceSelectorProps {
   selectedDocIds: string[];
   onSelectionChange: (docs: GovernanceDocument[]) => void;
+  placement?: 'top' | 'bottom';
 }
 
-export function GovernanceSelector({ selectedDocIds, onSelectionChange }: GovernanceSelectorProps) {
+export function GovernanceSelector({
+  selectedDocIds,
+  onSelectionChange,
+  placement = 'bottom',
+}: GovernanceSelectorProps) {
   const { activeWorkspace } = useWorkspace();
   const [open, setOpen] = useState(false);
   const [boards, setBoards] = useState<GovernanceBoard[]>([]);
@@ -136,36 +141,44 @@ export function GovernanceSelector({ selectedDocIds, onSelectionChange }: Govern
 
   return (
     <div className="relative z-50" ref={ref}>
-      <button
-        onClick={() => setOpen(!open)}
-        className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-sm transition-colors hover:bg-bg-tertiary ${
+      <div
+        className={`flex h-9 items-center rounded-xl border text-xs font-medium transition-colors hover:bg-bg-tertiary ${
           selectedDocIds.length > 0 ? 'border-accent/40 bg-accent/10' : 'border-border'
         }`}
-        aria-label="Select governance documents"
-        aria-expanded={open}
       >
-        <FileText
-          size={12}
-          className={selectedDocIds.length > 0 ? 'text-accent' : 'text-text-tertiary'}
-        />
-        <span className="text-text-primary">{label}</span>
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          className="flex h-full items-center gap-1.5 rounded-l-xl pl-2.5 pr-2 text-text-secondary hover:text-text-primary"
+          aria-label="Select governance documents"
+          aria-expanded={open}
+        >
+          <FileText
+            size={12}
+            className={selectedDocIds.length > 0 ? 'text-accent' : 'text-text-tertiary'}
+          />
+          <span>{label}</span>
+          <ChevronDown size={12} className="text-text-tertiary" />
+        </button>
         {selectedDocIds.length > 0 && (
           <button
-            onClick={(e) => {
-              e.stopPropagation();
-              handleClear();
-            }}
-            className="ml-0.5 rounded p-0.5 text-text-tertiary hover:text-text-primary"
+            type="button"
+            onClick={handleClear}
+            className="mr-1 rounded-md p-1 text-text-tertiary hover:bg-bg-primary/40 hover:text-text-primary"
             title="Clear governance selection"
+            aria-label="Clear governance selection"
           >
             <X size={10} />
           </button>
         )}
-        <ChevronDown size={12} className="text-text-tertiary" />
-      </button>
+      </div>
 
       {open && (
-        <div className="absolute left-0 top-full z-50 mt-1.5 w-80 overflow-hidden rounded-xl border border-border bg-bg-elevated shadow-2xl ring-1 ring-black/10">
+        <div
+          className={`absolute left-0 z-50 w-80 overflow-hidden rounded-xl border border-border bg-bg-elevated shadow-2xl ring-1 ring-black/10 ${
+            placement === 'top' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'
+          }`}
+        >
           <div className="flex items-center justify-between border-b border-border-subtle px-3 py-2">
             <span className="text-xs font-medium uppercase tracking-wide text-text-tertiary">
               Workspace documents

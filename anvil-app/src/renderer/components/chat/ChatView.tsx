@@ -18,7 +18,6 @@ import {
   Presentation,
   GraduationCap,
   Database,
-  Hammer,
   ListChecks,
   Target,
   Circle,
@@ -32,7 +31,7 @@ import {
   Copy,
   Check,
   ExternalLink,
-  SlidersHorizontal,
+  Ellipsis,
   Maximize2,
   Minimize2,
   PictureInPicture2,
@@ -56,6 +55,7 @@ import type {
   CodexMode,
   CodexSession,
   Persona,
+  ReasoningEffort,
   UserRole,
 } from '../../../shared/types';
 import { ROLE_RECOMMENDED_PERSONAS } from '../../../shared/types';
@@ -79,7 +79,6 @@ import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { DesignProvider } from '../../contexts/DesignContext';
 import { RepoSelector } from '../shared/RepoSelector';
 import { GovernanceSelector } from '../shared/GovernanceSelector';
-import { WorkspaceGitActions } from '../shared/WorkspaceGitActions';
 import {
   extractFindings,
   stripFindingMarkers,
@@ -102,6 +101,7 @@ import {
   PlanIntentSurface,
   QuestionIntentSurface,
 } from './AgentUIIntentSurface';
+import { resolveChatFastModeTarget } from '../../utils/chat-fast-mode';
 
 const PERSONA_ICONS: Record<string, React.ReactNode> = {
   Code: <Code size={14} />,
@@ -186,7 +186,7 @@ export function ChatView({ userRole }: ChatViewProps) {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [showPersonaDropdown, setShowPersonaDropdown] = useState(false);
-  const [showContextSettings, setShowContextSettings] = useState(false);
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
   const [showFindings, setShowFindings] = useState(true);
   const [dismissedFindings, setDismissedFindings] = useState<Set<number>>(new Set());
   const [composerPrefill, setComposerPrefill] = useState<{ id: string; text: string } | null>(null);
@@ -194,6 +194,7 @@ export function ChatView({ userRole }: ChatViewProps) {
   const [goalPopoverOpen, setGoalPopoverOpen] = useState(false);
   const [workOpen, setWorkOpen] = useState(false);
   const [executionStrategy, setExecutionStrategy] = useState<ExecutionStrategy>('auto');
+  const [fastMode, setFastMode] = useState(false);
   const [canvasOpen, setCanvasOpen] = useState(true);
   const [canvasExpanded, setCanvasExpanded] = useState(false);
   const [canvasDetached, setCanvasDetached] = useState(false);
@@ -207,6 +208,7 @@ export function ChatView({ userRole }: ChatViewProps) {
   const [itsmWorkbenchOpen, setItsmWorkbenchOpen] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const moreMenuRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
   const appliedItsmDefaultRef = useRef(false);
 
@@ -215,6 +217,10 @@ export function ChatView({ userRole }: ChatViewProps) {
   const isDbExpertPersona = activePersona?.id === 'db-expert';
   const isItsmPersona = activePersona ? ITSM_PERSONA_IDS.has(activePersona.id) : false;
   const isWorkItemLayout = chatLayout === 'workitems';
+  const fastModeTarget = useMemo(
+    () => resolveChatFastModeTarget(modelProvider, model, modelOptions),
+    [model, modelOptions, modelProvider],
+  );
   const mentionRepoIds = useMemo(() => activeRepos.map((repo) => repo.id), [activeRepos]);
   const slashCommands = useMemo<ChatSlashCommand[]>(
     () => [
@@ -249,6 +255,10 @@ export function ChatView({ userRole }: ChatViewProps) {
     ],
     [],
   );
+
+  useEffect(() => {
+    if (!fastModeTarget.available && fastMode) setFastMode(false);
+  }, [fastMode, fastModeTarget.available]);
 
   useEffect(() => {
     if (userRole !== 'itsm') {
@@ -413,6 +423,7 @@ export function ChatView({ userRole }: ChatViewProps) {
 
   const handleSwitchPersona = (persona: Persona) => {
     setShowPersonaDropdown(false);
+    setShowMoreMenu(false);
     switchPersona(persona);
   };
 
@@ -436,6 +447,7 @@ export function ChatView({ userRole }: ChatViewProps) {
                 message,
                 attachments,
                 buildExecutionStrategyPrompt(executionStrategy) ?? undefined,
+                fastMode,
               );
               return;
             }
@@ -458,14 +470,20 @@ export function ChatView({ userRole }: ChatViewProps) {
               message,
               attachments,
               buildExecutionStrategyPrompt(executionStrategy) ?? undefined,
+              fastMode,
             );
           });
         return;
       }
 
-      void send(message, attachments, buildExecutionStrategyPrompt(executionStrategy) ?? undefined);
+      void send(
+        message,
+        attachments,
+        buildExecutionStrategyPrompt(executionStrategy) ?? undefined,
+        fastMode,
+      );
     },
-    [activeWorkspace, executionStrategy, navigate, send, startNewSession],
+    [activeWorkspace, executionStrategy, fastMode, navigate, send, startNewSession],
   );
 
   const handleChatInputSend = useCallback(
@@ -487,6 +505,21 @@ export function ChatView({ userRole }: ChatViewProps) {
       console.error('[Chat] Failed to update Codex mode:', err);
     }
   }, []);
+
+  const handleModelChange = useCallback(
+    (nextModel: string) => {
+      setFastMode(false);
+      setModel(nextModel);
+    },
+    [setModel],
+  );
+
+  const handleReasoningChange = useCallback(
+    (nextLevel: ReasoningEffort) => {
+      setReasoningLevel(nextLevel);
+    },
+    [setReasoningLevel],
+  );
 
   const handleChatLayoutChange = useCallback(
     (layout: typeof chatLayout) => {
@@ -636,6 +669,27 @@ export function ChatView({ userRole }: ChatViewProps) {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [canvasExpanded]);
 
+  useEffect(() => {
+    if (!showMoreMenu) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!moreMenuRef.current?.contains(event.target as Node)) {
+        setShowMoreMenu(false);
+        setShowPersonaDropdown(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      setShowMoreMenu(false);
+      setShowPersonaDropdown(false);
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showMoreMenu]);
+
   const handleDetachedCanvasClose = useCallback(() => {
     setCanvasDetached(false);
     setCanvasOpen(true);
@@ -672,20 +726,57 @@ export function ChatView({ userRole }: ChatViewProps) {
             </p>
           </div>
 
-          <div className="relative ml-auto shrink-0">
+          {!scaffoldModeActive && (
+            <div
+              className="ml-auto flex shrink-0 items-center rounded-lg bg-bg-primary/55 p-0.5"
+              role="group"
+              aria-label="Thread source"
+            >
+              <button
+                type="button"
+                onClick={() => handleChatLayoutChange('classic')}
+                className={`flex h-8 items-center gap-1.5 rounded-md px-2 text-xs font-medium transition-colors ${
+                  chatLayout === 'classic'
+                    ? 'bg-bg-elevated text-text-primary shadow-sm'
+                    : 'text-text-tertiary hover:text-text-primary'
+                }`}
+                aria-pressed={chatLayout === 'classic'}
+                title="Chat threads"
+              >
+                <MessageSquare size={12} />
+                <span className="hidden xl:inline">Chat</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleChatLayoutChange('workitems')}
+                className={`flex h-8 items-center gap-1.5 rounded-md px-2 text-xs font-medium transition-colors ${
+                  chatLayout === 'workitems'
+                    ? 'bg-bg-elevated text-info shadow-sm'
+                    : 'text-text-tertiary hover:text-text-primary'
+                }`}
+                aria-pressed={chatLayout === 'workitems'}
+                title="Work-item threads"
+              >
+                <ClipboardList size={12} />
+                <span className="hidden xl:inline">Tickets</span>
+              </button>
+            </div>
+          )}
+
+          <div ref={moreMenuRef} className="relative shrink-0">
             <button
               type="button"
-              onClick={() => setShowContextSettings((open) => !open)}
+              onClick={() => setShowMoreMenu((open) => !open)}
               className="flex h-9 items-center gap-2 rounded-lg border border-border px-2.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-              aria-expanded={showContextSettings}
-              aria-label="Chat context and mode settings"
+              aria-expanded={showMoreMenu}
+              aria-label="More chat controls"
             >
-              <SlidersHorizontal size={13} />
-              <span className="hidden lg:inline">Context</span>
+              <Ellipsis size={14} />
+              <span className="hidden 2xl:inline">More</span>
             </button>
 
-            {showContextSettings && (
-              <div className="absolute right-0 top-full z-50 mt-2 w-[min(680px,calc(100vw-2rem))] rounded-xl border border-border bg-bg-elevated p-3 shadow-2xl">
+            {showMoreMenu && (
+              <div className="absolute right-0 top-full z-50 mt-2 w-80 rounded-xl border border-border bg-bg-elevated p-3 shadow-2xl">
                 <div className="flex flex-wrap items-center gap-2">
                   {/* Persona selector */}
                   <div className="relative">
@@ -755,101 +846,6 @@ export function ChatView({ userRole }: ChatViewProps) {
                     )}
                   </div>
 
-                  {/* Repo selector */}
-                  {!scaffoldModeActive && (
-                    <RepoSelector
-                      variant="dropdown"
-                      mode="multi"
-                      selectedRepoIds={activeRepos.map((r) => r.id)}
-                      onMultiSelect={setActiveRepos}
-                    />
-                  )}
-
-                  {!scaffoldModeActive && (
-                    <div className="flex items-center gap-1 rounded-xl border border-border bg-bg-primary/60 p-0.5">
-                      <button
-                        onClick={() => handleChatLayoutChange('classic')}
-                        className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
-                          chatLayout === 'classic'
-                            ? 'bg-accent/15 text-accent'
-                            : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary'
-                        }`}
-                        aria-pressed={chatLayout === 'classic'}
-                        title="Chat threads"
-                      >
-                        <MessageSquare size={12} />
-                        <span className="hidden 2xl:inline">Classic</span>
-                      </button>
-                      <button
-                        onClick={() => handleChatLayoutChange('workitems')}
-                        className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
-                          chatLayout === 'workitems'
-                            ? 'bg-info/15 text-info'
-                            : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary'
-                        }`}
-                        aria-pressed={chatLayout === 'workitems'}
-                        title="Work-item chat threads"
-                      >
-                        <ClipboardList size={12} />
-                        <span className="hidden 2xl:inline">Tickets</span>
-                      </button>
-                    </div>
-                  )}
-
-                  {!scaffoldModeActive && (
-                    <div className="flex items-center gap-1 rounded-xl border border-border bg-bg-primary/60 p-0.5">
-                      <button
-                        onClick={() => setCollaborationMode('default')}
-                        className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
-                          collaborationMode === 'default'
-                            ? 'bg-accent/15 text-accent'
-                            : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary'
-                        }`}
-                        aria-pressed={collaborationMode === 'default'}
-                        title="Implementation mode"
-                      >
-                        <Hammer size={12} />
-                        <span className="hidden xl:inline">Build</span>
-                      </button>
-                      <button
-                        onClick={() => setCollaborationMode('plan')}
-                        className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
-                          collaborationMode === 'plan'
-                            ? 'bg-info/15 text-info'
-                            : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary'
-                        }`}
-                        aria-pressed={collaborationMode === 'plan'}
-                        title="Planning mode"
-                      >
-                        <ListChecks size={12} />
-                        <span className="hidden xl:inline">Plan</span>
-                      </button>
-                    </div>
-                  )}
-
-                  {/* Governance document selector */}
-                  <GovernanceSelector
-                    selectedDocIds={selectedGovernanceDocs.map((d) => d.id)}
-                    onSelectionChange={setSelectedGovernanceDocs}
-                  />
-
-                  {!scaffoldModeActive && (
-                    <WorkspaceGitActions
-                      repos={repos}
-                      onPullRequestCreated={(result) => {
-                        const target =
-                          result.pullRequestUrl ?? `${result.repoName} ${result.branch}`;
-                        setComposerPrefill({
-                          id: `pr-${Date.now()}`,
-                          text: `Created PR for ${result.repoName}: ${target}`,
-                        });
-                      }}
-                      onError={(message) => {
-                        setComposerPrefill({ id: `git-error-${Date.now()}`, text: message });
-                      }}
-                    />
-                  )}
-
                   {!scaffoldModeActive && (
                     <AgentWorkControl
                       open={workOpen}
@@ -891,17 +887,6 @@ export function ChatView({ userRole }: ChatViewProps) {
         </div>
 
         <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">
-          {!scaffoldModeActive && activeRepos.length > 0 && (
-            <button
-              type="button"
-              onClick={() => navigate('/git?tab=pull_requests')}
-              className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-              title="Browse and visualise pull requests"
-            >
-              <GitPullRequest size={13} />
-              <span className="hidden xl:inline">PRs</span>
-            </button>
-          )}
           {!isWorkItemLayout && (
             <button
               onClick={() => void startNewSession()}
@@ -1226,10 +1211,10 @@ export function ChatView({ userRole }: ChatViewProps) {
             model={model}
             modelProvider={modelProvider}
             modelOptions={modelOptions}
-            onModelChange={setModel}
+            onModelChange={handleModelChange}
             reasoningLevel={reasoningLevel}
             reasoningOptions={reasoningOptions}
-            onReasoningChange={setReasoningLevel}
+            onReasoningChange={handleReasoningChange}
             executionStrategy={executionStrategy}
             onExecutionStrategyChange={setExecutionStrategy}
             codexMode={isItsmPersona ? 'read-only' : codexMode}
@@ -1237,6 +1222,29 @@ export function ChatView({ userRole }: ChatViewProps) {
               scaffoldModeActive ? undefined : (mode) => void handleCodexModeChange(mode)
             }
             codexModeDisabled={isItsmPersona}
+            collaborationMode={collaborationMode}
+            onCollaborationModeChange={scaffoldModeActive ? undefined : setCollaborationMode}
+            fastMode={fastMode}
+            fastModeAvailable={fastModeTarget.available}
+            onFastModeChange={scaffoldModeActive ? undefined : setFastMode}
+            contextControls={
+              scaffoldModeActive ? null : (
+                <>
+                  <RepoSelector
+                    variant="dropdown"
+                    mode="multi"
+                    placement="top"
+                    selectedRepoIds={activeRepos.map((repo) => repo.id)}
+                    onMultiSelect={setActiveRepos}
+                  />
+                  <GovernanceSelector
+                    placement="top"
+                    selectedDocIds={selectedGovernanceDocs.map((document) => document.id)}
+                    onSelectionChange={setSelectedGovernanceDocs}
+                  />
+                </>
+              )
+            }
             prefill={composerPrefill}
             draftKey={composerDraftKey}
             mentionRepoIds={mentionRepoIds}
@@ -1332,7 +1340,7 @@ export function ChatView({ userRole }: ChatViewProps) {
             title="Canvas"
             defaultWidth={460}
             minWidth={360}
-            maxWidth={720}
+            maxWidth={960}
             collapsedWidth={0}
             className="border-l border-border/60 bg-bg-secondary/50"
           >
@@ -1359,7 +1367,7 @@ export function ChatView({ userRole }: ChatViewProps) {
         {canvasExpanded &&
           !canvasDetached &&
           (selectedArtifact || planIntents.length > 0 || activeGoal) && (
-            <div className="fixed inset-3 z-50 flex min-h-0 overflow-hidden rounded-xl border border-border bg-bg-secondary shadow-2xl">
+            <div className="fixed inset-y-3 left-20 right-3 z-50 flex min-h-0 overflow-hidden rounded-xl border border-border bg-bg-primary shadow-2xl">
               <ChatCanvasSidebar
                 artifacts={activeArtifacts}
                 selectedArtifact={selectedArtifact}
@@ -1842,6 +1850,11 @@ function ChatCanvasSidebar({
 }) {
   const [mode, setMode] = useState<'preview' | 'source'>('preview');
   const [copied, setCopied] = useState(false);
+  const [planOpen, setPlanOpen] = useState(!selectedArtifact && Boolean(activePlan));
+
+  useEffect(() => {
+    if (!selectedArtifact && activePlan) setPlanOpen(true);
+  }, [activePlan, selectedArtifact]);
 
   const handleCopy = useCallback(() => {
     if (!selectedArtifact) return;
@@ -1858,14 +1871,24 @@ function ChatCanvasSidebar({
   }, [onDiscardArtifact, selectedArtifact]);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="border-b border-border/60 px-3 py-2.5">
+    <div
+      className={`flex min-h-0 flex-1 flex-col ${
+        presentation === 'expanded' ? 'bg-bg-primary' : ''
+      }`}
+    >
+      <div
+        className={`border-b border-border/60 ${
+          presentation === 'expanded' ? 'px-5 py-3.5' : 'px-3 py-2.5'
+        }`}
+      >
         <div className="flex items-center gap-2">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-accent/20 bg-accent/10 text-accent">
             <Braces size={15} />
           </div>
           <div className="min-w-0 flex-1">
-            <h3 className="truncate text-sm font-semibold text-text-primary">Canvas</h3>
+            <h3 className="truncate text-sm font-semibold text-text-primary">
+              {presentation === 'expanded' ? 'Canvas workspace' : 'Canvas'}
+            </h3>
             <p className="truncate text-xs text-text-tertiary">
               {artifacts.length > 0
                 ? `${artifacts.length} artifact${artifacts.length === 1 ? '' : 's'}`
@@ -1875,6 +1898,25 @@ function ChatCanvasSidebar({
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-1">
+            {planIntents.length === 0 && activePlan && (
+              <button
+                type="button"
+                onClick={() => setPlanOpen((open) => !open)}
+                className={`flex h-8 items-center gap-1.5 rounded-md px-2 text-xs font-medium transition-colors ${
+                  planOpen
+                    ? 'bg-info/10 text-info'
+                    : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary'
+                }`}
+                aria-pressed={planOpen}
+                title={planOpen ? 'Hide implementation plan' : 'Show implementation plan'}
+              >
+                <ListChecks size={13} />
+                <span>
+                  Plan {activePlan.steps.filter((step) => step.status === 'completed').length}/
+                  {activePlan.steps.length}
+                </span>
+              </button>
+            )}
             <button
               type="button"
               onClick={onExpand}
@@ -2040,7 +2082,21 @@ function ChatCanvasSidebar({
           activePlan={activePlan}
           planIntents={planIntents}
           activeGoal={activeGoal}
+          planOpen={planOpen}
+          onPlanOpenChange={setPlanOpen}
         />
+      )}
+
+      {selectedArtifact && (activeGoal || planIntents.length > 0 || (activePlan && planOpen)) && (
+        <div className="max-h-60 overflow-auto border-t border-border/60">
+          <PlanGoalSidebar
+            activePlan={activePlan}
+            planIntents={planIntents}
+            activeGoal={activeGoal}
+            planOpen={planOpen}
+            onPlanOpenChange={setPlanOpen}
+          />
+        </div>
       )}
     </div>
   );
@@ -2071,10 +2127,14 @@ function PlanGoalSidebar({
   activePlan,
   planIntents,
   activeGoal,
+  planOpen = true,
+  onPlanOpenChange,
 }: {
   activePlan: ChatPlanSnapshot | null;
   planIntents: AgentUIPlanIntent[];
   activeGoal: ChatGoalSnapshot | null;
+  planOpen?: boolean;
+  onPlanOpenChange?: (open: boolean) => void;
 }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-3">
@@ -2101,37 +2161,51 @@ function PlanGoalSidebar({
 
       {planIntents.length === 0 && activePlan && (
         <section className="rounded-xl border border-info/20 bg-info/5">
-          <div className="border-b border-info/15 p-3">
-            <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
+          <button
+            type="button"
+            onClick={() => onPlanOpenChange?.(!planOpen)}
+            className={`w-full p-3 text-left transition-colors hover:bg-info/5 ${
+              planOpen ? 'border-b border-info/15' : ''
+            }`}
+            aria-expanded={planOpen}
+          >
+            <span className="flex items-center gap-2 text-sm font-medium text-text-primary">
               <ListChecks size={14} className="text-info" />
               Implementation Plan
               <span className="ml-auto text-xs text-text-tertiary">
                 {activePlan.steps.filter((step) => step.status === 'completed').length}/
                 {activePlan.steps.length}
               </span>
-            </div>
-            {activePlan.explanation && (
-              <p className="mt-2 text-xs leading-relaxed text-text-secondary">
-                {activePlan.explanation}
-              </p>
-            )}
-          </div>
-          <ol className="space-y-2 p-3">
-            {activePlan.steps.map((step, index) => (
-              <li key={`${index}-${step.step}`} className="flex items-start gap-2 text-sm">
-                <SidebarPlanStepIcon status={step.status} />
-                <span
-                  className={
-                    step.status === 'completed'
-                      ? 'text-text-tertiary line-through'
-                      : 'text-text-secondary'
-                  }
-                >
-                  {step.step}
-                </span>
-              </li>
-            ))}
-          </ol>
+              {planOpen ? (
+                <ChevronDown size={13} className="text-text-tertiary" />
+              ) : (
+                <ChevronRight size={13} className="text-text-tertiary" />
+              )}
+            </span>
+          </button>
+          {planOpen && activePlan.explanation && (
+            <p className="border-b border-info/15 px-3 pb-3 text-xs leading-relaxed text-text-secondary">
+              {activePlan.explanation}
+            </p>
+          )}
+          {planOpen && (
+            <ol className="space-y-2 p-3">
+              {activePlan.steps.map((step, index) => (
+                <li key={`${index}-${step.step}`} className="flex items-start gap-2 text-sm">
+                  <SidebarPlanStepIcon status={step.status} />
+                  <span
+                    className={
+                      step.status === 'completed'
+                        ? 'text-text-tertiary line-through'
+                        : 'text-text-secondary'
+                    }
+                  >
+                    {step.step}
+                  </span>
+                </li>
+              ))}
+            </ol>
+          )}
         </section>
       )}
     </div>

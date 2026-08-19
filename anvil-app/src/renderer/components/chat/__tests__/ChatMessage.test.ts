@@ -33,8 +33,9 @@ describe('shouldCollapseUserMessage', () => {
 });
 
 describe('shouldShowTurnWorkDetails', () => {
-  it('keeps the current turn visible even before the user expands it', () => {
-    expect(shouldShowTurnWorkDetails(true, false)).toBe(true);
+  it('keeps live operational detail folded until the user asks for it', () => {
+    expect(shouldShowTurnWorkDetails(true, false)).toBe(false);
+    expect(shouldShowTurnWorkDetails(true, true)).toBe(true);
   });
 
   it('folds settled work unless the user has expanded it', () => {

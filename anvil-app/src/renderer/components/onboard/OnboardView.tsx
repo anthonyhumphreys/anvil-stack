@@ -7,6 +7,7 @@ import { DevcontainerStep } from './DevcontainerStep';
 import { ConnectorsStep } from './ConnectorsStep';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { RepoSelector } from '../shared/RepoSelector';
+import { ViewHeader } from '../layout/ViewScaffold';
 
 type WizardStep =
   | 'select'
@@ -120,27 +121,29 @@ export function OnboardView() {
 
   return (
     <div className="flex h-full flex-col">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-border bg-bg-secondary px-4 py-2">
-        <div className="flex items-center gap-3">
-          <Compass size={20} className="text-accent" />
-          <h2 className="text-xl font-semibold">Onboarding</h2>
-          {selectedRepo && (
+      <ViewHeader
+        icon={Compass}
+        title="Repository Setup"
+        description="Prepare a repository for reliable agent work and connected delivery tools."
+        meta={
+          selectedRepo ? (
             <span className="rounded bg-bg-tertiary px-2 py-0.5 text-xs text-text-secondary">
               {selectedRepo.name}
             </span>
-          )}
-        </div>
-        {detection && (
-          <button
-            onClick={handleRestart}
-            className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-sm text-text-secondary hover:text-text-primary"
-          >
-            <RefreshCw size={12} />
-            Restart
-          </button>
-        )}
-      </div>
+          ) : undefined
+        }
+        actions={
+          detection ? (
+            <button
+              onClick={handleRestart}
+              className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-sm text-text-secondary hover:text-text-primary"
+            >
+              <RefreshCw size={12} />
+              Restart
+            </button>
+          ) : undefined
+        }
+      />
 
       {/* Step indicator */}
       <div className="flex items-center gap-1 border-b border-border bg-bg-secondary px-4 py-2">

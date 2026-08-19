@@ -1,37 +1,43 @@
 import { useBrand } from '../../contexts/BrandContext';
 import type { UserRole } from '../../../shared/types';
-import { ROLE_FEATURES } from '../../../shared/types';
-
-const ROLE_LABELS: Record<string, string> = {
-  repos: 'Repositories',
-  chat: 'Chat',
-  onboard: 'Onboarding',
-  workitems: 'Work Items',
-  security: 'Security',
-  codereview: 'Code Review',
-  docs: 'Documentation',
-  diagrams: 'Diagrams',
-  governance: 'Governance',
-  compliance: 'Compliance',
-  adrs: 'ADRs',
-  browser: 'Browser',
-  git: 'Git',
-};
+import { ArrowRight, Code2, LifeBuoy, PenTool, Workflow, type LucideIcon } from 'lucide-react';
 
 interface RoleOption {
   role: UserRole;
   label: string;
   description: string;
+  strengths: string;
+  icon: LucideIcon;
 }
 
 const ROLES: RoleOption[] = [
-  { role: 'developer', label: 'Developer', description: 'Full access to all tools' },
-  { role: 'ba-brm', label: 'BA / BRM', description: 'Docs, diagrams, chat & work items' },
-  { role: 'design', label: 'Design', description: 'Design companion with Figma & diagrams' },
+  {
+    role: 'developer',
+    label: 'Developer',
+    description: 'Build, review, and operate software',
+    strengths: 'Code · delivery · security',
+    icon: Code2,
+  },
+  {
+    role: 'ba-brm',
+    label: 'BA / BRM',
+    description: 'Shape delivery work and decisions',
+    strengths: 'Work items · docs · diagrams',
+    icon: Workflow,
+  },
+  {
+    role: 'design',
+    label: 'Design',
+    description: 'Explore and communicate product intent',
+    strengths: 'Chat · diagrams · governance',
+    icon: PenTool,
+  },
   {
     role: 'itsm',
     label: 'ITSM',
-    description: 'Service support, incident coordination & continual improvement',
+    description: 'Coordinate service work and improvement',
+    strengths: 'Incidents · risk · compliance',
+    icon: LifeBuoy,
   },
 ];
 
@@ -61,23 +67,26 @@ export function RolePickerOverlay({ onRoleSelected }: RolePickerOverlayProps) {
         </div>
 
         <div className="space-y-3">
-          {ROLES.map(({ role, label, description }) => {
-            const features = ROLE_FEATURES[role]
-              .filter((feature) => feature !== 'cloud')
-              .map((feature) => ROLE_LABELS[feature] ?? feature)
-              .join(' · ');
+          {ROLES.map(({ role, label, description, strengths, icon: Icon }) => {
             return (
               <button
                 key={role}
                 onClick={() => handleSelect(role)}
-                className="flex w-full items-center gap-4 rounded-lg border border-border bg-bg-secondary p-4 text-left transition-colors hover:border-accent hover:bg-accent/5"
+                className="group flex w-full items-center gap-4 rounded-lg border border-border bg-bg-secondary p-4 text-left transition-colors hover:border-accent hover:bg-accent/5"
               >
+                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-bg-tertiary text-text-secondary group-hover:text-accent">
+                  <Icon size={18} aria-hidden="true" />
+                </span>
                 <div className="flex-1">
                   <div className="text-base font-semibold text-text-primary">{label}</div>
                   <div className="mt-0.5 text-sm text-text-tertiary">{description}</div>
-                  <div className="mt-2 text-xs text-text-tertiary">{features}</div>
+                  <div className="mt-1 text-xs text-text-muted">{strengths}</div>
                 </div>
-                <span className="text-text-tertiary">&rarr;</span>
+                <ArrowRight
+                  size={16}
+                  className="text-text-tertiary transition-transform group-hover:translate-x-0.5 group-hover:text-accent motion-reduce:transition-none"
+                  aria-hidden="true"
+                />
               </button>
             );
           })}

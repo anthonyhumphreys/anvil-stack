@@ -236,16 +236,9 @@ export function TurnWorkMessage({
         <button
           type="button"
           onClick={() => setExpanded((current) => !current)}
-          disabled={active}
-          className="flex min-h-10 w-full items-center gap-2.5 px-3 py-2 text-left text-xs transition-colors hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-default"
+          className="flex min-h-10 w-full items-center gap-2.5 px-3 py-2 text-left text-xs transition-colors hover:bg-bg-secondary/35 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
           aria-expanded={showDetails}
-          aria-label={
-            active
-              ? 'Live work details'
-              : showDetails
-                ? 'Collapse work details'
-                : 'Expand work details'
-          }
+          aria-label={showDetails ? 'Collapse work details' : 'Expand work details'}
         >
           <span className="shrink-0 text-text-tertiary">
             {showDetails ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
@@ -372,8 +365,8 @@ export function TurnActivityStatus({
   );
 }
 
-export function shouldShowTurnWorkDetails(active: boolean, expanded: boolean): boolean {
-  return active || expanded;
+export function shouldShowTurnWorkDetails(_active: boolean, expanded: boolean): boolean {
+  return expanded;
 }
 
 function WorkingDots({ compact = false }: { compact?: boolean }) {

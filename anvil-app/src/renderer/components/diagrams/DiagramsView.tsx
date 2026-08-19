@@ -7,6 +7,7 @@ import { DiagramViewer } from './DiagramViewer';
 import { DiagramChat } from './DiagramChat';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { RepoSelector } from '../shared/RepoSelector';
+import { EmptyState, ViewHeader } from '../layout/ViewScaffold';
 
 type ViewMode = 'gallery' | 'viewer';
 
@@ -135,18 +136,18 @@ export function DiagramsView() {
 
   return (
     <div className="flex h-full flex-col">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-border px-4 py-3">
-        <div className="flex items-center gap-3">
-          <GitFork size={20} className="text-accent" />
-          <h1 className="text-lg font-semibold text-text-primary">Diagrams</h1>
-        </div>
-        {selectedRepoId && selectedRepo && (
-          <span className="rounded bg-bg-tertiary px-2 py-0.5 text-xs text-text-secondary">
-            {selectedRepo.name}
-          </span>
-        )}
-      </div>
+      <ViewHeader
+        icon={GitFork}
+        title="Diagrams"
+        description="Browse, edit, and generate architecture diagrams alongside repository context."
+        meta={
+          selectedRepoId && selectedRepo ? (
+            <span className="rounded bg-bg-tertiary px-2 py-0.5 text-xs text-text-secondary">
+              {selectedRepo.name}
+            </span>
+          ) : undefined
+        }
+      />
 
       {!selectedRepoId ? (
         <div className="flex-1 overflow-auto p-6">
@@ -165,9 +166,12 @@ export function DiagramsView() {
           />
         </div>
       ) : !hasLocalPath ? (
-        <div className="flex flex-1 items-center justify-center text-sm text-text-secondary">
-          Diagrams require a locally cloned repository.
-        </div>
+        <EmptyState
+          icon={GitFork}
+          title="Local repository required"
+          description="Clone this repository locally before creating or editing diagrams."
+          className="flex-1"
+        />
       ) : (
         <div className="flex flex-1 flex-col overflow-hidden">
           {/* Top 2/3 — Gallery or Viewer */}

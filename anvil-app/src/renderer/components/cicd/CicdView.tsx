@@ -34,6 +34,7 @@ import type {
   CicdValidationFinding,
   RepoInfo,
 } from '../../../shared/types';
+import { EmptyState, ViewHeader } from '../layout/ViewScaffold';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { buildEditorUrl } from '../../utils/editor-link';
 
@@ -173,8 +174,13 @@ export function CicdView() {
     } else if (command.includes('template') || command.includes('new pipeline')) {
       setMode('templates');
       setAssistantNote('Opened templates. Pick a starter file and then tune the generated YAML.');
-    } else if (command.includes('error') || command.includes('warning') || command.includes('validate')) {
-      const finding = analysis.findings.find((item) => item.severity === 'error') ?? analysis.findings[0];
+    } else if (
+      command.includes('error') ||
+      command.includes('warning') ||
+      command.includes('validate')
+    ) {
+      const finding =
+        analysis.findings.find((item) => item.severity === 'error') ?? analysis.findings[0];
       setMode('atlas');
       if (finding?.nodeId) setSelectedNodeId(finding.nodeId);
       setAssistantNote(
@@ -189,7 +195,9 @@ export function CicdView() {
         setSelectedNodeId(match.id);
         setAssistantNote(`Focused ${match.label} in ${match.filePath}.`);
       } else {
-        setAssistantNote('No matching node. Try a workflow, stage, job, "gate", "template", or "validate".');
+        setAssistantNote(
+          'No matching node. Try a workflow, stage, job, "gate", "template", or "validate".',
+        );
       }
     }
     setChatInput('');
@@ -197,29 +205,25 @@ export function CicdView() {
 
   if (repos.length === 0) {
     return (
-      <div className="flex h-full items-center justify-center bg-bg-primary p-8 text-text-secondary">
-        Connect a repository before designing pipelines. The canvas needs something to judge.
-      </div>
+      <EmptyState
+        icon={Workflow}
+        title="Connect a repository for CI/CD"
+        description="Anvil needs pipeline files and repository context before it can map or validate delivery flows."
+        className="h-full"
+      />
     );
   }
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-bg-primary text-text-primary">
-      <header className="shrink-0 border-b border-border bg-bg-secondary/70 px-7 py-5">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <span className="flex h-11 w-11 items-center justify-center rounded-lg bg-accent/15 text-accent">
-              <Workflow size={22} />
-            </span>
-            <div>
-              <h2 className="text-2xl font-semibold tracking-tight">CI/CD Atlas</h2>
-              <p className="text-sm text-text-secondary">
-                Map, inspect, validate, and open Actions or Azure Pipelines from one workspace view
-              </p>
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
+      <ViewHeader
+        icon={Workflow}
+        title="CI/CD Atlas"
+        description="Map, inspect, and validate pipelines, then open their provider when action is needed."
+        actions={
+          <>
             <select
+              aria-label="Pipeline repository"
               value={selectedRepo?.id ?? ''}
               onChange={(event) => setSelectedRepoId(event.target.value)}
               className="rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary"
@@ -237,9 +241,9 @@ export function CicdView() {
               {loading ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
               Refresh
             </button>
-          </div>
-        </div>
-      </header>
+          </>
+        }
+      />
 
       <main className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_380px] gap-0 overflow-hidden">
         <section className="flex min-h-0 flex-col overflow-hidden">
@@ -295,13 +299,17 @@ export function CicdView() {
                 error={createError}
                 onCreate={createPipeline}
                 onPreview={(name) =>
-                  setAssistantNote(`Previewing ${name}. Create the starter file when the shape is right.`)
+                  setAssistantNote(
+                    `Previewing ${name}. Create the starter file when the shape is right.`,
+                  )
                 }
               />
             )}
-            {!error && !loading && analysis && analysis.files.length === 0 && mode !== 'templates' && (
-              <EmptyPipelineState onCreate={() => setMode('templates')} />
-            )}
+            {!error &&
+              !loading &&
+              analysis &&
+              analysis.files.length === 0 &&
+              mode !== 'templates' && <EmptyPipelineState onCreate={() => setMode('templates')} />}
           </div>
         </section>
 
@@ -342,7 +350,11 @@ function PipelineStats({
   loading: boolean;
 }) {
   const stats = [
-    { label: 'Workflows', value: analysis?.summary.workflowCount ?? 0, icon: <Workflow size={16} /> },
+    {
+      label: 'Workflows',
+      value: analysis?.summary.workflowCount ?? 0,
+      icon: <Workflow size={16} />,
+    },
     { label: 'Stages', value: analysis?.summary.stageCount ?? 0, icon: <GitFork size={16} /> },
     { label: 'Jobs', value: analysis?.summary.jobCount ?? 0, icon: <Boxes size={16} /> },
     { label: 'Gates', value: analysis?.summary.gateCount ?? 0, icon: <ShieldCheck size={16} /> },
@@ -350,18 +362,24 @@ function PipelineStats({
   ];
 
   return (
-    <div className="grid grid-cols-5 gap-3">
+    <dl className="grid overflow-hidden rounded-lg border border-border-subtle bg-bg-secondary sm:grid-cols-5 sm:divide-x sm:divide-border-subtle">
       {stats.map((stat) => (
-        <div key={stat.label} className="rounded-lg border border-border-subtle bg-bg-secondary px-4 py-3">
-          <div className="flex items-center justify-between text-text-tertiary">
-            {stat.icon}
-            {loading && stat.label === 'Workflows' ? <Loader2 size={14} className="animate-spin" /> : null}
-          </div>
-          <div className="mt-2 text-2xl font-semibold">{stat.value}</div>
-          <div className="text-xs uppercase tracking-wide text-text-tertiary">{stat.label}</div>
+        <div key={stat.label} className="px-4 py-3">
+          <dt className="flex items-center justify-between text-xs text-text-tertiary">
+            <span className="flex items-center gap-2">
+              {stat.icon}
+              {stat.label}
+            </span>
+            {loading && stat.label === 'Workflows' ? (
+              <Loader2 size={14} className="animate-spin" />
+            ) : null}
+          </dt>
+          <dd className="mt-1 text-lg font-semibold tabular-nums text-text-primary">
+            {stat.value}
+          </dd>
         </div>
       ))}
-    </div>
+    </dl>
   );
 }
 
@@ -379,7 +397,10 @@ function PipelineHealthStrip({
   return (
     <div className="flex items-center gap-2 text-xs text-text-secondary">
       <span className="inline-flex items-center gap-1 rounded-full border border-border-subtle bg-bg-secondary px-3 py-1.5">
-        <CircleDot size={13} className={analysis.findings.length ? 'text-warning' : 'text-success'} />
+        <CircleDot
+          size={13}
+          className={analysis.findings.length ? 'text-warning' : 'text-success'}
+        />
         {analysis.findings.length ? `${analysis.findings.length} findings` : 'clean validation'}
       </span>
       <span className="inline-flex items-center gap-1 rounded-full border border-border-subtle bg-bg-secondary px-3 py-1.5">
@@ -414,7 +435,8 @@ function PipelineAtlas({
   onSelectNode: (nodeId: string) => void;
 }) {
   const lanes = useMemo(() => buildPipelineLanes(analysis), [analysis]);
-  const selectedNode = analysis.nodes.find((node) => node.id === selectedNodeId) ?? lanes[0]?.workflow ?? null;
+  const selectedNode =
+    analysis.nodes.find((node) => node.id === selectedNodeId) ?? lanes[0]?.workflow ?? null;
   const drilldown = useMemo(
     () => (selectedNode ? buildDrilldown(selectedNode.id, analysis.nodes, analysis.edges) : []),
     [analysis.edges, analysis.nodes, selectedNode],
@@ -432,7 +454,8 @@ function PipelineAtlas({
               Pipeline map
             </div>
             <p className="mt-1 text-sm text-text-secondary">
-              High-level workflow lanes first; select a phase to drill into its jobs, gates, and steps.
+              High-level workflow lanes first; select a phase to drill into its jobs, gates, and
+              steps.
             </p>
           </div>
           <div className="rounded-lg border border-border-subtle bg-bg-primary px-3 py-2 text-xs text-text-tertiary">
@@ -488,11 +511,16 @@ function WorkflowLane({
           onClick={() => onSelectNode(lane.workflow.id)}
           className="flex min-w-0 items-center gap-3 text-left"
         >
-          <NodeBadge node={lane.workflow} findings={findings} selected={selectedNodeId === lane.workflow.id} />
+          <NodeBadge
+            node={lane.workflow}
+            findings={findings}
+            selected={selectedNodeId === lane.workflow.id}
+          />
           <div className="min-w-0">
             <div className="truncate text-sm font-semibold">{lane.workflow.label}</div>
             <div className="truncate text-xs text-text-tertiary">
-              {providerLabel(lane.workflow.provider)} / {lane.workflow.subtitle ?? lane.workflow.filePath}
+              {providerLabel(lane.workflow.provider)} /{' '}
+              {lane.workflow.subtitle ?? lane.workflow.filePath}
             </div>
           </div>
         </button>
@@ -559,7 +587,9 @@ function PhaseCard({
         </span>
       </div>
       <div className="mt-3 line-clamp-2 text-sm font-semibold">{node.label}</div>
-      <div className="mt-1 truncate text-xs text-text-tertiary">{node.subtitle ?? node.filePath}</div>
+      <div className="mt-1 truncate text-xs text-text-tertiary">
+        {node.subtitle ?? node.filePath}
+      </div>
       <div className="mt-3 flex items-center justify-between text-xs text-text-tertiary">
         <span>{statusLabel(node.status)}</span>
         {findingCount > 0 && <span className="text-warning">{findingCount} finding</span>}
@@ -614,7 +644,8 @@ function PhaseDrilldown({
           </div>
           <h3 className="mt-2 text-xl font-semibold">{selectedNode.label}</h3>
           <p className="mt-1 text-sm text-text-secondary">
-            {selectedNode.subtitle ?? `${providerLabel(selectedNode.provider)} ${selectedNode.type}`}
+            {selectedNode.subtitle ??
+              `${providerLabel(selectedNode.provider)} ${selectedNode.type}`}
           </p>
         </div>
         <NodeBadge node={selectedNode} findings={findings} selected />
@@ -623,7 +654,8 @@ function PhaseDrilldown({
       <div className="mt-5 grid gap-3">
         {drilldown.length === 0 ? (
           <div className="rounded-lg border border-dashed border-border-subtle bg-bg-primary p-5 text-sm text-text-secondary">
-            This phase has no discovered child steps. That may be valid, or the pipeline is hiding work in a template.
+            This phase has no discovered child steps. That may be valid, or the pipeline is hiding
+            work in a template.
           </div>
         ) : (
           drilldown.map((item, index) => {
@@ -828,16 +860,18 @@ function TemplateGallery({
           Component palette
         </div>
         <div className="flex flex-wrap gap-2">
-          {['build job', 'test job', 'security scan', 'environment gate', 'deploy job'].map((item) => (
-            <span
-              key={item}
-              draggable
-              className="cursor-grab rounded-full border border-border bg-bg-primary px-3 py-2 text-xs text-text-secondary active:cursor-grabbing"
-              title="Drag into a template preview before creating the starter file."
-            >
-              {item}
-            </span>
-          ))}
+          {['build job', 'test job', 'security scan', 'environment gate', 'deploy job'].map(
+            (item) => (
+              <span
+                key={item}
+                draggable
+                className="cursor-grab rounded-full border border-border bg-bg-primary px-3 py-2 text-xs text-text-secondary active:cursor-grabbing"
+                title="Drag into a template preview before creating the starter file."
+              >
+                {item}
+              </span>
+            ),
+          )}
         </div>
       </div>
       <div className="grid grid-cols-3 gap-4">
@@ -853,7 +887,9 @@ function TemplateGallery({
                 <span className="rounded-lg bg-accent/15 p-2 text-accent">
                   <Plus size={18} />
                 </span>
-                <span className="text-xs text-text-tertiary">{providerLabel(template.provider)}</span>
+                <span className="text-xs text-text-tertiary">
+                  {providerLabel(template.provider)}
+                </span>
               </div>
               <div className="mt-4 text-lg font-semibold">{template.name}</div>
               <div className="mt-1 text-sm text-text-secondary">{template.subtitle}</div>
@@ -943,12 +979,17 @@ function NodeInspector({
             </div>
           ) : (
             nodeFindings.map((finding) => (
-              <div key={finding.id} className="rounded-lg border border-border-subtle bg-bg-primary p-3">
+              <div
+                key={finding.id}
+                className="rounded-lg border border-border-subtle bg-bg-primary p-3"
+              >
                 <div className="flex items-center gap-2 text-sm font-semibold">
                   <FindingIcon finding={finding} />
                   {finding.severity}
                 </div>
-                <p className="mt-2 text-sm leading-relaxed text-text-secondary">{finding.message}</p>
+                <p className="mt-2 text-sm leading-relaxed text-text-secondary">
+                  {finding.message}
+                </p>
                 <button
                   onClick={() => onOpenFile(finding.filePath)}
                   className="mt-2 inline-flex max-w-full items-center gap-1 text-xs text-accent hover:underline"
@@ -972,7 +1013,8 @@ function EmptyPipelineState({ onCreate }: { onCreate?: () => void }) {
         <Rocket size={34} className="mx-auto text-accent" />
         <h3 className="mt-4 text-xl font-semibold">No pipeline files found</h3>
         <p className="mt-2 max-w-md text-sm leading-relaxed text-text-secondary">
-          Start from a template, then wire jobs, gates, and deployment stages without spelunking YAML by hand.
+          Start from a template, then wire jobs, gates, and deployment stages without spelunking
+          YAML by hand.
         </p>
         {onCreate && (
           <button
@@ -1024,7 +1066,11 @@ function NodeBadge({
 
 function NodeIcon({ node }: { node: CicdFlowNode }) {
   const className =
-    node.status === 'error' ? 'text-error' : node.status === 'warning' ? 'text-warning' : 'text-accent';
+    node.status === 'error'
+      ? 'text-error'
+      : node.status === 'warning'
+        ? 'text-warning'
+        : 'text-accent';
   if (node.type === 'workflow') return <Workflow size={18} className={className} />;
   if (node.type === 'gate') return <ShieldCheck size={18} className={className} />;
   if (node.type === 'stage') return <GitFork size={18} className={className} />;
@@ -1055,9 +1101,7 @@ function buildPipelineLanes(analysis: CicdPipelineAnalysis): PipelineLane[] {
       (node) => node.type === 'stage' || node.type === 'template',
     );
     const phases =
-      hasExplicitStages || workflow.provider === 'azure-pipelines'
-        ? directChildren
-        : depthOneNodes;
+      hasExplicitStages || workflow.provider === 'azure-pipelines' ? directChildren : depthOneNodes;
 
     return {
       workflow,
