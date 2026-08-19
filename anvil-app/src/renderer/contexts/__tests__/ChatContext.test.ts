@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ChatThread } from '../../../shared/types';
 import {
   chatMessagesToEntries,
+  planIntentToSnapshot,
   shouldSuppressPreparedChatBootstrap,
   threadBelongsToChatList,
   threadBelongsToWorkspace,
@@ -111,6 +112,64 @@ describe('chatMessagesToEntries', () => {
     ).toEqual([{ kind: 'assistant', content: 'Existing flattened output', id: 'legacy-1' }]);
   });
 
+  it('restores the latest intent revision and removes resolved questions', () => {
+    const question = {
+      protocolVersion: 1 as const,
+      id: 'question-1',
+      kind: 'question' as const,
+      revision: 1,
+      scope: { threadId: 'thread-1' },
+      lifecycle: 'pending' as const,
+      presentation: { collapsed: false, hidden: false },
+      payload: {
+        questions: [
+          {
+            id: 'target',
+            kind: 'single_choice' as const,
+            question: 'Where should this ship?',
+            required: true,
+            allowCancel: false,
+            options: [{ id: 'preview', label: 'Preview', value: 'preview' }],
+          },
+        ],
+      },
+      createdAt: '2026-08-19T10:00:00.000Z',
+      updatedAt: '2026-08-19T10:00:00.000Z',
+    };
+    const entries = chatMessagesToEntries([
+      {
+        id: 'question-created',
+        role: 'system',
+        content: 'Question',
+        timestamp: question.createdAt,
+        event: { type: 'agent_ui_intent', agentUIIntent: question },
+      },
+      {
+        id: 'question-updated',
+        role: 'system',
+        content: 'Question updated',
+        timestamp: question.createdAt,
+        event: {
+          type: 'agent_ui_intent',
+          agentUIIntent: {
+            ...question,
+            revision: 2,
+            presentation: { collapsed: true, hidden: false },
+          },
+        },
+      },
+      {
+        id: 'question-resolved',
+        role: 'system',
+        content: 'Question resolved',
+        timestamp: question.createdAt,
+        event: { type: 'agent_ui_intent_resolved', agentUIIntentId: question.id },
+      },
+    ]);
+
+    expect(entries).toEqual([]);
+  });
+
   it('keeps subagent work at its original chronological position while updating its lifecycle', () => {
     const entries = chatMessagesToEntries([
       {
@@ -173,6 +232,41 @@ describe('chatMessagesToEntries', () => {
       },
     });
     expect(entries[2]).toMatchObject({ kind: 'event', event: { type: 'file_read' } });
+  });
+});
+
+describe('planIntentToSnapshot', () => {
+  it('keeps legacy prompt context compatible with richer plan statuses', () => {
+    expect(
+      planIntentToSnapshot({
+        protocolVersion: 1,
+        id: 'plan-1',
+        kind: 'plan',
+        revision: 1,
+        scope: { threadId: 'thread-1' },
+        lifecycle: 'presented',
+        presentation: { collapsed: false, hidden: false },
+        payload: {
+          planId: 'plan-1',
+          title: 'Plan',
+          lifecycle: 'active',
+          phases: [],
+          steps: [
+            { id: 'todo', title: 'Todo', status: 'todo' },
+            { id: 'blocked', title: 'Blocked', status: 'blocked' },
+            { id: 'done', title: 'Done', status: 'done' },
+          ],
+        },
+        createdAt: '2026-08-19T10:00:00.000Z',
+        updatedAt: '2026-08-19T10:01:00.000Z',
+      }),
+    ).toMatchObject({
+      steps: [
+        { step: 'Todo', status: 'pending' },
+        { step: 'Blocked', status: 'in_progress' },
+        { step: 'Done', status: 'completed' },
+      ],
+    });
   });
 });
 

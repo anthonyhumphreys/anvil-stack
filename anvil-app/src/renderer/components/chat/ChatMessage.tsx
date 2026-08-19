@@ -34,6 +34,7 @@ import { buildEditorUrl } from '../../utils/editor-link';
 import { copyTextToClipboard } from '../../utils/clipboard';
 import { isAbsoluteEditorPath } from '../../../shared/editor-file-link';
 import type { ChatTurnWorkItem } from './chat-turns';
+import { AgentUIIntentSurface } from './AgentUIIntentSurface';
 
 interface ChatEventProps {
   event: CodexEvent & { sessionId?: string };
@@ -67,6 +68,10 @@ export function ChatEventRenderer({ event }: ChatEventProps) {
       return <ThreadStatusEvent event={event} />;
     case 'plan_update':
       return event.plan ? <PlanUpdateEvent plan={event.plan} /> : null;
+    case 'agent_ui_intent':
+      return event.agentUIIntent ? <AgentUIIntentSurface intent={event.agentUIIntent} /> : null;
+    case 'agent_ui_intent_resolved':
+      return null;
     case 'goal_update':
       return event.goal ? <GoalUpdateEvent goal={event.goal} /> : null;
     case 'goal_cleared':
@@ -199,12 +204,14 @@ export function TurnWorkMessage({
   const activityEvents = items
     .filter((item): item is Extract<ChatTurnWorkItem, { kind: 'event' }> => item.kind === 'event')
     .map((item) => item.event);
-  const blockingItems = items.filter(
+  const surfaceItems = items.filter(
     (item): item is Extract<ChatTurnWorkItem, { kind: 'event' }> =>
       item.kind === 'event' &&
-      (item.event.type === 'approval_request' || item.event.type === 'input_request'),
+      (item.event.type === 'approval_request' ||
+        item.event.type === 'input_request' ||
+        item.event.type === 'agent_ui_intent'),
   );
-  const blockingSourceIndexes = new Set(blockingItems.map((item) => item.sourceIndex));
+  const surfaceSourceIndexes = new Set(surfaceItems.map((item) => item.sourceIndex));
   const failedCount = activityEvents.filter(
     (event) =>
       event.type === 'error' ||
@@ -260,9 +267,9 @@ export function TurnWorkMessage({
           )}
         </button>
 
-        {blockingItems.length > 0 && (
-          <div className="space-y-2 border-t border-warning/20 px-3 py-3">
-            {blockingItems.map((item, index) => (
+        {surfaceItems.length > 0 && (
+          <div className="space-y-2 border-t border-border-subtle px-3 py-3">
+            {surfaceItems.map((item, index) => (
               <ChatEventRenderer
                 key={buildActivityEventKey(item.event, index)}
                 event={item.event}
@@ -274,7 +281,7 @@ export function TurnWorkMessage({
         {showDetails && (
           <div className="space-y-3 border-t border-border-subtle/70 px-3 py-3">
             {items.map((item, index) => {
-              if (blockingSourceIndexes.has(item.sourceIndex)) return null;
+              if (surfaceSourceIndexes.has(item.sourceIndex)) return null;
               if (item.kind === 'progress') {
                 return (
                   <div key={`progress-${item.sourceIndex}`} className="pr-2">
@@ -401,6 +408,12 @@ function describeWorkItem(item: ChatTurnWorkItem | undefined): string {
       return 'Coordinating agent work';
     case 'plan_update':
       return 'Updating the plan';
+    case 'agent_ui_intent':
+      return item.event.agentUIIntent?.kind === 'question'
+        ? 'Waiting for your input'
+        : 'Updating the plan';
+    case 'agent_ui_intent_resolved':
+      return 'Resuming after input';
     case 'goal_update':
     case 'goal_cleared':
       return 'Updating the goal';
@@ -1636,6 +1649,7 @@ function summarizeActivityEvents(events: Array<CodexEvent & { sessionId?: string
     summarizeActivityCount(events, 'input_request', 'input request'),
     summarizeActivityCount(events, 'subagent_update', 'agent update'),
     summarizeActivityCount(events, 'plan_update', 'plan update'),
+    summarizeActivityCount(events, 'agent_ui_intent', 'structured interface'),
     summarizeActivityCount(events, 'goal_update', 'goal update'),
     summarizeActivityCount(events, 'goal_cleared', 'goal clear'),
   ].filter((value): value is string => Boolean(value));
@@ -1682,6 +1696,10 @@ function formatActivityPreview(event: CodexEvent & { sessionId?: string }): stri
         : 'Waiting for approval';
     case 'plan_update':
       return event.plan ? `Plan: ${event.plan.steps.length} steps` : 'Plan update';
+    case 'agent_ui_intent':
+      return event.agentUIIntent?.kind === 'plan'
+        ? `Plan: ${event.agentUIIntent.payload.steps.length} steps`
+        : 'Input requested';
     case 'goal_update':
       return event.goal ? `Goal: ${event.goal.objective}` : 'Goal update';
     case 'goal_cleared':
@@ -1702,6 +1720,8 @@ function buildActivityEventKey(event: CodexEvent & { sessionId?: string }, index
     event.subagent?.id,
     event.protocolThreadId,
     event.plan?.updatedAt,
+    event.agentUIIntent?.id,
+    event.agentUIIntent?.revision,
     event.goal?.updatedAt,
     event.status,
     String(index),

@@ -5,6 +5,11 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { app, BrowserWindow } from 'electron';
 import type {
+  AgentUIPlanPatch,
+  AgentUIQuestionIntent,
+  AgentUIQuestionResolution,
+} from '../../shared/agent-ui-intents.js';
+import type {
   AgentProvider,
   ChatAttachment,
   ChatSendOptions,
@@ -33,6 +38,23 @@ import { emitCompanionEvent } from './companion-events.service.js';
 import { normaliseCodexModel, normaliseReasoningEffort } from '../../shared/codex-models.js';
 import { notifyChatActivity, type ChatActivityKind } from './notification.service.js';
 import { updateChatThreadAttention } from './chat-persistence.service.js';
+import {
+  dismissAgentUIIntent,
+  expireAgentUIIntentsForSession,
+  expireAgentUIIntentForRequest,
+  getAgentUIIntent,
+  getAgentUIIntentRecord,
+  patchAgentUIPlan,
+  recordAgentUIQuestionResolution,
+  updateAgentUIIntentPresentation,
+  restoreAgentUIIntent,
+  upsertAgentUIIntent,
+  validateAgentUIQuestionResolution,
+} from './agent-ui-intent.service.js';
+import {
+  adaptCodexEventToAgentUIIntent,
+  codexResponseFromAgentUIResolution,
+} from './codex-agent-ui.adapter.js';
 
 interface ManagedSession {
   id: string;
@@ -200,6 +222,9 @@ export async function startSession(
 
   proc.on('exit', (code, signal) => {
     console.log(`[Codex:${id.slice(0, 8)}] exited with code=${code} signal=${signal}`);
+    for (const intent of expireAgentUIIntentsForSession(id)) {
+      broadcastAgentUIIntent(intent, id);
+    }
     if (session.stopping) {
       setSessionThreadAttention(session, 'idle');
       return;
@@ -557,6 +582,91 @@ export function resolveInputRequest(
   setSessionThreadAttention(session, 'working');
 }
 
+export function resolveAgentUIQuestion(
+  intentId: string,
+  resolution: AgentUIQuestionResolution,
+): AgentUIQuestionIntent {
+  const record = getAgentUIIntentRecord(intentId);
+  if (!record || record.intent.kind !== 'question') {
+    throw new Error(`Question intent not found: ${intentId}`);
+  }
+  validateAgentUIQuestionResolution(record.intent, resolution);
+  const binding = record.binding;
+  if (!binding?.sessionId || binding.requestId === undefined || !binding.responseKind) {
+    throw new Error('Question is no longer connected to an active provider request.');
+  }
+  const session = sessions.get(binding.sessionId);
+  if (!session) throw new Error('The provider session is no longer active.');
+  const requestKey = buildPendingRequestKey(binding.sessionId, binding.requestId);
+  const pending = pendingServerRequests.get(requestKey);
+  if (!pending || pending.kind !== binding.responseKind) {
+    const current = getAgentUIIntent(intentId);
+    if (current?.kind === 'question' && current.lifecycle === 'resolved') return current;
+    throw new Error('Question is no longer awaiting an answer.');
+  }
+
+  const response = codexResponseFromAgentUIResolution(
+    record.intent,
+    resolution,
+    binding.responseKind,
+  );
+  sendCodexJsonRpcResult(session.process, binding.requestId, buildInputResponse(response));
+  pendingServerRequests.delete(requestKey);
+  const resolved = recordAgentUIQuestionResolution(record.intent, resolution);
+  setSessionThreadAttention(session, 'working');
+  broadcastEvent(session.id, { type: 'agent_ui_intent_resolved', agentUIIntentId: intentId });
+  return resolved;
+}
+
+export async function patchAgentUIPlanAndNotify(
+  intentId: string,
+  patch: AgentUIPlanPatch,
+): Promise<ReturnType<typeof patchAgentUIPlan>> {
+  const updated = patchAgentUIPlan(intentId, patch);
+  const record = getAgentUIIntentRecord(intentId);
+  const session = record?.binding?.sessionId ? sessions.get(record.binding.sessionId) : undefined;
+  if (session) {
+    const payload = JSON.stringify({
+      type: 'anvil.agent_ui.plan_patch',
+      protocolVersion: updated.protocolVersion,
+      intentId,
+      patch,
+      plan: updated.payload,
+    });
+    if (session.status === 'busy' && session.turnId) {
+      await steerTurn(session.id, payload);
+    } else if (session.status === 'ready') {
+      await sendMessage(session.id, payload);
+    }
+  }
+  broadcastAgentUIIntent(updated, record?.binding?.sessionId);
+  return updated;
+}
+
+export function updateAgentUIIntentPresentationAndBroadcast(
+  intentId: string,
+  patch: Parameters<typeof updateAgentUIIntentPresentation>[1],
+) {
+  const updated = updateAgentUIIntentPresentation(intentId, patch);
+  const record = getAgentUIIntentRecord(intentId);
+  broadcastAgentUIIntent(updated, record?.binding?.sessionId);
+  return updated;
+}
+
+export function dismissAgentUIIntentAndBroadcast(intentId: string) {
+  const dismissed = dismissAgentUIIntent(intentId);
+  const record = getAgentUIIntentRecord(intentId);
+  broadcastAgentUIIntent(dismissed, record?.binding?.sessionId);
+  return dismissed;
+}
+
+export function restoreAgentUIIntentAndBroadcast(intentId: string) {
+  const restored = restoreAgentUIIntent(intentId);
+  const record = getAgentUIIntentRecord(intentId);
+  broadcastAgentUIIntent(restored, record?.binding?.sessionId);
+  return restored;
+}
+
 export function buildApprovalResponse(
   kind: 'command' | 'file_change' | 'permissions',
   permissions: Record<string, unknown> | undefined,
@@ -687,9 +797,30 @@ function handleServerMessage(session: ManagedSession, line: string): void {
           });
         }
       }
+      let deliveredEvent = event;
+      if (session.appThreadId) {
+        const currentPlan = getAgentUIIntent(`plan:${session.appThreadId}`);
+        const adapted = adaptCodexEventToAgentUIIntent(
+          event,
+          {
+            appThreadId: session.appThreadId,
+            workspaceId: session.workspaceId,
+            providerThreadId: session.threadId ?? undefined,
+            sessionId: session.id,
+          },
+          currentPlan?.kind === 'plan' ? currentPlan : null,
+        );
+        if (adapted) {
+          const intent = upsertAgentUIIntent(adapted);
+          deliveredEvent = { type: 'agent_ui_intent', agentUIIntent: intent };
+        }
+      }
       if (event.type === 'approval_request') {
         setSessionThreadAttention(session, 'approval');
-      } else if (event.type === 'input_request') {
+      } else if (
+        deliveredEvent.type === 'agent_ui_intent' &&
+        deliveredEvent.agentUIIntent?.kind === 'question'
+      ) {
         setSessionThreadAttention(session, 'input');
       } else if (event.type === 'thread_status') {
         if (event.threadActiveFlags?.includes('waitingOnApproval')) {
@@ -713,8 +844,8 @@ function handleServerMessage(session: ManagedSession, line: string): void {
         session.status = 'busy';
         emitCompanionEvent('sessions');
       }
-      broadcastEvent(session.id, event);
-      notifyForChatEvent(session, event);
+      broadcastEvent(session.id, deliveredEvent);
+      notifyForChatEvent(session, deliveredEvent);
     },
     onLog: (message) => {
       console.log(`[Codex:${session.id.slice(0, 8)}] ${message}`);
@@ -723,6 +854,8 @@ function handleServerMessage(session: ManagedSession, line: string): void {
       const requestKey = buildPendingRequestKey(session.id, requestId);
       pendingServerRequests.delete(requestKey);
       pendingApprovalDetails.delete(requestKey);
+      const expiredIntent = expireAgentUIIntentForRequest(session.id, requestId);
+      if (expiredIntent) broadcastAgentUIIntent(expiredIntent, session.id);
       if (session.status === 'busy') {
         setSessionThreadAttention(session, 'working');
       }
@@ -752,6 +885,8 @@ function notifyForChatEvent(session: ManagedSession, event: CodexEvent): void {
   let kind: ChatActivityKind | null = null;
   if (event.type === 'approval_request') kind = 'approval';
   else if (event.type === 'input_request') kind = 'input';
+  else if (event.type === 'agent_ui_intent' && event.agentUIIntent?.kind === 'question')
+    kind = 'input';
   else if (event.type === 'status' && event.status === 'complete') kind = 'complete';
 
   if (!kind) return;
@@ -772,6 +907,23 @@ function broadcastEvent(sessionId: string, event: CodexEvent): void {
       sessionId,
       appThreadId: session?.appThreadId,
       ...event,
+    });
+  }
+}
+
+function broadcastAgentUIIntent(
+  intent: NonNullable<CodexEvent['agentUIIntent']>,
+  sessionId?: string,
+): void {
+  if (sessionId && sessions.has(sessionId)) {
+    broadcastEvent(sessionId, { type: 'agent_ui_intent', agentUIIntent: intent });
+    return;
+  }
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send('chat:event', {
+      appThreadId: intent.scope.threadId,
+      type: 'agent_ui_intent',
+      agentUIIntent: intent,
     });
   }
 }
