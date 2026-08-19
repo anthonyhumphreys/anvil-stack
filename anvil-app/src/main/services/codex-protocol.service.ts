@@ -127,7 +127,7 @@ export function handleCodexServerLine(
     }
     if (result?.stopReason) {
       callbacks.onEvent?.({ type: 'status', status: 'complete' });
-      callbacks.onTurnCompleted?.();
+      callbacks.onTurnCompleted?.('completed');
     }
     return;
   }
@@ -153,11 +153,12 @@ export function handleCodexServerLine(
               return [
                 {
                   id: `cursor-plan-${index}`,
-                  text: entry.content,
+                  step: entry.content,
                   status: parseAcpPlanStatus(entry.status),
                 },
               ];
             }),
+            updatedAt: new Date().toISOString(),
           },
         });
       } else if (kind === 'tool_call' || kind === 'tool_call_update') {
@@ -179,6 +180,24 @@ export function handleCodexServerLine(
         approvalKind: 'permissions',
         approvalReason: typeof toolCall?.title === 'string' ? toolCall.title : undefined,
         approvalPermissions: { options: Array.isArray(params?.options) ? params.options : [] },
+      });
+      break;
+    }
+
+    case 'elicitation/create': {
+      const params = msg.params as Record<string, unknown>;
+      callbacks.onEvent?.({
+        type: 'input_request',
+        inputRequestId: requestId,
+        protocolThreadId: typeof params?.sessionId === 'string' ? params.sessionId : undefined,
+        inputRequest: {
+          kind: 'mcp_elicitation',
+          serverName: 'Cursor',
+          message: typeof params?.message === 'string' ? params.message : undefined,
+          mode: params?.mode === 'form' || params?.mode === 'url' ? params.mode : undefined,
+          requestedSchema: params?.requestedSchema,
+          url: typeof params?.url === 'string' ? params.url : undefined,
+        },
       });
       break;
     }

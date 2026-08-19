@@ -527,9 +527,54 @@ describe('codex protocol service', () => {
         type: 'plan_update',
         plan: {
           steps: [
-            { id: 'cursor-plan-0', text: 'Inspect Cursor ACP output', status: 'in_progress' },
-            { id: 'cursor-plan-1', text: 'Report result', status: 'pending' },
+            { id: 'cursor-plan-0', step: 'Inspect Cursor ACP output', status: 'in_progress' },
+            { id: 'cursor-plan-1', step: 'Report result', status: 'pending' },
           ],
+          updatedAt: expect.any(String),
+        },
+      },
+    ]);
+  });
+
+  it('normalises Cursor ACP form elicitation into a structured input request', () => {
+    const events = collectEvents(createState(), [
+      {
+        jsonrpc: '2.0',
+        id: 17,
+        method: 'elicitation/create',
+        params: {
+          sessionId: 'cursor-session-1',
+          mode: 'form',
+          message: 'Select the deployment target.',
+          requestedSchema: {
+            type: 'object',
+            required: ['target'],
+            properties: {
+              target: { type: 'string', enum: ['preview', 'production'] },
+            },
+          },
+        },
+      },
+    ]);
+
+    expect(events).toEqual([
+      {
+        type: 'input_request',
+        inputRequestId: 17,
+        protocolThreadId: 'cursor-session-1',
+        inputRequest: {
+          kind: 'mcp_elicitation',
+          serverName: 'Cursor',
+          message: 'Select the deployment target.',
+          mode: 'form',
+          requestedSchema: {
+            type: 'object',
+            required: ['target'],
+            properties: {
+              target: { type: 'string', enum: ['preview', 'production'] },
+            },
+          },
+          url: undefined,
         },
       },
     ]);
