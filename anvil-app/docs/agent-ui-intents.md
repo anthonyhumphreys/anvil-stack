@@ -107,15 +107,26 @@ Artifact annotations are stored separately in `chat_artifact_annotations` and ca
 artifact. Canvas users can attach a note to an artifact, optionally capture the current text selection,
 resolve/reopen or delete the note, and prefill chat with the artifact and annotation context.
 
-## Codex adapter
+## Provider adapters
 
-`codex-agent-ui.adapter.ts` translates Codex `plan_update` and `input_request` events into core intents.
-It also maps supported MCP JSON Schema fields into native questions and converts structured resolutions
-back into Codex user-input or MCP elicitation responses. Unsupported MCP schemas continue through the
-existing fallback instead of being guessed at in React.
+`codex-agent-ui.adapter.ts` is the adapter boundary for normalized events emitted by the current Codex
+and Cursor transports. It translates `plan_update` and `input_request` events into core intents, maps
+supported JSON Schema fields into native questions, and converts structured resolutions back into the
+provider response shape. Provider identity is carried in the binding rather than assumed by the UI.
 
 Codex plan snapshots do not supply stable step IDs, so the adapter reuses IDs by prior title and index.
 The UI never parses Codex prose or Codex-specific labels.
+
+Cursor uses Agent Client Protocol (ACP) v1. Anvil advertises form elicitation support, translates
+`elicitation/create` requests into Question intents, and returns the structured accept, decline, or
+cancel response to the waiting JSON-RPC request. Cursor `session/update` plan entries become Plan
+intents through the same provider-neutral path. Permission requests remain on the dedicated runtime
+approval surface.
+
+ACP does not provide Codex's active-turn steering method. If a user edits a plan while a Cursor prompt
+is running, Anvil queues the patch and sends it as the next `session/prompt` after the current prompt
+returns its stop reason. Ready Cursor sessions receive plan feedback immediately. This preserves edits
+without issuing overlapping ACP prompts.
 
 ## Adding another surface
 

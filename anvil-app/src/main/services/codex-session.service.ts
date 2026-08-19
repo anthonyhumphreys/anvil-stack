@@ -52,8 +52,8 @@ import {
   validateAgentUIQuestionResolution,
 } from './agent-ui-intent.service.js';
 import {
-  adaptCodexEventToAgentUIIntent,
-  codexResponseFromAgentUIResolution,
+  adaptProviderEventToAgentUIIntent,
+  providerResponseFromAgentUIResolution,
 } from './codex-agent-ui.adapter.js';
 
 interface ManagedSession {
@@ -85,7 +85,7 @@ type CodexUserInput =
   | { type: 'localImage'; path: string }
   | { type: 'mention'; name: string; path: string };
 
-export interface CodexTurnSteerParams {
+export interface CodexTurnSteerParams extends Record<string, unknown> {
   threadId: string;
   expectedTurnId: string;
   input: CodexUserInput[];
@@ -112,6 +112,7 @@ type PendingServerRequest =
 
 const pendingServerRequests = new Map<string, PendingServerRequest>();
 const pendingApprovalDetails = new Map<string, MobileApprovalRequest>();
+const pendingPlanFeedback = new Map<string, string[]>();
 
 export function resolveSessionModel(provider: AgentProvider, configuredModel: string): string {
   return provider === 'cursor'
@@ -254,11 +255,7 @@ export async function startSession(
   if (provider === 'cursor') {
     sendCodexJsonRpc(proc, 'initialize', {
       protocolVersion: 1,
-      clientCapabilities: {
-        fs: { readTextFile: false, writeTextFile: false },
-        terminal: false,
-        _meta: { parameterizedModelPicker: true },
-      },
+      clientCapabilities: buildCursorClientCapabilities(),
       clientInfo: { name: 'anvil', version: app.getVersion() },
     });
     sendCodexJsonRpc(proc, 'authenticate', { methodId: 'cursor_login' });
@@ -470,6 +467,7 @@ export function stopSession(sessionId: string): void {
     /* already dead */
   }
   sessions.delete(sessionId);
+  pendingPlanFeedback.delete(sessionId);
   for (const [requestKey, request] of pendingServerRequests) {
     if (request.sessionId === sessionId) {
       pendingServerRequests.delete(requestKey);
@@ -605,7 +603,7 @@ export function resolveAgentUIQuestion(
     throw new Error('Question is no longer awaiting an answer.');
   }
 
-  const response = codexResponseFromAgentUIResolution(
+  const response = providerResponseFromAgentUIResolution(
     record.intent,
     resolution,
     binding.responseKind,
@@ -633,10 +631,15 @@ export async function patchAgentUIPlanAndNotify(
       patch,
       plan: updated.payload,
     });
-    if (session.status === 'busy' && session.turnId) {
+    const delivery = resolvePlanFeedbackDelivery(session.provider, session.status, session.turnId);
+    if (delivery === 'steer') {
       await steerTurn(session.id, payload);
-    } else if (session.status === 'ready') {
+    } else if (delivery === 'prompt') {
       await sendMessage(session.id, payload);
+    } else if (delivery === 'queue') {
+      const queued = pendingPlanFeedback.get(session.id) ?? [];
+      queued.push(payload);
+      pendingPlanFeedback.set(session.id, queued);
     }
   }
   broadcastAgentUIIntent(updated, record?.binding?.sessionId);
@@ -706,6 +709,26 @@ export function buildInputResponse(response: CodexInputResponse): Record<string,
   };
 }
 
+export function buildCursorClientCapabilities(): Record<string, unknown> {
+  return {
+    fs: { readTextFile: false, writeTextFile: false },
+    terminal: false,
+    elicitation: { form: {} },
+    _meta: { parameterizedModelPicker: true },
+  };
+}
+
+export function resolvePlanFeedbackDelivery(
+  provider: ManagedSession['provider'],
+  status: ManagedSession['status'],
+  turnId: string | null,
+): 'steer' | 'prompt' | 'queue' | 'none' {
+  if (status === 'ready') return 'prompt';
+  if (status !== 'busy') return 'none';
+  if (provider === 'cursor') return 'queue';
+  return turnId ? 'steer' : 'none';
+}
+
 // --- Internal helpers ---
 
 export function resolveSessionCwd(
@@ -749,6 +772,7 @@ function handleServerMessage(session: ManagedSession, line: string): void {
         session,
         status === 'failed' ? 'failed' : status === 'interrupted' ? 'idle' : 'complete',
       );
+      void flushPendingPlanFeedback(session);
     },
     onTurnIdChanged: (turnId) => {
       session.turnId = turnId;
@@ -800,13 +824,14 @@ function handleServerMessage(session: ManagedSession, line: string): void {
       let deliveredEvent = event;
       if (session.appThreadId) {
         const currentPlan = getAgentUIIntent(`plan:${session.appThreadId}`);
-        const adapted = adaptCodexEventToAgentUIIntent(
+        const adapted = adaptProviderEventToAgentUIIntent(
           event,
           {
             appThreadId: session.appThreadId,
             workspaceId: session.workspaceId,
             providerThreadId: session.threadId ?? undefined,
             sessionId: session.id,
+            provider: session.provider,
           },
           currentPlan?.kind === 'plan' ? currentPlan : null,
         );
@@ -862,6 +887,24 @@ function handleServerMessage(session: ManagedSession, line: string): void {
       emitCompanionEvent('approvals');
     },
   });
+}
+
+async function flushPendingPlanFeedback(session: ManagedSession): Promise<void> {
+  const queued = pendingPlanFeedback.get(session.id);
+  if (!queued?.length || session.status !== 'ready') return;
+  pendingPlanFeedback.delete(session.id);
+  try {
+    await sendMessage(session.id, queued.join('\n'));
+  } catch (error) {
+    pendingPlanFeedback.set(session.id, [
+      ...queued,
+      ...(pendingPlanFeedback.get(session.id) ?? []),
+    ]);
+    console.warn(
+      `[Codex:${session.id.slice(0, 8)}] Failed to deliver queued plan feedback:`,
+      error,
+    );
+  }
 }
 
 function setSessionThreadAttention(

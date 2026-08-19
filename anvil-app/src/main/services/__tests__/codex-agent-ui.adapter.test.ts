@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentUIPlanIntent, AgentUIQuestionIntent } from '../../../shared/agent-ui-intents.js';
 import {
-  adaptCodexEventToAgentUIIntent,
-  codexResponseFromAgentUIResolution,
+  adaptProviderEventToAgentUIIntent,
+  providerResponseFromAgentUIResolution,
 } from '../codex-agent-ui.adapter.js';
 
 const context = {
@@ -10,11 +10,12 @@ const context = {
   workspaceId: 'workspace-1',
   providerThreadId: 'provider-thread-1',
   sessionId: 'session-1',
+  provider: 'codex' as const,
 };
 
-describe('Codex Agent UI adapter', () => {
+describe('agent provider UI adapter', () => {
   it('creates a provider-neutral plan and preserves stable step ids across updates', () => {
-    const created = adaptCodexEventToAgentUIIntent(
+    const created = adaptProviderEventToAgentUIIntent(
       {
         type: 'plan_update',
         plan: {
@@ -39,7 +40,7 @@ describe('Codex Agent UI adapter', () => {
       ],
     });
 
-    const updated = adaptCodexEventToAgentUIIntent(
+    const updated = adaptProviderEventToAgentUIIntent(
       {
         type: 'plan_update',
         plan: {
@@ -62,7 +63,7 @@ describe('Codex Agent UI adapter', () => {
   });
 
   it('maps Codex choices and free text into explicit question kinds and values', () => {
-    const record = adaptCodexEventToAgentUIIntent(
+    const record = adaptProviderEventToAgentUIIntent(
       {
         type: 'input_request',
         inputRequestId: 'question-1',
@@ -113,7 +114,7 @@ describe('Codex Agent UI adapter', () => {
   });
 
   it('turns JSON-schema MCP forms into native questions', () => {
-    const intent = adaptCodexEventToAgentUIIntent(
+    const intent = adaptProviderEventToAgentUIIntent(
       {
         type: 'input_request',
         inputRequestId: 'elicitation-1',
@@ -153,6 +154,51 @@ describe('Codex Agent UI adapter', () => {
       { id: 'checks', kind: 'multiple_choice', defaultValue: ['Test'] },
       { id: 'note', kind: 'free_text', required: false, allowCancel: true },
     ]);
+  });
+
+  it('binds Cursor ACP plans and form elicitations to the Cursor session', () => {
+    const cursorContext = { ...context, provider: 'cursor' as const };
+    const plan = adaptProviderEventToAgentUIIntent(
+      {
+        type: 'plan_update',
+        plan: {
+          steps: [{ step: 'Inspect ACP', status: 'in_progress' }],
+          updatedAt: '2026-08-19T10:02:00.000Z',
+        },
+      },
+      cursorContext,
+    );
+    const question = adaptProviderEventToAgentUIIntent(
+      {
+        type: 'input_request',
+        inputRequestId: 7,
+        inputRequest: {
+          kind: 'mcp_elicitation',
+          message: 'Choose a target.',
+          mode: 'form',
+          requestedSchema: {
+            type: 'object',
+            required: ['target'],
+            properties: {
+              target: { title: 'Target', type: 'string', enum: ['Preview', 'Production'] },
+            },
+          },
+        },
+      },
+      cursorContext,
+    );
+
+    expect(plan?.binding).toEqual({ provider: 'cursor', sessionId: 'session-1' });
+    expect(question?.binding).toEqual({
+      provider: 'cursor',
+      sessionId: 'session-1',
+      requestId: 7,
+      responseKind: 'mcp_elicitation',
+    });
+    expect(question?.intent).toMatchObject({
+      kind: 'question',
+      payload: { questions: [{ id: 'target', kind: 'single_choice' }] },
+    });
   });
 
   it('returns structured single, multi, text, and approval answers to providers', () => {
@@ -202,7 +248,7 @@ describe('Codex Agent UI adapter', () => {
       answeredAt: '2026-08-19T10:01:00.000Z',
     };
 
-    expect(codexResponseFromAgentUIResolution(intent, resolution, 'user_input')).toEqual({
+    expect(providerResponseFromAgentUIResolution(intent, resolution, 'user_input')).toEqual({
       kind: 'user_input',
       answers: {
         single: ['one'],
@@ -211,7 +257,7 @@ describe('Codex Agent UI adapter', () => {
         approval: ['yes'],
       },
     });
-    expect(codexResponseFromAgentUIResolution(intent, resolution, 'mcp_elicitation')).toEqual({
+    expect(providerResponseFromAgentUIResolution(intent, resolution, 'mcp_elicitation')).toEqual({
       kind: 'mcp_elicitation',
       action: 'accept',
       content: resolution.answers,

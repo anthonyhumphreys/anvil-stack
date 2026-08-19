@@ -14,32 +14,33 @@ import type {
   CodexInputResponse,
 } from '../../shared/types.js';
 
-interface CodexAgentUIContext {
+interface AgentProviderUIContext {
   appThreadId: string;
   workspaceId?: string;
   providerThreadId?: string;
   sessionId: string;
+  provider: 'codex' | 'cursor';
 }
 
-export function adaptCodexEventToAgentUIIntent(
+export function adaptProviderEventToAgentUIIntent(
   event: CodexEvent,
-  context: CodexAgentUIContext,
+  context: AgentProviderUIContext,
   current?: AgentUIPlanIntent | null,
 ): AgentUIIntentRecord | null {
   if (event.type === 'plan_update' && event.plan) {
-    const intent = planIntentFromCodex(event.plan, context, current ?? undefined);
+    const intent = planIntentFromProvider(event.plan, context, current ?? undefined);
     return {
       intent,
-      binding: { provider: 'codex', sessionId: context.sessionId },
+      binding: { provider: context.provider, sessionId: context.sessionId },
     };
   }
   if (event.type === 'input_request' && event.inputRequest && event.inputRequestId !== undefined) {
-    const intent = questionIntentFromCodex(event.inputRequest, event.inputRequestId, context);
+    const intent = questionIntentFromProvider(event.inputRequest, event.inputRequestId, context);
     if (!intent) return null;
     return {
       intent,
       binding: {
-        provider: 'codex',
+        provider: context.provider,
         sessionId: context.sessionId,
         requestId: event.inputRequestId,
         responseKind: event.inputRequest.kind,
@@ -49,7 +50,7 @@ export function adaptCodexEventToAgentUIIntent(
   return null;
 }
 
-export function codexResponseFromAgentUIResolution(
+export function providerResponseFromAgentUIResolution(
   intent: AgentUIQuestionIntent,
   resolution: AgentUIQuestionResolution,
   responseKind: 'user_input' | 'mcp_elicitation',
@@ -78,9 +79,9 @@ export function codexResponseFromAgentUIResolution(
   };
 }
 
-function planIntentFromCodex(
+function planIntentFromProvider(
   plan: ChatPlanSnapshot,
-  context: CodexAgentUIContext,
+  context: AgentProviderUIContext,
   current?: AgentUIPlanIntent,
 ): AgentUIPlanIntent {
   const now = plan.updatedAt || new Date().toISOString();
@@ -134,10 +135,10 @@ function planIntentFromCodex(
   };
 }
 
-function questionIntentFromCodex(
+function questionIntentFromProvider(
   request: CodexInputRequest,
   requestId: string | number,
-  context: CodexAgentUIContext,
+  context: AgentProviderUIContext,
 ): AgentUIQuestionIntent | null {
   const questions =
     request.kind === 'user_input'
