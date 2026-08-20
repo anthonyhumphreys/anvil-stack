@@ -1,6 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import type { ChildProcess } from 'node:child_process';
+import { PassThrough } from 'node:stream';
+import { describe, expect, it, vi } from 'vitest';
 import type { CodexEvent } from '../../../shared/types.js';
-import { handleCodexServerLine, type CodexProtocolState } from '../codex-protocol.service.js';
+import {
+  handleCodexServerLine,
+  sendCodexJsonRpc,
+  sendCodexJsonRpcNotification,
+  sendCodexJsonRpcResult,
+  type CodexProtocolState,
+} from '../codex-protocol.service.js';
 
 function createState(): CodexProtocolState {
   return {
@@ -23,6 +31,58 @@ function collectEvents(state: CodexProtocolState, messages: unknown[]): CodexEve
 }
 
 describe('codex protocol service', () => {
+  it('writes requests, notifications, and results as newline-delimited JSON-RPC', () => {
+    const stdin = new PassThrough();
+    const output: string[] = [];
+    stdin.on('data', (chunk: Buffer) => output.push(chunk.toString()));
+    const proc = { stdin } as unknown as ChildProcess;
+
+    expect(sendCodexJsonRpc(proc, 'turn/start', { threadId: 'thread-1' })).toBe(true);
+    expect(sendCodexJsonRpcNotification(proc, 'initialized', {})).toBe(true);
+    expect(sendCodexJsonRpcResult(proc, 42, { accepted: true })).toBe(true);
+
+    const messages = output.join('').trim().split('\n').map(JSON.parse);
+    expect(messages).toHaveLength(3);
+    expect(messages[0]).toMatchObject({
+      jsonrpc: '2.0',
+      method: 'turn/start',
+      params: { threadId: 'thread-1' },
+    });
+    expect(messages[0].id).toEqual(expect.any(String));
+    expect(messages[1]).toEqual({ method: 'initialized', params: {} });
+    expect(messages[2]).toEqual({ jsonrpc: '2.0', id: 42, result: { accepted: true } });
+    expect(stdin.listenerCount('error')).toBe(1);
+  });
+
+  it('rejects writes to a closed provider stream', () => {
+    const stdin = new PassThrough();
+    stdin.end();
+    const proc = { stdin } as unknown as ChildProcess;
+
+    expect(sendCodexJsonRpc(proc, 'turn/start', {})).toBe(false);
+  });
+
+  it('handles closed-pipe errors without raising an uncaught exception', () => {
+    const stdin = new PassThrough();
+    const proc = { stdin } as unknown as ChildProcess;
+    sendCodexJsonRpc(proc, 'initialize', {});
+    const error = Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+
+    expect(() => stdin.emit('error', error)).not.toThrow();
+  });
+
+  it('logs unexpected provider stream errors without raising an uncaught exception', () => {
+    const stdin = new PassThrough();
+    const proc = { stdin } as unknown as ChildProcess;
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    sendCodexJsonRpc(proc, 'initialize', {});
+    const error = Object.assign(new Error('connection reset'), { code: 'ECONNRESET' });
+
+    expect(() => stdin.emit('error', error)).not.toThrow();
+    expect(consoleError).toHaveBeenCalledWith('[Codex] JSON-RPC stdin error:', error);
+    consoleError.mockRestore();
+  });
+
   it('preserves agent message item boundaries and normalises phases', () => {
     const events = collectEvents(createState(), [
       {
