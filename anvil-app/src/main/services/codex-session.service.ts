@@ -12,6 +12,7 @@ import type {
 import type {
   AgentProvider,
   ChatAttachment,
+  ChatCollaborationMode,
   ChatSendOptions,
   ChatStartOptions,
   CodexEvent,
@@ -19,6 +20,7 @@ import type {
   CodexMode,
   CodexSession,
   MobileApprovalRequest,
+  ReasoningEffort,
 } from '../../shared/types.js';
 import {
   buildSystemPrompt,
@@ -91,6 +93,15 @@ export interface CodexTurnSteerParams extends Record<string, unknown> {
   input: CodexUserInput[];
 }
 
+export interface CodexCollaborationMode {
+  mode: ChatCollaborationMode;
+  settings: {
+    model: string;
+    reasoning_effort: ReasoningEffort;
+    developer_instructions: null;
+  };
+}
+
 const sessions = new Map<string, ManagedSession>();
 type PendingServerRequest =
   | {
@@ -118,6 +129,21 @@ export function resolveSessionModel(provider: AgentProvider, configuredModel: st
   return provider === 'cursor'
     ? configuredModel.trim() || 'auto'
     : normaliseCodexModel(configuredModel);
+}
+
+export function buildCodexCollaborationMode(
+  mode: ChatCollaborationMode | undefined,
+  model: string,
+  reasoningEffort: ReasoningEffort,
+): CodexCollaborationMode {
+  return {
+    mode: mode ?? 'default',
+    settings: {
+      model,
+      reasoning_effort: reasoningEffort,
+      developer_instructions: null,
+    },
+  };
 }
 
 /**
@@ -326,6 +352,9 @@ export async function sendMessage(
   const settings = getSettings();
   const mode = settings.codexMode ?? session.mode;
   const model = normaliseCodexModel(options?.model ?? settings.openaiModel);
+  const reasoningEffort = normaliseReasoningEffort(
+    options?.reasoningEffort ?? settings.reasoningLevel,
+  );
   const codexPolicy = resolvePersonaCodexPolicy(mode, session.personaId, {
     planMode: options?.collaborationMode === 'plan',
   });
@@ -352,7 +381,12 @@ export async function sendMessage(
     sandboxPolicy: sandboxModeToTurnPolicy(codexPolicy.sandbox, session.cwd),
     model,
     ...(options?.serviceTier !== undefined ? { serviceTier: options.serviceTier } : {}),
-    effort: normaliseReasoningEffort(options?.reasoningEffort ?? settings.reasoningLevel),
+    effort: reasoningEffort,
+    collaborationMode: buildCodexCollaborationMode(
+      options?.collaborationMode,
+      model,
+      reasoningEffort,
+    ),
   });
 }
 

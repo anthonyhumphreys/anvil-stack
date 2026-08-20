@@ -18,6 +18,7 @@ vi.mock('electron', () => ({
 
 import {
   buildApprovalResponse,
+  buildCodexCollaborationMode,
   buildCursorClientCapabilities,
   buildInputResponse,
   buildTurnSteerParams,
@@ -36,6 +37,25 @@ afterEach(() => {
 });
 
 describe('codex session service', () => {
+  it('builds native Codex collaboration modes for plan and default turns', () => {
+    expect(buildCodexCollaborationMode('plan', 'gpt-5.6-sol', 'high')).toEqual({
+      mode: 'plan',
+      settings: {
+        model: 'gpt-5.6-sol',
+        reasoning_effort: 'high',
+        developer_instructions: null,
+      },
+    });
+    expect(buildCodexCollaborationMode(undefined, 'gpt-5.6-terra', 'medium')).toEqual({
+      mode: 'default',
+      settings: {
+        model: 'gpt-5.6-terra',
+        reasoning_effort: 'medium',
+        developer_instructions: null,
+      },
+    });
+  });
+
   it('keeps Cursor model ids instead of coercing them into the Codex catalog', () => {
     expect(resolveSessionModel('cursor', 'claude-fable-5-thinking-high')).toBe(
       'claude-fable-5-thinking-high',
