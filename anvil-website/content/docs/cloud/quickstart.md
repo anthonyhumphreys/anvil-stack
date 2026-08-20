@@ -4,6 +4,7 @@ navTitle: Quickstart
 description: Create a Cell, run local checks, inspect output, and produce deployable artifacts.
 product: Anvil Cloud
 section: Getting started
+journey: build
 order: 110
 ---
 

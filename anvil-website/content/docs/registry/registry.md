@@ -4,6 +4,7 @@ navTitle: Request flow
 description: How the npm registry gateway handles metadata, tarballs, upstreams, policy, and analysis.
 product: Anvil Registry
 section: Concepts
+journey: learn
 order: 3
 ---
 

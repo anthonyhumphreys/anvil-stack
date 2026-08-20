@@ -4,7 +4,8 @@ navTitle: LLM integration
 description: Configure optional LLM risk review, understand the provider contract, and keep model output out of the enforcement seat.
 product: Anvil Registry
 section: Operations
-order: 10.25
+journey: build
+order: 10
 ---
 
 # LLM integration

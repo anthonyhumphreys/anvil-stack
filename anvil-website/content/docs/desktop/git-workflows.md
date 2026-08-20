@@ -4,6 +4,7 @@ navTitle: Git
 description: Branch management, diff review, commit preparation, and PR handover from inside Anvil Desktop.
 product: Anvil Desktop
 section: Working guide
+journey: build
 order: 113
 ---
 

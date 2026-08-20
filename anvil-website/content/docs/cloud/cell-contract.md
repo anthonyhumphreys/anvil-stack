@@ -4,6 +4,7 @@ navTitle: Cell contract
 description: The Anvil Cell app DSL, schema, handlers, capabilities, and generated manifest shape.
 product: Anvil Cloud
 section: Architecture
+journey: learn
 order: 115
 ---
 

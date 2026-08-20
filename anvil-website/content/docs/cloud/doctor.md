@@ -4,6 +4,7 @@ navTitle: Doctor
 description: Stable anvil-cloud doctor JSON check IDs, statuses, remediation hints, and details fields.
 product: Anvil Cloud
 section: Reference
+journey: reference
 order: 145
 ---
 

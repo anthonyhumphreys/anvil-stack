@@ -4,6 +4,7 @@ navTitle: Contributing
 description: How to contribute to Anvil Desktop, Anvil Registry, Anvil Node Base, and Anvil Cloud.
 product: Project
 section: Notes
+journey: build
 order: 895
 ---
 

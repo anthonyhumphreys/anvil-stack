@@ -4,6 +4,7 @@ navTitle: Safe mode
 description: Install dependencies without lifecycle scripts and generate reviewable dependency reports.
 product: Anvil Node Base
 section: Guides
+journey: build
 order: 7
 ---
 

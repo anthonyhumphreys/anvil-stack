@@ -4,6 +4,7 @@ navTitle: Terminal and editor
 description: Use the PTY terminal and embedded VS Code editor inside Anvil Desktop without losing workspace context.
 product: Anvil Desktop
 section: Working guide
+journey: build
 order: 115
 ---
 
