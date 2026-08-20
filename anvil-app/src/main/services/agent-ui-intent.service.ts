@@ -824,8 +824,8 @@ function validateQuestionPayload(value: unknown, errors: string[]): void {
       errors.push(`Question ${question.id} must define required and allowCancel.`);
     }
     if (question.kind === 'single_choice' || question.kind === 'multiple_choice') {
-      if (!Array.isArray(question.options) || question.options.length < 2) {
-        errors.push(`Question ${question.id} requires at least two options.`);
+      if (!Array.isArray(question.options) || question.options.length < 1) {
+        errors.push(`Question ${question.id} requires at least one option.`);
       }
     }
     if (Array.isArray(question.options)) {

@@ -2431,12 +2431,11 @@ function upsertAgentUIIntentState(
   incoming: AgentUIIntent,
 ): AgentUIIntent[] {
   const index = intents.findIndex((intent) => intent.id === incoming.id);
-  if (index < 0) return [incoming, ...intents];
-  const updated = [...intents];
-  updated[index] = incoming;
-  return updated.toSorted(
-    (left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt),
-  );
+  const next =
+    index < 0
+      ? [incoming, ...intents]
+      : intents.map((intent, i) => (i === index ? incoming : intent));
+  return next.toSorted((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
 }
 
 function upsertAgentUIIntentEntry(entries: ChatEntry[], event: CodexEvent): ChatEntry[] {
