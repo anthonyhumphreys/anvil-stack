@@ -180,6 +180,7 @@ export function ChatView({ userRole }: ChatViewProps) {
     setCollaborationMode,
     setChatLayout,
     selectWorkItemThread,
+    startWorkItemThread,
   } = useChatContext();
   const { repos, featureAvailability, activeScaffoldSession, activeWorkspace } = useWorkspace();
   const navigate = useNavigate();
@@ -979,6 +980,11 @@ export function ChatView({ userRole }: ChatViewProps) {
               activeThreadId={activeThreadId}
               liveThreadStatuses={liveThreadStatuses}
               onSelectWorkItem={(workItem) => void selectWorkItemThread(workItem)}
+              onSelectThread={(threadId) => void selectThread(threadId)}
+              onCreateThread={(workItem) => void startWorkItemThread(workItem)}
+              onRenameThread={(threadId, title) => void renameThread(threadId, title)}
+              onSettleThread={(threadId, settled) => void settleThread(threadId, settled)}
+              onDeleteThread={(threadId) => void deleteThread(threadId)}
             />
           ) : (
             <ChatThreadRail
@@ -1052,8 +1058,7 @@ export function ChatView({ userRole }: ChatViewProps) {
                           Select a work item
                         </p>
                         <p className="mt-2 text-sm text-text-tertiary">
-                          Each work item has one chat thread. Pick one from the left panel to
-                          continue.
+                          Pick a ticket from the left. Its live and archived threads stay together.
                         </p>
                       </div>
                     </div>

@@ -117,6 +117,7 @@ interface ChatContextValue {
   setCollaborationMode: (mode: ChatCollaborationMode) => void;
   setChatLayout: (layout: ChatLayout) => Promise<void>;
   selectWorkItemThread: (workItem: WorkItem) => Promise<void>;
+  startWorkItemThread: (workItem: WorkItem) => Promise<void>;
   launchPreparedChat: (opts: {
     personaId: string;
     repoIds?: string[];
@@ -565,6 +566,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       title?: string;
       repoSelection?: RepoInfo[];
       primaryRepo?: RepoInfo | null;
+      workItem?: WorkItem;
     }) => {
       const persona = opts?.persona ?? activePersona;
       if (!persona) return null;
@@ -575,6 +577,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         workspaceId: activeWorkspace?.id ?? null,
         personaId: persona.id,
         title: opts?.title,
+        workItemId: opts?.workItem?.id,
+        workItemProvider: opts?.workItem?.provider,
+        workItemTitle: opts?.workItem?.title,
         repoIds: repoSelection.map((repo) => repo.id),
         activeRepoId: primaryRepo?.id ?? null,
       });
@@ -586,7 +591,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       setActiveRepoState(primaryRepo);
       rememberThreadSelection(
         lastSelectedThreadIdsRef.current,
-        getThreadPreferenceKey(activeWorkspace?.id ?? null, persona.id),
+        created.workItemId
+          ? getWorkItemThreadPreferenceKey(activeWorkspace?.id ?? null)
+          : getThreadPreferenceKey(activeWorkspace?.id ?? null, persona.id),
         created.id,
       );
 
@@ -1935,16 +1942,29 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         setBusy(false);
         setError(null);
 
+        const existingThread =
+          threadsRef.current.find(
+            (thread) =>
+              thread.workItemId === workItem.id &&
+              thread.workItemProvider === workItem.provider &&
+              !thread.settledAt,
+          ) ??
+          threadsRef.current.find(
+            (thread) =>
+              thread.workItemId === workItem.id && thread.workItemProvider === workItem.provider,
+          );
         const primaryRepo = activeRepoState ?? activeReposState[0] ?? null;
-        const thread = await window.anvil.chat.ensureWorkItemThread({
-          workspaceId: activeWorkspace?.id ?? null,
-          personaId: activePersona.id,
-          workItemId: workItem.id,
-          workItemProvider: workItem.provider,
-          workItemTitle: workItem.title,
-          repoIds: activeReposState.map((repo) => repo.id),
-          activeRepoId: primaryRepo?.id ?? null,
-        });
+        const thread =
+          existingThread ??
+          (await window.anvil.chat.ensureWorkItemThread({
+            workspaceId: activeWorkspace?.id ?? null,
+            personaId: activePersona.id,
+            workItemId: workItem.id,
+            workItemProvider: workItem.provider,
+            workItemTitle: workItem.title,
+            repoIds: activeReposState.map((repo) => repo.id),
+            activeRepoId: primaryRepo?.id ?? null,
+          }));
 
         const listedThreads = await window.anvil.chat.listWorkItemThreads(
           activeWorkspace?.id ?? null,
@@ -1975,6 +1995,23 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       loadThreadIntoState,
       scaffoldModeActive,
     ],
+  );
+
+  const startWorkItemThread = useCallback(
+    async (workItem: WorkItem) => {
+      if (scaffoldModeActive || !activePersona) return;
+      threadLoadVersionRef.current += 1;
+      detachLiveSession();
+      setEntries([]);
+      setActiveArtifacts([]);
+      setBusy(false);
+      setError(null);
+      await createThreadRecord({
+        title: buildEmptyThreadLabel(activePersona.name),
+        workItem,
+      });
+    },
+    [activePersona, createThreadRecord, detachLiveSession, scaffoldModeActive],
   );
 
   const interrupt = useCallback(async () => {
@@ -2190,9 +2227,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
       const useWorkItemThread = chatLayout === 'workitems' && !!opts.workItem;
       const createdThread = useWorkItemThread
-        ? await window.anvil.chat.ensureWorkItemThread({
+        ? await window.anvil.chat.createThread({
             workspaceId: activeWorkspace?.id ?? null,
             personaId: targetPersona.id,
+            title: opts.threadTitle ?? buildThreadTitle(opts.message, targetPersona.name),
             workItemId: opts.workItem!.id,
             workItemProvider: opts.workItem!.provider,
             workItemTitle: opts.workItem!.title,
@@ -2390,6 +2428,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         setCollaborationMode,
         setChatLayout,
         selectWorkItemThread,
+        startWorkItemThread,
         launchPreparedChat,
       }}
     >

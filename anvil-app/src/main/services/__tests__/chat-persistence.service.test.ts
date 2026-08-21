@@ -180,6 +180,29 @@ describe('chat thread persistence', () => {
     expect(second.repoIds).toEqual([]);
   });
 
+  it('persists multiple threads for the same work item', () => {
+    const first = createChatThread({
+      workspaceId: 'ws-1',
+      personaId: 'coder',
+      title: 'Plan the ticket',
+      workItemId: 'ADO-456',
+      workItemProvider: 'ado',
+      workItemTitle: 'Own several threads',
+    });
+    const second = createChatThread({
+      workspaceId: 'ws-1',
+      personaId: 'coder',
+      title: 'Implement the ticket',
+      workItemId: 'ADO-456',
+      workItemProvider: 'ado',
+      workItemTitle: 'Own several threads',
+    });
+
+    expect(new Set(listWorkItemChatThreads('ws-1').map((thread) => thread.id))).toEqual(
+      new Set([first.id, second.id]),
+    );
+  });
+
   it('saves thread-scoped history and updates preview metadata', () => {
     const thread = createChatThread({
       workspaceId: 'ws-1',
