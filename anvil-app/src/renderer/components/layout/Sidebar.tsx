@@ -19,181 +19,61 @@ import {
   SquareTerminal,
   ChevronLeft,
   ChevronRight,
-  Bot,
+  Bell,
+  RadioTower,
+  Wrench,
   Activity,
   Boxes,
   Workflow,
   NotebookPen,
   StickyNote,
   MonitorSmartphone,
+  GripVertical,
 } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
 import { useBrand } from '../../contexts/BrandContext';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { RunButton } from './RunButton';
 import { AnvilLogo } from '../brand/AnvilLogo';
-import type { UserRole, Feature } from '../../../shared/types';
-import { ROLE_FEATURES } from '../../../shared/types';
+import type { UserRole, WorkspaceFeatureAvailability } from '../../../shared/types';
 import { useStoredPanelState } from '../../hooks/useStoredPanelState';
 import {
+  buildAggregateActivityIndicator,
   SidebarActivityBadge,
-  SidebarActivityCenter,
   useSidebarActivity,
 } from './SidebarActivityCenter';
+import {
+  getAvailableSidebarNavigation,
+  isSidebarNavItemActive,
+  type SidebarNavItemDefinition,
+} from '../../utils/sidebar-navigation';
 
-interface NavItem {
-  path: string;
-  label: string;
-  icon: ReactNode;
-  feature: Feature;
-  requiresRepoFeature?: boolean;
-  requiresChat?: boolean;
-}
-
-const navItems: NavItem[] = [
-  { path: '/repos', label: 'Repositories', icon: <Code size={20} />, feature: 'repos' },
-  {
-    path: '/chat',
-    label: 'Chat',
-    icon: <MessageSquare size={20} />,
-    feature: 'chat',
-    requiresChat: true,
-  },
-  {
-    path: '/meeting-notes',
-    label: 'Meeting Notes',
-    icon: <NotebookPen size={20} />,
-    feature: 'meeting-notes',
-  },
-  {
-    path: '/workspace-notes',
-    label: 'Workspace Notes',
-    icon: <StickyNote size={20} />,
-    feature: 'workspace-notes',
-  },
-  {
-    path: '/editor',
-    label: 'Editor',
-    icon: <SquareTerminal size={20} />,
-    feature: 'editor',
-    requiresRepoFeature: true,
-  },
-  {
-    path: '/automations',
-    label: 'Automations',
-    icon: <Bot size={20} />,
-    feature: 'automations',
-  },
-  {
-    path: '/workflows',
-    label: 'Workflows',
-    icon: <GitFork size={20} />,
-    feature: 'workflows',
-    requiresChat: true,
-  },
-  {
-    path: '/db-insights',
-    label: 'DB Insights',
-    icon: <Database size={20} />,
-    feature: 'dbinsights',
-  },
-  {
-    path: '/onboard',
-    label: 'Onboarding',
-    icon: <Compass size={20} />,
-    feature: 'onboard',
-    requiresRepoFeature: true,
-  },
-  {
-    path: '/workitems',
-    label: 'Work Items',
-    icon: <TicketCheck size={20} />,
-    feature: 'workitems',
-  },
-  {
-    path: '/dependencies',
-    label: 'Dependencies',
-    icon: <Boxes size={20} />,
-    feature: 'dependencies',
-    requiresRepoFeature: true,
-  },
-  {
-    path: '/security',
-    label: 'Security',
-    icon: <Shield size={20} />,
-    feature: 'security',
-    requiresRepoFeature: true,
-  },
-  {
-    path: '/codereview',
-    label: 'Code Review',
-    icon: <GitPullRequest size={20} />,
-    feature: 'codereview',
-    requiresRepoFeature: true,
-  },
-  {
-    path: '/cicd',
-    label: 'CI/CD',
-    icon: <Workflow size={20} />,
-    feature: 'cicd',
-    requiresRepoFeature: true,
-  },
-  {
-    path: '/cloud',
-    label: 'Cloud',
-    icon: <Cloud size={20} />,
-    feature: 'cloud',
-    requiresRepoFeature: true,
-  },
-  { path: '/docs', label: 'Documentation', icon: <FileText size={20} />, feature: 'docs' },
-  {
-    path: '/adrs',
-    label: 'ADRs',
-    icon: <BookOpen size={20} />,
-    feature: 'adrs',
-    requiresRepoFeature: true,
-  },
-  {
-    path: '/diagrams',
-    label: 'Diagrams',
-    icon: <GitFork size={20} />,
-    feature: 'diagrams',
-    requiresRepoFeature: true,
-  },
-  { path: '/governance', label: 'Governance', icon: <Landmark size={20} />, feature: 'governance' },
-  {
-    path: '/browser',
-    label: 'Browser',
-    icon: <Globe size={20} />,
-    feature: 'browser',
-    requiresRepoFeature: true,
-  },
-  {
-    path: '/argent',
-    label: 'Argent',
-    icon: <MonitorSmartphone size={20} />,
-    feature: 'argent',
-  },
-  {
-    path: '/git',
-    label: 'Git',
-    icon: <GitBranch size={20} />,
-    feature: 'git',
-    requiresRepoFeature: true,
-  },
-  {
-    path: '/compliance',
-    label: 'Data & Compliance',
-    icon: <Scale size={20} />,
-    feature: 'compliance',
-    requiresRepoFeature: true,
-  },
-];
-
-const PRIMARY_NAV_PATHS = new Set(['/chat', '/repos', '/editor']);
-const WORK_NAV_PATHS = new Set(['/workitems', '/automations', '/workflows', '/codereview']);
-const PRIMARY_NAV_ORDER = ['/chat', '/repos', '/editor'];
-const WORK_NAV_ORDER = ['/workitems', '/automations', '/workflows', '/codereview'];
+const NAV_ICONS: Record<string, ReactNode> = {
+  '/inbox': <Bell size={19} />,
+  '/chat': <MessageSquare size={19} />,
+  '/repos': <Code size={19} />,
+  '/automations': <RadioTower size={19} />,
+  '/workflows': <GitFork size={18} />,
+  '/meeting-notes': <NotebookPen size={18} />,
+  '/workspace-notes': <StickyNote size={18} />,
+  '/editor': <SquareTerminal size={18} />,
+  '/db-insights': <Database size={18} />,
+  '/onboard': <Compass size={18} />,
+  '/workitems': <TicketCheck size={18} />,
+  '/dependencies': <Boxes size={18} />,
+  '/security': <Shield size={18} />,
+  '/codereview': <GitPullRequest size={18} />,
+  '/cicd': <Workflow size={18} />,
+  '/cloud': <Cloud size={18} />,
+  '/docs': <FileText size={18} />,
+  '/adrs': <BookOpen size={18} />,
+  '/diagrams': <GitFork size={18} />,
+  '/governance': <Landmark size={18} />,
+  '/browser': <Globe size={18} />,
+  '/argent': <MonitorSmartphone size={18} />,
+  '/git': <GitBranch size={18} />,
+  '/compliance': <Scale size={18} />,
+};
 
 interface SidebarProps {
   connectionStatus: {
@@ -216,11 +96,7 @@ export function Sidebar({
   const navigate = useNavigate();
   const brand = useBrand();
   const { activeWorkspace, featureAvailability } = useWorkspace();
-  const {
-    items: activityItems,
-    indicators: activityIndicators,
-    activeCount,
-  } = useSidebarActivity();
+  const { items: activityItems, indicators: activityIndicators } = useSidebarActivity();
   const { width, setWidth, collapsed, toggleCollapsed } = useStoredPanelState({
     storageKey: 'layout:main-sidebar:v2',
     defaultWidth: 252,
@@ -229,7 +105,8 @@ export function Sidebar({
   });
   const [autoCompact, setAutoCompact] = useState(false);
   const [narrowExpansion, setNarrowExpansion] = useState(false);
-  const [moreOpen, setMoreOpen] = useState(false);
+  const [automateOpen, setAutomateOpen] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
   const compact = collapsed || (autoCompact && !narrowExpansion);
 
   useEffect(() => {
@@ -244,21 +121,23 @@ export function Sidebar({
     return () => window.removeEventListener('resize', updateCompactMode);
   }, [location.pathname]);
 
-  const availableNavItems = navItems.filter(
-    (item) =>
-      ROLE_FEATURES[userRole].includes(item.feature) &&
-      (item.feature !== 'cloud' || cloudFeaturesEnabled),
+  const navigation = getAvailableSidebarNavigation(userRole, cloudFeaturesEnabled);
+  const automateActive = navigation.automate.some((item) =>
+    isSidebarNavItemActive(location.pathname, item),
   );
-  const primaryNavItems = orderNavItems(availableNavItems, PRIMARY_NAV_ORDER);
-  const workNavItems = orderNavItems(availableNavItems, WORK_NAV_ORDER);
-  const moreNavItems = availableNavItems.filter(
-    (item) => !PRIMARY_NAV_PATHS.has(item.path) && !WORK_NAV_PATHS.has(item.path),
+  const toolsActive = navigation.tools.some((group) =>
+    group.items.some((item) => isSidebarNavItemActive(location.pathname, item)),
   );
-  const moreActive = moreNavItems.some((item) => location.pathname.startsWith(item.path));
+  const inboxIndicator = buildAggregateActivityIndicator(activityItems);
+  const automateRoute = navigation.automate[0]?.path;
 
   useEffect(() => {
-    if (moreActive) setMoreOpen(true);
-  }, [moreActive]);
+    if (automateActive) setAutomateOpen(true);
+  }, [automateActive]);
+
+  useEffect(() => {
+    if (toolsActive) setToolsOpen(true);
+  }, [toolsActive]);
 
   const handleCollapseToggle = () => {
     if (autoCompact) {
@@ -307,6 +186,20 @@ export function Sidebar({
 
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
+  };
+
+  const handleResizeKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (compact || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    if (event.key === 'Home') {
+      setWidth(224);
+      return;
+    }
+    if (event.key === 'End') {
+      setWidth(340);
+      return;
+    }
+    setWidth(width + (event.key === 'ArrowRight' ? 24 : -24));
   };
 
   return (
@@ -388,90 +281,129 @@ export function Sidebar({
         <div className="min-h-0 flex-1 px-2.5 py-2.5">
           <nav className="h-full overflow-y-auto pr-1">
             <div className="flex flex-col gap-1">
-              {[...primaryNavItems, ...workNavItems].map((item, index) => {
-                const active = location.pathname.startsWith(item.path);
-                const disabled = item.requiresChat
-                  ? !featureAvailability.chatEnabled
-                  : item.requiresRepoFeature
-                    ? !featureAvailability.repoFeaturesEnabled
-                    : false;
-                return (
-                  <button
-                    key={item.path}
-                    onClick={() => {
-                      if (!disabled) navigate(item.path);
-                    }}
-                    disabled={disabled}
-                    className={`titlebar-no-drag relative flex w-full items-center rounded-lg border py-2 text-sm font-medium transition-colors ${
-                      active
-                        ? 'border-accent/30 bg-accent/12 text-text-primary'
-                        : disabled
-                          ? 'cursor-not-allowed border-transparent text-text-tertiary opacity-50'
-                          : item.path === '/chat'
-                            ? 'border-border-subtle bg-bg-tertiary/45 text-text-primary hover:border-border hover:bg-bg-tertiary'
-                            : 'border-transparent text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
-                    } ${compact ? 'justify-center px-2.5' : 'gap-3 px-3'} ${index === primaryNavItems.length && !compact ? 'mt-2 border-t-0' : ''}`}
-                    aria-label={item.label}
-                    title={disabled ? featureAvailability.repoFeatureReason : item.label}
-                  >
-                    {item.icon}
-                    {!compact && <span className="truncate">{item.label}</span>}
-                    <SidebarActivityBadge
-                      indicator={activityIndicators[item.feature]}
-                      collapsed={compact}
-                    />
-                  </button>
-                );
-              })}
+              {navigation.primary.map((item) => (
+                <SidebarNavButton
+                  key={item.path}
+                  item={item}
+                  active={isSidebarNavItemActive(location.pathname, item)}
+                  compact={compact}
+                  featureAvailability={featureAvailability}
+                  indicator={
+                    item.path === '/inbox' ? inboxIndicator : activityIndicators[item.feature]
+                  }
+                  onNavigate={navigate}
+                  prominent={item.path === '/chat'}
+                />
+              ))}
 
-              {moreNavItems.length > 0 && !compact && (
-                <div className="mt-2 border-t border-border-subtle pt-2">
+              {navigation.automate.length > 0 && (
+                <div className={compact ? 'mt-1' : 'mt-2 border-t border-border-subtle pt-2'}>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (automateRoute) navigate(automateRoute);
+                      }}
+                      className={`titlebar-no-drag relative flex min-w-0 flex-1 items-center rounded-lg border py-2 text-sm font-medium transition-colors ${
+                        automateActive
+                          ? 'border-accent/30 bg-accent/12 text-text-primary'
+                          : 'border-transparent text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
+                      } ${compact ? 'justify-center px-2.5' : 'gap-3 px-3'}`}
+                      aria-label="Automate"
+                      title="Automate"
+                    >
+                      <RadioTower size={19} />
+                      {!compact && <span className="truncate">Automate</span>}
+                    </button>
+                    {!compact && navigation.automate.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => setAutomateOpen((open) => !open)}
+                        className="titlebar-no-drag rounded-lg p-2.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+                        aria-label={automateOpen ? 'Collapse Automate' : 'Expand Automate'}
+                        aria-expanded={automateOpen}
+                      >
+                        <ChevronRight
+                          size={14}
+                          className={`transition-transform ${automateOpen ? 'rotate-90' : ''}`}
+                        />
+                      </button>
+                    )}
+                  </div>
+                  {!compact && automateOpen && (
+                    <div className="mt-1 flex flex-col gap-0.5 pl-2">
+                      {navigation.automate.map((item) => (
+                        <SidebarNavButton
+                          key={item.path}
+                          item={item}
+                          active={isSidebarNavItemActive(location.pathname, item)}
+                          compact={false}
+                          featureAvailability={featureAvailability}
+                          indicator={activityIndicators[item.feature]}
+                          onNavigate={navigate}
+                          compactDensity
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {navigation.tools.length > 0 && (
+                <div className={compact ? '' : 'mt-1'}>
                   <button
                     type="button"
-                    onClick={() => setMoreOpen((open) => !open)}
-                    className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-                    aria-expanded={moreOpen}
+                    onClick={() => {
+                      if (compact) {
+                        handleCollapseToggle();
+                        setToolsOpen(true);
+                      } else {
+                        setToolsOpen((open) => !open);
+                      }
+                    }}
+                    className={`titlebar-no-drag relative flex w-full items-center rounded-lg border border-transparent py-2 text-sm font-medium transition-colors ${
+                      toolsActive
+                        ? 'bg-bg-tertiary text-text-primary'
+                        : 'text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
+                    } ${compact ? 'justify-center px-2.5' : 'gap-3 px-3'}`}
+                    aria-label="Tools"
+                    aria-expanded={toolsOpen}
+                    title="Tools"
                   >
-                    {moreOpen ? (
-                      <ChevronLeft size={13} className="-rotate-90" />
-                    ) : (
-                      <ChevronRight size={13} />
+                    <Wrench size={19} />
+                    {!compact && (
+                      <>
+                        <span className="truncate">Tools</span>
+                        <ChevronRight
+                          size={14}
+                          className={`ml-auto transition-transform ${toolsOpen ? 'rotate-90' : ''}`}
+                        />
+                      </>
                     )}
-                    <span>More tools</span>
-                    <span className="ml-auto text-[11px]">{moreNavItems.length}</span>
                   </button>
-                  {moreOpen && (
-                    <div className="mt-1 flex flex-col gap-0.5">
-                      {moreNavItems.map((item) => {
-                        const active = location.pathname.startsWith(item.path);
-                        const disabled = item.requiresChat
-                          ? !featureAvailability.chatEnabled
-                          : item.requiresRepoFeature
-                            ? !featureAvailability.repoFeaturesEnabled
-                            : false;
-                        return (
-                          <button
-                            key={item.path}
-                            onClick={() => !disabled && navigate(item.path)}
-                            disabled={disabled}
-                            className={`relative flex w-full items-center gap-3 rounded-lg px-3 py-1.5 text-sm transition-colors ${
-                              active
-                                ? 'bg-accent/10 text-text-primary'
-                                : disabled
-                                  ? 'cursor-not-allowed text-text-tertiary opacity-45'
-                                  : 'text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
-                            }`}
-                            title={disabled ? featureAvailability.repoFeatureReason : item.label}
-                          >
-                            {item.icon}
-                            <span className="truncate">{item.label}</span>
-                            <SidebarActivityBadge
-                              indicator={activityIndicators[item.feature]}
-                              collapsed={false}
-                            />
-                          </button>
-                        );
-                      })}
+                  {!compact && toolsOpen && (
+                    <div className="mt-2 space-y-3 pb-2 pl-2">
+                      {navigation.tools.map((group) => (
+                        <div key={group.id}>
+                          <div className="px-3 pb-1 text-xs font-medium text-text-tertiary">
+                            {group.label}
+                          </div>
+                          <div className="flex flex-col gap-0.5">
+                            {group.items.map((item) => (
+                              <SidebarNavButton
+                                key={item.path}
+                                item={item}
+                                active={isSidebarNavItemActive(location.pathname, item)}
+                                compact={false}
+                                featureAvailability={featureAvailability}
+                                indicator={activityIndicators[item.feature]}
+                                onNavigate={navigate}
+                                compactDensity
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   )}
                 </div>
@@ -482,11 +414,6 @@ export function Sidebar({
 
         {/* Footer — connection status + settings */}
         <div className="shrink-0 border-t border-border-subtle p-2.5">
-          <SidebarActivityCenter
-            items={activityItems}
-            activeCount={activeCount}
-            collapsed={compact}
-          />
           {!compact && <ConnectionSummary connectionStatus={connectionStatus} />}
           <button
             onClick={() => navigate('/settings')}
@@ -521,13 +448,76 @@ export function Sidebar({
       {!compact && (
         <div
           onMouseDown={handleResizeStart}
-          className="absolute -right-1 bottom-0 top-0 z-10 w-2 cursor-col-resize"
-          aria-hidden="true"
+          onKeyDown={handleResizeKeyDown}
+          className="group absolute -right-1.5 bottom-0 top-0 z-20 flex w-3 cursor-col-resize items-center justify-center"
+          role="separator"
+          aria-label="Resize navigation"
+          aria-orientation="vertical"
+          aria-valuemin={224}
+          aria-valuemax={340}
+          aria-valuenow={width}
+          tabIndex={0}
         >
-          <div className="mx-auto h-full w-px bg-border/50 transition-colors hover:bg-accent" />
+          <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-border/60 transition-colors group-hover:bg-accent" />
+          <span className="relative flex h-9 w-3 items-center justify-center rounded-full border border-border bg-bg-elevated text-text-muted shadow-sm transition-colors group-hover:border-accent/50 group-hover:text-accent">
+            <GripVertical size={10} />
+          </span>
         </div>
       )}
     </aside>
+  );
+}
+
+function SidebarNavButton({
+  item,
+  active,
+  compact,
+  featureAvailability,
+  indicator,
+  onNavigate,
+  prominent = false,
+  compactDensity = false,
+}: {
+  item: SidebarNavItemDefinition;
+  active: boolean;
+  compact: boolean;
+  featureAvailability: WorkspaceFeatureAvailability;
+  indicator?: ReturnType<typeof buildAggregateActivityIndicator>;
+  onNavigate: (path: string) => void;
+  prominent?: boolean;
+  compactDensity?: boolean;
+}) {
+  const disabled = item.requiresChat
+    ? !featureAvailability.chatEnabled
+    : item.requiresRepoFeature
+      ? !featureAvailability.repoFeaturesEnabled
+      : false;
+
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        if (!disabled) onNavigate(item.path);
+      }}
+      disabled={disabled}
+      className={`titlebar-no-drag relative flex w-full items-center rounded-lg border text-sm transition-colors ${
+        compactDensity ? 'py-1.5' : 'py-2'
+      } ${
+        active
+          ? 'border-accent/30 bg-accent/12 font-medium text-text-primary'
+          : disabled
+            ? 'cursor-not-allowed border-transparent text-text-tertiary opacity-50'
+            : prominent
+              ? 'border-border-subtle bg-bg-tertiary/45 font-medium text-text-primary hover:border-border hover:bg-bg-tertiary'
+              : 'border-transparent text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
+      } ${compact ? 'justify-center px-2.5' : 'gap-3 px-3'}`}
+      aria-label={item.label}
+      title={disabled ? featureAvailability.repoFeatureReason : item.label}
+    >
+      {NAV_ICONS[item.path]}
+      {!compact && <span className="truncate">{item.label}</span>}
+      <SidebarActivityBadge indicator={indicator} collapsed={compact} />
+    </button>
   );
 }
 
@@ -562,11 +552,4 @@ function ConnectionSummary({
 function BrandName({ name, collapsed = false }: { name: string; collapsed?: boolean }) {
   if (collapsed) return <>{name.slice(0, 3)}</>;
   return <>{name}</>;
-}
-
-function orderNavItems(items: NavItem[], paths: string[]): NavItem[] {
-  return paths.flatMap((path) => {
-    const item = items.find((candidate) => candidate.path === path);
-    return item ? [item] : [];
-  });
 }

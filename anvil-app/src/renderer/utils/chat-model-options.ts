@@ -12,6 +12,7 @@ export interface ChatModelOption {
   description: string;
   supportedReasoningEfforts: ReasoningEffort[];
   defaultReasoningEffort: ReasoningEffort;
+  serviceTiers: Array<{ id: string; name: string; description?: string }>;
 }
 
 export function buildChatModelOptions(
@@ -28,6 +29,7 @@ export function buildChatModelOptions(
       description: model.description ?? 'Detected from the local Codex CLI model catalog.',
       supportedReasoningEfforts: model.supportedReasoningEfforts,
       defaultReasoningEffort: model.defaultReasoningEffort ?? 'medium',
+      serviceTiers: model.serviceTiers,
     }));
   const options =
     provider === 'cursor'
@@ -37,6 +39,7 @@ export function buildChatModelOptions(
           description: 'Detected from the local Cursor CLI model catalog.',
           supportedReasoningEfforts: [],
           defaultReasoningEffort: 'medium' as ReasoningEffort,
+          serviceTiers: [],
         }))
       : detectedCodexOptions?.length
         ? detectedCodexOptions
@@ -46,6 +49,7 @@ export function buildChatModelOptions(
             description: model.description,
             supportedReasoningEfforts: model.supportedReasoningEfforts,
             defaultReasoningEffort: model.defaultReasoningEffort,
+            serviceTiers: [],
           }));
 
   if (options.some((option) => option.id === selectedModel)) return options;
@@ -59,6 +63,7 @@ export function buildChatModelOptions(
           : 'Custom model or deployment selected in Settings.',
       supportedReasoningEfforts: provider === 'cursor' ? [] : CODEX_REASONING_EFFORTS,
       defaultReasoningEffort: 'medium',
+      serviceTiers: [],
     },
     ...options,
   ];

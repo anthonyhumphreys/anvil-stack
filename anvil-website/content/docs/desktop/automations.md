@@ -4,6 +4,7 @@ navTitle: Automations
 description: Schedule recurring checks, run disposable worktrees, and wire automation output back into workspace evidence.
 product: Anvil Desktop
 section: Working guide
+journey: build
 order: 116
 ---
 

@@ -4,6 +4,7 @@ navTitle: Configuration
 description: Configure clients, scoped upstream registries, readiness, policy mode, and local cache behaviour.
 product: Anvil Registry
 section: Operations
+journey: build
 order: 10
 ---
 

@@ -28,6 +28,7 @@ import { SettingsView } from './components/settings/SettingsView';
 import { CodexRegistryView } from './components/settings/CodexRegistryView';
 import { OpenInAnvilView } from './components/launch/OpenInAnvilView';
 import { MeetingNotesView } from './components/meeting/MeetingNotesView';
+import { InboxView } from './components/inbox/InboxView';
 import { SplashScreen } from './components/brand/SplashScreen';
 import { ChatProvider } from './contexts/ChatContext';
 import { BrandProvider } from './contexts/BrandContext';
@@ -266,6 +267,17 @@ export function App() {
                   />
                 }
               >
+                <Route
+                  path="/inbox"
+                  element={guard(
+                    'chat',
+                    <WorkspaceGate>
+                      <ErrorBoundary>
+                        <InboxView />
+                      </ErrorBoundary>
+                    </WorkspaceGate>,
+                  )}
+                />
                 <Route
                   path="/repos"
                   element={

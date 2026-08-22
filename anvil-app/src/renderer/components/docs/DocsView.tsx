@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import type { DocPage, AppSettings } from '../../../shared/types';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
+import { ViewHeader } from '../layout/ViewScaffold';
 
 export function DocsView() {
   const { repos, activeWorkspace, updatePreferences } = useWorkspace();
@@ -217,36 +218,38 @@ export function DocsView() {
 
   return (
     <div className="flex h-full flex-col">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-border bg-bg-secondary px-4 py-2">
-        <div className="flex items-center gap-3">
-          <FileText size={20} className="text-accent" />
-          <h2 className="text-xl font-semibold">Documentation</h2>
-          {providerLabel && (
-            <span className="rounded bg-bg-tertiary px-2 py-0.5 text-xs text-text-tertiary">
+      <ViewHeader
+        icon={FileText}
+        title="Documentation"
+        description="Browse connected knowledge and create repository-grounded pages."
+        meta={
+          providerLabel ? (
+            <span className="rounded-md bg-bg-tertiary px-2 py-0.5 text-xs text-text-tertiary">
               {providerLabel}
             </span>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setShowCreate(true)}
-            disabled={!isConfigured || indexedRepos.length === 0}
-            className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-sm text-text-secondary hover:text-text-primary disabled:opacity-40"
-          >
-            <Plus size={12} />
-            New Page
-          </button>
-          <button
-            onClick={loadPages}
-            disabled={loading || !isConfigured}
-            className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-sm text-text-secondary hover:text-text-primary disabled:opacity-40"
-          >
-            <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
-            Refresh
-          </button>
-        </div>
-      </div>
+          ) : undefined
+        }
+        actions={
+          <>
+            <button
+              onClick={() => setShowCreate(true)}
+              disabled={!isConfigured || indexedRepos.length === 0}
+              className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-sm text-text-secondary hover:text-text-primary disabled:opacity-40"
+            >
+              <Plus size={12} />
+              New Page
+            </button>
+            <button
+              onClick={loadPages}
+              disabled={loading || !isConfigured}
+              className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-sm text-text-secondary hover:text-text-primary disabled:opacity-40"
+            >
+              <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
+              Refresh
+            </button>
+          </>
+        }
+      />
 
       {/* Breadcrumb + filter toolbar */}
       <div className="flex items-center gap-3 border-b border-border-subtle bg-bg-secondary px-4 py-1.5">

@@ -28,4 +28,29 @@ describe('fresh database schema', () => {
       db.close();
     }
   });
+
+  it('includes Canvas storage and Watchtower trigger columns', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec(SCHEMA_SQL);
+      const tableColumns = (table: string) =>
+        new Set(
+          (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
+            (column) => column.name,
+          ),
+        );
+
+      expect(tableColumns('chat_artifacts').has('storage_scope')).toBe(true);
+      expect(tableColumns('chat_artifact_revisions').has('storage_scope')).toBe(true);
+      expect(tableColumns('automation_definitions').has('trigger_mode')).toBe(true);
+      expect(tableColumns('automation_definitions').has('watch_event')).toBe(true);
+      expect(tableColumns('automation_definitions').has('watch_target_json')).toBe(true);
+      expect(tableColumns('automation_definitions').has('watch_state_json')).toBe(true);
+      expect(tableColumns('automation_runs').has('trigger_context_json')).toBe(true);
+      expect(tableColumns('watchtower_events').has('source_id')).toBe(true);
+      expect(tableColumns('watchtower_events').has('run_id')).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
 });

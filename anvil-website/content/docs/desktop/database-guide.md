@@ -4,6 +4,7 @@ navTitle: Persistence
 description: How Anvil Desktop uses SQLite, schema migrations, and workspace-scoped data storage.
 product: Anvil Desktop
 section: Engineering
+journey: reference
 order: 106
 ---
 

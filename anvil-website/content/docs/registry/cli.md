@@ -4,6 +4,7 @@ navTitle: CLI
 description: Install and use Anvil Registry commands for package decisions, lockfile scans, reports, overrides, and operations.
 product: Anvil Registry
 section: Getting started
+journey: build
 order: 3
 ---
 

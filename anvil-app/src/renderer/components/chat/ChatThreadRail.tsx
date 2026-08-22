@@ -160,7 +160,7 @@ export function ChatThreadRail({
               ) : (
                 <>
                   <ThreadAction
-                    label={compact ? 'Return to active work' : 'Settle thread'}
+                    label={compact ? 'Return to active threads' : 'Archive thread'}
                     disabled={!compact && !settleAllowed}
                     onClick={() => onSettleThread(thread.id, compact ? false : true)}
                   >
@@ -203,7 +203,7 @@ export function ChatThreadRail({
     <ResizableSidebarPanel
       storageKey="chat:threads"
       side="left"
-      title="Work inbox"
+      title="Threads"
       defaultWidth={300}
       minWidth={240}
       maxWidth={440}
@@ -214,7 +214,7 @@ export function ChatThreadRail({
       <div className="border-b border-border/60 px-3 py-3 pr-14">
         <div className="flex items-center justify-between gap-2">
           <div className="min-w-0">
-            <h3 className="truncate text-sm font-semibold text-text-primary">Work inbox</h3>
+            <h3 className="truncate text-sm font-semibold text-text-primary">Threads</h3>
             <p className="mt-0.5 text-[11px] text-text-tertiary">
               {activeThreads.length} active · creation order
             </p>
@@ -235,7 +235,7 @@ export function ChatThreadRail({
           <div className="rounded-xl border border-dashed border-border px-4 py-5 text-center">
             <p className="text-sm font-medium text-text-primary">{emptyLabel}</p>
             <p className="mt-2 text-xs leading-relaxed text-text-tertiary">
-              Start a thread, or return settled work to the inbox when it needs another pass.
+              Start a thread, or return archived work when it needs another pass.
             </p>
           </div>
         ) : (
@@ -245,10 +245,10 @@ export function ChatThreadRail({
         )}
 
         {settledThreads.length > 0 && (
-          <section className="mt-5 border-t border-border/60 pt-3" aria-label="Settled threads">
+          <section className="mt-5 border-t border-border/60 pt-3" aria-label="Archived threads">
             <div className="mb-1.5 flex items-center justify-between px-1">
               <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-tertiary">
-                Settled
+                Archived
               </h4>
               <span className="text-[11px] tabular-nums text-text-tertiary">
                 {settledThreads.length}
@@ -285,7 +285,7 @@ function ThreadAction({
       }}
       disabled={disabled}
       className={`rounded-lg p-1.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-30 ${className}`}
-      title={disabled ? 'Finish or resolve this thread before settling it' : label}
+      title={disabled ? 'Finish or resolve this thread before archiving it' : label}
       aria-label={label}
     >
       {children}
@@ -307,7 +307,7 @@ function threadStateLabel(state: ThreadDisplayState): string {
   if (state === 'approval') return 'Approval needed';
   if (state === 'input') return 'Input needed';
   if (state === 'failed') return 'Needs a look';
-  if (state === 'complete') return 'Ready to settle';
+  if (state === 'complete') return 'Ready to archive';
   if (state === 'working') return 'Working';
   return 'Idle';
 }

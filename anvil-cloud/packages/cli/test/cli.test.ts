@@ -1931,6 +1931,115 @@ describe("main", () => {
     }
   });
 
+  it("emits a conformant plan-only Cloudflare deployment plan", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-"));
+    const originalCwd = process.cwd();
+    const originalExitCode = process.exitCode;
+
+    try {
+      process.exitCode = undefined;
+      process.chdir(rootDir);
+      await captureStdout(() =>
+        main(["new", "edge-notes", "--client", "headless", "--json"]),
+      );
+      process.chdir(path.join(rootDir, "edge-notes"));
+
+      const output = await captureStdout(() =>
+        main(["plan", "--stage", "dev", "--adapter", "cloudflare", "--json"]),
+      );
+      const payload = JSON.parse(output) as Record<string, unknown>;
+
+      expect(payload).toMatchObject({
+        ok: true,
+        plan: {
+          schemaVersion: "0.1",
+          adapter: "cloudflare",
+          environment: "dev",
+          cell: "edge-notes",
+          changes: expect.arrayContaining([
+            expect.objectContaining({
+              concept: "runtime",
+              details: { service: "workers", compatibility: "workerd" },
+            }),
+            expect.objectContaining({
+              concept: "database",
+              details: { service: "d1", tables: ["todos"] },
+            }),
+          ]),
+          review: {
+            stableId: "cloudflare-preview:permanent:edge-notes:dev:deploy",
+            approvalGates: expect.arrayContaining([
+              expect.objectContaining({
+                id: "cloudflare-plan-only-gate",
+                severity: "block",
+              }),
+            ]),
+          },
+        },
+      });
+      expect(process.exitCode).toBeUndefined();
+    } finally {
+      process.chdir(originalCwd);
+      process.exitCode = originalExitCode;
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("plans Cloudflare Temporary Account previews explicitly", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-"));
+    const originalCwd = process.cwd();
+    const originalExitCode = process.exitCode;
+
+    try {
+      process.exitCode = undefined;
+      process.chdir(rootDir);
+      await captureStdout(() =>
+        main(["new", "temporary-edge", "--client", "headless", "--json"]),
+      );
+      process.chdir(path.join(rootDir, "temporary-edge"));
+
+      const output = await captureStdout(() =>
+        main([
+          "plan",
+          "--stage",
+          "preview",
+          "--adapter",
+          "cloudflare",
+          "--temporary",
+          "--json",
+        ]),
+      );
+      const payload = JSON.parse(output) as Record<string, unknown>;
+
+      expect(payload).toMatchObject({
+        ok: true,
+        plan: {
+          adapter: "cloudflare",
+          review: {
+            stableId:
+              "cloudflare-preview:temporary:temporary-edge:preview:deploy",
+          },
+          changes: expect.arrayContaining([
+            expect.objectContaining({
+              concept: "environment",
+              details: expect.objectContaining({
+                authentication: "temporary",
+                wranglerMinimumVersion: "4.102.0",
+                claimWithinMinutes: 60,
+              }),
+            }),
+          ]),
+        },
+      });
+      expect(output).not.toContain("apiToken");
+      expect(process.exitCode).toBeUndefined();
+    } finally {
+      process.chdir(originalCwd);
+      process.exitCode = originalExitCode;
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("aggregates Guard and preview plan review into a trust report", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-"));
     const originalCwd = process.cwd();
@@ -1993,6 +2102,63 @@ describe("main", () => {
         },
       });
       expect(process.exitCode).toBeUndefined();
+    } finally {
+      process.chdir(originalCwd);
+      process.exitCode = originalExitCode;
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("includes Cloudflare plan blockers in the trust report", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-cli-"));
+    const originalCwd = process.cwd();
+    const originalExitCode = process.exitCode;
+
+    try {
+      process.exitCode = undefined;
+      process.chdir(rootDir);
+      await captureStdout(() =>
+        main(["new", "edge-review", "--client", "headless", "--json"]),
+      );
+      process.chdir(path.join(rootDir, "edge-review"));
+
+      const output = await captureStdout(() =>
+        main([
+          "review",
+          "--adapter",
+          "cloudflare",
+          "--env",
+          "preview",
+          "--json",
+        ]),
+      );
+      const payload = JSON.parse(output) as Record<string, unknown>;
+
+      expect(payload).toMatchObject({
+        ok: false,
+        status: "block",
+        target: {
+          adapter: "cloudflare",
+          environment: "preview",
+          cell: "edge-review",
+        },
+        summary: {
+          blockingGates: 2,
+        },
+        review: {
+          approvalGates: expect.arrayContaining([
+            expect.objectContaining({
+              id: "cloudflare-plan-only-gate",
+              severity: "block",
+            }),
+            expect.objectContaining({
+              id: "cloudflare-preview-support-gate",
+              severity: "block",
+            }),
+          ]),
+        },
+      });
+      expect(process.exitCode).toBe(6);
     } finally {
       process.chdir(originalCwd);
       process.exitCode = originalExitCode;

@@ -1,7 +1,15 @@
 import { ipcMain } from 'electron';
 import type {
+  AgentUIIntentPresentationPatch,
+  AgentUIPlanPatch,
+  AgentUIQuestionResolution,
+} from '../../shared/agent-ui-intents.js';
+import type {
   ChatMessage,
   ChatArtifact,
+  ChatArtifactAnnotation,
+  ChatArtifactAnnotationInput,
+  ChatArtifactAnnotationPatch,
   ChatArtifactFile,
   ChatArtifactInput,
   ChatAttachment,
@@ -34,6 +42,11 @@ import {
   listActiveCodexSessions,
   resolveApproval,
   resolveInputRequest,
+  dismissAgentUIIntentAndBroadcast,
+  patchAgentUIPlanAndNotify,
+  resolveAgentUIQuestion,
+  restoreAgentUIIntentAndBroadcast,
+  updateAgentUIIntentPresentationAndBroadcast,
 } from '../services/codex-session.service.js';
 import {
   callAppleFoundationModel,
@@ -66,10 +79,18 @@ import {
 import { listChatTurnSummaries, saveChatEvent } from '../services/chat-evidence.service.js';
 import { searchChatFileMentions } from '../services/chat-file-mention.service.js';
 import {
+  discardChatArtifact,
   listChatArtifacts,
   readChatArtifactFile,
   upsertChatArtifact,
 } from '../services/chat-artifact.service.js';
+import {
+  createChatArtifactAnnotation,
+  deleteChatArtifactAnnotation,
+  listChatArtifactAnnotations,
+  updateChatArtifactAnnotation,
+} from '../services/chat-artifact-annotation.service.js';
+import { listAgentUIIntents } from '../services/agent-ui-intent.service.js';
 
 const APPLE_FOUNDATION_CHAT_MAX_PROMPT_CHARS = 8_000;
 
@@ -292,6 +313,34 @@ export function registerChatHandlers(): void {
     },
   );
 
+  ipcMain.handle('chat:list-agent-ui-intents', (_event, threadId: string, includeInactive = true) =>
+    listAgentUIIntents(threadId, { includeInactive }),
+  );
+
+  ipcMain.handle(
+    'chat:resolve-agent-ui-question',
+    (_event, intentId: string, resolution: AgentUIQuestionResolution) =>
+      resolveAgentUIQuestion(intentId, resolution),
+  );
+
+  ipcMain.handle('chat:patch-agent-ui-plan', (_event, intentId: string, patch: AgentUIPlanPatch) =>
+    patchAgentUIPlanAndNotify(intentId, patch),
+  );
+
+  ipcMain.handle(
+    'chat:update-agent-ui-presentation',
+    (_event, intentId: string, patch: AgentUIIntentPresentationPatch) =>
+      updateAgentUIIntentPresentationAndBroadcast(intentId, patch),
+  );
+
+  ipcMain.handle('chat:dismiss-agent-ui-intent', (_event, intentId: string) =>
+    dismissAgentUIIntentAndBroadcast(intentId),
+  );
+
+  ipcMain.handle('chat:restore-agent-ui-intent', (_event, intentId: string) =>
+    restoreAgentUIIntentAndBroadcast(intentId),
+  );
+
   ipcMain.handle(
     'chat:switch-persona',
     async (_event, repoId: string, personaId: string): Promise<CodexSession> => {
@@ -410,9 +459,35 @@ export function registerChatHandlers(): void {
     return upsertChatArtifact(input);
   });
 
+  ipcMain.handle('chat:discard-artifact', (_event, id: string): boolean => {
+    return discardChatArtifact(id);
+  });
+
   ipcMain.handle('chat:read-artifact-file', (_event, id: string): ChatArtifactFile => {
     return readChatArtifactFile(id);
   });
+
+  ipcMain.handle(
+    'chat:list-artifact-annotations',
+    (_event, artifactId: string): ChatArtifactAnnotation[] =>
+      listChatArtifactAnnotations(artifactId),
+  );
+
+  ipcMain.handle(
+    'chat:create-artifact-annotation',
+    (_event, input: ChatArtifactAnnotationInput): ChatArtifactAnnotation =>
+      createChatArtifactAnnotation(input),
+  );
+
+  ipcMain.handle(
+    'chat:update-artifact-annotation',
+    (_event, id: string, patch: ChatArtifactAnnotationPatch): ChatArtifactAnnotation =>
+      updateChatArtifactAnnotation(id, patch),
+  );
+
+  ipcMain.handle('chat:delete-artifact-annotation', (_event, id: string): boolean =>
+    deleteChatArtifactAnnotation(id),
+  );
 
   ipcMain.handle('chat:detect-codex', async () => {
     return detectCodexCli();

@@ -1,0 +1,19 @@
+{
+  "name": "@anvil-cloud/cloudflare",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@anvil-cloud/builder": "workspace:*",
+    "@anvil-cloud/deployment": "workspace:*",
+    "@anvil-cloud/runtime": "workspace:*",
+    "esbuild": "^0.28.1"
+  }
+}

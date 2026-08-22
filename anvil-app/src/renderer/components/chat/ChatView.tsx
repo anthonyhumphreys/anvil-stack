@@ -18,7 +18,6 @@ import {
   Presentation,
   GraduationCap,
   Database,
-  Hammer,
   ListChecks,
   Target,
   Circle,
@@ -32,7 +31,7 @@ import {
   Copy,
   Check,
   ExternalLink,
-  SlidersHorizontal,
+  Ellipsis,
   Maximize2,
   Minimize2,
   PictureInPicture2,
@@ -43,7 +42,9 @@ import {
   GitPullRequest,
   Gauge,
   LifeBuoy,
+  Trash2,
 } from 'lucide-react';
+import type { AgentUIPlanIntent, AgentUIQuestionIntent } from '../../../shared/agent-ui-intents';
 import type {
   AgentRunSummary,
   ChatAttachment,
@@ -54,6 +55,7 @@ import type {
   CodexMode,
   CodexSession,
   Persona,
+  ReasoningEffort,
   UserRole,
 } from '../../../shared/types';
 import { ROLE_RECOMMENDED_PERSONAS } from '../../../shared/types';
@@ -70,13 +72,13 @@ import {
 import { composeChatTurns } from './chat-turns';
 import { ChatEmptyState } from './ChatEmptyState';
 import { ArtifactPreview } from './ArtifactPreview';
+import { ArtifactAnnotationsPanel } from './ArtifactAnnotationsPanel';
 import { DetachedCanvasWindow } from './DetachedCanvasWindow';
 import { useChatContext } from '../../contexts/ChatContext';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { DesignProvider } from '../../contexts/DesignContext';
 import { RepoSelector } from '../shared/RepoSelector';
 import { GovernanceSelector } from '../shared/GovernanceSelector';
-import { WorkspaceGitActions } from '../shared/WorkspaceGitActions';
 import {
   extractFindings,
   stripFindingMarkers,
@@ -92,6 +94,14 @@ import {
 import { parseWorkflowChatIntent } from '../../utils/workflow-chat-intent';
 import { groupPersonasForRole } from '../../utils/persona-groups';
 import { ItsmWorkbench } from './ItsmWorkbench';
+import { ExecutionTopologyPanel } from './ExecutionTopologyPanel';
+import { buildExecutionTopology, type ExecutionTopology } from '../../utils/execution-topology';
+import {
+  CHAT_PREFILL_EVENT,
+  PlanIntentSurface,
+  QuestionIntentSurface,
+} from './AgentUIIntentSurface';
+import { resolveChatFastModeTarget } from '../../utils/chat-fast-mode';
 
 const PERSONA_ICONS: Record<string, React.ReactNode> = {
   Code: <Code size={14} />,
@@ -149,8 +159,10 @@ export function ChatView({ userRole }: ChatViewProps) {
     liveThreadStatuses,
     collaborationMode,
     activePlan,
+    agentUIIntents,
     activeGoal,
     activeArtifacts,
+    discardArtifact,
     chatLayout,
     send,
     steer,
@@ -174,7 +186,7 @@ export function ChatView({ userRole }: ChatViewProps) {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [showPersonaDropdown, setShowPersonaDropdown] = useState(false);
-  const [showContextSettings, setShowContextSettings] = useState(false);
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
   const [showFindings, setShowFindings] = useState(true);
   const [dismissedFindings, setDismissedFindings] = useState<Set<number>>(new Set());
   const [composerPrefill, setComposerPrefill] = useState<{ id: string; text: string } | null>(null);
@@ -182,10 +194,13 @@ export function ChatView({ userRole }: ChatViewProps) {
   const [goalPopoverOpen, setGoalPopoverOpen] = useState(false);
   const [workOpen, setWorkOpen] = useState(false);
   const [executionStrategy, setExecutionStrategy] = useState<ExecutionStrategy>('auto');
+  const [fastMode, setFastMode] = useState(false);
   const [canvasOpen, setCanvasOpen] = useState(true);
   const [canvasExpanded, setCanvasExpanded] = useState(false);
   const [canvasDetached, setCanvasDetached] = useState(false);
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
+  const [canvasPlanSelected, setCanvasPlanSelected] = useState(false);
+  const [showPlanHistory, setShowPlanHistory] = useState(false);
   const [recentRuns, setRecentRuns] = useState<AgentRunSummary[]>([]);
   const [activeSessions, setActiveSessions] = useState<CodexSession[]>([]);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
@@ -193,6 +208,7 @@ export function ChatView({ userRole }: ChatViewProps) {
   const [itsmWorkbenchOpen, setItsmWorkbenchOpen] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const moreMenuRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
   const appliedItsmDefaultRef = useRef(false);
 
@@ -201,6 +217,10 @@ export function ChatView({ userRole }: ChatViewProps) {
   const isDbExpertPersona = activePersona?.id === 'db-expert';
   const isItsmPersona = activePersona ? ITSM_PERSONA_IDS.has(activePersona.id) : false;
   const isWorkItemLayout = chatLayout === 'workitems';
+  const fastModeTarget = useMemo(
+    () => resolveChatFastModeTarget(modelProvider, model, modelOptions),
+    [model, modelOptions, modelProvider],
+  );
   const mentionRepoIds = useMemo(() => activeRepos.map((repo) => repo.id), [activeRepos]);
   const slashCommands = useMemo<ChatSlashCommand[]>(
     () => [
@@ -235,6 +255,10 @@ export function ChatView({ userRole }: ChatViewProps) {
     ],
     [],
   );
+
+  useEffect(() => {
+    if (!fastModeTarget.available && fastMode) setFastMode(false);
+  }, [fastMode, fastModeTarget.available]);
 
   useEffect(() => {
     if (userRole !== 'itsm') {
@@ -399,6 +423,7 @@ export function ChatView({ userRole }: ChatViewProps) {
 
   const handleSwitchPersona = (persona: Persona) => {
     setShowPersonaDropdown(false);
+    setShowMoreMenu(false);
     switchPersona(persona);
   };
 
@@ -422,6 +447,7 @@ export function ChatView({ userRole }: ChatViewProps) {
                 message,
                 attachments,
                 buildExecutionStrategyPrompt(executionStrategy) ?? undefined,
+                fastMode,
               );
               return;
             }
@@ -444,14 +470,20 @@ export function ChatView({ userRole }: ChatViewProps) {
               message,
               attachments,
               buildExecutionStrategyPrompt(executionStrategy) ?? undefined,
+              fastMode,
             );
           });
         return;
       }
 
-      void send(message, attachments, buildExecutionStrategyPrompt(executionStrategy) ?? undefined);
+      void send(
+        message,
+        attachments,
+        buildExecutionStrategyPrompt(executionStrategy) ?? undefined,
+        fastMode,
+      );
     },
-    [activeWorkspace, executionStrategy, navigate, send, startNewSession],
+    [activeWorkspace, executionStrategy, fastMode, navigate, send, startNewSession],
   );
 
   const handleChatInputSend = useCallback(
@@ -473,6 +505,21 @@ export function ChatView({ userRole }: ChatViewProps) {
       console.error('[Chat] Failed to update Codex mode:', err);
     }
   }, []);
+
+  const handleModelChange = useCallback(
+    (nextModel: string) => {
+      setFastMode(false);
+      setModel(nextModel);
+    },
+    [setModel],
+  );
+
+  const handleReasoningChange = useCallback(
+    (nextLevel: ReasoningEffort) => {
+      setReasoningLevel(nextLevel);
+    },
+    [setReasoningLevel],
+  );
 
   const handleChatLayoutChange = useCallback(
     (layout: typeof chatLayout) => {
@@ -528,10 +575,41 @@ export function ChatView({ userRole }: ChatViewProps) {
 
   const isEmpty = entries.length === 0 && !error;
   const showCenteredEmptyPane = isEmpty || (scaffoldModeActive && entries.length === 0 && !error);
-  const selectedArtifact =
-    activeArtifacts.find((artifact) => artifact.id === selectedArtifactId) ??
-    activeArtifacts[0] ??
-    null;
+  const planIntents = useMemo(
+    () => agentUIIntents.filter((intent): intent is AgentUIPlanIntent => intent.kind === 'plan'),
+    [agentUIIntents],
+  );
+  const visiblePlanIntent = planIntents.find(
+    (intent) =>
+      intent.lifecycle !== 'dismissed' &&
+      intent.lifecycle !== 'expired' &&
+      intent.payload.lifecycle !== 'archived' &&
+      !intent.presentation.hidden,
+  );
+  const pendingQuestions = useMemo(
+    () =>
+      agentUIIntents.filter(
+        (intent): intent is AgentUIQuestionIntent =>
+          intent.kind === 'question' &&
+          (intent.lifecycle === 'pending' || intent.lifecycle === 'presented'),
+      ),
+    [agentUIIntents],
+  );
+  const selectedArtifact = canvasPlanSelected
+    ? null
+    : (activeArtifacts.find((artifact) => artifact.id === selectedArtifactId) ??
+      activeArtifacts[0] ??
+      null);
+  const executionTopology = useMemo(
+    () =>
+      buildExecutionTopology({
+        entries,
+        sessions: activeSessions,
+        threadId: activeThreadId,
+        rootLabel: activeThread?.title ?? 'New thread',
+      }),
+    [activeSessions, activeThread?.title, activeThreadId, entries],
+  );
   const showItsmWorkbench = userRole === 'itsm' && isItsmPersona && itsmWorkbenchOpen;
   const showCanvasSidebar =
     !isDesignPersona &&
@@ -540,7 +618,10 @@ export function ChatView({ userRole }: ChatViewProps) {
     canvasOpen &&
     !canvasExpanded &&
     !canvasDetached &&
-    (activeArtifacts.length > 0 || activePlan || activeGoal);
+    (activeArtifacts.length > 0 ||
+      visiblePlanIntent ||
+      activeGoal ||
+      (showPlanHistory && planIntents.length > 0));
 
   useEffect(() => {
     if (activeArtifacts.length === 0) {
@@ -556,10 +637,28 @@ export function ChatView({ userRole }: ChatViewProps) {
   }, [activeArtifacts]);
 
   useEffect(() => {
-    if (activeArtifacts.length > 0 || activePlan || activeGoal) return;
+    if (!visiblePlanIntent || activeArtifacts.length > 0) return;
+    setCanvasPlanSelected(true);
+    setCanvasOpen(true);
+  }, [activeArtifacts.length, visiblePlanIntent?.id]);
+
+  useEffect(() => {
+    if (activeArtifacts.length > 0 || visiblePlanIntent || activeGoal) return;
     setCanvasExpanded(false);
     setCanvasDetached(false);
-  }, [activeArtifacts.length, activeGoal, activePlan]);
+    setCanvasOpen(false);
+  }, [activeArtifacts.length, activeGoal, visiblePlanIntent]);
+
+  useEffect(() => {
+    const handlePrefill = (event: Event) => {
+      const detail = (event as CustomEvent<{ text?: string }>).detail;
+      if (!detail?.text) return;
+      setComposerPrefill({ id: `agent-ui-${Date.now()}`, text: detail.text });
+      setComposerFocusRequest((current) => current + 1);
+    };
+    window.addEventListener(CHAT_PREFILL_EVENT, handlePrefill);
+    return () => window.removeEventListener(CHAT_PREFILL_EVENT, handlePrefill);
+  }, []);
 
   useEffect(() => {
     if (!canvasExpanded) return;
@@ -569,6 +668,27 @@ export function ChatView({ userRole }: ChatViewProps) {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [canvasExpanded]);
+
+  useEffect(() => {
+    if (!showMoreMenu) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!moreMenuRef.current?.contains(event.target as Node)) {
+        setShowMoreMenu(false);
+        setShowPersonaDropdown(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      setShowMoreMenu(false);
+      setShowPersonaDropdown(false);
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showMoreMenu]);
 
   const handleDetachedCanvasClose = useCallback(() => {
     setCanvasDetached(false);
@@ -598,7 +718,7 @@ export function ChatView({ userRole }: ChatViewProps) {
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-2">
               <h2 className="truncate text-sm font-semibold tracking-tight text-text-primary">
-                {activeThread && !scaffoldModeActive ? activeThread.title : 'New conversation'}
+                {activeThread && !scaffoldModeActive ? activeThread.title : 'New thread'}
               </h2>
             </div>
             <p className="truncate text-xs text-text-tertiary">
@@ -606,20 +726,57 @@ export function ChatView({ userRole }: ChatViewProps) {
             </p>
           </div>
 
-          <div className="relative ml-auto shrink-0">
+          {!scaffoldModeActive && (
+            <div
+              className="ml-auto flex shrink-0 items-center rounded-lg bg-bg-primary/55 p-0.5"
+              role="group"
+              aria-label="Thread source"
+            >
+              <button
+                type="button"
+                onClick={() => handleChatLayoutChange('classic')}
+                className={`flex h-8 items-center gap-1.5 rounded-md px-2 text-xs font-medium transition-colors ${
+                  chatLayout === 'classic'
+                    ? 'bg-bg-elevated text-text-primary shadow-sm'
+                    : 'text-text-tertiary hover:text-text-primary'
+                }`}
+                aria-pressed={chatLayout === 'classic'}
+                title="Chat threads"
+              >
+                <MessageSquare size={12} />
+                <span className="hidden xl:inline">Chat</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleChatLayoutChange('workitems')}
+                className={`flex h-8 items-center gap-1.5 rounded-md px-2 text-xs font-medium transition-colors ${
+                  chatLayout === 'workitems'
+                    ? 'bg-bg-elevated text-info shadow-sm'
+                    : 'text-text-tertiary hover:text-text-primary'
+                }`}
+                aria-pressed={chatLayout === 'workitems'}
+                title="Work-item threads"
+              >
+                <ClipboardList size={12} />
+                <span className="hidden xl:inline">Tickets</span>
+              </button>
+            </div>
+          )}
+
+          <div ref={moreMenuRef} className="relative shrink-0">
             <button
               type="button"
-              onClick={() => setShowContextSettings((open) => !open)}
+              onClick={() => setShowMoreMenu((open) => !open)}
               className="flex h-9 items-center gap-2 rounded-lg border border-border px-2.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-              aria-expanded={showContextSettings}
-              aria-label="Chat context and mode settings"
+              aria-expanded={showMoreMenu}
+              aria-label="More chat controls"
             >
-              <SlidersHorizontal size={13} />
-              <span className="hidden lg:inline">Context</span>
+              <Ellipsis size={14} />
+              <span className="hidden 2xl:inline">More</span>
             </button>
 
-            {showContextSettings && (
-              <div className="absolute right-0 top-full z-50 mt-2 w-[min(680px,calc(100vw-2rem))] rounded-xl border border-border bg-bg-elevated p-3 shadow-2xl">
+            {showMoreMenu && (
+              <div className="absolute right-0 top-full z-50 mt-2 w-80 rounded-xl border border-border bg-bg-elevated p-3 shadow-2xl">
                 <div className="flex flex-wrap items-center gap-2">
                   {/* Persona selector */}
                   <div className="relative">
@@ -689,106 +846,12 @@ export function ChatView({ userRole }: ChatViewProps) {
                     )}
                   </div>
 
-                  {/* Repo selector */}
-                  {!scaffoldModeActive && (
-                    <RepoSelector
-                      variant="dropdown"
-                      mode="multi"
-                      selectedRepoIds={activeRepos.map((r) => r.id)}
-                      onMultiSelect={setActiveRepos}
-                    />
-                  )}
-
-                  {!scaffoldModeActive && (
-                    <div className="flex items-center gap-1 rounded-xl border border-border bg-bg-primary/60 p-0.5">
-                      <button
-                        onClick={() => handleChatLayoutChange('classic')}
-                        className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
-                          chatLayout === 'classic'
-                            ? 'bg-accent/15 text-accent'
-                            : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary'
-                        }`}
-                        aria-pressed={chatLayout === 'classic'}
-                        title="Classic chat threads"
-                      >
-                        <MessageSquare size={12} />
-                        <span className="hidden 2xl:inline">Classic</span>
-                      </button>
-                      <button
-                        onClick={() => handleChatLayoutChange('workitems')}
-                        className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
-                          chatLayout === 'workitems'
-                            ? 'bg-info/15 text-info'
-                            : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary'
-                        }`}
-                        aria-pressed={chatLayout === 'workitems'}
-                        title="Work-item chat threads"
-                      >
-                        <ClipboardList size={12} />
-                        <span className="hidden 2xl:inline">Tickets</span>
-                      </button>
-                    </div>
-                  )}
-
-                  {!scaffoldModeActive && (
-                    <div className="flex items-center gap-1 rounded-xl border border-border bg-bg-primary/60 p-0.5">
-                      <button
-                        onClick={() => setCollaborationMode('default')}
-                        className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
-                          collaborationMode === 'default'
-                            ? 'bg-accent/15 text-accent'
-                            : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary'
-                        }`}
-                        aria-pressed={collaborationMode === 'default'}
-                        title="Implementation mode"
-                      >
-                        <Hammer size={12} />
-                        <span className="hidden xl:inline">Build</span>
-                      </button>
-                      <button
-                        onClick={() => setCollaborationMode('plan')}
-                        className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
-                          collaborationMode === 'plan'
-                            ? 'bg-info/15 text-info'
-                            : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-secondary'
-                        }`}
-                        aria-pressed={collaborationMode === 'plan'}
-                        title="Planning mode"
-                      >
-                        <ListChecks size={12} />
-                        <span className="hidden xl:inline">Plan</span>
-                      </button>
-                    </div>
-                  )}
-
-                  {/* Governance document selector */}
-                  <GovernanceSelector
-                    selectedDocIds={selectedGovernanceDocs.map((d) => d.id)}
-                    onSelectionChange={setSelectedGovernanceDocs}
-                  />
-
-                  {!scaffoldModeActive && (
-                    <WorkspaceGitActions
-                      repos={repos}
-                      onPullRequestCreated={(result) => {
-                        const target =
-                          result.pullRequestUrl ?? `${result.repoName} ${result.branch}`;
-                        setComposerPrefill({
-                          id: `pr-${Date.now()}`,
-                          text: `Created PR for ${result.repoName}: ${target}`,
-                        });
-                      }}
-                      onError={(message) => {
-                        setComposerPrefill({ id: `git-error-${Date.now()}`, text: message });
-                      }}
-                    />
-                  )}
-
                   {!scaffoldModeActive && (
                     <AgentWorkControl
                       open={workOpen}
                       runs={recentRuns}
                       sessions={activeSessions}
+                      topology={executionTopology}
                       onOpenChange={setWorkOpen}
                       onOpenThread={(threadId) => void selectThread(threadId)}
                       onStop={(sessionId) => void window.anvil.chat.stopSession(sessionId)}
@@ -824,17 +887,6 @@ export function ChatView({ userRole }: ChatViewProps) {
         </div>
 
         <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">
-          {!scaffoldModeActive && activeRepos.length > 0 && (
-            <button
-              type="button"
-              onClick={() => navigate('/git?tab=pull_requests')}
-              className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-              title="Browse and visualise pull requests"
-            >
-              <GitPullRequest size={13} />
-              <span className="hidden xl:inline">PRs</span>
-            </button>
-          )}
           {!isWorkItemLayout && (
             <button
               onClick={() => void startNewSession()}
@@ -876,12 +928,13 @@ export function ChatView({ userRole }: ChatViewProps) {
                   }
                   if (!showCanvasSidebar) {
                     setItsmWorkbenchOpen(false);
+                    setShowPlanHistory(!visiblePlanIntent && planIntents.length > 0);
                     setCanvasOpen(true);
                     return;
                   }
                   setCanvasOpen(false);
                 }}
-                disabled={activeArtifacts.length === 0 && !activePlan && !activeGoal}
+                disabled={activeArtifacts.length === 0 && planIntents.length === 0 && !activeGoal}
                 className="flex items-center gap-1.5 rounded-xl border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-45"
                 title={
                   canvasDetached
@@ -1143,6 +1196,12 @@ export function ChatView({ userRole }: ChatViewProps) {
           </div>
 
           {/* Input */}
+          {pendingQuestions[0] && (
+            <PendingQuestionPrompt
+              intent={pendingQuestions[0]}
+              additionalCount={Math.max(0, pendingQuestions.length - 1)}
+            />
+          )}
           <ChatInput
             onSend={handleChatInputSend}
             onStop={interrupt}
@@ -1152,10 +1211,10 @@ export function ChatView({ userRole }: ChatViewProps) {
             model={model}
             modelProvider={modelProvider}
             modelOptions={modelOptions}
-            onModelChange={setModel}
+            onModelChange={handleModelChange}
             reasoningLevel={reasoningLevel}
             reasoningOptions={reasoningOptions}
-            onReasoningChange={setReasoningLevel}
+            onReasoningChange={handleReasoningChange}
             executionStrategy={executionStrategy}
             onExecutionStrategyChange={setExecutionStrategy}
             codexMode={isItsmPersona ? 'read-only' : codexMode}
@@ -1163,6 +1222,29 @@ export function ChatView({ userRole }: ChatViewProps) {
               scaffoldModeActive ? undefined : (mode) => void handleCodexModeChange(mode)
             }
             codexModeDisabled={isItsmPersona}
+            collaborationMode={collaborationMode}
+            onCollaborationModeChange={scaffoldModeActive ? undefined : setCollaborationMode}
+            fastMode={fastMode}
+            fastModeAvailable={fastModeTarget.available}
+            onFastModeChange={scaffoldModeActive ? undefined : setFastMode}
+            contextControls={
+              scaffoldModeActive ? null : (
+                <>
+                  <RepoSelector
+                    variant="dropdown"
+                    mode="multi"
+                    placement="top"
+                    selectedRepoIds={activeRepos.map((repo) => repo.id)}
+                    onMultiSelect={setActiveRepos}
+                  />
+                  <GovernanceSelector
+                    placement="top"
+                    selectedDocIds={selectedGovernanceDocs.map((document) => document.id)}
+                    onSelectionChange={setSelectedGovernanceDocs}
+                  />
+                </>
+              )
+            }
             prefill={composerPrefill}
             draftKey={composerDraftKey}
             mentionRepoIds={mentionRepoIds}
@@ -1258,7 +1340,7 @@ export function ChatView({ userRole }: ChatViewProps) {
             title="Canvas"
             defaultWidth={460}
             minWidth={360}
-            maxWidth={720}
+            maxWidth={960}
             collapsedWidth={0}
             className="border-l border-border/60 bg-bg-secondary/50"
           >
@@ -1266,8 +1348,15 @@ export function ChatView({ userRole }: ChatViewProps) {
               artifacts={activeArtifacts}
               selectedArtifact={selectedArtifact}
               activePlan={activePlan}
+              planIntents={planIntents}
               activeGoal={activeGoal}
-              onSelectArtifact={setSelectedArtifactId}
+              planSelected={canvasPlanSelected}
+              onSelectPlan={() => setCanvasPlanSelected(true)}
+              onSelectArtifact={(artifactId) => {
+                setCanvasPlanSelected(false);
+                setSelectedArtifactId(artifactId);
+              }}
+              onDiscardArtifact={discardArtifact}
               presentation="sidebar"
               onExpand={() => setCanvasExpanded(true)}
               onDetach={() => setCanvasDetached(true)}
@@ -1275,32 +1364,48 @@ export function ChatView({ userRole }: ChatViewProps) {
           </ResizableSidebarPanel>
         )}
 
-        {canvasExpanded && !canvasDetached && (selectedArtifact || activePlan || activeGoal) && (
-          <div className="fixed inset-3 z-50 flex min-h-0 overflow-hidden rounded-xl border border-border bg-bg-secondary shadow-2xl">
-            <ChatCanvasSidebar
-              artifacts={activeArtifacts}
-              selectedArtifact={selectedArtifact}
-              activePlan={activePlan}
-              activeGoal={activeGoal}
-              onSelectArtifact={setSelectedArtifactId}
-              presentation="expanded"
-              onExpand={() => setCanvasExpanded(false)}
-              onDetach={() => {
-                setCanvasExpanded(false);
-                setCanvasDetached(true);
-              }}
-            />
-          </div>
-        )}
+        {canvasExpanded &&
+          !canvasDetached &&
+          (selectedArtifact || planIntents.length > 0 || activeGoal) && (
+            <div className="fixed inset-y-3 left-20 right-3 z-50 flex min-h-0 overflow-hidden rounded-xl border border-border bg-bg-primary shadow-2xl">
+              <ChatCanvasSidebar
+                artifacts={activeArtifacts}
+                selectedArtifact={selectedArtifact}
+                activePlan={activePlan}
+                planIntents={planIntents}
+                activeGoal={activeGoal}
+                planSelected={canvasPlanSelected}
+                onSelectPlan={() => setCanvasPlanSelected(true)}
+                onSelectArtifact={(artifactId) => {
+                  setCanvasPlanSelected(false);
+                  setSelectedArtifactId(artifactId);
+                }}
+                onDiscardArtifact={discardArtifact}
+                presentation="expanded"
+                onExpand={() => setCanvasExpanded(false)}
+                onDetach={() => {
+                  setCanvasExpanded(false);
+                  setCanvasDetached(true);
+                }}
+              />
+            </div>
+          )}
 
-        {canvasDetached && (selectedArtifact || activePlan || activeGoal) && (
+        {canvasDetached && (selectedArtifact || planIntents.length > 0 || activeGoal) && (
           <DetachedCanvasWindow title="Anvil Canvas" onClose={handleDetachedCanvasClose}>
             <ChatCanvasSidebar
               artifacts={activeArtifacts}
               selectedArtifact={selectedArtifact}
               activePlan={activePlan}
+              planIntents={planIntents}
               activeGoal={activeGoal}
-              onSelectArtifact={setSelectedArtifactId}
+              planSelected={canvasPlanSelected}
+              onSelectPlan={() => setCanvasPlanSelected(true)}
+              onSelectArtifact={(artifactId) => {
+                setCanvasPlanSelected(false);
+                setSelectedArtifactId(artifactId);
+              }}
+              onDiscardArtifact={discardArtifact}
               presentation="detached"
               onExpand={handleDetachedCanvasClose}
               onDetach={handleDetachedCanvasClose}
@@ -1318,10 +1423,54 @@ export function ChatView({ userRole }: ChatViewProps) {
   return content;
 }
 
+function PendingQuestionPrompt({
+  intent,
+  additionalCount,
+}: {
+  intent: AgentUIQuestionIntent;
+  additionalCount: number;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="border-t border-warning/25 bg-warning/[0.035]">
+      <button
+        type="button"
+        onClick={() => setExpanded((current) => !current)}
+        className="flex w-full items-center gap-2.5 px-4 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/50"
+        aria-expanded={expanded}
+      >
+        <MessageSquare size={14} className="shrink-0 text-warning" />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-xs font-semibold text-text-primary">
+            {intent.payload.title ?? 'Agent needs your input'}
+          </span>
+          <span className="block truncate text-xs text-text-tertiary">
+            {intent.payload.questions[0]?.question}
+            {additionalCount > 0
+              ? ` · ${additionalCount} more request${additionalCount === 1 ? '' : 's'}`
+              : ''}
+          </span>
+        </span>
+        <span className="rounded-md bg-warning/10 px-2 py-1 text-xs font-semibold text-warning">
+          {expanded ? 'Hide' : 'Answer'}
+        </span>
+        {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+      </button>
+      {expanded && (
+        <div className="max-h-[min(60vh,560px)] overflow-y-auto border-t border-warning/20 p-2">
+          <QuestionIntentSurface intent={intent} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AgentWorkControl({
   open,
   runs,
   sessions,
+  topology,
   onOpenChange,
   onOpenThread,
   onStop,
@@ -1329,11 +1478,12 @@ function AgentWorkControl({
   open: boolean;
   runs: AgentRunSummary[];
   sessions: CodexSession[];
+  topology: ExecutionTopology;
   onOpenChange: (open: boolean) => void;
   onOpenThread: (threadId: string) => void;
   onStop: (sessionId: string) => void;
 }) {
-  const [section, setSection] = useState<'active' | 'recent'>('active');
+  const [section, setSection] = useState<'active' | 'recent' | 'topology'>('active');
   const activeSessions = sessions.filter(
     (session) => session.status === 'starting' || session.status === 'busy',
   );
@@ -1367,11 +1517,11 @@ function AgentWorkControl({
           <div className="px-2 pb-2">
             <div className="text-sm font-semibold text-text-primary">Agent work</div>
             <div className="mt-1 text-xs text-text-tertiary">
-              Live sessions and durable run history for this workspace.
+              Live sessions, optional topology, and durable run history for this workspace.
             </div>
           </div>
           <div className="flex gap-1 border-b border-border-subtle px-2 pb-2" role="tablist">
-            {(['active', 'recent'] as const).map((item) => (
+            {(['active', 'topology', 'recent'] as const).map((item) => (
               <button
                 key={item}
                 type="button"
@@ -1390,7 +1540,9 @@ function AgentWorkControl({
             ))}
           </div>
           <div className="max-h-96 overflow-y-auto py-2">
-            {section === 'active' && activeSessions.length === 0 ? (
+            {section === 'topology' ? (
+              <ExecutionTopologyPanel topology={topology} />
+            ) : section === 'active' && activeSessions.length === 0 ? (
               <div className="px-3 py-6 text-center">
                 <Bot size={20} className="mx-auto text-text-muted" />
                 <p className="mt-2 text-sm text-text-secondary">No work is running.</p>
@@ -1673,8 +1825,12 @@ function ChatCanvasSidebar({
   artifacts,
   selectedArtifact,
   activePlan,
+  planIntents,
   activeGoal,
+  planSelected,
+  onSelectPlan,
   onSelectArtifact,
+  onDiscardArtifact,
   presentation,
   onExpand,
   onDetach,
@@ -1682,14 +1838,23 @@ function ChatCanvasSidebar({
   artifacts: ChatArtifact[];
   selectedArtifact: ChatArtifact | null;
   activePlan: ChatPlanSnapshot | null;
+  planIntents: AgentUIPlanIntent[];
   activeGoal: ChatGoalSnapshot | null;
+  planSelected: boolean;
+  onSelectPlan: () => void;
   onSelectArtifact: (artifactId: string) => void;
+  onDiscardArtifact: (artifactId: string) => Promise<void>;
   presentation: 'sidebar' | 'expanded' | 'detached';
   onExpand: () => void;
   onDetach: () => void;
 }) {
   const [mode, setMode] = useState<'preview' | 'source'>('preview');
   const [copied, setCopied] = useState(false);
+  const [planOpen, setPlanOpen] = useState(!selectedArtifact && Boolean(activePlan));
+
+  useEffect(() => {
+    if (!selectedArtifact && activePlan) setPlanOpen(true);
+  }, [activePlan, selectedArtifact]);
 
   const handleCopy = useCallback(() => {
     if (!selectedArtifact) return;
@@ -1699,22 +1864,59 @@ function ChatCanvasSidebar({
     });
   }, [selectedArtifact]);
 
+  const handleDiscard = useCallback(() => {
+    if (!selectedArtifact || selectedArtifact.storage !== 'session') return;
+    if (!window.confirm(`Discard the session-only artifact “${selectedArtifact.title}”?`)) return;
+    void onDiscardArtifact(selectedArtifact.id);
+  }, [onDiscardArtifact, selectedArtifact]);
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="border-b border-border/60 px-3 py-2.5">
+    <div
+      className={`flex min-h-0 flex-1 flex-col ${
+        presentation === 'expanded' ? 'bg-bg-primary' : ''
+      }`}
+    >
+      <div
+        className={`border-b border-border/60 ${
+          presentation === 'expanded' ? 'px-5 py-3.5' : 'px-3 py-2.5'
+        }`}
+      >
         <div className="flex items-center gap-2">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-accent/20 bg-accent/10 text-accent">
             <Braces size={15} />
           </div>
           <div className="min-w-0 flex-1">
-            <h3 className="truncate text-sm font-semibold text-text-primary">Canvas</h3>
+            <h3 className="truncate text-sm font-semibold text-text-primary">
+              {presentation === 'expanded' ? 'Canvas workspace' : 'Canvas'}
+            </h3>
             <p className="truncate text-xs text-text-tertiary">
               {artifacts.length > 0
                 ? `${artifacts.length} artifact${artifacts.length === 1 ? '' : 's'}`
-                : 'Plan and goal context'}
+                : planIntents.length > 0
+                  ? `${planIntents.length} plan${planIntents.length === 1 ? '' : 's'}`
+                  : 'Goal context'}
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-1">
+            {planIntents.length === 0 && activePlan && (
+              <button
+                type="button"
+                onClick={() => setPlanOpen((open) => !open)}
+                className={`flex h-8 items-center gap-1.5 rounded-md px-2 text-xs font-medium transition-colors ${
+                  planOpen
+                    ? 'bg-info/10 text-info'
+                    : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary'
+                }`}
+                aria-pressed={planOpen}
+                title={planOpen ? 'Hide implementation plan' : 'Show implementation plan'}
+              >
+                <ListChecks size={13} />
+                <span>
+                  Plan {activePlan.steps.filter((step) => step.status === 'completed').length}/
+                  {activePlan.steps.length}
+                </span>
+              </button>
+            )}
             <button
               type="button"
               onClick={onExpand}
@@ -1739,16 +1941,31 @@ function ChatCanvasSidebar({
         </div>
       </div>
 
-      {artifacts.length > 0 && (
+      {(artifacts.length > 0 || planIntents.length > 0) && (
         <div className="border-b border-border/60 p-2">
           <div className="flex gap-1 overflow-x-auto pb-1">
+            {planIntents.length > 0 && (
+              <button
+                type="button"
+                onClick={onSelectPlan}
+                className={`flex max-w-48 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-left text-xs transition-colors ${
+                  planSelected
+                    ? 'border-info/35 bg-info/10 text-info'
+                    : 'border-border bg-bg-primary/60 text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
+                }`}
+              >
+                <ListChecks size={13} />
+                <span className="truncate">Plans</span>
+                <span className="shrink-0 text-[10px] opacity-70">{planIntents.length}</span>
+              </button>
+            )}
             {artifacts.map((artifact) => (
               <button
                 key={artifact.id}
                 type="button"
                 onClick={() => onSelectArtifact(artifact.id)}
                 className={`flex max-w-48 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-left text-xs transition-colors ${
-                  selectedArtifact?.id === artifact.id
+                  !planSelected && selectedArtifact?.id === artifact.id
                     ? 'border-accent/35 bg-accent/10 text-accent'
                     : 'border-border bg-bg-primary/60 text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
                 }`}
@@ -1763,7 +1980,7 @@ function ChatCanvasSidebar({
         </div>
       )}
 
-      {selectedArtifact ? (
+      {!planSelected && selectedArtifact ? (
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="border-b border-border/60 px-3 py-2">
             <div className="flex items-start gap-2">
@@ -1773,9 +1990,15 @@ function ChatCanvasSidebar({
                   {selectedArtifact.title}
                 </div>
                 <div className="mt-0.5 truncate font-mono text-[11px] text-text-tertiary">
-                  {selectedArtifact.filePath ?? `.anvil/artifacts/${selectedArtifact.relativePath}`}
+                  {selectedArtifact.storage === 'session'
+                    ? `Session only · ${selectedArtifact.relativePath}`
+                    : (selectedArtifact.filePath ??
+                      `.anvil/artifacts/${selectedArtifact.relativePath}`)}
                 </div>
                 <div className="mt-1 flex flex-wrap gap-1.5">
+                  <ArtifactMetaChip
+                    label={selectedArtifact.storage === 'session' ? 'throwaway' : 'repository'}
+                  />
                   <ArtifactMetaChip label={selectedArtifact.status} />
                   <ArtifactMetaChip label={selectedArtifact.visibility} />
                   <ArtifactMetaChip label={selectedArtifact.source} />
@@ -1834,6 +2057,17 @@ function ChatCanvasSidebar({
                     <ExternalLink size={13} />
                   </button>
                 )}
+                {selectedArtifact.storage === 'session' && (
+                  <button
+                    type="button"
+                    onClick={handleDiscard}
+                    className="rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-error/10 hover:text-error"
+                    title="Discard session-only artifact"
+                    aria-label="Discard session-only artifact"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -1841,14 +2075,27 @@ function ChatCanvasSidebar({
           <div className="min-h-0 flex-1 overflow-auto bg-bg-primary/40">
             <ArtifactBody artifact={selectedArtifact} mode={mode} />
           </div>
+          <ArtifactAnnotationsPanel artifact={selectedArtifact} />
         </div>
       ) : (
-        <PlanGoalSidebar activePlan={activePlan} activeGoal={activeGoal} />
+        <PlanGoalSidebar
+          activePlan={activePlan}
+          planIntents={planIntents}
+          activeGoal={activeGoal}
+          planOpen={planOpen}
+          onPlanOpenChange={setPlanOpen}
+        />
       )}
 
-      {selectedArtifact && (activePlan || activeGoal) && (
+      {selectedArtifact && (activeGoal || planIntents.length > 0 || (activePlan && planOpen)) && (
         <div className="max-h-60 overflow-auto border-t border-border/60">
-          <PlanGoalSidebar activePlan={activePlan} activeGoal={activeGoal} compact />
+          <PlanGoalSidebar
+            activePlan={activePlan}
+            planIntents={planIntents}
+            activeGoal={activeGoal}
+            planOpen={planOpen}
+            onPlanOpenChange={setPlanOpen}
+          />
         </div>
       )}
     </div>
@@ -1878,19 +2125,21 @@ function ArtifactBody({ artifact, mode }: { artifact: ChatArtifact; mode: 'previ
 
 function PlanGoalSidebar({
   activePlan,
+  planIntents,
   activeGoal,
-  compact = false,
+  planOpen = true,
+  onPlanOpenChange,
 }: {
   activePlan: ChatPlanSnapshot | null;
+  planIntents: AgentUIPlanIntent[];
   activeGoal: ChatGoalSnapshot | null;
-  compact?: boolean;
+  planOpen?: boolean;
+  onPlanOpenChange?: (open: boolean) => void;
 }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-3">
       {activeGoal && (
-        <section
-          className={`${compact ? 'mb-2' : 'mb-3'} rounded-xl border border-success/20 bg-success/5 p-3`}
-        >
+        <section className="mb-3 rounded-xl border border-success/20 bg-success/5 p-3">
           <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
             <Target size={14} className="text-success" />
             Goal
@@ -1906,39 +2155,57 @@ function PlanGoalSidebar({
         </section>
       )}
 
-      {activePlan && (
+      {planIntents.map((intent) => (
+        <PlanIntentSurface key={intent.id} intent={intent} mode="canvas" />
+      ))}
+
+      {planIntents.length === 0 && activePlan && (
         <section className="rounded-xl border border-info/20 bg-info/5">
-          <div className="border-b border-info/15 p-3">
-            <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
+          <button
+            type="button"
+            onClick={() => onPlanOpenChange?.(!planOpen)}
+            className={`w-full p-3 text-left transition-colors hover:bg-info/5 ${
+              planOpen ? 'border-b border-info/15' : ''
+            }`}
+            aria-expanded={planOpen}
+          >
+            <span className="flex items-center gap-2 text-sm font-medium text-text-primary">
               <ListChecks size={14} className="text-info" />
               Implementation Plan
               <span className="ml-auto text-xs text-text-tertiary">
                 {activePlan.steps.filter((step) => step.status === 'completed').length}/
                 {activePlan.steps.length}
               </span>
-            </div>
-            {activePlan.explanation && (
-              <p className="mt-2 text-xs leading-relaxed text-text-secondary">
-                {activePlan.explanation}
-              </p>
-            )}
-          </div>
-          <ol className="space-y-2 p-3">
-            {activePlan.steps.map((step, index) => (
-              <li key={`${index}-${step.step}`} className="flex items-start gap-2 text-sm">
-                <SidebarPlanStepIcon status={step.status} />
-                <span
-                  className={
-                    step.status === 'completed'
-                      ? 'text-text-tertiary line-through'
-                      : 'text-text-secondary'
-                  }
-                >
-                  {step.step}
-                </span>
-              </li>
-            ))}
-          </ol>
+              {planOpen ? (
+                <ChevronDown size={13} className="text-text-tertiary" />
+              ) : (
+                <ChevronRight size={13} className="text-text-tertiary" />
+              )}
+            </span>
+          </button>
+          {planOpen && activePlan.explanation && (
+            <p className="border-b border-info/15 px-3 pb-3 text-xs leading-relaxed text-text-secondary">
+              {activePlan.explanation}
+            </p>
+          )}
+          {planOpen && (
+            <ol className="space-y-2 p-3">
+              {activePlan.steps.map((step, index) => (
+                <li key={`${index}-${step.step}`} className="flex items-start gap-2 text-sm">
+                  <SidebarPlanStepIcon status={step.status} />
+                  <span
+                    className={
+                      step.status === 'completed'
+                        ? 'text-text-tertiary line-through'
+                        : 'text-text-secondary'
+                    }
+                  >
+                    {step.step}
+                  </span>
+                </li>
+              ))}
+            </ol>
+          )}
         </section>
       )}
     </div>

@@ -11,6 +11,7 @@ import { RepoList } from './RepoList';
 import { RepoDetail } from './RepoDetail';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { RepoScanner } from '../shared/RepoScanner';
+import { EmptyState, InlineNotice, ViewHeader } from '../layout/ViewScaffold';
 
 interface IndexProgressState {
   message: string;
@@ -273,49 +274,70 @@ export function ReposView() {
 
   return (
     <>
-      <div className="flex h-full gap-6 p-6">
-        {/* Left panel — repo list */}
-        <div className="w-80 shrink-0 overflow-auto">
-          <div className="mb-4 flex items-center gap-3">
-            <Code size={24} className="text-accent" />
-            <h2 className="text-xl font-semibold">Repositories</h2>
+      <div className="flex h-full min-h-0 flex-col">
+        <ViewHeader
+          icon={Code}
+          title="Repositories"
+          description="Connected codebases, indexing state, and the repository knowledge available to Anvil."
+          meta={
+            <span className="rounded-md bg-bg-tertiary px-2 py-0.5 text-xs tabular-nums text-text-tertiary">
+              {repos.length}
+            </span>
+          }
+          actions={
+            <button
+              type="button"
+              onClick={() => setShowConnectModal(true)}
+              className="rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white hover:bg-accent/90"
+            >
+              Connect repository
+            </button>
+          }
+        />
+        <div className="flex min-h-0 flex-1">
+          {/* Left panel — repo list */}
+          <div className="w-80 shrink-0 overflow-auto border-r border-border-subtle bg-bg-secondary/35 p-4">
+            {error && (
+              <InlineNotice tone="error" className="mb-3">
+                {error}
+              </InlineNotice>
+            )}
+
+            <RepoList
+              repos={repos}
+              selectedRepoId={selectedRepo?.id ?? null}
+              onSelect={handleSelect}
+              onIndex={handleIndex}
+              onForceReindex={handleForceReindex}
+              indexingRepoIds={indexingRepoIds}
+              indexProgressMap={indexProgressMap}
+            />
           </div>
 
-          {error && (
-            <div className="mb-3 rounded-md border border-error/30 bg-error/10 px-3 py-2 text-sm text-error">
-              {error}
-            </div>
-          )}
-
-          <RepoList
-            repos={repos}
-            selectedRepoId={selectedRepo?.id ?? null}
-            onSelect={handleSelect}
-            onConnect={() => setShowConnectModal(true)}
-            onIndex={handleIndex}
-            onForceReindex={handleForceReindex}
-            indexingRepoIds={indexingRepoIds}
-            indexProgressMap={indexProgressMap}
-          />
-        </div>
-
-        {/* Right panel — repo detail */}
-        <div className="flex-1 overflow-auto">
-          {selectedRepo ? (
-            <RepoDetail
-              repo={selectedRepo}
-              summary={summary}
-              isIndexing={selectedRepoIsIndexing}
-              indexProgress={selectedIndexProgress}
-              mapStatus={mapStatus}
-              onRefreshMap={() => void handleIndex(selectedRepo.id)}
-              onMapRefreshModeChange={(mode) => void handleMapRefreshModeChange(mode)}
-            />
-          ) : (
-            <div className="flex h-full items-center justify-center">
-              <p className="text-sm text-text-secondary">Select a repository to view details</p>
-            </div>
-          )}
+          {/* Right panel — repo detail */}
+          <div className="min-w-0 flex-1 overflow-auto p-5">
+            {selectedRepo ? (
+              <RepoDetail
+                repo={selectedRepo}
+                summary={summary}
+                isIndexing={selectedRepoIsIndexing}
+                indexProgress={selectedIndexProgress}
+                mapStatus={mapStatus}
+                onRefreshMap={() => void handleIndex(selectedRepo.id)}
+                onMapRefreshModeChange={(mode) => void handleMapRefreshModeChange(mode)}
+              />
+            ) : (
+              <EmptyState
+                icon={Code}
+                title={repos.length === 0 ? 'Connect a repository' : 'Choose a repository'}
+                description={
+                  repos.length === 0
+                    ? 'Connect a local Git repository to index it and make its structure available across Anvil.'
+                    : 'Select a repository from the list to inspect its index, map, and summary.'
+                }
+              />
+            )}
+          </div>
         </div>
       </div>
 

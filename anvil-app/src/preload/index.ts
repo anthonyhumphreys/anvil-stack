@@ -9,6 +9,8 @@ import type {
   AutomationTriageItem,
   ArgentCommandId,
   ChatArtifactInput,
+  ChatArtifactAnnotationInput,
+  ChatArtifactAnnotationPatch,
   ChatAttachment,
   ChatNavigationTarget,
   ChatAttachmentInput,
@@ -37,6 +39,11 @@ import type {
 } from '../shared/types.js';
 import type { PentestScanConfig, PentestScanEvent } from '../shared/pentest-types.js';
 import type { RunCommand, RunStatus } from '../shared/run-types.js';
+import type {
+  AgentUIIntentPresentationPatch,
+  AgentUIPlanPatch,
+  AgentUIQuestionResolution,
+} from '../shared/agent-ui-intents.js';
 
 const api: AnvilAPI = {
   appWindow: {
@@ -173,7 +180,16 @@ const api: AnvilAPI = {
       ipcRenderer.invoke('chat:list-turn-summaries', threadId),
     listArtifacts: (threadId: string) => ipcRenderer.invoke('chat:list-artifacts', threadId),
     upsertArtifact: (input: ChatArtifactInput) => ipcRenderer.invoke('chat:upsert-artifact', input),
+    discardArtifact: (id: string) => ipcRenderer.invoke('chat:discard-artifact', id),
     readArtifactFile: (id: string) => ipcRenderer.invoke('chat:read-artifact-file', id),
+    listArtifactAnnotations: (artifactId: string) =>
+      ipcRenderer.invoke('chat:list-artifact-annotations', artifactId),
+    createArtifactAnnotation: (input: ChatArtifactAnnotationInput) =>
+      ipcRenderer.invoke('chat:create-artifact-annotation', input),
+    updateArtifactAnnotation: (id: string, patch: ChatArtifactAnnotationPatch) =>
+      ipcRenderer.invoke('chat:update-artifact-annotation', id, patch),
+    deleteArtifactAnnotation: (id: string) =>
+      ipcRenderer.invoke('chat:delete-artifact-annotation', id),
     listThreads: (workspaceId: string | null, personaId: string) =>
       ipcRenderer.invoke('chat:list-threads', workspaceId, personaId),
     listWorkItemThreads: (workspaceId: string | null) =>
@@ -234,6 +250,18 @@ const api: AnvilAPI = {
       ipcRenderer.invoke('chat:save-thread-plan', threadId, plan),
     saveThreadGoal: (threadId: string, goal: ChatGoalSnapshot | null) =>
       ipcRenderer.invoke('chat:save-thread-goal', threadId, goal),
+    listAgentUIIntents: (threadId: string, includeInactive = true) =>
+      ipcRenderer.invoke('chat:list-agent-ui-intents', threadId, includeInactive),
+    resolveAgentUIQuestion: (intentId: string, resolution: AgentUIQuestionResolution) =>
+      ipcRenderer.invoke('chat:resolve-agent-ui-question', intentId, resolution),
+    patchAgentUIPlan: (intentId: string, patch: AgentUIPlanPatch) =>
+      ipcRenderer.invoke('chat:patch-agent-ui-plan', intentId, patch),
+    updateAgentUIIntentPresentation: (intentId: string, patch: AgentUIIntentPresentationPatch) =>
+      ipcRenderer.invoke('chat:update-agent-ui-presentation', intentId, patch),
+    dismissAgentUIIntent: (intentId: string) =>
+      ipcRenderer.invoke('chat:dismiss-agent-ui-intent', intentId),
+    restoreAgentUIIntent: (intentId: string) =>
+      ipcRenderer.invoke('chat:restore-agent-ui-intent', intentId),
   },
 
   workflow: {

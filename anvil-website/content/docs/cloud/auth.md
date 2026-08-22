@@ -4,6 +4,7 @@ navTitle: Auth
 description: Declare access on handlers, verify real tokens locally and in the cloud, and plug in any OIDC provider with configuration.
 product: Anvil Cloud
 section: Architecture
+journey: learn
 order: 118
 ---
 

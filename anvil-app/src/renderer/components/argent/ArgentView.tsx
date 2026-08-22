@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   AlertTriangle,
-  Bot,
   CheckCircle2,
   Copy,
   FileSearch,
@@ -25,6 +24,7 @@ import type {
   ArgentWorkbenchSnapshot,
 } from '../../../shared/types';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
+import { InlineNotice, ViewHeader } from '../layout/ViewScaffold';
 
 const COMMAND_CATEGORY_LABELS: Record<ArgentCommandDefinition['category'], string> = {
   setup: 'Setup',
@@ -54,10 +54,7 @@ export function ArgentView() {
   }, [snapshot]);
 
   const groupedCommands = useMemo(() => {
-    const groups = new Map<
-      ArgentCommandDefinition['category'],
-      ArgentCommandDefinition[]
-    >();
+    const groups = new Map<ArgentCommandDefinition['category'], ArgentCommandDefinition[]>();
     for (const command of snapshot?.commands ?? []) {
       if (!groups.has(command.category)) groups.set(command.category, []);
       groups.get(command.category)!.push(command);
@@ -133,7 +130,7 @@ export function ArgentView() {
       ? [
           `Workspace: ${activeWorkspace?.name ?? 'Active Anvil workspace'}`,
           `Expo companion path: ${snapshot.mobileProjectPath}`,
-          `Argent CLI: ${snapshot.cli.installed ? snapshot.cli.version ?? 'installed' : 'missing'}`,
+          `Argent CLI: ${snapshot.cli.installed ? (snapshot.cli.version ?? 'installed') : 'missing'}`,
           `Codex MCP: ${snapshot.mcp.registered ? 'registered' : 'not registered'}`,
           `iOS: ${snapshot.ios.detail}`,
           `Android: ${snapshot.android.detail}`,
@@ -157,7 +154,9 @@ export function ArgentView() {
 
   async function copyResult() {
     if (!lastResult) return;
-    const text = [lastResult.stdout, lastResult.stderr, lastResult.error].filter(Boolean).join('\n');
+    const text = [lastResult.stdout, lastResult.stderr, lastResult.error]
+      .filter(Boolean)
+      .join('\n');
     try {
       await navigator.clipboard.writeText(text.trim());
       setCopied(true);
@@ -169,25 +168,17 @@ export function ArgentView() {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-bg-primary text-text-primary">
-      <header className="shrink-0 border-b border-border bg-bg-secondary/70 px-7 py-5">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="flex min-w-0 items-center gap-3">
-            <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-info/15 text-info">
-              <MonitorSmartphone size={22} />
-            </span>
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 text-sm text-text-tertiary">
-                <Bot size={14} />
-                {activeWorkspace?.name ?? 'Workspace'} / Expo Argent
-              </div>
-              <h2 className="mt-1 text-2xl font-semibold tracking-tight">Argent Workbench</h2>
-              <p className="mt-1 max-w-3xl text-sm leading-relaxed text-text-secondary">
-                Set up Argent for the Expo companion, check live-device readiness, and send
-                evidence-focused mobile prompts into Chat.
-              </p>
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
+      <ViewHeader
+        icon={MonitorSmartphone}
+        title="Argent Workbench"
+        description="Set up the Expo companion, check device readiness, and send evidence-focused mobile work into Chat."
+        meta={
+          <span className="rounded-md bg-bg-tertiary px-2 py-0.5 text-xs text-text-tertiary">
+            {activeWorkspace?.name ?? 'Workspace'}
+          </span>
+        }
+        actions={
+          <>
             <StatusPill ok={setupComplete} label={setupComplete ? 'Ready' : 'Needs setup'} />
             <button
               type="button"
@@ -211,15 +202,14 @@ export function ArgentView() {
               )}
               Start Preview
             </button>
-          </div>
-        </div>
-        {error && (
-          <div className="mt-4 flex items-center gap-2 rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-sm text-error">
-            <AlertTriangle size={14} />
-            {error}
-          </div>
-        )}
-      </header>
+          </>
+        }
+      />
+      {error && (
+        <InlineNotice icon={AlertTriangle} tone="error" className="m-4 mb-0">
+          {error}
+        </InlineNotice>
+      )}
 
       <main className="grid min-h-0 flex-1 overflow-hidden xl:grid-cols-[22rem_minmax(0,1fr)_23rem]">
         <aside className="min-h-0 overflow-y-auto border-r border-border bg-bg-secondary/45 p-4">
@@ -311,9 +301,7 @@ export function ArgentView() {
                         <td className="px-4 py-3">
                           <span
                             className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${
-                              result.ok
-                                ? 'bg-success/10 text-success'
-                                : 'bg-error/10 text-error'
+                              result.ok ? 'bg-success/10 text-success' : 'bg-error/10 text-error'
                             }`}
                           >
                             {result.ok ? 'ok' : 'failed'}
@@ -387,9 +375,7 @@ function CheckRow({ check }: { check: ArgentReadinessCheck }) {
         {check.level === 'pass' ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}
         <span className="text-sm font-semibold text-text-primary">{check.label}</span>
       </div>
-      <p className="mt-1 break-words text-xs leading-relaxed text-text-secondary">
-        {check.detail}
-      </p>
+      <p className="mt-1 break-words text-xs leading-relaxed text-text-secondary">{check.detail}</p>
     </div>
   );
 }
@@ -473,9 +459,7 @@ function PromptCard({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-sm font-semibold text-text-primary">{template.label}</div>
-          <p className="mt-1 text-xs leading-relaxed text-text-secondary">
-            {template.description}
-          </p>
+          <p className="mt-1 text-xs leading-relaxed text-text-secondary">{template.description}</p>
         </div>
         <MessageSquare size={15} className="mt-0.5 shrink-0 text-info" />
       </div>

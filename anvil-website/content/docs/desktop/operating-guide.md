@@ -4,6 +4,7 @@ navTitle: Operating guide
 description: Set up Anvil Desktop and run delivery workflows with real evidence.
 product: Anvil Desktop
 section: Working guide
+journey: build
 order: 110
 ---
 

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   BookOpen,
+  Bell,
   Code,
   Compass,
   Database,
@@ -20,7 +21,7 @@ import {
   SquareTerminal,
   Terminal,
   TicketCheck,
-  Bot,
+  RadioTower,
   Scale,
   FolderOpen,
   Wrench,
@@ -199,8 +200,18 @@ export function CommandPalette({
 
       // Navigation
       {
+        id: 'nav-inbox',
+        label: 'Go to Inbox',
+        description: 'Review work that needs you and work still in progress.',
+        section: 'Navigation',
+        icon: <Bell size={16} />,
+        feature: 'chat',
+        keywords: ['inbox', 'attention', 'approval', 'failed', 'completed'],
+        action: () => go('/inbox'),
+      },
+      {
         id: 'nav-repos',
-        label: 'Go to Repositories',
+        label: 'Go to Workspace',
         description: 'Connect, inspect, and index source repositories.',
         section: 'Navigation',
         icon: <Code size={16} />,
@@ -230,13 +241,23 @@ export function CommandPalette({
       },
       {
         id: 'nav-automations',
-        label: 'Go to Automations',
-        description: 'Manage scheduled and background agent work.',
+        label: 'Go to Watchtower & schedules',
+        description: 'Manage event-driven and scheduled background agent work.',
         section: 'Navigation',
-        icon: <Bot size={16} />,
+        icon: <RadioTower size={16} />,
         feature: 'automations',
-        keywords: ['automation', 'schedule', 'daemon', 'agents'],
+        keywords: ['automation', 'watchtower', 'schedule', 'daemon', 'agents'],
         action: () => go('/automations'),
+      },
+      {
+        id: 'nav-workflows',
+        label: 'Go to Workflows',
+        description: 'Build and run reusable multi-step agent workflows.',
+        section: 'Navigation',
+        icon: <GitFork size={16} />,
+        feature: 'workflows',
+        keywords: ['automation', 'workflow', 'agents', 'graph'],
+        action: () => go('/workflows'),
       },
       {
         id: 'nav-onboard',

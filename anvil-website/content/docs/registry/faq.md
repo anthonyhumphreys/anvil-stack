@@ -4,6 +4,7 @@ navTitle: FAQ
 description: Quick answers about policy decisions, false positives, private packages, CI behavior, and performance.
 product: Anvil Registry
 section: Getting started
+journey: build
 order: 4
 ---
 

@@ -4,6 +4,7 @@ navTitle: Introduction
 description: What Anvil Registry is, who it is for, and how the pieces fit together.
 product: Anvil Registry
 section: Getting started
+journey: build
 order: 1
 ---
 

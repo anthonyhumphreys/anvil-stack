@@ -12,6 +12,7 @@ import type {
   AutomationTriageItem,
   AutomationRunWorktree,
   CodexEvent,
+  WatchtowerEvent,
 } from '../../shared/types.js';
 import { getDb } from '../db/database.js';
 import { detectCodexCli } from './codex-bridge.service.js';
@@ -21,18 +22,24 @@ import {
   countEnabledAutomations,
   createAutomationRecord,
   createAutomationRun,
+  claimPendingWatchtowerEvent,
   deleteAutomationRecord,
+  enqueueWatchtowerEvent,
   getAutomation,
   getAutomationRun,
+  listExternalWatchtowerAutomations,
+  listPendingWatchtowerEvents,
   listAutomationRunEvents,
   listAutomationRuns,
   listAutomationTriageItems,
   listAutomations,
   listDueAutomations,
+  listWatchtowerAutomations,
   markStaleAutomationRunsFailed,
   updateAutomationRecord,
   updateAutomationRunWorktrees,
   updateAutomationScheduleState,
+  updateWatchtowerState,
 } from './automation-persistence.service.js';
 import { getNextAutomationRunAt, validateAutomationCron } from './automation-cron.service.js';
 import {
@@ -51,11 +58,20 @@ import { notifyIfUnfocused } from './notification.service.js';
 import { buildSystemPrompt, getPersonaById } from './persona.service.js';
 import { getSettings } from './settings.service.js';
 import { resolvePersonaCodexPolicy } from './codex-session.service.js';
+import { parseAdoRemoteUrl, parseGitHubRemoteUrl } from './code-review-pr.service.js';
+import {
+  buildExternalWatchtowerEvent,
+  isExternalWatchtowerEvent,
+  observeExternalWatchtowerSource,
+  shouldTriggerWatchtowerObservation,
+  watchtowerStateFromObservation,
+} from './watchtower-source.service.js';
 
 interface RepoRow {
   id: string;
   name: string;
   path: string;
+  remoteUrl?: string;
 }
 
 interface PreparedWorktree {
@@ -67,13 +83,21 @@ interface PreparedWorktree {
 }
 
 let schedulerTimer: NodeJS.Timeout | null = null;
+let schedulerTickInFlight = false;
 const activeAutomationIds = new Set<string>();
 
 function getRepoRows(repoIds: string[]): RepoRow[] {
   const db = getDb();
-  const query = db.prepare('SELECT id, name, path FROM repos WHERE id = ?');
+  const query = db.prepare('SELECT id, name, path, remote_url FROM repos WHERE id = ?');
   const rows = repoIds
-    .map((repoId) => query.get(repoId) as RepoRow | undefined)
+    .map((repoId) => {
+      const row = query.get(repoId) as
+        | { id: string; name: string; path: string; remote_url: string | null }
+        | undefined;
+      return row
+        ? { id: row.id, name: row.name, path: row.path, remoteUrl: row.remote_url ?? undefined }
+        : undefined;
+    })
     .filter((row): row is RepoRow => Boolean(row));
   return rows;
 }
@@ -105,7 +129,62 @@ function validateAutomationInput(input: AutomationDefinitionInput): void {
   if (input.repoIds.length === 0) {
     throw new Error('Select at least one repository for this automation.');
   }
-  validateAutomationCron(input.scheduleCron, input.timezone);
+  if ((input.triggerMode ?? 'schedule') === 'watchtower') {
+    const supportedEvents = new Set([
+      'workflow.completed',
+      'workflow.failed',
+      'pull_request.merged',
+      'pull_request.closed',
+      'pipeline.completed',
+      'pipeline.failed',
+    ]);
+    if (!input.watchEvent || !supportedEvents.has(input.watchEvent)) {
+      throw new Error('Choose a Watchtower event.');
+    }
+    if (isExternalWatchtowerEvent(input.watchEvent)) {
+      const target = input.watchTarget;
+      if (!target || !input.repoIds.includes(target.repoId)) {
+        throw new Error('Choose one of the automation repositories to watch.');
+      }
+      const targetRepo = getRepoRows([target.repoId])[0];
+      if (!targetRepo?.remoteUrl) {
+        throw new Error('The watched repository needs a GitHub or Azure DevOps remote.');
+      }
+      if (!parseGitHubRemoteUrl(targetRepo.remoteUrl) && !parseAdoRemoteUrl(targetRepo.remoteUrl)) {
+        throw new Error('Watchtower currently supports GitHub and Azure DevOps remotes.');
+      }
+      if (input.watchEvent.startsWith('pull_request.')) {
+        if (!Number.isInteger(target.pullRequestNumber) || (target.pullRequestNumber ?? 0) < 1) {
+          throw new Error('Enter a valid pull request number.');
+        }
+      } else if (!target.pipelineIdentifier?.trim()) {
+        throw new Error('Enter a pipeline name, workflow file, or run ID.');
+      }
+    }
+  } else {
+    validateAutomationCron(input.scheduleCron, input.timezone);
+  }
+}
+
+function withWatchtowerContext(
+  automation: AutomationDefinition,
+  event: WatchtowerEvent | undefined,
+): AutomationDefinition {
+  if (!event) return automation;
+  return {
+    ...automation,
+    prompt: [
+      automation.prompt,
+      '',
+      '## Watchtower event',
+      `Event: ${event.type}`,
+      `Source: ${event.sourceLabel} (${event.sourceId})`,
+      `Occurred at: ${event.occurredAt}`,
+      event.metadata ? `Metadata: ${JSON.stringify(event.metadata)}` : null,
+    ]
+      .filter((line): line is string => Boolean(line))
+      .join('\n'),
+  };
 }
 
 function getActiveLoopConfig(automation: AutomationDefinition): AutomationLoopConfig | null {
@@ -557,8 +636,8 @@ async function runLoopAutomation(
 }
 
 async function executeAutomationRun(run: AutomationRun): Promise<void> {
-  const automation = getAutomation(run.automationId);
-  if (!automation) {
+  const storedAutomation = getAutomation(run.automationId);
+  if (!storedAutomation) {
     completeAutomationRun(run.id, {
       status: 'failed',
       errorMessage: 'Automation definition was deleted before the run started.',
@@ -567,6 +646,7 @@ async function executeAutomationRun(run: AutomationRun): Promise<void> {
     });
     return;
   }
+  const automation = withWatchtowerContext(storedAutomation, run.triggerContext);
 
   if (activeAutomationIds.has(automation.id)) return;
   activeAutomationIds.add(automation.id);
@@ -669,11 +749,55 @@ async function processDueAutomations(): Promise<void> {
   }
 }
 
+async function processExternalWatchtowerSources(): Promise<void> {
+  for (const automation of listExternalWatchtowerAutomations()) {
+    if (!automation.watchEvent || !isExternalWatchtowerEvent(automation.watchEvent)) continue;
+    try {
+      const { repo, observation } = await observeExternalWatchtowerSource(automation);
+      const shouldTrigger = shouldTriggerWatchtowerObservation(
+        automation.watchEvent,
+        automation.watchState,
+        observation,
+      );
+      // Queue the transition before advancing the cursor so a crash cannot silently lose it.
+      if (shouldTrigger) {
+        enqueueWatchtowerEvent(
+          automation.id,
+          buildExternalWatchtowerEvent(automation, repo, observation),
+        );
+      }
+      updateWatchtowerState(automation.id, watchtowerStateFromObservation(observation));
+    } catch (error) {
+      updateWatchtowerState(automation.id, {
+        ...automation.watchState,
+        observedAt: new Date().toISOString(),
+        lastError: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  for (const pending of listPendingWatchtowerEvents()) {
+    const run = claimPendingWatchtowerEvent(pending.id);
+    if (run) void executeAutomationRun(run);
+  }
+}
+
+async function processSchedulerTick(): Promise<void> {
+  if (schedulerTickInFlight) return;
+  schedulerTickInFlight = true;
+  try {
+    await processDueAutomations();
+    await processExternalWatchtowerSources();
+  } finally {
+    schedulerTickInFlight = false;
+  }
+}
+
 function startSchedulerLoop(): void {
   if (schedulerTimer) return;
-  void processDueAutomations();
+  void processSchedulerTick();
   schedulerTimer = setInterval(() => {
-    void processDueAutomations();
+    void processSchedulerTick();
   }, 30_000);
 }
 
@@ -682,6 +806,7 @@ export function shutdownAutomationRuntime(): void {
     clearInterval(schedulerTimer);
     schedulerTimer = null;
   }
+  schedulerTickInFlight = false;
 }
 
 export function initializeAutomationRuntime(): void {
@@ -704,9 +829,10 @@ export function createWorkspaceAutomation(
   input: AutomationDefinitionInput,
 ): AutomationDefinition {
   validateAutomationInput(input);
-  const nextRunAt = input.enabled
-    ? getNextAutomationRunAt(input.scheduleCron, input.timezone)
-    : null;
+  const nextRunAt =
+    input.enabled && (input.triggerMode ?? 'schedule') === 'schedule'
+      ? getNextAutomationRunAt(input.scheduleCron, input.timezone)
+      : null;
   const automation = createAutomationRecord(workspaceId, input, nextRunAt);
   void reconcileAutomationDaemon();
   return automation;
@@ -717,9 +843,10 @@ export function updateWorkspaceAutomation(
   input: AutomationDefinitionInput,
 ): AutomationDefinition | null {
   validateAutomationInput(input);
-  const nextRunAt = input.enabled
-    ? getNextAutomationRunAt(input.scheduleCron, input.timezone)
-    : null;
+  const nextRunAt =
+    input.enabled && (input.triggerMode ?? 'schedule') === 'schedule'
+      ? getNextAutomationRunAt(input.scheduleCron, input.timezone)
+      : null;
   const automation = updateAutomationRecord(automationId, input, nextRunAt);
   void reconcileAutomationDaemon();
   return automation;
@@ -737,6 +864,28 @@ export function runAutomationNow(automationId: string): AutomationRun {
   const run = createAutomationRun(automation, 'manual');
   void executeAutomationRun(run);
   return run;
+}
+
+export function triggerWatchtowerEvent(event: WatchtowerEvent): AutomationRun[] {
+  const runs: AutomationRun[] = [];
+  for (const automation of listWatchtowerAutomations(event.workspaceId, event.type)) {
+    if (
+      event.repoIds.length > 0 &&
+      !automation.repoIds.some((repoId) => event.repoIds.includes(repoId))
+    ) {
+      continue;
+    }
+    try {
+      const run = createAutomationRun(automation, 'watchtower', event);
+      runs.push(run);
+      void executeAutomationRun(run);
+    } catch (error) {
+      if (!(error instanceof Error && error.message.includes('already has an active run'))) {
+        console.error(`[Watchtower] Failed to start ${automation.name}:`, error);
+      }
+    }
+  }
+  return runs;
 }
 
 export function listRunsForAutomation(automationId: string): AutomationRun[] {

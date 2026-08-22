@@ -50,6 +50,7 @@ export const navItems = [
 
 export const productLines = [
   {
+    id: "desktop",
     title: "Anvil Desktop",
     repoName: "anvil-app/",
     eyebrow: "Local delivery workspace",
@@ -81,6 +82,7 @@ export const productLines = [
     ]
   },
   {
+    id: "registry",
     title: "Anvil Registry",
     repoName: "anvil-registry/",
     eyebrow: "npm policy gateway",
@@ -107,6 +109,7 @@ export const productLines = [
     ]
   },
   {
+    id: "cloud",
     title: "Anvil Cloud",
     repoName: "anvil-cloud/",
     eyebrow: "Inspectable app runtime",
@@ -139,6 +142,7 @@ export const productLines = [
     ]
   },
   {
+    id: "node-base",
     title: "Anvil Node Base",
     repoName: "anvil-registry/devcontainer-base/",
     eyebrow: "Hardened Node image",

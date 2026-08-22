@@ -4,6 +4,7 @@ navTitle: Security
 description: Security design expectations, vulnerability reporting, and safe research guidelines for Anvil Registry and Anvil Node Base.
 product: Anvil Registry
 section: Project
+journey: reference
 order: 15
 ---
 

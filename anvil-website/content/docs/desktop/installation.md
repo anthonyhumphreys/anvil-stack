@@ -4,6 +4,7 @@ navTitle: Installation
 description: Get Anvil Desktop running from a release build or from source, and complete first-launch setup.
 product: Anvil Desktop
 section: Basics
+journey: build
 order: 101
 ---
 

@@ -8,6 +8,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import type { AgentUIIntent, AgentUIPlanIntent } from '../../shared/agent-ui-intents';
 import type {
   AgentProvider,
   ChatAttachment,
@@ -47,6 +48,7 @@ import {
   type CodexSelectionChangedDetail,
 } from '../utils/codex-selection';
 import { buildChatModelOptions, type ChatModelOption } from '../utils/chat-model-options';
+import { resolveChatFastModeTarget } from '../utils/chat-fast-mode';
 
 export type ChatEntry =
   | { kind: 'user'; content: string; attachments?: ChatAttachment[]; id?: string }
@@ -85,13 +87,20 @@ interface ChatContextValue {
   liveThreadStatuses: Record<string, CodexSession['status']>;
   collaborationMode: ChatCollaborationMode;
   activePlan: ChatPlanSnapshot | null;
+  agentUIIntents: AgentUIIntent[];
   activeGoal: ChatGoalSnapshot | null;
   activeArtifacts: ChatArtifact[];
+  discardArtifact: (artifactId: string) => Promise<void>;
   chatLayout: ChatLayout;
   setActiveRepo: (repo: RepoInfo) => void;
   setActiveRepos: (repos: RepoInfo[]) => void;
   setSelectedGovernanceDocs: (docs: GovernanceDocument[]) => void;
-  send: (message: string, attachments?: ChatAttachment[], modelContext?: string) => Promise<void>;
+  send: (
+    message: string,
+    attachments?: ChatAttachment[],
+    modelContext?: string,
+    fastMode?: boolean,
+  ) => Promise<void>;
   steer: (message: string, attachments?: ChatAttachment[]) => Promise<void>;
   switchPersona: (persona: Persona) => Promise<void>;
   interrupt: () => Promise<void>;
@@ -167,6 +176,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [dbInsightArtifacts, setDbInsightArtifacts] = useState<DbInsightArtifact[]>([]);
   const [dbInsightAnalysis, setDbInsightAnalysis] = useState<DbInsightAnalysis | null>(null);
   const [activeArtifacts, setActiveArtifacts] = useState<ChatArtifact[]>([]);
+  const [agentUIIntents, setAgentUIIntents] = useState<AgentUIIntent[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [model, setModelState] = useState(DEFAULT_CODEX_MODEL);
@@ -213,8 +223,21 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     () => scopedThreads.find((thread) => thread.id === activeThreadId) ?? null,
     [scopedThreads, activeThreadId],
   );
-  const activePlan = activeThread?.activePlan ?? null;
+  const activePlanIntent = agentUIIntents.find(
+    (intent): intent is AgentUIPlanIntent =>
+      intent.kind === 'plan' &&
+      intent.lifecycle !== 'dismissed' &&
+      intent.lifecycle !== 'expired' &&
+      intent.payload.lifecycle !== 'archived',
+  );
+  const activePlan = activePlanIntent
+    ? planIntentToSnapshot(activePlanIntent)
+    : (activeThread?.activePlan ?? null);
   const activeGoal = activeThread?.activeGoal ?? null;
+
+  useEffect(() => {
+    if (!activeThreadId) setAgentUIIntents([]);
+  }, [activeThreadId]);
 
   const sessionRef = useRef<CodexSession | null>(null);
   sessionRef.current = session;
@@ -463,9 +486,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       );
       if (!thread || !threadBelongsToWorkspace(thread, activeWorkspace?.id ?? null)) return;
 
-      const [history, artifacts] = await Promise.all([
+      const [history, artifacts, intents] = await Promise.all([
         window.anvil.chat.loadHistory(threadId),
         window.anvil.chat.listArtifacts(threadId),
+        window.anvil.chat.listAgentUIIntents(threadId, true),
       ]);
       if (loadVersion !== threadLoadVersionRef.current) return;
 
@@ -500,6 +524,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
       setEntries(nextEntries);
       setActiveArtifacts(artifacts);
+      setAgentUIIntents(intents);
       setActiveReposState(resolvedRepos);
       setActiveRepoState(primaryRepo);
       setError(null);
@@ -1251,6 +1276,32 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           .catch(console.error);
       }
 
+      if (event.type === 'agent_ui_intent' && event.agentUIIntent) {
+        const intent = event.agentUIIntent;
+        if (activeThreadRef.current?.id === intent.scope.threadId) {
+          setAgentUIIntents((previous) => upsertAgentUIIntentState(previous, intent));
+        }
+        if (intent.kind === 'plan') {
+          const snapshot =
+            intent.lifecycle === 'dismissed' || intent.payload.lifecycle === 'archived'
+              ? undefined
+              : planIntentToSnapshot(intent);
+          setThreads((previous) =>
+            previous.map((thread) =>
+              thread.id === intent.scope.threadId ? { ...thread, activePlan: snapshot } : thread,
+            ),
+          );
+        }
+      } else if (event.type === 'agent_ui_intent_resolved' && event.agentUIIntentId) {
+        setAgentUIIntents((previous) =>
+          previous.map((intent) =>
+            intent.id === event.agentUIIntentId
+              ? { ...intent, lifecycle: 'resolved' as const, resolvedAt: new Date().toISOString() }
+              : intent,
+          ),
+        );
+      }
+
       if (eventThreadId && event.type === 'subagent_update') {
         const result = getCompletedSubagentResult(event);
         if (result) {
@@ -1365,6 +1416,14 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         const targetThreadId = eventThreadId ?? activeThreadRef.current?.id;
         if (targetThreadId) persistThreadPlan(targetThreadId, event.plan);
         setEntries((prev) => [...prev, { kind: 'event', event }]);
+      } else if (event.type === 'agent_ui_intent' && event.agentUIIntent) {
+        flushPendingStreamEntry();
+        setEntries((previous) => upsertAgentUIIntentEntry(previous, event));
+      } else if (event.type === 'agent_ui_intent_resolved' && event.agentUIIntentId) {
+        flushPendingStreamEntry();
+        setEntries((previous) =>
+          removeResolvedAgentUIIntentEntry(previous, event.agentUIIntentId!),
+        );
       } else if (event.type === 'goal_update' && event.goal) {
         flushPendingStreamEntry();
         const targetThreadId = eventThreadId ?? activeThreadRef.current?.id;
@@ -1571,7 +1630,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   );
 
   const send = useCallback(
-    async (message: string, attachments: ChatAttachment[] = [], modelContext?: string) => {
+    async (
+      message: string,
+      attachments: ChatAttachment[] = [],
+      modelContext?: string,
+      fastMode = false,
+    ) => {
       const displayMessage = normaliseOutgoingMessage(message, attachments);
       const attachmentPrompt = buildAttachmentPrompt(displayMessage, attachments);
       const modelMessage = modelContext
@@ -1601,6 +1665,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         artifacts: nextArtifacts,
         analysis: nextAnalysis,
       });
+      const fastModeTarget = resolveChatFastModeTarget(modelProvider, model, modelOptions);
+      const turnModel = fastMode && fastModeTarget.available ? fastModeTarget.model : model;
+      const serviceTier = fastModeTarget.available
+        ? fastMode
+          ? fastModeTarget.serviceTier
+          : null
+        : undefined;
 
       let thread = activeThreadRef.current;
       if (!thread) {
@@ -1721,8 +1792,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
           await window.anvil.chat.send(startedSession.id, enriched, attachments, {
             collaborationMode,
-            model,
+            model: turnModel,
             reasoningEffort: reasoningLevel,
+            serviceTier,
           });
         } catch (err) {
           setError(err instanceof Error ? err.message : 'Failed to start session');
@@ -1757,8 +1829,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         bumpThreadSummary(thread.id, buildThreadPreview(displayMessage, attachments), timestamp);
         await window.anvil.chat.send(currentSessionForThread.id, enriched, attachments, {
           collaborationMode,
-          model,
+          model: turnModel,
           reasoningEffort: reasoningLevel,
+          serviceTier,
         });
       } catch (err) {
         setBusy(false);
@@ -1782,6 +1855,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       dbInsightAnalysis,
       findThreadIdForSession,
       model,
+      modelOptions,
+      modelProvider,
       reasoningLevel,
       rememberLiveSession,
       scaffoldModeActive,
@@ -2256,6 +2331,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     }
   }, [activeThreadId, scaffoldModeActive]);
 
+  const discardArtifact = useCallback(async (artifactId: string) => {
+    const discarded = await window.anvil.chat.discardArtifact(artifactId);
+    if (discarded) {
+      setActiveArtifacts((prev) => prev.filter((artifact) => artifact.id !== artifactId));
+    }
+  }, []);
+
   return (
     <ChatContext.Provider
       value={{
@@ -2283,8 +2365,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         liveThreadStatuses,
         collaborationMode,
         activePlan,
+        agentUIIntents,
         activeGoal,
         activeArtifacts,
+        discardArtifact,
         chatLayout,
         setActiveRepo,
         setActiveRepos,
@@ -2326,6 +2410,49 @@ function boundEventPayload<T extends CodexEvent>(event: T): T {
   return event;
 }
 
+export function planIntentToSnapshot(intent: AgentUIPlanIntent): ChatPlanSnapshot {
+  return {
+    explanation: intent.payload.description,
+    steps: intent.payload.steps.map((step) => ({
+      step: step.title,
+      status:
+        step.status === 'done'
+          ? 'completed'
+          : step.status === 'in_progress' || step.status === 'blocked'
+            ? 'in_progress'
+            : 'pending',
+    })),
+    updatedAt: intent.updatedAt,
+  };
+}
+
+function upsertAgentUIIntentState(
+  intents: AgentUIIntent[],
+  incoming: AgentUIIntent,
+): AgentUIIntent[] {
+  const index = intents.findIndex((intent) => intent.id === incoming.id);
+  const next =
+    index < 0
+      ? [incoming, ...intents]
+      : intents.map((intent, i) => (i === index ? incoming : intent));
+  return next.toSorted((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
+}
+
+function upsertAgentUIIntentEntry(entries: ChatEntry[], event: CodexEvent): ChatEntry[] {
+  const intentId = event.agentUIIntent?.id;
+  if (!intentId) return [...entries, { kind: 'event', event }];
+  const index = entries.findIndex(
+    (entry) =>
+      entry.kind === 'event' &&
+      entry.event.type === 'agent_ui_intent' &&
+      entry.event.agentUIIntent?.id === intentId,
+  );
+  if (index < 0) return [...entries, { kind: 'event', event }];
+  const updated = [...entries];
+  updated[index] = { kind: 'event', event };
+  return updated;
+}
+
 function shouldPersistEvidenceEvent(event: CodexEvent): boolean {
   if (event.type === 'command_exec') return !!event.command || !!event.output;
   if (event.type === 'subagent_update') return true;
@@ -2337,6 +2464,8 @@ function shouldPersistEvidenceEvent(event: CodexEvent): boolean {
     event.type === 'input_request' ||
     event.type === 'request_resolved' ||
     event.type === 'plan_update' ||
+    event.type === 'agent_ui_intent' ||
+    event.type === 'agent_ui_intent_resolved' ||
     event.type === 'goal_update' ||
     event.type === 'goal_cleared' ||
     event.type === 'error'
@@ -2395,6 +2524,17 @@ function removeResolvedRequestEntry(entries: ChatEntry[], requestId: string | nu
   );
 }
 
+function removeResolvedAgentUIIntentEntry(entries: ChatEntry[], intentId: string): ChatEntry[] {
+  return entries.filter(
+    (entry) =>
+      !(
+        entry.kind === 'event' &&
+        entry.event.type === 'agent_ui_intent' &&
+        entry.event.agentUIIntent?.id === intentId
+      ),
+  );
+}
+
 export function chatMessagesToEntries(history: ChatMessage[]): ChatEntry[] {
   const entries: ChatEntry[] = [];
 
@@ -2404,6 +2544,12 @@ export function chatMessagesToEntries(history: ChatMessage[]): ChatEntry[] {
       message.event.resolvedRequestId !== undefined
     ) {
       const remaining = removeResolvedRequestEntry(entries, message.event.resolvedRequestId);
+      entries.splice(0, entries.length, ...remaining);
+      continue;
+    }
+
+    if (message.event?.type === 'agent_ui_intent_resolved' && message.event.agentUIIntentId) {
+      const remaining = removeResolvedAgentUIIntentEntry(entries, message.event.agentUIIntentId);
       entries.splice(0, entries.length, ...remaining);
       continue;
     }
@@ -2437,6 +2583,12 @@ export function chatMessagesToEntries(history: ChatMessage[]): ChatEntry[] {
 
     if (message.event?.type === 'subagent_update') {
       const next = upsertSubagentEntry(entries, message.event);
+      entries.splice(0, entries.length, ...next);
+      continue;
+    }
+
+    if (message.event?.type === 'agent_ui_intent') {
+      const next = upsertAgentUIIntentEntry(entries, message.event);
       entries.splice(0, entries.length, ...next);
       continue;
     }
@@ -2658,6 +2810,22 @@ function getThreadAttentionUpdate(
       settledAt: undefined,
     };
   }
+  if (event.type === 'agent_ui_intent' && event.agentUIIntent?.kind === 'question') {
+    return {
+      attentionState: 'input',
+      attentionUpdatedAt: now,
+      activeTurnStartedAt: undefined,
+      settledAt: undefined,
+    };
+  }
+  if (event.type === 'agent_ui_intent_resolved') {
+    return {
+      attentionState: 'working',
+      attentionUpdatedAt: now,
+      activeTurnStartedAt: now,
+      settledAt: undefined,
+    };
+  }
   if (event.type === 'error' || (event.type === 'status' && event.status === 'error')) {
     return {
       attentionState: 'failed',
@@ -2824,6 +2992,7 @@ function buildArtifactCanvasPrompt(threadTitle?: string): string {
     '```',
     'Supported kinds: markdown, mermaid, html, docx, pptx, pdf, csv, xlsx, code, data, text.',
     'Use artifacts for plans, review packs, diagrams, HTML prototypes, dashboards, documents, presentations, spreadsheets, specs, migration notes, and handover documents.',
+    'For throwaway output that should stay in this Anvil session instead of being written to the repository, add storage=session to the fence header.',
     'For a binary docx, pptx, pdf, or xlsx already created under .anvil/artifacts, add encoding=file to the fence header and put a short description inside the fence. Do not inline binary data.',
     'Keep ordinary commentary outside artifact fences.',
     threadTitle ? `Current thread: ${threadTitle}` : null,
@@ -2921,6 +3090,7 @@ function extractChatArtifactInputs(
       sourceMessageId: context.sourceMessageId,
       title,
       kind,
+      storage: metadata.storage,
       relativePath,
       content: artifactContent,
       contentEncoding: metadata.encoding,
@@ -2940,12 +3110,14 @@ function parseArtifactMetadata(value: string): {
   title?: string;
   kind?: ChatArtifactKind;
   encoding?: ArtifactContentEncoding;
+  storage?: ChatArtifactInput['storage'];
 } {
   const metadata: {
     path?: string;
     title?: string;
     kind?: ChatArtifactKind;
     encoding?: ArtifactContentEncoding;
+    storage?: ChatArtifactInput['storage'];
   } = {};
   const tokenPattern = /(\w+)=(?:"([^"]+)"|'([^']+)'|([^\s]+))/g;
   let match: RegExpExecArray | null;
@@ -2959,9 +3131,16 @@ function parseArtifactMetadata(value: string): {
     if (key === 'encoding' && isArtifactContentEncoding(tokenValue)) {
       metadata.encoding = tokenValue;
     }
+    if ((key === 'storage' || key === 'persist') && isArtifactStorage(tokenValue)) {
+      metadata.storage = tokenValue;
+    }
   }
 
   return metadata;
+}
+
+function isArtifactStorage(value: string): value is NonNullable<ChatArtifactInput['storage']> {
+  return value === 'repository' || value === 'session';
 }
 
 function isChatArtifactKind(value: string): value is ChatArtifactKind {

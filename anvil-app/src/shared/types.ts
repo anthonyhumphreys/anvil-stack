@@ -1,3 +1,5 @@
+import type { AgentUIIntent } from './agent-ui-intents.js';
+
 export interface RepoInfo {
   id: string; // SHA256 of repo path
   name: string; // Directory name
@@ -431,6 +433,7 @@ export type ChatArtifactKind =
   | 'text';
 
 export type ChatArtifactContentEncoding = 'utf8' | 'base64' | 'file';
+export type ChatArtifactStorage = 'repository' | 'session';
 
 export interface ChatArtifactFile {
   name: string;
@@ -485,6 +488,7 @@ export interface ChatArtifact {
   sourceMessageId?: string;
   title: string;
   kind: ChatArtifactKind;
+  storage: ChatArtifactStorage;
   relativePath: string;
   filePath?: string;
   content: string;
@@ -504,6 +508,7 @@ export interface ChatArtifactInput {
   sourceMessageId?: string;
   title: string;
   kind: ChatArtifactKind;
+  storage?: ChatArtifactStorage;
   relativePath: string;
   content: string;
   contentEncoding?: ChatArtifactContentEncoding;
@@ -512,6 +517,30 @@ export interface ChatArtifactInput {
   source?: ChatArtifact['source'];
   model?: string;
   reasoningEffort?: ReasoningEffort;
+}
+
+export type ChatArtifactAnnotationStatus = 'open' | 'resolved';
+
+export interface ChatArtifactAnnotation {
+  id: string;
+  artifactId: string;
+  body: string;
+  quote?: string;
+  status: ChatArtifactAnnotationStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ChatArtifactAnnotationInput {
+  artifactId: string;
+  body: string;
+  quote?: string;
+}
+
+export interface ChatArtifactAnnotationPatch {
+  body?: string;
+  quote?: string | null;
+  status?: ChatArtifactAnnotationStatus;
 }
 
 export interface ChatAttachment {
@@ -637,6 +666,7 @@ export interface ChatSendOptions {
   collaborationMode?: ChatCollaborationMode;
   reasoningEffort?: ReasoningEffort;
   model?: string;
+  serviceTier?: string | null;
 }
 
 export interface ChatFileMentionSearchInput {
@@ -884,6 +914,8 @@ export interface CodexEvent {
     | 'thread_status'
     | 'request_resolved'
     | 'plan_update'
+    | 'agent_ui_intent'
+    | 'agent_ui_intent_resolved'
     | 'goal_update'
     | 'goal_cleared'
     | 'error'
@@ -911,6 +943,8 @@ export interface CodexEvent {
   threadActiveFlags?: Array<'waitingOnApproval' | 'waitingOnUserInput'>;
   subagent?: CodexSubagentUpdate;
   plan?: ChatPlanSnapshot;
+  agentUIIntent?: AgentUIIntent;
+  agentUIIntentId?: string;
   goal?: ChatGoalSnapshot;
   status?: 'thinking' | 'executing' | 'complete' | 'error';
   errorMessage?: string;
@@ -1662,7 +1696,15 @@ export interface WorkspaceScaffoldMaybeCompleteResult {
 // ---------------------------------------------------------------------------
 
 export type AutomationExecutionMode = 'disposable-worktree';
-export type AutomationRunTrigger = 'manual' | 'schedule';
+export type AutomationTriggerMode = 'schedule' | 'watchtower';
+export type WatchtowerEventType =
+  | 'workflow.completed'
+  | 'workflow.failed'
+  | 'pull_request.merged'
+  | 'pull_request.closed'
+  | 'pipeline.completed'
+  | 'pipeline.failed';
+export type AutomationRunTrigger = 'manual' | 'schedule' | 'watchtower';
 export type AutomationRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type AutomationLoopMode = 'sequence' | 'dynamic';
 export type AutomationEventType =
@@ -1684,11 +1726,41 @@ export interface AutomationLoopConfig {
   stopCondition: string;
 }
 
+export interface WatchtowerEvent {
+  id: string;
+  type: WatchtowerEventType;
+  workspaceId: string;
+  repoIds: string[];
+  sourceId: string;
+  sourceLabel: string;
+  occurredAt: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface WatchtowerTarget {
+  repoId: string;
+  pullRequestNumber?: number;
+  pipelineIdentifier?: string;
+  branch?: string;
+}
+
+export interface WatchtowerState {
+  sourceId?: string;
+  sourceLabel?: string;
+  status?: string;
+  observedAt: string;
+  occurredAt?: string;
+  lastError?: string;
+}
+
 export interface AutomationDefinitionInput {
   name: string;
   personaId: string;
   prompt: string;
   repoIds: string[];
+  triggerMode?: AutomationTriggerMode;
+  watchEvent?: WatchtowerEventType;
+  watchTarget?: WatchtowerTarget;
   scheduleCron: string;
   timezone: string;
   enabled: boolean;
@@ -1697,9 +1769,16 @@ export interface AutomationDefinitionInput {
   loopConfig?: AutomationLoopConfig;
 }
 
-export interface AutomationDefinition extends AutomationDefinitionInput {
+export interface AutomationDefinition extends Omit<
+  AutomationDefinitionInput,
+  'triggerMode' | 'watchEvent' | 'watchTarget'
+> {
   id: string;
   workspaceId: string;
+  triggerMode: AutomationTriggerMode;
+  watchEvent?: WatchtowerEventType;
+  watchTarget?: WatchtowerTarget;
+  watchState?: WatchtowerState;
   executionMode: AutomationExecutionMode;
   lastRunAt?: string;
   nextRunAt?: string;
@@ -1721,6 +1800,7 @@ export interface AutomationRun {
   automationId: string;
   workspaceId: string;
   trigger: AutomationRunTrigger;
+  triggerContext?: WatchtowerEvent;
   status: AutomationRunStatus;
   startedAt: string;
   completedAt?: string;

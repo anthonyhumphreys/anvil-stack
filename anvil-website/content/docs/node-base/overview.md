@@ -4,6 +4,7 @@ navTitle: Overview
 description: Use the hardened Node base image for safer local and CI dependency installs.
 product: Anvil Node Base
 section: Concepts
+journey: learn
 order: 6
 ---
 

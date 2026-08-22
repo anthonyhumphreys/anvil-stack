@@ -26,6 +26,7 @@ import { buildSystemPrompt, getPersonaById } from './persona.service.js';
 import { getSettings } from './settings.service.js';
 import { callLlm } from './llm.service.js';
 import { resolvePersonaCodexPolicy, resolveSessionCwd } from './codex-session.service.js';
+import { triggerWatchtowerEvent } from './automation.service.js';
 
 interface WorkflowTemplateRow {
   id: string;
@@ -777,6 +778,24 @@ async function executeWorkflow(runId: string): Promise<void> {
       : undefined;
   run.completedAt = new Date().toISOString();
   persistRun(run);
+  try {
+    triggerWatchtowerEvent({
+      id: `${run.id}:${run.status}`,
+      type: run.status === 'failed' ? 'workflow.failed' : 'workflow.completed',
+      workspaceId: run.workspaceId,
+      repoIds: run.repoIds,
+      sourceId: run.id,
+      sourceLabel: run.templateName,
+      occurredAt: run.completedAt,
+      metadata: {
+        kickoff: run.kickoff,
+        failedStepCount: failed.length,
+        error: run.error,
+      },
+    });
+  } catch (error) {
+    console.error('[Watchtower] Workflow event dispatch failed:', error);
+  }
 }
 
 export function startWorkflowRun(input: {

@@ -21,6 +21,7 @@ import {
   Folder,
   GitBranch,
   MessageSquareText,
+  RadioTower,
   PackageOpen,
   Search,
   ShieldCheck,
@@ -76,6 +77,9 @@ const EMPTY_COUNTS: Record<RepositoryChangeStatus, number> = {
 const LazyRepositoryGarden = lazy(() =>
   import('./RepositoryGarden').then((module) => ({ default: module.RepositoryGarden })),
 );
+const LazyRepositoryTwin = lazy(() =>
+  import('./RepositoryTwin').then((module) => ({ default: module.RepositoryTwin })),
+);
 
 export function RepositoryMap({
   repoId,
@@ -98,7 +102,7 @@ export function RepositoryMap({
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [showDependencies, setShowDependencies] = useState(true);
-  const [viewMode, setViewMode] = useState<'map' | 'garden'>('map');
+  const [viewMode, setViewMode] = useState<'map' | 'garden' | 'twin'>('map');
 
   const nodesById = useMemo(
     () => new Map(resolvedGraph.nodes.map((node) => [node.id, node])),
@@ -251,32 +255,36 @@ export function RepositoryMap({
           ))}
         </nav>
 
-        <label className="relative min-w-44 flex-1 sm:max-w-64">
-          <span className="sr-only">Find a module, file, or symbol</span>
-          <Search
-            size={14}
-            className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted"
-          />
-          <input
-            type="search"
-            value={searchQuery}
-            onChange={(event) => setSearchQuery(event.target.value)}
-            placeholder="Find code..."
-            className="h-8 w-full rounded-md border border-border bg-bg-primary pl-8 pr-2 text-xs text-text-primary placeholder:text-text-muted"
-          />
-        </label>
-        <button
-          type="button"
-          aria-pressed={showDependencies}
-          onClick={() => setShowDependencies((visible) => !visible)}
-          className={`flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs transition-colors ${
-            showDependencies
-              ? 'border-info/40 bg-info/10 text-info'
-              : 'border-border text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary'
-          }`}
-        >
-          <GitBranch size={13} /> Paths
-        </button>
+        {viewMode !== 'twin' && (
+          <label className="relative min-w-44 flex-1 sm:max-w-64">
+            <span className="sr-only">Find a module, file, or symbol</span>
+            <Search
+              size={14}
+              className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted"
+            />
+            <input
+              type="search"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="Find code..."
+              className="h-8 w-full rounded-md border border-border bg-bg-primary pl-8 pr-2 text-xs text-text-primary placeholder:text-text-muted"
+            />
+          </label>
+        )}
+        {viewMode !== 'twin' && (
+          <button
+            type="button"
+            aria-pressed={showDependencies}
+            onClick={() => setShowDependencies((visible) => !visible)}
+            className={`flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs transition-colors ${
+              showDependencies
+                ? 'border-info/40 bg-info/10 text-info'
+                : 'border-border text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary'
+            }`}
+          >
+            <GitBranch size={13} /> Paths
+          </button>
+        )}
         <div className="flex h-8 rounded-md border border-border bg-bg-primary p-0.5" role="group" aria-label="Repository view">
           <button
             type="button"
@@ -302,11 +310,26 @@ export function RepositoryMap({
           >
             <TreePine size={12} /> Garden
           </button>
+          <button
+            type="button"
+            aria-pressed={viewMode === 'twin'}
+            onClick={() => setViewMode('twin')}
+            className={`flex items-center gap-1 rounded px-2 text-xs transition-colors ${
+              viewMode === 'twin'
+                ? 'bg-bg-elevated text-text-primary'
+                : 'text-text-tertiary hover:text-text-primary'
+            }`}
+          >
+            <RadioTower size={12} /> Twin
+          </button>
         </div>
       </div>
 
-      {searchResults.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 border-b border-border-subtle bg-bg-primary px-3 py-2" role="listbox">
+      {viewMode !== 'twin' && searchResults.length > 0 && (
+        <div
+          className="flex flex-wrap gap-1.5 border-b border-border-subtle bg-bg-primary px-3 py-2"
+          role="listbox"
+        >
           {searchResults.map((node) => (
             <button
               key={node.id}
@@ -331,9 +354,18 @@ export function RepositoryMap({
       )}
 
       <div
-        className={`repository-explorer-body grid min-h-0 ${selectedNode ? 'has-inspector' : ''}`}
+        className={`repository-explorer-body grid min-h-0 ${selectedNode && viewMode !== 'twin' ? 'has-inspector' : ''}`}
       >
-        {viewMode === 'garden' ? (
+        {viewMode === 'twin' ? (
+          <Suspense fallback={<GardenLoading compact={compact} />}>
+            <LazyRepositoryTwin
+              repoId={repoId}
+              repositoryName={repositoryName}
+              graph={resolvedGraph}
+              compact={compact}
+            />
+          </Suspense>
+        ) : viewMode === 'garden' ? (
           <RepositoryGardenBoundary
             fallback={
               <GardenUnavailable
@@ -402,7 +434,7 @@ export function RepositoryMap({
           </div>
         )}
 
-        {selectedNode && (
+        {selectedNode && viewMode !== 'twin' && (
           <RepositoryInspector
             node={selectedNode}
             changes={selectedChanges}

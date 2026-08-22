@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
-  Bot,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -9,11 +8,14 @@ import {
   GitBranch,
   Loader2,
   Play,
+  RadioTower,
   RefreshCw,
   Save,
   Trash2,
   Wrench,
+  Workflow,
 } from 'lucide-react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import type {
   AutomationDaemonStatus,
   AutomationDefinition,
@@ -24,6 +26,7 @@ import type {
   AutomationTriageItem,
   CodexEvent,
   Persona,
+  WatchtowerEventType,
 } from '../../../shared/types';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { useStoredPanelState } from '../../hooks/useStoredPanelState';
@@ -33,6 +36,7 @@ import {
   buildAutomationDisplayEntries,
   type AutomationDisplayEntry,
 } from '../../utils/automation-run-events';
+import { EmptyState, InlineNotice, ViewHeader } from '../layout/ViewScaffold';
 
 const DEFAULT_CRON = '0 9 * * 1-5';
 
@@ -61,6 +65,9 @@ function emptyDraft(repoIds: string[]): AutomationDefinitionInput {
     personaId: 'coder',
     prompt: '',
     repoIds,
+    triggerMode: 'schedule',
+    watchEvent: 'workflow.completed',
+    watchTarget: repoIds[0] ? { repoId: repoIds[0] } : undefined,
     scheduleCron: DEFAULT_CRON,
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
     enabled: true,
@@ -76,6 +83,9 @@ function automationToDraft(automation: AutomationDefinition): AutomationDefiniti
     personaId: automation.personaId,
     prompt: automation.prompt,
     repoIds: automation.repoIds,
+    triggerMode: automation.triggerMode,
+    watchEvent: automation.watchEvent ?? 'workflow.completed',
+    watchTarget: automation.watchTarget,
     scheduleCron: automation.scheduleCron,
     timezone: automation.timezone,
     enabled: automation.enabled,
@@ -109,18 +119,54 @@ function isLoopAutomation(automation: AutomationDefinition): boolean {
   return automation.loopConfig?.enabled === true;
 }
 
+function watchEventLabel(event: AutomationDefinition['watchEvent']): string {
+  const labels: Record<WatchtowerEventType, string> = {
+    'workflow.completed': 'Workflow completed',
+    'workflow.failed': 'Workflow failed',
+    'pull_request.merged': 'Pull request merged',
+    'pull_request.closed': 'Pull request closed',
+    'pipeline.completed': 'Pipeline completed',
+    'pipeline.failed': 'Pipeline failed',
+  };
+  return event ? labels[event] : 'Choose an event';
+}
+
+function isPullRequestWatch(event: WatchtowerEventType | undefined): boolean {
+  return event === 'pull_request.merged' || event === 'pull_request.closed';
+}
+
+function isPipelineWatch(event: WatchtowerEventType | undefined): boolean {
+  return event === 'pipeline.completed' || event === 'pipeline.failed';
+}
+
+function isExternalWatch(event: WatchtowerEventType | undefined): boolean {
+  return isPullRequestWatch(event) || isPipelineWatch(event);
+}
+
+function runTriggerLabel(trigger: AutomationRun['trigger']): string {
+  if (trigger === 'manual') return 'Manual';
+  if (trigger === 'watchtower') return 'Watchtower';
+  return 'Scheduled';
+}
+
 export function AutomationsView() {
+  const navigate = useNavigate();
+  const [initialSearchParams, setSearchParams] = useSearchParams();
   const { activeWorkspace } = useWorkspace();
   const workspaceId = activeWorkspace?.id;
   const repos = activeWorkspace?.repos ?? [];
 
   const [personas, setPersonas] = useState<Persona[]>([]);
   const [automations, setAutomations] = useState<AutomationDefinition[]>([]);
-  const [selectedAutomationId, setSelectedAutomationId] = useState<string | null>(null);
+  const [selectedAutomationId, setSelectedAutomationId] = useState<string | null>(() =>
+    initialSearchParams.get('automation'),
+  );
   const [draft, setDraft] = useState<AutomationDefinitionInput>(() => emptyDraft([]));
   const [runs, setRuns] = useState<AutomationRun[]>([]);
   const [triageItems, setTriageItems] = useState<AutomationTriageItem[]>([]);
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(() =>
+    initialSearchParams.get('run'),
+  );
   const [runEvents, setRunEvents] = useState<AutomationRunEvent[]>([]);
   const [runDetailTab, setRunDetailTab] = useState<AutomationRunDetailTab>('transcript');
   const [daemonStatus, setDaemonStatus] = useState<AutomationDaemonStatus | null>(null);
@@ -241,6 +287,7 @@ export function AutomationsView() {
   const handleSelectAutomation = (automation: AutomationDefinition) => {
     setSelectedAutomationId(automation.id);
     setDraft(automationToDraft(automation));
+    setSearchParams({ automation: automation.id }, { replace: true });
   };
 
   const handleNewAutomation = () => {
@@ -249,6 +296,7 @@ export function AutomationsView() {
     setRunEvents([]);
     setRuns([]);
     setDraft(emptyDraft(repos.map((repo) => repo.id)));
+    setSearchParams({}, { replace: true });
   };
 
   const handleSave = async () => {
@@ -261,6 +309,7 @@ export function AutomationsView() {
       } else {
         const created = await window.anvil.automations.create(workspaceId, draft);
         setSelectedAutomationId(created.id);
+        setSearchParams({ automation: created.id }, { replace: true });
       }
       await loadData();
     } catch (err) {
@@ -293,6 +342,7 @@ export function AutomationsView() {
     try {
       const run = await window.anvil.automations.runNow(selectedAutomationId);
       setSelectedRunId(run.id);
+      setSearchParams({ automation: selectedAutomationId, run: run.id }, { replace: true });
       await loadRuns(selectedAutomationId);
       await loadEvents(run.id);
     } catch (err) {
@@ -318,9 +368,17 @@ export function AutomationsView() {
       setDraft(automationToDraft(automation));
     }
     setSelectedRunId(item.id);
+    setSearchParams({ automation: item.automationId, run: item.id }, { replace: true });
     await loadRuns(item.automationId);
     setSelectedRunId(item.id);
     await loadEvents(item.id);
+  };
+
+  const handleSelectRun = (runId: string) => {
+    setSelectedRunId(runId);
+    if (selectedAutomationId) {
+      setSearchParams({ automation: selectedAutomationId, run: runId }, { replace: true });
+    }
   };
 
   if (!workspaceId) {
@@ -333,50 +391,56 @@ export function AutomationsView() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex items-center justify-between border-b border-border bg-bg-secondary px-4 py-3">
-        <div className="flex items-center gap-3">
-          <Bot size={20} className="text-accent" />
-          <div>
-            <h2 className="text-xl font-semibold text-text-primary">Automations</h2>
-            <p className="text-sm text-text-secondary">
-              Schedule autonomous Codex runs in disposable worktrees.
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          {daemonStatus && (
-            <span className="rounded-full border border-border px-2.5 py-1 text-xs text-text-secondary">
+      <ViewHeader
+        icon={RadioTower}
+        title="Watchtower"
+        description="Schedule work or babysit workflows, pull requests, and pipelines until their state changes."
+        meta={
+          daemonStatus ? (
+            <span className="rounded-md bg-bg-tertiary px-2 py-0.5 text-xs text-text-tertiary">
               {daemonStatus.mode === 'daemon'
-                ? 'Daemon mode'
+                ? 'Daemon active'
                 : daemonStatus.supported
                   ? daemonStatus.loaded
                     ? 'Daemon loaded'
                     : daemonStatus.installed
                       ? 'Daemon installed'
-                      : 'Daemon not installed'
-                  : 'Daemon unsupported'}
+                      : 'Daemon unavailable'
+                  : 'Local mode'}
             </span>
-          )}
-          <button
-            onClick={handleReconcileDaemon}
-            className="flex items-center gap-1 rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary"
-          >
-            <RefreshCw size={14} />
-            Reconcile daemon
-          </button>
-          <button
-            onClick={handleNewAutomation}
-            className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent/90"
-          >
-            New automation
-          </button>
-        </div>
-      </div>
+          ) : undefined
+        }
+        actions={
+          <>
+            <button
+              onClick={handleReconcileDaemon}
+              className="flex items-center gap-1 rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary"
+            >
+              <RefreshCw size={14} />
+              Reconcile daemon
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate('/workflows')}
+              className="flex items-center gap-1 rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary"
+            >
+              <Workflow size={14} />
+              Workflows
+            </button>
+            <button
+              onClick={handleNewAutomation}
+              className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent/90"
+            >
+              New automation
+            </button>
+          </>
+        }
+      />
 
       {error && (
-        <div className="border-b border-error/30 bg-error/10 px-4 py-2 text-sm text-error">
+        <InlineNotice tone="error" className="m-4 mb-0">
           {error}
-        </div>
+        </InlineNotice>
       )}
 
       {triageItems.length > 0 && (
@@ -439,9 +503,7 @@ export function AutomationsView() {
           <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-3">
             {!automationsCollapsed && (
               <div>
-                <div className="text-xs font-semibold uppercase tracking-wide text-text-tertiary">
-                  Saved automations
-                </div>
+                <div className="text-xs font-medium text-text-tertiary">Saved automations</div>
                 <div className="mt-1 text-xs text-text-secondary">{automations.length} saved</div>
               </div>
             )}
@@ -486,9 +548,12 @@ export function AutomationsView() {
                   Loading automations…
                 </div>
               ) : automations.length === 0 ? (
-                <div className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-text-secondary">
-                  No automations yet.
-                </div>
+                <EmptyState
+                  icon={RadioTower}
+                  compact
+                  title="No Watchtower jobs"
+                  description="Create a schedule or monitor an external event."
+                />
               ) : (
                 automations.map((automation) => (
                   <button
@@ -509,8 +574,16 @@ export function AutomationsView() {
                       </span>
                     </div>
                     <div className="mt-1 text-xs text-text-secondary">
-                      {automation.scheduleCron}
+                      {automation.triggerMode === 'watchtower'
+                        ? watchEventLabel(automation.watchEvent)
+                        : automation.scheduleCron}
                     </div>
+                    {automation.triggerMode === 'watchtower' && (
+                      <div className="mt-2 inline-flex items-center gap-1 rounded-full border border-info/30 bg-info/10 px-2 py-0.5 text-xs text-info">
+                        <RadioTower size={11} />
+                        Watchtower
+                      </div>
+                    )}
                     {isLoopAutomation(automation) && (
                       <div className="mt-2 inline-flex items-center gap-1 rounded-full border border-accent/30 bg-accent/10 px-2 py-0.5 text-xs text-accent">
                         <GitBranch size={11} />
@@ -518,7 +591,11 @@ export function AutomationsView() {
                       </div>
                     )}
                     <div className="mt-2 text-xs text-text-tertiary">
-                      Next: {formatTimestamp(automation.nextRunAt)}
+                      {automation.triggerMode === 'watchtower'
+                        ? automation.enabled
+                          ? 'Listening for matching events'
+                          : 'Listener disabled'
+                        : `Next: ${formatTimestamp(automation.nextRunAt)}`}
                     </div>
                   </button>
                 ))
@@ -571,17 +648,68 @@ export function AutomationsView() {
                   </select>
                 </label>
 
-                <label className="grid gap-1">
-                  <span className="text-sm font-medium text-text-secondary">Timezone</span>
-                  <input
-                    value={draft.timezone}
-                    onChange={(event) =>
-                      setDraft((current) => ({ ...current, timezone: event.target.value }))
-                    }
-                    className="rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary"
-                    placeholder="Europe/London"
-                  />
-                </label>
+                {(draft.triggerMode ?? 'schedule') === 'schedule' ? (
+                  <label className="grid gap-1">
+                    <span className="text-sm font-medium text-text-secondary">Timezone</span>
+                    <input
+                      value={draft.timezone}
+                      onChange={(event) =>
+                        setDraft((current) => ({ ...current, timezone: event.target.value }))
+                      }
+                      className="rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary"
+                      placeholder="Europe/London"
+                    />
+                  </label>
+                ) : (
+                  <div className="grid gap-1">
+                    <span className="text-sm font-medium text-text-secondary">Delivery</span>
+                    <div className="flex items-center gap-2 rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary">
+                      <RadioTower size={14} className="text-info" />
+                      Background listener · every 30 seconds
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <div className="text-sm font-medium text-text-secondary">Trigger</div>
+                <div className="mt-2 grid gap-2 md:grid-cols-2">
+                  {[
+                    {
+                      mode: 'schedule' as const,
+                      label: 'Schedule',
+                      description: 'Run from the existing cron scheduler.',
+                      icon: <Clock3 size={15} />,
+                    },
+                    {
+                      mode: 'watchtower' as const,
+                      label: 'Watchtower',
+                      description: 'Wait for workflows, pull requests, or pipelines.',
+                      icon: <RadioTower size={15} />,
+                    },
+                  ].map((option) => (
+                    <button
+                      key={option.mode}
+                      type="button"
+                      onClick={() =>
+                        setDraft((current) => ({ ...current, triggerMode: option.mode }))
+                      }
+                      className={`rounded-lg border px-3 py-3 text-left transition-colors ${
+                        (draft.triggerMode ?? 'schedule') === option.mode
+                          ? 'border-accent bg-accent/10'
+                          : 'border-border-subtle bg-bg-primary hover:border-border'
+                      }`}
+                    >
+                      <span className="flex items-center gap-2 text-sm font-medium text-text-primary">
+                        {option.icon}
+                        {option.label}
+                      </span>
+                      <span className="mt-1 block text-xs text-text-secondary">
+                        {option.description}
+                      </span>
+                    </button>
+                  ))}
+                </div>
               </div>
 
               <div className="rounded-lg border border-border-subtle bg-bg-primary p-4">
@@ -751,20 +879,186 @@ export function AutomationsView() {
                 )}
               </div>
 
-              <label className="grid gap-1">
-                <span className="text-sm font-medium text-text-secondary">Schedule (cron)</span>
-                <input
-                  value={draft.scheduleCron}
-                  onChange={(event) =>
-                    setDraft((current) => ({ ...current, scheduleCron: event.target.value }))
-                  }
-                  className="rounded-md border border-border bg-bg-primary px-3 py-2 font-mono text-sm text-text-primary"
-                  placeholder="0 9 * * 1-5"
-                />
-                <span className="text-xs text-text-tertiary">
-                  Examples: `0 9 * * 1-5` weekdays at 09:00, `*/30 * * * *` every 30 minutes.
-                </span>
-              </label>
+              {(draft.triggerMode ?? 'schedule') === 'schedule' ? (
+                <label className="grid gap-1">
+                  <span className="text-sm font-medium text-text-secondary">Schedule (cron)</span>
+                  <input
+                    value={draft.scheduleCron}
+                    onChange={(event) =>
+                      setDraft((current) => ({ ...current, scheduleCron: event.target.value }))
+                    }
+                    className="rounded-md border border-border bg-bg-primary px-3 py-2 font-mono text-sm text-text-primary"
+                    placeholder="0 9 * * 1-5"
+                  />
+                  <span className="text-xs text-text-tertiary">
+                    Examples: `0 9 * * 1-5` weekdays at 09:00, `*/30 * * * *` every 30 minutes.
+                  </span>
+                </label>
+              ) : (
+                <div className="grid gap-3 rounded-lg border border-border-subtle bg-bg-primary p-4">
+                  <label className="grid gap-1">
+                    <span className="text-sm font-medium text-text-secondary">Watch event</span>
+                    <select
+                      value={draft.watchEvent ?? 'workflow.completed'}
+                      onChange={(event) => {
+                        const watchEvent = event.target.value as WatchtowerEventType;
+                        setDraft((current) => ({
+                          ...current,
+                          watchEvent,
+                          watchTarget: isExternalWatch(watchEvent)
+                            ? (current.watchTarget ?? {
+                                repoId: current.repoIds[0] ?? repos[0]?.id ?? '',
+                              })
+                            : undefined,
+                        }));
+                      }}
+                      className="rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary"
+                    >
+                      <optgroup label="Anvil workflows">
+                        <option value="workflow.completed">Workflow completed</option>
+                        <option value="workflow.failed">Workflow failed</option>
+                      </optgroup>
+                      <optgroup label="Pull requests">
+                        <option value="pull_request.merged">Pull request merged</option>
+                        <option value="pull_request.closed">
+                          Pull request closed without merge
+                        </option>
+                      </optgroup>
+                      <optgroup label="Pipelines">
+                        <option value="pipeline.completed">Pipeline completed</option>
+                        <option value="pipeline.failed">Pipeline failed</option>
+                      </optgroup>
+                    </select>
+                    <span className="text-xs text-text-tertiary">
+                      Existing workflows remain reusable and unchanged.
+                    </span>
+                  </label>
+
+                  {isExternalWatch(draft.watchEvent) && (
+                    <>
+                      <label className="grid gap-1">
+                        <span className="text-sm font-medium text-text-secondary">
+                          Repository to watch
+                        </span>
+                        <select
+                          value={draft.watchTarget?.repoId ?? ''}
+                          onChange={(event) =>
+                            setDraft((current) => ({
+                              ...current,
+                              watchTarget: {
+                                ...current.watchTarget,
+                                repoId: event.target.value,
+                              },
+                            }))
+                          }
+                          className="rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary"
+                        >
+                          <option value="" disabled>
+                            Select a repository
+                          </option>
+                          {repos
+                            .filter((repo) => draft.repoIds.includes(repo.id))
+                            .map((repo) => (
+                              <option key={repo.id} value={repo.id}>
+                                {repo.name}
+                              </option>
+                            ))}
+                        </select>
+                      </label>
+
+                      {isPullRequestWatch(draft.watchEvent) ? (
+                        <label className="grid gap-1">
+                          <span className="text-sm font-medium text-text-secondary">
+                            Pull request number
+                          </span>
+                          <input
+                            type="number"
+                            min={1}
+                            value={draft.watchTarget?.pullRequestNumber ?? ''}
+                            onChange={(event) =>
+                              setDraft((current) => ({
+                                ...current,
+                                watchTarget: {
+                                  ...current.watchTarget,
+                                  repoId: current.watchTarget?.repoId ?? current.repoIds[0] ?? '',
+                                  pullRequestNumber: event.target.value
+                                    ? Number(event.target.value)
+                                    : undefined,
+                                },
+                              }))
+                            }
+                            className="rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary"
+                            placeholder="123"
+                          />
+                        </label>
+                      ) : (
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <label className="grid gap-1">
+                            <span className="text-sm font-medium text-text-secondary">
+                              Pipeline or run
+                            </span>
+                            <input
+                              value={draft.watchTarget?.pipelineIdentifier ?? ''}
+                              onChange={(event) =>
+                                setDraft((current) => ({
+                                  ...current,
+                                  watchTarget: {
+                                    ...current.watchTarget,
+                                    repoId: current.watchTarget?.repoId ?? current.repoIds[0] ?? '',
+                                    pipelineIdentifier: event.target.value,
+                                  },
+                                }))
+                              }
+                              className="rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary"
+                              placeholder="CI, ci.yml, or run ID"
+                            />
+                          </label>
+                          <label className="grid gap-1">
+                            <span className="text-sm font-medium text-text-secondary">
+                              Branch filter <span className="text-text-tertiary">(optional)</span>
+                            </span>
+                            <input
+                              value={draft.watchTarget?.branch ?? ''}
+                              onChange={(event) =>
+                                setDraft((current) => ({
+                                  ...current,
+                                  watchTarget: {
+                                    ...current.watchTarget,
+                                    repoId: current.watchTarget?.repoId ?? current.repoIds[0] ?? '',
+                                    branch: event.target.value,
+                                  },
+                                }))
+                              }
+                              className="rounded-md border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary"
+                              placeholder="main"
+                            />
+                          </label>
+                        </div>
+                      )}
+
+                      <p className="text-xs leading-relaxed text-text-tertiary">
+                        GitHub uses your authenticated <code>gh</code> session. Azure DevOps uses
+                        the configured PAT. The first check establishes a baseline; later matching
+                        transitions trigger exactly once.
+                      </p>
+
+                      {selectedAutomation?.watchState && (
+                        <div
+                          className={`rounded-md px-3 py-2 text-xs ${
+                            selectedAutomation.watchState.lastError
+                              ? 'bg-error/10 text-error'
+                              : 'bg-bg-secondary text-text-secondary'
+                          }`}
+                        >
+                          {selectedAutomation.watchState.lastError
+                            ? `Last check failed: ${selectedAutomation.watchState.lastError}`
+                            : `Watching ${selectedAutomation.watchState.sourceLabel ?? 'source'} · ${selectedAutomation.watchState.status ?? 'unknown'} · checked ${formatTimestamp(selectedAutomation.watchState.observedAt)}`}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
 
               <label className="grid gap-1">
                 <span className="text-sm font-medium text-text-secondary">Prompt</span>
@@ -790,12 +1084,20 @@ export function AutomationsView() {
                         type="checkbox"
                         checked={draft.repoIds.includes(repo.id)}
                         onChange={(event) =>
-                          setDraft((current) => ({
-                            ...current,
-                            repoIds: event.target.checked
+                          setDraft((current) => {
+                            const repoIds = event.target.checked
                               ? [...current.repoIds, repo.id]
-                              : current.repoIds.filter((candidate) => candidate !== repo.id),
-                          }))
+                              : current.repoIds.filter((candidate) => candidate !== repo.id);
+                            const watchTarget = current.watchTarget
+                              ? {
+                                  ...current.watchTarget,
+                                  repoId: repoIds.includes(current.watchTarget.repoId)
+                                    ? current.watchTarget.repoId
+                                    : (repoIds[0] ?? ''),
+                                }
+                              : undefined;
+                            return { ...current, repoIds, watchTarget };
+                          })
                         }
                       />
                       <span>{repo.name}</span>
@@ -895,7 +1197,7 @@ export function AutomationsView() {
                         key={run.id}
                         run={run}
                         selected={selectedRunId === run.id}
-                        onSelect={() => setSelectedRunId(run.id)}
+                        onSelect={() => handleSelectRun(run.id)}
                       />
                     ))}
                   </div>
@@ -945,9 +1247,7 @@ function RunPickerItem({
           ) : (
             <Loader2 size={14} className="shrink-0 animate-spin text-accent" />
           )}
-          <span className="truncate">
-            {run.trigger === 'manual' ? 'Manual run' : 'Scheduled run'}
-          </span>
+          <span className="truncate">{runTriggerLabel(run.trigger)} run</span>
         </div>
         <span className={`shrink-0 text-xs ${statusTone(run.status)}`}>{run.status}</span>
       </div>
@@ -999,7 +1299,10 @@ function AutomationRunDetail({
                 {selectedRun.completedAt && (
                   <span>Completed {formatCompactTimestamp(selectedRun.completedAt)}</span>
                 )}
-                <span>{selectedRun.trigger === 'manual' ? 'Manual' : 'Scheduled'}</span>
+                <span>{runTriggerLabel(selectedRun.trigger)}</span>
+                {selectedRun.triggerContext && (
+                  <span>From {selectedRun.triggerContext.sourceLabel}</span>
+                )}
                 <span>{runEvents.length} events</span>
               </div>
             )}

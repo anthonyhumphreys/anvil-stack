@@ -33,6 +33,7 @@ import type {
 } from '../../../shared/types';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { WorkspaceGitActions } from '../shared/WorkspaceGitActions';
+import { EmptyState } from '../layout/ViewScaffold';
 
 type Tab = 'changes' | 'pull_requests' | 'log' | 'branches';
 
@@ -306,9 +307,12 @@ export function GitView() {
 
   if (indexedRepos.length === 0) {
     return (
-      <div className="flex h-full items-center justify-center text-text-secondary">
-        Connect a repository first to use the Git client.
-      </div>
+      <EmptyState
+        icon={GitBranch}
+        title="Connect a repository for Git"
+        description="Git changes, branches, commits, and pull requests are scoped to a workspace repository."
+        className="h-full"
+      />
     );
   }
 
@@ -317,6 +321,7 @@ export function GitView() {
       {/* Header: repo selector + branch + sync */}
       <div className="flex items-center gap-3 border-b border-border bg-bg-secondary px-4 py-2">
         <select
+          aria-label="Git repository"
           value={selectedRepoId}
           onChange={(e) => setSelectedRepoId(e.target.value)}
           className="rounded-lg border border-border bg-bg-primary px-3 py-1.5 text-sm text-text-primary"

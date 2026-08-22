@@ -4,7 +4,8 @@ navTitle: API reference
 description: Gateway, Admin, health, readiness, explain, policy, override, report, and package endpoint reference for alpha operators.
 product: Anvil Registry
 section: Operations
-order: 10.5
+journey: reference
+order: 11
 ---
 
 # API reference

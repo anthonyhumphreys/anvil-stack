@@ -1,0 +1,9 @@
+{
+  "name": "cloudflare-smoke",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@anvil-cloud/client": "workspace:*",
+    "@anvil-cloud/runtime": "workspace:*"
+  }
+}

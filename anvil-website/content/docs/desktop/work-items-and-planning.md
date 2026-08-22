@@ -4,6 +4,7 @@ navTitle: Work items
 description: How Anvil Desktop brings Linear, Jira, Azure DevOps, BA notes, acceptance criteria, and implementation planning into repo-aware work.
 product: Anvil Desktop
 section: Working guide
+journey: build
 order: 114
 ---
 

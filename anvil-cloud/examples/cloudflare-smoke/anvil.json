@@ -1,0 +1,8 @@
+{
+  "name": "cloudflare-smoke",
+  "entrypoints": {
+    "server": "src/cell.server.ts",
+    "client": "src/cell.client.tsx"
+  },
+  "runtime": "nodejs20"
+}

@@ -77,9 +77,25 @@
     @apply bg-background text-foreground antialiased;
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   }
+
+  h1, h2, h3 {
+    text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+
+  button, a, summary {
+    touch-action: manipulation;
+  }
 }
 
 @layer components {
+  .skip-link {
+    @apply fixed left-4 top-3 z-50 -translate-y-20 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-transform focus:translate-y-0 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2;
+  }
+
   .hero-proof {
     position: relative;
     display: grid;
@@ -90,9 +106,7 @@
     position: absolute;
     inset: 8% -5% 18% 14%;
     border: 1px solid oklch(var(--border));
-    background:
-      linear-gradient(135deg, color-mix(in oklch, oklch(var(--accent)) 10%, transparent), transparent 44%),
-      repeating-linear-gradient(90deg, color-mix(in oklch, oklch(var(--border)) 42%, transparent) 0 1px, transparent 1px 56px);
+    background: color-mix(in oklch, oklch(var(--accent)) 7%, oklch(var(--background)));
     content: "";
     opacity: 0.72;
     pointer-events: none;
@@ -107,7 +121,7 @@
     border: 1px solid oklch(var(--border));
     border-radius: var(--radius);
     background: oklch(0.13 0.014 205);
-    box-shadow: 0 18px 55px color-mix(in oklch, oklch(var(--foreground)) 11%, transparent);
+    box-shadow: 0 12px 30px color-mix(in oklch, oklch(var(--foreground)) 9%, transparent);
   }
 
   .hero-window-bar {
@@ -152,9 +166,8 @@
     overflow: hidden;
     border: 1px solid oklch(var(--border));
     border-radius: var(--radius);
-    background: color-mix(in oklch, oklch(var(--card)) 92%, transparent);
-    box-shadow: 0 18px 45px color-mix(in oklch, oklch(var(--foreground)) 12%, transparent);
-    backdrop-filter: blur(16px);
+    background: oklch(var(--card));
+    box-shadow: 0 10px 24px color-mix(in oklch, oklch(var(--foreground)) 10%, transparent);
   }
 
   .product-card {
@@ -170,19 +183,19 @@
   }
 
   .doc-markdown {
-    @apply text-[15px] leading-7 text-foreground;
+    @apply text-base leading-7 text-foreground;
   }
 
   .doc-markdown h1 {
-    @apply mb-4 text-4xl font-semibold leading-tight tracking-normal;
+    @apply mb-5 text-4xl font-semibold leading-[1.08] tracking-[-0.025em] sm:text-5xl;
   }
 
   .doc-markdown h2 {
-    @apply mt-12 border-t pt-8 text-2xl font-semibold tracking-normal;
+    @apply mt-14 scroll-mt-24 border-t pt-8 text-2xl font-semibold tracking-[-0.015em];
   }
 
   .doc-markdown h3 {
-    @apply mt-8 text-lg font-semibold tracking-normal;
+    @apply mt-9 scroll-mt-24 text-xl font-semibold tracking-[-0.01em];
   }
 
   .doc-markdown p {
@@ -206,12 +219,26 @@
     @apply font-medium text-foreground underline underline-offset-4;
   }
 
+  .doc-markdown .doc-heading-anchor {
+    @apply no-underline;
+  }
+
+  .doc-markdown .doc-heading-anchor > span {
+    @apply ml-2 text-muted-foreground opacity-0 transition-opacity;
+  }
+
+  .doc-markdown h2:hover .doc-heading-anchor > span,
+  .doc-markdown h3:hover .doc-heading-anchor > span,
+  .doc-markdown .doc-heading-anchor:focus-visible > span {
+    @apply opacity-100;
+  }
+
   .doc-markdown code {
     @apply rounded-md border bg-muted px-1.5 py-0.5 font-mono text-[13px] text-foreground;
   }
 
   .doc-markdown pre {
-    @apply mt-5 overflow-x-auto rounded-lg border bg-[oklch(0.16_0.014_205)] p-5 text-sm text-[oklch(0.96_0.006_205)] shadow-anvil;
+    @apply mt-5 overflow-x-auto rounded-lg border bg-[oklch(0.16_0.014_205)] p-5 text-sm text-[oklch(0.96_0.006_205)];
   }
 
   .doc-markdown pre code {
@@ -234,6 +261,15 @@
   .doc-markdown th {
     @apply bg-muted font-semibold text-foreground;
   }
+
+  .docs-search-dialog[open] {
+    animation: docs-dialog-in 150ms ease-out;
+  }
+}
+
+@keyframes docs-dialog-in {
+  from { opacity: 0; transform: translateY(0.5rem) scale(0.99); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 @media (max-width: 1023px) {

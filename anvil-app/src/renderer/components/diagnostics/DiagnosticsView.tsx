@@ -7,6 +7,7 @@ import type {
 } from '../../../shared/types';
 import { useChatContext } from '../../contexts/ChatContext';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
+import { InlineNotice, ViewHeader } from '../layout/ViewScaffold';
 
 interface RendererMemoryInfo {
   usedJSHeapSize: number;
@@ -90,23 +91,16 @@ export function DiagnosticsView() {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-bg-primary">
-      <header className="shrink-0 border-b border-border px-8 py-6">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2 text-sm text-text-tertiary">
-              <Activity size={14} />
-              Runtime Diagnostics
-            </div>
-            <h2 className="mt-2 text-2xl font-semibold tracking-tight text-text-primary">
-              Memory Profile
-            </h2>
-            <p className="mt-1 text-sm text-text-secondary">
-              {snapshot
-                ? `Captured ${new Date(snapshot.capturedAt).toLocaleTimeString()}`
-                : 'Waiting for metrics'}
-            </p>
-          </div>
-          <div className="flex items-center gap-3">
+      <ViewHeader
+        icon={Activity}
+        title="Runtime Diagnostics"
+        description={
+          snapshot
+            ? `Memory, process, and feature counters captured ${new Date(snapshot.capturedAt).toLocaleTimeString()}.`
+            : 'Memory, process, and feature counters for this Anvil session.'
+        }
+        actions={
+          <>
             <label className="flex items-center gap-2 text-sm text-text-secondary">
               <input
                 type="checkbox"
@@ -124,15 +118,14 @@ export function DiagnosticsView() {
               <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
               Refresh
             </button>
-          </div>
-        </div>
-        {error && (
-          <div className="mt-4 flex items-center gap-2 rounded-lg border border-error/30 bg-error/5 px-3 py-2 text-sm text-error">
-            <AlertTriangle size={14} />
-            {error}
-          </div>
-        )}
-      </header>
+          </>
+        }
+      />
+      {error && (
+        <InlineNotice icon={AlertTriangle} tone="error" className="m-4 mb-0">
+          {error}
+        </InlineNotice>
+      )}
 
       <main className="min-h-0 flex-1 overflow-y-auto px-8 py-6">
         <section className="grid gap-4 lg:grid-cols-4">

@@ -4,6 +4,7 @@ navTitle: Extend the app
 description: Add new app capabilities without bypassing the Electron service boundaries.
 product: Anvil Desktop
 section: Engineering
+journey: build
 order: 130
 ---
 
@@ -31,4 +32,3 @@ The main process owns side effects: filesystem access, Git, SQLite, connector ca
 IPC handlers should validate input, call services, and translate results. Business logic in IPC files ages about as well as milk on a radiator.
 
 Renderer code should respect workspace state, feature availability, and role-gated navigation instead of inventing a parallel universe.
-

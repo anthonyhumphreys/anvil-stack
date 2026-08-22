@@ -4,6 +4,7 @@ navTitle: Contributing
 description: Development setup, workspace commands, and review expectations for Anvil Registry and Anvil Node Base.
 product: Anvil Registry
 section: Project
+journey: reference
 order: 20
 ---
 

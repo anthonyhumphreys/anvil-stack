@@ -1,6 +1,6 @@
 {
   "name": "@anvilstack/cloud-cli",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "license": "MIT",
   "description": "Command-line tools for Anvil Cloud Cells, local runtime, inspection, and preview deployment.",
   "private": false,
@@ -48,6 +48,8 @@
     "@anvil-cloud/auth": "workspace:^",
     "@anvil-cloud/aws": "workspace:*",
     "@anvil-cloud/builder": "workspace:*",
+    "@anvil-cloud/cloudflare": "workspace:*",
+    "@anvil-cloud/deployment": "workspace:*",
     "@anvil-cloud/local": "workspace:*",
     "@anvil-cloud/runtime": "workspace:*",
     "tsx": "^4.22.4"

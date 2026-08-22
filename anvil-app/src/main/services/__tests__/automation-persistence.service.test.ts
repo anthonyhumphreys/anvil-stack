@@ -11,20 +11,29 @@ vi.mock('../../db/database.js', () => ({
 
 import {
   appendAutomationRunEvent,
+  claimPendingWatchtowerEvent,
   completeAutomationRun,
+  countEnabledAutomations,
   createAutomationRecord,
   createAutomationRun,
+  enqueueWatchtowerEvent,
   getAutomation,
   getAutomationRun,
   listAutomationRunEvents,
   listAutomationRuns,
   listAutomations,
+  listDueAutomations,
+  listExternalWatchtowerAutomations,
+  listPendingWatchtowerEvents,
+  listWatchtowerAutomations,
   updateAutomationRecord,
   updateAutomationRunWorktrees,
+  updateWatchtowerState,
 } from '../automation-persistence.service.js';
 
 beforeEach(() => {
   inMemoryDb.exec('DELETE FROM automation_run_events');
+  inMemoryDb.exec('DELETE FROM watchtower_events');
   inMemoryDb.exec('DELETE FROM automation_runs');
   inMemoryDb.exec('DELETE FROM automation_definitions');
   inMemoryDb.exec('DELETE FROM workspace_preferences');
@@ -212,6 +221,95 @@ describe('automation persistence', () => {
     expect(listAutomationRunEvents(run.id)).toHaveLength(2);
     expect(getAutomationRun(run.id)?.assistantMessage).toBe('No issues found.');
     expect(getAutomation(automation.id)?.lastRunStatus).toBe('completed');
+  });
+
+  it('keeps Watchtower listeners out of the cron queue and records event context', () => {
+    const automation = createAutomationRecord(
+      'ws-1',
+      {
+        name: 'Workflow follow-up',
+        personaId: 'coder',
+        prompt: 'Review the completed workflow output.',
+        repoIds: ['repo-1'],
+        triggerMode: 'watchtower',
+        watchEvent: 'workflow.completed',
+        scheduleCron: '0 9 * * 1-5',
+        timezone: 'UTC',
+        enabled: true,
+        allowRepoWrite: false,
+        allowCommandRun: false,
+      },
+      null,
+    );
+
+    expect(listDueAutomations('2099-01-01T00:00:00.000Z')).toEqual([]);
+    expect(listWatchtowerAutomations('ws-1', 'workflow.completed')).toEqual([automation]);
+    expect(countEnabledAutomations()).toBe(0);
+
+    const event = {
+      id: 'workflow-1:completed',
+      type: 'workflow.completed' as const,
+      workspaceId: 'ws-1',
+      repoIds: ['repo-1'],
+      sourceId: 'workflow-1',
+      sourceLabel: 'Ship feature',
+      occurredAt: '2026-08-10T12:00:00.000Z',
+    };
+    const run = createAutomationRun(automation, 'watchtower', event);
+
+    expect(run.trigger).toBe('watchtower');
+    expect(run.triggerContext).toEqual(event);
+  });
+
+  it('persists external Watchtower targets and claims each observed transition once', () => {
+    const automation = createAutomationRecord(
+      'ws-1',
+      {
+        name: 'Merged PR follow-up',
+        personaId: 'coder',
+        prompt: 'Review what landed and prepare the next action.',
+        repoIds: ['repo-1'],
+        triggerMode: 'watchtower',
+        watchEvent: 'pull_request.merged',
+        watchTarget: { repoId: 'repo-1', pullRequestNumber: 42 },
+        scheduleCron: '0 9 * * 1-5',
+        timezone: 'UTC',
+        enabled: true,
+        allowRepoWrite: false,
+        allowCommandRun: false,
+      },
+      null,
+    );
+
+    expect(automation.watchTarget).toEqual({ repoId: 'repo-1', pullRequestNumber: 42 });
+    expect(listExternalWatchtowerAutomations()).toEqual([automation]);
+    expect(countEnabledAutomations()).toBe(1);
+
+    const checked = updateWatchtowerState(automation.id, {
+      sourceId: 'github-pr:42',
+      sourceLabel: 'PR #42 · Ship it',
+      status: 'open',
+      observedAt: '2026-08-10T10:00:00.000Z',
+    });
+    expect(checked?.watchState?.status).toBe('open');
+
+    const event = {
+      id: `${automation.id}:pull_request.merged:github-pr:42`,
+      type: 'pull_request.merged' as const,
+      workspaceId: 'ws-1',
+      repoIds: ['repo-1'],
+      sourceId: 'github-pr:42',
+      sourceLabel: 'PR #42 · Ship it',
+      occurredAt: '2026-08-10T10:05:00.000Z',
+    };
+    const pending = enqueueWatchtowerEvent(automation.id, event);
+    enqueueWatchtowerEvent(automation.id, event);
+
+    expect(listPendingWatchtowerEvents()).toHaveLength(1);
+    const run = claimPendingWatchtowerEvent(pending.id);
+    expect(run).toMatchObject({ trigger: 'watchtower', triggerContext: event });
+    expect(claimPendingWatchtowerEvent(pending.id)).toBeNull();
+    expect(listPendingWatchtowerEvents()).toEqual([]);
   });
 
   it('coalesces adjacent streamed text-like events for the same run', () => {

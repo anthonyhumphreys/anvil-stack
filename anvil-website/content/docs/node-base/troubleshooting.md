@@ -4,6 +4,7 @@ navTitle: Troubleshooting
 description: Fix permission, capability, reporting, and strict-mode issues when running Anvil Node Base.
 product: Anvil Node Base
 section: Guides
+journey: reference
 order: 11
 ---
 
