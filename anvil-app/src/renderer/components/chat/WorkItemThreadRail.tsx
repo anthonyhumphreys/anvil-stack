@@ -380,7 +380,7 @@ export function WorkItemThreadRail({
                         onClick={() => toggleItem(key)}
                         className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:ring-2 focus-visible:ring-accent/40"
                         aria-expanded={expanded}
-                        aria-label={`${expanded ? 'Collapse' : 'Expand'} ${item.id}`}
+                        aria-label={`${expanded ? 'Collapse' : 'Expand'} ${item.id}: ${item.title}`}
                       >
                         {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                       </button>
