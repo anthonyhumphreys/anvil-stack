@@ -22,6 +22,7 @@ import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { LifecycleListPanel } from './lifecycle/LifecycleListPanel';
 import { LifecycleDetailView } from './lifecycle/LifecycleDetailView';
 import { GateConfigView } from './gate-config/GateConfigView';
+import { ViewHeader } from '../layout/ViewScaffold';
 
 const FILE_TYPE_ICONS: Record<GovernanceFileType, typeof FileText> = {
   pdf: FileText,
@@ -183,36 +184,34 @@ export function GovernanceView() {
       {/* Tab content */}
       {activeTab === 'boards' && (
         <div className="flex h-full flex-col">
-          {/* Header */}
-          <div className="flex items-center justify-between border-b border-border bg-bg-secondary px-4 py-2">
-            <div className="flex items-center gap-3">
-              <Landmark size={20} className="text-accent" />
-              <h2 className="text-xl font-semibold">Governance</h2>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleAddDocuments}
-                className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-sm text-text-secondary hover:text-text-primary"
-              >
-                <FileUp size={12} />
-                Add Documents
-              </button>
-              <button
-                onClick={() => setShowCreateBoard(true)}
-                className="flex items-center gap-1 rounded-md bg-accent px-2 py-1 text-sm font-medium text-white hover:bg-accent/90"
-              >
-                <Plus size={12} />
-                New Board
-              </button>
-            </div>
-          </div>
+          <ViewHeader
+            icon={Landmark}
+            title="Governance"
+            description="Organise decision records and delivery evidence into workspace-owned boards."
+            actions={
+              <>
+                <button
+                  onClick={handleAddDocuments}
+                  className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-sm text-text-secondary hover:text-text-primary"
+                >
+                  <FileUp size={12} />
+                  Add Documents
+                </button>
+                <button
+                  onClick={() => setShowCreateBoard(true)}
+                  className="flex items-center gap-1 rounded-md bg-accent px-2 py-1 text-sm font-medium text-white hover:bg-accent/90"
+                >
+                  <Plus size={12} />
+                  New Board
+                </button>
+              </>
+            }
+          />
 
           <div className="flex flex-1 overflow-hidden">
             {/* Board sidebar */}
             <div className="w-[240px] shrink-0 overflow-auto border-r border-border bg-bg-secondary p-3">
-              <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-text-tertiary">
-                Boards
-              </div>
+              <div className="mb-2 px-2 text-xs font-medium text-text-tertiary">Boards</div>
 
               <button
                 onClick={() => setSelectedBoardId(null)}

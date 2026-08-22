@@ -4,6 +4,7 @@ navTitle: Quickstart
 description: Run Anvil Registry locally and point npm-compatible clients at the gateway.
 product: Anvil Registry
 section: Getting started
+journey: build
 order: 2
 ---
 

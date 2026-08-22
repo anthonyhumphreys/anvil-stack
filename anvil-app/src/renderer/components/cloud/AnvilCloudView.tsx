@@ -24,6 +24,7 @@ import type {
   RepoInfo,
 } from '../../../shared/types';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
+import { EmptyState, InlineNotice, ViewHeader } from '../layout/ViewScaffold';
 import { RemoteExecutionsPanel } from './RemoteExecutionsPanel';
 
 const CATEGORY_LABELS: Record<AnvilCloudCommandDefinition['category'], string> = {
@@ -136,33 +137,30 @@ export function AnvilCloudView() {
 
   if (repos.length === 0) {
     return (
-      <div className="flex h-full items-center justify-center bg-bg-primary p-8 text-text-secondary">
-        Add a repository before using Anvil Cloud. Cells need a working directory, annoyingly.
-      </div>
+      <EmptyState
+        icon={Cloud}
+        title="Connect a repository for Anvil Cloud"
+        description="Cloud commands need a workspace repository as their source and working directory."
+        className="h-full"
+      />
     );
   }
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-bg-primary text-text-primary">
-      <header className="shrink-0 border-b border-border bg-bg-secondary/70 px-7 py-5">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <span className="flex h-11 w-11 items-center justify-center rounded-lg bg-accent/15 text-accent">
-              <Cloud size={22} />
-            </span>
-            <div>
-              <div className="flex items-center gap-2 text-sm text-text-tertiary">
-                {activeWorkspace?.name ?? 'Workspace'} / Anvil Cloud
-              </div>
-              <h2 className="mt-1 text-2xl font-semibold tracking-tight">Cloud Workbench</h2>
-              <p className="mt-1 max-w-3xl text-sm leading-relaxed text-text-secondary">
-                Run Anvil Cloud CLI checks against workspace repos, inspect local Cell state, and
-                open Anvil Lens when a local runtime is running.
-              </p>
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
+      <ViewHeader
+        icon={Cloud}
+        title="Cloud Workbench"
+        description="Run Cloud checks against a workspace repository, inspect local Cell state, and open Lens."
+        meta={
+          <span className="rounded-md bg-bg-tertiary px-2 py-0.5 text-xs text-text-tertiary">
+            {activeWorkspace?.name ?? 'Workspace'}
+          </span>
+        }
+        actions={
+          <>
             <select
+              aria-label="Cloud repository"
               value={selectedRepo?.id ?? ''}
               onChange={(event) => setSelectedRepoId(event.target.value)}
               className="rounded-lg border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary"
@@ -192,15 +190,14 @@ export function AnvilCloudView() {
               )}
               Open Lens
             </button>
-          </div>
-        </div>
-        {error && (
-          <div className="mt-4 flex items-center gap-2 rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-sm text-error">
-            <AlertTriangle size={14} />
-            {error}
-          </div>
-        )}
-      </header>
+          </>
+        }
+      />
+      {error && (
+        <InlineNotice icon={AlertTriangle} tone="error" className="m-4 mb-0">
+          {error}
+        </InlineNotice>
+      )}
 
       <main className="grid min-h-0 flex-1 gap-0 overflow-hidden xl:grid-cols-[20rem_minmax(0,1fr)_22rem]">
         <aside className="min-h-0 overflow-y-auto border-r border-border bg-bg-secondary/45 p-4">

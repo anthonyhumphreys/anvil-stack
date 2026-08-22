@@ -97,6 +97,9 @@ Output lands in `dist/`. Targets by platform:
 
 ## Architecture
 
+Agent-requested native plans and questions use the provider-neutral
+[Agent UI intent protocol](docs/agent-ui-intents.md).
+
 Anvil follows the standard Electron multi-process model:
 
 ```

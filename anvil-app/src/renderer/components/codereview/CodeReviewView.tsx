@@ -11,6 +11,7 @@ import { CodeReviewReport } from './CodeReviewReport';
 import { CodeReviewScopeSelector } from './CodeReviewScopeSelector';
 import { RepoSelector } from '../shared/RepoSelector';
 import { PullRequestCanvas } from './PullRequestCanvas';
+import { EmptyState, ViewHeader } from '../layout/ViewScaffold';
 
 export function CodeReviewView() {
   const { repoId } = useParams<{ repoId: string }>();
@@ -181,18 +182,18 @@ export function CodeReviewView() {
   // Repo selection view
   if (!repoId) {
     return (
-      <div className="flex-1 overflow-auto p-6">
-        <div className="mb-6">
-          <h1 className="flex items-center gap-2 text-xl font-semibold text-text-primary">
-            <GitPullRequest size={20} className="text-accent" />
-            Code Review
-          </h1>
-          <p className="mt-1 text-sm text-text-secondary">Select a repository to review</p>
-        </div>
-        <RepoSelector
-          selectedRepoId={null}
-          onSelect={(repo) => navigate(`/codereview/${repo.id}`)}
+      <div className="flex h-full min-h-0 flex-col">
+        <ViewHeader
+          icon={GitPullRequest}
+          title="Code Review"
+          description="Review a branch, commit range, working tree, or pull request with repository context."
         />
+        <div className="min-h-0 flex-1 overflow-auto p-5">
+          <RepoSelector
+            selectedRepoId={null}
+            onSelect={(repo) => navigate(`/codereview/${repo.id}`)}
+          />
+        </div>
       </div>
     );
   }
@@ -240,9 +241,7 @@ export function CodeReviewView() {
         {/* Scope selector */}
         {!running && (
           <div className="border-b border-border-subtle p-4">
-            <p className="mb-2 text-sm font-medium text-text-secondary uppercase tracking-wide">
-              Scope
-            </p>
+            <p className="mb-2 text-sm font-medium text-text-secondary">Review scope</p>
             <CodeReviewScopeSelector
               repoId={repoId}
               onScopeSelected={handleScopeSelected}
@@ -284,9 +283,7 @@ export function CodeReviewView() {
 
         {/* Review history */}
         <div className="flex-1 overflow-auto p-2">
-          <p className="px-2 pb-1 text-sm font-medium text-text-secondary uppercase tracking-wide">
-            History
-          </p>
+          <p className="px-2 pb-1 text-sm font-medium text-text-secondary">Review history</p>
           {reviews.map((review) => (
             <button
               key={review.id}
@@ -340,14 +337,15 @@ export function CodeReviewView() {
             }
           />
         ) : (
-          <div className="flex h-full items-center justify-center">
-            <div className="text-center">
-              <GitPullRequest size={48} className="mx-auto mb-3 text-text-tertiary opacity-30" />
-              <p className="text-sm text-text-secondary">
-                {running ? 'Review in progress...' : 'Select a scope and run a review'}
-              </p>
-            </div>
-          </div>
+          <EmptyState
+            icon={GitPullRequest}
+            title={running ? 'Review in progress' : 'Ready for a review'}
+            description={
+              running
+                ? progress.message || 'Anvil is inspecting the selected scope.'
+                : 'Choose a scope in the left panel, then run Quick Glance or Senior Dev Review.'
+            }
+          />
         )}
       </div>
     </div>

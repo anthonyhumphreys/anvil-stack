@@ -4,6 +4,7 @@ navTitle: Overview
 description: The local desktop workspace for repo-aware agent delivery work.
 product: Anvil Desktop
 section: Basics
+journey: learn
 order: 100
 ---
 

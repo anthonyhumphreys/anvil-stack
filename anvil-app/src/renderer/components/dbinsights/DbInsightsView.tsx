@@ -19,6 +19,7 @@ import type {
   DbInsightFileType,
 } from '../../../shared/types';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
+import { EmptyState, InlineNotice, ViewHeader } from '../layout/ViewScaffold';
 
 const FILE_TYPE_ICONS: Record<DbInsightFileType, typeof FileCode2> = {
   sql: FileCode2,
@@ -154,43 +155,35 @@ export function DbInsightsView() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b border-border bg-bg-secondary px-4 py-3">
-        <div className="flex items-center gap-3">
-          <Database size={20} className="text-accent" />
-          <div>
-            <h2 className="text-xl font-semibold">DB Insights</h2>
-            <p className="text-sm text-text-tertiary">
-              Import SSMS schema and stored procedure exports, analyse them, then use the results in
-              Chat with the DB Expert persona.
-            </p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <button
-            onClick={handleAddFiles}
-            className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-          >
-            <FileUp size={14} />
-            Add Exports
-          </button>
-          <button
-            onClick={handleAnalyze}
-            disabled={running || artifacts.length === 0}
-            className="flex items-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {running ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
-            Analyse
-          </button>
-        </div>
-      </div>
+      <ViewHeader
+        icon={Database}
+        title="DB Insights"
+        description="Import database exports, analyse their structure, and bring the resulting context into Chat."
+        actions={
+          <>
+            <button
+              onClick={handleAddFiles}
+              className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+            >
+              <FileUp size={14} />
+              Add Exports
+            </button>
+            <button
+              onClick={handleAnalyze}
+              disabled={running || artifacts.length === 0}
+              className="flex items-center gap-2 rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {running ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
+              Analyse
+            </button>
+          </>
+        }
+      />
 
       <div className="grid min-h-0 flex-1 grid-cols-[320px_minmax(0,1fr)]">
         <aside className="overflow-auto border-r border-border bg-bg-secondary p-4">
-          <div className="rounded-xl border border-border bg-bg-primary/50 p-4">
-            <div className="text-xs font-semibold uppercase tracking-[0.18em] text-text-tertiary">
-              Getting Started
-            </div>
+          <div className="border-b border-border-subtle pb-4">
+            <h2 className="text-sm font-semibold text-text-primary">Getting started</h2>
             <ol className="mt-3 space-y-2 text-sm leading-relaxed text-text-secondary">
               <li>1. Export schema and stored procedure scripts from SSMS as `.sql` files.</li>
               <li>2. Add those exports here.</li>
@@ -245,9 +238,12 @@ export function DbInsightsView() {
               })}
 
               {!loading && artifacts.length === 0 && (
-                <div className="rounded-xl border border-dashed border-border p-4 text-sm text-text-tertiary">
-                  No exports added yet.
-                </div>
+                <EmptyState
+                  icon={FileUp}
+                  compact
+                  title="Add database exports"
+                  description="Import schema or stored procedure files to begin an analysis."
+                />
               )}
 
               {loading && (
@@ -262,24 +258,21 @@ export function DbInsightsView() {
 
         <main className="overflow-auto p-6">
           {error && (
-            <div className="mb-4 rounded-xl border border-error/30 bg-error/10 px-4 py-3 text-sm text-error">
+            <InlineNotice tone="error" className="mb-4">
               {error}
-            </div>
+            </InlineNotice>
           )}
 
-          <div className="grid gap-4 md:grid-cols-4">
+          <dl className="grid overflow-hidden rounded-lg border border-border bg-bg-secondary md:grid-cols-4 md:divide-x md:divide-border-subtle">
             {stats.map((stat) => (
-              <div
-                key={stat.label}
-                className="rounded-2xl border border-border bg-bg-secondary/80 p-4"
-              >
-                <div className="text-xs uppercase tracking-[0.18em] text-text-tertiary">
-                  {stat.label}
-                </div>
-                <div className="mt-2 text-3xl font-semibold text-text-primary">{stat.value}</div>
+              <div key={stat.label} className="px-4 py-3">
+                <dt className="text-xs text-text-tertiary">{stat.label}</dt>
+                <dd className="mt-0.5 text-lg font-semibold tabular-nums text-text-primary">
+                  {stat.value}
+                </dd>
               </div>
             ))}
-          </div>
+          </dl>
 
           <div className="mt-4 rounded-2xl border border-border bg-bg-secondary/70 p-5">
             <div className="flex flex-wrap items-start justify-between gap-3">

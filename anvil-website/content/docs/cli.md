@@ -4,6 +4,7 @@ navTitle: Anvil CLI
 description: Use the umbrella anvil command as the main entrypoint for Anvil Cloud and Anvil Registry.
 product: Start here
 section: Welcome
+journey: build
 order: 20
 ---
 

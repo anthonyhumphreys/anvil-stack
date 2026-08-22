@@ -34,6 +34,7 @@ describe('buildChatModelOptions', () => {
         description: 'Detected from the local Cursor CLI model catalog.',
         supportedReasoningEfforts: [],
         defaultReasoningEffort: 'medium',
+        serviceTiers: [],
       },
     ]);
   });
@@ -52,5 +53,24 @@ describe('buildChatModelOptions', () => {
       description: 'Custom model or deployment selected in Settings.',
     });
     expect(options.some((option) => option.id === 'gpt-5.6-sol')).toBe(true);
+  });
+
+  it('carries provider-advertised service tiers into the chat model capability', () => {
+    const codexStatus: CodexCliStatus = {
+      installed: true,
+      models: [
+        {
+          id: 'gpt-5.6-sol',
+          displayName: 'GPT-5.6 Sol',
+          hidden: false,
+          supportedReasoningEfforts: ['low', 'medium', 'high'],
+          serviceTiers: [{ id: 'priority', name: 'Fast', description: 'Faster provider service.' }],
+        },
+      ],
+    };
+
+    expect(
+      buildChatModelOptions('codex', 'gpt-5.6-sol', codexStatus, null)[0].serviceTiers,
+    ).toEqual([{ id: 'priority', name: 'Fast', description: 'Faster provider service.' }]);
   });
 });

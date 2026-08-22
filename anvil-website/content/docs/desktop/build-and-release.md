@@ -4,6 +4,7 @@ navTitle: Build and release
 description: Development, testing, packaging, signing, and distribution notes for Anvil Desktop.
 product: Anvil Desktop
 section: Engineering
+journey: build
 order: 132
 ---
 

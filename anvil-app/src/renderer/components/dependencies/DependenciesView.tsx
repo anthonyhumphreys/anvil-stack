@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { Boxes } from 'lucide-react';
 import type {
   DependencyAuditResult,
   DependencyRecord,
@@ -8,6 +9,7 @@ import type {
   SbomFormat,
 } from '../../../shared/types';
 import { RepoSelector } from '../shared/RepoSelector';
+import { EmptyState, InlineNotice, ViewHeader } from '../layout/ViewScaffold';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 
 const managers: PackageManager[] = ['npm', 'pnpm', 'yarn', 'nuget', 'python'];
@@ -98,9 +100,11 @@ export function DependenciesView() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="border-b border-border-subtle px-4 py-3 text-lg font-semibold">
-        Dependencies
-      </div>
+      <ViewHeader
+        icon={Boxes}
+        title="Dependencies"
+        description="Inspect packages, licensing, vulnerabilities, and software bills of materials for a repository."
+      />
       {!repoId ? (
         <div className="flex-1 overflow-auto p-4">
           <RepoSelector
@@ -128,9 +132,9 @@ export function DependenciesView() {
               </button>
             </div>
             {error && (
-              <div className="mb-2 rounded border border-error/30 bg-error/10 px-3 py-2 text-sm text-error">
+              <InlineNotice tone="error" className="mb-2">
                 {error}
-              </div>
+              </InlineNotice>
             )}
             <div className="min-h-0 flex-1 overflow-auto text-sm">
               {filtered.map((dependency) => (
@@ -156,10 +160,17 @@ export function DependenciesView() {
                   )}
                 </div>
               ))}
-              {filtered.length === 0 && (
-                <div className="rounded border border-border-subtle p-3 text-text-tertiary">
-                  {loading ? 'Loading dependencies...' : 'No dependencies found.'}
-                </div>
+              {filtered.length === 0 && !loading && (
+                <EmptyState
+                  icon={Boxes}
+                  compact
+                  title={items.length === 0 ? 'No dependencies indexed' : 'No matches'}
+                  description={
+                    items.length === 0
+                      ? 'Refresh this repository to discover its package manifests.'
+                      : 'Adjust the dependency search.'
+                  }
+                />
               )}
             </div>
           </div>

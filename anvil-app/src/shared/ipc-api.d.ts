@@ -7,6 +7,14 @@ import type {
 } from './pentest-types';
 import type { RunCommand, RunStatus } from './run-types';
 import type {
+  AgentUIIntent,
+  AgentUIIntentPresentationPatch,
+  AgentUIPlanIntent,
+  AgentUIPlanPatch,
+  AgentUIQuestionIntent,
+  AgentUIQuestionResolution,
+} from './agent-ui-intents';
+import type {
   Iteration,
   AgentRunSummary,
   ArgentCommandId,
@@ -39,6 +47,9 @@ import type {
   ChatNavigationTarget,
   ChatAttachmentInput,
   ChatArtifact,
+  ChatArtifactAnnotation,
+  ChatArtifactAnnotationInput,
+  ChatArtifactAnnotationPatch,
   ChatArtifactFile,
   ChatArtifactInput,
   ChatFileMentionSearchInput,
@@ -253,6 +264,15 @@ export interface AnvilAPI {
     upsertArtifact: (input: ChatArtifactInput) => Promise<ChatArtifact>;
     discardArtifact: (id: string) => Promise<boolean>;
     readArtifactFile: (id: string) => Promise<ChatArtifactFile>;
+    listArtifactAnnotations: (artifactId: string) => Promise<ChatArtifactAnnotation[]>;
+    createArtifactAnnotation: (
+      input: ChatArtifactAnnotationInput,
+    ) => Promise<ChatArtifactAnnotation>;
+    updateArtifactAnnotation: (
+      id: string,
+      patch: ChatArtifactAnnotationPatch,
+    ) => Promise<ChatArtifactAnnotation>;
+    deleteArtifactAnnotation: (id: string) => Promise<boolean>;
     listThreads: (workspaceId: string | null, personaId: string) => Promise<ChatThread[]>;
     listWorkItemThreads: (workspaceId: string | null) => Promise<ChatThread[]>;
     createThread: (input: {
@@ -309,6 +329,18 @@ export interface AnvilAPI {
     clearHistory: (threadId: string) => Promise<void>;
     saveThreadPlan: (threadId: string, plan: ChatPlanSnapshot) => Promise<ChatThread | null>;
     saveThreadGoal: (threadId: string, goal: ChatGoalSnapshot | null) => Promise<ChatThread | null>;
+    listAgentUIIntents: (threadId: string, includeInactive?: boolean) => Promise<AgentUIIntent[]>;
+    resolveAgentUIQuestion: (
+      intentId: string,
+      resolution: AgentUIQuestionResolution,
+    ) => Promise<AgentUIQuestionIntent>;
+    patchAgentUIPlan: (intentId: string, patch: AgentUIPlanPatch) => Promise<AgentUIPlanIntent>;
+    updateAgentUIIntentPresentation: (
+      intentId: string,
+      patch: AgentUIIntentPresentationPatch,
+    ) => Promise<AgentUIIntent>;
+    dismissAgentUIIntent: (intentId: string) => Promise<AgentUIIntent>;
+    restoreAgentUIIntent: (intentId: string) => Promise<AgentUIIntent>;
   };
 
   workflow: {

@@ -4,7 +4,8 @@ navTitle: Architecture
 description: How Anvil Registry, the worker, persistence, object storage, queueing, CLI, Admin, and Node Base fit together.
 product: Anvil Registry
 section: Concepts
-order: 2.5
+journey: learn
+order: 3
 ---
 
 # Architecture

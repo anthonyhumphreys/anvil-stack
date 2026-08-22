@@ -1,31 +1,57 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { load as loadYaml } from "js-yaml";
-import { marked } from "marked";
+import { marked, Renderer } from "marked";
+import {
+  docsJourneys,
+  docsProducts,
+  resolveJourneyId,
+  resolveProductId,
+  type JourneyId,
+  type ProductId
+} from "@/lib/docs-navigation";
 
 const docsDirectory = path.join(process.cwd(), "content", "docs");
-const productOrder = [
-  "Start here",
-  "Anvil Cloud",
-  "Anvil Desktop",
-  "Anvil Registry",
-  "Anvil Node Base",
-  "Project"
-];
+const productOrder = new Map(docsProducts.map((product, index) => [product.id, index]));
+const journeyOrder = new Map(docsJourneys.map((journey, index) => [journey.id, index]));
 
 export type DocMeta = {
   title: string;
   navTitle: string;
   description: string;
   product: string;
+  productId: ProductId;
   section: string;
+  journey: JourneyId;
   order: number;
+  kind: "article" | "product";
+  searchHeadings: string[];
+};
+
+export type DocHeading = {
+  depth: 2 | 3;
+  id: string;
+  text: string;
+};
+
+export type DocSearchItem = {
+  slug: string;
+  title: string;
+  navTitle: string;
+  description: string;
+  product: string;
+  productId: ProductId;
+  section: string;
+  journey: JourneyId;
+  searchHeadings: string[];
+  kind: "article" | "product";
 };
 
 export type DocPage = DocMeta & {
   slug: string;
   segments: string[];
   contentHtml: string;
+  headings: DocHeading[];
 };
 
 marked.use({
@@ -73,18 +99,67 @@ function slugFromPath(filePath: string) {
   return path.relative(docsDirectory, filePath).replace(/\.md$/, "").split(path.sep).join("/");
 }
 
+function stripMarkdown(value: string) {
+  return value
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\[([^\]]+)\]\([^\)]+\)/g, "$1")
+    .replace(/[!*_~]/g, "")
+    .trim();
+}
+
+function createSlugger() {
+  const seen = new Map<string, number>();
+  return (value: string) => {
+    const base = stripMarkdown(value)
+      .toLowerCase()
+      .replace(/&[a-z]+;/g, "")
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "") || "section";
+    const count = seen.get(base) ?? 0;
+    seen.set(base, count + 1);
+    return count === 0 ? base : `${base}-${count + 1}`;
+  };
+}
+
+function readHeadings(content: string): DocHeading[] {
+  const slug = createSlugger();
+  return [...content.matchAll(/^(#{2,3})\s+(.+)$/gm)].map((match) => ({
+    depth: match[1].length as 2 | 3,
+    id: slug(match[2]),
+    text: stripMarkdown(match[2])
+  }));
+}
+
+async function renderMarkdown(content: string) {
+  const slug = createSlugger();
+  const renderer = new Renderer();
+  renderer.heading = function ({ tokens, depth }) {
+    const html = this.parser.parseInline(tokens);
+    const text = tokens.map((token) => "text" in token ? String(token.text) : "").join("");
+    const id = slug(text || html);
+    return `<h${depth} id="${id}" class="group/doc-heading"><a class="doc-heading-anchor" href="#${id}" aria-label="Link to ${stripMarkdown(text || html)}">${html}<span aria-hidden="true">#</span></a></h${depth}>`;
+  };
+  return marked.parse(content, { renderer });
+}
+
 function readMeta(slug: string, data: FrontmatterData): DocMeta & { slug: string; segments: string[] } {
   const segments = slug.split("/");
   const title = String(data.title ?? segments.at(-1) ?? slug);
+  const product = String(data.product ?? segments[0] ?? "Project");
+  const section = String(data.section ?? "Guides");
   return {
     slug,
     segments,
     title,
     navTitle: String(data.navTitle ?? title),
     description: String(data.description ?? ""),
-    product: String(data.product ?? segments[0] ?? "Project"),
-    section: String(data.section ?? "Guides"),
-    order: Number(data.order ?? 999)
+    product,
+    productId: resolveProductId(product, segments),
+    section,
+    journey: resolveJourneyId(data.journey, section, slug),
+    order: Number(data.order ?? 999),
+    kind: data.kind === "product" ? "product" : "article",
+    searchHeadings: []
   };
 }
 
@@ -94,24 +169,17 @@ export async function getDocs(): Promise<Array<DocMeta & { slug: string; segment
     files.map(async (filePath) => {
       const slug = slugFromPath(filePath);
       const source = await fs.readFile(filePath, "utf8");
-      const { data } = parseFrontmatter(source);
-      return readMeta(slug, data);
+      const { content, data } = parseFrontmatter(source);
+      return {
+        ...readMeta(slug, data),
+        searchHeadings: readHeadings(content).map((heading) => heading.text)
+      };
     })
   );
-  const sectionRank = new Map<string, number>();
-  for (const doc of docs) {
-    const key = `${doc.product}::${doc.section}`;
-    sectionRank.set(key, Math.min(sectionRank.get(key) ?? Number.POSITIVE_INFINITY, doc.order));
-  }
-
   return docs.sort((left, right) => {
-    const leftProduct = productOrder.indexOf(left.product);
-    const rightProduct = productOrder.indexOf(right.product);
-
     return (
-      (leftProduct === -1 ? 999 : leftProduct) - (rightProduct === -1 ? 999 : rightProduct) ||
-      (sectionRank.get(`${left.product}::${left.section}`) ?? 999) -
-        (sectionRank.get(`${right.product}::${right.section}`) ?? 999) ||
+      (productOrder.get(left.productId) ?? 999) - (productOrder.get(right.productId) ?? 999) ||
+      (journeyOrder.get(left.journey) ?? 999) - (journeyOrder.get(right.journey) ?? 999) ||
       left.order - right.order ||
       left.title.localeCompare(right.title)
     );
@@ -124,7 +192,8 @@ export async function getDoc(slug: string): Promise<DocPage | undefined> {
     const { content, data } = parseFrontmatter(source);
     return {
       ...readMeta(slug, data),
-      contentHtml: await marked.parse(content)
+      contentHtml: await renderMarkdown(content),
+      headings: readHeadings(content)
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
@@ -144,5 +213,41 @@ export function groupDocs(docs: Array<DocMeta & { slug: string; segments: string
   return [...products.entries()].map(([product, sections]) => ({
     product,
     sections: [...sections.entries()]
+  }));
+}
+
+export function groupProductDocs(
+  docs: Array<DocMeta & { slug: string; segments: string[] }>,
+  productId: ProductId
+) {
+  const productDocs = docs.filter((doc) => doc.productId === productId && doc.kind !== "product");
+  return docsJourneys.map((journey) => {
+    const entries = productDocs.filter((doc) => doc.journey === journey.id);
+    const groups = new Map<string, typeof entries>();
+    for (const entry of entries) {
+      const group = groups.get(entry.section) ?? [];
+      group.push(entry);
+      groups.set(entry.section, group);
+    }
+    return {
+      ...journey,
+      entries,
+      groups: [...groups.entries()]
+    };
+  }).filter((journey) => journey.entries.length > 0);
+}
+
+export function toSearchItems(docs: Array<DocMeta & { slug: string; segments: string[] }>) {
+  return docs.map((doc) => ({
+    slug: doc.slug,
+    title: doc.title,
+    navTitle: doc.navTitle,
+    description: doc.description,
+    product: doc.product,
+    productId: doc.productId,
+    section: doc.section,
+    journey: doc.journey,
+    searchHeadings: doc.searchHeadings,
+    kind: doc.kind
   }));
 }

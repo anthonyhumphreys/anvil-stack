@@ -28,6 +28,7 @@ import {
   NotebookPen,
   StickyNote,
   MonitorSmartphone,
+  GripVertical,
 } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
 import { useBrand } from '../../contexts/BrandContext';
@@ -185,6 +186,20 @@ export function Sidebar({
 
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
+  };
+
+  const handleResizeKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (compact || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    if (event.key === 'Home') {
+      setWidth(224);
+      return;
+    }
+    if (event.key === 'End') {
+      setWidth(340);
+      return;
+    }
+    setWidth(width + (event.key === 'ArrowRight' ? 24 : -24));
   };
 
   return (
@@ -433,10 +448,20 @@ export function Sidebar({
       {!compact && (
         <div
           onMouseDown={handleResizeStart}
-          className="absolute -right-1 bottom-0 top-0 z-10 w-2 cursor-col-resize"
-          aria-hidden="true"
+          onKeyDown={handleResizeKeyDown}
+          className="group absolute -right-1.5 bottom-0 top-0 z-20 flex w-3 cursor-col-resize items-center justify-center"
+          role="separator"
+          aria-label="Resize navigation"
+          aria-orientation="vertical"
+          aria-valuemin={224}
+          aria-valuemax={340}
+          aria-valuenow={width}
+          tabIndex={0}
         >
-          <div className="mx-auto h-full w-px bg-border/50 transition-colors hover:bg-accent" />
+          <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-border/60 transition-colors group-hover:bg-accent" />
+          <span className="relative flex h-9 w-3 items-center justify-center rounded-full border border-border bg-bg-elevated text-text-muted shadow-sm transition-colors group-hover:border-accent/50 group-hover:text-accent">
+            <GripVertical size={10} />
+          </span>
         </div>
       )}
     </aside>

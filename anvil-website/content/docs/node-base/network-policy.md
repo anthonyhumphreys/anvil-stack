@@ -4,6 +4,7 @@ navTitle: Network policy
 description: Configure allowed hosts, blocked hosts, ports, and severity levels for observed mode network monitoring.
 product: Anvil Node Base
 section: Guides
+journey: build
 order: 10
 ---
 
