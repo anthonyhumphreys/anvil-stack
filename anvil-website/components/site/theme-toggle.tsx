@@ -34,6 +34,7 @@ function subscribeToPreference(onStoreChange: () => void): () => void {
     onStoreChange();
   };
 
+  applyTheme(getStoredPreference());
   window.addEventListener("storage", handlePreferenceChange);
   window.addEventListener(preferenceChangeEvent, handlePreferenceChange);
   media.addEventListener("change", handlePreferenceChange);
@@ -55,7 +56,6 @@ export function ThemeToggle() {
   function cyclePreference() {
     const next = preferences[(preferences.indexOf(preference) + 1) % preferences.length];
     window.localStorage.setItem(storageKey, next);
-    applyTheme(next);
     window.dispatchEvent(new Event(preferenceChangeEvent));
   }
 

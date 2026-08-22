@@ -6,6 +6,9 @@
   "icon": "command-icon.png",
   "author": "anthonyhumphreys",
   "license": "MIT",
+  "engines": {
+    "node": ">=22.22.2"
+  },
   "commands": [
     {
       "name": "overview",

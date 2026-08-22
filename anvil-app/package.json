@@ -4,6 +4,9 @@
   "description": "Anvil developer mission control",
   "main": "out/main/index.js",
   "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/anthonyhumphreys/anvil-stack.git",
