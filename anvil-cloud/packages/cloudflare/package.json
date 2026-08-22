@@ -14,6 +14,6 @@
     "@anvil-cloud/builder": "workspace:*",
     "@anvil-cloud/deployment": "workspace:*",
     "@anvil-cloud/runtime": "workspace:*",
-    "esbuild": "^0.28.1"
+    "esbuild": "^0.28.2"
   }
 }

@@ -62,7 +62,7 @@
     "publish": "ray publish"
   },
   "dependencies": {
-    "@raycast/api": "^1.90.0",
+    "@raycast/api": "^2.0.5",
     "@raycast/utils": "^1.17.0"
   },
   "devDependencies": {
