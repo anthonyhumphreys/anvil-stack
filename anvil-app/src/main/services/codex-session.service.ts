@@ -33,6 +33,7 @@ import {
   type JsonRpcRequestId,
   sendCodexJsonRpc,
   sendCodexJsonRpcNotification,
+  sendCodexJsonRpcResult,
 } from './codex-protocol.service.js';
 import { emitCompanionEvent } from './companion-events.service.js';
 import { normaliseCodexModel, normaliseReasoningEffort } from '../../shared/codex-models.js';
@@ -1002,20 +1003,6 @@ function waitForThreadReady(threadReady: Promise<void>, sessionId: string): Prom
       }, 20_000);
     }),
   ]);
-}
-
-function sendCodexJsonRpcResult(
-  proc: ChildProcess,
-  requestId: JsonRpcRequestId,
-  result: Record<string, unknown>,
-): void {
-  proc.stdin?.write(
-    JSON.stringify({
-      jsonrpc: '2.0',
-      id: requestId,
-      result,
-    }) + '\n',
-  );
 }
 
 function codexModeToPolicy(mode: CodexMode): {

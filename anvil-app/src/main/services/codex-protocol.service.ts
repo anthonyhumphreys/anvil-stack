@@ -44,6 +44,12 @@ export interface CodexProtocolCallbacks {
 
 const MAX_RENDERED_DIFF_CHARS = 120_000;
 const MAX_RENDERED_COMMAND_OUTPUT_CHARS = 120_000;
+const guardedJsonRpcStdin = new WeakSet<object>();
+const CLOSED_PIPE_ERROR_CODES = new Set([
+  'EPIPE',
+  'ERR_STREAM_DESTROYED',
+  'ERR_STREAM_WRITE_AFTER_END',
+]);
 
 /** Find the longest common parent directory of a set of absolute paths. */
 export function commonParentDir(paths: string[]): string {
@@ -63,27 +69,65 @@ export function sendCodexJsonRpc(
   proc: ChildProcess,
   method: string,
   params: Record<string, unknown>,
-): void {
-  const message = JSON.stringify({
+): boolean {
+  return writeCodexJsonRpcLine(proc, {
     jsonrpc: '2.0',
     method,
     params,
     id: randomUUID(),
   });
-  proc.stdin?.write(message + '\n');
 }
 
 export function sendCodexJsonRpcNotification(
   proc: ChildProcess,
   method: string,
   params: Record<string, unknown>,
-): void {
-  proc.stdin?.write(
-    JSON.stringify({
-      method,
-      params,
-    }) + '\n',
-  );
+): boolean {
+  return writeCodexJsonRpcLine(proc, { method, params });
+}
+
+export function sendCodexJsonRpcResult(
+  proc: ChildProcess,
+  requestId: JsonRpcRequestId,
+  result: Record<string, unknown>,
+): boolean {
+  return writeCodexJsonRpcLine(proc, {
+    jsonrpc: '2.0',
+    id: requestId,
+    result,
+  });
+}
+
+function writeCodexJsonRpcLine(proc: ChildProcess, payload: Record<string, unknown>): boolean {
+  const stdin = proc.stdin;
+  if (!stdin) return false;
+
+  guardJsonRpcStdin(stdin);
+  if (!stdin.writable || stdin.destroyed || stdin.writableEnded) return false;
+
+  try {
+    stdin.write(`${JSON.stringify(payload)}\n`);
+    return true;
+  } catch (error) {
+    handleJsonRpcStdinError(error);
+    return false;
+  }
+}
+
+function guardJsonRpcStdin(stdin: NonNullable<ChildProcess['stdin']>): void {
+  if (guardedJsonRpcStdin.has(stdin)) return;
+  guardedJsonRpcStdin.add(stdin);
+  stdin.on('error', handleJsonRpcStdinError);
+}
+
+function handleJsonRpcStdinError(error: unknown): void {
+  if (isClosedPipeError(error)) return;
+  console.error('[Codex] JSON-RPC stdin error:', error);
+}
+
+function isClosedPipeError(error: unknown): boolean {
+  if (!error || typeof error !== 'object' || !('code' in error)) return false;
+  return CLOSED_PIPE_ERROR_CODES.has(String(error.code));
 }
 
 export function handleCodexServerLine(
