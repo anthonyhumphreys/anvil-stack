@@ -359,6 +359,7 @@ async function resolveWorkspaceMaterial(
 
 function validateSourceAccess(access: AgentExecutionSourceAccess): void {
   let endpoint: URL;
+  const expiresAt = new Date(access.expiresAt).getTime();
 
   try {
     endpoint = new URL(access.endpoint);
@@ -370,7 +371,8 @@ function validateSourceAccess(access: AgentExecutionSourceAccess): void {
     endpoint.protocol !== "https:" ||
     access.token.length < 16 ||
     access.token.length > 512 ||
-    new Date(access.expiresAt).getTime() <= Date.now()
+    !Number.isFinite(expiresAt) ||
+    expiresAt <= Date.now()
   ) {
     throw invalidSource("Execution source grant is invalid or expired.");
   }

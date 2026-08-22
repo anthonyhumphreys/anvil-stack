@@ -162,7 +162,9 @@ contract later.
 
 1. `clientToken` makes execution creation idempotent.
 2. Provider events are de-duplicated and receive durable, monotonically
-   increasing control-plane cursors.
+   increasing control-plane cursors. File-backed lease and event mutations are
+   serialized within the service process, and malformed persisted collections
+   fail closed instead of being treated as valid state.
 3. Closing and reconnecting a client cannot duplicate events after its last
    cursor.
 4. Git sources are credential-free HTTPS URLs pinned to hexadecimal commits;
@@ -195,7 +197,8 @@ contract later.
 12. Snapshot bytes are content-addressed, size-bounded, and served through
     short-lived single-use grants whose raw token is returned once and only a
     SHA-256 verifier is persisted. The worker verifies declared byte counts and
-    SHA-256 digests before preparing the workspace.
+    SHA-256 digests before preparing the workspace. Snapshot and worker grants
+    with invalid expiry timestamps fail closed.
 13. Desktop keeps the Anvil Cloud bearer encrypted in the Electron main
     process. The renderer sees only endpoint and configured state. Desktop
     uploads a committed Git archive with `.git`, ignored/untracked files,

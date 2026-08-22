@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -78,6 +79,8 @@ export class InMemoryAgentExecutionStore implements AgentExecutionStore {
 }
 
 export class JsonFileAgentExecutionStore implements AgentExecutionStore {
+  private stateMutation = Promise.resolve();
+
   constructor(readonly filePath: string) {}
 
   async get(executionId: string): Promise<AgentExecutionLease | null> {
@@ -108,21 +111,25 @@ export class JsonFileAgentExecutionStore implements AgentExecutionStore {
   }
 
   async put(lease: AgentExecutionLease): Promise<void> {
-    const state = await this.read();
-    state.leases[lease.id] = clone(lease);
-    await this.write(state);
+    await this.withStateMutation(async () => {
+      const state = await this.read();
+      state.leases[lease.id] = clone(lease);
+      await this.write(state);
+    });
   }
 
   async appendEvents(
     executionId: string,
     events: AgentExecutionEvent[],
   ): Promise<void> {
-    const state = await this.read();
-    state.events[executionId] = [
-      ...(state.events[executionId] ?? []),
-      ...clone(events),
-    ];
-    await this.write(state);
+    await this.withStateMutation(async () => {
+      const state = await this.read();
+      state.events[executionId] = [
+        ...(state.events[executionId] ?? []),
+        ...clone(events),
+      ];
+      await this.write(state);
+    });
   }
 
   async events(
@@ -160,13 +167,28 @@ export class JsonFileAgentExecutionStore implements AgentExecutionStore {
 
   private async write(state: ExecutionStoreState): Promise<void> {
     await mkdir(path.dirname(this.filePath), { recursive: true });
-    const temporaryPath = `${this.filePath}.${process.pid}.tmp`;
+    const temporaryPath = `${this.filePath}.${process.pid}.${randomUUID()}.tmp`;
     await writeFile(
       temporaryPath,
       `${JSON.stringify(state, null, 2)}\n`,
       "utf8",
     );
     await rename(temporaryPath, this.filePath);
+  }
+
+  private async withStateMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const previousMutation = this.stateMutation;
+    let releaseMutation: () => void = () => undefined;
+    this.stateMutation = new Promise<void>((resolve) => {
+      releaseMutation = resolve;
+    });
+
+    await previousMutation;
+    try {
+      return await operation();
+    } finally {
+      releaseMutation();
+    }
   }
 }
 
@@ -180,13 +202,15 @@ function emptyState(): ExecutionStoreState {
 
 function isStoreState(value: unknown): value is ExecutionStoreState {
   return (
-    typeof value === "object" &&
-    value !== null &&
-    !Array.isArray(value) &&
-    (value as { schemaVersion?: unknown }).schemaVersion === "0.1" &&
-    typeof (value as { leases?: unknown }).leases === "object" &&
-    typeof (value as { events?: unknown }).events === "object"
+    isObject(value) &&
+    value.schemaVersion === "0.1" &&
+    isObject(value.leases) &&
+    isObject(value.events)
   );
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {

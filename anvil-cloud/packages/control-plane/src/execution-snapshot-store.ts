@@ -568,7 +568,14 @@ function validateGrant(
       "Snapshot grant has already been used.",
     );
   }
-  if (new Date(grant.expiresAt).getTime() <= now().getTime()) {
+  const expiresAt = new Date(grant.expiresAt).getTime();
+  if (!Number.isFinite(expiresAt)) {
+    throw new AgentExecutionSnapshotStoreError(
+      "EXECUTION_SNAPSHOT_GRANT_INVALID",
+      "Snapshot grant is invalid.",
+    );
+  }
+  if (expiresAt <= now().getTime()) {
     throw new AgentExecutionSnapshotStoreError(
       "EXECUTION_SNAPSHOT_GRANT_EXPIRED",
       "Snapshot grant has expired.",

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -245,6 +245,56 @@ describe("AgentExecutionControlPlane", () => {
     }
   });
 
+  it("serializes concurrent JSON store mutations without losing executions", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-executions-"));
+    const store = new JsonFileAgentExecutionStore(
+      path.join(rootDir, "executions.json"),
+    );
+    let id = 0;
+    const plane = new AgentExecutionControlPlane({
+      providers: [new FakeAgentExecutionProvider()],
+      store,
+      idFactory: () => `concurrent-${++id}`,
+    });
+    const firstRequest = createRequest();
+    const secondRequest = createRequest();
+    secondRequest.clientToken = "second-client-token";
+
+    try {
+      const created = await Promise.all([
+        plane.createExecution(firstRequest),
+        plane.createExecution(secondRequest),
+      ]);
+
+      await expect(store.list()).resolves.toEqual(
+        expect.arrayContaining(
+          created.map((lease) => expect.objectContaining({ id: lease.id })),
+        ),
+      );
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects malformed JSON store record collections", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-executions-"));
+    const filePath = path.join(rootDir, "executions.json");
+
+    try {
+      await writeFile(
+        filePath,
+        JSON.stringify({ schemaVersion: "0.1", leases: null, events: [] }),
+        "utf8",
+      );
+
+      await expect(
+        new JsonFileAgentExecutionStore(filePath).list(),
+      ).rejects.toThrow(`Invalid execution store at ${filePath}.`);
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("stores content-addressed snapshots and consumes worker grants once", async () => {
     const store = new InMemoryAgentExecutionSnapshotStore({
       idFactory: () => "grant-1",
@@ -340,6 +390,43 @@ describe("AgentExecutionControlPlane", () => {
           }),
         }),
       ]);
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects file-backed grants with invalid expiry timestamps", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "anvil-grants-"));
+    const store = new FileAgentExecutionSnapshotStore(rootDir, {
+      idFactory: () => "grant-1",
+      tokenFactory: () => "one-time-worker-token",
+    });
+
+    try {
+      const stored = await store.put({
+        workspace: "workspace-1",
+        baseCommit: "a".repeat(40),
+        archive: Buffer.from("repository archive"),
+      });
+      const grant = await store.issueGrant({
+        workspace: "workspace-1",
+        snapshotId: stored.source.snapshotId,
+        executionId: "exec-1",
+      });
+      const statePath = path.join(rootDir, "state.json");
+      const state = JSON.parse(await readFile(statePath, "utf8")) as {
+        grants: Record<string, { expiresAt: string }>;
+      };
+      state.grants[grant.id]!.expiresAt = "not-a-date";
+      await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+
+      await expect(
+        store.consumeGrant({
+          grantId: grant.id,
+          executionId: "exec-1",
+          token: grant.token,
+        }),
+      ).rejects.toMatchObject({ code: "EXECUTION_SNAPSHOT_GRANT_INVALID" });
     } finally {
       await rm(rootDir, { recursive: true, force: true });
     }
@@ -602,6 +689,16 @@ describe("AgentExecutionControlPlane", () => {
         },
       },
     );
+    const invalidAccessResponse = await worker({
+      method: "POST",
+      path: "/_anvil/execution/workspace",
+      headers: { authorization: "Bearer microvm-token" },
+      body: {
+        executionId: "exec-worker",
+        source: record.source,
+        access: { ...access, expiresAt: "not-a-date" },
+      },
+    });
     const workspaceResponse = await worker({
       method: "POST",
       path: "/_anvil/execution/workspace",
@@ -645,6 +742,10 @@ describe("AgentExecutionControlPlane", () => {
     expect(workspaceResponse).toMatchObject({
       status: 200,
       body: { workspace: { id: "worker-workspace", writable: false } },
+    });
+    expect(invalidAccessResponse).toMatchObject({
+      status: 400,
+      body: { error: { code: "EXECUTION_WORKER_SOURCE_INVALID" } },
     });
     expect(Buffer.from(driver.material?.archive ?? []).toString()).toBe(
       "worker archive",
