@@ -4,6 +4,7 @@ navTitle: Observed mode
 description: Run install scripts explicitly while capturing process, network, filesystem, and environment evidence.
 product: Anvil Node Base
 section: Guides
+journey: build
 order: 8
 ---
 

@@ -4,6 +4,7 @@ navTitle: Package decisions
 description: Interpret allow, warn, quarantine, block, explain, analysis, LLM review, and override output.
 product: Anvil Registry
 section: Concepts
+journey: learn
 order: 5
 ---
 

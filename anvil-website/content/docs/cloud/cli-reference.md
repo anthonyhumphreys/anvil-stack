@@ -4,6 +4,7 @@ navTitle: CLI reference
 description: Commands, JSON output, exit codes, local inspection, and AWS preview deployment through the Anvil Cloud CLI.
 product: Anvil Cloud
 section: Reference
+journey: reference
 order: 140
 ---
 

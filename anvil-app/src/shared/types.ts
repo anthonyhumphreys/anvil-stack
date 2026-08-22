@@ -1,3 +1,5 @@
+import type { AgentUIIntent } from './agent-ui-intents.js';
+
 export interface RepoInfo {
   id: string; // SHA256 of repo path
   name: string; // Directory name
@@ -517,6 +519,30 @@ export interface ChatArtifactInput {
   reasoningEffort?: ReasoningEffort;
 }
 
+export type ChatArtifactAnnotationStatus = 'open' | 'resolved';
+
+export interface ChatArtifactAnnotation {
+  id: string;
+  artifactId: string;
+  body: string;
+  quote?: string;
+  status: ChatArtifactAnnotationStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ChatArtifactAnnotationInput {
+  artifactId: string;
+  body: string;
+  quote?: string;
+}
+
+export interface ChatArtifactAnnotationPatch {
+  body?: string;
+  quote?: string | null;
+  status?: ChatArtifactAnnotationStatus;
+}
+
 export interface ChatAttachment {
   id: string;
   name: string;
@@ -888,6 +914,8 @@ export interface CodexEvent {
     | 'thread_status'
     | 'request_resolved'
     | 'plan_update'
+    | 'agent_ui_intent'
+    | 'agent_ui_intent_resolved'
     | 'goal_update'
     | 'goal_cleared'
     | 'error'
@@ -915,6 +943,8 @@ export interface CodexEvent {
   threadActiveFlags?: Array<'waitingOnApproval' | 'waitingOnUserInput'>;
   subagent?: CodexSubagentUpdate;
   plan?: ChatPlanSnapshot;
+  agentUIIntent?: AgentUIIntent;
+  agentUIIntentId?: string;
   goal?: ChatGoalSnapshot;
   status?: 'thinking' | 'executing' | 'complete' | 'error';
   errorMessage?: string;

@@ -4,6 +4,7 @@ navTitle: Endpoints and jobs
 description: Define custom HTTP endpoints and scheduled background jobs in Anvil Cells.
 product: Anvil Cloud
 section: Architecture
+journey: learn
 order: 117
 ---
 

@@ -17,8 +17,8 @@ import {
 export default function HomePage() {
   return (
     <div className="min-h-screen bg-background">
-      <SiteHeader />
-      <main>
+      <SiteHeader active="home" />
+      <main id="main-content">
         <HeroSection />
         <RepoMapSection />
         <ProductsSection />
@@ -43,7 +43,7 @@ function HeroSection() {
               Local evidence before trust.
             </h1>
             <p className="max-w-2xl text-lg leading-8 text-muted-foreground">
-              Anvil is a small family of developer tools: Desktop for repo-aware agent delivery, Registry for safer npm dependency ingress, and Cloud for inspectable app runtime contracts. The common rule is simple: make the work reviewable before anyone has to believe it.
+              Anvil is a family of developer tools: Desktop for repo-aware delivery, Registry for npm dependency policy, Node Base for safer installs, and Cloud for inspectable runtime contracts. Each one leaves evidence a reviewer can inspect.
             </p>
           </div>
           <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
@@ -59,15 +59,13 @@ function HeroSection() {
                 Download macOS Apple Silicon
               </Link>
             </Button>
-            <Button asChild size="lg" variant="outline">
-              <Link href="/docs/project/repositories">Monorepo map</Link>
-            </Button>
-            <Button asChild size="lg" variant="outline">
-              <Link href={githubRepositoryUrl}>
-                <Github data-icon="inline-start" aria-hidden="true" />
-                anvil-stack
-              </Link>
-            </Button>
+            <Link
+              className="inline-flex min-h-11 items-center gap-2 px-2 text-sm font-medium text-muted-foreground hover:text-foreground"
+              href={githubRepositoryUrl}
+            >
+              <Github className="size-4" aria-hidden="true" />
+              View anvil-stack on GitHub
+            </Link>
           </div>
         </div>
         <div className="hero-proof">

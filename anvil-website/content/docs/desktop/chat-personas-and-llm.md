@@ -4,6 +4,7 @@ navTitle: Chat and LLM
 description: Configure AI providers, switch chat personas, tune reasoning effort, and understand how Anvil Desktop grounds sessions in repository context.
 product: Anvil Desktop
 section: Working guide
+journey: build
 order: 111
 ---
 

@@ -4,6 +4,7 @@ navTitle: Troubleshooting
 description: Diagnose registry routing, blocked installs, readiness failures, lifecycle scripts, and Node Base report issues.
 product: Anvil Registry
 section: Operations
+journey: reference
 order: 13
 ---
 
