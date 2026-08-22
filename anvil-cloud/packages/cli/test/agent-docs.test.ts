@@ -10,14 +10,13 @@ const repoRoot = path.resolve(cloudRoot, "..");
 
 describe("agent-facing docs", () => {
   it("keeps llms mirrors in sync for website and package publishing", async () => {
-    const [llms, full, siteFull, packageLlms, packageFull] =
-      await Promise.all([
-        readText(path.join(cloudRoot, "llms.txt")),
-        readText(path.join(cloudRoot, "llms-full.txt")),
-        readText(path.join(repoRoot, "anvil-website/public/llms-full.txt")),
-        readText(path.join(cliPackageDir, "docs/llms.txt")),
-        readText(path.join(cliPackageDir, "docs/llms-full.txt")),
-      ]);
+    const [llms, full, siteFull, packageLlms, packageFull] = await Promise.all([
+      readText(path.join(cloudRoot, "llms.txt")),
+      readText(path.join(cloudRoot, "llms-full.txt")),
+      readText(path.join(repoRoot, "anvil-website/public/llms-full.txt")),
+      readText(path.join(cliPackageDir, "docs/llms.txt")),
+      readText(path.join(cliPackageDir, "docs/llms-full.txt")),
+    ]);
 
     expect(siteFull).toBe(full);
     expect(packageLlms).toBe(llms);
