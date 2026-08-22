@@ -988,7 +988,7 @@ export function ChatView({ userRole }: ChatViewProps) {
             />
           ) : (
             <ChatThreadRail
-              persona={activePersona}
+              personas={personas}
               repos={repos}
               threads={threads}
               activeThreadId={activeThreadId}

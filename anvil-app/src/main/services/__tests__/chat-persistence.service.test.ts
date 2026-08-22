@@ -100,6 +100,16 @@ describe('chat thread persistence', () => {
     expect(updated?.activeRepoId).toBeUndefined();
   });
 
+  it('lists every classic thread when no persona filter is supplied', () => {
+    const coderThread = createChatThread({ workspaceId: 'ws-1', personaId: 'coder' });
+    const architectThread = createChatThread({ workspaceId: 'ws-1', personaId: 'architect' });
+    createChatThread({ workspaceId: null, personaId: 'ba' });
+
+    expect(new Set(listChatThreads('ws-1').map((thread) => thread.id))).toEqual(
+      new Set([coderThread.id, architectThread.id]),
+    );
+  });
+
   it('tracks inbox attention and prevents active work from being settled', () => {
     const thread = createChatThread({ workspaceId: 'ws-1', personaId: 'coder' });
 

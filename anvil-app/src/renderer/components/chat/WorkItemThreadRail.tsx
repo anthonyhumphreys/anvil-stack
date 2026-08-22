@@ -501,6 +501,7 @@ function ThreadAction({
   className?: string;
   disabled?: boolean;
 }) {
+  const accessibleLabel = disabled ? 'Finish or resolve this thread before archiving it' : label;
   return (
     <button
       type="button"
@@ -510,8 +511,8 @@ function ThreadAction({
       }}
       disabled={disabled}
       className={`rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-30 ${className}`}
-      title={disabled ? 'Finish or resolve this thread before archiving it' : label}
-      aria-label={label}
+      title={accessibleLabel}
+      aria-label={accessibleLabel}
     >
       {children}
     </button>

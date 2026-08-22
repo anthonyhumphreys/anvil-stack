@@ -190,8 +190,8 @@ const api: AnvilAPI = {
       ipcRenderer.invoke('chat:update-artifact-annotation', id, patch),
     deleteArtifactAnnotation: (id: string) =>
       ipcRenderer.invoke('chat:delete-artifact-annotation', id),
-    listThreads: (workspaceId: string | null, personaId: string) =>
-      ipcRenderer.invoke('chat:list-threads', workspaceId, personaId),
+    listThreads: (workspaceId: string | null) =>
+      ipcRenderer.invoke('chat:list-threads', workspaceId),
     listWorkItemThreads: (workspaceId: string | null) =>
       ipcRenderer.invoke('chat:list-work-item-threads', workspaceId),
     createThread: (input: {
