@@ -4,6 +4,9 @@
   "description": "Anvil developer mission control",
   "main": "out/main/index.js",
   "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/anthonyhumphreys/anvil-stack.git",
@@ -68,7 +71,7 @@
     "react-diff-viewer-continued": "^4.2.2",
     "react-dom": "^19.2.4",
     "react-markdown": "^10.1.0",
-    "react-router-dom": "^6.30.5",
+    "react-router-dom": "^7.18.2",
     "remark-gfm": "^4.0.1",
     "shiki": "^4.0.2",
     "simple-git": "^3.36.0",
@@ -83,9 +86,10 @@
   "pnpm": {
     "overrides": {
       "@xmldom/xmldom": "0.8.13",
-      "brace-expansion@1": "1.1.14",
-      "brace-expansion@2": "2.0.3",
-      "brace-expansion@5": "5.0.6",
+      "brace-expansion@1": "1.1.18",
+      "brace-expansion@2": "2.1.4",
+      "brace-expansion@5": "5.0.9",
+      "fast-uri": "3.1.5",
       "flatted": "3.4.2",
       "ip-address": "10.1.1",
       "lodash": "4.18.0",
@@ -95,20 +99,22 @@
       "@babel/core": "7.29.6",
       "esbuild": "0.28.1",
       "form-data": "4.0.6",
-      "js-yaml": "4.2.0",
-      "postcss": "8.5.14",
-      "shell-quote": "1.8.4",
-      "tar": "7.5.16",
+      "js-yaml": "4.3.1",
+      "nanoid@3": "3.3.18",
+      "postcss": "8.5.26",
+      "shell-quote": "1.10.0",
+      "tar": "7.5.22",
       "tmp": "0.2.7",
+      "undici@6": "6.28.0",
       "uuid@11": "11.1.1",
       "uuid@7": "11.1.1",
       "vite": "7.3.5",
-      "ws": "8.21.0",
+      "ws": "8.21.3",
       "yaml@1": "1.10.3"
     }
   },
   "devDependencies": {
-    "@electron/rebuild": "^4.0.4",
+    "@electron/rebuild": "^4.2.0",
     "@eslint/js": "^10.0.1",
     "@tailwindcss/vite": "^4.2.1",
     "@types/better-sqlite3": "^7.6.13",
