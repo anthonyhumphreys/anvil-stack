@@ -76,6 +76,11 @@ Poor shared types:
 - provider SDK clients
 - anything with hidden process affinity
 
+The Cloud execution path follows the same rule. `anvil-cloud-execution.service`
+owns encrypted connection state, Git snapshot construction, authenticated HTTP,
+and execution lifecycle calls. The typed IPC bridge exposes leases and events,
+not bearer tokens or archive bytes.
+
 ## Renderer
 
 The renderer is a React single-page app. Feature UI is grouped under `src/renderer/components` with supporting contexts, hooks, stores, utilities, and global styles.

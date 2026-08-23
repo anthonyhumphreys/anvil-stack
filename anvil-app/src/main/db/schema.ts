@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 55;
+export const SCHEMA_VERSION = 56;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -329,6 +329,13 @@ CREATE TABLE IF NOT EXISTS settings (
   github_username TEXT,
   cloud_features_enabled INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS cloud_execution_connection (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  endpoint TEXT NOT NULL,
+  token BLOB NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS mobile_companion_settings (
@@ -1773,5 +1780,13 @@ export const MIGRATIONS: Record<number, string> = {
 
     CREATE INDEX IF NOT EXISTS idx_chat_artifact_annotations_artifact_updated
       ON chat_artifact_annotations(artifact_id, updated_at DESC);
+  `,
+  56: `
+    CREATE TABLE IF NOT EXISTS cloud_execution_connection (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      endpoint TEXT NOT NULL,
+      token BLOB NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `,
 };
