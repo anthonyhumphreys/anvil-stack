@@ -236,7 +236,7 @@ function parseWorkItemProvider(value: string | null | undefined): WorkItemProvid
   return value === 'ado' || value === 'linear' || value === 'jira' ? value : undefined;
 }
 
-export function listChatThreads(workspaceId: string | null, personaId: string): ChatThread[] {
+export function listChatThreads(workspaceId: string | null, personaId?: string): ChatThread[] {
   const db = getDb();
   const rows = db
     .prepare(
@@ -277,7 +277,7 @@ export function listChatThreads(workspaceId: string | null, personaId: string): 
            (? IS NULL AND t.workspace_id IS NULL)
            OR t.workspace_id = ?
          )
-         AND t.persona_id = ?
+         AND (? IS NULL OR t.persona_id = ?)
          AND t.work_item_id IS NULL
        GROUP BY t.id
        ORDER BY
@@ -285,7 +285,7 @@ export function listChatThreads(workspaceId: string | null, personaId: string): 
          t.created_at DESC,
          t.id DESC`,
     )
-    .all(workspaceId, workspaceId, personaId) as ChatThreadRow[];
+    .all(workspaceId, workspaceId, personaId ?? null, personaId ?? null) as ChatThreadRow[];
 
   return rows.map(mapThreadRow);
 }

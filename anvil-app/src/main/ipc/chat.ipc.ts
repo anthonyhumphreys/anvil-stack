@@ -365,12 +365,9 @@ export function registerChatHandlers(): void {
     return getPersonas();
   });
 
-  ipcMain.handle(
-    'chat:list-threads',
-    (_event, workspaceId: string | null, personaId: string): ChatThread[] => {
-      return listChatThreads(workspaceId, personaId);
-    },
-  );
+  ipcMain.handle('chat:list-threads', (_event, workspaceId: string | null): ChatThread[] => {
+    return listChatThreads(workspaceId);
+  });
 
   ipcMain.handle(
     'chat:list-work-item-threads',

@@ -17,7 +17,7 @@ import { ResizableSidebarPanel } from '../layout/ResizableSidebarPanel';
 import { isEditableShortcutTarget } from '../../utils/keyboard';
 
 interface ChatThreadRailProps {
-  persona: Persona | null;
+  personas: Persona[];
   repos: RepoInfo[];
   threads: ChatThread[];
   activeThreadId: string | null;
@@ -32,7 +32,7 @@ interface ChatThreadRailProps {
 type ThreadDisplayState = 'approval' | 'input' | 'failed' | 'complete' | 'working' | 'idle';
 
 export function ChatThreadRail({
-  persona,
+  personas,
   repos,
   threads,
   activeThreadId,
@@ -47,15 +47,14 @@ export function ChatThreadRail({
   const [draftTitle, setDraftTitle] = useState('');
   const { activeThreads, settledThreads } = useMemo(() => partitionThreads(threads), [threads]);
   const repoNames = useMemo(() => new Map(repos.map((repo) => [repo.id, repo.name])), [repos]);
+  const personaNames = useMemo(
+    () => new Map(personas.map((persona) => [persona.id, persona.name])),
+    [personas],
+  );
 
   useEffect(() => {
     if (!editingThreadId) setDraftTitle('');
   }, [editingThreadId]);
-
-  const emptyLabel = useMemo(
-    () => (persona ? `No active ${persona.name} work.` : 'No active work.'),
-    [persona],
-  );
 
   const commitRename = () => {
     if (!editingThreadId) return;
@@ -72,7 +71,7 @@ export function ChatThreadRail({
     const context =
       thread.workItemTitle ??
       (thread.activeRepoId ? repoNames.get(thread.activeRepoId) : undefined) ??
-      persona?.name;
+      personaNames.get(thread.personaId);
 
     return (
       <div
@@ -216,7 +215,7 @@ export function ChatThreadRail({
           <div className="min-w-0">
             <h3 className="truncate text-sm font-semibold text-text-primary">Threads</h3>
             <p className="mt-0.5 text-[11px] text-text-tertiary">
-              {activeThreads.length} active · creation order
+              {activeThreads.length} active · all assistants
             </p>
           </div>
           <button
@@ -233,7 +232,7 @@ export function ChatThreadRail({
       <div className="min-h-0 flex-1 overflow-y-auto p-2.5">
         {activeThreads.length === 0 ? (
           <div className="rounded-xl border border-dashed border-border px-4 py-5 text-center">
-            <p className="text-sm font-medium text-text-primary">{emptyLabel}</p>
+            <p className="text-sm font-medium text-text-primary">No active work.</p>
             <p className="mt-2 text-xs leading-relaxed text-text-tertiary">
               Start a thread, or return archived work when it needs another pass.
             </p>
@@ -277,6 +276,7 @@ function ThreadAction({
   className?: string;
   disabled?: boolean;
 }) {
+  const accessibleLabel = disabled ? 'Finish or resolve this thread before archiving it' : label;
   return (
     <button
       onClick={(event) => {
@@ -285,8 +285,8 @@ function ThreadAction({
       }}
       disabled={disabled}
       className={`rounded-lg p-1.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-30 ${className}`}
-      title={disabled ? 'Finish or resolve this thread before archiving it' : label}
-      aria-label={label}
+      title={accessibleLabel}
+      aria-label={accessibleLabel}
     >
       {children}
     </button>

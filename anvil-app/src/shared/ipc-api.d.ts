@@ -273,7 +273,7 @@ export interface AnvilAPI {
       patch: ChatArtifactAnnotationPatch,
     ) => Promise<ChatArtifactAnnotation>;
     deleteArtifactAnnotation: (id: string) => Promise<boolean>;
-    listThreads: (workspaceId: string | null, personaId: string) => Promise<ChatThread[]>;
+    listThreads: (workspaceId: string | null) => Promise<ChatThread[]>;
     listWorkItemThreads: (workspaceId: string | null) => Promise<ChatThread[]>;
     createThread: (input: {
       workspaceId?: string | null;

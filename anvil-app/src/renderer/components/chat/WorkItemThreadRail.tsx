@@ -1,24 +1,48 @@
 import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  Archive,
+  ArchiveRestore,
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  CircleAlert,
+  CircleHelp,
   ExternalLink,
   Loader2,
+  LoaderCircle,
   Maximize2,
   MessageSquare,
+  MessageSquarePlus,
+  Pencil,
   RefreshCw,
   Search,
   TicketCheck,
+  Trash2,
   X,
 } from 'lucide-react';
 import type { ChatThread, CodexSession, WorkItem, WorkItemProvider } from '../../../shared/types';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { ResizableSidebarPanel } from '../layout/ResizableSidebarPanel';
+import {
+  canSettleThread,
+  getThreadActionVisibilityClass,
+  getThreadDisplayState,
+  partitionThreads,
+  shouldSelectThreadFromKey,
+} from './ChatThreadRail';
 
 interface WorkItemThreadRailProps {
   threads: ChatThread[];
   activeThreadId: string | null;
   liveThreadStatuses: Record<string, CodexSession['status']>;
   onSelectWorkItem: (workItem: WorkItem) => void;
+  onSelectThread: (threadId: string) => void;
+  onCreateThread: (workItem: WorkItem) => void;
+  onRenameThread: (threadId: string, title: string) => void;
+  onSettleThread: (threadId: string, settled: boolean) => void;
+  onDeleteThread: (threadId: string) => void;
 }
 
 export function WorkItemThreadRail({
@@ -26,6 +50,11 @@ export function WorkItemThreadRail({
   activeThreadId,
   liveThreadStatuses,
   onSelectWorkItem,
+  onSelectThread,
+  onCreateThread,
+  onRenameThread,
+  onSettleThread,
+  onDeleteThread,
 }: WorkItemThreadRailProps) {
   const { activeWorkspace } = useWorkspace();
   const [items, setItems] = useState<WorkItem[]>([]);
@@ -34,15 +63,11 @@ export function WorkItemThreadRail({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [detailItem, setDetailItem] = useState<WorkItem | null>(null);
+  const [expandedItems, setExpandedItems] = useState<Set<string>>(() => new Set());
+  const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
+  const [draftTitle, setDraftTitle] = useState('');
 
-  const workItemThreads = useMemo(() => {
-    const map = new Map<string, ChatThread>();
-    for (const thread of threads) {
-      if (!thread.workItemId || !thread.workItemProvider) continue;
-      map.set(buildWorkItemKey(thread.workItemProvider, thread.workItemId), thread);
-    }
-    return map;
-  }, [threads]);
+  const workItemThreads = useMemo(() => groupWorkItemThreads(threads), [threads]);
 
   const selectedIterations = useMemo(
     () => activeWorkspace?.preferences?.workitems.iterationIds ?? [],
@@ -78,15 +103,172 @@ export function WorkItemThreadRail({
     void loadItems();
   }, [loadItems]);
 
+  useEffect(() => {
+    setExpandedItems(new Set());
+    setEditingThreadId(null);
+  }, [activeWorkspace?.id]);
+
+  const ownedItems = useMemo(
+    () => mergeWorkItemsWithOwnedThreads(items, threads),
+    [items, threads],
+  );
+
   const visibleItems = useMemo(() => {
     const query = filter.trim().toLowerCase();
-    if (!query) return items;
-    return items.filter((item) =>
+    if (!query) return ownedItems;
+    return ownedItems.filter((item) =>
       [item.id, item.title, item.type, item.state, item.assignee]
         .filter((value): value is string => Boolean(value))
         .some((value) => value.toLowerCase().includes(query)),
     );
-  }, [filter, items]);
+  }, [filter, ownedItems]);
+
+  useEffect(() => {
+    if (!activeThreadId) return;
+    const activeThread = threads.find((thread) => thread.id === activeThreadId);
+    if (!activeThread?.workItemId || !activeThread.workItemProvider) return;
+    const key = buildWorkItemKey(activeThread.workItemProvider, activeThread.workItemId);
+    setExpandedItems((current) => (current.has(key) ? current : new Set([...current, key])));
+  }, [activeThreadId, threads]);
+
+  useEffect(() => {
+    if (!editingThreadId) setDraftTitle('');
+  }, [editingThreadId]);
+
+  const toggleItem = (key: string) => {
+    setExpandedItems((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const commitRename = () => {
+    if (!editingThreadId) return;
+    const trimmed = draftTitle.trim();
+    if (trimmed) onRenameThread(editingThreadId, trimmed);
+    setEditingThreadId(null);
+  };
+
+  const renderThread = (thread: ChatThread, archived: boolean) => {
+    const active = thread.id === activeThreadId;
+    const liveStatus = liveThreadStatuses[thread.id];
+    const displayState = getThreadDisplayState(thread, liveStatus, active);
+    const settleAllowed = canSettleThread(thread, liveStatus);
+
+    return (
+      <div
+        key={thread.id}
+        className={`group relative rounded-lg border transition-colors ${
+          active
+            ? 'border-accent/35 bg-accent/10'
+            : archived
+              ? 'border-transparent hover:border-border/60 hover:bg-bg-tertiary/45'
+              : 'border-border/45 bg-bg-secondary/35 hover:border-border hover:bg-bg-tertiary/45'
+        }`}
+      >
+        <div
+          role="button"
+          tabIndex={0}
+          aria-current={active ? 'true' : undefined}
+          onClick={() => onSelectThread(thread.id)}
+          onKeyDown={(event) => {
+            if (!shouldSelectThreadFromKey(event)) return;
+            event.preventDefault();
+            onSelectThread(thread.id);
+          }}
+          className={`w-full cursor-pointer text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40 ${
+            archived ? 'px-2.5 py-2' : 'px-3 py-2.5'
+          }`}
+        >
+          <div className="flex items-start gap-2">
+            <WorkItemThreadStatusIcon state={displayState} />
+            <div className="min-w-0 flex-1">
+              {editingThreadId === thread.id ? (
+                <input
+                  autoFocus
+                  value={draftTitle}
+                  onChange={(event) => setDraftTitle(event.target.value)}
+                  onClick={(event) => event.stopPropagation()}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      commitRename();
+                    } else if (event.key === 'Escape') {
+                      event.preventDefault();
+                      setEditingThreadId(null);
+                    }
+                  }}
+                  className="w-full rounded-lg border border-border bg-bg-secondary px-2 py-1 text-xs text-text-primary outline-none focus:border-accent/40"
+                  aria-label="Thread title"
+                />
+              ) : (
+                <p className="truncate text-xs font-medium leading-snug text-text-primary">
+                  {thread.title}
+                </p>
+              )}
+              {!archived && (
+                <div className="mt-1 flex min-w-0 items-center gap-1.5 text-[11px]">
+                  <span className={threadStateTextClass(displayState)}>
+                    {threadStateLabel(displayState)}
+                  </span>
+                  {thread.preview && (
+                    <>
+                      <span className="text-text-tertiary/60">·</span>
+                      <span className="truncate text-text-tertiary">
+                        {thread.preview.replace(/\s+/g, ' ').trim()}
+                      </span>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+            <div className={getThreadActionVisibilityClass()}>
+              {editingThreadId === thread.id ? (
+                <>
+                  <ThreadAction label="Save title" onClick={commitRename}>
+                    <Check size={13} />
+                  </ThreadAction>
+                  <ThreadAction label="Cancel rename" onClick={() => setEditingThreadId(null)}>
+                    <X size={13} />
+                  </ThreadAction>
+                </>
+              ) : (
+                <>
+                  <ThreadAction
+                    label={archived ? 'Return to active threads' : 'Archive thread'}
+                    disabled={!archived && !settleAllowed}
+                    onClick={() => onSettleThread(thread.id, !archived)}
+                  >
+                    {archived ? <ArchiveRestore size={13} /> : <Archive size={13} />}
+                  </ThreadAction>
+                  <ThreadAction
+                    label="Rename thread"
+                    onClick={() => {
+                      setEditingThreadId(thread.id);
+                      setDraftTitle(thread.title);
+                    }}
+                  >
+                    <Pencil size={13} />
+                  </ThreadAction>
+                  <ThreadAction
+                    label="Delete thread"
+                    className="hover:bg-error/10 hover:text-error"
+                    onClick={() => {
+                      if (window.confirm(`Delete "${thread.title}"?`)) onDeleteThread(thread.id);
+                    }}
+                  >
+                    <Trash2 size={13} />
+                  </ThreadAction>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <>
@@ -109,9 +291,7 @@ export function WorkItemThreadRail({
                 Work Items
               </h3>
               <p className="mt-1 truncate text-xs text-text-tertiary">
-                {provider === 'none'
-                  ? 'No provider configured'
-                  : `${provider.toUpperCase()} items as chat threads`}
+                {provider === 'none' ? 'No provider configured' : 'Threads grouped by ticket'}
               </p>
             </div>
             <button
@@ -153,7 +333,7 @@ export function WorkItemThreadRail({
             <div className="flex h-40 items-center justify-center">
               <Loader2 size={22} className="animate-spin text-accent" />
             </div>
-          ) : provider === 'none' ? (
+          ) : provider === 'none' && visibleItems.length === 0 ? (
             <EmptyRailState
               title="No provider"
               body="Choose a work-item provider in Settings to use ticket threads."
@@ -168,80 +348,89 @@ export function WorkItemThreadRail({
               }
             />
           ) : (
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               {visibleItems.map((item) => {
-                const thread = workItemThreads.get(buildWorkItemKey(item.provider, item.id));
-                const active = thread?.id === activeThreadId;
-                const liveStatus = thread ? liveThreadStatuses[thread.id] : undefined;
-                const isRunning = liveStatus === 'starting' || liveStatus === 'busy';
-                const preview = thread?.preview?.replace(/\s+/g, ' ').trim();
+                const key = buildWorkItemKey(item.provider, item.id);
+                const itemThreads = workItemThreads.get(key) ?? [];
+                const { activeThreads, settledThreads } = partitionThreads(itemThreads);
+                const expanded = expandedItems.has(key);
+                const active = itemThreads.some((thread) => thread.id === activeThreadId);
+                const needsAttention = activeThreads.some((thread) =>
+                  ['approval', 'input', 'failed'].includes(
+                    getThreadDisplayState(
+                      thread,
+                      liveThreadStatuses[thread.id],
+                      thread.id === activeThreadId,
+                    ),
+                  ),
+                );
 
                 return (
-                  <div
+                  <section
                     key={`${item.provider}:${item.id}`}
-                    className={`group rounded-2xl border transition-all ${
+                    className={`rounded-xl border transition-colors ${
                       active
-                        ? 'border-accent/30 bg-accent/5 shadow-sm'
-                        : 'border-border/60 bg-bg-primary/70 hover:border-border hover:bg-bg-primary'
+                        ? 'border-accent/30 bg-accent/5'
+                        : 'border-border/55 bg-bg-primary/65 hover:border-border'
                     }`}
                   >
-                    <div className="flex items-start gap-1 px-3.5 py-3">
+                    <div className="flex items-start gap-1 px-2.5 py-2.5">
                       <button
                         type="button"
-                        onClick={() => onSelectWorkItem(item)}
-                        className="flex min-w-0 flex-1 flex-col items-start gap-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                        onClick={() => toggleItem(key)}
+                        className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:ring-2 focus-visible:ring-accent/40"
+                        aria-expanded={expanded}
+                        aria-label={`${expanded ? 'Collapse' : 'Expand'} ${item.id}: ${item.title}`}
+                      >
+                        {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setExpandedItems((current) => new Set([...current, key]));
+                          onSelectWorkItem(item);
+                        }}
+                        className="min-w-0 flex-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
                         aria-current={active ? 'true' : undefined}
                       >
-                        <div className="flex w-full items-start gap-2">
-                          <div className="min-w-0 flex-1">
-                            <div className="flex min-w-0 items-center gap-2">
-                              <span className="shrink-0 rounded-md bg-bg-tertiary px-1.5 py-0.5 font-mono text-[11px] text-text-secondary">
-                                {item.id}
-                              </span>
-                              <span className="truncate text-[11px] uppercase tracking-normal text-text-tertiary">
-                                {item.type}
-                              </span>
-                            </div>
-                            <p className="mt-1 line-clamp-2 text-sm font-medium leading-snug text-text-primary">
-                              {item.title}
-                            </p>
-                          </div>
-                        </div>
-
-                        <div className="flex w-full items-center justify-between gap-2 text-[11px] text-text-tertiary">
-                          <span className="flex min-w-0 items-center gap-1.5">
-                            {liveStatus ? (
-                              <span
-                                className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                                  isRunning
-                                    ? 'animate-pulse bg-accent'
-                                    : liveStatus === 'error'
-                                      ? 'bg-error'
-                                      : 'bg-success'
-                                }`}
-                                aria-hidden="true"
-                              />
-                            ) : (
-                              <MessageSquare size={11} className="shrink-0 text-text-muted" />
-                            )}
-                            <span>
-                              {isRunning
-                                ? 'Running'
-                                : thread
-                                  ? `${thread.messageCount} message${
-                                      thread.messageCount === 1 ? '' : 's'
-                                    }`
-                                  : 'Not started'}
-                            </span>
+                        <div className="flex min-w-0 items-center gap-2">
+                          <span className="shrink-0 rounded-md bg-bg-tertiary px-1.5 py-0.5 font-mono text-[11px] text-text-secondary">
+                            {item.id}
                           </span>
-                          <span className="truncate">{item.state}</span>
+                          <span className="truncate text-[11px] text-text-tertiary">
+                            {item.type}
+                          </span>
                         </div>
-
-                        <p className="line-clamp-2 min-h-[2.5rem] text-xs leading-relaxed text-text-tertiary">
-                          {preview ||
-                            stripHtml(item.description) ||
-                            'Open this item to start its chat.'}
+                        <p className="mt-1 line-clamp-2 text-sm font-medium leading-snug text-text-primary">
+                          {item.title}
                         </p>
+                        <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-text-tertiary">
+                          {needsAttention ? (
+                            <CircleAlert size={11} className="text-warning" />
+                          ) : (
+                            <MessageSquare size={11} />
+                          )}
+                          <span>{formatThreadCount(activeThreads.length, 'active')}</span>
+                          {settledThreads.length > 0 && (
+                            <>
+                              <span>·</span>
+                              <span>{formatThreadCount(settledThreads.length, 'archived')}</span>
+                            </>
+                          )}
+                          <span className="ml-auto truncate">{item.state}</span>
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setExpandedItems((current) => new Set([...current, key]));
+                          onCreateThread(item);
+                        }}
+                        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:ring-2 focus-visible:ring-accent/40"
+                        title={`New thread for ${item.id}`}
+                        aria-label={`New thread for ${item.id}`}
+                      >
+                        <MessageSquarePlus size={13} />
                       </button>
                       <button
                         type="button"
@@ -253,7 +442,38 @@ export function WorkItemThreadRail({
                         <Maximize2 size={13} />
                       </button>
                     </div>
-                  </div>
+
+                    {expanded && (
+                      <div className="border-t border-border/45 px-2.5 pb-2.5 pt-2">
+                        {activeThreads.length > 0 ? (
+                          <div className="space-y-1.5">
+                            {activeThreads.map((thread) => renderThread(thread, false))}
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => onCreateThread(item)}
+                            className="flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-border px-3 py-3 text-xs text-text-secondary transition-colors hover:border-accent/35 hover:text-text-primary focus-visible:ring-2 focus-visible:ring-accent/40"
+                          >
+                            <MessageSquarePlus size={13} />
+                            Start a thread
+                          </button>
+                        )}
+
+                        {settledThreads.length > 0 && (
+                          <div className="mt-3 border-t border-border/45 pt-2">
+                            <div className="mb-1 flex items-center justify-between px-1 text-[11px] text-text-tertiary">
+                              <span>Archived</span>
+                              <span className="tabular-nums">{settledThreads.length}</span>
+                            </div>
+                            <div className="space-y-0.5">
+                              {settledThreads.map((thread) => renderThread(thread, true))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </section>
                 );
               })}
             </div>
@@ -264,6 +484,105 @@ export function WorkItemThreadRail({
       {detailItem && <WorkItemDetailsModal item={detailItem} onClose={() => setDetailItem(null)} />}
     </>
   );
+}
+
+type ThreadDisplayState = ReturnType<typeof getThreadDisplayState>;
+
+function ThreadAction({
+  label,
+  onClick,
+  children,
+  className = '',
+  disabled = false,
+}: {
+  label: string;
+  onClick: () => void;
+  children: React.ReactNode;
+  className?: string;
+  disabled?: boolean;
+}) {
+  const accessibleLabel = disabled ? 'Finish or resolve this thread before archiving it' : label;
+  return (
+    <button
+      type="button"
+      onClick={(event) => {
+        event.stopPropagation();
+        onClick();
+      }}
+      disabled={disabled}
+      className={`rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-30 ${className}`}
+      title={accessibleLabel}
+      aria-label={accessibleLabel}
+    >
+      {children}
+    </button>
+  );
+}
+
+function WorkItemThreadStatusIcon({ state }: { state: ThreadDisplayState }) {
+  const className = `mt-0.5 h-3.5 w-3.5 shrink-0 ${threadStateTextClass(state)}`;
+  if (state === 'working') return <LoaderCircle className={`${className} animate-spin`} />;
+  if (state === 'approval') return <CircleAlert className={className} />;
+  if (state === 'input') return <CircleHelp className={className} />;
+  if (state === 'failed') return <CircleAlert className={className} />;
+  if (state === 'complete') return <CheckCircle2 className={className} />;
+  return <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-text-tertiary/50" />;
+}
+
+function threadStateLabel(state: ThreadDisplayState): string {
+  if (state === 'approval') return 'Approval needed';
+  if (state === 'input') return 'Input needed';
+  if (state === 'failed') return 'Needs a look';
+  if (state === 'complete') return 'Ready to archive';
+  if (state === 'working') return 'Working';
+  return 'Idle';
+}
+
+function threadStateTextClass(state: ThreadDisplayState): string {
+  if (state === 'approval' || state === 'input') return 'text-warning';
+  if (state === 'failed') return 'text-error';
+  if (state === 'complete') return 'text-success';
+  if (state === 'working') return 'text-accent';
+  return 'text-text-tertiary';
+}
+
+export function groupWorkItemThreads(threads: ChatThread[]): Map<string, ChatThread[]> {
+  const groups = new Map<string, ChatThread[]>();
+  for (const thread of threads) {
+    if (!thread.workItemId || !thread.workItemProvider) continue;
+    const key = buildWorkItemKey(thread.workItemProvider, thread.workItemId);
+    const group = groups.get(key);
+    if (group) group.push(thread);
+    else groups.set(key, [thread]);
+  }
+  return groups;
+}
+
+export function mergeWorkItemsWithOwnedThreads(
+  items: WorkItem[],
+  threads: ChatThread[],
+): WorkItem[] {
+  const merged = [...items];
+  const knownKeys = new Set(items.map((item) => buildWorkItemKey(item.provider, item.id)));
+  for (const thread of threads) {
+    if (!thread.workItemId || !thread.workItemProvider) continue;
+    const key = buildWorkItemKey(thread.workItemProvider, thread.workItemId);
+    if (knownKeys.has(key)) continue;
+    knownKeys.add(key);
+    merged.push({
+      id: thread.workItemId,
+      provider: thread.workItemProvider,
+      title: thread.workItemTitle ?? thread.workItemId,
+      type: 'Task',
+      state: 'Outside current view',
+      priority: 0,
+    });
+  }
+  return merged;
+}
+
+function formatThreadCount(count: number, label: 'active' | 'archived'): string {
+  return `${count} ${label}`;
 }
 
 function EmptyRailState({ title, body }: { title: string; body: string }) {
@@ -524,10 +843,6 @@ function formatExtraValue(value: unknown): string {
     }
   }
   return String(value);
-}
-
-function stripHtml(value?: string): string {
-  return stripWorkItemHtml(value).replace(/\s+/g, ' ').trim();
 }
 
 export function stripWorkItemHtml(value?: string): string {

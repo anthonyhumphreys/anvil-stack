@@ -1,13 +1,44 @@
 import { describe, expect, it } from 'vitest';
-import type { ChatThread } from '../../../shared/types';
+import type { ChatThread, Persona } from '../../../shared/types';
 import {
   chatMessagesToEntries,
+  findPersonaForThread,
   planIntentToSnapshot,
-  shouldSuppressPreparedChatBootstrap,
   threadBelongsToChatList,
   threadBelongsToWorkspace,
   upsertThreadForChatList,
 } from '../ChatContext';
+
+const personas: Persona[] = [
+  {
+    id: 'coder',
+    name: 'Coder',
+    icon: 'code',
+    colour: 'blue',
+    description: 'Writes code',
+    systemPromptTemplate: 'Code',
+    capabilities: { canWriteFiles: true, canRunCommands: true, canReadFiles: true },
+  },
+  {
+    id: 'architect',
+    name: 'Architect',
+    icon: 'blocks',
+    colour: 'purple',
+    description: 'Shapes systems',
+    systemPromptTemplate: 'Architect',
+    capabilities: { canWriteFiles: false, canRunCommands: false, canReadFiles: true },
+  },
+];
+
+describe('findPersonaForThread', () => {
+  it('resolves the persona owned by the selected thread', () => {
+    expect(findPersonaForThread({ personaId: 'architect' }, personas)?.name).toBe('Architect');
+  });
+
+  it('does not substitute another persona for an unavailable owner', () => {
+    expect(findPersonaForThread({ personaId: 'reviewer' }, personas)).toBeUndefined();
+  });
+});
 
 describe('chatMessagesToEntries', () => {
   it('restores segmented assistant output and persisted activity', () => {
@@ -312,6 +343,9 @@ describe('threadBelongsToChatList', () => {
       threadBelongsToChatList({ workspaceId: 'anvil', personaId: 'coder' }, classicScope),
     ).toBe(true);
     expect(
+      threadBelongsToChatList({ workspaceId: 'anvil', personaId: 'architect' }, classicScope),
+    ).toBe(true);
+    expect(
       threadBelongsToChatList(
         {
           workspaceId: 'anvil',
@@ -356,17 +390,6 @@ describe('upsertThreadForChatList', () => {
 
     expect(next).toBe(current);
     expect(next.map((thread) => thread.id)).toEqual(['anvil-thread']);
-  });
-});
-
-describe('shouldSuppressPreparedChatBootstrap', () => {
-  it('does not leave suppression armed when launching with the active persona', () => {
-    expect(shouldSuppressPreparedChatBootstrap('coder', 'coder')).toBe(false);
-  });
-
-  it('suppresses the bootstrap triggered by an actual persona change', () => {
-    expect(shouldSuppressPreparedChatBootstrap('coder', 'architect')).toBe(true);
-    expect(shouldSuppressPreparedChatBootstrap(null, 'coder')).toBe(true);
   });
 });
 
