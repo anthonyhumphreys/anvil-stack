@@ -16,6 +16,9 @@ import {
   MessageSquare,
   MonitorSmartphone,
   Square,
+  PanelRightOpen,
+  PictureInPicture2,
+  X,
 } from 'lucide-react';
 import type {
   BrowserAnnotation,
@@ -23,17 +26,31 @@ import type {
   BrowserBridgeStatus,
   SimulatorPreviewStatus,
 } from '../../../shared/types';
+import { useWorkspace } from '../../contexts/WorkspaceContext';
 
-type PreviewMode = 'browser' | 'simulator';
+export type PreviewMode = 'browser' | 'simulator';
 
-export function BrowserPanel() {
+interface BrowserPanelProps {
+  initialMode?: PreviewMode;
+  initialUrl?: string;
+  presentation?: 'route' | 'pane';
+  onClose?: () => void;
+}
+
+export function BrowserPanel({
+  initialMode = 'browser',
+  initialUrl = '',
+  presentation = 'route',
+  onClose,
+}: BrowserPanelProps = {}) {
   const routerNavigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const { activeWorkspace } = useWorkspace();
   const [webviewEl, setWebviewEl] = useState<Electron.WebviewTag | null>(null);
-  const [previewMode, setPreviewMode] = useState<PreviewMode>('browser');
+  const [previewMode, setPreviewMode] = useState<PreviewMode>(initialMode);
 
-  const [currentUrl, setCurrentUrl] = useState('');
-  const [urlInput, setUrlInput] = useState('');
+  const [currentUrl, setCurrentUrl] = useState(initialUrl);
+  const [urlInput, setUrlInput] = useState(initialUrl);
   const [isLoading, setIsLoading] = useState(false);
   const [canGoBack, setCanGoBack] = useState(false);
   const [canGoForward, setCanGoForward] = useState(false);
@@ -50,6 +67,7 @@ export function BrowserPanel() {
   const [simStarting, setSimStarting] = useState(false);
   const [annotationNote, setAnnotationNote] = useState('');
   const [annotations, setAnnotations] = useState<BrowserAnnotation[]>([]);
+  const isDetachedWindow = searchParams.get('toolWindow') === '1';
 
   // Poll for targets
   useEffect(() => {
@@ -128,13 +146,30 @@ export function BrowserPanel() {
   }, [previewMode, webviewEl]);
 
   useEffect(() => {
-    if (searchParams.get('mode') !== 'simulator') return;
-
-    setPreviewMode('simulator');
+    const requestedMode = searchParams.get('mode');
+    const requestedUrl = searchParams.get('url');
+    if (requestedMode === 'browser' || requestedMode === 'simulator') {
+      setPreviewMode(requestedMode);
+    }
+    if (requestedUrl) {
+      setCurrentUrl(requestedUrl);
+      setUrlInput(requestedUrl);
+    }
+    if (!requestedMode && !requestedUrl) return;
     const next = new URLSearchParams(searchParams);
     next.delete('mode');
+    next.delete('url');
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
+
+  useEffect(() => {
+    if (presentation !== 'pane') return;
+    setPreviewMode(initialMode);
+    if (initialUrl) {
+      setCurrentUrl(initialUrl);
+      setUrlInput(initialUrl);
+    }
+  }, [initialMode, initialUrl, presentation]);
 
   const navigate = useCallback((url: string) => {
     let normalized = url.trim();
@@ -280,13 +315,32 @@ export function BrowserPanel() {
     routerNavigate(`/chat?prompt=${encodeURIComponent(prompt)}`);
   };
 
+  const handleOpenAlongsideChat = () => {
+    const params = new URLSearchParams({ preview: previewMode });
+    if (previewMode === 'browser' && currentUrl) params.set('previewUrl', currentUrl);
+    routerNavigate(`/chat?${params.toString()}`);
+  };
+
+  const handleDetach = () => {
+    const params = new URLSearchParams({ mode: previewMode });
+    if (previewMode === 'browser' && currentUrl) params.set('url', currentUrl);
+    void window.anvil.appWindow.openToolWindow(
+      `/browser?${params.toString()}`,
+      activeWorkspace?.id,
+    );
+  };
+
   const webviewSrc = previewMode === 'simulator' ? (simStatus.url ?? '') : currentUrl;
   const hasUrl = !!webviewSrc;
 
   return (
     <div className="flex h-full flex-col">
       {/* Toolbar */}
-      <div className="flex items-center gap-2 border-b border-border bg-bg-secondary px-4 py-2">
+      <div
+        className={`flex items-center gap-2 border-b border-border bg-bg-secondary py-2 ${
+          presentation === 'pane' ? 'flex-wrap px-2' : 'px-4'
+        }`}
+      >
         <div className="flex items-center gap-1 rounded-lg border border-border bg-bg-primary p-0.5">
           <button
             type="button"
@@ -350,7 +404,10 @@ export function BrowserPanel() {
         </button>
 
         {/* URL bar */}
-        <form onSubmit={handleUrlSubmit} className="flex flex-1 items-center gap-2">
+        <form
+          onSubmit={handleUrlSubmit}
+          className={`flex flex-1 items-center gap-2 ${presentation === 'pane' ? 'order-last w-full' : ''}`}
+        >
           <div className="relative flex flex-1 items-center">
             <Globe size={14} className="absolute left-3 text-text-tertiary" />
             <input
@@ -425,7 +482,7 @@ export function BrowserPanel() {
       </div>
 
       {/* CDP bridge status bar */}
-      <div className="flex items-center gap-3 border-b border-border-subtle bg-bg-primary px-4 py-1.5 text-xs">
+      <div className="flex flex-wrap items-center gap-2 border-b border-border-subtle bg-bg-primary px-3 py-1.5 text-xs">
         <div className="flex items-center gap-1.5">
           <span
             className={`inline-block h-2 w-2 rounded-full ${bridgeStatus.running ? 'bg-success' : 'bg-text-tertiary'}`}
@@ -475,6 +532,42 @@ export function BrowserPanel() {
             {pageTitle}
           </span>
         )}
+
+        <div className="ml-auto flex items-center gap-1">
+          {presentation === 'route' && !isDetachedWindow && (
+            <button
+              type="button"
+              onClick={handleOpenAlongsideChat}
+              className="flex items-center gap-1.5 rounded-md px-2 py-1 text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+              title="Open preview alongside chat"
+            >
+              <PanelRightOpen size={12} />
+              Alongside chat
+            </button>
+          )}
+          {!isDetachedWindow && (
+            <button
+              type="button"
+              onClick={handleDetach}
+              className="rounded-md p-1 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+              title="Open preview in new window"
+              aria-label="Open preview in new window"
+            >
+              <PictureInPicture2 size={13} />
+            </button>
+          )}
+          {presentation === 'pane' && onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-md p-1 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+              title="Close preview"
+              aria-label="Close preview"
+            >
+              <X size={13} />
+            </button>
+          )}
+        </div>
       </div>
 
       {previewMode === 'simulator' && (

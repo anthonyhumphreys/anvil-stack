@@ -43,6 +43,10 @@ import {
   Gauge,
   LifeBuoy,
   Trash2,
+  Globe,
+  MonitorSmartphone,
+  Minus,
+  Plus,
 } from 'lucide-react';
 import type { AgentUIPlanIntent, AgentUIQuestionIntent } from '../../../shared/agent-ui-intents';
 import type {
@@ -58,7 +62,7 @@ import type {
   ReasoningEffort,
   UserRole,
 } from '../../../shared/types';
-import { ROLE_RECOMMENDED_PERSONAS } from '../../../shared/types';
+import { ROLE_FEATURES, ROLE_RECOMMENDED_PERSONAS } from '../../../shared/types';
 import { ChatInput, type ChatSlashCommand } from './ChatInput';
 import { ChatThreadRail } from './ChatThreadRail';
 import { WorkItemThreadRail } from './WorkItemThreadRail';
@@ -102,6 +106,7 @@ import {
   QuestionIntentSurface,
 } from './AgentUIIntentSurface';
 import { resolveChatFastModeTarget } from '../../utils/chat-fast-mode';
+import { BrowserPanel, type PreviewMode } from '../browser/BrowserPanel';
 
 const PERSONA_ICONS: Record<string, React.ReactNode> = {
   Code: <Code size={14} />,
@@ -131,6 +136,10 @@ interface ScrollMetrics {
 const CHAT_BOTTOM_THRESHOLD_PX = 96;
 const NEW_CHAT_THREAD_LABEL = 'New thread';
 const ITSM_PERSONA_IDS = new Set(ROLE_RECOMMENDED_PERSONAS.itsm ?? []);
+
+export function clampCanvasZoom(zoom: number): number {
+  return Math.min(200, Math.max(50, Math.round(zoom / 10) * 10));
+}
 
 interface ChatViewProps {
   userRole: UserRole;
@@ -199,6 +208,9 @@ export function ChatView({ userRole }: ChatViewProps) {
   const [canvasOpen, setCanvasOpen] = useState(true);
   const [canvasExpanded, setCanvasExpanded] = useState(false);
   const [canvasDetached, setCanvasDetached] = useState(false);
+  const [canvasZoom, setCanvasZoom] = useState(100);
+  const [previewMode, setPreviewMode] = useState<PreviewMode | null>(null);
+  const [previewInitialUrl, setPreviewInitialUrl] = useState('');
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [canvasPlanSelected, setCanvasPlanSelected] = useState(false);
   const [showPlanHistory, setShowPlanHistory] = useState(false);
@@ -218,6 +230,7 @@ export function ChatView({ userRole }: ChatViewProps) {
   const isDbExpertPersona = activePersona?.id === 'db-expert';
   const isItsmPersona = activePersona ? ITSM_PERSONA_IDS.has(activePersona.id) : false;
   const isWorkItemLayout = chatLayout === 'workitems';
+  const browserAvailable = ROLE_FEATURES[userRole].includes('browser');
   const fastModeTarget = useMemo(
     () => resolveChatFastModeTarget(modelProvider, model, modelOptions),
     [model, modelOptions, modelProvider],
@@ -347,6 +360,21 @@ export function ChatView({ userRole }: ChatViewProps) {
     next.delete('persona');
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams, personas, activePersona, switchPersona]);
+
+  useEffect(() => {
+    const requestedPreview = searchParams.get('preview');
+    if (requestedPreview !== 'browser' && requestedPreview !== 'simulator') return;
+    setPreviewMode(requestedPreview);
+    setPreviewInitialUrl(searchParams.get('previewUrl') ?? '');
+    setCanvasOpen(false);
+    setCanvasExpanded(false);
+    setItsmWorkbenchOpen(false);
+
+    const next = new URLSearchParams(searchParams);
+    next.delete('preview');
+    next.delete('previewUrl');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
 
   useEffect(() => {
     const threadId = searchParams.get('thread');
@@ -616,6 +644,7 @@ export function ChatView({ userRole }: ChatViewProps) {
     !isDesignPersona &&
     !isBaPersona &&
     !showItsmWorkbench &&
+    !previewMode &&
     canvasOpen &&
     !canvasExpanded &&
     !canvasDetached &&
@@ -903,6 +932,48 @@ export function ChatView({ userRole }: ChatViewProps) {
 
           {!isDesignPersona && !isBaPersona && (
             <>
+              {browserAvailable && (
+                <div className="flex items-center rounded-lg border border-border bg-bg-primary/60 p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPreviewMode((current) => (current === 'browser' ? null : 'browser'));
+                      setCanvasOpen(false);
+                      setCanvasExpanded(false);
+                      setItsmWorkbenchOpen(false);
+                    }}
+                    className={`rounded-md p-1.5 transition-colors ${
+                      previewMode === 'browser'
+                        ? 'bg-accent/15 text-accent'
+                        : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary'
+                    }`}
+                    title="Show browser alongside chat"
+                    aria-label="Show browser alongside chat"
+                    aria-pressed={previewMode === 'browser'}
+                  >
+                    <Globe size={13} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPreviewMode((current) => (current === 'simulator' ? null : 'simulator'));
+                      setCanvasOpen(false);
+                      setCanvasExpanded(false);
+                      setItsmWorkbenchOpen(false);
+                    }}
+                    className={`rounded-md p-1.5 transition-colors ${
+                      previewMode === 'simulator'
+                        ? 'bg-info/15 text-info'
+                        : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary'
+                    }`}
+                    title="Show simulator alongside chat"
+                    aria-label="Show simulator alongside chat"
+                    aria-pressed={previewMode === 'simulator'}
+                  >
+                    <MonitorSmartphone size={13} />
+                  </button>
+                </div>
+              )}
               {userRole === 'itsm' && isItsmPersona && (
                 <button
                   type="button"
@@ -1259,7 +1330,7 @@ export function ChatView({ userRole }: ChatViewProps) {
         </div>
 
         {/* Findings sidebar - BA persona only */}
-        {isBaPersona && findings.length > 0 && (
+        {!previewMode && isBaPersona && findings.length > 0 && (
           <ResizableSidebarPanel
             storageKey="chat:findings"
             side="right"
@@ -1310,14 +1381,14 @@ export function ChatView({ userRole }: ChatViewProps) {
         )}
 
         {/* Design sidebar */}
-        {isDesignPersona && (
+        {!previewMode && isDesignPersona && (
           <DesignSidebar
             collapsed={designSidebarCollapsed}
             onToggleCollapse={() => setDesignSidebarCollapsed((c) => !c)}
           />
         )}
 
-        {showItsmWorkbench && (
+        {!previewMode && showItsmWorkbench && (
           <ResizableSidebarPanel
             storageKey="chat:itsm-workbench"
             side="right"
@@ -1334,6 +1405,27 @@ export function ChatView({ userRole }: ChatViewProps) {
                 setComposerPrefill({ id: `itsm-${Date.now()}`, text: prompt });
                 setComposerFocusRequest((current) => current + 1);
               }}
+            />
+          </ResizableSidebarPanel>
+        )}
+
+        {previewMode && (
+          <ResizableSidebarPanel
+            storageKey="chat:preview"
+            side="right"
+            title={previewMode === 'simulator' ? 'Simulator preview' : 'Browser preview'}
+            defaultWidth={620}
+            minWidth={420}
+            maxWidth={1100}
+            collapsedWidth={0}
+            className="border-l border-border/60 bg-bg-secondary/50"
+          >
+            <BrowserPanel
+              key={previewMode}
+              initialMode={previewMode}
+              initialUrl={previewInitialUrl}
+              presentation="pane"
+              onClose={() => setPreviewMode(null)}
             />
           </ResizableSidebarPanel>
         )}
@@ -1362,6 +1454,8 @@ export function ChatView({ userRole }: ChatViewProps) {
                 setSelectedArtifactId(artifactId);
               }}
               onDiscardArtifact={discardArtifact}
+              zoom={canvasZoom}
+              onZoomChange={setCanvasZoom}
               presentation="sidebar"
               onExpand={() => setCanvasExpanded(true)}
               onDetach={() => setCanvasDetached(true)}
@@ -1386,6 +1480,8 @@ export function ChatView({ userRole }: ChatViewProps) {
                   setSelectedArtifactId(artifactId);
                 }}
                 onDiscardArtifact={discardArtifact}
+                zoom={canvasZoom}
+                onZoomChange={setCanvasZoom}
                 presentation="expanded"
                 onExpand={() => setCanvasExpanded(false)}
                 onDetach={() => {
@@ -1411,6 +1507,8 @@ export function ChatView({ userRole }: ChatViewProps) {
                 setSelectedArtifactId(artifactId);
               }}
               onDiscardArtifact={discardArtifact}
+              zoom={canvasZoom}
+              onZoomChange={setCanvasZoom}
               presentation="detached"
               onExpand={handleDetachedCanvasClose}
               onDetach={handleDetachedCanvasClose}
@@ -1836,6 +1934,8 @@ function ChatCanvasSidebar({
   onSelectPlan,
   onSelectArtifact,
   onDiscardArtifact,
+  zoom,
+  onZoomChange,
   presentation,
   onExpand,
   onDetach,
@@ -1849,6 +1949,8 @@ function ChatCanvasSidebar({
   onSelectPlan: () => void;
   onSelectArtifact: (artifactId: string) => void;
   onDiscardArtifact: (artifactId: string) => Promise<void>;
+  zoom: number;
+  onZoomChange: (zoom: number) => void;
   presentation: 'sidebar' | 'expanded' | 'detached';
   onExpand: () => void;
   onDetach: () => void;
@@ -2016,6 +2118,35 @@ function ChatCanvasSidebar({
               <div className="flex shrink-0 items-center gap-1">
                 <button
                   type="button"
+                  onClick={() => onZoomChange(clampCanvasZoom(zoom - 10))}
+                  disabled={zoom <= 50}
+                  className="rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-35"
+                  title="Zoom out"
+                  aria-label="Zoom canvas out"
+                >
+                  <Minus size={13} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onZoomChange(100)}
+                  className="min-w-11 rounded-md px-1.5 py-1 text-[11px] font-medium tabular-nums text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+                  title="Reset canvas zoom"
+                  aria-label={`Reset canvas zoom, currently ${zoom}%`}
+                >
+                  {zoom}%
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onZoomChange(clampCanvasZoom(zoom + 10))}
+                  disabled={zoom >= 200}
+                  className="rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-35"
+                  title="Zoom in"
+                  aria-label="Zoom canvas in"
+                >
+                  <Plus size={13} />
+                </button>
+                <button
+                  type="button"
                   onClick={() => setMode('preview')}
                   className={`rounded-md p-1.5 transition-colors ${
                     mode === 'preview'
@@ -2077,8 +2208,20 @@ function ChatCanvasSidebar({
             </div>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-auto bg-bg-primary/40">
-            <ArtifactBody artifact={selectedArtifact} mode={mode} />
+          <div
+            className="min-h-0 flex-1 overflow-auto bg-bg-primary/40"
+            onWheel={(event) => {
+              if (!event.metaKey && !event.ctrlKey) return;
+              event.preventDefault();
+              onZoomChange(clampCanvasZoom(zoom + (event.deltaY > 0 ? -10 : 10)));
+            }}
+          >
+            <div
+              className="min-h-full origin-top-left"
+              style={{ zoom: zoom / 100, width: `${10_000 / zoom}%` }}
+            >
+              <ArtifactBody artifact={selectedArtifact} mode={mode} />
+            </div>
           </div>
           <ArtifactAnnotationsPanel artifact={selectedArtifact} />
         </div>

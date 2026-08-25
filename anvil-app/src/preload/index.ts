@@ -49,6 +49,8 @@ const api: AnvilAPI = {
   appWindow: {
     getVersion: () => ipcRenderer.invoke('app-window:get-version'),
     getChromeState: () => ipcRenderer.invoke('app-window:get-chrome-state'),
+    openToolWindow: (route: string, workspaceId?: string) =>
+      ipcRenderer.invoke('app-window:open-tool-window', route, workspaceId),
     onChromeStateChanged: (callback: (state: { isFullScreen: boolean }) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, state: { isFullScreen: boolean }) =>
         callback(state);

@@ -152,16 +152,24 @@ function isAnvilRendererDocument(url: string): boolean {
   return url.endsWith('/renderer/index.html') || url.endsWith('\\renderer\\index.html');
 }
 
-function getWorkspaceWindowHash(workspaceId: string): string {
-  return `/repos?workspaceId=${encodeURIComponent(workspaceId)}`;
+function getWindowHash(route: string, workspaceId?: string, toolWindow = false): string {
+  const routeUrl = new URL(route, 'https://anvil.local');
+  const params = routeUrl.searchParams;
+  if (workspaceId) params.set('workspaceId', workspaceId);
+  if (toolWindow) params.set('toolWindow', '1');
+  const query = params.toString();
+  return `${routeUrl.pathname}${query ? `?${query}` : ''}`;
 }
 
-function createWindow(options: { workspaceId?: string } = {}): BrowserWindow {
+function createWindow(
+  options: { workspaceId?: string; route?: string; toolWindow?: boolean } = {},
+): BrowserWindow {
+  const isToolWindow = options.toolWindow === true;
   const createdWindow = new BrowserWindow({
-    width: 1400,
-    height: 900,
-    minWidth: 1024,
-    minHeight: 700,
+    width: isToolWindow ? 1200 : 1400,
+    height: isToolWindow ? 820 : 900,
+    minWidth: isToolWindow ? 720 : 1024,
+    minHeight: isToolWindow ? 520 : 700,
     title: app.getName(),
     titleBarStyle: 'hidden',
     trafficLightPosition: { x: 16, y: 16 },
@@ -222,14 +230,21 @@ function createWindow(options: { workspaceId?: string } = {}): BrowserWindow {
   // Load renderer
   if (process.env.ELECTRON_RENDERER_URL) {
     const rendererUrl = new URL(process.env.ELECTRON_RENDERER_URL);
-    if (options.workspaceId) {
-      rendererUrl.hash = getWorkspaceWindowHash(options.workspaceId);
+    if (options.workspaceId || options.route) {
+      rendererUrl.hash = getWindowHash(
+        options.route ?? '/repos',
+        options.workspaceId,
+        options.toolWindow,
+      );
     }
     createdWindow.loadURL(rendererUrl.toString());
   } else {
-    const loadOptions = options.workspaceId
-      ? { hash: getWorkspaceWindowHash(options.workspaceId) }
-      : undefined;
+    const loadOptions =
+      options.workspaceId || options.route
+        ? {
+            hash: getWindowHash(options.route ?? '/repos', options.workspaceId, options.toolWindow),
+          }
+        : undefined;
     createdWindow.loadFile(path.join(__dirname, '../renderer/index.html'), loadOptions);
   }
 
@@ -350,6 +365,14 @@ app.whenReady().then(() => {
 
   ipcMain.handle('brand:get', () => brand);
   ipcMain.handle('app-window:get-version', () => app.getVersion());
+  ipcMain.handle('app-window:open-tool-window', (_event, route: string, workspaceId?: string) => {
+    if (!route.startsWith('/') || route.startsWith('//')) {
+      throw new Error('Tool routes must be internal application paths');
+    }
+    const win = createWindow({ route, workspaceId, toolWindow: true });
+    win.show();
+    win.focus();
+  });
   ipcMain.handle('app-window:get-chrome-state', (event) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     return getWindowChromeState(win ?? mainWindow);

@@ -170,6 +170,7 @@ export interface AnvilAPI {
   appWindow: {
     getVersion: () => Promise<string>;
     getChromeState: () => Promise<{ isFullScreen: boolean }>;
+    openToolWindow: (route: string, workspaceId?: string) => Promise<void>;
     onChromeStateChanged: (callback: (state: { isFullScreen: boolean }) => void) => () => void;
     onNavigateToChat: (callback: (target: ChatNavigationTarget) => void) => () => void;
   };
