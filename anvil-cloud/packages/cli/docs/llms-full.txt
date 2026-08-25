@@ -305,6 +305,33 @@ anvil-cloud destroy --preview --app <name> --yes --json
 Missing AWS configuration should produce stable JSON errors and reviewable
 plans, not half-mutated infrastructure.
 
+## Agent Execution Boundary
+
+Agent Sandbox lifecycle becomes remote work through the provider-neutral
+`AgentExecutionProvider` contract. The control plane owns idempotent leases,
+durable cursor events, approvals, input, steering, TTL and budget enforcement,
+results, and cleanup receipts. Providers own sandbox lifecycle and private I/O.
+
+Use the deterministic exit gate before changing execution providers:
+
+```sh
+anvil-cloud executions conformance --json
+```
+
+The runnable boundary includes authenticated Node HTTP serving, content-addressed
+source snapshots, single-use worker grants, the provider-neutral worker router,
+CLI service/client commands, and the opt-in Desktop workbench. AWS execution is
+read-only and still requires a compatible Lambda MicroVM worker image. Runnable
+Node services reject invalid control-plane bearer headers before buffering a
+snapshot body.
+
+Model authentication is explicit. `provider-subscription` requests let a worker
+offer execution-scoped Codex or Cursor login without accepting a model API key.
+Workers must advertise each supported subscription provider and discard the
+login session during sandbox cleanup. Never persist worker auth tokens,
+pre-signed source URLs, credential values, or local Codex/Cursor OAuth state in
+leases, events, or snapshots.
+
 ## Verification
 
 For narrow package work, run focused filters from `anvil-cloud/`:
@@ -318,8 +345,8 @@ For runtime, AWS adapter, or CLI orchestration changes, use the owned Effect
 verification set from root `PATCH.md`:
 
 ```sh
-pnpm --filter @anvil-cloud/runtime --filter @anvil-cloud/aws --filter @anvilstack/cloud-cli typecheck
-pnpm --filter @anvil-cloud/runtime --filter @anvil-cloud/aws --filter @anvilstack/cloud-cli test
+pnpm --filter @anvil-cloud/runtime --filter @anvil-cloud/control-plane --filter @anvil-cloud/aws --filter @anvilstack/cloud-cli typecheck
+pnpm --filter @anvil-cloud/runtime --filter @anvil-cloud/control-plane --filter @anvil-cloud/aws --filter @anvilstack/cloud-cli test
 ```
 
 Before a broad PR, prefer:

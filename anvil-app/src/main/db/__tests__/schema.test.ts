@@ -1,6 +1,21 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
-import { SCHEMA_SQL } from '../schema';
+import { MIGRATIONS, SCHEMA_SQL, SCHEMA_VERSION } from '../schema';
+
+function applyMigration(db: Database.Database, migration: string): void {
+  for (const statement of migration
+    .split(';')
+    .map((value) => value.trim())
+    .filter(Boolean)) {
+    try {
+      db.exec(statement);
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes('duplicate column')) {
+        throw error;
+      }
+    }
+  }
+}
 
 describe('fresh database schema', () => {
   it('contains every settings column required by the settings service', () => {
@@ -49,6 +64,72 @@ describe('fresh database schema', () => {
       expect(tableColumns('automation_runs').has('trigger_context_json')).toBe(true);
       expect(tableColumns('watchtower_events').has('source_id')).toBe(true);
       expect(tableColumns('watchtower_events').has('run_id')).toBe(true);
+      expect(tableColumns('cloud_execution_connection').has('token')).toBe(true);
+      expect(tableColumns('cloud_execution_connection').has('endpoint')).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each([
+    {
+      name: 'cloud execution version 56',
+      setup: `
+        CREATE TABLE settings (
+          id INTEGER PRIMARY KEY,
+          apple_foundation_models_mode TEXT DEFAULT 'off'
+        );
+        CREATE TABLE cloud_execution_connection (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          endpoint TEXT NOT NULL,
+          token BLOB NOT NULL,
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+      `,
+    },
+    {
+      name: 'local model version 56',
+      setup: `
+        CREATE TABLE settings (
+          id INTEGER PRIMARY KEY,
+          apple_foundation_models_mode TEXT DEFAULT 'off',
+          local_llm_mode TEXT DEFAULT 'off',
+          local_llm_provider TEXT DEFAULT 'apple',
+          local_llm_endpoint TEXT,
+          local_llm_model TEXT
+        );
+      `,
+    },
+  ])('reconciles a database from $name', ({ setup }) => {
+    const db = new Database(':memory:');
+    try {
+      db.exec(setup);
+      applyMigration(db, MIGRATIONS[57]);
+
+      const settingsColumns = new Set(
+        (db.prepare('PRAGMA table_info(settings)').all() as Array<{ name: string }>).map(
+          (column) => column.name,
+        ),
+      );
+      const cloudColumns = new Set(
+        (
+          db.prepare('PRAGMA table_info(cloud_execution_connection)').all() as Array<{
+            name: string;
+          }>
+        ).map((column) => column.name),
+      );
+
+      expect(SCHEMA_VERSION).toBe(57);
+      for (const column of [
+        'local_llm_mode',
+        'local_llm_provider',
+        'local_llm_endpoint',
+        'local_llm_model',
+      ]) {
+        expect(settingsColumns.has(column), `Missing settings.${column}`).toBe(true);
+      }
+      expect(cloudColumns.has('endpoint')).toBe(true);
+      expect(cloudColumns.has('token')).toBe(true);
     } finally {
       db.close();
     }

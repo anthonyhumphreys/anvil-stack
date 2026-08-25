@@ -37,6 +37,7 @@ describe("main", () => {
     expect(output).toContain("anvil-cloud channels simulate");
     expect(output).toContain("anvil-cloud manifest diff");
     expect(output).toContain("anvil-cloud auth test");
+    expect(output).toContain("anvil-cloud executions conformance");
     expect(output).toContain(
       "anvil-cloud destroy --preview --app <name> [--name branch] --yes",
     );
@@ -226,6 +227,27 @@ describe("main", () => {
       ANVIL_AUTH_AUDIENCE: "https://api.example.test",
       ANVIL_AUTH_ROLES_CLAIM: "https://anvil.dev/roles",
     });
+  });
+
+  it("runs agent execution conformance as stable JSON", async () => {
+    const output = await captureStdout(() =>
+      main(["executions", "conformance", "--json"]),
+    );
+    const payload = JSON.parse(output) as {
+      ok: boolean;
+      summary: { passed: number; failed: number; total: number };
+      checks: Array<{ id: string; ok: boolean }>;
+    };
+
+    expect(payload.ok).toBe(true);
+    expect(payload.summary).toEqual({ passed: 6, failed: 0, total: 6 });
+    expect(payload.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "idempotent-create", ok: true }),
+        expect.objectContaining({ id: "approval-resume", ok: true }),
+        expect.objectContaining({ id: "verified-cleanup", ok: true }),
+      ]),
+    );
   });
 
   it("checks the supported pnpm version floor", () => {

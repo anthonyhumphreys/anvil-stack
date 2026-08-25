@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 56;
+export const SCHEMA_VERSION = 57;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -333,6 +333,13 @@ CREATE TABLE IF NOT EXISTS settings (
   github_username TEXT,
   cloud_features_enabled INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS cloud_execution_connection (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  endpoint TEXT NOT NULL,
+  token BLOB NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS mobile_companion_settings (
@@ -1779,6 +1786,14 @@ export const MIGRATIONS: Record<number, string> = {
       ON chat_artifact_annotations(artifact_id, updated_at DESC);
   `,
   56: `
+    CREATE TABLE IF NOT EXISTS cloud_execution_connection (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      endpoint TEXT NOT NULL,
+      token BLOB NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `,
+  57: `
     ALTER TABLE settings ADD COLUMN local_llm_mode TEXT DEFAULT 'off';
     ALTER TABLE settings ADD COLUMN local_llm_provider TEXT DEFAULT 'apple';
     ALTER TABLE settings ADD COLUMN local_llm_endpoint TEXT;
@@ -1787,5 +1802,12 @@ export const MIGRATIONS: Record<number, string> = {
     UPDATE settings
       SET local_llm_mode = COALESCE(apple_foundation_models_mode, 'off')
       WHERE local_llm_mode = 'off' AND apple_foundation_models_mode = 'prefer-simple';
+
+    CREATE TABLE IF NOT EXISTS cloud_execution_connection (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      endpoint TEXT NOT NULL,
+      token BLOB NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `,
 };

@@ -247,9 +247,12 @@ An AWS-backed Agent Sandbox provider now provides:
 - lifecycle metadata: started, active, waiting for approval, suspended,
   resumed, terminated, expired.
 
-The network-bound credential injection broker, streamed command transport,
-workspace snapshot store, sandbox-aware Lens view, and artifact/diff capture are
-still follow-on work.
+The provider now implements the normalised read-only execution transport for a
+compatible MicroVM worker image: workspace preparation, run start, resumable
+events, approvals, structured input, steering, and result collection use
+short-lived MicroVM auth tokens. The hosted credential injection broker, source
+snapshot store, deployed worker image, real-account execution smoke,
+sandbox-aware Lens view, and artifact/diff storage are still follow-on work.
 
 ### Compatibility mapping
 

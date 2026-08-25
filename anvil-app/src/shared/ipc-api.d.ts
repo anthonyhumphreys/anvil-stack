@@ -23,6 +23,13 @@ import type {
   AnvilCloudCommandId,
   AnvilCloudCommandResult,
   AnvilCloudWorkbenchSnapshot,
+  AnvilCloudExecutionConnection,
+  AnvilCloudExecutionConnectionInput,
+  AnvilCloudExecutionConnectionTest,
+  AnvilCloudExecutionEventBatch,
+  AnvilCloudExecutionLease,
+  AnvilCloudExecutionStartInput,
+  AnvilCloudExecutionStartResult,
   AutomationDaemonStatus,
   AutomationDefinition,
   AutomationDefinitionInput,
@@ -267,7 +274,7 @@ export interface AnvilAPI {
       patch: ChatArtifactAnnotationPatch,
     ) => Promise<ChatArtifactAnnotation>;
     deleteArtifactAnnotation: (id: string) => Promise<boolean>;
-    listThreads: (workspaceId: string | null, personaId: string) => Promise<ChatThread[]>;
+    listThreads: (workspaceId: string | null) => Promise<ChatThread[]>;
     listWorkItemThreads: (workspaceId: string | null) => Promise<ChatThread[]>;
     createThread: (input: {
       workspaceId?: string | null;
@@ -603,6 +610,30 @@ export interface AnvilAPI {
       result: AnvilCloudCommandResult;
       error?: string;
     }>;
+    executionConnection: () => Promise<AnvilCloudExecutionConnection>;
+    saveExecutionConnection: (
+      input: AnvilCloudExecutionConnectionInput,
+    ) => Promise<AnvilCloudExecutionConnection>;
+    clearExecutionConnection: () => Promise<AnvilCloudExecutionConnection>;
+    testExecutionConnection: () => Promise<AnvilCloudExecutionConnectionTest>;
+    listExecutions: () => Promise<AnvilCloudExecutionLease[]>;
+    getExecution: (executionId: string) => Promise<AnvilCloudExecutionLease>;
+    startExecution: (
+      input: AnvilCloudExecutionStartInput,
+    ) => Promise<AnvilCloudExecutionStartResult>;
+    executionEvents: (
+      executionId: string,
+      cursor?: string,
+    ) => Promise<AnvilCloudExecutionEventBatch>;
+    resolveExecutionApproval: (input: {
+      executionId: string;
+      requestId: string;
+      decision: 'approved' | 'rejected';
+      reason?: string;
+    }) => Promise<AnvilCloudExecutionLease>;
+    steerExecution: (executionId: string, message: string) => Promise<AnvilCloudExecutionLease>;
+    collectExecution: (executionId: string) => Promise<AnvilCloudExecutionLease>;
+    terminateExecution: (executionId: string) => Promise<AnvilCloudExecutionLease>;
   };
 
   diagrams: {

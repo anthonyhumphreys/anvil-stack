@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { execFile, spawn, type StdioOptions } from "node:child_process";
+import { timingSafeEqual } from "node:crypto";
 import { realpathSync } from "node:fs";
 import {
   mkdir,
@@ -28,6 +29,7 @@ import {
   createAwsSdkPreviewProvisionerFromEnv,
   BedrockInferenceProvider,
   checkAwsAgentCompatibility,
+  createAwsLambdaMicroVmSandboxProviderFromEnv,
 } from "@anvil-cloud/aws";
 import {
   buildCell,
@@ -75,9 +77,22 @@ import {
   runAgentEvalSuite,
   type AgentEvalBaseline,
   type AppDefinition,
+  type AgentExecutionRequest,
   type WorkflowRun,
   type WorkflowRunSummary,
 } from "@anvil-cloud/runtime";
+import {
+  AgentExecutionControlPlane,
+  createAgentExecutionHttpHandler,
+  createHttpAgentExecutionControlPlane,
+  createHttpAgentExecutionSourceClient,
+  FakeAgentExecutionProvider,
+  FileAgentExecutionSnapshotStore,
+  JsonFileAgentExecutionStore,
+  runAgentExecutionConformance,
+  SnapshotStoreAgentExecutionSourceBroker,
+  startAgentExecutionNodeHttpServer,
+} from "@anvil-cloud/control-plane";
 import {
   resolveDeploymentAdapter,
   supportedDeploymentAdapters,
@@ -228,6 +243,9 @@ export async function main(argv: string[]): Promise<void> {
     case "agents":
       await commandAgents(context, subcommand, maybeArg);
       return;
+    case "executions":
+      await commandExecutions(context, subcommand, maybeArg);
+      return;
     case "eval":
       await commandEval(context, subcommand);
       return;
@@ -260,6 +278,376 @@ export async function main(argv: string[]): Promise<void> {
       );
       process.exitCode = 2;
   }
+}
+
+async function commandExecutions(
+  context: CliContext,
+  subcommand: string | undefined,
+  executionId: string | undefined,
+): Promise<void> {
+  switch (subcommand) {
+    case "conformance": {
+      const result = await runAgentExecutionConformance();
+      const payload = {
+        ...result,
+        summary: {
+          passed: result.checks.filter((check) => check.ok).length,
+          failed: result.checks.filter((check) => !check.ok).length,
+          total: result.checks.length,
+        },
+      };
+
+      writeJsonOrHuman(
+        context,
+        payload,
+        [
+          payload.ok
+            ? "Agent execution conformance passed."
+            : "Agent execution conformance failed.",
+          ...payload.checks.map(
+            (check) =>
+              `  ${check.ok ? "✓" : "✗"} ${check.id}: ${check.message}`,
+          ),
+        ].join("\n"),
+      );
+
+      if (!payload.ok) process.exitCode = 1;
+      return;
+    }
+    case "serve":
+      await commandExecutionsServe(context);
+      return;
+    case "list": {
+      const executions = await executionClient(context).listExecutions();
+      writeJsonOrHuman(
+        context,
+        { ok: true, executions },
+        executions.length === 0
+          ? "No remote executions."
+          : executions
+              .map(
+                (execution) =>
+                  `${execution.id}  ${execution.status}  ${execution.provider}  ${execution.request.task}`,
+              )
+              .join("\n"),
+      );
+      return;
+    }
+    case "show": {
+      if (!executionId) return invalidExecutionUsage(context);
+      const execution =
+        await executionClient(context).getExecution(executionId);
+      writeJsonOrHuman(
+        context,
+        { ok: true, execution },
+        JSON.stringify(execution, null, 2),
+      );
+      return;
+    }
+    case "events": {
+      if (!executionId) return invalidExecutionUsage(context);
+      const cursor = context.values.get("cursor");
+      const rawLimit = context.values.get("limit");
+      const limit =
+        rawLimit === undefined
+          ? undefined
+          : parsePositiveIntegerOption(rawLimit);
+      if (rawLimit !== undefined && limit === undefined) {
+        return invalidExecutionUsage(context);
+      }
+      const batch = await executionClient(context).streamEvents(
+        executionId,
+        cursor,
+        limit,
+      );
+      writeJsonOrHuman(
+        context,
+        { ok: true, batch },
+        batch.events
+          .map(
+            (event) => `${event.sequence}  ${event.type}  ${event.timestamp}`,
+          )
+          .join("\n") || "No new execution events.",
+      );
+      return;
+    }
+    case "start": {
+      const requestPath = context.values.get("request");
+      if (!requestPath) return invalidExecutionUsage(context);
+      const request = JSON.parse(
+        await readFile(path.resolve(context.cwd, requestPath), "utf8"),
+      ) as AgentExecutionRequest;
+      const execution = await executionClient(context).createExecution(request);
+      writeJsonOrHuman(
+        context,
+        { ok: true, execution },
+        `Started execution ${execution.id} (${execution.status}).`,
+      );
+      return;
+    }
+    case "snapshot": {
+      const workspace = context.values.get("workspace");
+      const baseCommit = context.values.get("commit");
+      const archivePath = context.values.get("archive");
+      if (!workspace || !baseCommit || !archivePath) {
+        return invalidExecutionUsage(context);
+      }
+      const patchPath = context.values.get("patch");
+      const repository = context.values.get("repository");
+      const branch = context.values.get("branch");
+      const source = await executionSourceClient(context).uploadSnapshot({
+        workspace,
+        baseCommit,
+        archive: await readFile(path.resolve(context.cwd, archivePath)),
+        ...(repository === undefined ? {} : { repository }),
+        ...(branch === undefined ? {} : { branch }),
+        ...(patchPath === undefined
+          ? {}
+          : {
+              workingTreePatch: await readFile(
+                path.resolve(context.cwd, patchPath),
+              ),
+            }),
+      });
+      writeJsonOrHuman(
+        context,
+        { ok: true, source },
+        `Uploaded immutable snapshot ${source.snapshotId}.`,
+      );
+      return;
+    }
+    case "approve":
+    case "reject": {
+      const requestId = context.values.get("request");
+      if (!executionId || !requestId) return invalidExecutionUsage(context);
+      const reason = context.values.get("reason");
+      const execution = await executionClient(context).resolveApproval(
+        executionId,
+        {
+          requestId,
+          decision: subcommand === "approve" ? "approved" : "rejected",
+          actor: context.values.get("actor") ?? "cli-operator",
+          ...(reason === undefined ? {} : { reason }),
+        },
+      );
+      writeJsonOrHuman(
+        context,
+        { ok: true, execution },
+        `${subcommand === "approve" ? "Approved" : "Rejected"} ${requestId}.`,
+      );
+      return;
+    }
+    case "steer": {
+      const message = context.values.get("message");
+      if (!executionId || !message) return invalidExecutionUsage(context);
+      const execution = await executionClient(context).steer(
+        executionId,
+        message,
+      );
+      writeJsonOrHuman(
+        context,
+        { ok: true, execution },
+        `Steered execution ${executionId}.`,
+      );
+      return;
+    }
+    case "suspend":
+    case "resume":
+    case "collect":
+    case "terminate": {
+      if (!executionId) return invalidExecutionUsage(context);
+      const client = executionClient(context);
+      const execution =
+        subcommand === "suspend"
+          ? await client.suspend(executionId)
+          : subcommand === "resume"
+            ? await client.resume(executionId)
+            : subcommand === "collect"
+              ? await client.collectResult(executionId)
+              : await client.terminate(executionId);
+      writeJsonOrHuman(
+        context,
+        { ok: true, execution },
+        `${subcommand} ${executionId}: ${execution.status}.`,
+      );
+      return;
+    }
+    default:
+      invalidExecutionUsage(context);
+  }
+}
+
+async function commandExecutionsServe(context: CliContext): Promise<void> {
+  const token = executionControlToken(context);
+  const host = context.values.get("host") ?? "127.0.0.1";
+  const port = Number(context.values.get("port") ?? "4764");
+  const providerName = context.values.get("provider") ?? "fake";
+  const publicUrl = context.values.get("public-url");
+  if (
+    (!isLoopbackHost(host) && !context.flags.has("allow-public-bind")) ||
+    !Number.isSafeInteger(port) ||
+    port < 1 ||
+    port > 65_535 ||
+    (providerName !== "fake" && providerName !== "aws") ||
+    (providerName === "aws" &&
+      (!publicUrl || !publicUrl.startsWith("https://")))
+  ) {
+    invalidExecutionUsage(context);
+    return;
+  }
+
+  const stateDir = path.resolve(
+    context.cwd,
+    context.values.get("state-dir") ?? ".anvil/cloud/executions",
+  );
+  const snapshots = new FileAgentExecutionSnapshotStore(
+    path.join(stateDir, "snapshots"),
+  );
+  const provider =
+    providerName === "aws"
+      ? createAwsLambdaMicroVmSandboxProviderFromEnv()
+      : new FakeAgentExecutionProvider();
+  const serverBaseUrl = publicUrl ?? `http://${formatHostForUrl(host)}:${port}`;
+  const plane = new AgentExecutionControlPlane({
+    providers: [provider],
+    store: new JsonFileAgentExecutionStore(path.join(stateDir, "state.json")),
+    sourceBroker: new SnapshotStoreAgentExecutionSourceBroker(
+      snapshots,
+      serverBaseUrl,
+    ),
+  });
+  const handler = createAgentExecutionHttpHandler(
+    plane,
+    {
+      authenticate: (request) => {
+        const authorization = Object.entries(request.headers ?? {}).find(
+          ([name]) => name.toLowerCase() === "authorization",
+        )?.[1];
+        return authorization &&
+          constantTimeTextEqual(authorization, `Bearer ${token}`)
+          ? { subject: "execution-service-operator", roles: ["admin"] }
+          : null;
+      },
+      authorize: () => true,
+    },
+    { snapshots },
+  );
+  const server = await startAgentExecutionNodeHttpServer({
+    handler,
+    host,
+    port,
+    authenticateHeaders: (request) => {
+      if (
+        request.method.toUpperCase() === "GET" &&
+        request.path.startsWith("/v1/source-grants/")
+      ) {
+        return true;
+      }
+      const authorization = Object.entries(request.headers ?? {}).find(
+        ([name]) => name.toLowerCase() === "authorization",
+      )?.[1];
+
+      return Boolean(
+        authorization &&
+        constantTimeTextEqual(authorization, `Bearer ${token}`),
+      );
+    },
+  });
+
+  writeJsonOrHuman(
+    context,
+    {
+      ok: true,
+      service: {
+        url: server.url,
+        provider: provider.id,
+        stateDir,
+        authentication: "bearer-env",
+      },
+    },
+    `Execution control plane listening on ${server.url} (${provider.id}).`,
+  );
+
+  try {
+    await waitForTerminationSignal();
+  } finally {
+    await server.close();
+  }
+}
+
+function executionClient(context: CliContext) {
+  return createHttpAgentExecutionControlPlane(executionControlUrl(context), {
+    headers: { authorization: `Bearer ${executionControlToken(context)}` },
+  });
+}
+
+function executionSourceClient(context: CliContext) {
+  return createHttpAgentExecutionSourceClient(executionControlUrl(context), {
+    headers: { authorization: `Bearer ${executionControlToken(context)}` },
+  });
+}
+
+function executionControlUrl(context: CliContext): string {
+  return (
+    context.values.get("url") ??
+    process.env.ANVIL_EXECUTION_CONTROL_URL ??
+    "http://127.0.0.1:4764"
+  );
+}
+
+function executionControlToken(context: CliContext): string {
+  const envName =
+    context.values.get("token-env") ?? "ANVIL_EXECUTION_CONTROL_TOKEN";
+  const token = process.env[envName];
+  if (!token || token.length < 16) {
+    throw new Error(
+      `Execution bearer token environment variable ${envName} must contain at least 16 characters.`,
+    );
+  }
+
+  return token;
+}
+
+function invalidExecutionUsage(context: CliContext): void {
+  const usage =
+    "Usage: anvil-cloud executions conformance|serve|list|show|events|start|snapshot|approve|reject|steer|suspend|resume|collect|terminate [options]";
+  writeJsonOrHuman(
+    context,
+    { ok: false, errors: [{ code: "INVALID_USAGE", message: usage }] },
+    usage,
+  );
+  process.exitCode = 2;
+}
+
+function isLoopbackHost(host: string): boolean {
+  return host === "127.0.0.1" || host === "localhost" || host === "::1";
+}
+
+function formatHostForUrl(host: string): string {
+  return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+}
+
+function constantTimeTextEqual(left: string, right: string): boolean {
+  const leftBytes = Buffer.from(left);
+  const rightBytes = Buffer.from(right);
+
+  return (
+    leftBytes.byteLength === rightBytes.byteLength &&
+    timingSafeEqual(leftBytes, rightBytes)
+  );
+}
+
+async function waitForTerminationSignal(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    const stop = () => {
+      process.off("SIGINT", stop);
+      process.off("SIGTERM", stop);
+      resolve();
+    };
+
+    process.once("SIGINT", stop);
+    process.once("SIGTERM", stop);
+  });
 }
 
 async function commandChannels(
@@ -4830,6 +5218,16 @@ function writeHelp(): void {
       "  anvil-cloud agents discover [--json]",
       "  anvil-cloud agents guardian [--json]",
       "  anvil-cloud agents sandboxes [--sandbox-backend auto|docker|process] [--json]",
+      "  anvil-cloud executions conformance [--json]",
+      "  anvil-cloud executions serve [--provider fake|aws] [--host 127.0.0.1] [--port 4764] [--state-dir .anvil/cloud/executions] [--public-url https://...] [--token-env ANVIL_EXECUTION_CONTROL_TOKEN] [--json]",
+      "  anvil-cloud executions list [--url http://127.0.0.1:4764] [--token-env ANVIL_EXECUTION_CONTROL_TOKEN] [--json]",
+      "  anvil-cloud executions show <id> [--url ...] [--json]",
+      "  anvil-cloud executions events <id> [--cursor <cursor>] [--limit <n>] [--url ...] [--json]",
+      "  anvil-cloud executions start --request execution.json [--url ...] [--json]",
+      "  anvil-cloud executions snapshot --workspace <id> --commit <sha> --archive <path> [--patch <path>] [--repository <url>] [--branch <name>] [--url ...] [--json]",
+      "  anvil-cloud executions approve|reject <id> --request <approvalId> [--actor <name>] [--reason <text>] [--url ...] [--json]",
+      "  anvil-cloud executions steer <id> --message <text> [--url ...] [--json]",
+      "  anvil-cloud executions suspend|resume|collect|terminate <id> [--url ...] [--json]",
       "  anvil-cloud channels simulate --channel <name> --input <text> [--sender <id>] [--thread <id>] [--json]",
       "  anvil-cloud workflows list [--json]",
       "  anvil-cloud workflows show <runId> [--json]",
