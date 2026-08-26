@@ -35,6 +35,8 @@ import type {
   CodexUsageSnapshot,
   CursorCliStatus,
   DocsProvider,
+  LocalLlmCapabilities,
+  LocalLlmProvider,
   MobileCompanionDevice,
   MobileCompanionStatus,
   MobilePairingTicket,
@@ -215,8 +217,10 @@ export function SettingsView({
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [llmStatus, setLlmStatus] = useState<TestStatus>('idle');
-  const [appleFoundationModelsStatus, setAppleFoundationModelsStatus] =
-    useState<TestStatus>('idle');
+  const [localLlmStatus, setLocalLlmStatus] = useState<TestStatus>('idle');
+  const [localLlmCapabilities, setLocalLlmCapabilities] = useState<LocalLlmCapabilities | null>(
+    null,
+  );
   const [wiStatus, setWiStatus] = useState<TestStatus>('idle');
   const [confluenceStatus, setConfluenceStatus] = useState<TestStatus>('idle');
   const [testError, setTestError] = useState<string | null>(null);
@@ -284,6 +288,10 @@ export function SettingsView({
       })
       .catch(console.warn);
     window.anvil.settings.getCursorStatus().then(setCursorStatus).catch(console.warn);
+    window.anvil.settings
+      .getLocalLlmCapabilities()
+      .then(setLocalLlmCapabilities)
+      .catch(console.warn);
     refreshMobileCompanion().catch(console.error);
     refreshCodexUsage().catch(console.error);
     refreshCodexAgentsFile().catch(console.error);
@@ -579,12 +587,12 @@ export function SettingsView({
     if (result.error) setTestError(result.error);
   };
 
-  const testAppleFoundationModels = async () => {
-    setAppleFoundationModelsStatus('testing');
+  const testLocalLlm = async () => {
+    setLocalLlmStatus('testing');
     setTestError(null);
     await saveBeforeTest();
-    const result = await window.anvil.settings.testAppleFoundationModels();
-    setAppleFoundationModelsStatus(result.ok ? 'ok' : 'error');
+    const result = await window.anvil.settings.testLocalLlm();
+    setLocalLlmStatus(result.ok ? 'ok' : 'error');
     if (result.error) setTestError(result.error);
   };
 
@@ -1300,39 +1308,102 @@ export function SettingsView({
                   </div>
                 )}
 
-                <div className="rounded-md border border-border bg-bg-primary p-4 space-y-3">
+                <div className="rounded-md border border-border bg-bg-primary p-4 space-y-4">
                   <div className="space-y-1">
-                    <label className="block text-sm text-text-secondary">
-                      Apple Foundation Models
-                    </label>
+                    <label className="block text-sm text-text-secondary">Local model</label>
                     <p className="text-sm text-text-secondary">
-                      Optionally try the on-device Apple model for short helper prompts, then fall
-                      back to the selected backend when unavailable or unsuitable.
+                      Route simple, self-contained prompts through a local model, then fall back to
+                      the selected backend when the classifier decides tools or deeper reasoning are
+                      needed.
                     </p>
                   </div>
                   <ButtonGrid>
                     <ProviderButton
                       label="Off"
                       description="Always use selected backend"
-                      active={(settings.appleFoundationModelsMode ?? 'off') === 'off'}
-                      onClick={() => update('appleFoundationModelsMode', 'off')}
+                      active={(settings.localLlmMode ?? 'off') === 'off'}
+                      onClick={() => update('localLlmMode', 'off')}
                     />
                     <ProviderButton
                       label="Prefer simple"
                       description="Try local model for small helper prompts"
-                      active={settings.appleFoundationModelsMode === 'prefer-simple'}
-                      onClick={() => update('appleFoundationModelsMode', 'prefer-simple')}
+                      active={settings.localLlmMode === 'prefer-simple'}
+                      onClick={() => update('localLlmMode', 'prefer-simple')}
                     />
                   </ButtonGrid>
+
+                  <div className="space-y-2">
+                    <label className="block text-sm text-text-secondary">Provider</label>
+                    <ButtonGrid>
+                      {(localLlmCapabilities?.providers ?? ['ollama', 'lm-studio']).map(
+                        (providerId) => (
+                          <ProviderButton
+                            key={providerId}
+                            label={
+                              providerId === 'apple'
+                                ? 'Apple Intelligence'
+                                : providerId === 'ollama'
+                                  ? 'Ollama'
+                                  : 'LM Studio'
+                            }
+                            description={
+                              providerId === 'apple'
+                                ? 'Private on-device Foundation Models'
+                                : providerId === 'ollama'
+                                  ? 'OpenAI-compatible Ollama server'
+                                  : 'OpenAI-compatible LM Studio server'
+                            }
+                            active={settings.localLlmProvider === providerId}
+                            onClick={() => {
+                              const providerChanged = settings.localLlmProvider !== providerId;
+                              update('localLlmProvider', providerId as LocalLlmProvider);
+                              if (providerChanged) {
+                                update(
+                                  'localLlmEndpoint',
+                                  providerId === 'ollama'
+                                    ? 'http://127.0.0.1:11434/v1'
+                                    : providerId === 'lm-studio'
+                                      ? 'http://127.0.0.1:1234/v1'
+                                      : '',
+                                );
+                              }
+                              setLocalLlmStatus('idle');
+                            }}
+                          />
+                        ),
+                      )}
+                    </ButtonGrid>
+                  </div>
+
+                  {settings.localLlmProvider !== 'apple' && (
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <Field
+                        label="OpenAI-compatible endpoint"
+                        value={settings.localLlmEndpoint ?? ''}
+                        onChange={(value) => update('localLlmEndpoint', value)}
+                        placeholder={
+                          settings.localLlmProvider === 'lm-studio'
+                            ? 'http://127.0.0.1:1234/v1'
+                            : 'http://127.0.0.1:11434/v1'
+                        }
+                      />
+                      <Field
+                        label="Model ID (optional)"
+                        value={settings.localLlmModel ?? ''}
+                        onChange={(value) => update('localLlmModel', value)}
+                        placeholder="Use the first loaded model"
+                      />
+                    </div>
+                  )}
                   <p className="text-xs text-text-tertiary">
-                    Requires macOS 26, Apple Intelligence support, and Apple Intelligence enabled.
-                    Chat, BA sessions, code review analysis, security, compliance, diagrams, and
-                    long-context work stay on the configured backend.
+                    Apple Intelligence is offered only on macOS. Ollama and LM Studio work on any
+                    supported desktop platform. Repository work, tools, code edits, and long-context
+                    tasks stay on the configured backend.
                   </p>
                   <TestButton
-                    status={appleFoundationModelsStatus}
-                    onClick={testAppleFoundationModels}
-                    label="Test Apple Models"
+                    status={localLlmStatus}
+                    onClick={testLocalLlm}
+                    label="Test Local Model"
                   />
                 </div>
 

@@ -578,7 +578,8 @@ const api: AnvilAPI = {
     setCodexAgentMaxThreads: (maxThreads) =>
       ipcRenderer.invoke('settings:codex-agent-max-threads', maxThreads),
     testFoundryConnection: () => ipcRenderer.invoke('settings:test-foundry'),
-    testAppleFoundationModels: () => ipcRenderer.invoke('settings:test-apple-foundation-models'),
+    getLocalLlmCapabilities: () => ipcRenderer.invoke('settings:local-llm-capabilities'),
+    testLocalLlm: () => ipcRenderer.invoke('settings:test-local-llm'),
     testWorkItemProviderConnection: () => ipcRenderer.invoke('settings:test-workitem-provider'),
     listLinearTeams: () => ipcRenderer.invoke('settings:linear-teams'),
     testConfluenceConnection: () => ipcRenderer.invoke('settings:test-confluence'),

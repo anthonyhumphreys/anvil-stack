@@ -1,0 +1,65 @@
+name: Anvil App Linux x64
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/app-linux-x64.yml"
+      - "anvil-app/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: app-linux-x64-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: true
+
+defaults:
+  run:
+    working-directory: anvil-app
+
+jobs:
+  package:
+    name: Build AppImage and deb
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: anvil-app/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test
+
+      - name: Package Linux x64
+        run: pnpm run dist:linux:x64
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: anvil-linux-x64
+          if-no-files-found: error
+          path: |
+            anvil-app/dist/*.AppImage
+            anvil-app/dist/*.deb
+            anvil-app/dist/latest-linux.yml

@@ -102,6 +102,10 @@ configureUserDataPath();
 let mainWindow: BrowserWindow | null = null;
 let rendererCspRegistered = false;
 const daemonMode = isAutomationDaemonMode();
+if (daemonMode && process.platform === 'linux') {
+  app.commandLine.appendSwitch('headless');
+  app.commandLine.appendSwitch('disable-gpu');
+}
 const gotSingleInstanceLock = daemonMode ? true : app.requestSingleInstanceLock();
 
 function getWindowChromeState(targetWindow = mainWindow): { isFullScreen: boolean } {
@@ -171,8 +175,10 @@ function createWindow(
     minWidth: isToolWindow ? 720 : 1024,
     minHeight: isToolWindow ? 520 : 700,
     title: app.getName(),
-    titleBarStyle: 'hidden',
-    trafficLightPosition: { x: 16, y: 16 },
+    titleBarStyle: process.platform === 'darwin' ? 'hidden' : 'default',
+    ...(process.platform === 'darwin'
+      ? { trafficLightPosition: { x: 16, y: 16 } }
+      : {}),
     backgroundColor: '#0b1020',
     icon: getAppIconPath(),
     webPreferences: {

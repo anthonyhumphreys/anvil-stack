@@ -10,7 +10,10 @@ import {
 } from '../services/settings.service.js';
 import { resetLlmClient } from '../services/llm.service.js';
 import { emitCompanionEvent } from '../services/companion-events.service.js';
-import { testAppleFoundationModels } from '../services/apple-foundation-models.service.js';
+import {
+  getLocalLlmCapabilities,
+  testPreferredLocalModel,
+} from '../services/local-llm.service.js';
 import { getActiveProvider } from '../services/workitem-provider.js';
 import {
   readCodexAgentsFile,
@@ -106,9 +109,11 @@ export function registerSettingsHandlers(): void {
     }
   });
 
-  ipcMain.handle('settings:test-apple-foundation-models', async () => {
+  ipcMain.handle('settings:local-llm-capabilities', () => getLocalLlmCapabilities());
+
+  ipcMain.handle('settings:test-local-llm', async () => {
     try {
-      return await testAppleFoundationModels();
+      return await testPreferredLocalModel();
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }

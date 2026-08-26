@@ -7,10 +7,10 @@ import { getSettings } from './settings.service.js';
 import { PRIMARY_CODEX_TEMP_PREFIX } from '../../shared/app-identity.js';
 import { DEFAULT_CODEX_MODEL } from '../../shared/codex-models.js';
 import {
-  callAppleFoundationModel,
-  classifyPromptForOnDeviceModel,
-  isLikelyAppleFoundationModelsRefusal,
-} from './apple-foundation-models.service.js';
+  callPreferredLocalModel,
+  classifyPromptForLocalModel,
+  isLikelyLocalModelRefusal,
+} from './local-llm.service.js';
 
 let cachedClient: AzureOpenAI | OpenAI | null = null;
 let cachedProvider: string | null = null;
@@ -32,7 +32,7 @@ export interface LlmCallOptions {
 
 class EmptyLlmResponseError extends Error {}
 
-const APPLE_FOUNDATION_MODELS_MAX_PROMPT_CHARS = 12_000;
+const LOCAL_LLM_MAX_PROMPT_CHARS = 12_000;
 
 function killProcessTree(pid: number | undefined, signal: NodeJS.Signals): void {
   if (!pid) return;
@@ -62,28 +62,28 @@ function isLikelyJsonResponse(value: string): boolean {
   }
 }
 
-function isAppleFoundationModelsEligible(
+function isLocalLlmEligible(
   prompt: string,
   maxTokens: number,
   options?: LlmCallOptions,
 ): boolean {
   if (!options?.taskClass) return false;
-  if (prompt.length > APPLE_FOUNDATION_MODELS_MAX_PROMPT_CHARS) return false;
+  if (prompt.length > LOCAL_LLM_MAX_PROMPT_CHARS) return false;
   if (maxTokens > 4096) return false;
   return true;
 }
 
-async function tryAppleFoundationModels(
+async function tryLocalLlm(
   prompt: string,
   maxTokens: number,
   options?: LlmCallOptions,
 ): Promise<string | null> {
   const settings = getSettings();
-  if (settings.appleFoundationModelsMode !== 'prefer-simple') return null;
-  if (!isAppleFoundationModelsEligible(prompt, maxTokens, options)) return null;
+  if (settings.localLlmMode !== 'prefer-simple') return null;
+  if (!isLocalLlmEligible(prompt, maxTokens, options)) return null;
 
-  options?.onProgress?.('Checking whether the on-device Apple model can handle this...');
-  const route = await classifyPromptForOnDeviceModel(prompt);
+  options?.onProgress?.('Checking whether the selected local model can handle this...');
+  const route = await classifyPromptForLocalModel(prompt);
   if (route !== 'local') {
     if (route === 'cloud') {
       console.log('[LLM] On-device classifier routed prompt to the configured backend');
@@ -93,29 +93,29 @@ async function tryAppleFoundationModels(
     return null;
   }
 
-  options?.onProgress?.('Trying Apple Foundation Models locally...');
-  const result = await callAppleFoundationModel(prompt);
+  options?.onProgress?.('Trying the selected local model...');
+  const result = await callPreferredLocalModel(prompt, maxTokens);
   if (!result.ok || !result.content?.trim()) {
     const fallbackReason = result.error ? ` (${result.error})` : '';
-    console.warn(`[LLM] Apple Foundation Models fallback${fallbackReason}`);
-    options?.onProgress?.('Apple Foundation Models unavailable; falling back to configured LLM...');
+    console.warn(`[LLM] Local model fallback${fallbackReason}`);
+    options?.onProgress?.('Local model unavailable; falling back to configured LLM...');
     return null;
   }
 
   const content = result.content.trim();
-  if (isLikelyAppleFoundationModelsRefusal(content)) {
-    console.warn('[LLM] Apple Foundation Models returned a refusal; falling back');
+  if (isLikelyLocalModelRefusal(content)) {
+    console.warn('[LLM] Local model returned a refusal; falling back');
     options?.onProgress?.('Local model refused the request; falling back to configured LLM...');
     return null;
   }
 
   if (options?.taskClass === 'simple-json' && !isLikelyJsonResponse(content)) {
-    console.warn('[LLM] Apple Foundation Models returned non-JSON for a JSON task; falling back');
+    console.warn('[LLM] Local model returned non-JSON for a JSON task; falling back');
     options?.onProgress?.('Local model returned invalid JSON; falling back to configured LLM...');
     return null;
   }
 
-  console.log(`[LLM] Apple Foundation Models response accepted (${content.length} chars)`);
+  console.log(`[LLM] Local model response accepted (${content.length} chars)`);
   return content;
 }
 
@@ -462,7 +462,7 @@ export async function callLlm(
   const settings = getSettings();
   let lastEmptyResponseMessage: string | null = null;
 
-  const localResult = await tryAppleFoundationModels(userMessage, maxTokens, options);
+  const localResult = await tryLocalLlm(userMessage, maxTokens, options);
   if (localResult) return localResult;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
