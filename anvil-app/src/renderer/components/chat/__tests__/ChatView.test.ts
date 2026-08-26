@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildMessageReusePrefill,
+  clampCanvasZoom,
   getChatTurnLiveState,
   getNewChatThreadActionLabel,
   isNearChatBottom,
@@ -81,6 +82,14 @@ describe('shouldFocusChatComposerFromKey', () => {
 describe('getNewChatThreadActionLabel', () => {
   it('uses thread wording for the new chat action', () => {
     expect(getNewChatThreadActionLabel()).toBe('New thread');
+  });
+});
+
+describe('clampCanvasZoom', () => {
+  it('keeps canvas zoom on ten-percent steps within the supported range', () => {
+    expect(clampCanvasZoom(44)).toBe(50);
+    expect(clampCanvasZoom(126)).toBe(130);
+    expect(clampCanvasZoom(240)).toBe(200);
   });
 });
 

@@ -4,6 +4,7 @@ navTitle: Companion surfaces
 description: Pair mobile, watch, Raycast, menu bar, and widget controls with the desktop app.
 product: Anvil Desktop
 section: Working guide
+journey: build
 order: 120
 ---
 

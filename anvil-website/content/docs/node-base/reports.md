@@ -4,6 +4,7 @@ navTitle: Reports
 description: Understand report files, strict-mode gates, network reports, and report submission.
 product: Anvil Node Base
 section: Guides
+journey: build
 order: 9
 ---
 

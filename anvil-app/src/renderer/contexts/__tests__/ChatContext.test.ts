@@ -1,12 +1,44 @@
 import { describe, expect, it } from 'vitest';
-import type { ChatThread } from '../../../shared/types';
+import type { ChatThread, Persona } from '../../../shared/types';
 import {
   chatMessagesToEntries,
-  shouldSuppressPreparedChatBootstrap,
+  findPersonaForThread,
+  planIntentToSnapshot,
   threadBelongsToChatList,
   threadBelongsToWorkspace,
   upsertThreadForChatList,
 } from '../ChatContext';
+
+const personas: Persona[] = [
+  {
+    id: 'coder',
+    name: 'Coder',
+    icon: 'code',
+    colour: 'blue',
+    description: 'Writes code',
+    systemPromptTemplate: 'Code',
+    capabilities: { canWriteFiles: true, canRunCommands: true, canReadFiles: true },
+  },
+  {
+    id: 'architect',
+    name: 'Architect',
+    icon: 'blocks',
+    colour: 'purple',
+    description: 'Shapes systems',
+    systemPromptTemplate: 'Architect',
+    capabilities: { canWriteFiles: false, canRunCommands: false, canReadFiles: true },
+  },
+];
+
+describe('findPersonaForThread', () => {
+  it('resolves the persona owned by the selected thread', () => {
+    expect(findPersonaForThread({ personaId: 'architect' }, personas)?.name).toBe('Architect');
+  });
+
+  it('does not substitute another persona for an unavailable owner', () => {
+    expect(findPersonaForThread({ personaId: 'reviewer' }, personas)).toBeUndefined();
+  });
+});
 
 describe('chatMessagesToEntries', () => {
   it('restores segmented assistant output and persisted activity', () => {
@@ -111,6 +143,64 @@ describe('chatMessagesToEntries', () => {
     ).toEqual([{ kind: 'assistant', content: 'Existing flattened output', id: 'legacy-1' }]);
   });
 
+  it('restores the latest intent revision and removes resolved questions', () => {
+    const question = {
+      protocolVersion: 1 as const,
+      id: 'question-1',
+      kind: 'question' as const,
+      revision: 1,
+      scope: { threadId: 'thread-1' },
+      lifecycle: 'pending' as const,
+      presentation: { collapsed: false, hidden: false },
+      payload: {
+        questions: [
+          {
+            id: 'target',
+            kind: 'single_choice' as const,
+            question: 'Where should this ship?',
+            required: true,
+            allowCancel: false,
+            options: [{ id: 'preview', label: 'Preview', value: 'preview' }],
+          },
+        ],
+      },
+      createdAt: '2026-08-19T10:00:00.000Z',
+      updatedAt: '2026-08-19T10:00:00.000Z',
+    };
+    const entries = chatMessagesToEntries([
+      {
+        id: 'question-created',
+        role: 'system',
+        content: 'Question',
+        timestamp: question.createdAt,
+        event: { type: 'agent_ui_intent', agentUIIntent: question },
+      },
+      {
+        id: 'question-updated',
+        role: 'system',
+        content: 'Question updated',
+        timestamp: question.createdAt,
+        event: {
+          type: 'agent_ui_intent',
+          agentUIIntent: {
+            ...question,
+            revision: 2,
+            presentation: { collapsed: true, hidden: false },
+          },
+        },
+      },
+      {
+        id: 'question-resolved',
+        role: 'system',
+        content: 'Question resolved',
+        timestamp: question.createdAt,
+        event: { type: 'agent_ui_intent_resolved', agentUIIntentId: question.id },
+      },
+    ]);
+
+    expect(entries).toEqual([]);
+  });
+
   it('keeps subagent work at its original chronological position while updating its lifecycle', () => {
     const entries = chatMessagesToEntries([
       {
@@ -176,6 +266,41 @@ describe('chatMessagesToEntries', () => {
   });
 });
 
+describe('planIntentToSnapshot', () => {
+  it('keeps legacy prompt context compatible with richer plan statuses', () => {
+    expect(
+      planIntentToSnapshot({
+        protocolVersion: 1,
+        id: 'plan-1',
+        kind: 'plan',
+        revision: 1,
+        scope: { threadId: 'thread-1' },
+        lifecycle: 'presented',
+        presentation: { collapsed: false, hidden: false },
+        payload: {
+          planId: 'plan-1',
+          title: 'Plan',
+          lifecycle: 'active',
+          phases: [],
+          steps: [
+            { id: 'todo', title: 'Todo', status: 'todo' },
+            { id: 'blocked', title: 'Blocked', status: 'blocked' },
+            { id: 'done', title: 'Done', status: 'done' },
+          ],
+        },
+        createdAt: '2026-08-19T10:00:00.000Z',
+        updatedAt: '2026-08-19T10:01:00.000Z',
+      }),
+    ).toMatchObject({
+      steps: [
+        { step: 'Todo', status: 'pending' },
+        { step: 'Blocked', status: 'in_progress' },
+        { step: 'Done', status: 'completed' },
+      ],
+    });
+  });
+});
+
 describe('threadBelongsToWorkspace', () => {
   it('matches only the active workspace', () => {
     expect(threadBelongsToWorkspace({ workspaceId: 'workspace-a' }, 'workspace-a')).toBe(true);
@@ -216,6 +341,9 @@ describe('threadBelongsToChatList', () => {
 
     expect(
       threadBelongsToChatList({ workspaceId: 'anvil', personaId: 'coder' }, classicScope),
+    ).toBe(true);
+    expect(
+      threadBelongsToChatList({ workspaceId: 'anvil', personaId: 'architect' }, classicScope),
     ).toBe(true);
     expect(
       threadBelongsToChatList(
@@ -262,17 +390,6 @@ describe('upsertThreadForChatList', () => {
 
     expect(next).toBe(current);
     expect(next.map((thread) => thread.id)).toEqual(['anvil-thread']);
-  });
-});
-
-describe('shouldSuppressPreparedChatBootstrap', () => {
-  it('does not leave suppression armed when launching with the active persona', () => {
-    expect(shouldSuppressPreparedChatBootstrap('coder', 'coder')).toBe(false);
-  });
-
-  it('suppresses the bootstrap triggered by an actual persona change', () => {
-    expect(shouldSuppressPreparedChatBootstrap('coder', 'architect')).toBe(true);
-    expect(shouldSuppressPreparedChatBootstrap(null, 'coder')).toBe(true);
   });
 });
 

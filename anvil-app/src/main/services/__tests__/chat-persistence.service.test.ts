@@ -100,6 +100,16 @@ describe('chat thread persistence', () => {
     expect(updated?.activeRepoId).toBeUndefined();
   });
 
+  it('lists every classic thread when no persona filter is supplied', () => {
+    const coderThread = createChatThread({ workspaceId: 'ws-1', personaId: 'coder' });
+    const architectThread = createChatThread({ workspaceId: 'ws-1', personaId: 'architect' });
+    createChatThread({ workspaceId: null, personaId: 'ba' });
+
+    expect(new Set(listChatThreads('ws-1').map((thread) => thread.id))).toEqual(
+      new Set([coderThread.id, architectThread.id]),
+    );
+  });
+
   it('tracks inbox attention and prevents active work from being settled', () => {
     const thread = createChatThread({ workspaceId: 'ws-1', personaId: 'coder' });
 
@@ -178,6 +188,29 @@ describe('chat thread persistence', () => {
     expect(second.title).toBe('ADO-123: Add chat layout toggle');
     expect(second.workItemTitle).toBe('Add chat layout toggle');
     expect(second.repoIds).toEqual([]);
+  });
+
+  it('persists multiple threads for the same work item', () => {
+    const first = createChatThread({
+      workspaceId: 'ws-1',
+      personaId: 'coder',
+      title: 'Plan the ticket',
+      workItemId: 'ADO-456',
+      workItemProvider: 'ado',
+      workItemTitle: 'Own several threads',
+    });
+    const second = createChatThread({
+      workspaceId: 'ws-1',
+      personaId: 'coder',
+      title: 'Implement the ticket',
+      workItemId: 'ADO-456',
+      workItemProvider: 'ado',
+      workItemTitle: 'Own several threads',
+    });
+
+    expect(new Set(listWorkItemChatThreads('ws-1').map((thread) => thread.id))).toEqual(
+      new Set([first.id, second.id]),
+    );
   });
 
   it('saves thread-scoped history and updates preview metadata', () => {

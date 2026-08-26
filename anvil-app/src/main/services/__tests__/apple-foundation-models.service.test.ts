@@ -4,38 +4,38 @@ vi.mock('electron', () => ({
   app: { isPackaged: false },
 }));
 
-import { parseOnDeviceRouteResponse } from '../apple-foundation-models.service.js';
+import { parseLocalLlmRouteResponse } from '../local-llm.service.js';
 
-describe('parseOnDeviceRouteResponse', () => {
+describe('parseLocalLlmRouteResponse', () => {
   it('parses a strict JSON local route', () => {
-    expect(parseOnDeviceRouteResponse('{"route": "local"}')).toBe('local');
+    expect(parseLocalLlmRouteResponse('{"route": "local"}')).toBe('local');
   });
 
   it('parses a strict JSON cloud route', () => {
-    expect(parseOnDeviceRouteResponse('{"route": "cloud"}')).toBe('cloud');
+    expect(parseLocalLlmRouteResponse('{"route": "cloud"}')).toBe('cloud');
   });
 
   it('parses JSON embedded in surrounding prose', () => {
-    expect(parseOnDeviceRouteResponse('Sure! Here you go: {"route": "cloud"} Hope that helps.')).toBe(
+    expect(parseLocalLlmRouteResponse('Sure! Here you go: {"route": "cloud"} Hope that helps.')).toBe(
       'cloud',
     );
   });
 
   it('parses bare route words', () => {
-    expect(parseOnDeviceRouteResponse('local')).toBe('local');
-    expect(parseOnDeviceRouteResponse('  CLOUD  ')).toBe('cloud');
-    expect(parseOnDeviceRouteResponse('"local"')).toBe('local');
+    expect(parseLocalLlmRouteResponse('local')).toBe('local');
+    expect(parseLocalLlmRouteResponse('  CLOUD  ')).toBe('cloud');
+    expect(parseLocalLlmRouteResponse('"local"')).toBe('local');
   });
 
   it('returns null for unexpected route values', () => {
-    expect(parseOnDeviceRouteResponse('{"route": "hybrid"}')).toBeNull();
+    expect(parseLocalLlmRouteResponse('{"route": "hybrid"}')).toBeNull();
   });
 
   it('returns null for garbage, empty, and missing responses', () => {
-    expect(parseOnDeviceRouteResponse('I think this needs a bigger model.')).toBeNull();
-    expect(parseOnDeviceRouteResponse('{"answer": 42}')).toBeNull();
-    expect(parseOnDeviceRouteResponse('')).toBeNull();
-    expect(parseOnDeviceRouteResponse(undefined)).toBeNull();
-    expect(parseOnDeviceRouteResponse(null)).toBeNull();
+    expect(parseLocalLlmRouteResponse('I think this needs a bigger model.')).toBeNull();
+    expect(parseLocalLlmRouteResponse('{"answer": 42}')).toBeNull();
+    expect(parseLocalLlmRouteResponse('')).toBeNull();
+    expect(parseLocalLlmRouteResponse(undefined)).toBeNull();
+    expect(parseLocalLlmRouteResponse(null)).toBeNull();
   });
 });

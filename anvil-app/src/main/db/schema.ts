@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 53;
+export const SCHEMA_VERSION = 57;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -120,6 +120,45 @@ CREATE INDEX IF NOT EXISTS idx_chat_threads_workspace_work_item
 CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_timestamp
   ON chat_messages(thread_id, timestamp ASC);
 
+CREATE TABLE IF NOT EXISTS agent_ui_intents (
+  id TEXT PRIMARY KEY,
+  thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+  workspace_id TEXT,
+  run_id TEXT,
+  kind TEXT NOT NULL,
+  protocol_version INTEGER NOT NULL,
+  revision INTEGER NOT NULL,
+  lifecycle TEXT NOT NULL,
+  intent_json TEXT NOT NULL,
+  binding_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  resolved_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_ui_intents_thread_lifecycle
+  ON agent_ui_intents(thread_id, lifecycle, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS agent_ui_intent_events (
+  id TEXT PRIMARY KEY,
+  intent_id TEXT NOT NULL REFERENCES agent_ui_intents(id) ON DELETE CASCADE,
+  actor TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_ui_intent_events_intent
+  ON agent_ui_intent_events(intent_id, created_at ASC);
+
+CREATE TABLE IF NOT EXISTS agent_ui_intent_responses (
+  id TEXT PRIMARY KEY,
+  intent_id TEXT NOT NULL UNIQUE REFERENCES agent_ui_intents(id) ON DELETE CASCADE,
+  action TEXT NOT NULL,
+  response_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_chat_threads_provider_thread
   ON chat_threads(provider_thread_id);
 
@@ -200,6 +239,19 @@ CREATE TABLE IF NOT EXISTS chat_artifact_revisions (
 CREATE INDEX IF NOT EXISTS idx_chat_artifact_revisions_artifact_version
   ON chat_artifact_revisions(artifact_id, version DESC);
 
+CREATE TABLE IF NOT EXISTS chat_artifact_annotations (
+  id TEXT PRIMARY KEY,
+  artifact_id TEXT NOT NULL REFERENCES chat_artifacts(id) ON DELETE CASCADE,
+  body TEXT NOT NULL,
+  quote TEXT,
+  status TEXT NOT NULL DEFAULT 'open',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_artifact_annotations_artifact_updated
+  ON chat_artifact_annotations(artifact_id, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS review_workspace_comments (
   id TEXT PRIMARY KEY,
   repo_id TEXT REFERENCES repos(id) ON DELETE CASCADE,
@@ -245,6 +297,10 @@ CREATE TABLE IF NOT EXISTS settings (
   codex_mode TEXT DEFAULT 'on-request',
   chat_layout TEXT DEFAULT 'classic',
   apple_foundation_models_mode TEXT DEFAULT 'off',
+  local_llm_mode TEXT DEFAULT 'off',
+  local_llm_provider TEXT DEFAULT 'apple',
+  local_llm_endpoint TEXT,
+  local_llm_model TEXT,
   ado_org_url TEXT,
   ado_project TEXT,
   ado_team TEXT,
@@ -277,6 +333,13 @@ CREATE TABLE IF NOT EXISTS settings (
   github_username TEXT,
   cloud_features_enabled INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS cloud_execution_connection (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  endpoint TEXT NOT NULL,
+  token BLOB NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS mobile_companion_settings (
@@ -1667,5 +1730,84 @@ export const MIGRATIONS: Record<number, string> = {
 
     CREATE INDEX IF NOT EXISTS idx_watchtower_events_pending
       ON watchtower_events(status, observed_at ASC);
+  `,
+  54: `
+    CREATE TABLE IF NOT EXISTS agent_ui_intents (
+      id TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+      workspace_id TEXT,
+      run_id TEXT,
+      kind TEXT NOT NULL,
+      protocol_version INTEGER NOT NULL,
+      revision INTEGER NOT NULL,
+      lifecycle TEXT NOT NULL,
+      intent_json TEXT NOT NULL,
+      binding_json TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      resolved_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_ui_intents_thread_lifecycle
+      ON agent_ui_intents(thread_id, lifecycle, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS agent_ui_intent_events (
+      id TEXT PRIMARY KEY,
+      intent_id TEXT NOT NULL REFERENCES agent_ui_intents(id) ON DELETE CASCADE,
+      actor TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_ui_intent_events_intent
+      ON agent_ui_intent_events(intent_id, created_at ASC);
+
+    CREATE TABLE IF NOT EXISTS agent_ui_intent_responses (
+      id TEXT PRIMARY KEY,
+      intent_id TEXT NOT NULL UNIQUE REFERENCES agent_ui_intents(id) ON DELETE CASCADE,
+      action TEXT NOT NULL,
+      response_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+  `,
+  55: `
+    CREATE TABLE IF NOT EXISTS chat_artifact_annotations (
+      id TEXT PRIMARY KEY,
+      artifact_id TEXT NOT NULL REFERENCES chat_artifacts(id) ON DELETE CASCADE,
+      body TEXT NOT NULL,
+      quote TEXT,
+      status TEXT NOT NULL DEFAULT 'open',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chat_artifact_annotations_artifact_updated
+      ON chat_artifact_annotations(artifact_id, updated_at DESC);
+  `,
+  56: `
+    CREATE TABLE IF NOT EXISTS cloud_execution_connection (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      endpoint TEXT NOT NULL,
+      token BLOB NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+  `,
+  57: `
+    ALTER TABLE settings ADD COLUMN local_llm_mode TEXT DEFAULT 'off';
+    ALTER TABLE settings ADD COLUMN local_llm_provider TEXT DEFAULT 'apple';
+    ALTER TABLE settings ADD COLUMN local_llm_endpoint TEXT;
+    ALTER TABLE settings ADD COLUMN local_llm_model TEXT;
+
+    UPDATE settings
+      SET local_llm_mode = COALESCE(apple_foundation_models_mode, 'off')
+      WHERE local_llm_mode = 'off' AND apple_foundation_models_mode = 'prefer-simple';
+
+    CREATE TABLE IF NOT EXISTS cloud_execution_connection (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      endpoint TEXT NOT NULL,
+      token BLOB NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `,
 };

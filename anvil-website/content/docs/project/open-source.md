@@ -4,6 +4,7 @@ navTitle: OSS posture
 description: How to read Anvil's scope, claims, and security posture.
 product: Project
 section: Notes
+journey: reference
 order: 900
 ---
 

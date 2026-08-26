@@ -16,7 +16,7 @@ export function fixPath(): void {
   const original = process.env.PATH ?? '';
 
   try {
-    const shell = process.env.SHELL || '/bin/zsh';
+    const shell = process.env.SHELL || (process.platform === 'darwin' ? '/bin/zsh' : '/bin/bash');
     // Use -lc (login, non-interactive) to source the user's profile.
     // Dump the full environment with `env` so we capture all variables.
     const output = execFileSync(

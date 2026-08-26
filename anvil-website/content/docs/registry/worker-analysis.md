@@ -4,6 +4,7 @@ navTitle: Worker analysis
 description: What Anvil Registry static analysis detects, how name-squatting checks work, and what evidence the worker produces.
 product: Anvil Registry
 section: Concepts
+journey: learn
 order: 6
 ---
 

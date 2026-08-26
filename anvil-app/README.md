@@ -18,6 +18,7 @@ Anvil is the brain; your coding agents are the hands.
 - **Terminal** — built-in xterm.js terminal with PTY support and powerline font rendering
 - **Workspaces** — group repos, configure integrations per workspace, and export to VS Code
 - **Governance** — document and board management for governance oversight
+- **Optional Cloud Workbench** — connect to an authenticated Anvil Cloud execution plane, upload committed read-only snapshots, request Codex/Cursor subscription auth without model API keys, and inspect remote evidence and approvals
 
 ## Tech Stack
 
@@ -50,6 +51,7 @@ Anvil is the brain; your coding agents are the hands.
 
 - A [Nerd Font](https://www.nerdfonts.com/) installed (e.g. MesloLGS NF, Hack Nerd Font) for powerline glyph rendering in the terminal
 - An Azure AI Foundry or OpenAI API key for AI features
+- Subscription-backed Cloud execution needs a compatible worker image that implements the selected provider's interactive login; model API keys are not required by that execution contract
 - Azure DevOps PAT / Linear API key / Jira API token for work-item integration
 - Confluence PAT for documentation features
 
@@ -94,6 +96,9 @@ Output lands in `dist/`. Targets by platform:
 - **Linux** — `.AppImage` + `.deb`
 
 ## Architecture
+
+Agent-requested native plans and questions use the provider-neutral
+[Agent UI intent protocol](docs/agent-ui-intents.md).
 
 Anvil follows the standard Electron multi-process model:
 

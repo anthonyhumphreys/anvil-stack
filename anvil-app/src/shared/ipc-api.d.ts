@@ -7,6 +7,14 @@ import type {
 } from './pentest-types';
 import type { RunCommand, RunStatus } from './run-types';
 import type {
+  AgentUIIntent,
+  AgentUIIntentPresentationPatch,
+  AgentUIPlanIntent,
+  AgentUIPlanPatch,
+  AgentUIQuestionIntent,
+  AgentUIQuestionResolution,
+} from './agent-ui-intents';
+import type {
   Iteration,
   AgentRunSummary,
   ArgentCommandId,
@@ -15,6 +23,13 @@ import type {
   AnvilCloudCommandId,
   AnvilCloudCommandResult,
   AnvilCloudWorkbenchSnapshot,
+  AnvilCloudExecutionConnection,
+  AnvilCloudExecutionConnectionInput,
+  AnvilCloudExecutionConnectionTest,
+  AnvilCloudExecutionEventBatch,
+  AnvilCloudExecutionLease,
+  AnvilCloudExecutionStartInput,
+  AnvilCloudExecutionStartResult,
   AutomationDaemonStatus,
   AutomationDefinition,
   AutomationDefinitionInput,
@@ -22,6 +37,7 @@ import type {
   AutomationRunEvent,
   AutomationTriageItem,
   AppSettings,
+  LocalLlmCapabilities,
   BaFinding,
   BaFindingStatus,
   BaFindingType,
@@ -32,6 +48,9 @@ import type {
   ChatNavigationTarget,
   ChatAttachmentInput,
   ChatArtifact,
+  ChatArtifactAnnotation,
+  ChatArtifactAnnotationInput,
+  ChatArtifactAnnotationPatch,
   ChatArtifactFile,
   ChatArtifactInput,
   ChatFileMentionSearchInput,
@@ -152,6 +171,7 @@ export interface AnvilAPI {
   appWindow: {
     getVersion: () => Promise<string>;
     getChromeState: () => Promise<{ isFullScreen: boolean }>;
+    openToolWindow: (route: string, workspaceId?: string) => Promise<void>;
     onChromeStateChanged: (callback: (state: { isFullScreen: boolean }) => void) => () => void;
     onNavigateToChat: (callback: (target: ChatNavigationTarget) => void) => () => void;
   };
@@ -246,7 +266,16 @@ export interface AnvilAPI {
     upsertArtifact: (input: ChatArtifactInput) => Promise<ChatArtifact>;
     discardArtifact: (id: string) => Promise<boolean>;
     readArtifactFile: (id: string) => Promise<ChatArtifactFile>;
-    listThreads: (workspaceId: string | null, personaId: string) => Promise<ChatThread[]>;
+    listArtifactAnnotations: (artifactId: string) => Promise<ChatArtifactAnnotation[]>;
+    createArtifactAnnotation: (
+      input: ChatArtifactAnnotationInput,
+    ) => Promise<ChatArtifactAnnotation>;
+    updateArtifactAnnotation: (
+      id: string,
+      patch: ChatArtifactAnnotationPatch,
+    ) => Promise<ChatArtifactAnnotation>;
+    deleteArtifactAnnotation: (id: string) => Promise<boolean>;
+    listThreads: (workspaceId: string | null) => Promise<ChatThread[]>;
     listWorkItemThreads: (workspaceId: string | null) => Promise<ChatThread[]>;
     createThread: (input: {
       workspaceId?: string | null;
@@ -302,6 +331,18 @@ export interface AnvilAPI {
     clearHistory: (threadId: string) => Promise<void>;
     saveThreadPlan: (threadId: string, plan: ChatPlanSnapshot) => Promise<ChatThread | null>;
     saveThreadGoal: (threadId: string, goal: ChatGoalSnapshot | null) => Promise<ChatThread | null>;
+    listAgentUIIntents: (threadId: string, includeInactive?: boolean) => Promise<AgentUIIntent[]>;
+    resolveAgentUIQuestion: (
+      intentId: string,
+      resolution: AgentUIQuestionResolution,
+    ) => Promise<AgentUIQuestionIntent>;
+    patchAgentUIPlan: (intentId: string, patch: AgentUIPlanPatch) => Promise<AgentUIPlanIntent>;
+    updateAgentUIIntentPresentation: (
+      intentId: string,
+      patch: AgentUIIntentPresentationPatch,
+    ) => Promise<AgentUIIntent>;
+    dismissAgentUIIntent: (intentId: string) => Promise<AgentUIIntent>;
+    restoreAgentUIIntent: (intentId: string) => Promise<AgentUIIntent>;
   };
 
   workflow: {
@@ -525,7 +566,8 @@ export interface AnvilAPI {
     getCursorStatus: () => Promise<CursorCliStatus>;
     setCodexAgentMaxThreads: (maxThreads: number) => Promise<CodexCliStatus>;
     testFoundryConnection: () => Promise<{ ok: boolean; error?: string }>;
-    testAppleFoundationModels: () => Promise<{ ok: boolean; error?: string }>;
+    getLocalLlmCapabilities: () => Promise<LocalLlmCapabilities>;
+    testLocalLlm: () => Promise<{ ok: boolean; error?: string }>;
     testWorkItemProviderConnection: () => Promise<{ ok: boolean; error?: string }>;
     listLinearTeams: () => Promise<Array<{ id: string; name: string; key: string }>>;
     testConfluenceConnection: () => Promise<{ ok: boolean; error?: string }>;
@@ -569,6 +611,30 @@ export interface AnvilAPI {
       result: AnvilCloudCommandResult;
       error?: string;
     }>;
+    executionConnection: () => Promise<AnvilCloudExecutionConnection>;
+    saveExecutionConnection: (
+      input: AnvilCloudExecutionConnectionInput,
+    ) => Promise<AnvilCloudExecutionConnection>;
+    clearExecutionConnection: () => Promise<AnvilCloudExecutionConnection>;
+    testExecutionConnection: () => Promise<AnvilCloudExecutionConnectionTest>;
+    listExecutions: () => Promise<AnvilCloudExecutionLease[]>;
+    getExecution: (executionId: string) => Promise<AnvilCloudExecutionLease>;
+    startExecution: (
+      input: AnvilCloudExecutionStartInput,
+    ) => Promise<AnvilCloudExecutionStartResult>;
+    executionEvents: (
+      executionId: string,
+      cursor?: string,
+    ) => Promise<AnvilCloudExecutionEventBatch>;
+    resolveExecutionApproval: (input: {
+      executionId: string;
+      requestId: string;
+      decision: 'approved' | 'rejected';
+      reason?: string;
+    }) => Promise<AnvilCloudExecutionLease>;
+    steerExecution: (executionId: string, message: string) => Promise<AnvilCloudExecutionLease>;
+    collectExecution: (executionId: string) => Promise<AnvilCloudExecutionLease>;
+    terminateExecution: (executionId: string) => Promise<AnvilCloudExecutionLease>;
   };
 
   diagrams: {

@@ -1,7 +1,15 @@
 import { ipcMain } from 'electron';
 import type {
+  AgentUIIntentPresentationPatch,
+  AgentUIPlanPatch,
+  AgentUIQuestionResolution,
+} from '../../shared/agent-ui-intents.js';
+import type {
   ChatMessage,
   ChatArtifact,
+  ChatArtifactAnnotation,
+  ChatArtifactAnnotationInput,
+  ChatArtifactAnnotationPatch,
   ChatArtifactFile,
   ChatArtifactInput,
   ChatAttachment,
@@ -34,12 +42,17 @@ import {
   listActiveCodexSessions,
   resolveApproval,
   resolveInputRequest,
+  dismissAgentUIIntentAndBroadcast,
+  patchAgentUIPlanAndNotify,
+  resolveAgentUIQuestion,
+  restoreAgentUIIntentAndBroadcast,
+  updateAgentUIIntentPresentationAndBroadcast,
 } from '../services/codex-session.service.js';
 import {
-  callAppleFoundationModel,
-  classifyPromptForOnDeviceModel,
-  isLikelyAppleFoundationModelsRefusal,
-} from '../services/apple-foundation-models.service.js';
+  callPreferredLocalModel,
+  classifyPromptForLocalModel,
+  isLikelyLocalModelRefusal,
+} from '../services/local-llm.service.js';
 import { getSettings } from '../services/settings.service.js';
 import { getPersonas } from '../services/persona.service.js';
 import { detectCodexCli, getCodexInstallInstructions } from '../services/codex-bridge.service.js';
@@ -71,32 +84,39 @@ import {
   readChatArtifactFile,
   upsertChatArtifact,
 } from '../services/chat-artifact.service.js';
+import {
+  createChatArtifactAnnotation,
+  deleteChatArtifactAnnotation,
+  listChatArtifactAnnotations,
+  updateChatArtifactAnnotation,
+} from '../services/chat-artifact-annotation.service.js';
+import { listAgentUIIntents } from '../services/agent-ui-intent.service.js';
 
-const APPLE_FOUNDATION_CHAT_MAX_PROMPT_CHARS = 8_000;
+const LOCAL_LLM_CHAT_MAX_PROMPT_CHARS = 8_000;
 
 /**
- * When the on-device Apple model opt-in is enabled, classify the prompt and —
+ * When the local-model opt-in is enabled, classify the prompt and —
  * if it is simple enough — answer it locally instead of starting a Codex turn.
  * Returns true when the message was fully handled on-device.
  */
-async function tryAppleFoundationModelChatReply(
+async function tryLocalLlmChatReply(
   sessionId: string,
   message: string,
 ): Promise<boolean> {
-  if (getSettings().appleFoundationModelsMode !== 'prefer-simple') return false;
-  if (message.length > APPLE_FOUNDATION_CHAT_MAX_PROMPT_CHARS) return false;
+  if (getSettings().localLlmMode !== 'prefer-simple') return false;
+  if (message.length > LOCAL_LLM_CHAT_MAX_PROMPT_CHARS) return false;
 
-  const route = await classifyPromptForOnDeviceModel(message);
+  const route = await classifyPromptForLocalModel(message);
   if (route !== 'local') return false;
 
-  const result = await callAppleFoundationModel(message);
+  const result = await callPreferredLocalModel(message);
   const content = result.ok ? (result.content?.trim() ?? '') : '';
-  if (!content || isLikelyAppleFoundationModelsRefusal(content)) {
-    console.warn('[Chat] Apple Foundation Models reply unusable; falling back to Codex');
+  if (!content || isLikelyLocalModelRefusal(content)) {
+    console.warn('[Chat] Local model reply unusable; falling back to configured provider');
     return false;
   }
 
-  console.log(`[Chat] Answered on-device via Apple Foundation Models (${content.length} chars)`);
+  console.log(`[Chat] Answered via local model (${content.length} chars)`);
   emitLocalAssistantTurn(sessionId, content);
   return true;
 }
@@ -206,7 +226,7 @@ export function registerChatHandlers(): void {
 
       // Plain messages without attachments may be answerable on-device.
       if (!parsed.command && (!attachments || attachments.length === 0)) {
-        const handledLocally = await tryAppleFoundationModelChatReply(sessionId, enrichedMessage);
+        const handledLocally = await tryLocalLlmChatReply(sessionId, enrichedMessage);
         if (handledLocally) return;
       }
 
@@ -293,6 +313,34 @@ export function registerChatHandlers(): void {
     },
   );
 
+  ipcMain.handle('chat:list-agent-ui-intents', (_event, threadId: string, includeInactive = true) =>
+    listAgentUIIntents(threadId, { includeInactive }),
+  );
+
+  ipcMain.handle(
+    'chat:resolve-agent-ui-question',
+    (_event, intentId: string, resolution: AgentUIQuestionResolution) =>
+      resolveAgentUIQuestion(intentId, resolution),
+  );
+
+  ipcMain.handle('chat:patch-agent-ui-plan', (_event, intentId: string, patch: AgentUIPlanPatch) =>
+    patchAgentUIPlanAndNotify(intentId, patch),
+  );
+
+  ipcMain.handle(
+    'chat:update-agent-ui-presentation',
+    (_event, intentId: string, patch: AgentUIIntentPresentationPatch) =>
+      updateAgentUIIntentPresentationAndBroadcast(intentId, patch),
+  );
+
+  ipcMain.handle('chat:dismiss-agent-ui-intent', (_event, intentId: string) =>
+    dismissAgentUIIntentAndBroadcast(intentId),
+  );
+
+  ipcMain.handle('chat:restore-agent-ui-intent', (_event, intentId: string) =>
+    restoreAgentUIIntentAndBroadcast(intentId),
+  );
+
   ipcMain.handle(
     'chat:switch-persona',
     async (_event, repoId: string, personaId: string): Promise<CodexSession> => {
@@ -317,12 +365,9 @@ export function registerChatHandlers(): void {
     return getPersonas();
   });
 
-  ipcMain.handle(
-    'chat:list-threads',
-    (_event, workspaceId: string | null, personaId: string): ChatThread[] => {
-      return listChatThreads(workspaceId, personaId);
-    },
-  );
+  ipcMain.handle('chat:list-threads', (_event, workspaceId: string | null): ChatThread[] => {
+    return listChatThreads(workspaceId);
+  });
 
   ipcMain.handle(
     'chat:list-work-item-threads',
@@ -418,6 +463,28 @@ export function registerChatHandlers(): void {
   ipcMain.handle('chat:read-artifact-file', (_event, id: string): ChatArtifactFile => {
     return readChatArtifactFile(id);
   });
+
+  ipcMain.handle(
+    'chat:list-artifact-annotations',
+    (_event, artifactId: string): ChatArtifactAnnotation[] =>
+      listChatArtifactAnnotations(artifactId),
+  );
+
+  ipcMain.handle(
+    'chat:create-artifact-annotation',
+    (_event, input: ChatArtifactAnnotationInput): ChatArtifactAnnotation =>
+      createChatArtifactAnnotation(input),
+  );
+
+  ipcMain.handle(
+    'chat:update-artifact-annotation',
+    (_event, id: string, patch: ChatArtifactAnnotationPatch): ChatArtifactAnnotation =>
+      updateChatArtifactAnnotation(id, patch),
+  );
+
+  ipcMain.handle('chat:delete-artifact-annotation', (_event, id: string): boolean =>
+    deleteChatArtifactAnnotation(id),
+  );
 
   ipcMain.handle('chat:detect-codex', async () => {
     return detectCodexCli();

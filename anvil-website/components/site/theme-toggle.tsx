@@ -1,12 +1,13 @@
 "use client";
 
 import { Monitor, Moon, Sun } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/button";
 
 type ThemePreference = "system" | "dark" | "light";
 
 const storageKey = "anvil-registry-theme";
+const preferenceChangeEvent = "anvil-theme-preference-change";
 const preferences: ThemePreference[] = ["system", "dark", "light"];
 
 function getStoredPreference(): ThemePreference {
@@ -26,29 +27,36 @@ function applyTheme(preference: ThemePreference) {
   root.style.colorScheme = dark ? "dark" : "light";
 }
 
+function subscribeToPreference(onStoreChange: () => void): () => void {
+  const media = window.matchMedia("(prefers-color-scheme: dark)");
+  const handlePreferenceChange = () => {
+    applyTheme(getStoredPreference());
+    onStoreChange();
+  };
+
+  applyTheme(getStoredPreference());
+  window.addEventListener("storage", handlePreferenceChange);
+  window.addEventListener(preferenceChangeEvent, handlePreferenceChange);
+  media.addEventListener("change", handlePreferenceChange);
+
+  return () => {
+    window.removeEventListener("storage", handlePreferenceChange);
+    window.removeEventListener(preferenceChangeEvent, handlePreferenceChange);
+    media.removeEventListener("change", handlePreferenceChange);
+  };
+}
+
 export function ThemeToggle() {
-  const [preference, setPreference] = useState<ThemePreference>("system");
-
-  useEffect(() => {
-    const stored = getStoredPreference();
-    const media = window.matchMedia("(prefers-color-scheme: dark)");
-
-    setPreference(stored);
-    applyTheme(stored);
-
-    const handleChange = () => {
-      if (getStoredPreference() === "system") applyTheme("system");
-    };
-
-    media.addEventListener("change", handleChange);
-    return () => media.removeEventListener("change", handleChange);
-  }, []);
+  const preference = useSyncExternalStore<ThemePreference>(
+    subscribeToPreference,
+    getStoredPreference,
+    (): ThemePreference => "system",
+  );
 
   function cyclePreference() {
     const next = preferences[(preferences.indexOf(preference) + 1) % preferences.length];
     window.localStorage.setItem(storageKey, next);
-    setPreference(next);
-    applyTheme(next);
+    window.dispatchEvent(new Event(preferenceChangeEvent));
   }
 
   const label = `Theme: ${preference}`;

@@ -4,6 +4,7 @@ navTitle: Overview
 description: The local desktop workspace for repo-aware agent delivery work.
 product: Anvil Desktop
 section: Basics
+journey: learn
 order: 100
 ---
 
@@ -40,6 +41,7 @@ Use Anvil Desktop when a change needs more than a chat transcript:
 | Governance | Track lifecycle gates, impact analysis, decisions, readiness checks, and handover packs. |
 | Activity and notifications | See work continuing in other workspaces and open the exact conversation when Anvil needs approval or input, or when a run completes. |
 | Companion controls | Use mobile, watch, Raycast, widget, and menu bar surfaces for small actions while the desktop app owns heavy review. |
+| Optional Cloud Workbench | Connect to an Anvil Cloud execution plane, send a committed read-only repo snapshot, choose Codex/Cursor subscription or cloud-managed auth, and inspect remote evidence without changing chat. |
 
 ## Chat-first workspace
 
@@ -52,6 +54,12 @@ Switching workspaces does not cancel active chat work. The activity centre keeps
 Anvil Desktop runs as a desktop app with privileged main-process services, a typed preload bridge, SQLite persistence, and a React renderer.
 
 That boundary matters. Local developer tooling touches credentials, repositories, shell commands, work evidence, and connector state. Renderer code should not gain direct Node access just because a button wants to feel important.
+
+The optional Cloud Workbench preserves that split. Its bearer token is
+encrypted in main-process SQLite, repository archives are built and uploaded in
+the main process, and the renderer receives only connection status, execution
+leases, and evidence. Cloud is disabled by default and stays outside ordinary
+chat unless you choose to enable and open it.
 
 ## Read next
 

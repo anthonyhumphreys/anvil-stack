@@ -4,6 +4,7 @@ navTitle: Architecture
 description: How Anvil Desktop separates Electron main process services, preload IPC, shared contracts, renderer UI, SQLite, and companion packages.
 product: Anvil Desktop
 section: Engineering
+journey: learn
 order: 105
 ---
 
@@ -74,6 +75,11 @@ Poor shared types:
 - Electron objects
 - provider SDK clients
 - anything with hidden process affinity
+
+The Cloud execution path follows the same rule. `anvil-cloud-execution.service`
+owns encrypted connection state, Git snapshot construction, authenticated HTTP,
+and execution lifecycle calls. The typed IPC bridge exposes leases and events,
+not bearer tokens or archive bytes.
 
 ## Renderer
 

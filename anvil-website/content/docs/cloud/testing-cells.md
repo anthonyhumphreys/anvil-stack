@@ -4,6 +4,7 @@ navTitle: Testing
 description: Test Anvil Cells with in-memory adapters, mock auth, and captured logs before deploying.
 product: Anvil Cloud
 section: Runtime
+journey: build
 order: 128
 ---
 

@@ -18,10 +18,12 @@ vi.mock('electron', () => ({
 
 import {
   buildApprovalResponse,
+  buildCursorClientCapabilities,
   buildInputResponse,
   buildTurnSteerParams,
   resolveSessionModel,
   resolvePersonaCodexPolicy,
+  resolvePlanFeedbackDelivery,
   resolveSessionCwd,
 } from '../codex-session.service.js';
 
@@ -40,6 +42,15 @@ describe('codex session service', () => {
     );
     expect(resolveSessionModel('cursor', '  ')).toBe('auto');
     expect(resolveSessionModel('codex', '')).toBe('gpt-5.6-sol');
+  });
+
+  it('advertises ACP form elicitation without claiming unsupported URL elicitation', () => {
+    expect(buildCursorClientCapabilities()).toMatchObject({
+      elicitation: { form: {} },
+    });
+    expect(buildCursorClientCapabilities()).not.toMatchObject({
+      elicitation: { url: {} },
+    });
   });
 
   it('builds turn steering params using the Codex app-server expected turn precondition', () => {
@@ -72,6 +83,13 @@ describe('codex session service', () => {
       ],
     });
     expect(params).not.toHaveProperty('turnId');
+  });
+
+  it('routes plan feedback using provider-specific active-turn semantics', () => {
+    expect(resolvePlanFeedbackDelivery('codex', 'busy', 'turn-1')).toBe('steer');
+    expect(resolvePlanFeedbackDelivery('cursor', 'busy', null)).toBe('queue');
+    expect(resolvePlanFeedbackDelivery('cursor', 'ready', null)).toBe('prompt');
+    expect(resolvePlanFeedbackDelivery('codex', 'error', null)).toBe('none');
   });
 
   it('returns requested permission profiles only for accepted permission approvals', () => {

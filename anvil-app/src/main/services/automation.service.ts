@@ -912,7 +912,7 @@ export function reconcileAutomationDaemon(): AutomationDaemonStatus {
   if (isAutomationDaemonMode()) {
     return getAutomationDaemonStatus();
   }
-  if (process.platform !== 'darwin') {
+  if (process.platform !== 'darwin' && process.platform !== 'linux') {
     return getAutomationDaemonStatus();
   }
 

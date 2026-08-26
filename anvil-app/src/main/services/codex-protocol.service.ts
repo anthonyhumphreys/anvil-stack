@@ -44,6 +44,12 @@ export interface CodexProtocolCallbacks {
 
 const MAX_RENDERED_DIFF_CHARS = 120_000;
 const MAX_RENDERED_COMMAND_OUTPUT_CHARS = 120_000;
+const guardedJsonRpcStdin = new WeakSet<object>();
+const CLOSED_PIPE_ERROR_CODES = new Set([
+  'EPIPE',
+  'ERR_STREAM_DESTROYED',
+  'ERR_STREAM_WRITE_AFTER_END',
+]);
 
 /** Find the longest common parent directory of a set of absolute paths. */
 export function commonParentDir(paths: string[]): string {
@@ -63,27 +69,65 @@ export function sendCodexJsonRpc(
   proc: ChildProcess,
   method: string,
   params: Record<string, unknown>,
-): void {
-  const message = JSON.stringify({
+): boolean {
+  return writeCodexJsonRpcLine(proc, {
     jsonrpc: '2.0',
     method,
     params,
     id: randomUUID(),
   });
-  proc.stdin?.write(message + '\n');
 }
 
 export function sendCodexJsonRpcNotification(
   proc: ChildProcess,
   method: string,
   params: Record<string, unknown>,
-): void {
-  proc.stdin?.write(
-    JSON.stringify({
-      method,
-      params,
-    }) + '\n',
-  );
+): boolean {
+  return writeCodexJsonRpcLine(proc, { method, params });
+}
+
+export function sendCodexJsonRpcResult(
+  proc: ChildProcess,
+  requestId: JsonRpcRequestId,
+  result: Record<string, unknown>,
+): boolean {
+  return writeCodexJsonRpcLine(proc, {
+    jsonrpc: '2.0',
+    id: requestId,
+    result,
+  });
+}
+
+function writeCodexJsonRpcLine(proc: ChildProcess, payload: Record<string, unknown>): boolean {
+  const stdin = proc.stdin;
+  if (!stdin) return false;
+
+  guardJsonRpcStdin(stdin);
+  if (!stdin.writable || stdin.destroyed || stdin.writableEnded) return false;
+
+  try {
+    stdin.write(`${JSON.stringify(payload)}\n`);
+    return true;
+  } catch (error) {
+    handleJsonRpcStdinError(error);
+    return false;
+  }
+}
+
+function guardJsonRpcStdin(stdin: NonNullable<ChildProcess['stdin']>): void {
+  if (guardedJsonRpcStdin.has(stdin)) return;
+  guardedJsonRpcStdin.add(stdin);
+  stdin.on('error', handleJsonRpcStdinError);
+}
+
+function handleJsonRpcStdinError(error: unknown): void {
+  if (isClosedPipeError(error)) return;
+  console.error('[Codex] JSON-RPC stdin error:', error);
+}
+
+function isClosedPipeError(error: unknown): boolean {
+  if (!error || typeof error !== 'object' || !('code' in error)) return false;
+  return CLOSED_PIPE_ERROR_CODES.has(String(error.code));
 }
 
 export function handleCodexServerLine(
@@ -127,7 +171,7 @@ export function handleCodexServerLine(
     }
     if (result?.stopReason) {
       callbacks.onEvent?.({ type: 'status', status: 'complete' });
-      callbacks.onTurnCompleted?.();
+      callbacks.onTurnCompleted?.('completed');
     }
     return;
   }
@@ -153,11 +197,12 @@ export function handleCodexServerLine(
               return [
                 {
                   id: `cursor-plan-${index}`,
-                  text: entry.content,
+                  step: entry.content,
                   status: parseAcpPlanStatus(entry.status),
                 },
               ];
             }),
+            updatedAt: new Date().toISOString(),
           },
         });
       } else if (kind === 'tool_call' || kind === 'tool_call_update') {
@@ -179,6 +224,24 @@ export function handleCodexServerLine(
         approvalKind: 'permissions',
         approvalReason: typeof toolCall?.title === 'string' ? toolCall.title : undefined,
         approvalPermissions: { options: Array.isArray(params?.options) ? params.options : [] },
+      });
+      break;
+    }
+
+    case 'elicitation/create': {
+      const params = msg.params as Record<string, unknown>;
+      callbacks.onEvent?.({
+        type: 'input_request',
+        inputRequestId: requestId,
+        protocolThreadId: typeof params?.sessionId === 'string' ? params.sessionId : undefined,
+        inputRequest: {
+          kind: 'mcp_elicitation',
+          serverName: 'Cursor',
+          message: typeof params?.message === 'string' ? params.message : undefined,
+          mode: params?.mode === 'form' || params?.mode === 'url' ? params.mode : undefined,
+          requestedSchema: params?.requestedSchema,
+          url: typeof params?.url === 'string' ? params.url : undefined,
+        },
       });
       break;
     }

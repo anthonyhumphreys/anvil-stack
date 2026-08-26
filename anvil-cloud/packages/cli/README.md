@@ -54,6 +54,7 @@ Initial commands:
 - `anvil-cloud build`
 - `anvil-cloud agents discover`
 - `anvil-cloud agents guardian`
+- `anvil-cloud executions conformance --json`
 - `anvil-cloud approvals list`
 - `anvil-cloud approvals approve <id>`
 - `anvil-cloud approvals reject <id>`
@@ -80,6 +81,10 @@ Initial commands:
 - `anvil-cloud destroy --preview --app <name> [--name branch] --yes`
 
 Every automation-oriented command must support `--json`.
+
+`anvil-cloud executions conformance --json` exercises the provider-neutral
+execution control plane without a cloud account: idempotent creation, approval
+pause/resume, cursor replay, patch return, and verified teardown.
 
 `anvil-cloud auth test --json` runs the local/OIDC auth conformance kit and
 reports stable check ids for CI: local JWT issue/verify, runtime auth policy,

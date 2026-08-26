@@ -4,6 +4,7 @@ navTitle: Policy
 description: How Anvil Registry decides whether a package should be allowed, warned, quarantined, or blocked.
 product: Anvil Registry
 section: Concepts
+journey: learn
 order: 4
 ---
 

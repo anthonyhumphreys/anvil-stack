@@ -29,6 +29,7 @@ import {
   StickyNote,
   MonitorSmartphone,
   GripVertical,
+  PictureInPicture2,
 } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
 import { useBrand } from '../../contexts/BrandContext';
@@ -130,6 +131,9 @@ export function Sidebar({
   );
   const inboxIndicator = buildAggregateActivityIndicator(activityItems);
   const automateRoute = navigation.automate[0]?.path;
+  const openToolWindow = (path: string) => {
+    void window.anvil.appWindow.openToolWindow(path, activeWorkspace?.id);
+  };
 
   useEffect(() => {
     if (automateActive) setAutomateOpen(true);
@@ -292,6 +296,7 @@ export function Sidebar({
                     item.path === '/inbox' ? inboxIndicator : activityIndicators[item.feature]
                   }
                   onNavigate={navigate}
+                  onOpenInNewWindow={openToolWindow}
                   prominent={item.path === '/chat'}
                 />
               ))}
@@ -315,6 +320,17 @@ export function Sidebar({
                       <RadioTower size={19} />
                       {!compact && <span className="truncate">Automate</span>}
                     </button>
+                    {!compact && automateRoute && (
+                      <button
+                        type="button"
+                        onClick={() => openToolWindow(automateRoute)}
+                        className="titlebar-no-drag rounded-lg p-2.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+                        title="Open Automate in new window"
+                        aria-label="Open Automate in new window"
+                      >
+                        <PictureInPicture2 size={13} />
+                      </button>
+                    )}
                     {!compact && navigation.automate.length > 1 && (
                       <button
                         type="button"
@@ -341,6 +357,7 @@ export function Sidebar({
                           featureAvailability={featureAvailability}
                           indicator={activityIndicators[item.feature]}
                           onNavigate={navigate}
+                          onOpenInNewWindow={openToolWindow}
                           compactDensity
                         />
                       ))}
@@ -398,6 +415,7 @@ export function Sidebar({
                                 featureAvailability={featureAvailability}
                                 indicator={activityIndicators[item.feature]}
                                 onNavigate={navigate}
+                                onOpenInNewWindow={openToolWindow}
                                 compactDensity
                               />
                             ))}
@@ -415,32 +433,26 @@ export function Sidebar({
         {/* Footer — connection status + settings */}
         <div className="shrink-0 border-t border-border-subtle p-2.5">
           {!compact && <ConnectionSummary connectionStatus={connectionStatus} />}
-          <button
-            onClick={() => navigate('/settings')}
-            className={`titlebar-no-drag mt-2 flex w-full items-center rounded-lg py-2 text-sm font-medium transition-colors ${
-              location.pathname.startsWith('/settings')
-                ? 'border-accent/30 bg-accent/10 text-text-primary'
-                : 'border-transparent text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
-            } ${compact ? 'justify-center px-2' : 'gap-2 px-3'}`}
-            aria-label="Settings"
-            title="Settings"
-          >
-            <Settings size={16} />
-            {!compact && 'Settings'}
-          </button>
-          <button
-            onClick={() => navigate('/diagnostics')}
-            className={`titlebar-no-drag mt-1 flex w-full items-center rounded-lg py-2 text-sm font-medium transition-colors ${
-              location.pathname.startsWith('/diagnostics')
-                ? 'border-accent/30 bg-accent/10 text-text-primary'
-                : 'border-transparent text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
-            } ${compact ? 'justify-center px-2' : 'gap-2 px-3'}`}
-            aria-label="Diagnostics"
-            title="Diagnostics"
-          >
-            <Activity size={16} />
-            {!compact && 'Diagnostics'}
-          </button>
+          <SidebarFooterButton
+            path="/settings"
+            label="Settings"
+            icon={<Settings size={16} />}
+            compact={compact}
+            active={location.pathname.startsWith('/settings')}
+            onNavigate={navigate}
+            onOpenInNewWindow={openToolWindow}
+            className="mt-2"
+          />
+          <SidebarFooterButton
+            path="/diagnostics"
+            label="Diagnostics"
+            icon={<Activity size={16} />}
+            compact={compact}
+            active={location.pathname.startsWith('/diagnostics')}
+            onNavigate={navigate}
+            onOpenInNewWindow={openToolWindow}
+            className="mt-1"
+          />
         </div>
       </div>
       {/* end border wrapper */}
@@ -475,6 +487,7 @@ function SidebarNavButton({
   featureAvailability,
   indicator,
   onNavigate,
+  onOpenInNewWindow,
   prominent = false,
   compactDensity = false,
 }: {
@@ -484,6 +497,7 @@ function SidebarNavButton({
   featureAvailability: WorkspaceFeatureAvailability;
   indicator?: ReturnType<typeof buildAggregateActivityIndicator>;
   onNavigate: (path: string) => void;
+  onOpenInNewWindow: (path: string) => void;
   prominent?: boolean;
   compactDensity?: boolean;
 }) {
@@ -494,30 +508,43 @@ function SidebarNavButton({
       : false;
 
   return (
-    <button
-      type="button"
-      onClick={() => {
-        if (!disabled) onNavigate(item.path);
-      }}
-      disabled={disabled}
-      className={`titlebar-no-drag relative flex w-full items-center rounded-lg border text-sm transition-colors ${
-        compactDensity ? 'py-1.5' : 'py-2'
-      } ${
-        active
-          ? 'border-accent/30 bg-accent/12 font-medium text-text-primary'
-          : disabled
-            ? 'cursor-not-allowed border-transparent text-text-tertiary opacity-50'
-            : prominent
-              ? 'border-border-subtle bg-bg-tertiary/45 font-medium text-text-primary hover:border-border hover:bg-bg-tertiary'
-              : 'border-transparent text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
-      } ${compact ? 'justify-center px-2.5' : 'gap-3 px-3'}`}
-      aria-label={item.label}
-      title={disabled ? featureAvailability.repoFeatureReason : item.label}
-    >
-      {NAV_ICONS[item.path]}
-      {!compact && <span className="truncate">{item.label}</span>}
-      <SidebarActivityBadge indicator={indicator} collapsed={compact} />
-    </button>
+    <div className="group/nav relative flex min-w-0 items-center">
+      <button
+        type="button"
+        onClick={() => {
+          if (!disabled) onNavigate(item.path);
+        }}
+        disabled={disabled}
+        className={`titlebar-no-drag relative flex min-w-0 flex-1 items-center rounded-lg border text-sm transition-colors ${
+          compactDensity ? 'py-1.5' : 'py-2'
+        } ${
+          active
+            ? 'border-accent/30 bg-accent/12 font-medium text-text-primary'
+            : disabled
+              ? 'cursor-not-allowed border-transparent text-text-tertiary opacity-50'
+              : prominent
+                ? 'border-border-subtle bg-bg-tertiary/45 font-medium text-text-primary hover:border-border hover:bg-bg-tertiary'
+                : 'border-transparent text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
+        } ${compact ? 'justify-center px-2.5' : 'gap-3 pl-3 pr-9'}`}
+        aria-label={item.label}
+        title={disabled ? featureAvailability.repoFeatureReason : item.label}
+      >
+        {NAV_ICONS[item.path]}
+        {!compact && <span className="truncate">{item.label}</span>}
+        <SidebarActivityBadge indicator={indicator} collapsed={compact} />
+      </button>
+      {!compact && !disabled && (
+        <button
+          type="button"
+          onClick={() => onOpenInNewWindow(item.path)}
+          className="titlebar-no-drag absolute right-1.5 rounded-md p-1 text-text-tertiary opacity-0 transition-[color,background-color,opacity] hover:bg-bg-elevated hover:text-text-primary focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 group-hover/nav:opacity-100"
+          title={`Open ${item.label} in new window`}
+          aria-label={`Open ${item.label} in new window`}
+        >
+          <PictureInPicture2 size={13} />
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -545,6 +572,56 @@ function ConnectionSummary({
         className={`h-2 w-2 rounded-full ${failed > 0 ? 'bg-error' : connected > 0 ? 'bg-success' : 'bg-text-tertiary'}`}
       />
       <span>{label}</span>
+    </div>
+  );
+}
+
+function SidebarFooterButton({
+  path,
+  label,
+  icon,
+  compact,
+  active,
+  onNavigate,
+  onOpenInNewWindow,
+  className,
+}: {
+  path: string;
+  label: string;
+  icon: ReactNode;
+  compact: boolean;
+  active: boolean;
+  onNavigate: (path: string) => void;
+  onOpenInNewWindow: (path: string) => void;
+  className?: string;
+}) {
+  return (
+    <div className={`group/footer relative flex items-center ${className ?? ''}`}>
+      <button
+        type="button"
+        onClick={() => onNavigate(path)}
+        className={`titlebar-no-drag flex min-w-0 flex-1 items-center rounded-lg py-2 text-sm font-medium transition-colors ${
+          active
+            ? 'border-accent/30 bg-accent/10 text-text-primary'
+            : 'border-transparent text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
+        } ${compact ? 'justify-center px-2' : 'gap-2 pl-3 pr-9'}`}
+        aria-label={label}
+        title={label}
+      >
+        {icon}
+        {!compact && label}
+      </button>
+      {!compact && (
+        <button
+          type="button"
+          onClick={() => onOpenInNewWindow(path)}
+          className="titlebar-no-drag absolute right-1.5 rounded-md p-1 text-text-tertiary opacity-0 transition-[color,background-color,opacity] hover:bg-bg-elevated hover:text-text-primary focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 group-hover/footer:opacity-100"
+          title={`Open ${label} in new window`}
+          aria-label={`Open ${label} in new window`}
+        >
+          <PictureInPicture2 size={13} />
+        </button>
+      )}
     </div>
   );
 }

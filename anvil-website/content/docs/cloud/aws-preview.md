@@ -4,6 +4,7 @@ navTitle: AWS preview
 description: How the Anvil Cloud AWS preview adapter maps Cell manifests to Lambda, CloudFormation, DynamoDB, S3, SQS, EventBridge, and CloudWatch.
 product: Anvil Cloud
 section: Deployment
+journey: build
 order: 150
 ---
 

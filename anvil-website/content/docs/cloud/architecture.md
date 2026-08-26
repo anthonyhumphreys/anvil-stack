@@ -4,6 +4,7 @@ navTitle: Runtime model
 description: How shared execution contracts and adapter boundaries work in Anvil Cloud.
 product: Anvil Cloud
 section: Architecture
+journey: learn
 order: 120
 ---
 

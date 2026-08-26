@@ -6,6 +6,8 @@ import type {
   AppTheme,
   AgentProvider,
   CodexMode,
+  LocalLlmMode,
+  LocalLlmProvider,
   WorkItemConnection,
 } from '../../shared/types.js';
 import {
@@ -22,6 +24,10 @@ interface SettingsRow {
   llm_provider: string | null;
   enabled_llm_providers: string | null;
   apple_foundation_models_mode: string | null;
+  local_llm_mode: string | null;
+  local_llm_provider: string | null;
+  local_llm_endpoint: string | null;
+  local_llm_model: string | null;
   foundry_endpoint: string | null;
   foundry_deployment: string | null;
   foundry_api_version: string | null;
@@ -74,10 +80,8 @@ const APP_THEMES: AppTheme[] = [
 ];
 const CODEX_MODES: CodexMode[] = ['read-only', 'on-request', 'workspace-auto', 'full-access'];
 const CHAT_LAYOUTS: ChatLayout[] = ['classic', 'workitems'];
-const APPLE_FOUNDATION_MODEL_MODES: AppSettings['appleFoundationModelsMode'][] = [
-  'off',
-  'prefer-simple',
-];
+const LOCAL_LLM_MODES: LocalLlmMode[] = ['off', 'prefer-simple'];
+const LOCAL_LLM_PROVIDERS: LocalLlmProvider[] = ['apple', 'ollama', 'lm-studio'];
 const AGENT_PROVIDERS: AgentProvider[] = ['codex', 'cursor', 'openai', 'azure'];
 
 function normaliseTheme(theme: string | null | undefined): AppTheme {
@@ -92,12 +96,17 @@ function normaliseChatLayout(layout: string | null | undefined): ChatLayout {
   return CHAT_LAYOUTS.includes(layout as ChatLayout) ? (layout as ChatLayout) : 'classic';
 }
 
-function normaliseAppleFoundationModelsMode(
-  mode: string | null | undefined,
-): AppSettings['appleFoundationModelsMode'] {
-  return APPLE_FOUNDATION_MODEL_MODES.includes(mode as AppSettings['appleFoundationModelsMode'])
-    ? (mode as AppSettings['appleFoundationModelsMode'])
-    : 'off';
+function normaliseLocalLlmMode(mode: string | null | undefined): LocalLlmMode {
+  return LOCAL_LLM_MODES.includes(mode as LocalLlmMode) ? (mode as LocalLlmMode) : 'off';
+}
+
+function normaliseLocalLlmProvider(provider: string | null | undefined): LocalLlmProvider {
+  const normalised = LOCAL_LLM_PROVIDERS.includes(provider as LocalLlmProvider)
+    ? (provider as LocalLlmProvider)
+    : process.platform === 'darwin'
+      ? 'apple'
+      : 'ollama';
+  return normalised === 'apple' && process.platform !== 'darwin' ? 'ollama' : normalised;
 }
 
 function normaliseAgentProvider(value: string | null | undefined): AgentProvider {
@@ -263,7 +272,12 @@ export function getSettings(): AppSettings {
   const settings: AppSettings = {
     llmProvider,
     enabledLlmProviders: normaliseEnabledLlmProviders(row.enabled_llm_providers, llmProvider),
-    appleFoundationModelsMode: normaliseAppleFoundationModelsMode(row.apple_foundation_models_mode),
+    localLlmMode: normaliseLocalLlmMode(
+      row.local_llm_mode ?? row.apple_foundation_models_mode,
+    ),
+    localLlmProvider: normaliseLocalLlmProvider(row.local_llm_provider),
+    localLlmEndpoint: row.local_llm_endpoint ?? '',
+    localLlmModel: row.local_llm_model ?? '',
     foundryEndpoint: row.foundry_endpoint ?? '',
     foundryDeploymentName: row.foundry_deployment ?? '',
     foundryApiVersion: row.foundry_api_version ?? '2024-10-21',
@@ -330,9 +344,21 @@ export function updateSettings(partial: Partial<AppSettings>): void {
     setClauses.push('enabled_llm_providers = ?');
     values.push(JSON.stringify(enabledProviders));
   }
-  if (partial.appleFoundationModelsMode !== undefined) {
-    setClauses.push('apple_foundation_models_mode = ?');
-    values.push(normaliseAppleFoundationModelsMode(partial.appleFoundationModelsMode));
+  if (partial.localLlmMode !== undefined) {
+    setClauses.push('local_llm_mode = ?');
+    values.push(normaliseLocalLlmMode(partial.localLlmMode));
+  }
+  if (partial.localLlmProvider !== undefined) {
+    setClauses.push('local_llm_provider = ?');
+    values.push(normaliseLocalLlmProvider(partial.localLlmProvider));
+  }
+  if (partial.localLlmEndpoint !== undefined) {
+    setClauses.push('local_llm_endpoint = ?');
+    values.push(partial.localLlmEndpoint.trim());
+  }
+  if (partial.localLlmModel !== undefined) {
+    setClauses.push('local_llm_model = ?');
+    values.push(partial.localLlmModel.trim());
   }
   if (partial.foundryEndpoint !== undefined) {
     setClauses.push('foundry_endpoint = ?');
@@ -575,7 +601,10 @@ function defaultSettings(): AppSettings {
   return {
     llmProvider: 'codex',
     enabledLlmProviders: ['codex'],
-    appleFoundationModelsMode: 'off',
+    localLlmMode: 'off',
+    localLlmProvider: process.platform === 'darwin' ? 'apple' : 'ollama',
+    localLlmEndpoint: '',
+    localLlmModel: '',
     foundryEndpoint: '',
     foundryDeploymentName: '',
     foundryApiVersion: '2024-10-21',

@@ -9,6 +9,8 @@ import type {
   AutomationTriageItem,
   ArgentCommandId,
   ChatArtifactInput,
+  ChatArtifactAnnotationInput,
+  ChatArtifactAnnotationPatch,
   ChatAttachment,
   ChatNavigationTarget,
   ChatAttachmentInput,
@@ -37,11 +39,18 @@ import type {
 } from '../shared/types.js';
 import type { PentestScanConfig, PentestScanEvent } from '../shared/pentest-types.js';
 import type { RunCommand, RunStatus } from '../shared/run-types.js';
+import type {
+  AgentUIIntentPresentationPatch,
+  AgentUIPlanPatch,
+  AgentUIQuestionResolution,
+} from '../shared/agent-ui-intents.js';
 
 const api: AnvilAPI = {
   appWindow: {
     getVersion: () => ipcRenderer.invoke('app-window:get-version'),
     getChromeState: () => ipcRenderer.invoke('app-window:get-chrome-state'),
+    openToolWindow: (route: string, workspaceId?: string) =>
+      ipcRenderer.invoke('app-window:open-tool-window', route, workspaceId),
     onChromeStateChanged: (callback: (state: { isFullScreen: boolean }) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, state: { isFullScreen: boolean }) =>
         callback(state);
@@ -175,8 +184,16 @@ const api: AnvilAPI = {
     upsertArtifact: (input: ChatArtifactInput) => ipcRenderer.invoke('chat:upsert-artifact', input),
     discardArtifact: (id: string) => ipcRenderer.invoke('chat:discard-artifact', id),
     readArtifactFile: (id: string) => ipcRenderer.invoke('chat:read-artifact-file', id),
-    listThreads: (workspaceId: string | null, personaId: string) =>
-      ipcRenderer.invoke('chat:list-threads', workspaceId, personaId),
+    listArtifactAnnotations: (artifactId: string) =>
+      ipcRenderer.invoke('chat:list-artifact-annotations', artifactId),
+    createArtifactAnnotation: (input: ChatArtifactAnnotationInput) =>
+      ipcRenderer.invoke('chat:create-artifact-annotation', input),
+    updateArtifactAnnotation: (id: string, patch: ChatArtifactAnnotationPatch) =>
+      ipcRenderer.invoke('chat:update-artifact-annotation', id, patch),
+    deleteArtifactAnnotation: (id: string) =>
+      ipcRenderer.invoke('chat:delete-artifact-annotation', id),
+    listThreads: (workspaceId: string | null) =>
+      ipcRenderer.invoke('chat:list-threads', workspaceId),
     listWorkItemThreads: (workspaceId: string | null) =>
       ipcRenderer.invoke('chat:list-work-item-threads', workspaceId),
     createThread: (input: {
@@ -235,6 +252,18 @@ const api: AnvilAPI = {
       ipcRenderer.invoke('chat:save-thread-plan', threadId, plan),
     saveThreadGoal: (threadId: string, goal: ChatGoalSnapshot | null) =>
       ipcRenderer.invoke('chat:save-thread-goal', threadId, goal),
+    listAgentUIIntents: (threadId: string, includeInactive = true) =>
+      ipcRenderer.invoke('chat:list-agent-ui-intents', threadId, includeInactive),
+    resolveAgentUIQuestion: (intentId: string, resolution: AgentUIQuestionResolution) =>
+      ipcRenderer.invoke('chat:resolve-agent-ui-question', intentId, resolution),
+    patchAgentUIPlan: (intentId: string, patch: AgentUIPlanPatch) =>
+      ipcRenderer.invoke('chat:patch-agent-ui-plan', intentId, patch),
+    updateAgentUIIntentPresentation: (intentId: string, patch: AgentUIIntentPresentationPatch) =>
+      ipcRenderer.invoke('chat:update-agent-ui-presentation', intentId, patch),
+    dismissAgentUIIntent: (intentId: string) =>
+      ipcRenderer.invoke('chat:dismiss-agent-ui-intent', intentId),
+    restoreAgentUIIntent: (intentId: string) =>
+      ipcRenderer.invoke('chat:restore-agent-ui-intent', intentId),
   },
 
   workflow: {
@@ -549,7 +578,8 @@ const api: AnvilAPI = {
     setCodexAgentMaxThreads: (maxThreads) =>
       ipcRenderer.invoke('settings:codex-agent-max-threads', maxThreads),
     testFoundryConnection: () => ipcRenderer.invoke('settings:test-foundry'),
-    testAppleFoundationModels: () => ipcRenderer.invoke('settings:test-apple-foundation-models'),
+    getLocalLlmCapabilities: () => ipcRenderer.invoke('settings:local-llm-capabilities'),
+    testLocalLlm: () => ipcRenderer.invoke('settings:test-local-llm'),
     testWorkItemProviderConnection: () => ipcRenderer.invoke('settings:test-workitem-provider'),
     listLinearTeams: () => ipcRenderer.invoke('settings:linear-teams'),
     testConfluenceConnection: () => ipcRenderer.invoke('settings:test-confluence'),
@@ -581,6 +611,24 @@ const api: AnvilAPI = {
     snapshot: () => ipcRenderer.invoke('anvil-cloud:snapshot'),
     run: (commandId, cwd) => ipcRenderer.invoke('anvil-cloud:run', commandId, cwd),
     openLens: (cwd) => ipcRenderer.invoke('anvil-cloud:open-lens', cwd),
+    executionConnection: () => ipcRenderer.invoke('anvil-cloud:execution-connection'),
+    saveExecutionConnection: (input) =>
+      ipcRenderer.invoke('anvil-cloud:save-execution-connection', input),
+    clearExecutionConnection: () => ipcRenderer.invoke('anvil-cloud:clear-execution-connection'),
+    testExecutionConnection: () => ipcRenderer.invoke('anvil-cloud:test-execution-connection'),
+    listExecutions: () => ipcRenderer.invoke('anvil-cloud:executions-list'),
+    getExecution: (executionId) => ipcRenderer.invoke('anvil-cloud:execution-get', executionId),
+    startExecution: (input) => ipcRenderer.invoke('anvil-cloud:execution-start', input),
+    executionEvents: (executionId, cursor) =>
+      ipcRenderer.invoke('anvil-cloud:execution-events', executionId, cursor),
+    resolveExecutionApproval: (input) =>
+      ipcRenderer.invoke('anvil-cloud:execution-approval', input),
+    steerExecution: (executionId, message) =>
+      ipcRenderer.invoke('anvil-cloud:execution-steer', executionId, message),
+    collectExecution: (executionId) =>
+      ipcRenderer.invoke('anvil-cloud:execution-collect', executionId),
+    terminateExecution: (executionId) =>
+      ipcRenderer.invoke('anvil-cloud:execution-terminate', executionId),
   },
 
   diagrams: {

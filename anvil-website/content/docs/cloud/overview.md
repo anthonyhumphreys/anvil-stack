@@ -4,6 +4,7 @@ navTitle: Overview
 description: Build Anvil Cells with typed contracts, local runtime, generated manifests, and adapter-based deployment.
 product: Anvil Cloud
 section: Overview
+journey: learn
 order: 100
 ---
 
@@ -20,14 +21,14 @@ The goal is not to make AWS easier to spray around. The goal is to give develope
 
 | Package | Role |
 | --- | --- |
-| `@anvil-cloud/runtime` | Cell DSL, Agent definitions, provider-neutral agent runtime contracts, `RuntimeRequest`, `RuntimeResponse`, `RuntimeHost`, `RuntimeContext`, and `handleRuntimeRequest`. |
+| `@anvil-cloud/runtime` | Cell DSL, Agent definitions, provider-neutral agent runtime and execution contracts, `RuntimeRequest`, `RuntimeResponse`, `RuntimeHost`, `RuntimeContext`, and `handleRuntimeRequest`. |
 | `@anvil-cloud/builder` | Config loading, import policy, typecheck, server/client bundle, manifest extraction, build metadata, and generated client files. |
 | `@anvil-cloud/local` | Local runtime server, JSON database adapter, local files, auth, logs, events, jobs, and inspection state. |
 | `@anvil-cloud/client` | Browser client and framework hook helpers for generated query and mutation metadata. |
 | `@anvil-cloud/auth` | Provider-neutral token verification: OIDC discovery/JWKS verification plus a local identity provider that signs real JWTs. |
-| `@anvilstack/cloud-cli` | `anvil cloud new`, `dev`, `check`, `review`, `build`, `agents`, `inspect`, `logs`, `usage`, `db`, `auth`, `workflows`, `services`, `lens`, `deploy --preview`, and rollback/destroy preview commands. |
-| `@anvil-cloud/control-plane` | The `ControlPlaneApi` contract behind Anvil Lens, implemented over the local runtime routes today and swappable for a hosted plane later. |
-| `@anvil-cloud/aws` | AWS preview adapter, CloudFormation synthesis, Lambda runtime bridge, AWS-backed host adapters, Bedrock inference provider, agent compatibility checks, artifact packaging, provisioning, remote inspect, remote logs, and preview cleanup. |
+| `@anvilstack/cloud-cli` | `anvil cloud new`, `dev`, `check`, `review`, `build`, `agents`, `executions`, `inspect`, `logs`, `usage`, `db`, `auth`, `workflows`, `services`, `lens`, `deploy --preview`, and rollback/destroy preview commands. |
+| `@anvil-cloud/control-plane` | The `ControlPlaneApi` contract behind Anvil Lens plus durable agent execution leases, cursor events, controls, and a framework-neutral HTTP boundary. |
+| `@anvil-cloud/aws` | AWS preview adapter, CloudFormation synthesis, Lambda runtime bridge, AWS-backed host adapters, Bedrock inference provider, Lambda MicroVM read-only execution transport, artifact packaging, provisioning, remote inspect, remote logs, and preview cleanup. |
 
 ## Core terms
 
@@ -75,7 +76,7 @@ Current alpha limits include:
   until the Fargate runner executes the exact Cell service handler.
 - Outbound fetch policy is checked by Guard and enforced by the AWS Lambda runtime allow-list guard.
 - Production use needs wider operational validation beyond the preview verifier.
-- Agents are a contract/runtime foundation, not a hosted agent platform. Project-agent discovery and deterministic Guardian review exist; AWS Lambda MicroVM-backed Agent Sandboxes cover sandbox-required agents when configured. Production approval UI, durable multi-step orchestration, hosted memory, streamed sandbox tools, workspace snapshots, and sandbox-aware Lens views are future work.
+- Agents are a runnable alpha control-plane foundation, not a deployed hosted agent platform. Project-agent discovery, deterministic Guardian review, authenticated resumable execution leases/events/controls, immutable snapshots, one-time worker grants, a CLI service, an optional Desktop workbench, subscription-auth intent, provider conformance, and an AWS Lambda MicroVM read-only transport exist. A deployed compatible worker image, concrete Codex/Cursor login runners, production persistence/approval UI, hosted memory, real-account proof, and sandbox-aware Lens views are future work.
 - Auth token verification is real locally and on AWS, but session/refresh lifecycle and login UI belong to your provider.
 - Anvil Lens is local-first; there is no hosted control plane, marketplace, or multi-region deployment.
 - No arbitrary provider-resource authoring or raw container/Kubernetes definitions in Cell code.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { shouldIgnoreShellShortcut } from '../Shell';
+import { getToolWindowTitle, shouldIgnoreShellShortcut } from '../Shell';
 
 const target = (options: {
   editable?: boolean;
@@ -39,5 +39,13 @@ describe('shouldIgnoreShellShortcut', () => {
     expect(shouldIgnoreShellShortcut(target({ closestEditable: false }))).toBe(false);
     expect(shouldIgnoreShellShortcut({} as EventTarget)).toBe(false);
     expect(shouldIgnoreShellShortcut(null)).toBe(false);
+  });
+});
+
+describe('getToolWindowTitle', () => {
+  it('turns the active route into a compact detached-window title', () => {
+    expect(getToolWindowTitle('/browser')).toBe('Browser');
+    expect(getToolWindowTitle('/meeting-notes')).toBe('Meeting Notes');
+    expect(getToolWindowTitle('/security/repo-1')).toBe('Security');
   });
 });

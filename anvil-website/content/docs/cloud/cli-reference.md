@@ -4,6 +4,7 @@ navTitle: CLI reference
 description: Commands, JSON output, exit codes, local inspection, and AWS preview deployment through the Anvil Cloud CLI.
 product: Anvil Cloud
 section: Reference
+journey: reference
 order: 140
 ---
 
@@ -53,6 +54,7 @@ Human output can be friendly, but automation output must be stable.
 | `anvil cloud agents guardian`              | Run the deterministic Guardian review over the Cell trust report.                             |
 | `anvil cloud agents sandboxes`             | Report AWS Lambda MicroVM sandbox readiness for sandbox-required agents.                      |
 | `anvil cloud agents invoke <name>`         | Invoke a mounted agent locally through the registered provider (`--input <text>`).            |
+| `anvil cloud executions conformance`       | Prove idempotency, cursor replay, approval resume, patch return, and sandbox teardown without a cloud account. |
 | `anvil cloud channels simulate`            | Send a simulated channel message to a mounted agent through the local runtime (`--channel`, `--input`). |
 | `anvil cloud inspect --local`              | Inspect local manifest, auth, database counts, and recent errors.                             |
 | `anvil cloud lens`                         | Verify the local runtime is reachable and print the Anvil Lens URL.                           |

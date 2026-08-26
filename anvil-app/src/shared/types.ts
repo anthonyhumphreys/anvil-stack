@@ -1,3 +1,5 @@
+import type { AgentUIIntent } from './agent-ui-intents.js';
+
 export interface RepoInfo {
   id: string; // SHA256 of repo path
   name: string; // Directory name
@@ -517,6 +519,30 @@ export interface ChatArtifactInput {
   reasoningEffort?: ReasoningEffort;
 }
 
+export type ChatArtifactAnnotationStatus = 'open' | 'resolved';
+
+export interface ChatArtifactAnnotation {
+  id: string;
+  artifactId: string;
+  body: string;
+  quote?: string;
+  status: ChatArtifactAnnotationStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ChatArtifactAnnotationInput {
+  artifactId: string;
+  body: string;
+  quote?: string;
+}
+
+export interface ChatArtifactAnnotationPatch {
+  body?: string;
+  quote?: string | null;
+  status?: ChatArtifactAnnotationStatus;
+}
+
 export interface ChatAttachment {
   id: string;
   name: string;
@@ -888,6 +914,8 @@ export interface CodexEvent {
     | 'thread_status'
     | 'request_resolved'
     | 'plan_update'
+    | 'agent_ui_intent'
+    | 'agent_ui_intent_resolved'
     | 'goal_update'
     | 'goal_cleared'
     | 'error'
@@ -915,6 +943,8 @@ export interface CodexEvent {
   threadActiveFlags?: Array<'waitingOnApproval' | 'waitingOnUserInput'>;
   subagent?: CodexSubagentUpdate;
   plan?: ChatPlanSnapshot;
+  agentUIIntent?: AgentUIIntent;
+  agentUIIntentId?: string;
   goal?: ChatGoalSnapshot;
   status?: 'thinking' | 'executing' | 'complete' | 'error';
   errorMessage?: string;
@@ -1796,6 +1826,7 @@ export interface AutomationDaemonStatus {
   mode: 'app' | 'daemon';
   label?: string;
   plistPath?: string;
+  servicePath?: string;
   lastError?: string;
 }
 
@@ -1885,12 +1916,23 @@ export type AppTheme =
   | 'token-bender'
   | 'agent-after-hours';
 
+export type LocalLlmProvider = 'apple' | 'ollama' | 'lm-studio';
+export type LocalLlmMode = 'off' | 'prefer-simple';
+
+export interface LocalLlmCapabilities {
+  platform: NodeJS.Platform;
+  providers: LocalLlmProvider[];
+}
+
 export interface AppSettings {
   /** Primary provider for new chats and app-level AI tasks. */
   llmProvider: AgentProvider;
   /** Providers available to workflows and agent-authored shell commands. */
   enabledLlmProviders?: AgentProvider[];
-  appleFoundationModelsMode: 'off' | 'prefer-simple';
+  localLlmMode: LocalLlmMode;
+  localLlmProvider: LocalLlmProvider;
+  localLlmEndpoint: string;
+  localLlmModel: string;
 
   // Azure AI Foundry
   foundryEndpoint: string;
@@ -2129,6 +2171,108 @@ export interface AnvilCloudCommandResult {
 export interface AnvilCloudWorkbenchSnapshot {
   status: AnvilCloudCliStatus;
   commands: AnvilCloudCommandDefinition[];
+}
+
+export interface AnvilCloudExecutionConnection {
+  configured: boolean;
+  endpoint: string;
+  tokenConfigured: boolean;
+  updatedAt?: string;
+}
+
+export interface AnvilCloudExecutionConnectionInput {
+  endpoint: string;
+  token?: string;
+}
+
+export type AnvilCloudExecutionStatus =
+  | 'queued'
+  | 'starting'
+  | 'running'
+  | 'waiting-for-approval'
+  | 'waiting-for-input'
+  | 'suspended'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'expired';
+
+export interface AnvilCloudExecutionLease {
+  schemaVersion: '0.1';
+  id: string;
+  status: AnvilCloudExecutionStatus;
+  provider: string;
+  request: {
+    workspace: string;
+    task: string;
+    cell: string;
+    environment: string;
+    policy: { mode: 'read-only' | 'read-write'; ttlSeconds: number };
+    source: {
+      kind: 'git' | 'snapshot';
+      snapshotId?: string;
+      repository?: string;
+      commit?: string;
+      baseCommit?: string;
+      branch?: string;
+    };
+  };
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string;
+  failure?: { code: string; message: string };
+  result?: {
+    status: 'completed' | 'failed' | 'cancelled';
+    summary: string;
+    changedFiles: string[];
+    evidence: Array<{ label: string; value: string }>;
+    errors: Array<{ code: string; message: string }>;
+  };
+}
+
+export interface AnvilCloudExecutionEvent {
+  id: string;
+  executionId: string;
+  sequence: number;
+  cursor: string;
+  timestamp: string;
+  type: string;
+  data: Record<string, unknown>;
+}
+
+export interface AnvilCloudExecutionEventBatch {
+  executionId: string;
+  events: AnvilCloudExecutionEvent[];
+  cursor: string;
+  done: boolean;
+}
+
+export interface AnvilCloudExecutionStartInput {
+  workspaceId: string;
+  repoId: string;
+  task: string;
+  provider: 'auto' | 'aws-lambda-microvm';
+  agentRuntime?: 'codex-subscription' | 'cursor-subscription' | 'cloud-managed';
+  ttlSeconds?: number;
+  maxCostUsd?: number;
+}
+
+export interface AnvilCloudExecutionStartResult {
+  execution: AnvilCloudExecutionLease;
+  source: {
+    commit: string;
+    branch?: string;
+    repository?: string;
+    archiveBytes: number;
+    excludedWorkingTreeChanges: boolean;
+  };
+}
+
+export interface AnvilCloudExecutionConnectionTest {
+  ok: boolean;
+  endpoint: string;
+  executionCount?: number;
+  error?: string;
 }
 
 export interface CodexRegistryActionResult {
