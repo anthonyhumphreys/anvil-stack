@@ -19,11 +19,15 @@ export interface ExecutionTopologyNode {
   prompt?: string;
   model?: string;
   reasoningEffort?: string;
+  latestMessage?: string;
+  sessionId?: string;
+  appThreadId?: string;
 }
 
 export interface ExecutionTopology {
   nodes: ExecutionTopologyNode[];
   delegatedCount: number;
+  runningCount: number;
 }
 
 interface ExecutionTopologyInput {
@@ -42,29 +46,35 @@ export function buildExecutionTopology({
   const rootId = `thread:${threadId ?? 'new'}`;
   const nodes = new Map<string, ExecutionTopologyNode>();
   const protocolNodeIds = new Map<string, string>();
+  const relevantSessions = sessions.filter((session) => {
+    if (threadId && session.appThreadId && session.appThreadId !== threadId) return false;
+    if (threadId && !session.appThreadId) return false;
+    return true;
+  });
 
   nodes.set(rootId, {
     id: rootId,
     label: rootLabel,
     detail: 'Chat thread',
-    status: sessions.some((session) => session.status === 'busy' || session.status === 'starting')
+    status: relevantSessions.some(
+      (session) => session.status === 'busy' || session.status === 'starting',
+    )
       ? 'running'
       : 'idle',
     kind: 'thread',
   });
 
-  for (const session of sessions) {
-    if (threadId && session.appThreadId && session.appThreadId !== threadId) continue;
-    if (threadId && !session.appThreadId) continue;
-
+  for (const session of relevantSessions) {
     const nodeId = `session:${session.id}`;
     nodes.set(nodeId, {
       id: nodeId,
       parentId: rootId,
-      label: session.personaId,
+      label: formatSessionLabel(session.personaId),
       detail: session.kind ? `${session.kind} session` : 'Agent session',
       status: sessionStatus(session.status),
       kind: 'session',
+      sessionId: session.id,
+      appThreadId: session.appThreadId,
     });
     if (session.providerThreadId) protocolNodeIds.set(session.providerThreadId, nodeId);
   }
@@ -81,6 +91,9 @@ export function buildExecutionTopology({
       ? (protocolNodeIds.get(update.senderThreadId) ?? fallbackSessionId)
       : fallbackSessionId;
     const statusByThreadId = new Map(update.agents.map((agent) => [agent.threadId, agent.status]));
+    const messageByThreadId = new Map(
+      update.agents.map((agent) => [agent.threadId, agent.message]),
+    );
 
     for (const receiverThreadId of update.receiverThreadIds) {
       const nodeId = protocolNodeIds.get(receiverThreadId) ?? `subagent:${receiverThreadId}`;
@@ -96,6 +109,7 @@ export function buildExecutionTopology({
         prompt: update.prompt ?? existing?.prompt,
         model: update.model ?? existing?.model,
         reasoningEffort: update.reasoningEffort ?? existing?.reasoningEffort,
+        latestMessage: messageByThreadId.get(receiverThreadId) ?? existing?.latestMessage,
       });
       protocolNodeIds.set(receiverThreadId, nodeId);
     }
@@ -112,6 +126,7 @@ export function buildExecutionTopology({
         prompt: update.prompt,
         model: update.model,
         reasoningEffort: update.reasoningEffort,
+        latestMessage: messageByThreadId.get(update.agentThreadId),
       });
       protocolNodeIds.set(update.agentThreadId, nodeId);
     }
@@ -121,7 +136,14 @@ export function buildExecutionTopology({
   return {
     nodes: result,
     delegatedCount: result.filter((node) => node.kind === 'subagent').length,
+    runningCount: result.filter((node) => node.kind !== 'thread' && node.status === 'running')
+      .length,
   };
+}
+
+function formatSessionLabel(personaId: string): string {
+  if (personaId === 'coder') return 'Main agent';
+  return personaId.replaceAll('-', ' ');
 }
 
 function sessionStatus(status: CodexSession['status']): ExecutionTopologyNodeStatus {

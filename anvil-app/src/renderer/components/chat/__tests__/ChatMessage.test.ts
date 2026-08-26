@@ -33,12 +33,14 @@ describe('shouldCollapseUserMessage', () => {
 });
 
 describe('shouldShowTurnWorkDetails', () => {
-  it('keeps live operational detail folded until the user asks for it', () => {
+  it('keeps live operational detail open while work is running', () => {
+    expect(shouldShowTurnWorkDetails(true, null)).toBe(true);
     expect(shouldShowTurnWorkDetails(true, false)).toBe(false);
     expect(shouldShowTurnWorkDetails(true, true)).toBe(true);
   });
 
   it('folds settled work unless the user has expanded it', () => {
+    expect(shouldShowTurnWorkDetails(false, null)).toBe(false);
     expect(shouldShowTurnWorkDetails(false, false)).toBe(false);
     expect(shouldShowTurnWorkDetails(false, true)).toBe(true);
   });

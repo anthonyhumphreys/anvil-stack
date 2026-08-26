@@ -31,7 +31,6 @@ import {
   Copy,
   Check,
   ExternalLink,
-  Ellipsis,
   Maximize2,
   Minimize2,
   PictureInPicture2,
@@ -196,13 +195,12 @@ export function ChatView({ userRole }: ChatViewProps) {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [showPersonaDropdown, setShowPersonaDropdown] = useState(false);
-  const [showMoreMenu, setShowMoreMenu] = useState(false);
   const [showFindings, setShowFindings] = useState(true);
   const [dismissedFindings, setDismissedFindings] = useState<Set<number>>(new Set());
   const [composerPrefill, setComposerPrefill] = useState<{ id: string; text: string } | null>(null);
   const [codexMode, setCodexMode] = useState<CodexMode>('on-request');
   const [goalPopoverOpen, setGoalPopoverOpen] = useState(false);
-  const [workOpen, setWorkOpen] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
   const [executionStrategy, setExecutionStrategy] = useState<ExecutionStrategy>('auto');
   const [fastMode, setFastMode] = useState(false);
   const [canvasOpen, setCanvasOpen] = useState(true);
@@ -221,7 +219,9 @@ export function ChatView({ userRole }: ChatViewProps) {
   const [itsmWorkbenchOpen, setItsmWorkbenchOpen] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
-  const moreMenuRef = useRef<HTMLDivElement>(null);
+  const personaMenuRef = useRef<HTMLDivElement>(null);
+  const activityButtonRef = useRef<HTMLButtonElement>(null);
+  const activityOpenRef = useRef(activityOpen);
   const shouldStickToBottomRef = useRef(true);
   const appliedItsmDefaultRef = useRef(false);
 
@@ -369,6 +369,7 @@ export function ChatView({ userRole }: ChatViewProps) {
     setCanvasOpen(false);
     setCanvasExpanded(false);
     setItsmWorkbenchOpen(false);
+    setActivityOpen(false);
 
     const next = new URLSearchParams(searchParams);
     next.delete('preview');
@@ -452,7 +453,7 @@ export function ChatView({ userRole }: ChatViewProps) {
 
   const handleSwitchPersona = (persona: Persona) => {
     setShowPersonaDropdown(false);
-    setShowMoreMenu(false);
+    setActivityOpen(false);
     switchPersona(persona);
   };
 
@@ -640,11 +641,19 @@ export function ChatView({ userRole }: ChatViewProps) {
     [activeSessions, activeThread?.title, activeThreadId, entries],
   );
   const showItsmWorkbench = userRole === 'itsm' && isItsmPersona && itsmWorkbenchOpen;
+  const showActivitySidebar =
+    activityOpen &&
+    !scaffoldModeActive &&
+    !isDesignPersona &&
+    !isBaPersona &&
+    !showItsmWorkbench &&
+    !previewMode;
   const showCanvasSidebar =
     !isDesignPersona &&
     !isBaPersona &&
     !showItsmWorkbench &&
     !previewMode &&
+    !activityOpen &&
     canvasOpen &&
     !canvasExpanded &&
     !canvasDetached &&
@@ -654,11 +663,15 @@ export function ChatView({ userRole }: ChatViewProps) {
       (showPlanHistory && planIntents.length > 0));
 
   useEffect(() => {
+    activityOpenRef.current = activityOpen;
+  }, [activityOpen]);
+
+  useEffect(() => {
     if (activeArtifacts.length === 0) {
       setSelectedArtifactId(null);
       return;
     }
-    setCanvasOpen(true);
+    if (!activityOpenRef.current) setCanvasOpen(true);
     setSelectedArtifactId((current) =>
       current && activeArtifacts.some((artifact) => artifact.id === current)
         ? current
@@ -669,7 +682,7 @@ export function ChatView({ userRole }: ChatViewProps) {
   useEffect(() => {
     if (!visiblePlanIntent || activeArtifacts.length > 0) return;
     setCanvasPlanSelected(true);
-    setCanvasOpen(true);
+    if (!activityOpenRef.current) setCanvasOpen(true);
   }, [activeArtifacts.length, visiblePlanIntent?.id]);
 
   useEffect(() => {
@@ -700,16 +713,14 @@ export function ChatView({ userRole }: ChatViewProps) {
   }, [canvasExpanded]);
 
   useEffect(() => {
-    if (!showMoreMenu) return;
+    if (!showPersonaDropdown) return;
     const handlePointerDown = (event: MouseEvent) => {
-      if (!moreMenuRef.current?.contains(event.target as Node)) {
-        setShowMoreMenu(false);
+      if (!personaMenuRef.current?.contains(event.target as Node)) {
         setShowPersonaDropdown(false);
       }
     };
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
-      setShowMoreMenu(false);
       setShowPersonaDropdown(false);
     };
     document.addEventListener('mousedown', handlePointerDown);
@@ -718,7 +729,7 @@ export function ChatView({ userRole }: ChatViewProps) {
       document.removeEventListener('mousedown', handlePointerDown);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [showMoreMenu]);
+  }, [showPersonaDropdown]);
 
   const handleDetachedCanvasClose = useCallback(() => {
     setCanvasDetached(false);
@@ -752,7 +763,7 @@ export function ChatView({ userRole }: ChatViewProps) {
               </h2>
             </div>
             <p className="truncate text-xs text-text-tertiary">
-              {activeWorkspace?.name ?? 'No workspace'} · {activePersona?.name ?? 'Assistant'}
+              {activeWorkspace?.name ?? 'No workspace'}
             </p>
           </div>
 
@@ -793,110 +804,64 @@ export function ChatView({ userRole }: ChatViewProps) {
             </div>
           )}
 
-          <div ref={moreMenuRef} className="relative shrink-0">
+          <div ref={personaMenuRef} className="relative shrink-0">
             <button
               type="button"
-              onClick={() => setShowMoreMenu((open) => !open)}
-              className="flex h-9 items-center gap-2 rounded-lg border border-border px-2.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-              aria-expanded={showMoreMenu}
-              aria-label="More chat controls"
+              onClick={() => {
+                if (!scaffoldModeActive) setShowPersonaDropdown((open) => !open);
+              }}
+              className="flex h-8 max-w-48 items-center gap-1.5 rounded-md px-2 text-xs text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-default"
+              aria-label="Select persona"
+              aria-expanded={showPersonaDropdown}
+              disabled={scaffoldModeActive}
             >
-              <Ellipsis size={14} />
-              <span className="hidden 2xl:inline">More</span>
+              <span
+                className="inline-block h-2 w-2 shrink-0 rounded-full"
+                style={{ backgroundColor: personaColour }}
+              />
+              {activePersona ? PERSONA_ICONS[activePersona.icon] : null}
+              <span className="truncate">{activePersona?.name ?? 'Select persona'}</span>
+              {!scaffoldModeActive && <ChevronDown size={11} className="shrink-0" />}
             </button>
 
-            {showMoreMenu && (
-              <div className="absolute right-0 top-full z-50 mt-2 w-80 rounded-xl border border-border bg-bg-elevated p-3 shadow-2xl">
-                <div className="flex flex-wrap items-center gap-2">
-                  {/* Persona selector */}
-                  <div className="relative">
-                    <button
-                      onClick={() => {
-                        if (!scaffoldModeActive) setShowPersonaDropdown(!showPersonaDropdown);
-                      }}
-                      className="flex items-center gap-2 rounded-xl border border-border px-3 py-1.5 text-sm transition-all hover:bg-bg-tertiary hover:shadow-sm"
-                      style={{ borderColor: personaColour + '40' }}
-                      aria-label="Select persona"
-                      aria-expanded={showPersonaDropdown}
-                      disabled={scaffoldModeActive}
+            {showPersonaDropdown && !scaffoldModeActive && (
+              <div className="absolute left-0 top-full z-50 mt-1.5 max-h-[min(32rem,calc(100vh-8rem))] w-72 overflow-y-auto rounded-xl border border-border bg-bg-elevated shadow-2xl ring-1 ring-black/10">
+                <div className="p-1.5">
+                  {groupPersonasForRole(personas, userRole).map((group, groupIndex) => (
+                    <div
+                      key={group.id}
+                      className={groupIndex > 0 ? 'mt-1 border-t border-border/60 pt-1' : ''}
                     >
-                      <span
-                        className="inline-block h-2 w-2 rounded-full shadow-sm"
-                        style={{ backgroundColor: personaColour }}
-                      />
-                      {activePersona ? PERSONA_ICONS[activePersona.icon] : null}
-                      <span className="text-text-primary">
-                        {activePersona?.name ?? 'Select persona'}
-                      </span>
-                      <ChevronDown size={12} className="text-text-tertiary" />
-                    </button>
-
-                    {showPersonaDropdown && !scaffoldModeActive && (
-                      <div className="absolute left-0 top-full z-50 mt-1.5 max-h-[min(32rem,calc(100vh-8rem))] w-72 overflow-y-auto rounded-xl border border-border bg-bg-elevated shadow-2xl ring-1 ring-black/10">
-                        <div className="p-1.5">
-                          {groupPersonasForRole(personas, userRole).map((group, groupIndex) => (
-                            <div
-                              key={group.id}
-                              className={
-                                groupIndex > 0 ? 'mt-1 border-t border-border/60 pt-1' : ''
-                              }
-                            >
-                              {group.label && (
-                                <p className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">
-                                  {group.label}
-                                </p>
-                              )}
-                              {group.personas.map((p) => (
-                                <button
-                                  key={p.id}
-                                  onClick={() => handleSwitchPersona(p)}
-                                  className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-colors hover:bg-bg-tertiary ${
-                                    activePersona?.id === p.id ? 'bg-bg-tertiary' : ''
-                                  }`}
-                                >
-                                  <span
-                                    className="inline-block h-2.5 w-2.5 shrink-0 rounded-full shadow-sm"
-                                    style={{ backgroundColor: p.colour }}
-                                  />
-                                  <span className="shrink-0 text-text-secondary">
-                                    {PERSONA_ICONS[p.icon]}
-                                  </span>
-                                  <div className="min-w-0">
-                                    <div className="font-medium text-text-primary">{p.name}</div>
-                                    <div className="truncate text-xs text-text-tertiary">
-                                      {p.description}
-                                    </div>
-                                  </div>
-                                </button>
-                              ))}
+                      {group.label && (
+                        <p className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+                          {group.label}
+                        </p>
+                      )}
+                      {group.personas.map((persona) => (
+                        <button
+                          key={persona.id}
+                          onClick={() => handleSwitchPersona(persona)}
+                          className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm transition-colors hover:bg-bg-tertiary ${
+                            activePersona?.id === persona.id ? 'bg-bg-tertiary' : ''
+                          }`}
+                        >
+                          <span
+                            className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
+                            style={{ backgroundColor: persona.colour }}
+                          />
+                          <span className="shrink-0 text-text-secondary">
+                            {PERSONA_ICONS[persona.icon]}
+                          </span>
+                          <div className="min-w-0">
+                            <div className="font-medium text-text-primary">{persona.name}</div>
+                            <div className="truncate text-xs text-text-tertiary">
+                              {persona.description}
                             </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  {!scaffoldModeActive && (
-                    <AgentWorkControl
-                      open={workOpen}
-                      runs={recentRuns}
-                      sessions={activeSessions}
-                      topology={executionTopology}
-                      onOpenChange={setWorkOpen}
-                      onOpenThread={(threadId) => void selectThread(threadId)}
-                      onStop={(sessionId) => void window.anvil.chat.stopSession(sessionId)}
-                    />
-                  )}
-                  {!scaffoldModeActive && (
-                    <GoalControl
-                      activeGoal={activeGoal}
-                      busy={busy}
-                      open={goalPopoverOpen}
-                      onOpenChange={setGoalPopoverOpen}
-                      onSetGoal={handleSetGoal}
-                      onCompleteGoal={handleCompleteGoal}
-                    />
-                  )}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
@@ -941,6 +906,7 @@ export function ChatView({ userRole }: ChatViewProps) {
                       setCanvasOpen(false);
                       setCanvasExpanded(false);
                       setItsmWorkbenchOpen(false);
+                      setActivityOpen(false);
                     }}
                     className={`rounded-md p-1.5 transition-colors ${
                       previewMode === 'browser'
@@ -960,6 +926,7 @@ export function ChatView({ userRole }: ChatViewProps) {
                       setCanvasOpen(false);
                       setCanvasExpanded(false);
                       setItsmWorkbenchOpen(false);
+                      setActivityOpen(false);
                     }}
                     className={`rounded-md p-1.5 transition-colors ${
                       previewMode === 'simulator'
@@ -979,6 +946,7 @@ export function ChatView({ userRole }: ChatViewProps) {
                   type="button"
                   onClick={() => {
                     if (!itsmWorkbenchOpen) setCanvasOpen(false);
+                    setActivityOpen(false);
                     setItsmWorkbenchOpen((open) => !open);
                   }}
                   className="flex items-center gap-1.5 rounded-xl border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
@@ -990,16 +958,49 @@ export function ChatView({ userRole }: ChatViewProps) {
                 </button>
               )}
               <button
+                ref={activityButtonRef}
+                type="button"
+                onClick={() => {
+                  if (!activityOpen) {
+                    setCanvasOpen(false);
+                    setCanvasExpanded(false);
+                    setPreviewMode(null);
+                    setItsmWorkbenchOpen(false);
+                  }
+                  setActivityOpen((open) => !open);
+                  setGoalPopoverOpen(false);
+                }}
+                className={`flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
+                  showActivitySidebar
+                    ? 'border-accent/35 bg-accent/10 text-accent'
+                    : 'border-border text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
+                }`}
+                title={showActivitySidebar ? 'Hide activity' : 'Show activity'}
+                aria-label={showActivitySidebar ? 'Hide activity' : 'Show activity'}
+                aria-pressed={showActivitySidebar}
+              >
+                <Bot size={13} />
+                <span className="hidden xl:inline">Activity</span>
+                {executionTopology.runningCount > 0 && (
+                  <span className="rounded-full bg-bg-primary px-1.5 py-0.5 text-[10px] font-semibold text-text-primary">
+                    {executionTopology.runningCount}
+                  </span>
+                )}
+              </button>
+              <button
                 type="button"
                 onClick={() => {
                   if (canvasDetached) {
                     setCanvasDetached(false);
                     setCanvasOpen(true);
                     setItsmWorkbenchOpen(false);
+                    setActivityOpen(false);
                     return;
                   }
                   if (!showCanvasSidebar) {
                     setItsmWorkbenchOpen(false);
+                    setActivityOpen(false);
+                    setPreviewMode(null);
                     setShowPlanHistory(!visiblePlanIntent && planIntents.length > 0);
                     setCanvasOpen(true);
                     return;
@@ -1211,7 +1212,7 @@ export function ChatView({ userRole }: ChatViewProps) {
                             />
                           )}
                           {turn.work.length > 0 && (
-                            <TurnWorkMessage items={turn.work} active={liveState !== null} />
+                            <TurnWorkMessage items={turn.work} active={liveState === 'working'} />
                           )}
                           {turn.answer && (
                             <AssistantMessage
@@ -1230,10 +1231,10 @@ export function ChatView({ userRole }: ChatViewProps) {
                           {turn.trailingWork.length > 0 && (
                             <TurnWorkMessage
                               items={turn.trailingWork}
-                              active={liveState !== null}
+                              active={liveState === 'working'}
                             />
                           )}
-                          {liveState && (
+                          {liveState && shouldShowTurnActivityStatus(liveState) && (
                             <TurnActivityStatus
                               state={liveState}
                               latestItem={
@@ -1265,8 +1266,8 @@ export function ChatView({ userRole }: ChatViewProps) {
                 onClick={handleJumpToLatest}
                 className="absolute bottom-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-bg-elevated/95 px-3 py-1.5 text-xs font-medium text-text-secondary shadow-lg backdrop-blur transition-colors hover:border-accent/40 hover:bg-bg-tertiary hover:text-text-primary"
               >
-                {busy ? <Loader2 size={13} className="animate-spin" /> : <ArrowDown size={13} />}
-                {busy ? 'Working · Latest' : 'Latest'}
+                <ArrowDown size={13} />
+                {busy ? 'Jump to live work' : 'Latest'}
               </button>
             )}
           </div>
@@ -1430,6 +1431,39 @@ export function ChatView({ userRole }: ChatViewProps) {
           </ResizableSidebarPanel>
         )}
 
+        {showActivitySidebar && (
+          <ResizableSidebarPanel
+            storageKey="chat:activity"
+            side="right"
+            title="Activity"
+            defaultWidth={420}
+            minWidth={340}
+            maxWidth={620}
+            collapsedWidth={0}
+            collapsible={false}
+            className="border-l border-border/60 bg-bg-secondary/50"
+          >
+            <AgentActivitySidebar
+              workspaceName={activeWorkspace?.name ?? 'workspace'}
+              runs={recentRuns}
+              topology={executionTopology}
+              activeGoal={activeGoal}
+              busy={busy}
+              goalOpen={goalPopoverOpen}
+              onGoalOpenChange={setGoalPopoverOpen}
+              onSetGoal={handleSetGoal}
+              onCompleteGoal={handleCompleteGoal}
+              onClose={() => {
+                setActivityOpen(false);
+                setGoalPopoverOpen(false);
+                window.requestAnimationFrame(() => activityButtonRef.current?.focus());
+              }}
+              onOpenThread={(threadId) => void selectThread(threadId)}
+              onStop={(sessionId) => void window.anvil.chat.stopSession(sessionId)}
+            />
+          </ResizableSidebarPanel>
+        )}
+
         {showCanvasSidebar && (
           <ResizableSidebarPanel
             storageKey="chat:canvas"
@@ -1569,62 +1603,79 @@ function PendingQuestionPrompt({
   );
 }
 
-function AgentWorkControl({
-  open,
+function AgentActivitySidebar({
+  workspaceName,
   runs,
-  sessions,
   topology,
-  onOpenChange,
+  activeGoal,
+  busy,
+  goalOpen,
+  onGoalOpenChange,
+  onSetGoal,
+  onCompleteGoal,
+  onClose,
   onOpenThread,
   onStop,
 }: {
-  open: boolean;
+  workspaceName: string;
   runs: AgentRunSummary[];
-  sessions: CodexSession[];
   topology: ExecutionTopology;
-  onOpenChange: (open: boolean) => void;
+  activeGoal: ChatGoalSnapshot | null;
+  busy: boolean;
+  goalOpen: boolean;
+  onGoalOpenChange: (open: boolean) => void;
+  onSetGoal: (objective: string, tokenBudget: string) => void;
+  onCompleteGoal: () => void;
+  onClose: () => void;
   onOpenThread: (threadId: string) => void;
   onStop: (sessionId: string) => void;
 }) {
-  const [section, setSection] = useState<'active' | 'recent' | 'topology'>('active');
-  const activeSessions = sessions.filter(
-    (session) => session.status === 'starting' || session.status === 'busy',
-  );
-  const activeRuns = runs.filter((run) => run.status === 'queued' || run.status === 'running');
-  const activeCount = Math.max(activeSessions.length, activeRuns.length);
+  const [section, setSection] = useState<'current' | 'history'>('current');
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    panelRef.current?.focus();
+  }, []);
 
   return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={() => onOpenChange(!open)}
-        className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-medium transition-colors ${
-          activeCount > 0
-            ? 'border-accent/30 bg-accent/10 text-accent hover:bg-accent/15'
-            : 'border-border text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary'
-        }`}
-        title="Agent work"
-        aria-label="Agent work"
-        aria-expanded={open}
-      >
-        <Bot size={13} />
-        <span>Work</span>
-        {activeCount > 0 && (
-          <span className="rounded-full bg-bg-primary px-1.5 text-[10px] text-text-primary">
-            {activeCount}
-          </span>
-        )}
-      </button>
-      {open && (
-        <div className="absolute right-0 top-full z-50 mt-2 w-[28rem] rounded-xl border border-border bg-bg-elevated p-2 shadow-xl">
-          <div className="px-2 pb-2">
-            <div className="text-sm font-semibold text-text-primary">Agent work</div>
-            <div className="mt-1 text-xs text-text-tertiary">
-              Live sessions, optional topology, and durable run history for this workspace.
+    <div
+      ref={panelRef}
+      className="flex min-h-0 flex-1 flex-col focus:outline-none"
+      role="region"
+      aria-label="Agent activity"
+      tabIndex={-1}
+    >
+      <div className="shrink-0 border-b border-border/60 px-4 py-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <Bot
+                size={14}
+                className={topology.runningCount > 0 ? 'text-accent' : 'text-text-tertiary'}
+              />
+              <h3 className="text-sm font-semibold text-text-primary">Activity</h3>
+              {topology.runningCount > 0 && (
+                <span className="rounded-full bg-accent/10 px-2 py-0.5 text-[10px] font-medium text-accent">
+                  {topology.runningCount} working
+                </span>
+              )}
             </div>
+            <p className="mt-1 truncate text-xs text-text-tertiary">
+              Current thread · {workspaceName}
+            </p>
           </div>
-          <div className="flex gap-1 border-b border-border-subtle px-2 pb-2" role="tablist">
-            {(['active', 'topology', 'recent'] as const).map((item) => (
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            aria-label="Close activity"
+          >
+            <X size={14} />
+          </button>
+        </div>
+        <div className="mt-3 flex items-center justify-between gap-2">
+          <div className="flex gap-1 rounded-lg bg-bg-primary/60 p-0.5" role="tablist">
+            {(['current', 'history'] as const).map((item) => (
               <button
                 key={item}
                 type="button"
@@ -1638,116 +1689,69 @@ function AgentWorkControl({
                 }`}
               >
                 {item}
-                {item === 'active' && activeCount > 0 ? ` ${activeCount}` : ''}
               </button>
             ))}
           </div>
-          <div className="max-h-96 overflow-y-auto py-2">
-            {section === 'topology' ? (
-              <ExecutionTopologyPanel topology={topology} />
-            ) : section === 'active' && activeSessions.length === 0 ? (
-              <div className="px-3 py-6 text-center">
-                <Bot size={20} className="mx-auto text-text-muted" />
-                <p className="mt-2 text-sm text-text-secondary">No work is running.</p>
-                <p className="mt-1 text-xs text-text-tertiary">
-                  Adaptive and parallel strategies can delegate bounded tasks when useful.
-                </p>
-              </div>
-            ) : section === 'active' ? (
-              activeSessions.map((session) => (
-                <div
-                  key={session.id}
-                  className="mb-1 border-b border-border-subtle px-3 py-2.5 last:border-b-0"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
-                        <span className="truncate text-sm font-medium text-text-primary">
-                          {session.personaId}
-                        </span>
-                      </div>
-                      <div className="mt-1 text-xs text-text-tertiary">
-                        {session.status} · {session.kind ?? 'session'}
-                        {session.mode ? ` · ${session.mode}` : ''}
-                      </div>
-                      {session.providerThreadId && (
-                        <div className="mt-1 truncate font-mono text-[10px] text-text-muted">
-                          {session.providerThreadId}
-                        </div>
-                      )}
+          <GoalControl
+            activeGoal={activeGoal}
+            busy={busy}
+            open={goalOpen}
+            onOpenChange={onGoalOpenChange}
+            onSetGoal={onSetGoal}
+            onCompleteGoal={onCompleteGoal}
+          />
+        </div>
+      </div>
+      {section === 'current' ? (
+        <ExecutionTopologyPanel topology={topology} onOpenThread={onOpenThread} onStop={onStop} />
+      ) : (
+        <div className="min-h-0 flex-1 overflow-y-auto py-2">
+          <p className="px-3 pb-2 text-xs text-text-tertiary">Recent in {workspaceName}</p>
+          {runs.length === 0 ? (
+            <p className="px-2 py-4 text-center text-sm text-text-tertiary">
+              No run history captured yet.
+            </p>
+          ) : (
+            runs.map((run) => (
+              <div
+                key={run.id}
+                className="mb-1 border-b border-border-subtle px-3 py-2.5 last:border-b-0"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium text-text-primary">
+                      {run.title}
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => onStop(session.id)}
-                      className="shrink-0 rounded-md border border-border px-2 py-1 text-xs text-text-secondary hover:bg-bg-tertiary hover:text-text-primary"
-                    >
-                      Stop
-                    </button>
+                    <div className="mt-0.5 text-xs text-text-tertiary">
+                      {formatAgentRunSource(run.source)} · {formatTimestamp(run.startedAt)}
+                    </div>
                   </div>
-                  {session.appThreadId && (
+                  <span className={`shrink-0 text-xs ${statusTone(run.status)}`}>{run.status}</span>
+                </div>
+                {run.summary && (
+                  <p className="mt-2 line-clamp-2 text-xs leading-relaxed text-text-secondary">
+                    {run.summary}
+                  </p>
+                )}
+                <div className="mt-2 flex items-center gap-2 text-[11px] text-text-tertiary">
+                  <span>{run.changedFileCount} files</span>
+                  <span>{run.evidenceCount} evidence</span>
+                  {run.threadId && (
                     <button
                       type="button"
                       onClick={() => {
-                        onOpenThread(session.appThreadId!);
-                        onOpenChange(false);
+                        onOpenThread(run.threadId!);
+                        onClose();
                       }}
-                      className="mt-2 text-xs font-medium text-accent hover:underline"
+                      className="ml-auto font-medium text-accent hover:underline"
                     >
                       Open thread
                     </button>
                   )}
                 </div>
-              ))
-            ) : runs.length === 0 ? (
-              <p className="px-2 py-4 text-center text-sm text-text-tertiary">
-                No run history captured yet.
-              </p>
-            ) : (
-              runs.map((run) => (
-                <div
-                  key={run.id}
-                  className="mb-1 border-b border-border-subtle px-3 py-2.5 last:border-b-0"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-medium text-text-primary">
-                        {run.title}
-                      </div>
-                      <div className="mt-0.5 text-xs text-text-tertiary">
-                        {formatAgentRunSource(run.source)} · {run.status} ·{' '}
-                        {formatTimestamp(run.startedAt)}
-                      </div>
-                    </div>
-                    <span className={`shrink-0 text-xs ${statusTone(run.status)}`}>
-                      {run.status}
-                    </span>
-                  </div>
-                  {run.summary && (
-                    <p className="mt-2 line-clamp-2 text-xs leading-relaxed text-text-secondary">
-                      {run.summary}
-                    </p>
-                  )}
-                  <div className="mt-2 flex items-center gap-2 text-[11px] text-text-tertiary">
-                    <span>{run.changedFileCount} files</span>
-                    <span>{run.evidenceCount} evidence</span>
-                    {run.threadId && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          onOpenThread(run.threadId!);
-                          onOpenChange(false);
-                        }}
-                        className="ml-auto font-medium text-accent hover:underline"
-                      >
-                        Open thread
-                      </button>
-                    )}
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
+              </div>
+            ))
+          )}
         </div>
       )}
     </div>
@@ -1823,7 +1827,7 @@ function GoalControl({
       <button
         type="button"
         onClick={() => onOpenChange(!open)}
-        className={`flex max-w-[260px] items-center gap-1.5 rounded-xl border px-3 py-1.5 text-sm transition-all hover:bg-bg-tertiary hover:shadow-sm ${
+        className={`flex max-w-[260px] items-center gap-1.5 rounded-xl border px-3 py-1.5 text-sm transition-colors hover:bg-bg-tertiary ${
           hasActiveGoal
             ? 'border-success/30 bg-success/10 text-success'
             : 'border-border text-text-secondary hover:text-text-primary'
@@ -1842,7 +1846,7 @@ function GoalControl({
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full z-50 mt-1.5 w-96 max-w-[calc(100vw-2rem)] rounded-xl border border-border bg-bg-elevated p-3 shadow-2xl ring-1 ring-black/10">
+        <div className="absolute right-0 top-full z-50 mt-1.5 w-80 max-w-[calc(100vw-2rem)] rounded-xl border border-border bg-bg-elevated p-3 shadow-2xl ring-1 ring-black/10">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="text-sm font-medium text-text-primary">
@@ -2408,6 +2412,10 @@ export function getChatTurnLiveState({
   if (hasAnswer) return 'responding';
   if (hasWork) return 'working';
   return 'thinking';
+}
+
+export function shouldShowTurnActivityStatus(state: TurnActivityState | null): boolean {
+  return state === 'thinking';
 }
 
 function formatGoalStatus(status: ChatGoalSnapshot['status']): string {

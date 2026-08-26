@@ -27,7 +27,7 @@ describe('buildExecutionTopology', () => {
     expect(result.nodes).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ kind: 'thread', label: 'Ship the feature' }),
-        expect.objectContaining({ kind: 'session', label: 'coder', status: 'running' }),
+        expect.objectContaining({ kind: 'session', label: 'Main agent', status: 'running' }),
       ]),
     );
   });
@@ -48,7 +48,13 @@ describe('buildExecutionTopology', () => {
             prompt: 'Review the auth boundary.',
             model: 'gpt-5.6-sol',
             reasoningEffort: 'high',
-            agents: [{ threadId: 'agent-security', status: 'running' }],
+            agents: [
+              {
+                threadId: 'agent-security',
+                status: 'running',
+                message: 'Checking route authorization.',
+              },
+            ],
             agentPath: '/root/security_review',
           },
         },
@@ -78,7 +84,31 @@ describe('buildExecutionTopology', () => {
       label: 'security review',
       status: 'running',
       prompt: 'Review the auth boundary.',
+      latestMessage: 'Checking route authorization.',
       parentId: 'session:session-1',
     });
+    expect(result.runningCount).toBe(2);
+  });
+
+  it('does not mark the selected thread as running because another thread is active', () => {
+    const result = buildExecutionTopology({
+      entries: [],
+      sessions: [
+        {
+          id: 'other-session',
+          appThreadId: 'thread-2',
+          personaId: 'coder',
+          status: 'busy',
+          startedAt: '2026-08-10T10:00:00.000Z',
+        },
+      ],
+      threadId: 'thread-1',
+      rootLabel: 'Selected thread',
+    });
+
+    expect(result.nodes).toEqual([
+      expect.objectContaining({ kind: 'thread', status: 'idle', label: 'Selected thread' }),
+    ]);
+    expect(result.runningCount).toBe(0);
   });
 });

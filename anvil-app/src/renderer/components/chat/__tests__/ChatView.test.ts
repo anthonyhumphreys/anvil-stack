@@ -6,6 +6,7 @@ import {
   getNewChatThreadActionLabel,
   isNearChatBottom,
   shouldFocusChatComposerFromKey,
+  shouldShowTurnActivityStatus,
 } from '../ChatView';
 
 describe('getChatTurnLiveState', () => {
@@ -37,6 +38,15 @@ describe('getChatTurnLiveState', () => {
     expect(
       getChatTurnLiveState({ busy: true, isLatest: false, hasWork: true, hasAnswer: false }),
     ).toBeNull();
+  });
+});
+
+describe('shouldShowTurnActivityStatus', () => {
+  it('uses the standalone status only before live work or an answer exists', () => {
+    expect(shouldShowTurnActivityStatus('thinking')).toBe(true);
+    expect(shouldShowTurnActivityStatus('working')).toBe(false);
+    expect(shouldShowTurnActivityStatus('responding')).toBe(false);
+    expect(shouldShowTurnActivityStatus(null)).toBe(false);
   });
 });
 

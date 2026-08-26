@@ -198,8 +198,9 @@ export function TurnWorkMessage({
   items: ChatTurnWorkItem[];
   active?: boolean;
 }) {
-  const [expanded, setExpanded] = useState(false);
-  const showDetails = shouldShowTurnWorkDetails(active, expanded);
+  const [expandedOverride, setExpandedOverride] = useState<boolean | null>(null);
+  const wasActiveRef = useRef(active);
+  const showDetails = shouldShowTurnWorkDetails(active, expandedOverride);
   const progressCount = items.filter((item) => item.kind === 'progress').length;
   const activityEvents = items
     .filter((item): item is Extract<ChatTurnWorkItem, { kind: 'event' }> => item.kind === 'event')
@@ -228,6 +229,13 @@ export function TurnWorkMessage({
   ].filter((part): part is string => Boolean(part));
   const latestActivity = describeWorkItem(items[items.length - 1]);
 
+  useEffect(() => {
+    if (wasActiveRef.current && !active && expandedOverride === null) {
+      setExpandedOverride(true);
+    }
+    wasActiveRef.current = active;
+  }, [active, expandedOverride]);
+
   if (items.length === 0) return null;
 
   return (
@@ -235,7 +243,7 @@ export function TurnWorkMessage({
       <div className="w-full border-y border-border-subtle/80">
         <button
           type="button"
-          onClick={() => setExpanded((current) => !current)}
+          onClick={() => setExpandedOverride(!showDetails)}
           className="flex min-h-10 w-full items-center gap-2.5 px-3 py-2 text-left text-xs transition-colors hover:bg-bg-secondary/35 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
           aria-expanded={showDetails}
           aria-label={showDetails ? 'Collapse work details' : 'Expand work details'}
@@ -365,8 +373,11 @@ export function TurnActivityStatus({
   );
 }
 
-export function shouldShowTurnWorkDetails(_active: boolean, expanded: boolean): boolean {
-  return expanded;
+export function shouldShowTurnWorkDetails(
+  active: boolean,
+  expandedOverride: boolean | null,
+): boolean {
+  return expandedOverride ?? active;
 }
 
 function WorkingDots({ compact = false }: { compact?: boolean }) {
