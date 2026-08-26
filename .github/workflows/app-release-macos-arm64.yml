@@ -3,15 +3,15 @@ name: Anvil App Release macOS Apple Silicon
 on:
   push:
     tags:
-      - 'app-v*'
+      - "app-v*"
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to create or update, for example app-v0.1.0. Defaults to app-v<package.json version>.'
+        description: "Release tag to create or update, for example app-v0.1.0. Defaults to app-v<package.json version>."
         required: false
         type: string
       notarize:
-        description: 'Build signed and notarized artifacts. Tagged releases are always signed; this controls manual dispatches.'
+        description: "Build signed and notarized artifacts. Tagged releases are always signed; this controls manual dispatches."
         required: false
         default: false
         type: boolean
@@ -123,7 +123,7 @@ jobs:
       - name: Build unsigned macOS Apple Silicon artifacts
         if: ${{ steps.release_scope.outputs.should_release == 'true' && github.event_name == 'workflow_dispatch' && !inputs.notarize }}
         env:
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: pnpm run dist:mac:arm64
 
       - name: Build signed and notarized macOS Apple Silicon artifacts
@@ -282,4 +282,23 @@ jobs:
             gh release create "${release_tag}" "${assets[@]}" \
               --title "${release_name}" \
               --notes-file "${notes_file}"
+          fi
+
+      - name: Publish stable macOS auto-update feed
+        if: ${{ steps.release_scope.outputs.should_release == 'true' && (github.event_name != 'workflow_dispatch' || inputs.notarize) }}
+        shell: bash
+        working-directory: anvil-app
+        run: |
+          set -euo pipefail
+
+          update_tag="app-updates"
+          update_manifest="dist/anvil-macos-arm64-updates.json"
+          if gh release view "${update_tag}" >/dev/null 2>&1; then
+            gh release upload "${update_tag}" "${update_manifest}" --clobber
+          else
+            gh release create "${update_tag}" "${update_manifest}" \
+              --prerelease \
+              --target "${GITHUB_SHA}" \
+              --title "Anvil macOS auto-update feed" \
+              --notes "Machine-readable update metadata for signed Anvil macOS releases."
           fi

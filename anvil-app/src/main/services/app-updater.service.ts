@@ -1,7 +1,7 @@
 import { app, autoUpdater } from 'electron';
 
 const UPDATE_FEED_URL =
-  'https://github.com/anthonyhumphreys/anvil-stack/releases/latest/download/anvil-macos-arm64-updates.json';
+  'https://github.com/anthonyhumphreys/anvil-stack/releases/download/app-updates/anvil-macos-arm64-updates.json';
 const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
 const INITIAL_UPDATE_CHECK_DELAY_MS = 15 * 1000;
 
