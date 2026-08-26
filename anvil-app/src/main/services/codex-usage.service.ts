@@ -98,7 +98,7 @@ async function getCodexCliDetails(): Promise<CodexCliDetails> {
   }
 }
 
-function readCodexAccountUsage(): Promise<AppServerCallResult> {
+export function readCodexAccountUsage(): Promise<AppServerCallResult> {
   return new Promise((resolve, reject) => {
     const proc = spawn('codex', ['app-server'], {
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -136,6 +136,7 @@ function readCodexAccountUsage(): Promise<AppServerCallResult> {
     };
 
     proc.on('error', (err) => fail(err));
+    proc.stdin.on('error', (err) => fail(err));
     proc.stderr.on('data', (chunk: Buffer) => {
       stderrChunks.push(chunk.toString('utf-8'));
     });
