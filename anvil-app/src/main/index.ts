@@ -66,6 +66,8 @@ import {
 } from './services/mobile-companion.service.js';
 import { cleanupStatusBar, initializeStatusBar } from './services/statusbar.service.js';
 import { cleanupSimulatorPreview } from './services/simulator-preview.service.js';
+import { isTelemetryEnabled } from './services/settings.service.js';
+import { initializeTelemetry } from './services/telemetry.service.js';
 
 const brandId = parseBrandFromArgs(process.argv);
 const brand = getBrand(brandId);
@@ -98,6 +100,12 @@ function configureUserDataPath(): void {
 
 app.setName(isolatedDevProfileActive ? `${brand.appName} UI Lab` : brand.appName);
 configureUserDataPath();
+initDatabase(brand.defaultTheme);
+initializeTelemetry({
+  enabled: isTelemetryEnabled(),
+  release: `anvil@${app.getVersion()}`,
+  environment: app.isPackaged ? 'production' : 'development',
+});
 
 let mainWindow: BrowserWindow | null = null;
 let rendererCspRegistered = false;
@@ -303,7 +311,6 @@ app.whenReady().then(() => {
   if (process.platform === 'darwin' && app.dock) {
     app.dock.setIcon(getAppIconPath());
   }
-  initDatabase(brand.defaultTheme);
   initializeAutomationRuntime();
 
   if (daemonMode) {

@@ -36,6 +36,7 @@ describe('fresh database schema', () => {
         'notion_database_id',
         'github_pat',
         'github_username',
+        'telemetry_enabled',
       ]) {
         expect(columns.has(requiredColumn), `Missing settings.${requiredColumn}`).toBe(true);
       }
@@ -119,7 +120,7 @@ describe('fresh database schema', () => {
         ).map((column) => column.name),
       );
 
-      expect(SCHEMA_VERSION).toBe(57);
+      expect(SCHEMA_VERSION).toBe(58);
       for (const column of [
         'local_llm_mode',
         'local_llm_provider',
@@ -130,6 +131,22 @@ describe('fresh database schema', () => {
       }
       expect(cloudColumns.has('endpoint')).toBe(true);
       expect(cloudColumns.has('token')).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('adds opt-in telemetry disabled by default', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec('CREATE TABLE settings (id INTEGER PRIMARY KEY)');
+      applyMigration(db, MIGRATIONS[58]);
+      db.exec('INSERT INTO settings (id) VALUES (1)');
+
+      const row = db.prepare('SELECT telemetry_enabled FROM settings WHERE id = 1').get() as {
+        telemetry_enabled: number;
+      };
+      expect(row.telemetry_enabled).toBe(0);
     } finally {
       db.close();
     }

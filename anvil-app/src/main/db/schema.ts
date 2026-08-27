@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 57;
+export const SCHEMA_VERSION = 58;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -332,6 +332,7 @@ CREATE TABLE IF NOT EXISTS settings (
   github_pat BLOB,
   github_username TEXT,
   cloud_features_enabled INTEGER NOT NULL DEFAULT 0,
+  telemetry_enabled INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -1809,5 +1810,8 @@ export const MIGRATIONS: Record<number, string> = {
       token BLOB NOT NULL,
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+  `,
+  58: `
+    ALTER TABLE settings ADD COLUMN telemetry_enabled INTEGER NOT NULL DEFAULT 0;
   `,
 };

@@ -21,6 +21,7 @@ import {
   Save,
   Settings,
   ShieldAlert,
+  ShieldCheck,
   Smartphone,
   Trash2,
   UserRound,
@@ -57,7 +58,14 @@ import { dispatchCodexSelectionChanged } from '../../utils/codex-selection';
 import { InlineNotice } from '../layout/ViewScaffold';
 
 type TestStatus = 'idle' | 'testing' | 'ok' | 'error';
-type SettingsCategoryId = 'profile' | 'ai' | 'delivery' | 'review' | 'devices' | 'danger';
+type SettingsCategoryId =
+  | 'profile'
+  | 'ai'
+  | 'delivery'
+  | 'review'
+  | 'devices'
+  | 'privacy'
+  | 'danger';
 type CodexAgentsStatus = { tone: 'success' | 'error'; message: string };
 type CodexModelPickerOption = CodexModelOption & { source: 'docs' | 'cli' };
 
@@ -123,6 +131,12 @@ const SETTINGS_CATEGORIES: Array<{
     label: 'Devices & system',
     description: 'Repo defaults and mobile companion access.',
     icon: MonitorSmartphone,
+  },
+  {
+    id: 'privacy',
+    label: 'Privacy',
+    description: 'Optional crash reporting.',
+    icon: ShieldCheck,
   },
   {
     id: 'danger',
@@ -2201,6 +2215,43 @@ export function SettingsView({
                     </div>
                   </div>
                 )}
+              </SettingsPanel>
+            </SettingsCategory>
+
+            <SettingsCategory
+              id="privacy"
+              hidden={activeCategory !== 'privacy'}
+              title="Privacy"
+              description="Choose whether Anvil may send crash reports when something breaks."
+              icon={ShieldCheck}
+            >
+              <SettingsPanel
+                title="Help improve Anvil"
+                description="Crash reports help identify failures that are difficult to reproduce locally."
+              >
+                <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border bg-bg-primary p-4 transition-colors hover:bg-bg-tertiary">
+                  <input
+                    type="checkbox"
+                    checked={settings.telemetryEnabled ?? false}
+                    onChange={(event) => update('telemetryEnabled', event.target.checked)}
+                    className="mt-1 h-4 w-4 accent-accent"
+                  />
+                  <span className="min-w-0">
+                    <span className="flex items-center gap-2 text-sm font-medium text-text-primary">
+                      <ShieldCheck size={15} className="text-accent" />
+                      Send crash reports
+                    </span>
+                    <span className="mt-1 block text-sm leading-relaxed text-text-secondary">
+                      Sends error stack traces, the Anvil version, and operating-system details to
+                      Sentry. Reports do not include screenshots, interaction history, or attached
+                      repository files.
+                    </span>
+                  </span>
+                </label>
+                <p className="text-xs leading-relaxed text-text-tertiary">
+                  Off by default. Save this setting, then restart Anvil for the change to take
+                  effect. Error stack traces may contain local file paths.
+                </p>
               </SettingsPanel>
             </SettingsCategory>
 
