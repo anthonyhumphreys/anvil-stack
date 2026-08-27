@@ -39,7 +39,12 @@ vi.mock('openai', () => ({
   }),
 }));
 
-import { buildCursorPrintArgs, callLlm, resetLlmClient } from '../llm.service.js';
+import {
+  buildCodexExecArgs,
+  buildCursorPrintArgs,
+  callLlm,
+  resetLlmClient,
+} from '../llm.service.js';
 
 function openAiSettings() {
   return {
@@ -164,6 +169,22 @@ describe('Cursor CLI routing', () => {
       '--model',
       'cursor-grok-4.5-medium',
       'Review this change',
+    ]);
+  });
+});
+
+describe('Codex CLI routing', () => {
+  it('uses the supported read-only sandbox for non-interactive prompts', () => {
+    expect(buildCodexExecArgs('/tmp/last-message.txt')).toEqual([
+      'exec',
+      '--skip-git-repo-check',
+      '--sandbox',
+      'read-only',
+      '--color',
+      'never',
+      '--output-last-message',
+      '/tmp/last-message.txt',
+      '-',
     ]);
   });
 });

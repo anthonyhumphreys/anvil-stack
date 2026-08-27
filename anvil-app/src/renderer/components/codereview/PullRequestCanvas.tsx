@@ -61,6 +61,32 @@ type CanvasNode = Node<CanvasNodeData, 'pullRequest'>;
 
 const nodeTypes = { pullRequest: PullRequestNode };
 
+interface CanvasErrorPresentation {
+  message: string;
+  retryable: boolean;
+}
+
+function presentCanvasError(error: string): CanvasErrorPresentation {
+  if (/unexpected argument|unknown (?:argument|option)/i.test(error)) {
+    return {
+      message: 'The installed Codex CLI is not compatible with this version of Anvil.',
+      retryable: false,
+    };
+  }
+
+  if (/spawn codex enoent|codex: command not found/i.test(error)) {
+    return {
+      message: 'Anvil could not find the Codex CLI on this computer.',
+      retryable: false,
+    };
+  }
+
+  return {
+    message: 'The request failed before the change story was ready.',
+    retryable: true,
+  };
+}
+
 export function PullRequestCanvas({
   repoId,
   pullRequestId,
@@ -158,6 +184,7 @@ export function PullRequestCanvas({
     [changeState, layoutPositions, selectedChapterId, selectedNodeId, visualisation],
   );
   const visibleNodeCount = nodes.filter((node) => !node.hidden).length;
+  const errorPresentation = error ? presentCanvasError(error) : null;
 
   const openNode = useCallback(
     (node: PullRequestVisualisationNode) => {
@@ -250,7 +277,11 @@ export function PullRequestCanvas({
   if (loading || !visualisation) {
     return (
       <div className="flex h-full min-h-0 items-center justify-center bg-bg-primary">
-        <div className="max-w-sm text-center">
+        <div
+          className="w-full max-w-md px-6 text-center"
+          role={error ? 'alert' : 'status'}
+          aria-live={error ? 'assertive' : 'polite'}
+        >
           <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-xl border border-accent/30 bg-accent/10 text-accent">
             {error ? <AlertTriangle size={18} /> : <Sparkles size={18} className="animate-pulse" />}
           </div>
@@ -258,16 +289,27 @@ export function PullRequestCanvas({
             {error ? 'PR Canvas could not be generated' : 'Building the change story'}
           </p>
           <p className="mt-2 text-xs leading-5 text-text-secondary">
-            {error ??
+            {errorPresentation?.message ??
               'Tracing behaviour, evidence, risks, and before/after logic across the pull request.'}
           </p>
-          {error && (
+          {errorPresentation && (
+            <details className="mt-3 text-left text-xs text-text-tertiary">
+              <summary className="mx-auto w-fit cursor-pointer select-none hover:text-text-secondary">
+                Technical details
+              </summary>
+              <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-bg-secondary p-3 font-mono leading-5 text-text-tertiary">
+                {error}
+              </pre>
+            </details>
+          )}
+          {errorPresentation?.retryable && (
             <button
               type="button"
               onClick={() => void generate(true)}
-              className="mt-4 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-white"
+              className="mt-4 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-white hover:bg-accent/85 disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={generating}
             >
-              Try again
+              {generating ? 'Retrying…' : 'Try again'}
             </button>
           )}
         </div>

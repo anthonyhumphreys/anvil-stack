@@ -254,6 +254,20 @@ export function buildCursorPrintArgs(prompt: string, model = 'auto'): string[] {
   return ['-p', '--model', model, prompt];
 }
 
+export function buildCodexExecArgs(outputPath: string): string[] {
+  return [
+    'exec',
+    '--skip-git-repo-check',
+    '--sandbox',
+    'read-only',
+    '--color',
+    'never',
+    '--output-last-message',
+    outputPath,
+    '-',
+  ];
+}
+
 async function callCursor(
   prompt: string,
   options?: LlmCallOptions,
@@ -342,27 +356,14 @@ async function callCodex(prompt: string, options?: LlmCallOptions): Promise<stri
         }
       };
 
-      const child = spawn(
-        'codex',
-        [
-          'exec',
-          '-',
-          '--skip-git-repo-check',
-          '--full-auto',
-          '--color',
-          'never',
-          '--output-last-message',
-          outputPath,
-        ],
-        {
-          ...(cwd && { cwd }),
-          env: {
-            ...process.env,
-            OTEL_SDK_DISABLED: 'true',
-          },
-          detached: process.platform !== 'win32',
+      const child = spawn('codex', buildCodexExecArgs(outputPath), {
+        ...(cwd && { cwd }),
+        env: {
+          ...process.env,
+          OTEL_SDK_DISABLED: 'true',
         },
-      );
+        detached: process.platform !== 'win32',
+      });
 
       let stdout = '';
       let stderr = '';
