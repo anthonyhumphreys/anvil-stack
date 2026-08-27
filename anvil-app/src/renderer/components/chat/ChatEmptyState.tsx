@@ -358,68 +358,75 @@ export function ChatEmptyState({
   ].includes(personaId);
 
   return (
-    <div className="flex h-full flex-col items-center justify-center px-4 py-8">
-      <div className="relative mb-4">
-        <div
-          className="flex h-12 w-12 items-center justify-center rounded-xl"
-          style={{ backgroundColor: `${personaColour}14` }}
-        >
-          <span style={{ color: personaColour }}>{icon}</span>
-        </div>
-        <div
-          className="absolute -right-1 -top-1 flex h-6 w-6 items-center justify-center rounded-full"
-          style={{ backgroundColor: personaColour }}
-        >
-          <Sparkles size={12} className="text-white" />
-        </div>
-      </div>
-
-      <h3 className="mb-1.5 text-lg font-semibold tracking-tight text-text-primary">
-        Start a conversation with {personaName}
-      </h3>
-
-      <p className="mb-5 max-w-md text-center text-sm leading-relaxed text-text-tertiary">
-        {isDbExpertPersona
-          ? 'Import SSMS schema or stored procedure exports in DB Insights, then ask questions about the database design here.'
-          : isItsmPersona && !hasRepos
-            ? 'Use Chat and the ITSM workbench to explore the service, issue, evidence, and handover. Add repositories when technical context would help.'
-            : hasRepos
-              ? 'Ask about your code, request changes, or get help understanding the codebase.'
-              : hasGovernanceDocs
-                ? 'Ask questions using the governance documents as context.'
-                : 'Add repositories or governance documents to give Chat more context, or ask questions directly.'}
-      </p>
-
-      <div className="grid w-full max-w-2xl grid-cols-1 gap-2 sm:grid-cols-2">
-        {suggestions.map((suggestion) => (
-          <button
-            key={suggestion.label}
-            onClick={() => onSuggestionClick(suggestion.prompt)}
-            className={getSuggestionCardClassName()}
-          >
-            <div className="flex w-full items-center justify-between gap-2">
-              <span
-                className="text-xs font-semibold uppercase tracking-wider transition-colors"
-                style={{ color: personaColour }}
-              >
-                {suggestion.label}
-              </span>
-              <ArrowRight size={12} className={getSuggestionArrowClassName()} />
+    <div className="flex h-full w-full items-center justify-center px-2 py-8">
+      <div className="w-full max-w-2xl">
+        <div className="flex items-start gap-4">
+          <div className="relative shrink-0">
+            <div
+              className="flex h-12 w-12 items-center justify-center rounded-xl border"
+              style={{
+                backgroundColor: `${personaColour}0f`,
+                borderColor: `${personaColour}24`,
+              }}
+            >
+              <span style={{ color: personaColour }}>{icon}</span>
             </div>
-            <span className="mt-1 line-clamp-1 text-sm text-text-secondary transition-colors group-hover:text-text-primary group-focus-visible:text-text-primary">
-              {suggestion.prompt}
-            </span>
-          </button>
-        ))}
+            <div
+              className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full ring-2 ring-bg-primary"
+              style={{ backgroundColor: personaColour }}
+            >
+              <Sparkles size={10} className="text-bg-primary" aria-hidden="true" />
+            </div>
+          </div>
+
+          <div className="min-w-0 pt-0.5">
+            <h3 className="text-lg font-semibold tracking-tight text-text-primary">
+              Start a conversation with {personaName}
+            </h3>
+
+            <p className="mt-1 max-w-xl text-sm leading-6 text-text-tertiary">
+              {isDbExpertPersona
+                ? 'Import SSMS schema or stored procedure exports in DB Insights, then ask questions about the database design here.'
+                : isItsmPersona && !hasRepos
+                  ? 'Use Chat and the ITSM workbench to explore the service, issue, evidence, and handover. Add repositories when technical context would help.'
+                  : hasRepos
+                    ? 'Ask about your code, request a change, or work through an unfamiliar part of the codebase.'
+                    : hasGovernanceDocs
+                      ? 'Ask questions using the governance documents as context.'
+                      : 'Add repositories or governance documents for context, or start with a general question.'}
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-6 grid grid-cols-1 gap-1 sm:grid-cols-2 sm:gap-x-3">
+          {suggestions.map((suggestion) => (
+            <button
+              key={suggestion.label}
+              onClick={() => onSuggestionClick(suggestion.prompt)}
+              className={getSuggestionCardClassName()}
+            >
+              <span
+                className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md"
+                style={{ backgroundColor: `${personaColour}12`, color: personaColour }}
+              >
+                <ArrowRight size={13} aria-hidden="true" />
+              </span>
+              <span className="min-w-0">
+                <span className="block text-sm font-medium text-text-primary">
+                  {suggestion.label}
+                </span>
+                <span className="mt-0.5 block line-clamp-1 text-xs leading-5 text-text-tertiary transition-colors group-hover:text-text-secondary group-focus-visible:text-text-secondary">
+                  {suggestion.prompt}
+                </span>
+              </span>
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   );
 }
 
 export function getSuggestionCardClassName(): string {
-  return 'suggestion-card group flex flex-col items-start rounded-lg border border-border-subtle bg-bg-secondary/45 px-3 py-2.5 text-left transition-colors duration-200 hover:border-border hover:bg-bg-tertiary focus-visible:border-border focus-visible:bg-bg-tertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35';
-}
-
-export function getSuggestionArrowClassName(): string {
-  return 'text-text-tertiary opacity-0 transition-all group-hover:translate-x-0.5 group-hover:opacity-100 group-focus-visible:translate-x-0.5 group-focus-visible:opacity-100';
+  return 'suggestion-card group flex min-w-0 items-start gap-3 rounded-lg px-2.5 py-2.5 text-left transition-colors duration-200 hover:bg-bg-tertiary/70 focus-visible:bg-bg-tertiary/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60';
 }

@@ -730,17 +730,17 @@ export function ChatInput({
         : undefined;
 
   return (
-    <div className="border-t border-border/50 bg-bg-secondary px-4 py-3 xl:px-6">
-      <div className="mx-auto w-full max-w-[1120px]">
+    <div className="border-t border-border-subtle bg-bg-primary px-3 pb-3 pt-2 xl:px-5 xl:pb-4 xl:pt-3">
+      <div className="mx-auto w-full max-w-[1040px]">
         <div
-          className={`relative rounded-xl border bg-bg-primary transition-[border-color,background-color,box-shadow] duration-200 focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/30 ${
+          className={`relative rounded-xl border bg-bg-secondary transition-[border-color,background-color,box-shadow] duration-200 focus-within:border-accent/70 focus-within:ring-1 focus-within:ring-accent/25 ${
             disabled && !busy ? 'opacity-60' : ''
           } ${
             draggingFiles
-              ? 'border-accent bg-accent/5 shadow-accent/10'
+              ? 'border-accent bg-accent/5'
               : hasContent
-                ? 'border-accent/30 shadow-accent/5'
-                : 'border-border'
+                ? 'border-border bg-bg-secondary'
+                : 'border-border-subtle'
           }`}
           onDragEnter={handleDragEnter}
           onDragOver={handleDragOver}
@@ -861,17 +861,17 @@ export function ChatInput({
                     : 'Ask anything, paste images, or drop files here...'
             }
             rows={1}
-            className="block w-full resize-none bg-transparent px-4 py-3.5 text-sm leading-6 text-text-primary placeholder:text-text-tertiary focus:outline-none disabled:opacity-50"
-            style={{ maxHeight: '200px', minHeight: '56px' }}
+            className="chat-composer-textarea block w-full resize-none bg-transparent px-4 pb-3 pt-4 text-[15px] leading-6 text-text-primary placeholder:text-text-tertiary focus:outline-none disabled:opacity-50"
+            style={{ maxHeight: '200px', minHeight: '72px' }}
           />
 
-          <div className="flex min-h-12 flex-wrap items-center justify-between gap-2 border-t border-border-subtle/70 px-2.5 py-1.5">
+          <div className="flex min-h-12 flex-wrap items-center justify-between gap-2 px-2.5 pb-2 pt-1">
             <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
               <button
                 type="button"
                 onClick={() => void handleSelectAttachments()}
                 disabled={disabled || preparingAttachments}
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-text-tertiary transition-colors duration-200 hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-30"
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-text-tertiary transition-colors duration-200 hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-30"
                 title="Attach files"
                 aria-label="Attach files"
               >
@@ -883,7 +883,7 @@ export function ChatInput({
               </button>
 
               {onCodexModeChange && (
-                <label className="flex h-9 min-w-0 items-center gap-1.5 rounded-xl px-2 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-within:ring-2 focus-within:ring-accent/70">
+                <label className="flex h-8 min-w-0 items-center gap-1.5 rounded-lg px-2 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-within:ring-2 focus-within:ring-accent/70">
                   <Shield size={13} className="shrink-0 text-text-tertiary" />
                   <select
                     value={codexMode}
@@ -909,14 +909,14 @@ export function ChatInput({
 
               {onCollaborationModeChange && (
                 <div
-                  className="flex h-9 items-center rounded-xl bg-bg-secondary/70 p-0.5"
+                  className="flex h-8 items-center rounded-lg bg-bg-primary/70 p-0.5"
                   role="group"
                   aria-label="Collaboration mode"
                 >
                   <button
                     type="button"
                     onClick={() => onCollaborationModeChange('default')}
-                    className={`flex h-8 items-center gap-1.5 rounded-lg px-2 text-xs font-medium transition-colors ${
+                    className={`flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium transition-colors ${
                       collaborationMode === 'default'
                         ? 'bg-bg-elevated text-text-primary shadow-sm'
                         : 'text-text-tertiary hover:text-text-primary'
@@ -930,7 +930,7 @@ export function ChatInput({
                   <button
                     type="button"
                     onClick={() => onCollaborationModeChange('plan')}
-                    className={`flex h-8 items-center gap-1.5 rounded-lg px-2 text-xs font-medium transition-colors ${
+                    className={`flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium transition-colors ${
                       collaborationMode === 'plan'
                         ? 'bg-info/12 text-info shadow-sm'
                         : 'text-text-tertiary hover:text-text-primary'
@@ -951,10 +951,10 @@ export function ChatInput({
                   type="button"
                   onClick={() => onFastModeChange(!fastMode)}
                   disabled={!fastModeAvailable}
-                  className={`flex h-9 shrink-0 items-center gap-1.5 rounded-xl border px-2.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 ${
+                  className={`flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 ${
                     fastMode
-                      ? 'border-warning/35 bg-warning/12 text-warning'
-                      : 'border-border bg-bg-secondary text-text-secondary hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40'
+                      ? 'bg-warning/12 text-warning'
+                      : 'text-text-secondary hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40'
                   }`}
                   aria-pressed={fastMode}
                   title={
@@ -998,7 +998,7 @@ export function ChatInput({
                 <button
                   type="button"
                   onClick={onStop}
-                  className="flex h-9 items-center justify-center gap-1.5 rounded-xl bg-error px-3 text-xs font-semibold text-white transition-colors duration-200 hover:bg-error/80"
+                  className="flex h-8 items-center justify-center gap-1.5 rounded-lg bg-error px-3 text-xs font-semibold text-white transition-colors duration-200 hover:bg-error/80"
                   title="Stop generation"
                   aria-label="Stop generation"
                 >
@@ -1010,7 +1010,7 @@ export function ChatInput({
                   type="button"
                   onClick={handleSend}
                   disabled={disabled || !hasContent || preparingAttachments}
-                  className="composer-send flex h-9 w-9 items-center justify-center rounded-xl transition-[transform,filter,opacity] duration-200 disabled:opacity-30"
+                  className="composer-send flex h-8 w-8 items-center justify-center rounded-lg transition-[transform,filter,opacity] duration-200 disabled:opacity-30"
                   style={{
                     backgroundColor: hasContent ? personaColour : `${personaColour}40`,
                   }}

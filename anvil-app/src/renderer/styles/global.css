@@ -141,6 +141,10 @@ body,
   border-radius: 4px;
 }
 
+.chat-composer-textarea:focus-visible {
+  outline: none;
+}
+
 .workflow-input {
   width: 100%;
   border: 1px solid var(--color-border);
