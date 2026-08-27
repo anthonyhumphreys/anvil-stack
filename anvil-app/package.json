@@ -1,6 +1,6 @@
 {
   "name": "anvil",
-  "version": "0.6.8",
+  "version": "0.6.9",
   "description": "Anvil developer mission control",
   "main": "out/main/index.js",
   "type": "module",
@@ -47,6 +47,7 @@
     "@anvilstack/registry-cli": "^0.1.1",
     "@dagrejs/dagre": "^3.1.0",
     "@react-three/fiber": "^9.7.0",
+    "@sentry/electron": "^7.17.0",
     "@shikijs/langs": "^4.0.2",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.12.0",

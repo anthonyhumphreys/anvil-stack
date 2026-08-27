@@ -24,6 +24,7 @@ describe('buildExecutionTopology', () => {
     });
 
     expect(result.delegatedCount).toBe(0);
+    expect(result.startedAt).toBe('2026-08-10T10:00:00.000Z');
     expect(result.nodes).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ kind: 'thread', label: 'Ship the feature' }),
@@ -110,5 +111,6 @@ describe('buildExecutionTopology', () => {
       expect.objectContaining({ kind: 'thread', status: 'idle', label: 'Selected thread' }),
     ]);
     expect(result.runningCount).toBe(0);
+    expect(result.startedAt).toBeUndefined();
   });
 });

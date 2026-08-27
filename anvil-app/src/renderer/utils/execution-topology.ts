@@ -28,6 +28,7 @@ export interface ExecutionTopology {
   nodes: ExecutionTopologyNode[];
   delegatedCount: number;
   runningCount: number;
+  startedAt?: string;
 }
 
 interface ExecutionTopologyInput {
@@ -138,6 +139,9 @@ export function buildExecutionTopology({
     delegatedCount: result.filter((node) => node.kind === 'subagent').length,
     runningCount: result.filter((node) => node.kind !== 'thread' && node.status === 'running')
       .length,
+    startedAt: relevantSessions
+      .map((session) => session.startedAt)
+      .sort((left, right) => Date.parse(left) - Date.parse(right))[0],
   };
 }
 

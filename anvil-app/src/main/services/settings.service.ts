@@ -68,6 +68,7 @@ interface SettingsRow {
   github_pat: Buffer | null;
   github_username: string | null;
   cloud_features_enabled: number | null;
+  telemetry_enabled: number | null;
 }
 
 const APP_THEMES: AppTheme[] = [
@@ -316,6 +317,7 @@ export function getSettings(): AppSettings {
     githubPat: decryptSecret(row.github_pat, 'settings.githubPat'),
     githubUsername: row.github_username ?? undefined,
     cloudFeaturesEnabled: row.cloud_features_enabled === 1,
+    telemetryEnabled: row.telemetry_enabled === 1,
     defaultRepoPath: row.default_repo_path ?? undefined,
     theme: normaliseTheme(row.theme),
   };
@@ -527,6 +529,10 @@ export function updateSettings(partial: Partial<AppSettings>): void {
     setClauses.push('cloud_features_enabled = ?');
     values.push(partial.cloudFeaturesEnabled ? 1 : 0);
   }
+  if (partial.telemetryEnabled !== undefined) {
+    setClauses.push('telemetry_enabled = ?');
+    values.push(partial.telemetryEnabled ? 1 : 0);
+  }
   if (partial.theme !== undefined) {
     setClauses.push('theme = ?');
     values.push(normaliseTheme(partial.theme));
@@ -624,8 +630,16 @@ function defaultSettings(): AppSettings {
     githubPat: undefined,
     githubUsername: undefined,
     cloudFeaturesEnabled: false,
+    telemetryEnabled: false,
     theme: 'system',
   };
+}
+
+export function isTelemetryEnabled(): boolean {
+  const row = getDb().prepare('SELECT telemetry_enabled FROM settings WHERE id = 1').get() as
+    | { telemetry_enabled: number | null }
+    | undefined;
+  return row?.telemetry_enabled === 1;
 }
 
 export function resetOnboardingState(): void {

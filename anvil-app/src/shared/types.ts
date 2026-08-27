@@ -1987,6 +1987,7 @@ export interface AppSettings {
   githubPat?: string;
   githubUsername?: string;
   cloudFeaturesEnabled: boolean;
+  telemetryEnabled: boolean;
   theme: AppTheme;
   userRole?: UserRole;
 }
