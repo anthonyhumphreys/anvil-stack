@@ -168,7 +168,6 @@ function subagentStatus(
   toolStatus: 'inProgress' | 'completed' | 'failed' | undefined,
 ): ExecutionTopologyNodeStatus {
   if (toolStatus === 'failed') return 'failed';
-  if (toolStatus === 'inProgress') return 'running';
   switch (status) {
     case 'pendingInit':
     case 'running':
@@ -183,6 +182,7 @@ function subagentStatus(
     case 'shutdown':
       return 'stopped';
     default:
+      if (toolStatus === 'inProgress') return 'running';
       return toolStatus === 'completed' ? 'completed' : 'idle';
   }
 }
