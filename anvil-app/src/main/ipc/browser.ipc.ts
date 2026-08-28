@@ -5,6 +5,12 @@ import { resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { getBrowserMcpNames, PRIMARY_BROWSER_MCP_NAME } from '../../shared/app-identity.js';
 import {
+  buildBrowserMcpAddArgs,
+  isCurrentBrowserMcpRegistration,
+  parseCodexStdioMcpRegistration,
+  type CodexStdioMcpRegistration,
+} from '../services/browser-mcp-registration.service.js';
+import {
   listTargets,
   addManualTarget,
   startBridge,
@@ -54,16 +60,18 @@ app.on('web-contents-created', (_event, contents) => {
 // Codex MCP registration
 // ---------------------------------------------------------------------------
 
-async function isChromeMcpRegistered(): Promise<boolean> {
+async function getChromeMcpRegistration(name: string): Promise<CodexStdioMcpRegistration | null> {
   try {
-    const { stdout } = await execFileAsync('codex', ['mcp', 'list'], { timeout: 10_000 });
-    return getBrowserMcpNames().some((name) => stdout.includes(name));
+    const { stdout } = await execFileAsync('codex', ['mcp', 'get', name, '--json'], {
+      timeout: 10_000,
+    });
+    return parseCodexStdioMcpRegistration(String(stdout));
   } catch {
-    return false;
+    return null;
   }
 }
 
-async function registerChromeMcp(): Promise<{ success: boolean; error?: string }> {
+function resolveChromeMcpScriptPath(): string | null {
   // In dev: app.getAppPath() → project root. In prod: app.getAppPath() → app.asar
   // The scripts/ dir lives at project root, so try both locations
   const appPath = app.getAppPath();
@@ -73,21 +81,53 @@ async function registerChromeMcp(): Promise<{ success: boolean; error?: string }
     resolve(__dirname, '../../scripts/chrome-mcp-server.mjs'),
   ];
   const scriptPath = candidates.find((p) => existsSync(p)) ?? candidates[0];
+  return existsSync(scriptPath) ? scriptPath : null;
+}
 
-  if (!existsSync(scriptPath)) {
-    return { success: false, error: `MCP server script not found at ${scriptPath}` };
+async function removeChromeMcp(name: string): Promise<void> {
+  await execFileAsync('codex', ['mcp', 'remove', name], { timeout: 15_000 });
+}
+
+async function registerChromeMcp(): Promise<{ success: boolean; error?: string }> {
+  const scriptPath = resolveChromeMcpScriptPath();
+
+  if (!scriptPath) {
+    return { success: false, error: 'Anvil Chrome MCP server script not found.' };
   }
 
-  if (await isChromeMcpRegistered()) {
-    return { success: true };
+  const registrations = new Map<string, CodexStdioMcpRegistration>();
+  for (const name of getBrowserMcpNames()) {
+    const registration = await getChromeMcpRegistration(name);
+    if (registration) registrations.set(name, registration);
+  }
+
+  const primaryRegistration = registrations.get(PRIMARY_BROWSER_MCP_NAME);
+  if (
+    primaryRegistration &&
+    isCurrentBrowserMcpRegistration(primaryRegistration, process.execPath, scriptPath)
+  ) {
+    try {
+      for (const name of registrations.keys()) {
+        if (name !== PRIMARY_BROWSER_MCP_NAME) await removeChromeMcp(name);
+      }
+      return { success: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[Browser] Failed to remove legacy MCP registration: ${msg}`);
+      return { success: false, error: msg };
+    }
   }
 
   try {
+    if (primaryRegistration) await removeChromeMcp(PRIMARY_BROWSER_MCP_NAME);
     await execFileAsync(
       'codex',
-      ['mcp', 'add', PRIMARY_BROWSER_MCP_NAME, '--', process.execPath, scriptPath],
+      buildBrowserMcpAddArgs(PRIMARY_BROWSER_MCP_NAME, process.execPath, scriptPath),
       { timeout: 15_000 },
     );
+    for (const name of registrations.keys()) {
+      if (name !== PRIMARY_BROWSER_MCP_NAME) await removeChromeMcp(name);
+    }
     console.log(`[Browser] Registered ${PRIMARY_BROWSER_MCP_NAME} MCP with Codex CLI`);
     return { success: true };
   } catch (err) {
@@ -157,6 +197,24 @@ export function registerBrowserHandlers(): void {
       return wc.debugger.sendCommand(method, params);
     },
   );
+
+  void repairChromeMcpRegistration().catch((err) => {
+    console.warn(
+      `[Browser] Failed to check Chrome MCP registration: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  });
+}
+
+async function repairChromeMcpRegistration(): Promise<void> {
+  const registrations = await Promise.all(
+    getBrowserMcpNames().map((name) => getChromeMcpRegistration(name)),
+  );
+  if (!registrations.some(Boolean)) return;
+
+  const result = await registerChromeMcp();
+  if (!result.success) {
+    console.warn(`[Browser] Failed to repair Chrome MCP registration: ${result.error}`);
+  }
 }
 
 export { cleanupBrowser };

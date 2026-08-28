@@ -13,7 +13,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { createInterface } from 'node:readline';
 import { request } from 'node:http';
 
 // ---------------------------------------------------------------------------
@@ -260,28 +259,35 @@ async function handleToolCall(name, args) {
 // MCP stdio transport — JSON-RPC 2.0
 // ---------------------------------------------------------------------------
 
-function send(msg) {
+function send(msg, framing) {
   const json = JSON.stringify(msg);
-  process.stdout.write(`Content-Length: ${Buffer.byteLength(json)}\r\n\r\n${json}`);
+  process.stdout.write(
+    framing === 'content-length'
+      ? `Content-Length: ${Buffer.byteLength(json)}\r\n\r\n${json}`
+      : `${json}\n`,
+  );
 }
 
-function handleMessage(msg) {
+function handleMessage(msg, framing) {
   const { id, method, params } = msg;
 
   switch (method) {
     case 'initialize':
-      send({
-        jsonrpc: '2.0',
-        id,
-        result: {
-          protocolVersion: '2024-11-05',
-          capabilities: { tools: {} },
-          serverInfo: {
-            name: 'anvil-chrome',
-            version: '0.1.0',
+      send(
+        {
+          jsonrpc: '2.0',
+          id,
+          result: {
+            protocolVersion: '2024-11-05',
+            capabilities: { tools: {} },
+            serverInfo: {
+              name: 'anvil-chrome',
+              version: '0.1.0',
+            },
           },
         },
-      });
+        framing,
+      );
       break;
 
     case 'notifications/initialized':
@@ -289,37 +295,46 @@ function handleMessage(msg) {
       break;
 
     case 'tools/list':
-      send({
-        jsonrpc: '2.0',
-        id,
-        result: { tools: TOOLS },
-      });
+      send(
+        {
+          jsonrpc: '2.0',
+          id,
+          result: { tools: TOOLS },
+        },
+        framing,
+      );
       break;
 
     case 'tools/call':
       handleToolCall(params.name, params.arguments ?? {})
         .then((result) => {
-          send({ jsonrpc: '2.0', id, result });
+          send({ jsonrpc: '2.0', id, result }, framing);
         })
         .catch((err) => {
-          send({
-            jsonrpc: '2.0',
-            id,
-            result: {
-              isError: true,
-              content: [{ type: 'text', text: err.message }],
+          send(
+            {
+              jsonrpc: '2.0',
+              id,
+              result: {
+                isError: true,
+                content: [{ type: 'text', text: err.message }],
+              },
             },
-          });
+            framing,
+          );
         });
       break;
 
     default:
       if (id) {
-        send({
-          jsonrpc: '2.0',
-          id,
-          error: { code: -32601, message: `Method not found: ${method}` },
-        });
+        send(
+          {
+            jsonrpc: '2.0',
+            id,
+            error: { code: -32601, message: `Method not found: ${method}` },
+          },
+          framing,
+        );
       }
   }
 }
@@ -335,40 +350,41 @@ process.stdin.on('data', (chunk) => {
   buffer += chunk;
 
   while (true) {
-    const headerEnd = buffer.indexOf('\r\n\r\n');
-    if (headerEnd === -1) break;
+    let messageStr;
+    let framing;
+    if (/^Content-Length:/i.test(buffer)) {
+      framing = 'content-length';
+      const headerEnd = buffer.indexOf('\r\n\r\n');
+      if (headerEnd === -1) break;
 
-    const header = buffer.slice(0, headerEnd);
-    const match = header.match(/Content-Length:\s*(\d+)/i);
-    if (!match) {
-      // Try to parse as raw JSON (some transports skip framing)
-      try {
-        const msg = JSON.parse(buffer);
+      const header = buffer.slice(0, headerEnd);
+      const match = header.match(/Content-Length:\s*(\d+)/i);
+      if (!match) {
         buffer = '';
-        handleMessage(msg);
-      } catch {
-        buffer = '';
+        break;
       }
-      break;
+
+      const contentLength = parseInt(match[1], 10);
+      const messageStart = headerEnd + 4;
+      if (buffer.length < messageStart + contentLength) break;
+
+      messageStr = buffer.slice(messageStart, messageStart + contentLength);
+      buffer = buffer.slice(messageStart + contentLength);
+    } else {
+      framing = 'newline';
+      const lineEnd = buffer.indexOf('\n');
+      if (lineEnd === -1) break;
+      messageStr = buffer.slice(0, lineEnd).trim();
+      buffer = buffer.slice(lineEnd + 1);
+      if (!messageStr) continue;
     }
 
-    const contentLength = parseInt(match[1], 10);
-    const messageStart = headerEnd + 4;
-    if (buffer.length < messageStart + contentLength) break;
-
-    const messageStr = buffer.slice(messageStart, messageStart + contentLength);
-    buffer = buffer.slice(messageStart + contentLength);
-
     try {
-      handleMessage(JSON.parse(messageStr));
+      handleMessage(JSON.parse(messageStr), framing);
     } catch (err) {
       process.stderr.write(`[chrome-mcp] Parse error: ${err.message}\n`);
     }
   }
 });
-
-// Also handle newline-delimited JSON (fallback)
-const rl = createInterface({ input: process.stdin, terminal: false });
-// The 'data' handler above takes priority; rl is a safety net for simpler transports.
 
 process.stderr.write('[chrome-mcp] Anvil Chrome MCP server started\n');
