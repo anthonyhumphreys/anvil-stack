@@ -10,6 +10,7 @@ import {
   ClipboardCheck,
   Code2,
   Cloud,
+  Compass,
   FolderGit2,
   Gauge,
   Loader2,
@@ -150,6 +151,7 @@ interface SettingsViewProps {
   onSettingsSaved?: () => void;
   onRoleChange?: (role: UserRole) => void;
   onThemeChange?: (theme: AppTheme) => void;
+  onPreviewOnboarding?: () => void;
   userRole?: UserRole;
 }
 
@@ -222,6 +224,7 @@ export function SettingsView({
   onSettingsSaved,
   onRoleChange,
   onThemeChange,
+  onPreviewOnboarding,
   userRole,
 }: SettingsViewProps) {
   const navigate = useNavigate();
@@ -977,6 +980,26 @@ export function SettingsView({
                     }}
                   />
                 </ButtonGrid>
+                {onPreviewOnboarding && (
+                  <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-text-primary">
+                        Preview first-run setup
+                      </p>
+                      <p className="mt-0.5 text-xs text-text-tertiary">
+                        Replay the role and connector screens without changing saved settings.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={onPreviewOnboarding}
+                      className="inline-flex shrink-0 items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:border-text-tertiary hover:bg-bg-tertiary hover:text-text-primary"
+                    >
+                      <Compass size={14} aria-hidden="true" />
+                      Preview onboarding
+                    </button>
+                  </div>
+                )}
               </SettingsPanel>
 
               <SettingsPanel

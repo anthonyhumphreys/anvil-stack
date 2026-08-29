@@ -42,6 +42,7 @@ import type { UserRole, Feature, AppTheme } from '../shared/types';
 import { ROLE_FEATURES } from '../shared/types';
 
 const STARTUP_SPLASH_MIN_DURATION_MS = 1500;
+type OnboardingPreviewStep = 'role' | 'connectors';
 const WorkflowsView = lazy(() =>
   import('./components/workflows/WorkflowsView').then((module) => ({
     default: module.WorkflowsView,
@@ -117,6 +118,9 @@ export function App() {
   const [roleLoaded, setRoleLoaded] = useState(false);
   const [connectorsConfigured, setConnectorsConfigured] = useState(false);
   const [startupSplashElapsed, setStartupSplashElapsed] = useState(false);
+  const [onboardingPreviewStep, setOnboardingPreviewStep] = useState<OnboardingPreviewStep | null>(
+    null,
+  );
 
   const checkConnections = useCallback(async () => {
     try {
@@ -233,6 +237,30 @@ export function App() {
 
   if (!roleLoaded || !startupSplashElapsed) {
     return <SplashScreen label={`Starting ${fallbackBrand.appName}`} />;
+  }
+
+  if (onboardingPreviewStep === 'role') {
+    return (
+      <BrandProvider>
+        <RolePickerOverlay
+          preview
+          onRoleSelected={() => setOnboardingPreviewStep('connectors')}
+          onExitPreview={() => setOnboardingPreviewStep(null)}
+        />
+      </BrandProvider>
+    );
+  }
+
+  if (onboardingPreviewStep === 'connectors') {
+    return (
+      <BrandProvider>
+        <ConnectorSetupOverlay
+          preview
+          onContinue={() => setOnboardingPreviewStep(null)}
+          onExitPreview={() => setOnboardingPreviewStep(null)}
+        />
+      </BrandProvider>
+    );
   }
 
   if (!userRole) {
@@ -588,6 +616,7 @@ export function App() {
                         onSettingsSaved={checkConnections}
                         onRoleChange={handleRoleChange}
                         onThemeChange={handleThemeChange}
+                        onPreviewOnboarding={() => setOnboardingPreviewStep('role')}
                         userRole={userRole}
                       />
                     </ErrorBoundary>

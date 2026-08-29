@@ -1,6 +1,7 @@
 import { useBrand } from '../../contexts/BrandContext';
 import type { UserRole } from '../../../shared/types';
 import { ArrowRight, Code2, LifeBuoy, PenTool, Workflow, type LucideIcon } from 'lucide-react';
+import { OnboardingPreviewBar } from './OnboardingPreviewBar';
 
 interface RoleOption {
   role: UserRole;
@@ -43,12 +44,23 @@ const ROLES: RoleOption[] = [
 
 interface RolePickerOverlayProps {
   onRoleSelected: (role: UserRole) => void;
+  preview?: boolean;
+  onExitPreview?: () => void;
 }
 
-export function RolePickerOverlay({ onRoleSelected }: RolePickerOverlayProps) {
+export function RolePickerOverlay({
+  onRoleSelected,
+  preview = false,
+  onExitPreview,
+}: RolePickerOverlayProps) {
   const brand = useBrand();
 
   const handleSelect = async (role: UserRole) => {
+    if (preview) {
+      onRoleSelected(role);
+      return;
+    }
+
     try {
       await window.anvil.settings.update({ userRole: role });
       onRoleSelected(role);
@@ -58,8 +70,13 @@ export function RolePickerOverlay({ onRoleSelected }: RolePickerOverlayProps) {
   };
 
   return (
-    <div className="flex h-screen items-start justify-center overflow-y-auto bg-bg-primary py-14 sm:items-center">
+    <div
+      className={`flex h-screen items-start justify-center overflow-y-auto bg-bg-primary sm:items-center ${
+        preview ? 'py-24' : 'py-14'
+      }`}
+    >
       <div className="titlebar-drag fixed inset-x-0 top-0 h-10" />
+      {preview && onExitPreview && <OnboardingPreviewBar onExit={onExitPreview} />}
       <div className="w-full max-w-md space-y-6 px-6">
         <div className="text-center">
           <h1 className="text-2xl font-bold text-accent">{brand.appName}</h1>

@@ -13,14 +13,21 @@ import {
 } from 'lucide-react';
 import { useBrand } from '../../contexts/BrandContext';
 import type { AppSettings } from '../../../shared/types';
+import { OnboardingPreviewBar } from './OnboardingPreviewBar';
 
 type TestStatus = 'idle' | 'testing' | 'ok' | 'error';
 
 interface ConnectorSetupOverlayProps {
   onContinue: () => void;
+  preview?: boolean;
+  onExitPreview?: () => void;
 }
 
-export function ConnectorSetupOverlay({ onContinue }: ConnectorSetupOverlayProps) {
+export function ConnectorSetupOverlay({
+  onContinue,
+  preview = false,
+  onExitPreview,
+}: ConnectorSetupOverlayProps) {
   const brand = useBrand();
   const [settings, setSettings] = useState<Partial<AppSettings>>({});
   const [expandedCard, setExpandedCard] = useState<string | null>(null);
@@ -49,6 +56,7 @@ export function ConnectorSetupOverlay({ onContinue }: ConnectorSetupOverlayProps
   };
 
   const saveSettings = async () => {
+    if (preview) return;
     await window.anvil.settings.update(settings);
   };
 
@@ -133,7 +141,8 @@ export function ConnectorSetupOverlay({ onContinue }: ConnectorSetupOverlayProps
   return (
     <div className="flex h-screen items-center justify-center overflow-auto bg-bg-primary">
       <div className="titlebar-drag fixed inset-x-0 top-0 h-10" />
-      <div className="w-full max-w-lg space-y-4 px-6 py-16">
+      {preview && onExitPreview && <OnboardingPreviewBar onExit={onExitPreview} />}
+      <div className={`w-full max-w-lg space-y-4 px-6 ${preview ? 'py-24' : 'py-16'}`}>
         <div className="text-center">
           <h1 className="text-2xl font-bold text-accent">{brand.appName}</h1>
           <h2 className="mt-2 text-lg font-semibold text-text-primary">Connect Your Tools</h2>
@@ -258,7 +267,12 @@ export function ConnectorSetupOverlay({ onContinue }: ConnectorSetupOverlayProps
                 </div>
               )}
               {llmProvider !== 'azure' && (
-                <TestButton status={llmStatus} onClick={testLlm} label="Test Connection" />
+                <TestButton
+                  status={llmStatus}
+                  onClick={testLlm}
+                  label="Test Connection"
+                  disabled={preview}
+                />
               )}
             </div>
           </ConnectorCard>
@@ -355,7 +369,12 @@ export function ConnectorSetupOverlay({ onContinue }: ConnectorSetupOverlayProps
                   />
                 </>
               )}
-              <TestButton status={wiStatus} onClick={testWi} label="Test Connection" />
+              <TestButton
+                status={wiStatus}
+                onClick={testWi}
+                label="Test Connection"
+                disabled={preview}
+              />
             </div>
           </ConnectorCard>
 
@@ -447,7 +466,7 @@ export function ConnectorSetupOverlay({ onContinue }: ConnectorSetupOverlayProps
                   </p>
                 </>
               )}
-              <TestButton status={gitStatus} onClick={saveGit} label="Save" />
+              <TestButton status={gitStatus} onClick={saveGit} label="Save" disabled={preview} />
             </div>
           </ConnectorCard>
 
@@ -488,6 +507,7 @@ export function ConnectorSetupOverlay({ onContinue }: ConnectorSetupOverlayProps
                 status={confluenceStatus}
                 onClick={testConfluence}
                 label="Test Connection"
+                disabled={preview}
               />
             </div>
           </ConnectorCard>
@@ -648,15 +668,18 @@ function TestButton({
   status,
   onClick,
   label,
+  disabled = false,
 }: {
   status: TestStatus;
   onClick: () => void;
   label: string;
+  disabled?: boolean;
 }) {
   return (
     <button
       onClick={onClick}
-      disabled={status === 'testing'}
+      disabled={disabled || status === 'testing'}
+      title={disabled ? 'Connection tests are unavailable in preview mode' : undefined}
       className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-text-secondary transition-colors hover:border-text-tertiary hover:text-text-primary disabled:opacity-50"
     >
       {status === 'testing' && <Loader2 size={12} className="animate-spin" />}
