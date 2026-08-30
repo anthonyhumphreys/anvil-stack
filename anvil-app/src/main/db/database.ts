@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import { app } from 'electron';
 import path from 'node:path';
@@ -17,6 +17,7 @@ export function getDb(): Database.Database {
 
 export function initDatabase(defaultTheme: AppTheme = 'dark'): void {
   const userDataPath = app.getPath('userData');
+  mkdirSync(userDataPath, { recursive: true });
   const primaryDbPath = path.join(userDataPath, PRIMARY_DB_FILENAME);
   const legacyDbPaths = [path.join(userDataPath, LEGACY_DB_FILENAME)];
   const dbPath =

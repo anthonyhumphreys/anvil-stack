@@ -37,7 +37,7 @@ win:
   icon: resources/anvil.png
 
 linux:
-  target: [AppImage, deb]
+  target: [AppImage, deb, pacman]
   maintainer: Anthony Humphreys <contact@anthonyhumphreys.co.uk>
   icon: resources/anvil.png
   category: Development

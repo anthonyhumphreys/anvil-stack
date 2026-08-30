@@ -33,7 +33,7 @@ Anvil is the brain; your coding agents are the hands.
 | Diagrams | Mermaid, draw.io |
 | Git | simple-git |
 | Build | electron-vite 5, Vite 7 |
-| Packaging | electron-builder (dmg, nsis, AppImage, deb) |
+| Packaging | electron-builder (dmg, nsis, AppImage, deb, pacman) |
 | Testing | Vitest 4 |
 | Linting | ESLint 10, Prettier 3 |
 
@@ -93,7 +93,7 @@ Output lands in `dist/`. Targets by platform:
 
 - **macOS** — `.dmg` + `.zip`
 - **Windows** — NSIS installer + portable `.exe`
-- **Linux** — `.AppImage` + `.deb`
+- **Linux** — `.AppImage` (portable), `.deb` (Debian/Ubuntu), and `.pacman` (Arch/Omarchy)
 
 ## Architecture
 

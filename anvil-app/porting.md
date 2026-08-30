@@ -8,7 +8,7 @@ This document describes what needs to be done to support Windows and Linux along
 
 The repository already has some cross-platform foundations:
 
-- `electron-builder.yml` defines `win` targets (`nsis`, `portable`) and `linux` targets (`AppImage`, `deb`).
+- `electron-builder.yml` defines `win` targets (`nsis`, `portable`) and Linux targets (`AppImage`, `deb`, `pacman`).
 - The runtime already contains some `process.platform` handling for Windows in process termination, shell execution, and VS Code server paths.
 - Native modules are rebuilt after install through `electron-rebuild -f -w better-sqlite3,node-pty`.
 - The app uses Electron, React, SQLite via `better-sqlite3`, pseudo-terminals via `node-pty`, and external CLIs such as `git`, `gh`, `codex`, `repobase`, `bun`, `npx`, Docker, and VS Code.
@@ -28,6 +28,7 @@ Recommended initial support:
 | --- | --- | --- | --- | --- |
 | Windows 11 | x64 | NSIS and portable `.exe` | High | Start with x64 only. Windows arm64 can wait unless there is a real user base. |
 | Ubuntu LTS / Debian-family Linux | x64 | AppImage and `.deb` | High | This matches the existing electron-builder config. |
+| Arch-family Linux | x64 | `.pacman` or AppImage | Medium | The pacman package provides native installation; AppImage remains the portable fallback. |
 | Other Linux distributions | x64 | AppImage | Medium | Treat as best-effort until tested. |
 | Windows arm64 | arm64 | NSIS or portable | Low | Native module support and CI cost need proving first. |
 | Linux arm64 | arm64 | AppImage or `.deb` | Low | Useful later, but do not make it the first hill to die on. |
@@ -42,8 +43,8 @@ Add explicit scripts to `package.json` so CI and developers do not have to remem
 {
   "scripts": {
     "dist:win:x64:anvil": "node scripts/dist.mjs --win nsis portable --x64 --publish never --brand=anvil",
-    "dist:linux:x64:anvil": "node scripts/dist.mjs --linux AppImage deb --x64 --publish never --brand=anvil",
-    "dist:all:x64:anvil": "node scripts/dist.mjs --win nsis portable --linux AppImage deb --x64 --publish never --brand=anvil"
+    "dist:linux:x64:anvil": "node scripts/dist.mjs --linux AppImage deb pacman --x64 --publish never --brand=anvil",
+    "dist:all:x64:anvil": "node scripts/dist.mjs --win nsis portable --linux AppImage deb pacman --x64 --publish never --brand=anvil"
   }
 }
 ```
@@ -81,7 +82,7 @@ win:
   icon: resources/anvil.ico
 ```
 
-Linux can keep the PNG if it renders correctly in AppImage and `.deb` metadata.
+Linux can keep the PNG if it renders correctly in AppImage, `.deb`, and `.pacman` metadata.
 
 ### Signing
 
@@ -96,7 +97,7 @@ Windows:
 
 Linux:
 
-- AppImage and `.deb` do not require signing in the same way.
+- AppImage, `.deb`, and `.pacman` do not require signing in the same way.
 - If publishing through an internal package repository, add repository signing later.
 
 ## CI Work

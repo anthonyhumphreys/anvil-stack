@@ -5,14 +5,17 @@ on:
     paths:
       - ".github/workflows/app-linux-x64.yml"
       - "anvil-app/**"
+  push:
+    tags:
+      - "app-v*"
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: app-linux-x64-${{ github.ref }}
-  cancel-in-progress: true
+  group: app-release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   CI: true
@@ -23,7 +26,7 @@ defaults:
 
 jobs:
   package:
-    name: Build AppImage and deb
+    name: Build AppImage, deb, and pacman packages
     runs-on: ubuntu-latest
 
     steps:
@@ -54,6 +57,25 @@ jobs:
       - name: Package Linux x64
         run: pnpm run dist:linux:x64
 
+      - name: Verify release tag
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="$(node -p "require('./package.json').version")"
+          expected_tag="app-v${package_version}"
+          if [[ "${GITHUB_REF_NAME}" != "${expected_tag}" ]]; then
+            echo "Release tag ${GITHUB_REF_NAME} does not match package.json version ${package_version} (${expected_tag})." >&2
+            exit 1
+          fi
+
+      - name: Generate Linux checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum ./*.AppImage ./*.deb ./*.pacman > SHA256SUMS-linux-x64
+
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -62,4 +84,23 @@ jobs:
           path: |
             anvil-app/dist/*.AppImage
             anvil-app/dist/*.deb
+            anvil-app/dist/*.pacman
             anvil-app/dist/latest-linux.yml
+            anvil-app/dist/SHA256SUMS-linux-x64
+
+      - name: Create or update GitHub Release
+        if: github.ref_type == 'tag'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          assets=(dist/*.AppImage dist/*.deb dist/*.pacman dist/latest-linux.yml dist/SHA256SUMS-linux-x64)
+
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" "${assets[@]}" --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" "${assets[@]}" \
+              --title "Anvil ${GITHUB_REF_NAME}" \
+              --generate-notes
+          fi

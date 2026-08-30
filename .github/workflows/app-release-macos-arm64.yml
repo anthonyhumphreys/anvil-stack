@@ -19,6 +19,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: app-release-${{ github.ref }}
+  cancel-in-progress: false
+
 defaults:
   run:
     working-directory: anvil-app
