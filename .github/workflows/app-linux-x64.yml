@@ -45,6 +45,11 @@ jobs:
           cache: pnpm
           cache-dependency-path: anvil-app/pnpm-lock.yaml
 
+      - name: Install Linux packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libarchive-tools
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
