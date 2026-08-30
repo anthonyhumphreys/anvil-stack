@@ -1143,8 +1143,6 @@ export function ChatView({ userRole }: ChatViewProps) {
                   !error && (
                     <ChatEmptyState
                       personaId={activePersona?.id ?? 'coder'}
-                      personaName={activePersona?.name ?? 'Coder'}
-                      personaColour={personaColour}
                       hasRepos={true}
                       hasGovernanceDocs={selectedGovernanceDocs.length > 0}
                       isDbExpertPersona={isDbExpertPersona}
@@ -1160,8 +1158,6 @@ export function ChatView({ userRole }: ChatViewProps) {
                   featureAvailability.chatEnabled && (
                     <ChatEmptyState
                       personaId={activePersona?.id ?? 'coder'}
-                      personaName={activePersona?.name ?? 'Coder'}
-                      personaColour={personaColour}
                       hasRepos={false}
                       hasGovernanceDocs={selectedGovernanceDocs.length > 0}
                       isDbExpertPersona={isDbExpertPersona}
@@ -1310,12 +1306,12 @@ export function ChatView({ userRole }: ChatViewProps) {
                   <RepoSelector
                     variant="dropdown"
                     mode="multi"
-                    placement="top"
+                    placement="bottom"
                     selectedRepoIds={activeRepos.map((repo) => repo.id)}
                     onMultiSelect={setActiveRepos}
                   />
                   <GovernanceSelector
-                    placement="top"
+                    placement="bottom"
                     selectedDocIds={selectedGovernanceDocs.map((document) => document.id)}
                     onSelectionChange={setSelectedGovernanceDocs}
                   />

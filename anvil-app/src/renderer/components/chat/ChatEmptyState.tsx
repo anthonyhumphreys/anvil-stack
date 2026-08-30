@@ -1,23 +1,3 @@
-import {
-  MessageSquare,
-  Code,
-  Shield,
-  Eye,
-  BookOpen,
-  Palette,
-  GraduationCap,
-  Database,
-  Building2,
-  Sparkles,
-  ArrowRight,
-  Headphones,
-  Wrench,
-  Radio,
-  SearchCheck,
-  GitPullRequest,
-  Gauge,
-} from 'lucide-react';
-
 interface Suggestion {
   label: string;
   prompt: string;
@@ -309,28 +289,8 @@ const PERSONA_SUGGESTIONS: Record<string, Suggestion[]> = {
   ],
 };
 
-const PERSONA_ICONS: Record<string, React.ReactNode> = {
-  coder: <Code size={22} />,
-  architect: <Building2 size={22} />,
-  security: <Shield size={22} />,
-  reviewer: <Eye size={22} />,
-  docs: <BookOpen size={22} />,
-  ba: <MessageSquare size={22} />,
-  design: <Palette size={22} />,
-  mentor: <GraduationCap size={22} />,
-  'db-expert': <Database size={22} />,
-  'service-desk': <Headphones size={22} />,
-  'technical-support': <Wrench size={22} />,
-  'incident-manager': <Radio size={22} />,
-  'problem-manager': <SearchCheck size={22} />,
-  'change-manager': <GitPullRequest size={22} />,
-  'service-manager': <Gauge size={22} />,
-};
-
 interface ChatEmptyStateProps {
   personaId: string;
-  personaName: string;
-  personaColour: string;
   hasRepos: boolean;
   hasGovernanceDocs: boolean;
   isDbExpertPersona: boolean;
@@ -339,15 +299,12 @@ interface ChatEmptyStateProps {
 
 export function ChatEmptyState({
   personaId,
-  personaName,
-  personaColour,
   hasRepos,
   hasGovernanceDocs,
   isDbExpertPersona,
   onSuggestionClick,
 }: ChatEmptyStateProps) {
   const suggestions = PERSONA_SUGGESTIONS[personaId] ?? PERSONA_SUGGESTIONS.coder;
-  const icon = PERSONA_ICONS[personaId] ?? <MessageSquare size={22} />;
   const isItsmPersona = [
     'service-desk',
     'technical-support',
@@ -358,67 +315,32 @@ export function ChatEmptyState({
   ].includes(personaId);
 
   return (
-    <div className="flex h-full w-full items-center justify-center px-2 py-8">
-      <div className="w-full max-w-2xl">
-        <div className="flex items-start gap-4">
-          <div className="relative shrink-0">
-            <div
-              className="flex h-12 w-12 items-center justify-center rounded-xl border"
-              style={{
-                backgroundColor: `${personaColour}0f`,
-                borderColor: `${personaColour}24`,
-              }}
-            >
-              <span style={{ color: personaColour }}>{icon}</span>
-            </div>
-            <div
-              className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full ring-2 ring-bg-primary"
-              style={{ backgroundColor: personaColour }}
-            >
-              <Sparkles size={10} className="text-bg-primary" aria-hidden="true" />
-            </div>
-          </div>
+    <div className="flex h-full w-full items-center justify-center px-4 py-10">
+      <div className="w-full max-w-2xl text-center">
+        <h3 className="text-xl font-semibold tracking-[-0.02em] text-text-primary">
+          What should we work on?
+        </h3>
+        <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-text-tertiary">
+          {isDbExpertPersona
+            ? 'Ask about an imported schema or stored procedure.'
+            : isItsmPersona && !hasRepos
+              ? 'Triage an issue, shape a handover, or add technical context.'
+              : hasRepos
+                ? 'Explore the code, make a change, review work, or fix a problem.'
+                : hasGovernanceDocs
+                  ? 'Ask about the selected governance documents.'
+                  : 'Start with a question, or add context from the composer.'}
+        </p>
 
-          <div className="min-w-0 pt-0.5">
-            <h3 className="text-lg font-semibold tracking-tight text-text-primary">
-              Start a conversation with {personaName}
-            </h3>
-
-            <p className="mt-1 max-w-xl text-sm leading-6 text-text-tertiary">
-              {isDbExpertPersona
-                ? 'Import SSMS schema or stored procedure exports in DB Insights, then ask questions about the database design here.'
-                : isItsmPersona && !hasRepos
-                  ? 'Use Chat and the ITSM workbench to explore the service, issue, evidence, and handover. Add repositories when technical context would help.'
-                  : hasRepos
-                    ? 'Ask about your code, request a change, or work through an unfamiliar part of the codebase.'
-                    : hasGovernanceDocs
-                      ? 'Ask questions using the governance documents as context.'
-                      : 'Add repositories or governance documents for context, or start with a general question.'}
-            </p>
-          </div>
-        </div>
-
-        <div className="mt-6 grid grid-cols-1 gap-1 sm:grid-cols-2 sm:gap-x-3">
+        <div className="mt-5 flex flex-wrap justify-center gap-2" aria-label="Suggested prompts">
           {suggestions.map((suggestion) => (
             <button
               key={suggestion.label}
               onClick={() => onSuggestionClick(suggestion.prompt)}
-              className={getSuggestionCardClassName()}
+              className={getSuggestionShortcutClassName()}
+              title={suggestion.prompt}
             >
-              <span
-                className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md"
-                style={{ backgroundColor: `${personaColour}12`, color: personaColour }}
-              >
-                <ArrowRight size={13} aria-hidden="true" />
-              </span>
-              <span className="min-w-0">
-                <span className="block text-sm font-medium text-text-primary">
-                  {suggestion.label}
-                </span>
-                <span className="mt-0.5 block line-clamp-1 text-xs leading-5 text-text-tertiary transition-colors group-hover:text-text-secondary group-focus-visible:text-text-secondary">
-                  {suggestion.prompt}
-                </span>
-              </span>
+              {suggestion.label}
             </button>
           ))}
         </div>
@@ -427,6 +349,6 @@ export function ChatEmptyState({
   );
 }
 
-export function getSuggestionCardClassName(): string {
-  return 'suggestion-card group flex min-w-0 items-start gap-3 rounded-lg px-2.5 py-2.5 text-left transition-colors duration-200 hover:bg-bg-tertiary/70 focus-visible:bg-bg-tertiary/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60';
+export function getSuggestionShortcutClassName(): string {
+  return 'rounded-lg px-3 py-2 text-sm font-medium text-text-secondary transition-colors duration-150 hover:bg-bg-tertiary hover:text-text-primary focus-visible:bg-bg-tertiary focus-visible:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60';
 }

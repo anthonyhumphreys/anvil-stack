@@ -76,12 +76,8 @@ export function ChatThreadRail({
     return (
       <div
         key={thread.id}
-        className={`group relative rounded-xl border transition-colors ${
-          active
-            ? 'border-accent/35 bg-accent/10'
-            : compact
-              ? 'border-transparent hover:border-border/60 hover:bg-bg-tertiary/45'
-              : 'border-border/55 bg-bg-secondary/45 hover:border-border hover:bg-bg-tertiary/45'
+        className={`group relative rounded-lg transition-colors ${
+          active ? 'bg-accent/10' : 'hover:bg-bg-tertiary/55'
         } ${displayState === 'working' && !active ? 'opacity-70' : ''}`}
       >
         <div
@@ -95,7 +91,7 @@ export function ChatThreadRail({
             onSelectThread(thread.id);
           }}
           className={`w-full cursor-pointer text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40 ${
-            compact ? 'px-2.5 py-2' : 'px-3 py-3'
+            compact ? 'px-2.5 py-2' : 'px-2.5 py-2.5'
           }`}
         >
           <div className="flex items-start gap-2">
@@ -187,12 +183,6 @@ export function ChatThreadRail({
               )}
             </div>
           </div>
-          {!compact && (
-            <p className="mt-2 truncate pl-5 text-xs text-text-tertiary">
-              {thread.preview?.replace(/\s+/g, ' ').trim() ||
-                'Empty thread. Add a prompt to get this work moving.'}
-            </p>
-          )}
         </div>
       </div>
     );
@@ -203,7 +193,7 @@ export function ChatThreadRail({
       storageKey="chat:threads"
       side="left"
       title="Threads"
-      defaultWidth={300}
+      defaultWidth={280}
       minWidth={240}
       maxWidth={440}
       collapsedWidth={0}
@@ -238,7 +228,7 @@ export function ChatThreadRail({
             </p>
           </div>
         ) : (
-          <div className="space-y-2">
+          <div className="space-y-0.5">
             {activeThreads.map((thread) => renderThread(thread, false))}
           </div>
         )}

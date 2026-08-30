@@ -160,10 +160,30 @@ export function ChatInput({
   const [skillMentionError, setSkillMentionError] = useState<string | null>(null);
   const [selectedSkillMentionIndex, setSelectedSkillMentionIndex] = useState(0);
   const [dragDepth, setDragDepth] = useState(0);
+  const [contextMenuOpen, setContextMenuOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
   const skipNextDraftSaveRef = useRef(false);
   const mentionRepoKey = mentionRepoIds.join('\0');
   const draggingFiles = dragDepth > 0;
+
+  useEffect(() => {
+    if (!contextMenuOpen) return;
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!contextMenuRef.current?.contains(event.target as Node)) setContextMenuOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setContextMenuOpen(false);
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [contextMenuOpen]);
 
   const resizeTextarea = useCallback(() => {
     const el = textareaRef.current;
@@ -882,107 +902,67 @@ export function ChatInput({
                 )}
               </button>
 
-              {onCodexModeChange && (
-                <label className="flex h-8 min-w-0 items-center gap-1.5 rounded-lg px-2 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-within:ring-2 focus-within:ring-accent/70">
-                  <Shield size={13} className="shrink-0 text-text-tertiary" />
-                  <select
-                    value={codexMode}
-                    onChange={(event) => onCodexModeChange(event.target.value as CodexMode)}
-                    disabled={codexModeDisabled}
-                    className="min-w-0 max-w-36 bg-transparent text-xs text-text-secondary outline-none disabled:cursor-not-allowed disabled:opacity-60"
-                    aria-label="Codex access mode"
-                    title={
-                      codexModeDisabled
-                        ? 'This access mode is enforced for the current persona'
-                        : 'Choose when Codex should ask for approval'
-                    }
-                  >
-                    <option value="read-only">Read only</option>
-                    <option value="on-request">Approve for me</option>
-                    <option value="workspace-auto">Auto approve</option>
-                    <option value="full-access">Full access</option>
-                  </select>
-                </label>
-              )}
-
-              {contextControls}
-
-              {onCollaborationModeChange && (
-                <div
-                  className="flex h-8 items-center rounded-lg bg-bg-primary/70 p-0.5"
-                  role="group"
-                  aria-label="Collaboration mode"
-                >
+              {contextControls && (
+                <div ref={contextMenuRef} className="relative">
                   <button
                     type="button"
-                    onClick={() => onCollaborationModeChange('default')}
-                    className={`flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium transition-colors ${
-                      collaborationMode === 'default'
-                        ? 'bg-bg-elevated text-text-primary shadow-sm'
-                        : 'text-text-tertiary hover:text-text-primary'
-                    }`}
-                    aria-pressed={collaborationMode === 'default'}
-                    title="Build: Codex can implement changes"
+                    onClick={() => setContextMenuOpen((open) => !open)}
+                    className="flex h-8 items-center gap-1.5 rounded-lg px-2 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
+                    aria-haspopup="dialog"
+                    aria-expanded={contextMenuOpen}
+                    aria-controls={contextMenuOpen ? 'chat-context-menu' : undefined}
                   >
-                    <Hammer size={12} />
-                    Build
+                    Context
+                    <ChevronDown
+                      size={11}
+                      className={`transition-transform ${contextMenuOpen ? 'rotate-180' : ''}`}
+                    />
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => onCollaborationModeChange('plan')}
-                    className={`flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium transition-colors ${
-                      collaborationMode === 'plan'
-                        ? 'bg-info/12 text-info shadow-sm'
-                        : 'text-text-tertiary hover:text-text-primary'
-                    }`}
-                    aria-pressed={collaborationMode === 'plan'}
-                    title="Plan: keep this conversation read-only"
-                  >
-                    <ListChecks size={12} />
-                    Plan
-                  </button>
+                  {contextMenuOpen && (
+                    <div
+                      id="chat-context-menu"
+                      role="dialog"
+                      aria-label="Conversation context"
+                      className="absolute bottom-full left-0 z-50 mb-2 min-w-64 rounded-xl border border-border bg-bg-elevated p-2 shadow-lg ring-1 ring-black/20"
+                    >
+                      <p className="px-2 pb-2 text-xs leading-4 text-text-tertiary">
+                        Choose repositories and documents for this conversation.
+                      </p>
+                      <div className="flex flex-wrap items-center gap-1">{contextControls}</div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
 
             <div className="ml-auto flex min-w-0 items-center justify-end gap-1.5">
-              {onFastModeChange && !busy && (
-                <button
-                  type="button"
-                  onClick={() => onFastModeChange(!fastMode)}
-                  disabled={!fastModeAvailable}
-                  className={`flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 ${
-                    fastMode
-                      ? 'bg-warning/12 text-warning'
-                      : 'text-text-secondary hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40'
-                  }`}
-                  aria-pressed={fastMode}
-                  title={
-                    fastMode
-                      ? 'Fast provider service is on for new turns.'
-                      : fastModeAvailable
-                        ? "Use the provider's faster service tier without changing model or reasoning."
-                        : 'Fast mode is not available for the selected provider and model.'
-                  }
-                >
-                  <Zap size={13} fill={fastMode ? 'currentColor' : 'none'} />
-                  Fast
-                </button>
-              )}
-
-              {(onModelChange || onExecutionStrategyChange || onReasoningChange) && !busy && (
-                <RunSettingsDropdown
-                  model={model}
-                  modelProvider={modelProvider}
-                  modelOptions={modelOptions}
-                  onModelChange={onModelChange}
-                  executionStrategy={executionStrategy}
-                  onExecutionStrategyChange={onExecutionStrategyChange}
-                  reasoningLevel={reasoningLevel}
-                  reasoningOptions={reasoningOptions}
-                  onReasoningChange={onReasoningChange}
-                />
-              )}
+              {(onModelChange ||
+                onExecutionStrategyChange ||
+                onReasoningChange ||
+                onCodexModeChange ||
+                onCollaborationModeChange ||
+                onFastModeChange) &&
+                !busy && (
+                  <RunSettingsDropdown
+                    model={model}
+                    modelProvider={modelProvider}
+                    modelOptions={modelOptions}
+                    onModelChange={onModelChange}
+                    executionStrategy={executionStrategy}
+                    onExecutionStrategyChange={onExecutionStrategyChange}
+                    reasoningLevel={reasoningLevel}
+                    reasoningOptions={reasoningOptions}
+                    onReasoningChange={onReasoningChange}
+                    codexMode={codexMode}
+                    onCodexModeChange={onCodexModeChange}
+                    codexModeDisabled={codexModeDisabled}
+                    collaborationMode={collaborationMode}
+                    onCollaborationModeChange={onCollaborationModeChange}
+                    fastMode={fastMode}
+                    fastModeAvailable={fastModeAvailable}
+                    onFastModeChange={onFastModeChange}
+                  />
+                )}
 
               <VoiceInputButton
                 onTranscript={(text) => {
@@ -1621,14 +1601,13 @@ export function getCompactModelLabel(
 
 export function getRunSettingsLabel(
   modelLabel: string,
-  executionStrategy: ExecutionStrategy,
+  collaborationMode: 'default' | 'plan',
   reasoningLevel?: ReasoningEffort,
 ): string {
-  const strategy = EXECUTION_STRATEGIES.find((option) => option.id === executionStrategy);
   return [
+    collaborationMode === 'plan' ? 'Plan' : 'Build',
     modelLabel,
     reasoningLevel ? formatReasoningLabel(reasoningLevel) : null,
-    strategy?.label ?? executionStrategy,
   ]
     .filter(Boolean)
     .join(' · ');
@@ -1644,6 +1623,14 @@ function RunSettingsDropdown({
   reasoningLevel,
   reasoningOptions = REASONING_EFFORT_OPTIONS.map((option) => option.level),
   onReasoningChange,
+  codexMode,
+  onCodexModeChange,
+  codexModeDisabled,
+  collaborationMode,
+  onCollaborationModeChange,
+  fastMode,
+  fastModeAvailable,
+  onFastModeChange,
 }: {
   model: string;
   modelProvider: AgentProvider;
@@ -1654,6 +1641,14 @@ function RunSettingsDropdown({
   reasoningLevel: ReasoningEffort;
   reasoningOptions?: ReasoningEffort[];
   onReasoningChange?: (level: ReasoningEffort) => void;
+  codexMode: CodexMode;
+  onCodexModeChange?: (mode: CodexMode) => void;
+  codexModeDisabled: boolean;
+  collaborationMode: 'default' | 'plan';
+  onCollaborationModeChange?: (mode: 'default' | 'plan') => void;
+  fastMode: boolean;
+  fastModeAvailable: boolean;
+  onFastModeChange?: (enabled: boolean) => void;
 }) {
   const availableOptions = REASONING_EFFORT_OPTIONS.filter((option) =>
     reasoningOptions.includes(option.level),
@@ -1685,7 +1680,7 @@ function RunSettingsDropdown({
   const modelLabel = getCompactModelLabel(model, selectedModel?.label ?? model, modelProvider);
   const label = getRunSettingsLabel(
     modelLabel,
-    executionStrategy,
+    collaborationMode,
     modelProvider === 'cursor' ? getCursorModelReasoningEffort(model) : reasoningLevel,
   );
 
@@ -1695,7 +1690,7 @@ function RunSettingsDropdown({
         ref={triggerRef}
         type="button"
         onClick={() => setOpen((current) => !current)}
-        className="flex h-9 max-w-52 items-center gap-1.5 rounded-xl border border-border bg-bg-secondary px-2.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
+        className="flex h-8 max-w-52 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
         title="Run settings"
         aria-label={`Run settings: ${label}`}
         aria-haspopup="dialog"
@@ -1713,11 +1708,74 @@ function RunSettingsDropdown({
       {open && (
         <div
           id={RUN_SETTINGS_MENU_ID}
-          className="absolute bottom-full right-0 z-50 mb-2 w-72 rounded-xl border border-border bg-bg-elevated p-3 shadow-lg ring-1 ring-black/20"
+          className="absolute bottom-full right-0 z-50 mb-2 max-h-[min(38rem,calc(100vh-8rem))] w-72 overflow-y-auto rounded-xl border border-border bg-bg-elevated p-3 shadow-lg ring-1 ring-black/20"
           role="dialog"
           aria-label="Run settings"
         >
           <div className="space-y-3">
+            {onCollaborationModeChange && (
+              <div>
+                <span className="mb-1 block text-xs font-medium text-text-muted">Mode</span>
+                <div
+                  className="grid grid-cols-2 gap-1 rounded-lg bg-bg-secondary p-1"
+                  role="group"
+                  aria-label="Collaboration mode"
+                >
+                  <button
+                    type="button"
+                    onClick={() => onCollaborationModeChange('default')}
+                    className={`flex h-8 items-center justify-center gap-1.5 rounded-md text-xs font-medium transition-colors ${
+                      collaborationMode === 'default'
+                        ? 'bg-bg-elevated text-text-primary'
+                        : 'text-text-tertiary hover:text-text-primary'
+                    }`}
+                    aria-pressed={collaborationMode === 'default'}
+                  >
+                    <Hammer size={12} />
+                    Build
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onCollaborationModeChange('plan')}
+                    className={`flex h-8 items-center justify-center gap-1.5 rounded-md text-xs font-medium transition-colors ${
+                      collaborationMode === 'plan'
+                        ? 'bg-info/12 text-info'
+                        : 'text-text-tertiary hover:text-text-primary'
+                    }`}
+                    aria-pressed={collaborationMode === 'plan'}
+                  >
+                    <ListChecks size={12} />
+                    Plan
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {onCodexModeChange && (
+              <label className="block">
+                <span className="mb-1 flex items-center gap-1.5 text-xs font-medium text-text-muted">
+                  <Shield size={11} />
+                  Access
+                </span>
+                <select
+                  value={codexMode}
+                  onChange={(event) => onCodexModeChange(event.target.value as CodexMode)}
+                  disabled={codexModeDisabled}
+                  className="h-9 w-full rounded-lg border border-border bg-bg-secondary px-2.5 text-xs text-text-primary outline-none focus:border-accent focus:ring-2 focus:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-60"
+                  title={
+                    codexModeDisabled
+                      ? 'This access mode is enforced for the current persona'
+                      : 'Choose when Codex should ask for approval'
+                  }
+                >
+                  <option value="read-only">Read only</option>
+                  <option value="on-request">Approve for me</option>
+                  <option value="workspace-auto">Auto approve</option>
+                  <option value="full-access">Full access</option>
+                </select>
+              </label>
+            )}
+
             {onModelChange && modelOptions.length > 0 && (
               <label className="block">
                 <span className="mb-1 block text-[11px] font-medium text-text-muted">Model</span>
@@ -1769,7 +1827,7 @@ function RunSettingsDropdown({
                       </option>
                     ))}
                   </select>
-                  <span className="mt-1 block text-[11px] leading-4 text-text-tertiary">
+                  <span className="mt-1 block text-xs leading-4 text-text-tertiary">
                     {
                       availableOptions.find((option) => option.level === reasoningLevel)
                         ?.description
@@ -1804,6 +1862,31 @@ function RunSettingsDropdown({
                   }
                 </span>
               </label>
+            )}
+
+            {onFastModeChange && (
+              <button
+                type="button"
+                onClick={() => onFastModeChange(!fastMode)}
+                disabled={!fastModeAvailable}
+                className={`flex w-full items-center justify-between rounded-lg border px-2.5 py-2 text-left text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-45 ${
+                  fastMode
+                    ? 'border-warning/30 bg-warning/10 text-warning'
+                    : 'border-border-subtle bg-bg-secondary text-text-secondary hover:border-border hover:text-text-primary'
+                }`}
+                aria-pressed={fastMode}
+              >
+                <span>
+                  <span className="flex items-center gap-1.5 font-medium">
+                    <Zap size={12} fill={fastMode ? 'currentColor' : 'none'} />
+                    Fast mode
+                  </span>
+                  <span className="mt-1 block text-xs leading-4 text-text-tertiary">
+                    Use the provider's faster service tier.
+                  </span>
+                </span>
+                <span aria-hidden="true">{fastMode ? 'On' : 'Off'}</span>
+              </button>
             )}
           </div>
         </div>

@@ -14,16 +14,14 @@ import {
 } from '../ChatInput';
 
 describe('getRunSettingsLabel', () => {
-  it('summarises model, reasoning, and subagent strategy in one compact label', () => {
-    expect(getRunSettingsLabel('5.6 Sol', 'auto', 'medium')).toBe('5.6 Sol · Medium · Auto');
-    expect(getRunSettingsLabel('5.6 Terra', 'adaptive', 'high')).toBe(
-      '5.6 Terra · High · Adaptive',
-    );
+  it('summarises mode, model, and reasoning in one compact label', () => {
+    expect(getRunSettingsLabel('5.6 Sol', 'default', 'medium')).toBe('Build · 5.6 Sol · Medium');
+    expect(getRunSettingsLabel('5.6 Terra', 'plan', 'high')).toBe('Plan · 5.6 Terra · High');
   });
 
   it('omits separate reasoning when the selected model controls it', () => {
-    expect(getRunSettingsLabel('Fable 5 Thinking High', 'review-team')).toBe(
-      'Fable 5 Thinking High · Review team',
+    expect(getRunSettingsLabel('Fable 5 Thinking High', 'default')).toBe(
+      'Build · Fable 5 Thinking High',
     );
   });
 });
@@ -45,16 +43,16 @@ describe('Cursor model labels', () => {
           'Fable 5 1M Thinking (NO ZDR)',
           'cursor',
         ),
-        'review-team',
+        'default',
         getCursorModelReasoningEffort('claude-fable-5-thinking-high'),
       ),
-    ).toBe('Fable 5 · High · Review team');
+    ).toBe('Build · Fable 5 · High');
   });
 
-  it('distinguishes Cursor automatic model routing from automatic subagent strategy', () => {
+  it('keeps automatic model routing distinct from the build mode', () => {
     expect(getCompactModelLabel('auto', 'Auto (current, default)', 'cursor')).toBe('Cursor auto');
     expect(getCursorModelReasoningEffort('auto')).toBeUndefined();
-    expect(getRunSettingsLabel('Cursor auto', 'auto')).toBe('Cursor auto · Auto');
+    expect(getRunSettingsLabel('Cursor auto', 'default')).toBe('Build · Cursor auto');
   });
 });
 
