@@ -34,6 +34,7 @@ jobs:
 
     env:
       GH_TOKEN: ${{ github.token }}
+      ANVIL_UPDATE_ORIGIN: ${{ vars.ANVIL_UPDATE_ORIGIN }}
 
     steps:
       - name: Check out repository
@@ -124,9 +125,42 @@ jobs:
           echo "tag=${release_tag}" >> "${GITHUB_OUTPUT}"
           echo "name=Anvil ${release_tag}" >> "${GITHUB_OUTPUT}"
 
+      - name: Validate Cloudflare update publishing config
+        if: ${{ steps.release_scope.outputs.should_release == 'true' && (github.event_name != 'workflow_dispatch' || inputs.notarize) }}
+        shell: bash
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_R2_API_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          missing=()
+          [[ -n "${ANVIL_UPDATE_ORIGIN}" ]] || missing+=(ANVIL_UPDATE_ORIGIN)
+          [[ -n "${CLOUDFLARE_ACCOUNT_ID}" ]] || missing+=(CLOUDFLARE_ACCOUNT_ID)
+          [[ -n "${CLOUDFLARE_API_TOKEN}" ]] || missing+=(CLOUDFLARE_R2_API_TOKEN)
+          if [[ "${#missing[@]}" -gt 0 ]]; then
+            printf 'Missing Cloudflare update configuration: %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+
+          node <<'NODE'
+          const origin = new URL(process.env.ANVIL_UPDATE_ORIGIN);
+          if (
+            origin.protocol !== 'https:' ||
+            origin.username ||
+            origin.password ||
+            origin.search ||
+            origin.hash ||
+            origin.pathname !== '/'
+          ) {
+            throw new Error('ANVIL_UPDATE_ORIGIN must be an HTTPS origin without credentials, path, query, or fragment.');
+          }
+          NODE
+
       - name: Build unsigned macOS Apple Silicon artifacts
         if: ${{ steps.release_scope.outputs.should_release == 'true' && github.event_name == 'workflow_dispatch' && !inputs.notarize }}
         env:
+          ANVIL_UPDATE_ORIGIN: ""
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: pnpm run dist:mac:arm64
 
@@ -156,6 +190,51 @@ jobs:
           fi
 
           cp "${dmg_assets[0]}" dist/Anvil-latest-arm64.dmg
+
+      - name: Prepare macOS auto-update feed
+        if: ${{ steps.release_scope.outputs.should_release == 'true' && (github.event_name != 'workflow_dispatch' || inputs.notarize) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          shopt -s nullglob
+          zip_assets=(dist/*-arm64-mac.zip)
+          if [[ "${#zip_assets[@]}" -ne 1 ]]; then
+            echo "Expected exactly one macOS Apple Silicon ZIP, found ${#zip_assets[@]}." >&2
+            printf 'ZIP candidates:\n' >&2
+            printf '  %s\n' "${zip_assets[@]}" >&2
+            exit 1
+          fi
+
+          export ANVIL_UPDATE_VERSION="$(node -p "require('./package.json').version")"
+          export ANVIL_UPDATE_ZIP="$(basename "${zip_assets[0]}")"
+
+          node <<'NODE'
+          const fs = require('node:fs');
+
+          const version = process.env.ANVIL_UPDATE_VERSION;
+          const zip = process.env.ANVIL_UPDATE_ZIP;
+          const origin = process.env.ANVIL_UPDATE_ORIGIN.replace(/\/+$/, '');
+          const url = `${origin}/v1/macos/arm64/releases/${encodeURIComponent(version)}/${encodeURIComponent(zip)}`;
+
+          const feed = {
+            currentRelease: version,
+            releases: [
+              {
+                version,
+                updateTo: {
+                  version,
+                  url,
+                  name: `Anvil ${version}`,
+                  notes: `Anvil ${version}`,
+                  pub_date: new Date().toISOString(),
+                },
+              },
+            ],
+          };
+
+          fs.writeFileSync('dist/anvil-macos-arm64-updates.json', `${JSON.stringify(feed, null, 2)}\n`);
+          NODE
 
       - name: Create or update GitHub Release
         if: steps.release_scope.outputs.should_release == 'true'
@@ -236,3 +315,54 @@ jobs:
               --title "${release_name}" \
               --notes-file "${notes_file}"
           fi
+
+      - name: Publish macOS update assets to Cloudflare R2
+        if: ${{ steps.release_scope.outputs.should_release == 'true' && (github.event_name != 'workflow_dispatch' || inputs.notarize) }}
+        shell: bash
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_R2_API_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          shopt -s nullglob
+          version="$(node -p "require('./package.json').version")"
+          zip_assets=(dist/*-arm64-mac.zip)
+          dmg_assets=(dist/Anvil-[0-9]*-arm64.dmg)
+          if [[ "${#zip_assets[@]}" -ne 1 || "${#dmg_assets[@]}" -ne 1 ]]; then
+            echo "Expected one ZIP and one versioned DMG before publishing to R2." >&2
+            exit 1
+          fi
+
+          bucket="anvil-desktop-releases"
+          worker_dir="${GITHUB_WORKSPACE}/anvil-app/updates-worker"
+          zip_file="${GITHUB_WORKSPACE}/anvil-app/${zip_assets[0]}"
+          dmg_file="${GITHUB_WORKSPACE}/anvil-app/${dmg_assets[0]}"
+          latest_dmg_file="${GITHUB_WORKSPACE}/anvil-app/dist/Anvil-latest-arm64.dmg"
+          feed_file="${GITHUB_WORKSPACE}/anvil-app/dist/anvil-macos-arm64-updates.json"
+          immutable_cache="public, max-age=31536000, immutable"
+          mutable_cache="public, max-age=60, s-maxage=300, must-revalidate"
+
+          pnpm --dir "${worker_dir}" exec wrangler r2 object put \
+            "${bucket}/macos/arm64/releases/${version}/$(basename "${zip_file}")" \
+            --file "${zip_file}" --remote \
+            --content-type application/zip \
+            --content-disposition "attachment; filename=\"$(basename "${zip_file}")\"" \
+            --cache-control "${immutable_cache}"
+          pnpm --dir "${worker_dir}" exec wrangler r2 object put \
+            "${bucket}/macos/arm64/releases/${version}/$(basename "${dmg_file}")" \
+            --file "${dmg_file}" --remote \
+            --content-type application/x-apple-diskimage \
+            --content-disposition "attachment; filename=\"$(basename "${dmg_file}")\"" \
+            --cache-control "${immutable_cache}"
+          pnpm --dir "${worker_dir}" exec wrangler r2 object put \
+            "${bucket}/macos/arm64/latest/Anvil-latest-arm64.dmg" \
+            --file "${latest_dmg_file}" --remote \
+            --content-type application/x-apple-diskimage \
+            --content-disposition 'attachment; filename="Anvil-latest-arm64.dmg"' \
+            --cache-control "${mutable_cache}"
+          pnpm --dir "${worker_dir}" exec wrangler r2 object put \
+            "${bucket}/macos/arm64/feed.json" \
+            --file "${feed_file}" --remote \
+            --content-type application/json \
+            --cache-control "${mutable_cache}"

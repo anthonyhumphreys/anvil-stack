@@ -68,6 +68,7 @@ import { cleanupStatusBar, initializeStatusBar } from './services/statusbar.serv
 import { cleanupSimulatorPreview } from './services/simulator-preview.service.js';
 import { isTelemetryEnabled } from './services/settings.service.js';
 import { initializeTelemetry } from './services/telemetry.service.js';
+import { initializeAppUpdater } from './services/app-updater.service.js';
 
 const brandId = parseBrandFromArgs(process.argv);
 const brand = getBrand(brandId);
@@ -319,6 +320,7 @@ app.whenReady().then(() => {
   }
 
   initializeStatusBar(brand);
+  initializeAppUpdater();
 
   registerSettingsHandlers();
   registerMobileCompanionHandlers();
