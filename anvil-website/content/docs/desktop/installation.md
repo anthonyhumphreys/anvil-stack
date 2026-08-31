@@ -14,9 +14,9 @@ Anvil Desktop is an Electron app. You can run a packaged release build or build 
 
 ## Option A: release build (macOS Apple Silicon)
 
-Release builds are attached to GitHub releases tagged `app-v*` in the [anvil-stack repository](https://github.com/anthonyhumphreys/anvil-stack/releases).
+Signed release builds are distributed through the Cloudflare-backed Anvil download service. GitHub releases tagged `app-v*` retain the versioned artefacts as a manual fallback and audit trail.
 
-1. Download the latest [macOS Apple Silicon DMG](https://github.com/anthonyhumphreys/anvil-stack/releases/latest/download/Anvil-latest-arm64.dmg), or open the latest `app-v*` release and choose the `.dmg` or `.zip` asset manually.
+1. Download the latest [macOS Apple Silicon DMG](/download), or open the latest [`app-v*` GitHub release](https://github.com/anthonyhumphreys/anvil-stack/releases) and choose the `.dmg` or `.zip` asset manually.
 2. Open the disk image and drag Anvil into Applications.
 3. Launch it. If the build is not notarized, macOS Gatekeeper may require right-click → Open on first launch.
 

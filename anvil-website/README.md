@@ -53,6 +53,7 @@ Repository links can be configured with:
 NEXT_PUBLIC_ANVIL_APP_REPO_URL=https://github.com/your-org/anvil-app
 NEXT_PUBLIC_ANVIL_REGISTRY_REPO_URL=https://github.com/your-org/anvil-registry
 NEXT_PUBLIC_ANVIL_CLOUD_REPO_URL=https://github.com/your-org/anvil-cloud
+ANVIL_UPDATE_ORIGIN=https://anvil-desktop-updates.example.workers.dev
 ```
 
 ## Status

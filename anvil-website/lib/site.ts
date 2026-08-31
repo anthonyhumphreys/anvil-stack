@@ -36,8 +36,32 @@ export const repositoryUrl = "/docs/project/repositories";
 
 export const githubRepositoryUrl = "https://github.com/anthonyhumphreys/anvil-stack";
 
-export const latestDesktopDmgUrl =
+const githubLatestDesktopDmgUrl =
   "https://github.com/anthonyhumphreys/anvil-stack/releases/latest/download/Anvil-latest-arm64.dmg";
+
+export const latestDesktopDmgUrl = "/download";
+
+export function resolveLatestDesktopDmgAssetUrl(rawOrigin = process.env.ANVIL_UPDATE_ORIGIN) {
+  const value = rawOrigin?.trim();
+  if (!value) return githubLatestDesktopDmgUrl;
+
+  try {
+    const origin = new URL(value);
+    if (
+      origin.protocol !== "https:" ||
+      origin.username ||
+      origin.password ||
+      origin.search ||
+      origin.hash ||
+      origin.pathname !== "/"
+    ) {
+      return githubLatestDesktopDmgUrl;
+    }
+    return new URL("/v1/macos/arm64/latest/Anvil-latest-arm64.dmg", origin).toString();
+  } catch {
+    return githubLatestDesktopDmgUrl;
+  }
+}
 
 export const navItems = [
   { label: "Products", href: "/#products" },
