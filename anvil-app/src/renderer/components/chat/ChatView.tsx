@@ -50,6 +50,7 @@ import {
 import type { AgentUIPlanIntent, AgentUIQuestionIntent } from '../../../shared/agent-ui-intents';
 import type {
   AgentRunSummary,
+  AgentProvider,
   ChatAttachment,
   ChatArtifact,
   ChatGoalSnapshot,
@@ -537,9 +538,9 @@ export function ChatView({ userRole }: ChatViewProps) {
   }, []);
 
   const handleModelChange = useCallback(
-    (nextModel: string) => {
+    (nextModel: string, nextProvider: AgentProvider) => {
       setFastMode(false);
-      setModel(nextModel);
+      setModel(nextModel, nextProvider);
     },
     [setModel],
   );

@@ -408,6 +408,7 @@ async function runCodexThread(input: {
     input.personaId,
     sessionId,
     input.resumeProviderThreadId ?? null,
+    input.provider,
   );
   saveMessage(input.threadId, input.repoRows[0]?.id ?? null, sessionId, {
     id: randomUUID(),
@@ -478,7 +479,9 @@ async function runCodexThread(input: {
         handleCodexServerLine(state, line.trim(), {
           onThreadReady: () => {
             providerThreadId = state.threadId ?? undefined;
-            if (providerThreadId) setChatThreadProviderThreadId(input.threadId, providerThreadId);
+            if (providerThreadId) {
+              setChatThreadProviderThreadId(input.threadId, providerThreadId, input.provider);
+            }
             sendCodexJsonRpc(proc, 'turn/start', {
               threadId: state.threadId,
               input: [{ type: 'text', text: input.prompt }],
@@ -555,6 +558,7 @@ async function runCursorThread(input: {
     input.personaId,
     sessionId,
     null,
+    'cursor',
   );
   saveMessage(input.threadId, input.repoRows[0]?.id ?? null, sessionId, {
     id: randomUUID(),

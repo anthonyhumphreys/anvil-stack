@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 58;
+export const SCHEMA_VERSION = 59;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS chat_threads (
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   last_message_at TEXT,
   provider_thread_id TEXT,
+  provider_thread_provider TEXT,
   active_plan_json TEXT,
   active_plan_updated_at TEXT,
   active_goal_json TEXT,
@@ -1813,5 +1814,12 @@ export const MIGRATIONS: Record<number, string> = {
   `,
   58: `
     ALTER TABLE settings ADD COLUMN telemetry_enabled INTEGER NOT NULL DEFAULT 0;
+  `,
+  59: `
+    ALTER TABLE chat_threads ADD COLUMN provider_thread_provider TEXT;
+
+    UPDATE chat_threads
+      SET provider_thread_provider = 'codex'
+      WHERE provider_thread_id IS NOT NULL AND provider_thread_provider IS NULL;
   `,
 };
