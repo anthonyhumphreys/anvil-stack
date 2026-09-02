@@ -1,0 +1,19 @@
+{
+  "name": "@anvilstack/desktop-updates-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dry-run": "wrangler deploy --dry-run",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "types": "wrangler types ./worker-configuration.d.ts",
+    "types:check": "wrangler types ./worker-configuration.d.ts --check"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0",
+    "wrangler": "4.127.1"
+  }
+}

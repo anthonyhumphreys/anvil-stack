@@ -4,12 +4,16 @@ on:
   pull_request:
     paths:
       - ".github/workflows/app-ci.yml"
+      - ".github/scripts/publish-r2-immutable.mjs"
+      - ".github/scripts/publish-r2-immutable.test.mjs"
       - "anvil-app/**"
   push:
     branches:
       - main
     paths:
       - ".github/workflows/app-ci.yml"
+      - ".github/scripts/publish-r2-immutable.mjs"
+      - ".github/scripts/publish-r2-immutable.test.mjs"
       - "anvil-app/**"
   workflow_dispatch:
 
@@ -56,6 +60,10 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+      - name: Test immutable R2 publisher
+        working-directory: .
+        run: node --test .github/scripts/publish-r2-immutable.test.mjs
 
       - name: Build
         run: pnpm build

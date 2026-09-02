@@ -1,5 +1,6 @@
 packages:
   - mobile
+  - updates-worker
 
 allowBuilds:
   better-sqlite3: true
