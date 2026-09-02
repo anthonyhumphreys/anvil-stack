@@ -10,11 +10,6 @@ on:
         description: "Release tag to create or update, for example app-v0.1.0. Defaults to app-v<package.json version>."
         required: false
         type: string
-      notarize:
-        description: "Build signed and notarized artifacts. Tagged releases are always signed; this controls manual dispatches."
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: write
@@ -34,7 +29,8 @@ jobs:
 
     env:
       GH_TOKEN: ${{ github.token }}
-      ANVIL_UPDATE_ORIGIN: ${{ vars.ANVIL_UPDATE_ORIGIN }}
+      # Auto-update publication stays parked until Developer ID signing is available.
+      ANVIL_UPDATE_ORIGIN: ""
 
     steps:
       - name: Check out repository
@@ -125,56 +121,11 @@ jobs:
           echo "tag=${release_tag}" >> "${GITHUB_OUTPUT}"
           echo "name=Anvil ${release_tag}" >> "${GITHUB_OUTPUT}"
 
-      - name: Validate Cloudflare update publishing config
-        if: ${{ steps.release_scope.outputs.should_release == 'true' && (github.event_name != 'workflow_dispatch' || inputs.notarize) }}
-        shell: bash
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
-        run: |
-          set -euo pipefail
-
-          missing=()
-          [[ -n "${ANVIL_UPDATE_ORIGIN}" ]] || missing+=(ANVIL_UPDATE_ORIGIN)
-          [[ -n "${CLOUDFLARE_ACCOUNT_ID}" ]] || missing+=(CLOUDFLARE_ACCOUNT_ID)
-          [[ -n "${AWS_ACCESS_KEY_ID}" ]] || missing+=(CLOUDFLARE_R2_ACCESS_KEY_ID)
-          [[ -n "${AWS_SECRET_ACCESS_KEY}" ]] || missing+=(CLOUDFLARE_R2_SECRET_ACCESS_KEY)
-          if [[ "${#missing[@]}" -gt 0 ]]; then
-            printf 'Missing Cloudflare update configuration: %s\n' "${missing[*]}" >&2
-            exit 1
-          fi
-
-          node <<'NODE'
-          const origin = new URL(process.env.ANVIL_UPDATE_ORIGIN);
-          if (
-            origin.protocol !== 'https:' ||
-            origin.username ||
-            origin.password ||
-            origin.search ||
-            origin.hash ||
-            origin.pathname !== '/'
-          ) {
-            throw new Error('ANVIL_UPDATE_ORIGIN must be an HTTPS origin without credentials, path, query, or fragment.');
-          }
-          NODE
-
       - name: Build unsigned macOS Apple Silicon artifacts
-        if: ${{ steps.release_scope.outputs.should_release == 'true' && github.event_name == 'workflow_dispatch' && !inputs.notarize }}
+        if: steps.release_scope.outputs.should_release == 'true'
         env:
-          ANVIL_UPDATE_ORIGIN: ""
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: pnpm run dist:mac:arm64
-
-      - name: Build signed and notarized macOS Apple Silicon artifacts
-        if: ${{ steps.release_scope.outputs.should_release == 'true' && (github.event_name != 'workflow_dispatch' || inputs.notarize) }}
-        env:
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: pnpm run dist:mac:arm64:anvil:notarized
 
       - name: Prepare stable download asset
         if: steps.release_scope.outputs.should_release == 'true'
@@ -193,82 +144,6 @@ jobs:
 
           cp "${dmg_assets[0]}" dist/Anvil-latest-arm64.dmg
 
-      - name: Prepare macOS auto-update feed
-        if: ${{ steps.release_scope.outputs.should_release == 'true' && (github.event_name != 'workflow_dispatch' || inputs.notarize) }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          shopt -s nullglob
-          zip_assets=(dist/*-arm64-mac.zip)
-          if [[ "${#zip_assets[@]}" -ne 1 ]]; then
-            echo "Expected exactly one macOS Apple Silicon ZIP, found ${#zip_assets[@]}." >&2
-            printf 'ZIP candidates:\n' >&2
-            printf '  %s\n' "${zip_assets[@]}" >&2
-            exit 1
-          fi
-
-          export ANVIL_UPDATE_VERSION="$(node -p "require('./package.json').version")"
-          export ANVIL_UPDATE_ZIP="$(basename "${zip_assets[0]}")"
-
-          node <<'NODE'
-          const fs = require('node:fs');
-
-          const version = process.env.ANVIL_UPDATE_VERSION;
-          const zip = process.env.ANVIL_UPDATE_ZIP;
-          const origin = process.env.ANVIL_UPDATE_ORIGIN.replace(/\/+$/, '');
-          const url = `${origin}/v1/macos/arm64/releases/${encodeURIComponent(version)}/${encodeURIComponent(zip)}`;
-
-          const feed = {
-            currentRelease: version,
-            releases: [
-              {
-                version,
-                updateTo: {
-                  version,
-                  url,
-                  name: `Anvil ${version}`,
-                  notes: `Anvil ${version}`,
-                  pub_date: new Date().toISOString(),
-                },
-              },
-            ],
-          };
-
-          fs.writeFileSync('dist/anvil-macos-arm64-updates.json', `${JSON.stringify(feed, null, 2)}\n`);
-          NODE
-
-      - name: Publish immutable macOS update assets to Cloudflare R2
-        if: ${{ steps.release_scope.outputs.should_release == 'true' && (github.event_name != 'workflow_dispatch' || inputs.notarize) }}
-        shell: bash
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
-          AWS_EC2_METADATA_DISABLED: "true"
-          AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED
-        run: |
-          set -euo pipefail
-
-          shopt -s nullglob
-          version="$(node -p "require('./package.json').version")"
-          zip_assets=(dist/*-arm64-mac.zip)
-          if [[ "${#zip_assets[@]}" -ne 1 ]]; then
-            echo "Expected one ZIP before publishing to R2." >&2
-            exit 1
-          fi
-
-          bucket="anvil-desktop-releases"
-          immutable_cache="public, max-age=31536000, immutable"
-          publisher="${GITHUB_WORKSPACE}/.github/scripts/publish-r2-immutable.mjs"
-
-          node "${publisher}" "${CLOUDFLARE_ACCOUNT_ID}" "${bucket}" \
-            "macos/arm64/releases/${version}/$(basename "${zip_assets[0]}")" \
-            "${GITHUB_WORKSPACE}/anvil-app/${zip_assets[0]}" \
-            "application/zip" \
-            "attachment; filename=\"$(basename "${zip_assets[0]}")\"" \
-            "${immutable_cache}"
       - name: Create or update GitHub Release
         if: steps.release_scope.outputs.should_release == 'true'
         shell: bash
@@ -278,7 +153,6 @@ jobs:
           release_tag="${{ steps.release.outputs.tag }}"
           release_name="${{ steps.release.outputs.name }}"
           release_url="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${release_tag}"
-          notarized_release="${{ github.event_name != 'workflow_dispatch' || inputs.notarize }}"
           assets=(dist/Anvil-[0-9]*-arm64.dmg dist/Anvil-latest-arm64.dmg dist/*-arm64-mac.zip)
           notes_file="$(mktemp)"
           changelog_file="$(mktemp)"
@@ -307,21 +181,17 @@ jobs:
               > "${changelog_file}"
           fi
 
-          if [[ "${notarized_release}" == "true" ]]; then
-            printf '%s\n' \
-              'Signed and notarized macOS Apple Silicon build.' \
-              > "${notes_file}"
-          else
-            printf '%s\n' \
-              'Unsigned internal macOS Apple Silicon build.' \
-              '' \
-              'This build is not notarized. macOS Gatekeeper may report that the app is damaged after download. For private testing, install it and remove the quarantine attribute:' \
-              '' \
-              '```bash' \
-              'xattr -dr com.apple.quarantine /Applications/Anvil.app' \
-              '```' \
-              > "${notes_file}"
-          fi
+          printf '%s\n' \
+            'Unsigned internal macOS Apple Silicon build.' \
+            '' \
+            'Automatic updates are disabled until Developer ID signing is available.' \
+            '' \
+            'This build is not notarized. macOS Gatekeeper may report that the app is damaged after download. For private testing, install it and remove the quarantine attribute:' \
+            '' \
+            '```bash' \
+            'xattr -dr com.apple.quarantine /Applications/Anvil.app' \
+            '```' \
+            > "${notes_file}"
 
           printf '\n## Changelog\n\n' >> "${notes_file}"
           cat "${changelog_file}" >> "${notes_file}"
@@ -348,29 +218,3 @@ jobs:
               --title "${release_name}" \
               --notes-file "${notes_file}"
           fi
-
-      - name: Publish macOS update feed to Cloudflare R2
-        if: ${{ steps.release_scope.outputs.should_release == 'true' && (github.event_name != 'workflow_dispatch' || inputs.notarize) }}
-        shell: bash
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
-          AWS_EC2_METADATA_DISABLED: "true"
-          AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED
-        run: |
-          set -euo pipefail
-
-          shopt -s nullglob
-          bucket="anvil-desktop-releases"
-          endpoint="https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com"
-          feed_file="${GITHUB_WORKSPACE}/anvil-app/dist/anvil-macos-arm64-updates.json"
-          mutable_cache="public, max-age=60, s-maxage=300, must-revalidate"
-
-          aws s3api put-object --bucket "${bucket}" \
-            --key "macos/arm64/feed.json" \
-            --body "${feed_file}" \
-            --content-type application/json \
-            --cache-control "${mutable_cache}" \
-            --endpoint-url "${endpoint}" --region auto --no-cli-pager
