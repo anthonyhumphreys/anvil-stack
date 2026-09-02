@@ -737,7 +737,7 @@ export function SettingsView({
       selectPrimaryAgentProvider(
         current,
         nextProvider,
-        cursorStatus?.models.map((model) => model.id),
+        cursorStatus?.models.map((model) => model.id) ?? [],
       ),
     );
     setSaved(false);
