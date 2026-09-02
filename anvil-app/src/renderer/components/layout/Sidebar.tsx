@@ -556,22 +556,19 @@ function ConnectionSummary({
   const services = Object.values(connectionStatus);
   const connected = services.filter((status) => status === true).length;
   const failed = services.filter((status) => status === false).length;
-  const label =
-    failed > 0
-      ? `${failed} connection issue${failed === 1 ? '' : 's'}`
-      : connected > 0
-        ? `${connected} connected`
-        : 'Connections';
+  const issueLabel = failed > 0 ? `${failed} connection issue${failed === 1 ? '' : 's'}` : null;
+  const accessibleLabel = issueLabel ?? (connected > 0 ? 'Connections healthy' : 'Connections');
 
   return (
     <div
       className="flex items-center gap-2 px-3 py-1.5 text-xs text-text-tertiary"
       title="Foundry, work items, and Confluence connection health"
+      aria-label={accessibleLabel}
     >
       <span
         className={`h-2 w-2 rounded-full ${failed > 0 ? 'bg-error' : connected > 0 ? 'bg-success' : 'bg-text-tertiary'}`}
       />
-      <span>{label}</span>
+      {issueLabel ? <span>{issueLabel}</span> : null}
     </div>
   );
 }

@@ -13,7 +13,9 @@ export function resolveChatFastModeTarget(
   modelOptions: ChatModelOption[],
 ): ChatFastModeTarget {
   if (provider !== 'cursor') {
-    const selected = modelOptions.find((option) => option.id === model);
+    const selected = modelOptions.find(
+      (option) => option.provider === provider && option.id === model,
+    );
     const priorityTier = selected?.serviceTiers.find((tier) => tier.id === 'priority');
     return {
       available: Boolean(priorityTier),
@@ -25,7 +27,9 @@ export function resolveChatFastModeTarget(
   const baseModel = model.endsWith('-fast') ? model.slice(0, -'-fast'.length) : model;
   const fastModel = `${baseModel}-fast`;
   return {
-    available: modelOptions.some((option) => option.id === fastModel),
+    available: modelOptions.some(
+      (option) => option.provider === provider && option.id === fastModel,
+    ),
     model: fastModel,
     serviceTier: null,
   };

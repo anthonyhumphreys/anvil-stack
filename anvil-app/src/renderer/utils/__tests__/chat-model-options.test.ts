@@ -4,9 +4,10 @@ import { buildChatModelOptions } from '../chat-model-options';
 
 describe('buildChatModelOptions', () => {
   it('uses docs-backed Codex models when the local catalog is unavailable', () => {
-    const options = buildChatModelOptions('codex', 'gpt-5.6-sol', null, null);
+    const options = buildChatModelOptions(['codex'], 'codex', 'gpt-5.6-sol', null, null);
 
     expect(options[0]).toMatchObject({
+      provider: 'codex',
       id: 'gpt-5.6-sol',
       label: '5.6 Sol',
       defaultReasoningEffort: 'medium',
@@ -26,9 +27,16 @@ describe('buildChatModelOptions', () => {
     };
 
     expect(
-      buildChatModelOptions('cursor', 'claude-fable-5-thinking-high', null, cursorStatus),
+      buildChatModelOptions(
+        ['cursor'],
+        'cursor',
+        'claude-fable-5-thinking-high',
+        null,
+        cursorStatus,
+      ),
     ).toEqual([
       {
+        provider: 'cursor',
         id: 'claude-fable-5-thinking-high',
         label: 'Fable 5 1M Thinking High',
         description: 'Detected from the local Cursor CLI model catalog.',
@@ -45,7 +53,13 @@ describe('buildChatModelOptions', () => {
       models: [],
     };
 
-    const options = buildChatModelOptions('azure', 'deployment-review', codexStatus, null);
+    const options = buildChatModelOptions(
+      ['azure'],
+      'azure',
+      'deployment-review',
+      codexStatus,
+      null,
+    );
 
     expect(options[0]).toMatchObject({
       id: 'deployment-review',
@@ -70,7 +84,32 @@ describe('buildChatModelOptions', () => {
     };
 
     expect(
-      buildChatModelOptions('codex', 'gpt-5.6-sol', codexStatus, null)[0].serviceTiers,
+      buildChatModelOptions(['codex'], 'codex', 'gpt-5.6-sol', codexStatus, null)[0].serviceTiers,
     ).toEqual([{ id: 'priority', name: 'Fast', description: 'Faster provider service.' }]);
+  });
+
+  it('combines models from every enabled provider without assigning models to the wrong driver', () => {
+    const cursorStatus: CursorCliStatus = {
+      installed: true,
+      models: [{ id: 'cursor-auto', label: 'Cursor Auto' }],
+    };
+
+    const options = buildChatModelOptions(
+      ['codex', 'cursor'],
+      'codex',
+      'gpt-5.6-sol',
+      null,
+      cursorStatus,
+    );
+
+    expect(
+      options.some((option) => option.provider === 'codex' && option.id === 'gpt-5.6-sol'),
+    ).toBe(true);
+    expect(
+      options.some((option) => option.provider === 'cursor' && option.id === 'cursor-auto'),
+    ).toBe(true);
+    expect(
+      options.some((option) => option.provider === 'cursor' && option.id === 'gpt-5.6-sol'),
+    ).toBe(false);
   });
 });

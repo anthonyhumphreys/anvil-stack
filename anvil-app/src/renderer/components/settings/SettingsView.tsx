@@ -56,6 +56,7 @@ import {
 } from '../../../shared/codex-models';
 import { useBrand } from '../../contexts/BrandContext';
 import { dispatchCodexSelectionChanged } from '../../utils/codex-selection';
+import { selectPrimaryAgentProvider } from '../../utils/agent-provider-settings';
 import { InlineNotice } from '../layout/ViewScaffold';
 
 type TestStatus = 'idle' | 'testing' | 'ok' | 'error';
@@ -732,26 +733,13 @@ export function SettingsView({
     ...new Set<AgentProvider>([provider, ...(settings.enabledLlmProviders ?? [])]),
   ];
   const setPrimaryProvider = (nextProvider: AgentProvider) => {
-    setSettings((prev) => {
-      const currentModel = prev.openaiModel ?? DEFAULT_CODEX_MODEL;
-      const cursorModels = cursorStatus?.models.map((model) => model.id) ?? [];
-      const model =
-        nextProvider === 'cursor'
-          ? cursorModels.includes(currentModel)
-            ? currentModel
-            : 'auto'
-          : provider === 'cursor' && cursorModels.includes(currentModel)
-            ? DEFAULT_CODEX_MODEL
-            : currentModel;
-      return {
-        ...prev,
-        llmProvider: nextProvider,
-        enabledLlmProviders: [
-          ...new Set<AgentProvider>([nextProvider, ...(prev.enabledLlmProviders ?? [provider])]),
-        ],
-        openaiModel: model,
-      };
-    });
+    setSettings((current) =>
+      selectPrimaryAgentProvider(
+        current,
+        nextProvider,
+        cursorStatus?.models.map((model) => model.id) ?? [],
+      ),
+    );
     setSaved(false);
   };
   const toggleProvider = (providerId: AgentProvider) => {

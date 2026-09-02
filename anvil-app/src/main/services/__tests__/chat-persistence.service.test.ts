@@ -20,6 +20,7 @@ import {
   ensureWorkItemChatThread,
   findChatAttachment,
   getChatThread,
+  getChatThreadProviderBinding,
   listChatThreads,
   listWorkItemChatThreads,
   loadChatHistory,
@@ -72,6 +73,21 @@ beforeEach(() => {
 });
 
 describe('chat thread persistence', () => {
+  it('keeps the provider with its resumable thread id', () => {
+    const thread = createChatThread({
+      workspaceId: 'ws-1',
+      personaId: 'coder',
+      repoIds: ['repo-1'],
+    });
+
+    createChatSession(thread.id, 'repo-1', 'coder', 'session-1', 'cursor-thread-1', 'cursor');
+
+    expect(getChatThreadProviderBinding(thread.id)).toEqual({
+      providerThreadId: 'cursor-thread-1',
+      provider: 'cursor',
+    });
+  });
+
   it('creates, lists, and updates chat threads for a persona within a workspace', () => {
     const thread = createChatThread({
       workspaceId: 'ws-1',

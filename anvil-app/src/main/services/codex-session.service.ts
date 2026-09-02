@@ -67,6 +67,7 @@ interface ManagedSession {
   mode: CodexMode;
   process: ChildProcess;
   provider: 'codex' | 'cursor';
+  agentProvider: AgentProvider;
   status: CodexSession['status'];
   startedAt: string;
   cwd: string;
@@ -133,8 +134,17 @@ export async function startSession(
 ): Promise<CodexSession> {
   const id = randomUUID();
   const settings = getSettings();
+  const agentProvider = options?.provider ?? settings.llmProvider;
+  const enabledProviders = settings.enabledLlmProviders?.length
+    ? settings.enabledLlmProviders
+    : [settings.llmProvider];
+  if (!enabledProviders.includes(agentProvider)) {
+    throw new Error(
+      `${agentProvider} is not enabled. Activate it in Settings before starting a chat.`,
+    );
+  }
   const mode = settings.codexMode ?? 'on-request';
-  const model = resolveSessionModel(settings.llmProvider, settings.openaiModel);
+  const model = resolveSessionModel(agentProvider, settings.openaiModel);
   const codexPolicy = resolvePersonaCodexPolicy(mode, personaId);
   const systemPrompt = options?.scaffold
     ? buildScaffoldSystemPrompt(personaId, options.scaffold.rootPath)
@@ -148,13 +158,20 @@ export async function startSession(
     ...(process.env as Record<string, string>),
   };
 
-  const provider = settings.llmProvider === 'cursor' ? 'cursor' : 'codex';
+  const provider = agentProvider === 'cursor' ? 'cursor' : 'codex';
   const command = provider === 'cursor' ? 'cursor-agent' : 'codex';
-  const args = provider === 'cursor' ? ['acp'] : ['app-server'];
+  const args =
+    agentProvider === 'cursor'
+      ? ['acp']
+      : agentProvider === 'azure'
+        ? ['app-server', '-c', 'model_provider="azure"']
+        : agentProvider === 'openai'
+          ? ['app-server', '-c', 'model_provider="openai"']
+          : ['app-server'];
 
   // Azure AI Foundry: Codex reads config from ~/.codex/config.toml (set up by user).
   // OpenAI: pass the API key via environment.
-  if (provider === 'codex' && settings.llmProvider === 'openai') {
+  if (agentProvider === 'openai') {
     if (settings.openaiApiKey) env['OPENAI_API_KEY'] = settings.openaiApiKey;
   }
 
@@ -188,6 +205,7 @@ export async function startSession(
     mode: codexPolicy.sandbox === 'read-only' ? 'read-only' : mode,
     process: proc,
     provider,
+    agentProvider,
     status: 'starting',
     startedAt: new Date().toISOString(),
     cwd,
@@ -326,7 +344,7 @@ export async function sendMessage(
 
   const settings = getSettings();
   const mode = settings.codexMode ?? session.mode;
-  const model = normaliseCodexModel(options?.model ?? settings.openaiModel);
+  const model = resolveSessionModel(session.agentProvider, options?.model ?? settings.openaiModel);
   const codexPolicy = resolvePersonaCodexPolicy(mode, session.personaId, {
     planMode: options?.collaborationMode === 'plan',
   });
@@ -985,6 +1003,7 @@ function sessionToPublic(session: ManagedSession): CodexSession {
     appThreadId: session.appThreadId,
     kind: session.kind,
     personaId: session.personaId,
+    provider: session.agentProvider,
     status: session.status,
     startedAt: session.startedAt,
     mode: session.mode,

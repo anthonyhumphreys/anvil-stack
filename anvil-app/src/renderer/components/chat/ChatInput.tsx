@@ -80,7 +80,7 @@ interface ChatInputProps {
   model?: string;
   modelProvider?: AgentProvider;
   modelOptions?: ChatInputModelOption[];
-  onModelChange?: (model: string) => void;
+  onModelChange?: (model: string, provider: AgentProvider) => void;
   reasoningLevel?: ReasoningEffort;
   reasoningOptions?: ReasoningEffort[];
   onReasoningChange?: (level: ReasoningEffort) => void;
@@ -104,6 +104,7 @@ interface ChatInputProps {
 }
 
 interface ChatInputModelOption {
+  provider: AgentProvider;
   id: string;
   label: string;
   description: string;
@@ -1635,7 +1636,7 @@ function RunSettingsDropdown({
   model: string;
   modelProvider: AgentProvider;
   modelOptions: ChatInputModelOption[];
-  onModelChange?: (model: string) => void;
+  onModelChange?: (model: string, provider: AgentProvider) => void;
   executionStrategy: ExecutionStrategy;
   onExecutionStrategyChange?: (strategy: ExecutionStrategy) => void;
   reasoningLevel: ReasoningEffort;
@@ -1653,7 +1654,15 @@ function RunSettingsDropdown({
   const availableOptions = REASONING_EFFORT_OPTIONS.filter((option) =>
     reasoningOptions.includes(option.level),
   );
-  const selectedModel = modelOptions.find((option) => option.id === model);
+  const selectedModel = modelOptions.find(
+    (option) => option.provider === modelProvider && option.id === model,
+  );
+  const modelOptionsByProvider = modelOptions.reduce((groups, option) => {
+    const group = groups.get(option.provider) ?? [];
+    group.push(option);
+    groups.set(option.provider, group);
+    return groups;
+  }, new Map<AgentProvider, ChatInputModelOption[]>());
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -1780,14 +1789,24 @@ function RunSettingsDropdown({
               <label className="block">
                 <span className="mb-1 block text-[11px] font-medium text-text-muted">Model</span>
                 <select
-                  value={model}
-                  onChange={(event) => onModelChange(event.target.value)}
+                  value={encodeModelSelection(modelProvider, model)}
+                  onChange={(event) => {
+                    const selection = decodeModelSelection(event.target.value);
+                    if (selection) onModelChange(selection.model, selection.provider);
+                  }}
                   className="h-9 w-full rounded-lg border border-border bg-bg-secondary px-2.5 text-xs text-text-primary outline-none focus:border-accent focus:ring-2 focus:ring-accent/30"
                 >
-                  {modelOptions.map((option) => (
-                    <option key={option.id} value={option.id}>
-                      {option.label}
-                    </option>
+                  {[...modelOptionsByProvider].map(([provider, options]) => (
+                    <optgroup key={provider} label={formatProviderLabel(provider)}>
+                      {options.map((option) => (
+                        <option
+                          key={`${option.provider}:${option.id}`}
+                          value={encodeModelSelection(option.provider, option.id)}
+                        >
+                          {option.label}
+                        </option>
+                      ))}
+                    </optgroup>
                   ))}
                 </select>
                 <span className="mt-1 block text-[11px] leading-4 text-text-tertiary">
@@ -1893,4 +1912,24 @@ function RunSettingsDropdown({
       )}
     </div>
   );
+}
+
+function encodeModelSelection(provider: AgentProvider, model: string): string {
+  return `${provider}:${model}`;
+}
+
+function decodeModelSelection(value: string): { provider: AgentProvider; model: string } | null {
+  const separator = value.indexOf(':');
+  if (separator < 1) return null;
+  const provider = value.slice(0, separator) as AgentProvider;
+  const model = value.slice(separator + 1);
+  if (!['azure', 'openai', 'codex', 'cursor'].includes(provider) || !model) return null;
+  return { provider, model };
+}
+
+function formatProviderLabel(provider: AgentProvider): string {
+  if (provider === 'codex') return 'Codex CLI';
+  if (provider === 'cursor') return 'Cursor CLI';
+  if (provider === 'openai') return 'OpenAI';
+  return 'Azure Foundry';
 }

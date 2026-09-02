@@ -37,7 +37,6 @@ import type {
 import {
   CODEX_REASONING_EFFORTS,
   DEFAULT_CODEX_MODEL,
-  getCodexModelReasoningOptions,
   resolveCodexReasoningEffort,
 } from '../../shared/codex-models';
 import { useWorkspace } from './WorkspaceContext';
@@ -107,7 +106,7 @@ interface ChatContextValue {
   startNewSession: () => Promise<void>;
   loadHistory: () => Promise<void>;
   clearHistory: () => Promise<void>;
-  setModel: (model: string) => void;
+  setModel: (model: string, provider: AgentProvider) => void;
   setReasoningLevel: (level: ReasoningEffort) => void;
   selectThread: (threadId: string) => Promise<void>;
   renameThread: (threadId: string, title: string) => Promise<void>;
@@ -183,7 +182,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [model, setModelState] = useState(DEFAULT_CODEX_MODEL);
   const [modelProvider, setModelProvider] = useState<AgentProvider>('codex');
   const [modelOptions, setModelOptions] = useState<ChatModelOption[]>(() =>
-    buildChatModelOptions('codex', DEFAULT_CODEX_MODEL, null, null),
+    buildChatModelOptions(['codex'], 'codex', DEFAULT_CODEX_MODEL, null, null),
   );
   const [reasoningLevel, setReasoningLevel] = useState<ReasoningEffort>('medium');
   const [reasoningOptions, setReasoningOptions] =
@@ -828,21 +827,30 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const applySelection = async (selection?: CodexSelectionChangedDetail) => {
       const settings = await window.anvil.settings.get();
-      const codexStatus =
-        settings.llmProvider === 'cursor'
-          ? null
-          : await window.anvil.settings.getCodexStatus().catch(() => null);
-      const cursorStatus =
-        settings.llmProvider === 'cursor'
-          ? await window.anvil.settings.getCursorStatus().catch(() => null)
-          : null;
+      const enabledProviders = [
+        ...new Set<AgentProvider>([settings.llmProvider, ...(settings.enabledLlmProviders ?? [])]),
+      ];
+      const [codexStatus, cursorStatus] = await Promise.all([
+        enabledProviders.some((provider) => provider !== 'cursor')
+          ? window.anvil.settings.getCodexStatus().catch(() => null)
+          : Promise.resolve(null),
+        enabledProviders.includes('cursor')
+          ? window.anvil.settings.getCursorStatus().catch(() => null)
+          : Promise.resolve(null),
+      ]);
       const model = selection?.model ?? settings.openaiModel ?? DEFAULT_CODEX_MODEL;
       const provider = settings.llmProvider;
-      const options = buildChatModelOptions(provider, model, codexStatus, cursorStatus);
-      const reasoning =
-        provider === 'cursor'
-          ? []
-          : getCodexModelReasoningOptions(model, codexStatus?.models).supportedReasoningEfforts;
+      const options = buildChatModelOptions(
+        enabledProviders,
+        provider,
+        model,
+        codexStatus,
+        cursorStatus,
+      );
+      const selectedOption = options.find(
+        (option) => option.provider === provider && option.id === model,
+      );
+      const reasoning = selectedOption?.supportedReasoningEfforts ?? [];
       const effort =
         provider === 'cursor'
           ? (selection?.reasoningEffort ?? settings.reasoningLevel)
@@ -851,6 +859,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
               selection?.reasoningEffort ?? settings.reasoningLevel,
               codexStatus?.models,
             );
+      const currentSession = sessionRef.current;
+      if (currentSession?.provider && currentSession.provider !== provider) {
+        const threadId = findThreadIdForSession(currentSession.id);
+        if (threadId) void stopThreadLiveSession(threadId);
+      }
       setModelState(model);
       setModelProvider(provider);
       setModelOptions(options);
@@ -866,30 +879,39 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     void applySelection().catch(console.error);
     window.addEventListener(CODEX_SELECTION_CHANGED_EVENT, handleSelectionChanged);
     return () => window.removeEventListener(CODEX_SELECTION_CHANGED_EVENT, handleSelectionChanged);
-  }, []);
+  }, [findThreadIdForSession, stopThreadLiveSession]);
 
   const updateModel = useCallback(
-    (nextModel: string) => {
-      const option = modelOptions.find((candidate) => candidate.id === nextModel);
+    (nextModel: string, nextProvider: AgentProvider) => {
+      const option = modelOptions.find(
+        (candidate) => candidate.provider === nextProvider && candidate.id === nextModel,
+      );
       const nextReasoning =
-        modelProvider === 'cursor'
+        nextProvider === 'cursor'
           ? reasoningLevelRef.current
           : option?.supportedReasoningEfforts.includes(reasoningLevelRef.current)
             ? reasoningLevelRef.current
             : (option?.defaultReasoningEffort ?? 'medium');
+      if (nextProvider !== modelProvider && activeThreadId) {
+        void stopThreadLiveSession(activeThreadId);
+      }
       setModelState(nextModel);
-      if (modelProvider !== 'cursor') {
+      setModelProvider(nextProvider);
+      if (nextProvider !== 'cursor') {
         setReasoningOptions(option?.supportedReasoningEfforts ?? CODEX_REASONING_EFFORTS);
         setReasoningLevel(nextReasoning);
+      } else {
+        setReasoningOptions([]);
       }
       void window.anvil.settings
         .update({
+          llmProvider: nextProvider,
           openaiModel: nextModel,
-          ...(modelProvider === 'cursor' ? {} : { reasoningLevel: nextReasoning }),
+          ...(nextProvider === 'cursor' ? {} : { reasoningLevel: nextReasoning }),
         })
         .catch(console.error);
     },
-    [modelOptions, modelProvider],
+    [activeThreadId, modelOptions, modelProvider, stopThreadLiveSession],
   );
 
   const updateReasoningLevel = useCallback((level: ReasoningEffort) => {
@@ -1736,15 +1758,17 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                     : {}),
                 },
                 threadId: thread.id,
+                provider: modelProvider,
                 ...designOptions,
               }
-            : { threadId: thread.id, ...designOptions };
+            : { threadId: thread.id, provider: modelProvider, ...designOptions };
           const startedSession =
             scaffoldModeActive && activeWorkspace && activeScaffoldSession
               ? await window.anvil.chat.startScaffoldSession(
                   activeWorkspace.id,
                   activeScaffoldSession.rootPath,
                   activePersona.id,
+                  { provider: modelProvider },
                 )
               : activeReposState.length > 0
                 ? await window.anvil.chat.startSession(
@@ -1759,6 +1783,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                         cwd: workspaceChatCwd,
                       },
                       threadId: thread.id,
+                      provider: modelProvider,
                       ...designOptions,
                     })
                   : null;
@@ -2304,6 +2329,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                 {
                   workspace: activeWorkspace ? { workspaceId: activeWorkspace.id } : undefined,
                   threadId: createdThread.id,
+                  provider: modelProvider,
                   ...designOptions,
                 },
               )
@@ -2314,6 +2340,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                     ...(workspaceChatCwd ? { cwd: workspaceChatCwd } : {}),
                   },
                   threadId: createdThread.id,
+                  provider: modelProvider,
                   ...designOptions,
                 })
               : null;
@@ -2364,6 +2391,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       chatLayout,
       collaborationMode,
       model,
+      modelProvider,
       personas,
       rememberLiveSession,
       repos,

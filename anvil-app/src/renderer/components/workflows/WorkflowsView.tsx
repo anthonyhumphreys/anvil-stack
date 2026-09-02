@@ -34,6 +34,7 @@ import {
 import type {
   AgentProvider,
   AppSettings,
+  CodexCliStatus,
   CursorCliStatus,
   Persona,
   WorkflowExecutionStrategy,
@@ -42,12 +43,9 @@ import type {
   WorkflowRun,
   WorkflowTemplate,
 } from '../../../shared/types';
-import {
-  CODEX_MODEL_OPTIONS,
-  DEFAULT_CODEX_MODEL,
-  getCodexModelReasoningOptions,
-} from '../../../shared/codex-models';
+import { DEFAULT_CODEX_MODEL, getCodexModelReasoningOptions } from '../../../shared/codex-models';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
+import { buildProviderModelOptions } from '../../utils/chat-model-options';
 
 type WorkflowCanvasData = {
   node: WorkflowNode;
@@ -167,6 +165,7 @@ export function WorkflowsView() {
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [personas, setPersonas] = useState<Persona[]>([]);
   const [agentSettings, setAgentSettings] = useState<AppSettings | null>(null);
+  const [codexStatus, setCodexStatus] = useState<CodexCliStatus | null>(null);
   const [cursorStatus, setCursorStatus] = useState<CursorCliStatus | null>(null);
   const [kickoff, setKickoff] = useState('');
   const [supervisorQuestion, setSupervisorQuestion] = useState('');
@@ -217,7 +216,13 @@ export function WorkflowsView() {
   }, [refresh]);
 
   useEffect(() => {
-    void window.anvil.settings.getCursorStatus().then(setCursorStatus).catch(console.warn);
+    void Promise.all([
+      window.anvil.settings.getCodexStatus().catch(() => null),
+      window.anvil.settings.getCursorStatus().catch(() => null),
+    ]).then(([nextCodexStatus, nextCursorStatus]) => {
+      setCodexStatus(nextCodexStatus);
+      setCursorStatus(nextCursorStatus);
+    });
   }, []);
 
   useEffect(() => {
@@ -729,6 +734,7 @@ export function WorkflowsView() {
                   ? agentSettings.enabledLlmProviders
                   : [agentSettings?.llmProvider ?? 'codex']
               }
+              codexStatus={codexStatus}
               cursorStatus={cursorStatus}
               onChange={updateNode}
               onDelete={() => {
@@ -753,6 +759,7 @@ function Inspector({
   node,
   personas,
   enabledProviders,
+  codexStatus,
   cursorStatus,
   onChange,
   onDelete,
@@ -760,16 +767,15 @@ function Inspector({
   node: WorkflowNode;
   personas: Persona[];
   enabledProviders: AgentProvider[];
+  codexStatus: CodexCliStatus | null;
   cursorStatus: CursorCliStatus | null;
   onChange: (updates: Partial<WorkflowNode>) => void;
   onDelete: () => void;
 }) {
   const provider = node.provider ?? 'codex';
-  const reasoning = getCodexModelReasoningOptions(node.model).supportedReasoningEfforts;
-  const modelOptions =
-    provider === 'cursor'
-      ? (cursorStatus?.models ?? []).map((model) => ({ id: model.id, label: model.label }))
-      : CODEX_MODEL_OPTIONS;
+  const modelOptions = buildProviderModelOptions(provider, node.model, codexStatus, cursorStatus);
+  const selectedModel = modelOptions.find((model) => model.id === node.model);
+  const reasoning = selectedModel?.supportedReasoningEfforts ?? [];
   return (
     <div className="min-h-0 flex-1 overflow-y-auto p-5">
       <div className="flex items-center justify-between">
@@ -848,12 +854,18 @@ function Inspector({
               if (provider === 'cursor') {
                 onChange({ model });
               } else {
-                const options = getCodexModelReasoningOptions(model);
+                const options = modelOptions.find((option) => option.id === model);
+                const supportedReasoningEfforts =
+                  options?.supportedReasoningEfforts ??
+                  getCodexModelReasoningOptions(model).supportedReasoningEfforts;
+                const defaultReasoningEffort =
+                  options?.defaultReasoningEffort ??
+                  getCodexModelReasoningOptions(model).defaultReasoningEffort;
                 onChange({
                   model,
-                  reasoningEffort: options.supportedReasoningEfforts.includes(node.reasoningEffort)
+                  reasoningEffort: supportedReasoningEfforts.includes(node.reasoningEffort)
                     ? node.reasoningEffort
-                    : options.defaultReasoningEffort,
+                    : defaultReasoningEffort,
                 });
               }
             }}

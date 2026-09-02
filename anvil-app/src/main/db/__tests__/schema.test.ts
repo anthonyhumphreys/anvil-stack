@@ -67,6 +67,7 @@ describe('fresh database schema', () => {
       expect(tableColumns('watchtower_events').has('run_id')).toBe(true);
       expect(tableColumns('cloud_execution_connection').has('token')).toBe(true);
       expect(tableColumns('cloud_execution_connection').has('endpoint')).toBe(true);
+      expect(tableColumns('chat_threads').has('provider_thread_provider')).toBe(true);
     } finally {
       db.close();
     }
@@ -120,7 +121,7 @@ describe('fresh database schema', () => {
         ).map((column) => column.name),
       );
 
-      expect(SCHEMA_VERSION).toBe(58);
+      expect(SCHEMA_VERSION).toBe(59);
       for (const column of [
         'local_llm_mode',
         'local_llm_provider',
@@ -147,6 +148,22 @@ describe('fresh database schema', () => {
         telemetry_enabled: number;
       };
       expect(row.telemetry_enabled).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('records Codex as the owner of existing provider thread ids', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec('CREATE TABLE chat_threads (id TEXT PRIMARY KEY, provider_thread_id TEXT)');
+      db.exec("INSERT INTO chat_threads (id, provider_thread_id) VALUES ('thread-1', 'remote-1')");
+      applyMigration(db, MIGRATIONS[59]);
+
+      const row = db
+        .prepare('SELECT provider_thread_provider FROM chat_threads WHERE id = ?')
+        .get('thread-1') as { provider_thread_provider: string };
+      expect(row.provider_thread_provider).toBe('codex');
     } finally {
       db.close();
     }

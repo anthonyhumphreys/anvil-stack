@@ -1,5 +1,6 @@
 import { ipcMain } from 'electron';
 import type {
+  AgentProvider,
   AgentUIIntentPresentationPatch,
   AgentUIPlanPatch,
   AgentUIQuestionResolution,
@@ -56,12 +57,13 @@ import {
 import { getSettings } from '../services/settings.service.js';
 import { getPersonas } from '../services/persona.service.js';
 import { detectCodexCli, getCodexInstallInstructions } from '../services/codex-bridge.service.js';
+import { detectCursorCli } from '../services/cursor-bridge.service.js';
 import {
   createChatThread,
   createChatSession,
   deleteChatThread,
   ensureWorkItemChatThread,
-  getChatThreadProviderThreadId,
+  getChatThreadProviderBinding,
   listChatThreads,
   listWorkItemChatThreads,
   saveChatEntry,
@@ -94,15 +96,29 @@ import { listAgentUIIntents } from '../services/agent-ui-intent.service.js';
 
 const LOCAL_LLM_CHAT_MAX_PROMPT_CHARS = 8_000;
 
+async function assertChatProviderAvailable(provider: AgentProvider): Promise<void> {
+  if (provider === 'cursor') {
+    const status = await detectCursorCli();
+    if (!status.installed) {
+      throw new Error(
+        'Cursor CLI is not installed. Install it and run `cursor-agent login` before starting a Cursor chat.',
+      );
+    }
+    return;
+  }
+
+  const status = await detectCodexCli();
+  if (!status.installed) {
+    throw new Error(`Codex CLI is not installed.\n\n${getCodexInstallInstructions()}`);
+  }
+}
+
 /**
  * When the local-model opt-in is enabled, classify the prompt and —
  * if it is simple enough — answer it locally instead of starting a Codex turn.
  * Returns true when the message was fully handled on-device.
  */
-async function tryLocalLlmChatReply(
-  sessionId: string,
-  message: string,
-): Promise<boolean> {
+async function tryLocalLlmChatReply(sessionId: string, message: string): Promise<boolean> {
   if (getSettings().localLlmMode !== 'prefer-simple') return false;
   if (message.length > LOCAL_LLM_CHAT_MAX_PROMPT_CHARS) return false;
 
@@ -130,11 +146,8 @@ export function registerChatHandlers(): void {
       personaId: string,
       options?: ChatStartOptions,
     ): Promise<CodexSession> => {
-      // Verify codex is installed
-      const status = await detectCodexCli();
-      if (!status.installed) {
-        throw new Error(`Codex CLI is not installed.\n\n${getCodexInstallInstructions()}`);
-      }
+      const provider = options?.provider ?? getSettings().llmProvider;
+      await assertChatProviderAvailable(provider);
 
       // Get repo paths from DB
       const db = getDb();
@@ -150,8 +163,10 @@ export function registerChatHandlers(): void {
       }
 
       // Use first repo's path as primary cwd; pass all paths for context
+      const storedBinding = getChatThreadProviderBinding(options?.threadId);
       const providerThreadId =
-        options?.providerThreadId ?? getChatThreadProviderThreadId(options?.threadId);
+        options?.providerThreadId ??
+        (storedBinding?.provider === provider ? storedBinding.providerThreadId : undefined);
       const codexSession = await startSession(repoPaths, repoIds, personaId, {
         ...options,
         providerThreadId: options?.forkFromProviderThreadId
@@ -166,6 +181,7 @@ export function registerChatHandlers(): void {
         personaId,
         codexSession.id,
         codexSession.providerThreadId ?? null,
+        provider,
       );
 
       return codexSession;
@@ -179,17 +195,24 @@ export function registerChatHandlers(): void {
       workspaceId: string,
       rootPath: string,
       personaId: string,
+      options?: Pick<ChatStartOptions, 'provider'>,
     ): Promise<CodexSession> => {
-      const status = await detectCodexCli();
-      if (!status.installed) {
-        throw new Error(`Codex CLI is not installed.\n\n${getCodexInstallInstructions()}`);
-      }
+      const provider = options?.provider ?? getSettings().llmProvider;
+      await assertChatProviderAvailable(provider);
 
       const codexSession = await startSession([rootPath], [], personaId, {
+        provider,
         scaffold: { workspaceId, rootPath },
       });
 
-      createChatSession(null, null, personaId, codexSession.id, codexSession.providerThreadId);
+      createChatSession(
+        null,
+        null,
+        personaId,
+        codexSession.id,
+        codexSession.providerThreadId,
+        provider,
+      );
       return codexSession;
     },
   );
@@ -252,8 +275,8 @@ export function registerChatHandlers(): void {
   ipcMain.handle(
     'chat:fork-provider-thread',
     async (_event, sourceThreadId: string, targetThreadId: string): Promise<ChatThread | null> => {
-      const sourceProviderThreadId = getChatThreadProviderThreadId(sourceThreadId);
-      if (!sourceProviderThreadId) return null;
+      const sourceBinding = getChatThreadProviderBinding(sourceThreadId);
+      if (!sourceBinding) return null;
 
       const targetThread = updateChatThread(targetThreadId, {});
       if (!targetThread) return null;
@@ -276,7 +299,8 @@ export function registerChatHandlers(): void {
           workspace: targetThread.workspaceId
             ? { workspaceId: targetThread.workspaceId }
             : undefined,
-          forkFromProviderThreadId: sourceProviderThreadId,
+          provider: sourceBinding.provider,
+          forkFromProviderThreadId: sourceBinding.providerThreadId,
         },
       );
       createChatSession(
@@ -285,10 +309,15 @@ export function registerChatHandlers(): void {
         targetThread.personaId,
         codexSession.id,
         codexSession.providerThreadId ?? null,
+        sourceBinding.provider,
       );
       stopSession(codexSession.id);
       if (codexSession.providerThreadId) {
-        setChatThreadProviderThreadId(targetThreadId, codexSession.providerThreadId);
+        setChatThreadProviderThreadId(
+          targetThreadId,
+          codexSession.providerThreadId,
+          sourceBinding.provider,
+        );
       }
       return updateChatThread(targetThreadId, {});
     },

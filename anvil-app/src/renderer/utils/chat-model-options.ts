@@ -7,6 +7,7 @@ import type {
 } from '../../shared/types';
 
 export interface ChatModelOption {
+  provider: AgentProvider;
   id: string;
   label: string;
   description: string;
@@ -15,15 +16,16 @@ export interface ChatModelOption {
   serviceTiers: Array<{ id: string; name: string; description?: string }>;
 }
 
-export function buildChatModelOptions(
+export function buildProviderModelOptions(
   provider: AgentProvider,
-  selectedModel: string,
+  selectedModel: string | null,
   codexStatus: CodexCliStatus | null,
   cursorStatus: CursorCliStatus | null,
 ): ChatModelOption[] {
   const detectedCodexOptions = codexStatus?.models
     ?.filter((model) => !model.hidden)
     .map((model) => ({
+      provider,
       id: model.id,
       label: model.displayName ?? model.id,
       description: model.description ?? 'Detected from the local Codex CLI model catalog.',
@@ -34,6 +36,7 @@ export function buildChatModelOptions(
   const options =
     provider === 'cursor'
       ? (cursorStatus?.models ?? []).map((model) => ({
+          provider,
           id: model.id,
           label: model.label,
           description: 'Detected from the local Cursor CLI model catalog.',
@@ -44,6 +47,7 @@ export function buildChatModelOptions(
       : detectedCodexOptions?.length
         ? detectedCodexOptions
         : CODEX_MODEL_OPTIONS.map((model) => ({
+            provider,
             id: model.id,
             label: model.label,
             description: model.description,
@@ -52,9 +56,10 @@ export function buildChatModelOptions(
             serviceTiers: [],
           }));
 
-  if (options.some((option) => option.id === selectedModel)) return options;
+  if (!selectedModel || options.some((option) => option.id === selectedModel)) return options;
   return [
     {
+      provider,
       id: selectedModel,
       label: selectedModel,
       description:
@@ -67,4 +72,21 @@ export function buildChatModelOptions(
     },
     ...options,
   ];
+}
+
+export function buildChatModelOptions(
+  enabledProviders: AgentProvider[],
+  selectedProvider: AgentProvider,
+  selectedModel: string,
+  codexStatus: CodexCliStatus | null,
+  cursorStatus: CursorCliStatus | null,
+): ChatModelOption[] {
+  return [...new Set([selectedProvider, ...enabledProviders])].flatMap((provider) =>
+    buildProviderModelOptions(
+      provider,
+      provider === selectedProvider ? selectedModel : null,
+      codexStatus,
+      cursorStatus,
+    ),
+  );
 }

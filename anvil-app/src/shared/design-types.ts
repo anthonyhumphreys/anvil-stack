@@ -1,5 +1,7 @@
 // src/shared/design-types.ts
 
+import type { AgentProvider } from './types.js';
+
 export type DesignMode = 'design' | 'implement';
 
 export type FigmaRefKind = 'design' | 'board' | 'make';
@@ -21,6 +23,7 @@ export interface DesignReadiness {
 }
 
 export interface ChatStartOptions {
+  provider?: AgentProvider;
   threadId?: string;
   providerThreadId?: string;
   forkFromProviderThreadId?: string;

@@ -143,8 +143,13 @@ const api: AnvilAPI = {
       personaId: string,
       options?: import('../shared/types.js').ChatStartOptions,
     ) => ipcRenderer.invoke('chat:start-session', repoIds, personaId, options),
-    startScaffoldSession: (workspaceId: string, rootPath: string, personaId: string) =>
-      ipcRenderer.invoke('chat:start-scaffold-session', workspaceId, rootPath, personaId),
+    startScaffoldSession: (
+      workspaceId: string,
+      rootPath: string,
+      personaId: string,
+      options?: Pick<import('../shared/types.js').ChatStartOptions, 'provider'>,
+    ) =>
+      ipcRenderer.invoke('chat:start-scaffold-session', workspaceId, rootPath, personaId, options),
     send: (
       sessionId: string,
       message: string,

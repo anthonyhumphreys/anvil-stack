@@ -975,6 +975,7 @@ export interface CodexSession {
   appThreadId?: string;
   kind?: 'repo' | 'workspace' | 'scaffold';
   personaId: string;
+  provider?: AgentProvider;
   status: 'starting' | 'ready' | 'busy' | 'error';
   startedAt: string;
   mode?: CodexMode;

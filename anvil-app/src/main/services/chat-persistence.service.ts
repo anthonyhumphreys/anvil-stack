@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type {
+  AgentProvider,
   ChatAttachment,
   ChatGoalSnapshot,
   ChatMessage,
@@ -643,6 +644,7 @@ export function createChatSession(
   personaId: string,
   sessionId?: string,
   providerThreadId?: string | null,
+  provider?: AgentProvider,
 ): string {
   const db = getDb();
   const id = sessionId ?? randomUUID();
@@ -653,28 +655,48 @@ export function createChatSession(
   ).run(id, threadId, repoId, personaId, providerThreadId ?? null);
 
   if (threadId && providerThreadId) {
-    setChatThreadProviderThreadId(threadId, providerThreadId);
+    setChatThreadProviderThreadId(threadId, providerThreadId, provider ?? 'codex');
   }
 
   return id;
 }
 
 export function getChatThreadProviderThreadId(threadId: string | null | undefined): string | null {
-  if (!threadId) return null;
-  const row = getDb()
-    .prepare('SELECT provider_thread_id FROM chat_threads WHERE id = ?')
-    .get(threadId) as { provider_thread_id: string | null } | undefined;
-  return row?.provider_thread_id ?? null;
+  return getChatThreadProviderBinding(threadId)?.providerThreadId ?? null;
 }
 
-export function setChatThreadProviderThreadId(threadId: string, providerThreadId: string): void {
+export function getChatThreadProviderBinding(
+  threadId: string | null | undefined,
+): { providerThreadId: string; provider: AgentProvider } | null {
+  if (!threadId) return null;
+  const row = getDb()
+    .prepare('SELECT provider_thread_id, provider_thread_provider FROM chat_threads WHERE id = ?')
+    .get(threadId) as
+    | { provider_thread_id: string | null; provider_thread_provider: string | null }
+    | undefined;
+  if (!row?.provider_thread_id) return null;
+  const provider = row.provider_thread_provider;
+  return {
+    providerThreadId: row.provider_thread_id,
+    provider:
+      provider === 'azure' || provider === 'openai' || provider === 'cursor' || provider === 'codex'
+        ? provider
+        : 'codex',
+  };
+}
+
+export function setChatThreadProviderThreadId(
+  threadId: string,
+  providerThreadId: string,
+  provider: AgentProvider = 'codex',
+): void {
   getDb()
     .prepare(
       `UPDATE chat_threads
-       SET provider_thread_id = ?, updated_at = ?
+       SET provider_thread_id = ?, provider_thread_provider = ?, updated_at = ?
        WHERE id = ?`,
     )
-    .run(providerThreadId, new Date().toISOString(), threadId);
+    .run(providerThreadId, provider, new Date().toISOString(), threadId);
 }
 
 export function setChatSessionProviderTurnId(

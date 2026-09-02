@@ -12,8 +12,9 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { useBrand } from '../../contexts/BrandContext';
-import type { AppSettings } from '../../../shared/types';
+import type { AgentProvider, AppSettings } from '../../../shared/types';
 import { OnboardingPreviewBar } from './OnboardingPreviewBar';
+import { selectPrimaryAgentProvider } from '../../utils/agent-provider-settings';
 
 type TestStatus = 'idle' | 'testing' | 'ok' | 'error';
 
@@ -53,6 +54,11 @@ export function ConnectorSetupOverlay({
 
   const update = (key: keyof AppSettings, value: string) => {
     setSettings((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const selectLlmProvider = (provider: AgentProvider) => {
+    setSettings((current) => selectPrimaryAgentProvider(current, provider));
+    setLlmStatus('idle');
   };
 
   const saveSettings = async () => {
@@ -175,22 +181,22 @@ export function ConnectorSetupOverlay({
                 <ProviderButton
                   label="Codex CLI"
                   active={llmProvider === 'codex'}
-                  onClick={() => update('llmProvider', 'codex')}
+                  onClick={() => selectLlmProvider('codex')}
                 />
                 <ProviderButton
                   label="Cursor CLI"
                   active={llmProvider === 'cursor'}
-                  onClick={() => update('llmProvider', 'cursor')}
+                  onClick={() => selectLlmProvider('cursor')}
                 />
                 <ProviderButton
                   label="OpenAI"
                   active={llmProvider === 'openai'}
-                  onClick={() => update('llmProvider', 'openai')}
+                  onClick={() => selectLlmProvider('openai')}
                 />
                 <ProviderButton
                   label="Azure Foundry"
                   active={llmProvider === 'azure'}
-                  onClick={() => update('llmProvider', 'azure')}
+                  onClick={() => selectLlmProvider('azure')}
                 />
               </div>
               {llmProvider === 'codex' && (

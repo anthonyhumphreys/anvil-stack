@@ -232,6 +232,7 @@ export interface AnvilAPI {
       workspaceId: string,
       rootPath: string,
       personaId: string,
+      options?: Pick<ChatStartOptions, 'provider'>,
     ) => Promise<CodexSession>;
     send: (
       sessionId: string,
