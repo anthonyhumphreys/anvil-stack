@@ -1,0 +1,36 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "anvil-desktop-updates",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-31",
+  "compatibility_flags": ["nodejs_compat"],
+  "preview_urls": false,
+  "r2_buckets": [
+    {
+      "binding": "RELEASES",
+      "bucket_name": "anvil-desktop-releases",
+    },
+  ],
+  "ratelimits": [
+    {
+      "name": "FEED_RATE_LIMITER",
+      "namespace_id": "20331101",
+      "simple": {
+        "limit": 120,
+        "period": 60,
+      },
+    },
+    {
+      "name": "ASSET_RATE_LIMITER",
+      "namespace_id": "20331102",
+      "simple": {
+        "limit": 30,
+        "period": 60,
+      },
+    },
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.1,
+  },
+}
