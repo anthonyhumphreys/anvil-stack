@@ -254,9 +254,8 @@ jobs:
           shopt -s nullglob
           version="$(node -p "require('./package.json').version")"
           zip_assets=(dist/*-arm64-mac.zip)
-          dmg_assets=(dist/Anvil-[0-9]*-arm64.dmg)
-          if [[ "${#zip_assets[@]}" -ne 1 || "${#dmg_assets[@]}" -ne 1 ]]; then
-            echo "Expected one ZIP and one versioned DMG before publishing to R2." >&2
+          if [[ "${#zip_assets[@]}" -ne 1 ]]; then
+            echo "Expected one ZIP before publishing to R2." >&2
             exit 1
           fi
 
@@ -270,13 +269,6 @@ jobs:
             "application/zip" \
             "attachment; filename=\"$(basename "${zip_assets[0]}")\"" \
             "${immutable_cache}"
-          node "${publisher}" "${CLOUDFLARE_ACCOUNT_ID}" "${bucket}" \
-            "macos/arm64/releases/${version}/$(basename "${dmg_assets[0]}")" \
-            "${GITHUB_WORKSPACE}/anvil-app/${dmg_assets[0]}" \
-            "application/x-apple-diskimage" \
-            "attachment; filename=\"$(basename "${dmg_assets[0]}")\"" \
-            "${immutable_cache}"
-
       - name: Create or update GitHub Release
         if: steps.release_scope.outputs.should_release == 'true'
         shell: bash
@@ -357,7 +349,7 @@ jobs:
               --notes-file "${notes_file}"
           fi
 
-      - name: Publish mutable macOS update aliases to Cloudflare R2
+      - name: Publish macOS update feed to Cloudflare R2
         if: ${{ steps.release_scope.outputs.should_release == 'true' && (github.event_name != 'workflow_dispatch' || inputs.notarize) }}
         shell: bash
         env:
@@ -373,17 +365,9 @@ jobs:
           shopt -s nullglob
           bucket="anvil-desktop-releases"
           endpoint="https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com"
-          latest_dmg_file="${GITHUB_WORKSPACE}/anvil-app/dist/Anvil-latest-arm64.dmg"
           feed_file="${GITHUB_WORKSPACE}/anvil-app/dist/anvil-macos-arm64-updates.json"
           mutable_cache="public, max-age=60, s-maxage=300, must-revalidate"
 
-          aws s3api put-object --bucket "${bucket}" \
-            --key "macos/arm64/latest/Anvil-latest-arm64.dmg" \
-            --body "${latest_dmg_file}" \
-            --content-type application/x-apple-diskimage \
-            --content-disposition 'attachment; filename="Anvil-latest-arm64.dmg"' \
-            --cache-control "${mutable_cache}" \
-            --endpoint-url "${endpoint}" --region auto --no-cli-pager
           aws s3api put-object --bucket "${bucket}" \
             --key "macos/arm64/feed.json" \
             --body "${feed_file}" \

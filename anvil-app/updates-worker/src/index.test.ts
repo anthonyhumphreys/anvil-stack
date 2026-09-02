@@ -100,7 +100,9 @@ describe('desktop updates Worker', () => {
   it('returns retry guidance when the asset limit is exceeded', async () => {
     const env = createEnv({ assetAllowed: false });
     const response = await handleRequest(
-      new Request('https://updates.example/v1/macos/arm64/latest/Anvil-latest-arm64.dmg'),
+      new Request(
+        'https://updates.example/v1/macos/arm64/releases/0.6.13/Anvil-0.6.13-arm64-mac.zip',
+      ),
       env,
     );
 

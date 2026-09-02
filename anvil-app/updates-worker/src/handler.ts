@@ -11,9 +11,8 @@ type PublicObject = {
 };
 
 const FEED_PATH = '/v1/macos/arm64/feed.json';
-const LATEST_DMG_PATH = '/v1/macos/arm64/latest/Anvil-latest-arm64.dmg';
 const VERSIONED_ASSET_PATH =
-  /^\/v1\/macos\/arm64\/releases\/(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\/(Anvil-[0-9A-Za-z.-]+-arm64(?:-mac)?\.(?:dmg|zip))$/;
+  /^\/v1\/macos\/arm64\/releases\/(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\/(Anvil-[0-9A-Za-z.-]+-arm64-mac\.zip)$/;
 
 const SHORT_CACHE = 'public, max-age=60, s-maxage=300, must-revalidate';
 const IMMUTABLE_CACHE = 'public, max-age=31536000, immutable';
@@ -70,14 +69,6 @@ function resolvePublicObject(pathname: string, env: UpdateServiceEnv): PublicObj
       cacheControl: SHORT_CACHE,
       key: 'macos/arm64/feed.json',
       rateLimiter: env.FEED_RATE_LIMITER,
-    };
-  }
-
-  if (pathname === LATEST_DMG_PATH) {
-    return {
-      cacheControl: SHORT_CACHE,
-      key: 'macos/arm64/latest/Anvil-latest-arm64.dmg',
-      rateLimiter: env.ASSET_RATE_LIMITER,
     };
   }
 
