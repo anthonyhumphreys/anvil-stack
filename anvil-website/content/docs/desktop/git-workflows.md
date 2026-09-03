@@ -40,6 +40,9 @@ Operations available:
 - Push and pull.
 - Fetch remote updates.
 - View diffs for modified files.
+- Discard selected working-tree changes after confirmation.
+- Generate a commit message from the staged diff.
+- Create a pull request through the configured provider.
 
 ## Diff review
 
@@ -59,7 +62,7 @@ Good commits survive longer than good intentions. Anvil Desktop suggests:
 
 - Keep commits scoped to one concern.
 - Include test changes in the same commit as the code they test.
-- Write commit messages that explain why, not just what.
+- Write commit messages that explain why the change exists.
 - Separate mechanical changes (formatting, renaming) from behavioural changes.
 
 The chat assistant can draft a commit message from the staged diff. Review it before accepting; models are optimistic about refactor completeness.
@@ -76,12 +79,9 @@ When a branch is ready for review, Anvil Desktop can prepare a handover pack:
 
 The handover pack is stored in the workspace and can be copied into the PR description or shared with reviewers.
 
-## Merge and rebase
+## Merge
 
-Anvil Desktop supports merge and rebase operations:
-
-- Merge: create a merge commit when the branch history should be preserved.
-- Rebase: rewrite history for a linear history preference.
+Anvil Desktop can merge a selected local branch into the current branch. The typed Git API does not expose a rebase action.
 
 Resolve conflicts in the embedded editor or your external IDE. The terminal can run `git mergetool` if configured.
 

@@ -63,7 +63,10 @@ chat unless you choose to enable and open it.
 
 ## Read next
 
+- [Feature directory](/docs/desktop/feature-directory)
 - [Installation and setup](/docs/desktop/installation)
+- [Workspaces, repositories, and activity](/docs/desktop/workspaces-repositories-and-activity)
+- [Chat, canvas, and agent runs](/docs/desktop/chat-canvas-and-agent-runs)
 - [Architecture](/docs/desktop/architecture)
 - [Operating guide](/docs/desktop/operating-guide)
 - [Agent workflows](/docs/desktop/agent-workflows)

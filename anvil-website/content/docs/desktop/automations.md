@@ -10,85 +10,79 @@ order: 116
 
 # Automations
 
-Anvil Desktop automations are scheduled or on-demand tasks that run against repositories and report findings back into the workspace.
-
-## What automations can do
-
-- Run a script on a schedule and record output.
-- Create disposable git worktrees for isolated test runs.
-- Scan dependencies and report drift or new vulnerabilities.
-- Run test suites and record pass/fail trends.
-- Check code quality metrics and record changes over time.
+Anvil Desktop automations run an agent prompt against one or more repositories. They start manually, on a cron schedule, or when Watchtower observes a matching workflow, pull request, or pipeline event.
 
 ## Automation definition
 
-An automation has:
+An automation stores:
 
-- **Name and description** — What it does and why it exists.
-- **Target repository** — Which repo to run against.
-- **Command or script** — What to execute.
-- **Schedule** — Cron expression or manual trigger.
-- **Environment** — Working directory, env vars, and tool versions.
-- **Output handling** — Where results are stored and how they surface in the workspace.
+- a name and agent persona
+- the prompt to run
+- one or more repository targets
+- schedule or Watchtower trigger configuration
+- whether the agent may write repository files or run commands
+- an optional multi-persona loop and stop condition
+- enabled state, timezone, last run, and next run
 
-## Scheduling
+Every run uses disposable Git worktrees. The automation prompt is constrained to those paths and explicitly forbids pushes, pull requests, remote mutations, and external ticket, document, or comment creation.
 
-Automations support two trigger modes:
+## Schedules and Watchtower
 
-| Mode | Use when |
+| Trigger | Use it for |
 | --- | --- |
-| Cron | The task should run repeatedly: nightly dependency scans, weekly report generation. |
-| Manual | The task runs on demand: pre-release checks, one-off audits. |
+| Schedule | Run from a cron expression in the selected IANA timezone. |
+| Watchtower | Wait for a workflow completion or failure, pull request merge or close, or pipeline completion or failure. |
+| Run now | Start the selected automation manually without changing its saved trigger. |
 
-Cron expressions use standard Unix cron syntax. The automation daemon evaluates schedules and queues execution.
+Workflow events come from Anvil's local workflow state. Pull request and pipeline watchers poll supported GitHub or Azure DevOps remotes. A pull request watcher needs a PR number; a pipeline watcher needs a pipeline name, workflow file, or run identifier.
 
-## The automation daemon
+The view shows the latest observed external state and any watcher error. An observed state change only starts a run when it matches the configured event.
 
-On macOS, the automation daemon can register with `launchctl` for background scheduling even when Anvil Desktop is not foreground. On other platforms, automations run while the app is open.
+## Background daemon
 
-The daemon:
+The automation daemon evaluates due schedules and pending Watchtower events outside the foreground window:
 
-1. Evaluates cron schedules.
-2. Creates disposable worktrees when configured.
-3. Runs the command in a PTY-like environment.
-4. Captures stdout, stderr, and exit code.
-5. Writes results to SQLite and surfaces them in the Automations view.
-6. Cleans up worktrees after a configured TTL.
+- macOS uses a user LaunchAgent through `launchctl`
+- Linux uses a user `systemd` service when user services are available
+- unsupported platforms fall back to the app process
+
+The Automations view reports whether the daemon is supported, installed, and loaded. Reconcile it after changing platform configuration or the packaged application path.
 
 ## Disposable worktrees
 
-Automations can run in a temporary git worktree so the main working directory stays untouched. This is useful for:
+Before a run, Anvil creates a dedicated branch and worktree for every target repository. The agent may only edit those worktree paths when write permission is enabled.
 
-- Running tests on a clean checkout.
-- Building release candidates in isolation.
-- Running lint or format checks without polluting the current branch.
+Clean worktrees are removed after the run. A worktree with changes is kept for review and appears in the run detail. This prevents an unattended run from mixing changes into the developer's current checkout while preserving work that needs inspection.
 
-Worktrees are deleted after the automation run unless configured otherwise.
+Disposable worktrees isolate Git state, not the operating system. An allowed command still runs as the user who launched Anvil.
 
-## Viewing results
+## Agent loops
 
-Automation results appear in:
+An optional loop assigns a list of personas, a maximum of one to eight iterations, and a stop condition. Sequence mode hands work through the personas in order. Dynamic mode lets the orchestrator decide whether a persona is useful for the current iteration.
 
-- The Automations view with pass/fail history.
-- Workspace status when an automation has recent failures.
-- Notifications when a scheduled run fails.
+Each member runs in a separate provider thread and receives the earlier thread outputs as handoff context. Use a small member list and a concrete stop condition. A vague loop is just an expensive way to rediscover ambiguity.
 
-Each result includes:
+## Results and triage
 
-- Exit code.
-- Stdout and stderr excerpts.
-- Duration.
-- Git commit at time of run.
-- Any artifacts produced.
+The run detail has four views:
 
-## Limitations
+- Transcript composes the assistant's readable response.
+- Activity groups thinking, file edits, commands, and tool calls.
+- Worktrees lists the branch and retained state for each repository.
+- Raw Events shows the stored event stream without presentation grouping.
 
-- Automations run as the user who launched Anvil Desktop. They do not run in an isolated sandbox.
-- Background scheduling on Windows and Linux is still being hardened. See the porting guide.
-- Very long-running automations may be killed if the app is closed.
-- Automations are not a CI replacement. They are a local convenience.
+Run history records trigger, status, assistant result, error, changed-file count, and worktree state. The triage list lifts failed or changed runs that need review. Notifications and Inbox activity can route back to the exact automation run.
+
+## Limits
+
+- Automations require the local Codex runtime and configured persona access.
+- Command and write permissions are broad within the disposable worktrees. Review retained changes before merging them.
+- Cancellation and failure do not reverse commands or external effects that already occurred.
+- External Watchtower polling depends on local provider credentials and API availability.
+- Automations complement hosted CI. They do not prove that a deployment pipeline passed.
 
 ## Read next
 
 - [Operating guide](/docs/desktop/operating-guide)
+- [Workflow graphs](/docs/desktop/workflow-graphs)
 - [Companion surfaces](/docs/desktop/companion-surfaces)

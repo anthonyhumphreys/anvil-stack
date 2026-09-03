@@ -3,6 +3,7 @@ import Link from "next/link";
 import {
   ArrowRight,
   Check,
+  ChevronDown,
   CircleDot,
   Container,
   FileCheck2,
@@ -105,23 +106,43 @@ export function ProductDocsLanding({
                 <p className="text-lg font-semibold">{journey.label}</p>
                 <p className="mt-1 text-sm leading-6 text-muted-foreground">{journeyById.get(journey.id)?.description}</p>
               </div>
-              <div className="grid gap-1 sm:grid-cols-2">
-                {journey.entries.slice(0, 6).map((entry) => (
-                  <Link
-                    key={entry.slug}
-                    href={`/docs/${entry.slug}`}
-                    className="group flex min-h-11 items-center justify-between gap-3 rounded-md px-3 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  >
-                    <span>{entry.navTitle}</span>
-                    <ArrowRight className="size-3.5 shrink-0 -translate-x-1 opacity-0 transition-[opacity,transform] group-hover:translate-x-0 group-hover:opacity-100 group-focus-visible:translate-x-0 group-focus-visible:opacity-100" aria-hidden="true" />
-                  </Link>
-                ))}
+              <div>
+                <div className="grid gap-1 sm:grid-cols-2">
+                  {journey.entries.slice(0, 6).map((entry) => (
+                    <JourneyLink key={entry.slug} entry={entry} />
+                  ))}
+                </div>
+                {journey.entries.length > 6 ? (
+                  <details className="group/more mt-2 border-t pt-2">
+                    <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 rounded-md px-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+                      <ChevronDown className="size-3.5 transition-transform group-open/more:rotate-180" aria-hidden="true" />
+                      Show {journey.entries.length - 6} more {journey.label.toLowerCase()} pages
+                    </summary>
+                    <div className="mt-1 grid gap-1 sm:grid-cols-2">
+                      {journey.entries.slice(6).map((entry) => (
+                        <JourneyLink key={entry.slug} entry={entry} />
+                      ))}
+                    </div>
+                  </details>
+                ) : null}
               </div>
             </div>
           ))}
         </div>
       </section>
     </div>
+  );
+}
+
+function JourneyLink({ entry }: { entry: { slug: string; navTitle: string } }) {
+  return (
+    <Link
+      href={`/docs/${entry.slug}`}
+      className="group flex min-h-11 items-center justify-between gap-3 rounded-md px-3 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <span>{entry.navTitle}</span>
+      <ArrowRight className="size-3.5 shrink-0 -translate-x-1 opacity-0 transition-[opacity,transform] group-hover:translate-x-0 group-hover:opacity-100 group-focus-visible:translate-x-0 group-focus-visible:opacity-100" aria-hidden="true" />
+    </Link>
   );
 }
 
