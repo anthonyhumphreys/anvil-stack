@@ -1527,6 +1527,7 @@ export function ChatView({ userRole }: ChatViewProps) {
             minWidth={360}
             maxWidth={960}
             collapsedWidth={0}
+            collapsible={false}
             className="border-l border-border/60 bg-bg-secondary/50"
           >
             <ChatCanvasSidebar

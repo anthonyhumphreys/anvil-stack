@@ -135,7 +135,8 @@ export function RepositoryMap({
       .filter(
         (node) =>
           node.kind !== 'repository' &&
-          (node.name.toLowerCase().includes(normalized) || node.path.toLowerCase().includes(normalized)),
+          (node.name.toLowerCase().includes(normalized) ||
+            node.path.toLowerCase().includes(normalized)),
       )
       .slice(0, 6);
   }, [resolvedGraph.nodes, searchQuery]);
@@ -229,10 +230,13 @@ export function RepositoryMap({
 
   return (
     <div
-      className={`repository-explorer overflow-hidden rounded-xl border border-border bg-bg-secondary ${className}`}
+      className={`repository-explorer overflow-hidden border-y border-border bg-bg-secondary ${className}`}
     >
       <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2.5">
-        <nav aria-label="Repository map breadcrumb" className="flex min-w-0 flex-1 items-center gap-1">
+        <nav
+          aria-label="Repository map breadcrumb"
+          className="flex min-w-0 flex-1 items-center gap-1"
+        >
           {breadcrumbs.map((node, index) => (
             <span key={node.id} className="flex min-w-0 items-center gap-1">
               {index > 0 && <ChevronRight size={13} className="shrink-0 text-text-muted" />}
@@ -282,10 +286,14 @@ export function RepositoryMap({
                 : 'border-border text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary'
             }`}
           >
-            <GitBranch size={13} /> Paths
+            <GitBranch size={13} /> Dependencies
           </button>
         )}
-        <div className="flex h-8 rounded-md border border-border bg-bg-primary p-0.5" role="group" aria-label="Repository view">
+        <div
+          className="flex h-8 rounded-md border border-border bg-bg-primary p-0.5"
+          role="group"
+          aria-label="Repository view"
+        >
           <button
             type="button"
             aria-pressed={viewMode === 'map'}
@@ -368,10 +376,7 @@ export function RepositoryMap({
         ) : viewMode === 'garden' ? (
           <RepositoryGardenBoundary
             fallback={
-              <GardenUnavailable
-                compact={compact}
-                onReturnToMap={() => setViewMode('map')}
-              />
+              <GardenUnavailable compact={compact} onReturnToMap={() => setViewMode('map')} />
             }
           >
             <Suspense fallback={<GardenLoading compact={compact} />}>
@@ -424,7 +429,9 @@ export function RepositoryMap({
               <div className="grid h-full place-items-center px-6 text-center">
                 <div>
                   <Box size={28} className="mx-auto text-text-muted" />
-                  <p className="mt-3 text-sm font-medium text-text-primary">No deeper layer indexed</p>
+                  <p className="mt-3 text-sm font-medium text-text-primary">
+                    No deeper layer indexed
+                  </p>
                   <p className="mt-1 max-w-sm text-xs text-text-tertiary">
                     This file may use an unsupported language, or this area contains no child nodes.
                   </p>
@@ -470,7 +477,11 @@ function RepositoryMapNode({ data, selected }: NodeProps<MapNode>) {
         if (event.key === 'Enter' && data.hasChildren) data.onOpen(node.id);
       }}
       className={`group w-[240px] overflow-hidden rounded-xl border bg-bg-elevated text-left transition-[border-color,background-color,transform] duration-200 hover:-translate-y-0.5 hover:bg-bg-hover ${
-        selected ? 'border-accent bg-bg-hover' : changes ? getChangeTone(changes.counts) : 'border-border'
+        selected
+          ? 'border-accent bg-bg-hover'
+          : changes
+            ? getChangeTone(changes.counts)
+            : 'border-border'
       } ${node.kind === 'module' ? 'h-[108px]' : node.kind === 'symbol' ? 'h-[72px]' : 'h-[84px]'}`}
       aria-label={`${node.kind} ${node.name}${changes ? `, ${changes.files.length} changed files` : ''}${data.hasChildren ? ', press Enter to explore' : ''}`}
     >
@@ -562,7 +573,9 @@ function RepositoryInspector({
 
       <dl className="mt-4 grid grid-cols-2 gap-x-3 gap-y-2 border-y border-border-subtle py-3 text-xs">
         <dt className="text-text-tertiary">Kind</dt>
-        <dd className="text-right capitalize text-text-secondary">{node.symbolKind ?? node.kind}</dd>
+        <dd className="text-right capitalize text-text-secondary">
+          {node.symbolKind ?? node.kind}
+        </dd>
         {node.language && (
           <>
             <dt className="text-text-tertiary">Language</dt>
@@ -689,10 +702,16 @@ function ChangeBadges({ changes }: { changes: NodeChanges }) {
     .map(([status, count]) => `${count} ${status}`)
     .join(', ');
   return (
-    <span className="ml-auto flex items-center gap-1.5 font-mono text-xs" aria-label={label} title={label}>
+    <span
+      className="ml-auto flex items-center gap-1.5 font-mono text-xs"
+      aria-label={label}
+      title={label}
+    >
       {changes.counts.added > 0 && <span className="text-success">+{changes.counts.added}</span>}
       {changes.counts.modified > 0 && <span className="text-info">~{changes.counts.modified}</span>}
-      {changes.counts.renamed > 0 && <span className="text-warning">↪{changes.counts.renamed}</span>}
+      {changes.counts.renamed > 0 && (
+        <span className="text-warning">↪{changes.counts.renamed}</span>
+      )}
       {changes.counts.deleted > 0 && <span className="text-error">−{changes.counts.deleted}</span>}
     </span>
   );

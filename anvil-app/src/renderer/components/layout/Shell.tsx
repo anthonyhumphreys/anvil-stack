@@ -3,7 +3,6 @@ import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Sidebar } from './Sidebar';
 import { StatusBar } from './StatusBar';
 import { CommandPalette } from './CommandPalette';
-import { WorkspaceRail } from '../workspace/WorkspaceRail';
 import { WorkspaceCreator } from '../workspace/WorkspaceCreator';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import type { UserRole } from '../../../shared/types';
@@ -25,15 +24,7 @@ interface ShellProps {
 }
 
 export function Shell({ connectionStatus, userRole, cloudFeaturesEnabled }: ShellProps) {
-  const {
-    workspaces,
-    activeWorkspace,
-    activeScaffoldSession,
-    switchWorkspace,
-    deleteWorkspace,
-    updateWorkspace,
-    refreshWorkspaces,
-  } = useWorkspace();
+  const { activeScaffoldSession, switchWorkspace, refreshWorkspaces } = useWorkspace();
   const [showCreator, setShowCreator] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
@@ -148,37 +139,11 @@ export function Shell({ connectionStatus, userRole, cloudFeaturesEnabled }: Shel
     <SidebarActivityProvider>
       <div className="flex h-screen flex-col">
         <div className="flex flex-1 overflow-hidden">
-          <WorkspaceRail
-            workspaces={workspaces}
-            activeWorkspaceId={activeWorkspace?.id ?? null}
-            reserveTitlebarSpace={reserveTitlebarSpace}
-            onSwitch={(id: string) => switchWorkspace(id)}
-            onCreateNew={() => setShowCreator(true)}
-            onRename={async (id: string) => {
-              const ws = workspaces.find((w) => w.id === id);
-              const newName = window.prompt('Rename workspace:', ws?.name ?? '');
-              if (newName && newName !== ws?.name) {
-                await updateWorkspace(id, { name: newName });
-              }
-            }}
-            onManageRepos={() => {}}
-            onOpenInNewWindow={async (id: string) => {
-              await window.anvil.workspace.openInNewWindow(id);
-            }}
-            onExportVSCode={async (id: string) => {
-              await window.anvil.workspace.exportVSCodeWorkspace(id);
-            }}
-            onDelete={async (id: string) => {
-              if (window.confirm('Delete this workspace? Repos will not be removed.')) {
-                await deleteWorkspace(id);
-              }
-            }}
-          />
           <Sidebar
-            connectionStatus={connectionStatus}
             userRole={userRole}
             cloudFeaturesEnabled={cloudFeaturesEnabled}
             reserveTitlebarSpace={reserveTitlebarSpace}
+            onCreateWorkspace={() => setShowCreator(true)}
           />
           <main className="relative flex flex-1 flex-col overflow-hidden bg-bg-primary">
             {reserveTitlebarSpace && (

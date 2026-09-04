@@ -125,7 +125,7 @@ export function ChatThreadRail({
                 </p>
               )}
               {!compact && (
-                <div className="mt-1.5 flex min-w-0 items-center gap-2 text-[11px]">
+                <div className="mt-1.5 flex min-w-0 items-center gap-2 text-xs">
                   <span className={threadStateTextClass(displayState)}>
                     {threadStateLabel(displayState)}
                   </span>
@@ -200,14 +200,14 @@ export function ChatThreadRail({
       autoCollapseBelow={1500}
       className="border-r border-border/60 bg-bg-secondary/50"
     >
-      <div className="border-b border-border/60 px-3 py-3 pr-14">
+      <div className="border-b border-border/60 px-3 py-3">
         <div className="flex items-center justify-between gap-2">
-          <div className="min-w-0">
-            <h3 className="truncate text-sm font-semibold text-text-primary">Threads</h3>
-            <p className="mt-0.5 text-[11px] text-text-tertiary">
-              {activeThreads.length} active · all assistants
-            </p>
-          </div>
+          <h3 className="flex min-w-0 items-center gap-2 truncate text-sm font-semibold text-text-primary">
+            Threads
+            <span className="text-xs font-normal tabular-nums text-text-tertiary">
+              {activeThreads.length}
+            </span>
+          </h3>
           <button
             onClick={onCreateThread}
             className="flex h-8 w-8 items-center justify-center rounded-lg text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
@@ -221,11 +221,9 @@ export function ChatThreadRail({
 
       <div className="min-h-0 flex-1 overflow-y-auto p-2.5">
         {activeThreads.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-border px-4 py-5 text-center">
-            <p className="text-sm font-medium text-text-primary">No active work.</p>
-            <p className="mt-2 text-xs leading-relaxed text-text-tertiary">
-              Start a thread, or return archived work when it needs another pass.
-            </p>
+          <div className="px-3 py-6 text-center">
+            <p className="text-sm font-medium text-text-primary">No active threads</p>
+            <p className="mt-1 text-xs text-text-tertiary">Start a thread or restore one below.</p>
           </div>
         ) : (
           <div className="space-y-0.5">
@@ -236,10 +234,10 @@ export function ChatThreadRail({
         {settledThreads.length > 0 && (
           <section className="mt-5 border-t border-border/60 pt-3" aria-label="Archived threads">
             <div className="mb-1.5 flex items-center justify-between px-1">
-              <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-tertiary">
+              <h4 className="text-xs font-semibold uppercase tracking-[0.12em] text-text-tertiary">
                 Archived
               </h4>
-              <span className="text-[11px] tabular-nums text-text-tertiary">
+              <span className="text-xs tabular-nums text-text-tertiary">
                 {settledThreads.length}
               </span>
             </div>

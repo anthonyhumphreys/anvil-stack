@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ChevronLeft, ChevronRight, GripVertical } from 'lucide-react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useStoredPanelState } from '../../hooks/useStoredPanelState';
 
 interface ResizableSidebarPanelProps {
@@ -180,8 +180,8 @@ export function ResizableSidebarPanel({
           <button
             type="button"
             onClick={expandManually}
-            className={`absolute top-3 z-20 flex h-8 w-8 items-center justify-center rounded-lg border border-border/70 bg-bg-elevated text-text-secondary shadow-sm transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 ${
-              side === 'left' ? 'left-2' : 'right-2'
+            className={`absolute top-1/2 z-30 flex h-8 w-7 -translate-y-1/2 items-center justify-center border border-border bg-bg-elevated text-text-secondary shadow-sm transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 ${
+              side === 'left' ? 'left-0 rounded-r-lg border-l-0' : 'right-0 rounded-l-lg border-r-0'
             }`}
             title={`Expand ${title}`}
             aria-label={`Expand ${title}`}
@@ -190,19 +190,19 @@ export function ResizableSidebarPanel({
           </button>
         ) : (
           <div
-            className={`flex min-h-0 w-full flex-col items-center justify-start border-border bg-bg-secondary py-2 ${
+            className={`flex min-h-0 w-full flex-col items-center justify-center gap-3 border-border bg-bg-secondary py-2 ${
               side === 'left' ? 'border-r' : 'border-l'
             } ${collapsedClassName}`}
           >
             <button
               onClick={expandManually}
-              className="rounded p-1 text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+              className="flex h-8 w-7 items-center justify-center rounded-lg border border-border bg-bg-elevated text-text-secondary shadow-sm transition-colors hover:bg-bg-tertiary hover:text-text-primary"
               title={`Expand ${title}`}
               aria-label={`Expand ${title}`}
             >
               {expandButton}
             </button>
-            <span className="mt-3 [writing-mode:vertical-rl] rotate-180 text-[10px] uppercase tracking-[0.2em] text-text-tertiary">
+            <span className="mt-3 [writing-mode:vertical-rl] rotate-180 text-xs uppercase tracking-[0.2em] text-text-tertiary">
               {title}
             </span>
           </div>
@@ -216,8 +216,10 @@ export function ResizableSidebarPanel({
           {collapsible && (
             <button
               onClick={collapseManually}
-              className={`absolute top-3 z-10 rounded-md border border-border/70 bg-bg-elevated/95 p-1 text-text-tertiary shadow-sm transition-colors hover:bg-bg-tertiary hover:text-text-primary ${
-                side === 'left' ? 'right-3' : 'left-3'
+              className={`absolute top-1/2 z-30 flex h-8 w-7 -translate-y-1/2 items-center justify-center border border-border bg-bg-elevated text-text-secondary shadow-sm transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 ${
+                side === 'left'
+                  ? '-right-7 rounded-r-lg border-l-0'
+                  : '-left-7 rounded-l-lg border-r-0'
               }`}
               title={`Collapse ${title}`}
               aria-label={`Collapse ${title}`}
@@ -242,9 +244,6 @@ export function ResizableSidebarPanel({
               tabIndex={0}
             >
               <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-border/60 transition-colors group-hover:bg-accent" />
-              <span className="relative flex h-9 w-3 items-center justify-center rounded-full border border-border bg-bg-elevated text-text-muted shadow-sm transition-colors group-hover:border-accent/50 group-hover:text-accent">
-                <GripVertical size={10} />
-              </span>
             </div>
           )}
         </>

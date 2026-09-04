@@ -316,7 +316,7 @@ export function CodeReviewView() {
           ))}
           {reviews.length === 0 && !running && (
             <p className="p-3 text-center text-xs text-text-secondary">
-              No reviews yet. Configure scope and run your first review.
+              Completed reviews appear here.
             </p>
           )}
         </div>
@@ -339,11 +339,11 @@ export function CodeReviewView() {
         ) : (
           <EmptyState
             icon={GitPullRequest}
-            title={running ? 'Review in progress' : 'Ready for a review'}
+            title={running ? 'Review in progress' : 'Select a scope'}
             description={
               running
                 ? progress.message || 'Anvil is inspecting the selected scope.'
-                : 'Choose a scope in the left panel, then run Quick Glance or Senior Dev Review.'
+                : 'Review a commit, branch diff, pull request, or the full codebase.'
             }
           />
         )}

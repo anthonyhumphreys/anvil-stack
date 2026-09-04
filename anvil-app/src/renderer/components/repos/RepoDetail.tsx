@@ -76,16 +76,25 @@ export function RepoDetail({
 
   if (!summary && !isIndexing) {
     return (
-      <div className="rounded-lg border border-border-subtle bg-bg-secondary p-8 text-center">
-        <p className="text-sm text-text-secondary">
-          This repo hasn't been indexed yet. Click "Index" to generate an architecture analysis.
+      <div className="flex min-h-64 flex-col items-center justify-center px-6 text-center">
+        <FileCode size={24} className="text-text-muted" />
+        <h2 className="mt-3 text-sm font-semibold text-text-primary">Index {repo.name}</h2>
+        <p className="mt-1 max-w-sm text-sm text-text-tertiary">
+          Map its structure, symbols, and dependencies.
         </p>
+        <button
+          type="button"
+          onClick={onRefreshMap}
+          className="mt-4 rounded-lg bg-accent px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-accent/90"
+        >
+          Index repository
+        </button>
       </div>
     );
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       {(isIndexing || (repo.status === 'error' && indexProgress)) && (
         <IndexingProgressPanel
           title={isIndexing ? 'Indexing repository...' : 'Last indexing attempt failed'}
@@ -95,9 +104,11 @@ export function RepoDetail({
 
       {/* Header */}
       <div>
-        <h2 className="text-2xl font-semibold tracking-tight text-text-primary">{repo.name}</h2>
-        <p className="mt-2 text-sm text-text-secondary font-mono">{repo.path}</p>
-        <div className="mt-4 flex flex-wrap items-center gap-3 text-sm text-text-secondary">
+        <h2 className="text-xl font-semibold tracking-tight text-text-primary">{repo.name}</h2>
+        <p className="mt-1 truncate font-mono text-xs text-text-tertiary" title={repo.path}>
+          {repo.path}
+        </p>
+        <div className="mt-3 flex flex-wrap items-center gap-3 text-sm text-text-secondary">
           <span className="flex items-center gap-1">
             <FileCode size={14} /> {repo.fileCount} files
           </span>
@@ -148,7 +159,7 @@ export function RepoDetail({
             className="flex items-center gap-2 rounded-lg border border-info/30 bg-info/10 px-3.5 py-2 text-sm font-medium text-text-primary transition-colors hover:bg-info/15"
           >
             <FileCode size={16} className="text-info" />
-            Open in Editor
+            Open in editor
           </button>
           <button
             onClick={() => window.anvil.repo.openInVSCode(repo.path)}
@@ -162,7 +173,13 @@ export function RepoDetail({
             className="flex items-center gap-2 rounded-lg border border-error/30 bg-error/10 px-3.5 py-2 text-sm font-medium text-text-primary transition-colors hover:bg-error/15"
           >
             <Shield size={16} className="text-error" />
-            Security Audit
+            Security audit
+          </button>
+          <button
+            onClick={() => navigate(`/diagrams/${repo.id}`)}
+            className="flex items-center gap-2 rounded-lg border border-border px-3.5 py-2 text-sm font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+          >
+            <GitFork size={15} /> Diagrams
           </button>
         </div>
       </div>
@@ -194,8 +211,8 @@ export function RepoDetail({
           )}
 
           {/* Overview */}
-          <section className="rounded-lg border border-border bg-bg-secondary p-4">
-            <h3 className="mb-2 text-base font-semibold text-text-primary">Overview</h3>
+          <section className="border-b border-border-subtle pb-5">
+            <h3 className="mb-2 text-sm font-semibold text-text-primary">Overview</h3>
             <p className="whitespace-pre-line text-base leading-relaxed text-text-secondary">
               {summary.overview}
             </p>
@@ -267,21 +284,10 @@ export function RepoDetail({
             />
           </section>
 
-          {/* Diagrams */}
-          <section>
-            <button
-              onClick={() => navigate(`/diagrams/${repo.id}`)}
-              className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-            >
-              <GitFork size={14} className="text-accent" />
-              View Diagrams
-            </button>
-          </section>
-
           {/* Detected Patterns */}
           {summary.patterns.length > 0 && (
             <section>
-              <h3 className="mb-2 text-base font-semibold text-text-primary">Detected Patterns</h3>
+              <h3 className="mb-2 text-sm font-semibold text-text-primary">Detected patterns</h3>
               <div className="flex flex-wrap gap-1.5">
                 {summary.patterns.map((p) => (
                   <span
@@ -298,7 +304,8 @@ export function RepoDetail({
           {/* Modules */}
           <section>
             <h3 className="mb-2 text-base font-semibold text-text-primary">
-              Modules ({summary.modules.length})
+              Modules{' '}
+              <span className="font-normal text-text-tertiary">{summary.modules.length}</span>
             </h3>
             <div className="space-y-1.5">
               {summary.modules.map((mod) => (
@@ -310,7 +317,7 @@ export function RepoDetail({
           {/* Entry Points */}
           {summary.entryPoints.length > 0 && (
             <section>
-              <h3 className="mb-2 text-base font-semibold text-text-primary">Key Entry Points</h3>
+              <h3 className="mb-2 text-base font-semibold text-text-primary">Key entry points</h3>
               <div className="space-y-0.5">
                 {summary.entryPoints.map((ep) => (
                   <p key={ep} className="font-mono text-sm text-text-secondary">

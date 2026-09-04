@@ -203,7 +203,12 @@ export function ReposView() {
     if (!selectedRepo) return;
 
     const workspaceRepo = repos.find((repo) => repo.id === selectedRepo.id);
-    if (!workspaceRepo) return;
+    if (!workspaceRepo) {
+      setSelectedRepo(null);
+      setSummary(null);
+      setMapStatus(null);
+      return;
+    }
     if (workspaceRepo.status === selectedRepo.status && workspaceRepo.name === selectedRepo.name) {
       return;
     }
@@ -278,7 +283,6 @@ export function ReposView() {
         <ViewHeader
           icon={Code}
           title="Repositories"
-          description="Connected codebases, indexing state, and the repository knowledge available to Anvil."
           meta={
             <span className="rounded-md bg-bg-tertiary px-2 py-0.5 text-xs tabular-nums text-text-tertiary">
               {repos.length}
@@ -296,7 +300,7 @@ export function ReposView() {
         />
         <div className="flex min-h-0 flex-1">
           {/* Left panel — repo list */}
-          <div className="w-80 shrink-0 overflow-auto border-r border-border-subtle bg-bg-secondary/35 p-4">
+          <div className="w-72 shrink-0 overflow-auto border-r border-border-subtle bg-bg-secondary/35 p-3">
             {error && (
               <InlineNotice tone="error" className="mb-3">
                 {error}
@@ -315,7 +319,7 @@ export function ReposView() {
           </div>
 
           {/* Right panel — repo detail */}
-          <div className="min-w-0 flex-1 overflow-auto p-5">
+          <div className="min-w-0 flex-1 overflow-auto p-4">
             {selectedRepo ? (
               <RepoDetail
                 repo={selectedRepo}
@@ -332,8 +336,8 @@ export function ReposView() {
                 title={repos.length === 0 ? 'Connect a repository' : 'Choose a repository'}
                 description={
                   repos.length === 0
-                    ? 'Connect a local Git repository to index it and make its structure available across Anvil.'
-                    : 'Select a repository from the list to inspect its index, map, and summary.'
+                    ? 'Connect a local Git repository to index its code.'
+                    : 'Select a repository to inspect its structure and index.'
                 }
               />
             )}
@@ -344,7 +348,7 @@ export function ReposView() {
       {showConnectModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
           <div className="w-full max-w-xl rounded-xl border border-border bg-bg-secondary p-6 shadow-2xl">
-            <h2 className="text-lg font-semibold text-text-primary">Connect Repositories</h2>
+            <h2 className="text-lg font-semibold text-text-primary">Connect repositories</h2>
             <p className="mt-1 text-sm text-text-secondary">
               Select a folder to scan for Git repositories.
             </p>
@@ -370,7 +374,7 @@ export function ReposView() {
               >
                 {connecting
                   ? 'Connecting...'
-                  : `Connect ${selectedScanPaths.size} Repo${selectedScanPaths.size !== 1 ? 's' : ''}`}
+                  : `Connect ${selectedScanPaths.size} ${selectedScanPaths.size === 1 ? 'repository' : 'repositories'}`}
               </button>
             </div>
           </div>

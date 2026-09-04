@@ -17,8 +17,9 @@ import {
   GitBranch,
   Scale,
   SquareTerminal,
-  ChevronLeft,
   ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   Bell,
   RadioTower,
   Wrench,
@@ -32,10 +33,9 @@ import {
   PictureInPicture2,
 } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
-import { useBrand } from '../../contexts/BrandContext';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { RunButton } from './RunButton';
-import { AnvilLogo } from '../brand/AnvilLogo';
+import { WorkspaceMenu } from '../workspace/WorkspaceMenu';
 import type { UserRole, WorkspaceFeatureAvailability } from '../../../shared/types';
 import { useStoredPanelState } from '../../hooks/useStoredPanelState';
 import {
@@ -77,25 +77,20 @@ const NAV_ICONS: Record<string, ReactNode> = {
 };
 
 interface SidebarProps {
-  connectionStatus: {
-    foundry: boolean | null;
-    ado: boolean | null;
-    confluence: boolean | null;
-  };
   userRole: UserRole;
   cloudFeaturesEnabled: boolean;
   reserveTitlebarSpace?: boolean;
+  onCreateWorkspace: () => void;
 }
 
 export function Sidebar({
-  connectionStatus,
   userRole,
   cloudFeaturesEnabled,
   reserveTitlebarSpace = true,
+  onCreateWorkspace,
 }: SidebarProps) {
   const location = useLocation();
   const navigate = useNavigate();
-  const brand = useBrand();
   const { activeWorkspace, featureAvailability } = useWorkspace();
   const { items: activityItems, indicators: activityIndicators } = useSidebarActivity();
   const { width, setWidth, collapsed, toggleCollapsed } = useStoredPanelState({
@@ -208,73 +203,24 @@ export function Sidebar({
 
   return (
     <aside
-      className="relative flex h-full min-h-0 shrink-0 flex-col bg-bg-secondary transition-[width] duration-200"
+      className="relative z-30 flex h-full min-h-0 shrink-0 flex-col bg-bg-secondary transition-[width] duration-200"
       style={{ width: compact ? 72 : width }}
     >
       {/* Titlebar drag region — clears macOS traffic lights outside fullscreen. */}
       {reserveTitlebarSpace && <div className="titlebar-drag h-14" />}
 
       {/* Border starts below the traffic lights */}
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden border-r border-border">
+      <div className="flex min-h-0 flex-1 flex-col border-r border-border">
         {/* Branding */}
-        <div className={`${compact ? 'px-3 pb-3' : 'px-4 pb-3'} shrink-0 pt-2.5`}>
-          <div className={`flex items-center ${compact ? 'justify-center' : 'justify-between'}`}>
-            <div className={`flex min-w-0 items-center ${compact ? '' : 'gap-2.5'}`}>
-              <AnvilLogo size={compact ? 36 : 38} showGlow />
-              {!compact && (
-                <h1 className="min-w-0 truncate text-base font-semibold tracking-tight text-text-primary">
-                  <BrandName name={brand.appName} collapsed={compact} />
-                </h1>
-              )}
-            </div>
-            {!compact && (
-              <button
-                onClick={handleCollapseToggle}
-                className="titlebar-no-drag rounded-lg p-1.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-                title="Collapse navigation"
-                aria-label="Collapse navigation"
-              >
-                <ChevronLeft size={14} />
-              </button>
-            )}
+        <div className="shrink-0 px-3 pb-3 pt-2.5">
+          <div className="flex items-center">
+            <WorkspaceMenu
+              compact={compact}
+              statusLabel={statusLabel}
+              onCreateNew={onCreateWorkspace}
+            />
           </div>
-          {compact && (
-            <button
-              onClick={handleCollapseToggle}
-              className="titlebar-no-drag mt-2 flex w-full items-center justify-center rounded-lg px-2 py-1.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-              title="Expand navigation"
-              aria-label="Expand navigation"
-            >
-              <ChevronRight size={14} />
-            </button>
-          )}
         </div>
-
-        {/* Active Workspace */}
-        {!compact && (
-          <div className="shrink-0 border-b border-border-subtle px-4 pb-3">
-            <div className="flex items-center gap-2">
-              <div className="text-base font-semibold text-text-primary">
-                {activeWorkspace?.name ?? 'No workspace selected'}
-              </div>
-              {activeWorkspace && (
-                <span className="rounded-full bg-bg-tertiary px-2 py-0.5 text-[10px] uppercase tracking-wide text-text-tertiary">
-                  {statusLabel}
-                </span>
-              )}
-            </div>
-            <div className="mt-1 text-sm leading-relaxed text-text-secondary">
-              {activeWorkspace
-                ? `${activeWorkspace.repos.length} repositories`
-                : 'Open a link or create a workspace'}
-            </div>
-            {activeWorkspace && featureAvailability.repoFeatureReason && (
-              <div className="mt-2 text-xs leading-relaxed text-text-tertiary">
-                {featureAvailability.repoFeatureReason}
-              </div>
-            )}
-          </div>
-        )}
 
         {/* Run Button */}
         <div className="shrink-0">
@@ -432,7 +378,18 @@ export function Sidebar({
 
         {/* Footer — connection status + settings */}
         <div className="shrink-0 border-t border-border-subtle p-2.5">
-          {!compact && <ConnectionSummary connectionStatus={connectionStatus} />}
+          <button
+            type="button"
+            onClick={handleCollapseToggle}
+            className={`titlebar-no-drag mb-2 flex h-9 w-full items-center rounded-lg text-sm text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 ${
+              compact ? 'justify-center' : 'gap-2 px-2.5'
+            }`}
+            title={compact ? 'Expand navigation' : 'Collapse navigation'}
+            aria-label={compact ? 'Expand navigation' : 'Collapse navigation'}
+          >
+            {compact ? <ChevronsRight size={16} /> : <ChevronsLeft size={16} />}
+            {!compact && <span>Collapse</span>}
+          </button>
           <SidebarFooterButton
             path="/settings"
             label="Settings"
@@ -548,31 +505,6 @@ function SidebarNavButton({
   );
 }
 
-function ConnectionSummary({
-  connectionStatus,
-}: {
-  connectionStatus: SidebarProps['connectionStatus'];
-}) {
-  const services = Object.values(connectionStatus);
-  const connected = services.filter((status) => status === true).length;
-  const failed = services.filter((status) => status === false).length;
-  const issueLabel = failed > 0 ? `${failed} connection issue${failed === 1 ? '' : 's'}` : null;
-  const accessibleLabel = issueLabel ?? (connected > 0 ? 'Connections healthy' : 'Connections');
-
-  return (
-    <div
-      className="flex items-center gap-2 px-3 py-1.5 text-xs text-text-tertiary"
-      title="Foundry, work items, and Confluence connection health"
-      aria-label={accessibleLabel}
-    >
-      <span
-        className={`h-2 w-2 rounded-full ${failed > 0 ? 'bg-error' : connected > 0 ? 'bg-success' : 'bg-text-tertiary'}`}
-      />
-      {issueLabel ? <span>{issueLabel}</span> : null}
-    </div>
-  );
-}
-
 function SidebarFooterButton({
   path,
   label,
@@ -621,9 +553,4 @@ function SidebarFooterButton({
       )}
     </div>
   );
-}
-
-function BrandName({ name, collapsed = false }: { name: string; collapsed?: boolean }) {
-  if (collapsed) return <>{name.slice(0, 3)}</>;
-  return <>{name}</>;
 }

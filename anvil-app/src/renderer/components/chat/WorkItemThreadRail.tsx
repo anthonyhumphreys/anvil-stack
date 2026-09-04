@@ -209,7 +209,7 @@ export function WorkItemThreadRail({
                 </p>
               )}
               {!archived && (
-                <div className="mt-1 flex min-w-0 items-center gap-1.5 text-[11px]">
+                <div className="mt-1 flex min-w-0 items-center gap-1.5 text-xs">
                   <span className={threadStateTextClass(displayState)}>
                     {threadStateLabel(displayState)}
                   </span>
@@ -275,7 +275,7 @@ export function WorkItemThreadRail({
       <ResizableSidebarPanel
         storageKey="chat:work-item-threads"
         side="left"
-        title="Work Items"
+        title="Work items"
         defaultWidth={320}
         minWidth={260}
         maxWidth={480}
@@ -283,16 +283,16 @@ export function WorkItemThreadRail({
         autoCollapseBelow={1500}
         className="border-r border-border/60 bg-bg-secondary/50"
       >
-        <div className="border-b border-border/60 px-3 py-3 pr-14">
+        <div className="border-b border-border/60 px-3 py-3">
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
               <h3 className="flex items-center gap-2 text-sm font-semibold text-text-primary">
                 <TicketCheck size={15} className="text-accent" />
-                Work Items
+                Work items
               </h3>
-              <p className="mt-1 truncate text-xs text-text-tertiary">
-                {provider === 'none' ? 'No provider configured' : 'Threads grouped by ticket'}
-              </p>
+              {provider === 'none' && (
+                <p className="mt-1 truncate text-xs text-text-tertiary">No provider configured</p>
+              )}
             </div>
             <button
               type="button"
@@ -394,17 +394,15 @@ export function WorkItemThreadRail({
                         aria-current={active ? 'true' : undefined}
                       >
                         <div className="flex min-w-0 items-center gap-2">
-                          <span className="shrink-0 rounded-md bg-bg-tertiary px-1.5 py-0.5 font-mono text-[11px] text-text-secondary">
+                          <span className="shrink-0 rounded-md bg-bg-tertiary px-1.5 py-0.5 font-mono text-xs text-text-secondary">
                             {item.id}
                           </span>
-                          <span className="truncate text-[11px] text-text-tertiary">
-                            {item.type}
-                          </span>
+                          <span className="truncate text-xs text-text-tertiary">{item.type}</span>
                         </div>
                         <p className="mt-1 line-clamp-2 text-sm font-medium leading-snug text-text-primary">
                           {item.title}
                         </p>
-                        <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-text-tertiary">
+                        <div className="mt-1.5 flex items-center gap-1.5 text-xs text-text-tertiary">
                           {needsAttention ? (
                             <CircleAlert size={11} className="text-warning" />
                           ) : (
@@ -462,7 +460,7 @@ export function WorkItemThreadRail({
 
                         {settledThreads.length > 0 && (
                           <div className="mt-3 border-t border-border/45 pt-2">
-                            <div className="mb-1 flex items-center justify-between px-1 text-[11px] text-text-tertiary">
+                            <div className="mb-1 flex items-center justify-between px-1 text-xs text-text-tertiary">
                               <span>Archived</span>
                               <span className="tabular-nums">{settledThreads.length}</span>
                             </div>
@@ -757,9 +755,7 @@ function WorkItemDetailsModal({ item, onClose }: { item: WorkItem; onClose: () =
 function DetailValue({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-lg border border-border bg-bg-primary px-3 py-2">
-      <dt className="text-[11px] font-medium uppercase tracking-normal text-text-tertiary">
-        {label}
-      </dt>
+      <dt className="text-xs font-medium uppercase tracking-normal text-text-tertiary">{label}</dt>
       <dd className="mt-1 break-words text-sm text-text-primary">{value}</dd>
     </div>
   );
@@ -768,9 +764,7 @@ function DetailValue({ label, value }: { label: string; value: string }) {
 function DetailLink({ label, href }: { label: string; href: string }) {
   return (
     <div className="rounded-lg border border-border bg-bg-primary px-3 py-2">
-      <dt className="text-[11px] font-medium uppercase tracking-normal text-text-tertiary">
-        {label}
-      </dt>
+      <dt className="text-xs font-medium uppercase tracking-normal text-text-tertiary">{label}</dt>
       <dd className="mt-1">
         <a
           href={href}

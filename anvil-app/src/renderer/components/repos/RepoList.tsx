@@ -37,8 +37,11 @@ export function RepoList({
   const { activeWorkspace } = useWorkspace();
 
   return (
-    <div className="space-y-3">
-      <h2 className="px-1 text-sm font-semibold text-text-primary">Connected repositories</h2>
+    <div>
+      <div className="flex items-center justify-between px-2 pb-2">
+        <h2 className="text-sm font-semibold text-text-primary">Connected</h2>
+        <span className="text-xs tabular-nums text-text-tertiary">{repos.length}</span>
+      </div>
 
       {repos.length === 0 && (
         <p className="px-1 text-sm leading-relaxed text-text-tertiary">
@@ -46,7 +49,7 @@ export function RepoList({
         </p>
       )}
 
-      <div className="space-y-2">
+      <div className="space-y-1">
         {repos.map((repo) => (
           <RepoCard
             key={repo.id}
@@ -109,19 +112,19 @@ function RepoCard({
   return (
     <div
       onClick={onSelect}
-      className={`cursor-pointer rounded-xl border p-4 transition-colors ${
+      className={`cursor-pointer rounded-lg border px-3 py-3 transition-colors ${
         selected
-          ? 'border-accent/35 bg-accent/10 shadow-[0_0_0_1px_var(--color-accent-glow)]'
-          : 'border-border bg-bg-secondary hover:border-border hover:bg-bg-tertiary'
+          ? 'border-accent/35 bg-accent/10'
+          : 'border-transparent hover:border-border-subtle hover:bg-bg-tertiary/70'
       }`}
     >
       <div className="flex items-start justify-between">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             {statusIcon}
-            <span className="truncate text-base font-semibold text-text-primary">{repo.name}</span>
+            <span className="truncate text-sm font-semibold text-text-primary">{repo.name}</span>
             {showDeepBadge && (
-              <span className="rounded-full bg-success/15 px-2 py-0.5 text-xs font-medium uppercase tracking-wide text-success">
+              <span className="rounded-md bg-success/15 px-1.5 py-0.5 text-xs font-medium text-success">
                 deep
               </span>
             )}
@@ -198,13 +201,13 @@ function RepoCard({
         </button>
       </div>
 
-      <div className="mt-3 flex flex-wrap items-center gap-3 text-sm text-text-secondary">
+      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-text-tertiary">
         <span>{repo.fileCount} files</span>
         <span>{repo.branchCount} branches</span>
         {topLanguages.map((lang) => (
           <span
             key={lang.language}
-            className="rounded-md bg-bg-elevated px-2 py-1 text-sm text-text-secondary"
+            className="rounded-md bg-bg-elevated px-1.5 py-0.5 text-xs text-text-secondary"
           >
             {lang.language} {lang.percentage}%
           </span>

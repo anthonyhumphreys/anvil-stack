@@ -400,8 +400,8 @@ export function PullRequestCanvas({
             void window.anvil.codereview.exportPullRequestVisualisation(repoId, pullRequestId)
           }
           className="rounded-md p-2 text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary"
-          aria-label="Export PR change story"
-          title="Export PR change story"
+          aria-label="Export change story"
+          title="Export change story"
         >
           <Download size={14} />
         </button>
@@ -409,8 +409,8 @@ export function PullRequestCanvas({
           type="button"
           onClick={() => void generate(true)}
           className="rounded-md p-2 text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary"
-          aria-label="Refresh PR Canvas"
-          title="Refresh PR Canvas"
+          aria-label="Refresh PR canvas"
+          title="Refresh PR canvas"
         >
           <RefreshCw size={14} className={generating ? 'animate-spin' : undefined} />
         </button>
@@ -444,9 +444,8 @@ export function PullRequestCanvas({
               }`}
             >
               <div className="border-b border-border-subtle p-4">
-                <h2 className="text-sm font-semibold text-text-primary">Change story</h2>
                 <p
-                  className={`mt-2 text-sm text-text-secondary ${
+                  className={`text-sm text-text-secondary ${
                     mode === 'story' ? 'leading-6' : 'line-clamp-3 leading-5'
                   }`}
                 >
