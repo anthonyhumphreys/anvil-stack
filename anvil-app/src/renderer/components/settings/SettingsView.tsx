@@ -39,6 +39,8 @@ import type {
   DocsProvider,
   LocalLlmCapabilities,
   LocalLlmProvider,
+  LlmGatewayBillingMode,
+  LlmGatewayStatus,
   MobileCompanionDevice,
   MobileCompanionStatus,
   MobilePairingTicket,
@@ -95,6 +97,11 @@ const AGENT_PROVIDER_OPTIONS: Array<{
     id: 'azure',
     label: 'Azure AI Foundry',
     description: 'Azure-hosted models registered through your Codex configuration.',
+  },
+  {
+    id: 'llmgateway',
+    label: 'LLMGateway',
+    description: 'DevPass or pay-as-you-go models through one gateway connection.',
   },
 ];
 
@@ -266,6 +273,8 @@ export function SettingsView({
   const [codexUsageLoading, setCodexUsageLoading] = useState(false);
   const [codexStatus, setCodexStatus] = useState<CodexCliStatus | null>(null);
   const [cursorStatus, setCursorStatus] = useState<CursorCliStatus | null>(null);
+  const [llmGatewayStatus, setLlmGatewayStatus] = useState<LlmGatewayStatus | null>(null);
+  const [llmGatewayConnecting, setLlmGatewayConnecting] = useState(false);
   const [agentMaxThreads, setAgentMaxThreads] = useState(6);
   const [agentMaxThreadsSaving, setAgentMaxThreadsSaving] = useState(false);
   const [agentMaxThreadsError, setAgentMaxThreadsError] = useState<string | null>(null);
@@ -306,6 +315,7 @@ export function SettingsView({
       })
       .catch(console.warn);
     window.anvil.settings.getCursorStatus().then(setCursorStatus).catch(console.warn);
+    window.anvil.settings.getLlmGatewayStatus().then(setLlmGatewayStatus).catch(console.warn);
     window.anvil.settings
       .getLocalLlmCapabilities()
       .then(setLocalLlmCapabilities)
@@ -458,7 +468,7 @@ export function SettingsView({
       const reasoningEffort = resolveCodexReasoningEffort(
         model,
         settings.reasoningLevel,
-        codexStatus?.models,
+        settings.llmProvider === 'llmgateway' ? llmGatewayStatus?.models : codexStatus?.models,
       );
       const settingsToSave = {
         ...settings,
@@ -466,6 +476,9 @@ export function SettingsView({
         reasoningLevel: reasoningEffort,
       };
       await window.anvil.settings.update(settingsToSave);
+      if (settingsToSave.enabledLlmProviders?.includes('llmgateway')) {
+        setLlmGatewayStatus(await window.anvil.settings.getLlmGatewayStatus(true));
+      }
       setSettings(settingsToSave);
       if (settingsToSave.chatLayout === 'classic' || settingsToSave.chatLayout === 'workitems') {
         window.dispatchEvent(
@@ -603,6 +616,50 @@ export function SettingsView({
     const result = await window.anvil.settings.testFoundryConnection();
     setLlmStatus(result.ok ? 'ok' : 'error');
     if (result.error) setTestError(result.error);
+  };
+
+  const connectLlmGateway = async (billingMode: LlmGatewayBillingMode) => {
+    setLlmGatewayConnecting(true);
+    setTestError(null);
+    update('llmGatewayBillingMode', billingMode);
+    try {
+      const status = await window.anvil.settings.connectLlmGateway(billingMode);
+      setLlmGatewayStatus(status);
+      setSettings((current) => ({
+        ...current,
+        llmGatewayApiKey: '••••••••',
+        llmGatewayBillingMode: billingMode,
+      }));
+      setSaved(true);
+    } catch (error) {
+      setTestError(error instanceof Error ? error.message : 'Failed to connect LLMGateway');
+    } finally {
+      setLlmGatewayConnecting(false);
+    }
+  };
+
+  const selectLlmGatewayBillingMode = (billingMode: LlmGatewayBillingMode) => {
+    update('llmGatewayBillingMode', billingMode);
+    void window.anvil.settings
+      .getLlmGatewayStatus(true, billingMode)
+      .then(setLlmGatewayStatus)
+      .catch((error) =>
+        setTestError(error instanceof Error ? error.message : 'Failed to load LLMGateway models'),
+      );
+  };
+
+  const disconnectLlmGateway = async () => {
+    setLlmGatewayConnecting(true);
+    setTestError(null);
+    try {
+      const status = await window.anvil.settings.disconnectLlmGateway();
+      setLlmGatewayStatus(status);
+      setSettings((current) => ({ ...current, llmGatewayApiKey: undefined }));
+    } catch (error) {
+      setTestError(error instanceof Error ? error.message : 'Failed to disconnect LLMGateway');
+    } finally {
+      setLlmGatewayConnecting(false);
+    }
   };
 
   const testLocalLlm = async () => {
@@ -768,19 +825,24 @@ export function SettingsView({
   const codexModelOptions = buildCodexModelOptions(codexStatus);
   const selectedModelId = settings.openaiModel ?? DEFAULT_CODEX_MODEL;
   const selectedModel = codexModelOptions.find((model) => model.id === selectedModelId);
+  const selectedLlmGatewayModel = llmGatewayStatus?.models.find(
+    (model) => model.id === selectedModelId,
+  );
   const reasoningOptions = selectedModel?.supportedReasoningEfforts?.length
     ? selectedModel.supportedReasoningEfforts
-    : CODEX_REASONING_EFFORTS;
+    : selectedLlmGatewayModel?.supportedReasoningEfforts.length
+      ? selectedLlmGatewayModel.supportedReasoningEfforts
+      : CODEX_REASONING_EFFORTS;
   const selectedReasoningEffort = resolveCodexReasoningEffort(
     selectedModelId,
     settings.reasoningLevel,
-    codexStatus?.models,
+    provider === 'llmgateway' ? llmGatewayStatus?.models : codexStatus?.models,
   );
   const updateCodexModel = (modelId: string) => {
     const reasoningEffort = resolveCodexReasoningEffort(
       modelId,
       settings.reasoningLevel,
-      codexStatus?.models,
+      provider === 'llmgateway' ? llmGatewayStatus?.models : codexStatus?.models,
     );
     setSettings((prev) => ({ ...prev, openaiModel: modelId, reasoningLevel: reasoningEffort }));
     setSaved(false);
@@ -1077,6 +1139,70 @@ export function SettingsView({
                   </>
                 )}
 
+                {enabledProviders.includes('llmgateway') && (
+                  <div className="space-y-4 rounded-md border border-border bg-bg-primary p-4">
+                    <div>
+                      <p className="text-sm font-medium text-text-primary">LLMGateway account</p>
+                      <p className="mt-1 text-xs text-text-tertiary">
+                        Browser login mints a gateway key for Anvil and stores it with Electron's
+                        encrypted credential storage.
+                      </p>
+                    </div>
+                    <ButtonGrid>
+                      <ProviderButton
+                        label="DevPass"
+                        description="Use subscription billing and canonical model IDs"
+                        active={(settings.llmGatewayBillingMode ?? 'devpass') === 'devpass'}
+                        onClick={() => selectLlmGatewayBillingMode('devpass')}
+                      />
+                      <ProviderButton
+                        label="Pay as you go"
+                        description="Use gateway credits and provider-pinned model IDs"
+                        active={settings.llmGatewayBillingMode === 'payg'}
+                        onClick={() => selectLlmGatewayBillingMode('payg')}
+                      />
+                    </ButtonGrid>
+                    <div className="flex flex-wrap items-center gap-3">
+                      <button
+                        type="button"
+                        disabled={llmGatewayConnecting}
+                        onClick={() =>
+                          void connectLlmGateway(settings.llmGatewayBillingMode ?? 'devpass')
+                        }
+                        className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-sm font-medium text-white transition-opacity disabled:opacity-50"
+                      >
+                        {llmGatewayConnecting && <Loader2 size={14} className="animate-spin" />}
+                        {llmGatewayStatus?.connected ? 'Reconnect' : 'Connect in browser'}
+                      </button>
+                      {llmGatewayStatus?.connected && (
+                        <button
+                          type="button"
+                          disabled={llmGatewayConnecting}
+                          onClick={() => void disconnectLlmGateway()}
+                          className="rounded-md border border-border px-3 py-2 text-sm text-text-secondary hover:bg-bg-tertiary disabled:opacity-50"
+                        >
+                          Remove from Anvil
+                        </button>
+                      )}
+                      <span className="text-xs text-text-tertiary">
+                        {llmGatewayStatus?.connected
+                          ? `Connected · ${llmGatewayStatus.models.length} agent models`
+                          : 'Not connected'}
+                      </span>
+                    </div>
+                    <Field
+                      label="API key (alternative)"
+                      value={settings.llmGatewayApiKey ?? ''}
+                      onChange={(value) => update('llmGatewayApiKey', value)}
+                      type="password"
+                      placeholder="llmgtwy_..."
+                    />
+                    {llmGatewayStatus?.error && (
+                      <p className="text-xs text-error">{llmGatewayStatus.error}</p>
+                    )}
+                  </div>
+                )}
+
                 {provider === 'cursor' && (
                   <div className="space-y-2 rounded-md border border-border bg-bg-primary p-4">
                     <label className="block text-sm text-text-secondary">
@@ -1256,6 +1382,68 @@ export function SettingsView({
                         Max gives one task more depth. Ultra uses subagents for work that can split
                         into meaningful parts.
                       </p>
+                    </div>
+                  </div>
+                )}
+
+                {provider === 'llmgateway' && (
+                  <div className="space-y-4 rounded-md border border-border bg-bg-primary p-4">
+                    <div className="space-y-1">
+                      <label className="block text-sm text-text-secondary">LLMGateway model</label>
+                      <select
+                        value={selectedModelId}
+                        onChange={(event) => updateCodexModel(event.target.value)}
+                        className="w-full rounded-md border border-border bg-bg-secondary px-3 py-2 text-sm text-text-primary outline-none focus:border-accent"
+                      >
+                        {!llmGatewayStatus?.models.some(
+                          (model) => model.id === selectedModelId,
+                        ) && <option value={selectedModelId}>{selectedModelId}</option>}
+                        {(llmGatewayStatus?.models ?? []).map((model) => (
+                          <option key={model.id} value={model.id}>
+                            {model.displayName} - {model.id}
+                          </option>
+                        ))}
+                      </select>
+                      <p className="text-xs text-text-tertiary">
+                        Models come from the{' '}
+                        {settings.llmGatewayBillingMode === 'payg'
+                          ? 'provider-pinned pay-as-you-go'
+                          : 'canonical DevPass'}{' '}
+                        catalog. Only models with tool calling are shown.
+                      </p>
+                      {selectedLlmGatewayModel && (
+                        <div className="space-y-1 text-xs text-text-tertiary">
+                          {selectedLlmGatewayModel.description && (
+                            <p>{selectedLlmGatewayModel.description}</p>
+                          )}
+                          <p>
+                            {selectedLlmGatewayModel.contextWindow
+                              ? `${formatModelTokenLimit(selectedLlmGatewayModel.contextWindow)} context`
+                              : 'Context limit unavailable'}
+                            {selectedLlmGatewayModel.maxOutputTokens
+                              ? ` · ${formatModelTokenLimit(selectedLlmGatewayModel.maxOutputTokens)} max output`
+                              : ''}
+                            {selectedLlmGatewayModel.inputPrice !== undefined &&
+                            selectedLlmGatewayModel.outputPrice !== undefined
+                              ? ` · $${formatModelPrice(selectedLlmGatewayModel.inputPrice)} input / $${formatModelPrice(selectedLlmGatewayModel.outputPrice)} output per 1M tokens`
+                              : ''}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                    <div className="space-y-1">
+                      <label className="block text-sm text-text-secondary">Reasoning effort</label>
+                      <div className="grid gap-2 sm:grid-cols-4">
+                        {reasoningOptions.map((effort) => (
+                          <ReasoningButton
+                            key={effort}
+                            label={formatReasoningLabel(effort)}
+                            description={describeReasoningEffort(effort)}
+                            active={selectedReasoningEffort === effort}
+                            onClick={() => update('reasoningLevel', effort)}
+                          />
+                        ))}
+                      </div>
                     </div>
                   </div>
                 )}
@@ -2681,6 +2869,16 @@ function AgentProviderManager({
 function formatReasoningLabel(effort: ReasoningEffort): string {
   if (effort === 'xhigh') return 'Extra High';
   return effort.charAt(0).toUpperCase() + effort.slice(1);
+}
+
+function formatModelTokenLimit(tokens: number): string {
+  return new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(
+    tokens,
+  );
+}
+
+function formatModelPrice(price: number): string {
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 4 }).format(price);
 }
 
 function describeReasoningEffort(effort: ReasoningEffort): string {

@@ -679,7 +679,11 @@ export function getChatThreadProviderBinding(
   return {
     providerThreadId: row.provider_thread_id,
     provider:
-      provider === 'azure' || provider === 'openai' || provider === 'cursor' || provider === 'codex'
+      provider === 'azure' ||
+      provider === 'openai' ||
+      provider === 'cursor' ||
+      provider === 'codex' ||
+      provider === 'llmgateway'
         ? provider
         : 'codex',
   };

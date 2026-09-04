@@ -830,12 +830,15 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       const enabledProviders = [
         ...new Set<AgentProvider>([settings.llmProvider, ...(settings.enabledLlmProviders ?? [])]),
       ];
-      const [codexStatus, cursorStatus] = await Promise.all([
-        enabledProviders.some((provider) => provider !== 'cursor')
+      const [codexStatus, cursorStatus, llmGatewayStatus] = await Promise.all([
+        enabledProviders.some((provider) => ['codex', 'openai', 'azure'].includes(provider))
           ? window.anvil.settings.getCodexStatus().catch(() => null)
           : Promise.resolve(null),
         enabledProviders.includes('cursor')
           ? window.anvil.settings.getCursorStatus().catch(() => null)
+          : Promise.resolve(null),
+        enabledProviders.includes('llmgateway')
+          ? window.anvil.settings.getLlmGatewayStatus().catch(() => null)
           : Promise.resolve(null),
       ]);
       const model = selection?.model ?? settings.openaiModel ?? DEFAULT_CODEX_MODEL;
@@ -846,6 +849,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         model,
         codexStatus,
         cursorStatus,
+        llmGatewayStatus,
       );
       const selectedOption = options.find(
         (option) => option.provider === provider && option.id === model,
@@ -857,7 +861,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           : resolveCodexReasoningEffort(
               model,
               selection?.reasoningEffort ?? settings.reasoningLevel,
-              codexStatus?.models,
+              provider === 'llmgateway' ? llmGatewayStatus?.models : codexStatus?.models,
             );
       const currentSession = sessionRef.current;
       if (currentSession?.provider && currentSession.provider !== provider) {

@@ -26,6 +26,8 @@ import { buildSystemPrompt, getPersonaById } from './persona.service.js';
 import { getSettings } from './settings.service.js';
 import { callLlm } from './llm.service.js';
 import { resolvePersonaCodexPolicy, resolveSessionCwd } from './codex-session.service.js';
+import { getLlmGatewayCodexConfigArgs } from '../../shared/llm-gateway.js';
+import { applyLlmGatewayEnvironment } from './llm-gateway.service.js';
 import { triggerWatchtowerEvent } from './automation.service.js';
 
 interface WorkflowTemplateRow {
@@ -67,7 +69,7 @@ interface CodexThreadResult {
 
 const activeProcesses = new Map<string, ChildProcess>();
 const cancelledRunIds = new Set<string>();
-const AGENT_PROVIDERS: AgentProvider[] = ['codex', 'cursor', 'openai', 'azure'];
+const AGENT_PROVIDERS: AgentProvider[] = ['codex', 'cursor', 'openai', 'azure', 'llmgateway'];
 
 export function normaliseWorkflowNodes(
   nodes: WorkflowNode[],
@@ -397,6 +399,9 @@ async function runCodexThread(input: {
   if (input.provider === 'openai' && settings.openaiApiKey) {
     env.OPENAI_API_KEY = settings.openaiApiKey;
   }
+  if (input.provider === 'llmgateway') {
+    applyLlmGatewayEnvironment(env, settings.llmGatewayApiKey);
+  }
 
   const args = buildCodexWorkflowArgs(input.provider);
   const proc = spawn('codex', args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -532,7 +537,9 @@ export function buildCodexWorkflowArgs(provider: Exclude<AgentProvider, 'cursor'
     ? ['app-server', '-c', 'model_provider="azure"']
     : provider === 'openai'
       ? ['app-server', '-c', 'model_provider="openai"']
-      : ['app-server'];
+      : provider === 'llmgateway'
+        ? getLlmGatewayCodexConfigArgs()
+        : ['app-server'];
 }
 
 async function runCursorThread(input: {

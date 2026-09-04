@@ -37,6 +37,8 @@ describe('fresh database schema', () => {
         'github_pat',
         'github_username',
         'telemetry_enabled',
+        'llm_gateway_api_key',
+        'llm_gateway_billing_mode',
       ]) {
         expect(columns.has(requiredColumn), `Missing settings.${requiredColumn}`).toBe(true);
       }
@@ -121,7 +123,7 @@ describe('fresh database schema', () => {
         ).map((column) => column.name),
       );
 
-      expect(SCHEMA_VERSION).toBe(59);
+      expect(SCHEMA_VERSION).toBe(60);
       for (const column of [
         'local_llm_mode',
         'local_llm_provider',
@@ -164,6 +166,23 @@ describe('fresh database schema', () => {
         .prepare('SELECT provider_thread_provider FROM chat_threads WHERE id = ?')
         .get('thread-1') as { provider_thread_provider: string };
       expect(row.provider_thread_provider).toBe('codex');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('adds encrypted LLMGateway credentials and defaults to DevPass', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec('CREATE TABLE settings (id INTEGER PRIMARY KEY)');
+      applyMigration(db, MIGRATIONS[60]);
+      db.exec('INSERT INTO settings (id) VALUES (1)');
+
+      const row = db
+        .prepare('SELECT llm_gateway_api_key, llm_gateway_billing_mode FROM settings WHERE id = 1')
+        .get() as { llm_gateway_api_key: Buffer | null; llm_gateway_billing_mode: string };
+      expect(row.llm_gateway_api_key).toBeNull();
+      expect(row.llm_gateway_billing_mode).toBe('devpass');
     } finally {
       db.close();
     }
