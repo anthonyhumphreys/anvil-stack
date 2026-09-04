@@ -1832,6 +1832,87 @@ export interface AutomationDaemonStatus {
 }
 
 // ---------------------------------------------------------------------------
+// Dojo
+// ---------------------------------------------------------------------------
+
+export interface DojoConfigInput {
+  enabled: boolean;
+  lookbackDays: number;
+  scheduleCron: string;
+  timezone: string;
+}
+
+export interface DojoConfig extends DojoConfigInput {
+  workspaceId: string;
+  lastRunAt?: string;
+  nextRunAt?: string;
+  updatedAt: string;
+}
+
+export interface DojoProviderMetrics {
+  provider: AgentProvider;
+  enabled: boolean;
+  status: 'covered' | 'no-activity';
+  threadCount: number;
+  sessionCount: number;
+  userMessageCount: number;
+  assistantMessageCount: number;
+}
+
+export interface DojoMetrics {
+  threadCount: number;
+  sessionCount: number;
+  userMessageCount: number;
+  assistantMessageCount: number;
+  estimatedInputTokens: number;
+  estimatedOutputTokens: number;
+  frustrationCount: number;
+  profanityCount: number;
+  correctionCount: number;
+  providers: DojoProviderMetrics[];
+}
+
+export interface DojoObservation {
+  title: string;
+  detail: string;
+  impact: 'high' | 'medium' | 'low';
+  category: 'accuracy' | 'efficiency' | 'communication' | 'workflow';
+}
+
+export interface DojoPromptRecommendation {
+  title: string;
+  prompt: string;
+  reason: string;
+  evidenceCount: number;
+}
+
+export interface DojoSkillRecommendation {
+  rank: number;
+  library: 'Matt Pocock skills' | 'pstack';
+  skill: string;
+  reason: string;
+  url: string;
+}
+
+export interface DojoReport {
+  id: string;
+  workspaceId: string;
+  status: 'running' | 'completed' | 'failed';
+  trigger: 'manual' | 'schedule';
+  windowStart: string;
+  windowEnd: string;
+  metrics: DojoMetrics;
+  summary?: string;
+  observations: DojoObservation[];
+  promptRecommendations: DojoPromptRecommendation[];
+  skillRecommendations: DojoSkillRecommendation[];
+  sampleMessageCount: number;
+  errorMessage?: string;
+  startedAt: string;
+  completedAt?: string;
+}
+
+// ---------------------------------------------------------------------------
 // DB Insights
 // ---------------------------------------------------------------------------
 
@@ -2393,6 +2474,7 @@ export type Feature =
   | 'chat'
   | 'editor'
   | 'automations'
+  | 'dojo'
   | 'workflows'
   | 'dbinsights'
   | 'onboard'
@@ -2419,6 +2501,7 @@ export const ROLE_FEATURES: Record<UserRole, readonly Feature[]> = {
     'chat',
     'editor',
     'automations',
+    'dojo',
     'workflows',
     'dbinsights',
     'onboard',
@@ -2442,6 +2525,7 @@ export const ROLE_FEATURES: Record<UserRole, readonly Feature[]> = {
   'ba-brm': [
     'repos',
     'chat',
+    'dojo',
     'workflows',
     'editor',
     'dbinsights',
@@ -2460,6 +2544,7 @@ export const ROLE_FEATURES: Record<UserRole, readonly Feature[]> = {
   design: [
     'repos',
     'chat',
+    'dojo',
     'workflows',
     'dbinsights',
     'docs',
@@ -2473,6 +2558,7 @@ export const ROLE_FEATURES: Record<UserRole, readonly Feature[]> = {
   itsm: [
     'repos',
     'chat',
+    'dojo',
     'workflows',
     'dbinsights',
     'workitems',

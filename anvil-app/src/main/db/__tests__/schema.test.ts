@@ -68,6 +68,9 @@ describe('fresh database schema', () => {
       expect(tableColumns('cloud_execution_connection').has('token')).toBe(true);
       expect(tableColumns('cloud_execution_connection').has('endpoint')).toBe(true);
       expect(tableColumns('chat_threads').has('provider_thread_provider')).toBe(true);
+      expect(tableColumns('chat_sessions').has('provider')).toBe(true);
+      expect(tableColumns('dojo_configs').has('enabled')).toBe(true);
+      expect(tableColumns('dojo_reports').has('metrics_json')).toBe(true);
     } finally {
       db.close();
     }
@@ -121,7 +124,7 @@ describe('fresh database schema', () => {
         ).map((column) => column.name),
       );
 
-      expect(SCHEMA_VERSION).toBe(59);
+      expect(SCHEMA_VERSION).toBe(60);
       for (const column of [
         'local_llm_mode',
         'local_llm_provider',
@@ -164,6 +167,38 @@ describe('fresh database schema', () => {
         .prepare('SELECT provider_thread_provider FROM chat_threads WHERE id = ?')
         .get('thread-1') as { provider_thread_provider: string };
       expect(row.provider_thread_provider).toBe('codex');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('adds Dojo storage and backfills session providers', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec(`
+        CREATE TABLE workspaces (id TEXT PRIMARY KEY);
+        CREATE TABLE chat_threads (
+          id TEXT PRIMARY KEY,
+          provider_thread_provider TEXT
+        );
+        CREATE TABLE chat_sessions (
+          id TEXT PRIMARY KEY,
+          thread_id TEXT
+        );
+        INSERT INTO chat_threads (id, provider_thread_provider) VALUES ('thread-1', 'cursor');
+        INSERT INTO chat_sessions (id, thread_id) VALUES ('session-1', 'thread-1');
+      `);
+      applyMigration(db, MIGRATIONS[60]);
+
+      const session = db
+        .prepare('SELECT provider FROM chat_sessions WHERE id = ?')
+        .get('session-1') as { provider: string };
+      expect(session.provider).toBe('cursor');
+      expect(
+        db
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'dojo_reports'")
+          .get(),
+      ).toBeTruthy();
     } finally {
       db.close();
     }

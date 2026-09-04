@@ -86,6 +86,9 @@ describe('chat thread persistence', () => {
       providerThreadId: 'cursor-thread-1',
       provider: 'cursor',
     });
+    expect(
+      inMemoryDb.prepare('SELECT provider FROM chat_sessions WHERE id = ?').get('session-1'),
+    ).toEqual({ provider: 'cursor' });
   });
 
   it('creates, lists, and updates chat threads for a persona within a workspace', () => {

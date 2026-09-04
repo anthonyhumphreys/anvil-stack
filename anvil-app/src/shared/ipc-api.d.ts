@@ -100,6 +100,9 @@ import type {
   DependencyAuditResult,
   DependencyRecord,
   DiagramFile,
+  DojoConfig,
+  DojoConfigInput,
+  DojoReport,
   GitStatusResult,
   GitLogEntry,
   GitBranchInfo,
@@ -391,6 +394,14 @@ export interface AnvilAPI {
     listRunEvents: (runId: string) => Promise<AutomationRunEvent[]>;
     getDaemonStatus: () => Promise<AutomationDaemonStatus>;
     reconcileDaemon: () => Promise<AutomationDaemonStatus>;
+  };
+
+  dojo: {
+    getConfig: (workspaceId: string) => Promise<DojoConfig>;
+    updateConfig: (workspaceId: string, input: DojoConfigInput) => Promise<DojoConfig>;
+    listReports: (workspaceId: string) => Promise<DojoReport[]>;
+    getReport: (reportId: string) => Promise<DojoReport | null>;
+    runNow: (workspaceId: string) => Promise<DojoReport>;
   };
 
   agentRuns: {

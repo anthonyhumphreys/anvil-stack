@@ -66,6 +66,11 @@ import {
   shouldTriggerWatchtowerObservation,
   watchtowerStateFromObservation,
 } from './watchtower-source.service.js';
+import {
+  countEnabledDojoConfigs,
+  markStaleDojoReportsFailed,
+  processDueDojoReviews,
+} from './dojo.service.js';
 
 interface RepoRow {
   id: string;
@@ -787,6 +792,7 @@ async function processSchedulerTick(): Promise<void> {
   schedulerTickInFlight = true;
   try {
     await processDueAutomations();
+    processDueDojoReviews();
     await processExternalWatchtowerSources();
   } finally {
     schedulerTickInFlight = false;
@@ -812,6 +818,7 @@ export function shutdownAutomationRuntime(): void {
 export function initializeAutomationRuntime(): void {
   if (isAutomationDaemonMode()) {
     markStaleAutomationRunsFailed('Automation daemon restarted while a run was still active.');
+    markStaleDojoReportsFailed('Automation daemon restarted while a Dojo review was running.');
     startSchedulerLoop();
   }
 }
@@ -916,5 +923,7 @@ export function reconcileAutomationDaemon(): AutomationDaemonStatus {
     return getAutomationDaemonStatus();
   }
 
-  return countEnabledAutomations() > 0 ? installAutomationDaemon() : uninstallAutomationDaemon();
+  return countEnabledAutomations() + countEnabledDojoConfigs() > 0
+    ? installAutomationDaemon()
+    : uninstallAutomationDaemon();
 }
