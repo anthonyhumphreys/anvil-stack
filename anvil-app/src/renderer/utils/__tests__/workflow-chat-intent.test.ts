@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { WorkflowTemplate } from '../../../shared/types';
-import { parseWorkflowChatIntent } from '../workflow-chat-intent';
+import { hasExplicitWorkflowCommand, parseWorkflowChatIntent } from '../workflow-chat-intent';
 
 const template: WorkflowTemplate = {
   id: 'review-fix-pr',
@@ -31,7 +31,20 @@ describe('parseWorkflowChatIntent', () => {
     ).toMatchObject({ kind: 'draft' });
   });
 
-  it('does not hijack ordinary chat that merely discusses workflow code', () => {
-    expect(parseWorkflowChatIntent('Why is this workflow YAML failing?', [template])).toBeNull();
+  it('routes a direct request to choose and run a workflow', () => {
+    expect(parseWorkflowChatIntent('Please run the workflow to inspect these logs', [])).toEqual({
+      kind: 'choose',
+      kickoff: 'inspect these logs',
+    });
+  });
+
+  it.each([
+    'Why is this workflow YAML failing?',
+    'Use the word workflow in the summary',
+    'Can you review the workflow UI and use the existing design?',
+    'Build a better PR workflow visualiser',
+  ])('does not hijack ordinary chat: %s', (message) => {
+    expect(hasExplicitWorkflowCommand(message)).toBe(false);
+    expect(parseWorkflowChatIntent(message, [template])).toBeNull();
   });
 });

@@ -667,13 +667,37 @@ body,
 }
 
 .pr-canvas-node {
-  border: 1px solid color-mix(in srgb, var(--pr-node-color) 55%, var(--color-border));
-  box-shadow: 0 8px 28px color-mix(in srgb, var(--pr-node-color) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--pr-node-color) 45%, var(--color-border));
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--pr-node-color) 7%, transparent);
 }
 
 .pr-canvas-node:hover {
   border-color: var(--pr-node-color);
   transform: translateY(-1px);
+}
+
+.pr-canvas-node.is-selected {
+  border-color: var(--pr-node-color);
+  box-shadow:
+    0 10px 32px color-mix(in srgb, var(--pr-node-color) 16%, transparent),
+    0 0 0 2px color-mix(in srgb, var(--pr-node-color) 24%, transparent);
+}
+
+.pr-canvas-node .react-flow__handle {
+  width: 7px;
+  height: 7px;
+  border: 1px solid var(--color-bg-primary);
+  background: var(--pr-node-color);
+}
+
+.pr-canvas-stage {
+  background:
+    radial-gradient(
+      circle at 50% 45%,
+      color-mix(in srgb, var(--color-bg-elevated) 32%, transparent),
+      transparent 46%
+    ),
+    var(--color-bg-primary);
 }
 
 .pr-canvas-flow .react-flow__controls,
@@ -690,6 +714,16 @@ body,
   background: var(--color-bg-secondary);
   color: var(--color-text-secondary);
   fill: currentColor;
+}
+
+.pr-canvas-flow .react-flow__controls-button:hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+
+.pr-canvas-flow .react-flow__edge-textbg {
+  stroke: var(--color-border-subtle);
+  stroke-width: 1px;
 }
 
 .working-dots {

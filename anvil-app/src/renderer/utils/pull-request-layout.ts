@@ -4,8 +4,8 @@ import type {
   PullRequestVisualisationNode,
 } from '../../shared/types';
 
-export const PULL_REQUEST_NODE_WIDTH = 240;
-export const PULL_REQUEST_NODE_HEIGHT = 80;
+export const PULL_REQUEST_NODE_WIDTH = 256;
+export const PULL_REQUEST_NODE_HEIGHT = 92;
 
 export interface PullRequestNodePosition {
   x: number;
@@ -28,8 +28,8 @@ export function layoutPullRequestNodes(
       rankdir: 'LR',
       ranker: 'network-simplex',
       acyclicer: 'greedy',
-      ranksep: 192,
-      nodesep: 48,
+      ranksep: 176,
+      nodesep: 44,
       edgesep: 24,
       marginx: 32,
       marginy: 32,

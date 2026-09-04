@@ -95,7 +95,11 @@ import {
   buildExecutionStrategyPrompt,
   type ExecutionStrategy,
 } from '../../utils/execution-strategy';
-import { parseWorkflowChatIntent } from '../../utils/workflow-chat-intent';
+import {
+  hasExplicitWorkflowCommand,
+  parseWorkflowChatIntent,
+  type WorkflowChatIntent,
+} from '../../utils/workflow-chat-intent';
 import { groupPersonasForRole } from '../../utils/persona-groups';
 import { ItsmWorkbench } from './ItsmWorkbench';
 import { ExecutionTopologyPanel } from './ExecutionTopologyPanel';
@@ -143,6 +147,16 @@ export function clampCanvasZoom(zoom: number): number {
 
 interface ChatViewProps {
   userRole: UserRole;
+}
+
+interface PendingWorkflowAction {
+  message: string;
+  intent: WorkflowChatIntent;
+  workspaceId: string;
+  workspaceName: string;
+  repoIds: string[];
+  executionStrategyPrompt?: string;
+  fastMode: boolean;
 }
 
 export function ChatView({ userRole }: ChatViewProps) {
@@ -215,6 +229,10 @@ export function ChatView({ userRole }: ChatViewProps) {
   const [showPlanHistory, setShowPlanHistory] = useState(false);
   const [recentRuns, setRecentRuns] = useState<AgentRunSummary[]>([]);
   const [activeSessions, setActiveSessions] = useState<CodexSession[]>([]);
+  const [pendingWorkflowAction, setPendingWorkflowAction] = useState<PendingWorkflowAction | null>(
+    null,
+  );
+  const [confirmingWorkflowAction, setConfirmingWorkflowAction] = useState(false);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [composerFocusRequest, setComposerFocusRequest] = useState(0);
   const [itsmWorkbenchOpen, setItsmWorkbenchOpen] = useState(true);
@@ -465,16 +483,14 @@ export function ChatView({ userRole }: ChatViewProps) {
         return;
       }
 
-      const mayBeWorkflowIntent =
-        /\bworkflow\b/i.test(message) &&
-        /\b(?:use|run|start|launch|create|build|make|design|draft)\b/i.test(message);
+      const mayBeWorkflowIntent = hasExplicitWorkflowCommand(message);
       if (attachments.length === 0 && activeWorkspace && mayBeWorkflowIntent) {
         void window.anvil.workflow
           .listTemplates()
-          .then(async (templates) => {
+          .then((templates) => {
             const intent = parseWorkflowChatIntent(message, templates);
             if (!intent) {
-              await send(
+              void send(
                 message,
                 attachments,
                 buildExecutionStrategyPrompt(executionStrategy) ?? undefined,
@@ -482,19 +498,15 @@ export function ChatView({ userRole }: ChatViewProps) {
               );
               return;
             }
-            if (intent.kind === 'run') {
-              const run = await window.anvil.workflow.startRun({
-                templateId: intent.template.id,
-                workspaceId: activeWorkspace.id,
-                repoIds: activeWorkspace.repos.map((repo) => repo.id),
-                kickoff: intent.kickoff,
-              });
-              navigate(`/workflows?run=${encodeURIComponent(run.id)}`);
-              return;
-            }
-            const params = new URLSearchParams({ kickoff: intent.kickoff });
-            if (intent.kind === 'draft') params.set('draft', intent.request);
-            navigate(`/workflows?${params.toString()}`);
+            setPendingWorkflowAction({
+              message,
+              intent,
+              workspaceId: activeWorkspace.id,
+              workspaceName: activeWorkspace.name,
+              repoIds: activeWorkspace.repos.map((repo) => repo.id),
+              executionStrategyPrompt: buildExecutionStrategyPrompt(executionStrategy) ?? undefined,
+              fastMode,
+            });
           })
           .catch(() => {
             void send(
@@ -514,8 +526,45 @@ export function ChatView({ userRole }: ChatViewProps) {
         fastMode,
       );
     },
-    [activeWorkspace, executionStrategy, fastMode, navigate, send, startNewSession],
+    [activeWorkspace, executionStrategy, fastMode, send, startNewSession],
   );
+
+  const handleConfirmWorkflowAction = useCallback(async () => {
+    if (!pendingWorkflowAction || confirmingWorkflowAction) return;
+    setConfirmingWorkflowAction(true);
+    try {
+      const { intent } = pendingWorkflowAction;
+      if (intent.kind === 'run') {
+        const run = await window.anvil.workflow.startRun({
+          templateId: intent.template.id,
+          workspaceId: pendingWorkflowAction.workspaceId,
+          repoIds: pendingWorkflowAction.repoIds,
+          kickoff: intent.kickoff,
+        });
+        setPendingWorkflowAction(null);
+        navigate(`/workflows?run=${encodeURIComponent(run.id)}`);
+        return;
+      }
+
+      const params = new URLSearchParams({ kickoff: intent.kickoff });
+      if (intent.kind === 'draft') params.set('draft', intent.request);
+      setPendingWorkflowAction(null);
+      navigate(`/workflows?${params.toString()}`);
+    } catch {
+      const pending = pendingWorkflowAction;
+      setPendingWorkflowAction(null);
+      await send(pending.message, [], pending.executionStrategyPrompt, pending.fastMode);
+    } finally {
+      setConfirmingWorkflowAction(false);
+    }
+  }, [confirmingWorkflowAction, navigate, pendingWorkflowAction, send]);
+
+  const handleKeepWorkflowPromptInChat = useCallback(() => {
+    if (!pendingWorkflowAction || confirmingWorkflowAction) return;
+    const pending = pendingWorkflowAction;
+    setPendingWorkflowAction(null);
+    void send(pending.message, [], pending.executionStrategyPrompt, pending.fastMode);
+  }, [confirmingWorkflowAction, pendingWorkflowAction, send]);
 
   const handleChatInputSend = useCallback(
     (message: string, attachments: ChatAttachment[] = []) => {
@@ -1276,10 +1325,18 @@ export function ChatView({ userRole }: ChatViewProps) {
               additionalCount={Math.max(0, pendingQuestions.length - 1)}
             />
           )}
+          {pendingWorkflowAction && (
+            <WorkflowActionConfirmation
+              pending={pendingWorkflowAction}
+              confirming={confirmingWorkflowAction}
+              onConfirm={() => void handleConfirmWorkflowAction()}
+              onKeepInChat={handleKeepWorkflowPromptInChat}
+            />
+          )}
           <ChatInput
             onSend={handleChatInputSend}
             onStop={interrupt}
-            disabled={chatInputDisabled}
+            disabled={chatInputDisabled || pendingWorkflowAction !== null}
             busy={busy}
             personaColour={personaColour}
             model={model}
@@ -1596,6 +1653,72 @@ function PendingQuestionPrompt({
           <QuestionIntentSurface intent={intent} />
         </div>
       )}
+    </div>
+  );
+}
+
+function WorkflowActionConfirmation({
+  pending,
+  confirming,
+  onConfirm,
+  onKeepInChat,
+}: {
+  pending: PendingWorkflowAction;
+  confirming: boolean;
+  onConfirm: () => void;
+  onKeepInChat: () => void;
+}) {
+  const { intent } = pending;
+  const title =
+    intent.kind === 'run'
+      ? `Run "${intent.template.name}"?`
+      : intent.kind === 'draft'
+        ? 'Open the workflow builder?'
+        : 'Choose a workflow to run?';
+  const detail =
+    intent.kind === 'run'
+      ? `This starts the saved workflow in ${pending.workspaceName}.`
+      : intent.kind === 'draft'
+        ? 'Anvil detected a request to create a workflow.'
+        : 'Anvil detected a request to start a workflow.';
+  const confirmLabel =
+    intent.kind === 'run'
+      ? 'Run workflow'
+      : intent.kind === 'draft'
+        ? 'Open builder'
+        : 'Choose workflow';
+
+  return (
+    <div
+      className="flex items-center gap-3 border-t border-accent/25 bg-accent/[0.045] px-4 py-3"
+      role="region"
+      aria-live="polite"
+      aria-label="Confirm workflow action"
+    >
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent/10 text-accent">
+        <ListChecks size={15} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="text-xs font-semibold text-text-primary">{title}</p>
+        <p className="mt-0.5 truncate text-xs text-text-tertiary">{detail}</p>
+      </div>
+      <button
+        type="button"
+        onClick={onKeepInChat}
+        disabled={confirming}
+        className="rounded-md px-3 py-2 text-xs font-medium text-text-secondary hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        Keep in chat
+      </button>
+      <button
+        type="button"
+        onClick={onConfirm}
+        disabled={confirming}
+        className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-white hover:bg-accent/85 disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {confirming && <Loader2 size={13} className="animate-spin" />}
+        {confirmLabel}
+      </button>
     </div>
   );
 }
