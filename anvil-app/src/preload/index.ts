@@ -25,6 +25,9 @@ import type {
   CodeReviewScopeType,
   ComplianceDocType,
   DevServerTarget,
+  DojoConfig,
+  DojoConfigInput,
+  DojoReport,
   EmbeddedEditorTarget,
   SimulatorPreviewStartOptions,
   GateId,
@@ -331,6 +334,19 @@ const api: AnvilAPI = {
       ipcRenderer.invoke('automations:daemon-status') as Promise<AutomationDaemonStatus>,
     reconcileDaemon: () =>
       ipcRenderer.invoke('automations:reconcile-daemon') as Promise<AutomationDaemonStatus>,
+  },
+
+  dojo: {
+    getConfig: (workspaceId: string) =>
+      ipcRenderer.invoke('dojo:get-config', workspaceId) as Promise<DojoConfig>,
+    updateConfig: (workspaceId: string, input: DojoConfigInput) =>
+      ipcRenderer.invoke('dojo:update-config', workspaceId, input) as Promise<DojoConfig>,
+    listReports: (workspaceId: string) =>
+      ipcRenderer.invoke('dojo:list-reports', workspaceId) as Promise<DojoReport[]>,
+    getReport: (reportId: string) =>
+      ipcRenderer.invoke('dojo:get-report', reportId) as Promise<DojoReport | null>,
+    runNow: (workspaceId: string) =>
+      ipcRenderer.invoke('dojo:run-now', workspaceId) as Promise<DojoReport>,
   },
 
   agentRuns: {

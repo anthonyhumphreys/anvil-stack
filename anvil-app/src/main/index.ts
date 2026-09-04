@@ -31,6 +31,7 @@ import { registerTerminalHandlers, cleanupTerminals } from './ipc/terminal.ipc.j
 import { registerGovernanceHandlers } from './ipc/governance.ipc.js';
 import { registerDbInsightsHandlers } from './ipc/db-insights.ipc.js';
 import { registerAutomationHandlers } from './ipc/automation.ipc.js';
+import { registerDojoHandlers } from './ipc/dojo.ipc.js';
 import { registerWorkflowHandlers } from './ipc/workflow.ipc.js';
 import { registerAgentRunHandlers } from './ipc/agent-run.ipc.js';
 import { registerDesignHandlers } from './ipc/design.ipc.js';
@@ -186,9 +187,7 @@ function createWindow(
     minHeight: isToolWindow ? 520 : 700,
     title: app.getName(),
     titleBarStyle: process.platform === 'darwin' ? 'hidden' : 'default',
-    ...(process.platform === 'darwin'
-      ? { trafficLightPosition: { x: 16, y: 16 } }
-      : {}),
+    ...(process.platform === 'darwin' ? { trafficLightPosition: { x: 16, y: 16 } } : {}),
     backgroundColor: '#0b1020',
     icon: getAppIconPath(),
     webPreferences: {
@@ -355,6 +354,7 @@ app.whenReady().then(() => {
   registerGovernanceHandlers();
   registerDbInsightsHandlers();
   registerAutomationHandlers();
+  registerDojoHandlers();
   registerWorkflowHandlers();
   registerAgentRunHandlers();
   registerDesignHandlers();

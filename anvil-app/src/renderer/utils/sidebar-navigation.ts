@@ -24,6 +24,7 @@ export const PRIMARY_NAV_ITEMS: SidebarNavItemDefinition[] = [
 export const AUTOMATE_NAV_ITEMS: SidebarNavItemDefinition[] = [
   { path: '/automations', label: 'Watchtower & schedules', feature: 'automations' },
   { path: '/workflows', label: 'Workflows', feature: 'workflows', requiresChat: true },
+  { path: '/dojo', label: 'Dojo', feature: 'dojo', requiresChat: true },
 ];
 
 export const TOOL_NAV_GROUPS: SidebarToolGroupDefinition[] = [

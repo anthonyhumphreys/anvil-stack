@@ -13,6 +13,7 @@ import { PentestView } from './components/security/PentestView';
 import { CodeReviewView } from './components/codereview/CodeReviewView';
 import { CicdView } from './components/cicd/CicdView';
 import { AutomationsView } from './components/automations/AutomationsView';
+import { DojoView } from './components/dojo/DojoView';
 import { DocsView } from './components/docs/DocsView';
 import { AdrsView } from './components/adrs/AdrsView';
 import { DiagramsView } from './components/diagrams/DiagramsView';
@@ -492,6 +493,17 @@ export function App() {
                     <WorkspaceGate>
                       <ErrorBoundary>
                         <AutomationsView />
+                      </ErrorBoundary>
+                    </WorkspaceGate>,
+                  )}
+                />
+                <Route
+                  path="/dojo"
+                  element={guard(
+                    'dojo',
+                    <WorkspaceGate>
+                      <ErrorBoundary>
+                        <DojoView />
                       </ErrorBoundary>
                     </WorkspaceGate>,
                   )}

@@ -650,9 +650,9 @@ export function createChatSession(
   const id = sessionId ?? randomUUID();
   db.prepare(
     `INSERT INTO chat_sessions
-     (id, thread_id, repo_id, persona_id, provider_thread_id, started_at)
-     VALUES (?, ?, ?, ?, ?, datetime('now'))`,
-  ).run(id, threadId, repoId, personaId, providerThreadId ?? null);
+     (id, thread_id, repo_id, persona_id, provider_thread_id, provider, started_at)
+     VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
+  ).run(id, threadId, repoId, personaId, providerThreadId ?? null, provider ?? 'codex');
 
   if (threadId && providerThreadId) {
     setChatThreadProviderThreadId(threadId, providerThreadId, provider ?? 'codex');

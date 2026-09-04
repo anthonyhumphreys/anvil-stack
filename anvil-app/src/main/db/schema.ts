@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 59;
+export const SCHEMA_VERSION = 60;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
   persona_id TEXT,
   provider_thread_id TEXT,
   provider_turn_id TEXT,
+  provider TEXT,
   started_at TEXT DEFAULT (datetime('now')),
   ended_at TEXT
 );
@@ -696,6 +697,38 @@ CREATE TABLE IF NOT EXISTS watchtower_events (
 
 CREATE INDEX IF NOT EXISTS idx_watchtower_events_pending
   ON watchtower_events(status, observed_at ASC);
+
+CREATE TABLE IF NOT EXISTS dojo_configs (
+  workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+  enabled INTEGER NOT NULL DEFAULT 0,
+  lookback_days INTEGER NOT NULL DEFAULT 30,
+  schedule_cron TEXT NOT NULL DEFAULT '0 9 * * 1',
+  timezone TEXT NOT NULL DEFAULT 'UTC',
+  last_run_at TEXT,
+  next_run_at TEXT,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_dojo_configs_due
+  ON dojo_configs(enabled, next_run_at);
+
+CREATE TABLE IF NOT EXISTS dojo_reports (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  status TEXT NOT NULL,
+  trigger TEXT NOT NULL,
+  window_start TEXT NOT NULL,
+  window_end TEXT NOT NULL,
+  metrics_json TEXT NOT NULL,
+  analysis_json TEXT,
+  sample_message_count INTEGER NOT NULL DEFAULT 0,
+  error_message TEXT,
+  started_at TEXT NOT NULL,
+  completed_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_dojo_reports_workspace
+  ON dojo_reports(workspace_id, started_at DESC);
 
 CREATE TABLE IF NOT EXISTS governance_boards (
   id TEXT PRIMARY KEY,
@@ -1821,5 +1854,49 @@ export const MIGRATIONS: Record<number, string> = {
     UPDATE chat_threads
       SET provider_thread_provider = 'codex'
       WHERE provider_thread_id IS NOT NULL AND provider_thread_provider IS NULL;
+  `,
+  60: `
+    ALTER TABLE chat_sessions ADD COLUMN provider TEXT;
+
+    UPDATE chat_sessions
+      SET provider = COALESCE(
+        (SELECT provider_thread_provider
+         FROM chat_threads
+         WHERE chat_threads.id = chat_sessions.thread_id),
+        'codex'
+      )
+      WHERE provider IS NULL;
+
+    CREATE TABLE IF NOT EXISTS dojo_configs (
+      workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+      enabled INTEGER NOT NULL DEFAULT 0,
+      lookback_days INTEGER NOT NULL DEFAULT 30,
+      schedule_cron TEXT NOT NULL DEFAULT '0 9 * * 1',
+      timezone TEXT NOT NULL DEFAULT 'UTC',
+      last_run_at TEXT,
+      next_run_at TEXT,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_dojo_configs_due
+      ON dojo_configs(enabled, next_run_at);
+
+    CREATE TABLE IF NOT EXISTS dojo_reports (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      status TEXT NOT NULL,
+      trigger TEXT NOT NULL,
+      window_start TEXT NOT NULL,
+      window_end TEXT NOT NULL,
+      metrics_json TEXT NOT NULL,
+      analysis_json TEXT,
+      sample_message_count INTEGER NOT NULL DEFAULT 0,
+      error_message TEXT,
+      started_at TEXT NOT NULL,
+      completed_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_dojo_reports_workspace
+      ON dojo_reports(workspace_id, started_at DESC);
   `,
 };

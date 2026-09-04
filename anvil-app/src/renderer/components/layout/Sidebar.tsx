@@ -31,6 +31,7 @@ import {
   MonitorSmartphone,
   GripVertical,
   PictureInPicture2,
+  Target,
 } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
@@ -54,6 +55,7 @@ const NAV_ICONS: Record<string, ReactNode> = {
   '/chat': <MessageSquare size={19} />,
   '/repos': <Code size={19} />,
   '/automations': <RadioTower size={19} />,
+  '/dojo': <Target size={19} />,
   '/workflows': <GitFork size={18} />,
   '/meeting-notes': <NotebookPen size={18} />,
   '/workspace-notes': <StickyNote size={18} />,
