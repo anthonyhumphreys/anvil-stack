@@ -419,14 +419,14 @@ function validateConfig(input: DojoConfigInput): void {
   if (!Number.isInteger(input.lookbackDays) || input.lookbackDays < 1 || input.lookbackDays > 365) {
     throw new Error('Dojo review period must be between 1 and 365 days.');
   }
-  validateAutomationCron(input.scheduleCron, input.timezone);
+  validateAutomationCron(input.scheduleCron.trim(), input.timezone.trim());
 }
 
 export function updateDojoConfig(workspaceId: string, input: DojoConfigInput): DojoConfig {
   validateConfig(input);
   const now = new Date().toISOString();
   const nextRunAt = input.enabled
-    ? getNextAutomationRunAt(input.scheduleCron, input.timezone)
+    ? getNextAutomationRunAt(input.scheduleCron.trim(), input.timezone.trim())
     : null;
   getDb()
     .prepare(
