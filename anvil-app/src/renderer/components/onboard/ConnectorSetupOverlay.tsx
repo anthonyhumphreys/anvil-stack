@@ -33,6 +33,7 @@ export function ConnectorSetupOverlay({
   const [settings, setSettings] = useState<Partial<AppSettings>>({});
   const [expandedCard, setExpandedCard] = useState<string | null>(null);
   const [llmStatus, setLlmStatus] = useState<TestStatus>('idle');
+  const [llmGatewayConnecting, setLlmGatewayConnecting] = useState(false);
   const [wiStatus, setWiStatus] = useState<TestStatus>('idle');
   const [gitStatus, setGitStatus] = useState<TestStatus>('idle');
   const [confluenceStatus, setConfluenceStatus] = useState<TestStatus>('idle');
@@ -76,6 +77,24 @@ export function ConnectorSetupOverlay({
 
   // --- LLM ---
   const llmProvider = settings.llmProvider ?? 'codex';
+  const connectLlmGateway = async () => {
+    if (preview) return;
+    setLlmGatewayConnecting(true);
+    setTestError(null);
+    try {
+      const billingMode = settings.llmGatewayBillingMode ?? 'devpass';
+      await window.anvil.settings.connectLlmGateway(billingMode);
+      setSettings((current) => ({
+        ...current,
+        llmGatewayApiKey: '••••••••',
+        llmGatewayBillingMode: billingMode,
+      }));
+    } catch (error) {
+      setTestError(error instanceof Error ? error.message : 'Failed to connect LLMGateway');
+    } finally {
+      setLlmGatewayConnecting(false);
+    }
+  };
   const testLlm = async () => {
     setLlmStatus('testing');
     setTestError(null);
@@ -198,6 +217,11 @@ export function ConnectorSetupOverlay({
                   active={llmProvider === 'azure'}
                   onClick={() => selectLlmProvider('azure')}
                 />
+                <ProviderButton
+                  label="LLMGateway"
+                  active={llmProvider === 'llmgateway'}
+                  onClick={() => selectLlmProvider('llmgateway')}
+                />
               </div>
               {llmProvider === 'codex' && (
                 <p className="text-xs text-text-tertiary">
@@ -225,6 +249,44 @@ export function ConnectorSetupOverlay({
                     placeholder="gpt-5.6-sol"
                   />
                 </>
+              )}
+              {llmProvider === 'llmgateway' && (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 gap-2">
+                    <ProviderButton
+                      label="DevPass"
+                      active={(settings.llmGatewayBillingMode ?? 'devpass') === 'devpass'}
+                      onClick={() => update('llmGatewayBillingMode', 'devpass')}
+                    />
+                    <ProviderButton
+                      label="Pay as you go"
+                      active={settings.llmGatewayBillingMode === 'payg'}
+                      onClick={() => update('llmGatewayBillingMode', 'payg')}
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    disabled={preview || llmGatewayConnecting}
+                    onClick={() => void connectLlmGateway()}
+                    className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+                  >
+                    {llmGatewayConnecting && <Loader2 size={13} className="animate-spin" />}
+                    Connect in browser
+                  </button>
+                  <Field
+                    label="API key (alternative)"
+                    value={settings.llmGatewayApiKey ?? ''}
+                    onChange={(value) => update('llmGatewayApiKey', value)}
+                    type="password"
+                    placeholder="llmgtwy_..."
+                  />
+                  <Field
+                    label="Model"
+                    value={settings.openaiModel ?? 'claude-sonnet-4-6'}
+                    onChange={(value) => update('openaiModel', value)}
+                    placeholder="claude-sonnet-4-6"
+                  />
+                </div>
               )}
               {llmProvider === 'azure' && (
                 <div className="rounded-md border border-border bg-bg-primary p-3 space-y-2">

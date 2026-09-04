@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 59;
+export const SCHEMA_VERSION = 60;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -293,6 +293,8 @@ CREATE TABLE IF NOT EXISTS settings (
   foundry_api_version TEXT DEFAULT '2024-10-21',
   foundry_api_key BLOB,
   openai_api_key BLOB,
+  llm_gateway_api_key BLOB,
+  llm_gateway_billing_mode TEXT NOT NULL DEFAULT 'devpass',
   openai_model TEXT DEFAULT 'gpt-5.6-sol',
   reasoning_level TEXT DEFAULT 'medium',
   codex_mode TEXT DEFAULT 'on-request',
@@ -1821,5 +1823,9 @@ export const MIGRATIONS: Record<number, string> = {
     UPDATE chat_threads
       SET provider_thread_provider = 'codex'
       WHERE provider_thread_id IS NOT NULL AND provider_thread_provider IS NULL;
+  `,
+  60: `
+    ALTER TABLE settings ADD COLUMN llm_gateway_api_key BLOB;
+    ALTER TABLE settings ADD COLUMN llm_gateway_billing_mode TEXT NOT NULL DEFAULT 'devpass';
   `,
 };

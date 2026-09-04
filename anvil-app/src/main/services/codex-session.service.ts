@@ -38,6 +38,8 @@ import {
 import { emitCompanionEvent } from './companion-events.service.js';
 import { normaliseCodexModel, normaliseReasoningEffort } from '../../shared/codex-models.js';
 import { notifyChatActivity, type ChatActivityKind } from './notification.service.js';
+import { getLlmGatewayCodexConfigArgs } from '../../shared/llm-gateway.js';
+import { applyLlmGatewayEnvironment } from './llm-gateway.service.js';
 import { updateChatThreadAttention } from './chat-persistence.service.js';
 import {
   dismissAgentUIIntent,
@@ -167,12 +169,17 @@ export async function startSession(
         ? ['app-server', '-c', 'model_provider="azure"']
         : agentProvider === 'openai'
           ? ['app-server', '-c', 'model_provider="openai"']
-          : ['app-server'];
+          : agentProvider === 'llmgateway'
+            ? getLlmGatewayCodexConfigArgs()
+            : ['app-server'];
 
   // Azure AI Foundry: Codex reads config from ~/.codex/config.toml (set up by user).
   // OpenAI: pass the API key via environment.
   if (agentProvider === 'openai') {
     if (settings.openaiApiKey) env['OPENAI_API_KEY'] = settings.openaiApiKey;
+  }
+  if (agentProvider === 'llmgateway') {
+    applyLlmGatewayEnvironment(env, settings.llmGatewayApiKey);
   }
 
   let proc: ChildProcess;

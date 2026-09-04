@@ -11,6 +11,7 @@ import {
   classifyPromptForLocalModel,
   isLikelyLocalModelRefusal,
 } from './local-llm.service.js';
+import { LLM_GATEWAY_API_URL, LLM_GATEWAY_SOURCE } from '../../shared/llm-gateway.js';
 
 let cachedClient: AzureOpenAI | OpenAI | null = null;
 let cachedProvider: string | null = null;
@@ -62,11 +63,7 @@ function isLikelyJsonResponse(value: string): boolean {
   }
 }
 
-function isLocalLlmEligible(
-  prompt: string,
-  maxTokens: number,
-  options?: LlmCallOptions,
-): boolean {
+function isLocalLlmEligible(prompt: string, maxTokens: number, options?: LlmCallOptions): boolean {
   if (!options?.taskClass) return false;
   if (prompt.length > LOCAL_LLM_MAX_PROMPT_CHARS) return false;
   if (maxTokens > 4096) return false;
@@ -157,7 +154,7 @@ function readCodexConfig(): { baseUrl: string; model: string; envKey: string } |
 
 /**
  * Get or create the LLM client based on the configured provider.
- * Only used for azure and openai providers — codex routes through the CLI.
+ * Only used for API-backed providers. Codex and Cursor route through their CLIs.
  */
 function getClient(): { client: AzureOpenAI | OpenAI; model: string } {
   const settings = getSettings();
@@ -194,6 +191,21 @@ function getClient(): { client: AzureOpenAI | OpenAI; model: string } {
       });
     }
     return { client: cachedClient, model: codexConfig.model };
+  }
+
+  if (provider === 'llmgateway') {
+    if (!settings.llmGatewayApiKey) {
+      throw new Error('Connect LLMGateway in Settings before using this provider');
+    }
+    if (!cachedClient) {
+      console.log('[LLM] Creating LLMGateway client');
+      cachedClient = new OpenAI({
+        apiKey: settings.llmGatewayApiKey,
+        baseURL: LLM_GATEWAY_API_URL,
+        defaultHeaders: { 'x-source': LLM_GATEWAY_SOURCE },
+      });
+    }
+    return { client: cachedClient, model: settings.openaiModel || DEFAULT_CODEX_MODEL };
   }
 
   // OpenAI API key

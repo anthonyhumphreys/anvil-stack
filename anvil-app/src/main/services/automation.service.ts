@@ -57,6 +57,8 @@ import { addWorktree, getFullStatus, removeWorktree } from './git.service.js';
 import { notifyIfUnfocused } from './notification.service.js';
 import { buildSystemPrompt, getPersonaById } from './persona.service.js';
 import { getSettings } from './settings.service.js';
+import { getLlmGatewayCodexConfigArgs } from '../../shared/llm-gateway.js';
+import { applyLlmGatewayEnvironment } from './llm-gateway.service.js';
 import { resolvePersonaCodexPolicy } from './codex-session.service.js';
 import { parseAdoRemoteUrl, parseGitHubRemoteUrl } from './code-review-pr.service.js';
 import {
@@ -443,8 +445,13 @@ async function runCodexAutomation(
   if (settings.llmProvider === 'openai' && settings.openaiApiKey) {
     env['OPENAI_API_KEY'] = settings.openaiApiKey;
   }
+  if (settings.llmProvider === 'llmgateway') {
+    applyLlmGatewayEnvironment(env, settings.llmGatewayApiKey);
+  }
 
-  const proc = spawn('codex', ['app-server'], {
+  const args =
+    settings.llmProvider === 'llmgateway' ? getLlmGatewayCodexConfigArgs() : ['app-server'];
+  const proc = spawn('codex', args, {
     cwd,
     env,
     stdio: ['pipe', 'pipe', 'pipe'],

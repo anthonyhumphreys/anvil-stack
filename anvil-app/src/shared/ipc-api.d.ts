@@ -77,6 +77,8 @@ import type {
   CodeReviewScopeType,
   CodexCliStatus,
   CursorCliStatus,
+  LlmGatewayBillingMode,
+  LlmGatewayStatus,
   CodexMcpRegisterInput,
   CodexRegistryActionResult,
   CodexRegistrySnapshot,
@@ -565,6 +567,12 @@ export interface AnvilAPI {
     update: (settings: Partial<AppSettings>) => Promise<void>;
     getCodexStatus: () => Promise<CodexCliStatus>;
     getCursorStatus: () => Promise<CursorCliStatus>;
+    getLlmGatewayStatus: (
+      forceModels?: boolean,
+      billingMode?: LlmGatewayBillingMode,
+    ) => Promise<LlmGatewayStatus>;
+    connectLlmGateway: (billingMode: LlmGatewayBillingMode) => Promise<LlmGatewayStatus>;
+    disconnectLlmGateway: () => Promise<LlmGatewayStatus>;
     setCodexAgentMaxThreads: (maxThreads: number) => Promise<CodexCliStatus>;
     testFoundryConnection: () => Promise<{ ok: boolean; error?: string }>;
     getLocalLlmCapabilities: () => Promise<LocalLlmCapabilities>;
