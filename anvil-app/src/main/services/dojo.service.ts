@@ -825,22 +825,23 @@ export function processDueDojoReviews(now = new Date().toISOString()): void {
     )
     .all(now) as DojoConfigRow[];
 
-for (const row of rows) {
-  const config = mapConfig(row);
-  try {
-    runDojoReview(config.workspaceId, 'schedule');
-    const nextRunAt = getNextAutomationRunAt(config.scheduleCron, config.timezone);
-    getDb()
-      .prepare('UPDATE dojo_configs SET next_run_at = ?, updated_at = ? WHERE workspace_id = ?')
-      .run(nextRunAt, now, config.workspaceId);
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('already running')) {
-      continue;
+  for (const row of rows) {
+    const config = mapConfig(row);
+    try {
+      runDojoReview(config.workspaceId, 'schedule');
+      const nextRunAt = getNextAutomationRunAt(config.scheduleCron, config.timezone);
+      getDb()
+        .prepare('UPDATE dojo_configs SET next_run_at = ?, updated_at = ? WHERE workspace_id = ?')
+        .run(nextRunAt, now, config.workspaceId);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('already running')) {
+        continue;
+      }
+      const nextRunAt = getNextAutomationRunAt(config.scheduleCron, config.timezone);
+      getDb()
+        .prepare('UPDATE dojo_configs SET next_run_at = ?, updated_at = ? WHERE workspace_id = ?')
+        .run(nextRunAt, now, config.workspaceId);
+      console.error('[Dojo] Failed to start scheduled review:', error);
     }
-    const nextRunAt = getNextAutomationRunAt(config.scheduleCron, config.timezone);
-    getDb()
-      .prepare('UPDATE dojo_configs SET next_run_at = ?, updated_at = ? WHERE workspace_id = ?')
-      .run(nextRunAt, now, config.workspaceId);
-    console.error('[Dojo] Failed to start scheduled review:', error);
   }
 }
