@@ -32,7 +32,7 @@ export function DojoAnalyticsPanel({
   onRefresh,
 }: {
   data: DojoAnalytics;
-  onRefresh: () => void;
+  onRefresh: () => Promise<void>;
 }) {
   const [tab, setTab] = useState<'overview' | 'runs' | 'usage'>('overview');
   const [search, setSearch] = useState('');
@@ -750,7 +750,7 @@ function UsageTable({
   onError,
 }: {
   data: DojoAnalytics;
-  onRefresh: () => void;
+  onRefresh: () => Promise<void>;
   onError: (error: string | null) => void;
 }) {
   const [savingDelivery, setSavingDelivery] = useState<string | null>(null);
@@ -759,7 +759,7 @@ function UsageTable({
     onError(null);
     try {
       await window.anvil.dojo.setDelivery(data.workspaceId, item, completed);
-      onRefresh();
+      await onRefresh();
     } catch (e) {
       onError(e instanceof Error ? e.message : 'Could not update delivery.');
     } finally {
@@ -889,7 +889,7 @@ function UsageTable({
                     </span>
                     <button
                       className={buttonClass}
-                      disabled={savingDelivery === item}
+                      disabled={savingDelivery !== null}
                       onClick={() =>
                         void markDelivery(item, !data.deliveries.some((d) => d.workItem === item))
                       }
@@ -916,7 +916,7 @@ function PriceEditor({
 }: {
   prices: DojoPrice[];
   runs: DojoRun[];
-  onSaved: () => void;
+  onSaved: () => Promise<void>;
   onError: (e: string | null) => void;
 }) {
   const [provider, setProvider] = useState('codex');
@@ -936,7 +936,7 @@ function PriceEditor({
         cachedInput: Number(cached),
         output: Number(output),
       });
-      onSaved();
+      await onSaved();
     } catch (e) {
       onError(e instanceof Error ? e.message : 'Could not save pricing.');
     } finally {

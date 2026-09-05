@@ -20,6 +20,11 @@ function WorkspaceDojo({ workspaceId }: { workspaceId: string }) {
   const [reports, setReports] = useState<DojoReport[]>([]);
   const [data, setData] = useState<DojoAnalytics | null>(null);
   const [days, setDays] = useState(30);
+  const [loadedDays, setLoadedDays] = useState<number | null>(null);
+  const [actionError, setActionError] = useState<{
+    action: 'save' | 'run';
+    message: string;
+  } | null>(null);
   const [tab, setTab] = useState<'analytics' | 'coaching'>('analytics');
   const [selected, setSelected] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -30,23 +35,32 @@ function WorkspaceDojo({ workspaceId }: { workspaceId: string }) {
   const request = useRef(0);
   const load = useCallback(async () => {
     const id = ++request.current;
-    try {
-      const [c, r, a] = await Promise.all([
-        window.anvil.dojo.getConfig(workspaceId),
-        window.anvil.dojo.listReports(workspaceId),
-        window.anvil.dojo.getAnalytics(workspaceId, days),
-      ]);
-      if (id !== request.current) return;
-      setConfig(c);
-      setDraft((d) => d ?? c);
-      setReports(r);
-      setData(a);
-      setError(null);
-    } catch (e) {
-      if (id === request.current) setError(e instanceof Error ? e.message : 'Could not load Dojo.');
-    } finally {
-      if (id === request.current) setLoading(false);
+    setLoading(true);
+    const results = await Promise.allSettled([
+      window.anvil.dojo.getConfig(workspaceId),
+      window.anvil.dojo.listReports(workspaceId),
+      window.anvil.dojo.getAnalytics(workspaceId, days),
+    ]);
+    if (id !== request.current) return;
+    const [c, r, a] = results;
+    if (c.status === 'fulfilled') {
+      setConfig(c.value);
+      setDraft((d) => d ?? c.value);
     }
+    if (r.status === 'fulfilled') setReports(r.value);
+    if (a.status === 'fulfilled') {
+      setData(a.value);
+      setLoadedDays(days);
+    }
+    const failures = results.flatMap((result, index) =>
+      result.status === 'rejected'
+        ? [
+            `${['Settings', 'Reviews', 'Performance'][index]}: ${result.reason instanceof Error ? result.reason.message : 'Could not load data.'}`,
+          ]
+        : [],
+    );
+    setError(failures.length ? failures.join(' ') : null);
+    setLoading(false);
   }, [workspaceId, days]);
   useEffect(() => {
     setLoading(true);
@@ -77,29 +91,40 @@ function WorkspaceDojo({ workspaceId }: { workspaceId: string }) {
   const report = reports.find((r) => r.id === selected) ?? reports[0] ?? null;
   const save = async () => {
     if (!draft) return;
+    request.current++;
+    setLoading(false);
     setBusy(true);
-    setError(null);
+    setActionError(null);
     try {
       const c = await window.anvil.dojo.updateConfig(workspaceId, draft);
       setConfig(c);
       setDraft(c);
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not save settings.');
+      setActionError({
+        action: 'save',
+        message: e instanceof Error ? e.message : 'Could not save settings.',
+      });
     } finally {
       setBusy(false);
     }
   };
   const run = async () => {
+    request.current++;
+    setLoading(false);
     setBusy(true);
-    setError(null);
+    setActionError(null);
     try {
       const r = await window.anvil.dojo.runNow(workspaceId);
       setReports((rs) => [r, ...rs.filter((x) => x.id !== r.id)]);
       setSelected(r.id);
       setTab('coaching');
+      await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not start review.');
+      setActionError({
+        action: 'run',
+        message: e instanceof Error ? e.message : 'Could not start review.',
+      });
     } finally {
       setBusy(false);
     }
@@ -119,8 +144,16 @@ function WorkspaceDojo({ workspaceId }: { workspaceId: string }) {
         description="Turn execution evidence into better habits and skills."
         actions={
           <div className="flex gap-2">
-            <button className={buttonClass} onClick={() => void load()} aria-label="Refresh Dojo">
-              <RefreshCw size={15} />
+            <button
+              className={buttonClass}
+              onClick={() => void load()}
+              disabled={loading || busy}
+              aria-label="Refresh Dojo"
+            >
+              <RefreshCw
+                size={15}
+                className={loading ? 'animate-spin motion-reduce:animate-none' : undefined}
+              />
             </button>
             <button
               className={buttonClass}
@@ -132,7 +165,7 @@ function WorkspaceDojo({ workspaceId }: { workspaceId: string }) {
             </button>
             <button
               className={`${buttonClass} border-accent/50 bg-accent/10 text-accent`}
-              disabled={!config?.enabled || running || busy}
+              disabled={!config || running || busy || loading}
               onClick={() => void run()}
             >
               {running ? (
@@ -153,24 +186,50 @@ function WorkspaceDojo({ workspaceId }: { workspaceId: string }) {
               className="flex items-center justify-between gap-3 rounded-lg border border-error/40 bg-error/10 p-4 text-sm text-error"
             >
               <span>{error}</span>
-              <button className={buttonClass} onClick={() => void load()}>
-                Retry
+              <button
+                className={buttonClass}
+                disabled={loading || busy}
+                onClick={() => void load()}
+              >
+                Reload Dojo
               </button>
             </div>
           )}
+          {actionError && (
+            <div
+              role="alert"
+              className="flex items-center justify-between gap-3 rounded-lg border border-error/40 bg-error/10 p-4 text-sm text-error"
+            >
+              <span>{actionError.message}</span>
+              <button
+                className={buttonClass}
+                disabled={busy || loading || (actionError.action === 'run' && running)}
+                onClick={() => void (actionError.action === 'save' ? save() : run())}
+              >
+                {actionError.action === 'save' ? 'Retry save' : 'Retry review'}
+              </button>
+            </div>
+          )}
+          <p className="text-xs text-text-tertiary">
+            Review now sends conversation samples from the last {config?.lookbackDays ?? 30} days to
+            your configured model. Scheduled reviews are {config?.enabled ? 'on' : 'off'}.
+          </p>
           {settingsOpen && draft && (
-            <section className="rounded-xl border border-border bg-bg-secondary p-5">
+            <fieldset
+              disabled={busy}
+              className="rounded-xl border border-border bg-bg-secondary p-5"
+            >
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <h2 className="text-sm font-semibold text-text-primary">Scheduled coaching</h2>
                   <p className="mt-1 text-xs text-text-tertiary">
-                    Conversation samples go to your configured model only when reviews are enabled.
+                    Choose whether reviews run automatically. You can always start a one-off review.
                   </p>
                 </div>
                 <button
                   type="button"
                   role="switch"
-                  aria-label="Enable Dojo reviews"
+                  aria-label="Enable scheduled Dojo reviews"
                   aria-checked={draft.enabled}
                   onClick={() => setDraft((d) => d && { ...d, enabled: !d.enabled })}
                   className={`relative h-6 w-11 shrink-0 rounded-full focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${draft.enabled ? 'bg-accent' : 'bg-bg-elevated'}`}
@@ -253,7 +312,7 @@ function WorkspaceDojo({ workspaceId }: { workspaceId: string }) {
                     : 'Scheduled reviews are off.'}{' '}
                 Keep Anvil open until a manual review finishes.
               </p>
-            </section>
+            </fieldset>
           )}
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex gap-2" aria-label="Dojo sections">
@@ -278,6 +337,7 @@ function WorkspaceDojo({ workspaceId }: { workspaceId: string }) {
                 <select
                   className={fieldClass}
                   value={days}
+                  disabled={busy}
                   onChange={(e) => setDays(Number(e.target.value))}
                 >
                   {[7, 14, 30, 60, 90, 180, 365].map((d) => (
@@ -306,33 +366,31 @@ function WorkspaceDojo({ workspaceId }: { workspaceId: string }) {
               </select>
             )}
           </div>
-          {loading ? (
-            <div className="flex items-center gap-2 py-12 text-sm text-text-tertiary">
+          {loading && (
+            <div role="status" className="flex items-center gap-2 text-sm text-text-tertiary">
               <Loader2 className="animate-spin motion-reduce:animate-none" size={16} />
-              Loading workspace evidence…
+              Refreshing workspace evidence…
             </div>
-          ) : tab === 'analytics' ? (
-            data && (
-              <DojoAnalyticsPanel
-                key={`${workspaceId}:${days}`}
-                data={data}
-                onRefresh={() => void load()}
-              />
-            )
-          ) : (
+          )}
+          {data && loadedDays !== days && (
+            <p role="status" className="text-sm text-warning">
+              Showing the last {loadedDays} days.{' '}
+              {loading
+                ? `Loading the requested ${days}-day window.`
+                : `The requested ${days}-day window could not be loaded. Reload Dojo to retry.`}
+            </p>
+          )}
+          <div hidden={tab !== 'analytics'} aria-busy={loading}>
+            {data && <DojoAnalyticsPanel data={data} onRefresh={load} />}
+          </div>
+          <div hidden={tab !== 'coaching'}>
             <DojoCoachingPanel
               key={report?.id ?? 'empty'}
               report={report}
               data={data}
-              onUpdate={() => void load()}
+              onUpdate={load}
             />
-          )}
-          {!config?.enabled && (
-            <p className="text-xs text-text-tertiary">
-              Coaching is off. Enable reviews in Review settings to generate recommendations.
-              Performance uses locally recorded execution data.
-            </p>
-          )}
+          </div>
         </div>
       </div>
     </div>

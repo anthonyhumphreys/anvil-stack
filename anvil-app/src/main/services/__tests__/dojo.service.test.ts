@@ -133,7 +133,8 @@ describe('Dojo scheduling and reports', () => {
     const config = getDojoConfig('ws-1');
     expect(config.enabled).toBe(false);
     expect(config.lookbackDays).toBe(30);
-    expect(() => runDojoReview('ws-1')).toThrow(/Enable Dojo/i);
+    expect(runDojoReview('ws-1').trigger).toBe('manual');
+    expect(getDojoConfig('ws-1')).toMatchObject({ enabled: false, nextRunAt: undefined });
 
     const updated = updateDojoConfig('ws-1', {
       enabled: true,
@@ -309,3 +310,57 @@ describe('Dojo scheduling and reports', () => {
     ]);
   });
 });
+
+it.each([30, 2000])(
+  'keeps recent evidence with %i-character older corrections',
+  async (messageSize) => {
+    const now = Date.now();
+    inMemoryDb
+      .prepare(
+        `INSERT INTO chat_threads (id, workspace_id, persona_id, title, repo_ids_json, created_at, updated_at) VALUES ('sample-thread', 'ws-1', 'coder', 'Sample', '[]', ?, ?)`,
+      )
+      .run(new Date(now).toISOString(), new Date(now).toISOString());
+    const insert = inMemoryDb.prepare(
+      `INSERT INTO chat_messages (id, thread_id, kind, role, content, timestamp) VALUES (?, 'sample-thread', ?, ?, ?, ?)`,
+    );
+    for (let i = 0; i < 240; i++) {
+      insert.run(
+        `old-${i}`,
+        'user',
+        'user',
+        'No, you changed the API.'.padEnd(messageSize, 'x'),
+        new Date(now - 86400000 + i * 1000).toISOString(),
+      );
+    }
+    insert.run(
+      'recent-user',
+      'user',
+      'user',
+      'RECENT_REQUEST: Document the successful migration.',
+      new Date(now - 2000).toISOString(),
+    );
+    insert.run(
+      'recent-assistant',
+      'assistant',
+      'assistant',
+      'RECENT_RESPONSE: The migration is documented.',
+      new Date(now - 1000).toISOString(),
+    );
+    callLlm.mockResolvedValueOnce(
+      JSON.stringify({
+        summary: 'Review complete',
+        observations: [],
+        promptRecommendations: [],
+        skillRecommendations: [],
+      }),
+    );
+    const report = runDojoReview('ws-1');
+    await vi.waitFor(() => expect(getDojoReport(report.id)?.status).toBe('completed'));
+    const prompt = callLlm.mock.calls[0][0];
+    expect(prompt).toContain('RECENT_REQUEST');
+    expect(prompt).toContain('RECENT_RESPONSE');
+    expect(prompt.indexOf('RECENT_REQUEST')).toBeLessThan(prompt.indexOf('RECENT_RESPONSE'));
+    expect(getDojoReport(report.id)?.sampleMessageCount).toBeLessThanOrEqual(240);
+    expect(getDojoConfig('ws-1')).toMatchObject({ enabled: false, nextRunAt: undefined });
+  },
+);

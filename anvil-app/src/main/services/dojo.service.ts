@@ -514,31 +514,43 @@ function readMessages(
 }
 
 function selectAnalysisSample(messages: DojoMessageRow[]): DojoMessageRow[] {
-  const flaggedIds = new Set(
-    messages
-      .filter((message) => {
-        if (message.role !== 'user') return false;
-        const signal = classifyDojoMessage(message.content);
-        return signal.frustration || signal.profanity || signal.correction;
-      })
-      .map((message) => message.id),
+  const chronological = [...messages].sort(
+    (a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp),
   );
-  const candidates = [
-    ...messages.filter((message) => flaggedIds.has(message.id)),
-    ...messages.slice(-MAX_ANALYSIS_MESSAGES),
-  ];
-  const seen = new Set<string>();
-  const selected: DojoMessageRow[] = [];
+  const selected = new Map<string, DojoMessageRow>();
   let characters = 0;
-  for (const message of candidates) {
-    if (seen.has(message.id) || selected.length >= MAX_ANALYSIS_MESSAGES) continue;
-    const contentLength = Math.min(message.content.length, MESSAGE_CONTENT_LIMIT);
-    if (characters + contentLength > MAX_ANALYSIS_CHARS) continue;
-    seen.add(message.id);
-    selected.push(message);
-    characters += contentLength;
+  const add = (message: DojoMessageRow, maxMessages: number, maxChars: number) => {
+    if (selected.has(message.id) || selected.size >= maxMessages) return;
+    const size = Math.min(message.content.length, MESSAGE_CONTENT_LIMIT);
+    if (characters + size > maxChars) return;
+    selected.set(message.id, message);
+    characters += size;
+  };
+  const newestFirst = [...chronological].reverse();
+  // Reserve half the budget for recent work before prioritizing correction signals.
+  for (const message of newestFirst) {
+    add(message, MAX_ANALYSIS_MESSAGES / 2, MAX_ANALYSIS_CHARS / 2);
   }
-  return selected.sort((left, right) => left.timestamp.localeCompare(right.timestamp));
+  const threads = new Map<string, DojoMessageRow[]>();
+  const positions = new Map<string, number>();
+  for (const message of chronological) {
+    const thread = threads.get(message.threadId) ?? [];
+    positions.set(message.id, thread.length);
+    thread.push(message);
+    threads.set(message.threadId, thread);
+  }
+  for (const message of newestFirst) {
+    if (message.role !== 'user') continue;
+    const signal = classifyDojoMessage(message.content);
+    if (!signal.frustration && !signal.profanity && !signal.correction) continue;
+    const thread = threads.get(message.threadId)!;
+    const index = positions.get(message.id)!;
+    for (const context of [message, thread[index - 1], thread[index + 1]]) {
+      if (context) add(context, MAX_ANALYSIS_MESSAGES, MAX_ANALYSIS_CHARS);
+    }
+  }
+  for (const message of newestFirst) add(message, MAX_ANALYSIS_MESSAGES, MAX_ANALYSIS_CHARS);
+  return [...selected.values()].sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
 }
 
 function buildAnalysisPrompt(
@@ -776,9 +788,6 @@ export function runDojoReview(
   }
 
   const config = getDojoConfig(workspaceId);
-  if (trigger === 'manual' && !config.enabled) {
-    throw new Error('Enable Dojo before starting a review.');
-  }
   const settings = getSettings();
   const enabledProviders = settings.enabledLlmProviders ?? [settings.llmProvider];
   const windowEnd = new Date();

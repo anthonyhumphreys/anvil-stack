@@ -17,7 +17,7 @@ export function DojoCoachingPanel({
 }: {
   report: DojoReport | null;
   data: DojoAnalytics | null;
-  onUpdate: () => void;
+  onUpdate: () => Promise<void>;
 }) {
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
@@ -29,7 +29,7 @@ export function DojoCoachingPanel({
     setError(null);
     try {
       await window.anvil.dojo.setRecommendationState(report.workspaceId, report.id, key, status);
-      onUpdate();
+      await onUpdate();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not update recommendation.');
     } finally {
@@ -52,7 +52,7 @@ export function DojoCoachingPanel({
         <select
           aria-label={`Recommendation status ${key}`}
           value={state?.status ?? 'suggested'}
-          disabled={busy === key}
+          disabled={busy !== null}
           onChange={(e) => void update(key, e.target.value as DojoRecommendationStatus)}
           className={fieldClass}
         >
@@ -287,7 +287,7 @@ function FollowThrough({
   return (
     <section className="border-b border-border pb-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold text-text-primary">Follow-through</h2>
+        <h2 className="text-sm font-semibold text-text-primary">Workspace follow-through</h2>
         <div className="flex flex-wrap gap-4 text-xs text-text-secondary">
           {['accepted', 'applied', 'dismissed'].map((status) => (
             <span key={status} className="capitalize">
@@ -299,6 +299,13 @@ function FollowThrough({
           ))}
         </div>
       </div>
+      {data && (
+        <p className="mt-2 text-xs text-text-tertiary">
+          Recommendation totals cover all workspace reviews. Session comparison:{' '}
+          {new Date(data.windowStart).toLocaleDateString()} to{' '}
+          {new Date(data.windowEnd).toLocaleDateString()}. Change this window in Performance.
+        </p>
+      )}
       {first ? (
         <>
           <p className="mt-3 text-sm text-text-secondary">
