@@ -19,7 +19,6 @@ import { registerWorkItemsHandlers } from './ipc/workitems.ipc.js';
 import { registerDocsHandlers } from './ipc/docs.ipc.js';
 import { registerBaHandlers, cleanupBaSessions, handleOrphanedBaSessions } from './ipc/ba.ipc.js';
 import { registerSecurityHandlers } from './ipc/security.ipc.js';
-import { registerPentestHandlers, cleanupPentest } from './ipc/pentest.ipc.js';
 import { registerCodeReviewHandlers } from './ipc/codereview.ipc.js';
 import { registerDiagramFileHandlers, cleanupDiagramServices } from './ipc/diagram-file.ipc.js';
 import { registerWorkspaceHandlers } from './ipc/workspace.ipc.js';
@@ -337,7 +336,6 @@ app.whenReady().then(() => {
   registerDocsHandlers();
   registerBaHandlers();
   registerSecurityHandlers();
-  registerPentestHandlers();
   registerCodeReviewHandlers();
   registerDiagramFileHandlers();
   registerWorkspaceHandlers({
@@ -421,7 +419,6 @@ app.on('before-quit', () => {
   cleanupSimulatorPreview();
   void stopMobileCompanionServer();
   void cleanupEmbeddedEditor();
-  cleanupPentest();
   cleanupRunProcesses();
   cleanupStatusBar();
 });

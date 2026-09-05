@@ -23,7 +23,7 @@ export const REPOSITORY_MAP_GRAPH_LIMITS = {
 const SYMBOL_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']);
 const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'];
 
-interface BuildRepositoryMapGraphInput {
+export interface BuildRepositoryMapGraphInput {
   repoId: string;
   repositoryName: string;
   repoPath: string;

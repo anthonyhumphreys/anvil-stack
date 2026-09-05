@@ -36,39 +36,15 @@ importers:
 
   .:
     dependencies:
-      '@aiden0z/pptx-renderer':
-        specifier: 1.2.4
-        version: 1.2.4
       '@anvilstack/cloud-cli':
         specifier: ^0.1.1
         version: 0.1.1(@types/node@26.2.0)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.50.0)(yaml@2.9.0)
       '@anvilstack/registry-cli':
         specifier: ^0.1.1
         version: 0.1.1
-      '@dagrejs/dagre':
-        specifier: ^3.1.0
-        version: 3.1.0
-      '@react-three/fiber':
-        specifier: ^9.7.0
-        version: 9.7.0(@types/react@19.2.14)(expo-asset@57.0.3(expo@57.0.4)(react-native@0.86.0(@babel/core@7.29.6)(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.4))(react@19.2.4)(typescript@5.9.3))(expo-file-system@57.0.0(expo@57.0.4)(react-native@0.86.0(@babel/core@7.29.6)(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.4)))(expo@57.0.4)(react-dom@19.2.4(react@19.2.4))(react-native@0.86.0(@babel/core@7.29.6)(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.4))(react@19.2.4)(three@0.185.1)
       '@sentry/electron':
         specifier: ^7.17.0
         version: 7.17.0(@opentelemetry/core@2.10.0(@opentelemetry/api@1.9.1))
-      '@shikijs/langs':
-        specifier: ^4.0.2
-        version: 4.0.2
-      '@xterm/addon-fit':
-        specifier: ^0.11.0
-        version: 0.11.0
-      '@xterm/addon-web-links':
-        specifier: ^0.12.0
-        version: 0.12.0
-      '@xterm/xterm':
-        specifier: ^6.0.0
-        version: 6.0.0
-      '@xyflow/react':
-        specifier: ^12.11.2
-        version: 12.11.2(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       abort-controller:
         specifier: ^3.0.0
         version: 3.0.0
@@ -81,27 +57,12 @@ importers:
       better-sqlite3:
         specifier: ^12.6.2
         version: 12.8.0
-      dompurify:
-        specifier: ^3.4.13
-        version: 3.4.13
       events-universal:
         specifier: ^1.0.1
         version: 1.0.1
       globby:
         specifier: ^16.2.0
         version: 16.2.0
-      lru-cache:
-        specifier: ^11.2.7
-        version: 11.2.7
-      lucide-react:
-        specifier: ^0.577.0
-        version: 0.577.0(react@19.2.4)
-      mammoth:
-        specifier: 1.12.0
-        version: 1.12.0
-      mermaid:
-        specifier: ^11.16.1
-        version: 11.16.1
       ms:
         specifier: ^2.1.3
         version: 2.1.3
@@ -117,45 +78,18 @@ importers:
       qrcode:
         specifier: ^1.5.4
         version: 1.5.4
-      react:
-        specifier: ^19.2.4
-        version: 19.2.4
-      react-diff-viewer-continued:
-        specifier: ^4.2.2
-        version: 4.2.2(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
-      react-dom:
-        specifier: ^19.2.4
-        version: 19.2.4(react@19.2.4)
-      react-markdown:
-        specifier: ^10.1.0
-        version: 10.1.0(@types/react@19.2.14)(react@19.2.4)
-      react-router-dom:
-        specifier: ^7.18.2
-        version: 7.18.2(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
-      remark-gfm:
-        specifier: ^4.0.1
-        version: 4.0.1
-      shiki:
-        specifier: ^4.0.2
-        version: 4.0.2
       simple-git:
         specifier: ^3.36.0
         version: 3.36.0
       text-decoder:
         specifier: ^1.2.7
         version: 1.2.7
-      three:
-        specifier: ^0.185.1
-        version: 0.185.1
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
       wrappy:
         specifier: ^1.0.2
         version: 1.0.2
-      xlsx:
-        specifier: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz
-        version: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz
       yaml:
         specifier: ^2.9.0
         version: 2.9.0
@@ -163,12 +97,24 @@ importers:
         specifier: ^3.3.1
         version: 3.3.1
     devDependencies:
+      '@aiden0z/pptx-renderer':
+        specifier: 1.2.4
+        version: 1.2.4
+      '@dagrejs/dagre':
+        specifier: ^3.1.0
+        version: 3.1.0
       '@electron/rebuild':
         specifier: ^4.2.0
         version: 4.2.0
       '@eslint/js':
         specifier: ^10.0.1
         version: 10.0.1(eslint@10.0.3(jiti@2.6.1))
+      '@react-three/fiber':
+        specifier: ^9.7.0
+        version: 9.7.0(@types/react@19.2.14)(expo-asset@57.0.3(expo@57.0.4)(react-native@0.86.0(@babel/core@7.29.6)(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.4))(react@19.2.4)(typescript@5.9.3))(expo-file-system@57.0.0(expo@57.0.4)(react-native@0.86.0(@babel/core@7.29.6)(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.4)))(expo@57.0.4)(react-dom@19.2.4(react@19.2.4))(react-native@0.86.0(@babel/core@7.29.6)(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.4))(react@19.2.4)(three@0.185.1)
+      '@shikijs/langs':
+        specifier: ^4.0.2
+        version: 4.0.2
       '@tailwindcss/vite':
         specifier: ^4.2.1
         version: 4.2.1(vite@7.3.5(@types/node@26.2.0)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.50.0)(yaml@2.9.0))
@@ -202,6 +148,21 @@ importers:
       '@vitejs/plugin-react':
         specifier: ^5.2.0
         version: 5.2.0(vite@7.3.5(@types/node@26.2.0)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.50.0)(yaml@2.9.0))
+      '@xterm/addon-fit':
+        specifier: ^0.11.0
+        version: 0.11.0
+      '@xterm/addon-web-links':
+        specifier: ^0.12.0
+        version: 0.12.0
+      '@xterm/xterm':
+        specifier: ^6.0.0
+        version: 6.0.0
+      '@xyflow/react':
+        specifier: ^12.11.2
+        version: 12.11.2(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      dompurify:
+        specifier: ^3.4.13
+        version: 3.4.13
       electron:
         specifier: ^39.8.10
         version: 39.8.10
@@ -220,18 +181,57 @@ importers:
       eslint-plugin-react-hooks:
         specifier: ^7.1.1
         version: 7.1.1(eslint@10.0.3(jiti@2.6.1))
+      lru-cache:
+        specifier: ^11.2.7
+        version: 11.2.7
+      lucide-react:
+        specifier: ^0.577.0
+        version: 0.577.0(react@19.2.4)
+      mammoth:
+        specifier: 1.12.0
+        version: 1.12.0
+      mermaid:
+        specifier: ^11.16.1
+        version: 11.16.1
       prettier:
         specifier: ^3.8.1
         version: 3.8.1
+      react:
+        specifier: ^19.2.4
+        version: 19.2.4
+      react-diff-viewer-continued:
+        specifier: ^4.2.2
+        version: 4.2.2(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      react-dom:
+        specifier: ^19.2.4
+        version: 19.2.4(react@19.2.4)
+      react-markdown:
+        specifier: ^10.1.0
+        version: 10.1.0(@types/react@19.2.14)(react@19.2.4)
+      react-router-dom:
+        specifier: ^7.18.2
+        version: 7.18.2(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      remark-gfm:
+        specifier: ^4.0.1
+        version: 4.0.1
+      shiki:
+        specifier: ^4.0.2
+        version: 4.0.2
       tailwindcss:
         specifier: ^4.2.1
         version: 4.2.1
+      three:
+        specifier: ^0.185.1
+        version: 0.185.1
       vite:
         specifier: 7.3.5
         version: 7.3.5(@types/node@26.2.0)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.50.0)(yaml@2.9.0)
       vitest:
         specifier: ^4.1.0
         version: 4.1.0(@opentelemetry/api@1.9.1)(@types/node@26.2.0)(vite@7.3.5(@types/node@26.2.0)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.50.0)(yaml@2.9.0))
+      xlsx:
+        specifier: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz
+        version: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz
 
   mobile:
     dependencies:

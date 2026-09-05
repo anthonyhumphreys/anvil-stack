@@ -2,47 +2,128 @@ import { lazy, Suspense, useEffect, useState, useCallback, type ReactNode } from
 import { HashRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { Shell } from './components/layout/Shell';
 import { ErrorBoundary } from './components/layout/ErrorBoundary';
-import { ReposView } from './components/repos/ReposView';
-import { ChatView } from './components/chat/ChatView';
-import { OnboardView } from './components/onboard/OnboardView';
-import { WorkItemsView } from './components/workitems/WorkItemsView';
-import { BaView } from './components/ba/BaView';
-import { DbInsightsView } from './components/dbinsights/DbInsightsView';
-import { SecurityView } from './components/security/SecurityView';
-import { PentestView } from './components/security/PentestView';
-import { CodeReviewView } from './components/codereview/CodeReviewView';
-import { CicdView } from './components/cicd/CicdView';
-import { AutomationsView } from './components/automations/AutomationsView';
-import { DojoView } from './components/dojo/DojoView';
-import { DocsView } from './components/docs/DocsView';
-import { AdrsView } from './components/adrs/AdrsView';
-import { DiagramsView } from './components/diagrams/DiagramsView';
-import { GovernanceView } from './components/governance/GovernanceView';
-import { BrowserPanel } from './components/browser/BrowserPanel';
-import { ArgentView } from './components/argent/ArgentView';
-import { GitView } from './components/git/GitView';
-import { ComplianceView } from './components/compliance/ComplianceView';
-import { DependenciesView } from './components/dependencies/DependenciesView';
-import { DiagnosticsView } from './components/diagnostics/DiagnosticsView';
-import { AnvilCloudView } from './components/cloud/AnvilCloudView';
-import { SettingsView } from './components/settings/SettingsView';
-import { CodexRegistryView } from './components/settings/CodexRegistryView';
-import { OpenInAnvilView } from './components/launch/OpenInAnvilView';
-import { MeetingNotesView } from './components/meeting/MeetingNotesView';
-import { InboxView } from './components/inbox/InboxView';
 import { SplashScreen } from './components/brand/SplashScreen';
 import { ChatProvider } from './contexts/ChatContext';
 import { BrandProvider } from './contexts/BrandContext';
 import { getBrand, getBuildBrandId } from '../shared/branding';
 import { WorkspaceProvider, useWorkspace } from './contexts/WorkspaceContext';
 import { WorkspaceCreator } from './components/workspace/WorkspaceCreator';
-import { WorkspaceNotesView } from './components/workspace/WorkspaceNotesView';
 import { RolePickerOverlay } from './components/onboard/RolePickerOverlay';
 import { ConnectorSetupOverlay } from './components/onboard/ConnectorSetupOverlay';
 import type { UserRole, Feature, AppTheme } from '../shared/types';
 import { ROLE_FEATURES } from '../shared/types';
 
-const STARTUP_SPLASH_MIN_DURATION_MS = 1500;
+const ReposView = lazy(() =>
+  import('./components/repos/ReposView').then((module) => ({ default: module.ReposView })),
+);
+const ChatView = lazy(() =>
+  import('./components/chat/ChatView').then((module) => ({ default: module.ChatView })),
+);
+const OnboardView = lazy(() =>
+  import('./components/onboard/OnboardView').then((module) => ({ default: module.OnboardView })),
+);
+const WorkItemsView = lazy(() =>
+  import('./components/workitems/WorkItemsView').then((module) => ({
+    default: module.WorkItemsView,
+  })),
+);
+const BaView = lazy(() =>
+  import('./components/ba/BaView').then((module) => ({ default: module.BaView })),
+);
+const DbInsightsView = lazy(() =>
+  import('./components/dbinsights/DbInsightsView').then((module) => ({
+    default: module.DbInsightsView,
+  })),
+);
+const SecurityView = lazy(() =>
+  import('./components/security/SecurityView').then((module) => ({ default: module.SecurityView })),
+);
+const CodeReviewView = lazy(() =>
+  import('./components/codereview/CodeReviewView').then((module) => ({
+    default: module.CodeReviewView,
+  })),
+);
+const CicdView = lazy(() =>
+  import('./components/cicd/CicdView').then((module) => ({ default: module.CicdView })),
+);
+const AutomationsView = lazy(() =>
+  import('./components/automations/AutomationsView').then((module) => ({
+    default: module.AutomationsView,
+  })),
+);
+const DojoView = lazy(() =>
+  import('./components/dojo/DojoView').then((module) => ({ default: module.DojoView })),
+);
+const DocsView = lazy(() =>
+  import('./components/docs/DocsView').then((module) => ({ default: module.DocsView })),
+);
+const AdrsView = lazy(() =>
+  import('./components/adrs/AdrsView').then((module) => ({ default: module.AdrsView })),
+);
+const DiagramsView = lazy(() =>
+  import('./components/diagrams/DiagramsView').then((module) => ({ default: module.DiagramsView })),
+);
+const GovernanceView = lazy(() =>
+  import('./components/governance/GovernanceView').then((module) => ({
+    default: module.GovernanceView,
+  })),
+);
+const BrowserPanel = lazy(() =>
+  import('./components/browser/BrowserPanel').then((module) => ({ default: module.BrowserPanel })),
+);
+const ArgentView = lazy(() =>
+  import('./components/argent/ArgentView').then((module) => ({ default: module.ArgentView })),
+);
+const GitView = lazy(() =>
+  import('./components/git/GitView').then((module) => ({ default: module.GitView })),
+);
+const ComplianceView = lazy(() =>
+  import('./components/compliance/ComplianceView').then((module) => ({
+    default: module.ComplianceView,
+  })),
+);
+const DependenciesView = lazy(() =>
+  import('./components/dependencies/DependenciesView').then((module) => ({
+    default: module.DependenciesView,
+  })),
+);
+const DiagnosticsView = lazy(() =>
+  import('./components/diagnostics/DiagnosticsView').then((module) => ({
+    default: module.DiagnosticsView,
+  })),
+);
+const AnvilCloudView = lazy(() =>
+  import('./components/cloud/AnvilCloudView').then((module) => ({
+    default: module.AnvilCloudView,
+  })),
+);
+const SettingsView = lazy(() =>
+  import('./components/settings/SettingsView').then((module) => ({ default: module.SettingsView })),
+);
+const CodexRegistryView = lazy(() =>
+  import('./components/settings/CodexRegistryView').then((module) => ({
+    default: module.CodexRegistryView,
+  })),
+);
+const OpenInAnvilView = lazy(() =>
+  import('./components/launch/OpenInAnvilView').then((module) => ({
+    default: module.OpenInAnvilView,
+  })),
+);
+const MeetingNotesView = lazy(() =>
+  import('./components/meeting/MeetingNotesView').then((module) => ({
+    default: module.MeetingNotesView,
+  })),
+);
+const InboxView = lazy(() =>
+  import('./components/inbox/InboxView').then((module) => ({ default: module.InboxView })),
+);
+const WorkspaceNotesView = lazy(() =>
+  import('./components/workspace/WorkspaceNotesView').then((module) => ({
+    default: module.WorkspaceNotesView,
+  })),
+);
+
 type OnboardingPreviewStep = 'role' | 'connectors';
 const WorkflowsView = lazy(() =>
   import('./components/workflows/WorkflowsView').then((module) => ({
@@ -118,7 +199,6 @@ export function App() {
   const [cloudFeaturesEnabled, setCloudFeaturesEnabled] = useState(false);
   const [roleLoaded, setRoleLoaded] = useState(false);
   const [connectorsConfigured, setConnectorsConfigured] = useState(false);
-  const [startupSplashElapsed, setStartupSplashElapsed] = useState(false);
   const [onboardingPreviewStep, setOnboardingPreviewStep] = useState<OnboardingPreviewStep | null>(
     null,
   );
@@ -205,14 +285,6 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      setStartupSplashElapsed(true);
-    }, STARTUP_SPLASH_MIN_DURATION_MS);
-
-    return () => window.clearTimeout(timer);
-  }, []);
-
-  useEffect(() => {
     const applyTheme = () => {
       document.documentElement.dataset.theme =
         appTheme === 'system' ? resolveSystemTheme() : appTheme;
@@ -236,7 +308,7 @@ export function App() {
       />
     );
 
-  if (!roleLoaded || !startupSplashElapsed) {
+  if (!roleLoaded) {
     return <SplashScreen label={`Starting ${fallbackBrand.appName}`} />;
   }
 
@@ -286,373 +358,364 @@ export function App() {
         <ChatProvider>
           <HashRouter>
             <LaunchIntentRouter />
-            <Routes>
-              <Route
-                element={
-                  <Shell
-                    connectionStatus={connectionStatus}
-                    userRole={userRole}
-                    cloudFeaturesEnabled={cloudFeaturesEnabled}
+            <Suspense fallback={<SplashScreen label="Loading workspace" />}>
+              <Routes>
+                <Route
+                  element={
+                    <Shell
+                      connectionStatus={connectionStatus}
+                      userRole={userRole}
+                      cloudFeaturesEnabled={cloudFeaturesEnabled}
+                    />
+                  }
+                >
+                  <Route
+                    path="/inbox"
+                    element={guard(
+                      'chat',
+                      <WorkspaceGate>
+                        <ErrorBoundary>
+                          <InboxView />
+                        </ErrorBoundary>
+                      </WorkspaceGate>,
+                    )}
                   />
-                }
-              >
-                <Route
-                  path="/inbox"
-                  element={guard(
-                    'chat',
-                    <WorkspaceGate>
+                  <Route
+                    path="/repos"
+                    element={
+                      <WorkspaceGate>
+                        <ErrorBoundary>
+                          <ReposView />
+                        </ErrorBoundary>
+                      </WorkspaceGate>
+                    }
+                  />
+                  <Route
+                    path="/open"
+                    element={
                       <ErrorBoundary>
-                        <InboxView />
+                        <OpenInAnvilView />
                       </ErrorBoundary>
-                    </WorkspaceGate>,
-                  )}
-                />
-                <Route
-                  path="/repos"
-                  element={
-                    <WorkspaceGate>
-                      <ErrorBoundary>
-                        <ReposView />
-                      </ErrorBoundary>
-                    </WorkspaceGate>
-                  }
-                />
-                <Route
-                  path="/open"
-                  element={
-                    <ErrorBoundary>
-                      <OpenInAnvilView />
-                    </ErrorBoundary>
-                  }
-                />
+                    }
+                  />
 
-                <Route
-                  path="/meeting-notes"
-                  element={guard(
-                    'meeting-notes',
-                    <WorkspaceGate>
-                      <ErrorBoundary>
-                        <MeetingNotesView />
-                      </ErrorBoundary>
-                    </WorkspaceGate>,
-                  )}
-                />
-                <Route
-                  path="/workspace-notes"
-                  element={guard(
-                    'workspace-notes',
-                    <WorkspaceGate>
-                      <ErrorBoundary>
-                        <WorkspaceNotesView />
-                      </ErrorBoundary>
-                    </WorkspaceGate>,
-                  )}
-                />
-                <Route
-                  path="/chat"
-                  element={guard(
-                    'chat',
-                    <WorkspaceGate>
-                      <ErrorBoundary>
-                        <ChatView userRole={userRole} />
-                      </ErrorBoundary>
-                    </WorkspaceGate>,
-                  )}
-                />
-                <Route
-                  path="/db-insights"
-                  element={guard(
-                    'dbinsights',
-                    <WorkspaceGate>
-                      <ErrorBoundary>
-                        <DbInsightsView />
-                      </ErrorBoundary>
-                    </WorkspaceGate>,
-                  )}
-                />
-                <Route
-                  path="/onboard"
-                  element={guard(
-                    'onboard',
-                    <WorkspaceGate>
-                      <ErrorBoundary>
-                        <OnboardView />
-                      </ErrorBoundary>
-                    </WorkspaceGate>,
-                  )}
-                />
-                <Route
-                  path="/workitems"
-                  element={guard(
-                    'workitems',
-                    <WorkspaceGate>
-                      <ErrorBoundary>
-                        <WorkItemsView />
-                      </ErrorBoundary>
-                    </WorkspaceGate>,
-                  )}
-                />
-                <Route
-                  path="/ba/:workItemId"
-                  element={guard(
-                    'workitems',
-                    <WorkspaceGate>
-                      <ErrorBoundary>
-                        <BaView />
-                      </ErrorBoundary>
-                    </WorkspaceGate>,
-                  )}
-                />
-                <Route
-                  path="/security/:repoId/pentest"
-                  element={guard(
-                    'security',
-                    <WorkspaceGate>
-                      <ErrorBoundary>
-                        <PentestView />
-                      </ErrorBoundary>
-                    </WorkspaceGate>,
-                  )}
-                />
-                <Route
-                  path="/dependencies/:repoId?"
-                  element={guard(
-                    'dependencies',
-                    <WorkspaceGate>
-                      <ErrorBoundary>
-                        <DependenciesView />
-                      </ErrorBoundary>
-                    </WorkspaceGate>,
-                  )}
-                />
-                <Route
-                  path="/security/:repoId/dependencies"
-                  element={guard(
-                    'dependencies',
-                    <WorkspaceGate>
-                      <ErrorBoundary>
-                        <DependenciesView />
-                      </ErrorBoundary>
-                    </WorkspaceGate>,
-                  )}
-                />
-                <Route
-                  path="/security/:repoId?"
-                  element={guard(
-                    'security',
-                    <WorkspaceGate>
-                      <ErrorBoundary>
-                        <SecurityView />
-                      </ErrorBoundary>
-                    </WorkspaceGate>,
-                  )}
-                />
-                <Route
-                  path="/codereview/:repoId?"
-                  element={guard(
-                    'codereview',
-                    <WorkspaceGate>
-                      <ErrorBoundary>
-                        <CodeReviewView />
-                      </ErrorBoundary>
-                    </WorkspaceGate>,
-                  )}
-                />
-                <Route
-                  path="/cicd"
-                  element={guard(
-                    'cicd',
-                    <WorkspaceGate>
-                      <ErrorBoundary>
-                        <CicdView />
-                      </ErrorBoundary>
-                    </WorkspaceGate>,
-                  )}
-                />
-                <Route
-                  path="/cloud"
-                  element={
-                    cloudFeaturesEnabled ? (
-                      guard(
-                        'cloud',
-                        <WorkspaceGate>
-                          <ErrorBoundary>
-                            <AnvilCloudView />
-                          </ErrorBoundary>
-                        </WorkspaceGate>,
+                  <Route
+                    path="/meeting-notes"
+                    element={guard(
+                      'meeting-notes',
+                      <WorkspaceGate>
+                        <ErrorBoundary>
+                          <MeetingNotesView />
+                        </ErrorBoundary>
+                      </WorkspaceGate>,
+                    )}
+                  />
+                  <Route
+                    path="/workspace-notes"
+                    element={guard(
+                      'workspace-notes',
+                      <WorkspaceGate>
+                        <ErrorBoundary>
+                          <WorkspaceNotesView />
+                        </ErrorBoundary>
+                      </WorkspaceGate>,
+                    )}
+                  />
+                  <Route
+                    path="/chat"
+                    element={guard(
+                      'chat',
+                      <WorkspaceGate>
+                        <ErrorBoundary>
+                          <ChatView userRole={userRole} />
+                        </ErrorBoundary>
+                      </WorkspaceGate>,
+                    )}
+                  />
+                  <Route
+                    path="/db-insights"
+                    element={guard(
+                      'dbinsights',
+                      <WorkspaceGate>
+                        <ErrorBoundary>
+                          <DbInsightsView />
+                        </ErrorBoundary>
+                      </WorkspaceGate>,
+                    )}
+                  />
+                  <Route
+                    path="/onboard"
+                    element={guard(
+                      'onboard',
+                      <WorkspaceGate>
+                        <ErrorBoundary>
+                          <OnboardView />
+                        </ErrorBoundary>
+                      </WorkspaceGate>,
+                    )}
+                  />
+                  <Route
+                    path="/workitems"
+                    element={guard(
+                      'workitems',
+                      <WorkspaceGate>
+                        <ErrorBoundary>
+                          <WorkItemsView />
+                        </ErrorBoundary>
+                      </WorkspaceGate>,
+                    )}
+                  />
+                  <Route
+                    path="/ba/:workItemId"
+                    element={guard(
+                      'workitems',
+                      <WorkspaceGate>
+                        <ErrorBoundary>
+                          <BaView />
+                        </ErrorBoundary>
+                      </WorkspaceGate>,
+                    )}
+                  />
+                  <Route
+                    path="/dependencies/:repoId?"
+                    element={guard(
+                      'dependencies',
+                      <WorkspaceGate>
+                        <ErrorBoundary>
+                          <DependenciesView />
+                        </ErrorBoundary>
+                      </WorkspaceGate>,
+                    )}
+                  />
+                  <Route
+                    path="/security/:repoId/dependencies"
+                    element={guard(
+                      'dependencies',
+                      <WorkspaceGate>
+                        <ErrorBoundary>
+                          <DependenciesView />
+                        </ErrorBoundary>
+                      </WorkspaceGate>,
+                    )}
+                  />
+                  <Route
+                    path="/security/:repoId?"
+                    element={guard(
+                      'security',
+                      <WorkspaceGate>
+                        <ErrorBoundary>
+                          <SecurityView />
+                        </ErrorBoundary>
+                      </WorkspaceGate>,
+                    )}
+                  />
+                  <Route
+                    path="/codereview/:repoId?"
+                    element={guard(
+                      'codereview',
+                      <WorkspaceGate>
+                        <ErrorBoundary>
+                          <CodeReviewView />
+                        </ErrorBoundary>
+                      </WorkspaceGate>,
+                    )}
+                  />
+                  <Route
+                    path="/cicd"
+                    element={guard(
+                      'cicd',
+                      <WorkspaceGate>
+                        <ErrorBoundary>
+                          <CicdView />
+                        </ErrorBoundary>
+                      </WorkspaceGate>,
+                    )}
+                  />
+                  <Route
+                    path="/cloud"
+                    element={
+                      cloudFeaturesEnabled ? (
+                        guard(
+                          'cloud',
+                          <WorkspaceGate>
+                            <ErrorBoundary>
+                              <AnvilCloudView />
+                            </ErrorBoundary>
+                          </WorkspaceGate>,
+                        )
+                      ) : (
+                        <Navigate to="/settings" replace />
                       )
-                    ) : (
-                      <Navigate to="/settings" replace />
-                    )
-                  }
-                />
-                <Route
-                  path="/automations"
-                  element={guard(
-                    'automations',
-                    <WorkspaceGate>
+                    }
+                  />
+                  <Route
+                    path="/automations"
+                    element={guard(
+                      'automations',
+                      <WorkspaceGate>
+                        <ErrorBoundary>
+                          <AutomationsView />
+                        </ErrorBoundary>
+                      </WorkspaceGate>,
+                    )}
+                  />
+                  <Route
+                    path="/dojo"
+                    element={guard(
+                      'dojo',
+                      <WorkspaceGate>
+                        <ErrorBoundary>
+                          <DojoView />
+                        </ErrorBoundary>
+                      </WorkspaceGate>,
+                    )}
+                  />
+                  <Route
+                    path="/workflows"
+                    element={guard(
+                      'workflows',
+                      <WorkspaceGate>
+                        <ErrorBoundary>
+                          <Suspense fallback={<SplashScreen label="Loading workflows" />}>
+                            <WorkflowsView />
+                          </Suspense>
+                        </ErrorBoundary>
+                      </WorkspaceGate>,
+                    )}
+                  />
+                  <Route
+                    path="/docs"
+                    element={guard(
+                      'docs',
+                      <WorkspaceGate>
+                        <ErrorBoundary>
+                          <DocsView />
+                        </ErrorBoundary>
+                      </WorkspaceGate>,
+                    )}
+                  />
+                  <Route
+                    path="/adrs"
+                    element={guard(
+                      'adrs',
+                      <WorkspaceGate>
+                        <ErrorBoundary>
+                          <AdrsView />
+                        </ErrorBoundary>
+                      </WorkspaceGate>,
+                    )}
+                  />
+                  <Route
+                    path="/diagrams/:repoId?"
+                    element={guard(
+                      'diagrams',
+                      <WorkspaceGate>
+                        <ErrorBoundary>
+                          <DiagramsView />
+                        </ErrorBoundary>
+                      </WorkspaceGate>,
+                    )}
+                  />
+                  <Route
+                    path="/governance"
+                    element={guard(
+                      'governance',
+                      <WorkspaceGate>
+                        <ErrorBoundary>
+                          <GovernanceView />
+                        </ErrorBoundary>
+                      </WorkspaceGate>,
+                    )}
+                  />
+                  <Route
+                    path="/browser"
+                    element={guard(
+                      'browser',
+                      <WorkspaceGate>
+                        <ErrorBoundary>
+                          <BrowserPanel />
+                        </ErrorBoundary>
+                      </WorkspaceGate>,
+                    )}
+                  />
+                  <Route
+                    path="/argent"
+                    element={guard(
+                      'argent',
+                      <WorkspaceGate>
+                        <ErrorBoundary>
+                          <ArgentView />
+                        </ErrorBoundary>
+                      </WorkspaceGate>,
+                    )}
+                  />
+                  <Route
+                    path="/editor"
+                    element={guard(
+                      'editor',
+                      <WorkspaceGate>
+                        <ErrorBoundary>
+                          <></>
+                        </ErrorBoundary>
+                      </WorkspaceGate>,
+                    )}
+                  />
+                  <Route
+                    path="/git"
+                    element={guard(
+                      'git',
+                      <WorkspaceGate>
+                        <ErrorBoundary>
+                          <GitView />
+                        </ErrorBoundary>
+                      </WorkspaceGate>,
+                    )}
+                  />
+                  <Route
+                    path="/compliance"
+                    element={guard(
+                      'compliance',
+                      <WorkspaceGate>
+                        <ErrorBoundary>
+                          <ComplianceView />
+                        </ErrorBoundary>
+                      </WorkspaceGate>,
+                    )}
+                  />
+                  <Route
+                    path="/settings"
+                    element={
                       <ErrorBoundary>
-                        <AutomationsView />
+                        <SettingsView
+                          onSettingsSaved={checkConnections}
+                          onRoleChange={handleRoleChange}
+                          onThemeChange={handleThemeChange}
+                          onPreviewOnboarding={() => setOnboardingPreviewStep('role')}
+                          userRole={userRole}
+                        />
                       </ErrorBoundary>
-                    </WorkspaceGate>,
-                  )}
-                />
-                <Route
-                  path="/dojo"
-                  element={guard(
-                    'dojo',
-                    <WorkspaceGate>
+                    }
+                  />
+                  <Route
+                    path="/settings/codex-registry"
+                    element={
                       <ErrorBoundary>
-                        <DojoView />
+                        <CodexRegistryView />
                       </ErrorBoundary>
-                    </WorkspaceGate>,
-                  )}
-                />
-                <Route
-                  path="/workflows"
-                  element={guard(
-                    'workflows',
-                    <WorkspaceGate>
+                    }
+                  />
+                  <Route
+                    path="/diagnostics"
+                    element={
                       <ErrorBoundary>
-                        <Suspense fallback={<SplashScreen label="Loading workflows" />}>
-                          <WorkflowsView />
-                        </Suspense>
+                        <DiagnosticsView />
                       </ErrorBoundary>
-                    </WorkspaceGate>,
-                  )}
-                />
-                <Route
-                  path="/docs"
-                  element={guard(
-                    'docs',
-                    <WorkspaceGate>
-                      <ErrorBoundary>
-                        <DocsView />
-                      </ErrorBoundary>
-                    </WorkspaceGate>,
-                  )}
-                />
-                <Route
-                  path="/adrs"
-                  element={guard(
-                    'adrs',
-                    <WorkspaceGate>
-                      <ErrorBoundary>
-                        <AdrsView />
-                      </ErrorBoundary>
-                    </WorkspaceGate>,
-                  )}
-                />
-                <Route
-                  path="/diagrams/:repoId?"
-                  element={guard(
-                    'diagrams',
-                    <WorkspaceGate>
-                      <ErrorBoundary>
-                        <DiagramsView />
-                      </ErrorBoundary>
-                    </WorkspaceGate>,
-                  )}
-                />
-                <Route
-                  path="/governance"
-                  element={guard(
-                    'governance',
-                    <WorkspaceGate>
-                      <ErrorBoundary>
-                        <GovernanceView />
-                      </ErrorBoundary>
-                    </WorkspaceGate>,
-                  )}
-                />
-                <Route
-                  path="/browser"
-                  element={guard(
-                    'browser',
-                    <WorkspaceGate>
-                      <ErrorBoundary>
-                        <BrowserPanel />
-                      </ErrorBoundary>
-                    </WorkspaceGate>,
-                  )}
-                />
-                <Route
-                  path="/argent"
-                  element={guard(
-                    'argent',
-                    <WorkspaceGate>
-                      <ErrorBoundary>
-                        <ArgentView />
-                      </ErrorBoundary>
-                    </WorkspaceGate>,
-                  )}
-                />
-                <Route
-                  path="/editor"
-                  element={guard(
-                    'editor',
-                    <WorkspaceGate>
-                      <ErrorBoundary>
-                        <></>
-                      </ErrorBoundary>
-                    </WorkspaceGate>,
-                  )}
-                />
-                <Route
-                  path="/git"
-                  element={guard(
-                    'git',
-                    <WorkspaceGate>
-                      <ErrorBoundary>
-                        <GitView />
-                      </ErrorBoundary>
-                    </WorkspaceGate>,
-                  )}
-                />
-                <Route
-                  path="/compliance"
-                  element={guard(
-                    'compliance',
-                    <WorkspaceGate>
-                      <ErrorBoundary>
-                        <ComplianceView />
-                      </ErrorBoundary>
-                    </WorkspaceGate>,
-                  )}
-                />
-                <Route
-                  path="/settings"
-                  element={
-                    <ErrorBoundary>
-                      <SettingsView
-                        onSettingsSaved={checkConnections}
-                        onRoleChange={handleRoleChange}
-                        onThemeChange={handleThemeChange}
-                        onPreviewOnboarding={() => setOnboardingPreviewStep('role')}
-                        userRole={userRole}
-                      />
-                    </ErrorBoundary>
-                  }
-                />
-                <Route
-                  path="/settings/codex-registry"
-                  element={
-                    <ErrorBoundary>
-                      <CodexRegistryView />
-                    </ErrorBoundary>
-                  }
-                />
-                <Route
-                  path="/diagnostics"
-                  element={
-                    <ErrorBoundary>
-                      <DiagnosticsView />
-                    </ErrorBoundary>
-                  }
-                />
-                <Route path="*" element={<Navigate to="/chat" replace />} />
-              </Route>
-            </Routes>
+                    }
+                  />
+                  <Route path="*" element={<Navigate to="/chat" replace />} />
+                </Route>
+              </Routes>
+            </Suspense>
           </HashRouter>
         </ChatProvider>
       </WorkspaceProvider>

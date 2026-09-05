@@ -17,7 +17,7 @@ export const HeroScene: React.FC = () => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
 
-  const scriptLine = 'Run. Review. Pentest. Package the evidence.';
+  const scriptLine = 'Run. Review. Audit. Package the evidence.';
   const typedCount = Math.floor(
     interpolate(frame, [20, 88], [0, scriptLine.length], {
       extrapolateLeft: 'clamp',
@@ -92,7 +92,7 @@ export const HeroScene: React.FC = () => {
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', maxWidth: 840 }}>
             <MetricPill label="Workspaces and scaffold flows" tone="amber" />
             <MetricPill label="Run + browser + live previews" tone="cyan" />
-            <MetricPill label="Code review + Strix pentest" tone="red" />
+            <MetricPill label="Code review + security audit" tone="red" />
             <MetricPill label="Lifecycle gates and handover packs" tone="green" />
           </div>
         </div>

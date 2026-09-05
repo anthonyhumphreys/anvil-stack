@@ -1,11 +1,11 @@
+import { renderMermaid } from '../../utils/mermaid';
 import { useEffect, useRef, useState, isValidElement, cloneElement } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import mermaid from 'mermaid';
 import DOMPurify from 'dompurify';
 import type { Components } from 'react-markdown';
 
-mermaid.initialize({
+const MERMAID_CONFIG: import('mermaid').MermaidConfig = {
   startOnLoad: false,
   theme: 'dark',
   securityLevel: 'loose',
@@ -23,7 +23,7 @@ mermaid.initialize({
     edgeLabelBackground: '#232528',
     fontFamily: 'inherit',
   },
-});
+};
 
 function MermaidBlock({ source }: { source: string }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -31,13 +31,13 @@ function MermaidBlock({ source }: { source: string }) {
 
   useEffect(() => {
     if (!ref.current || !source) return;
+    let cancelled = false;
     setError(null);
     const id = `adr-mermaid-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-    mermaid
-      .render(id, source.replace(/\\n/g, '\n'))
+    renderMermaid(id, source.replace(/\\n/g, '\n'), MERMAID_CONFIG)
       .then(({ svg }) => {
-        if (ref.current) {
+        if (!cancelled && ref.current) {
           ref.current.innerHTML = DOMPurify.sanitize(svg, {
             USE_PROFILES: { svg: true, svgFilters: true },
             ADD_TAGS: ['foreignObject'],
@@ -45,9 +45,13 @@ function MermaidBlock({ source }: { source: string }) {
         }
       })
       .catch((err) => {
-        setError(err instanceof Error ? err.message : String(err));
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
         document.getElementById(id)?.remove();
       });
+    return () => {
+      cancelled = true;
+      document.getElementById(id)?.remove();
+    };
   }, [source]);
 
   if (error) {

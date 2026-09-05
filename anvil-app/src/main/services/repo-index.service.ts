@@ -8,7 +8,7 @@ import { notifyIfUnfocused } from './notification.service.js';
 import { getSettings } from './settings.service.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
 import { getCurrentCommitSha } from './code-review-git.service.js';
-import { buildRepositoryMapGraph } from './repository-map-graph.service.js';
+import { buildRepositoryMapInWorker } from './repository-map-worker.service.js';
 
 interface DbRepoRow {
   id: string;
@@ -168,7 +168,7 @@ export async function indexRepo(
 
     sendProgress('Saving results...', 97, 'saving');
 
-    const repositoryMapGraph = buildRepositoryMapGraph({
+    const repositoryMapGraph = await buildRepositoryMapInWorker({
       repoId,
       repositoryName: repoRow.name,
       repoPath: repoRow.path,

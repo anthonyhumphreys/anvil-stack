@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Canvas, useFrame, type ThreeEvent } from '@react-three/fiber';
+import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
 import * as THREE from 'three';
 import {
   ChevronLeft,
@@ -141,6 +141,7 @@ export function RepositoryGarden({
       <Canvas
         key={`${scopeId}:${page}:${resetToken}`}
         orthographic
+        frameloop="demand"
         shadows={!reducedMotion}
         dpr={[1, 1.5]}
         camera={{ position: [12, 15, 12], zoom: compact ? 29 : 35, near: 0.1, far: 180 }}
@@ -1329,10 +1330,20 @@ function GardenAvatar({
   const rightArmRef = useRef<THREE.Group>(null);
   const leftLegRef = useRef<THREE.Group>(null);
   const rightLegRef = useRef<THREE.Group>(null);
+  const invalidate = useThree((state) => state.invalidate);
   const keysRef = useRef(new Set<string>());
   const positionRef = useRef(new THREE.Vector3(spawn[0], 0, spawn[1]));
   const cameraTarget = useMemo(() => new THREE.Vector3(), []);
   const movement = useMemo(() => new THREE.Vector3(), []);
+
+  useEffect(() => {
+    const resume = () => {
+      keysRef.current.clear();
+      if (!document.hidden) invalidate();
+    };
+    document.addEventListener('visibilitychange', resume);
+    return () => document.removeEventListener('visibilitychange', resume);
+  }, [invalidate]);
   const walkPhaseRef = useRef(0);
 
   useEffect(() => {
@@ -1342,6 +1353,7 @@ function GardenAvatar({
       if (['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(key)) {
         event.preventDefault();
         keysRef.current.add(key);
+        invalidate();
       }
       if (key === 'e' || key === 'enter') {
         event.preventDefault();
@@ -1353,14 +1365,17 @@ function GardenAvatar({
         onBack();
       }
     };
-    const onKeyUp = (event: KeyboardEvent) => keysRef.current.delete(event.key.toLowerCase());
+    const onKeyUp = (event: KeyboardEvent) => {
+      keysRef.current.delete(event.key.toLowerCase());
+      invalidate();
+    };
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, [active, onBack, onInteract, plots]);
+  }, [active, onBack, onInteract, plots, invalidate]);
 
   useFrame(({ camera }, delta) => {
     let isWalking = false;
@@ -1422,6 +1437,10 @@ function GardenAvatar({
     if (reducedMotion) camera.position.copy(cameraTarget);
     else camera.position.lerp(cameraTarget, Math.min(1, delta * 5));
     camera.lookAt(positionRef.current.x, 0, positionRef.current.z);
+    const settling =
+      camera.position.distanceToSquared(cameraTarget) > 0.0001 ||
+      Math.abs(leftArmRef.current?.rotation.x ?? 0) > 0.001;
+    if (!document.hidden && (isWalking || settling)) invalidate();
   });
 
   return (

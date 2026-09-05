@@ -16,7 +16,10 @@ export default defineConfig({
     build: {
       outDir: 'out/main',
       lib: {
-        entry: 'src/main/index.ts',
+        entry: {
+          index: 'src/main/index.ts',
+          'repository-map.worker': 'src/main/workers/repository-map.worker.ts',
+        },
       },
     },
   },
@@ -42,6 +45,7 @@ export default defineConfig({
     plugins: [react(), tailwindcss()],
     build: {
       outDir: 'out/renderer',
+      manifest: true,
       rollupOptions: {
         input: 'src/renderer/index.html',
       },

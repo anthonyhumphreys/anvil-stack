@@ -11,7 +11,7 @@ afterPack: scripts/build-apple-speech-helper.mjs
 files:
   - 'out/**/*'
   - 'prompts/**/*'
-  - 'scripts/**/*'
+  - 'scripts/chrome-mcp-server.mjs'
   - 'node_modules/**/*'
   - '!node_modules/**/test*'
 

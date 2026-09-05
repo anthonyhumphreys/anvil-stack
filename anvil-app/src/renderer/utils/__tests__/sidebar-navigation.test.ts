@@ -76,6 +76,6 @@ describe('sidebar navigation', () => {
 
     expect(isSidebarNavItemActive('/security/repo-1/dependencies', dependency)).toBe(true);
     expect(isSidebarNavItemActive('/security/repo-1/dependencies', security)).toBe(false);
-    expect(isSidebarNavItemActive('/security/repo-1/pentest', security)).toBe(true);
+    expect(isSidebarNavItemActive('/security/repo-1', security)).toBe(true);
   });
 });

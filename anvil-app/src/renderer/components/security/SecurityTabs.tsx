@@ -1,9 +1,8 @@
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
-import { Shield, Crosshair, Boxes } from 'lucide-react';
+import { Shield, Boxes } from 'lucide-react';
 
 const tabs = [
   { key: 'audit', label: 'Static Audit', icon: Shield, pathSuffix: '' },
-  { key: 'pentest', label: 'Penetration Testing', icon: Crosshair, pathSuffix: '/pentest' },
   { key: 'deps', label: 'Dependencies Audit', icon: Boxes, pathSuffix: '/dependencies' },
 ] as const;
 
@@ -12,9 +11,8 @@ export function SecurityTabs() {
   const location = useLocation();
   const navigate = useNavigate();
 
-  const isPentest = location.pathname.includes('/pentest');
   const isDeps = location.pathname.includes('/dependencies');
-  const activeKey = isDeps ? 'deps' : isPentest ? 'pentest' : 'audit';
+  const activeKey = isDeps ? 'deps' : 'audit';
 
   return (
     <div className="flex border-b border-border-subtle bg-bg-secondary px-4">

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { lazy, Suspense, useState, useEffect, useCallback } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Sidebar } from './Sidebar';
 import { StatusBar } from './StatusBar';
@@ -8,10 +8,14 @@ import { useWorkspace } from '../../contexts/WorkspaceContext';
 import type { UserRole } from '../../../shared/types';
 import { ROLE_FEATURES } from '../../../shared/types';
 import { TerminalPanel } from '../terminal/TerminalPanel';
-import { EditorView } from '../editor/EditorView';
+
 import { isEditableShortcutTarget, isShellShortcutOptInTarget } from '../../utils/keyboard';
 import { SidebarActivityProvider } from './SidebarActivityCenter';
 import { PictureInPicture2 } from 'lucide-react';
+
+const EditorView = lazy(() =>
+  import('../editor/EditorView').then((module) => ({ default: module.EditorView })),
+);
 
 interface ShellProps {
   connectionStatus: {
@@ -26,6 +30,7 @@ interface ShellProps {
 export function Shell({ connectionStatus, userRole, cloudFeaturesEnabled }: ShellProps) {
   const { activeScaffoldSession, switchWorkspace, refreshWorkspaces } = useWorkspace();
   const [showCreator, setShowCreator] = useState(false);
+  const [editorMounted, setEditorMounted] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [windowChromeState, setWindowChromeState] = useState({ isFullScreen: false });
@@ -33,6 +38,9 @@ export function Shell({ connectionStatus, userRole, cloudFeaturesEnabled }: Shel
   const navigate = useNavigate();
   const editorFeatureEnabled = ROLE_FEATURES[userRole].includes('editor');
   const showingEditor = editorFeatureEnabled && location.pathname === '/editor';
+  useEffect(() => {
+    if (showingEditor) setEditorMounted(true);
+  }, [showingEditor]);
   const reserveTitlebarSpace = !windowChromeState.isFullScreen;
   const isToolWindow = new URLSearchParams(location.search).get('toolWindow') === '1';
 
@@ -128,7 +136,21 @@ export function Shell({ connectionStatus, userRole, cloudFeaturesEnabled }: Shel
             <span className="ml-2 text-xs text-text-tertiary">Detached</span>
           </header>
           <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
-            {showingEditor ? <EditorView /> : <Outlet />}
+            {showingEditor ? (
+              <Suspense fallback={null}>
+                <EditorView />
+              </Suspense>
+            ) : (
+              <Suspense
+                fallback={
+                  <div role="status" className="p-6 text-sm text-text-secondary">
+                    Loading view…
+                  </div>
+                }
+              >
+                <Outlet />
+              </Suspense>
+            )}
           </main>
         </div>
       </SidebarActivityProvider>
@@ -150,13 +172,23 @@ export function Shell({ connectionStatus, userRole, cloudFeaturesEnabled }: Shel
               <div className="titlebar-drag absolute inset-x-0 top-0 z-10 h-3 shrink-0" />
             )}
             <div className="relative flex min-h-0 flex-1 flex-col">
-              {editorFeatureEnabled && (
+              {editorFeatureEnabled && (editorMounted || showingEditor) && (
                 <div className={showingEditor ? 'flex min-h-0 min-w-0 flex-1 w-full' : 'hidden'}>
-                  <EditorView />
+                  <Suspense fallback={null}>
+                    <EditorView />
+                  </Suspense>
                 </div>
               )}
               <div className={showingEditor ? 'hidden' : 'flex min-h-0 flex-1 flex-col'}>
-                <Outlet />
+                <Suspense
+                  fallback={
+                    <div role="status" className="p-6 text-sm text-text-secondary">
+                      Loading view…
+                    </div>
+                  }
+                >
+                  <Outlet />
+                </Suspense>
               </div>
             </div>
             <TerminalPanel isOpen={terminalOpen} onClose={() => setTerminalOpen(false)} />

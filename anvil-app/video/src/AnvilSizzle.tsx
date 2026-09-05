@@ -271,14 +271,13 @@ const FEATURE_SLIDES: FeatureSlideConfig[] = [
   {
     activeNav: 'Security',
     eyebrow: 'Security',
-    title: 'Audit and pentest.',
-    body: 'Pair static security review with Strix-backed dynamic proof so exploitability is not left to guesswork.',
+    title: 'Audit and remediate.',
+    body: 'Review the code for security issues and turn findings into tracked remediation work.',
     ghostLabel: 'Secure',
     accentTone: 'red',
     secondaryTone: 'cyan',
     pills: [
       { label: 'Static audit', tone: 'red' },
-      { label: 'Strix pentest', tone: 'amber' },
       { label: 'Work item handoff', tone: 'green' },
     ],
     cards: [
@@ -287,12 +286,6 @@ const FEATURE_SLIDES: FeatureSlideConfig[] = [
         title: 'OWASP and checklist coverage',
         detail: 'Use static analysis to widen the net across the codebase.',
         tone: 'red',
-      },
-      {
-        kicker: 'Dynamic',
-        title: 'Proof-of-concept findings',
-        detail: 'Run Docker-backed tests against a live target for confirmation.',
-        tone: 'amber',
       },
       {
         kicker: 'Flow',
@@ -307,7 +300,7 @@ const FEATURE_SLIDES: FeatureSlideConfig[] = [
         tone: 'green',
       },
     ],
-    footerNotes: ['Audit the code.', 'Probe the running target.', 'Escalate the real risk.'],
+    footerNotes: ['Audit the code.', 'Review the findings.', 'Escalate the real risk.'],
   },
   {
     activeNav: 'Code Review',

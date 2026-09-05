@@ -1,3 +1,4 @@
+import { pollWhileVisible } from '../../utils/visible-polling';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
@@ -316,7 +317,7 @@ export function ChatView({ userRole }: ChatViewProps) {
   useEffect(() => {
     let cancelled = false;
     const refresh = () => {
-      window.anvil.chat
+      return window.anvil.chat
         .listActiveSessions()
         .then((sessions) => {
           if (!cancelled) setActiveSessions(sessions.filter((item) => item.status !== 'error'));
@@ -325,11 +326,10 @@ export function ChatView({ userRole }: ChatViewProps) {
           if (!cancelled) setActiveSessions([]);
         });
     };
-    refresh();
-    const interval = window.setInterval(refresh, 5000);
+    const stop = pollWhileVisible(refresh, 5000);
     return () => {
       cancelled = true;
-      window.clearInterval(interval);
+      stop();
     };
   }, []);
 
@@ -341,7 +341,7 @@ export function ChatView({ userRole }: ChatViewProps) {
 
     let cancelled = false;
     const refresh = () => {
-      window.anvil.agentRuns
+      return window.anvil.agentRuns
         .list(activeWorkspace.id, 20)
         .then((runs) => {
           if (!cancelled) setRecentRuns(runs);
@@ -350,11 +350,10 @@ export function ChatView({ userRole }: ChatViewProps) {
           if (!cancelled) setRecentRuns([]);
         });
     };
-    refresh();
-    const interval = window.setInterval(refresh, 10_000);
+    const stop = pollWhileVisible(refresh, 10_000);
     return () => {
       cancelled = true;
-      window.clearInterval(interval);
+      stop();
     };
   }, [activeWorkspace?.id]);
 

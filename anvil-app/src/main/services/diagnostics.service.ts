@@ -50,6 +50,8 @@ export function getDiagnosticsSnapshot(): DiagnosticsSnapshot {
       id: 'terminal-sessions',
       label: 'Terminal sessions',
       count: terminals.activeTerminals,
+      bytes: terminals.replayBytes,
+      detail: `${terminals.trackedTerminals} tracked sessions; ${terminals.replayChunks} replay chunks; estimated UTF-16 payload bytes`,
     },
     {
       id: 'run-processes',

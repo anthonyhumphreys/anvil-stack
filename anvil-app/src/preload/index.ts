@@ -46,7 +46,6 @@ import type {
   WorkItemProvider,
   WorkspaceCreateOptions,
 } from '../shared/types.js';
-import type { PentestScanConfig, PentestScanEvent } from '../shared/pentest-types.js';
 import type { RunCommand, RunStatus } from '../shared/run-types.js';
 import type {
   AgentUIIntentPresentationPatch,
@@ -442,28 +441,6 @@ const api: AnvilAPI = {
       ) => callback(data);
       ipcRenderer.on('security:audit-progress', handler);
       return () => ipcRenderer.removeListener('security:audit-progress', handler);
-    },
-  },
-
-  pentest: {
-    checkDocker: () => ipcRenderer.invoke('pentest:check-docker'),
-    startScan: (repoId: string, config: PentestScanConfig) =>
-      ipcRenderer.invoke('pentest:start-scan', repoId, config),
-    stopScan: (scanId: string) => ipcRenderer.invoke('pentest:stop-scan', scanId),
-    getScan: (scanId: string) => ipcRenderer.invoke('pentest:get-scan', scanId),
-    getRunningScan: (repoId: string) => ipcRenderer.invoke('pentest:get-running-scan', repoId),
-    listScans: (repoId: string) => ipcRenderer.invoke('pentest:list-scans', repoId),
-    getFindings: (scanId: string) => ipcRenderer.invoke('pentest:get-findings', scanId),
-    dismissFinding: (findingId: string) => ipcRenderer.invoke('pentest:dismiss-finding', findingId),
-    createWorkItem: (findingId: string) =>
-      ipcRenderer.invoke('pentest:create-work-item', findingId),
-    createWorkItemsBulk: (findingIds: string[]) =>
-      ipcRenderer.invoke('pentest:create-work-items-bulk', findingIds),
-    exportReport: (scanId: string) => ipcRenderer.invoke('pentest:export-report', scanId),
-    onScanEvent: (callback: (event: PentestScanEvent) => void) => {
-      const handler = (_e: Electron.IpcRendererEvent, event: PentestScanEvent) => callback(event);
-      ipcRenderer.on('pentest:scan-event', handler);
-      return () => ipcRenderer.removeListener('pentest:scan-event', handler);
     },
   },
 

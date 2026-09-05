@@ -4,13 +4,6 @@ import type {
   DojoRecommendationState,
   DojoRecommendationStatus,
 } from './dojo-types';
-import type {
-  PentestScan,
-  PentestFinding,
-  PentestScanConfig,
-  PentestScanEvent,
-  DockerStatus,
-} from './pentest-types';
 import type { RunCommand, RunStatus } from './run-types';
 import type {
   AgentUIIntent,
@@ -464,21 +457,6 @@ export interface AnvilAPI {
     onAuditProgress: (
       callback: (data: { repoId: string; message: string; percent: number }) => void,
     ) => () => void;
-  };
-
-  pentest: {
-    checkDocker(): Promise<DockerStatus>;
-    startScan(repoId: string, config: PentestScanConfig): Promise<PentestScan>;
-    stopScan(scanId: string): Promise<void>;
-    getScan(scanId: string): Promise<PentestScan | null>;
-    getRunningScan(repoId: string): Promise<PentestScan | null>;
-    listScans(repoId: string): Promise<PentestScan[]>;
-    getFindings(scanId: string): Promise<PentestFinding[]>;
-    dismissFinding(findingId: string): Promise<void>;
-    createWorkItem(findingId: string): Promise<string>;
-    createWorkItemsBulk(findingIds: string[]): Promise<string[]>;
-    exportReport(scanId: string): Promise<string>;
-    onScanEvent(callback: (event: PentestScanEvent) => void): () => void;
   };
 
   run: {

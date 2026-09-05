@@ -9,6 +9,9 @@ import type {
 import { getDefaultShell } from '../utils/shell.js';
 
 export const TERMINAL_REPLAY_CHAR_LIMIT = 500_000;
+export const TERMINAL_REPLAY_CHUNK_LIMIT = 4_096;
+export const TERMINAL_TOTAL_REPLAY_CHAR_LIMIT = 8_000_000;
+export const TERMINAL_TOTAL_REPLAY_CHUNK_LIMIT = 32_768;
 
 interface ManagedTerminal extends TerminalSessionSummary {
   pty: pty.IPty | null;
@@ -21,6 +24,8 @@ type TerminalServiceEvent =
   | ({ type: 'exit' } & TerminalExitEvent);
 
 const terminals = new Map<string, ManagedTerminal>();
+let totalReplayChars = 0;
+let totalReplayChunks = 0;
 const eventListeners = new Set<(event: TerminalServiceEvent) => void>();
 
 function toSummary(terminal: ManagedTerminal): TerminalSessionSummary {
@@ -48,13 +53,43 @@ function appendOutput(terminal: ManagedTerminal, data: string): TerminalDataEven
   };
   terminal.output.push(chunk);
   terminal.outputChars += chunk.data.length;
+  totalReplayChars += chunk.data.length;
+  totalReplayChunks += 1;
+  // Map order tracks recent output so aggregate pressure evicts quiet replay first.
+  terminals.delete(terminal.terminalId);
+  terminals.set(terminal.terminalId, terminal);
 
-  while (terminal.outputChars > TERMINAL_REPLAY_CHAR_LIMIT && terminal.output.length > 1) {
-    const removed = terminal.output.shift();
-    if (removed) terminal.outputChars -= removed.data.length;
+  while (
+    terminal.output.length > 1 &&
+    (terminal.outputChars > TERMINAL_REPLAY_CHAR_LIMIT ||
+      terminal.output.length > TERMINAL_REPLAY_CHUNK_LIMIT)
+  ) {
+    removeOldestOutput(terminal);
+  }
+  for (const candidate of terminals.values()) {
+    while (
+      candidate.output.length &&
+      (totalReplayChars > TERMINAL_TOTAL_REPLAY_CHAR_LIMIT ||
+        totalReplayChunks > TERMINAL_TOTAL_REPLAY_CHUNK_LIMIT)
+    ) {
+      removeOldestOutput(candidate);
+    }
+    if (
+      totalReplayChars <= TERMINAL_TOTAL_REPLAY_CHAR_LIMIT &&
+      totalReplayChunks <= TERMINAL_TOTAL_REPLAY_CHUNK_LIMIT
+    )
+      break;
   }
 
   return { terminalId: terminal.terminalId, ...chunk };
+}
+
+function removeOldestOutput(terminal: ManagedTerminal): void {
+  const removed = terminal.output.shift();
+  if (!removed) return;
+  terminal.outputChars -= removed.data.length;
+  totalReplayChars -= removed.data.length;
+  totalReplayChunks -= 1;
 }
 
 export function createTerminal(
@@ -142,17 +177,24 @@ export function closeTerminal(terminalId: string): void {
   if (!terminal) return;
 
   terminals.delete(terminalId);
+  totalReplayChars -= terminal.outputChars;
+  totalReplayChunks -= terminal.output.length;
   terminal.pty?.kill();
 }
 
 export function closeAllTerminals(): void {
   const openTerminals = [...terminals.values()];
   terminals.clear();
+  totalReplayChars = 0;
+  totalReplayChunks = 0;
   for (const terminal of openTerminals) terminal.pty?.kill();
 }
 
-export function getTerminalDiagnostics(): { activeTerminals: number } {
+export function getTerminalDiagnostics() {
   return {
+    trackedTerminals: terminals.size,
+    replayBytes: totalReplayChars * 2,
+    replayChunks: totalReplayChunks,
     activeTerminals: [...terminals.values()].filter((terminal) => terminal.status === 'running')
       .length,
   };
