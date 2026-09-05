@@ -25,6 +25,7 @@ import {
   getDojoConfig,
   getDojoReport,
   listDojoReports,
+  markStaleDojoReportsFailed,
   processDueDojoReviews,
   runDojoReview,
   updateDojoConfig,
@@ -96,6 +97,38 @@ describe('Dojo signal classification', () => {
 });
 
 describe('Dojo scheduling and reports', () => {
+  it.each(['manual', 'schedule'] as const)(
+    'recovers only %s reviews owned by the restarting process',
+    (trigger) => {
+      const metrics = JSON.stringify(buildDojoMetrics([], ['codex']));
+      for (const source of ['manual', 'schedule']) {
+        inMemoryDb
+          .prepare(
+            `INSERT INTO dojo_reports (
+          id, workspace_id, status, trigger, window_start, window_end, metrics_json, started_at
+        ) VALUES (?, 'ws-1', 'running', ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            source,
+            source,
+            new Date().toISOString(),
+            new Date().toISOString(),
+            metrics,
+            new Date().toISOString(),
+          );
+      }
+      markStaleDojoReportsFailed(trigger, 'Owner restarted.');
+      expect(getDojoReport(trigger)).toMatchObject({
+        status: 'failed',
+        errorMessage: 'Owner restarted.',
+      });
+      expect(getDojoReport(trigger === 'manual' ? 'schedule' : 'manual')).toMatchObject({
+        status: 'running',
+        errorMessage: undefined,
+      });
+    },
+  );
+
   it('starts disabled and validates review settings', () => {
     const config = getDojoConfig('ws-1');
     expect(config.enabled).toBe(false);
@@ -184,8 +217,37 @@ describe('Dojo scheduling and reports', () => {
          ) VALUES ('message-1', 'thread-1', 'session-1', 'user', 'user', ?, ?)`,
       )
       .run('I asked you not to change the API again.', new Date().toISOString());
+    inMemoryDb
+      .prepare(
+        `INSERT INTO chat_messages (id,thread_id,session_id,kind,role,content,timestamp)
+      VALUES ('message-2','thread-1','session-1','user','user','You changed the API again.',?)`,
+      )
+      .run(new Date().toISOString());
     callLlm.mockResolvedValueOnce(
       JSON.stringify({
+        craftedSkills: [
+          {
+            name: 'preserve-contracts',
+            description: 'Use when changing a public API.',
+            reason: 'Repeated contract changes.',
+            instructions: 'Inspect callers. Preserve the contract. Verify caller behavior.',
+            evidenceIds: ['message-1', 'message-2'],
+          },
+          {
+            name: 'invented-evidence',
+            description: 'Use for all work.',
+            reason: 'Invented',
+            instructions: 'Do a thing.',
+            evidenceIds: ['missing-1', 'missing-2'],
+          },
+          {
+            name: '../../escape',
+            description: 'Invalid name',
+            reason: 'Bad name',
+            instructions: 'Bad',
+            evidenceIds: ['message-1', 'message-2'],
+          },
+        ],
         summary: 'You repeatedly correct scope drift.',
         observations: [],
         promptRecommendations: [
@@ -219,7 +281,14 @@ describe('Dojo scheduling and reports', () => {
     );
 
     const started = runDojoReview('ws-1');
+    inMemoryDb
+      .prepare('UPDATE dojo_reports SET error_message = ? WHERE id = ?')
+      .run('Previous restart error', started.id);
     await vi.waitFor(() => expect(getDojoReport(started.id)?.status).toBe('completed'));
+    expect(getDojoReport(started.id)?.errorMessage).toBeUndefined();
+    expect(getDojoReport(started.id)?.craftedSkills?.map((skill) => skill.name)).toEqual([
+      'preserve-contracts',
+    ]);
 
     expect(getDojoReport(started.id)?.skillRecommendations).toEqual([
       {

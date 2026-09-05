@@ -818,8 +818,16 @@ export function shutdownAutomationRuntime(): void {
 export function initializeAutomationRuntime(): void {
   if (isAutomationDaemonMode()) {
     markStaleAutomationRunsFailed('Automation daemon restarted while a run was still active.');
-    markStaleDojoReportsFailed('Automation daemon restarted while a Dojo review was running.');
+    markStaleDojoReportsFailed(
+      'schedule',
+      'Automation daemon restarted while a Dojo review was running. Run a new review to retry.',
+    );
     startSchedulerLoop();
+  } else {
+    markStaleDojoReportsFailed(
+      'manual',
+      'Anvil restarted while a manual Dojo review was running. Run a new review to retry.',
+    );
   }
 }
 

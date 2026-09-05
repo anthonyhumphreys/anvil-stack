@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 60;
+export const SCHEMA_VERSION = 61;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -866,6 +866,37 @@ CREATE TABLE IF NOT EXISTS handover_packs (
   generated_at TEXT NOT NULL,
   output_path TEXT NOT NULL,
   sections TEXT NOT NULL DEFAULT '[]'
+);
+
+CREATE TABLE IF NOT EXISTS dojo_execution_events (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+  event_json TEXT NOT NULL,
+  timestamp TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dojo_execution_events_session ON dojo_execution_events(session_id, timestamp);
+CREATE TABLE IF NOT EXISTS dojo_deliveries (
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  work_item TEXT NOT NULL,
+  completed_at TEXT NOT NULL,
+  PRIMARY KEY (workspace_id, work_item)
+);
+CREATE TABLE IF NOT EXISTS dojo_prices (
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  input REAL NOT NULL,
+  cached_input REAL NOT NULL,
+  output REAL NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (provider, model)
+);
+CREATE TABLE IF NOT EXISTS dojo_recommendation_states (
+  report_id TEXT NOT NULL REFERENCES dojo_reports(id) ON DELETE CASCADE,
+  recommendation_key TEXT NOT NULL,
+  status TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  applied_at TEXT,
+  PRIMARY KEY (report_id, recommendation_key)
 );
 `;
 
@@ -1899,4 +1930,36 @@ export const MIGRATIONS: Record<number, string> = {
     CREATE INDEX IF NOT EXISTS idx_dojo_reports_workspace
       ON dojo_reports(workspace_id, started_at DESC);
   `,
+  61: `
+CREATE TABLE IF NOT EXISTS dojo_execution_events (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+  event_json TEXT NOT NULL,
+  timestamp TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dojo_execution_events_session ON dojo_execution_events(session_id, timestamp);
+CREATE TABLE IF NOT EXISTS dojo_deliveries (
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  work_item TEXT NOT NULL,
+  completed_at TEXT NOT NULL,
+  PRIMARY KEY (workspace_id, work_item)
+);
+CREATE TABLE IF NOT EXISTS dojo_prices (
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  input REAL NOT NULL,
+  cached_input REAL NOT NULL,
+  output REAL NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (provider, model)
+);
+CREATE TABLE IF NOT EXISTS dojo_recommendation_states (
+  report_id TEXT NOT NULL REFERENCES dojo_reports(id) ON DELETE CASCADE,
+  recommendation_key TEXT NOT NULL,
+  status TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  applied_at TEXT,
+  PRIMARY KEY (report_id, recommendation_key)
+);
+`,
 };

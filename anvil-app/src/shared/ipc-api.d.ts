@@ -1,4 +1,10 @@
 import type {
+  DojoAnalytics,
+  DojoPrice,
+  DojoRecommendationState,
+  DojoRecommendationStatus,
+} from './dojo-types';
+import type {
   PentestScan,
   PentestFinding,
   PentestScanConfig,
@@ -397,6 +403,17 @@ export interface AnvilAPI {
   };
 
   dojo: {
+    setDelivery: (workspaceId: string, workItem: string, completed: boolean) => Promise<void>;
+
+    getAnalytics: (workspaceId: string, days: number) => Promise<DojoAnalytics>;
+    savePrice: (price: Omit<DojoPrice, 'updatedAt'>) => Promise<DojoPrice[]>;
+    setRecommendationState: (
+      workspaceId: string,
+      reportId: string,
+      key: string,
+      status: DojoRecommendationStatus,
+    ) => Promise<DojoRecommendationState>;
+
     getConfig: (workspaceId: string) => Promise<DojoConfig>;
     updateConfig: (workspaceId: string, input: DojoConfigInput) => Promise<DojoConfig>;
     listReports: (workspaceId: string) => Promise<DojoReport[]>;

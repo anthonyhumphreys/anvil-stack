@@ -1,3 +1,4 @@
+import type { DojoCraftedSkill } from '../../shared/dojo-types.js';
 import { randomUUID } from 'node:crypto';
 import type {
   AgentProvider,
@@ -46,7 +47,7 @@ export interface DojoMessageRow {
   role: 'user' | 'assistant';
   content: string;
   timestamp: string;
-  provider: AgentProvider;
+  provider: AgentProvider | 'unknown';
 }
 
 interface DojoConfigRow {
@@ -76,6 +77,7 @@ interface DojoReportRow {
 }
 
 interface DojoAnalysis {
+  craftedSkills: DojoCraftedSkill[];
   summary: string;
   observations: DojoObservation[];
   promptRecommendations: DojoPromptRecommendation[];
@@ -250,7 +252,7 @@ export function buildDojoMetrics(
       const providerMessages = messages.filter((message) => message.provider === provider);
       return {
         provider,
-        enabled: enabledProviders.includes(provider),
+        enabled: provider !== 'unknown' && enabledProviders.includes(provider),
         status: providerMessages.length > 0 ? 'covered' : 'no-activity',
         threadCount: new Set(providerMessages.map((message) => message.threadId)).size,
         sessionCount: new Set(
@@ -306,9 +308,18 @@ function readAnalysis(value: string | null): Omit<DojoAnalysis, 'skillRecommenda
 } {
   const parsed = safeParseJson(value);
   if (!isRecord(parsed)) {
-    return { summary: '', observations: [], promptRecommendations: [], skillRecommendations: [] };
+    return {
+      summary: '',
+      observations: [],
+      promptRecommendations: [],
+      skillRecommendations: [],
+      craftedSkills: [],
+    };
   }
   return {
+    craftedSkills: Array.isArray(parsed.craftedSkills)
+      ? parsed.craftedSkills.filter(isCraftedSkill).slice(0, 4)
+      : [],
     summary: typeof parsed.summary === 'string' ? parsed.summary : '',
     observations: Array.isArray(parsed.observations)
       ? parsed.observations.filter(isDojoObservation)
@@ -335,6 +346,7 @@ function mapReport(row: DojoReportRow): DojoReport {
     windowEnd: row.window_end,
     metrics,
     summary: analysis.summary || undefined,
+    craftedSkills: analysis.craftedSkills,
     observations: analysis.observations,
     promptRecommendations: analysis.promptRecommendations,
     skillRecommendations: analysis.skillRecommendations,
@@ -467,13 +479,13 @@ function readMessages(
          m.role,
          m.content,
          m.timestamp,
-         COALESCE(s.provider, t.provider_thread_provider, 'codex') AS provider
+         COALESCE(s.provider, t.provider_thread_provider, 'unknown') AS provider
        FROM chat_messages m
        INNER JOIN chat_threads t ON t.id = m.thread_id
        LEFT JOIN chat_sessions s ON s.id = m.session_id
        WHERE t.workspace_id = ?
-         AND m.timestamp >= ?
-         AND m.timestamp <= ?
+         AND julianday(m.timestamp) >= julianday(?)
+         AND julianday(m.timestamp) <= julianday(?)
          AND m.role IN ('user', 'assistant')
          AND length(trim(m.content)) > 0
        ORDER BY m.timestamp ASC, m.rowid ASC`,
@@ -497,7 +509,7 @@ function readMessages(
     timestamp: row.timestamp,
     provider: AGENT_PROVIDERS.includes(row.provider as AgentProvider)
       ? (row.provider as AgentProvider)
-      : 'codex',
+      : 'unknown',
   }));
 }
 
@@ -541,7 +553,7 @@ function buildAnalysisPrompt(
   const transcript = messages
     .map(
       (message) =>
-        `[${message.timestamp}] [${message.provider}] [${message.threadId}] ${message.role.toUpperCase()}: ${message.content.slice(0, MESSAGE_CONTENT_LIMIT)}`,
+        `[id:${message.id}] [${message.timestamp}] [${message.provider}] [${message.threadId}] ${message.role.toUpperCase()}: ${message.content.slice(0, MESSAGE_CONTENT_LIMIT)}`,
     )
     .join('\n\n');
 
@@ -551,6 +563,8 @@ function buildAnalysisPrompt(
     'Focus on changes that improve answer accuracy and reduce wasted tokens, retries, and corrections.',
     'Use the supplied metrics as facts. Do not invent counts or claim causation the evidence cannot support.',
     'Recommend repeated instructions as ready-to-paste skill prompts only when the pattern appears more than once.',
+    'Also craft up to four concise, reusable skills for repeated problems not adequately addressed by the catalog. Use lowercase-hyphen names, a precise when-to-use description, Markdown instructions without frontmatter, and at least two distinct user message IDs as evidenceIds. Never include secrets, personal identifiers, transcript quotes, or unverified commands. Keep skills provider-neutral unless their task is inherently provider-specific. Preserve the user’s authorization boundaries. Drafts must be reviewable, not automatically installed.',
+    'Return craftedSkills as [{name, description, reason, instructions, evidenceIds}]. Each skill should name its trigger, the practical workflow, and how to verify the result. Maximum 300 words each. Omit weak recommendations.',
     'Rank at most five skills from the supplied catalog. Choose only exact library and skill names from it.',
     '',
     `Review window: ${windowStart} through ${windowEnd}`,
@@ -610,7 +624,9 @@ function parseAnalysis(value: string): DojoAnalysis {
   const promptRecommendations = Array.isArray(parsed.promptRecommendations)
     ? parsed.promptRecommendations.filter(isDojoPromptRecommendation).slice(0, 6)
     : [];
-  const skillRecommendations = Array.isArray(parsed.skillRecommendations)
+  const skillRecommendations: DojoAnalysis['skillRecommendations'] = Array.isArray(
+    parsed.skillRecommendations,
+  )
     ? parsed.skillRecommendations.flatMap((recommendation) => {
         if (!isRecord(recommendation)) return [];
         const library = recommendation.library;
@@ -626,7 +642,16 @@ function parseAnalysis(value: string): DojoAnalysis {
         return [{ library, skill, reason }];
       })
     : [];
-  return { summary: parsed.summary, observations, promptRecommendations, skillRecommendations };
+  const craftedSkills = Array.isArray(parsed.craftedSkills)
+    ? parsed.craftedSkills.filter(isCraftedSkill).slice(0, 4)
+    : [];
+  return {
+    summary: parsed.summary,
+    observations,
+    promptRecommendations,
+    skillRecommendations,
+    craftedSkills,
+  };
 }
 
 function enrichSkillRecommendations(
@@ -657,7 +682,7 @@ function completeWithoutMessages(reportId: string): void {
   getDb()
     .prepare(
       `UPDATE dojo_reports
-       SET status = 'completed', analysis_json = ?, completed_at = ?
+       SET status = 'completed', analysis_json = ?, completed_at = ?, error_message = NULL
        WHERE id = ?`,
     )
     .run(JSON.stringify(analysis), new Date().toISOString(), reportId);
@@ -680,7 +705,7 @@ async function executeDojoReport(
     }
     const response = await callLlm(
       buildAnalysisPrompt(metrics, sample, windowStart, windowEnd),
-      5_000,
+      8_000,
       0.2,
       1,
       {
@@ -690,12 +715,30 @@ async function executeDojoReport(
     const analysis = parseAnalysis(response);
     const persistedAnalysis = {
       ...analysis,
+      craftedSkills: analysis.craftedSkills
+        .filter((skill) => {
+          const evidence = new Set(skill.evidenceIds);
+          return (
+            evidence.size >= 2 &&
+            [...evidence].every((id) =>
+              sample.some((message) => message.id === id && message.role === 'user'),
+            )
+          );
+        })
+        .map((skill) => ({
+          ...skill,
+          evidenceIds: [...new Set(skill.evidenceIds)],
+          evidenceThreads: [...new Set(skill.evidenceIds)].map((messageId) => ({
+            messageId,
+            threadId: sample.find((message) => message.id === messageId)!.threadId,
+          })),
+        })),
       skillRecommendations: enrichSkillRecommendations(analysis.skillRecommendations),
     };
     getDb()
       .prepare(
         `UPDATE dojo_reports
-         SET status = 'completed', analysis_json = ?, completed_at = ?
+         SET status = 'completed', analysis_json = ?, completed_at = ?, error_message = NULL
          WHERE id = ?`,
       )
       .run(JSON.stringify(persistedAnalysis), new Date().toISOString(), reportId);
@@ -740,8 +783,7 @@ export function runDojoReview(
   const enabledProviders = settings.enabledLlmProviders ?? [settings.llmProvider];
   const windowEnd = new Date();
   const windowStart = new Date(windowEnd.getTime() - config.lookbackDays * 86_400_000);
-  const allMessages = readMessages(workspaceId, windowStart.toISOString(), windowEnd.toISOString());
-  const messages = allMessages.filter((message) => enabledProviders.includes(message.provider));
+  const messages = readMessages(workspaceId, windowStart.toISOString(), windowEnd.toISOString());
   const metrics = buildDojoMetrics(messages, enabledProviders);
   const sample = selectAnalysisSample(messages);
   const id = randomUUID();
@@ -806,14 +848,14 @@ export function countEnabledDojoConfigs(): number {
   return row.count;
 }
 
-export function markStaleDojoReportsFailed(message: string): void {
+export function markStaleDojoReportsFailed(trigger: DojoReport['trigger'], message: string): void {
   getDb()
     .prepare(
       `UPDATE dojo_reports
        SET status = 'failed', error_message = ?, completed_at = ?
-       WHERE status = 'running'`,
+       WHERE status = 'running' AND trigger = ?`,
     )
-    .run(message, new Date().toISOString());
+    .run(message, new Date().toISOString(), trigger);
 }
 
 export function processDueDojoReviews(now = new Date().toISOString()): void {
@@ -844,4 +886,24 @@ export function processDueDojoReviews(now = new Date().toISOString()): void {
       console.error('[Dojo] Failed to start scheduled review:', error);
     }
   }
+}
+
+function isCraftedSkill(value: unknown): value is DojoCraftedSkill {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.name === 'string' &&
+    /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value.name) &&
+    value.name.length <= 64 &&
+    typeof value.description === 'string' &&
+    value.description.trim().length > 0 &&
+    value.description.length <= 500 &&
+    typeof value.reason === 'string' &&
+    value.reason.length <= 1000 &&
+    typeof value.instructions === 'string' &&
+    value.instructions.trim().length > 0 &&
+    value.instructions.length <= 6000 &&
+    Array.isArray(value.evidenceIds) &&
+    value.evidenceIds.every((id) => typeof id === 'string') &&
+    new Set(value.evidenceIds).size >= 2
+  );
 }

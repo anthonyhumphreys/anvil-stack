@@ -1,3 +1,4 @@
+import type { DojoTokenUsage } from '../../shared/dojo-types.js';
 import type { ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import type {
@@ -22,6 +23,8 @@ export interface CodexProtocolState {
   threadId: string | null;
   turnId: string | null;
   initialized: boolean;
+  tokenUsageTotal?: DojoTokenUsage;
+  acpCostUsd?: number;
   pendingFileChanges?: Map<string, Map<string, PendingFileChange>>;
   assistantPhases?: Map<string, ChatAssistantPhase>;
 }
@@ -170,8 +173,15 @@ export function handleCodexServerLine(
       callbacks.onThreadReady?.();
     }
     if (result?.stopReason) {
+      const outcome =
+        result.stopReason === 'cancelled'
+          ? 'interrupted'
+          : result.stopReason === 'end_turn'
+            ? 'completed'
+            : 'failed';
+      callbacks.onEvent?.({ type: 'turn_outcome', turnOutcome: outcome });
       callbacks.onEvent?.({ type: 'status', status: 'complete' });
-      callbacks.onTurnCompleted?.('completed');
+      callbacks.onTurnCompleted?.(outcome);
     }
     return;
   }
@@ -181,7 +191,37 @@ export function handleCodexServerLine(
       const params = msg.params as Record<string, unknown>;
       const update = params?.update as Record<string, unknown> | undefined;
       const kind = update?.sessionUpdate;
-      if (kind === 'agent_message_chunk') {
+      if (kind === 'usage_update') {
+        const cost = isRecord(update?.cost) ? update.cost : null;
+        const amount =
+          cost?.currency === 'USD' &&
+          typeof cost.amount === 'number' &&
+          Number.isFinite(cost.amount) &&
+          cost.amount >= 0
+            ? cost.amount
+            : undefined;
+        const observedCostUsd =
+          amount !== undefined && state.acpCostUsd !== undefined && amount >= state.acpCostUsd
+            ? amount - state.acpCostUsd
+            : undefined;
+        if (amount !== undefined) state.acpCostUsd = amount;
+        const used = update?.used;
+        const size = update?.size;
+        if (
+          typeof used === 'number' &&
+          Number.isSafeInteger(used) &&
+          used >= 0 &&
+          typeof size === 'number' &&
+          Number.isSafeInteger(size) &&
+          size > 0
+        ) {
+          callbacks.onEvent?.({
+            type: 'usage_context',
+            contextUsage: { used, size },
+            observedCostUsd,
+          });
+        }
+      } else if (kind === 'agent_message_chunk') {
         const text = extractAcpText(update?.content);
         if (text) callbacks.onEvent?.({ type: 'text', text });
       } else if (kind === 'agent_thought_chunk') {
@@ -208,6 +248,13 @@ export function handleCodexServerLine(
       } else if (kind === 'tool_call' || kind === 'tool_call_update') {
         callbacks.onEvent?.({
           type: 'tool_call',
+          itemId: typeof update?.toolCallId === 'string' ? update.toolCallId : undefined,
+          toolStatus:
+            update?.status === 'failed'
+              ? 'failed'
+              : update?.status === 'completed'
+                ? 'completed'
+                : 'running',
           toolName: (update?.title as string) ?? (update?.kind as string) ?? 'Cursor tool',
           toolInput: isRecord(update?.rawInput) ? update.rawInput : {},
         });
@@ -275,6 +322,38 @@ export function handleCodexServerLine(
       break;
     }
 
+    case 'thread/tokenUsage/updated': {
+      const params = msg.params as Record<string, unknown>;
+      if (params?.threadId !== state.threadId) break;
+      const tokenUsage = params?.tokenUsage as Record<string, unknown> | undefined;
+      const total = readProtocolUsage(tokenUsage?.total);
+      const last = readProtocolUsage(tokenUsage?.last);
+      if (!total) break;
+      const previous = state.tokenUsageTotal;
+      state.tokenUsageTotal = total;
+      // Restored thread totals establish a baseline; they are never new consumption.
+      if (!state.turnId || params?.turnId !== state.turnId) break;
+      const delta = previous
+        ? {
+            input: total.input - previous.input,
+            cachedInput: total.cachedInput - previous.cachedInput,
+            output: total.output - previous.output,
+          }
+        : last;
+      if (!delta || !isValidUsage(delta) || delta.input + delta.output === 0) break;
+      callbacks.onEvent?.({
+        type: 'usage',
+        usage: delta,
+        usageId: `${state.threadId}:${state.turnId}:${total.input}:${total.cachedInput}:${total.output}`,
+        protocolTurnId: state.turnId,
+      });
+      break;
+    }
+
+    case 'thread/compacted':
+      callbacks.onEvent?.({ type: 'context_compaction' });
+      break;
+
     case 'turn/started': {
       const params = msg.params as Record<string, unknown>;
       const turn = params?.turn as Record<string, unknown> | undefined;
@@ -294,6 +373,11 @@ export function handleCodexServerLine(
           ? rawStatus
           : 'completed';
       flushAllPendingFileChanges(state, callbacks);
+      callbacks.onEvent?.({
+        type: 'turn_outcome',
+        turnOutcome: status,
+        protocolTurnId: state.turnId ?? undefined,
+      });
       state.turnId = null;
       callbacks.onTurnIdChanged?.(null);
       if (status === 'failed') {
@@ -351,6 +435,7 @@ export function handleCodexServerLine(
       } else if (itemType === 'commandExecution') {
         callbacks.onEvent?.({
           type: 'command_exec',
+          itemId: getItemId(params, item),
           command: (item?.command as string) ?? '',
           output: '',
         });
@@ -379,6 +464,7 @@ export function handleCodexServerLine(
       if (itemType === 'commandExecution') {
         callbacks.onEvent?.({
           type: 'command_exec',
+          itemId: getItemId(params, item),
           command: (item?.command as string) ?? '',
           output: limitTail(
             (item?.aggregatedOutput as string) ?? '',
@@ -1003,4 +1089,21 @@ function limitTail(text: string, maxChars: number): string {
   const marker = `\n... truncated ${text.length - maxChars} chars ...\n`;
   const available = Math.max(maxChars - marker.length, 0);
   return `${marker}${text.slice(-available)}`;
+}
+
+function isValidUsage(value: DojoTokenUsage): boolean {
+  return (
+    [value.input, value.cachedInput, value.output].every(
+      (n) => Number.isSafeInteger(n) && n >= 0,
+    ) && value.cachedInput <= value.input
+  );
+}
+function readProtocolUsage(value: unknown): DojoTokenUsage | null {
+  if (!isRecord(value)) return null;
+  const usage = {
+    input: value.inputTokens as number,
+    cachedInput: value.cachedInputTokens as number,
+    output: value.outputTokens as number,
+  };
+  return isValidUsage(usage) ? usage : null;
 }

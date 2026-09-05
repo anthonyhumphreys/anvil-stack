@@ -1,3 +1,4 @@
+import type { DojoCraftedSkill, DojoTokenUsage, DojoPrice } from './dojo-types.js';
 import type { AgentUIIntent } from './agent-ui-intents.js';
 
 export interface RepoInfo {
@@ -919,7 +920,19 @@ export interface CodexEvent {
     | 'goal_update'
     | 'goal_cleared'
     | 'error'
-    | 'status';
+    | 'status'
+    | 'usage'
+    | 'turn_outcome'
+    | 'context_compaction'
+    | 'usage_context';
+  contextUsage?: { used: number; size: number };
+  observedCostUsd?: number;
+  usage?: DojoTokenUsage;
+  usageId?: string;
+  usagePrice?: DojoPrice;
+  model?: string;
+  turnOutcome?: 'completed' | 'failed' | 'interrupted' | 'inProgress';
+  protocolTurnId?: string;
   text?: string;
   filePath?: string;
   diff?: string;
@@ -927,6 +940,7 @@ export interface CodexEvent {
   command?: string;
   output?: string;
   exitCode?: number;
+  toolStatus?: 'running' | 'completed' | 'failed';
   toolName?: string;
   toolInput?: Record<string, unknown>;
   approvalRequestId?: JsonRpcRequestId;
@@ -1850,7 +1864,7 @@ export interface DojoConfig extends DojoConfigInput {
 }
 
 export interface DojoProviderMetrics {
-  provider: AgentProvider;
+  provider: AgentProvider | 'unknown';
   enabled: boolean;
   status: 'covered' | 'no-activity';
   threadCount: number;
@@ -1906,6 +1920,7 @@ export interface DojoReport {
   observations: DojoObservation[];
   promptRecommendations: DojoPromptRecommendation[];
   skillRecommendations: DojoSkillRecommendation[];
+  craftedSkills?: DojoCraftedSkill[];
   sampleMessageCount: number;
   errorMessage?: string;
   startedAt: string;

@@ -41,7 +41,11 @@ describe('codex protocol service', () => {
     expect(sendCodexJsonRpcNotification(proc, 'initialized', {})).toBe(true);
     expect(sendCodexJsonRpcResult(proc, 42, { accepted: true })).toBe(true);
 
-    const messages = output.join('').trim().split('\n').map(JSON.parse);
+    const messages = output
+      .join('')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
     expect(messages).toHaveLength(3);
     expect(messages[0]).toMatchObject({
       jsonrpc: '2.0',
@@ -179,14 +183,15 @@ describe('codex protocol service', () => {
       },
     ]);
 
-    expect(events).toHaveLength(2);
+    expect(events).toHaveLength(3);
     expect(events[0]).toMatchObject({
       type: 'file_edit',
       filePath: 'big.ts',
     });
     expect(events[0].diff?.length).toBeLessThanOrEqual(120_000);
     expect(events[0].diff).toContain('truncated');
-    expect(events[1]).toEqual({ type: 'status', status: 'complete' });
+    expect(events[1]).toMatchObject({ type: 'turn_outcome', turnOutcome: 'completed' });
+    expect(events[2]).toEqual({ type: 'status', status: 'complete' });
   });
 
   it('preserves a failed Codex turn instead of reporting successful completion', () => {
@@ -204,6 +209,7 @@ describe('codex protocol service', () => {
     ]);
 
     expect(events).toEqual([
+      { type: 'turn_outcome', turnOutcome: 'failed', protocolTurnId: 'turn-1' },
       {
         type: 'status',
         status: 'error',
@@ -653,5 +659,72 @@ describe('codex protocol service', () => {
     expect(ready).toBe(true);
     expect(state.threadId).toBe('cursor-1');
     expect(state.initialized).toBe(true);
+  });
+});
+
+describe('provider-neutral execution evidence', () => {
+  it('does not charge restored usage and deduplicates cumulative token notifications', () => {
+    const state = createState();
+    state.turnId = null;
+    const usage = (input: number, output: number, turnId = 'turn-1') => ({
+      method: 'thread/tokenUsage/updated',
+      params: {
+        threadId: 'thread-1',
+        turnId,
+        tokenUsage: {
+          total: { inputTokens: input, cachedInputTokens: 20, outputTokens: output },
+          last: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 5 },
+        },
+      },
+    });
+    const events = collectEvents(state, [
+      usage(100, 50),
+      { method: 'turn/started', params: { turn: { id: 'turn-1' } } },
+      usage(110, 55),
+      usage(110, 55),
+      { ...usage(999, 999), params: { ...usage(999, 999).params, threadId: 'other-thread' } },
+      usage(120, 60),
+    ]);
+    expect(events.filter((e) => e.type === 'usage').map((e) => e.usage)).toEqual([
+      { input: 10, cachedInput: 0, output: 5 },
+      { input: 10, cachedInput: 0, output: 5 },
+    ]);
+  });
+  it('preserves interrupted outcomes for app-server and ACP', () => {
+    const app = collectEvents(createState(), [
+      { method: 'turn/completed', params: { turn: { id: 't', status: 'interrupted' } } },
+    ]);
+    const acp = collectEvents(createState(), [{ id: 1, result: { stopReason: 'cancelled' } }]);
+    for (const events of [app, acp])
+      expect(events.find((e) => e.type === 'turn_outcome')?.turnOutcome).toBe('interrupted');
+  });
+  it('does not label ACP token limits or refusals as completed execution', () => {
+    for (const stopReason of ['max_tokens', 'max_turn_requests', 'refusal'])
+      expect(
+        collectEvents(createState(), [{ id: 1, result: { stopReason } }]).find(
+          (e) => e.type === 'turn_outcome',
+        )?.turnOutcome,
+      ).toBe('failed');
+  });
+  it('normalizes ACP context and observed cost differences without inventing token usage', () => {
+    const update = (amount: number) => ({
+      method: 'session/update',
+      params: {
+        update: {
+          sessionUpdate: 'usage_update',
+          used: 100,
+          size: 1000,
+          cost: { currency: 'USD', amount },
+        },
+      },
+    });
+    const events = collectEvents(createState(), [update(4), update(4.5), update(4.5)]);
+    expect(events[0]).toMatchObject({
+      type: 'usage_context',
+      contextUsage: { used: 100, size: 1000 },
+    });
+    expect(events[0].observedCostUsd).toBeUndefined();
+    expect(events[1].observedCostUsd).toBe(0.5);
+    expect(events[2].observedCostUsd).toBe(0);
   });
 });

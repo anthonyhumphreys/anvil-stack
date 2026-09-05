@@ -1,3 +1,9 @@
+import type {
+  DojoAnalytics,
+  DojoPrice,
+  DojoRecommendationState,
+  DojoRecommendationStatus,
+} from '../shared/dojo-types';
 import { contextBridge, ipcRenderer } from 'electron';
 import type { AnvilAPI } from '../shared/ipc-api.js';
 import type {
@@ -337,6 +343,27 @@ const api: AnvilAPI = {
   },
 
   dojo: {
+    setDelivery: (workspaceId: string, workItem: string, completed: boolean) =>
+      ipcRenderer.invoke('dojo:delivery', workspaceId, workItem, completed) as Promise<void>,
+
+    getAnalytics: (workspaceId: string, days: number) =>
+      ipcRenderer.invoke('dojo:analytics', workspaceId, days) as Promise<DojoAnalytics>,
+    savePrice: (price: Omit<DojoPrice, 'updatedAt'>) =>
+      ipcRenderer.invoke('dojo:save-price', price) as Promise<DojoPrice[]>,
+    setRecommendationState: (
+      workspaceId: string,
+      reportId: string,
+      key: string,
+      status: DojoRecommendationStatus,
+    ) =>
+      ipcRenderer.invoke(
+        'dojo:recommendation-state',
+        workspaceId,
+        reportId,
+        key,
+        status,
+      ) as Promise<DojoRecommendationState>,
+
     getConfig: (workspaceId: string) =>
       ipcRenderer.invoke('dojo:get-config', workspaceId) as Promise<DojoConfig>,
     updateConfig: (workspaceId: string, input: DojoConfigInput) =>

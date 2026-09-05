@@ -1,3 +1,4 @@
+import { listDojoPrices, recordDojoExecutionEvent } from './dojo-analytics.service.js';
 import { spawn, type ChildProcess } from 'node:child_process';
 
 import { randomUUID } from 'node:crypto';
@@ -68,6 +69,7 @@ interface ManagedSession {
   process: ChildProcess;
   provider: 'codex' | 'cursor';
   agentProvider: AgentProvider;
+  model?: string;
   status: CodexSession['status'];
   startedAt: string;
   cwd: string;
@@ -206,6 +208,7 @@ export async function startSession(
     process: proc,
     provider,
     agentProvider,
+    model,
     status: 'starting',
     startedAt: new Date().toISOString(),
     cwd,
@@ -345,6 +348,7 @@ export async function sendMessage(
   const settings = getSettings();
   const mode = settings.codexMode ?? session.mode;
   const model = resolveSessionModel(session.agentProvider, options?.model ?? settings.openaiModel);
+  session.model = model;
   const codexPolicy = resolvePersonaCodexPolicy(mode, session.personaId, {
     planMode: options?.collaborationMode === 'plan',
   });
@@ -466,6 +470,7 @@ export function emitLocalAssistantTurn(sessionId: string, text: string): void {
   broadcastEvent(sessionId, { type: 'text', text });
   session.status = 'ready';
   setSessionThreadAttention(session, 'complete');
+  broadcastEvent(sessionId, { type: 'turn_outcome', turnOutcome: 'completed', model: 'on-device' });
   broadcastEvent(sessionId, { type: 'status', status: 'complete' });
   emitCompanionEvent('sessions');
 }
@@ -474,6 +479,7 @@ export function interruptTurn(sessionId: string): void {
   const session = sessions.get(sessionId);
   if (!session) return;
   if (!session.threadId) return;
+  broadcastEvent(sessionId, { type: 'turn_outcome', turnOutcome: 'interrupted' });
   if (session.provider === 'cursor') {
     sendCodexJsonRpcNotification(session.process, 'session/cancel', {
       sessionId: session.threadId,
@@ -983,6 +989,28 @@ function notifyForChatEvent(session: ManagedSession, event: CodexEvent): void {
 
 function broadcastEvent(sessionId: string, event: CodexEvent): void {
   const session = sessions.get(sessionId);
+  if (
+    session?.appThreadId &&
+    ['usage', 'usage_context', 'turn_outcome', 'context_compaction', 'status'].includes(event.type)
+  ) {
+    try {
+      const model = event.model ?? session.model;
+      const usagePrice =
+        event.type === 'usage'
+          ? listDojoPrices().find(
+              (price) => price.provider === session.agentProvider && price.model === model,
+            )
+          : undefined;
+      recordDojoExecutionEvent(
+        sessionId,
+        { ...event, model, usagePrice },
+        new Date().toISOString(),
+      );
+    } catch (error) {
+      console.error('[Dojo] Could not persist execution telemetry:', error);
+    }
+  }
+  if (['usage', 'usage_context', 'turn_outcome', 'context_compaction'].includes(event.type)) return;
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send('chat:event', {
       sessionId,
