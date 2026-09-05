@@ -86,7 +86,12 @@ function run(command, commandArgs, options = {}) {
 }
 
 console.log(`[dist] Building ${brand.productName} (${brandId})`);
-run(resolvePackageManager(), ['run', 'build']);
+// Invoke the package manager's JS entrypoint so Windows does not need to spawn a .cmd shim.
+if (!process.env.ANVIL_PACKAGE_MANAGER && process.env.npm_execpath) {
+  run(process.execPath, [process.env.npm_execpath, 'run', 'build']);
+} else {
+  run(resolvePackageManager(), ['run', 'build']);
+}
 run(process.execPath, [
   path.join(repoRoot, 'node_modules/electron-builder/cli.js'),
   `-c.productName=${brand.productName}`,

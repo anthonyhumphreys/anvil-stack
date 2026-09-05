@@ -15,7 +15,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: app-release-${{ github.ref }}
+  group: app-release-macos-${{ github.ref }}
   cancel-in-progress: false
 
 defaults:
@@ -210,11 +210,11 @@ jobs:
             cat "${share_file}"
           } >> "${GITHUB_STEP_SUMMARY}"
 
-          if gh release view "${release_tag}" >/dev/null 2>&1; then
-            gh release upload "${release_tag}" "${assets[@]}" --clobber
-            gh release edit "${release_tag}" --notes-file "${notes_file}"
-          else
-            gh release create "${release_tag}" "${assets[@]}" \
+          if ! gh release view "${release_tag}" >/dev/null 2>&1; then
+            gh release create "${release_tag}" \
               --title "${release_name}" \
-              --notes-file "${notes_file}"
+              --notes-file "${notes_file}" \
+              || gh release view "${release_tag}" >/dev/null
           fi
+          gh release upload "${release_tag}" "${assets[@]}" --clobber
+          gh release edit "${release_tag}" --notes-file "${notes_file}"

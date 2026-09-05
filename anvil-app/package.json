@@ -1,6 +1,6 @@
 {
   "name": "anvil",
-  "version": "0.6.20",
+  "version": "0.6.21",
   "description": "Anvil developer mission control",
   "main": "out/main/index.js",
   "type": "module",
@@ -30,7 +30,8 @@
     "postinstall": "pnpm run rebuild:native:node",
     "rebuild:native:electron": "electron-rebuild -f -w better-sqlite3,node-pty",
     "rebuild:native:node": "pnpm rebuild better-sqlite3 node-pty",
-    "dist:linux:x64": "node scripts/dist.mjs --linux AppImage deb pacman --x64 --publish never --brand=anvil"
+    "dist:linux:x64": "node scripts/dist.mjs --linux AppImage deb pacman --x64 --publish never --brand=anvil",
+    "dist:win:x64": "node scripts/dist.mjs --win nsis portable --x64 --publish never --brand=anvil"
   },
   "keywords": [
     "electron",
