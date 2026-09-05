@@ -93,6 +93,7 @@ export interface AgentUIQuestion {
   context?: string;
   required: boolean;
   allowCancel: boolean;
+  allowOther?: boolean;
   sensitive?: boolean;
   defaultValue?: string | string[] | boolean;
   options?: AgentUIQuestionOption[];

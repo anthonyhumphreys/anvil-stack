@@ -1321,6 +1321,7 @@ export function ChatView({ userRole }: ChatViewProps) {
           {/* Input */}
           {pendingQuestions[0] && (
             <PendingQuestionPrompt
+              key={pendingQuestions[0].id}
               intent={pendingQuestions[0]}
               additionalCount={Math.max(0, pendingQuestions.length - 1)}
             />
@@ -1622,7 +1623,7 @@ function PendingQuestionPrompt({
   intent: AgentUIQuestionIntent;
   additionalCount: number;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(true);
 
   return (
     <div className="border-t border-warning/25 bg-warning/[0.035]">
@@ -1649,11 +1650,12 @@ function PendingQuestionPrompt({
         </span>
         {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
       </button>
-      {expanded && (
-        <div className="max-h-[min(60vh,560px)] overflow-y-auto border-t border-warning/20 p-2">
-          <QuestionIntentSurface intent={intent} />
-        </div>
-      )}
+      <div
+        hidden={!expanded}
+        className="max-h-[min(60vh,560px)] overflow-y-auto border-t border-warning/20 p-2"
+      >
+        <QuestionIntentSurface intent={intent} />
+      </div>
     </div>
   );
 }

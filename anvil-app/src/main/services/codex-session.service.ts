@@ -364,6 +364,7 @@ export async function sendMessage(
     return;
   }
 
+  const effort = normaliseReasoningEffort(options?.reasoningEffort ?? settings.reasoningLevel);
   sendCodexJsonRpc(session.process, 'turn/start', {
     threadId: session.threadId,
     input: buildUserInput(message, attachments),
@@ -371,8 +372,25 @@ export async function sendMessage(
     sandboxPolicy: sandboxModeToTurnPolicy(codexPolicy.sandbox, session.cwd),
     model,
     ...(options?.serviceTier !== undefined ? { serviceTier: options.serviceTier } : {}),
-    effort: normaliseReasoningEffort(options?.reasoningEffort ?? settings.reasoningLevel),
+    effort,
+    collaborationMode: buildCodexCollaborationMode(options?.collaborationMode, model, effort),
   });
+}
+
+export function buildCodexCollaborationMode(
+  mode: ChatSendOptions['collaborationMode'],
+  model: string,
+  effort: ReturnType<typeof normaliseReasoningEffort>,
+) {
+  return {
+    // Send default explicitly so switching back from Plan also resets the provider.
+    mode: mode ?? 'default',
+    settings: {
+      model,
+      reasoning_effort: effort ?? null,
+      developer_instructions: null,
+    },
+  };
 }
 
 export async function steerTurn(

@@ -198,6 +198,7 @@ function questionFromCodexUserInput(
     context: question.header,
     required: true,
     allowCancel: false,
+    allowOther: question.isOther,
     sensitive: question.isSecret,
     options,
   };

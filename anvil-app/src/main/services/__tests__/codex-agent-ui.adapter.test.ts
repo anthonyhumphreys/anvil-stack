@@ -74,7 +74,7 @@ describe('agent provider UI adapter', () => {
               id: 'provider',
               header: 'Provider',
               question: 'Which provider?',
-              isOther: false,
+              isOther: true,
               isSecret: false,
               options: [
                 { label: 'Vercel (Recommended)', description: 'Use the existing project.' },
@@ -98,6 +98,7 @@ describe('agent provider UI adapter', () => {
       {
         id: 'provider',
         kind: 'single_choice',
+        allowOther: true,
         options: [
           { label: 'Vercel', value: 'Vercel', recommended: true },
           { label: 'AWS', value: 'AWS', recommended: false },

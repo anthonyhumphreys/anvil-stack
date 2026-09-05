@@ -323,7 +323,12 @@ export function validateAgentUIQuestionResolution(
       throw new Error(`Question ${question.id} requires an answer.`);
     }
     if (answer === undefined || answer === null) continue;
-    validateAnswer(question.kind, question.options?.map((option) => option.value) ?? [], answer);
+    validateAnswer(
+      question.kind,
+      question.options?.map((option) => option.value) ?? [],
+      answer,
+      question.allowOther === true,
+    );
   }
 }
 
@@ -823,6 +828,9 @@ function validateQuestionPayload(value: unknown, errors: string[]): void {
     if (typeof question.required !== 'boolean' || typeof question.allowCancel !== 'boolean') {
       errors.push(`Question ${question.id} must define required and allowCancel.`);
     }
+    if (question.allowOther !== undefined && typeof question.allowOther !== 'boolean') {
+      errors.push(`Question ${question.id} has an invalid allowOther flag.`);
+    }
     if (question.kind === 'single_choice' || question.kind === 'multiple_choice') {
       if (!Array.isArray(question.options) || question.options.length < 1) {
         errors.push(`Question ${question.id} requires at least one option.`);
@@ -855,6 +863,7 @@ function validateQuestionPayload(value: unknown, errors: string[]): void {
             String(question.kind),
             [...values],
             question.defaultValue as AgentUIAnswerValue,
+            question.allowOther === true,
           );
         } catch {
           errors.push(`Question ${question.id} has an invalid default value.`);
@@ -870,7 +879,12 @@ function validateQuestionPayload(value: unknown, errors: string[]): void {
   }
 }
 
-function validateAnswer(kind: string, options: string[], answer: AgentUIAnswerValue): void {
+function validateAnswer(
+  kind: string,
+  options: string[],
+  answer: AgentUIAnswerValue,
+  allowOther = false,
+): void {
   if (kind === 'multiple_choice') {
     if (!Array.isArray(answer) || answer.some((value) => !options.includes(value))) {
       throw new Error('Multiple-choice answer contains an unsupported value.');
@@ -882,7 +896,7 @@ function validateAnswer(kind: string, options: string[], answer: AgentUIAnswerVa
     return;
   }
   if (typeof answer !== 'string') throw new Error('This question requires a text answer.');
-  if (kind === 'single_choice' && !options.includes(answer)) {
+  if (kind === 'single_choice' && !allowOther && !options.includes(answer)) {
     throw new Error('Single-choice answer is not one of the available options.');
   }
 }
