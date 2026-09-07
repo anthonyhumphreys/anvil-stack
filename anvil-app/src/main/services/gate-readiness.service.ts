@@ -33,11 +33,8 @@ function evaluateSecurityAudit(criterion: GateCriterion, repoIds: string[]): Cri
       )
       .get(repoId) as { id: string; status: string } | undefined;
 
-    if (
-      !audit ||
-      !currentRepoTree(repoId) ||
-      (audit as { source_tree?: string }).source_tree !== currentRepoTree(repoId)
-    )
+    const repoTree = currentRepoTree(repoId);
+    if (!audit || !repoTree || (audit as { source_tree?: string }).source_tree !== repoTree)
       return {
         criterion,
         status: 'not_met',
