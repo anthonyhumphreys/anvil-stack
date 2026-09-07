@@ -1,3 +1,4 @@
+import { isFindingAccepted } from '../../../shared/change-review-types';
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AlertTriangle, Play, RefreshCw, CheckCheck, Download, MessageSquare } from 'lucide-react';
@@ -724,8 +725,10 @@ export function ChangeReviewPanel({
                 <div key={f.id} className="space-y-2">
                   <p className="whitespace-pre-wrap text-sm">{f.note}</p>
                   <p className="text-xs text-text-secondary">
-                    {f.history.at(-1)?.state.replaceAll('_', ' ')} · {f.history.length} history
-                    entries
+                    {f.history.at(-1)?.state === 'accepted' && !isFindingAccepted(review, f)
+                      ? 'stale acceptance, recheck required'
+                      : f.history.at(-1)?.state.replaceAll('_', ' ')}{' '}
+                    · {f.history.length} history entries
                   </p>
                   <div className="flex flex-wrap gap-2">
                     <button
@@ -834,7 +837,7 @@ export function ChangeReviewPanel({
                     (outcome === 'accepted' &&
                       (run.outcome !== 'passed' ||
                         acceptedCriteria.length !== criteria?.items.length ||
-                        review.findings.some((f) => f.history.at(-1)?.state !== 'accepted')))
+                        review.findings.some((f) => !isFindingAccepted(review, f))))
                   }
                   onClick={() =>
                     void action(() =>

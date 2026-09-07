@@ -15,6 +15,7 @@ export function workItemConnectionKey(): string {
   return createHash('sha256')
     .update(
       JSON.stringify([
+        'provider-text-v2',
         s.activeWorkItemConnectionId,
         s.workItemProvider,
         s.adoOrganizationUrl,

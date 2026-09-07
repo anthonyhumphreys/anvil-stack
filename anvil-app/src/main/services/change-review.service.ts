@@ -1,3 +1,4 @@
+import { isFindingAccepted } from '../../shared/change-review-types.js';
 import { app, shell } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { userInfo } from 'node:os';
@@ -373,7 +374,7 @@ export async function decideChangeReview(
       throw new Error('A passing candidate run is required for acceptance.');
     if (input.criterionDecisions.some((c) => c.outcome !== 'accepted'))
       throw new Error('Some criteria remain unchecked.');
-    if (review.findings.some((f) => f.history.at(-1)?.state !== 'accepted'))
+    if (review.findings.some((f) => !isFindingAccepted(review, f)))
       throw new Error('Resolve open findings before acceptance.');
     for (const capture of [...run.base, ...run.candidateCaptures]) {
       verifiedArtifact(review, run, capture, 'image');
@@ -442,7 +443,10 @@ export function exportChangeReview(id: string, format: 'markdown' | 'json'): str
       base: run.base.map(({ image: _image, trace: _trace, ...c }) => c),
       candidateCaptures: run.candidateCaptures.map(({ image: _image, trace: _trace, ...c }) => c),
     })),
-    findings: review.findings,
+    findings: review.findings.map((finding) => ({
+      ...finding,
+      acceptanceCurrent: isFindingAccepted(review, finding),
+    })),
     decisions: review.decisions,
   };
   return format === 'json'
@@ -460,7 +464,10 @@ export function exportChangeReview(id: string, format: 'markdown' | 'json'): str
             `- ${r.startedAt}: ${r.outcome}, runner-observed, candidate ${r.candidate.tree}, run ${r.id}`,
         ),
         '## Findings',
-        ...review.findings.map((f) => `- ${f.history.at(-1)?.state}: ${f.note}`),
+        ...review.findings.map(
+          (f) =>
+            `- ${f.history.at(-1)?.state === 'accepted' && !isFindingAccepted(review, f) ? 'stale acceptance' : f.history.at(-1)?.state}: ${f.note}`,
+        ),
         '## Human decisions',
         ...review.decisions.map((d) => `- ${d.at}: ${d.outcome} for ${d.snapshot}. ${d.note}`),
         '## Scope',

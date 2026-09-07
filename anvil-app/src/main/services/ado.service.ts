@@ -1,3 +1,4 @@
+import { workItemText } from '../../shared/workitem-intent.js';
 import type {
   Iteration,
   WorkItem,
@@ -119,8 +120,11 @@ export async function listWorkItems(filters?: WorkItemFilters): Promise<WorkItem
       state: (wi.fields['System.State'] as string) ?? '',
       priority: (wi.fields['Microsoft.VSTS.Common.Priority'] as number) ?? 4,
       assignee: (wi.fields['System.AssignedTo'] as { displayName?: string })?.displayName,
-      description: (wi.fields['System.Description'] as string) ?? '',
-      acceptanceCriteria: (wi.fields['Microsoft.VSTS.Common.AcceptanceCriteria'] as string) ?? '',
+      description: workItemText(wi.fields['System.Description'], 'html'),
+      acceptanceCriteria: workItemText(
+        wi.fields['Microsoft.VSTS.Common.AcceptanceCriteria'],
+        'html',
+      ),
       tags: ((wi.fields['System.Tags'] as string) ?? '')
         .split(';')
         .map((t) => t.trim())
@@ -176,8 +180,11 @@ export async function getWorkItem(id: string): Promise<WorkItem> {
     state: (data.fields['System.State'] as string) ?? '',
     priority: (data.fields['Microsoft.VSTS.Common.Priority'] as number) ?? 4,
     assignee: (data.fields['System.AssignedTo'] as { displayName?: string })?.displayName,
-    description: (data.fields['System.Description'] as string) ?? '',
-    acceptanceCriteria: (data.fields['Microsoft.VSTS.Common.AcceptanceCriteria'] as string) ?? '',
+    description: workItemText(data.fields['System.Description'], 'html'),
+    acceptanceCriteria: workItemText(
+      data.fields['Microsoft.VSTS.Common.AcceptanceCriteria'],
+      'html',
+    ),
     tags: ((data.fields['System.Tags'] as string) ?? '')
       .split(';')
       .map((t) => t.trim())

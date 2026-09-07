@@ -156,3 +156,17 @@ export interface ChangeReviewApi {
   export(id: string, format: 'markdown' | 'json'): Promise<string>;
   publish(id: string, decisionId: string, redactedText: string): Promise<ChangeReview>;
 }
+
+/** Acceptance belongs to the evidence reviewed, not to every future candidate. */
+export function isFindingAccepted(review: ChangeReview, finding: ReviewFinding): boolean {
+  const decision = finding.history.at(-1);
+  if (decision?.state !== 'accepted' || review.freshness !== 'current') return false;
+  const run = review.runs.find((run) => run.id === decision.runId);
+  return Boolean(
+    run &&
+    run.outcome === 'passed' &&
+    run.candidate.tree === review.candidate.tree &&
+    run.criteriaVersion === review.criteria.at(-1)?.id &&
+    run.scenarioVersion === review.scenarioVersion,
+  );
+}

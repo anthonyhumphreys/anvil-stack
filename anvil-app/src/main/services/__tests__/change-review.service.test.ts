@@ -166,6 +166,37 @@ describe('change acceptance', () => {
           note: 'Manual check',
         })),
       };
+      const oldRun = {
+        ...review.runs[0],
+        id: 'old-replay',
+        candidate: { ...review.candidate, tree: 'old-tree' },
+      };
+      review.runs.push(oldRun);
+      review.findings.push({
+        id: 'finding',
+        runId: 'original',
+        captureId: 'capture',
+        note: 'Clipped control',
+        history: [{ state: 'accepted', at: '2026-01-02', runId: oldRun.id }],
+      });
+      persist(review);
+      await expect(decideChangeReview(review.id, decision)).rejects.toThrow(
+        'Resolve open findings',
+      );
+      oldRun.candidate = review.candidate;
+      oldRun.criteriaVersion = 'old-criteria';
+      persist(review);
+      await expect(decideChangeReview(review.id, decision)).rejects.toThrow(
+        'Resolve open findings',
+      );
+      oldRun.criteriaVersion = review.criteria[0].id;
+      oldRun.scenarioVersion = 'old-scenario';
+      persist(review);
+      await expect(decideChangeReview(review.id, decision)).rejects.toThrow(
+        'Resolve open findings',
+      );
+      review.findings[0].history.push({ state: 'accepted', at: '2026-01-03', runId: 'run' });
+      persist(review);
       expect((await decideChangeReview(review.id, decision)).decisions).toHaveLength(1);
       writeFileSync(join(dir, 'capture.png'), 'replaced');
       await expect(decideChangeReview(review.id, decision)).rejects.toThrow('Artifact changed');

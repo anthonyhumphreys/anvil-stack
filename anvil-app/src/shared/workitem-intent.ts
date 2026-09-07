@@ -1,31 +1,59 @@
 import type { WorkItem } from './types.js';
 
-/** Render provider rich text as plain text without executing HTML or losing paragraph boundaries. */
-export function workItemText(value: unknown): string {
-  if (typeof value === 'string') {
-    if (value.trim().startsWith('{')) {
-      try {
-        return workItemText(JSON.parse(value));
-      } catch {
-        /* plain text */
-      }
-    }
-    return value
-      .replace(/<\/(?:p|div|li|h[1-6])\s*>|<br\s*\/?>/gi, '\n')
-      .replace(/<[^>]*>/g, '')
-      .replace(/&nbsp;/g, ' ')
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .trim();
+/** Convert known provider HTML to display text. This is not an HTML sanitizer. */
+function htmlText(value: string): string {
+  let result = '';
+  let cursor = 0;
+  for (const token of value.matchAll(
+    /<!--[\s\S]*?-->|<\/?([a-z][a-z0-9]*)\b(?:"[^"]*"|'[^']*'|[^'">])*>/gi,
+  )) {
+    result += value.slice(cursor, token.index);
+    const tag = token[1]?.toLowerCase();
+    if (tag && /^h[1-6]$/.test(tag) && !token[0].startsWith('</'))
+      result += `\n${'#'.repeat(Number(tag[1]))} `;
+    else if (
+      tag === 'br' ||
+      (token[0].startsWith('</') &&
+        ['p', 'div', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(tag))
+    )
+      result += '\n';
+    cursor = token.index + token[0].length;
   }
+  result += value.slice(cursor);
+  const entities: Record<string, string> = {
+    nbsp: ' ',
+    amp: '&',
+    lt: '<',
+    gt: '>',
+    quot: '"',
+    apos: "'",
+  };
+  return result
+    .replace(/&(#x[0-9a-f]+|#\d+|nbsp|amp|lt|gt|quot|apos);/gi, (entity, name: string) => {
+      if (!name.startsWith('#')) return entities[name.toLowerCase()] ?? entity;
+      const code =
+        name[1].toLowerCase() === 'x' ? parseInt(name.slice(2), 16) : Number(name.slice(1));
+      return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : entity;
+    })
+    .trim();
+}
+/** Plain text and Markdown are preserved; only explicitly identified HTML is decoded. */
+export function workItemText(value: unknown, format: 'text' | 'html' = 'text'): string {
+  if (typeof value === 'string') return format === 'html' ? htmlText(value) : value;
   if (!value || typeof value !== 'object') return '';
-  const node = value as { text?: unknown; content?: unknown[]; type?: string };
+  const node = value as {
+    text?: unknown;
+    content?: unknown[];
+    type?: string;
+    attrs?: { level?: number };
+  };
   if (typeof node.text === 'string') return node.text;
-  return (node.content ?? [])
-    .map(workItemText)
+  const text = (node.content ?? [])
+    .map((child) => workItemText(child))
     .join(node.type === 'paragraph' || node.type === 'heading' ? '' : '\n');
+  return node.type === 'heading'
+    ? `${'#'.repeat(Math.min(6, Math.max(1, node.attrs?.level ?? 1)))} ${text}`
+    : text;
 }
 export function extractAcceptanceCriteria(
   item: Pick<WorkItem, 'acceptanceCriteria' | 'description'>,
