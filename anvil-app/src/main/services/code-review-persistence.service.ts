@@ -1,3 +1,4 @@
+import { bindAnalysisStart, validateAnalysisBinding } from './review-binding.service.js';
 import { randomUUID } from 'node:crypto';
 import type {
   CodeReview,
@@ -170,6 +171,7 @@ export function createReview(input: CreateReviewInput): string {
     input.rubricUsed ?? null,
     now,
   );
+  bindAnalysisStart('code_reviews', id, input.repoId);
   return id;
 }
 
@@ -225,6 +227,7 @@ export function listReviews(repoId: string): CodeReview[] {
 }
 
 export function updateReviewStatus(id: string, status: CodeReviewStatus, summary?: string): void {
+  if (status === 'completed') validateAnalysisBinding('code_reviews', id);
   const db = getDb();
   const now = new Date().toISOString();
   if (summary !== undefined) {

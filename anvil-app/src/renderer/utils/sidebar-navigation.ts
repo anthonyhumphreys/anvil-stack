@@ -32,6 +32,7 @@ export const TOOL_NAV_GROUPS: SidebarToolGroupDefinition[] = [
     id: 'delivery',
     label: 'Delivery',
     items: [
+      { path: '/review', label: 'Change Review', feature: 'codereview' },
       { path: '/workitems', label: 'Work Items', feature: 'workitems' },
       {
         path: '/codereview',

@@ -335,6 +335,7 @@ export function SettingsView({
       jiraAuthMode: connection.jiraAuthMode,
       jiraProject: connection.jiraProject,
       jiraBoardId: connection.jiraBoardId,
+      jiraAcceptanceCriteriaField: connection.jiraAcceptanceCriteriaField,
       jiraEmail: connection.jiraEmail,
       jiraApiToken: connection.jiraApiToken,
     }));
@@ -381,6 +382,7 @@ export function SettingsView({
             jiraAuthMode: active.jiraAuthMode,
             jiraProject: active.jiraProject,
             jiraBoardId: active.jiraBoardId,
+            jiraAcceptanceCriteriaField: active.jiraAcceptanceCriteriaField,
             jiraEmail: active.jiraEmail,
             jiraApiToken: active.jiraApiToken,
           }
@@ -1757,6 +1759,12 @@ export function SettingsView({
                       value={activeWorkItemConnection?.jiraBoardId ?? ''}
                       onChange={(v) => updateWorkItemConnection('jiraBoardId', v)}
                       placeholder="Auto-discovered if blank"
+                    />
+                    <Field
+                      label="Acceptance criteria field, optional"
+                      value={activeWorkItemConnection?.jiraAcceptanceCriteriaField ?? ''}
+                      onChange={(v) => updateWorkItemConnection('jiraAcceptanceCriteriaField', v)}
+                      placeholder="customfield_12345"
                     />
                     {(activeWorkItemConnection?.jiraAuthMode ?? 'cloud') === 'cloud' && (
                       <Field

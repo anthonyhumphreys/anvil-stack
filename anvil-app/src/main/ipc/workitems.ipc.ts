@@ -15,11 +15,14 @@ export function registerWorkItemsHandlers(): void {
     },
   );
 
-  ipcMain.handle('workitems:get', async (_event, id: string): Promise<WorkItem> => {
-    const provider = getActiveProvider();
-    if (!provider) throw new Error('No work item provider configured');
-    return provider.getItem(id);
-  });
+  ipcMain.handle(
+    'workitems:get',
+    async (_event, id: string, connectionId?: string, fresh = false): Promise<WorkItem> => {
+      const provider = getActiveProvider(connectionId, fresh);
+      if (!provider) throw new Error('No work item provider configured');
+      return provider.getItem(id);
+    },
+  );
 
   ipcMain.handle('workitems:plan', async (_event, id: string): Promise<string> => {
     const provider = getActiveProvider();

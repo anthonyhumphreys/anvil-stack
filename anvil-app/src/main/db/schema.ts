@@ -1,6 +1,22 @@
-export const SCHEMA_VERSION = 61;
+export const SCHEMA_VERSION = 62;
 
 export const SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS change_reviews (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  record_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_change_reviews_workspace ON change_reviews(workspace_id, updated_at DESC);
+CREATE TABLE IF NOT EXISTS scoped_work_items_cache (
+  connection_key TEXT NOT NULL,
+  id TEXT NOT NULL,
+  raw_json TEXT NOT NULL,
+  fetched_at TEXT NOT NULL,
+  PRIMARY KEY(connection_key, id)
+);
+
 CREATE TABLE IF NOT EXISTS schema_meta (
   key TEXT PRIMARY KEY,
   value TEXT
@@ -463,7 +479,8 @@ CREATE TABLE IF NOT EXISTS code_reviews (
   verification_worktree_path TEXT,
   verification_worktree_kept INTEGER NOT NULL DEFAULT 0,
   started_at    TEXT NOT NULL DEFAULT (datetime('now')),
-  completed_at  TEXT
+  completed_at  TEXT,
+  source_tree TEXT
 );
 
 CREATE TABLE IF NOT EXISTS code_review_findings (
@@ -512,7 +529,8 @@ CREATE TABLE IF NOT EXISTS security_audits (
   summary       TEXT,
   started_at    TEXT NOT NULL DEFAULT (datetime('now')),
   completed_at  TEXT,
-  model_version TEXT
+  model_version TEXT,
+  source_tree TEXT
 );
 
 CREATE TABLE IF NOT EXISTS security_findings (
@@ -1961,5 +1979,25 @@ CREATE TABLE IF NOT EXISTS dojo_recommendation_states (
   applied_at TEXT,
   PRIMARY KEY (report_id, recommendation_key)
 );
+`,
+  62: `
+CREATE TABLE IF NOT EXISTS change_reviews (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  record_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_change_reviews_workspace ON change_reviews(workspace_id, updated_at DESC);
+CREATE TABLE IF NOT EXISTS scoped_work_items_cache (
+  connection_key TEXT NOT NULL,
+  id TEXT NOT NULL,
+  raw_json TEXT NOT NULL,
+  fetched_at TEXT NOT NULL,
+  PRIMARY KEY(connection_key, id)
+);
+ALTER TABLE code_reviews ADD COLUMN source_tree TEXT;
+ALTER TABLE security_audits ADD COLUMN source_tree TEXT;
+UPDATE pull_request_visualisations SET status = 'failed' WHERE status = 'ready';
 `,
 };

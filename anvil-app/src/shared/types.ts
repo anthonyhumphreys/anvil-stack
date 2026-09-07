@@ -308,6 +308,7 @@ export interface WorkItemConnection {
   jiraAuthMode?: 'cloud' | 'server';
   jiraProject?: string;
   jiraBoardId?: string;
+  jiraAcceptanceCriteriaField?: string;
   jiraEmail?: string;
   jiraApiToken?: string;
 }
@@ -2064,6 +2065,7 @@ export interface AppSettings {
   jiraAuthMode?: 'cloud' | 'server';
   jiraProject?: string;
   jiraBoardId?: string;
+  jiraAcceptanceCriteriaField?: string;
   jiraEmail?: string;
   jiraApiToken?: string;
 

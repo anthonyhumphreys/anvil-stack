@@ -12,6 +12,7 @@ files:
   - 'out/**/*'
   - 'prompts/**/*'
   - 'scripts/chrome-mcp-server.mjs'
+  - 'scripts/review-scenario-runner.mjs'
   - 'node_modules/**/*'
   - '!node_modules/**/test*'
 
