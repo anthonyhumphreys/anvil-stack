@@ -24,6 +24,7 @@ export function OrchestrationPanel({
   providers: AgentProvider[];
   personas: Persona[];
 }) {
+  const [expandedProfile, setExpandedProfile] = useState<string | null>(null);
   const config = orchestrationConfig(value);
   const update = (patch: Partial<WorkflowOrchestration>) => onChange({ ...config, ...patch });
   const updateProfile = (id: string, patch: Partial<WorkflowAgentProfile>) =>
@@ -34,51 +35,21 @@ export function OrchestrationPanel({
     });
   return (
     <div className="min-h-0 flex-1 overflow-y-auto p-5">
-      <h3 className="text-base font-semibold text-text-primary">Orchestration</h3>
+      <h3 className="text-base font-semibold text-text-primary">Team & limits</h3>
       <p className="mt-2 text-sm text-text-secondary">
-        Choose the specialist pool. Each step can assign a team or let its coordinator delegate
-        within these limits.
-      </p>
-      <TeamDiagram />
-      <div className="grid grid-cols-2 gap-3 border-y border-border py-4">
-        {(
-          [
-            ['maxConcurrency', 'Concurrent agents', 1, 16],
-            ['maxNodes', 'Total nodes', 1, 256],
-            ['maxDepth', 'Delegation depth', 0, 6],
-            ['maxAttempts', 'Attempts per agent', 1, 10],
-            ['timeoutMinutes', 'Run budget, minutes', 1, 1440],
-            ['handoffChars', 'Handoff characters', 1000, 100000],
-          ] as const
-        ).map(([key, label, min, max]) => (
-          <label key={key} className="text-xs text-text-secondary">
-            {label}
-            <input
-              type="number"
-              min={min}
-              max={max}
-              value={config[key]}
-              onChange={(event) => update({ [key]: Number(event.target.value) })}
-              className={`${fieldClass} mt-1`}
-            />
-          </label>
-        ))}
-      </div>
-      <p className="mt-3 text-xs leading-relaxed text-text-tertiary">
-        Agents share this run's workspace. Use concurrency above one only for work with separate
-        edit scopes. Limits cover Anvil-managed agents. Provider-native delegation is disabled by
-        instruction, not sandbox enforcement. The wall-clock budget includes pauses.
+        Each specialist can use its own provider, model, and reasoning level.
       </p>
       <div className="mb-3 mt-6 flex items-center justify-between">
         <h4 className="text-sm font-semibold text-text-primary">Specialist pool</h4>
         <button
           className="inline-flex items-center gap-1 text-xs text-accent"
-          onClick={() =>
+          onClick={() => {
+            const id = crypto.randomUUID();
             update({
               profiles: [
                 ...config.profiles,
                 {
-                  id: crypto.randomUUID(),
+                  id,
                   name: `Specialist ${config.profiles.length + 1}`,
                   personaId: 'coder',
                   provider: providers[0] ?? 'codex',
@@ -87,8 +58,9 @@ export function OrchestrationPanel({
                   capabilities: [],
                 },
               ],
-            })
-          }
+            });
+            setExpandedProfile(id);
+          }}
         >
           <Plus size={14} /> Add specialist
         </button>
@@ -101,116 +73,181 @@ export function OrchestrationPanel({
       )}
       <div className="divide-y divide-border">
         {config.profiles.map((profile) => (
-          <div key={profile.id} className="space-y-3 py-4">
-            <div className="flex items-center gap-2">
-              <Bot size={16} className="shrink-0 text-accent" />
-              <input
-                aria-label="Specialist name"
-                value={profile.name}
-                onChange={(event) => updateProfile(profile.id, { name: event.target.value })}
-                className={fieldClass}
-              />
-              <button
-                aria-label={`Remove ${profile.name}`}
-                className="p-2 text-text-tertiary hover:text-error"
-                onClick={() =>
-                  update({ profiles: config.profiles.filter((item) => item.id !== profile.id) })
-                }
-              >
-                <Trash2 size={15} />
-              </button>
-            </div>
-            <label className="block text-xs text-text-secondary">
-              Persona
-              <select
-                className={`${fieldClass} mt-1`}
-                value={profile.personaId}
-                onChange={(event) => updateProfile(profile.id, { personaId: event.target.value })}
-              >
-                {personas.map((persona) => (
-                  <option key={persona.id} value={persona.id}>
-                    {persona.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="block text-xs text-text-secondary">
-              Provider
-              <select
-                className={`${fieldClass} mt-1`}
-                value={profile.provider}
-                onChange={(event) =>
-                  updateProfile(profile.id, {
-                    provider: event.target.value as AgentProvider,
-                    model: event.target.value === 'cursor' ? 'auto' : DEFAULT_CODEX_MODEL,
-                    reasoningEffort: 'medium',
-                  })
-                }
-              >
-                {[...new Set([...providers, profile.provider])].map((provider) => (
-                  <option key={provider} value={provider}>
-                    {provider}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="block text-xs text-text-secondary">
-              Model
-              <input
-                className={`${fieldClass} mt-1`}
-                value={profile.model}
-                onChange={(event) =>
-                  updateProfile(profile.id, {
-                    model: event.target.value,
-                    reasoningEffort: getCodexModelReasoningOptions(event.target.value)
-                      .defaultReasoningEffort,
-                  })
-                }
-              />
-            </label>
-            {profile.provider !== 'cursor' ? (
-              <label className="block text-xs text-text-secondary">
-                Reasoning
-                <select
-                  className={`${fieldClass} mt-1`}
-                  value={profile.reasoningEffort}
-                  onChange={(event) =>
-                    updateProfile(profile.id, {
-                      reasoningEffort: event.target
-                        .value as WorkflowAgentProfile['reasoningEffort'],
-                    })
-                  }
-                >
-                  {getCodexModelReasoningOptions(profile.model).supportedReasoningEfforts.map(
-                    (effort) => (
-                      <option key={effort} value={effort}>
-                        {effort}
+          <div key={profile.id} className="py-1">
+            <button
+              type="button"
+              aria-expanded={expandedProfile === profile.id}
+              aria-controls={`specialist-${profile.id}`}
+              onClick={() => setExpandedProfile(expandedProfile === profile.id ? null : profile.id)}
+              className="flex w-full items-center gap-3 rounded-lg px-2 py-3 text-left transition hover:bg-bg-tertiary focus-visible:outline focus-visible:outline-accent"
+            >
+              <Bot size={17} className="shrink-0 text-text-tertiary" />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-medium text-text-primary">
+                  {profile.name}
+                </span>
+                <span className="mt-1 block truncate text-xs text-text-tertiary">
+                  {profile.provider} · {profile.model}
+                  {profile.provider !== 'cursor' ? ` · ${profile.reasoningEffort}` : ''}
+                </span>
+              </span>
+              <span className="text-xs text-accent">
+                {expandedProfile === profile.id ? 'Done' : 'Edit'}
+              </span>
+            </button>
+            {expandedProfile === profile.id && (
+              <div id={`specialist-${profile.id}`} className="space-y-3 px-2 pb-5 pt-2">
+                <div className="flex items-center gap-2">
+                  <Bot size={16} className="shrink-0 text-accent" />
+                  <input
+                    aria-label="Specialist name"
+                    value={profile.name}
+                    onChange={(event) => updateProfile(profile.id, { name: event.target.value })}
+                    className={fieldClass}
+                  />
+                  <button
+                    aria-label={`Remove ${profile.name}`}
+                    className="p-2 text-text-tertiary hover:text-error"
+                    onClick={() =>
+                      update({ profiles: config.profiles.filter((item) => item.id !== profile.id) })
+                    }
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+                <label className="block text-xs text-text-secondary">
+                  Persona
+                  <select
+                    className={`${fieldClass} mt-1`}
+                    value={profile.personaId}
+                    onChange={(event) =>
+                      updateProfile(profile.id, { personaId: event.target.value })
+                    }
+                  >
+                    {personas.map((persona) => (
+                      <option key={persona.id} value={persona.id}>
+                        {persona.name}
                       </option>
-                    ),
-                  )}
-                </select>
-              </label>
-            ) : (
-              <p className="text-xs text-text-tertiary">
-                Cursor reasoning is selected through its model ID.
-              </p>
+                    ))}
+                  </select>
+                </label>
+                <label className="block text-xs text-text-secondary">
+                  Provider
+                  <select
+                    className={`${fieldClass} mt-1`}
+                    value={profile.provider}
+                    onChange={(event) =>
+                      updateProfile(profile.id, {
+                        provider: event.target.value as AgentProvider,
+                        model: event.target.value === 'cursor' ? 'auto' : DEFAULT_CODEX_MODEL,
+                        reasoningEffort: 'medium',
+                      })
+                    }
+                  >
+                    {[...new Set([...providers, profile.provider])].map((provider) => (
+                      <option key={provider} value={provider}>
+                        {provider}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block text-xs text-text-secondary">
+                  Model
+                  <input
+                    className={`${fieldClass} mt-1`}
+                    value={profile.model}
+                    onChange={(event) =>
+                      updateProfile(profile.id, {
+                        model: event.target.value,
+                        reasoningEffort: getCodexModelReasoningOptions(event.target.value)
+                          .defaultReasoningEffort,
+                      })
+                    }
+                  />
+                </label>
+                {profile.provider !== 'cursor' ? (
+                  <label className="block text-xs text-text-secondary">
+                    Reasoning
+                    <select
+                      className={`${fieldClass} mt-1`}
+                      value={profile.reasoningEffort}
+                      onChange={(event) =>
+                        updateProfile(profile.id, {
+                          reasoningEffort: event.target
+                            .value as WorkflowAgentProfile['reasoningEffort'],
+                        })
+                      }
+                    >
+                      {getCodexModelReasoningOptions(profile.model).supportedReasoningEfforts.map(
+                        (effort) => (
+                          <option key={effort} value={effort}>
+                            {effort}
+                          </option>
+                        ),
+                      )}
+                    </select>
+                  </label>
+                ) : (
+                  <p className="text-xs text-text-tertiary">
+                    Cursor reasoning is selected through its model ID.
+                  </p>
+                )}
+                <label className="block text-xs text-text-secondary">
+                  Capabilities, separated by commas
+                  <input
+                    className={`${fieldClass} mt-1`}
+                    placeholder="typescript, security, testing"
+                    value={profile.capabilities.join(', ')}
+                    onChange={(event) =>
+                      updateProfile(profile.id, {
+                        capabilities: event.target.value.split(',').map((value) => value.trim()),
+                      })
+                    }
+                  />
+                </label>
+              </div>
             )}
-            <label className="block text-xs text-text-secondary">
-              Capabilities, separated by commas
-              <input
-                className={`${fieldClass} mt-1`}
-                placeholder="typescript, security, testing"
-                value={profile.capabilities.join(', ')}
-                onChange={(event) =>
-                  updateProfile(profile.id, {
-                    capabilities: event.target.value.split(',').map((value) => value.trim()),
-                  })
-                }
-              />
-            </label>
           </div>
         ))}
       </div>
+      <details className="mt-6 border-t border-border pt-4">
+        <summary className="cursor-pointer text-sm font-medium text-text-secondary">
+          Run limits
+          <span className="mt-1 block text-xs font-normal text-text-tertiary">
+            {config.maxConcurrency} at a time · {config.timeoutMinutes} minutes · {config.maxNodes}{' '}
+            nodes maximum
+          </span>
+        </summary>
+        <div className="grid grid-cols-2 gap-3 border-y border-border py-4">
+          {(
+            [
+              ['maxConcurrency', 'Concurrent agents', 1, 16],
+              ['maxNodes', 'Total nodes', 1, 256],
+              ['maxDepth', 'Delegation depth', 0, 6],
+              ['maxAttempts', 'Attempts per agent', 1, 10],
+              ['timeoutMinutes', 'Run budget, minutes', 1, 1440],
+              ['handoffChars', 'Handoff characters', 1000, 100000],
+            ] as const
+          ).map(([key, label, min, max]) => (
+            <label key={key} className="text-xs text-text-secondary">
+              {label}
+              <input
+                type="number"
+                min={min}
+                max={max}
+                value={config[key]}
+                onChange={(event) => update({ [key]: Number(event.target.value) })}
+                className={`${fieldClass} mt-1`}
+              />
+            </label>
+          ))}
+        </div>
+        <p className="mt-3 text-xs leading-relaxed text-text-tertiary">
+          Agents share this run's workspace. Use concurrency above one only for work with separate
+          edit scopes. Limits cover Anvil-managed agents. Provider-native delegation is disabled by
+          instruction, not sandbox enforcement. The wall-clock budget includes pauses.
+        </p>
+      </details>
     </div>
   );
 }
@@ -431,50 +468,6 @@ export function RunInspector({
         </ol>
       </details>
     </div>
-  );
-}
-
-function TeamDiagram() {
-  return (
-    <figure className="my-4">
-      <svg
-        viewBox="0 0 300 142"
-        role="img"
-        aria-label="A coordinator delegates to two specialists, then synthesises their results."
-        className="w-full text-text-secondary"
-      >
-        <g fill="none" stroke="currentColor" strokeOpacity="0.45">
-          <path d="M80 62 H105 V28 H125 M105 62 V100 H125 M205 28 H225 V62 H246 M205 100 H225 V62" />
-        </g>
-        <g fill="var(--color-bg-tertiary)" stroke="var(--color-border)">
-          <rect x="0" y="43" width="80" height="38" rx="6" />
-          <rect x="125" y="9" width="80" height="38" rx="6" />
-          <rect x="125" y="81" width="80" height="38" rx="6" />
-          <rect x="246" y="43" width="53" height="38" rx="6" />
-        </g>
-        <g fill="currentColor" fontSize="10" textAnchor="middle">
-          <text x="40" y="66">
-            Coordinator
-          </text>
-          <text x="165" y="32">
-            Specialist A
-          </text>
-          <text x="165" y="104">
-            Specialist B
-          </text>
-          <text x="272" y="66">
-            Synthesis
-          </text>
-          <text x="150" y="139">
-            Independent provider, model, and reasoning per agent
-          </text>
-        </g>
-      </svg>
-      <figcaption className="sr-only">
-        Anvil records each specialist as a separate node and returns their handoffs to the
-        coordinator.
-      </figcaption>
-    </figure>
   );
 }
 

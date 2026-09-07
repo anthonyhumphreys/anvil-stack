@@ -26,12 +26,14 @@ Existing templates remain readable. Legacy provider-delegation hints remain avai
 
 ## Try it
 
-1. Open **Automate → Workflows → Delivery team**.
-2. Open **Orchestration** and configure the implementation, review, and verification specialists. Only enabled providers can execute.
-3. Select a graph node to choose its team strategy and permitted specialists.
-4. Set runtime limits, save, and enter the kickoff. Starting saves the current configuration first.
-5. Select a running node to inspect its handoff and attempts. Use the timeline to see why tasks appeared or failed.
+1. Open **Automate → Workflows**, describe the outcome, and choose a flow.
+2. Select **Preview workflow**. No agents start during preview.
+3. Optionally open **Team & limits**. Specialists expand individually; runtime limits are collapsed by default.
+4. Select a graph node to adjust its instruction, team strategy, or permitted specialists.
+5. Select **Run workflow**. Anvil saves the current configuration and launches it without a separate save step.
 6. At a human gate, select the node, record a decision, and resume.
+
+The workflow library collapses below 1280px and can be toggled manually. The run objective remains visible below the graph.
 
 For scheduled or event-driven execution, select the saved template in an automation's **Workflow execution** field. Workflow mode and persona-loop mode are mutually exclusive. Workflow automations currently require write and command permissions. The automation run includes an **Open workflow graph** action.
 
@@ -57,6 +59,8 @@ Automation-generated workflow events do not start another automation. This preve
 
 ## Screenshots
 
-![Specialist configuration and delivery graph](../reviews/orchestration/team-configuration.png)
+![Workflow setup](../reviews/orchestration/workflow-launch.png)
+
+![Workflow preview](../reviews/orchestration/workflow-preview.png)
 
 ![Completed human acceptance run](../reviews/orchestration/human-acceptance.png)
