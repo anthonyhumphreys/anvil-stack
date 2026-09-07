@@ -582,6 +582,50 @@ export interface WorkflowPosition {
   y: number;
 }
 
+export interface WorkflowAgentProfile {
+  id: string;
+  name: string;
+  personaId: string;
+  provider: AgentProvider;
+  model: string;
+  reasoningEffort: ReasoningEffort;
+  capabilities: string[];
+}
+
+export type WorkflowTeamStrategy = 'manual' | 'map-reduce' | 'review' | 'debate' | 'autonomous';
+
+export interface WorkflowOrchestration {
+  maxConcurrency: number;
+  maxNodes: number;
+  maxDepth: number;
+  maxAttempts: number;
+  timeoutMinutes: number;
+  handoffChars: number;
+  profiles: WorkflowAgentProfile[];
+}
+
+export interface WorkflowRuntimeEvent {
+  id: string;
+  at: string;
+  type: 'run' | 'dispatch' | 'completed' | 'failed' | 'delegated' | 'decision' | 'retry';
+  nodeId?: string;
+  message: string;
+}
+
+export interface WorkflowAttempt {
+  id: string;
+  startedAt: string;
+  completedAt?: string;
+  status: 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+  provider: AgentProvider;
+  model: string;
+  reasoningEffort: ReasoningEffort;
+  threadId?: string;
+  sessionId?: string;
+  output?: string;
+  error?: string;
+}
+
 export interface WorkflowNode {
   id: string;
   name: string;
@@ -593,6 +637,11 @@ export interface WorkflowNode {
   reasoningEffort: ReasoningEffort;
   executionStrategy: WorkflowExecutionStrategy;
   position: WorkflowPosition;
+  kind?: 'agent' | 'human';
+  teamStrategy?: WorkflowTeamStrategy;
+  teamProfileIds?: string[];
+  parentNodeId?: string;
+  depth?: number;
 }
 
 export interface WorkflowEdge {
@@ -602,6 +651,7 @@ export interface WorkflowEdge {
 }
 
 export interface WorkflowTemplate {
+  orchestration?: WorkflowOrchestration;
   id: string;
   name: string;
   description: string;
@@ -612,6 +662,7 @@ export interface WorkflowTemplate {
 }
 
 export interface WorkflowTemplateInput {
+  orchestration?: WorkflowOrchestration;
   name: string;
   description?: string;
   nodes: WorkflowNode[];
@@ -627,6 +678,8 @@ export type WorkflowRunStatus =
   | 'cancelled';
 
 export type WorkflowNodeRunStatus =
+  | 'waiting'
+  | 'interrupted'
   | 'queued'
   | 'running'
   | 'completed'
@@ -635,6 +688,10 @@ export type WorkflowNodeRunStatus =
   | 'cancelled';
 
 export interface WorkflowNodeRun {
+  attempts?: WorkflowAttempt[];
+  teamExpanded?: boolean;
+  delegationCount?: number;
+  decision?: { approved: boolean; note: string; at: string };
   nodeId: string;
   status: WorkflowNodeRunStatus;
   threadId?: string;
@@ -646,6 +703,12 @@ export interface WorkflowNodeRun {
 }
 
 export interface WorkflowRun {
+  runtimeOwnerPid?: number;
+  executionPaths?: Array<{ id: string; path: string }>;
+  orchestration?: WorkflowOrchestration;
+  events?: WorkflowRuntimeEvent[];
+  deadlineAt?: string;
+  sourceAutomationRunId?: string;
   id: string;
   templateId: string;
   templateName: string;
@@ -1782,6 +1845,7 @@ export interface AutomationDefinitionInput {
   allowRepoWrite: boolean;
   allowCommandRun: boolean;
   loopConfig?: AutomationLoopConfig;
+  workflowTemplateId?: string;
 }
 
 export interface AutomationDefinition extends Omit<

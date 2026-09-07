@@ -349,6 +349,15 @@ export interface AnvilAPI {
   };
 
   workflow: {
+    pauseRun: (runId: string) => Promise<WorkflowRun>;
+    resumeRun: (runId: string) => Promise<WorkflowRun>;
+    retryNode: (runId: string, nodeId: string) => Promise<WorkflowRun>;
+    decideNode: (
+      runId: string,
+      nodeId: string,
+      approved: boolean,
+      note: string,
+    ) => Promise<WorkflowRun>;
     listTemplates: () => Promise<WorkflowTemplate[]>;
     draftTemplate: (request: string) => Promise<WorkflowTemplateInput>;
     saveTemplate: (input: WorkflowTemplateInput, id?: string) => Promise<WorkflowTemplate>;

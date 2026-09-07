@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 61;
+export const SCHEMA_VERSION = 62;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -631,6 +631,7 @@ CREATE TABLE IF NOT EXISTS automation_definitions (
   enabled INTEGER NOT NULL DEFAULT 0,
   allow_repo_write INTEGER NOT NULL DEFAULT 0,
   allow_command_run INTEGER NOT NULL DEFAULT 0,
+  workflow_template_id TEXT,
   loop_config_json TEXT,
   execution_mode TEXT NOT NULL DEFAULT 'disposable-worktree',
   last_run_at TEXT,
@@ -1962,4 +1963,5 @@ CREATE TABLE IF NOT EXISTS dojo_recommendation_states (
   PRIMARY KEY (report_id, recommendation_key)
 );
 `,
+  62: `ALTER TABLE automation_definitions ADD COLUMN workflow_template_id TEXT;`,
 };

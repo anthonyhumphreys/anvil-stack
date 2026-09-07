@@ -1,4 +1,10 @@
 import { randomUUID } from 'node:crypto';
+import {
+  orchestrationConfig,
+  validateOrchestration,
+  TEAM_STRATEGIES,
+} from '../../shared/workflow-orchestration.js';
+import { recordWorkflowEvent, runWorkflowRuntime, workflowHandoff } from './workflow-runtime.js';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { app } from 'electron';
 import type {
@@ -7,6 +13,7 @@ import type {
   CodexEvent,
   WorkflowEdge,
   WorkflowNode,
+  WorkflowOrchestration,
   WorkflowNodeRun,
   WorkflowRun,
   WorkflowTemplate,
@@ -66,7 +73,10 @@ interface CodexThreadResult {
 }
 
 const activeProcesses = new Map<string, ChildProcess>();
-const cancelledRunIds = new Set<string>();
+const activeRuns = new Map<
+  string,
+  { run: WorkflowRun; controller: AbortController; completion: Promise<void> }
+>();
 const AGENT_PROVIDERS: AgentProvider[] = ['codex', 'cursor', 'openai', 'azure'];
 
 export function normaliseWorkflowNodes(
@@ -91,11 +101,21 @@ export function validateWorkflowGraph(nodes: WorkflowNode[], edges: WorkflowEdge
     ids.add(node.id);
     if (!node.name.trim()) throw new Error('Every workflow step needs a name.');
     if (!node.prompt.trim()) throw new Error(`${node.name} needs an instruction.`);
+    if (!node.model?.trim()) throw new Error(`${node.name} needs a model.`);
+    if (node.provider && !AGENT_PROVIDERS.includes(node.provider))
+      throw new Error('Unknown workflow provider.');
     if (!getPersonaById(node.personaId)) throw new Error(`Unknown persona: ${node.personaId}`);
   }
 
   const outgoing = new Map(nodes.map((node) => [node.id, [] as string[]]));
+  const edgeIds = new Set<string>();
+  const connections = new Set<string>();
   for (const edge of edges) {
+    const connection = JSON.stringify([edge.source, edge.target]);
+    if (!edge.id || edgeIds.has(edge.id) || connections.has(connection))
+      throw new Error('Workflow connections must be unique.');
+    edgeIds.add(edge.id);
+    connections.add(connection);
     if (!ids.has(edge.source) || !ids.has(edge.target)) {
       throw new Error('Every connection must point to an existing step.');
     }
@@ -117,11 +137,12 @@ export function validateWorkflowGraph(nodes: WorkflowNode[], edges: WorkflowEdge
 }
 
 function mapTemplate(row: WorkflowTemplateRow): WorkflowTemplate {
-  const graph = JSON.parse(row.graph_json) as Pick<WorkflowTemplate, 'nodes' | 'edges'>;
+  const graph = JSON.parse(row.graph_json) as WorkflowTemplate;
   return {
     id: row.id,
     name: row.name,
     description: row.description,
+    orchestration: orchestrationConfig(graph.orchestration),
     nodes: normaliseWorkflowNodes(graph.nodes),
     edges: graph.edges,
     createdAt: row.created_at,
@@ -130,13 +151,19 @@ function mapTemplate(row: WorkflowTemplateRow): WorkflowTemplate {
 }
 
 function mapRun(row: WorkflowRunRow): WorkflowRun {
-  const graph = JSON.parse(row.graph_json) as Pick<WorkflowRun, 'nodes' | 'edges'>;
+  const graph = JSON.parse(row.graph_json) as WorkflowRun;
   return {
     id: row.id,
+    events: graph.events ?? [],
+    deadlineAt: graph.deadlineAt,
+    sourceAutomationRunId: graph.sourceAutomationRunId,
+    runtimeOwnerPid: graph.runtimeOwnerPid,
+    executionPaths: graph.executionPaths,
     templateId: row.template_id,
     templateName: row.template_name,
     workspaceId: row.workspace_id,
     repoIds: JSON.parse(row.repo_ids_json) as string[],
+    orchestration: orchestrationConfig(graph.orchestration),
     nodes: normaliseWorkflowNodes(graph.nodes),
     edges: graph.edges,
     kickoff: row.kickoff,
@@ -170,6 +197,7 @@ export function saveWorkflowTemplate(
   templateId?: string,
 ): WorkflowTemplate {
   validateWorkflowGraph(input.nodes, input.edges);
+  validateWorkflowConfiguration(input);
   if (!input.name.trim()) throw new Error('Workflow name is required.');
 
   const existing = templateId ? getWorkflowTemplate(templateId) : null;
@@ -189,7 +217,11 @@ export function saveWorkflowTemplate(
       id,
       input.name.trim(),
       input.description?.trim() ?? '',
-      JSON.stringify({ nodes: input.nodes, edges: input.edges }),
+      JSON.stringify({
+        nodes: input.nodes,
+        edges: input.edges,
+        orchestration: orchestrationConfig(input.orchestration),
+      }),
       existing?.createdAt ?? now,
       now,
     );
@@ -209,7 +241,11 @@ export async function draftWorkflowTemplate(request: string): Promise<WorkflowTe
   const response = await callLlm(
     [
       'Design a reusable developer workflow as strict JSON.',
-      'Return one object with: name, description, and steps.',
+      'Return one object with: name, description, steps, and optionally orchestration.',
+      'orchestration has maxConcurrency (1 by default, up to 16), maxNodes (64), maxDepth (3), maxAttempts (3), timeoutMinutes (30), handoffChars (12000), and profiles.',
+      'Each specialist profile has id, name, personaId, provider, model, reasoningEffort, and capabilities (string array). Choose only enabled providers. Use profiles for cross-provider teams.',
+      'Steps may also have kind (agent or human), teamStrategy (manual, map-reduce, review, debate, autonomous), and teamProfileIds (approved profile ids). Fixed teams require explicit profile ids. Autonomous steps choose and recursively delegate to this pool. Human steps wait for a decision.',
+      'Use Anvil team strategies for delegation rather than legacy executionStrategy hints. Keep concurrency at 1 unless independent edit scopes are explicit.',
       'Each step has: id, name, prompt, personaId, provider, model, reasoningEffort, executionStrategy, dependsOn.',
       'dependsOn is an array of step ids. Build a directed acyclic graph. Branch and merge when the work benefits from it.',
       'Allowed personas: coder, mentor, architect, security, reviewer, docs, ba, workshop-planner, design, db-expert, service-desk, technical-support, incident-manager, problem-manager, change-manager, service-manager.',
@@ -230,6 +266,7 @@ export async function draftWorkflowTemplate(request: string): Promise<WorkflowTe
   const parsed = JSON.parse(stripJsonFence(response)) as {
     name?: string;
     description?: string;
+    orchestration?: WorkflowOrchestration;
     steps?: Array<{
       id?: string;
       name?: string;
@@ -239,6 +276,9 @@ export async function draftWorkflowTemplate(request: string): Promise<WorkflowTe
       model?: string;
       reasoningEffort?: string;
       executionStrategy?: string;
+      kind?: WorkflowNode['kind'];
+      teamStrategy?: WorkflowNode['teamStrategy'];
+      teamProfileIds?: string[];
       dependsOn?: string[];
     }>;
   };
@@ -268,6 +308,9 @@ export async function draftWorkflowTemplate(request: string): Promise<WorkflowTe
       model,
       reasoningEffort: resolveCodexReasoningEffort(model, step.reasoningEffort),
       executionStrategy: strategy,
+      kind: step.kind,
+      teamStrategy: step.teamStrategy,
+      teamProfileIds: step.teamProfileIds,
       position: { x: 100 + (index % 3) * 330, y: 100 + Math.floor(index / 3) * 210 },
     };
   });
@@ -284,7 +327,15 @@ export async function draftWorkflowTemplate(request: string): Promise<WorkflowTe
     }
   });
   validateWorkflowGraph(nodes, edges);
-  return { name: parsed.name.trim(), description: parsed.description?.trim() ?? '', nodes, edges };
+  const template = {
+    name: parsed.name.trim(),
+    description: parsed.description?.trim() ?? '',
+    nodes,
+    edges,
+    orchestration: orchestrationConfig(parsed.orchestration),
+  };
+  validateWorkflowConfiguration(template);
+  return template;
 }
 
 const STRATEGY_IDS: WorkflowNode['executionStrategy'][] = [
@@ -319,10 +370,20 @@ export function getWorkflowRun(id: string): WorkflowRun | null {
 function persistRun(run: WorkflowRun): void {
   getDb()
     .prepare(
-      `UPDATE workflow_runs SET status = ?, node_runs_json = ?, started_at = ?, completed_at = ?, error = ?
+      `UPDATE workflow_runs SET graph_json = ?, status = ?, node_runs_json = ?, started_at = ?, completed_at = ?, error = ?
        WHERE id = ?`,
     )
     .run(
+      JSON.stringify({
+        nodes: run.nodes,
+        edges: run.edges,
+        orchestration: run.orchestration,
+        events: run.events,
+        deadlineAt: run.deadlineAt,
+        sourceAutomationRunId: run.sourceAutomationRunId,
+        runtimeOwnerPid: run.runtimeOwnerPid,
+        executionPaths: run.executionPaths,
+      }),
       run.status,
       JSON.stringify(run.nodeRuns),
       run.startedAt ?? null,
@@ -383,10 +444,12 @@ async function runCodexThread(input: {
   prompt: string;
   displayPrompt?: string;
   resumeProviderThreadId?: string;
+  signal?: AbortSignal;
 }): Promise<CodexThreadResult> {
   const status = await detectCodexCli();
   if (!status.installed) throw new Error('Codex CLI is not installed.');
 
+  input.signal?.throwIfAborted();
   const settings = getSettings();
   const cwd = resolveSessionCwd(
     input.repoRows.map((repo) => repo.path),
@@ -429,6 +492,7 @@ async function runCodexThread(input: {
     const finish = (error?: Error) => {
       if (completed) return;
       completed = true;
+      input.signal?.removeEventListener('abort', abort);
       activeProcesses.delete(input.key);
       proc.stdout?.removeAllListeners();
       proc.stderr?.removeAllListeners();
@@ -450,7 +514,22 @@ async function runCodexThread(input: {
       resolve({ output: finalOutput, providerThreadId, sessionId });
     };
 
+    const abort = () => finish(new Error('Workflow execution stopped.'));
+    input.signal?.addEventListener('abort', abort, { once: true });
+    if (input.signal?.aborted) {
+      abort();
+      return;
+    }
+
     const persistEvent = (event: CodexEvent) => {
+      if (event.type === 'approval_request') {
+        finish(
+          new Error(
+            'This agent requested interactive tool approval. Workflow workers cannot resolve provider approvals; use an interactive chat or configure an appropriate persona policy.',
+          ),
+        );
+        return;
+      }
       if (event.type === 'text' && event.text) output += event.text;
       if (event.type === 'thinking' || event.type === 'status' || event.type === 'text') return;
       saveMessage(input.threadId, input.repoRows[0]?.id ?? null, sessionId, {
@@ -489,7 +568,9 @@ async function runCodexThread(input: {
               effort: resolveCodexReasoningEffort(input.model, input.reasoningEffort),
             });
           },
-          onTurnCompleted: () => finish(),
+          onThreadError: (message) => finish(new Error(message)),
+          onTurnCompleted: (status) =>
+            finish(status === 'completed' ? undefined : new Error(`Provider turn ${status}.`)),
           onEvent: persistEvent,
           onLog: () => undefined,
         });
@@ -545,7 +626,9 @@ async function runCursorThread(input: {
   systemPrompt: string;
   prompt: string;
   displayPrompt?: string;
+  signal?: AbortSignal;
 }): Promise<CodexThreadResult> {
+  input.signal?.throwIfAborted();
   const cwd = resolveSessionCwd(
     input.repoRows.map((repo) => repo.path),
     { workspace: { workspaceId: input.workspaceId } },
@@ -593,6 +676,8 @@ async function runCursorThread(input: {
       if (completed) return;
       completed = true;
       clearTimeout(timeout);
+      input.signal?.removeEventListener('abort', abort);
+      if (!proc.killed) proc.kill('SIGTERM');
       activeProcesses.delete(input.key);
       if (error) {
         reject(error);
@@ -613,6 +698,13 @@ async function runCursorThread(input: {
       });
       resolve({ output: finalOutput, sessionId });
     };
+
+    const abort = () => finish(new Error('Workflow execution stopped.'));
+    input.signal?.addEventListener('abort', abort, { once: true });
+    if (input.signal?.aborted) {
+      abort();
+      return;
+    }
 
     proc.stdout?.on('data', (chunk: Buffer) => {
       output += chunk.toString();
@@ -656,150 +748,143 @@ async function runAgentThread(
   });
 }
 
-function buildNodePrompt(run: WorkflowRun, node: WorkflowNode, incoming: WorkflowEdge[]): string {
-  const handoffs = incoming
-    .map((edge) => {
-      const upstream = run.nodeRuns.find((candidate) => candidate.nodeId === edge.source);
-      return `### ${edge.source}\n${upstream?.output ?? 'No handoff was produced.'}`;
-    })
-    .join('\n\n');
+function validateWorkflowConfiguration(template: WorkflowTemplateInput): void {
+  validateOrchestration(template.orchestration);
+  const config = orchestrationConfig(template.orchestration);
+  if (template.nodes.length > config.maxNodes) throw new Error('The graph exceeds the node limit.');
+  for (const profile of config.profiles)
+    if (!getPersonaById(profile.personaId))
+      throw new Error(`Unknown specialist persona: ${profile.personaId}`);
+  for (const node of template.nodes) {
+    if (node.teamStrategy && !TEAM_STRATEGIES.some((strategy) => strategy.id === node.teamStrategy))
+      throw new Error('Unknown team strategy.');
+    if (node.kind && !['agent', 'human'].includes(node.kind)) throw new Error('Unknown step kind.');
+    if (node.teamProfileIds?.some((id) => !config.profiles.some((profile) => profile.id === id)))
+      throw new Error('A step references a missing specialist.');
+    if (
+      ['map-reduce', 'review', 'debate'].includes(node.teamStrategy ?? '') &&
+      !node.teamProfileIds?.length
+    )
+      throw new Error(`${node.name} needs a specialist team.`);
+    if (node.teamStrategy === 'autonomous' && !config.profiles.length)
+      throw new Error(`${node.name} needs an approved specialist pool.`);
+  }
+}
+
+function delegationInstruction(run: WorkflowRun, node: WorkflowNode): string {
+  if (node.teamStrategy !== 'autonomous') return '';
+  const config = orchestrationConfig(run.orchestration);
+  const state = run.nodeRuns.find((item) => item.nodeId === node.id)!;
+  const remaining = config.maxAttempts - (state.attempts?.length ?? 0);
+  if ((node.depth ?? 0) >= config.maxDepth || remaining < 1 || run.nodes.length >= config.maxNodes)
+    return 'Delegation budget is exhausted. Complete this task yourself and report unresolved work honestly.';
+  const profiles = config.profiles.filter(
+    (profile) => !node.teamProfileIds?.length || node.teamProfileIds.includes(profile.id),
+  );
   return [
-    '## Workflow kickoff',
-    run.kickoff,
-    '',
-    '## Your instruction',
-    node.prompt,
-    '',
-    '## Upstream handoffs',
-    handoffs || 'This is an entry step. There are no upstream handoffs.',
+    'Anvil manages cross-provider subagents. Use this protocol instead of provider-native subagents so work is tracked and bounded.',
+    `Approved specialists: ${JSON.stringify(profiles)}`,
+    `Remaining synthesis attempts: ${remaining}. Remaining graph capacity: ${config.maxNodes - run.nodes.length}.`,
+    'You may split work, request specialist review, or delegate remediation. Select profile IDs by capability. Never invent a profile.',
+    'To delegate, finish your response with exactly one fenced anvil-delegate JSON block containing {"tasks":[{"profileId":"approved-id","name":"Task name","prompt":"Concrete instruction and expected handoff"}]}.',
+    'Anvil executes these tasks and calls you again with their handoffs. Your task remains incomplete until you synthesise the result without a delegation block.',
+    'All agents in this run share the execution workspace. Avoid conflicting edits. A handoff is an agent report, not independent proof.',
   ].join('\n');
 }
 
-async function executeNode(
-  run: WorkflowRun,
-  template: WorkflowTemplate,
-  node: WorkflowNode,
-): Promise<void> {
-  const nodeRun = run.nodeRuns.find((candidate) => candidate.nodeId === node.id)!;
-  nodeRun.status = 'running';
-  nodeRun.startedAt = new Date().toISOString();
-  const thread = createChatThread({
-    workspaceId: run.workspaceId,
-    personaId: node.personaId,
-    title: `${run.templateName} · ${node.name}`,
-    repoIds: run.repoIds,
-  });
-  nodeRun.threadId = thread.id;
-  persistRun(run);
-
-  try {
-    const result = await runAgentThread({
-      key: `${run.id}:${node.id}`,
-      threadId: thread.id,
-      repoRows: getRepoRows(run.repoIds),
-      workspaceId: run.workspaceId,
-      personaId: node.personaId,
-      provider: node.provider ?? 'codex',
-      model: node.model,
-      reasoningEffort: node.reasoningEffort,
-      systemPrompt: workflowSystemPrompt(node, run.workspaceId, run.repoIds),
-      prompt: buildNodePrompt(
-        run,
-        node,
-        template.edges.filter((edge) => edge.target === node.id),
-      ),
-    });
-    nodeRun.status = 'completed';
-    nodeRun.output = result.output;
-    nodeRun.sessionId = result.sessionId;
-  } catch (error) {
-    if (cancelledRunIds.has(run.id)) {
-      nodeRun.status = 'cancelled';
-    } else {
-      nodeRun.status = 'failed';
-      nodeRun.error = error instanceof Error ? error.message : String(error);
-    }
-  } finally {
-    nodeRun.completedAt = new Date().toISOString();
-    persistRun(run);
-  }
-}
-
-async function executeWorkflow(runId: string): Promise<void> {
-  const run = getWorkflowRun(runId);
-  if (!run) return;
-  if (cancelledRunIds.has(run.id)) {
-    cancelledRunIds.delete(run.id);
-    return;
-  }
-  const graph: WorkflowTemplate = {
-    id: run.templateId,
-    name: run.templateName,
-    description: '',
-    nodes: run.nodes,
-    edges: run.edges,
-    createdAt: run.createdAt,
-    updatedAt: run.createdAt,
-  };
-
-  run.status = 'running';
-  run.startedAt = new Date().toISOString();
-  persistRun(run);
-
-  while (run.nodeRuns.some((node) => node.status === 'queued')) {
-    const ready = graph.nodes.filter((node) => {
-      const state = run.nodeRuns.find((candidate) => candidate.nodeId === node.id);
-      if (state?.status !== 'queued') return false;
-      const dependencies = graph.edges.filter((edge) => edge.target === node.id);
-      return dependencies.every(
-        (edge) =>
-          run.nodeRuns.find((candidate) => candidate.nodeId === edge.source)?.status ===
-          'completed',
-      );
-    });
-
-    if (ready.length === 0) {
-      for (const nodeRun of run.nodeRuns) {
-        if (nodeRun.status === 'queued') nodeRun.status = 'skipped';
+function launchWorkflow(run: WorkflowRun): Promise<void> {
+  const existing = activeRuns.get(run.id);
+  if (existing) return existing.completion;
+  const controller = new AbortController();
+  run.runtimeOwnerPid = process.pid;
+  // Defer dispatch until ownership is registered.
+  const completion = Promise.resolve()
+    .then(() =>
+      runWorkflowRuntime(run, {
+        persist: persistRun,
+        signal: controller.signal,
+        execute: async (current, node, signal) => {
+          const state = current.nodeRuns.find((item) => item.nodeId === node.id)!;
+          const thread = createChatThread({
+            workspaceId: current.workspaceId,
+            personaId: node.personaId,
+            title: `${current.templateName} · ${node.name}`,
+            repoIds: current.repoIds,
+          });
+          state.threadId = thread.id;
+          const attempt = state.attempts?.at(-1);
+          if (attempt) attempt.threadId = thread.id;
+          persistRun(current);
+          const result = await runAgentThread({
+            key: `${current.id}:${node.id}`,
+            threadId: thread.id,
+            repoRows: current.executionPaths ?? getRepoRows(current.repoIds),
+            workspaceId: current.workspaceId,
+            personaId: node.personaId,
+            provider: node.provider ?? 'codex',
+            model: node.model,
+            reasoningEffort: node.reasoningEffort,
+            signal,
+            systemPrompt: [
+              workflowSystemPrompt(
+                node.teamStrategy ? { ...node, executionStrategy: 'focused' } : node,
+                current.workspaceId,
+                current.repoIds,
+              ),
+              delegationInstruction(current, node),
+              current.executionPaths
+                ? `Execution repositories for this run: ${JSON.stringify(current.executionPaths)}. Work only in these worktrees, not the original repository paths.`
+                : '',
+            ].join('\n\n'),
+            prompt: [
+              '## Workflow kickoff',
+              current.kickoff,
+              '## Your instruction',
+              node.prompt,
+              '## Upstream handoffs',
+              workflowHandoff(current, node) || 'No upstream handoffs.',
+              state.output
+                ? `## Your earlier handoff\n${state.output.slice(0, orchestrationConfig(current.orchestration).handoffChars)}`
+                : '',
+            ].join('\n\n'),
+          });
+          return { ...result, threadId: thread.id };
+        },
+      }),
+    )
+    .catch((error) => {
+      if (run.status !== 'cancelled') {
+        run.status = 'failed';
+        run.error = error instanceof Error ? error.message : String(error);
       }
-      break;
-    }
-    await Promise.all(ready.map((node) => executeNode(run, graph, node)));
-    if (cancelledRunIds.has(run.id)) {
-      run.status = 'cancelled';
       run.completedAt = new Date().toISOString();
+      recordWorkflowEvent(run, 'failed', run.error ?? 'Execution stopped.');
       persistRun(run);
-      cancelledRunIds.delete(run.id);
-      return;
-    }
-  }
-
-  const failed = run.nodeRuns.filter((node) => node.status === 'failed');
-  run.status = failed.length > 0 ? 'failed' : 'completed';
-  run.error =
-    failed.length > 0
-      ? `${failed.length} workflow step${failed.length === 1 ? '' : 's'} failed.`
-      : undefined;
-  run.completedAt = new Date().toISOString();
-  persistRun(run);
-  try {
-    triggerWatchtowerEvent({
-      id: `${run.id}:${run.status}`,
-      type: run.status === 'failed' ? 'workflow.failed' : 'workflow.completed',
-      workspaceId: run.workspaceId,
-      repoIds: run.repoIds,
-      sourceId: run.id,
-      sourceLabel: run.templateName,
-      occurredAt: run.completedAt,
-      metadata: {
-        kickoff: run.kickoff,
-        failedStepCount: failed.length,
-        error: run.error,
-      },
+    })
+    .finally(() => {
+      activeRuns.delete(run.id);
+      if (!['completed', 'failed'].includes(run.status)) return;
+      try {
+        triggerWatchtowerEvent({
+          id: `${run.id}:${run.events?.at(-1)?.id}`,
+          type: run.status === 'failed' ? 'workflow.failed' : 'workflow.completed',
+          workspaceId: run.workspaceId,
+          repoIds: run.repoIds,
+          sourceId: run.id,
+          sourceLabel: run.templateName,
+          occurredAt: run.completedAt!,
+          metadata: {
+            kickoff: run.kickoff,
+            error: run.error,
+            sourceAutomationRunId: run.sourceAutomationRunId,
+          },
+        });
+      } catch (error) {
+        console.error('[Workflow] Event dispatch failed:', error);
+      }
     });
-  } catch (error) {
-    console.error('[Watchtower] Workflow event dispatch failed:', error);
-  }
+  activeRuns.set(run.id, { run, controller, completion });
+  return completion;
 }
 
 export function startWorkflowRun(input: {
@@ -807,11 +892,14 @@ export function startWorkflowRun(input: {
   workspaceId: string;
   repoIds: string[];
   kickoff: string;
+  sourceAutomationRunId?: string;
+  executionPaths?: RepoRow[];
 }): WorkflowRun {
   const template = getWorkflowTemplate(input.templateId);
   if (!template) throw new Error('Workflow template not found.');
   if (!input.kickoff.trim()) throw new Error('Tell the workflow what you want it to do.');
   validateWorkflowGraph(template.nodes, template.edges);
+  validateWorkflowConfiguration(template);
 
   const id = randomUUID();
   const createdAt = new Date().toISOString();
@@ -839,7 +927,14 @@ export function startWorkflowRun(input: {
       template.name,
       input.workspaceId,
       JSON.stringify(input.repoIds),
-      JSON.stringify({ nodes: template.nodes, edges: template.edges }),
+      JSON.stringify({
+        nodes: template.nodes,
+        edges: template.edges,
+        orchestration: orchestrationConfig(template.orchestration),
+        events: [],
+        sourceAutomationRunId: input.sourceAutomationRunId,
+        executionPaths: input.executionPaths,
+      }),
       input.kickoff.trim(),
       supervisor.id,
       JSON.stringify(nodeRuns),
@@ -855,7 +950,7 @@ export function startWorkflowRun(input: {
     personaId: 'coder',
     threadId: supervisor.id,
   });
-  void executeWorkflow(id);
+  void launchWorkflow(run);
   return run;
 }
 
@@ -899,22 +994,175 @@ export async function askWorkflowSupervisor(runId: string, question: string): Pr
   return result.output;
 }
 
-export function cancelWorkflowRun(runId: string): WorkflowRun | null {
-  const run = getWorkflowRun(runId);
-  if (!run || !['queued', 'running', 'paused'].includes(run.status)) return run;
-  cancelledRunIds.add(runId);
-  for (const [key, process] of activeProcesses) {
-    if (!key.startsWith(`${runId}:`)) continue;
-    process.kill('SIGTERM');
-    activeProcesses.delete(key);
+function mutableRun(runId: string): WorkflowRun {
+  const run = activeRuns.get(runId)?.run ?? getWorkflowRun(runId);
+  if (!run) throw new Error('Workflow run not found.');
+  if (
+    run.runtimeOwnerPid &&
+    run.runtimeOwnerPid !== process.pid &&
+    (['running', 'queued'].includes(run.status) ||
+      run.nodeRuns.some((state) => state.status === 'running'))
+  ) {
+    try {
+      process.kill(run.runtimeOwnerPid, 0);
+    } catch {
+      return run;
+    }
+    throw new Error('This run is owned by another Anvil process. Open it in that process.');
   }
+  return run;
+}
+
+export function cancelWorkflowRun(runId: string): WorkflowRun | null {
+  const run = mutableRun(runId);
+  if (!['queued', 'running', 'paused'].includes(run.status)) return run;
   run.status = 'cancelled';
   run.completedAt = new Date().toISOString();
-  run.nodeRuns = run.nodeRuns.map((node) =>
-    node.status === 'queued' || node.status === 'running'
-      ? { ...node, status: 'cancelled', completedAt: new Date().toISOString() }
-      : node,
+  for (const state of run.nodeRuns)
+    if (['queued', 'running', 'waiting', 'interrupted'].includes(state.status)) {
+      state.status = 'cancelled';
+      state.completedAt = run.completedAt;
+    }
+  recordWorkflowEvent(run, 'run', 'Cancelled by user.');
+  activeRuns.get(runId)?.controller.abort();
+  for (const [key, child] of activeProcesses) {
+    if (key.startsWith(`${runId}:`)) child.kill('SIGTERM');
+  }
+  persistRun(run);
+  return run;
+}
+
+export function pauseWorkflowRun(runId: string): WorkflowRun {
+  const run = mutableRun(runId);
+  if (run.status !== 'running') throw new Error('Only a running workflow can be paused.');
+  run.status = 'paused';
+  recordWorkflowEvent(
+    run,
+    'run',
+    'Dispatch paused. Active agents will finish their current attempts.',
   );
   persistRun(run);
   return run;
+}
+
+export function resumeWorkflowRun(runId: string): WorkflowRun {
+  const run = mutableRun(runId);
+  if (run.status !== 'paused') throw new Error('Only a paused workflow can be resumed.');
+  if (activeRuns.has(runId)) throw new Error('Wait for active agents to finish before resuming.');
+  if (run.nodeRuns.some((state) => state.status === 'interrupted'))
+    throw new Error('Inspect interrupted attempts and retry them explicitly.');
+  if (run.nodeRuns.some((state) => state.status === 'waiting'))
+    throw new Error('Resolve pending human decisions before resuming.');
+  if (run.deadlineAt && Date.parse(run.deadlineAt) <= Date.now())
+    throw new Error('This run has exhausted its wall-clock budget. Start a new run.');
+  run.status = 'queued';
+  persistRun(run);
+  void launchWorkflow(run);
+  return run;
+}
+
+export function decideWorkflowNode(
+  runId: string,
+  nodeId: string,
+  approved: boolean,
+  note: string,
+): WorkflowRun {
+  if (typeof approved !== 'boolean' || typeof note !== 'string' || note.length > 12000)
+    throw new Error('Invalid human decision.');
+  const run = mutableRun(runId);
+  const state = run.nodeRuns.find((item) => item.nodeId === nodeId);
+  if (!['paused', 'running'].includes(run.status) || !state || state.status !== 'waiting')
+    throw new Error('This step is not waiting for a decision.');
+  state.decision = { approved, note, at: new Date().toISOString() };
+  state.output = `Human ${approved ? 'accepted' : 'rejected'}: ${note || 'No note supplied.'}`;
+  state.status = approved ? 'completed' : 'failed';
+  state.completedAt = state.decision.at;
+  recordWorkflowEvent(run, 'decision', state.output, nodeId);
+  persistRun(run);
+  return run;
+}
+
+export function retryWorkflowNode(runId: string, nodeId: string): WorkflowRun {
+  const run = mutableRun(runId);
+  if (activeRuns.has(runId) || !['failed', 'paused'].includes(run.status))
+    throw new Error('Retry is available after active agents stop.');
+  const state = run.nodeRuns.find((item) => item.nodeId === nodeId);
+  const node = run.nodes.find((item) => item.id === nodeId);
+  if (!state || !node || node.kind === 'human' || !['failed', 'interrupted'].includes(state.status))
+    throw new Error('Choose a failed or interrupted agent step.');
+  if ((state.attempts?.length ?? 0) >= orchestrationConfig(run.orchestration).maxAttempts)
+    throw new Error('Attempt budget exhausted. Start a new run.');
+  state.status = 'queued';
+  state.error = undefined;
+  state.completedAt = undefined;
+  // Only descendants skipped because of failed dependencies become eligible again.
+  const descendants = new Set([nodeId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const edge of run.edges)
+      if (descendants.has(edge.source) && !descendants.has(edge.target)) {
+        descendants.add(edge.target);
+        changed = true;
+      }
+  }
+  for (const item of run.nodeRuns)
+    if (descendants.has(item.nodeId) && item.status === 'skipped') {
+      item.status = 'queued';
+      item.error = undefined;
+    }
+  run.status = 'paused';
+  run.error = undefined;
+  run.completedAt = undefined;
+  recordWorkflowEvent(
+    run,
+    'retry',
+    'Retry queued after user inspection. Resume to execute.',
+    nodeId,
+  );
+  persistRun(run);
+  return run;
+}
+
+export function recoverInterruptedWorkflowRuns(): void {
+  const rows = getDb()
+    .prepare("SELECT * FROM workflow_runs WHERE status IN ('running', 'queued', 'paused')")
+    .all() as WorkflowRunRow[];
+  for (const row of rows) {
+    const run = mapRun(row);
+    if (activeRuns.has(run.id)) continue;
+    if (run.runtimeOwnerPid) {
+      try {
+        process.kill(run.runtimeOwnerPid, 0);
+        continue;
+      } catch {
+        /* previous owner exited */
+      }
+    }
+    if (run.status === 'paused' && !run.nodeRuns.some((state) => state.status === 'running'))
+      continue;
+    run.status = 'paused';
+    run.runtimeOwnerPid = undefined;
+    for (const state of run.nodeRuns)
+      if (state.status === 'running') {
+        state.status = 'interrupted';
+        state.error = 'The owning process exited. Inspect the workspace before retrying.';
+        const attempt = state.attempts?.at(-1);
+        if (attempt?.status === 'running') {
+          attempt.status = 'interrupted';
+          attempt.completedAt = new Date().toISOString();
+        }
+      }
+    recordWorkflowEvent(
+      run,
+      'run',
+      'Recovered after process exit. No agent work was automatically repeated.',
+    );
+    persistRun(run);
+  }
+}
+
+export async function waitForWorkflowRun(runId: string): Promise<WorkflowRun> {
+  await activeRuns.get(runId)?.completion;
+  return getWorkflowRun(runId)!;
 }

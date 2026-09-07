@@ -72,6 +72,7 @@ describe('automation persistence', () => {
       'ws-1',
       {
         name: 'Morning triage',
+        workflowTemplateId: 'workflow-team',
         personaId: 'coder',
         prompt: 'Summarise the most important changes.',
         repoIds: ['repo-1'],
@@ -85,6 +86,7 @@ describe('automation persistence', () => {
     );
 
     expect(created.workspaceId).toBe('ws-1');
+    expect(created.workflowTemplateId).toBe('workflow-team');
     expect(created.repoIds).toEqual(['repo-1']);
     expect(listAutomations('ws-1')).toHaveLength(1);
 
@@ -104,6 +106,7 @@ describe('automation persistence', () => {
       null,
     );
 
+    expect(updated?.workflowTemplateId).toBeUndefined();
     expect(updated?.name).toBe('Morning triage updated');
     expect(updated?.enabled).toBe(false);
     expect(updated?.nextRunAt).toBeUndefined();
