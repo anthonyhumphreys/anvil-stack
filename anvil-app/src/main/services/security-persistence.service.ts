@@ -185,24 +185,35 @@ export interface CreateFindingInput {
  * Create a security finding and return its ID.
  */
 export function createFinding(input: CreateFindingInput): string {
+  return createFindings([input])[0];
+}
+
+/** Save a completed review's findings atomically, with one prepared insert. */
+export function createFindings(inputs: CreateFindingInput[]): string[] {
+  if (inputs.length === 0) return [];
   const db = getDb();
-  const id = randomUUID();
-  db.prepare(
+  const insert = db.prepare(
     `INSERT INTO security_findings
      (id, audit_id, severity, category, owasp_ref, cwe_ref, affected_files, description, remediation)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    id,
-    input.auditId,
-    input.severity,
-    input.category,
-    input.owaspRef ?? null,
-    input.cweRef ?? null,
-    JSON.stringify(input.affectedFiles),
-    input.description,
-    input.remediation ?? null,
   );
-  return id;
+  return db.transaction(() =>
+    inputs.map((input) => {
+      const id = randomUUID();
+      insert.run(
+        id,
+        input.auditId,
+        input.severity,
+        input.category,
+        input.owaspRef ?? null,
+        input.cweRef ?? null,
+        JSON.stringify(input.affectedFiles),
+        input.description,
+        input.remediation ?? null,
+      );
+      return id;
+    }),
+  )();
 }
 
 /**

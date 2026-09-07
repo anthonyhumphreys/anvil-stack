@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 61;
+export const SCHEMA_VERSION = 62;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -528,6 +528,19 @@ CREATE TABLE IF NOT EXISTS security_findings (
   work_item_id   TEXT,
   dismissed      INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE INDEX IF NOT EXISTS idx_code_reviews_repo_started
+  ON code_reviews(repo_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_code_reviews_running
+  ON code_reviews(repo_id, started_at DESC) WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS idx_code_review_findings_review
+  ON code_review_findings(review_id);
+CREATE INDEX IF NOT EXISTS idx_security_audits_repo_started
+  ON security_audits(repo_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_security_audits_running
+  ON security_audits(repo_id, started_at DESC) WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS idx_security_findings_audit
+  ON security_findings(audit_id);
 
 CREATE TABLE IF NOT EXISTS pentest_scans (
   id              TEXT PRIMARY KEY,
@@ -1962,4 +1975,18 @@ CREATE TABLE IF NOT EXISTS dojo_recommendation_states (
   PRIMARY KEY (report_id, recommendation_key)
 );
 `,
+  62: `
+CREATE INDEX IF NOT EXISTS idx_code_reviews_repo_started
+  ON code_reviews(repo_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_code_reviews_running
+  ON code_reviews(repo_id, started_at DESC) WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS idx_code_review_findings_review
+  ON code_review_findings(review_id);
+CREATE INDEX IF NOT EXISTS idx_security_audits_repo_started
+  ON security_audits(repo_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_security_audits_running
+  ON security_audits(repo_id, started_at DESC) WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS idx_security_findings_audit
+  ON security_findings(audit_id);
+  `,
 };

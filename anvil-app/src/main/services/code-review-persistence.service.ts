@@ -286,24 +286,35 @@ export interface CreateFindingInput {
 }
 
 export function createFinding(input: CreateFindingInput): string {
+  return createFindings([input])[0];
+}
+
+/** Save a completed review's findings atomically, with one prepared insert. */
+export function createFindings(inputs: CreateFindingInput[]): string[] {
+  if (inputs.length === 0) return [];
   const db = getDb();
-  const id = randomUUID();
-  db.prepare(
+  const insert = db.prepare(
     `INSERT INTO code_review_findings
      (id, review_id, severity, category, file_path, line_start, line_end, description, suggestion)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    id,
-    input.reviewId,
-    input.severity,
-    input.category,
-    input.filePath ?? null,
-    input.lineStart ?? null,
-    input.lineEnd ?? null,
-    input.description,
-    input.suggestion ?? null,
   );
-  return id;
+  return db.transaction(() =>
+    inputs.map((input) => {
+      const id = randomUUID();
+      insert.run(
+        id,
+        input.reviewId,
+        input.severity,
+        input.category,
+        input.filePath ?? null,
+        input.lineStart ?? null,
+        input.lineEnd ?? null,
+        input.description,
+        input.suggestion ?? null,
+      );
+      return id;
+    }),
+  )();
 }
 
 export function getFindings(reviewId: string): CodeReviewFinding[] {

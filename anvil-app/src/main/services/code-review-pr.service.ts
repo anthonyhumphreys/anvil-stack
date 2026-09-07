@@ -133,7 +133,11 @@ export async function resolvePullRequestForReview(
   const resolution = await getAdoPullRequest(spec, normalizedPullRequestId);
   return {
     pullRequest: resolution.pullRequest,
-    diffFiles: getPullRequestRefDiff(repoPath, resolution.targetRefName, resolution.sourceRefName),
+    diffFiles: await getPullRequestRefDiff(
+      repoPath,
+      resolution.targetRefName,
+      resolution.sourceRefName,
+    ),
   };
 }
 
