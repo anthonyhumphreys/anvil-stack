@@ -151,7 +151,17 @@ export function ChangeReviewPanel({
               : !r.workItemRef),
         );
         setReviews(matching);
-        if (matching[0]) select(matching[0]);
+        if (matching[0]) {
+          select(matching[0]);
+        } else {
+          setReview(undefined);
+          setScenario(initialScenario);
+          setConfiguring(false);
+          setRunId('');
+          setAcceptedCriteria([]);
+          setDecisionNote('');
+          setPoint(undefined);
+        }
       })
       .catch((err) => {
         if (!cancelled) setError(String(err));
