@@ -1,3 +1,4 @@
+import { DocumentCriterionOptions } from './DocumentCriterionOptions';
 import { useState, useCallback, useEffect } from 'react';
 import { ChevronDown, ChevronRight, Plus, Trash2, Save } from 'lucide-react';
 import type { GateCriterion, GateId, GateCriterionType } from '../../../../shared/types';
@@ -9,7 +10,7 @@ const CRITERION_TYPE_OPTIONS: { label: string; value: GateCriterionType }[] = [
   { label: 'Security Audit', value: 'security_audit' },
   { label: 'Code Review', value: 'code_review' },
   { label: 'ADR Exists', value: 'adr_exists' },
-  { label: 'Compliance Document', value: 'compliance_doc' },
+  { label: 'Document Requirement', value: 'compliance_doc' },
   { label: 'Confluence Page', value: 'confluence_page' },
   { label: 'Governance Document', value: 'governance_document' },
   { label: 'Impact Analysis', value: 'impact_analysis' },
@@ -33,6 +34,7 @@ export function GateConfigView() {
   );
   const [expandedGates, setExpandedGates] = useState<Set<GateId>>(new Set(GATE_ORDER));
   const [dirty, setDirty] = useState(false);
+  const [error, setError] = useState('');
 
   const fetchTemplates = useCallback(async () => {
     if (!workspaceId) return;
@@ -111,17 +113,26 @@ export function GateConfigView() {
 
   const handleSave = useCallback(async () => {
     if (!workspaceId) return;
+    setError('');
     try {
       for (const gate of GATE_ORDER) {
         await window.anvil.lifecycle.updateGateTemplate(workspaceId, gate, {
           label: editedLabels[gate] ?? '',
-          criteria: editedCriteria[gate] ?? [],
+          criteria: (editedCriteria[gate] ?? []).map((criterion) => ({
+            ...criterion,
+            config: Array.isArray(criterion.config?.paths)
+              ? {
+                  ...criterion.config,
+                  paths: criterion.config.paths.map((path) => String(path).trim()).filter(Boolean),
+                }
+              : criterion.config,
+          })),
         });
       }
       await fetchTemplates();
       setDirty(false);
     } catch (err) {
-      console.error('Failed to save gate templates:', err);
+      setError(err instanceof Error ? err.message : 'Could not save gate templates.');
     }
   }, [workspaceId, editedLabels, editedCriteria, fetchTemplates]);
 
@@ -210,7 +221,7 @@ export function GateConfigView() {
                       {criteria.map((criterion) => (
                         <div
                           key={criterion.id}
-                          className="flex items-center gap-2 py-2 border-b border-border-subtle last:border-0"
+                          className="flex flex-wrap items-center gap-2 py-2 border-b border-border-subtle last:border-0"
                         >
                           {/* Type dropdown */}
                           <select
@@ -218,6 +229,7 @@ export function GateConfigView() {
                             onChange={(e) =>
                               handleCriterionChange(gate, criterion.id, {
                                 type: e.target.value as GateCriterionType,
+                                config: undefined,
                               })
                             }
                             className={INPUT_CLASS}
@@ -264,6 +276,15 @@ export function GateConfigView() {
                           >
                             <Trash2 size={14} />
                           </button>
+                          {(criterion.type === 'adr_exists' ||
+                            criterion.type === 'compliance_doc') && (
+                            <DocumentCriterionOptions
+                              criterion={criterion}
+                              onChange={(config) =>
+                                handleCriterionChange(gate, criterion.id, { config })
+                              }
+                            />
+                          )}
                         </div>
                       ))}
                     </div>
@@ -284,6 +305,11 @@ export function GateConfigView() {
         })}
       </div>
 
+      {error && (
+        <p role="alert" className="px-4 py-2 text-sm text-error">
+          {error}
+        </p>
+      )}
       {/* Save button */}
       <div className="shrink-0 border-t border-border bg-bg-secondary px-4 py-3 flex justify-end">
         <button

@@ -1,3 +1,4 @@
+import { documentGateConfig } from '../../shared/document-gate-config.js';
 import { randomUUID } from 'node:crypto';
 import { getDb } from '../db/database.js';
 import { DEFAULT_LIFECYCLE_STAGES, GATE_IDS } from '../../shared/lifecycle-types.js';
@@ -442,6 +443,10 @@ export function updateGateTemplate(
   gate: GateId,
   updates: GateTemplateUpdate,
 ): GateTemplate {
+  for (const criterion of updates.criteria) {
+    if (criterion.type === 'adr_exists' || criterion.type === 'compliance_doc')
+      documentGateConfig(criterion);
+  }
   const db = getDb();
   ensureGateTemplates(workspaceId);
   db.prepare(

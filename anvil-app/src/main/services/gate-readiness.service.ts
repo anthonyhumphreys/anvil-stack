@@ -1,7 +1,8 @@
 import { currentRepoTree } from './review-binding.service.js';
 import { scanRepoForAdrs } from './adr-discovery.service.js';
-import { existsSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, statSync, realpathSync } from 'node:fs';
+import { join, relative, isAbsolute } from 'node:path';
+import { documentGateConfig } from '../../shared/document-gate-config.js';
 import { getDb } from '../db/database.js';
 import { getItem } from './lifecycle.service.js';
 import { getGateTemplates } from './lifecycle.service.js';
@@ -112,31 +113,53 @@ function evaluateDocuments(
   repoIds: string[],
   kind: 'adr' | 'compliance',
 ): CriterionResult {
+  let config;
+  try {
+    config = documentGateConfig(criterion);
+  } catch (error) {
+    return { criterion, status: 'not_met', detail: String(error) };
+  }
+  if (config.source === 'manual')
+    return {
+      criterion,
+      status: 'partial',
+      detail: `Manual document review required${config.reference ? `: ${config.reference}` : '. Inspect the document linked to the Work Item or record its location in the gate decision.'}`,
+    };
   if (!repoIds.length) return { criterion, status: 'not_met', detail: 'No linked repos' };
-  for (const repoId of repoIds) {
+  const results = repoIds.map((repoId) => {
     const repo = getDb().prepare('SELECT path FROM repos WHERE id = ?').get(repoId) as
       | { path: string }
       | undefined;
+    if (!repo) return false;
     try {
-      const found =
-        repo &&
-        (kind === 'adr'
-          ? scanRepoForAdrs(repo.path).length > 0
-          : ['DPIA.md', 'PRIVACY_POLICY.md', 'TERMS_OF_SERVICE.md'].some((name) => {
-              const file = join(repo.path, 'docs', name);
-              return (
-                existsSync(file) &&
-                statSync(file).isFile() &&
-                readFileSync(file, 'utf8').trim().length > 0
-              );
-            }));
-      if (!found)
-        return { criterion, status: 'not_met', detail: `No ${kind} document found for ${repoId}` };
+      const root = realpathSync(repo.path);
+      const nonempty = (path: string) => {
+        try {
+          const file = realpathSync(join(root, path));
+          const rel = relative(root, file);
+          return (
+            !rel.startsWith('..') &&
+            !isAbsolute(rel) &&
+            statSync(file).isFile() &&
+            readFileSync(file, 'utf8').trim().length > 0
+          );
+        } catch {
+          return false;
+        }
+      };
+      if (!config.paths.length && kind === 'adr')
+        return scanRepoForAdrs(root).some((adr) => nonempty(adr.relativePath));
+      return config.match === 'all' ? config.paths.every(nonempty) : config.paths.some(nonempty);
     } catch {
-      return { criterion, status: 'not_met', detail: `Could not inspect documents for ${repoId}` };
+      return false;
     }
-  }
-  return { criterion, status: 'met', detail: `${kind} documents found in every linked repository` };
+  });
+  const found = config.repositories === 'all' ? results.every(Boolean) : results.some(Boolean);
+  return {
+    criterion,
+    status: found ? 'met' : 'not_met',
+    detail: `Document presence check: ${results.filter(Boolean).length}/${repoIds.length} repositories match; ${config.repositories === 'all' ? 'every repository required' : 'one repository sufficient'}. Content relevance and approval require human review.`,
+  };
 }
 function evaluateAdrExists(criterion: GateCriterion, repoIds: string[]): CriterionResult {
   return evaluateDocuments(criterion, repoIds, 'adr');
