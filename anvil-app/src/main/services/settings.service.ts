@@ -157,7 +157,7 @@ function parseWorkItemConnections(value: Buffer | null): WorkItemConnection[] {
   }
 }
 
-function applyWorkItemConnection(
+export function applyWorkItemConnection(
   settings: AppSettings,
   connection: WorkItemConnection | undefined,
 ): AppSettings {
@@ -175,6 +175,7 @@ function applyWorkItemConnection(
     jiraAuthMode: connection.jiraAuthMode,
     jiraProject: connection.jiraProject,
     jiraBoardId: connection.jiraBoardId,
+    jiraAcceptanceCriteriaField: connection.jiraAcceptanceCriteriaField,
     jiraEmail: connection.jiraEmail,
     jiraApiToken: connection.jiraApiToken,
   };
@@ -273,9 +274,7 @@ export function getSettings(): AppSettings {
   const settings: AppSettings = {
     llmProvider,
     enabledLlmProviders: normaliseEnabledLlmProviders(row.enabled_llm_providers, llmProvider),
-    localLlmMode: normaliseLocalLlmMode(
-      row.local_llm_mode ?? row.apple_foundation_models_mode,
-    ),
+    localLlmMode: normaliseLocalLlmMode(row.local_llm_mode ?? row.apple_foundation_models_mode),
     localLlmProvider: normaliseLocalLlmProvider(row.local_llm_provider),
     localLlmEndpoint: row.local_llm_endpoint ?? '',
     localLlmModel: row.local_llm_model ?? '',

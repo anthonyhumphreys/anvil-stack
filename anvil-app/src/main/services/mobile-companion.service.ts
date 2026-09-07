@@ -1,3 +1,4 @@
+import { cachedWorkItemRows } from './workitem-context.service.js';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
@@ -162,28 +163,6 @@ interface MobileSecurityFindingDetailRow extends MobileSecurityFindingRow {
   audit_summary: string | null;
   model_version: string | null;
   completed_at: string | null;
-}
-
-interface MobileWorkItemRow {
-  id: string;
-  title: string | null;
-  type: string | null;
-  state: string | null;
-  priority: number | null;
-  fetched_at: string | null;
-  assignee?: string | null;
-  iteration_path?: string | null;
-  raw_json?: string | null;
-}
-
-interface MobileWorkItemDetailRow extends MobileWorkItemRow {
-  assignee: string | null;
-  description: string | null;
-  acceptance_criteria: string | null;
-  repo_url: string | null;
-  tags: string | null;
-  iteration_path: string | null;
-  parent_id: string | null;
 }
 
 interface PairingTicketState {
@@ -880,8 +859,8 @@ export function getMobileOverview(requestedWorkspaceId?: string): MobileOverview
   const threads = listMobileChatThreads();
   const recentRuns = activeWorkspace ? listAgentRuns(activeWorkspace.id, 8) : [];
   const workspaceHealth = buildMobileWorkspaceHealth(activeWorkspace);
-  const workItems = listMobileWorkItems();
-  const currentIterationPath = resolveCurrentIterationPath();
+  const workItems = listMobileWorkItems(activeWorkspace?.id);
+  const currentIterationPath = resolveCurrentIterationPath(activeWorkspace?.id);
 
   return {
     generatedAt: new Date().toISOString(),
@@ -902,17 +881,12 @@ export function getMobileOverview(requestedWorkspaceId?: string): MobileOverview
   };
 }
 
-function resolveCurrentIterationPath(): string | undefined {
-  if (!databaseHasTables(['work_items_cache'])) return undefined;
-  const rows = getDb()
-    .prepare(
-      `SELECT iteration_path, raw_json
-       FROM work_items_cache
-       WHERE iteration_path IS NOT NULL AND TRIM(iteration_path) != ''
-       ORDER BY fetched_at DESC
-       LIMIT 100`,
-    )
-    .all() as MobileWorkItemRow[];
+function resolveCurrentIterationPath(workspaceId?: string): string | undefined {
+  if (!databaseHasTables(['scoped_work_items_cache'])) return undefined;
+  const rows = cachedWorkItemRows(workspaceId)
+    .filter((row) => row.iteration_path?.trim())
+    .sort((a, b) => b.fetched_at.localeCompare(a.fetched_at))
+    .slice(0, 100);
 
   for (const row of rows) {
     if (!row.iteration_path || !row.raw_json) continue;
@@ -948,21 +922,21 @@ function containsActiveIteration(value: unknown, iterationContext = false): bool
   return false;
 }
 
-function listMobileWorkItems(): MobileWorkItemSummary[] {
-  if (!databaseHasTables(['work_items_cache'])) return [];
+function listMobileWorkItems(workspaceId?: string): MobileWorkItemSummary[] {
+  if (!databaseHasTables(['scoped_work_items_cache'])) return [];
 
-  const rows = getDb()
-    .prepare(
-      `SELECT id, title, type, state, priority, assignee, iteration_path, fetched_at
-       FROM work_items_cache
-       WHERE COALESCE(LOWER(state), '') NOT IN ('done', 'closed', 'resolved', 'complete', 'completed')
-       ORDER BY
-         CASE WHEN iteration_path IS NULL OR TRIM(iteration_path) = '' THEN 1 ELSE 0 END,
-         COALESCE(priority, 999) ASC,
-         fetched_at DESC
-       LIMIT 100`,
+  const rows = cachedWorkItemRows(workspaceId)
+    .filter(
+      (row) =>
+        !['done', 'closed', 'resolved', 'complete', 'completed'].includes(row.state.toLowerCase()),
     )
-    .all() as MobileWorkItemRow[];
+    .sort(
+      (a, b) =>
+        Number(!a.iteration_path) - Number(!b.iteration_path) ||
+        a.priority - b.priority ||
+        b.fetched_at.localeCompare(a.fetched_at),
+    )
+    .slice(0, 100);
 
   return rows.map((row) => ({
     id: row.id,
@@ -1534,7 +1508,7 @@ export function buildMobileWorkspaceHealth(
   const reviewFindings = listMobileReviewFindings(repoIds);
   const securityFindings = listMobileSecurityFindings(repoIds);
   const lifecycleSignals = buildLifecycleSignals(activeWorkspace.id);
-  const workItemSignals = buildWorkItemSignals();
+  const workItemSignals = buildWorkItemSignals(activeWorkspace.id);
   const signals = [
     ...reviewFindings.slice(0, 10).map(reviewFindingSignal),
     ...securityFindings.slice(0, 10).map(securityFindingSignal),
@@ -1679,20 +1653,21 @@ function buildLifecycleSignals(workspaceId: string): {
   };
 }
 
-function buildWorkItemSignals(): { count: number; signals: MobileWorkspaceSignal[] } {
-  if (!databaseHasTables(['work_items_cache'])) {
+function buildWorkItemSignals(workspaceId?: string): {
+  count: number;
+  signals: MobileWorkspaceSignal[];
+} {
+  if (!databaseHasTables(['scoped_work_items_cache'])) {
     return { count: 0, signals: [] };
   }
 
-  const rows = getDb()
-    .prepare(
-      `SELECT id, title, type, state, priority, fetched_at
-       FROM work_items_cache
-       WHERE COALESCE(LOWER(state), '') NOT IN ('done', 'closed', 'resolved', 'complete', 'completed')
-       ORDER BY COALESCE(priority, 999) ASC, fetched_at DESC
-       LIMIT 12`,
+  const rows = cachedWorkItemRows(workspaceId)
+    .filter(
+      (row) =>
+        !['done', 'closed', 'resolved', 'complete', 'completed'].includes(row.state.toLowerCase()),
     )
-    .all() as MobileWorkItemRow[];
+    .sort((a, b) => a.priority - b.priority || b.fetched_at.localeCompare(a.fetched_at))
+    .slice(0, 12);
 
   return {
     count: rows.length,
@@ -1889,29 +1864,12 @@ function getMobileLifecycleDetail(itemId: string): MobileWorkspaceSignalDetail |
 }
 
 function getMobileWorkItemDetail(workItemId: string): MobileWorkspaceSignalDetail | null {
-  const row = getDb()
-    .prepare(
-      `SELECT
-         id,
-         title,
-         type,
-         state,
-         priority,
-         assignee,
-         description,
-         acceptance_criteria,
-         repo_url,
-         tags,
-         iteration_path,
-         parent_id,
-         fetched_at
-       FROM work_items_cache
-       WHERE id = ?`,
-    )
-    .get(workItemId) as MobileWorkItemDetailRow | undefined;
+  const row = cachedWorkItemRows(getSettings().activeWorkspaceId).find(
+    (row) => row.id === workItemId,
+  );
   if (!row) return null;
 
-  const signal = {
+  const signal: MobileWorkspaceSignal = {
     id: `work-item:${row.id}`,
     kind: 'work_item' as const,
     priority: row.priority !== null && row.priority <= 1 ? 'high' : 'low',

@@ -1,3 +1,4 @@
+import type { ChangeReviewApi } from './change-review-types.js';
 import type {
   DojoAnalytics,
   DojoPrice,
@@ -435,9 +436,11 @@ export interface AnvilAPI {
     onInstallOutput: (callback: (line: string) => void) => () => void;
   };
 
+  changeReview: ChangeReviewApi;
+
   workitems: {
     list: (filters?: WorkItemFilters) => Promise<WorkItem[]>;
-    get: (id: string) => Promise<WorkItem>;
+    get: (id: string, connectionId?: string, fresh?: boolean) => Promise<WorkItem>;
     plan: (id: string) => Promise<string>;
     generateFixPrompt: (id: string) => Promise<string>;
     listIterations: () => Promise<Iteration[]>;
@@ -725,10 +728,10 @@ export interface AnvilAPI {
     listTargets(): Promise<DevServerTarget[]>;
     addTarget(url: string): Promise<DevServerTarget>;
     getBridgeStatus(): Promise<BrowserBridgeStatus>;
-    startBridge(): Promise<{ port: number }>;
+    startBridge(id: number, workspaceId: string): Promise<{ port: number }>;
     stopBridge(): Promise<void>;
-    attachDebugger(): Promise<void>;
-    setUrl(url: string): Promise<void>;
+    attachDebugger(id: number, workspaceId: string): Promise<void>;
+    detachDebugger(id: number): Promise<void>;
     registerMcp(): Promise<{ success: boolean; error?: string }>;
     onTargetDetected(callback: (target: DevServerTarget) => void): () => void;
   };

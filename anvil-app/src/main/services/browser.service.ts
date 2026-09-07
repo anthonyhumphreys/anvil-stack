@@ -1,6 +1,6 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http';
-import { randomUUID } from 'node:crypto';
-import { writeFileSync, mkdirSync, unlinkSync } from 'node:fs';
+import { randomUUID, randomBytes, timingSafeEqual } from 'node:crypto';
+import { writeFileSync, mkdirSync, unlinkSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { type WebContents } from 'electron';
 
@@ -108,12 +108,19 @@ const LEGACY_BRIDGE_INFO_PATH = join(getLegacyHiddenDirPath(), 'browser-bridge.j
 let bridgeServer: Server | null = null;
 let bridgePort: number | null = null;
 let attachedWebContents: WebContents | null = null;
-let connectedUrl: string | null = null;
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    let size = 0;
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > 1024 * 1024) {
+        reject(new Error('Request body too large'));
+        req.destroy();
+      } else chunks.push(chunk);
+    });
+    req.on('aborted', () => reject(new Error('Request aborted')));
     req.on('end', () => resolve(Buffer.concat(chunks).toString()));
     req.on('error', reject);
   });
@@ -124,108 +131,141 @@ function jsonResponse(res: ServerResponse, status: number, body: unknown): void 
   res.end(JSON.stringify(body));
 }
 
-function handleCdpRequest(req: IncomingMessage, res: ServerResponse): void {
-  // CORS for local tools
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204);
-    res.end();
-    return;
+let bridgeToken = '';
+let targetGeneration = randomUUID();
+let targetScope: { workspaceId: string; repoPaths: string[] } | null = null;
+export function setBrowserScope(scope: { workspaceId: string; repoPaths: string[] }): void {
+  if (JSON.stringify(scope) !== JSON.stringify(targetScope)) {
+    targetScope = scope;
+    invalidateTarget();
   }
-
-  const url = req.url ?? '/';
-
-  if (req.method === 'GET' && url === '/status') {
-    jsonResponse(res, 200, {
-      attached: !!attachedWebContents,
-      url: connectedUrl,
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && url === '/cdp') {
-    if (!attachedWebContents) {
-      jsonResponse(res, 503, { error: 'No browser attached' });
-      return;
-    }
-
-    readBody(req)
-      .then((body) => {
-        const { method, params } = JSON.parse(body);
-        return attachedWebContents!.debugger.sendCommand(method, params);
-      })
-      .then((result) => jsonResponse(res, 200, { result }))
-      .catch((err) => jsonResponse(res, 500, { error: err.message }));
-    return;
-  }
-
-  if (req.method === 'POST' && url === '/screenshot') {
-    if (!attachedWebContents) {
-      jsonResponse(res, 503, { error: 'No browser attached' });
-      return;
-    }
-
-    attachedWebContents
-      .capturePage()
-      .then((image) => {
-        const base64 = image.toPNG().toString('base64');
-        jsonResponse(res, 200, { data: base64, mimeType: 'image/png' });
-      })
-      .catch((err) => jsonResponse(res, 500, { error: err.message }));
-    return;
-  }
-
-  if (req.method === 'POST' && url === '/evaluate') {
-    if (!attachedWebContents) {
-      jsonResponse(res, 503, { error: 'No browser attached' });
-      return;
-    }
-
-    readBody(req)
-      .then((body) => {
-        const { expression } = JSON.parse(body);
-        return attachedWebContents!.debugger.sendCommand('Runtime.evaluate', {
-          expression,
-          returnByValue: true,
-        });
-      })
-      .then((result) => jsonResponse(res, 200, { result }))
-      .catch((err) => jsonResponse(res, 500, { error: err.message }));
-    return;
-  }
-
-  if (req.method === 'POST' && url === '/navigate') {
-    if (!attachedWebContents) {
-      jsonResponse(res, 503, { error: 'No browser attached' });
-      return;
-    }
-
-    readBody(req)
-      .then((body) => {
-        const { url: targetUrl } = JSON.parse(body);
-        return attachedWebContents!.debugger.sendCommand('Page.navigate', { url: targetUrl });
-      })
-      .then((result) => {
-        connectedUrl = result.url ?? connectedUrl;
-        jsonResponse(res, 200, { result });
-      })
-      .catch((err) => jsonResponse(res, 500, { error: err.message }));
-    return;
-  }
-
-  jsonResponse(res, 404, { error: 'Not found' });
 }
+function writeDiscovery(): void {
+  if (!bridgePort || !bridgeToken) return;
+  mkdirSync(BRIDGE_INFO_DIR, { recursive: true });
+  writeFileSync(
+    BRIDGE_INFO_PATH,
+    JSON.stringify({
+      port: bridgePort,
+      pid: process.pid,
+      token: bridgeToken,
+      target: targetGeneration,
+      scope: targetScope,
+    }),
+    { mode: 0o600 },
+  );
+  chmodSync(BRIDGE_INFO_PATH, 0o600);
+}
+function invalidateTarget(): void {
+  targetGeneration = randomUUID();
+  writeDiscovery();
+}
+export async function handleCdpRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const supplied = Buffer.from(req.headers.authorization ?? '');
+  const expected = Buffer.from(`Bearer ${bridgeToken}`);
+  if (!bridgeToken || supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
+    jsonResponse(res, 401, { error: 'Browser session authentication required' });
+    return;
+  }
+  if (req.headers.origin !== undefined || req.headers['sec-fetch-site'] !== undefined) {
+    jsonResponse(res, 403, { error: 'Browser-origin requests are not allowed' });
+    return;
+  }
+  if (req.headers['x-anvil-target'] !== targetGeneration) {
+    jsonResponse(res, 409, { error: 'Browser target changed. Reconnect the browser MCP session.' });
+    return;
+  }
+  const target = attachedWebContents;
+  const generation = targetGeneration;
+  const token = bridgeToken;
+  const assertCurrent = () => {
+    if (
+      generation !== targetGeneration ||
+      token !== bridgeToken ||
+      target !== attachedWebContents ||
+      target?.isDestroyed()
+    )
+      throw new Error('Browser target changed during request');
+  };
+  try {
+    if (req.method === 'GET' && req.url === '/status') {
+      assertCurrent();
+      jsonResponse(res, 200, { attached: !!target, url: target?.getURL() ?? null });
+      return;
+    }
+    if (!target) {
+      jsonResponse(res, 503, { error: 'No browser attached' });
+      return;
+    }
+    if (
+      req.method !== 'POST' ||
+      !['/cdp', '/evaluate', '/navigate', '/screenshot'].includes(req.url ?? '')
+    ) {
+      jsonResponse(res, 404, { error: 'Not found' });
+      return;
+    }
+    if (req.url === '/screenshot') {
+      const capture = await target.capturePage();
+      assertCurrent();
+      jsonResponse(res, 200, { data: capture.toPNG().toString('base64'), mimeType: 'image/png' });
+      return;
+    }
+    const body = JSON.parse(await readBody(req));
+    assertCurrent();
+    let method: string;
+    let params: Record<string, unknown>;
+    if (req.url === '/cdp') {
+      if (typeof body.method !== 'string' || !body.method.trim())
+        throw new Error('A CDP method is required');
+      if (
+        !/^(Page|Runtime|DOM|CSS|Network|Accessibility|Input|Emulation|Performance|Log)\.[A-Za-z]+$/.test(
+          body.method,
+        )
+      )
+        throw new Error('Only page-scoped CDP commands are supported');
+      method = body.method;
+      params = body.params ?? {};
+    } else if (req.url === '/evaluate') {
+      if (typeof body.expression !== 'string') throw new Error('An expression is required');
+      method = 'Runtime.evaluate';
+      params = { expression: body.expression, returnByValue: true };
+    } else {
+      const url = new URL(body.url);
+      if (!['http:', 'https:'].includes(url.protocol))
+        throw new Error('Only HTTP and HTTPS navigation is supported');
+      method = 'Page.navigate';
+      params = { url: url.href };
+    }
+    const result = await target.debugger.sendCommand(method, params);
+    assertCurrent();
+    jsonResponse(res, 200, { result });
+  } catch (error) {
+    jsonResponse(res, 409, { error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+let bridgeStartup: Promise<number> | null = null;
+let bridgeLifecycle = 0;
 
 /** Start the CDP bridge HTTP server. Returns the port. */
 export function startBridge(): Promise<number> {
   if (bridgeServer && bridgePort) return Promise.resolve(bridgePort);
 
-  return new Promise((resolve, reject) => {
-    const server = createServer(handleCdpRequest);
+  if (bridgeStartup) return bridgeStartup;
+  const lifecycle = ++bridgeLifecycle;
+  const startup = new Promise<number>((resolve, reject) => {
+    bridgeToken = randomBytes(32).toString('hex');
+    const server = createServer((req, res) => {
+      void handleCdpRequest(req, res);
+    });
+    server.requestTimeout = 30_000;
+    bridgeServer = server;
     server.listen(0, '127.0.0.1', () => {
+      if (lifecycle !== bridgeLifecycle) {
+        server.close();
+        reject(new Error('Browser bridge startup cancelled'));
+        return;
+      }
       const addr = server.address();
       if (!addr || typeof addr === 'string') {
         reject(new Error('Failed to bind bridge server'));
@@ -238,7 +278,7 @@ export function startBridge(): Promise<number> {
       // Write bridge info so external MCP server can find it
       try {
         mkdirSync(BRIDGE_INFO_DIR, { recursive: true });
-        writeFileSync(BRIDGE_INFO_PATH, JSON.stringify({ port: bridgePort, pid: process.pid }));
+        writeDiscovery();
       } catch (err) {
         console.warn('[Browser] Failed to write bridge info:', err);
       }
@@ -249,10 +289,29 @@ export function startBridge(): Promise<number> {
 
     server.on('error', reject);
   });
+  bridgeStartup = startup;
+  void startup.then(
+    () => {
+      if (bridgeStartup === startup) bridgeStartup = null;
+    },
+    () => {
+      if (bridgeStartup === startup) {
+        bridgeStartup = null;
+        bridgeServer?.close();
+        bridgeServer = null;
+        bridgeToken = '';
+      }
+    },
+  );
+  return startup;
 }
 
 /** Stop the CDP bridge. */
 export function stopBridge(): void {
+  bridgeLifecycle++;
+  bridgeStartup = null;
+  bridgeToken = '';
+  invalidateTarget();
   if (bridgeServer) {
     bridgeServer.close();
     bridgeServer = null;
@@ -283,6 +342,7 @@ export function attachDebugger(webContents: WebContents): void {
   try {
     webContents.debugger.attach('1.3');
     attachedWebContents = webContents;
+    invalidateTarget();
     console.log('[Browser] CDP debugger attached');
 
     // Enable required CDP domains
@@ -294,7 +354,7 @@ export function attachDebugger(webContents: WebContents): void {
     webContents.on('destroyed', () => {
       if (attachedWebContents === webContents) {
         attachedWebContents = null;
-        connectedUrl = null;
+        invalidateTarget();
       }
     });
   } catch (err) {
@@ -304,6 +364,7 @@ export function attachDebugger(webContents: WebContents): void {
 
 /** Detach the CDP debugger. */
 export function detachDebugger(): void {
+  invalidateTarget();
   if (attachedWebContents) {
     try {
       attachedWebContents.debugger.detach();
@@ -311,13 +372,7 @@ export function detachDebugger(): void {
       /* already detached */
     }
     attachedWebContents = null;
-    connectedUrl = null;
   }
-}
-
-/** Update the tracked URL when the webview navigates. */
-export function setConnectedUrl(url: string): void {
-  connectedUrl = url;
 }
 
 /** Get bridge status. */
@@ -325,7 +380,10 @@ export function getBridgeStatus(): BrowserBridgeStatus {
   return {
     running: !!bridgeServer,
     port: bridgePort ?? undefined,
-    connectedUrl: connectedUrl ?? undefined,
+    connectedUrl:
+      attachedWebContents && !attachedWebContents.isDestroyed()
+        ? attachedWebContents.getURL()
+        : undefined,
   };
 }
 

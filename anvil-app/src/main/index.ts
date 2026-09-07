@@ -1,3 +1,5 @@
+import { cleanupChangeReviews } from './services/change-review.service.js';
+import { registerChangeReviewHandlers } from './ipc/change-review.ipc.js';
 import { fixPath } from './utils/fix-path.js';
 fixPath();
 
@@ -333,6 +335,7 @@ app.whenReady().then(() => {
   registerChatHandlers();
   registerOnboardHandlers();
   registerWorkItemsHandlers();
+  registerChangeReviewHandlers();
   registerDocsHandlers();
   registerBaHandlers();
   registerSecurityHandlers();
@@ -416,6 +419,7 @@ app.on('before-quit', () => {
   cleanupDiagramServices();
   cleanupTerminals();
   cleanupBrowser();
+  cleanupChangeReviews();
   cleanupSimulatorPreview();
   void stopMobileCompanionServer();
   void cleanupEmbeddedEditor();
