@@ -57,11 +57,11 @@ export function scanForRepos(
 
       const fullPath = path.join(dir, entry.name);
 
-      // Check if this directory contains a .git subdirectory
+      // Git uses a .git file for linked worktrees and submodules.
       const gitPath = path.join(fullPath, '.git');
       try {
         const stat = fs.statSync(gitPath);
-        if (stat.isDirectory()) {
+        if (stat.isDirectory() || stat.isFile()) {
           results.push({ path: fullPath, name: entry.name });
           // Do not descend further into this subtree
           continue;
@@ -78,7 +78,7 @@ export function scanForRepos(
   try {
     const rootGit = path.join(folderPath, '.git');
     const stat = fs.statSync(rootGit);
-    if (stat.isDirectory()) {
+    if (stat.isDirectory() || stat.isFile()) {
       results.push({ path: folderPath, name: path.basename(folderPath) });
       return results;
     }
@@ -126,11 +126,11 @@ export async function scanForReposAsync(
 
       const fullPath = path.join(dir, entry.name);
 
-      // Check if this directory contains a .git subdirectory
+      // Git uses a .git file for linked worktrees and submodules.
       const gitPath = path.join(fullPath, '.git');
       try {
         const stat = await fs.promises.stat(gitPath);
-        if (stat.isDirectory()) {
+        if (stat.isDirectory() || stat.isFile()) {
           const repo = { path: fullPath, name: entry.name };
           results.push(repo);
           onFound?.(repo);
@@ -149,7 +149,7 @@ export async function scanForReposAsync(
   try {
     const rootGit = path.join(folderPath, '.git');
     const stat = await fs.promises.stat(rootGit);
-    if (stat.isDirectory()) {
+    if (stat.isDirectory() || stat.isFile()) {
       const repo = { path: folderPath, name: path.basename(folderPath) };
       results.push(repo);
       onFound?.(repo);

@@ -412,13 +412,13 @@ export async function addWorktree(
 ): Promise<void> {
   const git = gitClient(repoPath);
   fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
-  await git.raw(['worktree', 'add', '-B', branchName, worktreePath, startPoint]);
+  await git.raw(['worktree', 'add', '-b', branchName, worktreePath, startPoint]);
 }
 
 export async function removeWorktree(repoPath: string, worktreePath: string): Promise<void> {
   const git = gitClient(repoPath);
   try {
-    await git.raw(['worktree', 'remove', '--force', worktreePath]);
+    await git.raw(['worktree', 'remove', worktreePath]);
   } finally {
     await git.raw(['worktree', 'prune']).catch(() => undefined);
   }

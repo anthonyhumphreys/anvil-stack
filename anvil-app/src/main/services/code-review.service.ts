@@ -429,9 +429,14 @@ async function runReviewVerification(opts: {
   }
 
   if (commands.length === 0) {
-    await removeWorktree(repoPath, worktreePath).catch(() => undefined);
+    const removed = await removeWorktree(repoPath, worktreePath).then(
+      () => true,
+      () => false,
+    );
     return {
       status: 'not_run',
+      worktreePath: removed ? undefined : worktreePath,
+      worktreeKept: !removed,
       summary:
         'No suitable branch-local verification commands were configured or detected for this repository.',
       targetRef: startPoint,
@@ -478,7 +483,9 @@ async function runReviewVerification(opts: {
     });
   } finally {
     if (!keepWorktree) {
-      await removeWorktree(repoPath, worktreePath).catch(() => undefined);
+      await removeWorktree(repoPath, worktreePath).catch(() => {
+        keepWorktree = true;
+      });
     }
   }
 
