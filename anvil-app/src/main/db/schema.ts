@@ -1406,7 +1406,6 @@ export const MIGRATIONS: Record<number, string> = {
   `,
   24: `
     CREATE TABLE IF NOT EXISTS automation_definitions (
-  workflow_template_id TEXT,
       id TEXT PRIMARY KEY,
       workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
       name TEXT NOT NULL,
