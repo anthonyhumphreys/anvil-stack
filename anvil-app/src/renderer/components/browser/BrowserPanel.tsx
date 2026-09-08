@@ -119,14 +119,21 @@ export function BrowserPanel({
       if (previewMode !== 'browser') return;
       setCurrentUrl(e.url);
       setUrlInput(e.url);
-      window.anvil.browser.setUrl(e.url).catch(() => {});
     };
     const onTitleUpdate = (e: Electron.PageTitleUpdatedEvent) => {
       setPageTitle(e.title);
     };
+    let attachedId: number | undefined;
     const onDomReady = () => {
-      window.anvil.browser.attachDebugger().catch(() => {});
+      if (!activeWorkspace) return;
+      try {
+        attachedId = webviewEl.getWebContentsId();
+        void window.anvil.browser.attachDebugger(attachedId, activeWorkspace.id).catch(() => {});
+      } catch {
+        /* Wait for dom-ready. */
+      }
     };
+    onDomReady();
 
     webviewEl.addEventListener('did-start-loading', onStartLoad);
     webviewEl.addEventListener('did-stop-loading', onStopLoad);
@@ -136,6 +143,8 @@ export function BrowserPanel({
     webviewEl.addEventListener('dom-ready', onDomReady);
 
     return () => {
+      if (attachedId !== undefined)
+        void window.anvil.browser.detachDebugger(attachedId).catch(() => {});
       webviewEl.removeEventListener('did-start-loading', onStartLoad);
       webviewEl.removeEventListener('did-stop-loading', onStopLoad);
       webviewEl.removeEventListener('did-navigate', onNavigate as EventListener);
@@ -143,7 +152,7 @@ export function BrowserPanel({
       webviewEl.removeEventListener('page-title-updated', onTitleUpdate as EventListener);
       webviewEl.removeEventListener('dom-ready', onDomReady);
     };
-  }, [previewMode, webviewEl]);
+  }, [previewMode, webviewEl, activeWorkspace?.id]);
 
   useEffect(() => {
     const requestedMode = searchParams.get('mode');
@@ -180,7 +189,6 @@ export function BrowserPanel({
     setUrlInput(normalized);
     setCurrentUrl(normalized);
     setPreviewMode('browser');
-    window.anvil.browser.setUrl(normalized).catch(() => {});
   }, []);
 
   const handleUrlSubmit = (e: React.FormEvent) => {
@@ -191,7 +199,10 @@ export function BrowserPanel({
   const handleStartBridge = async () => {
     setBridgeStarting(true);
     try {
-      const { port } = await window.anvil.browser.startBridge();
+      const { port } = await window.anvil.browser.startBridge(
+        webviewEl!.getWebContentsId(),
+        activeWorkspace!.id,
+      );
       setBridgeStatus({ running: true, port });
     } catch (err) {
       console.error('Failed to start bridge:', err);
@@ -230,7 +241,7 @@ export function BrowserPanel({
     const activeUrl = previewMode === 'simulator' ? simStatus.url : currentUrl;
     if (!activeUrl) return;
     const selectedText = await webviewEl
-      ?.executeJavaScript('window.getSelection()?.toString() ?? ""')
+      ?.executeJavaScript<string>('window.getSelection()?.toString() ?? ""')
       .catch(() => '');
 
     const prompt = [
@@ -279,7 +290,7 @@ export function BrowserPanel({
     const activeUrl = previewMode === 'simulator' ? simStatus.url : currentUrl;
     if (!note || !activeUrl) return;
     const selectedText = await webviewEl
-      ?.executeJavaScript('window.getSelection()?.toString() ?? ""')
+      ?.executeJavaScript<string>('window.getSelection()?.toString() ?? ""')
       .catch(() => '');
     const annotation: BrowserAnnotation = {
       id: `${Date.now()}`,

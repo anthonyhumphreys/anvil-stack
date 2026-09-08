@@ -416,9 +416,30 @@ const api: AnvilAPI = {
     },
   },
 
+  changeReview: {
+    publish: (id, decisionId, redactedText) =>
+      ipcRenderer.invoke('change-review:publish', id, decisionId, redactedText),
+    list: (workspaceId) => ipcRenderer.invoke('change-review:list', workspaceId),
+    create: (input) => ipcRenderer.invoke('change-review:create', input),
+    get: (id) => ipcRenderer.invoke('change-review:get', id),
+    refresh: (id) => ipcRenderer.invoke('change-review:refresh', id),
+    configure: (id, scenario) => ipcRenderer.invoke('change-review:configure', id, scenario),
+    run: (id) => ipcRenderer.invoke('change-review:run', id),
+    cancel: (id) => ipcRenderer.invoke('change-review:cancel', id),
+    annotate: (id, input) => ipcRenderer.invoke('change-review:annotate', id, input),
+    resolveFinding: (id, findingId, state, runId) =>
+      ipcRenderer.invoke('change-review:resolveFinding', id, findingId, state, runId),
+    decide: (id, input) => ipcRenderer.invoke('change-review:decide', id, input),
+    artifact: (id, runId, captureId) =>
+      ipcRenderer.invoke('change-review:artifact', id, runId, captureId),
+    openTrace: (id, runId, captureId) =>
+      ipcRenderer.invoke('change-review:openTrace', id, runId, captureId),
+    export: (id, format) => ipcRenderer.invoke('change-review:export', id, format),
+  },
   workitems: {
     list: (filters) => ipcRenderer.invoke('workitems:list', filters),
-    get: (id: string) => ipcRenderer.invoke('workitems:get', id),
+    get: (id: string, connectionId?: string, fresh?: boolean) =>
+      ipcRenderer.invoke('workitems:get', id, connectionId, fresh),
     plan: (id: string) => ipcRenderer.invoke('workitems:plan', id),
     generateFixPrompt: (id: string) => ipcRenderer.invoke('workitems:fix-prompt', id),
     listIterations: () => ipcRenderer.invoke('workitems:iterations'),
@@ -870,10 +891,12 @@ const api: AnvilAPI = {
     listTargets: () => ipcRenderer.invoke('browser:list-targets'),
     addTarget: (url: string) => ipcRenderer.invoke('browser:add-target', url),
     getBridgeStatus: () => ipcRenderer.invoke('browser:get-bridge-status'),
-    startBridge: () => ipcRenderer.invoke('browser:start-bridge'),
+    startBridge: (id: number, workspaceId: string) =>
+      ipcRenderer.invoke('browser:start-bridge', id, workspaceId),
     stopBridge: () => ipcRenderer.invoke('browser:stop-bridge'),
-    attachDebugger: () => ipcRenderer.invoke('browser:attach-debugger'),
-    setUrl: (url: string) => ipcRenderer.invoke('browser:set-url', url),
+    attachDebugger: (id: number, workspaceId: string) =>
+      ipcRenderer.invoke('browser:attach-debugger', id, workspaceId),
+    detachDebugger: (id: number) => ipcRenderer.invoke('browser:detach-debugger', id),
     registerMcp: () =>
       ipcRenderer.invoke('browser:register-mcp') as Promise<{ success: boolean; error?: string }>,
     onTargetDetected: (callback: (target: DevServerTarget) => void) => {

@@ -124,7 +124,7 @@ describe('fresh database schema', () => {
         ).map((column) => column.name),
       );
 
-      expect(SCHEMA_VERSION).toBe(62);
+      expect(SCHEMA_VERSION).toBe(64);
       for (const column of [
         'local_llm_mode',
         'local_llm_provider',
@@ -139,6 +139,47 @@ describe('fresh database schema', () => {
       db.close();
     }
   });
+
+  it.each(['main', 'review development', 'workflow development'])(
+    'reconciles version 62 from %s without losing review records',
+    (variant) => {
+      const db = new Database(':memory:');
+      try {
+        db.exec(SCHEMA_SQL);
+        db.exec('ALTER TABLE automation_definitions DROP COLUMN workflow_template_id');
+        if (variant !== 'main') {
+          db.exec(`
+            DROP TABLE change_reviews;
+            DROP TABLE scoped_work_items_cache;
+            ALTER TABLE code_reviews DROP COLUMN source_tree;
+            ALTER TABLE security_audits DROP COLUMN source_tree;
+          `);
+        }
+        if (variant === 'workflow development') {
+          db.exec('ALTER TABLE automation_definitions ADD COLUMN workflow_template_id TEXT');
+        }
+        db.exec(`
+          INSERT INTO repos (id, name, path) VALUES ('repo', 'Repo', '/repo');
+          INSERT INTO code_reviews (id, repo_id, mode, scope_type)
+            VALUES ('review', 'repo', 'quick_glance', 'latest_commit');
+        `);
+        applyMigration(db, MIGRATIONS[63]);
+        applyMigration(db, MIGRATIONS[64]);
+        expect(db.prepare('SELECT id, source_tree FROM code_reviews').get()).toEqual({
+          id: 'review',
+          source_tree: null,
+        });
+        expect(db.prepare('SELECT workflow_template_id FROM automation_definitions').all()).toEqual(
+          [],
+        );
+        expect(db.prepare('SELECT * FROM change_reviews').all()).toEqual([]);
+        expect(db.prepare('SELECT * FROM scoped_work_items_cache').all()).toEqual([]);
+        expect(db.prepare('SELECT source_tree FROM security_audits').all()).toEqual([]);
+      } finally {
+        db.close();
+      }
+    },
+  );
 
   it('adds opt-in telemetry disabled by default', () => {
     const db = new Database(':memory:');

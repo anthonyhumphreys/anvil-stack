@@ -1,14 +1,19 @@
+import { extractAcceptanceCriteria } from '../../shared/workitem-intent.js';
 import type {
   Iteration,
   WorkItem,
   WorkItemCreateInput,
   WorkItemFilters,
 } from '../../shared/types.js';
-import { getDb } from '../db/database.js';
-import { getSettings } from './settings.service.js';
+import {
+  getWorkItemSettings as getSettings,
+  getCachedWorkItems,
+  getCachedWorkItem,
+  invalidateWorkItemsCache,
+  cacheWorkItems,
+  cacheSingleWorkItem,
+} from './workitem-context.service.js';
 import type { WorkItemProviderService } from './workitem-provider.js';
-
-const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 // --- Auth ---
 
@@ -100,6 +105,7 @@ function issueToWorkItem(issue: LinearIssue): WorkItem {
     priority: issue.priority ?? 4,
     assignee: issue.assignee?.name,
     description: issue.description ?? undefined,
+    acceptanceCriteria: extractAcceptanceCriteria({ description: issue.description ?? undefined }),
     tags: labelNames.length > 0 ? labelNames : undefined,
     parentId: issue.parent?.identifier,
     provider: 'linear' as const,
@@ -180,7 +186,8 @@ async function listItems(filters?: WorkItemFilters): Promise<WorkItem[]> {
   const workItems = data.issues.nodes.map(issueToWorkItem);
 
   // Cache results
-  cacheWorkItems(workItems);
+  if (!filters?.iterationIds?.length) cacheWorkItems(workItems);
+  else workItems.forEach(cacheSingleWorkItem);
 
   return applyFilters(workItems, filters);
 }
@@ -188,18 +195,8 @@ async function listItems(filters?: WorkItemFilters): Promise<WorkItem[]> {
 // --- Get single item ---
 
 async function getItem(id: string): Promise<WorkItem> {
-  // Check cache first
-  const db = getDb();
-  const cached = db.prepare('SELECT * FROM work_items_cache WHERE id = ?').get(id) as
-    | Record<string, string | number | null>
-    | undefined;
-
-  if (cached && cached.fetched_at) {
-    const age = Date.now() - new Date(cached.fetched_at as string).getTime();
-    if (age < CACHE_TTL_MS) {
-      return rowToWorkItem(cached);
-    }
-  }
+  const cached = getCachedWorkItem(id);
+  if (cached) return cached;
 
   // Linear's issue() query accepts both UUIDs and human-readable identifiers like "ENG-123"
   const query = `
@@ -253,8 +250,12 @@ async function createItem(input: WorkItemCreateInput): Promise<WorkItem> {
         query GetParentIssue($id: String!) {
           issue(id: $id) {
             id
-            team { id }
-            project { id }
+            team {
+              id
+            }
+            project {
+              id
+            }
           }
         }
       `,
@@ -394,102 +395,6 @@ async function testConnection(): Promise<{ ok: boolean; error?: string }> {
 }
 
 // --- Caching ---
-
-function getCachedWorkItems(): WorkItem[] | null {
-  const db = getDb();
-  const rows = db.prepare('SELECT * FROM work_items_cache ORDER BY priority ASC').all() as Array<
-    Record<string, string | number | null>
-  >;
-
-  if (rows.length === 0) return null;
-
-  // Check age of first item
-  const firstAge = rows[0].fetched_at
-    ? Date.now() - new Date(rows[0].fetched_at as string).getTime()
-    : Infinity;
-  if (firstAge > CACHE_TTL_MS) return null;
-
-  return rows.map(rowToWorkItem);
-}
-
-function invalidateWorkItemsCache(): void {
-  getDb().prepare('DELETE FROM work_items_cache').run();
-}
-
-function cacheWorkItems(items: WorkItem[]): void {
-  const db = getDb();
-  const now = new Date().toISOString();
-
-  const insertStmt = db.prepare(
-    `INSERT OR REPLACE INTO work_items_cache
-     (id, title, type, state, priority, assignee, description, acceptance_criteria, tags, iteration_path, parent_id, raw_json, fetched_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  );
-
-  const tx = db.transaction(() => {
-    db.prepare('DELETE FROM work_items_cache').run();
-    for (const wi of items) {
-      insertStmt.run(
-        wi.id,
-        wi.title,
-        wi.type,
-        wi.state,
-        wi.priority,
-        wi.assignee ?? null,
-        wi.description ?? null,
-        wi.acceptanceCriteria ?? null,
-        wi.tags?.join(';') ?? null,
-        wi.iterationPath ?? null,
-        wi.parentId ?? null,
-        JSON.stringify(wi),
-        now,
-      );
-    }
-  });
-  tx();
-}
-
-function cacheSingleWorkItem(wi: WorkItem): void {
-  const db = getDb();
-  db.prepare(
-    `INSERT OR REPLACE INTO work_items_cache
-     (id, title, type, state, priority, assignee, description, acceptance_criteria, tags, iteration_path, parent_id, raw_json, fetched_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
-  ).run(
-    wi.id,
-    wi.title,
-    wi.type,
-    wi.state,
-    wi.priority,
-    wi.assignee ?? null,
-    wi.description ?? null,
-    wi.acceptanceCriteria ?? null,
-    wi.tags?.join(';') ?? null,
-    wi.iterationPath ?? null,
-    wi.parentId ?? null,
-    JSON.stringify(wi),
-  );
-}
-
-function rowToWorkItem(row: Record<string, string | number | null>): WorkItem {
-  if (row.raw_json) {
-    return JSON.parse(row.raw_json as string) as WorkItem;
-  }
-  return {
-    id: String(row.id),
-    title: (row.title as string) ?? '',
-    type: (row.type as WorkItem['type']) ?? 'Task',
-    state: (row.state as string) ?? '',
-    priority: (row.priority as number) ?? 4,
-    assignee: row.assignee as string | undefined,
-    description: row.description as string | undefined,
-    acceptanceCriteria: row.acceptance_criteria as string | undefined,
-    tags: row.tags ? (row.tags as string).split(';').filter(Boolean) : undefined,
-    iterationPath: row.iteration_path as string | undefined,
-    parentId: row.parent_id as string | undefined,
-    provider: 'linear' as const,
-  };
-}
 
 // --- Filtering ---
 

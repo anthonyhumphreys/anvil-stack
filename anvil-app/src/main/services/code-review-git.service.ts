@@ -1,4 +1,5 @@
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import type {
   RepositoryChangedFile,
   RepositoryChangeSummary,
@@ -20,24 +21,27 @@ export interface GitDiffFile {
   status: RepositoryChangeStatus;
 }
 
-function runGit(
+const execFileAsync = promisify(execFile);
+
+async function runGit(
   repoPath: string,
   args: string[],
   options?: { timeout?: number; maxBuffer?: number },
-): string {
-  return execFileSync('git', args, {
+): Promise<string> {
+  const { stdout } = await execFileAsync('git', args, {
     cwd: repoPath,
     encoding: 'utf-8',
     timeout: options?.timeout ?? 10_000,
     maxBuffer: options?.maxBuffer ?? 10 * 1024 * 1024,
   });
+  return stdout;
 }
 
 /**
  * List recent commits for a repo.
  */
-export function listRecentCommits(repoPath: string, count = 30): GitCommitInfo[] {
-  const output = runGit(repoPath, ['log', '--format=%H|%h|%s|%an|%aI', '-n', String(count)]);
+export async function listRecentCommits(repoPath: string, count = 30): Promise<GitCommitInfo[]> {
+  const output = await runGit(repoPath, ['log', '--format=%H|%h|%s|%an|%aI', '-n', String(count)]);
   return output
     .trim()
     .split('\n')
@@ -51,63 +55,65 @@ export function listRecentCommits(repoPath: string, count = 30): GitCommitInfo[]
 /**
  * List branches for a repo.
  */
-export function listBranches(repoPath: string): string[] {
-  const output = runGit(repoPath, ['branch', '-a', '--format=%(refname:short)']);
+export async function listBranches(repoPath: string): Promise<string[]> {
+  const output = await runGit(repoPath, ['branch', '-a', '--format=%(refname:short)']);
   return output.trim().split('\n').filter(Boolean);
 }
 
 /**
  * Get diff for latest commit.
  */
-export function getLatestCommitDiff(repoPath: string): GitDiffFile[] {
+export async function getLatestCommitDiff(repoPath: string): Promise<GitDiffFile[]> {
   return getDiffBetween(repoPath, 'HEAD~1', 'HEAD');
 }
 
 /**
  * Get diff between two commits.
  */
-export function getCommitRangeDiff(
+export async function getCommitRangeDiff(
   repoPath: string,
   fromSha: string,
   toSha: string,
-): GitDiffFile[] {
+): Promise<GitDiffFile[]> {
   return getDiffBetween(repoPath, fromSha, toSha);
 }
 
 /**
  * Get diff between two branches.
  */
-export function getBranchDiff(
+export async function getBranchDiff(
   repoPath: string,
   baseBranch: string,
   compareBranch: string,
-): GitDiffFile[] {
+): Promise<GitDiffFile[]> {
   return getDiffBetween(repoPath, baseBranch, compareBranch);
 }
 
 /**
  * Get a diff between pull request refs, resolving remote/local branch variants.
  */
-export function getPullRequestRefDiff(
+export async function getPullRequestRefDiff(
   repoPath: string,
   targetRef: string,
   sourceRef: string,
-): GitDiffFile[] {
-  const resolvedTarget = resolveGitRef(repoPath, targetRef);
-  const resolvedSource = resolveGitRef(repoPath, sourceRef);
+): Promise<GitDiffFile[]> {
+  const [resolvedTarget, resolvedSource] = await Promise.all([
+    resolveGitRef(repoPath, targetRef),
+    resolveGitRef(repoPath, sourceRef),
+  ]);
   if (!resolvedTarget || !resolvedSource) return [];
   return getDiffBetween(repoPath, resolvedTarget, resolvedSource);
 }
 
-export function getCurrentCommitSha(repoPath: string): string | undefined {
+export async function getCurrentCommitSha(repoPath: string): Promise<string | undefined> {
   try {
-    return runGit(repoPath, ['rev-parse', 'HEAD'], { timeout: 5_000 }).trim() || undefined;
+    return (await runGit(repoPath, ['rev-parse', 'HEAD'], { timeout: 5_000 })).trim() || undefined;
   } catch {
     return undefined;
   }
 }
 
-export function getScopeChangeSummary(
+export async function getScopeChangeSummary(
   repoPath: string,
   scopeType: 'latest_commit' | 'commit_range' | 'branch_diff' | 'full_codebase',
   scopeRef?: {
@@ -116,36 +122,48 @@ export function getScopeChangeSummary(
     baseBranch?: string;
     compareBranch?: string;
   },
-): RepositoryChangeSummary {
+): Promise<RepositoryChangeSummary> {
   switch (scopeType) {
     case 'commit_range':
       return summarizeDiffFiles(
-        getCommitRangeDiff(repoPath, scopeRef?.fromSha ?? 'HEAD~5', scopeRef?.toSha ?? 'HEAD'),
+        await getCommitRangeDiff(
+          repoPath,
+          scopeRef?.fromSha ?? 'HEAD~5',
+          scopeRef?.toSha ?? 'HEAD',
+        ),
       );
     case 'branch_diff':
       return summarizeDiffFiles(
-        getBranchDiff(repoPath, scopeRef?.baseBranch ?? 'main', scopeRef?.compareBranch ?? 'HEAD'),
+        await getBranchDiff(
+          repoPath,
+          scopeRef?.baseBranch ?? 'main',
+          scopeRef?.compareBranch ?? 'HEAD',
+        ),
       );
     case 'latest_commit':
     case 'full_codebase':
-      return summarizeDiffFiles(getLatestCommitDiff(repoPath));
+      return summarizeDiffFiles(await getLatestCommitDiff(repoPath));
   }
 }
 
 /**
  * Get diff between two refs, split by file.
  */
-function getDiffBetween(repoPath: string, fromRef: string, toRef: string): GitDiffFile[] {
+async function getDiffBetween(
+  repoPath: string,
+  fromRef: string,
+  toRef: string,
+): Promise<GitDiffFile[]> {
   let output: string;
   try {
-    output = runGit(repoPath, ['diff', `${fromRef}...${toRef}`], {
+    output = await runGit(repoPath, ['diff', `${fromRef}...${toRef}`], {
       timeout: 30_000,
       maxBuffer: 10 * 1024 * 1024,
     });
   } catch {
     // Fallback for cases where ... syntax doesn't work (e.g. HEAD~1 on first commit)
     try {
-      output = runGit(repoPath, ['diff', fromRef, toRef], {
+      output = await runGit(repoPath, ['diff', fromRef, toRef], {
         timeout: 30_000,
         maxBuffer: 10 * 1024 * 1024,
       });
@@ -272,8 +290,8 @@ export function parseChangedRanges(diff: string): NonNullable<RepositoryChangedF
  * Get full file contents for full codebase review. Returns file paths
  * relative to repo root for text files, skipping binaries and large files.
  */
-export function getTrackedFiles(repoPath: string): string[] {
-  const output = runGit(repoPath, ['ls-files']);
+export async function getTrackedFiles(repoPath: string): Promise<string[]> {
+  const output = await runGit(repoPath, ['ls-files']);
   return output.trim().split('\n').filter(Boolean);
 }
 
@@ -286,7 +304,7 @@ export function normalizeBranchName(ref: string): string {
     .replace(/^origin\//, '');
 }
 
-export function resolveGitRef(repoPath: string, ref: string): string | null {
+export async function resolveGitRef(repoPath: string, ref: string): Promise<string | null> {
   const normalized = normalizeBranchName(ref);
   const candidates = new Set<string>([
     ref,
@@ -299,7 +317,7 @@ export function resolveGitRef(repoPath: string, ref: string): string | null {
   for (const candidate of candidates) {
     if (!candidate) continue;
     try {
-      runGit(repoPath, ['rev-parse', '--verify', candidate], { timeout: 5_000 });
+      await runGit(repoPath, ['rev-parse', '--verify', candidate], { timeout: 5_000 });
       return candidate;
     } catch {
       // Try next candidate.

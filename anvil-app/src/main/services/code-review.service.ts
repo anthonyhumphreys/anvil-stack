@@ -5,7 +5,7 @@ import { loadPromptTemplate } from '../utils/prompt-templates.js';
 import { callLlm } from './llm.service.js';
 import {
   createReview,
-  createFinding,
+  createFindings,
   updateReviewScopeRef,
   updateReviewStatus,
   updateReviewVerification,
@@ -312,7 +312,7 @@ async function resolveVerificationStartPoint(
     scopeType === 'full_codebase' ||
     scopeType === 'commit_range'
   ) {
-    return resolveGitRef(repoPath, verificationTargetRef) ?? verificationTargetRef;
+    return (await resolveGitRef(repoPath, verificationTargetRef)) ?? verificationTargetRef;
   }
 
   await fetchRemote(repoPath).catch(() => undefined);
@@ -557,8 +557,8 @@ export function buildVerificationFindings(verification: CodeReviewVerification):
 }
 
 function persistReviewFindings(reviewId: string, findings: ReviewFinding[]): void {
-  for (const finding of findings) {
-    createFinding({
+  createFindings(
+    findings.map((finding) => ({
       reviewId,
       severity: finding.severity as 'critical' | 'major' | 'minor' | 'suggestion' | 'nitpick',
       category: finding.category,
@@ -567,8 +567,8 @@ function persistReviewFindings(reviewId: string, findings: ReviewFinding[]): voi
       lineEnd: finding.lineEnd,
       description: finding.description,
       suggestion: finding.suggestion,
-    });
-  }
+    })),
+  );
 }
 
 export function createPendingCodeReview(input: {
@@ -616,14 +616,14 @@ export async function runCodeReview(opts: RunReviewOptions): Promise<string> {
     switch (scopeType) {
       case 'latest_commit':
         scopeResolution = {
-          diffFiles: getLatestCommitDiff(repoPath),
+          diffFiles: await getLatestCommitDiff(repoPath),
           scopeDescription: 'Latest commit',
           verificationTargetRef: 'HEAD',
         };
         break;
       case 'commit_range':
         scopeResolution = {
-          diffFiles: getCommitRangeDiff(
+          diffFiles: await getCommitRangeDiff(
             repoPath,
             scopeRef?.fromSha ?? 'HEAD~5',
             scopeRef?.toSha ?? 'HEAD',
@@ -634,7 +634,7 @@ export async function runCodeReview(opts: RunReviewOptions): Promise<string> {
         break;
       case 'branch_diff':
         scopeResolution = {
-          diffFiles: getBranchDiff(
+          diffFiles: await getBranchDiff(
             repoPath,
             scopeRef?.baseBranch ?? 'main',
             scopeRef?.compareBranch ?? 'HEAD',
@@ -686,7 +686,7 @@ export async function runCodeReview(opts: RunReviewOptions): Promise<string> {
 
     if (scopeType === 'full_codebase') {
       scopeResolution = {
-        diffFiles: getLatestCommitDiff(repoPath),
+        diffFiles: await getLatestCommitDiff(repoPath),
         scopeDescription: 'Full codebase (latest changes)',
         verificationTargetRef: 'HEAD',
       };

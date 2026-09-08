@@ -159,7 +159,7 @@ describe('workflow persistence and commands', () => {
     legacy.exec(
       "CREATE TABLE automation_definitions (id TEXT PRIMARY KEY, name TEXT); INSERT INTO automation_definitions VALUES ('existing', 'Daily');",
     );
-    legacy.exec(MIGRATIONS[62]);
+    legacy.exec(MIGRATIONS[64]);
     expect(legacy.prepare('SELECT * FROM automation_definitions').get()).toEqual({
       id: 'existing',
       name: 'Daily',

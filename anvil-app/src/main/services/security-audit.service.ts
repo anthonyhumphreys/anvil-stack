@@ -1,6 +1,6 @@
 import { loadPromptTemplate } from '../utils/prompt-templates.js';
 import { callLlm } from './llm.service.js';
-import { createAudit, createFinding, updateAuditStatus } from './security-persistence.service.js';
+import { createAudit, createFindings, updateAuditStatus } from './security-persistence.service.js';
 import { getSettings } from './settings.service.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
 import type { RepoSummary } from '../../shared/types.js';
@@ -184,8 +184,8 @@ export async function runSecurityAudit(
     });
 
     // Persist findings
-    for (const finding of deduped) {
-      createFinding({
+    createFindings(
+      deduped.map((finding) => ({
         auditId,
         severity: finding.severity as 'critical' | 'high' | 'medium' | 'low' | 'info',
         category: finding.category,
@@ -194,8 +194,8 @@ export async function runSecurityAudit(
         affectedFiles: finding.affectedFiles,
         description: finding.description,
         remediation: finding.remediation,
-      });
-    }
+      })),
+    );
 
     // Generate executive summary
     sendProgress('Generating executive summary...', 95);

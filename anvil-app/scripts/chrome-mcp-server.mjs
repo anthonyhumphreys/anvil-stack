@@ -10,8 +10,8 @@
  * Bridge: HTTP to localhost:<port> read from ~/.anvil/browser-bridge.json
  */
 
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, realpathSync } from 'node:fs';
+import { join, relative, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
 import { request } from 'node:http';
 
@@ -24,11 +24,17 @@ const BRIDGE_INFO_PATHS = [
   join(homedir(), '.devhub', 'browser-bridge.json'),
 ];
 
-function getBridgePort() {
+function getBridgeInfo() {
   for (const bridgeInfoPath of BRIDGE_INFO_PATHS) {
     try {
       const info = JSON.parse(readFileSync(bridgeInfoPath, 'utf-8'));
-      return info.port;
+      if (
+        typeof info.token !== 'string' ||
+        typeof info.target !== 'string' ||
+        !Number.isInteger(info.port)
+      )
+        continue;
+      return info;
     } catch {
       // Try the next path.
     }
@@ -36,10 +42,32 @@ function getBridgePort() {
   return null;
 }
 
+// Bind once when this MCP process is created, not after a later workspace switch.
+const clientCwd = realpathSync(process.cwd());
+const pinnedBridge = getBridgeInfo();
 function bridgeRequest(path, body = null) {
-  const port = getBridgePort();
-  if (!port) return Promise.reject(new Error('Anvil browser bridge not running. Open the Browser panel in Anvil first.'));
+  const info = pinnedBridge;
+  if (!info)
+    return Promise.reject(
+      new Error('Anvil browser bridge not running. Open the Browser panel in Anvil first.'),
+    );
 
+  if (
+    !info.scope?.repoPaths?.some((root) => {
+      try {
+        const rel = relative(realpathSync(root), clientCwd);
+        return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+      } catch {
+        return false;
+      }
+    })
+  )
+    return Promise.reject(
+      new Error(
+        'This browser belongs to another workspace. Open the intended browser and reconnect this MCP session.',
+      ),
+    );
+  const { port, token, target } = info;
   return new Promise((resolve, reject) => {
     const payload = body ? JSON.stringify(body) : null;
     const req = request(
@@ -48,7 +76,13 @@ function bridgeRequest(path, body = null) {
         port,
         path,
         method: body ? 'POST' : 'GET',
-        headers: payload ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } : {},
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'X-Anvil-Target': target,
+          ...(payload
+            ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+            : {}),
+        },
         timeout: 30_000,
       },
       (res) => {
@@ -64,7 +98,10 @@ function bridgeRequest(path, body = null) {
       },
     );
     req.on('error', reject);
-    req.on('timeout', () => { req.destroy(); reject(new Error('Bridge request timed out')); });
+    req.on('timeout', () => {
+      req.destroy();
+      reject(new Error('Bridge request timed out'));
+    });
     if (payload) req.write(payload);
     req.end();
   });
@@ -88,7 +125,8 @@ const TOOLS = [
   },
   {
     name: 'browser_screenshot',
-    description: 'Take a screenshot of the current page in the embedded Anvil browser. Returns a base64-encoded PNG image.',
+    description:
+      'Take a screenshot of the current page in the embedded Anvil browser. Returns a base64-encoded PNG image.',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -111,7 +149,11 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        selector: { type: 'string', description: 'Optional CSS selector to get HTML of a specific element. Defaults to the entire page.' },
+        selector: {
+          type: 'string',
+          description:
+            'Optional CSS selector to get HTML of a specific element. Defaults to the entire page.',
+        },
       },
     },
   },
@@ -121,7 +163,11 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        selector: { type: 'string', description: 'Optional CSS selector to get text of a specific element. Defaults to document.body.' },
+        selector: {
+          type: 'string',
+          description:
+            'Optional CSS selector to get text of a specific element. Defaults to document.body.',
+        },
       },
     },
   },
@@ -150,7 +196,8 @@ const TOOLS = [
   },
   {
     name: 'browser_status',
-    description: 'Get the current status of the embedded Anvil browser (attached URL, connection state)',
+    description:
+      'Get the current status of the embedded Anvil browser (attached URL, connection state)',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -171,12 +218,10 @@ async function handleToolCall(name, args) {
     }
 
     case 'browser_screenshot': {
-      const result = await bridgeRequest('/screenshot');
+      const result = await bridgeRequest('/screenshot', {});
       if (result.error) return { isError: true, content: [{ type: 'text', text: result.error }] };
       return {
-        content: [
-          { type: 'image', data: result.data, mimeType: result.mimeType },
-        ],
+        content: [{ type: 'image', data: result.data, mimeType: result.mimeType }],
       };
     }
 
@@ -185,7 +230,12 @@ async function handleToolCall(name, args) {
       if (result.error) return { isError: true, content: [{ type: 'text', text: result.error }] };
       const value = result.result?.result?.value;
       return {
-        content: [{ type: 'text', text: value !== undefined ? JSON.stringify(value, null, 2) : 'undefined' }],
+        content: [
+          {
+            type: 'text',
+            text: value !== undefined ? JSON.stringify(value, null, 2) : 'undefined',
+          },
+        ],
       };
     }
 
@@ -221,7 +271,9 @@ async function handleToolCall(name, args) {
       })()`;
       const result = await bridgeRequest('/evaluate', { expression });
       if (result.error) return { isError: true, content: [{ type: 'text', text: result.error }] };
-      return { content: [{ type: 'text', text: result.result?.result?.value ?? 'Click executed' }] };
+      return {
+        content: [{ type: 'text', text: result.result?.result?.value ?? 'Click executed' }],
+      };
     }
 
     case 'browser_type': {
@@ -243,10 +295,12 @@ async function handleToolCall(name, args) {
       const result = await bridgeRequest('/status');
       if (result.error) return { isError: true, content: [{ type: 'text', text: result.error }] };
       return {
-        content: [{
-          type: 'text',
-          text: `Browser attached: ${result.attached}\nCurrent URL: ${result.url ?? 'none'}`,
-        }],
+        content: [
+          {
+            type: 'text',
+            text: `Browser attached: ${result.attached}\nCurrent URL: ${result.url ?? 'none'}`,
+          },
+        ],
       };
     }
 

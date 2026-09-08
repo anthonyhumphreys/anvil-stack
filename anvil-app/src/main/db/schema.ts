@@ -1,6 +1,22 @@
-export const SCHEMA_VERSION = 62;
+export const SCHEMA_VERSION = 64;
 
 export const SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS change_reviews (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  record_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_change_reviews_workspace ON change_reviews(workspace_id, updated_at DESC);
+CREATE TABLE IF NOT EXISTS scoped_work_items_cache (
+  connection_key TEXT NOT NULL,
+  id TEXT NOT NULL,
+  raw_json TEXT NOT NULL,
+  fetched_at TEXT NOT NULL,
+  PRIMARY KEY(connection_key, id)
+);
+
 CREATE TABLE IF NOT EXISTS schema_meta (
   key TEXT PRIMARY KEY,
   value TEXT
@@ -463,7 +479,8 @@ CREATE TABLE IF NOT EXISTS code_reviews (
   verification_worktree_path TEXT,
   verification_worktree_kept INTEGER NOT NULL DEFAULT 0,
   started_at    TEXT NOT NULL DEFAULT (datetime('now')),
-  completed_at  TEXT
+  completed_at  TEXT,
+  source_tree TEXT
 );
 
 CREATE TABLE IF NOT EXISTS code_review_findings (
@@ -512,7 +529,8 @@ CREATE TABLE IF NOT EXISTS security_audits (
   summary       TEXT,
   started_at    TEXT NOT NULL DEFAULT (datetime('now')),
   completed_at  TEXT,
-  model_version TEXT
+  model_version TEXT,
+  source_tree TEXT
 );
 
 CREATE TABLE IF NOT EXISTS security_findings (
@@ -528,6 +546,19 @@ CREATE TABLE IF NOT EXISTS security_findings (
   work_item_id   TEXT,
   dismissed      INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE INDEX IF NOT EXISTS idx_code_reviews_repo_started
+  ON code_reviews(repo_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_code_reviews_running
+  ON code_reviews(repo_id, started_at DESC) WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS idx_code_review_findings_review
+  ON code_review_findings(review_id);
+CREATE INDEX IF NOT EXISTS idx_security_audits_repo_started
+  ON security_audits(repo_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_security_audits_running
+  ON security_audits(repo_id, started_at DESC) WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS idx_security_findings_audit
+  ON security_findings(audit_id);
 
 CREATE TABLE IF NOT EXISTS pentest_scans (
   id              TEXT PRIMARY KEY,
@@ -616,6 +647,7 @@ CREATE INDEX IF NOT EXISTS idx_workspace_scaffold_sessions_status
   ON workspace_scaffold_sessions(status);
 
 CREATE TABLE IF NOT EXISTS automation_definitions (
+  workflow_template_id TEXT,
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
@@ -631,7 +663,6 @@ CREATE TABLE IF NOT EXISTS automation_definitions (
   enabled INTEGER NOT NULL DEFAULT 0,
   allow_repo_write INTEGER NOT NULL DEFAULT 0,
   allow_command_run INTEGER NOT NULL DEFAULT 0,
-  workflow_template_id TEXT,
   loop_config_json TEXT,
   execution_mode TEXT NOT NULL DEFAULT 'disposable-worktree',
   last_run_at TEXT,
@@ -1375,6 +1406,7 @@ export const MIGRATIONS: Record<number, string> = {
   `,
   24: `
     CREATE TABLE IF NOT EXISTS automation_definitions (
+  workflow_template_id TEXT,
       id TEXT PRIMARY KEY,
       workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
       name TEXT NOT NULL,
@@ -1963,5 +1995,58 @@ CREATE TABLE IF NOT EXISTS dojo_recommendation_states (
   PRIMARY KEY (report_id, recommendation_key)
 );
 `,
-  62: `ALTER TABLE automation_definitions ADD COLUMN workflow_template_id TEXT;`,
+  62: `
+CREATE TABLE IF NOT EXISTS change_reviews (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  record_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_change_reviews_workspace ON change_reviews(workspace_id, updated_at DESC);
+CREATE TABLE IF NOT EXISTS scoped_work_items_cache (
+  connection_key TEXT NOT NULL,
+  id TEXT NOT NULL,
+  raw_json TEXT NOT NULL,
+  fetched_at TEXT NOT NULL,
+  PRIMARY KEY(connection_key, id)
+);
+ALTER TABLE code_reviews ADD COLUMN source_tree TEXT;
+ALTER TABLE security_audits ADD COLUMN source_tree TEXT;
+UPDATE pull_request_visualisations SET status = 'failed' WHERE status = 'ready';
+`,
+  // Development review/workflow builds also used v62. Reconcile their missing main tables.
+  63: `
+CREATE TABLE IF NOT EXISTS change_reviews (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  record_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_change_reviews_workspace ON change_reviews(workspace_id, updated_at DESC);
+CREATE TABLE IF NOT EXISTS scoped_work_items_cache (
+  connection_key TEXT NOT NULL,
+  id TEXT NOT NULL,
+  raw_json TEXT NOT NULL,
+  fetched_at TEXT NOT NULL,
+  PRIMARY KEY(connection_key, id)
+);
+ALTER TABLE code_reviews ADD COLUMN source_tree TEXT;
+ALTER TABLE security_audits ADD COLUMN source_tree TEXT;
+UPDATE pull_request_visualisations SET status = 'failed' WHERE status = 'ready';
+CREATE INDEX IF NOT EXISTS idx_code_reviews_repo_started
+  ON code_reviews(repo_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_code_reviews_running
+  ON code_reviews(repo_id, started_at DESC) WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS idx_code_review_findings_review
+  ON code_review_findings(review_id);
+CREATE INDEX IF NOT EXISTS idx_security_audits_repo_started
+  ON security_audits(repo_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_security_audits_running
+  ON security_audits(repo_id, started_at DESC) WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS idx_security_findings_audit
+  ON security_findings(audit_id);
+  `,
+  64: `ALTER TABLE automation_definitions ADD COLUMN workflow_template_id TEXT;`,
 };
