@@ -1,3 +1,4 @@
+import { validateThreadCheckouts } from './thread-checkout.service.js';
 import { listDojoPrices, recordDojoExecutionEvent } from './dojo-analytics.service.js';
 import { spawn, type ChildProcess } from 'node:child_process';
 
@@ -29,7 +30,6 @@ import {
 } from './persona.service.js';
 import { getSettings } from './settings.service.js';
 import {
-  commonParentDir,
   handleCodexServerLine,
   type JsonRpcRequestId,
   sendCodexJsonRpc,
@@ -73,6 +73,7 @@ interface ManagedSession {
   status: CodexSession['status'];
   startedAt: string;
   cwd: string;
+  repoPaths: string[];
   buffer: string;
   threadId: string | null;
   turnId: string | null;
@@ -128,7 +129,39 @@ export function resolveSessionModel(provider: AgentProvider, configuredModel: st
  * Start a new Codex app-server session for a repo + persona combo.
  * Protocol: initialize → thread/start → turn/start for each message.
  */
+const startingThreads = new Set<string>();
+
+export function hasActiveThreadSession(threadId: string): boolean {
+  return (
+    startingThreads.has(threadId) ||
+    [...sessions.values()].some((session) => session.appThreadId === threadId)
+  );
+}
+
+export function hasActiveSessionAtPath(repoPath: string): boolean {
+  return [...sessions.values()].some((session) => session.repoPaths.includes(repoPath));
+}
+
 export async function startSession(
+  repoPaths: string[],
+  repoIds: string[],
+  personaId: string,
+  options?: ChatStartOptions,
+): Promise<CodexSession> {
+  const threadId = options?.threadId;
+  if (threadId && hasActiveThreadSession(threadId)) {
+    throw new Error('This thread already has an active session. Reopen it to continue.');
+  }
+  if (threadId) startingThreads.add(threadId);
+  try {
+    if (threadId) await validateThreadCheckouts(threadId, repoIds);
+    return await startManagedSession(repoPaths, repoIds, personaId, options);
+  } finally {
+    if (threadId) startingThreads.delete(threadId);
+  }
+}
+
+async function startManagedSession(
   repoPaths: string[],
   repoIds: string[],
   personaId: string,
@@ -152,7 +185,12 @@ export async function startSession(
     ? buildScaffoldSystemPrompt(personaId, options.scaffold.rootPath)
     : personaId === 'design'
       ? buildDesignSystemPrompt(repoIds, options?.designMode ?? 'design', options?.figmaContext)
-      : buildSystemPrompt(personaId, repoIds, options?.workspace?.workspaceId);
+      : buildSystemPrompt(
+          personaId,
+          repoIds,
+          options?.workspace?.workspaceId,
+          Object.fromEntries(repoIds.map((id, index) => [id, repoPaths[index]])),
+        );
   const cwd = resolveSessionCwd(repoPaths, options, app.getPath('userData'));
 
   // Build environment
@@ -212,6 +250,7 @@ export async function startSession(
     status: 'starting',
     startedAt: new Date().toISOString(),
     cwd,
+    repoPaths,
     buffer: '',
     threadId: null,
     turnId: null,
@@ -340,6 +379,7 @@ export async function sendMessage(
 
   // Wait for thread to be ready before sending
   await session.threadReady;
+  if (session.appThreadId) await validateThreadCheckouts(session.appThreadId);
 
   session.status = 'busy';
   setSessionThreadAttention(session, 'working');
@@ -373,7 +413,7 @@ export async function sendMessage(
     threadId: session.threadId,
     input: buildUserInput(message, attachments),
     approvalPolicy: codexPolicy.approvalPolicy,
-    sandboxPolicy: sandboxModeToTurnPolicy(codexPolicy.sandbox, session.cwd),
+    sandboxPolicy: sandboxModeToTurnPolicy(codexPolicy.sandbox, session.cwd, session.repoPaths),
     model,
     ...(options?.serviceTier !== undefined ? { serviceTier: options.serviceTier } : {}),
     effort,
@@ -781,8 +821,8 @@ export function resolveSessionCwd(
   userDataPath: string,
 ): string {
   if (options?.scaffold?.rootPath) return options.scaffold.rootPath;
+  if (repoPaths.length > 0) return repoPaths[0];
   if (options?.workspace?.cwd) return options.workspace.cwd;
-  if (repoPaths.length > 0) return commonParentDir(repoPaths);
   if (options?.workspace?.workspaceId) {
     const workspaceId = options.workspace.workspaceId;
     if (!/^[a-zA-Z0-9_-]+$/.test(workspaceId)) {
@@ -1108,6 +1148,7 @@ export function resolvePersonaCodexPolicy(
 function sandboxModeToTurnPolicy(
   mode: 'read-only' | 'workspace-write' | 'danger-full-access',
   cwd: string,
+  repoPaths: string[] = [],
 ): Record<string, unknown> {
   switch (mode) {
     case 'danger-full-access':
@@ -1118,7 +1159,7 @@ function sandboxModeToTurnPolicy(
     default:
       return {
         type: 'workspaceWrite',
-        writableRoots: [cwd],
+        writableRoots: repoPaths.length > 0 ? repoPaths : [cwd],
         networkAccess: false,
         excludeTmpdirEnvVar: false,
         excludeSlashTmp: false,

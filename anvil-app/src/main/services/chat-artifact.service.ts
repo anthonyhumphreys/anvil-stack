@@ -311,6 +311,27 @@ export function upsertChatArtifact(input: ChatArtifactInput): ChatArtifact {
       'Use a different path when changing an artifact between repository and session storage',
     );
   }
+  if (storage === 'repository' && input.repoId) {
+    const binding = db
+      .prepare('SELECT repo_id FROM thread_checkouts WHERE thread_id = ?')
+      .all(input.threadId) as Array<{ repo_id: string }>;
+    if (binding.length > 0 && !binding.some((checkout) => checkout.repo_id === input.repoId)) {
+      throw new Error(
+        'Artifact repository does not match this thread checkout. Reopen the thread before writing.',
+      );
+    }
+    const collision = db
+      .prepare(
+        `SELECT id FROM chat_artifacts WHERE repo_id = ? AND relative_path = ?
+      AND thread_id <> ? AND storage_scope = 'repository' LIMIT 1`,
+      )
+      .get(input.repoId, relativePath, input.threadId);
+    if (collision && input.contentEncoding !== 'file') {
+      throw new Error(
+        'Another thread owns this artifact path in the shared checkout. Choose a unique path for this thread.',
+      );
+    }
+  }
   const filePath =
     storage === 'repository'
       ? writeRepoArtifact(input.repoId, relativePath, input.content, input.contentEncoding)

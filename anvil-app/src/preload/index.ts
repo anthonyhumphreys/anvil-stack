@@ -146,6 +146,9 @@ const api: AnvilAPI = {
   },
 
   chat: {
+    checkoutOptions: (repoId: string) => ipcRenderer.invoke('chat:checkout-options', repoId),
+    selectCheckout: (input: import('../shared/types.js').ThreadCheckoutInput) =>
+      ipcRenderer.invoke('chat:select-checkout', input),
     startSession: (
       repoIds: string[],
       personaId: string,

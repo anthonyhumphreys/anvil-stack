@@ -685,7 +685,37 @@ export interface ChatFileMentionSearchResult {
   size: number;
 }
 
+export interface ThreadCheckout {
+  repoId: string;
+  sourceRepoId: string;
+  path: string;
+  branch: string;
+  baseCommit: string;
+  owned: boolean;
+}
+
+export interface CheckoutOptions {
+  currentPath: string;
+  checkouts: Array<{
+    path: string;
+    branch: string | null;
+    locked: boolean;
+    activeThreads: Array<{ id: string; title: string }>;
+  }>;
+  branches: string[];
+}
+
+export interface ThreadCheckoutInput {
+  threadId: string;
+  repoId: string;
+  mode: 'existing' | 'worktree';
+  path?: string;
+  branchName?: string;
+  baseBranch?: string;
+}
+
 export interface ChatThread {
+  checkouts?: ThreadCheckout[];
   id: string;
   personaId: string;
   title: string;

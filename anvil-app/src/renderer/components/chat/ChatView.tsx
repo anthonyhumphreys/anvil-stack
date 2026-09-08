@@ -1,3 +1,4 @@
+import { ThreadCheckoutPicker } from './ThreadCheckoutPicker';
 import { pollWhileVisible } from '../../utils/visible-polling';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -180,6 +181,8 @@ export function ChatView({ userRole }: ChatViewProps) {
     threads,
     activeThread,
     activeThreadId,
+    chooseCheckout,
+    session,
     liveThreadStatuses,
     collaborationMode,
     activePlan,
@@ -813,6 +816,8 @@ export function ChatView({ userRole }: ChatViewProps) {
             </div>
             <p className="truncate text-xs text-text-tertiary">
               {activeWorkspace?.name ?? 'No workspace'}
+              {activeRepos.length > 0 &&
+                ` · ${activeRepos.map((repo) => activeThread?.checkouts?.find((checkout) => checkout.repoId === repo.id)?.branch || repo.defaultBranch).join(', ')}`}
             </p>
           </div>
 
@@ -1361,12 +1366,29 @@ export function ChatView({ userRole }: ChatViewProps) {
             contextControls={
               scaffoldModeActive ? null : (
                 <>
-                  <RepoSelector
-                    variant="dropdown"
-                    mode="multi"
-                    placement="bottom"
-                    selectedRepoIds={activeRepos.map((repo) => repo.id)}
-                    onMultiSelect={setActiveRepos}
+                  {activeThread?.messageCount || session ? (
+                    <span
+                      className="max-w-48 truncate text-xs text-text-secondary"
+                      title={activeRepos.map((repo) => repo.path).join('\n')}
+                    >
+                      {activeRepos.map((repo) => repo.name).join(', ')}
+                    </span>
+                  ) : (
+                    <RepoSelector
+                      indexedOnly={false}
+                      variant="dropdown"
+                      mode="multi"
+                      placement="bottom"
+                      selectedRepoIds={activeRepos.map((repo) => repo.id)}
+                      onMultiSelect={setActiveRepos}
+                    />
+                  )}
+                  <ThreadCheckoutPicker
+                    key={activeThreadId ?? 'new'}
+                    repos={activeRepos}
+                    checkouts={activeThread?.checkouts ?? []}
+                    disabled={busy || Boolean(session) || Boolean(activeThread?.messageCount)}
+                    onChoose={chooseCheckout}
                   />
                   <GovernanceSelector
                     placement="bottom"

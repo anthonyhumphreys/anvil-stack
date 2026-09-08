@@ -37,6 +37,19 @@ afterEach(() => {
 });
 
 describe('codex session service', () => {
+  it('uses the selected primary checkout instead of their shared ancestor', () => {
+    expect(
+      resolveSessionCwd(['/worktrees/one/repo', '/worktrees/two/repo'], undefined, '/data'),
+    ).toBe('/worktrees/one/repo');
+    expect(
+      resolveSessionCwd(
+        ['/worktrees/one/repo'],
+        { workspace: { workspaceId: 'ws', cwd: '/source' } },
+        '/data',
+      ),
+    ).toBe('/worktrees/one/repo');
+  });
+
   it('sends native Plan settings and explicitly resets Build turns to default mode', () => {
     expect(buildCodexCollaborationMode('plan', 'gpt-5.6-sol', 'high')).toEqual({
       mode: 'plan',

@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 61;
+export const SCHEMA_VERSION = 62;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -83,6 +83,17 @@ CREATE TABLE IF NOT EXISTS chat_threads (
   active_turn_started_at TEXT,
   last_viewed_at TEXT,
   settled_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS thread_checkouts (
+  thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+  repo_id TEXT NOT NULL REFERENCES repos(id),
+  source_repo_id TEXT NOT NULL,
+  path TEXT NOT NULL,
+  branch TEXT NOT NULL,
+  base_commit TEXT NOT NULL,
+  owned INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(thread_id, repo_id)
 );
 
 CREATE TABLE IF NOT EXISTS chat_sessions (
@@ -1960,6 +1971,17 @@ CREATE TABLE IF NOT EXISTS dojo_recommendation_states (
   updated_at TEXT NOT NULL,
   applied_at TEXT,
   PRIMARY KEY (report_id, recommendation_key)
+);
+`,
+  62: `CREATE TABLE IF NOT EXISTS thread_checkouts (
+  thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+  repo_id TEXT NOT NULL REFERENCES repos(id),
+  source_repo_id TEXT NOT NULL,
+  path TEXT NOT NULL,
+  branch TEXT NOT NULL,
+  base_commit TEXT NOT NULL,
+  owned INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(thread_id, repo_id)
 );
 `,
 };

@@ -1,5 +1,7 @@
 # Concurrent threads and worktrees
 
+Follow-up: the optional thread-checkout implementation is recorded in [the handover](../handovers/optional-thread-checkouts.md). The findings below describe the original review baseline.
+
 Reviewed from `main` at `01cea7e`, in `feature/worktrees--concurrent-thread-isolation`.
 
 Ordinary chat threads are not isolated. Separate provider sessions still use the same registered checkout. Worktree support exists for automations, BA spikes, and review verification, but thread-owned checkout selection and recovery are missing. The fixes in this branch improve existing worktree safety; they do not complete ordinary-thread isolation.

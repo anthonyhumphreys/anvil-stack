@@ -43,6 +43,8 @@ import type {
   BaMessage,
   BaRepoLink,
   BaSession,
+  CheckoutOptions,
+  ThreadCheckoutInput,
   ChatAttachment,
   ChatNavigationTarget,
   ChatAttachmentInput,
@@ -225,6 +227,8 @@ export interface AnvilAPI {
   };
 
   chat: {
+    checkoutOptions: (repoId: string) => Promise<CheckoutOptions>;
+    selectCheckout: (input: ThreadCheckoutInput) => Promise<{ repo: RepoInfo; thread: ChatThread }>;
     startSession: (
       repoIds: string[],
       personaId: string,

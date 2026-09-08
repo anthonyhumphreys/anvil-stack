@@ -91,6 +91,9 @@ interface ChatContextValue {
   activeArtifacts: ChatArtifact[];
   discardArtifact: (artifactId: string) => Promise<void>;
   chatLayout: ChatLayout;
+  chooseCheckout: (
+    input: Omit<import('../../shared/types').ThreadCheckoutInput, 'threadId'>,
+  ) => Promise<void>;
   setActiveRepo: (repo: RepoInfo) => void;
   setActiveRepos: (repos: RepoInfo[]) => void;
   setSelectedGovernanceDocs: (docs: GovernanceDocument[]) => void;
@@ -606,6 +609,29 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     [activePersona, activeRepoState, activeReposState, activeWorkspace?.id, applyThreadState],
   );
 
+  const chooseCheckout = useCallback(
+    async (input: Omit<import('../../shared/types').ThreadCheckoutInput, 'threadId'>) => {
+      if (busy || session) throw new Error('Start a new thread to choose another checkout.');
+      const thread = activeThreadRef.current ?? (await createThreadRecord());
+      if (!thread) throw new Error('Choose an assistant before selecting a checkout.');
+      const version = threadLoadVersionRef.current;
+      setBusy(true);
+      try {
+        const result = await window.anvil.chat.selectCheckout({ ...input, threadId: thread.id });
+        await refreshWorkspaces();
+        if (threadLoadVersionRef.current !== version) return;
+        applyThreadState(result.thread);
+        setActiveReposState((current) =>
+          current.map((repo) => (repo.id === input.repoId ? result.repo : repo)),
+        );
+        setActiveRepoState((current) => (current?.id === input.repoId ? result.repo : current));
+      } finally {
+        if (threadLoadVersionRef.current === version) setBusy(false);
+      }
+    },
+    [busy, session, createThreadRecord, refreshWorkspaces, applyThreadState],
+  );
+
   const renameThread = useCallback(
     async (threadId: string, title: string) => {
       const updated = await window.anvil.chat.updateThread(threadId, { title });
@@ -959,6 +985,14 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       const threadRepos = activeThread.repoIds
         .map((repoId) => repos.find((repo) => repo.id === repoId))
         .filter((repo): repo is RepoInfo => Boolean(repo));
+      if (threadRepos.length !== activeThread.repoIds.length) {
+        setActiveReposState([]);
+        setActiveRepoState(null);
+        setError(
+          'A repository for this thread is unavailable. Reconnect its checkout before continuing.',
+        );
+        return;
+      }
       if (threadRepos.length > 0) {
         const nextPrimary =
           threadRepos.find((repo) => repo.id === activeThread.activeRepoId) ??
@@ -2180,6 +2214,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       setBusy(false);
       setError(null);
 
+      const sourceThreadId = activeThreadRef.current?.id;
       const forkedThread = await createThreadRecord({
         title: buildForkThreadTitle(
           activeThreadRef.current?.title,
@@ -2187,8 +2222,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         ),
       });
       if (!forkedThread) return;
-      const sourceThreadId = activeThreadRef.current?.id;
-
       const primaryRepo = activeRepoState ?? activeReposState[0] ?? null;
       const forkTimestampBase = Date.now();
       for (const [index, entry] of ancestorEntries.entries()) {
@@ -2472,6 +2505,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         switchPersona,
         interrupt,
         startNewSession,
+        chooseCheckout,
         loadHistory: loadHistoryFn,
         clearHistory: clearHistoryFn,
         setModel: updateModel,
