@@ -200,7 +200,10 @@ export function OrchestrationPanel({
                     value={profile.capabilities.join(', ')}
                     onChange={(event) =>
                       updateProfile(profile.id, {
-                        capabilities: event.target.value.split(',').map((value) => value.trim()),
+                        capabilities: event.target.value
+                          .split(',')
+                          .map((value) => value.trim())
+                          .filter(Boolean),
                       })
                     }
                   />
