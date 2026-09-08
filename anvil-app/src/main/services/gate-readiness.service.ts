@@ -1,3 +1,7 @@
+import { currentRepoTree } from './review-binding.service.js';
+import { scanRepoForAdrs } from './adr-discovery.service.js';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import { getDb } from '../db/database.js';
 import { getItem } from './lifecycle.service.js';
 import { getGateTemplates } from './lifecycle.service.js';
@@ -25,11 +29,17 @@ function evaluateSecurityAudit(criterion: GateCriterion, repoIds: string[]): Cri
   for (const repoId of repoIds) {
     const audit = db
       .prepare(
-        "SELECT id, status FROM security_audits WHERE repo_id = ? AND status = 'completed' ORDER BY completed_at DESC LIMIT 1",
+        "SELECT id, status, source_tree FROM security_audits WHERE repo_id = ? AND status = 'completed' ORDER BY completed_at DESC LIMIT 1",
       )
       .get(repoId) as { id: string; status: string } | undefined;
 
-    if (!audit) continue;
+    const repoTree = currentRepoTree(repoId);
+    if (!audit || !repoTree || (audit as { source_tree?: string }).source_tree !== repoTree)
+      return {
+        criterion,
+        status: 'not_met',
+        detail: `Missing or stale security audit for ${repoId}`,
+      };
     hasCompletedAudit = true;
 
     const blockingSeverities = severityOrder.slice(maxIdx + 1);
@@ -65,10 +75,15 @@ function evaluateCodeReview(criterion: GateCriterion, repoIds: string[]): Criter
   for (const repoId of repoIds) {
     const review = db
       .prepare(
-        "SELECT id FROM code_reviews WHERE repo_id = ? AND status = 'completed' ORDER BY completed_at DESC LIMIT 1",
+        "SELECT id, source_tree FROM code_reviews WHERE repo_id = ? AND status = 'completed' ORDER BY completed_at DESC LIMIT 1",
       )
       .get(repoId) as { id: string } | undefined;
-    if (!review) continue;
+    if (
+      !review ||
+      !currentRepoTree(repoId) ||
+      (review as { source_tree?: string }).source_tree !== currentRepoTree(repoId)
+    )
+      return { criterion, status: 'not_met', detail: `Missing or stale code review for ${repoId}` };
     hasReview = true;
 
     const count = db
@@ -89,56 +104,42 @@ function evaluateCodeReview(criterion: GateCriterion, repoIds: string[]): Criter
   return { criterion, status: 'met', detail: 'Code review passed — no critical/major findings' };
 }
 
-function evaluateAdrExists(_criterion: GateCriterion, repoIds: string[]): CriterionResult {
-  const db = getDb();
-  // ADRs are filesystem-based — we check if repos have been indexed and have ADR-like patterns
-  // We do a simple check: repos with any module_summary containing "adr" or "decision" in path
-  // In practice, the ADR view scans the filesystem, but for gate readiness we check repo state
-  if (repoIds.length === 0)
-    return { criterion: _criterion, status: 'not_met', detail: 'No linked repos' };
-
-  // Check if any linked repo has ADR files by looking at indexed data
+function evaluateDocuments(
+  criterion: GateCriterion,
+  repoIds: string[],
+  kind: 'adr' | 'compliance',
+): CriterionResult {
+  if (!repoIds.length) return { criterion, status: 'not_met', detail: 'No linked repos' };
   for (const repoId of repoIds) {
-    const summary = db
-      .prepare('SELECT overview FROM repo_summaries WHERE repo_id = ?')
-      .get(repoId) as { overview: string } | undefined;
-    if (summary) {
-      // Repo has been indexed — assume ADRs are accessible via filesystem scan
-      return {
-        criterion: _criterion,
-        status: 'met',
-        detail: 'Linked repos indexed — ADRs available for review',
-      };
-    }
-  }
-  return {
-    criterion: _criterion,
-    status: 'not_met',
-    detail: 'No indexed repos — run indexing first',
-  };
-}
-
-function evaluateComplianceDoc(criterion: GateCriterion, repoIds: string[]): CriterionResult {
-  const db = getDb();
-  if (repoIds.length === 0) return { criterion, status: 'not_met', detail: 'No linked repos' };
-
-  // Check for compliance documents (stored in filesystem but tracked in service state)
-  // The compliance service generates docs per repo — check if any exist
-  let found = false;
-  for (const repoId of repoIds) {
-    const repo = db.prepare('SELECT path FROM repos WHERE id = ?').get(repoId) as
+    const repo = getDb().prepare('SELECT path FROM repos WHERE id = ?').get(repoId) as
       | { path: string }
       | undefined;
-    if (repo) {
-      // Compliance docs live at docs/DPIA.md, docs/privacy-policy.md etc.
-      found = true;
-      break;
+    try {
+      const found =
+        repo &&
+        (kind === 'adr'
+          ? scanRepoForAdrs(repo.path).length > 0
+          : ['DPIA.md', 'PRIVACY_POLICY.md', 'TERMS_OF_SERVICE.md'].some((name) => {
+              const file = join(repo.path, 'docs', name);
+              return (
+                existsSync(file) &&
+                statSync(file).isFile() &&
+                readFileSync(file, 'utf8').trim().length > 0
+              );
+            }));
+      if (!found)
+        return { criterion, status: 'not_met', detail: `No ${kind} document found for ${repoId}` };
+    } catch {
+      return { criterion, status: 'not_met', detail: `Could not inspect documents for ${repoId}` };
     }
   }
-
-  return found
-    ? { criterion, status: 'met', detail: 'Compliance documents available' }
-    : { criterion, status: 'not_met', detail: 'No compliance documents found' };
+  return { criterion, status: 'met', detail: `${kind} documents found in every linked repository` };
+}
+function evaluateAdrExists(criterion: GateCriterion, repoIds: string[]): CriterionResult {
+  return evaluateDocuments(criterion, repoIds, 'adr');
+}
+function evaluateComplianceDoc(criterion: GateCriterion, repoIds: string[]): CriterionResult {
+  return evaluateDocuments(criterion, repoIds, 'compliance');
 }
 
 function evaluateConfluencePage(criterion: GateCriterion): CriterionResult {

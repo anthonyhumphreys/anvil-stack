@@ -124,6 +124,7 @@ interface ChatContextValue {
     reasoningLevel?: ReasoningEffort;
     threadTitle?: string;
     workItem?: WorkItem;
+    collaborationMode?: ChatCollaborationMode;
   }) => Promise<void>;
 }
 
@@ -2255,6 +2256,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       reasoningLevel?: ReasoningEffort;
       threadTitle?: string;
       workItem?: WorkItem;
+      collaborationMode?: ChatCollaborationMode;
     }) => {
       if (scaffoldModeActive) return;
 
@@ -2279,7 +2281,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       setActivePersona(targetPersona);
       setReasoningLevel(opts.reasoningLevel ?? reasoningLevel);
 
-      const useWorkItemThread = chatLayout === 'workitems' && !!opts.workItem;
+      const useWorkItemThread = !!opts.workItem;
+      if (useWorkItemThread && chatLayout !== 'workitems') await setChatLayout('workitems');
+      const requestedMode = opts.collaborationMode ?? collaborationMode;
+      setCollaborationMode(requestedMode);
       const createdThread = useWorkItemThread
         ? await window.anvil.chat.createThread({
             workspaceId: activeWorkspace?.id ?? null,
@@ -2374,7 +2379,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         bumpThreadSummary(createdThread.id, opts.message, timestamp);
 
         await window.anvil.chat.send(nextSession.id, enrichedMessage, [], {
-          collaborationMode,
+          collaborationMode: requestedMode,
           model,
           reasoningEffort: opts.reasoningLevel ?? reasoningLevel,
         });
@@ -2389,6 +2394,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       bumpThreadSummary,
       canStartWorkspaceChat,
       chatLayout,
+      setChatLayout,
+      setCollaborationMode,
       collaborationMode,
       model,
       modelProvider,

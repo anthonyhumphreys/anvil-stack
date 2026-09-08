@@ -8,7 +8,7 @@ The original checkout and its mobile changes were left untouched. No push or mer
 
 - Review Git helpers use asynchronous child processes. Diff gathering, commit and branch selectors, Azure DevOps PR ref resolution, verification ref resolution, impact analysis, repository indexing and map freshness checks now yield while Git runs. Existing timeouts, buffer limits and fallback behavior remain. Independent PR ref lookups run together.
 - Code and security reviews save findings with one prepared insert inside one transaction. A failed batch rolls back instead of leaving partial findings. Existing single-finding APIs remain available.
-- Schema migration 62 adds six indexes for repository history, running reviews and findings by review or audit. Both fresh installs and existing databases receive them. The migration preserves existing rows.
+- Schema migration 63 adds six indexes for repository history, running reviews and findings by review or audit. Both fresh installs and existing databases receive them. The migration preserves existing rows.
 
 ## Measurements
 

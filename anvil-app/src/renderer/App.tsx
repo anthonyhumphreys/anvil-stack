@@ -22,6 +22,11 @@ const ChatView = lazy(() =>
 const OnboardView = lazy(() =>
   import('./components/onboard/OnboardView').then((module) => ({ default: module.OnboardView })),
 );
+const ChangeReviewView = lazy(() =>
+  import('./components/review/ChangeReviewView').then((module) => ({
+    default: module.ChangeReviewView,
+  })),
+);
 const WorkItemsView = lazy(() =>
   import('./components/workitems/WorkItemsView').then((module) => ({
     default: module.WorkItemsView,
@@ -450,6 +455,17 @@ export function App() {
                       <WorkspaceGate>
                         <ErrorBoundary>
                           <OnboardView />
+                        </ErrorBoundary>
+                      </WorkspaceGate>,
+                    )}
+                  />
+                  <Route
+                    path="/review"
+                    element={guard(
+                      'codereview',
+                      <WorkspaceGate>
+                        <ErrorBoundary>
+                          <ChangeReviewView />
                         </ErrorBoundary>
                       </WorkspaceGate>,
                     )}

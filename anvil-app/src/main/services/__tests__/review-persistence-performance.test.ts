@@ -128,8 +128,19 @@ describe('review lookup indexes', () => {
         "INSERT INTO repos (id, name, path) VALUES ('repo', 'Repo', '/repo'); INSERT INTO code_reviews (id, repo_id, mode, scope_type) VALUES ('review', 'repo', 'quick_glance', 'latest_commit')",
       );
       const before = legacy.prepare('SELECT * FROM code_reviews').all();
-      legacy.exec(MIGRATIONS[62]);
-      legacy.exec(MIGRATIONS[62]);
+      for (let pass = 0; pass < 2; pass++) {
+        for (const statement of MIGRATIONS[63]
+          .split(';')
+          .map((sql) => sql.trim())
+          .filter(Boolean)) {
+          try {
+            legacy.exec(statement);
+          } catch (error) {
+            if (!(error instanceof Error) || !error.message.includes('duplicate column'))
+              throw error;
+          }
+        }
+      }
       expect(legacy.prepare('SELECT * FROM code_reviews').all()).toEqual(before);
       for (const [index, query] of indexQueries) {
         const plan = legacy.prepare(`EXPLAIN QUERY PLAN ${query}`).all('repo') as Array<{

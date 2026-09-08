@@ -1,4 +1,5 @@
-import { ipcMain, BrowserWindow, app, type WebContents } from 'electron';
+import { getWorkspace } from '../services/workspace.service.js';
+import { ipcMain, webContents, app, type WebContents } from 'electron';
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -11,6 +12,7 @@ import {
   type CodexStdioMcpRegistration,
 } from '../services/browser-mcp-registration.service.js';
 import {
+  setBrowserScope,
   listTargets,
   addManualTarget,
   startBridge,
@@ -18,7 +20,6 @@ import {
   getBridgeStatus,
   attachDebugger,
   detachDebugger,
-  setConnectedUrl,
   cleanupBrowser,
 } from '../services/browser.service.js';
 
@@ -28,33 +29,30 @@ const execFileAsync = promisify(execFile);
 // Track embedded webview webContents
 // ---------------------------------------------------------------------------
 
-let webviewContentsId: number | null = null;
-
-function findWebviewContents(): WebContents | null {
-  if (webviewContentsId !== null) {
-    const wc = BrowserWindow.getAllWindows()
-      .flatMap((w) => [w.webContents])
-      .find((c) => c.id === webviewContentsId);
-    if (wc && !wc.isDestroyed()) return wc;
-    webviewContentsId = null;
-  }
-  return null;
-}
-
-// Listen for webview creation to grab its webContents
+const owners = new Map<number, number>();
+let selectedOwner: number | null = null;
+let selectedGuestId: number | null = null;
+let selectedWorkspace: string | null = null;
 app.on('web-contents-created', (_event, contents) => {
-  if (contents.getType() === 'webview') {
-    webviewContentsId = contents.id;
-    console.log(`[Browser] Webview webContents created (id=${contents.id})`);
-
-    contents.on('destroyed', () => {
-      if (webviewContentsId === contents.id) {
-        webviewContentsId = null;
-        detachDebugger();
-      }
-    });
-  }
+  if (contents.getType() !== 'webview') return;
+  const host = (contents as WebContents & { hostWebContents?: WebContents }).hostWebContents;
+  if (host) owners.set(contents.id, host.id);
+  contents.on('destroyed', () => {
+    owners.delete(contents.id);
+  });
 });
+function ownedGuest(owner: WebContents, id: number): WebContents {
+  const guest = webContents.fromId(id);
+  const host = guest && (guest as WebContents & { hostWebContents?: WebContents }).hostWebContents;
+  if (
+    !guest ||
+    guest.isDestroyed() ||
+    guest.getType() !== 'webview' ||
+    (owners.get(id) ?? host?.id) !== owner.id
+  )
+    throw new Error('Browser target does not belong to this window');
+  return guest;
+}
 
 // ---------------------------------------------------------------------------
 // Codex MCP registration
@@ -154,49 +152,41 @@ export function registerBrowserHandlers(): void {
 
   ipcMain.handle('browser:get-bridge-status', () => getBridgeStatus());
 
-  ipcMain.handle('browser:start-bridge', async () => {
-    const port = await startBridge();
-
-    // Attach debugger to webview if available
-    const wc = findWebviewContents();
-    if (wc) {
-      attachDebugger(wc);
-    }
-
-    return { port };
+  ipcMain.handle('browser:start-bridge', async (event, id: number, workspaceId: string) => {
+    const guest = ownedGuest(event.sender, id);
+    const workspace = getWorkspace(workspaceId);
+    setBrowserScope({ workspaceId, repoPaths: workspace.repos.map((repo) => repo.path) });
+    selectedOwner = event.sender.id;
+    selectedWorkspace = workspaceId;
+    selectedGuestId = id;
+    attachDebugger(guest);
+    return { port: await startBridge() };
   });
-
   ipcMain.handle('browser:stop-bridge', () => {
     stopBridge();
+    selectedOwner = null;
+    selectedWorkspace = null;
   });
-
-  ipcMain.handle('browser:attach-debugger', () => {
-    const wc = findWebviewContents();
-    if (!wc) return; // webview not registered yet — will attach when bridge starts
-    attachDebugger(wc);
+  ipcMain.handle('browser:attach-debugger', (event, id: number, workspaceId: string) => {
+    const guest = ownedGuest(event.sender, id);
+    if (selectedOwner !== event.sender.id || selectedWorkspace !== workspaceId) detachDebugger();
+    selectedOwner = event.sender.id;
+    selectedWorkspace = workspaceId;
+    selectedGuestId = id;
+    setBrowserScope({
+      workspaceId,
+      repoPaths: getWorkspace(workspaceId).repos.map((repo) => repo.path),
+    });
+    attachDebugger(guest);
   });
-
-  ipcMain.handle('browser:set-url', (_event, url: string) => {
-    setConnectedUrl(url);
+  ipcMain.handle('browser:detach-debugger', (event, id: number) => {
+    if (selectedOwner === event.sender.id && selectedGuestId === id) {
+      detachDebugger();
+      selectedOwner = null;
+      selectedWorkspace = null;
+    }
   });
-
   ipcMain.handle('browser:register-mcp', () => registerChromeMcp());
-
-  ipcMain.handle(
-    'browser:cdp-command',
-    async (_event, method: string, params?: Record<string, unknown>) => {
-      const wc = findWebviewContents();
-      if (!wc) throw new Error('No embedded browser webview found');
-
-      try {
-        wc.debugger.attach('1.3');
-      } catch {
-        /* already attached */
-      }
-
-      return wc.debugger.sendCommand(method, params);
-    },
-  );
 
   void repairChromeMcpRegistration().catch((err) => {
     console.warn(

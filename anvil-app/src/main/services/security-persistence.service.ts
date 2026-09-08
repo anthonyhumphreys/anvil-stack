@@ -1,3 +1,4 @@
+import { bindAnalysisStart, validateAnalysisBinding } from './review-binding.service.js';
 import { randomUUID } from 'node:crypto';
 import type {
   SecurityAudit,
@@ -100,6 +101,7 @@ export function createAudit(input: CreateAuditInput): string {
      (id, repo_id, scope, status, started_at, model_version)
      VALUES (?, ?, ?, 'running', ?, ?)`,
   ).run(id, input.repoId, JSON.stringify(input.scope), now, input.modelVersion ?? null);
+  bindAnalysisStart('security_audits', id, input.repoId);
   return id;
 }
 
@@ -151,6 +153,7 @@ export function getRunningAudit(repoId: string): SecurityAudit | null {
  * Update the status (and optionally summary) of a security audit.
  */
 export function updateAuditStatus(id: string, status: SecurityAuditStatus, summary?: string): void {
+  if (status === 'completed') validateAnalysisBinding('security_audits', id);
   const db = getDb();
   const now = new Date().toISOString();
   if (summary !== undefined) {

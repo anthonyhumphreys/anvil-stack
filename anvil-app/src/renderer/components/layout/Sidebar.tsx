@@ -65,6 +65,7 @@ const NAV_ICONS: Record<string, ReactNode> = {
   '/workitems': <TicketCheck size={18} />,
   '/dependencies': <Boxes size={18} />,
   '/security': <Shield size={18} />,
+  '/review': <GitPullRequest size={18} />,
   '/codereview': <GitPullRequest size={18} />,
   '/cicd': <Workflow size={18} />,
   '/cloud': <Cloud size={18} />,
