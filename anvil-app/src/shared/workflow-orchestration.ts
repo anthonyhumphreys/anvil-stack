@@ -70,9 +70,9 @@ export function validateOrchestration(value?: WorkflowOrchestration): void {
     throw new Error('Use at most 32 specialist profiles.');
   const ids = new Set<string>();
   for (const profile of config.profiles) {
-    if (!profile.id?.trim() || ids.has(profile.id))
-      throw new Error('Specialist profile ids must be unique.');
-    ids.add(profile.id);
+    const id = profile.id?.trim();
+    if (!id || ids.has(id)) throw new Error('Specialist profile ids must be unique.');
+    ids.add(id);
     if (!profile.name?.trim() || !profile.model?.trim() || !profile.personaId?.trim())
       throw new Error('Every specialist needs a name, persona, and model.');
     if (!['codex', 'cursor', 'openai', 'azure'].includes(profile.provider))
