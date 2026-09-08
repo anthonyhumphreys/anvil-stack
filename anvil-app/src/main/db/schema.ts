@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 63;
+export const SCHEMA_VERSION = 64;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -647,6 +647,7 @@ CREATE INDEX IF NOT EXISTS idx_workspace_scaffold_sessions_status
   ON workspace_scaffold_sessions(status);
 
 CREATE TABLE IF NOT EXISTS automation_definitions (
+  workflow_template_id TEXT,
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
@@ -2046,4 +2047,5 @@ CREATE INDEX IF NOT EXISTS idx_security_audits_running
 CREATE INDEX IF NOT EXISTS idx_security_findings_audit
   ON security_findings(audit_id);
   `,
+  64: `ALTER TABLE automation_definitions ADD COLUMN workflow_template_id TEXT;`,
 };

@@ -26,6 +26,7 @@ import type {
   AutomationTriageItem,
   CodexEvent,
   Persona,
+  WorkflowTemplate,
   WatchtowerEventType,
 } from '../../../shared/types';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
@@ -92,6 +93,7 @@ function automationToDraft(automation: AutomationDefinition): AutomationDefiniti
     allowRepoWrite: automation.allowRepoWrite,
     allowCommandRun: automation.allowCommandRun,
     loopConfig: automation.loopConfig ?? DEFAULT_LOOP_CONFIG,
+    workflowTemplateId: automation.workflowTemplateId,
   };
 }
 
@@ -156,6 +158,13 @@ export function AutomationsView() {
   const workspaceId = activeWorkspace?.id;
   const repos = activeWorkspace?.repos ?? [];
 
+  const [workflowTemplates, setWorkflowTemplates] = useState<WorkflowTemplate[]>([]);
+  useEffect(() => {
+    void window.anvil.workflow
+      .listTemplates()
+      .then(setWorkflowTemplates)
+      .catch(() => undefined);
+  }, []);
   const [personas, setPersonas] = useState<Persona[]>([]);
   const [automations, setAutomations] = useState<AutomationDefinition[]>([]);
   const [selectedAutomationId, setSelectedAutomationId] = useState<string | null>(() =>
@@ -712,6 +721,37 @@ export function AutomationsView() {
                 </div>
               </div>
 
+              <label className="block text-sm text-text-primary">
+                Workflow execution
+                <select
+                  aria-label="Automation workflow"
+                  className="mt-2 w-full rounded-lg border border-border bg-bg-primary p-2"
+                  value={draft.workflowTemplateId ?? ''}
+                  onChange={(event) =>
+                    setDraft((current) => ({
+                      ...current,
+                      workflowTemplateId: event.target.value || undefined,
+                      loopConfig: {
+                        ...(current.loopConfig ?? DEFAULT_LOOP_CONFIG),
+                        enabled: false,
+                      },
+                    }))
+                  }
+                >
+                  <option value="">Run the configured persona</option>
+                  {workflowTemplates.map((template) => (
+                    <option key={template.id} value={template.id}>
+                      {template.name}
+                    </option>
+                  ))}
+                </select>
+                <span className="mt-2 block text-xs text-text-secondary">
+                  Schedules and Watchtower can launch an entire agent graph in automation worktrees.
+                  Workflow runs require write and command permissions. Human gates continue in
+                  Workflows. Automation-generated workflow events do not trigger another automation.
+                </span>
+              </label>
+
               <div className="rounded-lg border border-border-subtle bg-bg-primary p-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
@@ -726,6 +766,7 @@ export function AutomationsView() {
                   <label className="flex items-center gap-2 text-sm text-text-primary">
                     <input
                       type="checkbox"
+                      disabled={!!draft.workflowTemplateId}
                       checked={draft.loopConfig?.enabled === true}
                       onChange={(event) =>
                         setDraft((current) => ({
@@ -1272,6 +1313,9 @@ function AutomationRunDetail({
   activeTab: AutomationRunDetailTab;
   onTabChange: (tab: AutomationRunDetailTab) => void;
 }) {
+  const navigate = useNavigate();
+  const workflowRunId = runEvents.find((event) => typeof event.metadata?.workflowRunId === 'string')
+    ?.metadata?.workflowRunId;
   const hasRetainedWorktree =
     selectedRun?.worktrees.some((worktree) => worktree.kept && worktree.path) ?? false;
   const transcriptEntries = displayEntries.filter(isTranscriptEntry);
@@ -1307,6 +1351,14 @@ function AutomationRunDetail({
               </div>
             )}
           </div>
+          {typeof workflowRunId === 'string' && (
+            <button
+              className="shrink-0 rounded-lg border border-border px-3 py-2 text-xs text-accent"
+              onClick={() => navigate(`/workflows?run=${encodeURIComponent(workflowRunId)}`)}
+            >
+              Open workflow graph
+            </button>
+          )}
           {hasRetainedWorktree && (
             <span className="shrink-0 rounded-full border border-border px-2 py-1 text-xs text-text-secondary">
               Worktree retained

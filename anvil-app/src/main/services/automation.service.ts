@@ -1,4 +1,5 @@
 import { app } from 'electron';
+import { getWorkflowTemplate, startWorkflowRun, waitForWorkflowRun } from './workflow.service.js';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -95,7 +96,7 @@ function getRepoRows(repoIds: string[]): RepoRow[] {
   const db = getDb();
   const query = db.prepare('SELECT id, name, path, remote_url FROM repos WHERE id = ?');
   const rows = repoIds
-    .map((repoId) => {
+    .map((repoId): RepoRow | undefined => {
       const row = query.get(repoId) as
         | { id: string; name: string; path: string; remote_url: string | null }
         | undefined;
@@ -113,6 +114,16 @@ function validateAutomationInput(input: AutomationDefinitionInput): void {
   if (!input.personaId.trim()) throw new Error('Automation persona is required.');
   if (!getPersonaById(input.personaId)) {
     throw new Error(`Unknown persona: ${input.personaId}`);
+  }
+  if (input.workflowTemplateId) {
+    if (!getWorkflowTemplate(input.workflowTemplateId))
+      throw new Error('Choose an existing workflow template.');
+    if (input.loopConfig?.enabled)
+      throw new Error('Choose a workflow or a persona loop, not both.');
+    if (!input.allowRepoWrite || !input.allowCommandRun)
+      throw new Error(
+        'Workflow automations require repository write and command execution permissions. Use a persona automation for restricted runs.',
+      );
   }
   if (input.loopConfig?.enabled) {
     const members = input.loopConfig.memberPersonaIds;
@@ -677,12 +688,42 @@ async function executeAutomationRun(run: AutomationRun): Promise<void> {
       })),
     );
 
-    const loopConfig = getActiveLoopConfig(automation);
-    const { assistantMessage } = loopConfig
-      ? await runLoopAutomation(automation, run.id, preparedWorktrees, loopConfig)
-      : await runCodexAutomation(automation, run.id, preparedWorktrees);
+    let assistantMessage: string;
+    let retainWorkflowWorktrees = false;
+    if (automation.workflowTemplateId) {
+      validateAutomationInput(automation);
+      const workflow = startWorkflowRun({
+        templateId: automation.workflowTemplateId,
+        workspaceId: automation.workspaceId,
+        repoIds: automation.repoIds,
+        kickoff: automation.prompt,
+        sourceAutomationRunId: run.id,
+        executionPaths: preparedWorktrees.map((tree) => ({ id: tree.repoId, path: tree.path })),
+      });
+      appendAutomationRunEvent(run.id, 'system', `Workflow launched: ${workflow.templateName}`, {
+        workflowRunId: workflow.id,
+      });
+      const result = await waitForWorkflowRun(workflow.id);
+      retainWorkflowWorktrees = true;
+      if (result.status === 'failed' || result.status === 'cancelled')
+        throw new Error(`Workflow ${result.status}: ${result.error ?? result.id}`);
+      assistantMessage = `Workflow ${result.status}: ${result.templateName}\n\nWorkflow run: ${result.id}\n\n${
+        result.status === 'paused'
+          ? 'Worktrees retained. Resolve decisions and resume from Workflows.'
+          : result.nodeRuns
+              .filter((node) => node.output)
+              .map((node) => node.output)
+              .join('\n\n')
+              .slice(-24000)
+      }`;
+    } else {
+      const loopConfig = getActiveLoopConfig(automation);
+      ({ assistantMessage } = loopConfig
+        ? await runLoopAutomation(automation, run.id, preparedWorktrees, loopConfig)
+        : await runCodexAutomation(automation, run.id, preparedWorktrees));
+    }
     const changedFileCount = await getChangedFileCount(preparedWorktrees);
-    const keepWorktrees = changedFileCount > 0;
+    const keepWorktrees = retainWorkflowWorktrees || changedFileCount > 0;
 
     if (!keepWorktrees) {
       await cleanupWorktrees(preparedWorktrees);
@@ -882,6 +923,7 @@ export function runAutomationNow(automationId: string): AutomationRun {
 }
 
 export function triggerWatchtowerEvent(event: WatchtowerEvent): AutomationRun[] {
+  if (event.metadata?.sourceAutomationRunId) return [];
   const runs: AutomationRun[] = [];
   for (const automation of listWatchtowerAutomations(event.workspaceId, event.type)) {
     if (

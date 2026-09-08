@@ -1,3 +1,15 @@
+import { WorkflowLaunchpad } from './WorkflowLaunchpad';
+import {
+  OrchestrationPanel,
+  TeamSettings,
+  RunInspector,
+  RuntimeSummary,
+} from './OrchestrationPanel';
+import {
+  createOrchestrationPreset,
+  layoutWorkflowGraph,
+  orchestrationConfig,
+} from '../../../shared/workflow-orchestration';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
@@ -21,7 +33,6 @@ import {
   Bot,
   Check,
   CircleStop,
-  GitFork,
   MessageSquare,
   Play,
   Plus,
@@ -30,6 +41,11 @@ import {
   Trash2,
   X,
   Zap,
+  Settings2,
+  Pause,
+  UserCheck,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from 'lucide-react';
 import type {
   AgentProvider,
@@ -37,7 +53,6 @@ import type {
   CodexCliStatus,
   CursorCliStatus,
   Persona,
-  WorkflowExecutionStrategy,
   WorkflowNode,
   WorkflowNodeRun,
   WorkflowRun,
@@ -51,21 +66,6 @@ type WorkflowCanvasData = {
   node: WorkflowNode;
   state?: WorkflowNodeRun;
 } & Record<string, unknown>;
-
-const STRATEGIES: Array<{
-  id: WorkflowExecutionStrategy;
-  label: string;
-  description: string;
-}> = [
-  { id: 'focused', label: 'Focused', description: 'One primary agent owns the step.' },
-  { id: 'adaptive', label: 'Adaptive', description: 'Delegate when it materially helps.' },
-  { id: 'parallel', label: 'Parallel', description: 'Actively split independent work.' },
-  {
-    id: 'review-team',
-    label: 'Review team',
-    description: 'Separate work, review, and verification.',
-  },
-];
 
 const EMPTY_TEMPLATE: WorkflowTemplate = {
   id: '',
@@ -118,6 +118,8 @@ function WorkflowStepNode({ data, selected }: NodeProps<Node<WorkflowCanvasData>
             <Check size={17} />
           ) : status === 'running' ? (
             <Activity className="workflow-running-icon" size={17} />
+          ) : data.node.kind === 'human' ? (
+            <UserCheck size={17} />
           ) : (
             <Bot size={17} />
           )}
@@ -125,23 +127,32 @@ function WorkflowStepNode({ data, selected }: NodeProps<Node<WorkflowCanvasData>
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-semibold text-text-primary">{data.node.name}</div>
           <div className="mt-1 flex flex-wrap gap-1.5 text-[10px] uppercase tracking-[0.08em] text-text-tertiary">
-            <span>{data.node.personaId}</span>
-            <span aria-hidden="true">·</span>
-            <span>{PROVIDER_LABELS[data.node.provider ?? 'codex']}</span>
-            {(data.node.provider ?? 'codex') !== 'cursor' && (
+            <span>{data.node.kind === 'human' ? 'Your decision' : data.node.personaId}</span>
+            {data.node.kind !== 'human' && (
               <>
                 <span aria-hidden="true">·</span>
-                <span>{data.node.reasoningEffort}</span>
+                <span>{PROVIDER_LABELS[data.node.provider ?? 'codex']}</span>
+                {(data.node.provider ?? 'codex') !== 'cursor' && (
+                  <>
+                    <span aria-hidden="true">·</span>
+                    <span>{data.node.reasoningEffort}</span>
+                  </>
+                )}
               </>
             )}
             <span aria-hidden="true">·</span>
-            <span>{data.node.executionStrategy}</span>
+            <span>
+              {data.node.kind === 'human' ? 'human decision' : (data.node.teamStrategy ?? 'manual')}
+            </span>
+            {state && <span>{state.status}</span>}
           </div>
         </div>
         <StatusDot status={status} />
       </div>
       <div className="border-t border-border-subtle px-4 py-2.5 text-xs text-text-tertiary">
-        <span className="block truncate">{data.node.model}</span>
+        <span className="block truncate">
+          {data.node.kind === 'human' ? 'Accept or reject with a recorded note' : data.node.model}
+        </span>
       </div>
       <Handle
         type="source"
@@ -158,6 +169,16 @@ export function WorkflowsView() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { activeWorkspace } = useWorkspace();
+  const [loading, setLoading] = useState(true);
+  const [libraryExpanded, setLibraryExpanded] = useState(
+    () => window.matchMedia('(min-width: 1280px)').matches,
+  );
+  useEffect(() => {
+    const media = window.matchMedia('(min-width: 1280px)');
+    const changed = () => setLibraryExpanded(media.matches);
+    media.addEventListener('change', changed);
+    return () => media.removeEventListener('change', changed);
+  }, []);
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
   const [runs, setRuns] = useState<WorkflowRun[]>([]);
   const [draft, setDraft] = useState<WorkflowTemplate>(EMPTY_TEMPLATE);
@@ -172,6 +193,8 @@ export function WorkflowsView() {
   const [supervisorReplies, setSupervisorReplies] = useState<
     Array<{ question: string; answer: string }>
   >([]);
+  const [showOrchestration, setShowOrchestration] = useState(false);
+  const [commandBusy, setCommandBusy] = useState(false);
   const [saving, setSaving] = useState(false);
   const [starting, setStarting] = useState(false);
   const [asking, setAsking] = useState(false);
@@ -179,7 +202,8 @@ export function WorkflowsView() {
   const [deleteArmed, setDeleteArmed] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const selectedRun = runs.find((run) => run.id === selectedRunId) ?? null;
+  const selectedRun =
+    runs.find((run) => run.id === selectedRunId && run.workspaceId === activeWorkspace?.id) ?? null;
   const selectedNode = draft.nodes.find((node) => node.id === selectedNodeId) ?? null;
   const runTemplate = selectedRun
     ? {
@@ -193,6 +217,7 @@ export function WorkflowsView() {
       }
     : null;
   const canvasTemplate = runTemplate ?? draft;
+  const isLaunching = !selectedRun && draft.nodes.length === 0;
 
   const refresh = useCallback(async () => {
     const [nextTemplates, nextPersonas, nextRuns, nextSettings] = await Promise.all([
@@ -205,14 +230,12 @@ export function WorkflowsView() {
     setPersonas(nextPersonas);
     setRuns(nextRuns);
     setAgentSettings(nextSettings);
-    setDraft((current) => {
-      if (current.id) return nextTemplates.find((item) => item.id === current.id) ?? current;
-      return nextTemplates[0] ?? current;
-    });
   }, [activeWorkspace]);
 
   useEffect(() => {
-    void refresh().catch((caught) => setError(messageFrom(caught)));
+    void refresh()
+      .catch((caught) => setError(messageFrom(caught)))
+      .finally(() => setLoading(false));
   }, [refresh]);
 
   useEffect(() => {
@@ -231,7 +254,16 @@ export function WorkflowsView() {
     const kickoffMessage = searchParams.get('kickoff');
     if (!runId && !draftRequest && !kickoffMessage) return;
 
-    if (runId) setSelectedRunId(runId);
+    if (runId) {
+      setSelectedRunId(runId);
+      void window.anvil.workflow
+        .getRun(runId)
+        .then((run) => {
+          if (!run) throw new Error('Workflow run not found.');
+          setRuns((current) => [run, ...current.filter((item) => item.id !== run.id)]);
+        })
+        .catch((caught) => setError(messageFrom(caught)));
+    }
     if (kickoffMessage) setKickoff(kickoffMessage);
     const next = new URLSearchParams(searchParams);
     next.delete('run');
@@ -247,6 +279,7 @@ export function WorkflowsView() {
         .then((generated) => {
           setDraft({
             ...generated,
+            description: generated.description ?? '',
             id: '',
             createdAt: '',
             updatedAt: '',
@@ -261,7 +294,7 @@ export function WorkflowsView() {
   useEffect(() => {
     if (
       !activeWorkspace ||
-      !runs.some((run) => run.status === 'queued' || run.status === 'running')
+      !runs.some((run) => ['queued', 'running', 'paused'].includes(run.status))
     )
       return;
     const interval = window.setInterval(() => {
@@ -273,19 +306,24 @@ export function WorkflowsView() {
     return () => window.clearInterval(interval);
   }, [activeWorkspace, runs]);
 
+  const runtimeLayout = useMemo(
+    () => (selectedRun ? layoutWorkflowGraph(selectedRun.nodes, selectedRun.edges) : null),
+    [selectedRun],
+  );
+
   const flowNodes = useMemo<Node<WorkflowCanvasData>[]>(
     () =>
       canvasTemplate.nodes.map((node) => ({
         id: node.id,
         type: 'workflowStep',
-        position: node.position,
+        position: runtimeLayout?.get(node.id) ?? node.position,
         data: {
           node,
           state: selectedRun?.nodeRuns.find((candidate) => candidate.nodeId === node.id),
         },
         selected: node.id === selectedNodeId,
       })),
-    [canvasTemplate.nodes, selectedNodeId, selectedRun],
+    [canvasTemplate.nodes, selectedNodeId, selectedRun, runtimeLayout],
   );
 
   const flowEdges = useMemo<Edge[]>(
@@ -334,7 +372,8 @@ export function WorkflowsView() {
       provider,
       model: provider === 'cursor' ? 'auto' : (agentSettings?.openaiModel ?? DEFAULT_CODEX_MODEL),
       reasoningEffort: 'medium',
-      executionStrategy: 'adaptive',
+      executionStrategy: 'focused',
+      teamStrategy: 'manual',
       position: { x: 120 + (count % 3) * 330, y: 100 + Math.floor(count / 3) * 210 },
     };
     setSelectedRunId(null);
@@ -361,6 +400,7 @@ export function WorkflowsView() {
           description: draft.description,
           nodes: draft.nodes,
           edges: draft.edges,
+          orchestration: draft.orchestration,
         },
         draft.id || undefined,
       );
@@ -374,12 +414,24 @@ export function WorkflowsView() {
   };
 
   const start = async () => {
-    if (!activeWorkspace || !draft.id) return;
+    if (!activeWorkspace || !draft.nodes.length || !kickoff.trim() || starting || saving) return;
     setStarting(true);
     setError(null);
     try {
+      const saved = await window.anvil.workflow.saveTemplate(
+        {
+          name: draft.name,
+          description: draft.description,
+          nodes: draft.nodes,
+          edges: draft.edges,
+          orchestration: draft.orchestration,
+        },
+        draft.id || undefined,
+      );
+      setDraft(saved);
+      setTemplates((current) => [saved, ...current.filter((item) => item.id !== saved.id)]);
       const run = await window.anvil.workflow.startRun({
-        templateId: draft.id,
+        templateId: saved.id,
         workspaceId: activeWorkspace.id,
         repoIds: activeWorkspace.repos.map((repo) => repo.id),
         kickoff,
@@ -412,6 +464,88 @@ export function WorkflowsView() {
     }
   };
 
+  const runCommand = async (command: () => Promise<WorkflowRun>) => {
+    if (commandBusy) return;
+    setCommandBusy(true);
+    setError(null);
+    try {
+      const run = await command();
+      setRuns((current) => current.map((item) => (item.id === run.id ? run : item)));
+    } catch (caught) {
+      setError(messageFrom(caught));
+    } finally {
+      setCommandBusy(false);
+    }
+  };
+
+  const loadPreset = (kind: 'delivery' | 'review' | 'research') => {
+    const provider = agentSettings?.llmProvider ?? 'codex';
+    const profiles = orchestrationConfig(draft.orchestration).profiles;
+    const generated = createOrchestrationPreset(
+      kind,
+      profiles.length
+        ? profiles
+        : [
+            {
+              id: 'implementer',
+              name: 'Implementation',
+              personaId: 'coder',
+              capabilities: ['implementation', 'typescript'],
+            },
+            {
+              id: 'reviewer',
+              name: 'Code review',
+              personaId: personas.some((persona) => persona.id === 'reviewer')
+                ? 'reviewer'
+                : 'coder',
+              capabilities: ['review', 'security'],
+            },
+            {
+              id: 'verifier',
+              name: 'Verification',
+              personaId: 'coder',
+              capabilities: ['testing', 'regression'],
+            },
+          ].map((profile, index) => {
+            const available = agentSettings?.enabledLlmProviders?.length
+              ? agentSettings.enabledLlmProviders
+              : [provider];
+            const selectedProvider = available[index % available.length];
+            return {
+              ...profile,
+              provider: selectedProvider,
+              model:
+                selectedProvider === 'cursor'
+                  ? 'auto'
+                  : (agentSettings?.openaiModel ?? DEFAULT_CODEX_MODEL),
+              reasoningEffort: 'high' as const,
+            };
+          }),
+    );
+    if (kind === 'delivery') {
+      const positions = [
+        { x: 0, y: 0 },
+        { x: 330, y: 0 },
+        { x: 330, y: 220 },
+        { x: 660, y: 220 },
+      ];
+      generated.nodes = generated.nodes.map((node, index) => ({
+        ...node,
+        position: positions[index],
+      }));
+    }
+    setDraft({
+      ...generated,
+      description: generated.description ?? '',
+      id: '',
+      createdAt: '',
+      updatedAt: '',
+    });
+    setSelectedRunId(null);
+    setSelectedNodeId(null);
+    setShowOrchestration(false);
+  };
+
   const openThread = (threadId: string, personaId: string) => {
     navigate(
       `/chat?persona=${encodeURIComponent(personaId)}&thread=${encodeURIComponent(threadId)}`,
@@ -420,18 +554,31 @@ export function WorkflowsView() {
 
   return (
     <div className="flex h-full min-h-0 bg-bg-primary">
-      <aside className="flex w-64 shrink-0 flex-col border-r border-border bg-bg-secondary">
-        <div className="border-b border-border-subtle px-4 py-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-lg font-semibold text-text-primary">Workflows</h1>
-              <p className="mt-0.5 text-xs text-text-tertiary">Templates travel. Runs remember.</p>
-            </div>
+      <aside
+        className={`flex shrink-0 flex-col border-r border-border bg-bg-secondary ${libraryExpanded ? 'w-56' : 'w-14'}`}
+      >
+        <div className={`border-b border-border-subtle py-3 ${libraryExpanded ? 'px-4' : 'px-2'}`}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            {libraryExpanded && (
+              <div>
+                <h1 className="text-lg font-semibold text-text-primary">Workflows</h1>
+              </div>
+            )}
+            <button
+              aria-label={libraryExpanded ? 'Collapse workflow library' : 'Expand workflow library'}
+              aria-expanded={libraryExpanded}
+              onClick={() => setLibraryExpanded(!libraryExpanded)}
+              className="rounded-lg p-2 text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary"
+            >
+              {libraryExpanded ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}
+            </button>
             <button
               onClick={() => {
                 setDraft({ ...EMPTY_TEMPLATE });
                 setSelectedRunId(null);
                 setSelectedNodeId(null);
+                setShowOrchestration(false);
+                setKickoff('');
               }}
               className="rounded-lg border border-border p-2 text-text-secondary transition hover:border-accent/45 hover:bg-bg-tertiary hover:text-text-primary active:scale-95"
               aria-label="Create workflow template"
@@ -442,11 +589,14 @@ export function WorkflowsView() {
           </div>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto p-3">
-          <SectionLabel>Templates</SectionLabel>
+        <div className={`min-h-0 flex-1 overflow-y-auto p-3 ${libraryExpanded ? '' : 'hidden'}`}>
+          <SectionLabel>Saved workflows</SectionLabel>
           <div className="space-y-1.5">
             {templates.length === 0 ? (
-              <EmptyRail label="No templates yet" detail="Build the first reusable graph." />
+              <EmptyRail
+                label="Your flows will appear here"
+                detail="Start with an outcome, then save or run."
+              />
             ) : (
               templates.map((template) => (
                 <button
@@ -466,8 +616,9 @@ export function WorkflowsView() {
                     {template.name}
                   </div>
                   <div className="mt-1 flex items-center gap-2 text-[11px] text-text-tertiary">
-                    <span>{template.nodes.length} steps</span>
-                    <span>{template.edges.length} links</span>
+                    <span>
+                      {template.nodes.length} {template.nodes.length === 1 ? 'step' : 'steps'}
+                    </span>
                   </div>
                 </button>
               ))
@@ -476,138 +627,203 @@ export function WorkflowsView() {
 
           <SectionLabel className="mt-6">Recent runs</SectionLabel>
           <div className="space-y-1.5">
-            {runs.map((run) => (
-              <button
-                key={run.id}
-                onClick={() => {
-                  setSelectedRunId(run.id);
-                  setSelectedNodeId(null);
-                  setSupervisorReplies([]);
-                }}
-                className={`w-full rounded-lg border px-3 py-2.5 text-left transition ${
-                  selectedRunId === run.id
-                    ? 'border-accent/40 bg-accent/10'
-                    : 'border-transparent hover:border-border hover:bg-bg-tertiary'
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <StatusDot status={run.status} />
-                  <span className="truncate text-sm font-medium text-text-primary">
-                    {run.templateName}
-                  </span>
-                </div>
-                <div className="mt-1 truncate text-[11px] text-text-tertiary">{run.kickoff}</div>
-              </button>
-            ))}
+            {runs
+              .filter((run) => run.workspaceId === activeWorkspace?.id)
+              .map((run) => (
+                <button
+                  key={run.id}
+                  onClick={() => {
+                    setSelectedRunId(run.id);
+                    setSelectedNodeId(null);
+                    setSupervisorReplies([]);
+                  }}
+                  className={`w-full rounded-lg border px-3 py-2.5 text-left transition ${
+                    selectedRunId === run.id
+                      ? 'border-accent/40 bg-accent/10'
+                      : 'border-transparent hover:border-border hover:bg-bg-tertiary'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <StatusDot status={run.status} />
+                    <span className="truncate text-sm font-medium text-text-primary">
+                      {run.templateName}
+                    </span>
+                  </div>
+                  <div className="mt-1 truncate text-[11px] text-text-tertiary">{run.kickoff}</div>
+                </button>
+              ))}
           </div>
         </div>
       </aside>
 
       <main className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-16 shrink-0 items-center justify-between border-b border-border px-5">
-          <div className="min-w-0">
-            {selectedRun ? (
-              <>
-                <div className="flex items-center gap-2">
-                  <StatusDot status={selectedRun.status} />
-                  <h2 className="truncate text-base font-semibold text-text-primary">
-                    {selectedRun.templateName}
-                  </h2>
+        {!isLaunching && (
+          <header className="flex min-h-16 shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-3">
+            <div className="min-w-0 flex-1 basis-48">
+              {selectedRun ? (
+                <>
+                  <div className="flex items-center gap-2">
+                    <StatusDot status={selectedRun.status} />
+                    <h2 className="truncate text-base font-semibold text-text-primary">
+                      {selectedRun.templateName}
+                    </h2>
+                  </div>
+                  <p className="mt-0.5 truncate text-xs text-text-tertiary">
+                    {selectedRun.kickoff}
+                  </p>
+                </>
+              ) : (
+                <div>
+                  <input
+                    value={draft.name}
+                    onChange={(event) =>
+                      setDraft((current) => ({ ...current, name: event.target.value }))
+                    }
+                    className="w-full border-none bg-transparent text-base font-semibold text-text-primary outline-none placeholder:text-text-muted"
+                    aria-label="Workflow name"
+                  />
+                  <input
+                    value={draft.description}
+                    onChange={(event) =>
+                      setDraft((current) => ({ ...current, description: event.target.value }))
+                    }
+                    className="mt-0.5 block w-full border-none bg-transparent text-xs text-text-tertiary outline-none placeholder:text-text-muted"
+                    placeholder="What this workflow is for"
+                    aria-label="Workflow description"
+                  />
                 </div>
-                <p className="mt-0.5 truncate text-xs text-text-tertiary">{selectedRun.kickoff}</p>
-              </>
-            ) : (
-              <div>
-                <input
-                  value={draft.name}
-                  onChange={(event) =>
-                    setDraft((current) => ({ ...current, name: event.target.value }))
-                  }
-                  className="w-[420px] max-w-full border-none bg-transparent text-base font-semibold text-text-primary outline-none placeholder:text-text-muted"
-                  aria-label="Workflow name"
-                />
-                <input
-                  value={draft.description}
-                  onChange={(event) =>
-                    setDraft((current) => ({ ...current, description: event.target.value }))
-                  }
-                  className="mt-0.5 block w-[520px] max-w-full border-none bg-transparent text-xs text-text-tertiary outline-none placeholder:text-text-muted"
-                  placeholder="What this workflow is for"
-                  aria-label="Workflow description"
-                />
-              </div>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            {selectedRun ? (
-              <>
-                <button
-                  onClick={() => openThread(selectedRun.supervisorThreadId, 'coder')}
-                  className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-text-secondary transition hover:bg-bg-tertiary hover:text-text-primary"
-                >
-                  <MessageSquare size={15} /> Open supervisor thread
-                </button>
-                {(selectedRun.status === 'running' || selectedRun.status === 'queued') && (
+              )}
+            </div>
+            <div className="flex shrink-0 flex-wrap items-center gap-2 whitespace-nowrap">
+              {selectedRun ? (
+                <>
                   <button
-                    onClick={() => window.anvil.workflow.cancelRun(selectedRun.id).then(refresh)}
-                    className="inline-flex items-center gap-2 rounded-lg border border-error/35 px-3 py-2 text-sm text-error transition hover:bg-error/10"
+                    onClick={() => openThread(selectedRun.supervisorThreadId, 'coder')}
+                    className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-text-secondary transition hover:bg-bg-tertiary hover:text-text-primary"
                   >
-                    <CircleStop size={15} /> Stop
+                    <MessageSquare size={15} /> Supervisor
                   </button>
-                )}
-              </>
-            ) : (
-              <>
-                {draft.id && (
-                  <button
-                    onClick={() => {
-                      if (!deleteArmed) {
-                        setDeleteArmed(true);
-                        return;
+                  {selectedRun.status === 'running' && (
+                    <button
+                      disabled={commandBusy}
+                      className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-2 text-xs text-text-secondary"
+                      onClick={() =>
+                        runCommand(() => window.anvil.workflow.pauseRun(selectedRun.id))
                       }
-                      window.anvil.workflow
-                        .deleteTemplate(draft.id)
-                        .then(() => {
-                          const remaining = templates.filter((item) => item.id !== draft.id);
-                          setTemplates(remaining);
-                          setDraft(remaining[0] ?? { ...EMPTY_TEMPLATE });
-                          setSelectedNodeId(null);
-                          setDeleteArmed(false);
-                        })
-                        .catch((caught) => setError(messageFrom(caught)));
-                    }}
-                    onBlur={() => setDeleteArmed(false)}
-                    className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm transition ${
-                      deleteArmed
-                        ? 'border-error/45 bg-error/10 text-error'
-                        : 'border-border text-text-tertiary hover:border-error/35 hover:text-error'
-                    }`}
-                  >
-                    <Trash2 size={15} /> {deleteArmed ? 'Delete?' : 'Delete'}
-                  </button>
-                )}
-                <button
-                  onClick={addStep}
-                  className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-text-secondary transition hover:border-accent/40 hover:bg-bg-tertiary hover:text-text-primary active:scale-[0.98]"
-                >
-                  <Plus size={15} /> Add step
-                </button>
-                <button
-                  onClick={save}
-                  disabled={saving}
-                  className="inline-flex items-center gap-2 rounded-lg bg-accent px-3.5 py-2 text-sm font-semibold text-bg-primary transition hover:brightness-110 active:scale-[0.98] disabled:opacity-50"
-                >
-                  {saving ? (
-                    <Activity className="workflow-running-icon" size={15} />
-                  ) : (
-                    <Save size={15} />
+                    >
+                      <Pause size={14} /> Pause
+                    </button>
                   )}
-                  {draft.id ? 'Save' : 'Save template'}
-                </button>
-              </>
+                  {selectedRun.status === 'paused' && (
+                    <button
+                      disabled={commandBusy}
+                      className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-2 text-xs text-text-secondary"
+                      onClick={() =>
+                        runCommand(() => window.anvil.workflow.resumeRun(selectedRun.id))
+                      }
+                    >
+                      <Play size={14} /> Resume
+                    </button>
+                  )}
+                  {['running', 'queued', 'paused'].includes(selectedRun.status) && (
+                    <button
+                      onClick={() =>
+                        runCommand(
+                          async () => (await window.anvil.workflow.cancelRun(selectedRun.id))!,
+                        )
+                      }
+                      className="inline-flex items-center gap-2 rounded-lg border border-error/35 px-3 py-2 text-sm text-error transition hover:bg-error/10"
+                    >
+                      <CircleStop size={15} /> Stop
+                    </button>
+                  )}
+                </>
+              ) : (
+                <>
+                  <button
+                    aria-pressed={showOrchestration}
+                    onClick={() => {
+                      setShowOrchestration(!showOrchestration);
+                      setSelectedNodeId(null);
+                    }}
+                    className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-text-secondary"
+                  >
+                    <Settings2 size={15} /> Team & limits
+                  </button>
+                  {draft.id && (
+                    <button
+                      onClick={() => {
+                        if (!deleteArmed) {
+                          setDeleteArmed(true);
+                          return;
+                        }
+                        window.anvil.workflow
+                          .deleteTemplate(draft.id)
+                          .then(() => {
+                            const remaining = templates.filter((item) => item.id !== draft.id);
+                            setTemplates(remaining);
+                            setDraft(remaining[0] ?? { ...EMPTY_TEMPLATE });
+                            setSelectedNodeId(null);
+                            setDeleteArmed(false);
+                          })
+                          .catch((caught) => setError(messageFrom(caught)));
+                      }}
+                      onBlur={() => setDeleteArmed(false)}
+                      className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm transition ${
+                        deleteArmed
+                          ? 'border-error/45 bg-error/10 text-error'
+                          : 'border-border text-text-tertiary hover:border-error/35 hover:text-error'
+                      }`}
+                    >
+                      <Trash2 size={15} /> {deleteArmed ? 'Delete?' : 'Delete'}
+                    </button>
+                  )}
+                  <button
+                    onClick={addStep}
+                    className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-text-secondary transition hover:border-accent/40 hover:bg-bg-tertiary hover:text-text-primary active:scale-[0.98]"
+                  >
+                    <Plus size={15} /> Add step
+                  </button>
+                  <button
+                    onClick={save}
+                    disabled={saving || starting}
+                    className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-text-secondary transition hover:bg-bg-tertiary disabled:opacity-50"
+                  >
+                    {saving ? (
+                      <Activity className="workflow-running-icon" size={15} />
+                    ) : (
+                      <Save size={15} />
+                    )}
+                    {draft.id ? 'Save' : 'Save template'}
+                  </button>
+                </>
+              )}
+            </div>
+          </header>
+        )}
+
+        {selectedRun && <RuntimeSummary run={selectedRun} />}
+        {!selectedRun && !isLaunching && (
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border-subtle px-5 py-2.5 text-xs text-text-tertiary">
+            <span>
+              Preview · {draft.nodes.length} steps ·{' '}
+              {orchestrationConfig(draft.orchestration).profiles.length} specialists
+              <span className="ml-3 text-text-secondary">Select a step to adjust it</span>
+            </span>
+            {!draft.id && (
+              <button
+                onClick={() => {
+                  setDraft({ ...EMPTY_TEMPLATE });
+                  setSelectedNodeId(null);
+                  setShowOrchestration(false);
+                }}
+                className="text-text-secondary underline decoration-border underline-offset-4 hover:text-text-primary"
+              >
+                Change flow
+              </button>
             )}
           </div>
-        </header>
+        )}
 
         {error && (
           <div className="flex items-center justify-between border-b border-error/30 bg-error/10 px-5 py-2.5 text-sm text-error">
@@ -627,23 +843,38 @@ export function WorkflowsView() {
               </div>
             </div>
           )}
-          {canvasTemplate.nodes.length === 0 ? (
-            <button
-              onClick={addStep}
-              className="absolute inset-0 m-auto flex h-52 w-[360px] flex-col items-center justify-center rounded-2xl border border-dashed border-border bg-bg-secondary/65 text-center transition hover:border-accent/45 hover:bg-bg-secondary"
-            >
-              <div className="grid h-12 w-12 place-items-center rounded-xl bg-accent/12 text-accent">
-                <GitFork size={22} />
-              </div>
-              <span className="mt-4 text-base font-semibold text-text-primary">
-                Drop the first step
-              </span>
-              <span className="mt-1 max-w-[28ch] text-sm text-text-tertiary">
-                Connect handles to branch, merge, and make the graph earn its arrows.
-              </span>
-            </button>
+          {isLaunching ? (
+            <WorkflowLaunchpad
+              objective={kickoff}
+              onObjectiveChange={setKickoff}
+              onPrepare={loadPreset}
+              onCustom={addStep}
+              ready={!loading && !!agentSettings}
+              loading={loading}
+              onRetry={() => {
+                setError(null);
+                setLoading(true);
+                void refresh()
+                  .catch((caught) => setError(messageFrom(caught)))
+                  .finally(() => setLoading(false));
+              }}
+              profileCount={orchestrationConfig(draft.orchestration).profiles.length || 3}
+              providerSummary={(agentSettings?.enabledLlmProviders?.length
+                ? agentSettings.enabledLlmProviders
+                : [agentSettings?.llmProvider ?? 'codex']
+              )
+                .map((provider) => PROVIDER_LABELS[provider])
+                .join(' / ')}
+              workspaceName={activeWorkspace?.name}
+            />
           ) : (
             <ReactFlow
+              key={
+                selectedRun
+                  ? `${selectedRun.id}:${selectedRun.nodes.length}:${libraryExpanded}`
+                  : `template:${draft.id}:${libraryExpanded}:${showOrchestration || !!selectedNodeId}`
+              }
+              minZoom={0.1}
               nodes={flowNodes}
               edges={flowEdges}
               nodeTypes={NODE_TYPES}
@@ -653,19 +884,8 @@ export function WorkflowsView() {
               nodesConnectable={!selectedRun}
               elementsSelectable
               onNodeClick={(_event, node) => {
-                if (selectedRun) {
-                  const nodeRun = selectedRun.nodeRuns.find(
-                    (candidate) => candidate.nodeId === node.id,
-                  );
-                  const workflowNode = selectedRun.nodes.find(
-                    (candidate) => candidate.id === node.id,
-                  );
-                  if (nodeRun?.threadId) {
-                    openThread(nodeRun.threadId, workflowNode?.personaId ?? 'coder');
-                  }
-                  return;
-                }
                 setSelectedNodeId(node.id);
+                setShowOrchestration(false);
               }}
               onNodeDragStop={(_event, node) => {
                 if (selectedRun) return;
@@ -699,35 +919,85 @@ export function WorkflowsView() {
               <Controls showInteractive={false} />
             </ReactFlow>
           )}
-
-          {!selectedRun && draft.id && (
-            <KickoffPanel
-              kickoff={kickoff}
-              setKickoff={setKickoff}
-              starting={starting}
-              canStart={!!activeWorkspace && !!kickoff.trim() && draft.nodes.length > 0}
-              onStart={start}
-            />
-          )}
         </div>
+        {!selectedRun && draft.nodes.length > 0 && (
+          <KickoffPanel
+            kickoff={kickoff}
+            setKickoff={setKickoff}
+            starting={starting}
+            canStart={!!activeWorkspace && !!kickoff.trim() && draft.nodes.length > 0 && !saving}
+            onStart={start}
+          />
+        )}
       </main>
 
-      {(selectedNode || selectedRun) && (
+      {!isLaunching && (selectedNode || selectedRun || showOrchestration) && (
         <aside className="flex w-[340px] shrink-0 flex-col border-l border-border bg-bg-secondary">
+          {!selectedRun && (
+            <div className="flex items-center justify-between border-b border-border-subtle px-5 py-3">
+              <span className="text-xs text-text-secondary">
+                {showOrchestration ? 'Team configuration' : 'Step configuration'}
+              </span>
+              <button
+                aria-label="Close configuration"
+                onClick={() => {
+                  setShowOrchestration(false);
+                  setSelectedNodeId(null);
+                }}
+                className="rounded p-1 text-text-tertiary hover:text-text-primary"
+              >
+                <X size={16} />
+              </button>
+            </div>
+          )}
           {selectedRun ? (
-            <SupervisorPanel
-              run={selectedRun}
-              template={runTemplate}
-              replies={supervisorReplies}
-              question={supervisorQuestion}
-              setQuestion={setSupervisorQuestion}
-              asking={asking}
-              onAsk={askSupervisor}
-              onOpenThread={openThread}
+            <>
+              <div className="max-h-[50%] overflow-y-auto">
+                <RunInspector
+                  key={`${selectedRun.id}:${selectedNodeId}`}
+                  run={selectedRun}
+                  nodeId={selectedNodeId}
+                  onCommand={runCommand}
+                  onOpenThread={openThread}
+                />
+              </div>
+              <SupervisorPanel
+                run={selectedRun}
+                template={runTemplate}
+                replies={supervisorReplies}
+                question={supervisorQuestion}
+                setQuestion={setSupervisorQuestion}
+                asking={asking}
+                onAsk={askSupervisor}
+                onOpenThread={openThread}
+              />
+            </>
+          ) : showOrchestration ? (
+            <OrchestrationPanel
+              value={draft.orchestration}
+              onChange={(orchestration) =>
+                setDraft((current) => ({
+                  ...current,
+                  orchestration,
+                  nodes: current.nodes.map((node) => ({
+                    ...node,
+                    teamProfileIds: node.teamProfileIds?.filter((id) =>
+                      orchestration.profiles.some((profile) => profile.id === id),
+                    ),
+                  })),
+                }))
+              }
+              providers={
+                agentSettings?.enabledLlmProviders?.length
+                  ? agentSettings.enabledLlmProviders
+                  : [agentSettings?.llmProvider ?? 'codex']
+              }
+              personas={personas}
             />
           ) : selectedNode ? (
             <Inspector
               node={selectedNode}
+              profiles={orchestrationConfig(draft.orchestration).profiles}
               personas={personas}
               enabledProviders={
                 agentSettings?.enabledLlmProviders?.length
@@ -757,6 +1027,7 @@ export function WorkflowsView() {
 
 function Inspector({
   node,
+  profiles,
   personas,
   enabledProviders,
   codexStatus,
@@ -765,6 +1036,7 @@ function Inspector({
   onDelete,
 }: {
   node: WorkflowNode;
+  profiles: import('../../../shared/types').WorkflowAgentProfile[];
   personas: Persona[];
   enabledProviders: AgentProvider[];
   codexStatus: CodexCliStatus | null;
@@ -809,117 +1081,108 @@ function Inspector({
             className="workflow-input resize-y"
           />
         </Field>
-        <Field label="Persona">
-          <select
-            value={node.personaId}
-            onChange={(event) => onChange({ personaId: event.target.value })}
-            className="workflow-input"
-          >
-            {personas.map((persona) => (
-              <option key={persona.id} value={persona.id}>
-                {persona.name}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Field label="Provider">
-          <select
-            value={provider}
-            onChange={(event) => {
-              const nextProvider = event.target.value as AgentProvider;
-              onChange({
-                provider: nextProvider,
-                model: nextProvider === 'cursor' ? 'auto' : DEFAULT_CODEX_MODEL,
-                reasoningEffort: 'medium',
-              });
-            }}
-            className="workflow-input"
-          >
-            {enabledProviders.map((providerId) => (
-              <option key={providerId} value={providerId}>
-                {PROVIDER_LABELS[providerId]}
-              </option>
-            ))}
-          </select>
-          <p className="mt-1 text-xs text-text-tertiary">
-            Only providers activated in Settings are available here.
-          </p>
-        </Field>
-        <Field label="Model">
-          <input
-            list={`workflow-models-${node.id}`}
-            value={node.model}
-            onChange={(event) => {
-              const model = event.target.value;
-              if (provider === 'cursor') {
-                onChange({ model });
-              } else {
-                const options = modelOptions.find((option) => option.id === model);
-                const supportedReasoningEfforts =
-                  options?.supportedReasoningEfforts ??
-                  getCodexModelReasoningOptions(model).supportedReasoningEfforts;
-                const defaultReasoningEffort =
-                  options?.defaultReasoningEffort ??
-                  getCodexModelReasoningOptions(model).defaultReasoningEffort;
-                onChange({
-                  model,
-                  reasoningEffort: supportedReasoningEfforts.includes(node.reasoningEffort)
-                    ? node.reasoningEffort
-                    : defaultReasoningEffort,
-                });
-              }
-            }}
-            className="workflow-input"
-          />
-          <datalist id={`workflow-models-${node.id}`}>
-            {modelOptions.map((model) => (
-              <option key={model.id} value={model.id}>
-                {model.label}
-              </option>
-            ))}
-          </datalist>
-          {provider === 'cursor' && (
-            <p className="mt-1 text-xs text-text-tertiary">
-              {cursorStatus?.models.length
-                ? `${cursorStatus.models.length} models detected from Cursor CLI.`
-                : 'Enter a Cursor model id, or use auto.'}
-            </p>
-          )}
-        </Field>
-        {provider === 'cursor' ? (
-          <p className="text-xs text-text-tertiary">
-            Cursor model ids carry their own reasoning level, such as <code>-high</code> or{' '}
-            <code>-xhigh</code>.
-          </p>
-        ) : (
-          <Field label="Reasoning">
-            <div className="grid grid-cols-4 gap-1.5">
-              {reasoning.map((effort) => (
-                <ChoiceButton
-                  key={effort}
-                  active={node.reasoningEffort === effort}
-                  onClick={() => onChange({ reasoningEffort: effort })}
-                >
-                  {effort}
-                </ChoiceButton>
-              ))}
-            </div>
-          </Field>
-        )}
-        <Field label="Subagents">
-          <div className="space-y-1.5">
-            {STRATEGIES.map((strategy) => (
-              <button
-                key={strategy.id}
-                onClick={() => onChange({ executionStrategy: strategy.id })}
-                className={`w-full rounded-lg border p-3 text-left transition ${node.executionStrategy === strategy.id ? 'border-accent/45 bg-accent/10' : 'border-border hover:bg-bg-tertiary'}`}
+        <TeamSettings node={node} profiles={profiles} onChange={onChange} />
+        {node.kind !== 'human' && (
+          <>
+            <Field label="Persona">
+              <select
+                value={node.personaId}
+                onChange={(event) => onChange({ personaId: event.target.value })}
+                className="workflow-input"
               >
-                <div className="text-sm font-medium text-text-primary">{strategy.label}</div>
-                <div className="mt-0.5 text-xs text-text-tertiary">{strategy.description}</div>
-              </button>
-            ))}
-          </div>
-        </Field>
+                {personas.map((persona) => (
+                  <option key={persona.id} value={persona.id}>
+                    {persona.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Provider">
+              <select
+                value={provider}
+                onChange={(event) => {
+                  const nextProvider = event.target.value as AgentProvider;
+                  onChange({
+                    provider: nextProvider,
+                    model: nextProvider === 'cursor' ? 'auto' : DEFAULT_CODEX_MODEL,
+                    reasoningEffort: 'medium',
+                  });
+                }}
+                className="workflow-input"
+              >
+                {enabledProviders.map((providerId) => (
+                  <option key={providerId} value={providerId}>
+                    {PROVIDER_LABELS[providerId]}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-text-tertiary">
+                Only providers activated in Settings are available here.
+              </p>
+            </Field>
+            <Field label="Model">
+              <input
+                list={`workflow-models-${node.id}`}
+                value={node.model}
+                onChange={(event) => {
+                  const model = event.target.value;
+                  if (provider === 'cursor') {
+                    onChange({ model });
+                  } else {
+                    const options = modelOptions.find((option) => option.id === model);
+                    const supportedReasoningEfforts =
+                      options?.supportedReasoningEfforts ??
+                      getCodexModelReasoningOptions(model).supportedReasoningEfforts;
+                    const defaultReasoningEffort =
+                      options?.defaultReasoningEffort ??
+                      getCodexModelReasoningOptions(model).defaultReasoningEffort;
+                    onChange({
+                      model,
+                      reasoningEffort: supportedReasoningEfforts.includes(node.reasoningEffort)
+                        ? node.reasoningEffort
+                        : defaultReasoningEffort,
+                    });
+                  }
+                }}
+                className="workflow-input"
+              />
+              <datalist id={`workflow-models-${node.id}`}>
+                {modelOptions.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.label}
+                  </option>
+                ))}
+              </datalist>
+              {provider === 'cursor' && (
+                <p className="mt-1 text-xs text-text-tertiary">
+                  {cursorStatus?.models.length
+                    ? `${cursorStatus.models.length} models detected from Cursor CLI.`
+                    : 'Enter a Cursor model id, or use auto.'}
+                </p>
+              )}
+            </Field>
+            {provider === 'cursor' ? (
+              <p className="text-xs text-text-tertiary">
+                Cursor model ids carry their own reasoning level, such as <code>-high</code> or{' '}
+                <code>-xhigh</code>.
+              </p>
+            ) : (
+              <Field label="Reasoning">
+                <div className="grid grid-cols-4 gap-1.5">
+                  {reasoning.map((effort) => (
+                    <ChoiceButton
+                      key={effort}
+                      active={node.reasoningEffort === effort}
+                      onClick={() => onChange({ reasoningEffort: effort })}
+                    >
+                      {effort}
+                    </ChoiceButton>
+                  ))}
+                </div>
+              </Field>
+            )}
+          </>
+        )}
       </div>
     </div>
   );
@@ -939,8 +1202,12 @@ function KickoffPanel({
   onStart: () => void;
 }) {
   return (
-    <div className="absolute bottom-5 left-1/2 z-10 w-[min(720px,calc(100%-40px))] -translate-x-1/2 rounded-2xl border border-border bg-bg-elevated p-2 shadow-2xl">
-      <div className="flex items-end gap-2">
+    <div className="shrink-0 border-t border-border bg-bg-secondary px-5 py-4">
+      <div className="mb-2 flex items-center justify-between text-xs text-text-tertiary">
+        <span className="font-medium text-text-secondary">Run objective</span>
+        <span>Changes save when you run</span>
+      </div>
+      <div className="flex flex-wrap items-end gap-2">
         <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-accent/12 text-accent">
           <Sparkles size={18} />
         </div>
@@ -948,17 +1215,17 @@ function KickoffPanel({
           value={kickoff}
           onChange={(event) => setKickoff(event.target.value)}
           rows={2}
-          placeholder="Tell the supervisor what this run should accomplish…"
-          className="min-h-10 flex-1 resize-none bg-transparent px-2 py-2 text-sm text-text-primary outline-none placeholder:text-text-muted"
+          placeholder="Describe the outcome for this run…"
+          className="min-h-10 min-w-[180px] flex-1 resize-none bg-transparent px-2 py-2 text-sm text-text-primary outline-none placeholder:text-text-muted"
           aria-label="Workflow kickoff"
         />
         <button
           onClick={onStart}
           disabled={!canStart || starting}
-          className="inline-flex h-10 items-center gap-2 rounded-xl bg-accent px-4 text-sm font-semibold text-bg-primary transition hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
+          className="ml-auto inline-flex h-10 items-center gap-2 rounded-xl bg-accent px-4 text-sm font-semibold text-bg-primary transition hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
         >
           {starting ? <Activity className="workflow-running-icon" size={16} /> : <Play size={16} />}{' '}
-          Start
+          {starting ? 'Starting…' : 'Run workflow'}
         </button>
       </div>
     </div>
@@ -1096,11 +1363,13 @@ function StatusDot({ status }: { status: string }) {
       ? 'bg-success'
       : status === 'running' || status === 'queued'
         ? 'bg-accent'
-        : status === 'failed'
+        : status === 'failed' || status === 'interrupted'
           ? 'bg-error'
-          : status === 'cancelled' || status === 'skipped'
-            ? 'bg-text-muted'
-            : 'bg-border';
+          : status === 'waiting' || status === 'paused'
+            ? 'bg-warning'
+            : status === 'cancelled' || status === 'skipped'
+              ? 'bg-text-muted'
+              : 'bg-border';
   return (
     <span
       className={`inline-block h-2.5 w-2.5 shrink-0 rounded-full ${colour}`}
