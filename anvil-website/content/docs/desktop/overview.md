@@ -61,6 +61,12 @@ the main process, and the renderer receives only connection status, execution
 leases, and evidence. Cloud is disabled by default and stays outside ordinary
 chat unless you choose to enable and open it.
 
+## Recent delivery tools
+
+- [Workflows](/docs/desktop/workflow-graphs) coordinate cross-provider specialist teams with bounded delegation and human decisions.
+- [Change review](/docs/desktop/change-review) ties acceptance to a replayed candidate, criteria version, and captured evidence.
+- [Dojo](/docs/desktop/dojo) connects agent activity and usage coverage to prompt and skill coaching.
+
 ## Read next
 
 - [Feature directory](/docs/desktop/feature-directory)

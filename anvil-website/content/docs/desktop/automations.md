@@ -21,10 +21,10 @@ An automation stores:
 - one or more repository targets
 - schedule or Watchtower trigger configuration
 - whether the agent may write repository files or run commands
-- an optional multi-persona loop and stop condition
+- an optional multi-persona loop and stop condition, or a saved workflow template
 - enabled state, timezone, last run, and next run
 
-Every run uses disposable Git worktrees. The automation prompt is constrained to those paths and explicitly forbids pushes, pull requests, remote mutations, and external ticket, document, or comment creation.
+Every run uses disposable Git worktrees. Persona automation prompts are constrained to those paths and explicitly forbid pushes, pull requests, remote mutations, and external ticket, document, or comment creation. Workflow automations use the selected workflow instructions and provider persona policies; they require both repository write and command permissions.
 
 ## Schedules and Watchtower
 
@@ -52,7 +52,7 @@ The Automations view reports whether the daemon is supported, installed, and loa
 
 Before a run, Anvil creates a dedicated branch and worktree for every target repository. The agent may only edit those worktree paths when write permission is enabled.
 
-Clean worktrees are removed after the run. A worktree with changes is kept for review and appears in the run detail. This prevents an unattended run from mixing changes into the developer's current checkout while preserving work that needs inspection.
+For persona runs, clean worktrees are removed after the run. A worktree with changes is kept for review and appears in the run detail. This prevents an unattended run from mixing changes into the developer's current checkout while preserving work that needs inspection.
 
 Disposable worktrees isolate Git state, not the operating system. An allowed command still runs as the user who launched Anvil.
 
@@ -61,6 +61,14 @@ Disposable worktrees isolate Git state, not the operating system. An allowed com
 An optional loop assigns a list of personas, a maximum of one to eight iterations, and a stop condition. Sequence mode hands work through the personas in order. Dynamic mode lets the orchestrator decide whether a persona is useful for the current iteration.
 
 Each member runs in a separate provider thread and receives the earlier thread outputs as handoff context. Use a small member list and a concrete stop condition. A vague loop is just an expensive way to rediscover ambiguity.
+
+## Launch a workflow
+
+Select a saved workflow template to run it with the automation's prompt as its kickoff. A workflow template and persona loop cannot be combined in one automation.
+
+Workflow agents use the prepared worktrees. Those worktrees are retained for inspection and for paused workflow runs, including runs waiting for a human decision. Open the linked workflow from run details, resolve its decisions, and resume there. The automation transcript records the workflow state when its scheduler stops; inspect the linked workflow for subsequent progress.
+
+Workflow completion events carrying an originating automation run are filtered from Watchtower triggers to prevent feedback loops.
 
 ## Results and triage
 
@@ -75,7 +83,7 @@ Run history records trigger, status, assistant result, error, changed-file count
 
 ## Limits
 
-- Automations require the local Codex runtime and configured persona access.
+- Persona automations require the local Codex runtime and configured persona access. Workflow automations require the tools and credentials for each selected provider.
 - Command and write permissions are broad within the disposable worktrees. Review retained changes before merging them.
 - Cancellation and failure do not reverse commands or external effects that already occurred.
 - External Watchtower polling depends on local provider credentials and API availability.

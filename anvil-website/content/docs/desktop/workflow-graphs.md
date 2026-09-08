@@ -1,7 +1,7 @@
 ---
 title: Workflow graphs
 navTitle: Workflows
-description: Build reusable multi-step agent workflows, assign providers and models, run them against repositories, and inspect supervisor state.
+description: Coordinate agents across providers with specialist teams, bounded delegation, persisted handoffs, and human decisions.
 product: Anvil Desktop
 section: Automation
 journey: build
@@ -10,54 +10,57 @@ order: 117
 
 # Workflow graphs
 
-Workflows turn a repeated agent process into a named graph. They are useful when a task needs explicit handoffs, independent review, or the same sequence across several repositories.
+Workflows turn a repeated agent process into a named graph. Each step has an instruction, persona, provider, model, and reasoning level. Edges make downstream steps wait for completed upstream work.
 
-## Templates
+## From outcome to run
 
-A workflow template stores its name, description, nodes, edges, and visual positions. Every node has its own execution strategy. Create a template manually or ask the configured model to draft one from a plain-language request. Review drafted steps before saving because a plausible graph can still aim at the wrong repository or validation command.
+1. Describe the outcome and choose a delivery, review, or research starter, an existing template, or an AI-drafted flow.
+2. Edit the steps and connections. Expand team settings when a step needs specialists.
+3. Preview the graph. Preview does not start agents.
+4. Select the workspace repositories and write the kickoff with constraints and expected evidence.
+5. Choose Run. Anvil saves the configuration before starting, including a previously unsaved template.
 
-Each step records its prompt and can select an active provider and model. This makes the runtime choice visible. A template fails plainly if a saved step references a provider that is no longer active.
+Review generated steps before running them. A valid graph can still target the wrong repository or ask for the wrong checks.
 
-## Execution strategies
+## Specialist teams
 
-The workflow contract supports four strategies:
+Profiles name a specialist's persona, provider, model, reasoning level, and capabilities. A step can use an explicit subset of profiles; an autonomous step without a subset uses the configured pool.
 
-| Strategy | Use it for |
+| Strategy | Runtime behavior |
 | --- | --- |
-| Focused | Keep the run on a narrow ordered path. |
-| Adaptive | Let the supervisor choose the next useful handoff from current evidence. |
-| Parallel | Run independent branches at the same time where the provider and thread limit allow it. |
-| Review team | Ask separate reviewers to inspect the same work from different angles. |
+| Single agent | Runs the step's configured agent directly. |
+| Map / reduce | Creates specialist tasks and asks the coordinator to combine their handoffs. Task instructions describe each share; Anvil does not partition files automatically. |
+| Independent review | Specialists inspect independently before the coordinator reconciles their findings. |
+| Debate | Specialists propose alternatives before the coordinator evaluates them. |
+| Autonomous delegation | The agent requests tasks from the approved pool through a final delegation block. Anvil adds child nodes and calls the parent again to synthesise their results. |
 
-Edges define the allowed handoffs. Parallelism is still bounded by the configured agent thread limit and provider behavior.
+Child tasks appear in the live graph. Providers can differ between the coordinator and specialists. Codex, OpenAI, and Azure steps use the Codex app-server route; Cursor steps use `cursor-agent`. Providers must be enabled and authenticated locally.
 
-## Run a workflow
+Older templates may retain focused, adaptive, parallel, or review-team execution hints. Those are provider instructions. The team strategies above are managed by Anvil's scheduler.
 
-1. Choose a template.
-2. Select the workspace repositories the run may use.
-3. Write a kickoff that names the outcome and constraints.
-4. Start the run and watch node status in the graph.
-5. Open node output when a handoff needs inspection.
-6. Ask the supervisor what is happening if the graph state is unclear.
-7. Cancel the run if its assumptions or target are wrong.
+## Limits and handoffs
 
-Run history remains attached to the workspace. The workflow view can reopen a stored run and its node state. The Inbox also reports running, waiting, failed, and completed work when those states need attention.
+The default run policy allows one concurrent agent, 64 total nodes, delegation depth three, three attempts per step, and 30 minutes of wall-clock time. Team settings can change these within validated ranges. Delegation and parent synthesis consume the same bounded attempt budget.
 
-## Providers and models
+Upstream handoffs include node and attempt references. Output is truncated to fit the configured handoff allowance; open the source thread when the full result matters.
 
-The primary provider is only the default for new chat and app-level drafting. Workflow nodes may use any active provider. Codex, OpenAI, and Azure nodes use the Codex app-server route with the selected model configuration. Cursor nodes use `cursor-agent` and its locally reported model catalog.
+All agents in a run share its execution workspace. Concurrent edits can conflict. Use concurrency one unless task scopes are independent. Anvil does not automatically integrate per-agent branches, enforce hard token or cost budgets, or turn a reported handoff into independent evidence. Provider-native delegation remains instruction-controlled.
 
-Mix providers when independent implementation and review are worth the extra setup. Do not add a second provider merely to make the graph look busy.
+## Inspect and intervene
 
-## Workflows versus automations
+Run history stores node state, attempts, events, provider details, errors, and handoffs. Select a node to inspect its attempts and open its thread. The supervisor can explain the persisted snapshot but does not silently modify the graph.
 
-Use a workflow for agent reasoning and handoffs. Use an automation for a command or loop that should run manually, on a schedule, or when Watchtower detects a repository change.
+- Pause stops new dispatch. Active agents finish their current attempts.
+- A human step waits for an accept or reject decision and an optional note. Resolve pending decisions, then resume the paused run.
+- Retry queues a failed or interrupted agent step after inspection. Resume executes it, subject to its remaining attempt budget.
+- Cancel stops further work and requests that active workers stop. It cannot reverse edits or external effects already made.
 
-An automation may launch agent-backed work, but it also owns disposable worktree execution, cron state, run events, and local scheduling. See [Automations](/docs/desktop/automations).
+On recovery after an owning process exits, Anvil marks unfinished attempts as interrupted and pauses the run. It does not automatically replay uncertain work. Inspect the workspace before retrying. Resuming preserves the original deadline, including time spent paused.
 
-## Limits
+Human workflow decisions record an operator's judgement. For acceptance tied to a specific source snapshot and replayed browser evidence, use [Change review](/docs/desktop/change-review).
 
-- Workflow execution depends on the installed and authenticated provider tools.
-- Cancellation asks the active run to stop; it cannot reverse file or external-system changes already made.
-- A graph records coordination, not correctness. Review its output and run the repository's checks.
-- Provider quotas and the configured concurrent-thread limit still apply.
+## Scheduled workflows
+
+An [automation](/docs/desktop/automations) can launch a saved workflow in its disposable repository worktrees. Configure both repository write and command permissions; restricted persona automations remain available separately. Workflow runs retain their worktrees for inspection and resume. Open a linked workflow from the automation's run details to resolve human steps.
+
+Workflow-originated automation events are filtered to prevent a workflow automation from recursively triggering another automation through its own completion event.

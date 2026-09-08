@@ -49,6 +49,8 @@ Provider events can become native Anvil UI instead of raw transcript text:
 - question intents show structured choices and collect a resolution
 - goals expose the current objective and progress state
 
+Guided questions can present suggested answers alongside a free-text response, so clarification can stay attached to the work being discussed.
+
 These records persist with the thread. You can dismiss and restore supported intents without deleting their history.
 
 ## Canvas artifacts and annotations
@@ -64,6 +66,8 @@ Treat artifact previews as review surfaces. A generated plan or report is not pr
 The activity pane separates the parent turn from delegated agent work. Subagent events show status and progress without forcing every internal event into the main conversation. The current execution topology can fan work out when the provider and task allow it, then settle child activity back into the parent turn.
 
 Anvil records active sessions and recent agent runs so the Inbox, repository twin, sidebar indicators, and companion views can report work that continues outside the visible thread.
+
+For workspace-level activity, failures, usage coverage, and coaching reports, open [Dojo](/docs/desktop/dojo).
 
 ## Usage and completion
 

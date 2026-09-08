@@ -28,7 +28,9 @@ Role selection controls which tools appear. Cloud is also hidden until you enabl
 | Feature | What it does | Guide |
 | --- | --- | --- |
 | Watchtower and schedules | Runs manual, scheduled, or repository-change-triggered automation in disposable worktrees and stores run events. | [Automations](/docs/desktop/automations) |
-| Workflows | Builds reusable agent graphs, assigns providers and models per step, runs them against workspace repositories, and exposes the supervisor transcript. | [Workflow graphs](/docs/desktop/workflow-graphs) |
+| Workflows | Coordinates specialist teams across providers, records delegation and attempts, and supports pause, retry, cancellation, and human decisions. | [Workflow graphs](/docs/desktop/workflow-graphs) |
+| Change review | Replays base and candidate browser scenarios and binds acceptance to source snapshots, criteria, screenshots, and traces. | [Change review](/docs/desktop/change-review) |
+| Dojo | Inspects workspace agent activity, usage coverage, failures, and evidence-linked prompt and skill recommendations. | [Dojo](/docs/desktop/dojo) |
 
 ## Delivery
 
