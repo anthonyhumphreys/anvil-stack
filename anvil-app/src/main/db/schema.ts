@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 62;
+export const SCHEMA_VERSION = 63;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -546,6 +546,19 @@ CREATE TABLE IF NOT EXISTS security_findings (
   work_item_id   TEXT,
   dismissed      INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE INDEX IF NOT EXISTS idx_code_reviews_repo_started
+  ON code_reviews(repo_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_code_reviews_running
+  ON code_reviews(repo_id, started_at DESC) WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS idx_code_review_findings_review
+  ON code_review_findings(review_id);
+CREATE INDEX IF NOT EXISTS idx_security_audits_repo_started
+  ON security_audits(repo_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_security_audits_running
+  ON security_audits(repo_id, started_at DESC) WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS idx_security_findings_audit
+  ON security_findings(audit_id);
 
 CREATE TABLE IF NOT EXISTS pentest_scans (
   id              TEXT PRIMARY KEY,
@@ -2000,4 +2013,37 @@ ALTER TABLE code_reviews ADD COLUMN source_tree TEXT;
 ALTER TABLE security_audits ADD COLUMN source_tree TEXT;
 UPDATE pull_request_visualisations SET status = 'failed' WHERE status = 'ready';
 `,
+  // Development review/workflow builds also used v62. Reconcile their missing main tables.
+  63: `
+CREATE TABLE IF NOT EXISTS change_reviews (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  record_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_change_reviews_workspace ON change_reviews(workspace_id, updated_at DESC);
+CREATE TABLE IF NOT EXISTS scoped_work_items_cache (
+  connection_key TEXT NOT NULL,
+  id TEXT NOT NULL,
+  raw_json TEXT NOT NULL,
+  fetched_at TEXT NOT NULL,
+  PRIMARY KEY(connection_key, id)
+);
+ALTER TABLE code_reviews ADD COLUMN source_tree TEXT;
+ALTER TABLE security_audits ADD COLUMN source_tree TEXT;
+UPDATE pull_request_visualisations SET status = 'failed' WHERE status = 'ready';
+CREATE INDEX IF NOT EXISTS idx_code_reviews_repo_started
+  ON code_reviews(repo_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_code_reviews_running
+  ON code_reviews(repo_id, started_at DESC) WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS idx_code_review_findings_review
+  ON code_review_findings(review_id);
+CREATE INDEX IF NOT EXISTS idx_security_audits_repo_started
+  ON security_audits(repo_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_security_audits_running
+  ON security_audits(repo_id, started_at DESC) WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS idx_security_findings_audit
+  ON security_findings(audit_id);
+  `,
 };
