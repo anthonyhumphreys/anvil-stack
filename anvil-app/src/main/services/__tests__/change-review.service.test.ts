@@ -1,3 +1,4 @@
+import { isFindingAccepted } from '../../../shared/change-review-types.js';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { digest } from '../change-review-runner.service.js';
@@ -43,6 +44,8 @@ import {
   annotateChangeReview,
   validateScenario,
   publishChangeReview,
+  linkReviewEvidence,
+  recordNativeReviewEvidence,
 } from '../change-review.service.js';
 import type {
   ChangeReview,
@@ -249,6 +252,39 @@ describe('change acceptance', () => {
       'subsequent passing replay',
     );
   });
+  it('returns live stale freshness after a finding or scenario mutation', async () => {
+    const review = await reviewWithRun();
+    review.runs[0].candidateCaptures = [
+      { id: 'capture' } as ReviewRun['candidateCaptures'][number],
+    ];
+    persist(review);
+    const annotated = annotateChangeReview(review.id, {
+      runId: 'run',
+      captureId: 'capture',
+      note: 'Button clipped',
+    });
+    const finding = annotated.findings[0];
+    mocks.tree = 'changed-by-repair';
+    expect(getChangeReview(review.id).freshness).toBe('stale');
+    // The persisted record is still current: this reproduces a mutation after navigating back.
+    expect(
+      JSON.parse(
+        (
+          db.prepare('SELECT record_json FROM change_reviews WHERE id = ?').get(review.id) as {
+            record_json: string;
+          }
+        ).record_json,
+      ).freshness,
+    ).toBe('current');
+    const updated = resolveReviewFinding(review.id, finding.id, 'ready_for_recheck', 'run');
+    expect(updated.freshness).toBe('stale');
+    expect(updated.freshnessDetail).toContain('Source changed');
+    expect(updated.findings[0].history.at(-1)?.state).toBe('ready_for_recheck');
+    expect(updated.runs[0].evidenceAvailable).toBe(false);
+    expect(configureChangeReview(review.id, { ...scenario, fixtureVersion: 'v2' }).freshness).toBe(
+      'stale',
+    );
+  });
   it('rejects external navigation and malformed scenario settings', () => {
     expect(() => validateScenario({ ...scenario, readyPath: '//production.example' })).toThrow(
       'local path',
@@ -276,5 +312,208 @@ describe('change acceptance', () => {
     );
     expect(mocks.publish).toHaveBeenCalledTimes(1);
     expect(getChangeReview(review.id).decisions).toHaveLength(1);
+  });
+});
+
+describe('delivery evidence identity', () => {
+  it('refuses missing retained candidates without falling back to the repository', async () => {
+    await expect(
+      createChangeReview({
+        workspaceId: 'ws',
+        repoId: 'repo',
+        baseRef: 'main',
+        origin: { workflowRunId: 'missing' },
+      }),
+    ).rejects.toThrow('Workflow candidate is unavailable');
+    await expect(
+      createChangeReview({
+        workspaceId: 'ws',
+        repoId: 'repo',
+        baseRef: 'main',
+        origin: { automationRunId: 'missing' },
+      }),
+    ).rejects.toThrow('Automation candidate is unavailable');
+    await expect(
+      createChangeReview({
+        workspaceId: 'ws',
+        repoId: 'repo',
+        baseRef: 'main',
+        origin: { executionPath: '/arbitrary' },
+      }),
+    ).rejects.toThrow('persisted workflow');
+  });
+  it('rejects a PR handoff pointing at another head', async () => {
+    await expect(
+      createChangeReview({
+        workspaceId: 'ws',
+        repoId: 'repo',
+        baseRef: 'main',
+        origin: { pullRequest: { id: '7', provider: 'github', headSha: 'other' } },
+      }),
+    ).rejects.toThrow('does not match');
+  });
+  it('requires explicit mappings and invalidates them when criteria change', async () => {
+    const review = await reviewWithRun();
+    db.prepare(
+      'INSERT INTO pull_request_visualisations (id,repo_id,provider,pull_request_id,head_sha,status,pull_request_json,data_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)',
+    ).run(
+      'vis',
+      'repo',
+      'github',
+      '7',
+      'head',
+      'ready',
+      '{}',
+      JSON.stringify({ chapters: [{ id: 'chapter' }] }),
+      'today',
+    );
+    const source = {
+      visualisationId: 'vis',
+      headSha: 'head',
+      kind: 'chapter' as const,
+      id: 'chapter',
+    };
+    expect(() => linkReviewEvidence(review.id, { source })).toThrow('Choose an evidence target');
+    const linked = linkReviewEvidence(review.id, {
+      source,
+      criterionId: review.criteria[0].items[0].id,
+    });
+    expect(linked.evidenceLinks?.[0]).toMatchObject({
+      provenance: 'human-linked',
+      freshness: 'current',
+    });
+    expect(linked.decisions).toEqual([]);
+    db.prepare(
+      'INSERT INTO pull_request_visualisations (id,repo_id,provider,pull_request_id,head_sha,status,pull_request_json,data_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)',
+    ).run('vis-new', 'repo', 'github', '7', 'new-head', 'ready', '{}', '{}', 'tomorrow');
+    expect(getChangeReview(review.id).evidenceLinks?.[0].freshness).toBe('stale');
+    db.prepare('DELETE FROM pull_request_visualisations WHERE id = ?').run('vis-new');
+    db.prepare('UPDATE pull_request_visualisations SET data_json = ? WHERE id = ?').run(
+      JSON.stringify({ chapters: [{ id: 'chapter', summary: 'regenerated' }] }),
+      'vis',
+    );
+    expect(getChangeReview(review.id).evidenceLinks?.[0].freshness).toBe('stale');
+
+    mocks.text = '- New intent';
+    await refreshChangeReview(review.id);
+    expect(getChangeReview(review.id).evidenceLinks?.[0].freshness).toBe('stale');
+  });
+  it('marks capture mappings stale when their artifacts disappear', async () => {
+    const review = await reviewWithRun();
+    const dir = join('/tmp', 'change-review', review.id, 'run');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'image.png'), 'image');
+    writeFileSync(join(dir, 'trace.zip'), 'trace');
+    review.runs[0].candidateCaptures.push({
+      id: 'capture',
+      viewport: 'Mobile',
+      image: 'image.png',
+      trace: 'trace.zip',
+      imageDigest: digest('image'),
+      traceDigest: digest('trace'),
+      outcome: 'passed',
+      steps: [],
+    });
+    persist(review);
+    db.prepare(
+      'INSERT INTO pull_request_visualisations (id,repo_id,provider,pull_request_id,head_sha,status,pull_request_json,data_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)',
+    ).run(
+      'vis2',
+      'repo',
+      'github',
+      '8',
+      'head',
+      'ready',
+      '{}',
+      JSON.stringify({ risks: [{ id: 'risk' }] }),
+      'today',
+    );
+    linkReviewEvidence(review.id, {
+      source: { visualisationId: 'vis2', headSha: 'head', kind: 'risk', id: 'risk' },
+      runId: 'run',
+      captureId: 'capture',
+    });
+    const latest = getChangeReview(review.id);
+    latest.findings.push({
+      id: 'accepted-finding',
+      runId: 'run',
+      captureId: 'capture',
+      note: 'Reviewed',
+      history: [{ state: 'accepted', at: 'now', runId: 'run' }],
+    });
+    persist(latest);
+    expect(getChangeReview(review.id).runs[0].evidenceAvailable).toBe(true);
+    expect(isFindingAccepted(getChangeReview(review.id), latest.findings[0])).toBe(true);
+    latest.origin = { pullRequest: { id: '8', number: 8, provider: 'github', headSha: 'head' } };
+    persist(latest);
+    db.prepare(
+      "INSERT INTO automation_definitions(id,workspace_id,name,persona_id,prompt,schedule_cron,timezone,created_at,updated_at) VALUES ('watch','ws','Watch','coder','Review','* * * * *','UTC','now','now')",
+    ).run();
+    const watch = (
+      id: string,
+      observedAt: string,
+      provider: string,
+      pullRequestNumber: number,
+      headSha: string,
+      occurredAt: string,
+      repoId = 'repo',
+    ) => {
+      db.prepare(
+        "INSERT INTO watchtower_events(id,automation_id,event_type,source_id,payload_json,observed_at) VALUES (?,'watch','pull_request.head_changed',?,?,?)",
+      ).run(
+        id,
+        id,
+        JSON.stringify({
+          workspaceId: 'ws',
+          repoIds: [repoId],
+          occurredAt,
+          metadata: { repoId, provider, pullRequestNumber, headSha },
+        }),
+        observedAt,
+      );
+    };
+    watch('other-provider', '2026-01-05', 'azure-devops', 8, 'unrelated', '2026-01-05');
+    watch('other-pr', '2026-01-05', 'github', 9, 'unrelated', '2026-01-05');
+    watch('other-repo', '2026-01-05', 'github', 8, 'unrelated', '2026-01-05', 'different-repo');
+    expect(getChangeReview(review.id).freshness).toBe('current');
+    // Later observation wins even though its remote occurredAt precedes the prior event.
+    watch('older-head', '2026-01-01', 'github', 8, 'head', '2026-02-01');
+    watch('new-head', '2026-01-02', 'github', 8, 'head-new', '2025-12-01');
+    const changedHead = getChangeReview(review.id);
+    expect(changedHead.freshness).toBe('stale');
+    expect(changedHead.evidenceLinks?.[0].freshness).toBe('stale');
+    expect(isFindingAccepted(changedHead, changedHead.findings[0])).toBe(false);
+    await expect(refreshChangeReview(review.id)).rejects.toThrow('newer pull request head');
+    db.prepare("DELETE FROM watchtower_events WHERE automation_id = 'watch'").run();
+    db.prepare("DELETE FROM automation_definitions WHERE id = 'watch'").run();
+
+    rmSync(dir, { recursive: true, force: true });
+    const missing = getChangeReview(review.id);
+    expect(missing.runs[0].evidenceAvailable).toBe(false);
+    expect(missing.runs[0].evidenceDetail).toBeTruthy();
+    expect(isFindingAccepted(missing, missing.findings[0])).toBe(false);
+    expect(missing.evidenceLinks?.[0].freshness).toBe('stale');
+  });
+  it('keeps native observations separate from acceptance and enforces head identity', async () => {
+    const review = await reviewWithRun();
+    const input = {
+      buildId: 'pr-7-head-darwin-arm64-1',
+      headSha: 'head',
+      platform: 'darwin' as const,
+      arch: 'arm64' as const,
+      status: 'unavailable' as const,
+      signing: 'unavailable' as const,
+      notes: 'No native build available',
+    };
+    expect(() => recordNativeReviewEvidence(review.id, { ...input, headSha: 'other' })).toThrow(
+      'does not match',
+    );
+    const recorded = recordNativeReviewEvidence(review.id, input);
+    expect(recorded.nativeEvidence?.[0].provenance).toBe('human-observed');
+    expect(recorded.decisions).toEqual([]);
+    expect(recorded.nativeEvidence?.[0].candidateTree).toBe(review.candidate.tree);
+    expect(() => recordNativeReviewEvidence(review.id, { ...input, status: 'passed' })).toThrow(
+      'clean candidate commit',
+    );
   });
 });

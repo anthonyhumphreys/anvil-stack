@@ -1,3 +1,4 @@
+import type { ChatThreadPullRequestInput, ChatThreadPullRequestLink } from './types.js';
 import type { ChangeReviewApi } from './change-review-types.js';
 import type {
   DojoAnalytics,
@@ -46,6 +47,7 @@ import type {
   BaSession,
   ChatAttachment,
   ChatNavigationTarget,
+  WorkflowNavigationTarget,
   ChatAttachmentInput,
   ChatArtifact,
   ChatArtifactAnnotation,
@@ -176,6 +178,7 @@ export interface AnvilAPI {
     getChromeState: () => Promise<{ isFullScreen: boolean }>;
     openToolWindow: (route: string, workspaceId?: string) => Promise<void>;
     onChromeStateChanged: (callback: (state: { isFullScreen: boolean }) => void) => () => void;
+    onNavigateToWorkflow: (callback: (target: WorkflowNavigationTarget) => void) => () => void;
     onNavigateToChat: (callback: (target: ChatNavigationTarget) => void) => () => void;
   };
 
@@ -226,6 +229,18 @@ export interface AnvilAPI {
   };
 
   chat: {
+    linkPullRequest(
+      threadId: string,
+      input: ChatThreadPullRequestInput,
+    ): Promise<ChatThreadPullRequestLink>;
+    unlinkPullRequest(threadId: string, linkId: string): Promise<void>;
+    listPullRequestLinks(threadId: string): Promise<ChatThreadPullRequestLink[]>;
+    listPullRequestThreads(
+      repoId: string,
+      provider: 'github' | 'ado',
+      pullRequestId: string,
+    ): Promise<ChatThreadPullRequestLink[]>;
+    refreshPullRequestLink(threadId: string, linkId: string): Promise<ChatThreadPullRequestLink>;
     startSession: (
       repoIds: string[],
       personaId: string,
@@ -282,6 +297,7 @@ export interface AnvilAPI {
     listThreads: (workspaceId: string | null) => Promise<ChatThread[]>;
     listWorkItemThreads: (workspaceId: string | null) => Promise<ChatThread[]>;
     createThread: (input: {
+      pullRequest?: ChatThreadPullRequestInput;
       workspaceId?: string | null;
       personaId: string;
       title?: string;
@@ -370,6 +386,7 @@ export interface AnvilAPI {
       workspaceId: string;
       repoIds: string[];
       kickoff: string;
+      workItemRef?: import('./change-review-types').WorkItemReference;
     }) => Promise<WorkflowRun>;
     askSupervisor: (runId: string, question: string) => Promise<string>;
     cancelRun: (runId: string) => Promise<WorkflowRun | null>;

@@ -23,6 +23,7 @@ export interface DesignReadiness {
 }
 
 export interface ChatStartOptions {
+  changeReviewId?: string;
   provider?: AgentProvider;
   threadId?: string;
   providerThreadId?: string;

@@ -166,8 +166,70 @@ export function specialistNode(
   };
 }
 
+export const CONTEXTUAL_WORKFLOW_PRESETS = [
+  'issue-investigation',
+  'pr-review',
+  'pipeline-investigation',
+  'change-preparation',
+] as const;
+
+export type ContextualWorkflowPreset = (typeof CONTEXTUAL_WORKFLOW_PRESETS)[number];
+export type WorkflowPreset = 'delivery' | 'review' | 'research' | ContextualWorkflowPreset;
+
+export function isContextualWorkflowPreset(
+  value: string | null,
+): value is ContextualWorkflowPreset {
+  return CONTEXTUAL_WORKFLOW_PRESETS.some((preset) => preset === value);
+}
+
+const EVIDENCE_HANDOFF =
+  'Separate agent analysis from observed evidence. Cite source URLs, repository paths, commit SHAs and command outcomes where available. Mark missing or stale evidence explicitly. Agent narratives never establish verification. Do not publish, merge or change external state.';
+
+const CONTEXTUAL_PRESETS: Record<
+  ContextualWorkflowPreset,
+  {
+    name: string;
+    instruction: string;
+    strategy: WorkflowTeamStrategy;
+    decision: string;
+  }
+> = {
+  'issue-investigation': {
+    name: 'Issue investigation',
+    instruction:
+      'Investigate the supplied issue against the repository. Establish reproduction steps, affected code, likely causes and acceptance criteria. Propose bounded follow-up work without editing files.',
+    strategy: 'map-reduce',
+    decision:
+      'Review the investigation and choose the next action. Acceptance records this decision only; it does not authorize implementation.',
+  },
+  'pr-review': {
+    name: 'PR review prioritisation',
+    instruction:
+      'Inspect the supplied pull request and its exact head commit. Independently review correctness and risk, then prioritise findings by severity with file and line references. Include check status and missing verification. Do not edit files or submit a review.',
+    strategy: 'review',
+    decision:
+      'Review the prioritised findings and evidence for this PR head before deciding the next action. Acceptance does not approve or merge the PR.',
+  },
+  'pipeline-investigation': {
+    name: 'Pipeline failure investigation',
+    instruction:
+      'Investigate the supplied failed pipeline run. Inspect failing jobs, logs and the run commit. Distinguish code failures, infrastructure failures and uncertain causes. Recommend a targeted repair and checks without editing files or rerunning the pipeline.',
+    strategy: 'map-reduce',
+    decision:
+      'Review the failure diagnosis, missing logs and proposed repair before choosing the next action. Acceptance does not rerun or modify the pipeline.',
+  },
+  'change-preparation': {
+    name: 'Change preparation',
+    instruction:
+      'Prepare a bounded change plan from the supplied objective and repository. Compare implementation options, identify affected files and dependencies, and specify verification commands and acceptance criteria. Do not edit files. Hand off a reviewable plan for a separately authorized implementation.',
+    strategy: 'debate',
+    decision:
+      'Review the proposed scope, risks and verification plan. Acceptance records the plan decision only; start implementation separately.',
+  },
+};
+
 export function createOrchestrationPreset(
-  kind: 'delivery' | 'review' | 'research',
+  kind: WorkflowPreset,
   profiles: WorkflowAgentProfile[],
 ): WorkflowTemplateInput {
   const pool = profiles.length
@@ -188,6 +250,28 @@ export function createOrchestrationPreset(
     ...specialistNode(coordinator, id, name, prompt),
     position: { x, y: 140 },
   });
+  if (isContextualWorkflowPreset(kind)) {
+    const preset = CONTEXTUAL_PRESETS[kind];
+    const nodes: WorkflowNode[] = [
+      {
+        ...node('investigate', preset.name, `${preset.instruction} ${EVIDENCE_HANDOFF}`, 0),
+        teamStrategy: preset.strategy,
+        teamProfileIds: pool.map((profile) => profile.id),
+      },
+      {
+        ...node('decision', 'Choose next action', preset.decision, 430),
+        kind: 'human',
+      },
+    ];
+    return {
+      name: preset.name,
+      description:
+        'Inspect source evidence, reconcile specialist findings, then choose the next action.',
+      nodes,
+      edges: [{ id: 'investigate-decision', source: 'investigate', target: 'decision' }],
+      orchestration: { ...DEFAULT_ORCHESTRATION, profiles: pool },
+    };
+  }
   const nodes =
     kind === 'delivery'
       ? [

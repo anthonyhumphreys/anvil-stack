@@ -8,6 +8,9 @@ import type { WorkflowRun } from '../../../shared/types';
 const db = new Database(':memory:');
 db.exec(SCHEMA_SQL);
 vi.mock('../../db/database.js', () => ({ getDb: () => db }));
+vi.mock('../notification.service.js', () => ({ notifyWorkflowDecision: vi.fn() }));
+import { notifyWorkflowDecision } from '../notification.service.js';
+
 vi.mock('../automation.service.js', () => ({ triggerWatchtowerEvent: vi.fn() }));
 vi.mock('../persona.service.js', () => ({
   getPersonaById: (id: string) => (id === 'coder' ? { id } : null),
@@ -39,6 +42,7 @@ import {
 } from '../workflow.service';
 
 beforeEach(() => {
+  vi.mocked(notifyWorkflowDecision).mockClear();
   db.exec(
     "DELETE FROM workflow_runs; DELETE FROM workflow_templates; DELETE FROM chat_threads; DELETE FROM workspaces; INSERT INTO workspaces (id, name, created_at, updated_at) VALUES ('ws', 'Test', datetime('now'), datetime('now'));",
   );
@@ -81,9 +85,78 @@ function store(run: WorkflowRun) {
 }
 
 describe('workflow persistence and commands', () => {
+  it('retains the paused run when native notifications fail', async () => {
+    vi.mocked(notifyWorkflowDecision).mockImplementationOnce(() => {
+      throw new Error('Native notification unavailable');
+    });
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const run = await pausedRun();
+      expect(run.status).toBe('paused');
+      expect(getWorkflowRun(run.id)?.nodeRuns[0].status).toBe('waiting');
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
+  it('groups concurrent human gates into one workflow notification', async () => {
+    const initial = template();
+    const saved = saveWorkflowTemplate({
+      ...initial,
+      nodes: [initial.nodes[0], { ...initial.nodes[0], id: 'second', name: 'Second decision' }],
+    });
+    const started = startWorkflowRun({
+      templateId: saved.id,
+      workspaceId: 'ws',
+      repoIds: [],
+      kickoff: 'Test',
+    });
+    const run = await waitForWorkflowRun(started.id);
+    expect(run.nodeRuns.filter((node) => node.status === 'waiting')).toHaveLength(2);
+    expect(notifyWorkflowDecision).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains the structured Work Item identity across runtime saves and decisions', async () => {
+    const saved = template();
+    const workItemRef = { id: 'ANV-7', provider: 'linear' as const, connectionId: 'linear-stack' };
+    const started = startWorkflowRun({
+      templateId: saved.id,
+      workspaceId: 'ws',
+      repoIds: [],
+      kickoff: 'Investigate',
+      workItemRef,
+    });
+    expect(started.workItemRef).toEqual(workItemRef);
+    await waitForWorkflowRun(started.id);
+    expect(getWorkflowRun(started.id)?.workItemRef).toEqual(workItemRef);
+    decideWorkflowNode(started.id, 'gate', true, 'Plan reviewed');
+    resumeWorkflowRun(started.id);
+    const completed = await waitForWorkflowRun(started.id);
+    expect(completed.workItemRef).toEqual(workItemRef);
+    expect(completed.nodeRuns[0].decision?.note).toBe('Plan reviewed');
+    expect(completed.orchestration?.maxConcurrency).toBe(3);
+  });
+  it('rejects incomplete Work Item references before starting a run', () => {
+    const saved = template();
+    expect(() =>
+      startWorkflowRun({
+        templateId: saved.id,
+        workspaceId: 'ws',
+        repoIds: [],
+        kickoff: 'Investigate',
+        workItemRef: { id: 'ANV-7', provider: 'linear', connectionId: '' },
+      }),
+    ).toThrow('Work Item reference');
+  });
+
   it('round trips configuration and durable human decisions', async () => {
     const paused = await pausedRun();
     expect(paused.status).toBe('paused');
+    expect(notifyWorkflowDecision).toHaveBeenCalledTimes(1);
+    expect(notifyWorkflowDecision).toHaveBeenCalledWith(
+      { workspaceId: 'ws', runId: paused.id },
+      paused.templateName,
+    );
     expect(paused.orchestration?.maxConcurrency).toBe(3);
     expect(getWorkflowTemplate(paused.templateId)?.orchestration?.maxConcurrency).toBe(3);
     decideWorkflowNode(paused.id, 'gate', true, 'Inspected the candidate');
@@ -91,6 +164,7 @@ describe('workflow persistence and commands', () => {
     resumeWorkflowRun(paused.id);
     const completed = await waitForWorkflowRun(paused.id);
     expect(completed.status).toBe('completed');
+    expect(notifyWorkflowDecision).toHaveBeenCalledTimes(1);
     expect(completed.events?.some((event) => event.type === 'decision')).toBe(true);
     expect(() => decideWorkflowNode(paused.id, 'gate', true, 'duplicate')).toThrow('not waiting');
   });

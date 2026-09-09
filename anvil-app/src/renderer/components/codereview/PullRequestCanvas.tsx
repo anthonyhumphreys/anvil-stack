@@ -15,7 +15,6 @@ import {
   AlertTriangle,
   ArrowLeftRight,
   Box,
-  CheckCircle2,
   ChevronRight,
   CircleDot,
   Database,
@@ -32,20 +31,24 @@ import {
   TestTube2,
   X,
 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import type {
+  CodeReviewPullRequest,
   PullRequestDiffFile,
   PullRequestVisualisation,
   PullRequestVisualisationChangeState,
   PullRequestVisualisationNode,
   PullRequestVisualisationTone,
 } from '../../../shared/types';
+import { useChatContext } from '../../contexts/ChatContext';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { buildEditorUrl } from '../../utils/editor-link';
 import {
   isRenderablePullRequestEdge,
   layoutPullRequestNodes,
 } from '../../utils/pull-request-layout';
+import { PullRequestEvidencePanel } from '../review/PullRequestEvidencePanel';
+import { PullRequestThreads } from './PullRequestThreads';
 import { PullRequestDiffView } from './PullRequestDiffView';
 
 type ExperienceMode = 'story' | 'map' | 'diff';
@@ -101,6 +104,17 @@ export function PullRequestCanvas({
   onClose,
 }: PullRequestCanvasProps) {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const [diffPullRequest, setDiffPullRequest] = useState<{
+    repoId: string;
+    pullRequest: CodeReviewPullRequest;
+  }>();
+  const rememberDiffPullRequest = useCallback(
+    (pullRequest: CodeReviewPullRequest) => setDiffPullRequest({ repoId, pullRequest }),
+    [repoId],
+  );
+  const { launchPreparedChat } = useChatContext();
+  const [chatError, setChatError] = useState('');
   const { activeWorkspace } = useWorkspace();
   const [visualisation, setVisualisation] = useState<PullRequestVisualisation | null>(null);
   const [mode, setMode] = useState<ExperienceMode>(initialMode);
@@ -191,8 +205,7 @@ export function PullRequestCanvas({
   );
   const visibleNodeCount = nodes.filter((node) => !node.hidden).length;
   const riskCount = visualisation?.risks.length ?? 0;
-  const verifiedCount =
-    visualisation?.evidence.filter((item) => item.status === 'verified').length ?? 0;
+  const codeReferenceCount = visualisation?.evidence.length ?? 0;
   const errorPresentation = error ? presentCanvasError(error) : null;
 
   const openNode = useCallback(
@@ -228,10 +241,37 @@ export function PullRequestCanvas({
       ]
         .filter((line): line is string => Boolean(line))
         .join('\n\n');
-      navigate(`/chat?prompt=${encodeURIComponent(prompt)}`);
+      setChatError('');
+      void (async () => {
+        const pullRequest =
+          visualisation?.pullRequest ??
+          (await window.anvil.codereview.listPullRequests(repoId)).find(
+            (item) => item.id === pullRequestId,
+          );
+        if (!pullRequest)
+          throw new Error(
+            'This pull request could not be loaded. Refresh it before starting a linked chat.',
+          );
+        const threadId = await launchPreparedChat({
+          personaId: 'coder',
+          repoIds: [repoId],
+          message: prompt,
+          threadTitle: `PR #${pullRequest.id}: ${pullRequest.title}`,
+          pullRequest: { repoId, provider: pullRequest.provider, pullRequestId: pullRequest.id },
+        });
+        if (!threadId)
+          throw new Error(
+            'The linked chat could not start. Open linked threads to resume any saved draft.',
+          );
+        navigate(`/chat?${new URLSearchParams({ thread: threadId })}`);
+      })().catch((reason) =>
+        setChatError(reason instanceof Error ? reason.message : String(reason)),
+      );
     },
     [
       navigate,
+      launchPreparedChat,
+      repoId,
       pullRequestId,
       selectedNode?.filePath,
       selectedNode?.line,
@@ -240,7 +280,33 @@ export function PullRequestCanvas({
     ],
   );
 
-  if (mode === 'diff' && !visualisation && !loading) {
+  const linkedProvider = searchParams.get('provider');
+  const threadPullRequest =
+    (visualisation?.repoId === repoId && visualisation.pullRequest.id === pullRequestId
+      ? visualisation.pullRequest
+      : undefined) ??
+    (diffPullRequest?.repoId === repoId && diffPullRequest.pullRequest.id === pullRequestId
+      ? diffPullRequest.pullRequest
+      : undefined) ??
+    (linkedProvider === 'github' || linkedProvider === 'ado'
+      ? { id: pullRequestId, provider: linkedProvider }
+      : undefined);
+  const diffThreads = activeWorkspace ? (
+    <aside className="w-[310px] shrink-0 overflow-y-auto border-l border-border-subtle bg-bg-secondary/55 2xl:w-[360px]">
+      {threadPullRequest ? (
+        <PullRequestThreads
+          key={`${repoId}:${pullRequestId}`}
+          workspaceId={activeWorkspace.id}
+          repoId={repoId}
+          pullRequest={threadPullRequest}
+        />
+      ) : (
+        <p className="p-4 text-xs text-text-secondary">Loading pull request context…</p>
+      )}
+    </aside>
+  ) : null;
+
+  if (mode === 'diff' && !visualisation) {
     return (
       <div className="flex h-full min-h-0 flex-col bg-bg-primary">
         <header className="flex min-h-14 items-center gap-3 border-b border-border-subtle px-4">
@@ -272,12 +338,21 @@ export function PullRequestCanvas({
             </button>
           )}
         </header>
-        <div className="min-h-0 flex-1">
-          <PullRequestDiffView
-            repoId={repoId}
-            pullRequestId={pullRequestId}
-            onAskInChat={askInChat}
-          />
+        <div className="flex min-h-0 flex-1">
+          <div className="min-w-0 flex-1">
+            {chatError ? (
+              <p role="alert" className="px-4 py-2 text-xs text-error">
+                {chatError}
+              </p>
+            ) : null}
+            <PullRequestDiffView
+              repoId={repoId}
+              pullRequestId={pullRequestId}
+              onAskInChat={askInChat}
+              onPullRequestLoaded={rememberDiffPullRequest}
+            />
+          </div>
+          {diffThreads}
         </div>
       </div>
     );
@@ -363,10 +438,10 @@ export function PullRequestCanvas({
             tone={riskCount > 0 ? 'risk' : 'neutral'}
           />
           <SignalCount
-            icon={<CheckCircle2 size={13} />}
-            value={verifiedCount}
-            label="verified"
-            tone="verified"
+            icon={<Route size={13} />}
+            value={codeReferenceCount}
+            label="code references"
+            tone="neutral"
           />
         </div>
 
@@ -387,6 +462,17 @@ export function PullRequestCanvas({
             </button>
           ))}
         </div>
+        <button
+          type="button"
+          onClick={() =>
+            navigate(
+              `/workflows?${new URLSearchParams({ preset: 'pr-review', kickoff: `Review PR #${pr.id}: ${pr.title}\n${pr.url ?? ''}\nRepository: ${repoId}\nHead: ${visualisation.headSha}` })}`,
+            )
+          }
+          className="rounded-md border border-border px-3 py-2 text-xs text-text-secondary hover:bg-bg-tertiary focus-visible:outline-2 focus-visible:outline-accent"
+        >
+          Review workflow
+        </button>
         <button
           type="button"
           onClick={() => askInChat()}
@@ -426,14 +512,23 @@ export function PullRequestCanvas({
         )}
       </header>
 
+      {chatError ? (
+        <p role="alert" className="border-b border-border-subtle px-4 py-2 text-xs text-error">
+          {chatError}
+        </p>
+      ) : null}
       {mode === 'diff' ? (
-        <div className="min-h-0 flex-1">
-          <PullRequestDiffView
-            repoId={repoId}
-            pullRequestId={pullRequestId}
-            focusFilePath={selectedNode?.filePath}
-            onAskInChat={askInChat}
-          />
+        <div className="flex min-h-0 flex-1">
+          <div className="min-w-0 flex-1">
+            <PullRequestDiffView
+              repoId={repoId}
+              pullRequestId={pullRequestId}
+              focusFilePath={selectedNode?.filePath}
+              onAskInChat={askInChat}
+              onPullRequestLoaded={rememberDiffPullRequest}
+            />
+          </div>
+          {diffThreads}
         </div>
       ) : (
         <>
@@ -497,9 +592,9 @@ export function PullRequestCanvas({
                               <ShieldAlert size={11} />
                               <span className="tabular-nums">{chapter.riskCount}</span>
                             </span>
-                            <span className="inline-flex items-center gap-1 text-success">
-                              <CheckCircle2 size={11} />
-                              <span className="tabular-nums">{chapter.verifiedCount}</span>
+                            <span className="inline-flex items-center gap-1">
+                              <Route size={11} />
+                              <span>Code-derived</span>
                             </span>
                           </span>
                         </span>
@@ -562,7 +657,7 @@ export function PullRequestCanvas({
                   <MiniMap
                     pannable
                     zoomable
-                    nodeColor={(node) => toneColor(node.data.item.tone)}
+                    nodeColor={(node) => toneColor((node.data as CanvasNodeData).item.tone)}
                     maskColor="color-mix(in srgb, var(--color-bg-primary) 78%, transparent)"
                   />
                 )}
@@ -643,22 +738,43 @@ export function PullRequestCanvas({
                 </section>
               )}
 
+              {activeWorkspace ? (
+                <PullRequestThreads
+                  key={`${repoId}:${pullRequestId}`}
+                  workspaceId={activeWorkspace.id}
+                  repoId={repoId}
+                  pullRequest={pr}
+                />
+              ) : null}
+              {activeWorkspace ? (
+                <PullRequestEvidencePanel
+                  workspaceId={activeWorkspace.id}
+                  visualisation={visualisation}
+                  chapterId={selectedChapterId}
+                  riskId={selectedRisk?.id}
+                />
+              ) : null}
               <section className="p-4">
                 <div className="flex items-center gap-2">
-                  <h3 className="text-xs font-semibold text-text-secondary">Linked evidence</h3>
+                  <h3 className="text-xs font-semibold text-text-secondary">
+                    Code-derived context
+                  </h3>
                   {(selectedEvidence?.length ?? 0) > 0 && (
                     <span className="ml-auto font-mono text-xs tabular-nums text-text-tertiary">
                       {selectedEvidence?.length}
                     </span>
                   )}
                 </div>
+                <p className="mt-2 text-xs leading-5 text-text-tertiary">
+                  Generated from the diff. These references are not observed verification.
+                </p>
                 {(selectedEvidence?.length ?? 0) > 0 ? (
                   <div className="mt-3 divide-y divide-border-subtle">
                     {selectedEvidence?.map((evidence) => (
                       <div key={evidence.id} className="py-3 first:pt-0">
                         <div className="flex items-start gap-2">
                           {evidence.status === 'verified' ? (
-                            <CheckCircle2 size={13} className="mt-0.5 shrink-0 text-success" />
+                            <Route size={13} className="mt-0.5 shrink-0 text-text-tertiary" />
                           ) : evidence.status === 'risk' ? (
                             <AlertTriangle size={13} className="mt-0.5 shrink-0 text-error" />
                           ) : (
@@ -876,7 +992,7 @@ function getSelectedRoute(
 function toneColor(tone: PullRequestVisualisationTone): string {
   if (tone === 'action') return 'var(--color-accent)';
   if (tone === 'data') return 'var(--color-info)';
-  if (tone === 'verified') return 'var(--color-success)';
+  if (tone === 'verified') return 'var(--color-text-tertiary)';
   if (tone === 'risk') return 'var(--color-error)';
   if (tone === 'logic') return 'var(--color-persona-docs)';
   if (tone === 'uncertainty') return 'var(--color-warning)';

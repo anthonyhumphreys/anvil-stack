@@ -27,7 +27,7 @@ defaults:
 jobs:
   package:
     name: Build AppImage, deb, and pacman packages
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout
@@ -46,9 +46,17 @@ jobs:
           cache-dependency-path: anvil-app/pnpm-lock.yaml
 
       - name: Install Linux packaging tools
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes libarchive-tools
+          # Packaging only needs Ubuntu packages, not the runner's browser repositories.
+          test -s /etc/apt/sources.list.d/ubuntu.sources
+          packaging_apt_options=(
+            -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources
+            -o Dir::Etc::sourceparts=-
+            -o APT::Get::List-Cleanup=0
+          )
+          sudo apt-get "${packaging_apt_options[@]}" update
+          sudo apt-get "${packaging_apt_options[@]}" install --yes libarchive-tools
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

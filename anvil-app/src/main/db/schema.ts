@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 64;
+export const SCHEMA_VERSION = 65;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -156,6 +156,22 @@ CREATE TABLE IF NOT EXISTS agent_ui_intents (
 
 CREATE INDEX IF NOT EXISTS idx_agent_ui_intents_thread_lifecycle
   ON agent_ui_intents(thread_id, lifecycle, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS chat_thread_pull_requests (
+  id TEXT PRIMARY KEY,
+  thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL CHECK (provider IN ('github', 'ado')),
+  pull_request_id TEXT NOT NULL,
+  remote_url TEXT NOT NULL,
+  pull_request_json TEXT NOT NULL,
+  linked_at TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  UNIQUE(thread_id, repo_id, provider, pull_request_id)
+);
+CREATE INDEX IF NOT EXISTS idx_chat_thread_pr_reverse
+  ON chat_thread_pull_requests(repo_id, provider, pull_request_id);
 
 CREATE TABLE IF NOT EXISTS agent_ui_intent_events (
   id TEXT PRIMARY KEY,
@@ -2048,4 +2064,20 @@ CREATE INDEX IF NOT EXISTS idx_security_findings_audit
   ON security_findings(audit_id);
   `,
   64: `ALTER TABLE automation_definitions ADD COLUMN workflow_template_id TEXT;`,
+  65: `CREATE TABLE IF NOT EXISTS chat_thread_pull_requests (
+  id TEXT PRIMARY KEY,
+  thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL CHECK (provider IN ('github', 'ado')),
+  pull_request_id TEXT NOT NULL,
+  remote_url TEXT NOT NULL,
+  pull_request_json TEXT NOT NULL,
+  linked_at TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  UNIQUE(thread_id, repo_id, provider, pull_request_id)
+);
+CREATE INDEX IF NOT EXISTS idx_chat_thread_pr_reverse
+  ON chat_thread_pull_requests(repo_id, provider, pull_request_id);
+`,
 };

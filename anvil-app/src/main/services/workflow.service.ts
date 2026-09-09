@@ -7,6 +7,7 @@ import {
 import { recordWorkflowEvent, runWorkflowRuntime, workflowHandoff } from './workflow-runtime.js';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { app } from 'electron';
+import { notifyWorkflowDecision } from './notification.service.js';
 import type {
   AgentProvider,
   ChatMessage,
@@ -157,6 +158,7 @@ function mapRun(row: WorkflowRunRow): WorkflowRun {
     events: graph.events ?? [],
     deadlineAt: graph.deadlineAt,
     sourceAutomationRunId: graph.sourceAutomationRunId,
+    workItemRef: graph.workItemRef,
     runtimeOwnerPid: graph.runtimeOwnerPid,
     executionPaths: graph.executionPaths,
     templateId: row.template_id,
@@ -381,6 +383,7 @@ function persistRun(run: WorkflowRun): void {
         events: run.events,
         deadlineAt: run.deadlineAt,
         sourceAutomationRunId: run.sourceAutomationRunId,
+        workItemRef: run.workItemRef,
         runtimeOwnerPid: run.runtimeOwnerPid,
         executionPaths: run.executionPaths,
       }),
@@ -863,6 +866,13 @@ function launchWorkflow(run: WorkflowRun): Promise<void> {
     })
     .finally(() => {
       activeRuns.delete(run.id);
+      if (run.status === 'paused' && run.nodeRuns.some((node) => node.status === 'waiting')) {
+        try {
+          notifyWorkflowDecision({ workspaceId: run.workspaceId, runId: run.id }, run.templateName);
+        } catch (error) {
+          console.warn('[Workflow] Could not show decision notification:', error);
+        }
+      }
       if (!['completed', 'failed'].includes(run.status)) return;
       try {
         triggerWatchtowerEvent({
@@ -893,8 +903,18 @@ export function startWorkflowRun(input: {
   repoIds: string[];
   kickoff: string;
   sourceAutomationRunId?: string;
+  workItemRef?: WorkflowRun['workItemRef'];
   executionPaths?: RepoRow[];
 }): WorkflowRun {
+  if (
+    input.workItemRef &&
+    (typeof input.workItemRef.id !== 'string' ||
+      !input.workItemRef.id.trim() ||
+      typeof input.workItemRef.connectionId !== 'string' ||
+      !input.workItemRef.connectionId.trim() ||
+      !['ado', 'linear', 'jira'].includes(input.workItemRef.provider))
+  )
+    throw new Error('Work Item reference requires an id, connection and supported provider.');
   const template = getWorkflowTemplate(input.templateId);
   if (!template) throw new Error('Workflow template not found.');
   if (!input.kickoff.trim()) throw new Error('Tell the workflow what you want it to do.');
@@ -933,6 +953,7 @@ export function startWorkflowRun(input: {
         orchestration: orchestrationConfig(template.orchestration),
         events: [],
         sourceAutomationRunId: input.sourceAutomationRunId,
+        workItemRef: input.workItemRef,
         executionPaths: input.executionPaths,
       }),
       input.kickoff.trim(),

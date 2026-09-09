@@ -99,6 +99,19 @@ export async function listPullRequests(
   return listAdoPullRequests(spec);
 }
 
+/** Fetch provider metadata without checking out refs or loading a diff. */
+export async function getPullRequestMetadata(
+  remoteUrl: string | null | undefined,
+  pullRequestId: string,
+): Promise<CodeReviewPullRequest> {
+  const spec = getRemoteRepoSpec(remoteUrl);
+  if (!spec) throw new Error('Pull request linking requires a GitHub or Azure DevOps remote.');
+  const id = normalizePullRequestId(pullRequestId);
+  return spec.provider === 'github'
+    ? getGithubPullRequest(spec, id)
+    : (await getAdoPullRequest(spec, id)).pullRequest;
+}
+
 export async function resolvePullRequestForReview(
   repoPath: string,
   remoteUrl: string | null | undefined,

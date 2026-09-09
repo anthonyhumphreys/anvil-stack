@@ -1,3 +1,4 @@
+import { createChatNavigationRequests } from '../utils/chat-navigation-request';
 import {
   createContext,
   useCallback,
@@ -23,6 +24,7 @@ import type {
   ChatMessage,
   ChatPlanSnapshot,
   ChatThread,
+  ChatThreadPullRequestInput,
   CodexEvent,
   CodexSession,
   DbInsightAnalysis,
@@ -103,6 +105,7 @@ interface ChatContextValue {
   steer: (message: string, attachments?: ChatAttachment[]) => Promise<void>;
   switchPersona: (persona: Persona) => Promise<void>;
   interrupt: () => Promise<void>;
+  stopSession: (sessionId: string) => Promise<void>;
   startNewSession: () => Promise<void>;
   loadHistory: () => Promise<void>;
   clearHistory: () => Promise<void>;
@@ -118,6 +121,8 @@ interface ChatContextValue {
   selectWorkItemThread: (workItem: WorkItem) => Promise<void>;
   startWorkItemThread: (workItem: WorkItem) => Promise<void>;
   launchPreparedChat: (opts: {
+    pullRequest?: ChatThreadPullRequestInput;
+    changeReviewId?: string;
     personaId: string;
     repoIds?: string[];
     message: string;
@@ -125,7 +130,7 @@ interface ChatContextValue {
     threadTitle?: string;
     workItem?: WorkItem;
     collaborationMode?: ChatCollaborationMode;
-  }) => Promise<void>;
+  }) => Promise<string | undefined>;
 }
 
 const ChatContext = createContext<ChatContextValue | null>(null);
@@ -161,6 +166,11 @@ export function useChatContext(): ChatContextValue {
 
 export function ChatProvider({ children }: { children: ReactNode }) {
   const { repos, activeWorkspace, activeScaffoldSession, refreshWorkspaces } = useWorkspace();
+  const navigationRequests = useRef(createChatNavigationRequests());
+  const navigationWorkspaceIdRef = useRef(activeWorkspace?.id ?? null);
+  if (navigationWorkspaceIdRef.current !== (activeWorkspace?.id ?? null))
+    navigationRequests.current.invalidate();
+  navigationWorkspaceIdRef.current = activeWorkspace?.id ?? null;
   const [personas, setPersonas] = useState<Persona[]>([]);
   const [activePersona, setActivePersona] = useState<Persona | null>(null);
   const [session, setSession] = useState<CodexSession | null>(null);
@@ -330,7 +340,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const setChatLayout = useCallback(
-    async (layout: ChatLayout) => {
+    async (layout: ChatLayout, preserveNavigation = false) => {
+      if (!preserveNavigation) navigationRequests.current.invalidate();
       applyChatLayout(layout);
       await window.anvil.settings.update({ chatLayout: layout });
     },
@@ -478,7 +489,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   );
 
   const loadThreadIntoState = useCallback(
-    async (threadId: string, availableThreads?: ChatThread[]) => {
+    async (
+      threadId: string,
+      availableThreads?: ChatThread[],
+      isNavigationCurrent?: () => boolean,
+    ) => {
+      if (isNavigationCurrent && !isNavigationCurrent()) return;
       const loadVersion = ++threadLoadVersionRef.current;
       discardPendingStreamEntry();
       const thread = (availableThreads ?? threadsRef.current).find(
@@ -496,7 +512,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         window.anvil.chat.listArtifacts(threadId),
         window.anvil.chat.listAgentUIIntents(threadId, true),
       ]);
-      if (loadVersion !== threadLoadVersionRef.current) return;
+      if (
+        loadVersion !== threadLoadVersionRef.current ||
+        (isNavigationCurrent && !isNavigationCurrent())
+      )
+        return;
 
       const resolvedRepos = (thread.repoIds ?? [])
         .map((repoId) => repos.find((repo) => repo.id === repoId))
@@ -537,7 +557,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
       if (liveSession) {
         const liveStatus = await window.anvil.chat.getSessionStatus(liveSession.id);
-        if (loadVersion !== threadLoadVersionRef.current) return;
+        if (
+          loadVersion !== threadLoadVersionRef.current ||
+          (isNavigationCurrent && !isNavigationCurrent())
+        )
+          return;
 
         if (liveStatus === 'error') {
           delete liveSessionsByThreadIdRef.current[thread.id];
@@ -803,6 +827,22 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
     },
     [discardPendingStreamEntry, forgetLiveSession],
+  );
+
+  const stopSessionLive = useCallback(
+    async (sessionId: string) => {
+      const threadId = findThreadIdForSession(sessionId);
+      if (threadId) {
+        await stopThreadLiveSession(threadId);
+        return;
+      }
+      await window.anvil.chat.stopSession(sessionId).catch(console.error);
+      if (sessionRef.current?.id === sessionId) {
+        setSession(null);
+        setBusy(false);
+      }
+    },
+    [findThreadIdForSession, stopThreadLiveSession],
   );
 
   useEffect(() => {
@@ -1932,6 +1972,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const switchPersona = useCallback(
     async (persona: Persona) => {
+      navigationRequests.current.invalidate();
       if (scaffoldModeActive) return;
       threadLoadVersionRef.current += 1;
       detachLiveSession();
@@ -1993,6 +2034,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const selectWorkItemThread = useCallback(
     async (workItem: WorkItem) => {
+      navigationRequests.current.invalidate();
       if (scaffoldModeActive || !activePersona) return;
 
       try {
@@ -2058,6 +2100,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const startWorkItemThread = useCallback(
     async (workItem: WorkItem) => {
+      navigationRequests.current.invalidate();
       if (scaffoldModeActive || !activePersona) return;
       threadLoadVersionRef.current += 1;
       detachLiveSession();
@@ -2084,6 +2127,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, [session]);
 
   const startNewSession = useCallback(async () => {
+    navigationRequests.current.invalidate();
     if (scaffoldModeActive || !activePersona || chatLayout === 'workitems') return;
     threadLoadVersionRef.current += 1;
     detachLiveSession();
@@ -2099,6 +2143,47 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const selectThread = useCallback(
     async (threadId: string) => {
       if (scaffoldModeActive) return;
+      const isNavigationCurrent = navigationRequests.current.begin();
+      threadLoadVersionRef.current += 1;
+      const requestedWorkspaceId = activeWorkspace?.id ?? null;
+      let available = threadsRef.current;
+      let target = available.find((thread) => thread.id === threadId);
+      if (!target) {
+        try {
+          const [classic, workitems] = await Promise.all([
+            window.anvil.chat.listThreads(activeWorkspace?.id ?? null),
+            window.anvil.chat.listWorkItemThreads(activeWorkspace?.id ?? null),
+          ]);
+          if (!isNavigationCurrent() || navigationWorkspaceIdRef.current !== requestedWorkspaceId)
+            return;
+          target = [...classic, ...workitems].find(
+            (thread) =>
+              thread.id === threadId &&
+              threadBelongsToWorkspace(thread, activeWorkspace?.id ?? null),
+          );
+          if (!target) {
+            setError('This thread is unavailable in the current workspace.');
+            return;
+          }
+          available = target.workItemId ? workitems : classic;
+          rememberThreadSelection(
+            lastSelectedThreadIdsRef.current,
+            target.workItemId
+              ? getWorkItemThreadPreferenceKey(activeWorkspace?.id ?? null)
+              : getClassicThreadPreferenceKey(activeWorkspace?.id ?? null),
+            target.id,
+          );
+          await setChatLayout(target.workItemId ? 'workitems' : 'classic', true);
+          if (!isNavigationCurrent() || navigationWorkspaceIdRef.current !== requestedWorkspaceId)
+            return;
+          setThreads(sortThreads(available));
+        } catch (reason) {
+          if (!isNavigationCurrent() || navigationWorkspaceIdRef.current !== requestedWorkspaceId)
+            return;
+          setError(reason instanceof Error ? reason.message : 'Could not open the linked thread.');
+          return;
+        }
+      }
       const viewedAt = new Date().toISOString();
       setThreads((prev) =>
         prev.map((thread) =>
@@ -2108,12 +2193,17 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       void window.anvil.chat
         .updateThread(threadId, { viewed: true })
         .then((updated) => {
-          if (updated) applyThreadState(updated);
+          if (
+            updated &&
+            isNavigationCurrent() &&
+            navigationWorkspaceIdRef.current === requestedWorkspaceId
+          )
+            applyThreadState(updated);
         })
         .catch((error) => console.error('Failed to mark thread as viewed:', error));
-      await loadThreadIntoState(threadId);
+      await loadThreadIntoState(threadId, available, isNavigationCurrent);
     },
-    [applyThreadState, loadThreadIntoState, scaffoldModeActive],
+    [activeWorkspace?.id, applyThreadState, loadThreadIntoState, scaffoldModeActive, setChatLayout],
   );
 
   const settleThread = useCallback(
@@ -2138,6 +2228,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const deleteThread = useCallback(
     async (threadId: string) => {
+      navigationRequests.current.invalidate();
       const remainingThreads = threadsRef.current.filter((thread) => thread.id !== threadId);
       await stopThreadLiveSession(threadId);
       await window.anvil.chat.deleteThread(threadId);
@@ -2166,6 +2257,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const forkThread = useCallback(
     async (messageIndex: number) => {
+      navigationRequests.current.invalidate();
       if (scaffoldModeActive || !activePersona || chatLayout === 'workitems') return;
 
       const ancestorEntries = entriesRef.current
@@ -2250,6 +2342,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const launchPreparedChat = useCallback(
     async (opts: {
+      pullRequest?: ChatThreadPullRequestInput;
+      changeReviewId?: string;
       personaId: string;
       repoIds?: string[];
       message: string;
@@ -2259,6 +2353,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       collaborationMode?: ChatCollaborationMode;
     }) => {
       if (scaffoldModeActive) return;
+      const isNavigationCurrent = navigationRequests.current.begin();
 
       const targetPersona = personas.find((persona) => persona.id === opts.personaId);
       if (!targetPersona) {
@@ -2282,7 +2377,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       setReasoningLevel(opts.reasoningLevel ?? reasoningLevel);
 
       const useWorkItemThread = !!opts.workItem;
-      if (useWorkItemThread && chatLayout !== 'workitems') await setChatLayout('workitems');
+      const targetLayout = useWorkItemThread ? 'workitems' : 'classic';
+      if (chatLayout !== targetLayout) await setChatLayout(targetLayout, true);
+      if (!isNavigationCurrent()) return;
       const requestedMode = opts.collaborationMode ?? collaborationMode;
       setCollaborationMode(requestedMode);
       const createdThread = useWorkItemThread
@@ -2295,6 +2392,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             workItemTitle: opts.workItem!.title,
             repoIds: selectedRepos.map((repo) => repo.id),
             activeRepoId: selectedRepos[0]?.id ?? null,
+            pullRequest: opts.pullRequest,
           })
         : await window.anvil.chat.createThread({
             workspaceId: activeWorkspace?.id ?? null,
@@ -2302,11 +2400,14 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             title: opts.threadTitle ?? buildThreadTitle(opts.message, targetPersona.name),
             repoIds: selectedRepos.map((repo) => repo.id),
             activeRepoId: selectedRepos[0]?.id ?? null,
+            pullRequest: opts.pullRequest,
           });
 
+      if (!isNavigationCurrent()) return;
       const listedThreads = useWorkItemThread
         ? await window.anvil.chat.listWorkItemThreads(activeWorkspace?.id ?? null)
         : await window.anvil.chat.listThreads(activeWorkspace?.id ?? null);
+      if (!isNavigationCurrent()) return;
       const nextThreads = sortThreads(listedThreads);
       setThreads(nextThreads);
       setActiveThreadId(createdThread.id);
@@ -2334,6 +2435,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                 {
                   workspace: activeWorkspace ? { workspaceId: activeWorkspace.id } : undefined,
                   threadId: createdThread.id,
+                  changeReviewId: opts.changeReviewId,
                   provider: modelProvider,
                   ...designOptions,
                 },
@@ -2350,6 +2452,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                 })
               : null;
 
+        if (!isNavigationCurrent()) return;
         if (!nextSession) {
           setError('Unable to start chat for this request.');
           return;
@@ -2357,11 +2460,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
         const timestamp = new Date().toISOString();
         const userEntryId = generateId();
-        rememberLiveSession(createdThread.id, nextSession);
-        setSession(nextSession);
-        setEntries([{ kind: 'user', content: opts.message, id: userEntryId }]);
-        setBusy(true);
-        setLiveThreadStatus(createdThread.id, 'busy');
 
         await window.anvil.chat.saveEntry(
           createdThread.id,
@@ -2376,6 +2474,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             threadId: createdThread.id,
           },
         );
+        if (!isNavigationCurrent()) return;
+        rememberLiveSession(createdThread.id, nextSession);
+        setSession(nextSession);
+        setEntries([{ kind: 'user', content: opts.message, id: userEntryId }]);
+        setBusy(true);
+        setLiveThreadStatus(createdThread.id, 'busy');
         bumpThreadSummary(createdThread.id, opts.message, timestamp);
 
         await window.anvil.chat.send(nextSession.id, enrichedMessage, [], {
@@ -2383,7 +2487,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           model,
           reasoningEffort: opts.reasoningLevel ?? reasoningLevel,
         });
+        if (!isNavigationCurrent()) return;
+        return createdThread.id;
       } catch (err) {
+        if (!isNavigationCurrent()) return;
         setBusy(false);
         setError(err instanceof Error ? err.message : 'Failed to launch chat');
       }
@@ -2478,6 +2585,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         steer,
         switchPersona,
         interrupt,
+        stopSession: stopSessionLive,
         startNewSession,
         loadHistory: loadHistoryFn,
         clearHistory: clearHistoryFn,

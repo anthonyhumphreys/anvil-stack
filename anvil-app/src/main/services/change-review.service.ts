@@ -1,3 +1,7 @@
+import {
+  deriveDeliveryMetrics,
+  formatDeliveryMetricsMarkdown,
+} from '../../shared/delivery-metrics.js';
 import { isFindingAccepted } from '../../shared/change-review-types.js';
 import { app, shell } from 'electron';
 import { randomUUID } from 'node:crypto';
@@ -11,9 +15,11 @@ import type {
   ReviewCriteriaVersion,
   ChangeReviewApi,
   ReviewCapture,
+  ReviewEvidenceLink,
 } from '../../shared/change-review-types.js';
 import { extractAcceptanceCriteria } from '../../shared/workitem-intent.js';
 import { getDb } from '../db/database.js';
+import { mergePersistedReviewAttention } from './change-review-attention.service.js';
 import { getWorkspace } from './workspace.service.js';
 import { getActiveProvider } from './workitem-provider.js';
 import { captureReviewSnapshot, reviewGit } from './review-snapshot.service.js';
@@ -34,12 +40,57 @@ function read(id: string): ChangeReview {
   if (!row) throw new Error('Review not found.');
   return JSON.parse(row.record_json) as ChangeReview;
 }
-function repoPath(review: Pick<ChangeReview, 'workspaceId' | 'repoId'>): string {
+function repoPath(review: Pick<ChangeReview, 'workspaceId' | 'repoId' | 'origin'>): string {
   const repo = getWorkspace(review.workspaceId).repos.find((repo) => repo.id === review.repoId);
   if (!repo) throw new Error('The review repository is no longer linked to this workspace.');
-  return repo.path;
+  const origin = review.origin;
+  if (!origin) return repo.path;
+  let retainedPath: string | undefined;
+  if (origin.workflowRunId) {
+    const row = getDb()
+      .prepare('SELECT workspace_id, graph_json FROM workflow_runs WHERE id = ?')
+      .get(origin.workflowRunId) as { workspace_id: string; graph_json: string } | undefined;
+    if (!row || row.workspace_id !== review.workspaceId)
+      throw new Error('Workflow candidate is unavailable in this workspace.');
+    const graph = JSON.parse(row.graph_json) as {
+      executionPaths?: { id: string; path: string }[];
+      sourceAutomationRunId?: string;
+    };
+    retainedPath = graph.executionPaths?.find((item) => item.id === review.repoId)?.path;
+    if (origin.automationRunId && graph.sourceAutomationRunId !== origin.automationRunId)
+      throw new Error('Workflow and automation identities do not match.');
+    if (!retainedPath)
+      throw new Error('Workflow has no retained execution worktree for this repository.');
+  }
+  if (origin.automationRunId) {
+    const row = getDb()
+      .prepare('SELECT workspace_id, worktrees_json FROM automation_runs WHERE id = ?')
+      .get(origin.automationRunId) as { workspace_id: string; worktrees_json: string } | undefined;
+    if (!row || row.workspace_id !== review.workspaceId)
+      throw new Error('Automation candidate is unavailable in this workspace.');
+    const tree = (
+      JSON.parse(row.worktrees_json) as { repoId: string; path?: string; kept: boolean }[]
+    ).find((item) => item.repoId === review.repoId);
+    if (!tree?.kept || !tree.path)
+      throw new Error('Automation candidate worktree was not retained.');
+    if (retainedPath && realpathSync(retainedPath) !== realpathSync(tree.path))
+      throw new Error('Execution identities refer to different worktrees.');
+    retainedPath = tree.path;
+  }
+  if (origin.executionPath && !retainedPath)
+    throw new Error('An execution path requires a persisted workflow or automation run.');
+  if (!retainedPath) return repo.path;
+  const canonical = realpathSync(retainedPath);
+  if (origin.executionPath && realpathSync(origin.executionPath) !== canonical)
+    throw new Error('Execution path does not match the retained candidate.');
+  const common = (path: string) =>
+    realpathSync(resolve(path, reviewGit(path, ['rev-parse', '--git-common-dir'])));
+  if (common(canonical) !== common(repo.path))
+    throw new Error('Retained worktree belongs to a different Git repository.');
+  return canonical;
 }
 function save(review: ChangeReview): ChangeReview {
+  mergePersistedReviewAttention(review);
   review.updatedAt = now();
   getDb()
     .prepare(
@@ -47,6 +98,11 @@ function save(review: ChangeReview): ChangeReview {
     )
     .run(review.id, review.workspaceId, review.repoId, JSON.stringify(review), review.updatedAt);
   return review;
+}
+/** Public mutation responses must reflect the current source, not persisted freshness. */
+function saveResponse(review: ChangeReview): ChangeReview {
+  save(review);
+  return getChangeReview(review.id);
 }
 function editable(id: string): ChangeReview {
   if (active.has(id) || publishing.has(id))
@@ -122,23 +178,54 @@ export async function createChangeReview(
   input: Parameters<ChangeReviewApi['create']>[0],
 ): Promise<ChangeReview> {
   const path = repoPath(input);
+  let workItemRef = input.workItemRef;
+  if (input.origin?.workflowRunId) {
+    const row = getDb()
+      .prepare('SELECT graph_json FROM workflow_runs WHERE id = ?')
+      .get(input.origin.workflowRunId) as { graph_json: string };
+    const persistedRef = (
+      JSON.parse(row.graph_json) as { workItemRef?: ChangeReview['workItemRef'] }
+    ).workItemRef;
+    if (persistedRef) {
+      if (
+        workItemRef &&
+        (workItemRef.id !== persistedRef.id ||
+          workItemRef.provider !== persistedRef.provider ||
+          workItemRef.connectionId !== persistedRef.connectionId)
+      )
+        throw new Error('Work Item identity does not match the workflow run.');
+      workItemRef = persistedRef;
+    }
+  }
+
   if (!input.baseRef?.trim() || input.baseRef.startsWith('-'))
     throw new Error('Choose a base Git reference.');
   const baseCommit = reviewGit(path, ['rev-parse', '--verify', `${input.baseRef}^{commit}`]);
-  const item = input.workItemRef
-    ? await getActiveProvider(input.workItemRef.connectionId, true)?.getItem(input.workItemRef.id)
+  const item = workItemRef
+    ? await getActiveProvider(workItemRef.connectionId, true)?.getItem(workItemRef.id)
     : undefined;
-  if (input.workItemRef && (!item || item.provider !== input.workItemRef.provider))
+  if (workItemRef && (!item || item.provider !== workItemRef.provider))
     throw new Error('Work Item provider does not match the linked connection.');
-  return save({
+  const candidate = captureReviewSnapshot(path);
+  if (input.origin?.pullRequest && input.origin.pullRequest.headSha !== candidate.head)
+    throw new Error('The local candidate does not match the pull request head.');
+  return saveResponse({
     id: randomUUID(),
     workspaceId: input.workspaceId,
     repoId: input.repoId,
     title: item?.title ?? 'Local change review',
     baseRef: input.baseRef,
     baseCommit,
-    candidate: captureReviewSnapshot(path),
-    workItemRef: input.workItemRef,
+    candidate,
+    origin: input.origin
+      ? {
+          ...structuredClone(input.origin),
+          ...(input.origin.workflowRunId || input.origin.automationRunId
+            ? { executionPath: path }
+            : {}),
+        }
+      : undefined,
+    workItemRef,
     workItem: item,
     criteria: [
       criteriaVersion(item ? extractAcceptanceCriteria(item) : (input.localCriteria?.trim() ?? '')),
@@ -158,7 +245,56 @@ export function listChangeReviews(workspaceId: string): ChangeReview[] {
         'SELECT record_json FROM change_reviews WHERE workspace_id = ? ORDER BY updated_at DESC',
       )
       .all(workspaceId) as { record_json: string }[]
-  ).map((row) => JSON.parse(row.record_json));
+  ).map((row) => getChangeReview((JSON.parse(row.record_json) as ChangeReview).id));
+}
+/** Remote observations outrank local checkout identity; scope them to one repository and PR. */
+function latestObservedPrHead(
+  review: Pick<ChangeReview, 'repoId' | 'workspaceId'>,
+  pullRequest: { id: string; provider: string; number?: number },
+): string | undefined {
+  const provider = pullRequest.provider === 'azure-devops' ? 'ado' : pullRequest.provider;
+  const latestVisualisation = getDb()
+    .prepare(
+      'SELECT head_sha, created_at FROM pull_request_visualisations WHERE repo_id = ? AND provider = ? AND pull_request_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1',
+    )
+    .get(review.repoId, provider, pullRequest.id) as
+    | { head_sha: string; created_at: string }
+    | undefined;
+  const number = pullRequest.number ?? Number(pullRequest.id);
+  const observations = getDb()
+    .prepare(
+      "SELECT payload_json, observed_at FROM watchtower_events WHERE event_type LIKE 'pull_request.%' ORDER BY observed_at DESC, rowid DESC",
+    )
+    .all() as { payload_json: string; observed_at: string }[];
+  for (const observation of observations) {
+    let event: { workspaceId?: string; repoIds?: string[]; metadata?: Record<string, unknown> };
+    try {
+      event = JSON.parse(observation.payload_json);
+    } catch {
+      continue;
+    }
+    const metadata = event.metadata;
+    const observedProvider = metadata?.provider === 'azure-devops' ? 'ado' : metadata?.provider;
+    if (
+      event.workspaceId !== review.workspaceId ||
+      !event.repoIds?.includes(review.repoId) ||
+      metadata?.repoId !== review.repoId ||
+      observedProvider !== provider ||
+      !Number.isSafeInteger(number) ||
+      metadata?.pullRequestNumber !== number ||
+      typeof metadata.headSha !== 'string' ||
+      !metadata.headSha
+    )
+      continue;
+    // occurredAt may be absent, historical, or supplied by the provider; use queue observation time.
+    if (
+      !latestVisualisation ||
+      Date.parse(observation.observed_at) > (Date.parse(latestVisualisation.created_at) || 0)
+    )
+      return metadata.headSha;
+    break;
+  }
+  return latestVisualisation?.head_sha;
 }
 export function getChangeReview(id: string): ChangeReview {
   const review = read(id);
@@ -170,8 +306,11 @@ export function getChangeReview(id: string): ChangeReview {
       save(review);
     }
   try {
+    const snapshot = captureReviewSnapshot(repoPath(review));
     review.freshness =
-      captureReviewSnapshot(repoPath(review)).tree === review.candidate.tree
+      snapshot.tree === review.candidate.tree &&
+      snapshot.head === review.candidate.head &&
+      (!review.origin?.pullRequest || review.origin.pullRequest.headSha === snapshot.head)
         ? review.freshness === 'unknown'
           ? 'unknown'
           : 'current'
@@ -182,6 +321,16 @@ export function getChangeReview(id: string): ChangeReview {
     review.freshness = 'unknown';
     review.freshnessDetail = String(error);
   }
+  updateEvidenceAvailability(review);
+  if (review.origin?.pullRequest) {
+    const knownHead = latestObservedPrHead(review, review.origin.pullRequest);
+    if (knownHead && knownHead !== review.candidate.head) {
+      review.freshness = 'stale';
+      review.freshnessDetail =
+        'A newer pull request head was observed. Review the current candidate.';
+    }
+  }
+  for (const link of review.evidenceLinks ?? []) updateLinkFreshness(review, link);
   return review;
 }
 export async function refreshChangeReview(id: string): Promise<ChangeReview> {
@@ -210,16 +359,23 @@ export async function refreshChangeReview(id: string): Promise<ChangeReview> {
   }
   if (active.has(id) || publishing.has(id) || JSON.stringify(read(id)) !== originalRecord)
     throw new Error('The review changed while refreshing. Refresh again.');
+  if (review.origin?.pullRequest && review.origin.pullRequest.headSha !== snapshot.head)
+    throw new Error('Pull request head changed. Create a review for the new candidate.');
+  if (review.origin?.pullRequest) {
+    const knownHead = latestObservedPrHead(review, review.origin.pullRequest);
+    if (knownHead && knownHead !== snapshot.head)
+      throw new Error('A newer pull request head was observed. Review the current candidate.');
+  }
   review.candidate = snapshot;
   review.freshness = 'current';
   delete review.freshnessDetail;
-  return save(review);
+  return saveResponse(review);
 }
 export function configureChangeReview(id: string, scenario: ReviewScenario): ChangeReview {
   const review = editable(id);
   review.scenario = validateScenario(scenario);
   review.scenarioVersion = digest(JSON.stringify(review.scenario));
-  return save(review);
+  return saveResponse(review);
 }
 export async function runChangeReview(id: string): Promise<ChangeReview> {
   let review = editable(id);
@@ -288,7 +444,7 @@ export async function runChangeReview(id: string): Promise<ChangeReview> {
       active.delete(id);
     }
   })();
-  return review;
+  return getChangeReview(id);
 }
 export function cancelChangeReview(id: string): void {
   active.get(id)?.abort();
@@ -297,6 +453,7 @@ function currentRun(review: ChangeReview, runId: string): ReviewRun {
   const run = review.runs.find((run) => run.id === runId);
   if (
     !run ||
+    run.candidate.head !== review.candidate.head ||
     run.candidate.tree !== review.candidate.tree ||
     run.criteriaVersion !== review.criteria.at(-1)?.id ||
     run.scenarioVersion !== review.scenarioVersion
@@ -322,7 +479,7 @@ export function annotateChangeReview(
     id: randomUUID(),
     history: [{ state: 'open', at: now(), runId: input.runId }],
   });
-  return save(review);
+  return saveResponse(review);
 }
 export function resolveReviewFinding(
   id: string,
@@ -343,9 +500,15 @@ export function resolveReviewFinding(
       run.startedAt <= finding.history[0].at
     )
       throw new Error('A subsequent passing replay is required before accepting this finding.');
+    for (const capture of [...run.base, ...run.candidateCaptures]) {
+      verifiedArtifact(review, run, capture, 'image');
+      verifiedArtifact(review, run, capture, 'trace');
+    }
+    if (!run.candidateCaptures.length) throw new Error('Replay capture evidence is missing.');
+    if (finding.repair) finding.repair.replayRunId = runId;
   }
   finding.history.push({ state, at: now(), runId });
-  return save(review);
+  return saveResponse(review);
 }
 export async function decideChangeReview(
   id: string,
@@ -374,12 +537,13 @@ export async function decideChangeReview(
       throw new Error('A passing candidate run is required for acceptance.');
     if (input.criterionDecisions.some((c) => c.outcome !== 'accepted'))
       throw new Error('Some criteria remain unchecked.');
-    if (review.findings.some((f) => !isFindingAccepted(review, f)))
-      throw new Error('Resolve open findings before acceptance.');
     for (const capture of [...run.base, ...run.candidateCaptures]) {
       verifiedArtifact(review, run, capture, 'image');
       verifiedArtifact(review, run, capture, 'trace');
     }
+    updateEvidenceAvailability(review);
+    if (review.findings.some((f) => !isFindingAccepted(review, f)))
+      throw new Error('Resolve open findings before acceptance.');
   }
   if (!input.note?.trim())
     throw new Error('Record the basis for this decision, including any manual checks.');
@@ -391,7 +555,28 @@ export async function decideChangeReview(
     snapshot: review.candidate.tree,
     criteriaVersion: review.criteria.at(-1)!.id,
   });
-  return save(review);
+  return saveResponse(review);
+}
+function updateEvidenceAvailability(review: ChangeReview): void {
+  for (const run of review.runs) {
+    delete run.evidenceAvailable;
+    delete run.evidenceDetail;
+    if (!run.completedAt || run.outcome === 'running') {
+      run.evidenceDetail = 'Capture availability has not been checked for this unfinished run.';
+      continue;
+    }
+    try {
+      if (!run.candidateCaptures.length) throw new Error('Candidate capture evidence is missing.');
+      for (const capture of [...run.base, ...run.candidateCaptures]) {
+        verifiedArtifact(review, run, capture, 'image');
+        verifiedArtifact(review, run, capture, 'trace');
+      }
+      run.evidenceAvailable = true;
+    } catch (error) {
+      run.evidenceAvailable = false;
+      run.evidenceDetail = String(error);
+    }
+  }
 }
 function verifiedArtifact(
   review: ChangeReview,
@@ -431,9 +616,13 @@ export function exportChangeReview(id: string, format: 'markdown' | 'json'): str
   // Exports omit raw logs, command configuration, local paths, images and traces by default.
   const pack = {
     schemaVersion: 1,
+    deliveryMetrics: deriveDeliveryMetrics(review),
     id: review.id,
     title: review.title,
     workItem: review.workItemRef,
+    origin: review.origin ? { ...review.origin, executionPath: undefined } : undefined,
+    evidenceLinks: review.evidenceLinks ?? [],
+    nativeEvidence: review.nativeEvidence ?? [],
     base: review.baseCommit,
     candidate: review.candidate,
     freshness: review.freshness,
@@ -470,6 +659,7 @@ export function exportChangeReview(id: string, format: 'markdown' | 'json'): str
         ),
         '## Human decisions',
         ...review.decisions.map((d) => `- ${d.at}: ${d.outcome} for ${d.snapshot}. ${d.note}`),
+        formatDeliveryMetricsMarkdown(deriveDeliveryMetrics(review)),
         '## Scope',
         'Configured scenario assertions and captures only. Ignored files and external services are not part of the source snapshot. Visual, keyboard and accessibility judgement require explicit human review. Raw logs, command configuration and binary artifacts are omitted. Review this text for sensitive content before sharing.',
       ].join('\n\n');
@@ -488,7 +678,7 @@ export async function publishChangeReview(
   review.publications ??= [];
   const previous = review.publications.find((p) => p.decisionId === decisionId);
   if (previous) {
-    if (previous.status === 'published') return review;
+    if (previous.status === 'published') return getChangeReview(id);
     throw new Error(
       'Publication may already have reached the provider. Check the Work Item; Anvil will not send a duplicate.',
     );
@@ -512,7 +702,7 @@ export async function publishChangeReview(
     );
     const latest = read(id);
     latest.publications!.find((p) => p.id === publication.id)!.status = 'published';
-    return save(latest);
+    return saveResponse(latest);
   } catch (error) {
     const latest = read(id);
     latest.publications!.find((p) => p.id === publication.id)!.status = 'uncertain';
@@ -522,5 +712,259 @@ export async function publishChangeReview(
     );
   } finally {
     publishing.delete(id);
+  }
+}
+
+function visualisationSource(review: ChangeReview, source: ReviewEvidenceLink['source']): string {
+  const row = getDb()
+    .prepare(
+      'SELECT repo_id, provider, pull_request_id, head_sha, status, data_json FROM pull_request_visualisations WHERE id = ?',
+    )
+    .get(source.visualisationId) as
+    | {
+        repo_id: string;
+        provider: string;
+        pull_request_id: string;
+        head_sha: string;
+        status: string;
+        data_json: string;
+      }
+    | undefined;
+  if (
+    !row ||
+    row.repo_id !== review.repoId ||
+    row.head_sha !== source.headSha ||
+    row.status !== 'ready'
+  )
+    throw new Error('PR visualisation is unavailable or has changed.');
+  const latestHead = latestObservedPrHead(review, {
+    id: row.pull_request_id,
+    provider: row.provider,
+  });
+  if (latestHead && latestHead !== source.headSha)
+    throw new Error('A newer pull request head is known. Review the current candidate.');
+  const data = JSON.parse(row.data_json) as {
+    chapters?: { id: string }[];
+    risks?: { id: string }[];
+  };
+  const items =
+    source.kind === 'chapter' ? data.chapters : source.kind === 'risk' ? data.risks : [];
+  if (!items?.some((item) => item.id === source.id))
+    throw new Error('Visualisation chapter or risk no longer exists.');
+  if (source.headSha !== review.candidate.head)
+    throw new Error('Visualisation and candidate heads differ.');
+  if (
+    review.origin?.pullRequest &&
+    (row.pull_request_id !== review.origin.pullRequest.id ||
+      row.provider !== review.origin.pullRequest.provider)
+  )
+    throw new Error('Visualisation belongs to a different pull request.');
+  return digest(row.data_json);
+}
+function updateLinkFreshness(review: ChangeReview, link: ReviewEvidenceLink): void {
+  try {
+    if (visualisationSource(review, link.source) !== link.visualisationVersion)
+      throw new Error('Visualisation changed since this mapping was recorded.');
+    if (
+      review.freshness !== 'current' ||
+      link.candidateTree !== review.candidate.tree ||
+      link.criteriaVersion !== review.criteria.at(-1)?.id ||
+      (link.scenarioVersion && link.scenarioVersion !== review.scenarioVersion)
+    )
+      throw new Error(
+        'Candidate, criteria or scenario changed. Replay and relink current evidence.',
+      );
+    if (
+      link.criterionId &&
+      !review.criteria.at(-1)?.items.some((item) => item.id === link.criterionId)
+    )
+      throw new Error('Criterion no longer exists.');
+    if (link.findingId && !review.findings.some((item) => item.id === link.findingId))
+      throw new Error('Finding no longer exists.');
+    if (link.runId) {
+      const run = currentRun(review, link.runId);
+      if (!run.completedAt || run.outcome === 'running')
+        throw new Error('Evidence run has not completed.');
+      const captures = link.captureId
+        ? run.candidateCaptures.filter((capture) => capture.id === link.captureId)
+        : [...run.base, ...run.candidateCaptures];
+      if (!captures.length) throw new Error('Capture evidence is missing.');
+      for (const capture of captures) {
+        verifiedArtifact(review, run, capture, 'image');
+        verifiedArtifact(review, run, capture, 'trace');
+      }
+    }
+    link.freshness = 'current';
+    delete link.freshnessDetail;
+  } catch (error) {
+    link.freshness = review.freshness === 'unknown' ? 'unknown' : 'stale';
+    link.freshnessDetail = String(error);
+  }
+}
+export function linkReviewEvidence(
+  id: string,
+  input: Parameters<ChangeReviewApi['linkEvidence']>[1],
+): ChangeReview {
+  const review = editable(id);
+  if (!input?.source) throw new Error('Choose a visualisation chapter or risk.');
+  visualisationSource(review, input.source);
+  if (!input.criterionId && !input.scenarioVersion && !input.runId && !input.findingId)
+    throw new Error('Choose an evidence target. Unmapped chapters can remain unmapped.');
+  if (input.captureId && !input.runId) throw new Error('A capture requires its run.');
+  const finding = input.findingId
+    ? review.findings.find((item) => item.id === input.findingId)
+    : undefined;
+  if (input.findingId && !finding) throw new Error('Finding not found.');
+  if (finding && input.runId && finding.runId !== input.runId)
+    throw new Error('Finding belongs to a different run.');
+  if (finding && input.captureId && finding.captureId !== input.captureId)
+    throw new Error('Finding belongs to a different capture.');
+  const link: ReviewEvidenceLink = {
+    id: randomUUID(),
+    source: structuredClone(input.source),
+    visualisationVersion: visualisationSource(review, input.source),
+    criterionId: input.criterionId,
+    scenarioVersion: input.scenarioVersion,
+    runId: input.runId ?? finding?.runId,
+    captureId: input.captureId ?? finding?.captureId,
+    findingId: input.findingId,
+    criteriaVersion: review.criteria.at(-1)!.id,
+    candidateTree: review.candidate.tree,
+    createdAt: now(),
+    provenance: 'human-linked',
+    freshness: 'unknown',
+  };
+  updateLinkFreshness(getChangeReview(id), link);
+  if (link.freshness !== 'current') throw new Error(link.freshnessDetail);
+  review.evidenceLinks ??= [];
+  review.evidenceLinks.push(link);
+  return saveResponse(review);
+}
+export function unlinkReviewEvidence(id: string, linkId: string): ChangeReview {
+  const review = editable(id);
+  review.evidenceLinks = (review.evidenceLinks ?? []).filter((link) => link.id !== linkId);
+  return saveResponse(review);
+}
+export function repairReviewFinding(
+  id: string,
+  findingId: string,
+  input: Parameters<ChangeReviewApi['repairFinding']>[2],
+): ChangeReview {
+  const review = editable(id);
+  const finding = review.findings.find((item) => item.id === findingId);
+  if (!finding || (!input.threadId && !input.workItemRef))
+    throw new Error('Choose a finding and repair thread or Work Item.');
+  if (input.threadId) {
+    const thread = getDb()
+      .prepare('SELECT workspace_id FROM chat_threads WHERE id = ?')
+      .get(input.threadId) as { workspace_id: string } | undefined;
+    if (!thread || thread.workspace_id !== review.workspaceId)
+      throw new Error('Repair thread must belong to this workspace.');
+  }
+  if (
+    input.workItemRef &&
+    (!input.workItemRef.id || !input.workItemRef.connectionId || !input.workItemRef.provider)
+  )
+    throw new Error('Repair Work Item needs its provider and connection.');
+  finding.repair = { threadId: input.threadId, workItemRef: input.workItemRef, at: now() };
+  return saveResponse(review);
+}
+export function recordNativeReviewEvidence(
+  id: string,
+  input: Parameters<ChangeReviewApi['recordNativeEvidence']>[1],
+): ChangeReview {
+  const review = editable(id);
+  if (input.status === 'passed') {
+    const current = captureReviewSnapshot(repoPath(review));
+    if (
+      current.head !== review.candidate.head ||
+      current.tree !== review.candidate.tree ||
+      reviewGit(repoPath(review), ['rev-parse', 'HEAD^{tree}']) !== review.candidate.tree
+    )
+      throw new Error(
+        'Native build evidence requires the clean candidate commit. Commit changes and build this candidate first.',
+      );
+  }
+  if (input.headSha !== review.candidate.head)
+    throw new Error('Native build does not match this candidate head.');
+  if (
+    input.platform !== 'darwin' ||
+    !['arm64', 'x64'].includes(input.arch) ||
+    !['passed', 'failed', 'unsupported', 'unavailable'].includes(input.status) ||
+    !['unsigned', 'signed', 'unavailable'].includes(input.signing)
+  )
+    throw new Error('Invalid native verification result.');
+  if (
+    !input.buildId?.trim() ||
+    input.buildId.length > 300 ||
+    !input.notes?.trim() ||
+    input.notes.length > 8000
+  )
+    throw new Error('Record the build identity and manual verification notes.');
+  review.nativeEvidence ??= [];
+  review.nativeEvidence.push({
+    candidateTree: review.candidate.tree,
+    buildId: input.buildId,
+    headSha: input.headSha,
+    platform: input.platform,
+    arch: input.arch,
+    status: input.status,
+    signing: input.signing,
+    notes: input.notes,
+    id: randomUUID(),
+    recordedAt: now(),
+    reviewer: userInfo().username,
+    provenance: 'human-observed',
+  });
+  return saveResponse(review);
+}
+
+/** Resume repair sessions in their persisted candidate, never the regular checkout. */
+export function resolveReviewRepairPaths(
+  threadId: string | undefined,
+  repoIds: string[],
+  reviewId?: string,
+): string[] | undefined {
+  if (!threadId) {
+    if (reviewId) throw new Error('A repair session requires a persisted thread.');
+    return undefined;
+  }
+  const rows = getDb().prepare('SELECT record_json FROM change_reviews').all() as {
+    record_json: string;
+  }[];
+  const review = reviewId
+    ? read(reviewId)
+    : rows
+        .map((row) => JSON.parse(row.record_json) as ChangeReview)
+        .find((item) => item.findings.some((finding) => finding.repair?.threadId === threadId));
+  if (!review) return undefined;
+  const thread = getDb()
+    .prepare('SELECT workspace_id FROM chat_threads WHERE id = ?')
+    .get(threadId) as { workspace_id: string } | undefined;
+  if (
+    !thread ||
+    thread.workspace_id !== review.workspaceId ||
+    repoIds.length !== 1 ||
+    repoIds[0] !== review.repoId
+  )
+    throw new Error('Repair thread must target exactly the reviewed repository and workspace.');
+  return [repoPath(review)];
+}
+
+/** A generic provider fork cannot persist the retained-candidate binding. */
+export function assertReviewRepairForkAllowed(threadId: string): void {
+  const rows = getDb().prepare('SELECT record_json FROM change_reviews').all() as {
+    record_json: string;
+  }[];
+  if (
+    rows.some((row) =>
+      (JSON.parse(row.record_json) as ChangeReview).findings.some(
+        (finding) => finding.repair?.threadId === threadId,
+      ),
+    )
+  ) {
+    throw new Error(
+      'Repair threads cannot be forked. Request another fix from Change Review to preserve the candidate worktree.',
+    );
   }
 }

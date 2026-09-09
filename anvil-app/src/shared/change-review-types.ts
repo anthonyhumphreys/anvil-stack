@@ -5,6 +5,51 @@ export interface WorkItemReference {
   provider: WorkItemProvider;
   id: string;
 }
+/** Identity carried from execution to human verification; never a workflow gate decision. */
+export interface ReviewOrigin {
+  workflowRunId?: string;
+  automationRunId?: string;
+  executionPath?: string;
+  pullRequest?: { id: string; provider: string; headSha: string; number?: number };
+}
+export interface ReviewEvidenceSource {
+  visualisationId: string;
+  headSha: string;
+  kind: 'chapter' | 'risk';
+  id: string;
+}
+export interface ReviewEvidenceTarget {
+  criterionId?: string;
+  scenarioVersion?: string;
+  runId?: string;
+  captureId?: string;
+  findingId?: string;
+}
+export interface ReviewEvidenceLink extends ReviewEvidenceTarget {
+  id: string;
+  source: ReviewEvidenceSource;
+  visualisationVersion: string;
+  criteriaVersion: string;
+  candidateTree: string;
+  createdAt: string;
+  provenance: 'human-linked';
+  freshness: 'current' | 'stale' | 'unknown';
+  freshnessDetail?: string;
+}
+export interface ReviewNativeEvidence {
+  candidateTree: string;
+  id: string;
+  buildId: string;
+  headSha: string;
+  platform: 'darwin';
+  arch: 'arm64' | 'x64';
+  status: 'passed' | 'failed' | 'unsupported' | 'unavailable';
+  signing: 'unsigned' | 'signed' | 'unavailable';
+  notes: string;
+  recordedAt: string;
+  reviewer: string;
+  provenance: 'human-observed';
+}
 export interface ReviewSnapshot {
   head: string;
   tree: string;
@@ -48,6 +93,9 @@ export interface ReviewCapture {
   steps: { action: string; outcome: 'passed' | 'failed'; detail?: string }[];
 }
 export interface ReviewRun {
+  /** Computed when evidence is read; absent while not yet checked. */
+  evidenceAvailable?: boolean;
+  evidenceDetail?: string;
   id: string;
   candidate: ReviewSnapshot;
   baseTree: string;
@@ -71,6 +119,7 @@ export interface ReviewFinding {
   locator?: string;
   x?: number;
   y?: number;
+  repair?: { threadId?: string; workItemRef?: WorkItemReference; at: string; replayRunId?: string };
   history: { state: 'open' | 'ready_for_recheck' | 'accepted'; at: string; runId: string }[];
 }
 export interface ReviewDecision {
@@ -84,7 +133,19 @@ export interface ReviewDecision {
   note: string;
   criterionDecisions: { criterionId: string; outcome: 'accepted' | 'not_checked'; note: string }[];
 }
+export interface ReviewAttentionSession {
+  id: string;
+  reviewer: string;
+  startedAt: string;
+  lastObservedAt: string;
+  activeMs: number;
+  provenance: 'foreground-interaction';
+}
 export interface ChangeReview {
+  attentionSessions?: ReviewAttentionSession[];
+  origin?: ReviewOrigin;
+  evidenceLinks?: ReviewEvidenceLink[];
+  nativeEvidence?: ReviewNativeEvidence[];
   id: string;
   workspaceId: string;
   repoId: string;
@@ -112,6 +173,7 @@ export interface ChangeReview {
   }[];
 }
 export interface ChangeReviewApi {
+  recordAttention(id: string, input: { sessionId: string; active: boolean }): Promise<void>;
   list(workspaceId: string): Promise<ChangeReview[]>;
   create(input: {
     workspaceId: string;
@@ -119,7 +181,25 @@ export interface ChangeReviewApi {
     baseRef: string;
     workItemRef?: WorkItemReference;
     localCriteria?: string;
+    origin?: ReviewOrigin;
   }): Promise<ChangeReview>;
+  linkEvidence(
+    id: string,
+    input: ReviewEvidenceTarget & { source: ReviewEvidenceSource },
+  ): Promise<ChangeReview>;
+  unlinkEvidence(id: string, linkId: string): Promise<ChangeReview>;
+  repairFinding(
+    id: string,
+    findingId: string,
+    input: { threadId?: string; workItemRef?: WorkItemReference },
+  ): Promise<ChangeReview>;
+  recordNativeEvidence(
+    id: string,
+    input: Omit<
+      ReviewNativeEvidence,
+      'id' | 'recordedAt' | 'reviewer' | 'provenance' | 'candidateTree'
+    >,
+  ): Promise<ChangeReview>;
   get(id: string): Promise<ChangeReview>;
   refresh(id: string): Promise<ChangeReview>;
   configure(id: string, scenario: ReviewScenario): Promise<ChangeReview>;
@@ -164,7 +244,9 @@ export function isFindingAccepted(review: ChangeReview, finding: ReviewFinding):
   const run = review.runs.find((run) => run.id === decision.runId);
   return Boolean(
     run &&
+    run.candidate.head === review.candidate.head &&
     run.outcome === 'passed' &&
+    run.evidenceAvailable !== false &&
     run.candidate.tree === review.candidate.tree &&
     run.criteriaVersion === review.criteria.at(-1)?.id &&
     run.scenarioVersion === review.scenarioVersion,

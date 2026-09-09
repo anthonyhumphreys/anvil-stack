@@ -7,6 +7,8 @@ import {
 } from './OrchestrationPanel';
 import {
   createOrchestrationPreset,
+  isContextualWorkflowPreset,
+  type WorkflowPreset,
   layoutWorkflowGraph,
   orchestrationConfig,
 } from '../../../shared/workflow-orchestration';
@@ -168,6 +170,7 @@ const NODE_TYPES = { workflowStep: WorkflowStepNode };
 export function WorkflowsView() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const [contextualPreset, setContextualPreset] = useState<WorkflowPreset>('delivery');
   const { activeWorkspace } = useWorkspace();
   const [loading, setLoading] = useState(true);
   const [libraryExpanded, setLibraryExpanded] = useState(
@@ -189,6 +192,7 @@ export function WorkflowsView() {
   const [codexStatus, setCodexStatus] = useState<CodexCliStatus | null>(null);
   const [cursorStatus, setCursorStatus] = useState<CursorCliStatus | null>(null);
   const [kickoff, setKickoff] = useState('');
+  const [workItemRef, setWorkItemRef] = useState<WorkflowRun['workItemRef']>();
   const [supervisorQuestion, setSupervisorQuestion] = useState('');
   const [supervisorReplies, setSupervisorReplies] = useState<
     Array<{ question: string; answer: string }>
@@ -216,6 +220,10 @@ export function WorkflowsView() {
         updatedAt: selectedRun.createdAt,
       }
     : null;
+  const inspectedRunNodeId =
+    selectedNodeId ??
+    selectedRun?.nodeRuns.find((state) => state.status === 'waiting')?.nodeId ??
+    null;
   const canvasTemplate = runTemplate ?? draft;
   const isLaunching = !selectedRun && draft.nodes.length === 0;
 
@@ -252,9 +260,29 @@ export function WorkflowsView() {
     const runId = searchParams.get('run');
     const draftRequest = searchParams.get('draft');
     const kickoffMessage = searchParams.get('kickoff');
-    if (!runId && !draftRequest && !kickoffMessage) return;
+    const preset = searchParams.get('preset');
+    if (!runId && !draftRequest && !kickoffMessage && !preset) return;
+    const itemId = searchParams.get('workItemId');
+    const itemProvider = searchParams.get('workItemProvider');
+    const itemConnection = searchParams.get('workItemConnection');
+    if (preset || draftRequest || kickoffMessage) {
+      setWorkItemRef(
+        itemId &&
+          itemConnection &&
+          (itemProvider === 'ado' || itemProvider === 'linear' || itemProvider === 'jira')
+          ? { id: itemId, connectionId: itemConnection, provider: itemProvider }
+          : undefined,
+      );
+    }
+    if (isContextualWorkflowPreset(preset)) {
+      setContextualPreset(preset);
+      setSelectedRunId(null);
+      setDraft(EMPTY_TEMPLATE);
+      setSelectedNodeId(null);
+    }
 
     if (runId) {
+      setSelectedNodeId(null);
       setSelectedRunId(runId);
       void window.anvil.workflow
         .getRun(runId)
@@ -269,6 +297,10 @@ export function WorkflowsView() {
     next.delete('run');
     next.delete('draft');
     next.delete('kickoff');
+    next.delete('preset');
+    next.delete('workItemId');
+    next.delete('workItemProvider');
+    next.delete('workItemConnection');
     setSearchParams(next, { replace: true });
 
     if (draftRequest) {
@@ -435,6 +467,7 @@ export function WorkflowsView() {
         workspaceId: activeWorkspace.id,
         repoIds: activeWorkspace.repos.map((repo) => repo.id),
         kickoff,
+        workItemRef,
       });
       setRuns((current) => [run, ...current]);
       setSelectedRunId(run.id);
@@ -478,7 +511,7 @@ export function WorkflowsView() {
     }
   };
 
-  const loadPreset = (kind: 'delivery' | 'review' | 'research') => {
+  const loadPreset = (kind: WorkflowPreset) => {
     const provider = agentSettings?.llmProvider ?? 'codex';
     const profiles = orchestrationConfig(draft.orchestration).profiles;
     const generated = createOrchestrationPreset(
@@ -703,6 +736,24 @@ export function WorkflowsView() {
                   >
                     <MessageSquare size={15} /> Supervisor
                   </button>
+                  {selectedRun.executionPaths
+                    ?.filter((entry) => selectedRun.repoIds.includes(entry.id))
+                    .map((entry) => (
+                      <button
+                        key={entry.id}
+                        onClick={() =>
+                          navigate(
+                            `/review?${new URLSearchParams({ repo: entry.id, workflowRun: selectedRun.id, executionPath: entry.path, ...(selectedRun.workItemRef ? { workItemId: selectedRun.workItemRef.id, workItemProvider: selectedRun.workItemRef.provider, workItemConnection: selectedRun.workItemRef.connectionId } : {}) })}`,
+                          )
+                        }
+                        className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-xs text-text-secondary hover:bg-bg-tertiary focus-visible:outline focus-visible:outline-accent"
+                      >
+                        Review candidate
+                        {selectedRun.executionPaths!.length > 1
+                          ? ` · ${activeWorkspace?.repos.find((repo) => repo.id === entry.id)?.name ?? entry.id}`
+                          : ''}
+                      </button>
+                    ))}
                   {selectedRun.status === 'running' && (
                     <button
                       disabled={commandBusy}
@@ -845,6 +896,8 @@ export function WorkflowsView() {
           )}
           {isLaunching ? (
             <WorkflowLaunchpad
+              key={contextualPreset}
+              initialStarter={contextualPreset}
               objective={kickoff}
               onObjectiveChange={setKickoff}
               onPrepare={loadPreset}
@@ -954,9 +1007,10 @@ export function WorkflowsView() {
             <>
               <div className="max-h-[50%] overflow-y-auto">
                 <RunInspector
-                  key={`${selectedRun.id}:${selectedNodeId}`}
+                  key={`${selectedRun.id}:${inspectedRunNodeId}`}
                   run={selectedRun}
-                  nodeId={selectedNodeId}
+                  nodeId={inspectedRunNodeId}
+                  busy={commandBusy}
                   onCommand={runCommand}
                   onOpenThread={openThread}
                 />

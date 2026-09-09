@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { WorkflowNode, WorkflowRun } from '../../../shared/types';
 import {
+  CONTEXTUAL_WORKFLOW_PRESETS,
+  isContextualWorkflowPreset,
   DEFAULT_ORCHESTRATION,
   createOrchestrationPreset,
   parseDelegation,
@@ -345,5 +347,40 @@ describe('orchestration contracts', () => {
     expect(delivery.nodes.at(-1)?.kind).toBe('human');
     validateOrchestration(delivery.orchestration);
     expect(createOrchestrationPreset('review', []).nodes[0].teamStrategy).toBe('review');
+  });
+});
+
+describe('contextual workflow presets', () => {
+  it.each(CONTEXTUAL_WORKFLOW_PRESETS)(
+    '%s pauses for a human decision after specialist reconciliation',
+    async (kind) => {
+      const preset = createOrchestrationPreset(kind, []);
+      validateOrchestration(preset.orchestration);
+      const current = {
+        ...run([]),
+        nodes: preset.nodes,
+        edges: preset.edges,
+        orchestration: preset.orchestration,
+        nodeRuns: preset.nodes.map((node) => ({ nodeId: node.id, status: 'queued' as const })),
+      };
+      const execute = vi.fn(async () => ({ output: 'Agent analysis with missing evidence' }));
+      await runWorkflowRuntime(current, {
+        execute,
+        persist: vi.fn(),
+        signal: new AbortController().signal,
+      });
+      expect(current.status).toBe('paused');
+      expect(current.nodeRuns.find((node) => node.nodeId === 'decision')?.status).toBe('waiting');
+      expect(execute).toHaveBeenCalled();
+      expect(preset.nodes[0].prompt).toContain('Agent narratives never establish verification');
+      expect(preset.nodes[0].teamProfileIds).toEqual(
+        preset.orchestration?.profiles.map((profile) => profile.id),
+      );
+    },
+  );
+  it('accepts only known contextual preset identifiers', () => {
+    expect(isContextualWorkflowPreset('pr-review')).toBe(true);
+    expect(isContextualWorkflowPreset('unknown')).toBe(false);
+    expect(isContextualWorkflowPreset(null)).toBe(false);
   });
 });

@@ -19,6 +19,7 @@ import type {
   ChatArtifactAnnotationPatch,
   ChatAttachment,
   ChatNavigationTarget,
+  WorkflowNavigationTarget,
   ChatAttachmentInput,
   ChatFileMentionSearchInput,
   ChatMessage,
@@ -64,6 +65,12 @@ const api: AnvilAPI = {
         callback(state);
       ipcRenderer.on('app-window:chrome-state-changed', handler);
       return () => ipcRenderer.removeListener('app-window:chrome-state-changed', handler);
+    },
+    onNavigateToWorkflow: (callback: (target: WorkflowNavigationTarget) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, target: WorkflowNavigationTarget) =>
+        callback(target);
+      ipcRenderer.on('app-window:navigate-to-workflow', handler);
+      return () => ipcRenderer.removeListener('app-window:navigate-to-workflow', handler);
     },
     onNavigateToChat: (callback: (target: ChatNavigationTarget) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, target: ChatNavigationTarget) =>
@@ -146,6 +153,16 @@ const api: AnvilAPI = {
   },
 
   chat: {
+    linkPullRequest: (threadId, input) =>
+      ipcRenderer.invoke('chat:link-pull-request', threadId, input),
+    unlinkPullRequest: (threadId, linkId) =>
+      ipcRenderer.invoke('chat:unlink-pull-request', threadId, linkId),
+    listPullRequestLinks: (threadId) =>
+      ipcRenderer.invoke('chat:list-pull-request-links', threadId),
+    listPullRequestThreads: (repoId, provider, pullRequestId) =>
+      ipcRenderer.invoke('chat:list-pull-request-threads', repoId, provider, pullRequestId),
+    refreshPullRequestLink: (threadId, linkId) =>
+      ipcRenderer.invoke('chat:refresh-pull-request-link', threadId, linkId),
     startSession: (
       repoIds: string[],
       personaId: string,
@@ -298,6 +315,7 @@ const api: AnvilAPI = {
       workspaceId: string;
       repoIds: string[];
       kickoff: string;
+      workItemRef?: import('../shared/change-review-types').WorkItemReference;
     }) => ipcRenderer.invoke('workflow:start-run', input),
     askSupervisor: (runId: string, question: string) =>
       ipcRenderer.invoke('workflow:ask-supervisor', runId, question),
@@ -417,6 +435,13 @@ const api: AnvilAPI = {
   },
 
   changeReview: {
+    recordAttention: (id, input) => ipcRenderer.invoke('change-review:recordAttention', id, input),
+    linkEvidence: (id, input) => ipcRenderer.invoke('change-review:linkEvidence', id, input),
+    unlinkEvidence: (id, linkId) => ipcRenderer.invoke('change-review:unlinkEvidence', id, linkId),
+    repairFinding: (id, findingId, input) =>
+      ipcRenderer.invoke('change-review:repairFinding', id, findingId, input),
+    recordNativeEvidence: (id, input) =>
+      ipcRenderer.invoke('change-review:recordNativeEvidence', id, input),
     publish: (id, decisionId, redactedText) =>
       ipcRenderer.invoke('change-review:publish', id, decisionId, redactedText),
     list: (workspaceId) => ipcRenderer.invoke('change-review:list', workspaceId),

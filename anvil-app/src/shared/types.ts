@@ -1,4 +1,5 @@
 import type { DojoCraftedSkill, DojoTokenUsage, DojoPrice } from './dojo-types.js';
+import type { WorkItemReference } from './change-review-types.js';
 import type { AgentUIIntent } from './agent-ui-intents.js';
 
 export interface RepoInfo {
@@ -704,6 +705,7 @@ export interface WorkflowNodeRun {
 }
 
 export interface WorkflowRun {
+  workItemRef?: WorkItemReference;
   runtimeOwnerPid?: number;
   executionPaths?: Array<{ id: string; path: string }>;
   orchestration?: WorkflowOrchestration;
@@ -749,7 +751,26 @@ export interface ChatFileMentionSearchResult {
   size: number;
 }
 
+export interface ChatThreadPullRequestInput {
+  repoId: string;
+  provider: 'github' | 'ado';
+  pullRequestId: string;
+}
+export interface ChatThreadPullRequestLink {
+  availability: 'current' | 'repository_changed' | 'thread_changed';
+  id: string;
+  threadId: string;
+  threadTitle: string;
+  workspaceId: string;
+  repoId: string;
+  pullRequest: CodeReviewPullRequest;
+  linkedAt: string;
+  /** Last successful provider lookup; this snapshot is not a live status claim. */
+  observedAt: string;
+}
+
 export interface ChatThread {
+  pullRequestLinks?: ChatThreadPullRequestLink[];
   id: string;
   personaId: string;
   title: string;
@@ -781,6 +802,11 @@ export type ChatThreadAttentionState =
   | 'input'
   | 'failed'
   | 'complete';
+
+export interface WorkflowNavigationTarget {
+  workspaceId: string;
+  runId: string;
+}
 
 export interface ChatNavigationTarget {
   workspaceId: string;
@@ -889,7 +915,9 @@ export interface AutomationTriageItem {
   errorMessage?: string;
   retainedWorktreeCount: number;
   worktrees: AutomationRunWorktree[];
-  attention: 'blocked' | 'changes' | 'running';
+  attention: 'blocked' | 'changes' | 'running' | 'decision';
+  workflowRunId?: string;
+  nextAction?: string;
 }
 
 export type JsonRpcRequestId = string | number;
@@ -989,6 +1017,9 @@ export interface CodexEvent {
     | 'turn_outcome'
     | 'context_compaction'
     | 'usage_context';
+  /** App routing metadata attached to live provider events. */
+  sessionId?: string;
+  appThreadId?: string;
   contextUsage?: { used: number; size: number };
   observedCostUsd?: number;
   usage?: DojoTokenUsage;
@@ -1781,6 +1812,8 @@ export type WatchtowerEventType =
   | 'workflow.failed'
   | 'pull_request.merged'
   | 'pull_request.closed'
+  | 'pull_request.review_comment'
+  | 'pull_request.head_changed'
   | 'pipeline.completed'
   | 'pipeline.failed';
 export type AutomationRunTrigger = 'manual' | 'schedule' | 'watchtower';
@@ -1824,6 +1857,8 @@ export interface WatchtowerTarget {
 }
 
 export interface WatchtowerState {
+  headSha?: string;
+  reviewCommentIds?: string[];
   sourceId?: string;
   sourceLabel?: string;
   status?: string;

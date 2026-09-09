@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { FileCode2, FilePlus2, FileX2, Loader2, MessageSquareText } from 'lucide-react';
-import type { PullRequestDiff, PullRequestDiffFile } from '../../../shared/types';
+import type {
+  CodeReviewPullRequest,
+  PullRequestDiff,
+  PullRequestDiffFile,
+} from '../../../shared/types';
 import { DiffViewer } from '../chat/DiffViewer';
 
 interface PullRequestDiffViewProps {
@@ -8,6 +12,7 @@ interface PullRequestDiffViewProps {
   pullRequestId: string;
   focusFilePath?: string;
   onAskInChat?: (file: PullRequestDiffFile) => void;
+  onPullRequestLoaded?: (pullRequest: CodeReviewPullRequest) => void;
 }
 
 export function PullRequestDiffView({
@@ -15,6 +20,7 @@ export function PullRequestDiffView({
   pullRequestId,
   focusFilePath,
   onAskInChat,
+  onPullRequestLoaded,
 }: PullRequestDiffViewProps) {
   const [diff, setDiff] = useState<PullRequestDiff | null>(null);
   const [selectedPath, setSelectedPath] = useState(focusFilePath ?? '');
@@ -31,6 +37,7 @@ export function PullRequestDiffView({
       .then((nextDiff) => {
         if (cancelled) return;
         setDiff(nextDiff);
+        onPullRequestLoaded?.(nextDiff.pullRequest);
         setSelectedPath((current) =>
           nextDiff.files.some((file) => file.filePath === current)
             ? current
@@ -46,7 +53,7 @@ export function PullRequestDiffView({
     return () => {
       cancelled = true;
     };
-  }, [pullRequestId, repoId]);
+  }, [pullRequestId, repoId, onPullRequestLoaded]);
 
   useEffect(() => {
     if (focusFilePath) setSelectedPath(focusFilePath);

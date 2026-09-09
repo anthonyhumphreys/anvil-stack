@@ -21,6 +21,7 @@ import {
   getAutomationRun,
   listAutomationRunEvents,
   listAutomationRuns,
+  listAutomationTriageItems,
   listAutomations,
   listDueAutomations,
   listExternalWatchtowerAutomations,
@@ -32,6 +33,8 @@ import {
 } from '../automation-persistence.service.js';
 
 beforeEach(() => {
+  inMemoryDb.exec('DELETE FROM workflow_runs');
+  inMemoryDb.exec('DELETE FROM chat_threads');
   inMemoryDb.exec('DELETE FROM automation_run_events');
   inMemoryDb.exec('DELETE FROM watchtower_events');
   inMemoryDb.exec('DELETE FROM automation_runs');
@@ -67,6 +70,27 @@ beforeEach(() => {
 });
 
 describe('automation persistence', () => {
+  it('coalesces a completed launcher and its paused workflow into one decision', () => {
+    const definition = createAutomationRecord('ws-1', {
+      name: 'Prepare candidate', personaId: 'coder', prompt: 'Prepare review',
+      repoIds: ['repo-1'], scheduleCron: '0 9 * * 1-5', timezone: 'Europe/London',
+      enabled: true, allowRepoWrite: true, allowCommandRun: true,
+    }, '2026-09-09T09:00:00.000Z');
+    const run = createAutomationRun(definition, 'manual');
+    inMemoryDb.prepare("UPDATE automation_runs SET status = 'completed' WHERE id = ?").run(run.id);
+    inMemoryDb.prepare("INSERT INTO chat_threads (id, workspace_id, persona_id, title) VALUES ('thread', 'ws-1', 'coder', 'Prepare')").run();
+    inMemoryDb.prepare(`INSERT INTO workflow_runs (
+      id, template_id, template_name, workspace_id, graph_json, kickoff, status,
+      supervisor_thread_id, node_runs_json, created_at
+    ) VALUES (?, 'template', 'Prepare', 'ws-1', ?, '', 'paused', 'thread', '[]', datetime('now'))`)
+      .run('workflow-decision', JSON.stringify({ sourceAutomationRunId: run.id }));
+    const items = listAutomationTriageItems('ws-1');
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      id: run.id, workflowRunId: 'workflow-decision', attention: 'decision',
+      nextAction: 'Open workflow to answer the pending decision',
+    });
+  });
   it('creates and updates workspace automations', () => {
     const created = createAutomationRecord(
       'ws-1',
@@ -314,6 +338,37 @@ describe('automation persistence', () => {
     expect(claimPendingWatchtowerEvent(pending.id)).toBeNull();
     expect(listPendingWatchtowerEvents()).toEqual([]);
   });
+
+  it.each(['pull_request.review_comment', 'pull_request.head_changed'] as const)(
+    'persists distinct %s events from the same PR and deduplicates replay',
+    (type) => {
+      const automation = createAutomationRecord('ws-1', {
+        name: 'PR feedback', personaId: 'coder', prompt: 'Inspect feedback',
+        repoIds: ['repo-1'], triggerMode: 'watchtower', watchEvent: type,
+        watchTarget: { repoId: 'repo-1', pullRequestNumber: 42 },
+        scheduleCron: '0 9 * * 1-5', timezone: 'UTC', enabled: true,
+        allowRepoWrite: false, allowCommandRun: false,
+      }, null);
+      const base = {
+        type, workspaceId: 'ws-1', repoIds: ['repo-1'], sourceId: 'github-pr:42',
+        sourceLabel: 'PR #42', occurredAt: '2026-09-09T10:00:00.000Z',
+      };
+      const first = { ...base, id: `${automation.id}:${type}:github-pr:42:first` };
+      const second = { ...base, id: `${automation.id}:${type}:github-pr:42:second` };
+      const pendingFirst = enqueueWatchtowerEvent(automation.id, first);
+      const pendingSecond = enqueueWatchtowerEvent(automation.id, second);
+      enqueueWatchtowerEvent(automation.id, first);
+      expect(listPendingWatchtowerEvents().map((pending) => pending.event.id)).toEqual([first.id, second.id]);
+      const firstRun = claimPendingWatchtowerEvent(pendingFirst.id)!;
+      expect(firstRun.triggerContext).toEqual(first);
+      completeAutomationRun(firstRun.id, { status: 'completed', changedFileCount: 0, worktrees: [] });
+      expect(claimPendingWatchtowerEvent(pendingSecond.id)?.triggerContext).toEqual(second);
+      // A replay after claim remains consumed, including after cursor recovery.
+      enqueueWatchtowerEvent(automation.id, first);
+      enqueueWatchtowerEvent(automation.id, second);
+      expect(listPendingWatchtowerEvents()).toEqual([]);
+    },
+  );
 
   it('coalesces adjacent streamed text-like events for the same run', () => {
     const automation = createAutomationRecord(
