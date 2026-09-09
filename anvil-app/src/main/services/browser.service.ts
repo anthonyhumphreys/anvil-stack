@@ -1,3 +1,4 @@
+import { previewBuild } from '../../shared/preview-build.js';
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomUUID, randomBytes, timingSafeEqual } from 'node:crypto';
 import { writeFileSync, mkdirSync, unlinkSync, chmodSync } from 'node:fs';
@@ -101,7 +102,9 @@ export function addManualTarget(url: string): DevServerTarget {
 // CDP Bridge — HTTP server that proxies CDP commands to a webContents debugger
 // ---------------------------------------------------------------------------
 
-const BRIDGE_INFO_DIR = getPrimaryHiddenDirPath();
+const BRIDGE_INFO_DIR = previewBuild
+  ? join(getPrimaryHiddenDirPath(), 'previews', previewBuild.buildId)
+  : getPrimaryHiddenDirPath();
 const BRIDGE_INFO_PATH = join(BRIDGE_INFO_DIR, 'browser-bridge.json');
 const LEGACY_BRIDGE_INFO_PATH = join(getLegacyHiddenDirPath(), 'browser-bridge.json');
 
@@ -324,10 +327,12 @@ export function stopBridge(): void {
     /* ignore */
   }
 
-  try {
-    unlinkSync(LEGACY_BRIDGE_INFO_PATH);
-  } catch {
-    /* ignore */
+  if (!previewBuild) {
+    try {
+      unlinkSync(LEGACY_BRIDGE_INFO_PATH);
+    } catch {
+      /* ignore */
+    }
   }
 
   detachDebugger();

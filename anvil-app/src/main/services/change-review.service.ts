@@ -99,6 +99,11 @@ function save(review: ChangeReview): ChangeReview {
     .run(review.id, review.workspaceId, review.repoId, JSON.stringify(review), review.updatedAt);
   return review;
 }
+/** Public mutation responses must reflect the current source, not persisted freshness. */
+function saveResponse(review: ChangeReview): ChangeReview {
+  save(review);
+  return getChangeReview(review.id);
+}
 function editable(id: string): ChangeReview {
   if (active.has(id) || publishing.has(id))
     throw new Error('Wait for the current run to finish or cancel it first.');
@@ -204,7 +209,7 @@ export async function createChangeReview(
   const candidate = captureReviewSnapshot(path);
   if (input.origin?.pullRequest && input.origin.pullRequest.headSha !== candidate.head)
     throw new Error('The local candidate does not match the pull request head.');
-  return save({
+  return saveResponse({
     id: randomUUID(),
     workspaceId: input.workspaceId,
     repoId: input.repoId,
@@ -364,13 +369,13 @@ export async function refreshChangeReview(id: string): Promise<ChangeReview> {
   review.candidate = snapshot;
   review.freshness = 'current';
   delete review.freshnessDetail;
-  return save(review);
+  return saveResponse(review);
 }
 export function configureChangeReview(id: string, scenario: ReviewScenario): ChangeReview {
   const review = editable(id);
   review.scenario = validateScenario(scenario);
   review.scenarioVersion = digest(JSON.stringify(review.scenario));
-  return save(review);
+  return saveResponse(review);
 }
 export async function runChangeReview(id: string): Promise<ChangeReview> {
   let review = editable(id);
@@ -439,7 +444,7 @@ export async function runChangeReview(id: string): Promise<ChangeReview> {
       active.delete(id);
     }
   })();
-  return review;
+  return getChangeReview(id);
 }
 export function cancelChangeReview(id: string): void {
   active.get(id)?.abort();
@@ -474,7 +479,7 @@ export function annotateChangeReview(
     id: randomUUID(),
     history: [{ state: 'open', at: now(), runId: input.runId }],
   });
-  return save(review);
+  return saveResponse(review);
 }
 export function resolveReviewFinding(
   id: string,
@@ -503,7 +508,7 @@ export function resolveReviewFinding(
     if (finding.repair) finding.repair.replayRunId = runId;
   }
   finding.history.push({ state, at: now(), runId });
-  return save(review);
+  return saveResponse(review);
 }
 export async function decideChangeReview(
   id: string,
@@ -550,7 +555,7 @@ export async function decideChangeReview(
     snapshot: review.candidate.tree,
     criteriaVersion: review.criteria.at(-1)!.id,
   });
-  return save(review);
+  return saveResponse(review);
 }
 function updateEvidenceAvailability(review: ChangeReview): void {
   for (const run of review.runs) {
@@ -673,7 +678,7 @@ export async function publishChangeReview(
   review.publications ??= [];
   const previous = review.publications.find((p) => p.decisionId === decisionId);
   if (previous) {
-    if (previous.status === 'published') return review;
+    if (previous.status === 'published') return getChangeReview(id);
     throw new Error(
       'Publication may already have reached the provider. Check the Work Item; Anvil will not send a duplicate.',
     );
@@ -697,7 +702,7 @@ export async function publishChangeReview(
     );
     const latest = read(id);
     latest.publications!.find((p) => p.id === publication.id)!.status = 'published';
-    return save(latest);
+    return saveResponse(latest);
   } catch (error) {
     const latest = read(id);
     latest.publications!.find((p) => p.id === publication.id)!.status = 'uncertain';
@@ -833,12 +838,12 @@ export function linkReviewEvidence(
   if (link.freshness !== 'current') throw new Error(link.freshnessDetail);
   review.evidenceLinks ??= [];
   review.evidenceLinks.push(link);
-  return save(review);
+  return saveResponse(review);
 }
 export function unlinkReviewEvidence(id: string, linkId: string): ChangeReview {
   const review = editable(id);
   review.evidenceLinks = (review.evidenceLinks ?? []).filter((link) => link.id !== linkId);
-  return save(review);
+  return saveResponse(review);
 }
 export function repairReviewFinding(
   id: string,
@@ -862,7 +867,7 @@ export function repairReviewFinding(
   )
     throw new Error('Repair Work Item needs its provider and connection.');
   finding.repair = { threadId: input.threadId, workItemRef: input.workItemRef, at: now() };
-  return save(review);
+  return saveResponse(review);
 }
 export function recordNativeReviewEvidence(
   id: string,
@@ -911,7 +916,7 @@ export function recordNativeReviewEvidence(
     reviewer: userInfo().username,
     provenance: 'human-observed',
   });
-  return save(review);
+  return saveResponse(review);
 }
 
 /** Resume repair sessions in their persisted candidate, never the regular checkout. */

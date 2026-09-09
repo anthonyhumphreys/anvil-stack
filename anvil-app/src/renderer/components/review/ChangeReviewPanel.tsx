@@ -1,5 +1,6 @@
 import { useReviewAttention } from '../../hooks/useReviewAttention';
 import { isFindingAccepted } from '../../../shared/change-review-types';
+import { stripAnsi } from '../../../shared/strip-ansi';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AlertTriangle, Play, RefreshCw, CheckCheck, Download, MessageSquare } from 'lucide-react';
@@ -664,7 +665,7 @@ export function ChangeReviewPanel({
                   · runner-observed
                 </span>
               </div>
-              {run.error ? <p className="text-sm text-error">{run.error}</p> : null}
+              {run.error ? <p className="text-sm text-error">{stripAnsi(run.error)}</p> : null}
               <p className="text-xs text-text-secondary">{run.environment}</p>
               {candidateCapture && baseCapture ? (
                 <section ref={captureSection} className="space-y-3">
@@ -808,7 +809,9 @@ export function ChangeReviewPanel({
                             {step.outcome}
                           </span>{' '}
                           <code>{step.action}</code>
-                          {step.detail ? <p className="mt-1 text-error">{step.detail}</p> : null}
+                          {step.detail ? (
+                            <p className="mt-1 text-error">{stripAnsi(step.detail)}</p>
+                          ) : null}
                         </li>
                       ))}
                     </ol>

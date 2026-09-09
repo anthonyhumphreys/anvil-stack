@@ -252,6 +252,39 @@ describe('change acceptance', () => {
       'subsequent passing replay',
     );
   });
+  it('returns live stale freshness after a finding or scenario mutation', async () => {
+    const review = await reviewWithRun();
+    review.runs[0].candidateCaptures = [
+      { id: 'capture' } as ReviewRun['candidateCaptures'][number],
+    ];
+    persist(review);
+    const annotated = annotateChangeReview(review.id, {
+      runId: 'run',
+      captureId: 'capture',
+      note: 'Button clipped',
+    });
+    const finding = annotated.findings[0];
+    mocks.tree = 'changed-by-repair';
+    expect(getChangeReview(review.id).freshness).toBe('stale');
+    // The persisted record is still current: this reproduces a mutation after navigating back.
+    expect(
+      JSON.parse(
+        (
+          db.prepare('SELECT record_json FROM change_reviews WHERE id = ?').get(review.id) as {
+            record_json: string;
+          }
+        ).record_json,
+      ).freshness,
+    ).toBe('current');
+    const updated = resolveReviewFinding(review.id, finding.id, 'ready_for_recheck', 'run');
+    expect(updated.freshness).toBe('stale');
+    expect(updated.freshnessDetail).toContain('Source changed');
+    expect(updated.findings[0].history.at(-1)?.state).toBe('ready_for_recheck');
+    expect(updated.runs[0].evidenceAvailable).toBe(false);
+    expect(configureChangeReview(review.id, { ...scenario, fixtureVersion: 'v2' }).freshness).toBe(
+      'stale',
+    );
+  });
   it('rejects external navigation and malformed scenario settings', () => {
     expect(() => validateScenario({ ...scenario, readyPath: '//production.example' })).toThrow(
       'local path',

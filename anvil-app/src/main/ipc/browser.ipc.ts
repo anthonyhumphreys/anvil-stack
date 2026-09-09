@@ -1,3 +1,4 @@
+import { previewBuild } from '../../shared/preview-build.js';
 import { getWorkspace } from '../services/workspace.service.js';
 import { ipcMain, webContents, app, type WebContents } from 'electron';
 import { execFile } from 'node:child_process';
@@ -87,6 +88,12 @@ async function removeChromeMcp(name: string): Promise<void> {
 }
 
 async function registerChromeMcp(): Promise<{ success: boolean; error?: string }> {
+  if (previewBuild) {
+    return {
+      success: false,
+      error: 'Shared Codex MCP registration is disabled in candidate previews.',
+    };
+  }
   const scriptPath = resolveChromeMcpScriptPath();
 
   if (!scriptPath) {
@@ -196,6 +203,7 @@ export function registerBrowserHandlers(): void {
 }
 
 async function repairChromeMcpRegistration(): Promise<void> {
+  if (previewBuild) return;
   const registrations = await Promise.all(
     getBrowserMcpNames().map((name) => getChromeMcpRegistration(name)),
   );

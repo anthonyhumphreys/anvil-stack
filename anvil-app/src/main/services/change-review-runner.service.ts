@@ -10,6 +10,7 @@ import type {
   ReviewSnapshot,
 } from '../../shared/change-review-types.js';
 import { reviewGit, snapshotCommit, captureReviewSnapshot } from './review-snapshot.service.js';
+import { stripAnsi } from '../../shared/strip-ansi.js';
 
 export const digest = (value: string | Buffer): string =>
   createHash('sha256').update(value).digest('hex');
@@ -204,6 +205,10 @@ export async function runReviewSide(input: {
       throw new Error('Incomplete scenario results.');
     return report.results.map((capture) => ({
       ...capture,
+      steps: capture.steps.map((step) => ({
+        ...step,
+        ...(step.detail !== undefined ? { detail: stripAnsi(step.detail) } : {}),
+      })),
       id: randomUUID(),
       image: join(side, capture.image),
       trace: join(side, capture.trace),

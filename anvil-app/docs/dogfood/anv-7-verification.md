@@ -29,6 +29,20 @@ The unsigned arm64 preview for commit `656a9e94158057b45ee9cb67bcf26d4a6822f7fb`
 
 These observations apply only to that binary. They do not verify later commits, terminal execution, clipboard/file dialogs, clean-machine installation, Gatekeeper acceptance, signing/notarization, interrupted-work recovery or uninstall/reinstall recovery. The normal app was running during the exercise; its live database was not frozen for a byte-for-byte comparison.
 
+## Native development journey, 9 September 2026
+
+An isolated development instance of PR head `89a5c309`, followed by the native-test fixes, was exercised on macOS 26.6.2 arm64. A distinct Electron launcher and preview profile kept it separate from the user's running `main` instance. This is development-runtime evidence, not verification of a signed or distributed binary.
+
+Using the native UI, the test selected `/tmp/anv7-native-fixture` through the folder dialog, created a workspace, entered local acceptance criteria and saved a five-step scenario: navigate, fill invalid input, submit, assert validation text and assert Retry visibility. The baseline passed; the candidate failed only on mobile. A finding was saved against that capture, and Request fix started a real linked repair conversation. That conversation removed the seeded mobile hiding rule in the disposable repository.
+
+Returning to Change Review marked the old evidence stale. The saved scenario passed on replay, including the mobile Retry assertion. Both repaired captures were visually inspected; fixture-only finding and candidate acceptance were entered with a note explicitly excluding approval of PR #87. Evidence preview and Copy redacted evidence worked. After quit/relaunch, the repair conversation, two runs, finding and decision remained persisted.
+
+Review ID: `a6f00a0d-5659-4b90-bd56-db95d77ad37d`. Failed run: `2e52e7ad-aec9-4944-a45c-02fd6c1ef8c4`. Passing replay: `f858d770-7961-4f84-9d4d-4b8dbf1e6835`. Repair thread: `d7fd1a8b-c3b9-4702-bd97-e139fd0f3eb8`.
+
+The exported foreground interaction estimate was nonzero and persisted. These were automated UI interactions, so that value is not a human-effort measurement. The exercise exposed and drove fixes for shared preview browser MCP registration/discovery, ANSI formatting in assertion errors and stale freshness labels in mutation responses. The full suite passed 763 tests under the Electron Node runtime, with both browser integrations enabled.
+
+This fixture has no external Work Item or PR. Native notifications, complete workflow dogfood, clean-machine install and interrupted-work/uninstall recovery are still separate checks.
+
 ## Remaining evidence
 
 Live Work Item/PR dogfood, controlled external review feedback, clean-machine native checks and a matched before/after delivery comparison remain pending. Foreground interaction estimates now measure part of review activity; they do not establish full journey effort, interruption counts, attributable usage/cost or escaped regression outcomes.
