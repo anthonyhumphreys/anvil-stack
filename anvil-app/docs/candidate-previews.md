@@ -1,6 +1,6 @@
 # Candidate macOS previews
 
-Dispatch **Anvil candidate macOS preview** with the PR number and its full current head SHA. The workflow refuses a stale SHA, checks out that commit with read-only permissions, and retains a DMG, ZIP and `preview-manifest.json` for 14 days. It never publishes a release. A build failure remains a failed job; packaging failures also write a failure manifest. Dependency installation failures appear in the job log before a manifest exists.
+Dispatch **Anvil candidate macOS preview** on the PR source branch, with the PR number and its full current head SHA. The workflow requires that SHA to match both its selected Git ref and the current PR head. It uses the selected ref's checkout and cache scope rather than checking out input-selected code in the default branch context. Fork branches that cannot be selected in this repository need a local build. The workflow uses read-only permissions and retains a DMG, ZIP and `preview-manifest.json` for 14 days. It never publishes a release. A build failure remains a failed job; packaging failures also write a failure manifest. Dependency installation failures appear in the job log before a manifest exists.
 
 For a local build, use a clean checkout on macOS:
 

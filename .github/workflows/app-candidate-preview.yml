@@ -31,11 +31,11 @@ jobs:
           set -euo pipefail
           [[ "$PR" =~ ^[1-9][0-9]*$ ]]
           [[ "$HEAD_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$HEAD_SHA" == "$GITHUB_SHA" ]] || { echo 'Select the PR source branch as the workflow ref'; exit 1; }
           actual=$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha')
           [[ "$actual" == "$HEAD_SHA" ]] || { echo 'Candidate is stale'; exit 1; }
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.head_sha }}
           persist-credentials: false
       - uses: pnpm/action-setup@v4
         with:
