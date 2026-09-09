@@ -1,3 +1,4 @@
+import { previewBuild } from '../../shared/preview-build.js';
 import { app } from 'electron';
 import { getWorkflowTemplate, startWorkflowRun, waitForWorkflowRun } from './workflow.service.js';
 import { spawn } from 'node:child_process';
@@ -61,10 +62,9 @@ import { getSettings } from './settings.service.js';
 import { resolvePersonaCodexPolicy } from './codex-session.service.js';
 import { parseAdoRemoteUrl, parseGitHubRemoteUrl } from './code-review-pr.service.js';
 import {
-  buildExternalWatchtowerEvent,
+  buildExternalWatchtowerEvents,
   isExternalWatchtowerEvent,
   observeExternalWatchtowerSource,
-  shouldTriggerWatchtowerObservation,
   watchtowerStateFromObservation,
 } from './watchtower-source.service.js';
 import {
@@ -151,6 +151,8 @@ function validateAutomationInput(input: AutomationDefinitionInput): void {
       'workflow.failed',
       'pull_request.merged',
       'pull_request.closed',
+      'pull_request.review_comment',
+      'pull_request.head_changed',
       'pipeline.completed',
       'pipeline.failed',
     ]);
@@ -662,6 +664,69 @@ async function executeAutomationRun(run: AutomationRun): Promise<void> {
     });
     return;
   }
+  // Feedback is untrusted input. The existing persona and workflow runners do not
+  // enforce separate remote push/comment capabilities, so stop before even creating
+  // a worktree. Generic repo-write or command permission must not bypass this gate.
+  const contextEventType = run.triggerContext?.type;
+  const feedbackEventType =
+    contextEventType === 'pull_request.review_comment' ||
+    contextEventType === 'pull_request.head_changed'
+      ? contextEventType
+      : storedAutomation.watchEvent;
+  if (
+    feedbackEventType === 'pull_request.review_comment' ||
+    feedbackEventType === 'pull_request.head_changed'
+  ) {
+    const metadata = run.triggerContext?.metadata;
+    const feedback =
+      metadata?.feedback && typeof metadata.feedback === 'object'
+        ? (metadata.feedback as Record<string, unknown>)
+        : undefined;
+    const observedHead = typeof metadata?.headSha === 'string' ? metadata.headSha : undefined;
+    const commentHead = typeof feedback?.headSha === 'string' ? feedback.headSha : undefined;
+    const latestHead = storedAutomation.watchState?.headSha;
+    const stale = Boolean(
+      observedHead &&
+      ((latestHead && latestHead !== observedHead) ||
+        (commentHead && commentHead !== observedHead)),
+    );
+    const unknownScope =
+      !observedHead || (feedbackEventType === 'pull_request.review_comment' && !commentHead);
+    const stopReason = stale
+      ? 'stale-head'
+      : unknownScope
+        ? 'unknown-head'
+        : 'remote-write-capabilities-unavailable';
+    const reason = stale
+      ? 'PR feedback refers to an older head. Refresh the pull request and review the current changes.'
+      : unknownScope
+        ? 'PR feedback has no verified head SHA. Open the pull request and verify its current changes.'
+        : 'PR feedback needs manual review. Automatic repairs are disabled until push and comment permissions can be enforced separately. Open the pull request in Change Review.';
+    appendAutomationRunEvent(run.id, 'system', reason, {
+      repoId: storedAutomation.watchTarget?.repoId,
+      pullRequestNumber: storedAutomation.watchTarget?.pullRequestNumber,
+      feedbackDisposition: stale || unknownScope ? 'rejected' : 'deferred',
+      stopReason,
+      eventId: run.triggerContext?.id,
+      sourceId: run.triggerContext?.sourceId,
+      feedbackId: feedback?.id,
+      feedbackBody: typeof feedback?.body === 'string' ? feedback.body : undefined,
+      feedbackUrl: typeof feedback?.url === 'string' ? feedback.url : undefined,
+      feedbackAuthor: typeof feedback?.author === 'string' ? feedback.author : undefined,
+      observedHead,
+      commentHead,
+      latestHead,
+      repairRounds: 0,
+    });
+    completeAutomationRun(run.id, {
+      status: 'failed',
+      errorMessage: reason,
+      assistantMessage: reason,
+      changedFileCount: 0,
+      worktrees: [],
+    });
+    return;
+  }
   const automation = withWatchtowerContext(storedAutomation, run.triggerContext);
 
   if (activeAutomationIds.has(automation.id)) return;
@@ -800,17 +865,9 @@ async function processExternalWatchtowerSources(): Promise<void> {
     if (!automation.watchEvent || !isExternalWatchtowerEvent(automation.watchEvent)) continue;
     try {
       const { repo, observation } = await observeExternalWatchtowerSource(automation);
-      const shouldTrigger = shouldTriggerWatchtowerObservation(
-        automation.watchEvent,
-        automation.watchState,
-        observation,
-      );
-      // Queue the transition before advancing the cursor so a crash cannot silently lose it.
-      if (shouldTrigger) {
-        enqueueWatchtowerEvent(
-          automation.id,
-          buildExternalWatchtowerEvent(automation, repo, observation),
-        );
+      // Queue each transition before advancing the cursor so a crash cannot silently lose it.
+      for (const event of buildExternalWatchtowerEvents(automation, repo, observation)) {
+        enqueueWatchtowerEvent(automation.id, event);
       }
       updateWatchtowerState(automation.id, watchtowerStateFromObservation(observation));
     } catch (error) {
@@ -966,6 +1023,7 @@ export function getAutomationDaemonRuntimeStatus(): AutomationDaemonStatus {
 }
 
 export function reconcileAutomationDaemon(): AutomationDaemonStatus {
+  if (previewBuild) return getAutomationDaemonStatus();
   if (isAutomationDaemonMode()) {
     return getAutomationDaemonStatus();
   }

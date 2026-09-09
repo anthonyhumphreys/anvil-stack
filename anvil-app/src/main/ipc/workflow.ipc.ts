@@ -41,18 +41,14 @@ export function registerWorkflowHandlers(): void {
     listWorkflowRuns(workspaceId),
   );
   ipcMain.handle('workflow:get-run', (_event, id: string) => getWorkflowRun(id));
-  ipcMain.handle(
-    'workflow:start-run',
-    (
-      _event,
-      input: { templateId: string; workspaceId: string; repoIds: string[]; kickoff: string },
-    ) =>
-      startWorkflowRun({
-        templateId: input.templateId,
-        workspaceId: input.workspaceId,
-        repoIds: input.repoIds,
-        kickoff: input.kickoff,
-      }),
+  ipcMain.handle('workflow:start-run', (_event, input: Parameters<typeof startWorkflowRun>[0]) =>
+    startWorkflowRun({
+      templateId: input.templateId,
+      workspaceId: input.workspaceId,
+      repoIds: input.repoIds,
+      kickoff: input.kickoff,
+      workItemRef: input.workItemRef,
+    }),
   );
   ipcMain.handle('workflow:ask-supervisor', (_event, runId: string, question: string) =>
     askWorkflowSupervisor(runId, question),

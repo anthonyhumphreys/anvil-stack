@@ -16,6 +16,7 @@ import type {
   WatchtowerTarget,
 } from '../../shared/types.js';
 import { getDb } from '../db/database.js';
+import { deliveryNextAction } from '../../shared/delivery-triage.js';
 
 interface AutomationDefinitionRow {
   id: string;
@@ -91,6 +92,8 @@ const WATCHTOWER_EVENT_TYPES = new Set<WatchtowerEventType>([
   'workflow.failed',
   'pull_request.merged',
   'pull_request.closed',
+  'pull_request.review_comment',
+  'pull_request.head_changed',
   'pipeline.completed',
   'pipeline.failed',
 ]);
@@ -453,19 +456,32 @@ export function listAutomationTriageItems(workspaceId: string): AutomationTriage
     .prepare(
       `SELECT
          r.*,
-         d.name AS automation_name
+         d.name AS automation_name,
+         w.id AS workflow_run_id,
+         w.status AS workflow_status
        FROM automation_runs r
        JOIN automation_definitions d ON d.id = r.automation_id
+       LEFT JOIN workflow_runs w ON w.id = (
+         SELECT linked.id FROM workflow_runs linked
+         WHERE linked.workspace_id = r.workspace_id
+           AND json_extract(linked.graph_json, '$.sourceAutomationRunId') = r.id
+         ORDER BY linked.created_at DESC LIMIT 1
+       )
        WHERE r.workspace_id = ?
          AND (
            r.status IN ('queued', 'running', 'failed')
            OR r.changed_file_count > 0
            OR r.worktrees_json <> '[]'
+           OR w.status IN ('paused', 'failed', 'cancelled', 'running', 'queued')
          )
        ORDER BY r.started_at DESC
        LIMIT 40`,
     )
-    .all(workspaceId) as Array<AutomationRunRow & { automation_name: string }>;
+    .all(workspaceId) as Array<AutomationRunRow & {
+      automation_name: string;
+      workflow_run_id: string | null;
+      workflow_status: import('../../shared/types.js').WorkflowRunStatus | null;
+    }>;
 
   return rows
     .map((row) => {
@@ -473,12 +489,7 @@ export function listAutomationTriageItems(workspaceId: string): AutomationTriage
       const retainedWorktreeCount = run.worktrees.filter(
         (worktree) => worktree.kept && worktree.path,
       ).length;
-      const attention: AutomationTriageItem['attention'] =
-        run.status === 'failed'
-          ? 'blocked'
-          : run.status === 'running' || run.status === 'queued'
-            ? 'running'
-            : 'changes';
+      const action = deliveryNextAction(run.status, retainedWorktreeCount, row.workflow_status ?? undefined);
 
       return {
         id: run.id,
@@ -493,7 +504,8 @@ export function listAutomationTriageItems(workspaceId: string): AutomationTriage
         errorMessage: run.errorMessage,
         retainedWorktreeCount,
         worktrees: run.worktrees,
-        attention,
+        ...action,
+        workflowRunId: row.workflow_run_id ?? undefined,
       };
     })
     .filter(
@@ -671,7 +683,14 @@ export function enqueueWatchtowerEvent(
   event: WatchtowerEvent,
 ): PendingWatchtowerEvent {
   const observedAt = new Date().toISOString();
-  const id = `${automationId}:${event.type}:${event.sourceId}`;
+  // PR feedback has several events per source. Keep legacy keys unchanged for
+  // existing watches while retaining each new comment/head event identity.
+  const isPrFeedback =
+    event.type === 'pull_request.review_comment' || event.type === 'pull_request.head_changed';
+  // source_id participates in the legacy unique constraint. For feedback it must
+  // identify the individual observation; the PR source remains in payload_json.
+  const sourceKey = isPrFeedback ? event.id : event.sourceId;
+  const id = `${automationId}:${event.type}:${sourceKey}`;
   getDb()
     .prepare(
       `INSERT OR IGNORE INTO watchtower_events (
@@ -684,7 +703,7 @@ export function enqueueWatchtowerEvent(
          observed_at
        ) VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
     )
-    .run(id, automationId, event.type, event.sourceId, JSON.stringify(event), observedAt);
+    .run(id, automationId, event.type, sourceKey, JSON.stringify(event), observedAt);
 
   return { id, automationId, event, observedAt };
 }

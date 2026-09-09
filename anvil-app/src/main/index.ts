@@ -4,7 +4,7 @@ import { fixPath } from './utils/fix-path.js';
 fixPath();
 
 import { app, BrowserWindow, ipcMain, session } from 'electron';
-import { cpSync, existsSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { initDatabase } from './db/database.js';
 import { registerSettingsHandlers } from './ipc/settings.ipc.js';
@@ -27,6 +27,7 @@ import { registerWorkspaceHandlers } from './ipc/workspace.ipc.js';
 import { registerWorkspaceNotesHandlers } from './ipc/workspace-notes.ipc.js';
 import { registerWorkspaceScaffoldHandlers } from './ipc/workspace-scaffold.ipc.js';
 import { registerLaunchHandlers } from './ipc/launch.ipc.js';
+import { previewBuild, previewProfileDirectory } from '../shared/preview-build.js';
 import { parseBrandFromArgs, getBrand } from '../shared/branding.js';
 import { registerTerminalHandlers, cleanupTerminals } from './ipc/terminal.ipc.js';
 import { registerGovernanceHandlers } from './ipc/governance.ipc.js';
@@ -86,6 +87,13 @@ function getAppIconPath(): string {
 }
 
 function configureUserDataPath(): void {
+  if (previewBuild) {
+    const previewPath = path.join(app.getPath('appData'), previewProfileDirectory(previewBuild));
+    mkdirSync(previewPath, { recursive: true });
+    app.setPath('userData', previewPath);
+    app.setPath('sessionData', previewPath);
+    return;
+  }
   const isolatedDevPath = process.env.ANVIL_DEV_USER_DATA_PATH?.trim();
   if (process.env.ELECTRON_RENDERER_URL && isolatedDevPath) {
     app.setPath('userData', path.resolve(isolatedDevPath));
@@ -102,7 +110,13 @@ function configureUserDataPath(): void {
   app.setPath('userData', targetPath);
 }
 
-app.setName(isolatedDevProfileActive ? `${brand.appName} UI Lab` : brand.appName);
+app.setName(
+  previewBuild
+    ? `${brand.appName} Preview PR ${previewBuild.pullRequestNumber} (${previewBuild.headSha.slice(0, 8)})`
+    : isolatedDevProfileActive
+      ? `${brand.appName} UI Lab`
+      : brand.appName,
+);
 configureUserDataPath();
 initDatabase(brand.defaultTheme);
 initializeTelemetry({
@@ -323,7 +337,7 @@ app.whenReady().then(() => {
   }
 
   initializeStatusBar(brand);
-  initializeAppUpdater();
+  if (!previewBuild) initializeAppUpdater();
 
   registerSettingsHandlers();
   registerMobileCompanionHandlers();

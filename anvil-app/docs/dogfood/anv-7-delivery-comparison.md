@@ -1,0 +1,36 @@
+# ANV-7 delivery comparison
+
+Status: measurement protocol prepared; no baseline or connected-journey dogfood results recorded.
+
+Use matched delivery tasks with comparable acceptance criteria, fixture size and risk. Keep the candidate commit, application build, machine, runner environment and scenario version with each record. Save the exported Change Review evidence pack alongside the record. Do not compare a trivial baseline task with a larger connected task.
+
+| Record | Baseline journey | Connected journey |
+| --- | --- | --- |
+| Work item and task scope | Not recorded | Not recorded |
+| Candidate commit and application build | Not recorded | Not recorded |
+| Scenario and fixture versions | Not recorded | Not recorded |
+| Journey start and first usable evidence timestamps | Not recorded | Not recorded |
+| Active human minutes, measured with pause/resume timer | Not recorded | Not recorded |
+| First recorded comparison evidence from review creation | Not recorded | Not recorded |
+| Scenario runs and additional replays | Not recorded | Not recorded |
+| Repeated review work, with reason and duration | Not recorded | Not recorded |
+| Interruptions requiring human action, with timestamps | Not recorded | Not recorded |
+| Attributable input/output tokens and provider cost | Not recorded | Not recorded |
+| Escaped regressions and observation window | Unknown | Unknown |
+| Evidence export and reviewer | Not recorded | Not recorded |
+
+## Collection rules
+
+- Start the journey clock at the same event for both tasks. The built-in export starts at Change Review creation, so it cannot measure earlier implementation time.
+- Record active human time separately, pausing for unattended execution and breaks. Opening a review or accepting a decision does not measure attention.
+- Log each interruption when a person must stop other work to act. Workflow event counts and notifications do not establish interruption counts.
+- Explain replays and repeated review work. A replay after an intentional code change is not automatically wasted effort.
+- Use provider usage tied to the relevant run or thread. Do not allocate account totals or unrelated conversations to the task. Preserve unknown cost when pricing or attribution is missing.
+- Distinguish recorded capture availability from usable evidence verified by the reviewer. Check that images and traces open and match the candidate, criteria and scenario before recording the usable-evidence milestone.
+- Record post-merge regressions after a stated observation period, including severity and evidence. A passed pre-merge scenario cannot establish zero regressions.
+
+## Decision record
+
+After both runs, report the absolute measurements and differences with task-scope caveats. State whether human effort fell and whether quality held over the observation window. Leave the conclusion pending while either measurement or regression follow-up is missing.
+
+Current conclusion: pending real runs. Existing records can derive review run counts, decision counts, recorded repair handoffs and elapsed time to paired capture records. They do not record active human time, interruptions, journey-attributable usage or escaped regressions.

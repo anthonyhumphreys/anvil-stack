@@ -370,6 +370,7 @@ export interface AnvilAPI {
       workspaceId: string;
       repoIds: string[];
       kickoff: string;
+      workItemRef?: import('./change-review-types').WorkItemReference;
     }) => Promise<WorkflowRun>;
     askSupervisor: (runId: string, question: string) => Promise<string>;
     cancelRun: (runId: string) => Promise<WorkflowRun | null>;

@@ -118,6 +118,7 @@ interface ChatContextValue {
   selectWorkItemThread: (workItem: WorkItem) => Promise<void>;
   startWorkItemThread: (workItem: WorkItem) => Promise<void>;
   launchPreparedChat: (opts: {
+    changeReviewId?: string;
     personaId: string;
     repoIds?: string[];
     message: string;
@@ -125,7 +126,7 @@ interface ChatContextValue {
     threadTitle?: string;
     workItem?: WorkItem;
     collaborationMode?: ChatCollaborationMode;
-  }) => Promise<void>;
+  }) => Promise<string | undefined>;
 }
 
 const ChatContext = createContext<ChatContextValue | null>(null);
@@ -2250,6 +2251,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const launchPreparedChat = useCallback(
     async (opts: {
+      changeReviewId?: string;
       personaId: string;
       repoIds?: string[];
       message: string;
@@ -2334,6 +2336,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                 {
                   workspace: activeWorkspace ? { workspaceId: activeWorkspace.id } : undefined,
                   threadId: createdThread.id,
+                  changeReviewId: opts.changeReviewId,
                   provider: modelProvider,
                   ...designOptions,
                 },
@@ -2383,6 +2386,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           model,
           reasoningEffort: opts.reasoningLevel ?? reasoningLevel,
         });
+        return createdThread.id;
       } catch (err) {
         setBusy(false);
         setError(err instanceof Error ? err.message : 'Failed to launch chat');

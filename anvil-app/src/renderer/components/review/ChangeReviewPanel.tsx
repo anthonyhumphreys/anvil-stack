@@ -1,5 +1,5 @@
 import { isFindingAccepted } from '../../../shared/change-review-types';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AlertTriangle, Play, RefreshCw, CheckCheck, Download, MessageSquare } from 'lucide-react';
 import type {
@@ -10,6 +10,8 @@ import type {
 } from '../../../shared/change-review-types';
 import type { WorkItem } from '../../../shared/types';
 import { useChatContext } from '../../contexts/ChatContext';
+import { matchesReviewContext } from '../../utils/change-review-context';
+import { NativeEvidencePanel } from './NativeEvidencePanel';
 import { copyTextToClipboard } from '../../utils/clipboard';
 
 const button =
@@ -88,17 +90,37 @@ export function ChangeReviewPanel({
   repoId,
   workItem,
   connectionId,
+  initialReviewId,
+  initialRunId,
+  initialCaptureId,
+  initialFindingId,
+  initialCriterionId,
+  initialScenarioVersion,
+  initialBaseRef,
+  origin,
 }: {
   workspaceId: string;
   repoId: string;
   workItem?: WorkItem;
   connectionId?: string;
+  initialReviewId?: string;
+  initialRunId?: string;
+  initialCaptureId?: string;
+  initialFindingId?: string;
+  initialCriterionId?: string;
+  initialScenarioVersion?: string;
+  initialBaseRef?: string;
+  origin?: ChangeReview['origin'];
 }) {
   const navigate = useNavigate();
-  const { launchPreparedChat } = useChatContext();
+  const captureSection = useRef<HTMLElement>(null);
+  const findingsSection = useRef<HTMLElement>(null);
+  const criteriaSection = useRef<HTMLElement>(null);
+  const scenarioSection = useRef<HTMLElement>(null);
+  const { launchPreparedChat, setChatLayout } = useChatContext();
   const [reviews, setReviews] = useState<ChangeReview[]>([]);
   const [review, setReview] = useState<ChangeReview>();
-  const [baseRef, setBaseRef] = useState('HEAD');
+  const [baseRef, setBaseRef] = useState(initialBaseRef ?? 'HEAD');
   const [localCriteria, setLocalCriteria] = useState('');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -128,29 +150,57 @@ export function ChangeReviewPanel({
   );
   const baseCapture = run?.base.find((c) => c.viewport === viewport);
   const candidateCapture = run?.candidateCaptures.find((c) => c.viewport === viewport);
-  const select = useCallback((value: ChangeReview) => {
-    setReview(value);
-    setScenario(value.scenario ?? initialScenario);
-    setConfiguring(!value.scenario);
-    setRunId('');
-    setAcceptedCriteria([]);
-    setDecisionNote('');
-    setPoint(undefined);
-  }, []);
+  const select = useCallback(
+    (value: ChangeReview) => {
+      setReview(value);
+      setScenario(value.scenario ?? initialScenario);
+      setConfiguring(!value.scenario || Boolean(initialScenarioVersion));
+      const finding = value.findings.find((f) => f.id === initialFindingId);
+      const targetRun = value.runs.find((r) => r.id === (initialRunId ?? finding?.runId));
+      const targetCapture = targetRun?.candidateCaptures.find(
+        (c) => c.id === (initialCaptureId ?? finding?.captureId),
+      );
+      if (initialRunId && !targetRun)
+        setError('The linked run is unavailable. The latest run is shown below.');
+      if (initialScenarioVersion && initialScenarioVersion !== value.scenarioVersion)
+        setError(
+          'The linked scenario has changed. The current saved scenario is shown below; earlier evidence remains stale.',
+        );
+      if (
+        initialCriterionId &&
+        !value.criteria.at(-1)?.items.some((c) => c.id === initialCriterionId)
+      )
+        setError(
+          'The linked criterion is no longer in the current criteria. Review the updated expectations below.',
+        );
+      setRunId(targetRun?.id ?? '');
+      if (targetCapture) setViewport(targetCapture.viewport);
+      setAcceptedCriteria([]);
+      setDecisionNote('');
+      setPoint(undefined);
+    },
+    [initialRunId, initialCaptureId, initialFindingId, initialScenarioVersion, initialCriterionId],
+  );
   useEffect(() => {
     let cancelled = false;
+    setLoading(true);
+    setError('');
     void window.anvil.changeReview
       .list(workspaceId)
       .then((values) => {
         if (cancelled) return;
-        const matching = values.filter(
-          (r) =>
-            r.repoId === repoId &&
-            (workItem
-              ? r.workItemRef?.id === workItem.id && r.workItemRef.connectionId === connectionId
-              : !r.workItemRef),
+        const matching = values.filter((r) =>
+          matchesReviewContext(r, {
+            repoId,
+            reviewId: initialReviewId,
+            origin,
+            workItemId: workItem?.id,
+            connectionId,
+          }),
         );
         setReviews(matching);
+        if (initialReviewId && !matching.length)
+          setError('This review is unavailable in the selected workspace and repository.');
         if (matching[0]) {
           select(matching[0]);
         } else {
@@ -172,7 +222,19 @@ export function ChangeReviewPanel({
     return () => {
       cancelled = true;
     };
-  }, [workspaceId, repoId, workItem?.id, connectionId, select]);
+  }, [
+    workspaceId,
+    repoId,
+    workItem?.id,
+    connectionId,
+    initialReviewId,
+    origin?.automationRunId,
+    origin?.workflowRunId,
+    origin?.pullRequest?.id,
+    origin?.pullRequest?.provider,
+    origin?.pullRequest?.headSha,
+    select,
+  ]);
   useEffect(() => {
     if (!review?.id) return;
     let cancelled = false;
@@ -197,6 +259,19 @@ export function ChangeReviewPanel({
     setAcceptedCriteria([]);
     setDecisionNote('');
   }, [criteria?.id, run?.id]);
+  useEffect(() => {
+    if (loading) return;
+    const section = initialFindingId
+      ? findingsSection
+      : initialCriterionId
+        ? criteriaSection
+        : initialScenarioVersion
+          ? scenarioSection
+          : initialCaptureId
+            ? captureSection
+            : undefined;
+    section?.current?.scrollIntoView({ block: 'start' });
+  }, [loading, initialFindingId, initialCriterionId, initialScenarioVersion, initialCaptureId]);
   async function action(task: () => Promise<ChangeReview | void>) {
     setBusy(true);
     setError('');
@@ -216,6 +291,7 @@ export function ChangeReviewPanel({
         repoId,
         baseRef,
         localCriteria,
+        origin,
         workItemRef:
           workItem && connectionId
             ? { connectionId, provider: workItem.provider, id: workItem.id }
@@ -231,16 +307,21 @@ export function ChangeReviewPanel({
     const finding = review.findings.find((f) => f.id === findingId)!;
     const sourceRun = review.runs.find((r) => r.id === finding.runId)!;
     await action(async () => {
-      await launchPreparedChat({
+      const threadId = await launchPreparedChat({
         personaId: 'coder',
         repoIds: [repoId],
         workItem: review.workItem,
         collaborationMode: 'default',
         threadTitle: `Fix review: ${review.title}`,
+        changeReviewId: review.id,
         message: [
           `Resolve this review finding for ${review.title}.`,
           `Review ${review.id}; finding ${finding.id}; source tree ${sourceRun.candidate.tree}.`,
           finding.note,
+          review.origin?.executionPath
+            ? `Repair only in retained candidate worktree ${review.origin.executionPath}; do not change the normal repository checkout.`
+            : '',
+          `Return to evidence and replay: /review?repo=${encodeURIComponent(repoId)}&review=${encodeURIComponent(review.id)}&finding=${encodeURIComponent(finding.id)}`,
           finding.locator ? `Locator: ${finding.locator}` : '',
           finding.x !== undefined ? `Capture coordinates: ${finding.x}, ${finding.y}` : '',
           `Acceptance criteria from the Work Item:\n${criteria?.sourceText || 'No explicit criteria.'}`,
@@ -250,6 +331,9 @@ export function ChangeReviewPanel({
           .filter(Boolean)
           .join('\n\n'),
       });
+      if (!threadId)
+        throw new Error('The repair chat could not be started. Try requesting the fix again.');
+      await window.anvil.changeReview.repairFinding(review.id, finding.id, { threadId });
       navigate('/chat');
     });
   }
@@ -340,6 +424,21 @@ export function ChangeReviewPanel({
             </button>
           </div>
           <div className="space-y-1 text-xs leading-5 text-text-secondary">
+            {review.origin?.executionPath ? (
+              <p className="break-all">
+                Execution checkout: <code>{review.origin.executionPath}</code>
+              </p>
+            ) : null}
+            {review.origin?.automationRunId ? (
+              <p>
+                Watchtower run <code>{review.origin.automationRunId}</code>
+              </p>
+            ) : null}
+            {review.origin?.workflowRunId ? (
+              <p>
+                Workflow run <code>{review.origin.workflowRunId}</code>
+              </p>
+            ) : null}
             <p>
               Base <code>{review.baseCommit.slice(0, 12)}</code> · Candidate{' '}
               <code>{review.candidate.tree.slice(0, 12)}</code>
@@ -381,8 +480,9 @@ export function ChangeReviewPanel({
               </button>
             ) : null}
           </div>
+          <NativeEvidencePanel key={review.id} review={review} onUpdate={setReview} />
           {configuring ? (
-            <section className="space-y-4 border-y border-border py-4">
+            <section ref={scenarioSection} className="space-y-4 border-y border-border py-4">
               <h4 className="font-semibold">Replay scenario</h4>
               <p className="max-w-prose text-xs leading-5 text-text-secondary">
                 Commands run in isolated worktrees using the same saved steps for both versions. Use
@@ -554,13 +654,18 @@ export function ChangeReviewPanel({
                 <span
                   className={`text-sm ${stale ? 'text-warning' : run.outcome === 'passed' ? 'text-success' : 'text-text-secondary'}`}
                 >
-                  {stale ? 'Stale evidence' : run.outcome} · runner-observed
+                  {review.freshness === 'unknown'
+                    ? 'Freshness unknown'
+                    : stale
+                      ? 'Stale evidence'
+                      : run.outcome}{' '}
+                  · runner-observed
                 </span>
               </div>
               {run.error ? <p className="text-sm text-error">{run.error}</p> : null}
               <p className="text-xs text-text-secondary">{run.environment}</p>
               {candidateCapture && baseCapture ? (
-                <section className="space-y-3">
+                <section ref={captureSection} className="space-y-3">
                   <div className="flex flex-wrap gap-2">
                     <select
                       aria-label="Viewport"
@@ -729,10 +834,14 @@ export function ChangeReviewPanel({
             </p>
           )}
           {review.findings.length ? (
-            <section className="space-y-3 border-t border-border pt-4">
+            <section ref={findingsSection} className="space-y-3 border-t border-border pt-4">
               <h4 className="font-semibold">Findings</h4>
               {review.findings.map((f) => (
-                <div key={f.id} className="space-y-2">
+                <div
+                  key={f.id}
+                  id={`finding-${f.id}`}
+                  className={`space-y-2 rounded-md ${initialFindingId === f.id ? 'bg-bg-tertiary p-3' : ''}`}
+                >
                   <p className="whitespace-pre-wrap text-sm">{f.note}</p>
                   <p className="text-xs text-text-secondary">
                     {f.history.at(-1)?.state === 'accepted' && !isFindingAccepted(review, f)
@@ -741,6 +850,49 @@ export function ChangeReviewPanel({
                     · {f.history.length} history entries
                   </p>
                   <div className="flex flex-wrap gap-2">
+                    {f.repair?.threadId ? (
+                      <button
+                        className={button}
+                        onClick={() =>
+                          void action(async () => {
+                            await setChatLayout(review.workItem ? 'workitems' : 'classic');
+                            navigate(
+                              `/chat?${new URLSearchParams({ thread: f.repair!.threadId! })}`,
+                            );
+                          })
+                        }
+                      >
+                        <MessageSquare size={14} />
+                        Open repair thread
+                      </button>
+                    ) : null}
+                    <button
+                      className={button}
+                      disabled={busy || running}
+                      onClick={() => {
+                        const source = review.runs.find((r) => r.id === f.runId);
+                        const capture = source?.candidateCaptures.find((c) => c.id === f.captureId);
+                        setRunId(f.runId);
+                        if (capture) setViewport(capture.viewport);
+                        captureSection.current?.scrollIntoView({ block: 'start' });
+                      }}
+                    >
+                      View source capture
+                    </button>
+                    <button
+                      className={button}
+                      disabled={busy || running || !review.scenario}
+                      onClick={() => {
+                        setRunId('');
+                        void action(async () => {
+                          await window.anvil.changeReview.refresh(review.id);
+                          return window.anvil.changeReview.run(review.id);
+                        });
+                      }}
+                    >
+                      <Play size={14} />
+                      Replay current candidate
+                    </button>
                     <button
                       className={button}
                       disabled={busy || running}
@@ -788,7 +940,7 @@ export function ChangeReviewPanel({
               ))}
             </section>
           ) : null}
-          <section className="space-y-3 border-t border-border pt-4">
+          <section ref={criteriaSection} className="space-y-3 border-t border-border pt-4">
             <h4 className="font-semibold">Acceptance criteria</h4>
             <p className="text-xs leading-5 text-text-secondary">
               A passing scenario does not automatically satisfy every criterion. Inspect its
@@ -796,7 +948,10 @@ export function ChangeReviewPanel({
             </p>
             {criteria?.items.length ? (
               criteria.items.map((c) => (
-                <label key={c.id} className="flex items-start gap-3 text-sm leading-6">
+                <label
+                  key={c.id}
+                  className={`flex items-start gap-3 rounded-md text-sm leading-6 ${initialCriterionId === c.id ? 'bg-bg-tertiary p-3' : ''}`}
+                >
                   <input
                     type="checkbox"
                     className="mt-1.5 accent-accent"

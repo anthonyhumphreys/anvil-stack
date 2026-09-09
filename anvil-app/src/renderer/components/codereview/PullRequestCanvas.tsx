@@ -15,7 +15,6 @@ import {
   AlertTriangle,
   ArrowLeftRight,
   Box,
-  CheckCircle2,
   ChevronRight,
   CircleDot,
   Database,
@@ -46,6 +45,7 @@ import {
   isRenderablePullRequestEdge,
   layoutPullRequestNodes,
 } from '../../utils/pull-request-layout';
+import { PullRequestEvidencePanel } from '../review/PullRequestEvidencePanel';
 import { PullRequestDiffView } from './PullRequestDiffView';
 
 type ExperienceMode = 'story' | 'map' | 'diff';
@@ -191,8 +191,7 @@ export function PullRequestCanvas({
   );
   const visibleNodeCount = nodes.filter((node) => !node.hidden).length;
   const riskCount = visualisation?.risks.length ?? 0;
-  const verifiedCount =
-    visualisation?.evidence.filter((item) => item.status === 'verified').length ?? 0;
+  const codeReferenceCount = visualisation?.evidence.length ?? 0;
   const errorPresentation = error ? presentCanvasError(error) : null;
 
   const openNode = useCallback(
@@ -363,10 +362,10 @@ export function PullRequestCanvas({
             tone={riskCount > 0 ? 'risk' : 'neutral'}
           />
           <SignalCount
-            icon={<CheckCircle2 size={13} />}
-            value={verifiedCount}
-            label="verified"
-            tone="verified"
+            icon={<Route size={13} />}
+            value={codeReferenceCount}
+            label="code references"
+            tone="neutral"
           />
         </div>
 
@@ -387,6 +386,17 @@ export function PullRequestCanvas({
             </button>
           ))}
         </div>
+        <button
+          type="button"
+          onClick={() =>
+            navigate(
+              `/workflows?${new URLSearchParams({ preset: 'pr-review', kickoff: `Review PR #${pr.id}: ${pr.title}\n${pr.url ?? ''}\nRepository: ${repoId}\nHead: ${visualisation.headSha}` })}`,
+            )
+          }
+          className="rounded-md border border-border px-3 py-2 text-xs text-text-secondary hover:bg-bg-tertiary focus-visible:outline-2 focus-visible:outline-accent"
+        >
+          Review workflow
+        </button>
         <button
           type="button"
           onClick={() => askInChat()}
@@ -497,9 +507,9 @@ export function PullRequestCanvas({
                               <ShieldAlert size={11} />
                               <span className="tabular-nums">{chapter.riskCount}</span>
                             </span>
-                            <span className="inline-flex items-center gap-1 text-success">
-                              <CheckCircle2 size={11} />
-                              <span className="tabular-nums">{chapter.verifiedCount}</span>
+                            <span className="inline-flex items-center gap-1">
+                              <Route size={11} />
+                              <span>Code-derived</span>
                             </span>
                           </span>
                         </span>
@@ -562,7 +572,7 @@ export function PullRequestCanvas({
                   <MiniMap
                     pannable
                     zoomable
-                    nodeColor={(node) => toneColor(node.data.item.tone)}
+                    nodeColor={(node) => toneColor((node.data as CanvasNodeData).item.tone)}
                     maskColor="color-mix(in srgb, var(--color-bg-primary) 78%, transparent)"
                   />
                 )}
@@ -643,22 +653,35 @@ export function PullRequestCanvas({
                 </section>
               )}
 
+              {activeWorkspace ? (
+                <PullRequestEvidencePanel
+                  workspaceId={activeWorkspace.id}
+                  visualisation={visualisation}
+                  chapterId={selectedChapterId}
+                  riskId={selectedRisk?.id}
+                />
+              ) : null}
               <section className="p-4">
                 <div className="flex items-center gap-2">
-                  <h3 className="text-xs font-semibold text-text-secondary">Linked evidence</h3>
+                  <h3 className="text-xs font-semibold text-text-secondary">
+                    Code-derived context
+                  </h3>
                   {(selectedEvidence?.length ?? 0) > 0 && (
                     <span className="ml-auto font-mono text-xs tabular-nums text-text-tertiary">
                       {selectedEvidence?.length}
                     </span>
                   )}
                 </div>
+                <p className="mt-2 text-xs leading-5 text-text-tertiary">
+                  Generated from the diff. These references are not observed verification.
+                </p>
                 {(selectedEvidence?.length ?? 0) > 0 ? (
                   <div className="mt-3 divide-y divide-border-subtle">
                     {selectedEvidence?.map((evidence) => (
                       <div key={evidence.id} className="py-3 first:pt-0">
                         <div className="flex items-start gap-2">
                           {evidence.status === 'verified' ? (
-                            <CheckCircle2 size={13} className="mt-0.5 shrink-0 text-success" />
+                            <Route size={13} className="mt-0.5 shrink-0 text-text-tertiary" />
                           ) : evidence.status === 'risk' ? (
                             <AlertTriangle size={13} className="mt-0.5 shrink-0 text-error" />
                           ) : (
@@ -876,7 +899,7 @@ function getSelectedRoute(
 function toneColor(tone: PullRequestVisualisationTone): string {
   if (tone === 'action') return 'var(--color-accent)';
   if (tone === 'data') return 'var(--color-info)';
-  if (tone === 'verified') return 'var(--color-success)';
+  if (tone === 'verified') return 'var(--color-text-tertiary)';
   if (tone === 'risk') return 'var(--color-error)';
   if (tone === 'logic') return 'var(--color-persona-docs)';
   if (tone === 'uncertainty') return 'var(--color-warning)';

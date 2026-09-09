@@ -1,3 +1,7 @@
+import {
+  assertReviewRepairForkAllowed,
+  resolveReviewRepairPaths,
+} from '../services/change-review.service.js';
 import { ipcMain } from 'electron';
 import type {
   AgentProvider,
@@ -162,6 +166,17 @@ export function registerChatHandlers(): void {
         throw new Error('No repos found');
       }
 
+      const repairPaths = resolveReviewRepairPaths(
+        options?.threadId,
+        repoIds,
+        options?.changeReviewId,
+      );
+      if (repairPaths) {
+        if (options?.scaffold || options?.workspace?.cwd)
+          throw new Error('Repair sessions use the retained candidate working directory.');
+        repoPaths.splice(0, repoPaths.length, ...repairPaths);
+      }
+
       // Use first repo's path as primary cwd; pass all paths for context
       const storedBinding = getChatThreadProviderBinding(options?.threadId);
       const providerThreadId =
@@ -275,6 +290,8 @@ export function registerChatHandlers(): void {
   ipcMain.handle(
     'chat:fork-provider-thread',
     async (_event, sourceThreadId: string, targetThreadId: string): Promise<ChatThread | null> => {
+      assertReviewRepairForkAllowed(sourceThreadId);
+      assertReviewRepairForkAllowed(targetThreadId);
       const sourceBinding = getChatThreadProviderBinding(sourceThreadId);
       if (!sourceBinding) return null;
 

@@ -436,6 +436,33 @@ export function WorkItemsView() {
                       Explore this work
                     </summary>
                     <div className="mt-3 flex flex-wrap gap-2">
+                      {(['issue-investigation', 'change-preparation'] as const).map((preset) => (
+                        <button
+                          key={preset}
+                          className={button}
+                          disabled={!featureAvailability.repoFeaturesEnabled}
+                          onClick={() =>
+                            navigate(
+                              `/workflows?${new URLSearchParams({
+                                preset,
+                                workItemId: selected.id,
+                                workItemProvider: selected.provider,
+                                workItemConnection: connectionId,
+                                kickoff: [
+                                  `Work item: ${selected.id} — ${selected.title}`,
+                                  `Provider: ${selected.provider}`,
+                                  `Description: ${workItemText(selected.description)}`,
+                                  `Acceptance criteria: ${extractAcceptanceCriteria(selected) || 'Not supplied'}`,
+                                ].join('\n'),
+                              })}`,
+                            )
+                          }
+                        >
+                          {preset === 'issue-investigation'
+                            ? 'Investigate with a workflow'
+                            : 'Prepare a change workflow'}
+                        </button>
+                      ))}
                       <button
                         className={button}
                         onClick={() => navigate(`/ba/${encodeURIComponent(selected.id)}`)}

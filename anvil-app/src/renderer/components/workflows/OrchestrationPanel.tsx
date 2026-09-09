@@ -351,11 +351,13 @@ export function TeamSettings({
 }
 
 export function RunInspector({
+  busy = false,
   run,
   nodeId,
   onCommand,
   onOpenThread,
 }: {
+  busy?: boolean;
   run: WorkflowRun;
   nodeId: string | null;
   onCommand: (command: () => Promise<WorkflowRun>) => void;
@@ -377,6 +379,7 @@ export function RunInspector({
           </p>
           {state.status === 'waiting' && (
             <div className="mt-3 space-y-2">
+              <p className="text-xs leading-relaxed text-text-secondary">{node.prompt}</p>
               <textarea
                 aria-label="Decision note"
                 className={fieldClass}
@@ -387,7 +390,8 @@ export function RunInspector({
               />
               <div className="flex gap-2">
                 <button
-                  className="rounded-lg bg-accent px-3 py-2 text-xs text-bg-primary"
+                  disabled={busy}
+                  className="rounded-lg bg-accent px-3 py-2 text-xs text-bg-primary disabled:opacity-40"
                   onClick={() =>
                     onCommand(() => window.anvil.workflow.decideNode(run.id, node.id, true, note))
                   }
@@ -395,7 +399,8 @@ export function RunInspector({
                   Accept
                 </button>
                 <button
-                  className="rounded-lg border border-border px-3 py-2 text-xs text-text-primary"
+                  disabled={busy}
+                  className="rounded-lg border border-border px-3 py-2 text-xs text-text-primary disabled:opacity-40"
                   onClick={() =>
                     onCommand(() => window.anvil.workflow.decideNode(run.id, node.id, false, note))
                   }
@@ -419,7 +424,14 @@ export function RunInspector({
           {state.error && <p className="mt-2 text-xs text-error">{state.error}</p>}
           {state.output && (
             <details className="mt-3 text-xs text-text-secondary">
-              <summary className="cursor-pointer">Latest handoff</summary>
+              <summary className="cursor-pointer">
+                {node.kind === 'human' ? 'Decision record' : 'Agent handoff'}
+              </summary>
+              {node.kind !== 'human' && (
+                <p className="mt-2 text-text-tertiary">
+                  Agent analysis is not observed verification evidence.
+                </p>
+              )}
               <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap font-sans">
                 {state.output}
               </pre>

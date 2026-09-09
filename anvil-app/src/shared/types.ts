@@ -1,4 +1,5 @@
 import type { DojoCraftedSkill, DojoTokenUsage, DojoPrice } from './dojo-types.js';
+import type { WorkItemReference } from './change-review-types.js';
 import type { AgentUIIntent } from './agent-ui-intents.js';
 
 export interface RepoInfo {
@@ -704,6 +705,7 @@ export interface WorkflowNodeRun {
 }
 
 export interface WorkflowRun {
+  workItemRef?: WorkItemReference;
   runtimeOwnerPid?: number;
   executionPaths?: Array<{ id: string; path: string }>;
   orchestration?: WorkflowOrchestration;
@@ -889,7 +891,9 @@ export interface AutomationTriageItem {
   errorMessage?: string;
   retainedWorktreeCount: number;
   worktrees: AutomationRunWorktree[];
-  attention: 'blocked' | 'changes' | 'running';
+  attention: 'blocked' | 'changes' | 'running' | 'decision';
+  workflowRunId?: string;
+  nextAction?: string;
 }
 
 export type JsonRpcRequestId = string | number;
@@ -1781,6 +1785,8 @@ export type WatchtowerEventType =
   | 'workflow.failed'
   | 'pull_request.merged'
   | 'pull_request.closed'
+  | 'pull_request.review_comment'
+  | 'pull_request.head_changed'
   | 'pipeline.completed'
   | 'pipeline.failed';
 export type AutomationRunTrigger = 'manual' | 'schedule' | 'watchtower';
@@ -1824,6 +1830,8 @@ export interface WatchtowerTarget {
 }
 
 export interface WatchtowerState {
+  headSha?: string;
+  reviewCommentIds?: string[];
   sourceId?: string;
   sourceLabel?: string;
   status?: string;

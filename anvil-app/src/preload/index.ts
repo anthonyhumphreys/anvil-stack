@@ -298,6 +298,7 @@ const api: AnvilAPI = {
       workspaceId: string;
       repoIds: string[];
       kickoff: string;
+      workItemRef?: import('../shared/change-review-types').WorkItemReference;
     }) => ipcRenderer.invoke('workflow:start-run', input),
     askSupervisor: (runId: string, question: string) =>
       ipcRenderer.invoke('workflow:ask-supervisor', runId, question),
@@ -417,6 +418,12 @@ const api: AnvilAPI = {
   },
 
   changeReview: {
+    linkEvidence: (id, input) => ipcRenderer.invoke('change-review:linkEvidence', id, input),
+    unlinkEvidence: (id, linkId) => ipcRenderer.invoke('change-review:unlinkEvidence', id, linkId),
+    repairFinding: (id, findingId, input) =>
+      ipcRenderer.invoke('change-review:repairFinding', id, findingId, input),
+    recordNativeEvidence: (id, input) =>
+      ipcRenderer.invoke('change-review:recordNativeEvidence', id, input),
     publish: (id, decisionId, redactedText) =>
       ipcRenderer.invoke('change-review:publish', id, decisionId, redactedText),
     list: (workspaceId) => ipcRenderer.invoke('change-review:list', workspaceId),

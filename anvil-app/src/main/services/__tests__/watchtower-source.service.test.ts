@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { AutomationDefinition, WatchtowerState } from '../../../shared/types.js';
 import {
   buildExternalWatchtowerEvent,
+  buildExternalWatchtowerEvents,
   normaliseGitHubPullRequest,
   normalisePipelineObservation,
   shouldTriggerWatchtowerObservation,
@@ -115,6 +116,97 @@ describe('Watchtower source transitions', () => {
         'pipeline.failed',
         watchtowerStateFromObservation(failed),
         failed,
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('PR feedback observation cursors', () => {
+  const observe = (headSha: string, ids: string[] = []) => ({
+    ...normaliseGitHubPullRequest({
+      number: 42,
+      title: 'Ship it',
+      state: 'OPEN',
+      url: 'https://github.com/anvil/app/pull/42',
+      headRefOid: headSha,
+    }),
+    reviewComments: ids.map((id) => ({ id, body: `Feedback ${id}`, headSha })),
+  });
+
+  it('baselines existing comments and emits each new comment once across restart', () => {
+    const baseline = observe('head-a', ['1']);
+    const watch = { ...automation, watchEvent: 'pull_request.review_comment' as const };
+    expect(buildExternalWatchtowerEvents(watch, { id: 'repo-1', name: 'app' }, baseline)).toEqual(
+      [],
+    );
+    const state = JSON.parse(JSON.stringify(watchtowerStateFromObservation(baseline)));
+    const changed = observe('head-a', ['1', '2', '3']);
+    const events = buildExternalWatchtowerEvents(
+      { ...watch, watchState: state },
+      { id: 'repo-1', name: 'app' },
+      changed,
+    );
+    expect(events).toHaveLength(2);
+    expect(events[0].id).not.toEqual(events[1].id);
+    expect(events[0].metadata).toMatchObject({
+      headSha: 'head-a',
+      feedback: { id: '2', headSha: 'head-a' },
+    });
+    expect(
+      buildExternalWatchtowerEvents(
+        { ...watch, watchState: watchtowerStateFromObservation(changed) },
+        { id: 'repo-1', name: 'app' },
+        changed,
+      ),
+    ).toEqual([]);
+    // A crash before cursor advancement replays the same durable queue identities.
+    expect(
+      buildExternalWatchtowerEvents(
+        { ...watch, watchState: state },
+        { id: 'repo-1', name: 'app' },
+        changed,
+      ).map((event) => event.id),
+    ).toEqual(events.map((event) => event.id));
+  });
+
+  it('observes head changes while the PR remains open, with distinct event identities', () => {
+    const watch = {
+      ...automation,
+      watchEvent: 'pull_request.head_changed' as const,
+      watchState: watchtowerStateFromObservation(observe('head-a')),
+    };
+    const events = buildExternalWatchtowerEvents(
+      watch,
+      { id: 'repo-1', name: 'app' },
+      observe('head-b'),
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0].metadata).toMatchObject({ previousHeadSha: 'head-a', headSha: 'head-b' });
+    expect(events[0].id).not.toEqual(
+      buildExternalWatchtowerEvents(watch, { id: 'repo-1', name: 'app' }, observe('head-c'))[0].id,
+    );
+    expect(
+      buildExternalWatchtowerEvents(watch, { id: 'repo-1', name: 'app' }, observe('head-a')),
+    ).toEqual([]);
+  });
+
+  it('baselines a changed target and cannot infer head changes from missing heads', () => {
+    const watch = {
+      ...automation,
+      watchEvent: 'pull_request.head_changed' as const,
+      watchState: {
+        ...watchtowerStateFromObservation(observe('head-a')),
+        sourceId: 'github-pr:99',
+      },
+    };
+    expect(
+      buildExternalWatchtowerEvents(watch, { id: 'repo-1', name: 'app' }, observe('head-b')),
+    ).toEqual([]);
+    expect(
+      shouldTriggerWatchtowerObservation(
+        'pull_request.head_changed',
+        { ...watch.watchState, sourceId: 'github-pr:42', headSha: undefined },
+        observe('head-b'),
       ),
     ).toBe(false);
   });

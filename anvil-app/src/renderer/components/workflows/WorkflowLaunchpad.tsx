@@ -1,9 +1,39 @@
 import { useState } from 'react';
 import { ArrowRight, Check, GitFork, Layers, ShieldCheck } from 'lucide-react';
 
-export type WorkflowStarter = 'delivery' | 'review' | 'research';
+import type { WorkflowPreset } from '../../../shared/workflow-orchestration';
+
+export type WorkflowStarter = WorkflowPreset;
 
 const STARTERS = [
+  {
+    id: 'issue-investigation',
+    name: 'Investigate an issue',
+    detail: 'Trace the cause and define next steps.',
+    icon: Layers,
+    stages: ['Inspect sources', 'Reconcile findings', 'Choose next action'],
+  },
+  {
+    id: 'pr-review',
+    name: 'Prioritise a PR review',
+    detail: 'Find the risks that need attention.',
+    icon: ShieldCheck,
+    stages: ['Independent reviews', 'Prioritise findings', 'Choose next action'],
+  },
+  {
+    id: 'pipeline-investigation',
+    name: 'Investigate a failed pipeline',
+    detail: 'Connect failed checks to a repair plan.',
+    icon: GitFork,
+    stages: ['Inspect failed jobs', 'Diagnose failure', 'Choose next action'],
+  },
+  {
+    id: 'change-preparation',
+    name: 'Prepare a change',
+    detail: 'Agree on scope and verification first.',
+    icon: Layers,
+    stages: ['Compare options', 'Prepare a plan', 'Choose next action'],
+  },
   {
     id: 'delivery',
     name: 'Deliver a change',
@@ -28,6 +58,7 @@ const STARTERS = [
 ] as const;
 
 export function WorkflowLaunchpad({
+  initialStarter = 'delivery',
   objective,
   onObjectiveChange,
   onPrepare,
@@ -39,6 +70,7 @@ export function WorkflowLaunchpad({
   providerSummary,
   workspaceName,
 }: {
+  initialStarter?: WorkflowStarter;
   objective: string;
   onObjectiveChange: (value: string) => void;
   onPrepare: (kind: WorkflowStarter) => void;
@@ -50,7 +82,7 @@ export function WorkflowLaunchpad({
   providerSummary: string;
   workspaceName?: string;
 }) {
-  const [starter, setStarter] = useState<WorkflowStarter>('delivery');
+  const [starter, setStarter] = useState<WorkflowStarter>(initialStarter);
   const selected = STARTERS.find((item) => item.id === starter)!;
   return (
     <div className="flex h-full min-h-0 flex-col overflow-y-auto">
@@ -84,11 +116,11 @@ export function WorkflowLaunchpad({
           />
           <fieldset className="mt-7">
             <legend className="mb-3 text-sm font-medium text-text-primary">Choose a flow</legend>
-            <div className="grid gap-2 sm:grid-cols-3">
+            <div className="grid gap-2 sm:grid-cols-2">
               {STARTERS.map((item) => (
                 <label
                   key={item.id}
-                  className={`relative flex cursor-pointer flex-col gap-3 rounded-xl border p-4 transition-colors focus-within:ring-2 focus-within:ring-accent/40 ${starter === item.id ? 'border-accent/60 bg-accent/5' : 'border-border bg-bg-secondary hover:bg-bg-tertiary'}`}
+                  className={`relative flex cursor-pointer flex-row items-start gap-3 rounded-lg border p-3 transition-colors focus-within:ring-2 focus-within:ring-accent/40 ${starter === item.id ? 'border-accent/60 bg-accent/5' : 'border-border bg-bg-secondary hover:bg-bg-tertiary'}`}
                 >
                   <input
                     type="radio"
@@ -98,7 +130,7 @@ export function WorkflowLaunchpad({
                     onChange={() => setStarter(item.id)}
                     className="sr-only"
                   />
-                  <span className="flex items-center justify-between">
+                  <span className="flex items-center gap-2 pt-0.5">
                     <item.icon
                       size={18}
                       className={starter === item.id ? 'text-accent' : 'text-text-tertiary'}

@@ -157,6 +157,7 @@ function mapRun(row: WorkflowRunRow): WorkflowRun {
     events: graph.events ?? [],
     deadlineAt: graph.deadlineAt,
     sourceAutomationRunId: graph.sourceAutomationRunId,
+    workItemRef: graph.workItemRef,
     runtimeOwnerPid: graph.runtimeOwnerPid,
     executionPaths: graph.executionPaths,
     templateId: row.template_id,
@@ -381,6 +382,7 @@ function persistRun(run: WorkflowRun): void {
         events: run.events,
         deadlineAt: run.deadlineAt,
         sourceAutomationRunId: run.sourceAutomationRunId,
+        workItemRef: run.workItemRef,
         runtimeOwnerPid: run.runtimeOwnerPid,
         executionPaths: run.executionPaths,
       }),
@@ -893,8 +895,18 @@ export function startWorkflowRun(input: {
   repoIds: string[];
   kickoff: string;
   sourceAutomationRunId?: string;
+  workItemRef?: WorkflowRun['workItemRef'];
   executionPaths?: RepoRow[];
 }): WorkflowRun {
+  if (
+    input.workItemRef &&
+    (typeof input.workItemRef.id !== 'string' ||
+      !input.workItemRef.id.trim() ||
+      typeof input.workItemRef.connectionId !== 'string' ||
+      !input.workItemRef.connectionId.trim() ||
+      !['ado', 'linear', 'jira'].includes(input.workItemRef.provider))
+  )
+    throw new Error('Work Item reference requires an id, connection and supported provider.');
   const template = getWorkflowTemplate(input.templateId);
   if (!template) throw new Error('Workflow template not found.');
   if (!input.kickoff.trim()) throw new Error('Tell the workflow what you want it to do.');
@@ -933,6 +945,7 @@ export function startWorkflowRun(input: {
         orchestration: orchestrationConfig(template.orchestration),
         events: [],
         sourceAutomationRunId: input.sourceAutomationRunId,
+        workItemRef: input.workItemRef,
         executionPaths: input.executionPaths,
       }),
       input.kickoff.trim(),

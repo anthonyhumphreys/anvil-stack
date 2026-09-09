@@ -5,6 +5,10 @@ export function registerChangeReviewHandlers(): void {
   const handlers: {
     [K in keyof ChangeReviewApi]: (...args: Parameters<ChangeReviewApi[K]>) => unknown;
   } = {
+    linkEvidence: review.linkReviewEvidence,
+    unlinkEvidence: review.unlinkReviewEvidence,
+    repairFinding: review.repairReviewFinding,
+    recordNativeEvidence: review.recordNativeReviewEvidence,
     publish: review.publishChangeReview,
     list: review.listChangeReviews,
     create: review.createChangeReview,

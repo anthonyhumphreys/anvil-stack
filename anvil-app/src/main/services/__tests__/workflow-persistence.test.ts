@@ -81,6 +81,39 @@ function store(run: WorkflowRun) {
 }
 
 describe('workflow persistence and commands', () => {
+  it('retains the structured Work Item identity across runtime saves and decisions', async () => {
+    const saved = template();
+    const workItemRef = { id: 'ANV-7', provider: 'linear' as const, connectionId: 'linear-stack' };
+    const started = startWorkflowRun({
+      templateId: saved.id,
+      workspaceId: 'ws',
+      repoIds: [],
+      kickoff: 'Investigate',
+      workItemRef,
+    });
+    expect(started.workItemRef).toEqual(workItemRef);
+    await waitForWorkflowRun(started.id);
+    expect(getWorkflowRun(started.id)?.workItemRef).toEqual(workItemRef);
+    decideWorkflowNode(started.id, 'gate', true, 'Plan reviewed');
+    resumeWorkflowRun(started.id);
+    const completed = await waitForWorkflowRun(started.id);
+    expect(completed.workItemRef).toEqual(workItemRef);
+    expect(completed.nodeRuns[0].decision?.note).toBe('Plan reviewed');
+    expect(completed.orchestration?.maxConcurrency).toBe(3);
+  });
+  it('rejects incomplete Work Item references before starting a run', () => {
+    const saved = template();
+    expect(() =>
+      startWorkflowRun({
+        templateId: saved.id,
+        workspaceId: 'ws',
+        repoIds: [],
+        kickoff: 'Investigate',
+        workItemRef: { id: 'ANV-7', provider: 'linear', connectionId: '' },
+      }),
+    ).toThrow('Work Item reference');
+  });
+
   it('round trips configuration and durable human decisions', async () => {
     const paused = await pausedRun();
     expect(paused.status).toBe('paused');
