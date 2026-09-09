@@ -105,6 +105,7 @@ interface ChatContextValue {
   steer: (message: string, attachments?: ChatAttachment[]) => Promise<void>;
   switchPersona: (persona: Persona) => Promise<void>;
   interrupt: () => Promise<void>;
+  stopSession: (sessionId: string) => Promise<void>;
   startNewSession: () => Promise<void>;
   loadHistory: () => Promise<void>;
   clearHistory: () => Promise<void>;
@@ -826,6 +827,22 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
     },
     [discardPendingStreamEntry, forgetLiveSession],
+  );
+
+  const stopSessionLive = useCallback(
+    async (sessionId: string) => {
+      const threadId = findThreadIdForSession(sessionId);
+      if (threadId) {
+        await stopThreadLiveSession(threadId);
+        return;
+      }
+      await window.anvil.chat.stopSession(sessionId).catch(console.error);
+      if (sessionRef.current?.id === sessionId) {
+        setSession(null);
+        setBusy(false);
+      }
+    },
+    [findThreadIdForSession, stopThreadLiveSession],
   );
 
   useEffect(() => {
@@ -2568,6 +2585,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         steer,
         switchPersona,
         interrupt,
+        stopSession: stopSessionLive,
         startNewSession,
         loadHistory: loadHistoryFn,
         clearHistory: clearHistoryFn,

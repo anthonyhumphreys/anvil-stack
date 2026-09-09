@@ -1017,6 +1017,9 @@ export interface CodexEvent {
     | 'turn_outcome'
     | 'context_compaction'
     | 'usage_context';
+  /** App routing metadata attached to live provider events. */
+  sessionId?: string;
+  appThreadId?: string;
   contextUsage?: { used: number; size: number };
   observedCostUsd?: number;
   usage?: DojoTokenUsage;

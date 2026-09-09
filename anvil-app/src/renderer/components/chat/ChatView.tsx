@@ -105,7 +105,11 @@ import {
 import { groupPersonasForRole } from '../../utils/persona-groups';
 import { ItsmWorkbench } from './ItsmWorkbench';
 import { ExecutionTopologyPanel } from './ExecutionTopologyPanel';
-import { buildExecutionTopology, type ExecutionTopology } from '../../utils/execution-topology';
+import {
+  applyExecutionLifecycle,
+  buildExecutionTopology,
+  type ExecutionTopology,
+} from '../../utils/execution-topology';
 import {
   CHAT_PREFILL_EVENT,
   PlanIntentSurface,
@@ -165,6 +169,7 @@ export function ChatView({ userRole }: ChatViewProps) {
   const {
     personas,
     activePersona,
+    session,
     entries,
     activeRepos,
     selectedGovernanceDocs,
@@ -194,6 +199,7 @@ export function ChatView({ userRole }: ChatViewProps) {
     setActiveRepos,
     switchPersona,
     interrupt,
+    stopSession,
     startNewSession,
     setModel,
     setReasoningLevel,
@@ -231,6 +237,16 @@ export function ChatView({ userRole }: ChatViewProps) {
   const [showPlanHistory, setShowPlanHistory] = useState(false);
   const [recentRuns, setRecentRuns] = useState<AgentRunSummary[]>([]);
   const [activeSessions, setActiveSessions] = useState<CodexSession[]>([]);
+  const [executionSessionStates, setExecutionSessionStates] = useState<
+    Parameters<typeof applyExecutionLifecycle>[0]
+  >({});
+  useEffect(
+    () =>
+      window.anvil.chat.onEvent((event) => {
+        setExecutionSessionStates((states) => applyExecutionLifecycle(states, event));
+      }),
+    [],
+  );
   const [pendingWorkflowAction, setPendingWorkflowAction] = useState<PendingWorkflowAction | null>(
     null,
   );
@@ -682,11 +698,14 @@ export function ChatView({ userRole }: ChatViewProps) {
     () =>
       buildExecutionTopology({
         entries,
-        sessions: activeSessions,
+        sessions: session
+          ? [session, ...activeSessions.filter((item) => item.id !== session.id)]
+          : activeSessions,
+        sessionStates: executionSessionStates,
         threadId: activeThreadId,
         rootLabel: activeThread?.title ?? 'New thread',
       }),
-    [activeSessions, activeThread?.title, activeThreadId, entries],
+    [activeSessions, session, executionSessionStates, activeThread?.title, activeThreadId, entries],
   );
   const showItsmWorkbench = userRole === 'itsm' && isItsmPersona && itsmWorkbenchOpen;
   const showActivitySidebar =
@@ -1520,7 +1539,10 @@ export function ChatView({ userRole }: ChatViewProps) {
                 window.requestAnimationFrame(() => activityButtonRef.current?.focus());
               }}
               onOpenThread={(threadId) => void selectThread(threadId)}
-              onStop={(sessionId) => void window.anvil.chat.stopSession(sessionId)}
+              onStop={(sessionId) => {
+                setExecutionSessionStates((states) => ({ ...states, [sessionId]: 'stopped' }));
+                void stopSession(sessionId);
+              }}
             />
           </ResizableSidebarPanel>
         )}

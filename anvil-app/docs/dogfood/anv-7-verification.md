@@ -51,7 +51,9 @@ Native UI actions created an empty conversation scoped to the indexed fixture, l
 
 The test exposed an unnecessary dependency on AI story generation for navigation. Thread links now open the diff, with linked conversations available independently of story generation and diff loading. Impeccable inspection covered the link popover and diff sidebar. Independent review also drove fixes for competing navigation requests, cancelled linked-thread creation and unsent threads incorrectly remaining busy.
 
-The final feature suite passed 779 tests with both browser integrations enabled. Lint and the production build passed. Explicit typechecks retain baseline failures, with no new file/error-code pairs compared with the base archive. This verifies explicit associations, status refresh and navigation; it does not verify automatic PR checkout, branch discovery or thread settlement.
+The same native activity panel was reviewed after a stopped multi-agent run. Historical spawn events no longer keep children marked as working after the parent session ends. Provider completion and interruption events override stale polling snapshots, and the Stop action updates the panel immediately. Agent rows now show the task, current phase, and latest update without requiring expansion. The activity view also keeps the current task visible and reports stopped children without claiming they completed successfully.
+
+The final feature suite passed 788 tests with both browser integrations enabled. Lint and the production build passed. Explicit typechecks retain baseline failures, with no new file/error-code pairs compared with the base archive. This verifies explicit associations, status refresh and navigation; it does not verify automatic PR checkout, branch discovery or thread settlement.
 
 ## Remaining evidence
 
