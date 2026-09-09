@@ -391,10 +391,12 @@ app.whenReady().then(() => {
   handleOrphanedBaSessions();
   handleStaleIndexingRepos();
 
-  // Register Repobase MCP with Codex (background, non-blocking)
-  ensureRepobaseMcp().catch(() => {});
-  app.setAsDefaultProtocolClient(PRIMARY_PROTOCOL);
-  app.setAsDefaultProtocolClient(LEGACY_PROTOCOL);
+  if (!previewBuild) {
+    // Preview startup must not change the user's normal Codex or protocol registrations.
+    ensureRepobaseMcp().catch(() => {});
+    app.setAsDefaultProtocolClient(PRIMARY_PROTOCOL);
+    app.setAsDefaultProtocolClient(LEGACY_PROTOCOL);
+  }
 
   ipcMain.handle('brand:get', () => brand);
   ipcMain.handle('app-window:get-version', () => app.getVersion());
