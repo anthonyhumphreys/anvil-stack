@@ -19,6 +19,7 @@ import type {
 } from '../../shared/change-review-types.js';
 import { extractAcceptanceCriteria } from '../../shared/workitem-intent.js';
 import { getDb } from '../db/database.js';
+import { mergePersistedReviewAttention } from './change-review-attention.service.js';
 import { getWorkspace } from './workspace.service.js';
 import { getActiveProvider } from './workitem-provider.js';
 import { captureReviewSnapshot, reviewGit } from './review-snapshot.service.js';
@@ -89,6 +90,7 @@ function repoPath(review: Pick<ChangeReview, 'workspaceId' | 'repoId' | 'origin'
   return canonical;
 }
 function save(review: ChangeReview): ChangeReview {
+  mergePersistedReviewAttention(review);
   review.updatedAt = now();
   getDb()
     .prepare(

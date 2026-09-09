@@ -19,7 +19,7 @@ const root = mkdtempSync(join(tmpdir(), 'anvil-review-integration-'));
 afterAll(() => {
   try {
     if (process.env.ANVIL_REVIEW_QA_OUTPUT) {
-      for (const name of ['first', 'fixed']) {
+      for (const name of ['first', 'replay']) {
         if (existsSync(join(root, name)))
           cpSync(join(root, name), join(process.env.ANVIL_REVIEW_QA_OUTPUT, name), {
             recursive: true,

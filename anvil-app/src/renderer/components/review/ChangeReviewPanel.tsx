@@ -1,3 +1,4 @@
+import { useReviewAttention } from '../../hooks/useReviewAttention';
 import { isFindingAccepted } from '../../../shared/change-review-types';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -137,6 +138,7 @@ export function ChangeReviewPanel({
   const [acceptedCriteria, setAcceptedCriteria] = useState<string[]>([]);
   const [exportText, setExportText] = useState('');
   const [copied, setCopied] = useState(false);
+  const attentionRef = useReviewAttention(loading ? undefined : review?.id);
   const run = review?.runs.find((run) => run.id === runId) ?? review?.runs.at(-1);
   const running = review?.runs.some((run) => run.outcome === 'running') ?? false;
   const criteria = review?.criteria.at(-1);
@@ -344,7 +346,7 @@ export function ChangeReviewPanel({
       </p>
     );
   return (
-    <div className="min-w-0 space-y-5 p-5">
+    <div ref={attentionRef} className="min-w-0 space-y-5 p-5">
       {error ? (
         <div role="alert" className="flex items-start gap-2 text-sm text-error">
           <AlertTriangle size={16} className="mt-0.5 shrink-0" />
@@ -1045,7 +1047,8 @@ export function ChangeReviewPanel({
             <div className="mt-3 space-y-3">
               <p className="text-xs leading-5 text-text-secondary">
                 Logs, commands and binary artifacts are omitted. Review and redact the text below
-                before copying it elsewhere.
+                before copying it elsewhere. Foreground review interaction time is recorded after
+                input and pauses when you leave this view or stop interacting for 30 seconds.
               </p>
               <div className="flex gap-2">
                 {(['markdown', 'json'] as const).map((format) => (

@@ -46,6 +46,7 @@ import type {
   BaSession,
   ChatAttachment,
   ChatNavigationTarget,
+  WorkflowNavigationTarget,
   ChatAttachmentInput,
   ChatArtifact,
   ChatArtifactAnnotation,
@@ -176,6 +177,7 @@ export interface AnvilAPI {
     getChromeState: () => Promise<{ isFullScreen: boolean }>;
     openToolWindow: (route: string, workspaceId?: string) => Promise<void>;
     onChromeStateChanged: (callback: (state: { isFullScreen: boolean }) => void) => () => void;
+    onNavigateToWorkflow: (callback: (target: WorkflowNavigationTarget) => void) => () => void;
     onNavigateToChat: (callback: (target: ChatNavigationTarget) => void) => () => void;
   };
 

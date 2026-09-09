@@ -12,7 +12,7 @@ export interface DeliveryMetrics {
   findingCount: number;
   repairHandoffCount: number;
   humanDecisionCount: number;
-  activeHumanTimeMs: null;
+  activeHumanTimeMs: number | null;
   interruptionCount: null;
   attributedTokens: null;
   attributedCostUsd: null;
@@ -65,7 +65,9 @@ export function deriveDeliveryMetrics(review: ChangeReview): DeliveryMetrics {
     findingCount: review.findings.length,
     repairHandoffCount: review.findings.filter((finding) => finding.repair).length,
     humanDecisionCount: review.decisions.length,
-    activeHumanTimeMs: null,
+    activeHumanTimeMs: review.attentionSessions?.length
+      ? review.attentionSessions.reduce((total, session) => total + session.activeMs, 0)
+      : null,
     interruptionCount: null,
     attributedTokens: null,
     attributedCostUsd: null,
@@ -74,7 +76,7 @@ export function deriveDeliveryMetrics(review: ChangeReview): DeliveryMetrics {
       'Elapsed time starts when this Change Review was created, not when implementation began.',
       'First comparison evidence means a completed run with paired image and trace records. Files are not revalidated by this metric; historical evidence may now be stale.',
       'Replays count additional runs, not wasted work. Repair handoffs count findings with a recorded handoff, not every repair attempt.',
-      'Active human time and interruptions are not recorded. Review decisions are not a proxy for either.',
+      'Active human time estimates foreground review interaction in five-second intervals, stopping after 30 seconds without input. Reading without input, background time, gaps and other tools are excluded. Interruptions are not recorded.',
       'Token usage and cost are unavailable without attributable usage records for this delivery journey.',
       'Post-merge regressions are unknown. Passing a scenario does not establish regression outcomes.',
     ],
@@ -93,7 +95,7 @@ export function formatDeliveryMetricsMarkdown(metrics: DeliveryMetrics): string 
     `| Completed / failed runs | ${metrics.completedRunCount} / ${metrics.failedRunCount} |`,
     `| Findings / recorded repair handoffs | ${metrics.findingCount} / ${metrics.repairHandoffCount} |`,
     `| Human review decisions | ${metrics.humanDecisionCount} |`,
-    '| Active human time / interruptions | Not recorded |',
+    `| Foreground interaction estimate / interruptions | ${metrics.activeHumanTimeMs === null ? 'Not recorded' : `${metrics.activeHumanTimeMs} ms foreground interaction / interruptions not recorded`} |`,
     '| Attributed tokens / cost | Unavailable |',
     '| Post-merge regressions | Unknown |',
     '',

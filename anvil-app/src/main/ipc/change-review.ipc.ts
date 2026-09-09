@@ -1,3 +1,4 @@
+import { recordReviewAttention } from '../services/change-review-attention.service.js';
 import { ipcMain } from 'electron';
 import * as review from '../services/change-review.service.js';
 import type { ChangeReviewApi } from '../../shared/change-review-types.js';
@@ -5,6 +6,7 @@ export function registerChangeReviewHandlers(): void {
   const handlers: {
     [K in keyof ChangeReviewApi]: (...args: Parameters<ChangeReviewApi[K]>) => unknown;
   } = {
+    recordAttention: recordReviewAttention,
     linkEvidence: review.linkReviewEvidence,
     unlinkEvidence: review.unlinkReviewEvidence,
     repairFinding: review.repairReviewFinding,

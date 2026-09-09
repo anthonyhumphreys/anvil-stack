@@ -784,6 +784,11 @@ export type ChatThreadAttentionState =
   | 'failed'
   | 'complete';
 
+export interface WorkflowNavigationTarget {
+  workspaceId: string;
+  runId: string;
+}
+
 export interface ChatNavigationTarget {
   workspaceId: string;
   threadId: string;

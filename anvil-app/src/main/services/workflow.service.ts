@@ -7,6 +7,7 @@ import {
 import { recordWorkflowEvent, runWorkflowRuntime, workflowHandoff } from './workflow-runtime.js';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { app } from 'electron';
+import { notifyWorkflowDecision } from './notification.service.js';
 import type {
   AgentProvider,
   ChatMessage,
@@ -865,6 +866,13 @@ function launchWorkflow(run: WorkflowRun): Promise<void> {
     })
     .finally(() => {
       activeRuns.delete(run.id);
+      if (run.status === 'paused' && run.nodeRuns.some((node) => node.status === 'waiting')) {
+        try {
+          notifyWorkflowDecision({ workspaceId: run.workspaceId, runId: run.id }, run.templateName);
+        } catch (error) {
+          console.warn('[Workflow] Could not show decision notification:', error);
+        }
+      }
       if (!['completed', 'failed'].includes(run.status)) return;
       try {
         triggerWatchtowerEvent({

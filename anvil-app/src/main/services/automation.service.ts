@@ -755,6 +755,7 @@ async function executeAutomationRun(run: AutomationRun): Promise<void> {
 
     let assistantMessage: string;
     let retainWorkflowWorktrees = false;
+    let workflowOwnsDecision = false;
     if (automation.workflowTemplateId) {
       validateAutomationInput(automation);
       const workflow = startWorkflowRun({
@@ -770,6 +771,7 @@ async function executeAutomationRun(run: AutomationRun): Promise<void> {
       });
       const result = await waitForWorkflowRun(workflow.id);
       retainWorkflowWorktrees = true;
+      workflowOwnsDecision = result.status === 'paused';
       if (result.status === 'failed' || result.status === 'cancelled')
         throw new Error(`Workflow ${result.status}: ${result.error ?? result.id}`);
       assistantMessage = `Workflow ${result.status}: ${result.templateName}\n\nWorkflow run: ${result.id}\n\n${
@@ -809,7 +811,7 @@ async function executeAutomationRun(run: AutomationRun): Promise<void> {
       worktrees: persistedWorktrees,
     });
 
-    if (assistantMessage.trim() || changedFileCount > 0) {
+    if (!workflowOwnsDecision && (assistantMessage.trim() || changedFileCount > 0)) {
       notifyIfUnfocused(
         'Automation Complete',
         `${automation.name} finished${changedFileCount > 0 ? ` with ${changedFileCount} changed files` : ''}.`,

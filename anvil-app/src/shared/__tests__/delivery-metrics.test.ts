@@ -63,6 +63,25 @@ describe('delivery measurements', () => {
     expect(metrics.regressionOutcome).toBe('unknown');
   });
 
+  it('exports recorded foreground interaction without treating it as total human effort', () => {
+    const value = review();
+    value.attentionSessions = [
+      {
+        id: 'session',
+        reviewer: 'reviewer',
+        startedAt: '2026-09-09T10:00:00Z',
+        lastObservedAt: '2026-09-09T10:00:05Z',
+        activeMs: 5000,
+        provenance: 'foreground-interaction',
+      },
+    ];
+    const metrics = deriveDeliveryMetrics(value);
+    expect(metrics.activeHumanTimeMs).toBe(5000);
+    expect(metrics.interruptionCount).toBeNull();
+    expect(formatDeliveryMetricsMarkdown(metrics)).toContain('5000 ms foreground interaction');
+    expect(formatDeliveryMetricsMarkdown(metrics)).toContain('Reading without input');
+  });
+
   it('uses earliest completed paired evidence, including a useful failed comparison', () => {
     const metrics = deriveDeliveryMetrics(
       review([
@@ -100,7 +119,7 @@ describe('delivery measurements', () => {
     const markdown = formatDeliveryMetricsMarkdown(deriveDeliveryMetrics(value));
     expect(markdown).toContain('120000 ms from review creation');
     expect(markdown).toContain('historical evidence may now be stale');
-    expect(markdown).toContain('Active human time / interruptions | Not recorded');
+    expect(markdown).toContain('Foreground interaction estimate / interruptions | Not recorded');
     expect(markdown).toContain('Post-merge regressions | Unknown');
   });
 });

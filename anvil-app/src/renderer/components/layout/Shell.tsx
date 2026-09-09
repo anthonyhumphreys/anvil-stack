@@ -84,6 +84,22 @@ export function Shell({ connectionStatus, userRole, cloudFeaturesEnabled }: Shel
 
   useEffect(() => {
     let cancelled = false;
+    const cleanup = window.anvil.appWindow.onNavigateToWorkflow(async ({ workspaceId, runId }) => {
+      try {
+        await switchWorkspace(workspaceId);
+        if (!cancelled) navigate(`/workflows?run=${encodeURIComponent(runId)}`);
+      } catch (err) {
+        console.error('[Notification] Failed to open workflow:', err);
+      }
+    });
+    return () => {
+      cancelled = true;
+      cleanup();
+    };
+  }, [navigate, switchWorkspace]);
+
+  useEffect(() => {
+    let cancelled = false;
     const cleanup = window.anvil.appWindow.onNavigateToChat(
       async ({ workspaceId, threadId, personaId }) => {
         try {

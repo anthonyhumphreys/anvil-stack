@@ -19,6 +19,7 @@ import type {
   ChatArtifactAnnotationPatch,
   ChatAttachment,
   ChatNavigationTarget,
+  WorkflowNavigationTarget,
   ChatAttachmentInput,
   ChatFileMentionSearchInput,
   ChatMessage,
@@ -64,6 +65,12 @@ const api: AnvilAPI = {
         callback(state);
       ipcRenderer.on('app-window:chrome-state-changed', handler);
       return () => ipcRenderer.removeListener('app-window:chrome-state-changed', handler);
+    },
+    onNavigateToWorkflow: (callback: (target: WorkflowNavigationTarget) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, target: WorkflowNavigationTarget) =>
+        callback(target);
+      ipcRenderer.on('app-window:navigate-to-workflow', handler);
+      return () => ipcRenderer.removeListener('app-window:navigate-to-workflow', handler);
     },
     onNavigateToChat: (callback: (target: ChatNavigationTarget) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, target: ChatNavigationTarget) =>
@@ -418,6 +425,7 @@ const api: AnvilAPI = {
   },
 
   changeReview: {
+    recordAttention: (id, input) => ipcRenderer.invoke('change-review:recordAttention', id, input),
     linkEvidence: (id, input) => ipcRenderer.invoke('change-review:linkEvidence', id, input),
     unlinkEvidence: (id, linkId) => ipcRenderer.invoke('change-review:unlinkEvidence', id, linkId),
     repairFinding: (id, findingId, input) =>

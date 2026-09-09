@@ -133,7 +133,16 @@ export interface ReviewDecision {
   note: string;
   criterionDecisions: { criterionId: string; outcome: 'accepted' | 'not_checked'; note: string }[];
 }
+export interface ReviewAttentionSession {
+  id: string;
+  reviewer: string;
+  startedAt: string;
+  lastObservedAt: string;
+  activeMs: number;
+  provenance: 'foreground-interaction';
+}
 export interface ChangeReview {
+  attentionSessions?: ReviewAttentionSession[];
   origin?: ReviewOrigin;
   evidenceLinks?: ReviewEvidenceLink[];
   nativeEvidence?: ReviewNativeEvidence[];
@@ -164,6 +173,7 @@ export interface ChangeReview {
   }[];
 }
 export interface ChangeReviewApi {
+  recordAttention(id: string, input: { sessionId: string; active: boolean }): Promise<void>;
   list(workspaceId: string): Promise<ChangeReview[]>;
   create(input: {
     workspaceId: string;
