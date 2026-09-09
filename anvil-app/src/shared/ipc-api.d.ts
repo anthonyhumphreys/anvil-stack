@@ -1,3 +1,4 @@
+import type { ChatThreadPullRequestInput, ChatThreadPullRequestLink } from './types.js';
 import type { ChangeReviewApi } from './change-review-types.js';
 import type {
   DojoAnalytics,
@@ -228,6 +229,18 @@ export interface AnvilAPI {
   };
 
   chat: {
+    linkPullRequest(
+      threadId: string,
+      input: ChatThreadPullRequestInput,
+    ): Promise<ChatThreadPullRequestLink>;
+    unlinkPullRequest(threadId: string, linkId: string): Promise<void>;
+    listPullRequestLinks(threadId: string): Promise<ChatThreadPullRequestLink[]>;
+    listPullRequestThreads(
+      repoId: string,
+      provider: 'github' | 'ado',
+      pullRequestId: string,
+    ): Promise<ChatThreadPullRequestLink[]>;
+    refreshPullRequestLink(threadId: string, linkId: string): Promise<ChatThreadPullRequestLink>;
     startSession: (
       repoIds: string[],
       personaId: string,
@@ -284,6 +297,7 @@ export interface AnvilAPI {
     listThreads: (workspaceId: string | null) => Promise<ChatThread[]>;
     listWorkItemThreads: (workspaceId: string | null) => Promise<ChatThread[]>;
     createThread: (input: {
+      pullRequest?: ChatThreadPullRequestInput;
       workspaceId?: string | null;
       personaId: string;
       title?: string;

@@ -1,4 +1,13 @@
 import {
+  createThreadWithPullRequest,
+  linkThreadPullRequest,
+  unlinkThreadPullRequest,
+  listThreadPullRequestLinks,
+  listPullRequestThreads,
+  refreshThreadPullRequest,
+} from '../services/thread-pull-request.service.js';
+import type { ChatThreadPullRequestInput } from '../../shared/types.js';
+import {
   assertReviewRepairForkAllowed,
   resolveReviewRepairPaths,
 } from '../services/change-review.service.js';
@@ -63,7 +72,6 @@ import { getPersonas } from '../services/persona.service.js';
 import { detectCodexCli, getCodexInstallInstructions } from '../services/codex-bridge.service.js';
 import { detectCursorCli } from '../services/cursor-bridge.service.js';
 import {
-  createChatThread,
   createChatSession,
   deleteChatThread,
   ensureWorkItemChatThread,
@@ -142,6 +150,25 @@ async function tryLocalLlmChatReply(sessionId: string, message: string): Promise
 }
 
 export function registerChatHandlers(): void {
+  ipcMain.handle(
+    'chat:link-pull-request',
+    (_event, threadId: string, input: ChatThreadPullRequestInput) =>
+      linkThreadPullRequest(threadId, input),
+  );
+  ipcMain.handle('chat:unlink-pull-request', (_event, threadId: string, linkId: string) =>
+    unlinkThreadPullRequest(threadId, linkId),
+  );
+  ipcMain.handle('chat:list-pull-request-links', (_event, threadId: string) =>
+    listThreadPullRequestLinks(threadId),
+  );
+  ipcMain.handle(
+    'chat:list-pull-request-threads',
+    (_event, repoId: string, provider: 'github' | 'ado', pullRequestId: string) =>
+      listPullRequestThreads(repoId, provider, pullRequestId),
+  );
+  ipcMain.handle('chat:refresh-pull-request-link', (_event, threadId: string, linkId: string) =>
+    refreshThreadPullRequest(threadId, linkId),
+  );
   ipcMain.handle(
     'chat:start-session',
     async (
@@ -427,6 +454,7 @@ export function registerChatHandlers(): void {
     (
       _event,
       input: {
+        pullRequest?: ChatThreadPullRequestInput;
         workspaceId?: string | null;
         personaId: string;
         title?: string;
@@ -438,8 +466,8 @@ export function registerChatHandlers(): void {
         settled?: boolean;
         viewed?: boolean;
       },
-    ): ChatThread => {
-      return createChatThread(input);
+    ): Promise<ChatThread> => {
+      return createThreadWithPullRequest(input);
     },
   );
 

@@ -751,7 +751,26 @@ export interface ChatFileMentionSearchResult {
   size: number;
 }
 
+export interface ChatThreadPullRequestInput {
+  repoId: string;
+  provider: 'github' | 'ado';
+  pullRequestId: string;
+}
+export interface ChatThreadPullRequestLink {
+  availability: 'current' | 'repository_changed' | 'thread_changed';
+  id: string;
+  threadId: string;
+  threadTitle: string;
+  workspaceId: string;
+  repoId: string;
+  pullRequest: CodeReviewPullRequest;
+  linkedAt: string;
+  /** Last successful provider lookup; this snapshot is not a live status claim. */
+  observedAt: string;
+}
+
 export interface ChatThread {
+  pullRequestLinks?: ChatThreadPullRequestLink[];
   id: string;
   personaId: string;
   title: string;

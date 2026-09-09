@@ -43,6 +43,16 @@ The exported foreground interaction estimate was nonzero and persisted. These we
 
 This fixture has no external Work Item or PR. Native notifications, complete workflow dogfood, clean-machine install and interrupted-work/uninstall recovery are still separate checks.
 
+## PR-to-thread native check
+
+The isolated development instance also exercised durable PR linking against live GitHub metadata for PR #87. A separate four-file fixture, `/tmp/anv7-pr-link-fixture`, advertised the GitHub repository as its remote solely for this metadata test. It was not a checkout of the PR candidate. The original repository was connected but left unindexed and unchanged.
+
+Native UI actions created an empty conversation scoped to the indexed fixture, linked PR #87, refreshed its draft status and observation timestamp, and preserved the association across renderer reload. Opening the PR displayed its linked conversation before diff loading completed; the backlink returned to the same thread. Explicit unlink removed the badge and association. No GitHub comments, pushes or PR changes were made by these UI actions.
+
+The test exposed an unnecessary dependency on AI story generation for navigation. Thread links now open the diff, with linked conversations available independently of story generation and diff loading. Impeccable inspection covered the link popover and diff sidebar. Independent review also drove fixes for competing navigation requests, cancelled linked-thread creation and unsent threads incorrectly remaining busy.
+
+The final feature suite passed 779 tests with both browser integrations enabled. Lint and the production build passed. Explicit typechecks retain baseline failures, with no new file/error-code pairs compared with the base archive. This verifies explicit associations, status refresh and navigation; it does not verify automatic PR checkout, branch discovery or thread settlement.
+
 ## Remaining evidence
 
 Live Work Item/PR dogfood, controlled external review feedback, clean-machine native checks and a matched before/after delivery comparison remain pending. Foreground interaction estimates now measure part of review activity; they do not establish full journey effort, interruption counts, attributable usage/cost or escaped regression outcomes.

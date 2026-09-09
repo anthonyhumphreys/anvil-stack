@@ -31,14 +31,16 @@ import {
   TestTube2,
   X,
 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import type {
+  CodeReviewPullRequest,
   PullRequestDiffFile,
   PullRequestVisualisation,
   PullRequestVisualisationChangeState,
   PullRequestVisualisationNode,
   PullRequestVisualisationTone,
 } from '../../../shared/types';
+import { useChatContext } from '../../contexts/ChatContext';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { buildEditorUrl } from '../../utils/editor-link';
 import {
@@ -46,6 +48,7 @@ import {
   layoutPullRequestNodes,
 } from '../../utils/pull-request-layout';
 import { PullRequestEvidencePanel } from '../review/PullRequestEvidencePanel';
+import { PullRequestThreads } from './PullRequestThreads';
 import { PullRequestDiffView } from './PullRequestDiffView';
 
 type ExperienceMode = 'story' | 'map' | 'diff';
@@ -101,6 +104,17 @@ export function PullRequestCanvas({
   onClose,
 }: PullRequestCanvasProps) {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const [diffPullRequest, setDiffPullRequest] = useState<{
+    repoId: string;
+    pullRequest: CodeReviewPullRequest;
+  }>();
+  const rememberDiffPullRequest = useCallback(
+    (pullRequest: CodeReviewPullRequest) => setDiffPullRequest({ repoId, pullRequest }),
+    [repoId],
+  );
+  const { launchPreparedChat } = useChatContext();
+  const [chatError, setChatError] = useState('');
   const { activeWorkspace } = useWorkspace();
   const [visualisation, setVisualisation] = useState<PullRequestVisualisation | null>(null);
   const [mode, setMode] = useState<ExperienceMode>(initialMode);
@@ -227,10 +241,37 @@ export function PullRequestCanvas({
       ]
         .filter((line): line is string => Boolean(line))
         .join('\n\n');
-      navigate(`/chat?prompt=${encodeURIComponent(prompt)}`);
+      setChatError('');
+      void (async () => {
+        const pullRequest =
+          visualisation?.pullRequest ??
+          (await window.anvil.codereview.listPullRequests(repoId)).find(
+            (item) => item.id === pullRequestId,
+          );
+        if (!pullRequest)
+          throw new Error(
+            'This pull request could not be loaded. Refresh it before starting a linked chat.',
+          );
+        const threadId = await launchPreparedChat({
+          personaId: 'coder',
+          repoIds: [repoId],
+          message: prompt,
+          threadTitle: `PR #${pullRequest.id}: ${pullRequest.title}`,
+          pullRequest: { repoId, provider: pullRequest.provider, pullRequestId: pullRequest.id },
+        });
+        if (!threadId)
+          throw new Error(
+            'The linked chat could not start. Open linked threads to resume any saved draft.',
+          );
+        navigate(`/chat?${new URLSearchParams({ thread: threadId })}`);
+      })().catch((reason) =>
+        setChatError(reason instanceof Error ? reason.message : String(reason)),
+      );
     },
     [
       navigate,
+      launchPreparedChat,
+      repoId,
       pullRequestId,
       selectedNode?.filePath,
       selectedNode?.line,
@@ -239,7 +280,33 @@ export function PullRequestCanvas({
     ],
   );
 
-  if (mode === 'diff' && !visualisation && !loading) {
+  const linkedProvider = searchParams.get('provider');
+  const threadPullRequest =
+    (visualisation?.repoId === repoId && visualisation.pullRequest.id === pullRequestId
+      ? visualisation.pullRequest
+      : undefined) ??
+    (diffPullRequest?.repoId === repoId && diffPullRequest.pullRequest.id === pullRequestId
+      ? diffPullRequest.pullRequest
+      : undefined) ??
+    (linkedProvider === 'github' || linkedProvider === 'ado'
+      ? { id: pullRequestId, provider: linkedProvider }
+      : undefined);
+  const diffThreads = activeWorkspace ? (
+    <aside className="w-[310px] shrink-0 overflow-y-auto border-l border-border-subtle bg-bg-secondary/55 2xl:w-[360px]">
+      {threadPullRequest ? (
+        <PullRequestThreads
+          key={`${repoId}:${pullRequestId}`}
+          workspaceId={activeWorkspace.id}
+          repoId={repoId}
+          pullRequest={threadPullRequest}
+        />
+      ) : (
+        <p className="p-4 text-xs text-text-secondary">Loading pull request context…</p>
+      )}
+    </aside>
+  ) : null;
+
+  if (mode === 'diff' && !visualisation) {
     return (
       <div className="flex h-full min-h-0 flex-col bg-bg-primary">
         <header className="flex min-h-14 items-center gap-3 border-b border-border-subtle px-4">
@@ -271,12 +338,21 @@ export function PullRequestCanvas({
             </button>
           )}
         </header>
-        <div className="min-h-0 flex-1">
-          <PullRequestDiffView
-            repoId={repoId}
-            pullRequestId={pullRequestId}
-            onAskInChat={askInChat}
-          />
+        <div className="flex min-h-0 flex-1">
+          <div className="min-w-0 flex-1">
+            {chatError ? (
+              <p role="alert" className="px-4 py-2 text-xs text-error">
+                {chatError}
+              </p>
+            ) : null}
+            <PullRequestDiffView
+              repoId={repoId}
+              pullRequestId={pullRequestId}
+              onAskInChat={askInChat}
+              onPullRequestLoaded={rememberDiffPullRequest}
+            />
+          </div>
+          {diffThreads}
         </div>
       </div>
     );
@@ -436,14 +512,23 @@ export function PullRequestCanvas({
         )}
       </header>
 
+      {chatError ? (
+        <p role="alert" className="border-b border-border-subtle px-4 py-2 text-xs text-error">
+          {chatError}
+        </p>
+      ) : null}
       {mode === 'diff' ? (
-        <div className="min-h-0 flex-1">
-          <PullRequestDiffView
-            repoId={repoId}
-            pullRequestId={pullRequestId}
-            focusFilePath={selectedNode?.filePath}
-            onAskInChat={askInChat}
-          />
+        <div className="flex min-h-0 flex-1">
+          <div className="min-w-0 flex-1">
+            <PullRequestDiffView
+              repoId={repoId}
+              pullRequestId={pullRequestId}
+              focusFilePath={selectedNode?.filePath}
+              onAskInChat={askInChat}
+              onPullRequestLoaded={rememberDiffPullRequest}
+            />
+          </div>
+          {diffThreads}
         </div>
       ) : (
         <>
@@ -653,6 +738,14 @@ export function PullRequestCanvas({
                 </section>
               )}
 
+              {activeWorkspace ? (
+                <PullRequestThreads
+                  key={`${repoId}:${pullRequestId}`}
+                  workspaceId={activeWorkspace.id}
+                  repoId={repoId}
+                  pullRequest={pr}
+                />
+              ) : null}
               {activeWorkspace ? (
                 <PullRequestEvidencePanel
                   workspaceId={activeWorkspace.id}

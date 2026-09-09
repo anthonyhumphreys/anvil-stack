@@ -336,7 +336,24 @@ export function ChangeReviewPanel({
       });
       if (!threadId)
         throw new Error('The repair chat could not be started. Try requesting the fix again.');
-      await window.anvil.changeReview.repairFinding(review.id, finding.id, { threadId });
+      const repaired = await window.anvil.changeReview.repairFinding(review.id, finding.id, {
+        threadId,
+      });
+      setReview(repaired);
+      const pullRequest = review.origin?.pullRequest;
+      if (pullRequest && (pullRequest.provider === 'github' || pullRequest.provider === 'ado')) {
+        try {
+          await window.anvil.chat.linkPullRequest(threadId, {
+            repoId,
+            provider: pullRequest.provider,
+            pullRequestId: pullRequest.id,
+          });
+        } catch (reason) {
+          throw new Error(
+            `Repair thread saved. Its PR link could not be saved: ${reason instanceof Error ? reason.message : String(reason)}. Use Open repair thread to continue.`,
+          );
+        }
+      }
       navigate('/chat');
     });
   }

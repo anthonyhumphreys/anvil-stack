@@ -65,6 +65,7 @@ import type {
 } from '../../../shared/types';
 import { ROLE_FEATURES, ROLE_RECOMMENDED_PERSONAS } from '../../../shared/types';
 import { ChatInput, type ChatSlashCommand } from './ChatInput';
+import { ThreadPullRequests } from './ThreadPullRequests';
 import { ChatThreadRail } from './ChatThreadRail';
 import { WorkItemThreadRail } from './WorkItemThreadRail';
 import {
@@ -398,8 +399,6 @@ export function ChatView({ userRole }: ChatViewProps) {
   useEffect(() => {
     const threadId = searchParams.get('thread');
     if (!threadId) return;
-    if (!threads.some((thread) => thread.id === threadId)) return;
-
     void selectThread(threadId);
     const next = new URLSearchParams(searchParams);
     next.delete('thread');
@@ -816,6 +815,14 @@ export function ChatView({ userRole }: ChatViewProps) {
             </p>
           </div>
 
+          {activeThread && !scaffoldModeActive ? (
+            <ThreadPullRequests
+              key={activeThread.id}
+              threadId={activeThread.id}
+              preferredRepoId={activeThread.activeRepoId ?? undefined}
+              repoIds={activeThread.repoIds ?? []}
+            />
+          ) : null}
           {!scaffoldModeActive && (
             <div
               className="ml-auto flex shrink-0 items-center rounded-lg bg-bg-primary/55 p-0.5"

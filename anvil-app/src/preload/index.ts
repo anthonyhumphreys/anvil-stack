@@ -153,6 +153,16 @@ const api: AnvilAPI = {
   },
 
   chat: {
+    linkPullRequest: (threadId, input) =>
+      ipcRenderer.invoke('chat:link-pull-request', threadId, input),
+    unlinkPullRequest: (threadId, linkId) =>
+      ipcRenderer.invoke('chat:unlink-pull-request', threadId, linkId),
+    listPullRequestLinks: (threadId) =>
+      ipcRenderer.invoke('chat:list-pull-request-links', threadId),
+    listPullRequestThreads: (repoId, provider, pullRequestId) =>
+      ipcRenderer.invoke('chat:list-pull-request-threads', repoId, provider, pullRequestId),
+    refreshPullRequestLink: (threadId, linkId) =>
+      ipcRenderer.invoke('chat:refresh-pull-request-link', threadId, linkId),
     startSession: (
       repoIds: string[],
       personaId: string,
