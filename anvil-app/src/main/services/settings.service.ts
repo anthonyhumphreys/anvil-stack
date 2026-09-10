@@ -129,6 +129,41 @@ export function normaliseEnabledLlmProviders(
 
 const MASKED_SECRET = '••••••••';
 
+// Columns that older databases may lack when the schema_version was stamped
+// without their original migration running (v20). Added idempotently so a
+// settings save self-heals instead of throwing `no such column`.
+const DOCS_SETTINGS_COLUMNS: Array<{ name: string; ddl: string }> = [
+  { name: 'docs_provider', ddl: "ADD COLUMN docs_provider TEXT DEFAULT 'confluence'" },
+  { name: 'notion_oauth_token', ddl: 'ADD COLUMN notion_oauth_token BLOB' },
+  { name: 'notion_oauth_expiry', ddl: 'ADD COLUMN notion_oauth_expiry TEXT' },
+  { name: 'notion_database_id', ddl: 'ADD COLUMN notion_database_id TEXT' },
+];
+
+function ensureDocsSettingsColumns(db: ReturnType<typeof getDb>): void {
+  let existing: Set<string>;
+  try {
+    existing = new Set(
+      (db.prepare('PRAGMA table_info(settings)').all() as Array<{ name: string }>).map(
+        (column) => column.name,
+      ),
+    );
+  } catch {
+    return;
+  }
+  for (const column of DOCS_SETTINGS_COLUMNS) {
+    if (!existing.has(column.name)) {
+      try {
+        db.exec(`ALTER TABLE settings ${column.ddl}`);
+        existing.add(column.name);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : '';
+        if (!msg.includes('duplicate column')) throw err;
+        existing.add(column.name);
+      }
+    }
+  }
+}
+
 function safeParseSettingsJson<T>(value: string | null | undefined, fallback: T): T {
   if (!value) return fallback;
   try {
@@ -328,6 +363,7 @@ export function getSettings(): AppSettings {
 
 export function updateSettings(partial: Partial<AppSettings>): void {
   const db = getDb();
+  ensureDocsSettingsColumns(db);
   const current = getSettings();
   const setClauses: string[] = [];
   const values: unknown[] = [];

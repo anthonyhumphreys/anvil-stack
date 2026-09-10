@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 65;
+export const SCHEMA_VERSION = 66;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -2079,5 +2079,14 @@ CREATE INDEX IF NOT EXISTS idx_security_findings_audit
 );
 CREATE INDEX IF NOT EXISTS idx_chat_thread_pr_reverse
   ON chat_thread_pull_requests(repo_id, provider, pull_request_id);
+`,
+  // Reconcile databases that reached v65 without the v20 docs columns
+  // (e.g. a build that stamped a newer schema_version before v20 ran).
+  // The migration runner skips statements whose column already exists.
+  66: `
+ALTER TABLE settings ADD COLUMN docs_provider TEXT DEFAULT 'confluence';
+ALTER TABLE settings ADD COLUMN notion_oauth_token BLOB;
+ALTER TABLE settings ADD COLUMN notion_oauth_expiry TEXT;
+ALTER TABLE settings ADD COLUMN notion_database_id TEXT;
 `,
 };

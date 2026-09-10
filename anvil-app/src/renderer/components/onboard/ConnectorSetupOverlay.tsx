@@ -63,7 +63,12 @@ export function ConnectorSetupOverlay({
 
   const saveSettings = async () => {
     if (preview) return;
-    await window.anvil.settings.update(settings);
+    try {
+      await window.anvil.settings.update(settings);
+    } catch (err) {
+      // Persisting must not block connection tests.
+      console.warn('[Connectors] save before test failed, continuing with test', err);
+    }
   };
 
   const markConfigured = (id: string) => {
@@ -108,10 +113,15 @@ export function ConnectorSetupOverlay({
     setConfluenceStatus('testing');
     setTestError(null);
     await saveSettings();
-    const result = await window.anvil.settings.testConfluenceConnection();
-    setConfluenceStatus(result.ok ? 'ok' : 'error');
-    if (result.ok) markConfigured('confluence');
-    if (result.error) setTestError(result.error);
+    try {
+      const result = await window.anvil.settings.testConfluenceConnection();
+      setConfluenceStatus(result.ok ? 'ok' : 'error');
+      if (result.ok) markConfigured('confluence');
+      if (result.error) setTestError(result.error);
+    } catch (err) {
+      setConfluenceStatus('error');
+      setTestError(err instanceof Error ? err.message : 'Connection test failed');
+    }
   };
 
   // --- Git Provider ---

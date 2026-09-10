@@ -483,7 +483,13 @@ export function SettingsView({
   };
 
   const saveBeforeTest = async () => {
-    await window.anvil.settings.update(settings);
+    try {
+      await window.anvil.settings.update(settings);
+    } catch (err) {
+      // Persisting must not block connection tests (e.g. a settings save
+      // hitting a stale local DB should still let the test itself run).
+      console.warn('[Settings] save before test failed, continuing with test', err);
+    }
   };
 
   const refreshMobileCompanion = async () => {
@@ -634,9 +640,14 @@ export function SettingsView({
     setConfluenceStatus('testing');
     setTestError(null);
     await saveBeforeTest();
-    const result = await window.anvil.settings.testConfluenceConnection();
-    setConfluenceStatus(result.ok ? 'ok' : 'error');
-    if (result.error) setTestError(result.error);
+    try {
+      const result = await window.anvil.settings.testConfluenceConnection();
+      setConfluenceStatus(result.ok ? 'ok' : 'error');
+      if (result.error) setTestError(result.error);
+    } catch (err) {
+      setConfluenceStatus('error');
+      setTestError(err instanceof Error ? err.message : 'Connection test failed');
+    }
   };
 
   const testGit = async () => {

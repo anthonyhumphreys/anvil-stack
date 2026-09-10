@@ -124,7 +124,7 @@ describe('fresh database schema', () => {
         ).map((column) => column.name),
       );
 
-      expect(SCHEMA_VERSION).toBe(65);
+      expect(SCHEMA_VERSION).toBe(66);
       for (const column of [
         'local_llm_mode',
         'local_llm_provider',
@@ -180,6 +180,32 @@ describe('fresh database schema', () => {
       }
     },
   );
+
+  it('reconciles a v65 database missing the v20 docs columns', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec('CREATE TABLE settings (id INTEGER PRIMARY KEY, confluence_base_url TEXT)');
+      applyMigration(db, MIGRATIONS[66]);
+      // Re-running must be a no-op for databases that already have the columns.
+      applyMigration(db, MIGRATIONS[66]);
+
+      const columns = new Set(
+        (db.prepare('PRAGMA table_info(settings)').all() as Array<{ name: string }>).map(
+          (column) => column.name,
+        ),
+      );
+      for (const column of [
+        'docs_provider',
+        'notion_oauth_token',
+        'notion_oauth_expiry',
+        'notion_database_id',
+      ]) {
+        expect(columns.has(column), `Missing settings.${column}`).toBe(true);
+      }
+    } finally {
+      db.close();
+    }
+  });
 
   it('adds opt-in telemetry disabled by default', () => {
     const db = new Database(':memory:');
