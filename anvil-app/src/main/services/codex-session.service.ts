@@ -595,6 +595,7 @@ export function resolveApproval(
   sessionId: string,
   requestId: JsonRpcRequestId,
   decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel',
+  optionId?: string,
 ): void {
   const session = sessions.get(sessionId);
   if (!session) throw new Error(`Session not found: ${sessionId}`);
@@ -613,6 +614,7 @@ export function resolveApproval(
     request.kind,
     request.kind === 'permissions' ? request.permissions : undefined,
     decision,
+    optionId,
   );
   sendCodexJsonRpcResult(session.process, requestId, result);
   setSessionThreadAttention(session, 'working');
@@ -731,30 +733,42 @@ export function buildApprovalResponse(
   kind: 'command' | 'file_change' | 'permissions',
   permissions: Record<string, unknown> | undefined,
   decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel',
+  optionId?: string,
 ): Record<string, unknown> {
   if (kind !== 'permissions') return { decision };
   const acpOptions = Array.isArray(permissions?.options) ? permissions.options : [];
   if (decision === 'cancel' && acpOptions.length > 0) {
     return { outcome: { outcome: 'cancelled' } };
   }
+  const explicitlySelectedOption =
+    typeof optionId === 'string'
+      ? acpOptions.find(
+          (option) =>
+            typeof option === 'object' &&
+            option !== null &&
+            (option as { optionId?: unknown }).optionId === optionId,
+        )
+      : undefined;
   const optionKinds =
     decision === 'decline'
       ? ['reject_once', 'reject_always']
       : decision === 'acceptForSession'
         ? ['allow_always', 'allow_once']
         : ['allow_once', 'allow_always'];
-  const acpOption = optionKinds
-    .map((kind) =>
-      acpOptions.find(
-        (option) =>
-          typeof option === 'object' &&
-          option !== null &&
-          (option as { kind?: unknown }).kind === kind,
-      ),
-    )
-    .find(
-      (option): option is { optionId?: unknown } => typeof option === 'object' && option !== null,
-    );
+  const acpOption =
+    explicitlySelectedOption ??
+    optionKinds
+      .map((kind) =>
+        acpOptions.find(
+          (option) =>
+            typeof option === 'object' &&
+            option !== null &&
+            (option as { kind?: unknown }).kind === kind,
+        ),
+      )
+      .find(
+        (option): option is { optionId?: unknown } => typeof option === 'object' && option !== null,
+      );
   if (typeof acpOption?.optionId === 'string') {
     return { outcome: { outcome: 'selected', optionId: acpOption.optionId } };
   }

@@ -624,11 +624,16 @@ function ApprovalRequestEvent({ event }: { event: CodexEvent & { sessionId?: str
         ? `Allow writes under ${event.approvalGrantRoot}`
         : 'Codex wants permission to apply a file change.';
 
-  const decide = async (decision: 'accept' | 'acceptForSession' | 'decline') => {
+  const decide = async (decision: 'accept' | 'acceptForSession' | 'decline', optionId?: string) => {
     if (!event.sessionId || event.approvalRequestId === undefined) return;
     setError(null);
     try {
-      await window.anvil.chat.resolveApproval(event.sessionId, event.approvalRequestId, decision);
+      await window.anvil.chat.resolveApproval(
+        event.sessionId,
+        event.approvalRequestId,
+        decision,
+        optionId,
+      );
       setResolved(decision === 'decline' ? 'declined' : 'accepted');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to resolve approval');
@@ -669,7 +674,7 @@ function ApprovalRequestEvent({ event }: { event: CodexEvent & { sessionId?: str
             cursorOptions.map((option) => (
               <button
                 key={option.optionId}
-                onClick={() => void decide(cursorPermissionDecision(option.kind))}
+                onClick={() => void decide(cursorPermissionDecision(option.kind), option.optionId)}
                 className={
                   option.kind.startsWith('reject')
                     ? 'flex items-center gap-1.5 rounded-lg border border-error/40 px-3 py-1.5 text-sm text-error transition-colors hover:bg-error/10'

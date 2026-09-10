@@ -178,6 +178,10 @@ async function discoverCursorAcpModels(): Promise<{
     });
     child.on('exit', () => {
       if (!settled) {
+        const finalLine = stdout.trim();
+        if (finalLine) handleLine(finalLine);
+      }
+      if (!settled) {
         finish([], stderr.trim() ? `Cursor ACP unavailable: ${stderr.trim()}` : undefined);
       }
     });

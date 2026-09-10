@@ -145,6 +145,19 @@ describe('codex session service', () => {
     expect(buildApprovalResponse('permissions', permissions, 'decline')).toEqual({
       outcome: { outcome: 'selected', optionId: 'reject-once' },
     });
+    expect(
+      buildApprovalResponse(
+        'permissions',
+        {
+          options: [
+            { optionId: 'reject-once', name: 'Reject once', kind: 'reject_once' },
+            { optionId: 'reject-always', name: 'Always reject', kind: 'reject_always' },
+          ],
+        },
+        'decline',
+        'reject-always',
+      ),
+    ).toEqual({ outcome: { outcome: 'selected', optionId: 'reject-always' } });
     expect(buildApprovalResponse('permissions', permissions, 'cancel')).toEqual({
       outcome: { outcome: 'cancelled' },
     });

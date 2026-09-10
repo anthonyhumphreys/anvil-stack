@@ -197,7 +197,8 @@ const api: AnvilAPI = {
       sessionId: string,
       requestId: string | number,
       decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel',
-    ) => ipcRenderer.invoke('chat:resolve-approval', sessionId, requestId, decision),
+      optionId?: string,
+    ) => ipcRenderer.invoke('chat:resolve-approval', sessionId, requestId, decision, optionId),
     resolveInputRequest: (
       sessionId: string,
       requestId: string | number,

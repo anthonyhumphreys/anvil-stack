@@ -378,5 +378,19 @@ describe('agent provider UI adapter', () => {
         'cursor_create_plan',
       ),
     ).toEqual({ kind: 'cursor_create_plan', action: 'skip' });
+    expect(
+      providerResponseFromAgentUIResolution(
+        cursorPlanIntent,
+        { ...resolution, action: 'submit', answers: { plan: false } },
+        'cursor_create_plan',
+      ),
+    ).toEqual({ kind: 'cursor_create_plan', action: 'skip' });
+    expect(
+      providerResponseFromAgentUIResolution(
+        cursorPlanIntent,
+        { ...resolution, action: 'submit', answers: { plan: true } },
+        'cursor_create_plan',
+      ),
+    ).toEqual({ kind: 'cursor_create_plan', action: 'submit' });
   });
 });

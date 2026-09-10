@@ -68,7 +68,18 @@ export function providerResponseFromAgentUIResolution(
   }
 
   if (responseKind === 'cursor_create_plan') {
-    return { kind: 'cursor_create_plan', action: resolution.action };
+    if (resolution.action === 'cancel') {
+      return { kind: 'cursor_create_plan', action: 'cancel' };
+    }
+    if (resolution.action === 'skip') {
+      return { kind: 'cursor_create_plan', action: 'skip' };
+    }
+    const planAnswer = resolution.answers.plan;
+    const rejected =
+      planAnswer === false ||
+      planAnswer === 'reject' ||
+      (Array.isArray(planAnswer) && planAnswer.includes('reject'));
+    return { kind: 'cursor_create_plan', action: rejected ? 'skip' : 'submit' };
   }
 
   if (responseKind === 'mcp_elicitation') {
