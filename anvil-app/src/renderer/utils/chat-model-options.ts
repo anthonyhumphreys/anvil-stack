@@ -35,15 +35,28 @@ export function buildProviderModelOptions(
     }));
   const options =
     provider === 'cursor'
-      ? (cursorStatus?.models ?? []).map((model) => ({
-          provider,
-          id: model.id,
-          label: model.label,
-          description: 'Detected from the local Cursor CLI model catalog.',
-          supportedReasoningEfforts: [],
-          defaultReasoningEffort: 'medium' as ReasoningEffort,
-          serviceTiers: [],
-        }))
+      ? cursorStatus?.models?.length
+        ? cursorStatus.models.map((model) => ({
+            provider,
+            id: model.id,
+            label: model.label,
+            description: 'Detected from the local Cursor CLI model catalog.',
+            supportedReasoningEfforts: [],
+            defaultReasoningEffort: 'medium' as ReasoningEffort,
+            serviceTiers: [],
+          }))
+        : [
+            {
+              provider,
+              id: 'auto',
+              label: 'Auto (Cursor default)',
+              description:
+                "Cursor model catalog unavailable. Use Cursor's default model, or sign in to list specific models.",
+              supportedReasoningEfforts: [],
+              defaultReasoningEffort: 'medium' as ReasoningEffort,
+              serviceTiers: [],
+            },
+          ]
       : detectedCodexOptions?.length
         ? detectedCodexOptions
         : CODEX_MODEL_OPTIONS.map((model) => ({

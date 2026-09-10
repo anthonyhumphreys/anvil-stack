@@ -47,6 +47,22 @@ describe('buildChatModelOptions', () => {
     ]);
   });
 
+  it('keeps Cursor selectable as a secondary provider when its catalog is unavailable', () => {
+    const options = buildChatModelOptions(['codex', 'cursor'], 'codex', 'gpt-5.6-sol', null, {
+      installed: true,
+      models: [],
+      error: 'Cursor models unavailable',
+    });
+
+    expect(options).toContainEqual(
+      expect.objectContaining({
+        provider: 'cursor',
+        id: 'auto',
+        label: 'Auto (Cursor default)',
+      }),
+    );
+  });
+
   it('keeps a custom configured model visible when it is absent from the catalog', () => {
     const codexStatus: CodexCliStatus = {
       installed: true,
