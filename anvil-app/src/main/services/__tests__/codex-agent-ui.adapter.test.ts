@@ -188,6 +188,36 @@ describe('agent provider UI adapter', () => {
       },
       cursorContext,
     );
+    const cursorQuestion = adaptProviderEventToAgentUIIntent(
+      {
+        type: 'input_request',
+        inputRequestId: 8,
+        inputRequest: {
+          kind: 'cursor_ask_question',
+          title: 'Choose a target',
+          questions: [
+            {
+              id: 'target',
+              prompt: 'Where should this deploy?',
+              options: [{ id: 'preview', label: 'Preview' }],
+            },
+          ],
+        },
+      },
+      cursorContext,
+    );
+    const cursorPlan = adaptProviderEventToAgentUIIntent(
+      {
+        type: 'input_request',
+        inputRequestId: 9,
+        inputRequest: {
+          kind: 'cursor_create_plan',
+          title: 'Approve implementation plan',
+          plan: '1. Inspect\n2. Implement',
+        },
+      },
+      cursorContext,
+    );
 
     expect(plan?.binding).toEqual({ provider: 'cursor', sessionId: 'session-1' });
     expect(question?.binding).toEqual({
@@ -199,6 +229,28 @@ describe('agent provider UI adapter', () => {
     expect(question?.intent).toMatchObject({
       kind: 'question',
       payload: { questions: [{ id: 'target', kind: 'single_choice' }] },
+    });
+    expect(cursorQuestion?.intent).toMatchObject({
+      kind: 'question',
+      payload: {
+        title: 'Choose a target',
+        questions: [{ id: 'target', options: [{ id: 'preview', value: 'preview' }] }],
+      },
+    });
+    expect(cursorQuestion?.binding).toMatchObject({
+      requestId: 8,
+      responseKind: 'cursor_ask_question',
+    });
+    expect(cursorPlan?.intent).toMatchObject({
+      kind: 'question',
+      payload: {
+        title: 'Approve implementation plan',
+        questions: [{ id: 'plan', kind: 'approval' }],
+      },
+    });
+    expect(cursorPlan?.binding).toMatchObject({
+      requestId: 9,
+      responseKind: 'cursor_create_plan',
     });
   });
 
@@ -263,5 +315,68 @@ describe('agent provider UI adapter', () => {
       action: 'accept',
       content: resolution.answers,
     });
+
+    const cursorQuestionIntent = {
+      ...intent,
+      payload: {
+        questions: [
+          {
+            id: 'target',
+            kind: 'single_choice' as const,
+            question: 'Where?',
+            required: true,
+            allowCancel: true,
+            options: [{ id: 'preview', label: 'Preview', value: 'preview' }],
+          },
+        ],
+      },
+    };
+    expect(
+      providerResponseFromAgentUIResolution(
+        cursorQuestionIntent,
+        {
+          ...resolution,
+          answers: { target: 'preview' },
+        },
+        'cursor_ask_question',
+      ),
+    ).toEqual({
+      kind: 'cursor_ask_question',
+      action: 'submit',
+      answers: [{ questionId: 'target', selectedOptionIds: ['preview'] }],
+    });
+    expect(
+      providerResponseFromAgentUIResolution(
+        cursorQuestionIntent,
+        { ...resolution, action: 'cancel', answers: {} },
+        'cursor_ask_question',
+      ),
+    ).toEqual({
+      kind: 'cursor_ask_question',
+      action: 'cancel',
+      answers: [{ questionId: 'target', selectedOptionIds: [] }],
+    });
+
+    const cursorPlanIntent = {
+      ...intent,
+      payload: {
+        questions: [
+          {
+            id: 'plan',
+            kind: 'approval' as const,
+            question: 'Approve?',
+            required: true,
+            allowCancel: true,
+          },
+        ],
+      },
+    };
+    expect(
+      providerResponseFromAgentUIResolution(
+        cursorPlanIntent,
+        { ...resolution, action: 'skip', answers: {} },
+        'cursor_create_plan',
+      ),
+    ).toEqual({ kind: 'cursor_create_plan', action: 'skip' });
   });
 });

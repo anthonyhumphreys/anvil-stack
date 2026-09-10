@@ -971,16 +971,42 @@ export interface CodexUserInputQuestion {
   options?: CodexUserInputOption[];
 }
 
-export interface CodexInputRequest {
-  kind: 'user_input' | 'mcp_elicitation';
-  questions?: CodexUserInputQuestion[];
-  autoResolutionMs?: number;
-  message?: string;
-  serverName?: string;
-  mode?: 'form' | 'openai/form' | 'url';
-  requestedSchema?: unknown;
-  url?: string;
+export interface CursorQuestionOption {
+  id: string;
+  label: string;
 }
+
+export interface CursorQuestion {
+  id: string;
+  prompt: string;
+  options: CursorQuestionOption[];
+  allowMultiple?: boolean;
+}
+
+export type CodexInputRequest =
+  | {
+      kind: 'user_input';
+      questions?: CodexUserInputQuestion[];
+      autoResolutionMs?: number;
+    }
+  | {
+      kind: 'mcp_elicitation';
+      message?: string;
+      serverName?: string;
+      mode?: 'form' | 'openai/form' | 'url';
+      requestedSchema?: unknown;
+      url?: string;
+    }
+  | {
+      kind: 'cursor_ask_question';
+      title?: string;
+      questions: CursorQuestion[];
+    }
+  | {
+      kind: 'cursor_create_plan';
+      title?: string;
+      plan: string;
+    };
 
 export type CodexInputResponse =
   | {
@@ -991,6 +1017,15 @@ export type CodexInputResponse =
       kind: 'mcp_elicitation';
       action: 'accept' | 'decline' | 'cancel';
       content?: unknown;
+    }
+  | {
+      kind: 'cursor_ask_question';
+      action: 'submit' | 'skip' | 'cancel';
+      answers: Array<{ questionId: string; selectedOptionIds: string[] }>;
+    }
+  | {
+      kind: 'cursor_create_plan';
+      action: 'submit' | 'skip' | 'cancel';
     };
 
 export interface CodexEvent {

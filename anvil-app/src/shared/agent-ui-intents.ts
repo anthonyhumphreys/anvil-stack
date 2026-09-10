@@ -145,7 +145,7 @@ export interface AgentUIIntentBinding {
   provider: string;
   sessionId?: string;
   requestId?: string | number;
-  responseKind?: 'user_input' | 'mcp_elicitation';
+  responseKind?: 'user_input' | 'mcp_elicitation' | 'cursor_ask_question' | 'cursor_create_plan';
 }
 
 export interface AgentUIIntentRecord {

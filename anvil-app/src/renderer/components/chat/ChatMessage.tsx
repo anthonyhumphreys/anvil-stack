@@ -606,15 +606,20 @@ function ApprovalRequestEvent({ event }: { event: CodexEvent & { sessionId?: str
   const [error, setError] = useState<string | null>(null);
   const isCommand = event.approvalKind === 'command';
   const isPermissions = event.approvalKind === 'permissions';
+  const cursorOptions = isPermissions ? getCursorPermissionOptions(event.approvalPermissions) : [];
   const title = isCommand
     ? 'Approve command'
     : isPermissions
-      ? 'Approve additional permissions'
+      ? event.toolName
+        ? 'Approve ' + event.toolName
+        : 'Approve additional permissions'
       : 'Approve file change';
   const detail = isCommand
     ? event.approvalCommand
     : isPermissions
-      ? formatRequestedPermissions(event.approvalPermissions)
+      ? event.toolInput
+        ? formatApprovalInput(event.toolInput)
+        : formatRequestedPermissions(event.approvalPermissions)
       : event.approvalGrantRoot
         ? `Allow writes under ${event.approvalGrantRoot}`
         : 'Codex wants permission to apply a file change.';
@@ -639,9 +644,9 @@ function ApprovalRequestEvent({ event }: { event: CodexEvent & { sessionId?: str
           {detail && (
             <p className="mt-1 truncate font-mono text-xs text-text-secondary">{detail}</p>
           )}
-          {isPermissions && event.approvalPermissions && (
+          {isPermissions && event.toolInput && (
             <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg border border-border-subtle bg-bg-primary/60 p-2 font-mono text-[11px] text-text-secondary">
-              {JSON.stringify(event.approvalPermissions, null, 2)}
+              {JSON.stringify(event.toolInput, null, 2)}
             </pre>
           )}
           {event.approvalReason && (
@@ -660,24 +665,43 @@ function ApprovalRequestEvent({ event }: { event: CodexEvent & { sessionId?: str
       </div>
       {!resolved && (
         <div className="flex flex-wrap gap-2 border-t border-border-subtle px-4 py-2.5">
-          <button
-            onClick={() => void decide('accept')}
-            className="flex items-center gap-1.5 rounded-lg border border-success/40 px-3 py-1.5 text-sm text-success transition-colors hover:bg-success/10"
-          >
-            <Check size={12} /> Approve
-          </button>
-          <button
-            onClick={() => void decide('acceptForSession')}
-            className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary"
-          >
-            <Check size={12} /> Approve Session
-          </button>
-          <button
-            onClick={() => void decide('decline')}
-            className="flex items-center gap-1.5 rounded-lg border border-error/40 px-3 py-1.5 text-sm text-error transition-colors hover:bg-error/10"
-          >
-            <X size={12} /> Decline
-          </button>
+          {cursorOptions.length > 0 ? (
+            cursorOptions.map((option) => (
+              <button
+                key={option.optionId}
+                onClick={() => void decide(cursorPermissionDecision(option.kind))}
+                className={
+                  option.kind.startsWith('reject')
+                    ? 'flex items-center gap-1.5 rounded-lg border border-error/40 px-3 py-1.5 text-sm text-error transition-colors hover:bg-error/10'
+                    : 'flex items-center gap-1.5 rounded-lg border border-success/40 px-3 py-1.5 text-sm text-success transition-colors hover:bg-success/10'
+                }
+              >
+                {option.kind.startsWith('reject') ? <X size={12} /> : <Check size={12} />}
+                {option.name}
+              </button>
+            ))
+          ) : (
+            <>
+              <button
+                onClick={() => void decide('accept')}
+                className="flex items-center gap-1.5 rounded-lg border border-success/40 px-3 py-1.5 text-sm text-success transition-colors hover:bg-success/10"
+              >
+                <Check size={12} /> Approve
+              </button>
+              <button
+                onClick={() => void decide('acceptForSession')}
+                className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary"
+              >
+                <Check size={12} /> Approve Session
+              </button>
+              <button
+                onClick={() => void decide('decline')}
+                className="flex items-center gap-1.5 rounded-lg border border-error/40 px-3 py-1.5 text-sm text-error transition-colors hover:bg-error/10"
+              >
+                <X size={12} /> Decline
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>
@@ -686,11 +710,16 @@ function ApprovalRequestEvent({ event }: { event: CodexEvent & { sessionId?: str
 
 function InputRequestEvent({ event }: { event: CodexEvent & { sessionId?: string } }) {
   if (!event.inputRequest) return null;
-  return event.inputRequest.kind === 'user_input' ? (
-    <UserInputRequestEvent event={event} />
-  ) : (
-    <McpElicitationRequestEvent event={event} />
-  );
+  if (event.inputRequest.kind === 'user_input') {
+    return <UserInputRequestEvent event={event} />;
+  }
+  if (event.inputRequest.kind === 'cursor_ask_question') {
+    return <CursorQuestionRequestEvent event={event} />;
+  }
+  if (event.inputRequest.kind === 'cursor_create_plan') {
+    return <CursorPlanRequestEvent event={event} />;
+  }
+  return <McpElicitationRequestEvent event={event} />;
 }
 
 function UserInputRequestEvent({ event }: { event: CodexEvent & { sessionId?: string } }) {
@@ -899,6 +928,168 @@ function UserInputRequestEvent({ event }: { event: CodexEvent & { sessionId?: st
         </div>
       )}
     </form>
+  );
+}
+
+function CursorQuestionRequestEvent({ event }: { event: CodexEvent & { sessionId?: string } }) {
+  const request = event.inputRequest?.kind === 'cursor_ask_question' ? event.inputRequest : null;
+  const questions = request?.questions ?? [];
+  const [answers, setAnswers] = useState<Record<string, string[]>>({});
+  const [resolved, setResolved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const toggleOption = (questionId: string, optionId: string, allowMultiple: boolean) => {
+    setAnswers((previous) => {
+      const selected = previous[questionId] ?? [];
+      if (!allowMultiple) return { ...previous, [questionId]: [optionId] };
+      return {
+        ...previous,
+        [questionId]: selected.includes(optionId)
+          ? selected.filter((value) => value !== optionId)
+          : [...selected, optionId],
+      };
+    });
+  };
+
+  const submit = async (action: 'submit' | 'cancel') => {
+    if (!event.sessionId || event.inputRequestId === undefined || !request) return;
+    setError(null);
+    try {
+      await window.anvil.chat.resolveInputRequest(event.sessionId, event.inputRequestId, {
+        kind: 'cursor_ask_question',
+        action,
+        answers: questions.map((question) => ({
+          questionId: question.id,
+          selectedOptionIds: answers[question.id] ?? [],
+        })),
+      });
+      setResolved(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to send Cursor answers');
+    }
+  };
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-warning/35 bg-bg-secondary">
+      <div className="border-b border-border-subtle px-4 py-3">
+        <p className="text-sm font-semibold text-text-primary">
+          {request?.title ?? 'Cursor needs your input'}
+        </p>
+        <p className="mt-1 text-xs text-text-tertiary">Choose the options Cursor requested.</p>
+      </div>
+      <div className="space-y-4 p-4">
+        {questions.map((question) => (
+          <fieldset key={question.id}>
+            <legend className="text-sm font-medium text-text-primary">{question.prompt}</legend>
+            <div className="mt-2 grid gap-2">
+              {question.options.map((option) => {
+                const selected = (answers[question.id] ?? []).includes(option.id);
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() =>
+                      toggleOption(question.id, option.id, question.allowMultiple === true)
+                    }
+                    className={
+                      selected
+                        ? 'rounded-lg border border-accent/60 bg-accent/10 px-3 py-2 text-left text-sm text-text-primary'
+                        : 'rounded-lg border border-border-subtle px-3 py-2 text-left text-sm text-text-secondary hover:bg-bg-tertiary'
+                    }
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
+            </div>
+          </fieldset>
+        ))}
+        {error && <p className="text-xs text-error">{error}</p>}
+        {resolved && <p className="text-xs text-text-tertiary">Response sent.</p>}
+      </div>
+      {!resolved && (
+        <div className="flex gap-2 border-t border-border-subtle px-4 py-3">
+          <button
+            type="button"
+            onClick={() => void submit('submit')}
+            disabled={questions.some((question) => (answers[question.id] ?? []).length === 0)}
+            className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Send answer
+          </button>
+          <button
+            type="button"
+            onClick={() => void submit('cancel')}
+            className="rounded-lg border border-border px-3 py-1.5 text-sm text-text-secondary hover:bg-bg-tertiary"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CursorPlanRequestEvent({ event }: { event: CodexEvent & { sessionId?: string } }) {
+  const request = event.inputRequest?.kind === 'cursor_create_plan' ? event.inputRequest : null;
+  const [resolved, setResolved] = useState<'accepted' | 'rejected' | 'cancelled' | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const decide = async (action: 'submit' | 'skip' | 'cancel') => {
+    if (!event.sessionId || event.inputRequestId === undefined || !request) return;
+    setError(null);
+    try {
+      await window.anvil.chat.resolveInputRequest(event.sessionId, event.inputRequestId, {
+        kind: 'cursor_create_plan',
+        action,
+      });
+      setResolved(action === 'submit' ? 'accepted' : action === 'skip' ? 'rejected' : 'cancelled');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to resolve Cursor plan');
+    }
+  };
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-warning/35 bg-bg-secondary">
+      <div className="border-b border-border-subtle px-4 py-3">
+        <p className="text-sm font-semibold text-text-primary">
+          {request?.title ?? 'Cursor plan approval'}
+        </p>
+        <p className="mt-1 text-xs text-text-tertiary">
+          Cursor is waiting for approval before continuing.
+        </p>
+      </div>
+      <div className="max-h-80 overflow-auto p-4">
+        <MarkdownRenderer content={request?.plan ?? ''} />
+        {error && <p className="mt-3 text-xs text-error">{error}</p>}
+        {resolved && <p className="mt-3 text-xs text-text-tertiary">Plan {resolved}.</p>}
+      </div>
+      {!resolved && (
+        <div className="flex flex-wrap gap-2 border-t border-border-subtle px-4 py-3">
+          <button
+            type="button"
+            onClick={() => void decide('submit')}
+            className="rounded-lg border border-success/40 px-3 py-1.5 text-sm text-success hover:bg-success/10"
+          >
+            <Check size={12} className="mr-1 inline" /> Accept plan
+          </button>
+          <button
+            type="button"
+            onClick={() => void decide('skip')}
+            className="rounded-lg border border-error/40 px-3 py-1.5 text-sm text-error hover:bg-error/10"
+          >
+            <X size={12} className="mr-1 inline" /> Reject plan
+          </button>
+          <button
+            type="button"
+            onClick={() => void decide('cancel')}
+            className="rounded-lg border border-border px-3 py-1.5 text-sm text-text-secondary hover:bg-bg-tertiary"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1111,6 +1302,56 @@ function formatRequestedPermissions(permissions: Record<string, unknown> | undef
     .filter((scope): scope is string => Boolean(scope))
     .join(' and ');
   return scopes ? `Additional ${scopes} access requested.` : 'Additional permissions requested.';
+}
+
+function formatApprovalInput(input: Record<string, unknown>): string {
+  const serialised = JSON.stringify(input);
+  return serialised && serialised.length <= 1_000
+    ? serialised
+    : 'Cursor requested a tool operation.';
+}
+
+type CursorPermissionOption = {
+  optionId: string;
+  name: string;
+  kind: 'allow_once' | 'allow_always' | 'reject_once' | 'reject_always';
+};
+
+function getCursorPermissionOptions(
+  permissions: Record<string, unknown> | undefined,
+): CursorPermissionOption[] {
+  if (!Array.isArray(permissions?.options)) return [];
+  return permissions.options.flatMap((option) => {
+    if (typeof option !== 'object' || option === null || Array.isArray(option)) return [];
+    const candidate = option as Record<string, unknown>;
+    if (typeof candidate.optionId !== 'string') return [];
+    if (
+      candidate.kind !== 'allow_once' &&
+      candidate.kind !== 'allow_always' &&
+      candidate.kind !== 'reject_once' &&
+      candidate.kind !== 'reject_always'
+    ) {
+      return [];
+    }
+    return [
+      {
+        optionId: candidate.optionId,
+        name:
+          typeof candidate.name === 'string' && candidate.name.trim()
+            ? candidate.name
+            : candidate.kind,
+        kind: candidate.kind,
+      },
+    ];
+  });
+}
+
+function cursorPermissionDecision(
+  kind: CursorPermissionOption['kind'],
+): 'accept' | 'acceptForSession' | 'decline' {
+  if (kind === 'allow_always') return 'acceptForSession';
+  if (kind === 'reject_once' || kind === 'reject_always') return 'decline';
+  return 'accept';
 }
 
 function formatSubagentAction(

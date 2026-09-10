@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseCursorModels } from '../cursor-bridge.service';
+import { parseCursorAcpModels, parseCursorModels } from '../cursor-bridge.service';
 
 describe('parseCursorModels', () => {
   it('parses the Cursor CLI model catalog', () => {
@@ -25,6 +25,32 @@ cursor-grok-4.5-medium - Cursor Grok 4.5 Medium
   it('ignores noise and duplicate model ids', () => {
     expect(parseCursorModels('warning\nmodel-a - Model A\nmodel-a - Again\n')).toEqual([
       { id: 'model-a', label: 'Model A' },
+    ]);
+  });
+
+  it('parses the Cursor ACP session model catalog', () => {
+    expect(
+      parseCursorAcpModels(
+        [
+          JSON.stringify({ method: 'session/update', params: {} }),
+          JSON.stringify({
+            id: 3,
+            result: {
+              models: {
+                availableModels: [
+                  { modelId: 'default[]', name: 'Auto' },
+                  { modelId: 'gpt-5.6-sol[reasoning=medium]', name: 'gpt-5.6-sol' },
+                  { modelId: 'default[]', name: 'Duplicate auto' },
+                  { modelId: '  ', name: 'Blank' },
+                ],
+              },
+            },
+          }),
+        ].join('\n'),
+      ),
+    ).toEqual([
+      { id: 'default[]', label: 'Auto' },
+      { id: 'gpt-5.6-sol[reasoning=medium]', label: 'gpt-5.6-sol' },
     ]);
   });
 });

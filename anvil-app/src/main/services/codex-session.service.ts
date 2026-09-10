@@ -111,7 +111,7 @@ type PendingServerRequest =
   | {
       sessionId: string;
       requestId: JsonRpcRequestId;
-      kind: 'user_input' | 'mcp_elicitation';
+      kind: 'user_input' | 'mcp_elicitation' | 'cursor_ask_question' | 'cursor_create_plan';
     };
 
 const pendingServerRequests = new Map<string, PendingServerRequest>();
@@ -122,6 +122,14 @@ export function resolveSessionModel(provider: AgentProvider, configuredModel: st
   return provider === 'cursor'
     ? configuredModel.trim() || 'auto'
     : normaliseCodexModel(configuredModel);
+}
+
+export function resolveCursorMode(
+  codexMode: CodexMode,
+  collaborationMode?: ChatSendOptions['collaborationMode'],
+): 'agent' | 'plan' | 'ask' {
+  if (collaborationMode === 'plan') return 'plan';
+  return codexMode === 'read-only' ? 'ask' : 'agent';
 }
 
 /**
@@ -360,6 +368,11 @@ export async function sendMessage(
       sessionId: session.threadId,
       configId: 'model',
       value: model,
+    });
+    sendCodexJsonRpc(session.process, 'session/set_config', {
+      sessionId: session.threadId,
+      configId: 'mode',
+      value: resolveCursorMode(mode, options?.collaborationMode),
     });
     sendCodexJsonRpc(session.process, 'session/prompt', {
       sessionId: session.threadId,
@@ -721,13 +734,27 @@ export function buildApprovalResponse(
 ): Record<string, unknown> {
   if (kind !== 'permissions') return { decision };
   const acpOptions = Array.isArray(permissions?.options) ? permissions.options : [];
-  const acpOption = acpOptions.find((option) => {
-    if (typeof option !== 'object' || option === null) return false;
-    const optionKind = (option as { kind?: unknown }).kind;
-    return decision === 'decline' || decision === 'cancel'
-      ? optionKind === 'reject_once' || optionKind === 'reject_always'
-      : optionKind === 'allow_once' || optionKind === 'allow_always';
-  }) as { optionId?: unknown } | undefined;
+  if (decision === 'cancel' && acpOptions.length > 0) {
+    return { outcome: { outcome: 'cancelled' } };
+  }
+  const optionKinds =
+    decision === 'decline'
+      ? ['reject_once', 'reject_always']
+      : decision === 'acceptForSession'
+        ? ['allow_always', 'allow_once']
+        : ['allow_once', 'allow_always'];
+  const acpOption = optionKinds
+    .map((kind) =>
+      acpOptions.find(
+        (option) =>
+          typeof option === 'object' &&
+          option !== null &&
+          (option as { kind?: unknown }).kind === kind,
+      ),
+    )
+    .find(
+      (option): option is { optionId?: unknown } => typeof option === 'object' && option !== null,
+    );
   if (typeof acpOption?.optionId === 'string') {
     return { outcome: { outcome: 'selected', optionId: acpOption.optionId } };
   }
@@ -744,6 +771,26 @@ export function buildInputResponse(response: CodexInputResponse): Record<string,
       answers: Object.fromEntries(
         Object.entries(response.answers).map(([questionId, answers]) => [questionId, { answers }]),
       ),
+    };
+  }
+  if (response.kind === 'cursor_ask_question') {
+    return {
+      outcome:
+        response.action === 'submit'
+          ? { outcome: 'answered', answers: response.answers }
+          : response.action === 'skip'
+            ? { outcome: 'skipped' }
+            : { outcome: 'cancelled' },
+    };
+  }
+  if (response.kind === 'cursor_create_plan') {
+    return {
+      outcome:
+        response.action === 'submit'
+          ? { outcome: 'accepted' }
+          : response.action === 'skip'
+            ? { outcome: 'rejected' }
+            : { outcome: 'cancelled' },
     };
   }
   return {
@@ -857,7 +904,12 @@ function handleServerMessage(session: ManagedSession, line: string): void {
       }
       if (event.type === 'input_request' && event.inputRequestId !== undefined) {
         const kind = event.inputRequest?.kind;
-        if (kind === 'user_input' || kind === 'mcp_elicitation') {
+        if (
+          kind === 'user_input' ||
+          kind === 'mcp_elicitation' ||
+          kind === 'cursor_ask_question' ||
+          kind === 'cursor_create_plan'
+        ) {
           pendingServerRequests.set(buildPendingRequestKey(session.id, event.inputRequestId), {
             sessionId: session.id,
             requestId: event.inputRequestId,
