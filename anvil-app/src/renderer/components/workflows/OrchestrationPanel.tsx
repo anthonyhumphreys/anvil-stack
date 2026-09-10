@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { ArrowRight, Bot, GitFork, Plus, Trash2, UserCheck } from 'lucide-react';
 import type {
   AgentProvider,
+  CodexCliStatus,
+  CursorCliStatus,
   Persona,
   WorkflowAgentProfile,
   WorkflowNode,
@@ -10,6 +12,7 @@ import type {
 } from '../../../shared/types';
 import { DEFAULT_CODEX_MODEL, getCodexModelReasoningOptions } from '../../../shared/codex-models';
 import { orchestrationConfig, TEAM_STRATEGIES } from '../../../shared/workflow-orchestration';
+import { buildProviderModelOptions } from '../../utils/chat-model-options';
 
 const fieldClass = 'workflow-input';
 
@@ -18,11 +21,15 @@ export function OrchestrationPanel({
   onChange,
   providers,
   personas,
+  codexStatus,
+  cursorStatus,
 }: {
   value?: WorkflowOrchestration;
   onChange: (value: WorkflowOrchestration) => void;
   providers: AgentProvider[];
   personas: Persona[];
+  codexStatus: CodexCliStatus | null;
+  cursorStatus: CursorCliStatus | null;
 }) {
   const [expandedProfile, setExpandedProfile] = useState<string | null>(null);
   const config = orchestrationConfig(value);
@@ -45,6 +52,8 @@ export function OrchestrationPanel({
           className="inline-flex items-center gap-1 text-xs text-accent"
           onClick={() => {
             const id = crypto.randomUUID();
+            const provider = providers[0] ?? 'codex';
+            const model = buildProviderModelOptions(provider, null, codexStatus, cursorStatus)[0];
             update({
               profiles: [
                 ...config.profiles,
@@ -52,9 +61,9 @@ export function OrchestrationPanel({
                   id,
                   name: `Specialist ${config.profiles.length + 1}`,
                   personaId: 'coder',
-                  provider: providers[0] ?? 'codex',
-                  model: providers[0] === 'cursor' ? 'auto' : DEFAULT_CODEX_MODEL,
-                  reasoningEffort: 'medium',
+                  provider,
+                  model: model?.id ?? DEFAULT_CODEX_MODEL,
+                  reasoningEffort: model?.defaultReasoningEffort ?? 'medium',
                   capabilities: [],
                 },
               ],
@@ -72,146 +81,188 @@ export function OrchestrationPanel({
         </p>
       )}
       <div className="divide-y divide-border">
-        {config.profiles.map((profile) => (
-          <div key={profile.id} className="py-1">
-            <button
-              type="button"
-              aria-expanded={expandedProfile === profile.id}
-              aria-controls={`specialist-${profile.id}`}
-              onClick={() => setExpandedProfile(expandedProfile === profile.id ? null : profile.id)}
-              className="flex w-full items-center gap-3 rounded-lg px-2 py-3 text-left transition hover:bg-bg-tertiary focus-visible:outline focus-visible:outline-accent"
-            >
-              <Bot size={17} className="shrink-0 text-text-tertiary" />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-medium text-text-primary">
-                  {profile.name}
+        {config.profiles.map((profile) => {
+          const modelOptions = buildProviderModelOptions(
+            profile.provider,
+            profile.model,
+            codexStatus,
+            cursorStatus,
+          );
+          const selectedModel = modelOptions.find((model) => model.id === profile.model);
+          return (
+            <div key={profile.id} className="py-1">
+              <button
+                type="button"
+                aria-expanded={expandedProfile === profile.id}
+                aria-controls={`specialist-${profile.id}`}
+                onClick={() =>
+                  setExpandedProfile(expandedProfile === profile.id ? null : profile.id)
+                }
+                className="flex w-full items-center gap-3 rounded-lg px-2 py-3 text-left transition hover:bg-bg-tertiary focus-visible:outline focus-visible:outline-accent"
+              >
+                <Bot size={17} className="shrink-0 text-text-tertiary" />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-medium text-text-primary">
+                    {profile.name}
+                  </span>
+                  <span className="mt-1 block truncate text-xs text-text-tertiary">
+                    {profile.provider} · {profile.model}
+                    {profile.provider !== 'cursor' ? ` · ${profile.reasoningEffort}` : ''}
+                  </span>
                 </span>
-                <span className="mt-1 block truncate text-xs text-text-tertiary">
-                  {profile.provider} · {profile.model}
-                  {profile.provider !== 'cursor' ? ` · ${profile.reasoningEffort}` : ''}
+                <span className="text-xs text-accent">
+                  {expandedProfile === profile.id ? 'Done' : 'Edit'}
                 </span>
-              </span>
-              <span className="text-xs text-accent">
-                {expandedProfile === profile.id ? 'Done' : 'Edit'}
-              </span>
-            </button>
-            {expandedProfile === profile.id && (
-              <div id={`specialist-${profile.id}`} className="space-y-3 px-2 pb-5 pt-2">
-                <div className="flex items-center gap-2">
-                  <Bot size={16} className="shrink-0 text-accent" />
-                  <input
-                    aria-label="Specialist name"
-                    value={profile.name}
-                    onChange={(event) => updateProfile(profile.id, { name: event.target.value })}
-                    className={fieldClass}
-                  />
-                  <button
-                    aria-label={`Remove ${profile.name}`}
-                    className="p-2 text-text-tertiary hover:text-error"
-                    onClick={() =>
-                      update({ profiles: config.profiles.filter((item) => item.id !== profile.id) })
-                    }
-                  >
-                    <Trash2 size={15} />
-                  </button>
-                </div>
-                <label className="block text-xs text-text-secondary">
-                  Persona
-                  <select
-                    className={`${fieldClass} mt-1`}
-                    value={profile.personaId}
-                    onChange={(event) =>
-                      updateProfile(profile.id, { personaId: event.target.value })
-                    }
-                  >
-                    {personas.map((persona) => (
-                      <option key={persona.id} value={persona.id}>
-                        {persona.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="block text-xs text-text-secondary">
-                  Provider
-                  <select
-                    className={`${fieldClass} mt-1`}
-                    value={profile.provider}
-                    onChange={(event) =>
-                      updateProfile(profile.id, {
-                        provider: event.target.value as AgentProvider,
-                        model: event.target.value === 'cursor' ? 'auto' : DEFAULT_CODEX_MODEL,
-                        reasoningEffort: 'medium',
-                      })
-                    }
-                  >
-                    {[...new Set([...providers, profile.provider])].map((provider) => (
-                      <option key={provider} value={provider}>
-                        {provider}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="block text-xs text-text-secondary">
-                  Model
-                  <input
-                    className={`${fieldClass} mt-1`}
-                    value={profile.model}
-                    onChange={(event) =>
-                      updateProfile(profile.id, {
-                        model: event.target.value,
-                        reasoningEffort: getCodexModelReasoningOptions(event.target.value)
-                          .defaultReasoningEffort,
-                      })
-                    }
-                  />
-                </label>
-                {profile.provider !== 'cursor' ? (
-                  <label className="block text-xs text-text-secondary">
-                    Reasoning
-                    <select
-                      className={`${fieldClass} mt-1`}
-                      value={profile.reasoningEffort}
-                      onChange={(event) =>
-                        updateProfile(profile.id, {
-                          reasoningEffort: event.target
-                            .value as WorkflowAgentProfile['reasoningEffort'],
+              </button>
+              {expandedProfile === profile.id && (
+                <div id={`specialist-${profile.id}`} className="space-y-3 px-2 pb-5 pt-2">
+                  <div className="flex items-center gap-2">
+                    <Bot size={16} className="shrink-0 text-accent" />
+                    <input
+                      aria-label="Specialist name"
+                      value={profile.name}
+                      onChange={(event) => updateProfile(profile.id, { name: event.target.value })}
+                      className={fieldClass}
+                    />
+                    <button
+                      aria-label={`Remove ${profile.name}`}
+                      className="p-2 text-text-tertiary hover:text-error"
+                      onClick={() =>
+                        update({
+                          profiles: config.profiles.filter((item) => item.id !== profile.id),
                         })
                       }
                     >
-                      {getCodexModelReasoningOptions(profile.model).supportedReasoningEfforts.map(
-                        (effort) => (
+                      <Trash2 size={15} />
+                    </button>
+                  </div>
+                  <label className="block text-xs text-text-secondary">
+                    Persona
+                    <select
+                      className={`${fieldClass} mt-1`}
+                      value={profile.personaId}
+                      onChange={(event) =>
+                        updateProfile(profile.id, { personaId: event.target.value })
+                      }
+                    >
+                      {personas.map((persona) => (
+                        <option key={persona.id} value={persona.id}>
+                          {persona.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="block text-xs text-text-secondary">
+                    Provider
+                    <select
+                      className={`${fieldClass} mt-1`}
+                      value={profile.provider}
+                      onChange={(event) => {
+                        const provider = event.target.value as AgentProvider;
+                        const model = buildProviderModelOptions(
+                          provider,
+                          null,
+                          codexStatus,
+                          cursorStatus,
+                        )[0];
+                        updateProfile(profile.id, {
+                          provider,
+                          model: model?.id ?? DEFAULT_CODEX_MODEL,
+                          reasoningEffort: model?.defaultReasoningEffort ?? 'medium',
+                        });
+                      }}
+                    >
+                      {[...new Set([...providers, profile.provider])].map((provider) => (
+                        <option key={provider} value={provider}>
+                          {provider}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="block text-xs text-text-secondary">
+                    Model
+                    <select
+                      className={`${fieldClass} mt-1`}
+                      value={profile.model}
+                      onChange={(event) => {
+                        const model = modelOptions.find(
+                          (option) => option.id === event.target.value,
+                        );
+                        updateProfile(profile.id, {
+                          model: event.target.value,
+                          reasoningEffort:
+                            (model?.supportedReasoningEfforts.includes(profile.reasoningEffort) ??
+                            false)
+                              ? profile.reasoningEffort
+                              : (model?.defaultReasoningEffort ?? profile.reasoningEffort),
+                        });
+                      }}
+                    >
+                      {modelOptions.map((model) => (
+                        <option key={model.id} value={model.id}>
+                          {model.label} · {model.id}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="mt-1 text-xs text-text-tertiary">
+                      {profile.provider === 'cursor'
+                        ? cursorStatus?.models.length
+                          ? `${cursorStatus.models.length} models detected from Cursor CLI.`
+                          : "Cursor's model catalog is unavailable. Auto uses Cursor's default."
+                        : codexStatus?.models?.length
+                          ? `${codexStatus.models.filter((model) => !model.hidden).length} models detected from Codex CLI.`
+                          : 'Using the built-in model catalog.'}
+                    </p>
+                  </label>
+                  {profile.provider !== 'cursor' ? (
+                    <label className="block text-xs text-text-secondary">
+                      Reasoning
+                      <select
+                        className={`${fieldClass} mt-1`}
+                        value={profile.reasoningEffort}
+                        onChange={(event) =>
+                          updateProfile(profile.id, {
+                            reasoningEffort: event.target
+                              .value as WorkflowAgentProfile['reasoningEffort'],
+                          })
+                        }
+                      >
+                        {(
+                          selectedModel?.supportedReasoningEfforts ??
+                          getCodexModelReasoningOptions(profile.model).supportedReasoningEfforts
+                        ).map((effort) => (
                           <option key={effort} value={effort}>
                             {effort}
                           </option>
-                        ),
-                      )}
-                    </select>
+                        ))}
+                      </select>
+                    </label>
+                  ) : (
+                    <p className="text-xs text-text-tertiary">
+                      Cursor reasoning is selected through its model ID.
+                    </p>
+                  )}
+                  <label className="block text-xs text-text-secondary">
+                    Capabilities, separated by commas
+                    <input
+                      className={`${fieldClass} mt-1`}
+                      placeholder="typescript, security, testing"
+                      value={profile.capabilities.join(', ')}
+                      onChange={(event) =>
+                        updateProfile(profile.id, {
+                          capabilities: event.target.value
+                            .split(',')
+                            .map((value) => value.trim())
+                            .filter(Boolean),
+                        })
+                      }
+                    />
                   </label>
-                ) : (
-                  <p className="text-xs text-text-tertiary">
-                    Cursor reasoning is selected through its model ID.
-                  </p>
-                )}
-                <label className="block text-xs text-text-secondary">
-                  Capabilities, separated by commas
-                  <input
-                    className={`${fieldClass} mt-1`}
-                    placeholder="typescript, security, testing"
-                    value={profile.capabilities.join(', ')}
-                    onChange={(event) =>
-                      updateProfile(profile.id, {
-                        capabilities: event.target.value
-                          .split(',')
-                          .map((value) => value.trim())
-                          .filter(Boolean),
-                      })
-                    }
-                  />
-                </label>
-              </div>
-            )}
-          </div>
-        ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
       <details className="mt-6 border-t border-border pt-4">
         <summary className="cursor-pointer text-sm font-medium text-text-secondary">
@@ -334,7 +385,8 @@ export function TeamSettings({
                     <span>
                       {profile.name}
                       <span className="block text-text-tertiary">
-                        {profile.provider} · {profile.model} · {profile.reasoningEffort}
+                        {profile.provider} · {profile.model}
+                        {profile.provider !== 'cursor' ? ` · ${profile.reasoningEffort}` : ''}
                       </span>
                     </span>
                   </label>

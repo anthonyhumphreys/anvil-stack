@@ -513,6 +513,8 @@ export function WorkflowsView() {
 
   const loadPreset = (kind: WorkflowPreset) => {
     const provider = agentSettings?.llmProvider ?? 'codex';
+    const model =
+      agentSettings?.openaiModel ?? (provider === 'cursor' ? 'auto' : DEFAULT_CODEX_MODEL);
     const profiles = orchestrationConfig(draft.orchestration).profiles;
     const generated = createOrchestrationPreset(
       kind,
@@ -539,18 +541,11 @@ export function WorkflowsView() {
               personaId: 'coder',
               capabilities: ['testing', 'regression'],
             },
-          ].map((profile, index) => {
-            const available = agentSettings?.enabledLlmProviders?.length
-              ? agentSettings.enabledLlmProviders
-              : [provider];
-            const selectedProvider = available[index % available.length];
+          ].map((profile) => {
             return {
               ...profile,
-              provider: selectedProvider,
-              model:
-                selectedProvider === 'cursor'
-                  ? 'auto'
-                  : (agentSettings?.openaiModel ?? DEFAULT_CODEX_MODEL),
+              provider,
+              model,
               reasoningEffort: 'high' as const,
             };
           }),
@@ -1047,6 +1042,8 @@ export function WorkflowsView() {
                   : [agentSettings?.llmProvider ?? 'codex']
               }
               personas={personas}
+              codexStatus={codexStatus}
+              cursorStatus={cursorStatus}
             />
           ) : selectedNode ? (
             <Inspector
