@@ -14,6 +14,7 @@ import type {
   CodexSubagentToolStatus,
   CodexSubagentUpdate,
   CodexUserInputQuestion,
+  CursorQuestion,
   ReasoningEffort,
 } from '../../shared/types.js';
 
@@ -265,12 +266,54 @@ export function handleCodexServerLine(
     case 'session/request_permission': {
       const params = msg.params as Record<string, unknown>;
       const toolCall = params?.toolCall as Record<string, unknown> | undefined;
+      const metadata = isRecord(params?._meta) ? params._meta : undefined;
+      const permissionMeta = isRecord(metadata?.permission) ? metadata.permission : undefined;
       callbacks.onEvent?.({
         type: 'approval_request',
         approvalRequestId: requestId,
         approvalKind: 'permissions',
-        approvalReason: typeof toolCall?.title === 'string' ? toolCall.title : undefined,
+        approvalReason:
+          isRecord(permissionMeta) && typeof permissionMeta.description === 'string'
+            ? permissionMeta.description
+            : undefined,
+        toolName:
+          typeof toolCall?.title === 'string'
+            ? toolCall.title
+            : typeof toolCall?.kind === 'string'
+              ? toolCall.kind
+              : 'Cursor tool',
+        toolInput: isRecord(toolCall?.rawInput) ? toolCall.rawInput : undefined,
         approvalPermissions: { options: Array.isArray(params?.options) ? params.options : [] },
+      });
+      break;
+    }
+
+    case 'cursor/ask_question': {
+      const params = msg.params as Record<string, unknown>;
+      const questions = parseCursorQuestions(params?.questions);
+      callbacks.onEvent?.({
+        type: 'input_request',
+        inputRequestId: requestId,
+        inputRequest: {
+          kind: 'cursor_ask_question',
+          title: typeof params?.title === 'string' ? params.title : undefined,
+          questions,
+        },
+      });
+      break;
+    }
+
+    case 'cursor/create_plan': {
+      const params = msg.params as Record<string, unknown>;
+      if (typeof params?.plan !== 'string') break;
+      callbacks.onEvent?.({
+        type: 'input_request',
+        inputRequestId: requestId,
+        inputRequest: {
+          kind: 'cursor_create_plan',
+          title: typeof params.title === 'string' ? params.title : undefined,
+          plan: params.plan,
+        },
       });
       break;
     }
@@ -829,6 +872,34 @@ function parseUserInputQuestions(value: unknown): CodexUserInputQuestion[] {
         isOther: candidate.isOther === true,
         isSecret: candidate.isSecret === true,
         options,
+      },
+    ];
+  });
+}
+
+function parseCursorQuestions(value: unknown): CursorQuestion[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((candidate) => {
+    if (!isRecord(candidate)) return [];
+    if (typeof candidate.id !== 'string' || typeof candidate.prompt !== 'string') return [];
+    const options = Array.isArray(candidate.options)
+      ? candidate.options.flatMap((option) => {
+          if (
+            !isRecord(option) ||
+            typeof option.id !== 'string' ||
+            typeof option.label !== 'string'
+          ) {
+            return [];
+          }
+          return [{ id: option.id, label: option.label }];
+        })
+      : [];
+    return [
+      {
+        id: candidate.id,
+        prompt: candidate.prompt,
+        options,
+        allowMultiple: candidate.allowMultiple === true,
       },
     ];
   });

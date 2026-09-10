@@ -12,6 +12,7 @@ import type {
   CodexEvent,
   CodexInputRequest,
   CodexInputResponse,
+  CursorQuestion,
 } from '../../shared/types.js';
 
 interface AgentProviderUIContext {
@@ -53,8 +54,34 @@ export function adaptProviderEventToAgentUIIntent(
 export function providerResponseFromAgentUIResolution(
   intent: AgentUIQuestionIntent,
   resolution: AgentUIQuestionResolution,
-  responseKind: 'user_input' | 'mcp_elicitation',
+  responseKind: 'user_input' | 'mcp_elicitation' | 'cursor_ask_question' | 'cursor_create_plan',
 ): CodexInputResponse {
+  if (responseKind === 'cursor_ask_question') {
+    return {
+      kind: 'cursor_ask_question',
+      action: resolution.action,
+      answers: intent.payload.questions.map((question) => ({
+        questionId: question.id,
+        selectedOptionIds: answerToStrings(resolution.answers[question.id]),
+      })),
+    };
+  }
+
+  if (responseKind === 'cursor_create_plan') {
+    if (resolution.action === 'cancel') {
+      return { kind: 'cursor_create_plan', action: 'cancel' };
+    }
+    if (resolution.action === 'skip') {
+      return { kind: 'cursor_create_plan', action: 'skip' };
+    }
+    const planAnswer = resolution.answers.plan;
+    const rejected =
+      planAnswer === false ||
+      planAnswer === 'reject' ||
+      (Array.isArray(planAnswer) && planAnswer.includes('reject'));
+    return { kind: 'cursor_create_plan', action: rejected ? 'skip' : 'submit' };
+  }
+
   if (responseKind === 'mcp_elicitation') {
     return {
       kind: 'mcp_elicitation',
@@ -143,7 +170,11 @@ function questionIntentFromProvider(
   const questions =
     request.kind === 'user_input'
       ? (request.questions ?? []).map(questionFromCodexUserInput)
-      : questionsFromJsonSchema(request.requestedSchema);
+      : request.kind === 'cursor_ask_question'
+        ? request.questions.map(questionFromCursor)
+        : request.kind === 'cursor_create_plan'
+          ? [questionFromCursorPlan(request)]
+          : questionsFromJsonSchema(request.requestedSchema);
   if (questions.length === 0) return null;
   const now = new Date().toISOString();
   const id = `question:${context.sessionId}:${typeof requestId}:${String(requestId)}`;
@@ -161,11 +192,13 @@ function questionIntentFromProvider(
     presentation: { collapsed: false, hidden: false },
     payload: {
       title:
-        request.kind === 'mcp_elicitation'
-          ? request.serverName
-            ? `${request.serverName} needs input`
-            : 'Connected tool needs input'
-          : 'Agent needs your input',
+        request.kind === 'cursor_ask_question' || request.kind === 'cursor_create_plan'
+          ? (request.title ?? 'Cursor needs your input')
+          : request.kind === 'mcp_elicitation'
+            ? request.serverName
+              ? `${request.serverName} needs input`
+              : 'Connected tool needs input'
+            : 'Agent needs your input',
       questions: questions.map((question, index) =>
         index === 0 && request.kind === 'mcp_elicitation' && request.message
           ? { ...question, context: question.context ?? request.message }
@@ -177,8 +210,41 @@ function questionIntentFromProvider(
   };
 }
 
+function questionFromCursor(question: CursorQuestion): AgentUIQuestion {
+  return {
+    id: question.id,
+    kind: question.allowMultiple ? 'multiple_choice' : 'single_choice',
+    question: question.prompt,
+    required: true,
+    allowCancel: true,
+    options: question.options.map(
+      (option): AgentUIQuestionOption => ({
+        id: option.id,
+        label: option.label,
+        value: option.id,
+      }),
+    ),
+  };
+}
+
+function questionFromCursorPlan(
+  request: Extract<CodexInputRequest, { kind: 'cursor_create_plan' }>,
+): AgentUIQuestion {
+  return {
+    id: 'plan',
+    kind: 'approval',
+    question: request.plan,
+    required: true,
+    allowCancel: true,
+    options: [
+      { id: 'accept', label: 'Accept plan', value: 'accept' },
+      { id: 'reject', label: 'Reject plan', value: 'reject' },
+    ],
+  };
+}
+
 function questionFromCodexUserInput(
-  question: NonNullable<CodexInputRequest['questions']>[number],
+  question: NonNullable<Extract<CodexInputRequest, { kind: 'user_input' }>['questions']>[number],
 ): AgentUIQuestion {
   const options = question.options?.map((option, index): AgentUIQuestionOption => {
     const recommended = /\(recommended\)/i.test(option.label);

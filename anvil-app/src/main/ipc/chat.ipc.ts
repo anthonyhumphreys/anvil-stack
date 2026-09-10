@@ -374,8 +374,9 @@ export function registerChatHandlers(): void {
       sessionId: string,
       requestId: string | number,
       decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel',
+      optionId?: string,
     ): void => {
-      resolveApproval(sessionId, requestId, decision);
+      resolveApproval(sessionId, requestId, decision, optionId);
     },
   );
 

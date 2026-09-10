@@ -331,6 +331,98 @@ describe('codex protocol service', () => {
     ]);
   });
 
+  it('preserves Cursor ACP permission context and option metadata', () => {
+    const events = collectEvents(createState(), [
+      {
+        id: 'cursor-permission-1',
+        method: 'session/request_permission',
+        params: {
+          sessionId: 'cursor-session-1',
+          toolCall: {
+            toolCallId: 'tool-1',
+            title: 'Run tests',
+            kind: 'execute',
+            rawInput: { command: 'pnpm test' },
+          },
+          options: [
+            { optionId: 'allow-once', name: 'Run once', kind: 'allow_once' },
+            { optionId: 'reject-once', name: 'Reject', kind: 'reject_once' },
+          ],
+          _meta: { permission: { description: 'Needed to verify the change.' } },
+        },
+      },
+    ]);
+
+    expect(events).toEqual([
+      {
+        type: 'approval_request',
+        approvalRequestId: 'cursor-permission-1',
+        approvalKind: 'permissions',
+        approvalReason: 'Needed to verify the change.',
+        toolName: 'Run tests',
+        toolInput: { command: 'pnpm test' },
+        approvalPermissions: {
+          options: [
+            { optionId: 'allow-once', name: 'Run once', kind: 'allow_once' },
+            { optionId: 'reject-once', name: 'Reject', kind: 'reject_once' },
+          ],
+        },
+      },
+    ]);
+  });
+
+  it('normalises Cursor blocking question and plan requests', () => {
+    const events = collectEvents(createState(), [
+      {
+        id: 18,
+        method: 'cursor/ask_question',
+        params: {
+          title: 'Choose a target',
+          questions: [
+            {
+              id: 'target',
+              prompt: 'Where should this deploy?',
+              options: [{ id: 'preview', label: 'Preview' }],
+            },
+          ],
+        },
+      },
+      {
+        id: 19,
+        method: 'cursor/create_plan',
+        params: { title: 'Approve implementation plan', plan: '1. Inspect\n2. Implement' },
+      },
+    ]);
+
+    expect(events).toEqual([
+      {
+        type: 'input_request',
+        inputRequestId: 18,
+        inputRequest: {
+          kind: 'cursor_ask_question',
+          title: 'Choose a target',
+          questions: [
+            {
+              id: 'target',
+              prompt: 'Where should this deploy?',
+              options: [{ id: 'preview', label: 'Preview' }],
+              allowMultiple: false,
+            },
+          ],
+        },
+      },
+      {
+        type: 'input_request',
+        inputRequestId: 19,
+        inputRequest: {
+          kind: 'cursor_create_plan',
+          title: 'Approve implementation plan',
+          plan: '1. Inspect\n2. Implement',
+        },
+      },
+    ]);
+  });
+
   it('maps user input and MCP elicitation requests into blocking chat events', () => {
     const events = collectEvents(createState(), [
       {

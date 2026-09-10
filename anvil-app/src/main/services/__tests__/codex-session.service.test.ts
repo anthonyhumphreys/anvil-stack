@@ -24,6 +24,7 @@ import {
   buildTurnSteerParams,
   resolveSessionModel,
   resolvePersonaCodexPolicy,
+  resolveCursorMode,
   resolvePlanFeedbackDelivery,
   resolveSessionCwd,
 } from '../codex-session.service.js';
@@ -56,6 +57,12 @@ describe('codex session service', () => {
     );
     expect(resolveSessionModel('cursor', '  ')).toBe('auto');
     expect(resolveSessionModel('codex', '')).toBe('gpt-5.6-sol');
+  });
+
+  it('maps Anvil access and collaboration modes to Cursor ACP modes', () => {
+    expect(resolveCursorMode('read-only')).toBe('ask');
+    expect(resolveCursorMode('on-request')).toBe('agent');
+    expect(resolveCursorMode('full-access', 'plan')).toBe('plan');
   });
 
   it('advertises ACP form elicitation without claiming unsupported URL elicitation', () => {
@@ -120,6 +127,49 @@ describe('codex session service', () => {
     expect(buildApprovalResponse('command', undefined, 'accept')).toEqual({ decision: 'accept' });
   });
 
+  it('maps Cursor ACP permission choices to the provider option ids', () => {
+    const permissions = {
+      options: [
+        { optionId: 'allow-once', name: 'Run once', kind: 'allow_once' },
+        { optionId: 'allow-always', name: 'Always run', kind: 'allow_always' },
+        { optionId: 'reject-once', name: 'Reject', kind: 'reject_once' },
+      ],
+    };
+
+    expect(buildApprovalResponse('permissions', permissions, 'accept')).toEqual({
+      outcome: { outcome: 'selected', optionId: 'allow-once' },
+    });
+    expect(buildApprovalResponse('permissions', permissions, 'acceptForSession')).toEqual({
+      outcome: { outcome: 'selected', optionId: 'allow-always' },
+    });
+    expect(buildApprovalResponse('permissions', permissions, 'decline')).toEqual({
+      outcome: { outcome: 'selected', optionId: 'reject-once' },
+    });
+    expect(
+      buildApprovalResponse(
+        'permissions',
+        {
+          options: [
+            { optionId: 'reject-once', name: 'Reject once', kind: 'reject_once' },
+            { optionId: 'reject-always', name: 'Always reject', kind: 'reject_always' },
+          ],
+        },
+        'decline',
+        'reject-always',
+      ),
+    ).toEqual({ outcome: { outcome: 'selected', optionId: 'reject-always' } });
+    expect(buildApprovalResponse('permissions', permissions, 'cancel')).toEqual({
+      outcome: { outcome: 'cancelled' },
+    });
+    expect(
+      buildApprovalResponse(
+        'permissions',
+        { options: [{ optionId: 'allow-once', kind: 'allow_once' }] },
+        'acceptForSession',
+      ),
+    ).toEqual({ outcome: { outcome: 'selected', optionId: 'allow-once' } });
+  });
+
   it('maps user answers and MCP elicitation responses to app-server response shapes', () => {
     expect(
       buildInputResponse({
@@ -145,6 +195,21 @@ describe('codex session service', () => {
         action: 'decline',
       }),
     ).toEqual({ action: 'decline', content: null, _meta: null });
+    expect(
+      buildInputResponse({
+        kind: 'cursor_ask_question',
+        action: 'submit',
+        answers: [{ questionId: 'target', selectedOptionIds: ['preview'] }],
+      }),
+    ).toEqual({
+      outcome: {
+        outcome: 'answered',
+        answers: [{ questionId: 'target', selectedOptionIds: ['preview'] }],
+      },
+    });
+    expect(buildInputResponse({ kind: 'cursor_create_plan', action: 'skip' })).toEqual({
+      outcome: { outcome: 'rejected' },
+    });
   });
 
   it('forces non-writing personas into the read-only sandbox', () => {

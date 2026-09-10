@@ -270,6 +270,7 @@ export interface AnvilAPI {
       sessionId: string,
       requestId: string | number,
       decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel',
+      optionId?: string,
     ) => Promise<void>;
     resolveInputRequest: (
       sessionId: string,
