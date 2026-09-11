@@ -20,6 +20,7 @@ Committed on the branch:
 - `2108023 docs(sync-mesh): add Sync & Mesh spec v2, backend integration contract, and builder prompt`
 - `317272f docs(sync-mesh): add execution handoff plan for continuing agent`
 - `bebb146 docs(sync-mesh): PLAN-01 persistence and identity audit` — **PLAN-01 is complete and committed.** Key findings that constrain later packets: workspace and workflow-template IDs are already random UUIDs (keep them); `repos.id` is a SHA-256 prefix of the absolute path (machine-specific — map portable repo IDs onto it, never replace the FK); personas are a hardcoded slug catalog with no table or write path, so ENTITY-01 must introduce an editable-agent store before "editable agent definitions" can sync; `codex_mode` is local execution policy and must be excluded from the settings allowlist; `createWorkspace`/`deleteWorkspace`/membership already use `db.transaction()`, while template save/delete and `startWorkflowRun` do not.
+- `3c42e71 feat(sync-mesh): PLAN-02 provider-neutral v1 protocol contract and fixtures` — **PLAN-02 is complete and committed** (45 tests, strict typecheck clean via `cloud/tsconfig.json`). Ambiguity resolutions are logged in `anvil-app/cloud/contract/README.md`: `quota-exceeded`→413, `unsupported-*`→400, `SyncCursor` is a branded string, direct `cancelled` allowed only from non-running states. Only SYNC-01 remains from Wave 1.
 
 Baseline facts verified against the repo (do not re-audit):
 
