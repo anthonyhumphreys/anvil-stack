@@ -10,5 +10,6 @@
     "types": [],
     "lib": ["ES2022"]
   },
-  "include": ["./**/*.ts"]
+  "include": ["./**/*.ts"],
+  "exclude": ["./backend/**"]
 }
