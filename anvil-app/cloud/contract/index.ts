@@ -4,6 +4,7 @@
 export * from './version';
 export * from './discovery';
 export * from './envelope';
+export * from './auth';
 export * from './sync';
 export * from './operations';
 export * from './jobs';
