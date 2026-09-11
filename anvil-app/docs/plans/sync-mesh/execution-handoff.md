@@ -22,7 +22,20 @@ Committed on the branch:
 - `bebb146 docs(sync-mesh): PLAN-01 persistence and identity audit` — **PLAN-01 is complete and committed.** Key findings that constrain later packets: workspace and workflow-template IDs are already random UUIDs (keep them); `repos.id` is a SHA-256 prefix of the absolute path (machine-specific — map portable repo IDs onto it, never replace the FK); personas are a hardcoded slug catalog with no table or write path, so ENTITY-01 must introduce an editable-agent store before "editable agent definitions" can sync; `codex_mode` is local execution policy and must be excluded from the settings allowlist; `createWorkspace`/`deleteWorkspace`/membership already use `db.transaction()`, while template save/delete and `startWorkflowRun` do not.
 - `3c42e71 feat(sync-mesh): PLAN-02 provider-neutral v1 protocol contract and fixtures` — **PLAN-02 is complete and committed** (45 tests, strict typecheck clean via `cloud/tsconfig.json`). Ambiguity resolutions are logged in `anvil-app/cloud/contract/README.md`: `quota-exceeded`→413, `unsupported-*`→400, `SyncCursor` is a branded string, direct `cancelled` allowed only from non-running states. - `54ba1f4 feat(sync): SYNC-01 local sync bindings, outbox, and transactional workflow template writes` — **SYNC-01 is complete and committed** (schema v67; 25 new tests, 76/76 across sync/schema/workflow suites; eslint clean). Decisions taken: `dataset_epoch` is opaque TEXT; `sync_state.reset_required` INTEGER flag for reset/receipt-expired; dispatch skips entities with a `dispatched` row or an unresolved `sync_conflicts` row; `enrollment_id` is `''` until `nextBatch` assigns the dispatching enrollment; conflict `kind` inferred from op/remote payload; ordering `created_at, rowid`. `sync-persistence.service.ts` is ~880 lines — split an outbox module out in a later packet if it grows further.
 
-**Wave 1 is fully landed. Start at §3 reconciliation, then dispatch Wave 2 (§4).** Known pre-existing `tsc -p tsconfig.node.json` errors exist on `main` in untouched files (`chat.ipc`, `codex-bridge`, `embedded-editor`, `telemetry`, mobile-companion/agent-ui-intent tests); they are not from this branch — judge typecheck by "no errors in touched files" until main is fixed.
+**Wave 1 is fully landed.** Known pre-existing `tsc -p tsconfig.node.json` errors exist on `main` in untouched files (`chat.ipc`, `codex-bridge`, `embedded-editor`, `telemetry`, mobile-companion/agent-ui-intent tests); they are not from this branch — judge typecheck by "no errors in touched files" until main is fixed.
+
+- `6af4c93 refactor(sync): align local PendingChange and hash with cloud contract` — **§3 reconciliation is complete.** `src/shared/sync-mesh.ts` re-exports `PendingChange`, `SyncOperation`, `canonicalChangeHashInput`, `canonicalizeJson`, and `hashChange` from `cloud/contract/sync.ts`. `computePayloadHash` / `canonicalJson` in `sync-persistence.service.ts` delegate to those. `tsconfig.node.json` includes `cloud/contract/**`. Alignment tests live in `src/main/services/__tests__/sync-contract-hash.test.ts`.
+
+**Wave 2 is in flight** (disjoint file owners). If the working tree has their output when you arrive, verify and commit per packet; do not restart:
+
+| Packet | Owner files | Commit message |
+| --- | --- | --- |
+| BACKEND-01 | `anvil-app/cloud/backend/**` only | `feat(sync-mesh): BACKEND-01 AccountCoordinator push/pull spike` |
+| AUTH-01 | `cloud/contract/auth.ts`, `cloud/contract/index.ts` (export only), `src/main/services/sync-auth.service.ts`, tests | `feat(sync-mesh): AUTH-01 device enrollment and session contract` |
+| BYOB-01 | schema v68 `sync_backends`, client/IPC/preload/settings panel | `feat(sync-mesh): BYOB-01 generic backend discovery and connection` |
+| SESSION-01 | `docs/plans/sync-mesh/session-01-provider-portability-audit.md` only | `docs(sync-mesh): SESSION-01 provider portability audit` |
+
+Do not let AUTH-01 and BYOB-01 both edit `schema.ts` (BYOB-01 owns 68) or both edit `index.ts` beyond AUTH adding `export * from './auth'`.
 
 Baseline facts verified against the repo (do not re-audit):
 
