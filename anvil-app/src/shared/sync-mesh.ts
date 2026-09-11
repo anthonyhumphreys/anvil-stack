@@ -1,11 +1,19 @@
 /**
  * Shared TypeScript contracts for the local sync persistence layer (SYNC-01).
  *
- * These types mirror sections 3-5 of `docs/plans/sync-mesh/anvil-sync-mesh-spec-v2.md`.
- * Every sync row is scoped to `{ backendId, accountId, datasetEpoch }` per the spec's
- * ownership invariants. `datasetEpoch` is an opaque identifier (rotated on server
- * restore), so it is modelled as a string even though it is often numeric.
+ * Wire types (`PendingChange`, `SyncOperation`) are re-exported from the
+ * provider-neutral contract so local hashing and the backend share one schema.
+ * Every sync row is scoped to `{ backendId, accountId, datasetEpoch }` per the
+ * spec's ownership invariants. `datasetEpoch` is an opaque identifier (rotated
+ * on server restore), so it is modelled as a string even though it is often numeric.
  */
+
+export type { PendingChange, SyncOperation } from '../../cloud/contract/sync.js';
+export {
+  canonicalChangeHashInput,
+  canonicalizeJson,
+  hashChange,
+} from '../../cloud/contract/sync.js';
 
 export interface SyncScope {
   backendId: string;
@@ -14,8 +22,6 @@ export interface SyncScope {
 }
 
 export type SyncEntityType = string;
-
-export type SyncOperation = 'create' | 'update' | 'delete';
 
 export type SyncOutboxState = 'pending' | 'dispatched' | 'acknowledged' | 'conflict' | 'rejected';
 
@@ -31,24 +37,6 @@ export type PushResultStatus =
   | 'rejected'
   | 'reset-required'
   | 'receipt-expired';
-
-/**
- * Spec section 5 "Push". One dispatched mutation per entity; a dispatched
- * mutation is immutable and coalescing only applies while undispatched.
- */
-export interface PendingChange {
-  changeId: string;
-  enrollmentSequence: number;
-  entityType: string;
-  entityId: string;
-  schemaVersion: number;
-  /** Null is create-only: the entity has no acknowledged base revision yet. */
-  baseRevision: number | null;
-  operation: SyncOperation;
-  /** Validated by the entity-specific wire schema. Absent for deletes. */
-  payload?: unknown;
-  payloadHash: string;
-}
 
 export interface DeviceEnrollment {
   id: string;

@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
+  canonicalizeJson,
+  hashChange,
   SYNC_PUSH_DEFAULTS,
   type DeviceEnrollment,
   type NextBatchOptions,
@@ -29,15 +31,7 @@ function nowIso(): string {
 
 /** Canonical JSON: sorted object keys recursively, no whitespace. */
 export function canonicalJson(value: unknown): string {
-  if (value === null || value === undefined) return 'null';
-  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(',')}]`;
-  if (typeof value === 'object') {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, item]) => item !== undefined)
-      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
-    return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(',')}}`;
-  }
-  return JSON.stringify(value) ?? 'null';
+  return canonicalizeJson(value);
 }
 
 export interface PayloadHashInput {
@@ -54,18 +48,9 @@ export interface PayloadHashInput {
  * including operation, identity, base, and payload.
  */
 export function computePayloadHash(input: PayloadHashInput): string {
-  return createHash('sha256')
-    .update(
-      canonicalJson({
-        baseRevision: input.baseRevision,
-        entityType: input.entityType,
-        entityId: input.entityId,
-        operation: input.operation,
-        payload: input.payload ?? null,
-        schemaVersion: input.schemaVersion,
-      }),
-    )
-    .digest('hex');
+  return hashChange(input, (canonical) =>
+    createHash('sha256').update(canonical).digest('hex'),
+  );
 }
 
 interface EnrollmentRow {
