@@ -17,15 +17,23 @@ import {
   canonicalChangeHashInput,
   type PendingChange,
   type PushItemAccepted,
+  type ScannedEntity,
   type SyncCursor,
   type SyncOperation,
   type SyncPullResult,
   type SyncPushItemResult,
   type SyncPushResult,
+  type SyncScanBeginResult,
+  type SyncScanFinishResult,
+  type SyncScanPageResult,
   type SyncedChange,
 } from '../../contract/sync';
 import { SOCKET_FRAME_VERSION, type SyncInvalidateFrame } from '../../contract/socket';
-import { SOCKET_SUBPROTOCOL, DEFAULT_LIMITS } from '../../contract/version';
+import {
+  SOCKET_SUBPROTOCOL,
+  DEFAULT_LIMITS,
+  SNAPSHOT_LIFETIME_MS,
+} from '../../contract/version';
 
 interface SocketAttachment {
   accountId: string;
@@ -80,6 +88,25 @@ interface MetaRow {
   [key: string]: string | number | null;
 }
 
+interface ScanRow {
+  scan_id: string;
+  watermark_start: number;
+  epoch: string;
+  created_at: number;
+  done: number;
+  entity_cursor: string | null;
+  [key: string]: string | number | null;
+}
+
+interface ScanEntityRow {
+  entity_type: string;
+  entity_id: string;
+  revision: number;
+  schema_version: number;
+  payload: string | null;
+  [key: string]: string | number | null;
+}
+
 interface PushBatchOutcome {
   results: SyncPushItemResult[];
   acceptedWatermark: number | null;
@@ -131,6 +158,11 @@ export class AccountCoordinator extends DurableObject<Env> {
       'INSERT OR IGNORE INTO sync_meta (key, value) VALUES (?, ?)',
       'next_sequence',
       '1',
+    );
+    this.ctx.storage.sql.exec(
+      'INSERT OR IGNORE INTO sync_meta (key, value) VALUES (?, ?)',
+      'retention_floor',
+      '0',
     );
     this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
   }
@@ -202,6 +234,12 @@ export class AccountCoordinator extends DurableObject<Env> {
           return await this.handlePush(auth, rpc.requestId, rpc.params);
         case 'sync.pull':
           return this.handlePull(rpc.requestId, rpc.params);
+        case 'sync.scan.begin':
+          return this.handleScanBegin(rpc.requestId, rpc.params);
+        case 'sync.scan.page':
+          return this.handleScanPage(rpc.requestId, rpc.params);
+        case 'sync.scan.finish':
+          return this.handleScanFinish(rpc.requestId, rpc.params);
         default:
           return rpcErrorResponse(rpc.requestId, 'unsupported-operation');
       }
@@ -460,6 +498,182 @@ export class AccountCoordinator extends DurableObject<Env> {
     return rpcSuccessResponse(requestId, result);
   }
 
+  private handleScanBegin(requestId: string, params: unknown): Response {
+    const begin = parseScanBeginParams(params);
+    const result = this.ctx.storage.transactionSync(() => this.beginScan(begin.epoch));
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  private beginScan(epoch: string | null | undefined): SyncScanBeginResult {
+    const storedEpoch = this.readMeta('epoch');
+    if (epoch !== undefined && epoch !== null && epoch !== storedEpoch) {
+      throw new RpcFailure('epoch-mismatch', { expected: storedEpoch, actual: epoch });
+    }
+    const watermarkStart = this.currentWatermark();
+    const floor = this.readRetentionFloor();
+    if (watermarkStart < floor) {
+      throw new RpcFailure('reset-required', {
+        reason: 'retention-floor',
+        floor,
+        watermarkStart,
+      });
+    }
+    const scanId = crypto.randomUUID();
+    this.ctx.storage.sql.exec(
+      `INSERT INTO scans (scan_id, watermark_start, epoch, created_at, done, entity_cursor)
+       VALUES (?, ?, ?, ?, 0, NULL)`,
+      scanId,
+      watermarkStart,
+      storedEpoch,
+      Date.now(),
+    );
+    return { scanId, watermarkStart, epoch: storedEpoch };
+  }
+
+  private handleScanPage(requestId: string, params: unknown): Response {
+    const page = parseScanPageParams(params);
+    const result = this.ctx.storage.transactionSync(() =>
+      this.pageScan(page.scanId, page.cursor, page.maxBytes),
+    );
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  private pageScan(
+    scanId: string,
+    cursor: string | null,
+    requestedMaxBytes: number,
+  ): SyncScanPageResult {
+    const scan = this.loadScan(scanId);
+    this.assertScanEpochAndRetention(scan);
+    if (scan.done === 1) {
+      return { entities: [], nextCursor: null, done: true };
+    }
+    const after = cursor === null ? null : decodeEntityCursor(cursor);
+    const maxBytes = Math.min(requestedMaxBytes, DEFAULT_LIMITS.pageBytes);
+    const rows =
+      after === null
+        ? this.ctx.storage.sql
+            .exec<ScanEntityRow>(
+              `SELECT entity_type, entity_id, revision, schema_version, payload
+               FROM entities
+               WHERE operation != 'delete'
+               ORDER BY entity_type ASC, entity_id ASC`,
+            )
+            .toArray()
+        : this.ctx.storage.sql
+            .exec<ScanEntityRow>(
+              `SELECT entity_type, entity_id, revision, schema_version, payload
+               FROM entities
+               WHERE operation != 'delete'
+                 AND (entity_type > ? OR (entity_type = ? AND entity_id > ?))
+               ORDER BY entity_type ASC, entity_id ASC`,
+              after.entityType,
+              after.entityType,
+              after.entityId,
+            )
+            .toArray();
+
+    const entities: ScannedEntity[] = [];
+    let usedBytes = 0;
+    let remaining = false;
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index];
+      const scanned: ScannedEntity = {
+        entityType: row.entity_type,
+        entityId: row.entity_id,
+        revision: row.revision,
+        schemaVersion: row.schema_version,
+        payload: row.payload === null ? null : (JSON.parse(row.payload) as unknown),
+      };
+      const size = utf8ByteLength(JSON.stringify(scanned));
+      const wouldExceedBytes = entities.length > 0 && usedBytes + size > maxBytes;
+      if (wouldExceedBytes) {
+        remaining = true;
+        break;
+      }
+      entities.push(scanned);
+      usedBytes += size;
+    }
+    if (!remaining && entities.length < rows.length) {
+      remaining = true;
+    }
+    const last = entities[entities.length - 1];
+    const entityCursor =
+      last === undefined ? scan.entity_cursor : encodeEntityCursor(last.entityType, last.entityId);
+    const done = remaining ? 0 : 1;
+    this.ctx.storage.sql.exec(
+      'UPDATE scans SET entity_cursor = ?, done = ? WHERE scan_id = ?',
+      entityCursor,
+      done,
+      scan.scan_id,
+    );
+    return {
+      entities,
+      nextCursor: remaining ? entityCursor : null,
+      done: done === 1,
+    };
+  }
+
+  private handleScanFinish(requestId: string, params: unknown): Response {
+    const finish = parseScanFinishParams(params);
+    const result = this.ctx.storage.transactionSync(() => this.finishScan(finish.scanId));
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  private finishScan(scanId: string): SyncScanFinishResult {
+    const scan = this.loadScan(scanId);
+    this.assertScanEpochAndRetention(scan);
+    const watermarkEnd = this.currentWatermark();
+    this.ctx.storage.sql.exec('UPDATE scans SET done = 1 WHERE scan_id = ?', scan.scan_id);
+    return {
+      scanId: scan.scan_id,
+      complete: true,
+      nextCursor: String(watermarkEnd) as SyncCursor,
+    };
+  }
+
+  private loadScan(scanId: string): ScanRow {
+    const rows = this.ctx.storage.sql
+      .exec<ScanRow>(
+        `SELECT scan_id, watermark_start, epoch, created_at, done, entity_cursor
+         FROM scans WHERE scan_id = ?`,
+        scanId,
+      )
+      .toArray();
+    const scan = rows[0];
+    if (scan === undefined) {
+      throw new RpcFailure('not-found', { reason: 'scan' });
+    }
+    if (Date.now() - scan.created_at > SNAPSHOT_LIFETIME_MS) {
+      throw new RpcFailure('not-found', { reason: 'scan-expired' });
+    }
+    return scan;
+  }
+
+  private assertScanEpochAndRetention(scan: ScanRow): void {
+    const storedEpoch = this.readMeta('epoch');
+    if (scan.epoch !== storedEpoch) {
+      throw new RpcFailure('epoch-mismatch', { expected: storedEpoch, actual: scan.epoch });
+    }
+    const floor = this.readRetentionFloor();
+    if (scan.watermark_start < floor) {
+      throw new RpcFailure('reset-required', {
+        reason: 'retention-floor',
+        floor,
+        watermarkStart: scan.watermark_start,
+      });
+    }
+  }
+
+  private currentWatermark(): number {
+    const nextSequence = Number(this.readMeta('next_sequence'));
+    return nextSequence > 1 ? nextSequence - 1 : 0;
+  }
+
+  private readRetentionFloor(): number {
+    return Number(this.readMeta('retention_floor'));
+  }
+
   private provisionEnrollment(auth: SpikeAuth): void {
     this.ctx.storage.sql.exec(
       `INSERT INTO enrollments (enrollment_id, account_id, generation, high_water, created_at)
@@ -592,6 +806,89 @@ function parseSpikePullParams(params: unknown): { cursor: number; maxBytes: numb
     throw new RpcFailure('malformed-request', { reason: 'maxChanges' });
   }
   return { cursor, maxBytes, maxChanges: maxChangesRaw };
+}
+
+function parseScanBeginParams(params: unknown): { epoch?: string | null } {
+  if (!isRecord(params)) {
+    throw new RpcFailure('malformed-request', { reason: 'scan-begin-params' });
+  }
+  if (!Object.prototype.hasOwnProperty.call(params, 'epoch')) {
+    return {};
+  }
+  const epoch = params['epoch'];
+  if (epoch !== null && typeof epoch !== 'string') {
+    throw new RpcFailure('malformed-request', { reason: 'epoch-type' });
+  }
+  return { epoch };
+}
+
+function parseScanPageParams(params: unknown): {
+  scanId: string;
+  cursor: string | null;
+  maxBytes: number;
+} {
+  if (!isRecord(params)) {
+    throw new RpcFailure('malformed-request', { reason: 'scan-page-params' });
+  }
+  const scanId = params['scanId'];
+  if (typeof scanId !== 'string' || scanId.length === 0) {
+    throw new RpcFailure('malformed-request', { reason: 'scanId' });
+  }
+  if (!Object.prototype.hasOwnProperty.call(params, 'cursor')) {
+    throw new RpcFailure('malformed-request', { reason: 'cursor-required' });
+  }
+  const cursorRaw = params['cursor'];
+  if (cursorRaw !== null && typeof cursorRaw !== 'string') {
+    throw new RpcFailure('malformed-request', { reason: 'cursor-type' });
+  }
+  if (typeof cursorRaw === 'string' && cursorRaw.length === 0) {
+    throw new RpcFailure('malformed-request', { reason: 'cursor-format' });
+  }
+  const maxBytes = params['maxBytes'];
+  if (typeof maxBytes !== 'number' || !Number.isInteger(maxBytes) || maxBytes < 1) {
+    throw new RpcFailure('malformed-request', { reason: 'maxBytes' });
+  }
+  return { scanId, cursor: cursorRaw, maxBytes };
+}
+
+function parseScanFinishParams(params: unknown): { scanId: string; watermarkEnd: number } {
+  if (!isRecord(params)) {
+    throw new RpcFailure('malformed-request', { reason: 'scan-finish-params' });
+  }
+  const scanId = params['scanId'];
+  if (typeof scanId !== 'string' || scanId.length === 0) {
+    throw new RpcFailure('malformed-request', { reason: 'scanId' });
+  }
+  const watermarkEnd = params['watermarkEnd'];
+  if (typeof watermarkEnd !== 'number' || !Number.isInteger(watermarkEnd) || watermarkEnd < 0) {
+    throw new RpcFailure('malformed-request', { reason: 'watermarkEnd' });
+  }
+  return { scanId, watermarkEnd };
+}
+
+function encodeEntityCursor(entityType: string, entityId: string): string {
+  return JSON.stringify([entityType, entityId]);
+}
+
+function decodeEntityCursor(cursor: string): { entityType: string; entityId: string } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cursor) as unknown;
+  } catch {
+    throw new RpcFailure('malformed-request', { reason: 'cursor-format' });
+  }
+  if (!Array.isArray(parsed) || parsed.length !== 2) {
+    throw new RpcFailure('malformed-request', { reason: 'cursor-format' });
+  }
+  const entityType = parsed[0];
+  const entityId = parsed[1];
+  if (typeof entityType !== 'string' || typeof entityId !== 'string') {
+    throw new RpcFailure('malformed-request', { reason: 'cursor-format' });
+  }
+  if (entityType.length === 0 || entityId.length === 0) {
+    throw new RpcFailure('malformed-request', { reason: 'cursor-format' });
+  }
+  return { entityType, entityId };
 }
 
 function parsePendingChange(input: unknown): PendingChange {

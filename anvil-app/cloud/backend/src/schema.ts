@@ -46,6 +46,14 @@ CREATE TABLE IF NOT EXISTS receipts (
   created_at INTEGER NOT NULL,
   PRIMARY KEY (enrollment_id, enrollment_sequence)
 );
+CREATE TABLE IF NOT EXISTS scans (
+  scan_id TEXT PRIMARY KEY,
+  watermark_start INTEGER NOT NULL,
+  epoch TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  done INTEGER NOT NULL DEFAULT 0,
+  entity_cursor TEXT
+);
 `;
 
 /** First-dataset epoch for a fresh account object. Fixed for determinism. */

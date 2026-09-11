@@ -66,7 +66,10 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
   }
   switch (envelope.request.operation) {
     case 'sync.push':
-    case 'sync.pull': {
+    case 'sync.pull':
+    case 'sync.scan.begin':
+    case 'sync.scan.page':
+    case 'sync.scan.finish': {
       const id = env.ACCOUNT.idFromName(auth.accountId);
       const stub = env.ACCOUNT.get(id);
       return stub.fetch(
