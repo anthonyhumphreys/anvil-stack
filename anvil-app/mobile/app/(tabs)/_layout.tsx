@@ -21,8 +21,8 @@ export default function TabLayout() {
   return (
     <NativeTabs tintColor={nativeTint}>
       <NativeTabs.Trigger name="index">
-        <Label>Work</Label>
-        <Icon sf={{ default: 'hammer', selected: 'hammer.fill' }} md="work" />
+        <Label>Home</Label>
+        <Icon sf={{ default: 'house', selected: 'house.fill' }} md="home" />
       </NativeTabs.Trigger>
       <NativeTabs.Trigger name="chats">
         <Label>Threads</Label>
@@ -37,7 +37,7 @@ export default function TabLayout() {
       <NativeTabs.Trigger name="approvals">
         <Label>Inbox</Label>
         <Icon sf={{ default: 'tray', selected: 'tray.fill' }} md="inbox" />
-        <Badge hidden={inboxCount === 0}>{inboxCount > 99 ? '99+' : String(inboxCount)}</Badge>
+        {inboxCount > 0 && <Badge>{inboxCount > 99 ? '99+' : String(inboxCount)}</Badge>}
       </NativeTabs.Trigger>
       <NativeTabs.Trigger name="settings">
         <Label>Settings</Label>

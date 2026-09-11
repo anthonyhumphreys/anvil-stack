@@ -1,394 +1,321 @@
 import { MaterialIcons } from '@react-native-vector-icons/material-icons';
 import { router, type RelativePathString } from 'expo-router';
-import { useMemo, useState } from 'react';
-import { RefreshControl, ScrollView, Text, TextInput, Pressable, View } from 'react-native';
+import type { ComponentProps, ReactNode } from 'react';
+import {
+  ActivityIndicator,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import {
   ActionButton,
-  EmptyState,
-  SectionHeader,
-  companionColors,
-  inputStyle,
+  companionColors as colors,
   screenStyle,
   scrollContentStyle,
 } from '@/components/companion-ui';
 import { WorkspaceBar } from '@/components/workspace-bar';
 import { useCompanion } from '@/contexts/companion-context';
+import { homeSummary } from '@/lib/home-summary';
 import { useOpenThread } from '@/lib/routes';
-import type { MobileWorkQueueItem } from '../../../src/shared/types';
 
-export default function WorkScreen() {
-  const { connection, overview, loading, refresh, interrupt } = useCompanion();
+type IconName = ComponentProps<typeof MaterialIcons>['name'];
+
+export default function HomeScreen() {
+  const { connection, overview, loading, refresh, error, usingCachedOverview, openOnDesktop } =
+    useCompanion();
   const openThread = useOpenThread();
-  const [workQuery, setWorkQuery] = useState('');
-  const [showAllWorkItems, setShowAllWorkItems] = useState(false);
+  const { attention, running, recent } = overview
+    ? homeSummary(overview)
+    : { attention: [], running: [], recent: [] };
   const workspace = overview?.activeWorkspace;
-  const sessions = (overview?.activeSessions ?? []).filter(
-    (session) => !workspace || session.workspaceId === workspace.id,
-  );
-  const attention = (overview?.workQueue ?? []).filter(
-    (item) =>
-      item.kind !== 'thread' &&
-      (!item.workspaceId || !workspace || item.workspaceId === workspace.id),
-  );
-  const recentThreads = (overview?.threads ?? [])
-    .filter((thread) => !workspace || thread.workspaceId === workspace.id)
-    .slice(0, 5);
-  const currentIteration = overview?.currentIterationPath;
-  const visibleWorkItems = useMemo(() => {
-    const query = workQuery.trim().toLowerCase();
-    return (overview?.workItems ?? [])
-      .filter(
-        (item) => showAllWorkItems || !currentIteration || item.iterationPath === currentIteration,
-      )
-      .filter(
-        (item) =>
-          !query ||
-          `${item.id} ${item.title} ${item.state ?? ''} ${item.assignee ?? ''} ${item.iterationPath ?? ''}`
-            .toLowerCase()
-            .includes(query),
-      );
-  }, [currentIteration, overview?.workItems, showAllWorkItems, workQuery]);
-
-  if (!connection) {
-    return (
-      <ScrollView
-        style={screenStyle}
-        contentInsetAdjustmentBehavior="automatic"
-        contentContainerStyle={scrollContentStyle}
-      >
-        <View style={{ paddingVertical: 44, gap: 18, alignItems: 'flex-start' }}>
-          <View
-            style={{
-              width: 52,
-              height: 52,
-              borderRadius: 16,
-              backgroundColor: companionColors.accentSoft,
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            <MaterialIcons name="link" size={26} color={companionColors.accentInk} />
-          </View>
-          <View style={{ gap: 6 }}>
-            <Text
-              accessibilityRole="header"
-              style={{
-                color: companionColors.ink,
-                fontSize: 28,
-                lineHeight: 34,
-                fontWeight: '900',
-              }}
-            >
-              Pair a Mac
-            </Text>
-            <Text style={{ color: companionColors.muted, fontSize: 16, lineHeight: 23 }}>
-              Connect to Anvil on your main machine, then choose a workspace and keep work moving
-              from here.
-            </Text>
-          </View>
-          <ActionButton label="Open pairing" onPress={() => router.push('/(tabs)/settings')} />
-        </View>
-      </ScrollView>
-    );
-  }
+  const stale = Boolean(error || usingCachedOverview);
 
   return (
     <ScrollView
       style={screenStyle}
       contentInsetAdjustmentBehavior="automatic"
-      refreshControl={<RefreshControl refreshing={loading} onRefresh={refresh} />}
-      contentContainerStyle={scrollContentStyle}
+      refreshControl={
+        connection ? <RefreshControl refreshing={loading} onRefresh={refresh} /> : undefined
+      }
+      contentContainerStyle={[scrollContentStyle, styles.content]}
     >
-      <WorkspaceBar />
-
-      <View style={{ gap: 8 }}>
-        <SectionHeader
-          title={showAllWorkItems ? 'Work items' : currentIteration || 'Work items'}
-          count={visibleWorkItems.length}
-        />
-        <TextInput
-          accessibilityLabel="Search work items"
-          value={workQuery}
-          onChangeText={setWorkQuery}
-          placeholder="Search ID, title, state, or assignee"
-          placeholderTextColor={companionColors.faint}
-          returnKeyType="search"
-          style={[inputStyle, { minHeight: 46 }]}
-        />
-        {currentIteration && (
-          <View style={{ flexDirection: 'row', gap: 8 }}>
-            <ScopeButton
-              title="Current sprint"
-              selected={!showAllWorkItems}
-              onPress={() => setShowAllWorkItems(false)}
-            />
-            <ScopeButton
-              title="All open"
-              selected={showAllWorkItems}
-              onPress={() => setShowAllWorkItems(true)}
-            />
-          </View>
-        )}
-        {visibleWorkItems.length === 0 ? (
-          <EmptyState
-            title={workQuery ? 'No matching work' : 'No open work items'}
-            body={
-              workQuery
-                ? 'Try a broader search or switch to all open work.'
-                : 'Synced work appears here.'
-            }
+      <View style={styles.heading}>
+        <Text accessibilityRole="header" style={styles.title}>
+          Home
+        </Text>
+        {connection && overview && (
+          <ActionButton
+            label="New task"
+            onPress={() => router.push('/new-task' as RelativePathString)}
+            disabled={!workspace || stale}
+            style={styles.newTask}
+            textStyle={styles.newTaskText}
           />
-        ) : (
-          visibleWorkItems.slice(0, 8).map((item) => (
-            <Pressable
-              key={item.id}
-              accessibilityRole="button"
-              onPress={() =>
-                router.push(
-                  `/(tabs)/health/work-item:${encodeURIComponent(item.id)}` as RelativePathString,
-                )
-              }
-              style={rowStyle}
-            >
-              <View style={{ minWidth: 54 }}>
-                <Text
-                  numberOfLines={1}
-                  style={{ color: companionColors.accentInk, fontSize: 12, fontWeight: '900' }}
-                >
-                  {item.id}
-                </Text>
-                <Text numberOfLines={1} style={{ color: companionColors.subtle, fontSize: 11 }}>
-                  {item.state ?? 'Open'}
-                </Text>
-              </View>
-              <View style={{ flex: 1, minWidth: 0 }}>
-                <Text numberOfLines={2} style={rowTitleStyle}>
-                  {item.title}
-                </Text>
-                <Text numberOfLines={1} style={rowDetailStyle}>
-                  {[item.type, item.assignee].filter(Boolean).join(' · ') ||
-                    item.iterationPath ||
-                    'Tracked work'}
-                </Text>
-              </View>
-              <MaterialIcons name="chevron-right" size={22} color={companionColors.faint} />
-            </Pressable>
-          ))
         )}
       </View>
 
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="New task"
-        accessibilityHint="Start work in the selected workspace"
-        onPress={() => router.push('/new-task' as RelativePathString)}
-        style={({ pressed }) => ({
-          minHeight: 58,
-          borderRadius: 16,
-          borderCurve: 'continuous',
-          paddingHorizontal: 16,
-          backgroundColor: pressed ? companionColors.accentInk : companionColors.accent,
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: 12,
-        })}
-      >
-        <MaterialIcons name="add" size={24} color="#33200a" />
-        <View style={{ flex: 1 }}>
-          <Text style={{ color: '#33200a', fontSize: 17, fontWeight: '900' }}>New task</Text>
-          <Text numberOfLines={1} style={{ color: '#5b3a0c', fontSize: 13 }}>
-            {workspace ? `Start in ${workspace.name}` : 'Choose a workspace first'}
+      {!connection ? (
+        <View style={styles.welcome}>
+          <MaterialIcons name="devices" size={36} color={colors.subtle} />
+          <Text accessibilityRole="header" style={styles.welcomeTitle}>
+            Take your workspace with you
           </Text>
+          <Text style={styles.body}>
+            Check on agents, review approvals, and pick up a thread from your phone.
+          </Text>
+          <ActionButton label="Pair your Mac" onPress={() => router.push('/(tabs)/settings')} />
+          <Text style={styles.detail}>Open mobile pairing in Anvil on your Mac to connect.</Text>
         </View>
-        <MaterialIcons name="arrow-forward" size={21} color="#33200a" />
-      </Pressable>
-
-      <View style={{ gap: 8 }}>
-        <SectionHeader title="Needs you" count={attention.length} />
-        {attention.length === 0 ? (
-          <EmptyState title="Nothing blocked" body="Approvals and failed work will appear here." />
-        ) : (
-          attention
-            .slice(0, 4)
-            .map((item) => (
-              <WorkRow
-                key={item.id}
-                item={item}
-                onInterrupt={interrupt}
-                onOpenThread={openThread}
+      ) : (
+        <>
+          <WorkspaceBar />
+          {stale && (
+            <View accessibilityRole="alert" style={styles.notice}>
+              <Text style={styles.rowTitle}>
+                {overview ? 'Showing last saved activity' : 'Unable to load your workspace'}
+              </Text>
+              <Text style={styles.body}>
+                {error || 'Reconnect to your Mac to get the latest activity.'}
+              </Text>
+              <ActionButton
+                label="Retry connection"
+                variant="secondary"
+                onPress={() => void refresh()}
               />
-            ))
-        )}
-      </View>
-
-      <View style={{ gap: 8 }}>
-        <SectionHeader title="Active work" count={sessions.length} />
-        {sessions.length === 0 ? (
-          <EmptyState title="No active sessions" body="Start a task or resume a recent thread." />
-        ) : (
-          sessions.map((session) => (
-            <Pressable
-              key={session.id}
-              accessibilityRole="button"
-              onPress={() => session.appThreadId && openThread(session.appThreadId)}
-              style={rowStyle}
-            >
-              <StatusDot active={session.status === 'busy' || session.status === 'starting'} />
-              <View style={{ flex: 1, minWidth: 0 }}>
-                <Text numberOfLines={1} style={rowTitleStyle}>
-                  {session.personaId}
-                </Text>
-                <Text numberOfLines={1} style={rowDetailStyle}>
-                  {session.status}
-                </Text>
-              </View>
-              {(session.status === 'busy' || session.status === 'starting') && (
-                <ActionButton
-                  label="Stop"
-                  variant="secondary"
-                  onPress={() => void interrupt(session.id)}
-                  style={{ minHeight: 44, paddingVertical: 8 }}
-                />
-              )}
-            </Pressable>
-          ))
-        )}
-      </View>
-
-      <View style={{ gap: 8 }}>
-        <SectionHeader title="Recent" count={recentThreads.length} />
-        {recentThreads.map((thread) => (
-          <Pressable
-            key={thread.id}
-            accessibilityRole="button"
-            onPress={() => openThread(thread.id)}
-            style={rowStyle}
-          >
-            <MaterialIcons name="chat-bubble-outline" size={20} color={companionColors.subtle} />
-            <View style={{ flex: 1, minWidth: 0 }}>
-              <Text numberOfLines={1} style={rowTitleStyle}>
-                {thread.title}
-              </Text>
-              <Text numberOfLines={1} style={rowDetailStyle}>
-                {thread.preview || `${thread.messageCount} messages`}
-              </Text>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => router.navigate('/(tabs)/settings')}
+                style={styles.sectionAction}
+              >
+                <Text style={styles.actionText}>Connection settings</Text>
+              </Pressable>
             </View>
-            <MaterialIcons name="chevron-right" size={22} color={companionColors.faint} />
-          </Pressable>
-        ))}
-      </View>
+          )}
+          {!overview ? (
+            !stale ? (
+              <View style={styles.welcome}>
+                <ActivityIndicator color={colors.subtle} />
+                <Text style={styles.body}>Loading your workspace…</Text>
+              </View>
+            ) : null
+          ) : (
+            <>
+              {attention.length > 0 && (
+                <Section
+                  title="Needs attention"
+                  action="Open inbox"
+                  onAction={() => router.navigate('/(tabs)/approvals')}
+                >
+                  {attention.map((item) => (
+                    <HomeRow
+                      key={item.id}
+                      icon={item.kind === 'approval' ? 'pending-actions' : 'error-outline'}
+                      tone="attention"
+                      title={item.title}
+                      detail={`${item.statusLabel} · ${item.detail}`}
+                      onPress={() =>
+                        item.kind === 'approval'
+                          ? router.navigate('/(tabs)/approvals')
+                          : item.threadId
+                            ? openThread(item.threadId)
+                            : void openOnDesktop()
+                      }
+                    />
+                  ))}
+                </Section>
+              )}
+              {running.length > 0 && (
+                <Section title="Running">
+                  {running.map((session) => {
+                    const thread = overview.threads.find(
+                      (candidate) =>
+                        candidate.id === session.appThreadId ||
+                        candidate.activeSessionId === session.id,
+                    );
+                    const threadId = thread?.id ?? session.appThreadId;
+                    return (
+                      <HomeRow
+                        key={session.id}
+                        icon="bolt"
+                        tone="running"
+                        title={thread?.title ?? `${session.personaId} session`}
+                        detail={`${session.status === 'starting' ? 'Starting' : 'Working'} · ${session.personaId}${!threadId ? ' · Open on Mac' : ''}`}
+                        onPress={() => (threadId ? openThread(threadId) : void openOnDesktop())}
+                      />
+                    );
+                  })}
+                </Section>
+              )}
+              {attention.length === 0 && running.length === 0 && (
+                <View style={styles.quiet}>
+                  <Text style={styles.rowTitle}>
+                    {stale ? 'No activity in this snapshot' : 'No work needs your attention'}
+                  </Text>
+                  <Text style={styles.body}>
+                    {stale
+                      ? 'Reconnect to your Mac to resume work.'
+                      : workspace
+                        ? 'Start a task or continue a conversation below.'
+                        : 'Choose a workspace above to start a task.'}
+                  </Text>
+                </View>
+              )}
+              {recent.length > 0 && (
+                <Section
+                  title="Recent threads"
+                  action="All threads"
+                  onAction={() => router.navigate('/(tabs)/chats')}
+                >
+                  {recent.map((thread) => (
+                    <HomeRow
+                      key={thread.id}
+                      icon="chat-bubble-outline"
+                      title={thread.title}
+                      detail={thread.preview || `${thread.messageCount} messages`}
+                      onPress={() => openThread(thread.id)}
+                    />
+                  ))}
+                </Section>
+              )}
+              <Section title="Workspace">
+                <HomeRow
+                  icon="assignment"
+                  title="Work items"
+                  detail={
+                    overview.currentIterationPath
+                      ? `Current sprint · ${overview.workItems.length} open items in total`
+                      : `${overview.workItems.length} open items`
+                  }
+                  onPress={() => router.push('/work-items' as RelativePathString)}
+                />
+                <HomeRow
+                  icon="fact-check"
+                  title="Reviews & security"
+                  detail="Browse findings and workspace health"
+                  onPress={() => router.push('/(tabs)/work')}
+                />
+              </Section>
+            </>
+          )}
+        </>
+      )}
     </ScrollView>
   );
 }
 
-function ScopeButton({
+function Section({
   title,
-  selected,
-  onPress,
+  action,
+  onAction,
+  children,
 }: {
   title: string;
-  selected: boolean;
+  action?: string;
+  onAction?: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <View style={styles.section}>
+      <View style={styles.sectionHeading}>
+        <Text accessibilityRole="header" style={styles.sectionTitle}>
+          {title}
+        </Text>
+        {action && (
+          <Pressable
+            accessibilityRole="button"
+            onPress={onAction}
+            style={({ pressed }) => [styles.sectionAction, pressed && styles.pressed]}
+          >
+            <Text style={styles.actionText}>{action}</Text>
+          </Pressable>
+        )}
+      </View>
+      <View style={styles.list}>{children}</View>
+    </View>
+  );
+}
+
+function HomeRow({
+  icon,
+  title,
+  detail,
+  onPress,
+  tone,
+}: {
+  icon: IconName;
+  title: string;
+  detail: string;
   onPress: () => void;
+  tone?: 'attention' | 'running';
 }) {
   return (
     <Pressable
-      accessibilityRole="radio"
-      accessibilityState={{ selected }}
+      accessibilityRole="button"
       onPress={onPress}
-      style={{
-        minHeight: 44,
-        flex: 1,
-        alignItems: 'center',
-        justifyContent: 'center',
-        borderRadius: 11,
-        borderCurve: 'continuous',
-        backgroundColor: selected ? companionColors.accentSoft : companionColors.surfaceMuted,
-      }}
+      style={({ pressed }) => [styles.row, pressed && styles.pressed]}
     >
-      <Text
-        style={{
-          color: selected ? companionColors.accentInk : companionColors.subtle,
-          fontSize: 13,
-          fontWeight: '800',
-        }}
-      >
-        {title}
-      </Text>
-    </Pressable>
-  );
-}
-
-function WorkRow({
-  item,
-  onInterrupt,
-  onOpenThread,
-}: {
-  item: MobileWorkQueueItem;
-  onInterrupt: (id: string) => Promise<void>;
-  onOpenThread: (id: string) => void;
-}) {
-  const openItem = () => {
-    if (item.threadId) {
-      onOpenThread(item.threadId);
-      return;
-    }
-    router.push('/(tabs)/approvals');
-  };
-
-  return (
-    <Pressable accessibilityRole="button" onPress={openItem} style={rowStyle}>
       <MaterialIcons
-        name={item.kind === 'approval' ? 'priority-high' : 'error-outline'}
-        size={21}
-        color={companionColors.red}
+        name={icon}
+        size={22}
+        color={
+          tone === 'attention' ? colors.red : tone === 'running' ? colors.green : colors.subtle
+        }
       />
-      <View style={{ flex: 1, minWidth: 0 }}>
-        <Text numberOfLines={1} style={rowTitleStyle}>
-          {item.title}
+      <View style={styles.rowContent}>
+        <Text numberOfLines={2} style={styles.rowTitle}>
+          {title}
         </Text>
-        <Text numberOfLines={2} style={rowDetailStyle}>
-          {item.detail}
+        <Text numberOfLines={2} style={styles.detail}>
+          {detail}
         </Text>
       </View>
-      {item.sessionId && item.kind === 'session' ? (
-        <ActionButton
-          label="Stop"
-          variant="secondary"
-          onPress={() => void onInterrupt(item.sessionId!)}
-          style={{ minHeight: 44, paddingVertical: 8 }}
-        />
-      ) : (
-        <MaterialIcons name="chevron-right" size={22} color={companionColors.faint} />
-      )}
+      <MaterialIcons name="chevron-right" size={22} color={colors.subtle} />
     </Pressable>
   );
 }
 
-function StatusDot({ active }: { active: boolean }) {
-  return (
-    <View
-      style={{
-        width: 9,
-        height: 9,
-        borderRadius: 5,
-        backgroundColor: active ? companionColors.green : companionColors.faint,
-      }}
-    />
-  );
-}
-
-const rowStyle = ({ pressed }: { pressed: boolean }) => ({
-  minHeight: 62,
-  paddingHorizontal: 14,
-  paddingVertical: 10,
-  borderRadius: 14,
-  borderCurve: 'continuous' as const,
-  backgroundColor: pressed ? companionColors.surfaceMuted : companionColors.surface,
-  borderWidth: 1,
-  borderColor: companionColors.borderSubtle,
-  flexDirection: 'row' as const,
-  alignItems: 'center' as const,
-  gap: 11,
+const styles = StyleSheet.create({
+  content: { gap: 24, width: '100%', maxWidth: 760, alignSelf: 'center' },
+  heading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  title: { color: colors.ink, fontSize: 32, fontWeight: '700' },
+  newTask: {
+    minHeight: 48,
+    backgroundColor: colors.accent,
+    borderColor: colors.accent,
+    borderRadius: 12,
+  },
+  newTaskText: { color: '#33200a', fontWeight: '700' },
+  welcome: { paddingVertical: 32, gap: 20, alignItems: 'flex-start' },
+  welcomeTitle: { color: colors.ink, fontSize: 26, fontWeight: '700' },
+  body: { color: colors.muted, fontSize: 16, lineHeight: 24 },
+  detail: { color: colors.subtle, fontSize: 14, lineHeight: 20 },
+  notice: { padding: 16, gap: 12, backgroundColor: colors.surface, borderRadius: 12 },
+  quiet: { gap: 6, paddingVertical: 8 },
+  section: { gap: 8 },
+  sectionHeading: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8 },
+  sectionTitle: { flex: 1, color: colors.ink, fontSize: 18, fontWeight: '600' },
+  sectionAction: { minHeight: 48, justifyContent: 'center', paddingHorizontal: 8, borderRadius: 8 },
+  actionText: { color: colors.accentInk, fontSize: 14, fontWeight: '600' },
+  list: { backgroundColor: colors.surface, borderRadius: 12, overflow: 'hidden' },
+  row: {
+    minHeight: 80,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    padding: 16,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.borderSubtle,
+  },
+  pressed: { backgroundColor: colors.surfaceMuted },
+  rowContent: { flex: 1, minWidth: 0, gap: 4 },
+  rowTitle: { color: colors.ink, fontSize: 16, fontWeight: '600' },
 });
-const rowTitleStyle = { color: companionColors.ink, fontSize: 15, fontWeight: '800' as const };
-const rowDetailStyle = { color: companionColors.subtle, fontSize: 13, lineHeight: 18 };
