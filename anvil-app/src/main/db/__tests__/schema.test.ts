@@ -124,7 +124,7 @@ describe('fresh database schema', () => {
         ).map((column) => column.name),
       );
 
-      expect(SCHEMA_VERSION).toBe(66);
+      expect(SCHEMA_VERSION).toBe(67);
       for (const column of [
         'local_llm_mode',
         'local_llm_provider',
@@ -135,6 +135,72 @@ describe('fresh database schema', () => {
       }
       expect(cloudColumns.has('endpoint')).toBe(true);
       expect(cloudColumns.has('token')).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('includes the sync mesh persistence tables', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec(SCHEMA_SQL);
+      const tableColumns = (table: string) =>
+        new Set(
+          (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
+            (column) => column.name,
+          ),
+        );
+
+      expect(tableColumns('device_enrollments').has('enrollment_generation')).toBe(true);
+      expect(tableColumns('device_enrollments').has('revoked_at')).toBe(true);
+      expect(tableColumns('sync_bindings').has('base_payload_json')).toBe(true);
+      expect(tableColumns('sync_bindings').has('local_edit_generation')).toBe(true);
+      expect(tableColumns('sync_bindings').has('acknowledged_generation')).toBe(true);
+      expect(tableColumns('sync_outbox').has('enrollment_sequence')).toBe(true);
+      expect(tableColumns('sync_outbox').has('payload_hash')).toBe(true);
+      expect(tableColumns('sync_outbox').has('result_json')).toBe(true);
+      expect(tableColumns('sync_state').has('consumed_sequence_high_water')).toBe(true);
+      expect(tableColumns('sync_state').has('reset_required')).toBe(true);
+      expect(tableColumns('sync_conflicts').has('remote_payload_json')).toBe(true);
+      expect(tableColumns('sync_conflicts').has('resolution')).toBe(true);
+
+      const indexes = new Set(
+        (
+          db
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'index'")
+            .all() as Array<{ name: string }>
+        ).map((row) => row.name),
+      );
+      expect(indexes.has('uq_sync_bindings_scope_entity')).toBe(true);
+      expect(indexes.has('idx_sync_outbox_scope_state')).toBe(true);
+      expect(indexes.has('uq_sync_outbox_dispatched_entity')).toBe(true);
+      expect(indexes.has('idx_sync_conflicts_scope_entity')).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('migrates a v66 database to the sync mesh tables', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec('CREATE TABLE settings (id INTEGER PRIMARY KEY)');
+      applyMigration(db, MIGRATIONS[67]);
+      const tables = new Set(
+        (
+          db
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+            .all() as Array<{ name: string }>
+        ).map((row) => row.name),
+      );
+      for (const table of [
+        'device_enrollments',
+        'sync_bindings',
+        'sync_outbox',
+        'sync_state',
+        'sync_conflicts',
+      ]) {
+        expect(tables.has(table), `Missing table ${table}`).toBe(true);
+      }
     } finally {
       db.close();
     }

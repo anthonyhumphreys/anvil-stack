@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 66;
+export const SCHEMA_VERSION = 67;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -946,6 +946,98 @@ CREATE TABLE IF NOT EXISTS dojo_recommendation_states (
   applied_at TEXT,
   PRIMARY KEY (report_id, recommendation_key)
 );
+CREATE TABLE IF NOT EXISTS device_enrollments (
+  id TEXT PRIMARY KEY,
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  dataset_epoch TEXT NOT NULL,
+  installation_id TEXT NOT NULL,
+  enrollment_generation INTEGER NOT NULL DEFAULT 1,
+  display_name TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('active', 'revoked', 'pending')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_device_enrollments_scope
+  ON device_enrollments(backend_id, account_id, dataset_epoch);
+CREATE TABLE IF NOT EXISTS sync_bindings (
+  id TEXT PRIMARY KEY,
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  dataset_epoch TEXT NOT NULL,
+  entity_type TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  base_revision INTEGER,
+  base_payload_json TEXT,
+  local_edit_generation INTEGER NOT NULL DEFAULT 0,
+  acknowledged_generation INTEGER NOT NULL DEFAULT 0,
+  quarantine_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_sync_bindings_scope_entity
+  ON sync_bindings(backend_id, account_id, dataset_epoch, entity_type, entity_id);
+CREATE TABLE IF NOT EXISTS sync_outbox (
+  change_id TEXT PRIMARY KEY,
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  dataset_epoch TEXT NOT NULL,
+  enrollment_id TEXT NOT NULL,
+  enrollment_sequence INTEGER,
+  entity_type TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  schema_version INTEGER NOT NULL,
+  base_revision INTEGER,
+  operation TEXT NOT NULL CHECK (operation IN ('create', 'update', 'delete')),
+  payload_json TEXT,
+  payload_hash TEXT NOT NULL,
+  local_edit_generation INTEGER NOT NULL,
+  state TEXT NOT NULL DEFAULT 'pending'
+    CHECK (state IN ('pending', 'dispatched', 'acknowledged', 'conflict', 'rejected')),
+  created_at TEXT NOT NULL,
+  dispatched_at TEXT,
+  result_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sync_outbox_scope_state
+  ON sync_outbox(backend_id, account_id, dataset_epoch, state, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_sync_outbox_dispatched_entity
+  ON sync_outbox(backend_id, account_id, dataset_epoch, entity_type, entity_id)
+  WHERE state = 'dispatched';
+CREATE TABLE IF NOT EXISTS sync_state (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  dataset_epoch TEXT NOT NULL,
+  cursor TEXT,
+  last_pull_at TEXT,
+  last_push_at TEXT,
+  consumed_sequence_high_water INTEGER NOT NULL DEFAULT 0,
+  retention_floor_sequence INTEGER,
+  protocol_version TEXT,
+  server_limits_json TEXT,
+  reset_required INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, dataset_epoch)
+);
+CREATE TABLE IF NOT EXISTS sync_conflicts (
+  id TEXT PRIMARY KEY,
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  dataset_epoch TEXT NOT NULL,
+  entity_type TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  base_payload_json TEXT,
+  local_payload_json TEXT,
+  remote_payload_json TEXT,
+  base_revision INTEGER,
+  remote_revision INTEGER,
+  kind TEXT NOT NULL CHECK (kind IN ('edit-edit', 'edit-delete', 'delete-edit')),
+  created_at TEXT NOT NULL,
+  resolved_at TEXT,
+  resolution TEXT CHECK (resolution IN ('keep-local', 'use-remote', 'save-copy'))
+);
+CREATE INDEX IF NOT EXISTS idx_sync_conflicts_scope_entity
+  ON sync_conflicts(backend_id, account_id, dataset_epoch, entity_type, entity_id);
 `;
 
 /**
@@ -2088,5 +2180,99 @@ ALTER TABLE settings ADD COLUMN docs_provider TEXT DEFAULT 'confluence';
 ALTER TABLE settings ADD COLUMN notion_oauth_token BLOB;
 ALTER TABLE settings ADD COLUMN notion_oauth_expiry TEXT;
 ALTER TABLE settings ADD COLUMN notion_database_id TEXT;
+`,
+  67: `
+CREATE TABLE IF NOT EXISTS device_enrollments (
+  id TEXT PRIMARY KEY,
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  dataset_epoch TEXT NOT NULL,
+  installation_id TEXT NOT NULL,
+  enrollment_generation INTEGER NOT NULL DEFAULT 1,
+  display_name TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('active', 'revoked', 'pending')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_device_enrollments_scope
+  ON device_enrollments(backend_id, account_id, dataset_epoch);
+CREATE TABLE IF NOT EXISTS sync_bindings (
+  id TEXT PRIMARY KEY,
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  dataset_epoch TEXT NOT NULL,
+  entity_type TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  base_revision INTEGER,
+  base_payload_json TEXT,
+  local_edit_generation INTEGER NOT NULL DEFAULT 0,
+  acknowledged_generation INTEGER NOT NULL DEFAULT 0,
+  quarantine_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_sync_bindings_scope_entity
+  ON sync_bindings(backend_id, account_id, dataset_epoch, entity_type, entity_id);
+CREATE TABLE IF NOT EXISTS sync_outbox (
+  change_id TEXT PRIMARY KEY,
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  dataset_epoch TEXT NOT NULL,
+  enrollment_id TEXT NOT NULL,
+  enrollment_sequence INTEGER,
+  entity_type TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  schema_version INTEGER NOT NULL,
+  base_revision INTEGER,
+  operation TEXT NOT NULL CHECK (operation IN ('create', 'update', 'delete')),
+  payload_json TEXT,
+  payload_hash TEXT NOT NULL,
+  local_edit_generation INTEGER NOT NULL,
+  state TEXT NOT NULL DEFAULT 'pending'
+    CHECK (state IN ('pending', 'dispatched', 'acknowledged', 'conflict', 'rejected')),
+  created_at TEXT NOT NULL,
+  dispatched_at TEXT,
+  result_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sync_outbox_scope_state
+  ON sync_outbox(backend_id, account_id, dataset_epoch, state, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_sync_outbox_dispatched_entity
+  ON sync_outbox(backend_id, account_id, dataset_epoch, entity_type, entity_id)
+  WHERE state = 'dispatched';
+CREATE TABLE IF NOT EXISTS sync_state (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  dataset_epoch TEXT NOT NULL,
+  cursor TEXT,
+  last_pull_at TEXT,
+  last_push_at TEXT,
+  consumed_sequence_high_water INTEGER NOT NULL DEFAULT 0,
+  retention_floor_sequence INTEGER,
+  protocol_version TEXT,
+  server_limits_json TEXT,
+  reset_required INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, dataset_epoch)
+);
+CREATE TABLE IF NOT EXISTS sync_conflicts (
+  id TEXT PRIMARY KEY,
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  dataset_epoch TEXT NOT NULL,
+  entity_type TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  base_payload_json TEXT,
+  local_payload_json TEXT,
+  remote_payload_json TEXT,
+  base_revision INTEGER,
+  remote_revision INTEGER,
+  kind TEXT NOT NULL CHECK (kind IN ('edit-edit', 'edit-delete', 'delete-edit')),
+  created_at TEXT NOT NULL,
+  resolved_at TEXT,
+  resolution TEXT CHECK (resolution IN ('keep-local', 'use-remote', 'save-copy'))
+);
+CREATE INDEX IF NOT EXISTS idx_sync_conflicts_scope_entity
+  ON sync_conflicts(backend_id, account_id, dataset_epoch, entity_type, entity_id);
 `,
 };

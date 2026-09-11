@@ -21,6 +21,7 @@ import type {
   WorkflowTemplateInput,
 } from '../../shared/types.js';
 import { resolveCodexReasoningEffort } from '../../shared/codex-models.js';
+import { SYNC_ENTITY_WORKFLOW_TEMPLATE } from '../../shared/sync-mesh.js';
 import { getDb } from '../db/database.js';
 import { detectCodexCli } from './codex-bridge.service.js';
 import {
@@ -34,6 +35,7 @@ import { buildSystemPrompt, getPersonaById } from './persona.service.js';
 import { getSettings } from './settings.service.js';
 import { callLlm } from './llm.service.js';
 import { resolvePersonaCodexPolicy, resolveSessionCwd } from './codex-session.service.js';
+import { withSyncedEntityWrite } from './sync-persistence.service.js';
 import { triggerWatchtowerEvent } from './automation.service.js';
 
 interface WorkflowTemplateRow {
@@ -205,33 +207,46 @@ export function saveWorkflowTemplate(
   const existing = templateId ? getWorkflowTemplate(templateId) : null;
   const id = existing?.id ?? randomUUID();
   const now = new Date().toISOString();
-  getDb()
-    .prepare(
-      `INSERT INTO workflow_templates (id, name, description, graph_json, created_at, updated_at)
+  const name = input.name.trim();
+  const description = input.description?.trim() ?? '';
+  const graph = {
+    nodes: input.nodes,
+    edges: input.edges,
+    orchestration: orchestrationConfig(input.orchestration),
+  };
+  // The domain write and its sync intent commit in the same SQLite transaction
+  // (spec invariant 1): with no binding this is just the domain write.
+  getDb().transaction(() => {
+    withSyncedEntityWrite(
+      SYNC_ENTITY_WORKFLOW_TEMPLATE,
+      id,
+      1,
+      existing ? 'update' : 'create',
+      () => ({ id, name, description, ...graph }),
+      () => {
+        getDb()
+          .prepare(
+            `INSERT INTO workflow_templates (id, name, description, graph_json, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          name = excluded.name,
          description = excluded.description,
          graph_json = excluded.graph_json,
          updated_at = excluded.updated_at`,
-    )
-    .run(
-      id,
-      input.name.trim(),
-      input.description?.trim() ?? '',
-      JSON.stringify({
-        nodes: input.nodes,
-        edges: input.edges,
-        orchestration: orchestrationConfig(input.orchestration),
-      }),
-      existing?.createdAt ?? now,
-      now,
+          )
+          .run(id, name, description, JSON.stringify(graph), existing?.createdAt ?? now, now);
+      },
     );
+  })();
   return getWorkflowTemplate(id)!;
 }
 
 export function deleteWorkflowTemplate(id: string): void {
-  getDb().prepare('DELETE FROM workflow_templates WHERE id = ?').run(id);
+  getDb().transaction(() => {
+    withSyncedEntityWrite(SYNC_ENTITY_WORKFLOW_TEMPLATE, id, 1, 'delete', () => null, () => {
+      getDb().prepare('DELETE FROM workflow_templates WHERE id = ?').run(id);
+    });
+  })();
 }
 
 export async function draftWorkflowTemplate(request: string): Promise<WorkflowTemplateInput> {

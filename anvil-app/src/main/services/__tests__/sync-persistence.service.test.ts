@@ -1,0 +1,501 @@
+import Database from 'better-sqlite3';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { MIGRATIONS, SCHEMA_SQL, SCHEMA_VERSION } from '../../db/schema';
+import { DEFAULT_ORCHESTRATION } from '../../../shared/workflow-orchestration';
+import type { WorkflowNode } from '../../../shared/types';
+import {
+  SYNC_ENTITY_WORKFLOW_TEMPLATE,
+  type RecordLocalChangeInput,
+  type SyncScope,
+} from '../../../shared/sync-mesh';
+
+const db = new Database(':memory:');
+db.exec(SCHEMA_SQL);
+vi.mock('../../db/database.js', () => ({ getDb: () => db }));
+vi.mock('../persona.service.js', () => ({
+  getPersonaById: (id: string) => (id === 'coder' ? { id } : null),
+  buildSystemPrompt: () => '',
+}));
+
+import {
+  applyPushResults,
+  canonicalJson,
+  computePayloadHash,
+  getActiveEnrollment,
+  getBinding,
+  getSyncState,
+  hasActiveBinding,
+  listConflicts,
+  listOutboxRows,
+  listSyncScopesForEntity,
+  nextBatch,
+  recordLocalChange,
+  resolveConflict,
+  revokeEnrollment,
+  updateSyncState,
+  upsertBinding,
+  upsertEnrollment,
+  withSyncedEntityWrite,
+} from '../sync-persistence.service';
+import {
+  deleteWorkflowTemplate,
+  getWorkflowTemplate,
+  saveWorkflowTemplate,
+} from '../workflow.service';
+import { getDb } from '../../db/database.js';
+
+const SCOPE: SyncScope = { backendId: 'backend-1', accountId: 'account-1', datasetEpoch: '1' };
+const ET = SYNC_ENTITY_WORKFLOW_TEMPLATE;
+
+function node(id: string): WorkflowNode {
+  return {
+    id,
+    name: id,
+    prompt: `Run ${id}`,
+    personaId: 'coder',
+    model: 'gpt-5.6-terra',
+    reasoningEffort: 'medium',
+    executionStrategy: 'adaptive',
+    position: { x: 0, y: 0 },
+  };
+}
+
+function templateInput(name: string) {
+  return {
+    name,
+    description: 'Sync test workflow',
+    orchestration: { ...DEFAULT_ORCHESTRATION },
+    nodes: [node('step-1')],
+    edges: [],
+  };
+}
+
+function activateEnrollment(id = 'enrollment-1'): void {
+  upsertEnrollment({
+    displayName: 'Test device',
+    id,
+    installationId: 'installation-1',
+    scope: SCOPE,
+    state: 'active',
+  });
+}
+
+function change(input: RecordLocalChangeInput): string | null {
+  return getDb().transaction(() => recordLocalChange(SCOPE, input))();
+}
+
+function applyMigrationSql(target: Database.Database, migration: string): void {
+  for (const statement of migration
+    .split(';')
+    .map((value) => value.trim())
+    .filter(Boolean)) {
+    target.exec(statement);
+  }
+}
+
+beforeEach(() => {
+  db.exec(
+    'DELETE FROM sync_outbox; DELETE FROM sync_bindings; DELETE FROM sync_conflicts; DELETE FROM sync_state; DELETE FROM device_enrollments; DELETE FROM workflow_templates;',
+  );
+});
+
+describe('migration 67', () => {
+  it('reads SCHEMA_VERSION 67', () => {
+    expect(SCHEMA_VERSION).toBe(67);
+  });
+
+  it('creates the five sync tables from the migration SQL alone', () => {
+    const fresh = new Database(':memory:');
+    try {
+      applyMigrationSql(fresh, MIGRATIONS[67]);
+      // Re-running is a safe no-op.
+      applyMigrationSql(fresh, MIGRATIONS[67]);
+      const tables = new Set(
+        (
+          fresh
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+            .all() as Array<{ name: string }>
+        ).map((row) => row.name),
+      );
+      for (const table of [
+        'device_enrollments',
+        'sync_bindings',
+        'sync_outbox',
+        'sync_state',
+        'sync_conflicts',
+      ]) {
+        expect(tables.has(table), `Missing table ${table}`).toBe(true);
+      }
+      const outboxColumns = new Set(
+        (fresh.prepare('PRAGMA table_info(sync_outbox)').all() as Array<{ name: string }>).map(
+          (column) => column.name,
+        ),
+      );
+      for (const column of ['change_id', 'enrollment_sequence', 'payload_hash', 'result_json']) {
+        expect(outboxColumns.has(column), `Missing sync_outbox.${column}`).toBe(true);
+      }
+    } finally {
+      fresh.close();
+    }
+  });
+});
+
+describe('enrollments', () => {
+  it('returns the active enrollment and honours revocation', () => {
+    expect(getActiveEnrollment(SCOPE)).toBeNull();
+    activateEnrollment();
+    expect(getActiveEnrollment(SCOPE)?.id).toBe('enrollment-1');
+    revokeEnrollment('enrollment-1');
+    expect(getActiveEnrollment(SCOPE)).toBeNull();
+  });
+
+  it('rejects revoking an unknown enrollment', () => {
+    expect(() => revokeEnrollment('missing')).toThrow('Unknown enrollment');
+  });
+});
+
+describe('bindings and scopes', () => {
+  it('treats entities without bindings as unsynced', () => {
+    expect(hasActiveBinding(SCOPE, ET, 'ghost')).toBe(false);
+    expect(listSyncScopesForEntity(ET, 'ghost')).toEqual([]);
+  });
+
+  it('lists scopes once a binding exists', () => {
+    upsertBinding(SCOPE, ET, 'tpl-1');
+    expect(hasActiveBinding(SCOPE, ET, 'tpl-1')).toBe(true);
+    expect(listSyncScopesForEntity(ET, 'tpl-1')).toEqual([SCOPE]);
+  });
+});
+
+describe('recordLocalChange coalescing', () => {
+  it('coalesces two saves into one pending create with the latest payload', () => {
+    activateEnrollment();
+    upsertBinding(SCOPE, ET, 'e1');
+    const first = change({ entityId: 'e1', entityType: ET, operation: 'create', payload: { v: 1 }, schemaVersion: 1 });
+    const second = change({ entityId: 'e1', entityType: ET, operation: 'update', payload: { v: 2 }, schemaVersion: 1 });
+    expect(second).toBe(first);
+    const rows = listOutboxRows(SCOPE);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].operation).toBe('create');
+    expect(rows[0].payloadJson).toBe(canonicalJson({ v: 2 }));
+    expect(getBinding(SCOPE, ET, 'e1')?.localEditGeneration).toBe(2);
+  });
+
+  it('removes the pending row when a create is deleted before dispatch', () => {
+    activateEnrollment();
+    upsertBinding(SCOPE, ET, 'e2');
+    change({ entityId: 'e2', entityType: ET, operation: 'create', payload: { v: 1 }, schemaVersion: 1 });
+    expect(change({ entityId: 'e2', entityType: ET, operation: 'delete', schemaVersion: 1 })).toBeNull();
+    expect(listOutboxRows(SCOPE)).toEqual([]);
+  });
+
+  it('turns an update followed by delete into a single delete', () => {
+    activateEnrollment();
+    upsertBinding(SCOPE, ET, 'e3', { basePayloadJson: canonicalJson({ v: 0 }), baseRevision: 5 });
+    change({ entityId: 'e3', entityType: ET, operation: 'update', payload: { v: 1 }, schemaVersion: 1 });
+    change({ entityId: 'e3', entityType: ET, operation: 'delete', schemaVersion: 1 });
+    const rows = listOutboxRows(SCOPE);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].operation).toBe('delete');
+    expect(rows[0].payloadJson).toBeNull();
+    expect(rows[0].baseRevision).toBe(5);
+  });
+
+  it('leaves the dispatched row untouched and adds a pending successor', () => {
+    activateEnrollment();
+    upsertBinding(SCOPE, ET, 'e4');
+    const dispatchedId = change({
+      entityId: 'e4',
+      entityType: ET,
+      operation: 'create',
+      payload: { v: 1 },
+      schemaVersion: 1,
+    });
+    const [dispatched] = nextBatch(SCOPE, 'enrollment-1');
+    expect(dispatched.changeId).toBe(dispatchedId);
+    const successorId = change({
+      entityId: 'e4',
+      entityType: ET,
+      operation: 'update',
+      payload: { v: 2 },
+      schemaVersion: 1,
+    });
+    expect(successorId).not.toBe(dispatchedId);
+    const rows = listOutboxRows(SCOPE);
+    expect(rows).toHaveLength(2);
+    const dispatchedRow = rows.find((row) => row.changeId === dispatchedId);
+    expect(dispatchedRow?.state).toBe('dispatched');
+    expect(dispatchedRow?.payloadJson).toBe(canonicalJson({ v: 1 }));
+    const successor = rows.find((row) => row.changeId === successorId);
+    expect(successor?.state).toBe('pending');
+    expect(successor?.baseRevision).toBeNull();
+    // The entity is blocked while its dispatch is in flight.
+    expect(nextBatch(SCOPE, 'enrollment-1')).toEqual([]);
+  });
+});
+
+describe('workflow template sync integration', () => {
+  it('produces zero outbox rows for unsynced templates', () => {
+    activateEnrollment();
+    const saved = saveWorkflowTemplate(templateInput('Unsynced'));
+    expect(getWorkflowTemplate(saved.id)?.name).toBe('Unsynced');
+    deleteWorkflowTemplate(saved.id);
+    expect(getWorkflowTemplate(saved.id)).toBeNull();
+    expect(listOutboxRows(SCOPE)).toEqual([]);
+  });
+
+  it('records exactly one outbox row for a synced save and delete', () => {
+    activateEnrollment();
+    const saved = saveWorkflowTemplate(templateInput('Original'));
+    expect(listOutboxRows(SCOPE)).toEqual([]);
+    upsertBinding(SCOPE, ET, saved.id);
+    saveWorkflowTemplate({ ...templateInput('Renamed') }, saved.id);
+    const rows = listOutboxRows(SCOPE);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].operation).toBe('update');
+    expect(rows[0].payloadJson).toContain('Renamed');
+    expect(rows[0].schemaVersion).toBe(1);
+    deleteWorkflowTemplate(saved.id);
+    const afterDelete = listOutboxRows(SCOPE);
+    expect(afterDelete).toHaveLength(1);
+    expect(afterDelete[0].operation).toBe('delete');
+    expect(afterDelete[0].payloadJson).toBeNull();
+    expect(getWorkflowTemplate(saved.id)).toBeNull();
+  });
+
+  it('commits neither the template nor the outbox row when the transaction fails', () => {
+    activateEnrollment();
+    upsertBinding(SCOPE, ET, 'tpl-boom');
+    const timestamp = new Date().toISOString();
+    const graphJson = JSON.stringify({ nodes: [], edges: [] });
+    expect(() =>
+      getDb().transaction(() => {
+        withSyncedEntityWrite(
+          ET,
+          'tpl-boom',
+          1,
+          'create',
+          () => {
+            throw new Error('boom');
+          },
+          () => {
+            db.prepare(
+              'INSERT INTO workflow_templates (id, name, description, graph_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+            ).run('tpl-boom', 'Boom', '', graphJson, timestamp, timestamp);
+          },
+        );
+      })(),
+    ).toThrow('boom');
+    expect(getWorkflowTemplate('tpl-boom')).toBeNull();
+    expect(listOutboxRows(SCOPE)).toEqual([]);
+  });
+
+  it('commits both together on success', () => {
+    activateEnrollment();
+    upsertBinding(SCOPE, ET, 'tpl-ok');
+    const timestamp = new Date().toISOString();
+    getDb().transaction(() => {
+      withSyncedEntityWrite(
+        ET,
+        'tpl-ok',
+        1,
+        'create',
+        () => ({ id: 'tpl-ok' }),
+        () => {
+          db.prepare(
+            'INSERT INTO workflow_templates (id, name, description, graph_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+          ).run('tpl-ok', 'Ok', '', JSON.stringify({ nodes: [], edges: [] }), timestamp, timestamp);
+        },
+      );
+    })();
+    expect(getWorkflowTemplate('tpl-ok')?.name).toBe('Ok');
+    expect(listOutboxRows(SCOPE)).toHaveLength(1);
+  });
+});
+
+describe('nextBatch', () => {
+  it('dispatches one change per entity with strictly increasing sequences', () => {
+    activateEnrollment();
+    for (const id of ['a', 'b', 'c']) {
+      upsertBinding(SCOPE, ET, id);
+      change({ entityId: id, entityType: ET, operation: 'create', payload: { id }, schemaVersion: 1 });
+    }
+    const first = nextBatch(SCOPE, 'enrollment-1', { maxChanges: 1 });
+    expect(first.map((item) => item.entityId)).toEqual(['a']);
+    const rest = nextBatch(SCOPE, 'enrollment-1');
+    expect(rest.map((item) => item.entityId)).toEqual(['b', 'c']);
+    const sequences = [...first, ...rest].map((item) => item.enrollmentSequence);
+    expect(sequences).toEqual([...sequences].sort((left, right) => left - right));
+    expect(new Set(sequences).size).toBe(3);
+  });
+
+  it('respects the byte budget', () => {
+    activateEnrollment();
+    for (const id of ['a', 'b']) {
+      upsertBinding(SCOPE, ET, id);
+      change({ entityId: id, entityType: ET, operation: 'create', payload: { id }, schemaVersion: 1 });
+    }
+    const limited = nextBatch(SCOPE, 'enrollment-1', { maxBytes: 15 });
+    expect(limited.map((item) => item.entityId)).toEqual(['a']);
+    const remainder = nextBatch(SCOPE, 'enrollment-1');
+    expect(remainder.map((item) => item.entityId)).toEqual(['b']);
+  });
+
+  it('returns parsed payloads with matching hashes', () => {
+    activateEnrollment();
+    upsertBinding(SCOPE, ET, 'e');
+    change({ entityId: 'e', entityType: ET, operation: 'create', payload: { v: 1 }, schemaVersion: 1 });
+    const [item] = nextBatch(SCOPE, 'enrollment-1');
+    expect(item.payload).toEqual({ v: 1 });
+    expect(item.baseRevision).toBeNull();
+    expect(item.payloadHash).toBe(
+      computePayloadHash({
+        baseRevision: null,
+        entityId: 'e',
+        entityType: ET,
+        operation: 'create',
+        payload: { v: 1 },
+        schemaVersion: 1,
+      }),
+    );
+  });
+});
+
+describe('applyPushResults', () => {
+  it('advances the base and unblocks the pending successor on accept', () => {
+    activateEnrollment();
+    upsertBinding(SCOPE, ET, 'e');
+    change({ entityId: 'e', entityType: ET, operation: 'create', payload: { v: 1 }, schemaVersion: 1 });
+    const [dispatched] = nextBatch(SCOPE, 'enrollment-1');
+    change({ entityId: 'e', entityType: ET, operation: 'update', payload: { v: 2 }, schemaVersion: 1 });
+    applyPushResults(SCOPE, [{ changeId: dispatched.changeId, revision: 7, status: 'accepted' }]);
+    const binding = getBinding(SCOPE, ET, 'e');
+    expect(binding?.baseRevision).toBe(7);
+    expect(binding?.basePayloadJson).toBe(canonicalJson({ v: 1 }));
+    expect(binding?.acknowledgedGeneration).toBe(1);
+    const rows = listOutboxRows(SCOPE);
+    expect(rows.find((row) => row.changeId === dispatched.changeId)?.state).toBe('acknowledged');
+    const successor = rows.find((row) => row.state === 'pending');
+    expect(successor?.baseRevision).toBe(7);
+    expect(successor?.payloadJson).toBe(canonicalJson({ v: 2 }));
+  });
+
+  it('preserves base, local, and remote on conflict and blocks only that entity', () => {
+    activateEnrollment();
+    upsertBinding(SCOPE, ET, 'e1', { basePayloadJson: canonicalJson({ v: 0 }), baseRevision: 4 });
+    upsertBinding(SCOPE, ET, 'e2');
+    change({ entityId: 'e1', entityType: ET, operation: 'update', payload: { v: 1 }, schemaVersion: 1 });
+    change({ entityId: 'e2', entityType: ET, operation: 'create', payload: { w: 1 }, schemaVersion: 1 });
+    const batch = nextBatch(SCOPE, 'enrollment-1', { maxChanges: 1 });
+    expect(batch.map((item) => item.entityId)).toEqual(['e1']);
+    const e1Change = batch.find((item) => item.entityId === 'e1');
+    applyPushResults(SCOPE, [
+      {
+        changeId: e1Change!.changeId,
+        remotePayload: { v: 9 },
+        remoteRevision: 6,
+        status: 'conflict',
+      },
+    ]);
+    const conflicts = listConflicts(SCOPE);
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0].kind).toBe('edit-edit');
+    expect(conflicts[0].basePayloadJson).toBe(canonicalJson({ v: 0 }));
+    expect(conflicts[0].localPayloadJson).toBe(canonicalJson({ v: 1 }));
+    expect(conflicts[0].remotePayloadJson).toBe(canonicalJson({ v: 9 }));
+    expect(conflicts[0].remoteRevision).toBe(6);
+    // Only the conflicted entity is blocked; e2 still dispatches.
+    const next = nextBatch(SCOPE, 'enrollment-1');
+    expect(next.map((item) => item.entityId)).toEqual(['e2']);
+    // Resolving unblocks the entity for its next conditional mutation.
+    resolveConflict(conflicts[0].id, 'keep-local');
+    expect(listConflicts(SCOPE)).toEqual([]);
+    change({ entityId: 'e1', entityType: ET, operation: 'update', payload: { v: 10 }, schemaVersion: 1 });
+    const retry = nextBatch(SCOPE, 'enrollment-1');
+    expect(retry.map((item) => item.entityId)).toEqual(['e1']);
+    expect(() => resolveConflict(conflicts[0].id, 'use-remote')).toThrow('already resolved');
+  });
+
+  it('records rejections without advancing the base', () => {
+    activateEnrollment();
+    upsertBinding(SCOPE, ET, 'e');
+    change({ entityId: 'e', entityType: ET, operation: 'create', payload: { v: 1 }, schemaVersion: 1 });
+    const [dispatched] = nextBatch(SCOPE, 'enrollment-1');
+    applyPushResults(SCOPE, [{ changeId: dispatched.changeId, status: 'rejected' }]);
+    const rows = listOutboxRows(SCOPE);
+    expect(rows[0].state).toBe('rejected');
+    expect(rows[0].resultJson).toContain('rejected');
+    expect(getBinding(SCOPE, ET, 'e')?.baseRevision).toBeNull();
+  });
+
+  it('flags reset-required and receipt-expired on sync state without touching the row', () => {
+    activateEnrollment();
+    upsertBinding(SCOPE, ET, 'e');
+    change({ entityId: 'e', entityType: ET, operation: 'create', payload: { v: 1 }, schemaVersion: 1 });
+    const [dispatched] = nextBatch(SCOPE, 'enrollment-1');
+    applyPushResults(SCOPE, [{ changeId: dispatched.changeId, status: 'reset-required' }]);
+    expect(listOutboxRows(SCOPE)[0].state).toBe('dispatched');
+    expect(getSyncState(SCOPE)?.resetRequired).toBe(true);
+    applyPushResults(SCOPE, [{ changeId: dispatched.changeId, status: 'receipt-expired' }]);
+    expect(getSyncState(SCOPE)?.resetRequired).toBe(true);
+  });
+
+  it('rejects results for unknown changes', () => {
+    expect(() => applyPushResults(SCOPE, [{ changeId: 'missing', status: 'accepted' }])).toThrow(
+      'Unknown change',
+    );
+  });
+});
+
+describe('sync state', () => {
+  it('upserts cursor and watermarks', () => {
+    expect(getSyncState(SCOPE)).toBeNull();
+    const created = updateSyncState(SCOPE, {
+      consumedSequenceHighWater: 5,
+      cursor: 'cursor-1',
+      protocolVersion: '1',
+    });
+    expect(created.cursor).toBe('cursor-1');
+    expect(created.consumedSequenceHighWater).toBe(5);
+    expect(created.resetRequired).toBe(false);
+    const updated = updateSyncState(SCOPE, { lastPullAt: '2026-09-11T00:00:00.000Z' });
+    expect(updated.cursor).toBe('cursor-1');
+    expect(updated.lastPullAt).toBe('2026-09-11T00:00:00.000Z');
+  });
+});
+
+describe('payload hashing', () => {
+  it('is deterministic regardless of payload key order', () => {
+    const first = computePayloadHash({
+      baseRevision: 3,
+      entityId: 'e',
+      entityType: ET,
+      operation: 'update',
+      payload: { b: 1, a: 2 },
+      schemaVersion: 1,
+    });
+    const second = computePayloadHash({
+      baseRevision: 3,
+      entityId: 'e',
+      entityType: ET,
+      operation: 'update',
+      payload: { a: 2, b: 1 },
+      schemaVersion: 1,
+    });
+    expect(second).toBe(first);
+    expect(
+      computePayloadHash({
+        baseRevision: 3,
+        entityId: 'e',
+        entityType: ET,
+        operation: 'update',
+        payload: { a: 2, b: 999 },
+        schemaVersion: 1,
+      }),
+    ).not.toBe(first);
+  });
+
+  it('canonicalizes nested objects with sorted keys', () => {
+    expect(canonicalJson({ b: 1, a: { d: 4, c: 3 } })).toBe('{"a":{"c":3,"d":4},"b":1}');
+  });
+});
