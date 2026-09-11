@@ -8,6 +8,7 @@ import { cpSync, existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { initDatabase } from './db/database.js';
 import { registerSettingsHandlers } from './ipc/settings.ipc.js';
+import { registerSyncBackendHandlers } from './ipc/sync-backend.ipc.js';
 import { registerCodexRegistryHandlers } from './ipc/codex-registry.ipc.js';
 import { registerCodexUsageHandlers } from './ipc/codex-usage.ipc.js';
 import { registerAnvilCloudHandlers } from './ipc/anvil-cloud.ipc.js';
@@ -340,6 +341,7 @@ app.whenReady().then(() => {
   if (!previewBuild) initializeAppUpdater();
 
   registerSettingsHandlers();
+  registerSyncBackendHandlers();
   registerMobileCompanionHandlers();
   registerCodexRegistryHandlers();
   registerCodexUsageHandlers();

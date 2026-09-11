@@ -48,6 +48,7 @@ import type {
   WorkspaceCreateOptions,
 } from '../shared/types.js';
 import type { RunCommand, RunStatus } from '../shared/run-types.js';
+import type { SyncBackendPinInput } from '../shared/sync-backend.js';
 import type {
   AgentUIIntentPresentationPatch,
   AgentUIPlanPatch,
@@ -683,6 +684,14 @@ const api: AnvilAPI = {
 
   codexUsage: {
     snapshot: () => ipcRenderer.invoke('codex-usage:snapshot') as Promise<CodexUsageSnapshot>,
+  },
+
+  syncBackend: {
+    discover: (url: string) => ipcRenderer.invoke('sync-backend:discover', url),
+    pin: (input: SyncBackendPinInput) => ipcRenderer.invoke('sync-backend:pin', input),
+    status: () => ipcRenderer.invoke('sync-backend:status'),
+    disconnect: () => ipcRenderer.invoke('sync-backend:disconnect'),
+    integrationPrompt: () => ipcRenderer.invoke('sync-backend:integration-prompt'),
   },
 
   anvilCloud: {

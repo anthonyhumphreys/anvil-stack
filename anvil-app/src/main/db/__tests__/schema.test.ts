@@ -124,7 +124,7 @@ describe('fresh database schema', () => {
         ).map((column) => column.name),
       );
 
-      expect(SCHEMA_VERSION).toBe(67);
+      expect(SCHEMA_VERSION).toBe(68);
       for (const column of [
         'local_llm_mode',
         'local_llm_provider',
@@ -163,18 +163,94 @@ describe('fresh database schema', () => {
       expect(tableColumns('sync_state').has('reset_required')).toBe(true);
       expect(tableColumns('sync_conflicts').has('remote_payload_json')).toBe(true);
       expect(tableColumns('sync_conflicts').has('resolution')).toBe(true);
+      expect(tableColumns('sync_backends').has('base_url')).toBe(true);
+      expect(tableColumns('sync_backends').has('deployment_id')).toBe(true);
+      expect(tableColumns('sync_backends').has('display_name')).toBe(true);
+      expect(tableColumns('sync_backends').has('profiles_json')).toBe(true);
+      expect(tableColumns('sync_backends').has('auth_modes_json')).toBe(true);
+      expect(tableColumns('sync_backends').has('pinned_descriptor_json')).toBe(true);
+      expect(tableColumns('sync_backends').has('state')).toBe(true);
+      expect(tableColumns('sync_backends').has('created_at')).toBe(true);
+      expect(tableColumns('sync_backends').has('updated_at')).toBe(true);
 
       const indexes = new Set(
         (
-          db
-            .prepare("SELECT name FROM sqlite_master WHERE type = 'index'")
-            .all() as Array<{ name: string }>
+          db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as Array<{
+            name: string;
+          }>
         ).map((row) => row.name),
       );
       expect(indexes.has('uq_sync_bindings_scope_entity')).toBe(true);
       expect(indexes.has('idx_sync_outbox_scope_state')).toBe(true);
       expect(indexes.has('uq_sync_outbox_dispatched_entity')).toBe(true);
       expect(indexes.has('idx_sync_conflicts_scope_entity')).toBe(true);
+      expect(indexes.has('uq_sync_backends_one_active')).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('migrates a v67 database to the backend association table', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec('CREATE TABLE settings (id INTEGER PRIMARY KEY)');
+      applyMigration(db, MIGRATIONS[68]);
+      const tables = new Set(
+        (
+          db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{
+            name: string;
+          }>
+        ).map((row) => row.name),
+      );
+      expect(tables.has('sync_backends'), 'Missing table sync_backends').toBe(true);
+      const columns = new Set(
+        (db.prepare('PRAGMA table_info(sync_backends)').all() as Array<{ name: string }>).map(
+          (column) => column.name,
+        ),
+      );
+      for (const column of [
+        'id',
+        'base_url',
+        'deployment_id',
+        'display_name',
+        'profiles_json',
+        'auth_modes_json',
+        'pinned_descriptor_json',
+        'state',
+        'created_at',
+        'updated_at',
+      ]) {
+        expect(columns.has(column), `Missing sync_backends.${column}`).toBe(true);
+      }
+      const indexes = new Set(
+        (
+          db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as Array<{
+            name: string;
+          }>
+        ).map((row) => row.name),
+      );
+      expect(indexes.has('uq_sync_backends_one_active')).toBe(true);
+
+      db.exec(`
+        INSERT INTO sync_backends (
+          id, base_url, deployment_id, display_name, profiles_json, auth_modes_json,
+          pinned_descriptor_json, state, created_at, updated_at
+        ) VALUES (
+          'one', 'https://one.example/', 'one', 'One', '[]', '[]', '{}', 'active',
+          '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z'
+        )
+      `);
+      expect(() =>
+        db.exec(`
+          INSERT INTO sync_backends (
+            id, base_url, deployment_id, display_name, profiles_json, auth_modes_json,
+            pinned_descriptor_json, state, created_at, updated_at
+          ) VALUES (
+            'two', 'https://two.example/', 'two', 'Two', '[]', '[]', '{}', 'active',
+            '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z'
+          )
+        `),
+      ).toThrow(/unique/i);
     } finally {
       db.close();
     }
@@ -187,9 +263,9 @@ describe('fresh database schema', () => {
       applyMigration(db, MIGRATIONS[67]);
       const tables = new Set(
         (
-          db
-            .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
-            .all() as Array<{ name: string }>
+          db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{
+            name: string;
+          }>
         ).map((row) => row.name),
       );
       for (const table of [

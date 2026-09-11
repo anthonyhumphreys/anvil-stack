@@ -58,6 +58,7 @@ import { useBrand } from '../../contexts/BrandContext';
 import { dispatchCodexSelectionChanged } from '../../utils/codex-selection';
 import { selectPrimaryAgentProvider } from '../../utils/agent-provider-settings';
 import { InlineNotice } from '../layout/ViewScaffold';
+import { SyncMeshSettingsPanel } from './SyncMeshSettingsPanel';
 
 type TestStatus = 'idle' | 'testing' | 'ok' | 'error';
 type SettingsCategoryId =
@@ -66,6 +67,7 @@ type SettingsCategoryId =
   | 'delivery'
   | 'review'
   | 'devices'
+  | 'sync'
   | 'privacy'
   | 'danger';
 type CodexAgentsStatus = { tone: 'success' | 'error'; message: string };
@@ -133,6 +135,12 @@ const SETTINGS_CATEGORIES: Array<{
     label: 'Devices & system',
     description: 'Repo defaults and mobile companion access.',
     icon: MonitorSmartphone,
+  },
+  {
+    id: 'sync',
+    label: 'Sync & Mesh',
+    description: 'Backend connection for sync and mesh.',
+    icon: Cloud,
   },
   {
     id: 'privacy',
@@ -2246,6 +2254,16 @@ export function SettingsView({
                   </div>
                 )}
               </SettingsPanel>
+            </SettingsCategory>
+
+            <SettingsCategory
+              id="sync"
+              hidden={activeCategory !== 'sync'}
+              title="Sync & Mesh"
+              description="Connect this app to a compatible backend without rebuilding it."
+              icon={Cloud}
+            >
+              <SyncMeshSettingsPanel />
             </SettingsCategory>
 
             <SettingsCategory

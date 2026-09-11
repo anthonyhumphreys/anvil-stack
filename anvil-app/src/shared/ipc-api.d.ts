@@ -171,6 +171,11 @@ import type {
   TerminalSessionSummary,
 } from './types';
 import type { Brand } from './branding';
+import type {
+  SyncBackendDiscovery,
+  SyncBackendPinInput,
+  SyncBackendStatus,
+} from './sync-backend';
 
 export interface AnvilAPI {
   appWindow: {
@@ -637,6 +642,14 @@ export interface AnvilAPI {
 
   codexUsage: {
     snapshot: () => Promise<CodexUsageSnapshot>;
+  };
+
+  syncBackend: {
+    discover: (url: string) => Promise<SyncBackendDiscovery>;
+    pin: (input: SyncBackendPinInput) => Promise<SyncBackendStatus>;
+    status: () => Promise<SyncBackendStatus>;
+    disconnect: () => Promise<SyncBackendStatus>;
+    integrationPrompt: () => Promise<string>;
   };
 
   anvilCloud: {

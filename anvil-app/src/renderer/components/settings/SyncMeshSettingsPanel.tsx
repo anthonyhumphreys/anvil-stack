@@ -1,0 +1,380 @@
+import { useEffect, useState } from 'react';
+import type { ReactNode } from 'react';
+import {
+  AlertTriangle,
+  Check,
+  Cloud,
+  Copy,
+  HardDrive,
+  Loader2,
+  Server,
+  Unplug,
+} from 'lucide-react';
+import {
+  syncBackendModeLabel,
+  type SyncBackendConnectionMode,
+  type SyncBackendDiscovery,
+  type SyncBackendStatus,
+} from '../../../shared/sync-backend';
+import { copyTextToClipboard } from '../../utils/clipboard';
+
+function toErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function modeDescription(mode: SyncBackendConnectionMode): string {
+  switch (mode) {
+    case 'local':
+      return 'All data stays on this device.';
+    case 'hosted':
+      return 'Sign in with an Anvil-hosted account.';
+    case 'cloudflare':
+      return 'Point Anvil at your own Cloudflare deployment of the official backend.';
+    case 'compatible':
+      return 'Point Anvil at any backend implementing the frozen v1 contract.';
+    default: {
+      const exhaustive: never = mode;
+      return exhaustive;
+    }
+  }
+}
+
+const MODE_ORDER: SyncBackendConnectionMode[] = ['local', 'hosted', 'cloudflare', 'compatible'];
+
+export function SyncMeshSettingsPanel(): ReactNode {
+  const [mode, setMode] = useState<SyncBackendConnectionMode>('local');
+  const [status, setStatus] = useState<SyncBackendStatus | null>(null);
+  const [statusLoading, setStatusLoading] = useState(true);
+  const [url, setUrl] = useState('');
+  const [discovery, setDiscovery] = useState<SyncBackendDiscovery | null>(null);
+  const [discovering, setDiscovering] = useState(false);
+  const [pinning, setPinning] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [prompt, setPrompt] = useState<string | null>(null);
+  const [promptLoading, setPromptLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const refreshStatus = async (): Promise<void> => {
+    setStatusLoading(true);
+    try {
+      const next = await window.anvil.syncBackend.status();
+      setStatus(next);
+      if (next.state === 'active' && next.connectionMode !== 'local') {
+        setMode(next.connectionMode);
+      }
+    } catch (err) {
+      setError(toErrorMessage(err));
+    } finally {
+      setStatusLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void refreshStatus();
+  }, []);
+
+  const handleDiscover = async (): Promise<void> => {
+    setDiscovering(true);
+    setError(null);
+    setDiscovery(null);
+    try {
+      const result = await window.anvil.syncBackend.discover(url);
+      setDiscovery(result);
+    } catch (err) {
+      setError(toErrorMessage(err));
+    } finally {
+      setDiscovering(false);
+    }
+  };
+
+  const handlePin = async (): Promise<void> => {
+    if (!discovery) {
+      return;
+    }
+    setPinning(true);
+    setError(null);
+    try {
+      const next = await window.anvil.syncBackend.pin({
+        baseUrl: discovery.baseUrl,
+        descriptor: discovery.descriptor,
+      });
+      setStatus(next);
+      setMode('compatible');
+    } catch (err) {
+      setError(toErrorMessage(err));
+    } finally {
+      setPinning(false);
+    }
+  };
+
+  const handleDisconnect = async (): Promise<void> => {
+    setDisconnecting(true);
+    setError(null);
+    try {
+      const next = await window.anvil.syncBackend.disconnect();
+      setStatus(next);
+    } catch (err) {
+      setError(toErrorMessage(err));
+    } finally {
+      setDisconnecting(false);
+    }
+  };
+
+  const handleCopyPrompt = async (): Promise<void> => {
+    setPromptLoading(true);
+    setError(null);
+    try {
+      const text = prompt ?? (await window.anvil.syncBackend.integrationPrompt());
+      setPrompt(text);
+      await copyTextToClipboard(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      setError(toErrorMessage(err));
+    } finally {
+      setPromptLoading(false);
+    }
+  };
+
+  const showEndpointFlow = mode === 'compatible' || mode === 'cloudflare';
+
+  return (
+    <div className="space-y-3">
+      <Panel
+        title="Connection mode"
+        description="The same built app connects to any compatible backend. Switching pauses the old connection; cursors are never moved between backends."
+      >
+        {statusLoading ? (
+          <p className="flex items-center gap-2 text-sm text-text-tertiary">
+            <Loader2 size={14} className="animate-spin" /> Loading connection status…
+          </p>
+        ) : (
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {MODE_ORDER.map((option) => {
+              const disabled = option === 'hosted';
+              const selected = mode === option;
+              return (
+                <button
+                  key={option}
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => setMode(option)}
+                  className={`rounded-md border p-3 text-left transition-colors ${
+                    selected
+                      ? 'border-accent/60 bg-accent/5'
+                      : 'border-border bg-bg-primary hover:bg-bg-tertiary'
+                  } ${disabled ? 'cursor-not-allowed opacity-50' : ''}`}
+                >
+                  <span className="flex items-center gap-2 text-sm font-medium text-text-primary">
+                    {option === 'local' ? (
+                      <HardDrive size={15} className="text-accent" />
+                    ) : option === 'hosted' ? (
+                      <Cloud size={15} className="text-accent" />
+                    ) : (
+                      <Server size={15} className="text-accent" />
+                    )}
+                    {syncBackendModeLabel(option)}
+                  </span>
+                  <span className="mt-1 block text-xs leading-relaxed text-text-secondary">
+                    {disabled ? 'Not shipping in this packet.' : modeDescription(option)}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </Panel>
+
+      {mode === 'local' && (
+        <Panel
+          title="Local only"
+          description="Sync and Mesh stay off. Everything remains on this device."
+        >
+          <p className="text-sm text-text-secondary">
+            {status?.backendId
+              ? `A ${status.displayName ?? 'backend'} association is remembered but paused. Pick a backend mode above to review it.`
+              : 'No backend is associated with this device.'}
+          </p>
+        </Panel>
+      )}
+
+      {showEndpointFlow && (
+        <Panel
+          title={mode === 'cloudflare' ? 'My Cloudflare deployment' : 'Compatible backend'}
+          description={
+            mode === 'cloudflare'
+              ? 'Deploy the official backend to your own Cloudflare account, then paste its base URL below.'
+              : 'Paste the base URL of a backend implementing the frozen v1 contract.'
+          }
+        >
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <input
+              value={url}
+              onChange={(event) => setUrl(event.target.value)}
+              placeholder="https://anvil.example.com/"
+              spellCheck={false}
+              className="min-w-0 flex-1 rounded-md border border-border bg-bg-primary px-3 py-1.5 font-mono text-sm text-text-primary placeholder:text-text-tertiary"
+            />
+            <button
+              type="button"
+              onClick={() => void handleDiscover()}
+              disabled={discovering || url.trim().length === 0}
+              className="flex shrink-0 items-center justify-center gap-2 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
+            >
+              {discovering && <Loader2 size={14} className="animate-spin" />}
+              Discover
+            </button>
+          </div>
+
+          {discovery && (
+            <div className="space-y-2 rounded-md border border-border bg-bg-primary p-3">
+              <p className="text-xs font-medium uppercase tracking-wide text-text-tertiary">
+                Review before pinning
+              </p>
+              <dl className="space-y-1 text-sm">
+                <div className="flex justify-between gap-3">
+                  <dt className="text-text-tertiary">Endpoint</dt>
+                  <dd className="truncate font-mono text-xs text-text-primary">
+                    {discovery.baseUrl}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <dt className="text-text-tertiary">Deployment</dt>
+                  <dd className="truncate text-xs text-text-primary">
+                    {discovery.descriptor.displayName} ·{' '}
+                    <span className="font-mono">{discovery.descriptor.deploymentId}</span>
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <dt className="text-text-tertiary">Identity issuer</dt>
+                  <dd className="truncate font-mono text-xs text-text-primary">
+                    {discovery.descriptor.auth.issuer}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <dt className="text-text-tertiary">Capabilities</dt>
+                  <dd className="text-xs text-text-primary">
+                    {discovery.descriptor.profiles.join(', ')}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <dt className="text-text-tertiary">Sign-in</dt>
+                  <dd className="text-xs text-text-primary">
+                    {discovery.descriptor.authModes.join(', ')}
+                  </dd>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <dt className="text-text-tertiary">Limits</dt>
+                  <dd className="font-mono text-xs text-text-primary">
+                    {discovery.limits.entityBytes}/{discovery.limits.pageBytes}B ·{' '}
+                    {discovery.limits.batchChanges} changes · {discovery.limits.liveFrameBytes}B
+                    frames
+                  </dd>
+                </div>
+              </dl>
+              <p className="text-xs leading-relaxed text-text-tertiary">
+                Pinning stores a paused association for review. It does not enable upload.
+              </p>
+              <button
+                type="button"
+                onClick={() => void handlePin()}
+                disabled={pinning}
+                className="rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
+              >
+                {pinning ? 'Pinning…' : 'Pin association'}
+              </button>
+            </div>
+          )}
+        </Panel>
+      )}
+
+      <Panel title="Backend status" description="Public connection metadata. Never shows tokens.">
+        {!status || status.backendId === null ? (
+          <p className="text-sm text-text-tertiary">No backend associated yet.</p>
+        ) : (
+          <div className="space-y-2">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium text-text-primary">
+                  {status.displayName ?? status.backendId}
+                </p>
+                <p className="truncate font-mono text-xs text-text-tertiary">{status.baseUrl}</p>
+                <p className="mt-1 text-xs text-text-secondary">
+                  {status.profiles.join(', ') || 'no profiles'} ·{' '}
+                  {status.authModes.join(', ') || 'no sign-in modes'} ·{' '}
+                  {status.state === 'active'
+                    ? 'Connected'
+                    : status.state === 'paused'
+                      ? 'Paused — upload disabled'
+                      : 'Disconnected'}
+                </p>
+              </div>
+              {status.state === 'active' && (
+                <button
+                  type="button"
+                  onClick={() => void handleDisconnect()}
+                  disabled={disconnecting}
+                  className="flex shrink-0 items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
+                >
+                  <Unplug size={14} />
+                  {disconnecting ? 'Pausing…' : 'Disconnect'}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+      </Panel>
+
+      <Panel
+        title="Integration prompt"
+        description="Hand this to an agent implementing a compatible backend, with this build's protocol pinned."
+      >
+        <button
+          type="button"
+          onClick={() => void handleCopyPrompt()}
+          disabled={promptLoading}
+          className="flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
+        >
+          {copied ? <Check size={14} /> : <Copy size={14} />}
+          {promptLoading ? 'Loading…' : copied ? 'Copied' : 'Copy integration prompt'}
+        </button>
+        <textarea
+          readOnly
+          value={prompt ?? ''}
+          placeholder="The filled prompt appears here so it can be copied manually."
+          rows={10}
+          spellCheck={false}
+          className="w-full rounded-md border border-border bg-bg-primary p-3 font-mono text-xs leading-relaxed text-text-secondary placeholder:text-text-tertiary"
+        />
+      </Panel>
+
+      {error && (
+        <p className="flex items-start gap-2 rounded-md border border-error/30 bg-error/5 p-3 text-sm text-error">
+          <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function Panel({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description?: string;
+  children: ReactNode;
+}): ReactNode {
+  return (
+    <section className="space-y-4 rounded-lg border border-border bg-bg-secondary p-5">
+      <div>
+        <h4 className="text-base font-semibold text-text-primary">{title}</h4>
+        {description && <p className="mt-1 text-sm text-text-secondary">{description}</p>}
+      </div>
+      {children}
+    </section>
+  );
+}

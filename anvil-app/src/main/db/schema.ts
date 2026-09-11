@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 67;
+export const SCHEMA_VERSION = 68;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -1038,6 +1038,20 @@ CREATE TABLE IF NOT EXISTS sync_conflicts (
 );
 CREATE INDEX IF NOT EXISTS idx_sync_conflicts_scope_entity
   ON sync_conflicts(backend_id, account_id, dataset_epoch, entity_type, entity_id);
+CREATE TABLE IF NOT EXISTS sync_backends (
+  id TEXT PRIMARY KEY,
+  base_url TEXT NOT NULL,
+  deployment_id TEXT,
+  display_name TEXT,
+  profiles_json TEXT NOT NULL,
+  auth_modes_json TEXT NOT NULL,
+  pinned_descriptor_json TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('active','paused','disconnected')),
+  created_at TEXT,
+  updated_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_sync_backends_one_active
+  ON sync_backends(state) WHERE state = 'active';
 `;
 
 /**
@@ -2274,5 +2288,21 @@ CREATE TABLE IF NOT EXISTS sync_conflicts (
 );
 CREATE INDEX IF NOT EXISTS idx_sync_conflicts_scope_entity
   ON sync_conflicts(backend_id, account_id, dataset_epoch, entity_type, entity_id);
+`,
+  68: `
+CREATE TABLE IF NOT EXISTS sync_backends (
+  id TEXT PRIMARY KEY,
+  base_url TEXT NOT NULL,
+  deployment_id TEXT,
+  display_name TEXT,
+  profiles_json TEXT NOT NULL,
+  auth_modes_json TEXT NOT NULL,
+  pinned_descriptor_json TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('active','paused','disconnected')),
+  created_at TEXT,
+  updated_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_sync_backends_one_active
+  ON sync_backends(state) WHERE state = 'active';
 `,
 };
