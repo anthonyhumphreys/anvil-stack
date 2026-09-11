@@ -100,8 +100,8 @@ beforeEach(() => {
 });
 
 describe('migration 67', () => {
-  it('reads SCHEMA_VERSION 67', () => {
-    expect(SCHEMA_VERSION).toBe(67);
+  it('leaves SCHEMA_VERSION at the current schema after later packets', () => {
+    expect(SCHEMA_VERSION).toBe(68);
   });
 
   it('creates the five sync tables from the migration SQL alone', () => {
