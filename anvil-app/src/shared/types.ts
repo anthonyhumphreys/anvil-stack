@@ -1,6 +1,7 @@
 import type { DojoCraftedSkill, DojoTokenUsage, DojoPrice } from './dojo-types.js';
 import type { WorkItemReference } from './change-review-types.js';
 import type { AgentUIIntent } from './agent-ui-intents.js';
+import type { BootstrapRecipe } from '../../cloud/contract/bootstrap.js';
 
 export interface RepoInfo {
   id: string; // SHA256 of repo path
@@ -1894,6 +1895,45 @@ export interface WorkspaceMaterializationOpSummary {
   createdAt: string;
   updatedAt: string;
   repos: WorkspaceMaterializationRepoResult[];
+}
+
+/** Renderer-facing bootstrap recipe summary (WS-03 approval surface). */
+export interface WorkspaceBootstrapStatus {
+  /** The synced recipe, or null when the workspace definition has none. */
+  recipe: BootstrapRecipe | null;
+  /** Digest over recipe + resolved commits + effective policy. */
+  digest: string | null;
+  /** Whether a matching local approval covers the current digest. */
+  approved: boolean;
+  explanation: {
+    stepCount: number;
+    usesShell: boolean;
+    installsPackages: boolean;
+    envNames: string[];
+    steps: Array<{
+      id: string;
+      kind: string;
+      summary: string;
+      shell: boolean;
+      timeoutMs: number;
+      retry: string;
+    }>;
+  } | null;
+  runs: WorkspaceBootstrapRunSummary[];
+}
+
+export interface WorkspaceBootstrapRunSummary {
+  id: string;
+  digest: string;
+  state: 'awaiting-approval' | 'running' | 'verified' | 'failed' | 'unknown-outcome';
+  steps: Array<{ stepId: string; state: string; exitCode: number | null }>;
+}
+
+export interface WorkspaceBootstrapApprovalSummary {
+  id: string;
+  digest: string;
+  shellApproved: boolean;
+  createdAt: string;
 }
 
 export interface WorkspaceCreateOptions {

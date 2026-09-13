@@ -815,6 +815,16 @@ const api: AnvilAPI = {
       ipcRenderer.invoke('workspace:purge-quarantine', quarantineId),
     materializationOps: (workspaceId: string) =>
       ipcRenderer.invoke('workspace:materialization-ops', workspaceId),
+    bootstrapStatus: (workspaceId: string) =>
+      ipcRenderer.invoke('workspace:bootstrap-status', workspaceId),
+    bootstrapApprove: (workspaceId: string, options?: { shellApproved?: boolean }) =>
+      ipcRenderer.invoke('workspace:bootstrap-approve', workspaceId, options),
+    bootstrapRun: (workspaceId: string) =>
+      ipcRenderer.invoke('workspace:bootstrap-run', workspaceId),
+    bootstrapApprovals: (workspaceId: string) =>
+      ipcRenderer.invoke('workspace:bootstrap-approvals', workspaceId),
+    bootstrapRevokeApproval: (approvalId: string) =>
+      ipcRenderer.invoke('workspace:bootstrap-revoke-approval', approvalId),
   },
 
   agents: {

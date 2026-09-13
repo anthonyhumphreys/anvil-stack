@@ -142,6 +142,8 @@ import type {
   EditableAgentInput,
   WorkspaceCreateOptions,
   WorkspaceRepoDefinition,
+  WorkspaceBootstrapApprovalSummary,
+  WorkspaceBootstrapStatus,
   WorkspaceCloneRequest,
   WorkspaceCloneResult,
   WorkspaceLinkResult,
@@ -787,6 +789,17 @@ export interface AnvilAPI {
     /** WS-02: second explicit irreversible purge of a quarantined checkout. */
     purgeQuarantine: (quarantineId: string) => Promise<void>;
     materializationOps: (workspaceId: string) => Promise<WorkspaceMaterializationOpSummary[]>;
+    /** WS-03: recipe, current digest, approval state, and run history. */
+    bootstrapStatus: (workspaceId: string) => Promise<WorkspaceBootstrapStatus>;
+    /** WS-03: pin a local approval to the current digest and start the run. */
+    bootstrapApprove: (
+      workspaceId: string,
+      options?: { shellApproved?: boolean },
+    ) => Promise<{ approval: WorkspaceBootstrapApprovalSummary; runId: string | null }>;
+    /** WS-03: journal + start a run; parks in awaiting-approval without a pin. */
+    bootstrapRun: (workspaceId: string) => Promise<string>;
+    bootstrapApprovals: (workspaceId: string) => Promise<WorkspaceBootstrapApprovalSummary[]>;
+    bootstrapRevokeApproval: (approvalId: string) => Promise<{ revoked: boolean }>;
   };
 
   agents: {

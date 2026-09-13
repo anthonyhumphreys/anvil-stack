@@ -22,6 +22,24 @@ import {
   removeWorkspaceCheckout,
   startWorkspaceClone,
 } from '../services/workspace-materialization.service.js';
+import {
+  computeBootstrapDigest,
+  explainBootstrapRecipe,
+  getWorkspaceBootstrap,
+  isBootstrapApproved,
+  listBootstrapApprovals,
+  listBootstrapRuns,
+  recordBootstrapApproval,
+  resolveWorkspaceCommits,
+  revokeBootstrapApproval,
+  startBootstrapRun,
+  workspaceCheckoutRoot,
+} from '../services/bootstrap-policy.service.js';
+import { buildDevicePolicy } from '../services/mesh-worker.service.js';
+import type {
+  WorkspaceBootstrapApprovalSummary,
+  WorkspaceBootstrapStatus,
+} from '../../shared/types.js';
 import { scanForReposAsync, cancelScan } from '../services/repo-scan.service.js';
 import { ensureGateTemplates } from '../services/lifecycle.service.js';
 
@@ -236,6 +254,89 @@ export function registerWorkspaceHandlers(options: WorkspaceHandlersOptions = {}
       throw err;
     }
   });
+
+  ipcMain.handle(
+    'workspace:bootstrap-status',
+    async (_event, workspaceId: string): Promise<WorkspaceBootstrapStatus> => {
+      const recipe = getWorkspaceBootstrap(workspaceId);
+      if (recipe === null) {
+        return { recipe: null, digest: null, approved: false, explanation: null, runs: [] };
+      }
+      const input = {
+        recipe,
+        repositoryCommits: await resolveWorkspaceCommits(workspaceId),
+        executionPolicy: buildDevicePolicy(),
+      };
+      const digest = computeBootstrapDigest(input);
+      return {
+        recipe,
+        digest,
+        approved: isBootstrapApproved(workspaceId, digest, recipe),
+        explanation: explainBootstrapRecipe(recipe),
+        runs: listBootstrapRuns(workspaceId),
+      };
+    },
+  );
+
+  ipcMain.handle(
+    'workspace:bootstrap-approve',
+    async (
+      _event,
+      workspaceId: string,
+      options?: { shellApproved?: boolean },
+    ): Promise<{ approval: WorkspaceBootstrapApprovalSummary; runId: string | null }> => {
+      const recipe = getWorkspaceBootstrap(workspaceId);
+      if (recipe === null) throw new Error('workspace has no bootstrap recipe');
+      const input = {
+        recipe,
+        repositoryCommits: await resolveWorkspaceCommits(workspaceId),
+        executionPolicy: buildDevicePolicy(),
+      };
+      const approval = recordBootstrapApproval(workspaceId, {
+        ...input,
+        shellApproved: options?.shellApproved === true,
+      });
+      // Approving implies intent to run — start immediately when a checkout
+      // exists; otherwise the run stays a pending record the materialisation
+      // flow can trigger after cloning.
+      const checkoutRoot = workspaceCheckoutRoot(workspaceId);
+      const runId = checkoutRoot
+        ? startBootstrapRun({ workspaceId, ...input, checkoutRoot }).runId
+        : null;
+      return { approval, runId };
+    },
+  );
+
+  ipcMain.handle('workspace:bootstrap-run', async (_event, workspaceId: string) => {
+    const recipe = getWorkspaceBootstrap(workspaceId);
+    if (recipe === null) throw new Error('workspace has no bootstrap recipe');
+    const checkoutRoot = workspaceCheckoutRoot(workspaceId);
+    if (checkoutRoot === null) throw new Error('workspace has no mapped checkout');
+    return startBootstrapRun({
+      workspaceId,
+      recipe,
+      repositoryCommits: await resolveWorkspaceCommits(workspaceId),
+      executionPolicy: buildDevicePolicy(),
+      checkoutRoot,
+    }).runId;
+  });
+
+  ipcMain.handle(
+    'workspace:bootstrap-revoke-approval',
+    (_event, approvalId: string): { revoked: boolean } => {
+      if (typeof approvalId !== 'string' || approvalId.length === 0) {
+        throw new Error('approvalId is required');
+      }
+      revokeBootstrapApproval(approvalId);
+      return { revoked: true };
+    },
+  );
+
+  ipcMain.handle(
+    'workspace:bootstrap-approvals',
+    (_event, workspaceId: string): WorkspaceBootstrapApprovalSummary[] =>
+      listBootstrapApprovals(workspaceId),
+  );
 
   ipcMain.handle('workspace:export-vscode', async (_event, workspaceId: string) => {
     try {

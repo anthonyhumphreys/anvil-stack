@@ -27,6 +27,10 @@ import { registerCodeReviewHandlers } from './ipc/codereview.ipc.js';
 import { registerDiagramFileHandlers, cleanupDiagramServices } from './ipc/diagram-file.ipc.js';
 import { registerWorkspaceHandlers } from './ipc/workspace.ipc.js';
 import { recoverWorkspaceMaterializations } from './services/workspace-materialization.service.js';
+import {
+  recoverBootstrapRuns,
+  workspaceCheckoutRoot,
+} from './services/bootstrap-policy.service.js';
 import { registerAgentHandlers } from './ipc/agents.ipc.js';
 import { registerWorkspaceNotesHandlers } from './ipc/workspace-notes.ipc.js';
 import { registerWorkspaceScaffoldHandlers } from './ipc/workspace-scaffold.ipc.js';
@@ -404,6 +408,11 @@ app.whenReady().then(() => {
   // Only journal-authorised, operation-owned paths are touched.
   void recoverWorkspaceMaterializations().catch((err) => {
     console.error('[Workspace] Materialisation recovery failed:', err);
+  });
+  // WS-03: interrupted bootstrap runs re-verify postconditions; anything
+  // unproven is unknown-outcome — never silently replayed.
+  void recoverBootstrapRuns(workspaceCheckoutRoot).catch((err) => {
+    console.error('[Workspace] Bootstrap recovery failed:', err);
   });
   handleOrphanedBaSessions();
   handleStaleIndexingRepos();

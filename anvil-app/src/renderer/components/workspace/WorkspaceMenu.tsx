@@ -1,8 +1,18 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Check, ChevronsUpDown, Download, ExternalLink, Pencil, Plus, Trash2 } from 'lucide-react';
+import {
+  Check,
+  ChevronsUpDown,
+  Download,
+  ExternalLink,
+  Pencil,
+  Plus,
+  Rocket,
+  Trash2,
+} from 'lucide-react';
 import { useBrand } from '../../contexts/BrandContext';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { AnvilLogo } from '../brand/AnvilLogo';
+import { WorkspaceBootstrapPanel } from './WorkspaceBootstrapPanel';
 
 interface WorkspaceMenuProps {
   compact: boolean;
@@ -15,6 +25,7 @@ export function WorkspaceMenu({ compact, statusLabel, onCreateNew }: WorkspaceMe
   const { workspaces, activeWorkspace, switchWorkspace, updateWorkspace, deleteWorkspace } =
     useWorkspace();
   const [open, setOpen] = useState(false);
+  const [showBootstrap, setShowBootstrap] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const orderedWorkspaces = activeWorkspace
     ? workspaces.toSorted(
@@ -179,6 +190,14 @@ export function WorkspaceMenu({ compact, statusLabel, onCreateNew }: WorkspaceMe
                 }}
               />
               <MenuAction
+                icon={<Rocket size={14} />}
+                label="Bootstrap…"
+                onClick={() => {
+                  setOpen(false);
+                  setShowBootstrap(true);
+                }}
+              />
+              <MenuAction
                 icon={<Download size={14} />}
                 label="Export VS Code workspace"
                 onClick={() => {
@@ -195,6 +214,13 @@ export function WorkspaceMenu({ compact, statusLabel, onCreateNew }: WorkspaceMe
             </div>
           )}
         </div>
+      )}
+      {showBootstrap && activeWorkspace && (
+        <WorkspaceBootstrapPanel
+          workspaceId={activeWorkspace.id}
+          workspaceName={activeWorkspace.name}
+          onClose={() => setShowBootstrap(false)}
+        />
       )}
     </div>
   );

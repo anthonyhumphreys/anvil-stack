@@ -252,7 +252,11 @@ export async function setMeshWorkerEnabled(enabled: boolean): Promise<MeshWorker
   return getMeshWorkerStatus();
 }
 
-function buildDevicePolicy(): DevicePolicy {
+/**
+ * The effective execution policy this device enforces — also the policy
+ * input bootstrap digests commit to (WS-03 approval pins).
+ */
+export function buildDevicePolicy(): DevicePolicy {
   return {
     worker: {
       allowJobs: true,

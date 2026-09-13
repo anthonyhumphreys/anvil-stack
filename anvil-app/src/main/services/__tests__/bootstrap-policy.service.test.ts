@@ -15,6 +15,7 @@ import {
   isBootstrapApproved,
   listBootstrapRuns,
   recordBootstrapApproval,
+  recoverBootstrapRuns,
   setWorkspaceBootstrap,
   startBootstrapRun,
 } from '../bootstrap-policy.service';
@@ -209,6 +210,85 @@ describe('journaled bootstrap run', () => {
     expect(run?.state).toBe('failed');
     expect(run?.steps[0].state).toBe('failed');
     expect(run?.steps[0].exitCode).toBe(2);
+  });
+});
+
+describe('crash recovery (verifier)', () => {
+  function seedInterruptedRun(recipe: BootstrapRecipe): string {
+    setWorkspaceBootstrap(WS, recipe);
+    const runId = 'brun-interrupted';
+    db.prepare(
+      `INSERT INTO bootstrap_runs (id, workspace_id, digest, state, created_at, updated_at)
+       VALUES (?, ?, 'd', 'running', ?, ?)`,
+    ).run(runId, WS, new Date().toISOString(), new Date().toISOString());
+    db.prepare(
+      `INSERT INTO bootstrap_run_steps (run_id, step_id, state, updated_at) VALUES (?, 'install', 'running', ?)`,
+    ).run(runId, new Date().toISOString());
+    return runId;
+  }
+
+  it('marks verified when the recipe postconditions re-verify after a crash', async () => {
+    const runId = seedInterruptedRun({
+      schemaVersion: 1,
+      steps: [
+        {
+          id: 'install',
+          kind: 'command',
+          workingDirectory: '.',
+          argv: ['pnpm', 'install'],
+          timeoutMs: 60_000,
+          envNames: [],
+          retry: 'inspect-before-retry',
+        },
+        {
+          id: 'check',
+          kind: 'verify',
+          workingDirectory: '.',
+          argv: [process.execPath, '-e', 'process.exit(0)'],
+          timeoutMs: 5_000,
+          envNames: [],
+          retry: 'safe',
+        },
+      ],
+    });
+    await recoverBootstrapRuns(() => '/tmp');
+    expect(getBootstrapRun(runId)?.state).toBe('verified');
+  });
+
+  it('marks unknown-outcome when postconditions cannot be proven — never replays', async () => {
+    const runId = seedInterruptedRun({
+      schemaVersion: 1,
+      steps: [
+        {
+          id: 'install',
+          kind: 'command',
+          workingDirectory: '.',
+          argv: ['pnpm', 'install'],
+          timeoutMs: 60_000,
+          envNames: [],
+          retry: 'inspect-before-retry',
+        },
+        {
+          id: 'check',
+          kind: 'verify',
+          workingDirectory: '.',
+          argv: [process.execPath, '-e', 'process.exit(1)'],
+          timeoutMs: 5_000,
+          envNames: [],
+          retry: 'safe',
+        },
+      ],
+    });
+    await recoverBootstrapRuns(() => '/tmp');
+    const run = getBootstrapRun(runId);
+    expect(run?.state).toBe('unknown-outcome');
+    expect(run?.steps[0].state).toBe('unknown-outcome');
+  });
+
+  it('marks unknown-outcome when the checkout root is gone', async () => {
+    const runId = seedInterruptedRun(RECIPE);
+    await recoverBootstrapRuns(() => null);
+    expect(getBootstrapRun(runId)?.state).toBe('unknown-outcome');
   });
 });
 
