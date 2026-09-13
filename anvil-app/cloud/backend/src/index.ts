@@ -128,6 +128,13 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     return handleConnect(request, env);
   }
 
+  // MESH-03 artifact byte routes: bytes stream through to the account
+  // object's R2 binding — never buffered, never inside an RPC envelope.
+  const artifactMatch = /^\/v1\/artifacts\/([A-Za-z0-9_-]{1,128})$/.exec(path);
+  if (artifactMatch !== null) {
+    return handleArtifactBytes(request, env, artifactMatch[1] as string, url.pathname);
+  }
+
   if (request.method === 'POST' && path.startsWith('/v1/')) {
     const authRoute =
       path === '/v1/enroll'
@@ -170,6 +177,46 @@ async function handleConnect(request: Request, env: Env): Promise<Response> {
     method: 'GET',
     headers: new Headers(request.headers),
   });
+}
+
+/**
+ * PUT/GET `/v1/artifacts/{artifactId}`: authenticated like any other route,
+ * then forwarded to the owning account object with verified identity headers
+ * and the request body streamed (never buffered in the Worker).
+ */
+async function handleArtifactBytes(
+  request: Request,
+  env: Env,
+  _artifactId: string,
+  path: string,
+): Promise<Response> {
+  if (request.method !== 'PUT' && request.method !== 'GET') {
+    return rpcErrorResponse(undefined, 'malformed-request');
+  }
+  const auth = await authenticate(request, env);
+  if (auth === null) {
+    return rpcErrorResponse(undefined, 'unauthenticated');
+  }
+  const headers = new Headers();
+  headers.set('x-anvil-account', auth.accountId);
+  headers.set('x-anvil-enrollment', auth.enrollmentId);
+  const contentType = request.headers.get('content-type');
+  if (contentType !== null) {
+    headers.set('content-type', contentType);
+  }
+  const contentLength = request.headers.get('content-length');
+  if (contentLength !== null) {
+    headers.set('content-length', contentLength);
+  }
+  const stub = env.ACCOUNT.get(env.ACCOUNT.idFromName(auth.accountId));
+  const init = {
+    method: request.method,
+    headers,
+    ...(request.method === 'PUT' && request.body !== null
+      ? { body: request.body, duplex: 'half' }
+      : {}),
+  } as RequestInit;
+  return stub.fetch(new Request(`https://internal.anvil${path}`, init));
 }
 
 async function handleRpc(request: Request, env: Env): Promise<Response> {
@@ -229,7 +276,16 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
     case 'job.claim':
     case 'attempt.renew':
     case 'attempt.report':
-    case 'job.cancel': {
+    case 'job.cancel':
+    // MESH-03 durable events, approvals, and artifact manifests.
+    case 'event.pull':
+    case 'approval.get':
+    case 'approval.decide':
+    case 'artifact.reserve':
+    case 'artifact.finalize':
+    case 'artifact.get':
+    case 'artifact.list':
+    case 'artifact.delete': {
       return forwardToAccount(env, auth, {
         method: 'POST',
         headers: new Headers(request.headers),

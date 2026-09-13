@@ -133,6 +133,11 @@ export interface SyncAccountStats {
   historyQuotaBytes: number;
   /** Cursors strictly below this sequence must reset and re-scan. */
   retentionFloor: number;
+  /**
+   * MESH-03: declared bytes held by non-terminal artifact rows
+   * (reserved/uploaded/published/deleting) against the account quota.
+   */
+  artifactBytes?: number;
   counters: Record<string, number>;
 }
 

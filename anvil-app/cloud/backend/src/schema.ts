@@ -146,6 +146,96 @@ CREATE INDEX IF NOT EXISTS idx_attempts_worker_state
 -- Duplicate-active-attempt check and per-job attempt listing.
 CREATE INDEX IF NOT EXISTS idx_attempts_job_state
   ON attempts (job_id, state);
+-- MESH-03 durable event journal (spec §10). Two sequence spaces by design:
+-- event_seq is the per-job monotonic durable cursor (event.pull/afterSequence);
+-- sequence is the per-(attempt, stream) sequence carried by socket
+-- activity/gap frames. attempt_id '' marks job-scope lifecycle rows.
+-- covers_through = event_seq for ordinary rows; for 'gap' rows it is the
+-- highest dropped event_seq the row covers, so a pull can tell a cursor
+-- sitting mid-gap from a clean one. durable=1 rows are never budget-gated;
+-- durable=0 rows (worker activity) are journaled only while the job's
+-- intermediate-metadata budget (job_event_meta.activity_bytes) has room —
+-- past it they allocate a cursor but materialize as 'gap' rows, never a
+-- silent drop.
+CREATE TABLE IF NOT EXISTS events (
+  job_id TEXT NOT NULL,
+  event_seq INTEGER NOT NULL,
+  attempt_id TEXT NOT NULL,
+  stream_id TEXT NOT NULL,
+  sequence INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  durable INTEGER NOT NULL,
+  generation INTEGER NOT NULL,
+  payload TEXT NOT NULL,
+  covers_through INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (job_id, event_seq)
+);
+CREATE INDEX IF NOT EXISTS idx_events_attempt
+  ON events (job_id, attempt_id, event_seq);
+-- Worker-replayed activity dedupe: same (attempt, stream, sequence) never
+-- journals twice. 'gap' rows are excluded so a replayed frame that was once
+-- budget-dropped can still land if budget later frees.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_events_stream_seq
+  ON events (job_id, attempt_id, stream_id, sequence) WHERE kind != 'gap';
+-- Per-job journal counters: next durable cursor + retained activity bytes.
+CREATE TABLE IF NOT EXISTS job_event_meta (
+  job_id TEXT PRIMARY KEY,
+  next_event_seq INTEGER NOT NULL,
+  activity_bytes INTEGER NOT NULL DEFAULT 0
+);
+-- MESH-03 durable approvals (spec §10): expiring requests bound to an
+-- attempt, an action digest, the attempt fence (generation), and a
+-- permitted approver. A decision never loosens target-local policy.
+CREATE TABLE IF NOT EXISTS approvals (
+  approval_id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  attempt_id TEXT NOT NULL,
+  action_digest TEXT NOT NULL,
+  generation INTEGER NOT NULL,
+  approver_enrollment_id TEXT,
+  approver_role TEXT NOT NULL DEFAULT 'user',
+  state TEXT NOT NULL,
+  decided_by TEXT,
+  decided_at INTEGER,
+  expires_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_approvals_job ON approvals (job_id, state);
+-- At most one pending approval per attempt.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_approvals_pending_attempt
+  ON approvals (attempt_id) WHERE state = 'pending';
+-- Lazy/sweep expiry lookups.
+CREATE INDEX IF NOT EXISTS idx_approvals_expiry ON approvals (state, expires_at);
+-- MESH-03 artifact manifests (spec §10): rows are the state authority; the
+-- R2 object at r2_key is reconciled against them (reserved→uploaded→
+-- published, deleting→deleted). Never a SQL/R2 atomic transaction.
+CREATE TABLE IF NOT EXISTS artifacts (
+  artifact_id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  attempt_id TEXT NOT NULL,
+  byte_length INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  media_type TEXT NOT NULL,
+  retention_days INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  r2_key TEXT NOT NULL,
+  upload_expires_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  published_at INTEGER,
+  expires_at INTEGER,
+  deleted_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_artifacts_job ON artifacts (job_id, state);
+CREATE INDEX IF NOT EXISTS idx_artifacts_attempt ON artifacts (attempt_id, state);
+-- Retention-expiry sweep (published/uploaded past expires_at).
+CREATE INDEX IF NOT EXISTS idx_artifacts_expiry ON artifacts (state, expires_at);
+-- Orphaned-reservation sweep (reserved past upload_expires_at).
+CREATE INDEX IF NOT EXISTS idx_artifacts_upload_expiry
+  ON artifacts (state, upload_expires_at);
 `;
 
 /** First-dataset epoch for a fresh account object. Fixed for determinism. */

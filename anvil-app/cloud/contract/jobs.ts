@@ -257,3 +257,136 @@ export interface JobCancelParams {
 export interface JobCancelResult {
   job: JobSummary;
 }
+
+// ---- MESH-03 durable event journal + approvals ---------------------------
+// Wire shapes for `event.pull`, `approval.get`, and `approval.decide`
+// (spec §10: live and durable channels; durable expiring approvals).
+
+/**
+ * Journal row kinds. `activity` rows are intermediate metadata: journaled
+ * only up to the per-job budget, then represented by `gap` rows. Every
+ * other kind is durable — always journaled, never coalesced or dropped.
+ */
+export type DurableEventKind =
+  | 'job.created'
+  | 'job.state'
+  | 'attempt.created'
+  | 'attempt.state'
+  | 'approval.requested'
+  | 'approval.decided'
+  | 'artifact.reserved'
+  | 'artifact.published'
+  | 'artifact.deleted'
+  | 'artifact.expired'
+  | 'activity'
+  | 'gap';
+
+/**
+ * One journaled event. Two sequence spaces are deliberate: `cursor` is the
+ * per-job monotonic durable cursor used by `event.pull`/`subscribe`
+ * `afterSequence`, while `sequence` is the per-(attempt, stream) sequence
+ * carried live by `ActivityFrame`/`GapFrame`.
+ */
+export interface DurableEvent {
+  /** Monotonic per-job durable cursor; feed back as `afterSequence`. */
+  cursor: number;
+  jobId: string;
+  /** Present on attempt-scoped rows; absent on job-scope lifecycle rows. */
+  attemptId?: string;
+  streamId: string;
+  /** Per-(attempt, stream) sequence — the socket `ActivityFrame.sequence` space. */
+  sequence: number;
+  kind: DurableEventKind;
+  /** Owning attempt's fence for attempt-scoped rows; 0 on job-scope rows. */
+  generation: number;
+  /**
+   * Kind-specific bounded JSON. `gap` rows carry
+   * `{attemptId, streamId, fromSequence, toSequence, droppedEvents}` —
+   * stream-space bounds of the dropped range.
+   */
+  payload: unknown;
+  createdAt: string;
+}
+
+export interface EventPullParams {
+  /** A job id or attempt id within the authenticated account. */
+  scope: string;
+  /** Durable cursor (`DurableEvent.cursor` / `EventPullResult.nextCursor`). */
+  afterSequence?: number | null;
+  /** Page size, bounded by the backend. */
+  limit?: number;
+}
+
+export interface EventPullResult {
+  scopeKind: 'job' | 'attempt';
+  scopeId: string;
+  /** Owning job — the cursor domain for `nextCursor`/`hasGap`. */
+  jobId: string;
+  events: DurableEvent[];
+  /** Resume point: feed back as `afterSequence`. */
+  nextCursor: number;
+  hasMore: boolean;
+  /**
+   * True when the returned window spans dropped intermediate events —
+   * either `gap` rows inside it or a gap range covering part of it.
+   */
+  hasGap: boolean;
+}
+
+/** Durable approval lifecycle (spec §10). */
+export type ApprovalState = 'pending' | 'approved' | 'denied' | 'expired' | 'cancelled';
+
+export type ApprovalDecision = 'approved' | 'denied';
+
+/**
+ * An expiring durable approval request bound to an attempt, an action
+ * digest, the attempt fence (generation), and a permitted approver.
+ * Approval never loosens the target's local execution policy; a decision
+ * only resolves the pending request.
+ */
+export interface ApprovalRecord {
+  id: string;
+  jobId: string;
+  attemptId: string;
+  /** Digest of the action being approved (e.g. a bootstrap recipe hash). */
+  actionDigest: string;
+  /** The attempt fence the request was issued against; stale fences reject. */
+  generation: number;
+  /** The single enrollment permitted to decide; absent defers to `approverRole`. */
+  approverEnrollmentId?: string;
+  /** Approver class when no enrollment is pinned (`user`: any account device except the executing worker). */
+  approverRole: 'user';
+  state: ApprovalState;
+  decidedBy?: string;
+  decidedAt?: string;
+  expiresAt: string;
+  createdAt: string;
+}
+
+/** `approval.get`: exactly one selector is required. */
+export interface ApprovalGetParams {
+  approvalId?: string;
+  jobId?: string;
+  attemptId?: string;
+}
+
+export interface ApprovalGetResult {
+  approvals: ApprovalRecord[];
+}
+
+export interface ApprovalDecideParams {
+  approvalId: string;
+  decision: ApprovalDecision;
+  /** Optional human-readable note recorded on the decision. */
+  reason?: string;
+}
+
+export interface ApprovalDecideResult {
+  approval: ApprovalRecord;
+  job: JobSummary;
+  /**
+   * True when an identical decision was already stored — the replay is
+   * idempotent and changes nothing.
+   */
+  duplicate: boolean;
+}

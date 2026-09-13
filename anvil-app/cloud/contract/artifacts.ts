@@ -67,3 +67,51 @@ export const ARTIFACT_TRANSITIONS: Record<ArtifactState, readonly ArtifactState[
 export function canTransitionArtifact(from: ArtifactState, to: ArtifactState): boolean {
   return ARTIFACT_TRANSITIONS[from].includes(to);
 }
+
+// ---- MESH-03 artifact RPC shapes ------------------------------------------
+// Manifest reads/deletes ride the RPC envelope; bytes move on the Worker's
+// `PUT/GET /v1/artifacts/{artifactId}` routes under the same bearer auth.
+
+/** A manifest plus its backend bookkeeping fields. */
+export interface ArtifactDescriptor extends ArtifactManifest {
+  jobId: string;
+  createdAt: string;
+  updatedAt: string;
+  publishedAt: string | null;
+  /** Retention expiry; null until published. */
+  expiresAt: string | null;
+}
+
+export interface ArtifactGetParams {
+  artifactId: string;
+}
+
+export interface ArtifactGetResult {
+  artifact: ArtifactDescriptor;
+  /**
+   * Bounded read route (`GET` under the negotiated base). Present only
+   * while the artifact is `published` and unexpired.
+   */
+  downloadPath: string | null;
+}
+
+/** `artifact.list`: at least one of `jobId`/`attemptId` is required. */
+export interface ArtifactListParams {
+  jobId?: string;
+  attemptId?: string;
+  state?: ArtifactState;
+  /** Page size, bounded by the backend. */
+  limit?: number;
+}
+
+export interface ArtifactListResult {
+  artifacts: ArtifactDescriptor[];
+}
+
+export interface ArtifactDeleteParams {
+  artifactId: string;
+}
+
+export interface ArtifactDeleteResult {
+  artifact: ArtifactDescriptor;
+}
