@@ -98,6 +98,11 @@ import {
   resetMeshHandoffForTests,
 } from './mesh-handoff.service.js';
 import {
+  configureMeshDispatchContext,
+  reconcileDispatchesOnBoot,
+  resetMeshDispatchForTests,
+} from './mesh-dispatch.service.js';
+import {
   getOrCreateInstallationId,
   getSyncState,
   listBindings,
@@ -229,8 +234,18 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
     if (backend === null || fields === null || token === null) return null;
     return { apiUrl: apiUrlFor(backend), accessToken: token, enrollmentId: fields.enrollmentId };
   });
+  // FLOW-02: node dispatches are source-side; same session context, and
+  // boot reconciliation re-adopts persisted jobs (never recreates them).
+  configureMeshDispatchContext(() => {
+    const backend = getActiveBackend();
+    const fields = auth?.getSessionScopeFields() ?? null;
+    const token = auth?.getAccessToken() ?? null;
+    if (backend === null || fields === null || token === null) return null;
+    return { apiUrl: apiUrlFor(backend), accessToken: token, enrollmentId: fields.enrollmentId };
+  });
   void reconcileMeshAttemptsOnBoot().catch(() => undefined);
   void reconcileHandoffsOnBoot().catch(() => undefined);
+  void reconcileDispatchesOnBoot().catch(() => undefined);
   if (auth.getPublicSnapshot().state === 'signed-in') {
     scheduleSessionRefresh();
   }
@@ -253,6 +268,7 @@ export function resetSyncRuntimeForTests(): void {
   resetMeshArtifactForTests();
   resetMeshWorkerForTests();
   resetMeshHandoffForTests();
+  resetMeshDispatchForTests();
   auth = null;
   lastError = null;
   sessionExpired = false;

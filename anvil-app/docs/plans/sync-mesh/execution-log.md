@@ -776,3 +776,39 @@ gate 7/7, tsc + eslint clean.
 Remaining: `device.list|rename|revoke`, `account.delete*`,
 `data.export|import.*`, FLOW-02/03, PLACE-01, BYOB-02, IAC-02,
 LAUNCH-01.
+
+## FLOW-02 — remote nodes + result transfer (landed)
+
+Spec §449/§455: workflow nodes dispatch to remote workers as durable
+jobs; results transfer back through Git refs, not text.
+
+- `workflow-node` executor = code-task flow + `resultTransfer:
+  'bundle-artifacts'`. After finalize, each CHANGED repo's attempt
+  branch is packed as a thin bundle rooted on the pinned base (the
+  parent provably holds it — it pinned it) and published as an
+  `application/vnd.git-bundle` R2 artifact listed in the result
+  manifest. Unchanged repos transfer nothing (empty ranges don't
+  bundle).
+- Parent side (`mesh-dispatch.service.ts`, schema 75
+  `mesh_node_dispatches`): dispatch persists BEFORE job.create with a
+  stable `node-dispatch/<dispatchId>` requestId — backend idempotency
+  re-binds restarts instead of duplicating work. `refreshDispatch`
+  mirrors job state and, on terminal completion, downloads each
+  `bundle:<repo>` artifact and `git fetch`es it into the mapped local
+  checkout as `refs/mesh/result/<dispatchId>/<repo>` — the user's
+  working tree is never touched. `cancelNodeDispatch` persists intent
+  then propagates `job.cancel` (a missing ack is not treated as
+  cancelled). `reconcileDispatchesOnBoot` re-adopts persisted jobs.
+- `ExecutionAttempt.result` added to the wire (additive) so `job.get`
+  carries the attempt's result manifest — no separate fetch for
+  metadata.
+
+Coverage: 5 dispatch tests (stable requestId pinning, idempotent
+re-dispatch, real thin-bundle fetch into the parent repo producing the
+result ref with a clean working tree, cancel intent+propagation, boot
+re-adoption with no recreation) + 1 worker test (workflow-node
+publishes bundle artifacts). App suite 165 files / 1136 tests, backend
+98/98, gate 7/7, tsc + eslint clean.
+
+Remaining: `device.list|rename|revoke`, `account.delete*`,
+`data.export|import.*`, FLOW-03, PLACE-01, BYOB-02, IAC-02, LAUNCH-01.

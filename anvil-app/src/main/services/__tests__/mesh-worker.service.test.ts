@@ -1417,6 +1417,52 @@ describe('code-task executor (FLOW-01)', () => {
     }
   });
 
+  it('publishes bundle artifacts for a workflow-node dispatch', async () => {
+    const { workspaceId, portableId, repoDir, head } = seedTaskWorkspace('node');
+    try {
+      const job = makeCodeTaskJob('job-node', workspaceId, portableId, head, {
+        resultTransfer: 'bundle-artifacts',
+        dispatchId: 'disp-1',
+      });
+      job.kind = 'workflow-node';
+      // A node that produced output has commits to transfer.
+      runTurnMock.mockImplementation(
+        async (spec: RemoteSessionSpec, hooks: RemoteSessionHooks) => {
+          hooks.onThreadStarted('thr-mock');
+          writeFileSync(join(spec.cwd, 'node-out.ts'), 'export const n = 1;');
+          return {
+            providerThreadId: 'thr-mock',
+            turnId: 'turn-1',
+            turnStatus: 'completed' as const,
+            cliVersion: '0.44.0',
+            cancelled: false,
+          };
+        },
+      );
+      claimWith(job);
+      await handleJobAvailable('job-node');
+
+      const row = db
+        .prepare('SELECT state, journal_json, result_json FROM mesh_attempts WHERE id = ?')
+        .get('att-job-node') as {
+        state: string;
+        journal_json: string;
+        result_json: string;
+      };
+      expect(row.state).toBe('completed');
+      expect(row.journal_json).toContain('result-bundle-published');
+      const result = JSON.parse(row.result_json) as {
+        resultManifest: { artifacts: Array<{ artifactId: string; label: string }> };
+      };
+      expect(result.resultManifest.artifacts).toEqual([
+        { artifactId: 'art-test', label: `bundle:${portableId}` },
+      ]);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(userDataDir, { recursive: true, force: true });
+    }
+  });
+
   it('rejects a non-local ref policy — remote refs need explicit policy', async () => {
     const { workspaceId, portableId, repoDir, head } = seedTaskWorkspace('policy');
     try {

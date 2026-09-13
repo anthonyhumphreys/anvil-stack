@@ -66,7 +66,7 @@ const LOG_TAIL_BYTES = 4 * 1024;
  */
 const repoRefLocks = new Map<string, Promise<unknown>>();
 
-async function withRepoRefLock<T>(sourcePath: string, fn: () => Promise<T>): Promise<T> {
+export async function withRepoRefLock<T>(sourcePath: string, fn: () => Promise<T>): Promise<T> {
   const prior = repoRefLocks.get(sourcePath) ?? Promise.resolve();
   const next = prior.then(fn, fn);
   repoRefLocks.set(
@@ -83,7 +83,7 @@ function gitEnv(): Record<string, string> {
   return { ...meshExecEnv(), GIT_TERMINAL_PROMPT: '0' };
 }
 
-async function git(cwd: string, args: string[]): Promise<string> {
+export async function runGit(cwd: string, args: string[]): Promise<string> {
   const { stdout } = await execFileAsync('git', args, {
     cwd,
     timeout: GIT_TIMEOUT_MS,
@@ -91,6 +91,8 @@ async function git(cwd: string, args: string[]): Promise<string> {
   });
   return String(stdout);
 }
+
+const git = runGit;
 
 /** Branch/path component safe for refs and filesystems. */
 function sanitizeComponent(value: string): string {
@@ -176,6 +178,27 @@ export async function finalizeAttemptWorktrees(
     finalized.push(result);
   }
   return finalized;
+}
+
+/**
+ * Packs the attempt branch as a thin git bundle rooted on the pinned
+ * base commit — the fetchable form of the result (spec §455: code moves
+ * through Git refs; the bundle is the ref transport over artifacts).
+ * The receiver provably holds the base objects: it pinned them.
+ */
+export async function createAttemptBundle(
+  worktree: AttemptRepoWorktree,
+  bundlePath: string,
+): Promise<{ bundlePath: string; ref: string }> {
+  await withRepoRefLock(worktree.sourcePath, async () => {
+    await git(worktree.worktreePath, [
+      'bundle',
+      'create',
+      bundlePath,
+      `${worktree.baseCommit}..${worktree.branch}`,
+    ]);
+  });
+  return { bundlePath, ref: worktree.branch };
 }
 
 /**

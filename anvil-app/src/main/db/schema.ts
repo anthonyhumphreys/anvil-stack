@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 74;
+export const SCHEMA_VERSION = 75;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -767,6 +767,26 @@ CREATE TABLE IF NOT EXISTS mesh_handoff_journal (
 );
 CREATE INDEX IF NOT EXISTS idx_mesh_handoff_journal_session
   ON mesh_handoff_journal(session_id);
+
+-- FLOW-02: parent-side node dispatch records. The dispatch id is the
+-- stable identity — a parent restart re-adopts the recorded job rather
+-- than recreating one (spec §449).
+CREATE TABLE IF NOT EXISTS mesh_node_dispatches (
+  dispatch_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  node_id TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  manifest_json TEXT NOT NULL,
+  state TEXT NOT NULL,
+  cancel_requested INTEGER NOT NULL DEFAULT 0,
+  output_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mesh_node_dispatches_state
+  ON mesh_node_dispatches(state);
 
 -- WS-02: durable workspace materialisation journal. The op row and its
 -- per-repo stage rows are written BEFORE the matching filesystem mutation so
@@ -2714,5 +2734,26 @@ CREATE TABLE IF NOT EXISTS mesh_handoff_journal (
 );
 CREATE INDEX IF NOT EXISTS idx_mesh_handoff_journal_session
   ON mesh_handoff_journal(session_id);
+`,
+  75: `
+-- FLOW-02: parent-side node dispatch records. The dispatch id is the
+-- stable identity — a parent restart re-adopts the recorded job rather
+-- than recreating one (spec §449). Keep in sync with SCHEMA_SQL.
+CREATE TABLE IF NOT EXISTS mesh_node_dispatches (
+  dispatch_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  node_id TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  manifest_json TEXT NOT NULL,
+  state TEXT NOT NULL,
+  cancel_requested INTEGER NOT NULL DEFAULT 0,
+  output_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mesh_node_dispatches_state
+  ON mesh_node_dispatches(state);
 `,
 };

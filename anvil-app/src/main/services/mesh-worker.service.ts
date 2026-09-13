@@ -18,7 +18,7 @@ import { promisify } from 'node:util';
 import { platform, totalmem } from 'node:os';
 import { getDb } from '../db/database.js';
 import { join } from 'node:path';
-import { readdirSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { uploadAttemptArtifact } from './mesh-artifact.service.js';
 import { startWorkspaceClone } from './workspace-materialization.service.js';
 import {
@@ -33,6 +33,7 @@ import { getSettings } from './settings.service.js';
 import { writeSessionOwnership } from './mesh-ownership.service.js';
 import {
   allocateAttemptWorktrees,
+  createAttemptBundle,
   finalizeAttemptWorktrees,
   runVerificationCommand,
 } from './mesh-worktree.service.js';
@@ -131,6 +132,7 @@ const WORKER_CAPABILITIES = [
   'prepare-workspace',
   'start-session',
   'code-task',
+  'workflow-node',
 ];
 
 export function configureMeshWorkerContext(provider: () => MeshWorkerContext | null): void {
@@ -697,6 +699,9 @@ const EXECUTORS: Record<
   'prepare-workspace': executePrepareWorkspace,
   'start-session': executeStartSession,
   'code-task': executeCodeTask,
+  // FLOW-02: a workflow node IS a code-task unit plus result transfer —
+  // the manifest declares `resultTransfer: bundle-artifacts`.
+  'workflow-node': executeCodeTask,
 };
 
 /** Worker→backend control stream (`streamId: 'control'`) sequence space. */
@@ -1382,6 +1387,10 @@ async function executeCodeTask(
     // §455: remote refs require explicit policy — nothing else exists yet.
     throw new Error(`ref-policy-unsupported: ${String(refPolicy)}`);
   }
+  const resultTransfer = manifest.inputs['resultTransfer'] ?? 'manifest-only';
+  if (resultTransfer !== 'manifest-only' && resultTransfer !== 'bundle-artifacts') {
+    throw new Error(`result-transfer-unsupported: ${String(resultTransfer)}`);
+  }
 
   const localRevision = workspaceDefinitionRevision(workspaceId);
   if (localRevision === null) {
@@ -1581,6 +1590,46 @@ async function executeCodeTask(
   }
   if (isCancelRequested(attemptId)) return { ok: false, cancelled: true };
 
+  // FLOW-02 result transfer: with `bundle-artifacts` declared, each
+  // attempt branch is packed as a thin bundle (rooted on the pinned base
+  // the parent provably holds) and published as an R2 artifact — the
+  // fetchable ref transport. Publication happens while the attempt is
+  // still active (artifact.reserve rejects terminal attempts).
+  const artifacts: Array<{ artifactId: string; label: string }> = [];
+  if (resultTransfer === 'bundle-artifacts') {
+    const bundleDir = join(worktreeRoot, 'bundles');
+    mkdirSync(bundleDir, { recursive: true });
+    for (const [index, repo] of finalized.entries()) {
+      // An unchanged repo transfers nothing — its range is empty and a
+      // bundle would carry no commits. The manifest records base==result.
+      if (!repo.changed) continue;
+      const { bundlePath, ref } = await createAttemptBundle(
+        repo,
+        join(bundleDir, `${index}-${repo.repositoryId}.bundle`),
+      );
+      try {
+        const uploaded = await uploadAttemptArtifact({
+          attemptId,
+          bytes: readFileSync(bundlePath),
+          mediaType: 'application/vnd.git-bundle',
+        });
+        artifacts.push({ artifactId: uploaded.id, label: `bundle:${repo.repositoryId}` });
+        appendJournal(attemptId, 'result-bundle-published', {
+          repositoryId: repo.repositoryId,
+          artifactId: uploaded.id,
+          ref,
+        });
+      } catch (error) {
+        // Publication failure is a transfer failure, not silent absence —
+        // journal it; the manifest still records the local refs.
+        appendJournal(attemptId, 'result-bundle-failed', {
+          repositoryId: repo.repositoryId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+
   const ctx = workerContext();
   const resultManifest: AttemptResultManifest = {
     schemaVersion: 1,
@@ -1594,7 +1643,7 @@ async function executeCodeTask(
       changed: repo.changed,
     })),
     verification,
-    artifacts: [],
+    artifacts,
     provenance: {
       workerEnrollmentId: ctx?.enrollmentId ?? 'unknown',
       workerIncarnation: attempt.workerIncarnation,
@@ -2049,6 +2098,105 @@ export async function createCodeTaskJob(input: CodeTaskJobInput): Promise<JobSum
     requestId: input.requestId,
     payloadHash,
     kind: 'code-task',
+    requestedTarget,
+    inputManifest: manifest,
+    retryPolicy: 'inspect-before-retry',
+  });
+  return result.job;
+}
+
+export interface WorkflowNodeJobInput extends Omit<CodeTaskJobInput, 'requestId'> {
+  /**
+   * The parent run's stable dispatch identity — becomes the job's
+   * requestId so re-dispatch after a parent restart re-binds to the
+   * existing job instead of duplicating work (spec §449).
+   */
+  dispatchId: string;
+  runId: string;
+  nodeId: string;
+}
+
+/**
+ * `job.create` for `workflow-node` (FLOW-02). Same pinning as code-task
+ * plus `resultTransfer: bundle-artifacts` — the worker publishes each
+ * attempt branch as a fetchable bundle artifact so the parent can adopt
+ * the result refs. requestId is `node-dispatch/<dispatchId>`: the
+ * backend's (source, requestId) idempotency makes re-dispatch safe.
+ */
+export async function createWorkflowNodeJob(
+  input: WorkflowNodeJobInput,
+): Promise<JobSummary> {
+  const requestId = `node-dispatch/${input.dispatchId}`;
+  const provider: RemoteSessionProvider = input.provider ?? 'codex';
+  const revision = workspaceDefinitionRevision(input.workspaceId);
+  if (revision === null) {
+    throw new Error(`workspace not found: ${input.workspaceId}`);
+  }
+  const commits = await resolveWorkspaceCommits(input.workspaceId);
+  const defs = getDb()
+    .prepare(
+      `SELECT portable_id, mapped_repo_id FROM workspace_repo_definitions WHERE workspace_id = ?`,
+    )
+    .all(input.workspaceId) as Array<{ portable_id: string; mapped_repo_id: string | null }>;
+  const repositories = defs.map((def) => {
+    const commit = commits[def.portable_id];
+    if (def.mapped_repo_id === null || commit === undefined) {
+      throw new Error(
+        `repository ${def.portable_id} has no resolved commit on this device — map a checkout first`,
+      );
+    }
+    return { repositoryId: def.portable_id, commit };
+  });
+  const recipe = getWorkspaceBootstrap(input.workspaceId);
+  const bootstrapDigest =
+    recipe === null
+      ? 'none'
+      : computeBootstrapDigest({
+          recipe,
+          repositoryCommits: commits,
+          executionPolicy: buildDevicePolicy(),
+        });
+  const model =
+    input.model ?? resolveSessionModel(provider as AgentProvider, getSettings().openaiModel);
+  const manifest: ExecutionManifest = {
+    workspaceDefinitionRevision: revision,
+    repositories,
+    bootstrapDigest,
+    provider,
+    model,
+    configVersions: {},
+    inputs: {
+      workspaceId: input.workspaceId,
+      prompt: input.prompt,
+      refPolicy: 'local-branches',
+      resultTransfer: 'bundle-artifacts',
+      dispatchId: input.dispatchId,
+      runId: input.runId,
+      nodeId: input.nodeId,
+      ...(input.personaId === undefined ? {} : { personaId: input.personaId }),
+      ...(input.reasoningEffort === undefined
+        ? {}
+        : { reasoningEffort: input.reasoningEffort }),
+      ...(input.sandbox === undefined ? {} : { sandbox: input.sandbox }),
+      ...(input.cliMinVersion === undefined ? {} : { cliMinVersion: input.cliMinVersion }),
+      ...(input.turnTimeoutMs === undefined ? {} : { turnTimeoutMs: input.turnTimeoutMs }),
+      ...(input.verification === undefined ? {} : { verification: input.verification }),
+    },
+  };
+  const requestedTarget =
+    input.targetEnrollmentId !== undefined
+      ? { kind: 'device' as const, enrollmentId: input.targetEnrollmentId }
+      : { kind: 'auto' as const };
+  const payloadHash = createHash('sha256')
+    .update(
+      canonicalJson({ kind: 'workflow-node', requestedTarget, inputManifest: manifest }),
+      'utf8',
+    )
+    .digest('hex');
+  const result = await meshRpc<{ job: JobSummary }>('job.create', {
+    requestId,
+    payloadHash,
+    kind: 'workflow-node',
     requestedTarget,
     inputManifest: manifest,
     retryPolicy: 'inspect-before-retry',
