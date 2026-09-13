@@ -1363,7 +1363,11 @@ function formatSubagentAction(
   tool: NonNullable<CodexEvent['subagent']>['tool'],
   activityKind: NonNullable<CodexEvent['subagent']>['activityKind'],
 ): string {
-  if (activityKind) return `Subagent ${activityKind}`;
+  if (activityKind === 'completed') return 'Subagent completed';
+  if (activityKind === 'errored') return 'Subagent failed';
+  if (activityKind === 'started') return 'Subagent started';
+  if (activityKind === 'interacted') return 'Subagent update';
+  if (activityKind === 'interrupted') return 'Subagent interrupted';
   switch (tool) {
     case 'spawnAgent':
       return 'Spawn subagent';

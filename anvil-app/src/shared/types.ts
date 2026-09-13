@@ -949,7 +949,7 @@ export type CodexSubagentStatus =
   | 'errored'
   | 'shutdown'
   | 'notFound';
-export type CodexSubagentActivityKind = 'started' | 'interacted' | 'interrupted';
+export type CodexSubagentActivityKind = 'started' | 'interacted' | 'completed' | 'errored' | 'interrupted';
 
 export interface CodexSubagentState {
   threadId: string;
