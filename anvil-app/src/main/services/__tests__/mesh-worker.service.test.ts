@@ -35,6 +35,10 @@ vi.mock('../sync-backend-client.service.js', async (importOriginal) => {
   };
 });
 
+vi.mock('../mesh-artifact.service.js', () => ({
+  uploadAttemptArtifact: vi.fn(async () => ({ id: 'art-test' })),
+}));
+
 import {
   configureMeshWorkerContext,
   getMeshWorkerStatus,
@@ -174,13 +178,14 @@ describe('job claim + diagnostic execution', () => {
       .get('att-job-1') as { state: string; journal_json: string; result_json: string };
     expect(row.state).toBe('completed');
     const journal = JSON.parse(row.journal_json) as Array<{ event: string }>;
-    // Journal shows claim → preparing → running → completed ordering.
+    // Journal shows claim → preparing → running → artifact → completed ordering.
     expect(journal.map((j) => j.event)).toEqual([
       'claimed',
       'preparing',
       'running',
       'diagnostic.manifest',
       'diagnostic.environment',
+      'artifact-uploaded',
       'completed',
     ]);
     expect(JSON.parse(row.result_json)).toMatchObject({ ok: true });
