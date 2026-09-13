@@ -131,6 +131,9 @@ export function WorkspaceMenu({ compact, statusLabel, onCreateNew }: WorkspaceMe
                     <span className="block text-xs text-text-tertiary">
                       {workspace.repoCount}{' '}
                       {workspace.repoCount === 1 ? 'repository' : 'repositories'}
+                      {workspace.definitionState === 'needs-setup' && (
+                        <span className="ml-1 text-warning">· needs setup</span>
+                      )}
                     </span>
                   </span>
                   {active && <Check size={15} className="shrink-0 text-accent" />}

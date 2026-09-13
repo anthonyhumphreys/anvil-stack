@@ -124,7 +124,7 @@ describe('fresh database schema', () => {
         ).map((column) => column.name),
       );
 
-      expect(SCHEMA_VERSION).toBe(69);
+      expect(SCHEMA_VERSION).toBe(70);
       for (const column of [
         'local_llm_mode',
         'local_llm_provider',

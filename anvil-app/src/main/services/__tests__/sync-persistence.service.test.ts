@@ -106,7 +106,7 @@ beforeEach(() => {
 
 describe('schema migrations', () => {
   it('leaves SCHEMA_VERSION at the current schema after later packets', () => {
-    expect(SCHEMA_VERSION).toBe(69);
+    expect(SCHEMA_VERSION).toBe(70);
   });
 
   it('migration 69 adds the sequence allocator, review flag, and scan staging', () => {

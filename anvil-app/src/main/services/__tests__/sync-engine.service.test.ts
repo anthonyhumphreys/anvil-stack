@@ -3,7 +3,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SCHEMA_SQL } from '../../db/schema';
 import { DEFAULT_ORCHESTRATION } from '../../../shared/workflow-orchestration';
 import type { WorkflowNode } from '../../../shared/types';
-import { SYNC_ENTITY_WORKFLOW_TEMPLATE, type SyncScope } from '../../../shared/sync-mesh';
+import {
+  SYNC_ENTITY_EDITABLE_AGENT,
+  SYNC_ENTITY_SETTINGS,
+  SYNC_ENTITY_WORKFLOW_TEMPLATE,
+  SYNC_ENTITY_WORKSPACE_DEFINITION,
+  SYNC_SETTINGS_ENTITY_ID,
+  type SyncScope,
+} from '../../../shared/sync-mesh';
 import type {
   SyncCursor,
   SyncPullResult,
@@ -50,6 +57,8 @@ import {
   upsertEnrollment,
 } from '../sync-persistence.service';
 import { getWorkflowTemplate, saveWorkflowTemplate } from '../workflow.service';
+import { getEditableAgent, saveEditableAgent } from '../editable-agent.service';
+import { getSettings } from '../settings.service';
 
 const SCOPE: SyncScope = { backendId: 'backend-1', accountId: 'account-1', datasetEpoch: '1' };
 const ET = SYNC_ENTITY_WORKFLOW_TEMPLATE;
@@ -178,8 +187,12 @@ beforeEach(() => {
   db.exec(
     `DELETE FROM sync_outbox; DELETE FROM sync_bindings; DELETE FROM sync_conflicts;
      DELETE FROM sync_state; DELETE FROM device_enrollments; DELETE FROM workflow_templates;
-     DELETE FROM sync_scan_runs; DELETE FROM sync_scan_staging; DELETE FROM sync_installation;`,
+     DELETE FROM sync_scan_runs; DELETE FROM sync_scan_staging; DELETE FROM sync_installation;
+     DELETE FROM editable_agents; DELETE FROM workspaces; DELETE FROM workspace_repos;
+     DELETE FROM workspace_repo_definitions; DELETE FROM workspace_preferences;
+     DELETE FROM repos;`,
   );
+  db.prepare('INSERT OR IGNORE INTO settings (id) VALUES (1)').run();
 });
 
 describe('runSyncCycle push', () => {
@@ -324,6 +337,49 @@ describe('runSyncCycle push', () => {
     expect(pullCalls).toBe(2);
     expect(listOutboxRows(SCOPE)[0].state).toBe('acknowledged');
     expect(getSyncEngineSnapshot(SCOPE).inFlight).toBe(false);
+  });
+
+  it('resolves a displaced queue waiter only when the replacement cycle runs', async () => {
+    activateEnrollment();
+    const saved = saveWorkflowTemplate(templateInput('T'));
+    upsertBinding(SCOPE, ET, saved.id);
+    saveWorkflowTemplate({ ...templateInput('T') }, saved.id);
+
+    let releasePush!: () => void;
+    const holdPush = new Promise<void>((resolve) => {
+      releasePush = resolve;
+    });
+    let sawPush!: () => void;
+    const pushEntered = new Promise<void>((resolve) => {
+      sawPush = resolve;
+    });
+    let pushCalls = 0;
+    const rpc = fakeRpc({
+      onPush: async () => {
+        pushCalls += 1;
+        sawPush();
+        await holdPush;
+      },
+      push: (params) => acceptPush(params, 1),
+      pull: () => emptyPull('cursor-1'),
+    });
+
+    const first = cycle(rpc);
+    await pushEntered;
+    const second = cycle(rpc);
+    // A third caller arrives while the first is still held: it displaces the
+    // second, which must NOT resolve until the replacement cycle completes.
+    const third = cycle(rpc);
+    let secondResolved = false;
+    void second.then(() => {
+      secondResolved = true;
+    });
+    await Promise.resolve();
+    expect(secondResolved).toBe(false);
+    releasePush();
+    await Promise.all([first, second, third]);
+    expect(secondResolved).toBe(true);
+    expect(pushCalls).toBe(1);
   });
 });
 
@@ -577,5 +633,253 @@ describe('runSyncCycle pull', () => {
     await cycle(fakeRpc({ push: (params) => acceptPush(params, 2) }));
     expect(listOutboxRows(SCOPE).filter((row) => row.state === 'pending')).toEqual([]);
     expect(getBinding(SCOPE, ET, copyId)?.baseRevision).toBe(2);
+  });
+});
+
+describe('runSyncCycle pull — ENTITY-01 types', () => {
+  it('applies a remote editable-agent create', async () => {
+    activateEnrollment();
+    const change: SyncedChange = {
+      entityType: SYNC_ENTITY_EDITABLE_AGENT,
+      entityId: 'agent-remote',
+      operation: 'create',
+      payload: {
+        id: 'agent-remote',
+        name: 'Reviewer',
+        description: 'Reviews diffs',
+        icon: 'Search',
+        colour: '#22d3ee',
+        promptBody: 'Review the diff for {{repoName}}.',
+        capabilities: { canWriteFiles: false, canRunCommands: false, canReadFiles: true },
+      },
+      revision: 2,
+      schemaVersion: 1,
+      sequence: 5,
+    };
+    await cycle(
+      fakeRpc({
+        pull: () => ({
+          changes: [change],
+          hasMore: false,
+          nextCursor: 'cursor-a' as SyncCursor,
+        }),
+      }),
+    );
+
+    const agent = getEditableAgent('agent-remote');
+    expect(agent?.name).toBe('Reviewer');
+    expect(agent?.promptBody).toBe('Review the diff for {{repoName}}.');
+    expect(getBinding(SCOPE, SYNC_ENTITY_EDITABLE_AGENT, 'agent-remote')?.baseRevision).toBe(
+      2,
+    );
+  });
+
+  it('applies a remote workspace definition and marks it needs-setup', async () => {
+    activateEnrollment();
+    const change: SyncedChange = {
+      entityType: SYNC_ENTITY_WORKSPACE_DEFINITION,
+      entityId: 'ws-remote',
+      operation: 'create',
+      payload: {
+        id: 'ws-remote',
+        name: 'Shared workspace',
+        repos: [{ id: 'portable-1', name: 'anvil-app' }],
+        preferences: { workitems: { personaId: 'coder' } },
+      },
+      revision: 4,
+      schemaVersion: 1,
+      sequence: 6,
+    };
+    await cycle(
+      fakeRpc({
+        pull: () => ({
+          changes: [change],
+          hasMore: false,
+          nextCursor: 'cursor-w' as SyncCursor,
+        }),
+      }),
+    );
+
+    const ws = db.prepare('SELECT * FROM workspaces WHERE id = ?').get('ws-remote') as {
+      name: string;
+      definition_state: string;
+    };
+    expect(ws.name).toBe('Shared workspace');
+    expect(ws.definition_state).toBe('needs-setup');
+    expect(
+      db
+        .prepare('SELECT portable_id FROM workspace_repo_definitions WHERE workspace_id = ?')
+        .all('ws-remote'),
+    ).toHaveLength(1);
+    expect(
+      getBinding(SCOPE, SYNC_ENTITY_WORKSPACE_DEFINITION, 'ws-remote')?.baseRevision,
+    ).toBe(4);
+  });
+
+  it('applies a remote settings update to allowlisted fields only', async () => {
+    activateEnrollment();
+    upsertBinding(SCOPE, SYNC_ENTITY_SETTINGS, SYNC_SETTINGS_ENTITY_ID, {
+      basePayloadJson: canonicalJson({ id: SYNC_SETTINGS_ENTITY_ID, fields: { theme: 'system' } }),
+      baseRevision: 1,
+    });
+    const change: SyncedChange = {
+      entityType: SYNC_ENTITY_SETTINGS,
+      entityId: SYNC_SETTINGS_ENTITY_ID,
+      operation: 'update',
+      payload: {
+        id: SYNC_SETTINGS_ENTITY_ID,
+        fields: { theme: 'dark', githubPat: 'attacker-controlled' },
+      },
+      revision: 2,
+      schemaVersion: 1,
+      sequence: 7,
+    };
+    await cycle(
+      fakeRpc({
+        pull: () => ({
+          changes: [change],
+          hasMore: false,
+          nextCursor: 'cursor-s' as SyncCursor,
+        }),
+      }),
+    );
+
+    expect(getSettings().theme).toBe('dark');
+    const row = db.prepare('SELECT github_pat FROM settings WHERE id = 1').get() as {
+      github_pat: Buffer | null;
+    };
+    expect(row.github_pat).toBeNull();
+  });
+
+  it('quarantines a malformed editable-agent payload and keeps syncing other entities', async () => {
+    activateEnrollment();
+    const bad: SyncedChange = {
+      entityType: SYNC_ENTITY_EDITABLE_AGENT,
+      entityId: 'agent-bad',
+      operation: 'create',
+      payload: { id: 'agent-bad', promptBody: 42 },
+      revision: 1,
+      schemaVersion: 1,
+      sequence: 8,
+    };
+    const good: SyncedChange = {
+      entityType: SYNC_ENTITY_EDITABLE_AGENT,
+      entityId: 'agent-good',
+      operation: 'create',
+      payload: { id: 'agent-good', name: 'Fine', promptBody: 'x' },
+      revision: 1,
+      schemaVersion: 1,
+      sequence: 9,
+    };
+    await cycle(
+      fakeRpc({
+        pull: () => ({
+          changes: [bad, good],
+          hasMore: false,
+          nextCursor: 'cursor-q' as SyncCursor,
+        }),
+      }),
+    );
+
+    expect(getEditableAgent('agent-bad')).toBeNull();
+    // The un-understood payload is held on the binding for later revisions.
+    const quarantined = getBinding(SCOPE, SYNC_ENTITY_EDITABLE_AGENT, 'agent-bad');
+    expect(quarantined?.quarantineJson).toContain('agent-bad');
+    expect(getEditableAgent('agent-good')?.name).toBe('Fine');
+  });
+
+  it('applies a remote workspace delete', async () => {
+    activateEnrollment();
+    const change: SyncedChange = {
+      entityType: SYNC_ENTITY_WORKSPACE_DEFINITION,
+      entityId: 'ws-remote',
+      operation: 'create',
+      payload: { id: 'ws-remote', name: 'Doomed', repos: [] },
+      revision: 1,
+      schemaVersion: 1,
+      sequence: 3,
+    };
+    await cycle(
+      fakeRpc({
+        pull: () => ({
+          changes: [change],
+          hasMore: false,
+          nextCursor: 'cursor-1' as SyncCursor,
+        }),
+      }),
+    );
+    expect(db.prepare('SELECT id FROM workspaces WHERE id = ?').get('ws-remote')).toBeDefined();
+
+    await cycle(
+      fakeRpc({
+        pull: () => ({
+          changes: [
+            {
+              entityType: SYNC_ENTITY_WORKSPACE_DEFINITION,
+              entityId: 'ws-remote',
+              operation: 'delete' as const,
+              revision: 2,
+              schemaVersion: 1,
+              sequence: 4,
+            },
+          ],
+          hasMore: false,
+          nextCursor: 'cursor-2' as SyncCursor,
+        }),
+      }),
+    );
+    expect(
+      db.prepare('SELECT id FROM workspaces WHERE id = ?').get('ws-remote'),
+    ).toBeUndefined();
+  });
+
+  it('save-copy on an editable-agent conflict preserves the local version', async () => {
+    activateEnrollment();
+    const saved = saveEditableAgent({ name: 'Mine', promptBody: 'local body' });
+    upsertBinding(SCOPE, SYNC_ENTITY_EDITABLE_AGENT, saved.id, {
+      basePayloadJson: canonicalJson({ id: saved.id, name: 'Mine', promptBody: 'local body' }),
+      baseRevision: 1,
+    });
+    saveEditableAgent({ name: 'Mine', promptBody: 'local dirty body' }, saved.id);
+    expect(nextBatch(SCOPE, ENROLLMENT)).toHaveLength(1); // dispatch the dirty row
+
+    await cycle(
+      fakeRpc({
+        pull: () => ({
+          changes: [
+            {
+              entityType: SYNC_ENTITY_EDITABLE_AGENT,
+              entityId: saved.id,
+              operation: 'update' as const,
+              payload: {
+                id: saved.id,
+                name: 'Mine',
+                promptBody: 'remote body',
+              },
+              revision: 5,
+              schemaVersion: 1,
+              sequence: 12,
+            },
+          ],
+          hasMore: false,
+          nextCursor: 'cursor-c' as SyncCursor,
+        }),
+      }),
+    );
+
+    const conflict = listConflicts(SCOPE)[0];
+    expect(conflict.entityType).toBe(SYNC_ENTITY_EDITABLE_AGENT);
+    resolveSyncConflict({ conflictId: conflict.id, resolution: 'save-copy' });
+
+    expect(getEditableAgent(saved.id)?.promptBody).toBe('remote body');
+    const creates = listOutboxRows(SCOPE).filter(
+      (row) =>
+        row.state === 'pending' &&
+        row.operation === 'create' &&
+        row.entityType === SYNC_ENTITY_EDITABLE_AGENT &&
+        row.entityId !== saved.id,
+    );
+    expect(creates).toHaveLength(1);
+    expect(getEditableAgent(creates[0].entityId)?.name).toBe('Mine (local copy)');
   });
 });

@@ -45,6 +45,7 @@ import type {
   TerminalDataEvent,
   TerminalExitEvent,
   WorkItemProvider,
+  EditableAgentInput,
   WorkspaceCreateOptions,
 } from '../shared/types.js';
 import type { RunCommand, RunStatus } from '../shared/run-types.js';
@@ -789,6 +790,17 @@ const api: AnvilAPI = {
       ipcRenderer.invoke('workspace:export-vscode', workspaceId),
     openInNewWindow: (workspaceId: string) =>
       ipcRenderer.invoke('workspace:open-in-new-window', workspaceId),
+    repoDefinitions: (workspaceId: string) =>
+      ipcRenderer.invoke('workspace:repo-definitions', workspaceId),
+    mapRepo: (workspaceId: string, portableId: string, repoId: string) =>
+      ipcRenderer.invoke('workspace:map-repo', workspaceId, portableId, repoId),
+  },
+
+  agents: {
+    list: () => ipcRenderer.invoke('agents:list'),
+    save: (input: EditableAgentInput, agentId?: string) =>
+      ipcRenderer.invoke('agents:save', input, agentId),
+    delete: (agentId: string) => ipcRenderer.invoke('agents:delete', agentId),
   },
 
   workspaceScaffold: {

@@ -29,7 +29,7 @@ function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Compact one-line summary of a synced workflow payload for conflict compare. */
+/** Compact one-line summary of a synced entity payload for conflict compare. */
 function summarizeConflictPayload(json: string | null): string | null {
   if (json === null) return null;
   try {
@@ -37,9 +37,22 @@ function summarizeConflictPayload(json: string | null): string | null {
     if (typeof parsed !== 'object' || parsed === null) return '(unreadable payload)';
     const record = parsed as Record<string, unknown>;
     const name = typeof record.name === 'string' ? record.name : '(unnamed)';
-    const nodes = Array.isArray(record.nodes) ? record.nodes.length : 0;
-    const edges = Array.isArray(record.edges) ? record.edges.length : 0;
-    return `${name} — ${nodes} step${nodes === 1 ? '' : 's'}, ${edges} edge${edges === 1 ? '' : 's'}`;
+    if (Array.isArray(record.nodes) || Array.isArray(record.edges)) {
+      const nodes = Array.isArray(record.nodes) ? record.nodes.length : 0;
+      const edges = Array.isArray(record.edges) ? record.edges.length : 0;
+      return `${name} — ${nodes} step${nodes === 1 ? '' : 's'}, ${edges} edge${edges === 1 ? '' : 's'}`;
+    }
+    if (Array.isArray(record.repos)) {
+      return `${name} — ${record.repos.length} repo${record.repos.length === 1 ? '' : 's'}`;
+    }
+    if (typeof record.promptBody === 'string') {
+      return `${name} — custom agent prompt`;
+    }
+    if (typeof record.fields === 'object' && record.fields !== null) {
+      const count = Object.keys(record.fields).length;
+      return `App settings — ${count} field${count === 1 ? '' : 's'}`;
+    }
+    return name;
   } catch {
     return '(unreadable payload)';
   }

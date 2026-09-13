@@ -50,7 +50,7 @@ vi.mock('electron', () => ({
 }));
 
 import {
-  bindLocalWorkflowTemplates,
+  bindLocalEntities,
   enableSync,
   enrollWithEnrollmentCode,
   getRuntimeStatus,
@@ -164,7 +164,7 @@ describe.skipIf(!backendReachable)('two-profile acceptance gate (real worker)', 
         edges: [],
         orchestration: DEFAULT_ORCHESTRATION,
       });
-      bindLocalWorkflowTemplates(aScope);
+      bindLocalEntities(aScope);
       await requestSync();
       expect(getRuntimeStatus().lastError).toBeNull();
 
@@ -287,7 +287,7 @@ describe.skipIf(!backendReachable)('two-profile acceptance gate (real worker)', 
         edges: [],
         orchestration: DEFAULT_ORCHESTRATION,
       });
-      bindLocalWorkflowTemplates(aScope);
+      bindLocalEntities(aScope);
       await requestSync();
       expect(getRuntimeStatus().lastError).toBeNull();
 

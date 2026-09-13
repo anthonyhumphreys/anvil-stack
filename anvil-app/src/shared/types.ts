@@ -1105,6 +1105,10 @@ export interface Persona {
   colour: string;
   description: string;
   systemPromptTemplate: string;
+  /** Inline prompt body for user-defined agents; builtins use the template file. */
+  promptBody?: string;
+  /** True for user-defined agents stored in SQLite and synced; false for compiled-in personas. */
+  editable?: boolean;
   capabilities: {
     canWriteFiles: boolean;
     canRunCommands: boolean;
@@ -1759,8 +1763,50 @@ export type WorkspaceScaffoldStatus =
 export interface Workspace {
   id: string;
   name: string;
+  /** Synced-definition readiness: needs-setup until portable repos map to local checkouts. */
+  definitionState?: 'ready' | 'needs-setup';
   createdAt: string;
   updatedAt: string;
+}
+
+/** User-defined agent stored in SQLite and synced; surfaced as a Persona. */
+export interface EditableAgent {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  colour: string;
+  promptBody: string;
+  capabilities: {
+    canWriteFiles: boolean;
+    canRunCommands: boolean;
+    canReadFiles: boolean;
+  };
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EditableAgentInput {
+  name: string;
+  description?: string;
+  icon?: string;
+  colour?: string;
+  promptBody: string;
+  capabilities?: {
+    canWriteFiles?: boolean;
+    canRunCommands?: boolean;
+    canReadFiles?: boolean;
+  };
+}
+
+/** A portable repo entry in a synced workspace definition (WS-01 mapping surface). */
+export interface WorkspaceRepoDefinition {
+  portableId: string;
+  name: string;
+  remoteUrl?: string;
+  defaultBranch?: string;
+  /** Local checkout this entry maps to; null until mapped on this device. */
+  mappedRepoId: string | null;
 }
 
 export interface WorkspaceCreateOptions {

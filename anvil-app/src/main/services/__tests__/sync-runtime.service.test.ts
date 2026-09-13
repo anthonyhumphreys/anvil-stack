@@ -7,7 +7,12 @@ import { SCHEMA_SQL } from '../../db/schema';
 import { DEFAULT_ORCHESTRATION } from '../../../shared/workflow-orchestration';
 import type { WorkflowNode } from '../../../shared/types';
 import { SPIKE_DATASET_EPOCH } from '../../../shared/sync-runtime';
-import { SYNC_ENTITY_WORKFLOW_TEMPLATE, type SyncScope } from '../../../shared/sync-mesh';
+import {
+  SYNC_ENTITY_SETTINGS,
+  SYNC_ENTITY_WORKFLOW_TEMPLATE,
+  SYNC_SETTINGS_ENTITY_ID,
+  type SyncScope,
+} from '../../../shared/sync-mesh';
 import type { SyncBackendDescriptor } from '../../../shared/sync-backend';
 
 const db = new Database(':memory:');
@@ -31,7 +36,7 @@ vi.mock('electron', () => ({
 }));
 
 import {
-  bindLocalWorkflowTemplates,
+  bindLocalEntities,
   enableSync,
   enrollWithEnrollmentCode,
   exportSyncDiagnostics,
@@ -120,7 +125,7 @@ afterEach(() => {
   resetSyncRuntimeForTests();
 });
 
-describe('bindLocalWorkflowTemplates', () => {
+describe('bindLocalEntities', () => {
   it('queues a create for each unbound local template', () => {
     upsertEnrollment({
       displayName: 'Test device',
@@ -136,14 +141,18 @@ describe('bindLocalWorkflowTemplates', () => {
       nodes: [node('step-1')],
       edges: [],
     });
-    expect(previewAdoption()).toHaveLength(1);
-    expect(bindLocalWorkflowTemplates(SCOPE)).toBe(1);
-    expect(bindLocalWorkflowTemplates(SCOPE)).toBe(0);
+    // The settings singleton adopts alongside the workflow template.
+    expect(previewAdoption()).toHaveLength(2);
+    expect(bindLocalEntities(SCOPE)).toBe(2);
+    expect(bindLocalEntities(SCOPE)).toBe(0);
     const rows = listOutboxRows(SCOPE);
-    expect(rows).toHaveLength(1);
-    expect(rows[0].entityType).toBe(ET);
-    expect(rows[0].operation).toBe('create');
-    expect(rows[0].baseRevision).toBeNull();
+    expect(rows).toHaveLength(2);
+    const workflowRow = rows.find((row) => row.entityType === ET);
+    expect(workflowRow?.operation).toBe('create');
+    expect(workflowRow?.baseRevision).toBeNull();
+    const settingsRow = rows.find((row) => row.entityType === SYNC_ENTITY_SETTINGS);
+    expect(settingsRow?.entityId).toBe(SYNC_SETTINGS_ENTITY_ID);
+    expect(settingsRow?.operation).toBe('create');
   });
 
   it('never adopts a template already bound to another account scope', () => {
@@ -164,9 +173,12 @@ describe('bindLocalWorkflowTemplates', () => {
     upsertBinding(OTHER_SCOPE, ET, saved.id);
 
     // The entity is associated with account-2's scope: adoption into
-    // account-1's scope must not silently re-home it.
-    expect(bindLocalWorkflowTemplates(SCOPE)).toBe(0);
-    expect(listOutboxRows(SCOPE)).toEqual([]);
+    // account-1's scope must not silently re-home it. The settings singleton
+    // still adopts — it is a separate entity.
+    expect(bindLocalEntities(SCOPE)).toBe(1);
+    const rows = listOutboxRows(SCOPE);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].entityType).toBe(SYNC_ENTITY_SETTINGS);
     expect(getBinding(OTHER_SCOPE, ET, saved.id)).not.toBeNull();
     expect(getBinding(SCOPE, ET, saved.id)).toBeNull();
   });
@@ -588,8 +600,8 @@ describe('real auth transport (contract routes over injected fetch)', () => {
       nodes: [node('a')],
       edges: [],
     });
-    bindLocalWorkflowTemplates(SCOPE);
-    expect(listOutboxRows(SCOPE).length).toBe(1);
+    bindLocalEntities(SCOPE);
+    expect(listOutboxRows(SCOPE).length).toBe(2);
 
     const bundle = await exportSyncDiagnostics();
     expect(bundle.protocol).toBe(PROTOCOL);
@@ -598,8 +610,9 @@ describe('real auth transport (contract routes over injected fetch)', () => {
     const scopeDiag = bundle.scopes.find(
       (s) => s.backendId === SCOPE.backendId && s.accountId === SCOPE.accountId,
     );
-    expect(scopeDiag?.outboxByState['pending']).toBe(1);
+    expect(scopeDiag?.outboxByState['pending']).toBe(2);
     expect(scopeDiag?.bindingsByEntityType[ET]).toBe(1);
+    expect(scopeDiag?.bindingsByEntityType[SYNC_ENTITY_SETTINGS]).toBe(1);
     expect(scopeDiag?.openConflicts).toBe(0);
     expect(bundle.remote?.historyBytes).toBe(4096);
     expect(bundle.remote?.counters['pull_total']).toBe(5);

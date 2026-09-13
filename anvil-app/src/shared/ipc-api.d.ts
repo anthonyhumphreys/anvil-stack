@@ -138,7 +138,10 @@ import type {
   WorkItemCreateInput,
   WorkItemFilters,
   WorkItemProvider,
+  EditableAgent,
+  EditableAgentInput,
   WorkspaceCreateOptions,
+  WorkspaceRepoDefinition,
   WorkspaceScaffoldMaybeCompleteResult,
   WorkspaceScaffoldSession,
   WorkspaceScaffoldStartResult,
@@ -753,6 +756,14 @@ export interface AnvilAPI {
     ) => Promise<WorkspacePreferences>;
     exportVSCodeWorkspace: (workspaceId: string) => Promise<void>;
     openInNewWindow: (workspaceId: string) => Promise<void>;
+    repoDefinitions: (workspaceId: string) => Promise<WorkspaceRepoDefinition[]>;
+    mapRepo: (workspaceId: string, portableId: string, repoId: string) => Promise<void>;
+  };
+
+  agents: {
+    list: () => Promise<EditableAgent[]>;
+    save: (input: EditableAgentInput, agentId?: string) => Promise<EditableAgent>;
+    delete: (agentId: string) => Promise<void>;
   };
 
   workspaceScaffold: {

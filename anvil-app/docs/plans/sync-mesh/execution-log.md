@@ -349,3 +349,60 @@ suite, node+web typechecks zero sync diagnostics, eslint clean.
 
 Verification: 3/3 acceptance tests on live worker; 41/41 engine+runtime+
 failure-injection tests; typechecks and eslint clean.
+
+### ENTITY-01 + WS-01 + MESH-01 + IAC-01 wave
+
+- Schema 70: `editable_agents`, `workspace_repo_definitions`, and
+  `workspaces.definition_state` (`ready`/`needs-setup`) — added in both
+  `SCHEMA_SQL` and `MIGRATIONS` without rewriting history.
+- New domain codec boundary `sync-entity-domain.ts` generalizes the
+  workflow-template path across all `SYNC_ENTITY_TYPES`
+  (`workflow-template`, `editable-agent`, `workspace-definition`,
+  `settings`): serialize (canonical JSON), validate, remote projection,
+  delete, save-copy, local-id listing. Engine + scan/activation route all
+  entities through it; malformed/unsupported payloads quarantine on the
+  binding instead of corrupting domain state.
+- `editable-agent.service.ts` is a real synced domain entity (SQLite CRUD
+  via `withSyncedEntityWrite`). `persona-catalog.ts` extracts the built-in
+  catalog into a data-only leaf so `persona.service` (built-ins +
+  editable agents, inline `renderPromptTemplate` for agents) stays
+  cycle-free of the sync codec layer.
+- Workspace definitions sync `{ id, name, repos[], preferences }` with
+  stable `portable_id` per repo and device-local `mapped_repo_id`.
+  `materializeRepoDefinitions` runs on bind and every membership mutation;
+  `recomputeWorkspaceDefinitionState` flips `needs-setup` on unresolved
+  persona/workflow refs or unmapped repos. Preference serialization uses
+  a per-field allowlist — `workItemConnectionId`, provider page refs, and
+  launch provenance never leave the device — and remote apply merges
+  portable fields over local-only keys instead of replacing sections.
+- Settings sync is a singleton (`SYNC_SETTINGS_ENTITY_ID`) with a closed
+  column allowlist; `updateSettings` emits intent only when an allowlisted
+  key changed.
+- `bindLocalEntities`/`previewAdoption` generalize over all entity types;
+  an entity bound in any other scope is skipped (never silently re-homed).
+- IPC surface: `agents.ipc.ts`, preload bridge, `ipc-api.d.ts`. UI:
+  `EditableAgentsPanel` in settings, `· needs setup` marker in the
+  workspace menu, conflict summaries that describe all four payload
+  shapes.
+- WS-01 seam: `mapWorkspaceRepo` IPC maps a portable repo entry to a local
+  checkout and recomputes setup state.
+- Engine queue fix: a displaced `requestSync` waiter now rides forward
+  into the replacement cycle's settle list instead of resolving early —
+  previously an awaited requestSync could return while the in-flight pull
+  was still running (surfaced as a flaky restore-drill assertion under
+  parallel test load). Regression test added.
+- MESH-01 backend (parallel workstream): worker lifecycle in
+  `cloud/backend` — `device.policy.publish`, `worker.connect/describe/
+  capabilities.publish/replica.publish`, policy gating, revocation,
+  incarnation + lease management, availability socket fan-out, worker/
+  replica persistence, retention sweep, ops counters. Contract types in
+  `cloud/contract/workers.ts`.
+- IAC-01 (parallel workstream): `anvil-cloud/packages/cloudflare` mesh
+  recipe (plan/apply/remove/connection) + `anvil-cloud mesh` CLI commands;
+  provider-gated, no live calls in tests.
+
+Verification: 22/22 entity-domain tests, 17/17 engine tests, 152 files /
+990 tests full suite, 45/45 backend tests, 46/46 contract tests,
+3/3 two-profile acceptance tests against the live `wrangler dev` worker
+(all four entity types flowing), eslint clean, node typecheck clean for
+all touched files.

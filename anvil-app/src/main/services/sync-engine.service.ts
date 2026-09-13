@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { DEFAULT_LIMITS, type ContractLimits } from '../../../cloud/contract/version.js';
 import type {
   SyncCursor,
@@ -12,14 +11,23 @@ import type {
   SyncedChange,
 } from '../../../cloud/contract/sync.js';
 import {
-  SYNC_ENTITY_WORKFLOW_TEMPLATE,
+  SYNC_ENTITY_SCHEMA_VERSIONS,
   type PushResult,
   type SyncConflict,
   type SyncConflictKind,
   type SyncConflictResolution,
+  type SyncEntityType,
   type SyncOperation,
   type SyncScope,
 } from '../../shared/sync-mesh.js';
+import {
+  applyRemoteEntityPayload,
+  deleteLocalEntity,
+  entityPayloadIssue,
+  isSupportedEntityType,
+  persistConflictCopy,
+  readEntityPayloadJson,
+} from './sync-entity-domain.js';
 import {
   acknowledgeBindingLocalEdits,
   applyPushResults,
@@ -120,7 +128,7 @@ export class SyncEngineError extends Error {
 
 interface QueuedCycle {
   input: RunSyncCycleInput;
-  settle: (error: unknown) => void;
+  settles: Array<(error: unknown) => void>;
 }
 
 interface ScopeLoop {
@@ -224,12 +232,14 @@ export async function runSyncCycle(input: RunSyncCycleInput): Promise<void> {
     // A cycle for this scope is already running. This caller takes the queue
     // slot and receives the outcome of ITS OWN cycle — a predecessor's
     // superseded/backoff error must not propagate into this call. A caller
-    // displaced by a newer request resolves as coalesced rather than hanging.
+    // displaced by a newer request is coalesced INTO the replacement: its
+    // settle rides forward so `await requestSync()` only resolves once a
+    // cycle covering its intent has actually run.
     return new Promise<void>((resolve, reject) => {
-      loop.queued?.settle(null);
+      const carried = loop.queued?.settles ?? [];
       loop.queued = {
         input,
-        settle: (error) => (error === null ? resolve() : reject(error)),
+        settles: [...carried, (error) => (error === null ? resolve() : reject(error))],
       };
     });
   }
@@ -238,15 +248,18 @@ export async function runSyncCycle(input: RunSyncCycleInput): Promise<void> {
     const run = (async () => {
       let current: QueuedCycle = {
         input,
-        settle: (error) => (error === null ? resolve() : reject(error)),
+        settles: [(error) => (error === null ? resolve() : reject(error))],
       };
       try {
         for (;;) {
+          let outcome: unknown = null;
           try {
             await executeOneCycle(current.input);
-            current.settle(null);
           } catch (error) {
-            current.settle(error);
+            outcome = error;
+          }
+          for (const settle of current.settles) {
+            settle(outcome);
           }
           const next = loop.queued;
           loop.queued = null;
@@ -664,8 +677,10 @@ function entityQuarantineReason(
   schemaVersion: number,
   payloadJson: string | null,
 ): string | null {
-  if (entityType !== SYNC_ENTITY_WORKFLOW_TEMPLATE) return 'unsupported-entity-type';
-  if (schemaVersion !== 1) return 'unsupported-schema-version';
+  if (!isSupportedEntityType(entityType)) return 'unsupported-entity-type';
+  if (schemaVersion !== SYNC_ENTITY_SCHEMA_VERSIONS[entityType]) {
+    return 'unsupported-schema-version';
+  }
   if (payloadJson === null) return null;
   let parsed: unknown;
   try {
@@ -673,10 +688,7 @@ function entityQuarantineReason(
   } catch {
     return 'malformed-payload';
   }
-  if (!isRecord(parsed) || !Array.isArray(parsed.nodes) || !Array.isArray(parsed.edges)) {
-    return 'malformed-payload';
-  }
-  return null;
+  return entityPayloadIssue(entityType, parsed);
 }
 
 /**
@@ -979,12 +991,6 @@ function getConflictById(id: string): SyncConflict | null {
  * the remote state to the canonical entity id.
  */
 function saveLocalConflictCopy(conflict: SyncConflict): void {
-  if (conflict.entityType !== SYNC_ENTITY_WORKFLOW_TEMPLATE) {
-    throw new SyncEngineError(
-      `save-copy is not supported for entity type ${conflict.entityType}`,
-      { retryable: false },
-    );
-  }
   const localJson =
     conflict.localPayloadJson ?? readLocalPayloadJson(conflict.entityType, conflict.entityId);
   if (localJson === null) {
@@ -996,18 +1002,20 @@ function saveLocalConflictCopy(conflict: SyncConflict): void {
   if (!isRecord(payload)) {
     throw new SyncEngineError('Local payload is not an object', { retryable: false });
   }
-  const copyId = randomUUID();
-  const baseName =
-    typeof payload.name === 'string' && payload.name.length > 0 ? payload.name : 'Workflow';
-  const copyPayload = { ...payload, name: `${baseName} (local copy)` };
-  upsertWorkflowTemplateFromPayload(copyId, copyPayload);
-  upsertBinding(conflict.scope, conflict.entityType, copyId);
+  const copy = persistConflictCopy(conflict.entityType, payload);
+  if (copy === null) {
+    throw new SyncEngineError(
+      `save-copy is not supported for entity type ${conflict.entityType}`,
+      { retryable: false },
+    );
+  }
+  upsertBinding(conflict.scope, conflict.entityType, copy.entityId);
   recordLocalChange(conflict.scope, {
     entityType: conflict.entityType,
-    entityId: copyId,
+    entityId: copy.entityId,
     operation: 'create',
-    payload: copyPayload,
-    schemaVersion: 1,
+    payload: copy.payload,
+    schemaVersion: SYNC_ENTITY_SCHEMA_VERSIONS[conflict.entityType as SyncEntityType] ?? 1,
   });
 }
 
@@ -1087,7 +1095,7 @@ function applySyncedChange(scope: SyncScope, change: SyncedChange): void {
   const payloadJson = change.payload === undefined ? null : canonicalJson(change.payload);
   const quarantineReason =
     change.operation === 'delete'
-      ? change.entityType === SYNC_ENTITY_WORKFLOW_TEMPLATE
+      ? isSupportedEntityType(change.entityType)
         ? null
         : 'unsupported-entity-type'
       : entityQuarantineReason(change.entityType, change.schemaVersion, payloadJson);
@@ -1191,27 +1199,11 @@ function insertEditConflict(
 }
 
 function readLocalPayloadJson(entityType: string, entityId: string): string | null {
-  if (entityType !== SYNC_ENTITY_WORKFLOW_TEMPLATE) return null;
-  const row = getDb()
-    .prepare('SELECT id, name, description, graph_json FROM workflow_templates WHERE id = ?')
-    .get(entityId) as
-    | { id: string; name: string; description: string; graph_json: string }
-    | undefined;
-  if (!row) return null;
-  const graph = parseGraphJson(row.graph_json);
-  return canonicalJson({
-    id: row.id,
-    name: row.name,
-    description: row.description,
-    nodes: graph.nodes,
-    edges: graph.edges,
-    orchestration: graph.orchestration,
-  });
+  return readEntityPayloadJson(entityType, entityId);
 }
 
 function deleteDomainRow(entityType: string, entityId: string): void {
-  if (entityType !== SYNC_ENTITY_WORKFLOW_TEMPLATE) return;
-  getDb().prepare('DELETE FROM workflow_templates WHERE id = ?').run(entityId);
+  deleteLocalEntity(entityType, entityId);
 }
 
 function applyDomainProjection(change: {
@@ -1223,15 +1215,14 @@ function applyDomainProjection(change: {
   schemaVersion: number;
   sequence: number;
 }): void {
-  if (change.entityType !== SYNC_ENTITY_WORKFLOW_TEMPLATE) return;
   switch (change.operation) {
     case 'create':
     case 'update': {
-      upsertWorkflowTemplateFromPayload(change.entityId, change.payload);
+      applyRemoteEntityPayload(change.entityType, change.entityId, change.payload);
       break;
     }
     case 'delete': {
-      deleteDomainRow(change.entityType, change.entityId);
+      deleteLocalEntity(change.entityType, change.entityId);
       break;
     }
     default: {
@@ -1241,46 +1232,6 @@ function applyDomainProjection(change: {
       });
     }
   }
-}
-
-function upsertWorkflowTemplateFromPayload(entityId: string, payload: unknown): void {
-  if (!isRecord(payload)) return;
-  if (!Array.isArray(payload.nodes) || !Array.isArray(payload.edges)) return;
-  const name = typeof payload.name === 'string' ? payload.name : '';
-  const description = typeof payload.description === 'string' ? payload.description : '';
-  const graphJson = JSON.stringify({
-    nodes: payload.nodes,
-    edges: payload.edges,
-    orchestration: payload.orchestration,
-  });
-  const now = nowIso();
-  getDb()
-    .prepare(
-      `INSERT INTO workflow_templates (id, name, description, graph_json, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-         name = excluded.name,
-         description = excluded.description,
-         graph_json = excluded.graph_json,
-         updated_at = excluded.updated_at`,
-    )
-    .run(entityId, name, description, graphJson, now, now);
-}
-
-function parseGraphJson(graphJson: string): {
-  nodes: unknown;
-  edges: unknown;
-  orchestration: unknown;
-} {
-  const parsed: unknown = JSON.parse(graphJson);
-  if (!isRecord(parsed)) {
-    return { nodes: [], edges: [], orchestration: undefined };
-  }
-  return {
-    nodes: parsed.nodes,
-    edges: parsed.edges,
-    orchestration: parsed.orchestration,
-  };
 }
 
 function toSyncEngineError(error: unknown): SyncEngineError {

@@ -16,9 +16,16 @@ import {
   normaliseCodexModel,
   normaliseReasoningEffort,
 } from '../../shared/codex-models.js';
+import {
+  SYNC_ENTITY_SCHEMA_VERSIONS,
+  SYNC_ENTITY_SETTINGS,
+  SYNC_SETTINGS_ENTITY_ID,
+} from '../../shared/sync-mesh.js';
 import { getDb } from '../db/database.js';
 import { decryptSecret, encryptSecret } from './auth.service.js';
 import { testLlmConnection } from './llm.service.js';
+import { buildEntityPayload, SYNCED_SETTINGS_KEYS } from './sync-entity-domain.js';
+import { withSyncedEntityWrite } from './sync-persistence.service.js';
 
 interface SettingsRow {
   llm_provider: string | null;
@@ -578,6 +585,19 @@ export function updateSettings(partial: Partial<AppSettings>): void {
   setClauses.push("updated_at = datetime('now')");
   const sql = `UPDATE settings SET ${setClauses.join(', ')} WHERE id = 1`;
   db.prepare(sql).run(...values);
+
+  // Emit sync intent only when an allowlisted (portable) field changed;
+  // secrets, endpoints, paths, and connector config never leave the device.
+  if (Object.keys(partial).some((key) => (SYNCED_SETTINGS_KEYS as string[]).includes(key))) {
+    withSyncedEntityWrite(
+      SYNC_ENTITY_SETTINGS,
+      SYNC_SETTINGS_ENTITY_ID,
+      SYNC_ENTITY_SCHEMA_VERSIONS[SYNC_ENTITY_SETTINGS],
+      'update',
+      () => buildEntityPayload(SYNC_ENTITY_SETTINGS, SYNC_SETTINGS_ENTITY_ID),
+      () => {},
+    );
+  }
 }
 
 export async function testFoundryConnection(): Promise<{ ok: boolean; error?: string }> {

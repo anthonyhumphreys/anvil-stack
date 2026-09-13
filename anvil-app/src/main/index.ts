@@ -26,6 +26,7 @@ import { registerSecurityHandlers } from './ipc/security.ipc.js';
 import { registerCodeReviewHandlers } from './ipc/codereview.ipc.js';
 import { registerDiagramFileHandlers, cleanupDiagramServices } from './ipc/diagram-file.ipc.js';
 import { registerWorkspaceHandlers } from './ipc/workspace.ipc.js';
+import { registerAgentHandlers } from './ipc/agents.ipc.js';
 import { registerWorkspaceNotesHandlers } from './ipc/workspace-notes.ipc.js';
 import { registerWorkspaceScaffoldHandlers } from './ipc/workspace-scaffold.ipc.js';
 import { registerLaunchHandlers } from './ipc/launch.ipc.js';
@@ -373,6 +374,7 @@ app.whenReady().then(() => {
   });
   registerWorkspaceNotesHandlers();
   registerWorkspaceScaffoldHandlers();
+  registerAgentHandlers();
   registerLaunchHandlers();
   registerTerminalHandlers();
   registerGovernanceHandlers();

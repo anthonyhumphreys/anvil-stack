@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 69;
+export const SCHEMA_VERSION = 70;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -627,6 +627,7 @@ CREATE INDEX IF NOT EXISTS idx_run_commands_repo ON run_commands(repo_id);
 CREATE TABLE IF NOT EXISTS workspaces (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
+  definition_state TEXT NOT NULL DEFAULT 'ready',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -636,6 +637,36 @@ CREATE TABLE IF NOT EXISTS workspace_repos (
   repo_id TEXT NOT NULL REFERENCES repos(id),
   added_at TEXT NOT NULL,
   PRIMARY KEY (workspace_id, repo_id)
+);
+
+-- Portable repo membership in a synced workspace definition. repo_id in
+-- workspace_repos is a device-local checkout reference; portable_id is the
+-- stable cross-device identity a definition carries. mapped_repo_id stays
+-- null until the device maps the entry to a local checkout (WS-01).
+CREATE TABLE IF NOT EXISTS workspace_repo_definitions (
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  portable_id TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT '',
+  remote_url TEXT,
+  default_branch TEXT,
+  mapped_repo_id TEXT REFERENCES repos(id),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (workspace_id, portable_id)
+);
+
+CREATE TABLE IF NOT EXISTS editable_agents (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  icon TEXT NOT NULL DEFAULT 'Bot',
+  colour TEXT NOT NULL DEFAULT '#64748b',
+  prompt_body TEXT NOT NULL DEFAULT '',
+  can_write_files INTEGER NOT NULL DEFAULT 1,
+  can_run_commands INTEGER NOT NULL DEFAULT 1,
+  can_read_files INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS workspace_preferences (
@@ -2359,6 +2390,33 @@ CREATE TABLE IF NOT EXISTS sync_scan_staging (
   schema_version INTEGER NOT NULL,
   payload_json TEXT,
   PRIMARY KEY (backend_id, account_id, dataset_epoch, entity_type, entity_id)
+);
+`,
+  70: `
+ALTER TABLE workspaces ADD COLUMN definition_state TEXT NOT NULL DEFAULT 'ready';
+CREATE TABLE IF NOT EXISTS workspace_repo_definitions (
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  portable_id TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT '',
+  remote_url TEXT,
+  default_branch TEXT,
+  mapped_repo_id TEXT REFERENCES repos(id),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (workspace_id, portable_id)
+);
+CREATE TABLE IF NOT EXISTS editable_agents (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  icon TEXT NOT NULL DEFAULT 'Bot',
+  colour TEXT NOT NULL DEFAULT '#64748b',
+  prompt_body TEXT NOT NULL DEFAULT '',
+  can_write_files INTEGER NOT NULL DEFAULT 1,
+  can_run_commands INTEGER NOT NULL DEFAULT 1,
+  can_read_files INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
 );
 `,
 };

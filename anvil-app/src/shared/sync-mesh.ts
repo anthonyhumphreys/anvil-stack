@@ -23,8 +23,6 @@ export interface SyncScope {
   datasetEpoch: string;
 }
 
-export type SyncEntityType = string;
-
 export type SyncOutboxState = 'pending' | 'dispatched' | 'acknowledged' | 'conflict' | 'rejected';
 
 export type SyncEnrollmentState = 'active' | 'revoked' | 'pending';
@@ -154,3 +152,25 @@ export const SYNC_PUSH_DEFAULTS = {
 
 /** Portable entity types synced in this packet. */
 export const SYNC_ENTITY_WORKFLOW_TEMPLATE = 'workflow-template';
+export const SYNC_ENTITY_EDITABLE_AGENT = 'editable-agent';
+export const SYNC_ENTITY_WORKSPACE_DEFINITION = 'workspace-definition';
+/** Singleton entity id for the allowlisted settings projection. */
+export const SYNC_ENTITY_SETTINGS = 'settings';
+export const SYNC_SETTINGS_ENTITY_ID = 'default';
+
+export const SYNC_ENTITY_TYPES = [
+  SYNC_ENTITY_WORKFLOW_TEMPLATE,
+  SYNC_ENTITY_EDITABLE_AGENT,
+  SYNC_ENTITY_WORKSPACE_DEFINITION,
+  SYNC_ENTITY_SETTINGS,
+] as const;
+
+export type SyncEntityType = (typeof SYNC_ENTITY_TYPES)[number];
+
+/** Payload schema versions per entity type; bump on breaking payload changes. */
+export const SYNC_ENTITY_SCHEMA_VERSIONS: Record<SyncEntityType, number> = {
+  [SYNC_ENTITY_WORKFLOW_TEMPLATE]: 1,
+  [SYNC_ENTITY_EDITABLE_AGENT]: 1,
+  [SYNC_ENTITY_WORKSPACE_DEFINITION]: 1,
+  [SYNC_ENTITY_SETTINGS]: 1,
+};

@@ -8,6 +8,8 @@ import {
   deleteWorkspace,
   addReposToWorkspace,
   removeReposFromWorkspace,
+  listWorkspaceRepoDefinitions,
+  mapWorkspaceRepoToCheckout,
   getWorkspacePreferences,
   updateWorkspacePreferences,
   clearWorkspacePreferences,
@@ -126,6 +128,33 @@ export function registerWorkspaceHandlers(options: WorkspaceHandlersOptions = {}
       throw err;
     }
   });
+
+  ipcMain.handle('workspace:repo-definitions', (_event, workspaceId: string) => {
+    try {
+      return listWorkspaceRepoDefinitions(workspaceId);
+    } catch (err) {
+      console.error('[Workspace IPC] Error listing repo definitions:', err);
+      throw err;
+    }
+  });
+
+  ipcMain.handle(
+    'workspace:map-repo',
+    (_event, workspaceId: string, portableId: string, repoId: string) => {
+      try {
+        if (typeof portableId !== 'string' || portableId.length === 0) {
+          throw new Error('portableId is required');
+        }
+        if (typeof repoId !== 'string' || repoId.length === 0) {
+          throw new Error('repoId is required');
+        }
+        return mapWorkspaceRepoToCheckout(workspaceId, portableId, repoId);
+      } catch (err) {
+        console.error('[Workspace IPC] Error mapping repo definition:', err);
+        throw err;
+      }
+    },
+  );
 
   ipcMain.handle('workspace:export-vscode', async (_event, workspaceId: string) => {
     try {

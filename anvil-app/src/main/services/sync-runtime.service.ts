@@ -25,7 +25,18 @@ import {
   type SyncScopeDiagnostics,
   type SyncSpikeEnrollInput,
 } from '../../shared/sync-runtime.js';
-import { SYNC_ENTITY_WORKFLOW_TEMPLATE, type SyncScope } from '../../shared/sync-mesh.js';
+import {
+  SYNC_ENTITY_SCHEMA_VERSIONS,
+  SYNC_ENTITY_SETTINGS,
+  SYNC_ENTITY_TYPES,
+  SYNC_ENTITY_WORKSPACE_DEFINITION,
+  type SyncScope,
+} from '../../shared/sync-mesh.js';
+import {
+  buildEntityPayload,
+  listLocalEntityIds,
+  materializeRepoDefinitions,
+} from './sync-entity-domain.js';
 import {
   createSyncAuthService,
   type ListenLoopbackFn,
@@ -71,7 +82,6 @@ import {
   upsertBinding,
   upsertEnrollment,
 } from './sync-persistence.service.js';
-import { listWorkflowTemplates } from './workflow.service.js';
 import { getDb } from '../db/database.js';
 import { SCHEMA_VERSION } from '../db/schema.js';
 
@@ -214,10 +224,11 @@ function payloadLabel(json: string | null): string | null {
   if (json === null) return null;
   try {
     const parsed: unknown = JSON.parse(json);
-    if (typeof parsed === 'object' && parsed !== null && 'name' in parsed) {
-      const name = (parsed as { name: unknown }).name;
-      return typeof name === 'string' ? name : null;
-    }
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const record = parsed as Record<string, unknown>;
+    if (typeof record.name === 'string') return record.name;
+    // The settings singleton carries { id, fields } rather than a name.
+    if (record.id === SYNC_SETTINGS_ENTITY_ID) return 'App settings';
   } catch {
     return null;
   }
@@ -225,43 +236,54 @@ function payloadLabel(json: string | null): string | null {
 }
 
 export function previewAdoption(): SyncAdoptionPreviewItem[] {
-  return listWorkflowTemplates().map((template) => ({
-    entityType: SYNC_ENTITY_WORKFLOW_TEMPLATE,
-    entityId: template.id,
-    name: template.name,
-  }));
+  const items: SyncAdoptionPreviewItem[] = [];
+  for (const entityType of SYNC_ENTITY_TYPES) {
+    for (const entityId of listLocalEntityIds(entityType)) {
+      const payload = buildEntityPayload(entityType, entityId);
+      const name =
+        payload !== null && typeof payload === 'object' && 'name' in payload
+          ? ((payload as { name: unknown }).name as string | undefined)
+          : undefined;
+      items.push({
+        entityType,
+        entityId,
+        name: name ?? (entityType === SYNC_ENTITY_SETTINGS ? 'App settings' : entityId),
+      });
+    }
+  }
+  return items;
 }
 
 /**
- * Adopts local-only workflow templates into the scope. An entity already bound
- * in ANY scope is skipped: at most one hosted association exists per entity in
- * v1, so data owned by another account/backend is never silently re-homed.
+ * Adopts local-only entities into the scope. An entity already bound in ANY
+ * scope is skipped: at most one hosted association exists per entity in v1,
+ * so data owned by another account/backend is never silently re-homed.
  * Cross-account copies need explicit export/adoption (a separate UX flow).
  */
-export function bindLocalWorkflowTemplates(scope: SyncScope): number {
-  const templates = listWorkflowTemplates();
+export function bindLocalEntities(scope: SyncScope): number {
   const run = getDb().transaction(() => {
     let bound = 0;
-    for (const template of templates) {
-      if (listSyncScopesForEntity(SYNC_ENTITY_WORKFLOW_TEMPLATE, template.id).length > 0) {
-        continue;
+    for (const entityType of SYNC_ENTITY_TYPES) {
+      const entityIds = listLocalEntityIds(entityType);
+      for (const entityId of entityIds) {
+        if (entityType === SYNC_ENTITY_WORKSPACE_DEFINITION) {
+          materializeRepoDefinitions(entityId);
+        }
+        if (listSyncScopesForEntity(entityType, entityId).length > 0) {
+          continue;
+        }
+        const payload = buildEntityPayload(entityType, entityId);
+        if (payload === null) continue;
+        upsertBinding(scope, entityType, entityId);
+        recordLocalChange(scope, {
+          entityType,
+          entityId,
+          schemaVersion: SYNC_ENTITY_SCHEMA_VERSIONS[entityType],
+          operation: 'create',
+          payload,
+        });
+        bound += 1;
       }
-      upsertBinding(scope, SYNC_ENTITY_WORKFLOW_TEMPLATE, template.id);
-      recordLocalChange(scope, {
-        entityType: SYNC_ENTITY_WORKFLOW_TEMPLATE,
-        entityId: template.id,
-        schemaVersion: 1,
-        operation: 'create',
-        payload: {
-          id: template.id,
-          name: template.name,
-          description: template.description,
-          nodes: template.nodes,
-          edges: template.edges,
-          orchestration: template.orchestration,
-        },
-      });
-      bound += 1;
     }
     return bound;
   });
@@ -517,7 +539,7 @@ export function enableSync(): SyncRuntimeStatus {
     displayName: hostname() || 'Anvil device',
     state: 'active',
   });
-  bindLocalWorkflowTemplates(scope);
+  bindLocalEntities(scope);
   connectLiveChannel();
   armFallbackPoll();
   // Fire-and-forget kick: a superseded/backoff rejection must not surface as

@@ -59,6 +59,7 @@ import { dispatchCodexSelectionChanged } from '../../utils/codex-selection';
 import { selectPrimaryAgentProvider } from '../../utils/agent-provider-settings';
 import { InlineNotice } from '../layout/ViewScaffold';
 import { SyncMeshSettingsPanel } from './SyncMeshSettingsPanel';
+import { EditableAgentsPanel } from './EditableAgentsPanel';
 
 type TestStatus = 'idle' | 'testing' | 'ok' | 'error';
 type SettingsCategoryId =
@@ -1572,6 +1573,13 @@ export function SettingsView({
                     </span>
                   </span>
                 </label>
+              </SettingsPanel>
+
+              <SettingsPanel
+                title="Custom agents"
+                description="User-defined agents usable anywhere personas are selected. They sync across devices when Sync & Mesh is enabled."
+              >
+                <EditableAgentsPanel />
               </SettingsPanel>
             </SettingsCategory>
 
