@@ -582,3 +582,47 @@ with a real git fixture), app suite 161 files / 1085 tests, backend
 Remaining: `start-session` typed job, SESSION-03 handoff,
 `device.list|rename|revoke`, `account.delete*`, `data.export|import.*`,
 `handoff.*`, FLOW-01/02/03, PLACE-01, BYOB-02, IAC-02, LAUNCH-01.
+## SESSION-02 tail — live-channel handshake + remote approval E2E (2e044a4, e626647)
+
+The remote-approval acceptance test exposed a chain of three real
+production bugs, each fixed at its root:
+
+- Backend never emitted the contract `hello` frame: `acceptClient`
+  accepted the socket and stopped, so the desktop sat in 'connecting'
+  and the control channel could never open. `acceptClient` now sends
+  hello (enrollment identity, worker incarnation when live, negotiated
+  profiles) immediately after attachment serialization. (2e044a4)
+- Superseded sockets stranded 'connecting': a runtime generation bump
+  while a socket was mid-handshake (e.g. enableSync following
+  initSyncRuntime's auto-connect) fenced out its hello, and
+  connectLiveChannel's `liveSocket !== null` early-return prevented
+  redial — permanently. connectLiveChannel now records the dialing
+  generation and retires superseded sockets. (e626647)
+- `connectWorker` raced concurrent callers on a boolean guard: the
+  awaited caller returned before the in-flight connect finished,
+  observing a half-connected state (`worker.connected === false`). The
+  guard is now the in-flight promise; callers coalesce. (e626647)
+
+Also fixed a convergence bug the E2E forced to the surface: definition
+revision pins used `workspaces.updated_at`, a LOCAL clock re-stamped on
+remote apply, so a manifest pinned on one device could never match its
+replica on another. The pin is now sha256 over the canonical definition
+payload (`workspaceDefinitionRevision`) — identical on every converged
+replica — and replica publishing reports the same digest.
+
+The approval wait journals send/poll retries once per distinct failure
+reason (bounded observability; this is what surfaced the dead-socket
+loop above).
+
+Acceptance gate now 7/7 on the live backend, including both new
+SESSION-02 cases: remote `prepare-workspace` on a mapped worker with a
+pinned manifest + pre-approved digest (completed), and the remote
+approval path — worker request registers durably, source denies via
+`approval.decide`, job+attempt fail. Backend 86/86 (hello coverage +
+nextFrameOfType helper), app suite 161 files / 1088 tests.
+
+Remaining: `start-session` typed job + attempt journal before provider
+spawn, creation key/idempotency, timeout orphan kill, CLI pin per audit
+§9; then `device.list|rename|revoke`, `account.delete*`,
+`data.export|import.*`, `handoff.*`, FLOW-01/02/03, PLACE-01, BYOB-02,
+IAC-02, LAUNCH-01.
