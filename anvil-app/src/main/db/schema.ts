@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 71;
+export const SCHEMA_VERSION = 72;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -697,6 +697,59 @@ CREATE TABLE IF NOT EXISTS mesh_attempts (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_mesh_attempts_state ON mesh_attempts(state);
+
+-- WS-02: durable workspace materialisation journal. The op row and its
+-- per-repo stage rows are written BEFORE the matching filesystem mutation so
+-- a crash mid-clone/link/remove is reconstructable. request_key is the
+-- canonical hash of pinned inputs; concurrent identical requests attach to
+-- the same running op (partial unique index below).
+CREATE TABLE IF NOT EXISTS workspace_materialization_ops (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('clone', 'link', 'remove')),
+  definition_revision TEXT,
+  request_key TEXT NOT NULL,
+  request_json TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'running'
+    CHECK (state IN ('running', 'completed', 'failed', 'awaiting-review')),
+  error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_wm_ops_running_request
+  ON workspace_materialization_ops(request_key) WHERE state = 'running';
+CREATE INDEX IF NOT EXISTS idx_wm_ops_workspace
+  ON workspace_materialization_ops(workspace_id, state);
+
+-- stage records the last PROVEN step; recovery only trusts these values plus
+-- the journaled paths — never a matching directory name.
+CREATE TABLE IF NOT EXISTS workspace_materialization_repo_stages (
+  op_id TEXT NOT NULL REFERENCES workspace_materialization_ops(id) ON DELETE CASCADE,
+  portable_id TEXT NOT NULL,
+  remote_url TEXT,
+  requested_ref TEXT,
+  requested_commit TEXT,
+  destination TEXT,
+  staging_path TEXT,
+  ownership_intent TEXT NOT NULL DEFAULT 'anvil-created'
+    CHECK (ownership_intent IN ('anvil-created', 'linked')),
+  stage TEXT NOT NULL DEFAULT 'pending' CHECK (stage IN (
+    'pending', 'destination-reserved', 'cloned-to-staging', 'checkout-verified',
+    'commit-recorded', 'checks-recorded', 'mapping-published', 'detached',
+    'quarantined', 'failed', 'unsupported'
+  )),
+  stage_reason TEXT,
+  resolved_commit TEXT,
+  repo_id TEXT,
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (op_id, portable_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_wm_repo_stages_active_destination
+  ON workspace_materialization_repo_stages(destination)
+  WHERE stage NOT IN ('failed', 'unsupported', 'mapping-published', 'detached', 'quarantined')
+    AND destination IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS workspace_preferences (
   workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
@@ -2480,5 +2533,54 @@ CREATE TABLE IF NOT EXISTS mesh_attempts (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_mesh_attempts_state ON mesh_attempts(state);
+`,
+  72: `
+-- WS-02: durable workspace materialisation journal (spec §7). Written before
+-- each filesystem mutation so an interrupted clone/link/remove is
+-- reconstructable. Keep in sync with the SCHEMA_SQL copy of these tables.
+CREATE TABLE IF NOT EXISTS workspace_materialization_ops (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('clone', 'link', 'remove')),
+  definition_revision TEXT,
+  request_key TEXT NOT NULL,
+  request_json TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'running'
+    CHECK (state IN ('running', 'completed', 'failed', 'awaiting-review')),
+  error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_wm_ops_running_request
+  ON workspace_materialization_ops(request_key) WHERE state = 'running';
+CREATE INDEX IF NOT EXISTS idx_wm_ops_workspace
+  ON workspace_materialization_ops(workspace_id, state);
+CREATE TABLE IF NOT EXISTS workspace_materialization_repo_stages (
+  op_id TEXT NOT NULL REFERENCES workspace_materialization_ops(id) ON DELETE CASCADE,
+  portable_id TEXT NOT NULL,
+  remote_url TEXT,
+  requested_ref TEXT,
+  requested_commit TEXT,
+  destination TEXT,
+  staging_path TEXT,
+  ownership_intent TEXT NOT NULL DEFAULT 'anvil-created'
+    CHECK (ownership_intent IN ('anvil-created', 'linked')),
+  stage TEXT NOT NULL DEFAULT 'pending' CHECK (stage IN (
+    'pending', 'destination-reserved', 'cloned-to-staging', 'checkout-verified',
+    'commit-recorded', 'checks-recorded', 'mapping-published', 'detached',
+    'quarantined', 'failed', 'unsupported'
+  )),
+  stage_reason TEXT,
+  resolved_commit TEXT,
+  repo_id TEXT,
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (op_id, portable_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_wm_repo_stages_active_destination
+  ON workspace_materialization_repo_stages(destination)
+  WHERE stage NOT IN ('failed', 'unsupported', 'mapping-published', 'detached', 'quarantined')
+    AND destination IS NOT NULL;
 `,
 };

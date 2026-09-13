@@ -46,6 +46,7 @@ import type {
   TerminalExitEvent,
   WorkItemProvider,
   EditableAgentInput,
+  WorkspaceCloneRequest,
   WorkspaceCreateOptions,
 } from '../shared/types.js';
 import type { RunCommand, RunStatus } from '../shared/run-types.js';
@@ -797,6 +798,23 @@ const api: AnvilAPI = {
       ipcRenderer.invoke('workspace:repo-definitions', workspaceId),
     mapRepo: (workspaceId: string, portableId: string, repoId: string) =>
       ipcRenderer.invoke('workspace:map-repo', workspaceId, portableId, repoId),
+    startClone: (input: WorkspaceCloneRequest) =>
+      ipcRenderer.invoke('workspace:start-clone', input),
+    linkRepo: (
+      workspaceId: string,
+      portableId: string,
+      checkoutPath: string,
+      options?: { allowRemoteDivergence?: boolean },
+    ) => ipcRenderer.invoke('workspace:link-repo', workspaceId, portableId, checkoutPath, options),
+    removeCheckout: (
+      workspaceId: string,
+      portableId: string,
+      options?: { deleteCheckout?: boolean },
+    ) => ipcRenderer.invoke('workspace:remove-checkout', workspaceId, portableId, options),
+    purgeQuarantine: (quarantineId: string) =>
+      ipcRenderer.invoke('workspace:purge-quarantine', quarantineId),
+    materializationOps: (workspaceId: string) =>
+      ipcRenderer.invoke('workspace:materialization-ops', workspaceId),
   },
 
   agents: {

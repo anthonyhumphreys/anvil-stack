@@ -26,6 +26,7 @@ import { registerSecurityHandlers } from './ipc/security.ipc.js';
 import { registerCodeReviewHandlers } from './ipc/codereview.ipc.js';
 import { registerDiagramFileHandlers, cleanupDiagramServices } from './ipc/diagram-file.ipc.js';
 import { registerWorkspaceHandlers } from './ipc/workspace.ipc.js';
+import { recoverWorkspaceMaterializations } from './services/workspace-materialization.service.js';
 import { registerAgentHandlers } from './ipc/agents.ipc.js';
 import { registerWorkspaceNotesHandlers } from './ipc/workspace-notes.ipc.js';
 import { registerWorkspaceScaffoldHandlers } from './ipc/workspace-scaffold.ipc.js';
@@ -398,6 +399,11 @@ app.whenReady().then(() => {
   registerVoiceHandlers(mainWindow!);
   void syncMobileCompanionServer().catch((err) => {
     console.error('[Mobile Companion] Failed to start server:', err);
+  });
+  // WS-02: resume/wipe journalled materialisation ops interrupted by a crash.
+  // Only journal-authorised, operation-owned paths are touched.
+  void recoverWorkspaceMaterializations().catch((err) => {
+    console.error('[Workspace] Materialisation recovery failed:', err);
   });
   handleOrphanedBaSessions();
   handleStaleIndexingRepos();

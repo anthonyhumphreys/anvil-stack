@@ -1809,6 +1809,93 @@ export interface WorkspaceRepoDefinition {
   mappedRepoId: string | null;
 }
 
+// ---------------------------------------------------------------------------
+// WS-02: workspace materialisation (journalled clone / link / safe removal)
+// ---------------------------------------------------------------------------
+
+export type WorkspaceMaterializationKind = 'clone' | 'link' | 'remove';
+
+/**
+ * Last proven journal step for one repo inside a materialisation operation.
+ * Terminal states: 'mapping-published' | 'detached' | 'quarantined' (success),
+ * 'failed' | 'unsupported' (with a machine-readable stageReason).
+ */
+export type WorkspaceMaterializationStage =
+  | 'pending'
+  | 'destination-reserved'
+  | 'cloned-to-staging'
+  | 'checkout-verified'
+  | 'commit-recorded'
+  | 'checks-recorded'
+  | 'mapping-published'
+  | 'detached'
+  | 'quarantined'
+  | 'failed'
+  | 'unsupported';
+
+export interface WorkspaceCloneRepoRequest {
+  portableId: string;
+  /** Branch/tag preference — a floating ref is a setup preference only. */
+  ref?: string;
+  /** Pinned commit SHA; takes precedence over ref when both are given. */
+  commit?: string;
+}
+
+export interface WorkspaceCloneRequest {
+  workspaceId: string;
+  /** Existing directory under which checkouts are created (one child per repo). */
+  destinationRoot: string;
+  /** Defaults to every unmapped repo definition in the workspace. */
+  repos?: WorkspaceCloneRepoRequest[];
+}
+
+export interface WorkspaceMaterializationRepoResult {
+  portableId: string;
+  stage: WorkspaceMaterializationStage;
+  /** Machine-readable failure/unsupported reason when stage is terminal-bad. */
+  reason?: string;
+  destination?: string;
+  resolvedCommit?: string;
+  repoId?: string;
+}
+
+export interface WorkspaceCloneResult {
+  opId: string;
+  /** 'partial' when some repos published and others failed/unsupported. */
+  status: 'completed' | 'partial' | 'failed' | 'running';
+  repos: WorkspaceMaterializationRepoResult[];
+}
+
+export interface WorkspaceLinkResult {
+  opId: string;
+  status: 'linked' | 'divergence' | 'failed';
+  repoId?: string;
+  /** Recorded for review when the checkout remote differs from the definition. */
+  expectedRemoteUrl?: string;
+  actualRemoteUrl?: string;
+  error?: string;
+}
+
+export interface WorkspaceRemoveCheckoutResult {
+  opId?: string;
+  status: 'detached' | 'quarantined' | 'refused' | 'not-mapped';
+  /** Machine-readable refusal reasons when status is 'refused'. */
+  refusals?: string[];
+  quarantineId?: string;
+  quarantinePath?: string;
+}
+
+export interface WorkspaceMaterializationOpSummary {
+  id: string;
+  workspaceId: string;
+  kind: WorkspaceMaterializationKind;
+  state: 'running' | 'completed' | 'failed' | 'awaiting-review';
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+  repos: WorkspaceMaterializationRepoResult[];
+}
+
 export interface WorkspaceCreateOptions {
   name: string;
   repoIds?: string[];

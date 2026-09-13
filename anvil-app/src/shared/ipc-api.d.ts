@@ -142,6 +142,11 @@ import type {
   EditableAgentInput,
   WorkspaceCreateOptions,
   WorkspaceRepoDefinition,
+  WorkspaceCloneRequest,
+  WorkspaceCloneResult,
+  WorkspaceLinkResult,
+  WorkspaceMaterializationOpSummary,
+  WorkspaceRemoveCheckoutResult,
   WorkspaceScaffoldMaybeCompleteResult,
   WorkspaceScaffoldSession,
   WorkspaceScaffoldStartResult,
@@ -764,6 +769,24 @@ export interface AnvilAPI {
     openInNewWindow: (workspaceId: string) => Promise<void>;
     repoDefinitions: (workspaceId: string) => Promise<WorkspaceRepoDefinition[]>;
     mapRepo: (workspaceId: string, portableId: string, repoId: string) => Promise<void>;
+    /** WS-02: journalled clone of unmapped repo definitions under a root. */
+    startClone: (input: WorkspaceCloneRequest) => Promise<WorkspaceCloneResult>;
+    /** WS-02: link an existing local checkout to a portable definition entry. */
+    linkRepo: (
+      workspaceId: string,
+      portableId: string,
+      checkoutPath: string,
+      options?: { allowRemoteDivergence?: boolean },
+    ) => Promise<WorkspaceLinkResult>;
+    /** WS-02: detach a checkout mapping; optionally quarantine Anvil-created files. */
+    removeCheckout: (
+      workspaceId: string,
+      portableId: string,
+      options?: { deleteCheckout?: boolean },
+    ) => Promise<WorkspaceRemoveCheckoutResult>;
+    /** WS-02: second explicit irreversible purge of a quarantined checkout. */
+    purgeQuarantine: (quarantineId: string) => Promise<void>;
+    materializationOps: (workspaceId: string) => Promise<WorkspaceMaterializationOpSummary[]>;
   };
 
   agents: {

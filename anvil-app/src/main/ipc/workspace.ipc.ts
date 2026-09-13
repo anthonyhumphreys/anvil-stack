@@ -1,5 +1,5 @@
 import { BrowserWindow, ipcMain } from 'electron';
-import type { WorkspaceCreateOptions } from '../../shared/types.js';
+import type { WorkspaceCloneRequest, WorkspaceCreateOptions } from '../../shared/types.js';
 import {
   listWorkspaces,
   getWorkspace,
@@ -15,6 +15,13 @@ import {
   clearWorkspacePreferences,
   exportVSCodeWorkspace,
 } from '../services/workspace.service.js';
+import {
+  linkWorkspaceRepo,
+  listWorkspaceMaterializationOps,
+  purgeQuarantinedCheckout,
+  removeWorkspaceCheckout,
+  startWorkspaceClone,
+} from '../services/workspace-materialization.service.js';
 import { scanForReposAsync, cancelScan } from '../services/repo-scan.service.js';
 import { ensureGateTemplates } from '../services/lifecycle.service.js';
 
@@ -155,6 +162,80 @@ export function registerWorkspaceHandlers(options: WorkspaceHandlersOptions = {}
       }
     },
   );
+
+  ipcMain.handle('workspace:start-clone', async (_event, input: WorkspaceCloneRequest) => {
+    try {
+      if (typeof input !== 'object' || input === null) {
+        throw new Error('clone request is required');
+      }
+      return await startWorkspaceClone(input);
+    } catch (err) {
+      console.error('[Workspace IPC] Error starting workspace clone:', err);
+      throw err;
+    }
+  });
+
+  ipcMain.handle(
+    'workspace:link-repo',
+    async (
+      _event,
+      workspaceId: string,
+      portableId: string,
+      checkoutPath: string,
+      options?: { allowRemoteDivergence?: boolean },
+    ) => {
+      try {
+        if (typeof checkoutPath !== 'string' || checkoutPath.length === 0) {
+          throw new Error('checkoutPath is required');
+        }
+        return await linkWorkspaceRepo(workspaceId, portableId, checkoutPath, options ?? {});
+      } catch (err) {
+        console.error('[Workspace IPC] Error linking repo:', err);
+        throw err;
+      }
+    },
+  );
+
+  ipcMain.handle(
+    'workspace:remove-checkout',
+    async (
+      _event,
+      workspaceId: string,
+      portableId: string,
+      options?: { deleteCheckout?: boolean },
+    ) => {
+      try {
+        if (typeof portableId !== 'string' || portableId.length === 0) {
+          throw new Error('portableId is required');
+        }
+        return await removeWorkspaceCheckout(workspaceId, portableId, options ?? {});
+      } catch (err) {
+        console.error('[Workspace IPC] Error removing checkout:', err);
+        throw err;
+      }
+    },
+  );
+
+  ipcMain.handle('workspace:purge-quarantine', async (_event, quarantineId: string) => {
+    try {
+      if (typeof quarantineId !== 'string' || quarantineId.length === 0) {
+        throw new Error('quarantineId is required');
+      }
+      return await purgeQuarantinedCheckout(quarantineId);
+    } catch (err) {
+      console.error('[Workspace IPC] Error purging quarantined checkout:', err);
+      throw err;
+    }
+  });
+
+  ipcMain.handle('workspace:materialization-ops', (_event, workspaceId: string) => {
+    try {
+      return listWorkspaceMaterializationOps(workspaceId);
+    } catch (err) {
+      console.error('[Workspace IPC] Error listing materialisation ops:', err);
+      throw err;
+    }
+  });
 
   ipcMain.handle('workspace:export-vscode', async (_event, workspaceId: string) => {
     try {
