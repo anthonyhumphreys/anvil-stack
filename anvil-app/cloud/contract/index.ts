@@ -12,3 +12,4 @@ export * from './workers';
 export * from './handoff';
 export * from './socket';
 export * from './artifacts';
+export * from './bootstrap';
