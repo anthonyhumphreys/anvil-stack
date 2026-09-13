@@ -20,6 +20,7 @@ import { getDb } from '../db/database.js';
 import { join } from 'node:path';
 import { uploadAttemptArtifact } from './mesh-artifact.service.js';
 import { startWorkspaceClone } from './workspace-materialization.service.js';
+import { workspaceDefinitionRevision } from './sync-entity-domain.js';
 import {
   computeBootstrapDigest,
   getWorkspaceBootstrap,
@@ -98,7 +99,7 @@ interface WorkerStateRow {
 
 let contextProvider: (() => MeshWorkerContext | null) | null = null;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-let connectInFlight = false;
+let connectInFlight: Promise<void> | null = null;
 
 const DEFAULT_MAX_CONCURRENT_JOBS = 1;
 const WORKER_CAPABILITIES = ['diagnostic', 'prepare-workspace'];
@@ -309,8 +310,15 @@ function buildCapabilities(): WorkerCapabilities {
  * lease is live, and lazily after expiry (a fresh incarnation is minted).
  */
 async function connectWorker(): Promise<void> {
-  if (connectInFlight) return;
-  connectInFlight = true;
+  // Coalesce concurrent connects (enable path vs sync-ready transition) onto
+  // one flight so an awaited caller can't observe a half-connected state.
+  connectInFlight ??= doConnectWorker().finally(() => {
+    connectInFlight = null;
+  });
+  await connectInFlight;
+}
+
+async function doConnectWorker(): Promise<void> {
   try {
     const hadIncarnation = readWorkerState().incarnation;
     const result = await meshRpc<WorkerConnectResult>('worker.connect', {});
@@ -337,8 +345,6 @@ async function connectWorker(): Promise<void> {
       last_error: error instanceof Error ? error.message : String(error),
     });
     throw error;
-  } finally {
-    connectInFlight = false;
   }
 }
 
@@ -411,31 +417,31 @@ async function heartbeat(): Promise<void> {
 
 /**
  * Publishes coarse replica readiness for local workspace definitions.
- * Metadata only — workspace ids, definition revision (updated_at), and a
- * readiness enum; paths and local config never leave the device.
+ * Metadata only — workspace ids, the canonical definition revision (content
+ * digest, identical on every converged replica), and a readiness enum;
+ * paths and local config never leave the device.
  */
 export async function publishReplicas(): Promise<void> {
   if (!isMeshWorkerEnabled() || readWorkerState().incarnation === null) return;
   const db = getDb();
   const rows = db
-    .prepare(
-      `SELECT w.id AS workspace_id, w.updated_at AS definition_revision, w.definition_state
-       FROM workspaces w`,
-    )
-    .all() as Array<{
-    workspace_id: string;
-    definition_revision: string;
-    definition_state: string;
-  }>;
-  if (rows.length === 0) return;
-  await meshRpc('worker.replica.publish', {
-    replicas: rows.map((row) => ({
-      workspaceId: row.workspace_id,
-      definitionRevision: row.definition_revision,
-      readiness: row.definition_state === 'ready' ? 'ready' : 'not-ready',
-      observedAt: nowIso(),
-    })),
+    .prepare(`SELECT w.id AS workspace_id, w.definition_state FROM workspaces w`)
+    .all() as Array<{ workspace_id: string; definition_state: string }>;
+  const observedAt = nowIso();
+  const replicas = rows.flatMap((row) => {
+    const definitionRevision = workspaceDefinitionRevision(row.workspace_id);
+    if (definitionRevision === null) return [];
+    return [
+      {
+        workspaceId: row.workspace_id,
+        definitionRevision,
+        readiness: row.definition_state === 'ready' ? ('ready' as const) : ('not-ready' as const),
+        observedAt,
+      },
+    ];
   });
+  if (replicas.length === 0) return;
+  await meshRpc('worker.replica.publish', { replicas });
 }
 
 // ---- jobs ------------------------------------------------------------------
@@ -695,12 +701,18 @@ const APPROVAL_POLL_MS = 2_000;
 const APPROVAL_WAIT_CAP_MS = 10 * 60 * 1000; // backend default TTL
 
 /**
- * Parks the job in `awaiting-approval` via the control stream, then polls
- * `approval.get` until the durable request resolves. The approval ROW is the
- * authority — the job state is 'running' both before the request lands and
- * after a grant, so only a decided row (or a terminal job state, meaning the
- * wait was abandoned) ends the poll. Fail-closed: reaching the TTL cap, a
- * dropped request, or an unreachable backend all resolve 'denied'.
+ * Requests a durable approval on the reserved control stream, then polls
+ * `approval.get` until the row resolves. Two fail-closed rules:
+ *
+ * 1. The approval ROW is the decision authority — the job is 'running' both
+ *    before the request lands and after a grant, so job state alone can
+ *    never prove a grant.
+ * 2. The request is only "sent" once its row exists — control frames ride a
+ *    reconnecting socket, so the send retries each poll until the row
+ *    appears (the backend dedupes same-digest re-requests).
+ *
+ * Reaching the TTL cap, a dead socket, or an unreachable backend all
+ * resolve 'denied'. A terminal job state ends the wait early.
  */
 async function requestAndAwaitApproval(
   job: MeshJob,
@@ -709,23 +721,49 @@ async function requestAndAwaitApproval(
   pollMs = APPROVAL_POLL_MS,
   capMs = APPROVAL_WAIT_CAP_MS,
 ): Promise<'approved' | 'denied'> {
-  sendControl(attempt, { request: 'approval', actionDigest });
   appendJournal(attempt.id, 'approval-requested', { actionDigest });
   emitActivity(attempt, `approval requested: ${actionDigest.slice(0, 12)}…`);
   const deadline = Date.now() + capMs;
+  let requestSeen = false;
+  // Retries journal once per distinct failure reason — a dead socket would
+  // otherwise append an identical row every poll for the whole TTL window.
+  let lastRetryReason: string | null = null;
+  const journalRetry = (event: string, error: unknown): void => {
+    const reason = error instanceof Error ? error.message : String(error);
+    if (reason === lastRetryReason) return;
+    lastRetryReason = reason;
+    appendJournal(attempt.id, event, { reason });
+  };
   while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, pollMs));
+    if (!requestSeen) {
+      try {
+        sendControl(attempt, { request: 'approval', actionDigest });
+      } catch (error) {
+        // Socket still connecting or mid-reconnect — retried next poll.
+        journalRetry('approval-send-retry', error);
+      }
+    }
     try {
       const { approvals } = await meshRpc<{ approvals: ApprovalRecord[] }>('approval.get', {
         attemptId: attempt.id,
       });
       const mine = approvals.find((row) => row.actionDigest === actionDigest);
-      if (mine !== undefined && mine.state !== 'pending') {
-        appendJournal(attempt.id, `approval-${mine.state}`, {
-          actionDigest,
-          approvalId: mine.id,
-        });
-        return mine.state === 'approved' ? 'approved' : 'denied';
+      if (mine !== undefined) {
+        if (!requestSeen) {
+          requestSeen = true;
+          appendJournal(attempt.id, 'approval-registered', {
+            actionDigest,
+            approvalId: mine.id,
+            expiresAt: mine.expiresAt,
+          });
+        }
+        if (mine.state !== 'pending') {
+          appendJournal(attempt.id, `approval-${mine.state}`, {
+            actionDigest,
+            approvalId: mine.id,
+          });
+          return mine.state === 'approved' ? 'approved' : 'denied';
+        }
       }
       const { job: current } = await meshRpc<JobGetResult>('job.get', { jobId: job.id });
       if (current.state !== 'running' && current.state !== 'awaiting-approval') {
@@ -735,9 +773,11 @@ async function requestAndAwaitApproval(
         });
         return 'denied';
       }
-    } catch {
+    } catch (error) {
       // Reachability blip — keep polling inside the TTL window.
+      journalRetry('approval-poll-retry', error);
     }
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
   }
   appendJournal(attempt.id, 'approval-expired', { actionDigest });
   return 'denied';
@@ -762,17 +802,17 @@ async function executePrepareWorkspace(
   }
   emitActivity(attempt, `prepare: materialising workspace ${workspaceId}`);
 
-  // The worker's synced definition must match the pinned revision — a stale
-  // replica prepares the wrong thing silently otherwise.
-  const ws = getDb()
-    .prepare('SELECT id, updated_at FROM workspaces WHERE id = ?')
-    .get(workspaceId) as { id: string; updated_at: string } | undefined;
-  if (ws === undefined) {
+  // The worker's synced definition must match the pinned content revision —
+  // a stale replica prepares the wrong thing silently otherwise.
+  // `workspaces.updated_at` is a local clock (remote applies re-stamp it);
+  // the manifest pins the canonical payload digest instead.
+  const localRevision = workspaceDefinitionRevision(workspaceId);
+  if (localRevision === null) {
     throw new Error(`workspace not replicated on this device: ${workspaceId}`);
   }
-  if (ws.updated_at !== manifest.workspaceDefinitionRevision) {
+  if (localRevision !== manifest.workspaceDefinitionRevision) {
     throw new Error(
-      `definition-not-converged: local ${ws.updated_at} != manifest ${manifest.workspaceDefinitionRevision}`,
+      `definition-not-converged: local ${localRevision} != manifest ${manifest.workspaceDefinitionRevision}`,
     );
   }
 
@@ -990,7 +1030,7 @@ export async function reconcileMeshAttemptsOnBoot(): Promise<void> {
 
 export function resetMeshWorkerForTests(): void {
   stopHeartbeat();
-  connectInFlight = false;
+  connectInFlight = null;
   contextProvider = null;
   activitySequences.clear();
   controlSequences.clear();
@@ -1080,10 +1120,10 @@ export interface PrepareWorkspaceJobInput {
 export async function createPrepareWorkspaceJob(
   input: PrepareWorkspaceJobInput,
 ): Promise<JobSummary> {
-  const ws = getDb()
-    .prepare('SELECT id, updated_at FROM workspaces WHERE id = ?')
-    .get(input.workspaceId) as { id: string; updated_at: string } | undefined;
-  if (ws === undefined) throw new Error(`workspace not found: ${input.workspaceId}`);
+  const revision = workspaceDefinitionRevision(input.workspaceId);
+  if (revision === null) {
+    throw new Error(`workspace not found: ${input.workspaceId}`);
+  }
   const commits = await resolveWorkspaceCommits(input.workspaceId);
   const defs = getDb()
     .prepare(
@@ -1110,7 +1150,7 @@ export async function createPrepareWorkspaceJob(
           executionPolicy: policy,
         });
   const manifest: ExecutionManifest = {
-    workspaceDefinitionRevision: ws.updated_at,
+    workspaceDefinitionRevision: revision,
     repositories,
     bootstrapDigest,
     provider: input.provider ?? 'local',

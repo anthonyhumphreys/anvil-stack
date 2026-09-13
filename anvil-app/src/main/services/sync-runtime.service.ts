@@ -131,6 +131,8 @@ let rpcOverride: SyncEngineRpc | undefined;
  * poll and durable cursors recover anything missed, per the socket contract.
  */
 let liveSocket: BackendSocket | null = null;
+/** The `runtimeGeneration` that dialed `liveSocket`; -1 when none. */
+let liveSocketGeneration = -1;
 let liveState: SyncConnectionState = 'offline';
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempt = 0;
@@ -910,8 +912,20 @@ function stopPolling(): void {
  * schedules a full-jitter reconnect while the fallback poll keeps progress.
  */
 function connectLiveChannel(): void {
-  if (!isSyncEnabled() || liveSocket !== null) {
+  if (!isSyncEnabled()) {
     return;
+  }
+  if (liveSocket !== null) {
+    if (liveSocketGeneration === runtimeGeneration) {
+      return;
+    }
+    // A generation bump (re-enable, sign-out race) superseded this socket
+    // mid-handshake — its hello would be fenced out at the frame handler,
+    // stranding the channel in 'connecting' forever. Retire and redial.
+    const stale = liveSocket;
+    liveSocket = null;
+    liveSocketGeneration = -1;
+    stale.close(1000, 'superseded generation');
   }
   const backend = getActiveBackend();
   const token = auth?.getAccessToken() ?? null;
@@ -936,6 +950,7 @@ function connectLiveChannel(): void {
     return;
   }
   liveSocket = socket;
+  liveSocketGeneration = generation;
   socket.onFrame((frame) => {
     if (generation !== runtimeGeneration) {
       return;
@@ -994,6 +1009,7 @@ function onLiveClosed(generation: number, socket: BackendSocket): void {
     return; // stale close event from a replaced socket
   }
   liveSocket = null;
+  liveSocketGeneration = -1;
   liveState = 'offline';
   if (generation !== runtimeGeneration) {
     return;
@@ -1020,6 +1036,7 @@ function scheduleLiveReconnect(generation: number): void {
 function reconnectLiveChannel(): void {
   const socket = liveSocket;
   liveSocket = null;
+  liveSocketGeneration = -1;
   liveState = 'offline';
   socket?.close(1000, 'credential rotation');
   connectLiveChannel();
@@ -1033,6 +1050,7 @@ function teardownLiveChannel(): void {
   reconnectAttempt = 0;
   const socket = liveSocket;
   liveSocket = null;
+  liveSocketGeneration = -1;
   liveState = 'offline';
   // onLiveClosed ignores this close: liveSocket is already null.
   socket?.close(1000, 'sync disabled');

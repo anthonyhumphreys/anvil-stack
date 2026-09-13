@@ -8,7 +8,7 @@
  * the domain save functions, or the applied change would echo back as a new
  * local edit.
  */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   SYNC_ENTITY_EDITABLE_AGENT,
   SYNC_ENTITY_SETTINGS,
@@ -605,6 +605,19 @@ function deleteSettingsLocally(): void {
 export function readEntityPayloadJson(entityType: string, entityId: string): string | null {
   const payload = buildEntityPayload(entityType, entityId);
   return payload === null ? null : canonicalJson(payload);
+}
+
+/**
+ * The revision a job manifest pins for a workspace definition: sha256 over
+ * the canonical payload. `workspaces.updated_at` is a LOCAL clock — remote
+ * applies re-stamp it — so only a content digest converges across devices.
+ * Device-local state (repo mappings, merged local pref keys) is absent from
+ * the payload, so replicas of the same definition share the revision.
+ */
+export function workspaceDefinitionRevision(workspaceId: string): string | null {
+  const payload = buildWorkspacePayload(workspaceId);
+  if (payload === null) return null;
+  return createHash('sha256').update(canonicalJson(payload), 'utf8').digest('hex');
 }
 
 /** The canonical local payload for one entity, or null when absent locally. */

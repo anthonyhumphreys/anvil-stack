@@ -58,6 +58,7 @@ import {
   setMeshWorkerEnabled,
 } from '../mesh-worker.service';
 import { BackendRpcError } from '../sync-backend-client.service';
+import { workspaceDefinitionRevision } from '../sync-entity-domain';
 
 const CTX = { apiUrl: 'https://backend.test/v1', accessToken: 'tok', enrollmentId: 'enr-1' };
 
@@ -477,7 +478,12 @@ describe('createPrepareWorkspaceJob (SESSION-02)', () => {
       };
       expect(params.kind).toBe('prepare-workspace');
       expect(params.requestedTarget).toEqual({ kind: 'device', enrollmentId: 'enr-9' });
-      expect(params.inputManifest.workspaceDefinitionRevision).toBe('rev-2');
+      // The revision pin is the canonical payload content digest — both
+      // sides recompute it; `updated_at` is a local clock and can't pin.
+      expect(params.inputManifest.workspaceDefinitionRevision).toMatch(/^[0-9a-f]{64}$/);
+      expect(params.inputManifest.workspaceDefinitionRevision).toBe(
+        workspaceDefinitionRevision('w2'),
+      );
       expect(params.inputManifest.repositories).toEqual([
         { repositoryId: 'p1', commit: head },
       ]);
@@ -542,13 +548,11 @@ describe('remote approval wait (SESSION-02)', () => {
       500,
     );
     expect(decision).toBe('approved');
-    const control = sentFrames[0] as {
-      type: string;
-      streamId: string;
-      payload: { kind: string; text: string };
-    };
+    const control = sentFrames.find(
+      (f) => (f as { streamId: string }).streamId === 'control',
+    ) as { type: string; streamId: string; payload: { kind: string; text: string } };
+    expect(control).toBeDefined();
     expect(control.type).toBe('activity');
-    expect(control.streamId).toBe('control');
     expect(JSON.parse(control.payload.text)).toEqual({
       request: 'approval',
       actionDigest: 'digest-1',
@@ -624,7 +628,7 @@ describe('remote approval wait (SESSION-02)', () => {
     expect(row.journal_json).toContain('approval-expired');
   });
 
-  it('rejects instead of silently dropping the request when the socket is dead', async () => {
+  it('fails closed without sending when the socket never comes up', async () => {
     insertAttempt();
     configureMeshWorkerContext(() => ({
       ...CTX,
@@ -633,16 +637,61 @@ describe('remote approval wait (SESSION-02)', () => {
       },
       isLive: () => false,
     }));
-    await expect(
-      requestApprovalForTests(
-        makeJob('job-approval'),
-        { ...makeAttempt('job-approval'), id: 'att-approval' },
-        'digest-1',
-        5,
-        500,
-      ),
-    ).rejects.toThrow('control channel unavailable');
-    expect(sentFrames).toHaveLength(0);
+    rpcHandler = (op) =>
+      op === 'approval.get' ? { approvals: [] } : { job: { state: 'running' } };
+    const decision = await requestApprovalForTests(
+      makeJob('job-approval'),
+      { ...makeAttempt('job-approval'), id: 'att-approval' },
+      'digest-1',
+      5,
+      60,
+    );
+    expect(decision).toBe('denied');
+    // Status activity may still be emitted; the CONTROL request must not be.
+    expect(
+      sentFrames.filter((f) => (f as { streamId: string }).streamId === 'control'),
+    ).toHaveLength(0);
+  });
+
+  it('retries the control send until the approval row proves it landed', async () => {
+    insertAttempt();
+    let approvalReads = 0;
+    rpcHandler = (op) => {
+      if (op === 'approval.get') {
+        approvalReads += 1;
+        // Row appears only on the third read — earlier sends "missed".
+        if (approvalReads < 3) return { approvals: [] };
+        return {
+          approvals: [
+            {
+              id: 'ap-1',
+              jobId: 'job-approval',
+              attemptId: 'att-approval',
+              actionDigest: 'digest-1',
+              generation: 1,
+              approverRole: 'user',
+              state: 'approved',
+              expiresAt: new Date().toISOString(),
+              createdAt: new Date().toISOString(),
+            },
+          ],
+        };
+      }
+      return { job: { state: 'awaiting-approval' } };
+    };
+    const decision = await requestApprovalForTests(
+      makeJob('job-approval'),
+      { ...makeAttempt('job-approval'), id: 'att-approval' },
+      'digest-1',
+      5,
+      500,
+    );
+    expect(decision).toBe('approved');
+    // One send per poll until the row was seen — idempotent on the backend.
+    const controlSends = sentFrames.filter(
+      (f) => (f as { streamId: string }).streamId === 'control',
+    );
+    expect(controlSends.length).toBeGreaterThanOrEqual(2);
   });
 });
 

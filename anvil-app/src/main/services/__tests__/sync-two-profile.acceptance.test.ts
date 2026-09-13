@@ -15,6 +15,7 @@
  * machines without a running backend.
  */
 import Database from 'better-sqlite3';
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -61,7 +62,15 @@ import {
   setMeshWorkerOptIn,
   signOutSync,
 } from '../sync-runtime.service';
-import { createDiagnosticJob, getMeshJob } from '../mesh-worker.service';
+import {
+  buildDevicePolicy,
+  createDiagnosticJob,
+  createPrepareWorkspaceJob,
+  decideMeshApproval,
+  getMeshJob,
+  listMeshApprovals,
+} from '../mesh-worker.service';
+import { recordBootstrapApproval } from '../bootstrap-policy.service';
 import { observeAttempt, type AttemptActivity } from '../mesh-observe.service';
 import { downloadMeshArtifact, listMeshArtifacts } from '../mesh-artifact.service';
 import { pinBackend } from '../sync-backend.service';
@@ -485,6 +494,301 @@ describe.skipIf(!backendReachable)('two-profile acceptance gate (real worker)', 
       const bytes = await downloadMeshArtifact(evidence.id);
       const decoded = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
       expect(decoded).toBeTypeOf('object');
+      await signOutSync();
+    },
+  );
+
+  it(
+    'runs prepare-workspace on a remote worker against a pinned manifest (SESSION-02)',
+    { timeout: 90_000 },
+    async () => {
+      const accountId = `acct-gate-${Date.now()}-prepare`;
+      const descriptor = await backendDescriptor();
+
+      // ---- Shared fixture: a real repo the source resolves HEAD on. The
+      // synced remote_url is https (local transports are rejected for synced
+      // definitions); the target maps its own checkout, so nothing clones.
+      const repoDir = mkdtempSync(join(tmpdir(), 'anvil-gate-repo-'));
+      execFileSync('git', ['init'], { cwd: repoDir });
+      execFileSync(
+        'git',
+        ['-c', 'user.email=gate@t', '-c', 'user.name=gate', 'commit', '--allow-empty', '-m', 'init'],
+        { cwd: repoDir },
+      );
+      const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoDir })
+        .toString()
+        .trim();
+      const recipe = {
+        schemaVersion: 1,
+        steps: [
+          {
+            id: 's1',
+            kind: 'command',
+            workingDirectory: '.',
+            argv: ['/bin/echo', 'mesh-bootstrap-ok'],
+            timeoutMs: 10_000,
+            envNames: [],
+            retry: 'safe',
+          },
+        ],
+      };
+
+      // ---- Profile A: enroll, create the workspace + repo + recipe, sync.
+      const a = openProfile('a-prepare');
+      openProfiles.push(a);
+      const aStatus = await enrollProfile(a, await mintCode(accountId));
+      const aScope = scopeFor(aStatus, descriptor.deploymentId);
+      a.db
+        .prepare(
+          `INSERT INTO repos (id, name, path, remote_url, default_branch, status, created_at, updated_at)
+           VALUES ('repo-gate', 'gate-repo', ?, 'https://example.test/gate-repo.git', 'main', 'connected', datetime('now'), datetime('now'))`,
+        )
+        .run(repoDir);
+      a.db
+        .prepare(
+          `INSERT INTO workspaces (id, name, bootstrap_json, created_at, updated_at)
+           VALUES ('ws-gate', 'gate-workspace', ?, datetime('now'), datetime('now'))`,
+        )
+        .run(JSON.stringify(recipe));
+      a.db
+        .prepare(
+          `INSERT INTO workspace_repos (workspace_id, repo_id, added_at)
+           VALUES ('ws-gate', 'repo-gate', datetime('now'))`,
+        )
+        .run();
+      bindLocalEntities(aScope);
+      await requestSync();
+      expect(getRuntimeStatus().lastError).toBeNull();
+      const pairing = await issueEnrollmentCode();
+
+      // ---- Profile C: enroll as worker, sync the workspace, then map its
+      // own checkout of the same commit and PRE-APPROVE the exact bootstrap
+      // digest locally (the "operator already approved this recipe" path —
+      // no remote approval is requested).
+      const c = openProfile('c-prepare');
+      openProfiles.push(c);
+      const cStatus = await enrollProfile(c, pairing.code);
+      const cEnrollmentId = cStatus.auth.enrollmentId;
+      expect(cEnrollmentId).not.toBeNull();
+      const worker = await setMeshWorkerOptIn(true);
+      expect(worker.connected).toBe(true);
+      await requestSync();
+      expect(getRuntimeStatus().lastError).toBeNull();
+
+      const cDef = c.db
+        .prepare(
+          `SELECT portable_id FROM workspace_repo_definitions WHERE workspace_id = 'ws-gate'`,
+        )
+        .get() as { portable_id: string } | undefined;
+      expect(cDef).toBeDefined();
+      const cCheckout = mkdtempSync(join(tmpdir(), 'anvil-gate-checkout-'));
+      execFileSync('git', ['clone', `file://${repoDir}`, cCheckout]);
+      expect(
+        execFileSync('git', ['rev-parse', 'HEAD'], { cwd: cCheckout }).toString().trim(),
+      ).toBe(head);
+      c.db
+        .prepare(
+          `INSERT INTO repos (id, name, path, remote_url, default_branch, status, created_at, updated_at)
+           VALUES ('repo-gate-c', 'gate-repo', ?, 'https://example.test/gate-repo.git', 'main', 'connected', datetime('now'), datetime('now'))`,
+        )
+        .run(cCheckout);
+      c.db
+        .prepare(
+          `UPDATE workspace_repo_definitions SET mapped_repo_id = 'repo-gate-c'
+           WHERE workspace_id = 'ws-gate' AND portable_id = ?`,
+        )
+        .run(cDef!.portable_id);
+      c.db
+        .prepare(`UPDATE workspaces SET definition_state = 'ready' WHERE id = 'ws-gate'`)
+        .run();
+      recordBootstrapApproval('ws-gate', {
+        recipe: recipe as never,
+        repositoryCommits: { [cDef!.portable_id]: head },
+        executionPolicy: buildDevicePolicy(),
+        shellApproved: false,
+      });
+
+      // ---- Back on A: create the pinned prepare-workspace job for C.
+      reopenProfile(a);
+      pinBackend({ baseUrl: BACKEND_URL, descriptor });
+      enableSync();
+      const job = await createPrepareWorkspaceJob({
+        requestId: `prep-${Date.now()}`,
+        workspaceId: 'ws-gate',
+        targetEnrollmentId: cEnrollmentId ?? undefined,
+      });
+      expect(job.state).toBe('queued');
+
+      // ---- C claims via the durable sweep, verifies the pins, runs the
+      // approved recipe, reports — poll the local attempt journal.
+      const c2 = reopenProfile(c);
+      pinBackend({ baseUrl: BACKEND_URL, descriptor });
+      enableSync();
+      const deadline = Date.now() + 30_000;
+      let attempt: { state: string; journal_json: string } | undefined;
+      while (Date.now() < deadline) {
+        attempt = c2.db
+          .prepare('SELECT state, journal_json FROM mesh_attempts WHERE job_id = ?')
+          .get(job.id) as { state: string; journal_json: string } | undefined;
+        if (attempt !== undefined && ['completed', 'failed'].includes(attempt.state)) break;
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+      expect(attempt?.state).toBe('completed');
+      expect(attempt?.journal_json).toContain('materialized');
+
+      const run = c2.db
+        .prepare(`SELECT state FROM bootstrap_runs WHERE workspace_id = 'ws-gate'`)
+        .get() as { state: string } | undefined;
+      expect(run?.state).toBe('verified');
+
+      // ---- Source reads the terminal state.
+      reopenProfile(a);
+      pinBackend({ baseUrl: BACKEND_URL, descriptor });
+      enableSync();
+      const final = await getMeshJob(job.id);
+      expect(final?.state).toBe('completed');
+      await signOutSync();
+    },
+  );
+
+  it(
+    'gates remote bootstrap behind a durable approval the source can deny (SESSION-02)',
+    { timeout: 90_000 },
+    async () => {
+      const accountId = `acct-gate-${Date.now()}-approval`;
+      const descriptor = await backendDescriptor();
+
+      const repoDir = mkdtempSync(join(tmpdir(), 'anvil-gate-repo2-'));
+      execFileSync('git', ['init'], { cwd: repoDir });
+      execFileSync(
+        'git',
+        ['-c', 'user.email=gate@t', '-c', 'user.name=gate', 'commit', '--allow-empty', '-m', 'init'],
+        { cwd: repoDir },
+      );
+      const recipe = {
+        schemaVersion: 1,
+        steps: [
+          {
+            id: 's1',
+            kind: 'command',
+            workingDirectory: '.',
+            argv: ['/bin/echo', 'needs-approval'],
+            timeoutMs: 10_000,
+            envNames: [],
+            retry: 'safe',
+          },
+        ],
+      };
+
+      const a = openProfile('a-approval');
+      openProfiles.push(a);
+      const aStatus = await enrollProfile(a, await mintCode(accountId));
+      const aScope = scopeFor(aStatus, descriptor.deploymentId);
+      a.db
+        .prepare(
+          `INSERT INTO repos (id, name, path, remote_url, default_branch, status, created_at, updated_at)
+           VALUES ('repo-gate', 'gate-repo', ?, 'https://example.test/gate-repo.git', 'main', 'connected', datetime('now'), datetime('now'))`,
+        )
+        .run(repoDir);
+      a.db
+        .prepare(
+          `INSERT INTO workspaces (id, name, bootstrap_json, created_at, updated_at)
+           VALUES ('ws-gate', 'gate-workspace', ?, datetime('now'), datetime('now'))`,
+        )
+        .run(JSON.stringify(recipe));
+      a.db
+        .prepare(
+          `INSERT INTO workspace_repos (workspace_id, repo_id, added_at)
+           VALUES ('ws-gate', 'repo-gate', datetime('now'))`,
+        )
+        .run();
+      bindLocalEntities(aScope);
+      await requestSync();
+      expect(getRuntimeStatus().lastError).toBeNull();
+      const pairing = await issueEnrollmentCode();
+
+      // ---- C: worker with the repo mapped but NO bootstrap approval — the
+      // recipe gate must request a durable remote approval.
+      const c = openProfile('c-approval');
+      openProfiles.push(c);
+      const cStatus = await enrollProfile(c, pairing.code);
+      const cEnrollmentId = cStatus.auth.enrollmentId;
+      const worker = await setMeshWorkerOptIn(true);
+      expect(worker.connected).toBe(true);
+      await requestSync();
+      expect(getRuntimeStatus().lastError).toBeNull();
+      const cDef = c.db
+        .prepare(
+          `SELECT portable_id FROM workspace_repo_definitions WHERE workspace_id = 'ws-gate'`,
+        )
+        .get() as { portable_id: string } | undefined;
+      expect(cDef).toBeDefined();
+      const cCheckout = mkdtempSync(join(tmpdir(), 'anvil-gate-checkout2-'));
+      execFileSync('git', ['clone', `file://${repoDir}`, cCheckout]);
+      c.db
+        .prepare(
+          `INSERT INTO repos (id, name, path, remote_url, default_branch, status, created_at, updated_at)
+           VALUES ('repo-gate-c', 'gate-repo', ?, 'https://example.test/gate-repo.git', 'main', 'connected', datetime('now'), datetime('now'))`,
+        )
+        .run(cCheckout);
+      c.db
+        .prepare(
+          `UPDATE workspace_repo_definitions SET mapped_repo_id = 'repo-gate-c'
+           WHERE workspace_id = 'ws-gate' AND portable_id = ?`,
+        )
+        .run(cDef!.portable_id);
+      c.db
+        .prepare(`UPDATE workspaces SET definition_state = 'ready' WHERE id = 'ws-gate'`)
+        .run();
+
+      // ---- A creates the job; C claims it and parks at the approval gate.
+      reopenProfile(a);
+      pinBackend({ baseUrl: BACKEND_URL, descriptor });
+      enableSync();
+      const job = await createPrepareWorkspaceJob({
+        requestId: `prep-approval-${Date.now()}`,
+        workspaceId: 'ws-gate',
+        targetEnrollmentId: cEnrollmentId ?? undefined,
+      });
+
+      const c2 = reopenProfile(c);
+      pinBackend({ baseUrl: BACKEND_URL, descriptor });
+      enableSync();
+      // Wait until the worker's journal proves the backend registered the
+      // durable request ('approval-registered') before switching profiles —
+      // the request is only durable once its row exists.
+      const requestDeadline = Date.now() + 30_000;
+      let journal = '';
+      while (Date.now() < requestDeadline) {
+        const row = c2.db
+          .prepare('SELECT journal_json FROM mesh_attempts WHERE job_id = ?')
+          .get(job.id) as { journal_json: string } | undefined;
+        journal = row?.journal_json ?? '';
+        if (journal.includes('approval-registered')) break;
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+      expect(journal).toContain('approval-registered');
+
+      // ---- A sees the pending request and denies it: the job fails durably.
+      reopenProfile(a);
+      pinBackend({ baseUrl: BACKEND_URL, descriptor });
+      enableSync();
+      const listDeadline = Date.now() + 15_000;
+      let pending: Awaited<ReturnType<typeof listMeshApprovals>> = [];
+      while (Date.now() < listDeadline) {
+        pending = (await listMeshApprovals({ jobId: job.id })).filter(
+          (row) => row.state === 'pending',
+        );
+        if (pending.length > 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+      expect(pending.length).toBe(1);
+      const decision = await decideMeshApproval(pending[0]!.id, 'denied', 'gate test denial');
+      expect(decision.job.state).toBe('failed');
+      const final = await getMeshJob(job.id);
+      expect(final?.state).toBe('failed');
+      const stored = await listMeshApprovals({ approvalId: pending[0]!.id });
+      expect(stored[0]?.state).toBe('denied');
       await signOutSync();
     },
   );
