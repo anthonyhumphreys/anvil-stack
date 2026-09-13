@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 72;
+export const SCHEMA_VERSION = 73;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -628,6 +628,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   definition_state TEXT NOT NULL DEFAULT 'ready',
+  bootstrap_json TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -653,6 +654,50 @@ CREATE TABLE IF NOT EXISTS workspace_repo_definitions (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (workspace_id, portable_id)
+);
+
+-- WS-03: local bootstrap approval records. A record pins the sha256 digest
+-- of recipe content + repository commits + effective execution policy —
+-- a changed input can never silently reuse an old approval. Approvals are
+-- device-local and NEVER sync; each target approves for itself.
+CREATE TABLE IF NOT EXISTS bootstrap_approvals (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  digest TEXT NOT NULL,
+  recipe_json TEXT NOT NULL,
+  repository_commits_json TEXT NOT NULL,
+  policy_json TEXT NOT NULL,
+  shell_approved INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  UNIQUE (workspace_id, digest)
+);
+
+-- WS-03: bootstrap run journal — step outcomes + bounded evidence per
+-- workspace replica. state 'awaiting-approval' parks a run whose digest
+-- no current approval covers.
+CREATE TABLE IF NOT EXISTS bootstrap_runs (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  definition_revision TEXT,
+  digest TEXT NOT NULL,
+  state TEXT NOT NULL
+    CHECK (state IN ('awaiting-approval', 'running', 'verified', 'failed', 'unknown-outcome')),
+  error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_bootstrap_runs_workspace
+  ON bootstrap_runs(workspace_id, state);
+
+CREATE TABLE IF NOT EXISTS bootstrap_run_steps (
+  run_id TEXT NOT NULL REFERENCES bootstrap_runs(id) ON DELETE CASCADE,
+  step_id TEXT NOT NULL,
+  state TEXT NOT NULL
+    CHECK (state IN ('pending', 'running', 'verified', 'failed', 'unknown-outcome')),
+  log_tail TEXT,
+  exit_code INTEGER,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (run_id, step_id)
 );
 
 CREATE TABLE IF NOT EXISTS editable_agents (
@@ -2582,5 +2627,46 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_wm_repo_stages_active_destination
   ON workspace_materialization_repo_stages(destination)
   WHERE stage NOT IN ('failed', 'unsupported', 'mapping-published', 'detached', 'quarantined')
     AND destination IS NOT NULL;
+`,
+  73: `
+-- WS-03: bootstrap recipe on the workspace + local-only approval records
+-- and the run journal (step outcomes + bounded evidence). Approvals pin a
+-- sha256 digest of recipe + commits + effective policy and NEVER sync.
+-- Keep in sync with the SCHEMA_SQL copies of these tables.
+ALTER TABLE workspaces ADD COLUMN bootstrap_json TEXT;
+CREATE TABLE IF NOT EXISTS bootstrap_approvals (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  digest TEXT NOT NULL,
+  recipe_json TEXT NOT NULL,
+  repository_commits_json TEXT NOT NULL,
+  policy_json TEXT NOT NULL,
+  shell_approved INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  UNIQUE (workspace_id, digest)
+);
+CREATE TABLE IF NOT EXISTS bootstrap_runs (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  definition_revision TEXT,
+  digest TEXT NOT NULL,
+  state TEXT NOT NULL
+    CHECK (state IN ('awaiting-approval', 'running', 'verified', 'failed', 'unknown-outcome')),
+  error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_bootstrap_runs_workspace
+  ON bootstrap_runs(workspace_id, state);
+CREATE TABLE IF NOT EXISTS bootstrap_run_steps (
+  run_id TEXT NOT NULL REFERENCES bootstrap_runs(id) ON DELETE CASCADE,
+  step_id TEXT NOT NULL,
+  state TEXT NOT NULL
+    CHECK (state IN ('pending', 'running', 'verified', 'failed', 'unknown-outcome')),
+  log_tail TEXT,
+  exit_code INTEGER,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (run_id, step_id)
+);
 `,
 };

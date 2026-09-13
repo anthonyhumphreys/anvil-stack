@@ -263,6 +263,10 @@ function buildWorkspacePayload(entityId: string): unknown | null {
     const filtered = filterPreferenceSection(sectionName, parse(column ?? null));
     if (filtered !== undefined) preferences[sectionName] = filtered;
   }
+  const bootstrapRow = db
+    .prepare('SELECT bootstrap_json FROM workspaces WHERE id = ?')
+    .get(entityId) as { bootstrap_json: string | null } | undefined;
+  const bootstrap = parse(bootstrapRow?.bootstrap_json ?? null);
   return {
     id: ws.id,
     name: ws.name,
@@ -273,7 +277,37 @@ function buildWorkspacePayload(entityId: string): unknown | null {
       ...(r.default_branch !== null ? { defaultBranch: r.default_branch } : {}),
     })),
     preferences,
+    ...(bootstrap !== undefined ? { bootstrap } : {}),
   };
+}
+
+/** Closed validator for a synced bootstrap recipe — anything else drops. */
+function isBootstrapRecipe(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (value.schemaVersion !== 1) return false;
+  if (!Array.isArray(value.steps)) return false;
+  if (value.platforms !== undefined) {
+    if (!Array.isArray(value.platforms)) return false;
+    for (const p of value.platforms as unknown[]) {
+      if (p !== 'darwin' && p !== 'linux' && p !== 'win32') return false;
+    }
+  }
+  for (const step of value.steps as unknown[]) {
+    if (!isRecord(step)) return false;
+    if (typeof step.id !== 'string' || step.id === '') return false;
+    if (step.kind !== 'command' && step.kind !== 'verify') return false;
+    if (typeof step.workingDirectory !== 'string' || step.workingDirectory === '') return false;
+    // Exactly one of argv / shell.
+    const hasArgv = Array.isArray(step.argv) && (step.argv as unknown[]).every((a) => typeof a === 'string');
+    const hasShell = typeof step.shell === 'string' && step.shell !== '';
+    if (hasArgv === hasShell) return false;
+    if (typeof step.timeoutMs !== 'number' || !(step.timeoutMs > 0)) return false;
+    if (!Array.isArray(step.envNames) || !(step.envNames as unknown[]).every((n) => typeof n === 'string'))
+      return false;
+    if (step.retry !== 'safe' && step.retry !== 'inspect-before-retry' && step.retry !== 'never')
+      return false;
+  }
+  return true;
 }
 
 function validateWorkspacePayload(payload: unknown): boolean {
@@ -286,6 +320,7 @@ function validateWorkspacePayload(payload: unknown): boolean {
     if (typeof repo.name !== 'string') return false;
   }
   if (payload.preferences !== undefined && !isRecord(payload.preferences)) return false;
+  if (payload.bootstrap !== undefined && !isBootstrapRecipe(payload.bootstrap)) return false;
   return true;
 }
 
@@ -355,11 +390,14 @@ function applyWorkspacePayload(entityId: string, payload: unknown): void {
   const db = getDb();
   const now = nowIso();
   const txn = db.transaction(() => {
+    const bootstrapJson =
+      p.bootstrap !== undefined ? JSON.stringify(p.bootstrap) : null;
     db.prepare(
-      `INSERT INTO workspaces (id, name, definition_state, created_at, updated_at)
-       VALUES (?, ?, 'ready', ?, ?)
-       ON CONFLICT(id) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at`,
-    ).run(entityId, typeof p.name === 'string' ? p.name : '', now, now);
+      `INSERT INTO workspaces (id, name, definition_state, bootstrap_json, created_at, updated_at)
+       VALUES (?, ?, 'ready', ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET name = excluded.name,
+         bootstrap_json = excluded.bootstrap_json, updated_at = excluded.updated_at`,
+    ).run(entityId, typeof p.name === 'string' ? p.name : '', bootstrapJson, now, now);
 
     // Reconcile portable repo definitions; preserve existing local mappings.
     const incoming = new Set(repos.map((r) => String(r.id)));

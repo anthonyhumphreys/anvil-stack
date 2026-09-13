@@ -385,6 +385,70 @@ describe('workspace definitions', () => {
     expect(defs).toHaveLength(1);
     expect(defs[0].mapped_repo_id).toBe('repo-1');
   });
+
+  it('round-trips a bootstrap recipe and drops malformed ones', () => {
+    const ws = createWorkspace({ name: 'W', repoIds: [] });
+    const recipe = {
+      schemaVersion: 1,
+      steps: [
+        {
+          id: 'install',
+          kind: 'command',
+          workingDirectory: '.',
+          argv: ['pnpm', 'install'],
+          timeoutMs: 60_000,
+          envNames: [],
+          retry: 'safe',
+        },
+      ],
+    };
+    db.prepare('UPDATE workspaces SET bootstrap_json = ? WHERE id = ?').run(
+      JSON.stringify(recipe),
+      ws.id,
+    );
+    const payload = buildEntityPayload(SYNC_ENTITY_WORKSPACE_DEFINITION, ws.id) as Record<
+      string,
+      unknown
+    >;
+    expect(payload.bootstrap).toEqual(recipe);
+    expect(entityPayloadIssue(SYNC_ENTITY_WORKSPACE_DEFINITION, payload)).toBeNull();
+
+    // Remote apply lands the recipe on the local row.
+    applyRemoteEntityPayload(SYNC_ENTITY_WORKSPACE_DEFINITION, 'ws-boot', {
+      id: 'ws-boot',
+      name: 'B',
+      repos: [],
+      bootstrap: recipe,
+    });
+    const applied = db
+      .prepare('SELECT bootstrap_json FROM workspaces WHERE id = ?')
+      .get('ws-boot') as { bootstrap_json: string | null };
+    expect(JSON.parse(applied.bootstrap_json!)).toEqual(recipe);
+
+    // A malformed recipe (both argv and shell) is rejected at the boundary.
+    expect(
+      entityPayloadIssue(SYNC_ENTITY_WORKSPACE_DEFINITION, {
+        id: 'ws-bad',
+        name: 'Bad',
+        repos: [],
+        bootstrap: {
+          schemaVersion: 1,
+          steps: [
+            {
+              id: 'x',
+              kind: 'command',
+              workingDirectory: '.',
+              argv: ['a'],
+              shell: 'b',
+              timeoutMs: 1,
+              envNames: [],
+              retry: 'safe',
+            },
+          ],
+        },
+      }),
+    ).not.toBeNull();
+  });
 });
 
 describe('settings entity', () => {
