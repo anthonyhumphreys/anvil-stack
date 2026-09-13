@@ -51,6 +51,7 @@ import type { RunCommand, RunStatus } from '../shared/run-types.js';
 import type { SyncBackendPinInput } from '../shared/sync-backend.js';
 import type {
   SyncConflictResolutionChoice,
+  SyncDiagnostics,
   SyncIssuedEnrollmentCode,
   SyncSpikeEnrollInput,
 } from '../shared/sync-runtime.js';
@@ -716,6 +717,8 @@ const api: AnvilAPI = {
     conflicts: () => ipcRenderer.invoke('sync-runtime:conflicts'),
     resolveConflict: (conflictId: string, resolution: SyncConflictResolutionChoice) =>
       ipcRenderer.invoke('sync-runtime:resolve-conflict', { conflictId, resolution }),
+    diagnostics: (): Promise<SyncDiagnostics> =>
+      ipcRenderer.invoke('sync-runtime:diagnostics'),
   },
 
   anvilCloud: {

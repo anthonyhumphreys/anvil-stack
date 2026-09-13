@@ -405,6 +405,21 @@ export function listSyncScopesForEntity(entityType: string, entityId: string): S
   return rows.map(mapScope);
 }
 
+/** Every scope that has any sync metadata — bindings, outbox, state, or conflicts. */
+export function listSyncScopes(): SyncScope[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT DISTINCT backend_id, account_id, dataset_epoch FROM (
+         SELECT backend_id, account_id, dataset_epoch FROM sync_bindings
+         UNION SELECT backend_id, account_id, dataset_epoch FROM sync_outbox
+         UNION SELECT backend_id, account_id, dataset_epoch FROM sync_state
+         UNION SELECT backend_id, account_id, dataset_epoch FROM sync_conflicts
+       )`,
+    )
+    .all() as Array<{ backend_id: string; account_id: string; dataset_epoch: string }>;
+  return rows.map(mapScope);
+}
+
 /**
  * Records the sync intent for one local domain write.
  *

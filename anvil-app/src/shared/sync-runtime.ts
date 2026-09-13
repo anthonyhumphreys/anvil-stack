@@ -66,3 +66,54 @@ export interface SyncRuntimeStatus {
   lastPushAt: string | null;
   lastPullAt: string | null;
 }
+
+/**
+ * Per-scope metadata rollup for diagnostics. Counts and sequences only —
+ * never payloads, paths, tokens, or enrollment codes.
+ */
+export interface SyncScopeDiagnostics {
+  backendId: string;
+  accountId: string;
+  datasetEpoch: string;
+  /** entityType -> bound entity count. */
+  bindingsByEntityType: Record<string, number>;
+  /** outbox state -> row count (pending, dispatched, acknowledged, rejected). */
+  outboxByState: Record<string, number>;
+  openConflicts: number;
+  resolvedConflicts: number;
+  /** Pull cursor and server-provided sequences for cursor/retention debugging. */
+  pullCursor: string | null;
+  consumedSequenceHighWater: number;
+  retentionFloorSequence: number | null;
+  resetRequired: boolean;
+  /** Staged scan rows not yet activated. */
+  stagedScanRows: number;
+  lastPushAt: string | null;
+  lastPullAt: string | null;
+}
+
+/** Aggregate operational counters returned by the backend, when reachable. */
+export interface SyncRemoteAccountStats {
+  historyBytes: number;
+  historyQuotaBytes: number;
+  retentionFloor: number;
+  counters: Record<string, number>;
+}
+
+/**
+ * Redacted diagnostics bundle. Safe to share with an operator: contains
+ * identifiers, counts, cursors, and error strings — never payloads, file
+ * paths, tokens, enrollment codes, or entity content.
+ */
+export interface SyncDiagnostics {
+  generatedAt: string;
+  protocol: string;
+  profile: string;
+  schemaVersion: number;
+  /** Opaque device identifier used to correlate reports with installations. */
+  installationId: string;
+  status: SyncRuntimeStatus;
+  scopes: SyncScopeDiagnostics[];
+  /** Remote account stats from session.describe; null when unreachable. */
+  remote: SyncRemoteAccountStats | null;
+}

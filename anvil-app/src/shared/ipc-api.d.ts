@@ -177,6 +177,7 @@ import type {
   SyncAuthPublicSnapshot,
   SyncConflictResolutionChoice,
   SyncConflictView,
+  SyncDiagnostics,
   SyncIssuedEnrollmentCode,
   SyncRuntimeStatus,
   SyncSpikeEnrollInput,
@@ -673,6 +674,8 @@ export interface AnvilAPI {
       conflictId: string,
       resolution: SyncConflictResolutionChoice,
     ) => Promise<SyncRuntimeStatus>;
+    /** Redacted sync diagnostics bundle; safe to share with an operator. */
+    diagnostics: () => Promise<SyncDiagnostics>;
   };
 
   anvilCloud: {

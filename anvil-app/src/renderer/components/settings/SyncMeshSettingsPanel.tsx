@@ -77,6 +77,7 @@ export function SyncMeshSettingsPanel(): ReactNode {
   const [prompt, setPrompt] = useState<string | null>(null);
   const [promptLoading, setPromptLoading] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [diagnosticsCopied, setDiagnosticsCopied] = useState(false);
   const [runtime, setRuntime] = useState<SyncRuntimeStatus | null>(null);
   const [preview, setPreview] = useState<SyncAdoptionPreviewItem[]>([]);
   const [conflicts, setConflicts] = useState<SyncConflictView[]>([]);
@@ -274,6 +275,18 @@ export function SyncMeshSettingsPanel(): ReactNode {
       setError(toErrorMessage(err));
     } finally {
       setPromptLoading(false);
+    }
+  };
+
+  const handleCopyDiagnostics = async (): Promise<void> => {
+    setError(null);
+    try {
+      const bundle = await window.anvil.syncRuntime.diagnostics();
+      await copyTextToClipboard(JSON.stringify(bundle, null, 2));
+      setDiagnosticsCopied(true);
+      window.setTimeout(() => setDiagnosticsCopied(false), 2000);
+    } catch (err) {
+      setError(toErrorMessage(err));
     }
   };
 
@@ -626,14 +639,23 @@ export function SyncMeshSettingsPanel(): ReactNode {
           </p>
         )}
         {runtime?.lastError && <p className="text-xs text-error">{runtime.lastError}</p>}
-        <button
-          type="button"
-          onClick={() => void handleEnableSync()}
-          disabled={enabling || runtime?.syncEnabled === true}
-          className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
-        >
-          {enabling ? 'Enabling…' : runtime?.syncEnabled ? 'Sync enabled' : 'Enable Sync'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void handleEnableSync()}
+            disabled={enabling || runtime?.syncEnabled === true}
+            className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
+          >
+            {enabling ? 'Enabling…' : runtime?.syncEnabled ? 'Sync enabled' : 'Enable Sync'}
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleCopyDiagnostics()}
+            className="rounded-md border border-border px-3 py-1.5 text-sm font-medium text-text-secondary transition-colors hover:bg-bg-tertiary"
+          >
+            {diagnosticsCopied ? 'Diagnostics copied' : 'Copy diagnostics'}
+          </button>
+        </div>
       </Panel>
 
       {conflicts.length > 0 && (

@@ -34,6 +34,7 @@ import {
   bindLocalWorkflowTemplates,
   enableSync,
   enrollWithEnrollmentCode,
+  exportSyncDiagnostics,
   getRuntimeStatus,
   initSyncRuntime,
   issueEnrollmentCode,
@@ -389,6 +390,12 @@ function fakeBackend(options: { accessTtlMs?: number } = {}) {
             datasetEpoch: SPIKE_DATASET_EPOCH,
             credentialGeneration: session.generation,
             accessExpiresAt: session.accessExpiresAt,
+            accountStats: {
+              historyBytes: 4096,
+              historyQuotaBytes: 67108864,
+              retentionFloor: 7,
+              counters: { push_total: 3, pull_total: 5 },
+            },
           },
         });
       }
@@ -560,6 +567,50 @@ describe('real auth transport (contract routes over injected fetch)', () => {
     expect(getRuntimeStatus().sessionExpired).toBe(false);
     await expect(requestSync()).rejects.toThrow();
     expect(getRuntimeStatus().sessionExpired).toBe(true);
+  });
+
+  it('exports a redacted diagnostics bundle with local rollups and remote stats', async () => {
+    const backend = fakeBackend();
+    const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
+    initSyncRuntime(dir, { fetchFn: backend.fetchFn });
+    pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: oidcDescriptorFixture() });
+    const minted = await (await backend.fetchFn(
+      'https://backend.example.test/v1/enrollment-codes',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', Authorization: 'Bearer admin-token' },
+        body: JSON.stringify({ accountId: 'account-1' }),
+      },
+    )).json() as { code: string };
+    await enrollWithEnrollmentCode(minted.code);
+    const template = saveWorkflowTemplate({
+      name: 'Diagnostic flow',
+      nodes: [node('a')],
+      edges: [],
+    });
+    bindLocalWorkflowTemplates(SCOPE);
+    expect(listOutboxRows(SCOPE).length).toBe(1);
+
+    const bundle = await exportSyncDiagnostics();
+    expect(bundle.protocol).toBe(PROTOCOL);
+    expect(bundle.schemaVersion).toBeGreaterThan(0);
+    expect(bundle.installationId).toBeTruthy();
+    const scopeDiag = bundle.scopes.find(
+      (s) => s.backendId === SCOPE.backendId && s.accountId === SCOPE.accountId,
+    );
+    expect(scopeDiag?.outboxByState['pending']).toBe(1);
+    expect(scopeDiag?.bindingsByEntityType[ET]).toBe(1);
+    expect(scopeDiag?.openConflicts).toBe(0);
+    expect(bundle.remote?.historyBytes).toBe(4096);
+    expect(bundle.remote?.counters['pull_total']).toBe(5);
+
+    // Redaction: no tokens, codes, payloads, or template content anywhere.
+    const raw = JSON.stringify(bundle);
+    expect(raw).not.toContain('at-');
+    expect(raw).not.toContain('rt-');
+    expect(raw).not.toContain(minted.code);
+    expect(raw).not.toContain('Diagnostic flow');
+    expect(raw).not.toContain(template.id);
   });
 });
 

@@ -2,6 +2,7 @@ import { ipcMain } from 'electron';
 import {
   enableSync,
   enrollWithEnrollmentCode,
+  exportSyncDiagnostics,
   getRuntimeStatus,
   issueEnrollmentCode,
   listConflictViews,
@@ -50,6 +51,8 @@ export function registerSyncRuntimeHandlers(): void {
   ipcMain.handle('sync-runtime:sign-out', () => signOutSync());
 
   ipcMain.handle('sync-runtime:conflicts', () => listConflictViews());
+
+  ipcMain.handle('sync-runtime:diagnostics', () => exportSyncDiagnostics());
 
   ipcMain.handle('sync-runtime:resolve-conflict', (_event, payload: unknown) => {
     if (!isRecord(payload) || typeof payload['conflictId'] !== 'string') {

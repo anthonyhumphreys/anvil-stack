@@ -319,3 +319,20 @@ this OPS-01 slice.
   (personas are compiled-in constants with bundled prompt files).
 - WS-01..03, MESH-01..03, SESSION-02/03, FLOW-01..03, PLACE-01, BYOB-02,
   IAC-01/02, LAUNCH-01.
+
+### OPS-01 diagnostics export
+
+- `exportSyncDiagnostics()` in the runtime produces a redacted bundle:
+  generated-at, protocol/profile, schema version, installation id, runtime
+  status, and per-scope rollups (bindings by entity type, outbox by state,
+  open/resolved conflicts, pull cursor, consumed-sequence high-water,
+  retention floor, reset flag, staged scan rows, last push/pull). Remote
+  `session.describe` account stats merge best-effort; the bundle is complete
+  when the backend is unreachable. Never contains payloads, file paths,
+  tokens, or enrollment codes — verified by a redaction test.
+- Wired end to end: `sync-runtime:diagnostics` IPC → preload →
+  `syncRuntime.diagnostics()` → a "Copy diagnostics" button in the Sync
+  panel that copies the JSON bundle to the clipboard.
+
+Verification: 18/18 runtime tests (new diagnostics coverage), 618/618 main
+suite, node+web typechecks zero sync diagnostics, eslint clean.

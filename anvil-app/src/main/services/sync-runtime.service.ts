@@ -6,18 +6,23 @@ import type {
   EnrollmentCodeIssueResult,
   EnrollParams,
   EnrollResult,
+  SessionDescribeResult,
   SessionRefreshParams,
   SessionRefreshResult,
   SessionRevokeParams,
   SessionRevokeResult,
 } from '../../../cloud/contract/auth.js';
+import { PROTOCOL } from '../../../cloud/contract/version.js';
 import {
   SPIKE_DATASET_EPOCH,
   type SyncAdoptionPreviewItem,
   type SyncAuthPublicSnapshot,
   type SyncConflictResolutionChoice,
   type SyncConflictView,
+  type SyncDiagnostics,
+  type SyncRemoteAccountStats,
   type SyncRuntimeStatus,
+  type SyncScopeDiagnostics,
   type SyncSpikeEnrollInput,
 } from '../../shared/sync-runtime.js';
 import { SYNC_ENTITY_WORKFLOW_TEMPLATE, type SyncScope } from '../../shared/sync-mesh.js';
@@ -54,7 +59,12 @@ import {
 } from './sync-engine.service.js';
 import {
   getOrCreateInstallationId,
+  getSyncState,
+  listBindings,
   listConflicts,
+  listOutboxRows,
+  listScanStaging,
+  listSyncScopes,
   listSyncScopesForEntity,
   recordLocalChange,
   sweepLocalSyncRetention,
@@ -63,6 +73,7 @@ import {
 } from './sync-persistence.service.js';
 import { listWorkflowTemplates } from './workflow.service.js';
 import { getDb } from '../db/database.js';
+import { SCHEMA_VERSION } from '../db/schema.js';
 
 /** Fallback cadence while the live channel is down. */
 const POLL_MS = 5_000;
@@ -598,6 +609,75 @@ export function getRuntimeStatus(): SyncRuntimeStatus {
     lastError,
     lastPushAt: snapshot?.lastPushAt ?? null,
     lastPullAt: snapshot?.lastPullAt ?? null,
+  };
+}
+
+function countBy<T>(items: T[], key: (item: T) => string): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const item of items) {
+    const k = key(item);
+    counts[k] = (counts[k] ?? 0) + 1;
+  }
+  return counts;
+}
+
+/**
+ * Redacted diagnostics bundle for operator inspection (OPS-01). Only
+ * identifiers, counts, cursors, and error strings — never payloads, file
+ * paths, tokens, or enrollment codes. Remote account stats are merged
+ * best-effort; the bundle stays complete when the backend is unreachable.
+ */
+export async function exportSyncDiagnostics(): Promise<SyncDiagnostics> {
+  const scopes: SyncScopeDiagnostics[] = listSyncScopes().map((scope) => {
+    const state = getSyncState(scope);
+    const conflicts = listConflicts(scope);
+    return {
+      backendId: scope.backendId,
+      accountId: scope.accountId,
+      datasetEpoch: scope.datasetEpoch,
+      bindingsByEntityType: countBy(listBindings(scope), (b) => b.entityType),
+      outboxByState: countBy(listOutboxRows(scope), (r) => r.state),
+      openConflicts: conflicts.filter((c) => c.resolvedAt === null).length,
+      resolvedConflicts: conflicts.filter((c) => c.resolvedAt !== null).length,
+      pullCursor: state?.cursor ?? null,
+      consumedSequenceHighWater: state?.consumedSequenceHighWater ?? 0,
+      retentionFloorSequence: state?.retentionFloorSequence ?? null,
+      resetRequired: state?.resetRequired ?? false,
+      stagedScanRows: listScanStaging(scope).length,
+      lastPushAt: state?.lastPushAt ?? null,
+      lastPullAt: state?.lastPullAt ?? null,
+    };
+  });
+  let remote: SyncRemoteAccountStats | null = null;
+  const backend = getActiveBackend() ?? pinnedBackend();
+  const token = auth?.getAccessToken() ?? null;
+  if (backend !== null && token !== null) {
+    try {
+      const allowLoopbackHttp = shouldAllowLoopbackHttp(backend.baseUrl);
+      const paths = resolveBackendPaths(backend.baseUrl, backend.descriptor, {
+        allowLoopbackHttp,
+      });
+      const result = await backendRpc<SessionDescribeResult>(
+        { apiUrl: paths.apiUrl },
+        'session.describe',
+        {},
+        token,
+        fetchOverride === undefined ? {} : { fetchFn: fetchOverride },
+      );
+      remote = result.result.accountStats ?? null;
+    } catch {
+      remote = null;
+    }
+  }
+  return {
+    generatedAt: new Date().toISOString(),
+    protocol: PROTOCOL,
+    profile: 'sync/1',
+    schemaVersion: SCHEMA_VERSION,
+    installationId: getOrCreateInstallationId(),
+    status: getRuntimeStatus(),
+    scopes,
+    remote,
   };
 }
 
