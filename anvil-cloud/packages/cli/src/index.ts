@@ -94,6 +94,18 @@ import {
   startAgentExecutionNodeHttpServer,
 } from "@anvil-cloud/control-plane";
 import {
+  applyMeshDeployment,
+  createMeshConnectionRecord,
+  createMeshDeploymentPlan,
+  removeMeshDeployment,
+  writeMeshConnectionRecord,
+  writeMeshWranglerConfig,
+  MESH_PROVIDER_EVIDENCE_GATE_ID,
+  type CreateMeshDeploymentPlanOptions,
+  type MeshDeploymentPlan,
+  type MeshLifecycleResult,
+} from "@anvil-cloud/cloudflare";
+import {
   resolveDeploymentAdapter,
   supportedDeploymentAdapters,
 } from "./deployment-adapters.js";
@@ -261,6 +273,9 @@ export async function main(argv: string[]): Promise<void> {
       return;
     case "services":
       await commandServices(context, subcommand);
+      return;
+    case "mesh":
+      await commandMesh(context, subcommand);
       return;
     default:
       writeJsonOrHuman(
@@ -3359,6 +3374,289 @@ async function commandRemove(context: CliContext): Promise<void> {
   );
 }
 
+async function commandMesh(
+  context: CliContext,
+  subcommand: string | undefined,
+): Promise<void> {
+  switch (subcommand) {
+    case "plan":
+      await commandMeshPlan(context);
+      return;
+    case "apply":
+      await commandMeshLifecycle(context, "apply");
+      return;
+    case "remove":
+      await commandMeshLifecycle(context, "remove");
+      return;
+    case "connection":
+      await commandMeshConnection(context);
+      return;
+    default:
+      writeJsonOrHuman(
+        context,
+        {
+          ok: false,
+          errors: [
+            {
+              code: "INVALID_USAGE",
+              message:
+                "Usage: anvil-cloud mesh <plan|apply|remove|connection> --backend <path> --name <worker> [options] [--json]",
+            },
+          ],
+        },
+        "Usage: anvil-cloud mesh <plan|apply|remove|connection> --backend <path> --name <worker> [options] [--json]",
+      );
+      process.exitCode = 2;
+  }
+}
+
+const MESH_USAGE =
+  "Usage: anvil-cloud mesh <plan|apply|remove> --backend <path> --name <worker> [--stage production] [--env <name>] [--account-id <id>] [--base-url <url>|--subdomain <sub>] [--bucket <name>] [--oidc-issuer <url> --oidc-client-id <id>] [--first-deploy] [--dev] [--temporary] [--json]";
+
+function readMeshRecipeOptions(
+  context: CliContext,
+): CreateMeshDeploymentPlanOptions | undefined {
+  const backendDir = context.values.get("backend");
+  const workerName = context.values.get("name");
+
+  if (!backendDir || !workerName) {
+    writeInvalidUsage(context, MESH_USAGE);
+    return undefined;
+  }
+
+  const vars: Record<string, string> = {};
+  const oidcIssuer = context.values.get("oidc-issuer");
+  const oidcClientId = context.values.get("oidc-client-id");
+  const oidcScopes = context.values.get("oidc-scopes");
+  if (oidcIssuer) vars.OIDC_ISSUER = oidcIssuer;
+  if (oidcClientId) vars.OIDC_CLIENT_ID = oidcClientId;
+  if (oidcScopes) vars.OIDC_SCOPES = oidcScopes;
+  if (context.flags.has("dev-spike")) vars.ANVIL_DEV_SPIKE = "true";
+
+  const secrets: string[] = [];
+  if (context.flags.has("enrollment-admin")) {
+    secrets.push("ENROLLMENT_ADMIN_TOKEN");
+  }
+
+  const stage = context.values.get("stage");
+  const environmentName = context.values.get("env");
+  const accountId = context.values.get("account-id");
+  const baseUrl = context.values.get("base-url");
+  const workersDevSubdomain = context.values.get("subdomain");
+  const artifactsBucketName = context.values.get("bucket");
+  const configPath = context.values.get("config-out");
+  const connectionPath = context.values.get("connection-out");
+
+  return {
+    backendDir,
+    workerName,
+    ...(stage ? { stage } : {}),
+    ...(environmentName ? { environmentName } : {}),
+    ...(accountId ? { accountId } : {}),
+    ...(baseUrl ? { baseUrl } : {}),
+    ...(workersDevSubdomain ? { workersDevSubdomain } : {}),
+    ...(artifactsBucketName ? { artifactsBucketName } : {}),
+    ...(configPath ? { configPath } : {}),
+    ...(connectionPath ? { connectionPath } : {}),
+    vars,
+    secrets,
+    firstDeploy: context.flags.has("first-deploy"),
+    dev: context.flags.has("dev"),
+    authentication: context.flags.has("temporary") ? "temporary" : "permanent",
+    allowInsecureBaseUrl: context.flags.has("allow-insecure"),
+  };
+}
+
+async function commandMeshPlan(context: CliContext): Promise<void> {
+  const options = readMeshRecipeOptions(context);
+  if (!options) return;
+
+  const plan = await createMeshDeploymentPlan(options);
+  let configWritten: string | undefined;
+  if (context.flags.has("write")) {
+    configWritten = (await writeMeshWranglerConfig(plan)).path;
+  }
+
+  const blocking = plan.diagnostics.some(
+    (diagnostic) => diagnostic.severity === "block",
+  );
+  writeJsonOrHuman(
+    context,
+    {
+      ok: !blocking,
+      schemaVersion: "0.1",
+      command: "mesh plan",
+      plan,
+      ...(configWritten ? { configWritten } : {}),
+    },
+    formatMeshPlan(plan, configWritten),
+  );
+
+  if (blocking) {
+    process.exitCode = 4;
+  }
+}
+
+async function commandMeshLifecycle(
+  context: CliContext,
+  operation: "apply" | "remove",
+): Promise<void> {
+  const options = readMeshRecipeOptions(context);
+  if (!options) return;
+
+  const plan = await createMeshDeploymentPlan(options);
+  const evidenceReference = context.values.get("evidence");
+  const lifecycleOptions = {
+    plan,
+    ...(evidenceReference
+      ? { evidence: { reference: evidenceReference } }
+      : {}),
+    ...(context.flags.has("dry-run") ? { dryRun: true } : {}),
+  };
+  const result =
+    operation === "apply"
+      ? await applyMeshDeployment(lifecycleOptions)
+      : await removeMeshDeployment(lifecycleOptions);
+
+  writeJsonOrHuman(
+    context,
+    {
+      ok: result.ok,
+      schemaVersion: "0.1",
+      command: `mesh ${operation}`,
+      result,
+    },
+    formatMeshLifecycle(result),
+  );
+
+  if (!result.ok) {
+    process.exitCode = result.gated ? 2 : 5;
+  }
+}
+
+async function commandMeshConnection(context: CliContext): Promise<void> {
+  const workerName = context.values.get("name");
+  const baseUrl = context.values.get("base-url");
+
+  if (!workerName || !baseUrl) {
+    writeInvalidUsage(
+      context,
+      "Usage: anvil-cloud mesh connection --name <worker> --base-url <url> [--stage production] [--out <path>] [--allow-insecure] [--json]",
+    );
+    return;
+  }
+
+  const stage = context.values.get("stage");
+  const result = createMeshConnectionRecord({
+    workerName,
+    baseUrl,
+    ...(stage ? { stage } : {}),
+    allowInsecureBaseUrl: context.flags.has("allow-insecure"),
+  });
+
+  if (!result.ok) {
+    writeJsonOrHuman(
+      context,
+      { ok: false, errors: result.errors },
+      result.errors[0]?.message ?? "Invalid connection parameters.",
+    );
+    process.exitCode = 2;
+    return;
+  }
+
+  const out = context.values.get("out");
+  const written = out
+    ? (await writeMeshConnectionRecord(result.record, out)).path
+    : undefined;
+
+  writeJsonOrHuman(
+    context,
+    {
+      ok: true,
+      schemaVersion: "0.1",
+      command: "mesh connection",
+      connection: result.record,
+      ...(written ? { written } : {}),
+    },
+    [
+      `Connection record for ${result.record.workerName}:`,
+      `  baseUrl: ${result.record.baseUrl}`,
+      `  descriptorUrl: ${result.record.descriptorUrl}`,
+      ...(written ? [`  written: ${written}`] : []),
+    ].join("\n"),
+  );
+}
+
+function formatMeshPlan(
+  plan: MeshDeploymentPlan,
+  configWritten: string | undefined,
+): string {
+  const lines = [
+    `Mesh backend plan: ${plan.workerName} (${plan.stage}, ${plan.authentication})`,
+    `Backend project: ${plan.backendDir}`,
+    `Wrangler config: ${configWritten ?? `${plan.config.path} (preview only — pass --write to emit)`}`,
+    `Durable Objects: ${
+      plan.durableObjects
+        .map((binding) => `${binding.binding}=${binding.className}`)
+        .join(", ") || "none"
+    }`,
+    `R2 buckets: ${
+      plan.r2Buckets
+        .map((bucket) => `${bucket.binding}=${bucket.bucketName}`)
+        .join(", ") || "none"
+    }`,
+    `Migrations: ${
+      plan.migrationMode === "create"
+        ? plan.migrations
+            .map((migration) => `${migration.tag} (new classes)`)
+            .join(", ") || "none"
+        : "none (existing classes)"
+    }`,
+    `Auth modes: ${plan.advertisedAuthModes.join(", ")}`,
+    plan.connection.ready
+      ? `Connection: ${plan.connection.descriptorUrl}`
+      : `Connection: pending (${plan.connection.reason})`,
+  ];
+
+  if (plan.diagnostics.length > 0) {
+    lines.push(
+      "Diagnostics:",
+      ...plan.diagnostics.map(
+        (diagnostic) =>
+          `  ${diagnostic.severity.toUpperCase()} ${diagnostic.code}: ${diagnostic.message}`,
+      ),
+    );
+  }
+
+  lines.push(
+    `Gate: apply/remove require recorded provider evidence (${MESH_PROVIDER_EVIDENCE_GATE_ID}).`,
+  );
+
+  return lines.join("\n");
+}
+
+function formatMeshLifecycle(result: MeshLifecycleResult): string {
+  const lines = [
+    `Mesh ${result.operation} for ${result.workerName}: ${
+      result.ok ? "completed" : result.gated ? "gated" : "failed"
+    }`,
+  ];
+
+  for (const diagnostic of result.diagnostics) {
+    lines.push(
+      `  ${diagnostic.severity.toUpperCase()} ${diagnostic.code}: ${diagnostic.message}`,
+    );
+    if (diagnostic.hint) lines.push(`    hint: ${diagnostic.hint}`);
+  }
+
+  if (result.workerUrl) lines.push(`  workerUrl: ${result.workerUrl}`);
+  if (result.connection) {
+    lines.push(`  descriptorUrl: ${result.connection.descriptorUrl}`);
+  }
+
+  return lines.join("\n");
+}
+
 async function commandRollback(context: CliContext): Promise<void> {
   if (!context.flags.has("preview")) {
     writeInvalidUsage(
@@ -5201,6 +5499,10 @@ function writeHelp(): void {
       "  anvil-cloud plan --stage dev --adapter aws|cloudflare [--temporary] [--verbose] [--json]",
       "  anvil-cloud deploy --stage dev --adapter aws [--verbose] [--json]",
       "  anvil-cloud remove --stage dev --adapter aws [--verbose] [--json]",
+      "  anvil-cloud mesh plan --backend <path> --name <worker> [--stage production] [--env <name>] [--base-url <url>|--subdomain <sub>] [--oidc-issuer <url> --oidc-client-id <id>] [--first-deploy] [--write] [--json]",
+      "  anvil-cloud mesh apply --backend <path> --name <worker> [--evidence <ref>] [--dry-run] [--json]",
+      "  anvil-cloud mesh remove --backend <path> --name <worker> [--evidence <ref>] [--json]",
+      "  anvil-cloud mesh connection --name <worker> --base-url <url> [--stage production] [--out <path>] [--json]",
       "  anvil-cloud deploy --preview [--name branch] [--wait] [--wait-timeout 60] [--json]",
       "  anvil-cloud rollback --preview --app <name> --to-deployment <id> --dry-run [--json]",
       "  anvil-cloud destroy --preview --app <name> [--name branch] --yes [--dry-run] [--json]",

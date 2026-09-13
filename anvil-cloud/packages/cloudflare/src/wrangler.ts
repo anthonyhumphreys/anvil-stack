@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process";
 
-import type { CloudflareWorkerArtifacts } from "./artifacts.js";
 import type { CloudflareAuthenticationMode } from "./support.js";
 
 export const MINIMUM_TEMPORARY_WRANGLER_VERSION = "4.102.0";
@@ -18,8 +17,22 @@ export type WranglerCommandRunner = (options: {
   env: NodeJS.ProcessEnv;
 }) => Promise<WranglerCommandResult>;
 
+/**
+ * Structural deploy target: everything a Wrangler lifecycle command needs.
+ * `CloudflareWorkerArtifacts` satisfies this shape, and the Mesh recipe can
+ * point at a generated configuration inside an existing Worker project.
+ */
+export type WranglerDeployTarget = {
+  /** Working directory the Wrangler process runs in. */
+  directory: string;
+  /** Path to the Wrangler configuration file. */
+  config: string;
+  /** Worker script name used for result reporting. */
+  workerName: string;
+};
+
 export type RunCloudflareWranglerDeployOptions = {
-  artifacts: CloudflareWorkerArtifacts;
+  artifacts: WranglerDeployTarget;
   authentication: CloudflareAuthenticationMode;
   dryRun?: boolean;
   command?: string;
@@ -41,52 +54,38 @@ export type CloudflareWranglerDeployResult = {
   exitCode: number;
 };
 
+export type RunCloudflareWranglerDeleteOptions = {
+  artifacts: WranglerDeployTarget;
+  authentication: CloudflareAuthenticationMode;
+  command?: string;
+  commandPrefixArgs?: string[];
+  env?: NodeJS.ProcessEnv;
+  run?: WranglerCommandRunner;
+};
+
+export type CloudflareWranglerDeleteResult = {
+  ok: boolean;
+  authentication: CloudflareAuthenticationMode;
+  workerName: string;
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+};
+
 export async function runCloudflareWranglerDeploy(
   options: RunCloudflareWranglerDeployOptions,
 ): Promise<CloudflareWranglerDeployResult> {
   const run = options.run ?? runWranglerCommand;
-  const command = options.command ?? "wrangler";
-  const prefix = options.commandPrefixArgs ?? [];
-  const inheritedEnv =
-    options.authentication === "temporary"
-      ? sanitizeTemporaryCloudflareEnvironment(options.env ?? process.env)
-      : { ...(options.env ?? process.env) };
-  const env = {
-    ...inheritedEnv,
-    FORCE_COLOR: "0",
-    WRANGLER_HIDE_BANNER: "true",
-    WRANGLER_LOG_SANITIZE: "true",
-    WRANGLER_SEND_ERROR_REPORTS: "false",
-    WRANGLER_SEND_METRICS: "false",
-  };
-  const version = await run({
-    command,
-    args: [...prefix, "--version"],
-    cwd: options.artifacts.directory,
-    env,
-  });
-
-  if (version.exitCode !== 0) {
-    throw new Error(`Wrangler version check failed: ${version.stderr.trim()}`);
-  }
-
-  const parsedVersion = extractWranglerVersion(
-    `${version.stdout}\n${version.stderr}`,
+  const invocation = prepareWranglerInvocation(options);
+  await assertWranglerVersion(
+    invocation,
+    run,
+    options.artifacts.directory,
+    options.authentication,
   );
-  if (!parsedVersion) {
-    throw new Error("Could not determine the installed Wrangler version.");
-  }
-  if (
-    options.authentication === "temporary" &&
-    compareVersions(parsedVersion, MINIMUM_TEMPORARY_WRANGLER_VERSION) < 0
-  ) {
-    throw new Error(
-      `Cloudflare Temporary Accounts require Wrangler ${MINIMUM_TEMPORARY_WRANGLER_VERSION} or later; found ${parsedVersion}.`,
-    );
-  }
 
   const args = [
-    ...prefix,
+    ...invocation.prefix,
     "deploy",
     "--config",
     options.artifacts.config,
@@ -96,10 +95,10 @@ export async function runCloudflareWranglerDeploy(
       : []),
   ];
   const result = await run({
-    command,
+    command: invocation.command,
     args,
     cwd: options.artifacts.directory,
-    env,
+    env: invocation.env,
   });
   const combined = `${result.stdout}\n${result.stderr}`;
   const claimUrl = extractClaimUrl(combined);
@@ -116,6 +115,45 @@ export async function runCloudflareWranglerDeploy(
     workerName: options.artifacts.workerName,
     ...(previewUrl ? { previewUrl } : {}),
     claimUrlCaptured: claimUrl !== undefined,
+    stdout: redactCloudflareSecrets(result.stdout),
+    stderr: redactCloudflareSecrets(result.stderr),
+    exitCode: result.exitCode,
+  };
+}
+
+/**
+ * Runs `wrangler delete` against a generated configuration. The same
+ * environment isolation rules apply as deploy: temporary mode strips inherited
+ * Cloudflare credentials and captured output is redacted.
+ */
+export async function runCloudflareWranglerDelete(
+  options: RunCloudflareWranglerDeleteOptions,
+): Promise<CloudflareWranglerDeleteResult> {
+  const run = options.run ?? runWranglerCommand;
+  const invocation = prepareWranglerInvocation(options);
+  await assertWranglerVersion(
+    invocation,
+    run,
+    options.artifacts.directory,
+    options.authentication,
+  );
+
+  const result = await run({
+    command: invocation.command,
+    args: [
+      ...invocation.prefix,
+      "delete",
+      "--config",
+      options.artifacts.config,
+    ],
+    cwd: options.artifacts.directory,
+    env: invocation.env,
+  });
+
+  return {
+    ok: result.exitCode === 0,
+    authentication: options.authentication,
+    workerName: options.artifacts.workerName,
     stdout: redactCloudflareSecrets(result.stdout),
     stderr: redactCloudflareSecrets(result.stderr),
     exitCode: result.exitCode,
@@ -165,6 +203,70 @@ export const runWranglerCommand: WranglerCommandRunner = async (options) =>
       resolve({ exitCode: code ?? 1, stdout, stderr });
     });
   });
+
+type PreparedWranglerInvocation = {
+  command: string;
+  prefix: string[];
+  env: NodeJS.ProcessEnv;
+};
+
+function prepareWranglerInvocation(options: {
+  authentication: CloudflareAuthenticationMode;
+  command?: string;
+  commandPrefixArgs?: string[];
+  env?: NodeJS.ProcessEnv;
+}): PreparedWranglerInvocation {
+  const inheritedEnv =
+    options.authentication === "temporary"
+      ? sanitizeTemporaryCloudflareEnvironment(options.env ?? process.env)
+      : { ...(options.env ?? process.env) };
+
+  return {
+    command: options.command ?? "wrangler",
+    prefix: options.commandPrefixArgs ?? [],
+    env: {
+      ...inheritedEnv,
+      FORCE_COLOR: "0",
+      WRANGLER_HIDE_BANNER: "true",
+      WRANGLER_LOG_SANITIZE: "true",
+      WRANGLER_SEND_ERROR_REPORTS: "false",
+      WRANGLER_SEND_METRICS: "false",
+    },
+  };
+}
+
+async function assertWranglerVersion(
+  invocation: PreparedWranglerInvocation,
+  run: WranglerCommandRunner,
+  cwd: string,
+  authentication: CloudflareAuthenticationMode,
+): Promise<void> {
+  const version = await run({
+    command: invocation.command,
+    args: [...invocation.prefix, "--version"],
+    cwd,
+    env: invocation.env,
+  });
+
+  if (version.exitCode !== 0) {
+    throw new Error(`Wrangler version check failed: ${version.stderr.trim()}`);
+  }
+
+  const parsedVersion = extractWranglerVersion(
+    `${version.stdout}\n${version.stderr}`,
+  );
+  if (!parsedVersion) {
+    throw new Error("Could not determine the installed Wrangler version.");
+  }
+  if (
+    authentication === "temporary" &&
+    compareVersions(parsedVersion, MINIMUM_TEMPORARY_WRANGLER_VERSION) < 0
+  ) {
+    throw new Error(
+      `Cloudflare Temporary Accounts require Wrangler ${MINIMUM_TEMPORARY_WRANGLER_VERSION} or later; found ${parsedVersion}.`,
+    );
+  }
+}
 
 function extractClaimUrl(output: string): string | undefined {
   return /https:\/\/dash\.cloudflare\.com\/claim-preview\?claimToken=[^\s]+/.exec(

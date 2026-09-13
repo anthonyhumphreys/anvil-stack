@@ -38,6 +38,34 @@ export {
 } from "./host.js";
 export { createCloudflareWorkerName } from "./naming.js";
 export {
+  applyMeshDeployment,
+  createMeshConnectionRecord,
+  createMeshDeploymentPlan,
+  MESH_BACKEND_DESCRIPTOR_PATH,
+  MESH_GENERATED_CONFIG_NAME,
+  MESH_PROVIDER_EVIDENCE_GATE_ID,
+  MESH_RECIPE_ID,
+  removeMeshDeployment,
+  writeMeshConnectionRecord,
+  writeMeshWranglerConfig,
+  type CreateMeshConnectionRecordOptions,
+  type CreateMeshDeploymentPlanOptions,
+  type MeshConnectionPlan,
+  type MeshConnectionRecord,
+  type MeshConnectionRecordResult,
+  type MeshDeploymentPlan,
+  type MeshDurableObjectBinding,
+  type MeshDurableObjectMigration,
+  type MeshLifecycleOptions,
+  type MeshLifecycleResult,
+  type MeshProviderEvidence,
+  type MeshR2BucketBinding,
+  type MeshRecipeDiagnostic,
+  type MeshRecipeGate,
+  type MeshRecipeOperations,
+  type MeshSecretInput,
+} from "./mesh-recipe.js";
+export {
   checkCloudflarePreviewSupport,
   type CloudflareAuthenticationMode,
   type CloudflarePreviewDeploymentAdapterOptions,
@@ -46,13 +74,17 @@ export {
 export {
   MINIMUM_TEMPORARY_WRANGLER_VERSION,
   redactCloudflareSecrets,
+  runCloudflareWranglerDelete,
   runCloudflareWranglerDeploy,
   runWranglerCommand,
   sanitizeTemporaryCloudflareEnvironment,
+  type CloudflareWranglerDeleteResult,
   type CloudflareWranglerDeployResult,
+  type RunCloudflareWranglerDeleteOptions,
   type RunCloudflareWranglerDeployOptions,
   type WranglerCommandResult,
   type WranglerCommandRunner,
+  type WranglerDeployTarget,
 } from "./wrangler.js";
 
 export class CloudflarePreviewDeploymentAdapter implements DeploymentPlanAdapter {
