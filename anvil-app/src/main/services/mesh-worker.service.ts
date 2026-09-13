@@ -12,7 +12,7 @@
 // provider (apiUrl + token + enrollment) via `configureMeshWorkerContext`
 // and calls the lifecycle hooks below on enable/disable/frame events.
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { platform, totalmem } from 'node:os';
 import { getDb } from '../db/database.js';
 import { LEASE_RENEW_INTERVAL_MS } from '../../../cloud/contract/version.js';
@@ -41,6 +41,12 @@ interface MeshWorkerContext {
   apiUrl: string;
   accessToken: string;
   enrollmentId: string;
+  /**
+   * Sends a frame on the account's live socket when one is connected.
+   * Activity frames are an accelerator — the durable journal is the record —
+   * so a null sender (socket down) just skips emission.
+   */
+  sendFrame?: (frame: unknown) => void;
 }
 
 interface AttemptRow {
@@ -500,7 +506,7 @@ async function runAttempt(attempt: ExecutionAttempt, job: MeshJob): Promise<void
     }
     updateAttemptState(attemptId, 'running');
     appendJournal(attemptId, 'running');
-    const result = await executeDiagnostic(job.inputManifest, attemptId);
+    const result = await executeDiagnostic(job.inputManifest, attemptId, attempt);
     const cancelled = isCancelRequested(attemptId);
     updateAttemptState(attemptId, cancelled ? 'cancelled' : 'completed', {
       resultJson: JSON.stringify(result),
@@ -529,6 +535,34 @@ function isCancelRequested(attemptId: string): boolean {
 }
 
 /**
+ * Emits an `activity` status frame for an attempt. Best-effort: the frame is
+ * ephemeral observation, the attempt journal + report are the durable record.
+ * Sequence is per-attempt monotonic so observers can detect gaps.
+ */
+const activitySequences = new Map<string, number>();
+function emitActivity(attempt: ExecutionAttempt, text: string): void {
+  const send = workerContext()?.sendFrame;
+  if (send === undefined) return;
+  const streamId = `attempt:${attempt.id}`;
+  const sequence = (activitySequences.get(streamId) ?? 0) + 1;
+  activitySequences.set(streamId, sequence);
+  try {
+    send({
+      type: 'activity',
+      version: 1,
+      id: randomUUID(),
+      attemptId: attempt.id,
+      generation: attempt.fence,
+      streamId,
+      sequence,
+      payload: { kind: 'status', text, byteLength: text.length, truncated: false },
+    });
+  } catch {
+    // Socket mid-reconnect — the durable journal still records the transition.
+  }
+}
+
+/**
  * The diagnostic job proves the claim→journal→renew→report pipeline without
  * an agent runner: verify the manifest's declared digest shape, record
  * timings, and return a small result. Checkpoints between steps observe the
@@ -537,6 +571,7 @@ function isCancelRequested(attemptId: string): boolean {
 async function executeDiagnostic(
   manifest: ExecutionManifest,
   attemptId: string,
+  attempt?: ExecutionAttempt,
 ): Promise<Record<string, unknown>> {
   const started = Date.now();
   appendJournal(attemptId, 'diagnostic.manifest', {
@@ -545,6 +580,9 @@ async function executeDiagnostic(
     provider: manifest.provider,
     model: manifest.model,
   });
+  if (attempt !== undefined) {
+    emitActivity(attempt, 'diagnostic: manifest received');
+  }
   if (isCancelRequested(attemptId)) {
     return { ok: false, cancelled: true, tookMs: Date.now() - started };
   }
@@ -553,6 +591,9 @@ async function executeDiagnostic(
     arch: process.arch,
     capabilities: WORKER_CAPABILITIES,
   });
+  if (attempt !== undefined) {
+    emitActivity(attempt, 'diagnostic: environment recorded');
+  }
   return {
     ok: true,
     manifestReceived: true,
@@ -626,6 +667,7 @@ export function resetMeshWorkerForTests(): void {
   stopHeartbeat();
   connectInFlight = false;
   contextProvider = null;
+  activitySequences.clear();
 }
 
 /** Test seam: one heartbeat tick without waiting for the 30s interval. */

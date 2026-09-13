@@ -81,6 +81,18 @@ import {
   setMeshWorkerEnabled,
 } from './mesh-worker.service.js';
 import {
+  configureMeshObserverContext,
+  handleActivityFrame,
+  handleGapFrame,
+  meshObserverOnGone,
+  meshObserverOnLive,
+  resetMeshObserverForTests,
+} from './mesh-observe.service.js';
+import {
+  configureMeshArtifactContext,
+  resetMeshArtifactForTests,
+} from './mesh-artifact.service.js';
+import {
   getOrCreateInstallationId,
   getSyncState,
   listBindings,
@@ -174,7 +186,28 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
       apiUrl: apiUrlFor(backend),
       accessToken: token,
       enrollmentId: fields.enrollmentId,
+      sendFrame: (frame) => liveSocket?.send(JSON.stringify(frame)),
     };
+  });
+  // MESH-03: the observer shares the same session context and live socket.
+  configureMeshObserverContext(() => {
+    const backend = getActiveBackend();
+    const fields = auth?.getSessionScopeFields() ?? null;
+    const token = auth?.getAccessToken() ?? null;
+    if (backend === null || fields === null || token === null) return null;
+    return {
+      apiUrl: apiUrlFor(backend),
+      accessToken: token,
+      enrollmentId: fields.enrollmentId,
+      sendFrame: (frame) => liveSocket?.send(JSON.stringify(frame)),
+      isLive: () => liveState === 'live',
+    };
+  });
+  configureMeshArtifactContext(() => {
+    const backend = getActiveBackend();
+    const token = auth?.getAccessToken() ?? null;
+    if (backend === null || token === null) return null;
+    return { apiUrl: apiUrlFor(backend), accessToken: token };
   });
   void reconcileMeshAttemptsOnBoot().catch(() => undefined);
   if (auth.getPublicSnapshot().state === 'signed-in') {
@@ -195,6 +228,8 @@ export function resetSyncRuntimeForTests(): void {
   stopPolling();
   clearSessionRefresh();
   teardownLiveChannel();
+  resetMeshObserverForTests();
+  resetMeshArtifactForTests();
   resetMeshWorkerForTests();
   auth = null;
   lastError = null;
@@ -596,6 +631,7 @@ export async function signOutSync(): Promise<SyncRuntimeStatus> {
   service.signOutLocal();
   disconnectBackend();
   meshWorkerOnSyncGone();
+  meshObserverOnGone();
   lastError = null;
   sessionExpired = false;
   return getRuntimeStatus();
@@ -820,6 +856,7 @@ export function onBackendDisconnected(): void {
   stopPolling();
   teardownLiveChannel();
   meshWorkerOnSyncGone();
+  meshObserverOnGone();
 }
 
 /**
@@ -906,14 +943,21 @@ function connectLiveChannel(): void {
         armFallbackPoll();
         // Catch up anything missed while the channel was down.
         meshWorkerOnSyncReady();
+        meshObserverOnLive();
         void requestSync().catch(() => undefined);
         break;
       case 'sync.invalidate':
-      case 'gap':
         void requestSync().catch(() => undefined);
         break;
       case 'job.available':
         void handleJobAvailable(frame.jobId).catch(() => undefined);
+        break;
+      case 'activity':
+        handleActivityFrame(frame);
+        break;
+      case 'gap':
+        // Attempt-stream gap — the observer replays the durable journal.
+        handleGapFrame(frame);
         break;
       case 'auth.expiring':
         void runSessionRefresh();

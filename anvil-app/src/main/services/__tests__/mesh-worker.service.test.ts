@@ -272,6 +272,70 @@ describe('job claim + diagnostic execution', () => {
     await handleJobAvailable('job-3');
     expect(rpcCalls.find((c) => c.operation === 'job.claim')).toBeUndefined();
   });
+
+  it('emits bounded activity frames over the live socket, per-attempt sequenced', async () => {
+    const sentFrames: Array<Record<string, unknown>> = [];
+    configureMeshWorkerContext(() => ({
+      ...CTX,
+      sendFrame: (frame: unknown) => sentFrames.push(frame as Record<string, unknown>),
+    }));
+    rpcHandler = (op) => {
+      if (op === 'job.claim') {
+        const job = makeJob('job-act');
+        return {
+          job,
+          attempt: makeAttempt('job-act'),
+          fence: 1,
+          manifest: job.inputManifest,
+        };
+      }
+      if (op === 'attempt.report') {
+        return { status: 'applied' };
+      }
+      return {};
+    };
+    await handleJobAvailable('job-act');
+    const activities = sentFrames.filter((f) => f.type === 'activity');
+    expect(activities.length).toBeGreaterThanOrEqual(2);
+    activities.forEach((frame, i) => {
+      expect(frame.attemptId).toBe('att-job-act');
+      expect(frame.streamId).toBe('attempt:att-job-act');
+      expect(frame.generation).toBe(1);
+      expect(frame.sequence).toBe(i + 1);
+      const payload = frame.payload as { kind: string; text: string; byteLength: number };
+      expect(payload.kind).toBe('status');
+      expect(payload.byteLength).toBe(payload.text.length);
+    });
+  });
+
+  it('treats a failing frame sender as best-effort — execution still completes', async () => {
+    configureMeshWorkerContext(() => ({
+      ...CTX,
+      sendFrame: () => {
+        throw new Error('socket gone');
+      },
+    }));
+    rpcHandler = (op) => {
+      if (op === 'job.claim') {
+        const job = makeJob('job-noframe');
+        return {
+          job,
+          attempt: makeAttempt('job-noframe'),
+          fence: 1,
+          manifest: job.inputManifest,
+        };
+      }
+      if (op === 'attempt.report') {
+        return { status: 'applied' };
+      }
+      return {};
+    };
+    await handleJobAvailable('job-noframe');
+    const row = db
+      .prepare('SELECT state FROM mesh_attempts WHERE id = ?')
+      .get('att-job-noframe') as { state: string };
+    expect(row.state).toBe('completed');
+  });
 });
 
 describe('boot reconciliation', () => {
