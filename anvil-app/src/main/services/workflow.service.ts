@@ -1,3 +1,4 @@
+import { writeGatewayCodexCatalog } from './llm-gateway-runtime.service.js';
 import { randomUUID } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { app } from 'electron';
@@ -14,7 +15,6 @@ import type {
 } from '../../shared/types.js';
 import { resolveCodexReasoningEffort } from '../../shared/codex-models.js';
 import { getDb } from '../db/database.js';
-import { detectCodexCli } from './codex-bridge.service.js';
 import {
   createChatSession,
   createChatThread,
@@ -25,9 +25,14 @@ import { handleCodexServerLine, sendCodexJsonRpc } from './codex-protocol.servic
 import { buildSystemPrompt, getPersonaById } from './persona.service.js';
 import { getSettings } from './settings.service.js';
 import { callLlm } from './llm.service.js';
-import { resolvePersonaCodexPolicy, resolveSessionCwd } from './codex-session.service.js';
+import {
+  buildCodexProcessEnvironment,
+  resolvePersonaCodexPolicy,
+  resolveSessionCwd,
+} from './codex-session.service.js';
+import { resolveCodexRuntime } from './codex-runtime.service.js';
 import { getLlmGatewayCodexConfigArgs } from '../../shared/llm-gateway.js';
-import { applyLlmGatewayEnvironment } from './llm-gateway.service.js';
+import { resolveLlmGatewayModelConfig } from './llm-gateway.service.js';
 import { triggerWatchtowerEvent } from './automation.service.js';
 
 interface WorkflowTemplateRow {
@@ -386,25 +391,27 @@ async function runCodexThread(input: {
   displayPrompt?: string;
   resumeProviderThreadId?: string;
 }): Promise<CodexThreadResult> {
-  const status = await detectCodexCli();
-  if (!status.installed) throw new Error('Codex CLI is not installed.');
-
   const settings = getSettings();
   const cwd = resolveSessionCwd(
     input.repoRows.map((repo) => repo.path),
     { workspace: { workspaceId: input.workspaceId } },
     app.getPath('userData'),
   );
-  const env: Record<string, string> = { ...(process.env as Record<string, string>) };
-  if (input.provider === 'openai' && settings.openaiApiKey) {
-    env.OPENAI_API_KEY = settings.openaiApiKey;
-  }
-  if (input.provider === 'llmgateway') {
-    applyLlmGatewayEnvironment(env, settings.llmGatewayApiKey);
-  }
+  const env = await buildCodexProcessEnvironment(input.provider, settings);
 
   const args = buildCodexWorkflowArgs(input.provider);
-  const proc = spawn('codex', args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
+  const executable = input.provider === 'llmgateway' ? await resolveCodexRuntime() : 'codex';
+  const gatewayConfig =
+    input.provider === 'llmgateway'
+      ? await resolveLlmGatewayModelConfig(input.model, input.reasoningEffort)
+      : undefined;
+  const model = gatewayConfig?.model ?? input.model;
+  if (gatewayConfig)
+    args.push(...(await writeGatewayCodexCatalog(env.CODEX_HOME, gatewayConfig.models)));
+  const effort = gatewayConfig
+    ? gatewayConfig.effort
+    : resolveCodexReasoningEffort(model, input.reasoningEffort);
+  const proc = spawn(executable, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
   activeProcesses.set(input.key, proc);
   const sessionId = randomUUID();
   createChatSession(
@@ -490,8 +497,8 @@ async function runCodexThread(input: {
             sendCodexJsonRpc(proc, 'turn/start', {
               threadId: state.threadId,
               input: [{ type: 'text', text: input.prompt }],
-              model: input.model,
-              effort: resolveCodexReasoningEffort(input.model, input.reasoningEffort),
+              model,
+              ...(effort ? { effort } : {}),
             });
           },
           onTurnCompleted: () => finish(),
@@ -520,7 +527,7 @@ async function runCodexThread(input: {
       developerInstructions: input.systemPrompt,
       approvalPolicy: personaPolicy.approvalPolicy,
       sandbox: personaPolicy.sandbox,
-      model: input.model,
+      model,
     };
     sendCodexJsonRpc(
       proc,

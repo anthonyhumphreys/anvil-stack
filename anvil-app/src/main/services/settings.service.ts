@@ -291,7 +291,10 @@ export function getSettings(): AppSettings {
     openaiApiKey: decryptSecret(row.openai_api_key, 'settings.openaiApiKey'),
     llmGatewayApiKey: decryptSecret(row.llm_gateway_api_key, 'settings.llmGatewayApiKey'),
     llmGatewayBillingMode: normaliseLlmGatewayBillingMode(row.llm_gateway_billing_mode),
-    openaiModel: normaliseCodexModel(row.openai_model),
+    openaiModel:
+      llmProvider === 'llmgateway'
+        ? (row.openai_model?.trim() ?? '')
+        : normaliseCodexModel(row.openai_model),
     reasoningLevel: normaliseReasoningEffort(row.reasoning_level),
     codexMode: normaliseCodexMode(row.codex_mode),
     chatLayout: normaliseChatLayout(row.chat_layout),

@@ -586,6 +586,7 @@ export interface LlmGatewayModel extends CodexDetectedModel {
 
 export interface LlmGatewayStatus {
   connected: boolean;
+  credentialStatus: 'missing' | 'valid' | 'invalid' | 'unavailable';
   billingMode: LlmGatewayBillingMode;
   models: LlmGatewayModel[];
   error?: string;

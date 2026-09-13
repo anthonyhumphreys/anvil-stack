@@ -6,6 +6,7 @@ import type {
   DockerStatus,
 } from './pentest-types';
 import type { RunCommand, RunStatus } from './run-types';
+import type { CodexRuntimeStatus } from './codex-runtime';
 import type {
   AgentUIIntent,
   AgentUIIntentPresentationPatch,
@@ -566,6 +567,8 @@ export interface AnvilAPI {
     get: () => Promise<AppSettings>;
     update: (settings: Partial<AppSettings>) => Promise<void>;
     getCodexStatus: () => Promise<CodexCliStatus>;
+    getCodexRuntimeStatus: () => Promise<CodexRuntimeStatus>;
+    installCodexRuntime: () => Promise<CodexRuntimeStatus>;
     getCursorStatus: () => Promise<CursorCliStatus>;
     getLlmGatewayStatus: (
       forceModels?: boolean,

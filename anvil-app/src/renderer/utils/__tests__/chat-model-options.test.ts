@@ -3,6 +3,24 @@ import type { CodexCliStatus, CursorCliStatus, LlmGatewayStatus } from '../../..
 import { buildChatModelOptions } from '../chat-model-options';
 
 describe('buildChatModelOptions', () => {
+  it('does not invent gateway models or reasoning capabilities when its catalog is unavailable', () => {
+    const options = buildChatModelOptions(
+      ['llmgateway'],
+      'llmgateway',
+      'selected-gateway-model',
+      null,
+      null,
+      null,
+    );
+    expect(options).toEqual([
+      expect.objectContaining({
+        provider: 'llmgateway',
+        id: 'selected-gateway-model',
+        supportedReasoningEfforts: [],
+      }),
+    ]);
+    expect(buildChatModelOptions(['llmgateway'], 'llmgateway', '', null, null)).toEqual([]);
+  });
   it('uses docs-backed Codex models when the local catalog is unavailable', () => {
     const options = buildChatModelOptions(['codex'], 'codex', 'gpt-5.6-sol', null, null);
 
@@ -116,6 +134,7 @@ describe('buildChatModelOptions', () => {
   it('uses LLMGateway models only for the gateway provider', () => {
     const llmGatewayStatus: LlmGatewayStatus = {
       connected: true,
+      credentialStatus: 'valid',
       billingMode: 'devpass',
       models: [
         {

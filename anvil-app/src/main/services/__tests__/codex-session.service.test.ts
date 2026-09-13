@@ -44,6 +44,11 @@ describe('codex session service', () => {
     expect(resolveSessionModel('codex', '')).toBe('gpt-5.6-sol');
   });
 
+  it('does not substitute an OpenAI model when LLMGateway has no model configured', () => {
+    expect(resolveSessionModel('llmgateway', '')).toBe('');
+    expect(resolveSessionModel('llmgateway', 'gateway/model')).toBe('gateway/model');
+  });
+
   it('advertises ACP form elicitation without claiming unsupported URL elicitation', () => {
     expect(buildCursorClientCapabilities()).toMatchObject({
       elicitation: { form: {} },

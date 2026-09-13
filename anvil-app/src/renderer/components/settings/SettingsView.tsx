@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -60,6 +60,7 @@ import { useBrand } from '../../contexts/BrandContext';
 import { dispatchCodexSelectionChanged } from '../../utils/codex-selection';
 import { selectPrimaryAgentProvider } from '../../utils/agent-provider-settings';
 import { InlineNotice } from '../layout/ViewScaffold';
+import { CodexRuntimeSetup } from './CodexRuntimeSetup';
 
 type TestStatus = 'idle' | 'testing' | 'ok' | 'error';
 type SettingsCategoryId =
@@ -275,6 +276,7 @@ export function SettingsView({
   const [cursorStatus, setCursorStatus] = useState<CursorCliStatus | null>(null);
   const [llmGatewayStatus, setLlmGatewayStatus] = useState<LlmGatewayStatus | null>(null);
   const [llmGatewayConnecting, setLlmGatewayConnecting] = useState(false);
+  const llmGatewayRequestId = useRef(0);
   const [agentMaxThreads, setAgentMaxThreads] = useState(6);
   const [agentMaxThreadsSaving, setAgentMaxThreadsSaving] = useState(false);
   const [agentMaxThreadsError, setAgentMaxThreadsError] = useState<string | null>(null);
@@ -464,7 +466,8 @@ export function SettingsView({
   const handleSave = async () => {
     setSaving(true);
     try {
-      const model = settings.openaiModel ?? DEFAULT_CODEX_MODEL;
+      const isGateway = settings.llmProvider === 'llmgateway';
+      const model = settings.openaiModel ?? (isGateway ? '' : DEFAULT_CODEX_MODEL);
       const reasoningEffort = resolveCodexReasoningEffort(
         model,
         settings.reasoningLevel,
@@ -472,8 +475,7 @@ export function SettingsView({
       );
       const settingsToSave = {
         ...settings,
-        openaiModel: model,
-        reasoningLevel: reasoningEffort,
+        ...(model ? { openaiModel: model, reasoningLevel: reasoningEffort } : {}),
       };
       await window.anvil.settings.update(settingsToSave);
       if (settingsToSave.enabledLlmProviders?.includes('llmgateway')) {
@@ -485,7 +487,7 @@ export function SettingsView({
           new CustomEvent('anvil:chat-layout-changed', { detail: settingsToSave.chatLayout }),
         );
       }
-      dispatchCodexSelectionChanged({ model, reasoningEffort });
+      if (model) dispatchCodexSelectionChanged({ model, reasoningEffort });
       setSaved(true);
       onSettingsSaved?.();
     } finally {
@@ -639,13 +641,24 @@ export function SettingsView({
   };
 
   const selectLlmGatewayBillingMode = (billingMode: LlmGatewayBillingMode) => {
-    update('llmGatewayBillingMode', billingMode);
+    const requestId = ++llmGatewayRequestId.current;
+    setSettings((current) => ({
+      ...current,
+      llmGatewayBillingMode: billingMode,
+      openaiModel: undefined,
+    }));
+    setSaved(false);
+    setLlmGatewayStatus(null);
     void window.anvil.settings
       .getLlmGatewayStatus(true, billingMode)
-      .then(setLlmGatewayStatus)
-      .catch((error) =>
-        setTestError(error instanceof Error ? error.message : 'Failed to load LLMGateway models'),
-      );
+      .then((status) => {
+        if (requestId === llmGatewayRequestId.current) setLlmGatewayStatus(status);
+      })
+      .catch((error) => {
+        if (requestId === llmGatewayRequestId.current) {
+          setTestError(error instanceof Error ? error.message : 'Failed to load LLMGateway models');
+        }
+      });
   };
 
   const disconnectLlmGateway = async () => {
@@ -823,7 +836,8 @@ export function SettingsView({
     : brand.defaultTheme;
   const selectedChatLayout = settings.chatLayout ?? 'classic';
   const codexModelOptions = buildCodexModelOptions(codexStatus);
-  const selectedModelId = settings.openaiModel ?? DEFAULT_CODEX_MODEL;
+  const selectedModelId =
+    settings.openaiModel ?? (provider === 'llmgateway' ? '' : DEFAULT_CODEX_MODEL);
   const selectedModel = codexModelOptions.find((model) => model.id === selectedModelId);
   const selectedLlmGatewayModel = llmGatewayStatus?.models.find(
     (model) => model.id === selectedModelId,
@@ -1174,7 +1188,7 @@ export function SettingsView({
                         {llmGatewayConnecting && <Loader2 size={14} className="animate-spin" />}
                         {llmGatewayStatus?.connected ? 'Reconnect' : 'Connect in browser'}
                       </button>
-                      {llmGatewayStatus?.connected && (
+                      {llmGatewayStatus && llmGatewayStatus.credentialStatus !== 'missing' && (
                         <button
                           type="button"
                           disabled={llmGatewayConnecting}
@@ -1185,11 +1199,15 @@ export function SettingsView({
                         </button>
                       )}
                       <span className="text-xs text-text-tertiary">
-                        {llmGatewayStatus?.connected
-                          ? `Connected · ${llmGatewayStatus.models.length} agent models`
-                          : 'Not connected'}
+                        {llmGatewayStatus?.connected &&
+                        llmGatewayStatus.credentialStatus === 'valid'
+                          ? `Connected · ${llmGatewayStatus.models.length} available models`
+                          : llmGatewayStatus?.credentialStatus === 'invalid'
+                            ? 'Credentials need attention'
+                            : 'Not connected'}
                       </span>
                     </div>
+                    <CodexRuntimeSetup />
                     <Field
                       label="API key (alternative)"
                       value={settings.llmGatewayApiKey ?? ''}
@@ -1395,6 +1413,11 @@ export function SettingsView({
                         onChange={(event) => updateCodexModel(event.target.value)}
                         className="w-full rounded-md border border-border bg-bg-secondary px-3 py-2 text-sm text-text-primary outline-none focus:border-accent"
                       >
+                        {!selectedModelId && (
+                          <option value="" disabled>
+                            Select a gateway model
+                          </option>
+                        )}
                         {!llmGatewayStatus?.models.some(
                           (model) => model.id === selectedModelId,
                         ) && <option value={selectedModelId}>{selectedModelId}</option>}

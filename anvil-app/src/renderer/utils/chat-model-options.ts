@@ -53,15 +53,17 @@ export function buildProviderModelOptions(
         }))
       : detectedCodexOptions?.length
         ? detectedCodexOptions
-        : CODEX_MODEL_OPTIONS.map((model) => ({
-            provider,
-            id: model.id,
-            label: model.label,
-            description: model.description,
-            supportedReasoningEfforts: model.supportedReasoningEfforts,
-            defaultReasoningEffort: model.defaultReasoningEffort,
-            serviceTiers: [],
-          }));
+        : provider === 'llmgateway'
+          ? []
+          : CODEX_MODEL_OPTIONS.map((model) => ({
+              provider,
+              id: model.id,
+              label: model.label,
+              description: model.description,
+              supportedReasoningEfforts: model.supportedReasoningEfforts,
+              defaultReasoningEffort: model.defaultReasoningEffort,
+              serviceTiers: [],
+            }));
 
   if (!selectedModel || options.some((option) => option.id === selectedModel)) return options;
   return [
@@ -72,8 +74,11 @@ export function buildProviderModelOptions(
       description:
         provider === 'cursor'
           ? 'Custom Cursor model selected in Settings.'
-          : 'Custom model or deployment selected in Settings.',
-      supportedReasoningEfforts: provider === 'cursor' ? [] : CODEX_REASONING_EFFORTS,
+          : provider === 'llmgateway'
+            ? 'Selected model is unavailable in the LLMGateway catalog. Refresh models in Settings.'
+            : 'Custom model or deployment selected in Settings.',
+      supportedReasoningEfforts:
+        provider === 'cursor' || provider === 'llmgateway' ? [] : CODEX_REASONING_EFFORTS,
       defaultReasoningEffort: 'medium',
       serviceTiers: [],
     },

@@ -197,6 +197,9 @@ function getClient(): { client: AzureOpenAI | OpenAI; model: string } {
     if (!settings.llmGatewayApiKey) {
       throw new Error('Connect LLMGateway in Settings before using this provider');
     }
+    const model = settings.openaiModel?.trim();
+    if (!model)
+      throw new Error('Choose an LLMGateway model in Settings before using this provider.');
     if (!cachedClient) {
       console.log('[LLM] Creating LLMGateway client');
       cachedClient = new OpenAI({
@@ -205,7 +208,7 @@ function getClient(): { client: AzureOpenAI | OpenAI; model: string } {
         defaultHeaders: { 'x-source': LLM_GATEWAY_SOURCE },
       });
     }
-    return { client: cachedClient, model: settings.openaiModel || DEFAULT_CODEX_MODEL };
+    return { client: cachedClient, model };
   }
 
   // OpenAI API key

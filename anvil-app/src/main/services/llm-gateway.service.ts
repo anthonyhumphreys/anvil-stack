@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { shell } from 'electron';
 import type {
@@ -7,11 +7,16 @@ import type {
   LlmGatewayStatus,
   ReasoningEffort,
 } from '../../shared/types.js';
-import { LLM_GATEWAY_KEY_ENV, LLM_GATEWAY_SOURCE } from '../../shared/llm-gateway.js';
+import {
+  LLM_GATEWAY_API_URL,
+  LLM_GATEWAY_KEY_ENV,
+  LLM_GATEWAY_SOURCE,
+} from '../../shared/llm-gateway.js';
 import { getSettings, updateSettings } from './settings.service.js';
 
 const LLM_GATEWAY_LOGIN_URL = 'https://llmgateway.io/connect/cli';
 const MODELS_DEV_URL = 'https://models.dev/api.json';
+const LLM_GATEWAY_KEY_URL = `${LLM_GATEWAY_API_URL}/key`;
 const LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
 const MODEL_CACHE_TTL_MS = 15 * 60 * 1000;
 const REASONING_EFFORTS = new Set<ReasoningEffort>([
@@ -22,6 +27,7 @@ const REASONING_EFFORTS = new Set<ReasoningEffort>([
   'high',
   'xhigh',
   'max',
+  'ultra',
 ]);
 
 let modelCache:
@@ -49,6 +55,13 @@ interface ModelsDevProvider {
   models?: Record<string, ModelsDevModel>;
 }
 
+type CredentialStatus = LlmGatewayStatus['credentialStatus'];
+
+interface CredentialCheck {
+  status: Exclude<CredentialStatus, 'missing'>;
+  error?: string;
+}
+
 function providerIdForMode(mode: LlmGatewayBillingMode): string {
   return mode === 'devpass' ? 'llmgateway' : 'llmgateway-providers';
 }
@@ -62,7 +75,7 @@ function supportedReasoningEfforts(model: ModelsDevModel): ReasoningEffort[] {
   const explicit = (model.reasoning_options ?? [])
     .flatMap((option) => (option.type === 'effort' ? (option.values ?? []) : []))
     .filter((value): value is ReasoningEffort => REASONING_EFFORTS.has(value as ReasoningEffort));
-  return explicit.length > 0 ? explicit : ['low', 'medium', 'high'];
+  return explicit;
 }
 
 export function parseLlmGatewayModels(
@@ -94,6 +107,42 @@ export function parseLlmGatewayModels(
     .sort((left, right) => left.displayName.localeCompare(right.displayName));
 }
 
+async function validateLlmGatewayKey(apiKey: string): Promise<CredentialCheck> {
+  try {
+    const response = await fetch(LLM_GATEWAY_KEY_URL, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (response.status === 401 || response.status === 403) {
+      return { status: 'invalid', error: 'The LLMGateway key is invalid or inactive.' };
+    }
+    if (response.ok) {
+      let payload: unknown;
+      try {
+        payload = await response.json();
+      } catch {
+        return { status: 'unavailable', error: 'LLMGateway returned an invalid key status.' };
+      }
+      const record =
+        payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {};
+      const data =
+        record.data && typeof record.data === 'object'
+          ? (record.data as Record<string, unknown>)
+          : undefined;
+      if (typeof data?.label === 'string' && typeof data.devPlan === 'string') {
+        return { status: 'valid' };
+      }
+      return { status: 'unavailable', error: 'LLMGateway returned an unknown key status.' };
+    }
+    return {
+      status: 'unavailable',
+      error: `LLMGateway is temporarily unavailable (HTTP ${response.status}).`,
+    };
+  } catch {
+    return { status: 'unavailable', error: 'LLMGateway could not be reached.' };
+  }
+}
+
 export async function listLlmGatewayModels(
   billingMode: LlmGatewayBillingMode,
   force = false,
@@ -119,20 +168,73 @@ export async function getLlmGatewayStatus(
 ): Promise<LlmGatewayStatus> {
   const settings = getSettings();
   const billingMode = billingModeOverride ?? settings.llmGatewayBillingMode;
+  const apiKey = settings.llmGatewayApiKey;
+  if (!apiKey) {
+    return { connected: false, credentialStatus: 'missing', billingMode, models: [] };
+  }
+
+  const credential = await validateLlmGatewayKey(apiKey);
+  if (credential.status !== 'valid') {
+    return {
+      connected: false,
+      credentialStatus: credential.status,
+      billingMode,
+      models: [],
+      error: credential.error,
+    };
+  }
+
   try {
     return {
-      connected: Boolean(settings.llmGatewayApiKey),
+      connected: true,
+      credentialStatus: 'valid',
       billingMode,
       models: await listLlmGatewayModels(billingMode, forceModels),
     };
   } catch (error) {
     return {
-      connected: Boolean(settings.llmGatewayApiKey),
+      connected: true,
+      credentialStatus: 'valid',
       billingMode,
       models: [],
       error: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+export interface ResolvedLlmGatewayModelConfig {
+  /** The validated model id to pass to Codex. */
+  model: string;
+  /** Catalog metadata retained for callers that need capability or pricing details. */
+  metadata: LlmGatewayModel;
+  models: LlmGatewayModel[];
+  effort?: ReasoningEffort;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+}
+
+/** Resolve a catalog model and only return reasoning settings the catalog supports. */
+export async function resolveLlmGatewayModelConfig(
+  model: string,
+  effort?: ReasoningEffort,
+  sessionModels?: LlmGatewayModel[],
+): Promise<ResolvedLlmGatewayModelConfig> {
+  const billingMode = getSettings().llmGatewayBillingMode;
+  const models = sessionModels ?? (await listLlmGatewayModels(billingMode));
+  const resolved = models.find((candidate) => candidate.id === model);
+  if (!resolved) throw new Error(`LLMGateway model is not available: ${model}`);
+  if (effort && !resolved.supportedReasoningEfforts.includes(effort)) {
+    effort = resolved.defaultReasoningEffort;
+  }
+  if (resolved.supportedReasoningEfforts.length === 0) effort = undefined;
+  return {
+    model: resolved.id,
+    metadata: resolved,
+    models,
+    effort,
+    contextWindow: resolved.contextWindow,
+    maxOutputTokens: resolved.maxOutputTokens,
+  };
 }
 
 export function buildLlmGatewayLoginUrl(
@@ -171,6 +273,8 @@ async function performLogin(billingMode: LlmGatewayBillingMode): Promise<LlmGate
     settle = resolve;
     fail = reject;
   });
+  // A callback can reject before the outer await observes the promise.
+  void keyPromise.catch(() => undefined);
 
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
@@ -179,24 +283,32 @@ async function performLogin(billingMode: LlmGatewayBillingMode): Promise<LlmGate
       return;
     }
 
-    const error = url.searchParams.get('error');
-    const key = url.searchParams.get('key');
-    if (error) {
-      response.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
-      response.end(`LLMGateway did not connect: ${error}`);
-      fail?.(new Error(error));
-      return;
-    }
-    if (!key || url.searchParams.get('state') !== state) {
+    const callbackState = url.searchParams.get('state') ?? '';
+    const expected = Buffer.from(state);
+    const received = Buffer.from(callbackState);
+    const validState = received.length === expected.length && timingSafeEqual(received, expected);
+    if (!validState) {
       response.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
       response.end('Invalid LLMGateway authorization response. Return to Anvil and try again.');
-      fail?.(new Error('Invalid LLMGateway callback state'));
+      return;
+    }
+    if (url.searchParams.has('error')) {
+      response.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+      response.end('LLMGateway did not connect. Return to Anvil and try again.');
+      fail?.(new Error('LLMGateway authorization was denied'));
+      return;
+    }
+    const key = url.searchParams.get('key');
+    if (!key) {
+      response.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+      response.end('LLMGateway did not return a key. Return to Anvil and try again.');
+      fail?.(new Error('LLMGateway authorization returned no key'));
       return;
     }
 
     response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     response.end(
-      '<!doctype html><title>LLMGateway connected</title><main style="font:16px system-ui;padding:3rem"><h1>Connected to Anvil</h1><p>You can close this window and return to Anvil.</p></main>',
+      '<!doctype html><title>LLMGateway authorization received</title><main style="font:16px system-ui;padding:3rem"><h1>Authorization received</h1><p>Return to Anvil while your gateway key is validated.</p></main>',
     );
     settle?.(key);
   });
@@ -211,6 +323,8 @@ async function performLogin(billingMode: LlmGatewayBillingMode): Promise<LlmGate
   try {
     await shell.openExternal(buildLlmGatewayLoginUrl(callback, state, billingMode));
     const key = await keyPromise;
+    const credential = await validateLlmGatewayKey(key);
+    if (credential.status !== 'valid') throw new Error(credential.error);
     updateSettings({ llmGatewayApiKey: key, llmGatewayBillingMode: billingMode });
     return getLlmGatewayStatus(true);
   } finally {

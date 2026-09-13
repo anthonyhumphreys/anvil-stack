@@ -1,11 +1,11 @@
 import { ipcMain } from 'electron';
 import type {
-  AgentProvider,
   AgentUIIntentPresentationPatch,
   AgentUIPlanPatch,
   AgentUIQuestionResolution,
 } from '../../shared/agent-ui-intents.js';
 import type {
+  AgentProvider,
   ChatMessage,
   ChatArtifact,
   ChatArtifactAnnotation,
@@ -57,6 +57,7 @@ import {
 import { getSettings } from '../services/settings.service.js';
 import { getPersonas } from '../services/persona.service.js';
 import { detectCodexCli, getCodexInstallInstructions } from '../services/codex-bridge.service.js';
+import { resolveCodexRuntime } from '../services/codex-runtime.service.js';
 import { detectCursorCli } from '../services/cursor-bridge.service.js';
 import {
   createChatThread,
@@ -107,9 +108,20 @@ async function assertChatProviderAvailable(provider: AgentProvider): Promise<voi
     return;
   }
 
+  if (provider === 'llmgateway') {
+    try {
+      await resolveCodexRuntime();
+    } catch (error) {
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)}\n\n${getCodexInstallInstructions('llmgateway')}`,
+      );
+    }
+    return;
+  }
+
   const status = await detectCodexCli();
   if (!status.installed) {
-    throw new Error(`Codex CLI is not installed.\n\n${getCodexInstallInstructions()}`);
+    throw new Error(`Codex CLI is not installed.\n\n${getCodexInstallInstructions('codex')}`);
   }
 }
 
@@ -515,9 +527,7 @@ export function registerChatHandlers(): void {
     deleteChatArtifactAnnotation(id),
   );
 
-  ipcMain.handle('chat:detect-codex', async () => {
-    return detectCodexCli();
-  });
+  ipcMain.handle('chat:detect-codex', async () => detectCodexCli());
 
   ipcMain.handle(
     'chat:prepare-attachments',

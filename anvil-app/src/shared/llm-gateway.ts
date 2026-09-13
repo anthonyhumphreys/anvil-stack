@@ -16,6 +16,10 @@ export function getLlmGatewayCodexConfigArgs(): string[] {
     '-c',
     'model_providers.llmgateway.wire_api="responses"',
     '-c',
+    'model_providers.llmgateway.requires_openai_auth=false',
+    '-c',
+    'web_search="disabled"',
+    '-c',
     `model_providers.llmgateway.http_headers={ x-source = "${LLM_GATEWAY_SOURCE}" }`,
   ];
 }

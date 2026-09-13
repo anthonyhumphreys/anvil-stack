@@ -18,6 +18,7 @@ import {
 } from '../services/codex-agents-file.service.js';
 import { detectCodexCli, setCodexAgentMaxThreads } from '../services/codex-bridge.service.js';
 import { detectCursorCli } from '../services/cursor-bridge.service.js';
+import { getCodexRuntimeStatus, installCodexRuntime } from '../services/codex-runtime.service.js';
 import {
   disconnectLlmGateway,
   getLlmGatewayStatus,
@@ -31,6 +32,9 @@ import {
 } from '../services/notion.service.js';
 
 export function registerSettingsHandlers(): void {
+  ipcMain.handle('settings:codex-runtime-status', () => getCodexRuntimeStatus());
+  ipcMain.handle('settings:codex-runtime-install', () => installCodexRuntime());
+
   ipcMain.handle('settings:get', () => {
     try {
       const settings = getSettings();
