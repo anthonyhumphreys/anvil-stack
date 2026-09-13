@@ -7,7 +7,9 @@
   "scripts": {
     "dev": "wrangler dev --env dev",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "conformance": "node conformance/suite.mjs",
+    "conformance:fixture": "node conformance/suite.mjs --fixture"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.1.7",

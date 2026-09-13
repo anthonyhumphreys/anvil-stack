@@ -2,7 +2,7 @@
 
 Reusable agent prompt for the planned `Copy integration prompt` action.
 
-This prompt accompanies a frozen protocol bundle. The current integration contract is a draft; the machine-readable schemas and runnable conformance suite still need implementation. Do not use this prompt to claim compatibility without that bundle and an actual desktop test.
+Prompt version: **2** (BYOB-02). This prompt accompanies a frozen protocol bundle. The runnable conformance suite and a non-Cloudflare reference fixture now exist at `cloud/backend/conformance/` (`suite.mjs`, `fixture-server.mjs`) and pass identically against the Cloudflare backend and the fixture; the machine-readable schema bundle is still generated from `cloud/contract/`. Do not use this prompt to claim compatibility without running the conformance suite and an actual desktop test.
 
 Copy the following prompt, filling the input fields. The released app should fill its version, protocol range, and bundle digest automatically.
 

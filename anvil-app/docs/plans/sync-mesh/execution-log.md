@@ -993,3 +993,31 @@ idempotent commit; unknown-id not-found + kind-mismatch +
 unsupported formatVersion. Backend 117/117, gate 7/7, tsc clean.
 
 Remaining: BYOB-02, IAC-02, LAUNCH-01.
+
+## 2026-09-13 — BYOB-02 conformance runner + non-Cloudflare fixture
+
+- `cloud/backend/conformance/suite.mjs` — standalone conformance
+  runner: zero repo imports, plain HTTP. 11 checks covering
+  descriptor, unauthenticated rejection, enrollment-code enroll +
+  describe, push/receipt-replay/pull round-trip, tampered-hash
+  rejection, stale-baseRevision conflict, scan paging + watermark,
+  device list/rename/revoke, refresh rotation, export→import across
+  accounts, account.delete + admin-only deletionStatus + locked
+  accountId. Canonical JSON + SHA-256 change hashing are
+  re-implemented inline so canonicalization agreement is verified
+  over the wire. `--fixture` spawns the fixture, waits, runs, kills.
+- `cloud/backend/conformance/fixture-server.mjs` — non-Cloudflare
+  reference backend: plain node:http, in-memory state, sync/1 only.
+  Proves the contract is implementable without Durable Objects/R2/
+  Workers. Not a production backend (per-process state).
+- Both legs pass: `pnpm conformance` vs wrangler dev backend 11/11;
+  `pnpm conformance:fixture` 11/11.
+- Desktop gate evidence: `byob-conformance.test.ts` spawns the real
+  fixture and drives the SHIPPED client path — discover →
+  enrollment-codes → enroll → session.describe → sync.push (hash
+  verified by the fixture's independent canonicalization) →
+  sync.pull → device.list → session/refresh. 1/1.
+- Builder prompt versioned to v2 noting the runnable suite exists.
+- `conformance` / `conformance:fixture` npm scripts added.
+
+Remaining: IAC-02, LAUNCH-01.
