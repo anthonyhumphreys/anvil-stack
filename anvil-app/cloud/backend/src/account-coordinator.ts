@@ -2156,7 +2156,19 @@ export class AccountCoordinator extends DurableObject<Env> {
         auth.accountId,
       )
       .toArray();
+    // §12 hard constraint: jobs that consume a materialised workspace
+    // require a 'ready' replica at the manifest's pinned definition
+    // revision (the digest that also proves Git inputs materialised).
+    // prepare-workspace produces readiness and diagnostic needs none.
+    const needsWorkspace =
+      create.kind !== 'diagnostic' && create.kind !== 'prepare-workspace';
+    const manifestWorkspaceId =
+      needsWorkspace && typeof create.inputManifest.inputs['workspaceId'] === 'string'
+        ? (create.inputManifest.inputs['workspaceId'] as string)
+        : null;
+    const requiredRevision = create.inputManifest.workspaceDefinitionRevision;
     let liveAllowing = 0;
+    let readyRejected = 0;
     const eligible: { enrollmentId: string; activeAttempts: number }[] = [];
     for (const row of candidates) {
       const policy = parseStoredDevicePolicy(row.policy);
@@ -2175,6 +2187,27 @@ export class AccountCoordinator extends DurableObject<Env> {
       if (row.active_attempts >= capacity) {
         continue;
       }
+      if (needsWorkspace) {
+        const replica =
+          manifestWorkspaceId === null
+            ? null
+            : this.ctx.storage.sql
+                .exec<{ readiness: string; definition_revision: string }>(
+                  `SELECT readiness, definition_revision FROM worker_replicas
+                   WHERE enrollment_id = ? AND workspace_id = ?`,
+                  row.enrollment_id,
+                  manifestWorkspaceId,
+                )
+                .toArray()[0] ?? null;
+        if (
+          replica === null ||
+          replica.readiness !== 'ready' ||
+          replica.definition_revision !== requiredRevision
+        ) {
+          readyRejected += 1;
+          continue;
+        }
+      }
       eligible.push({ enrollmentId: row.enrollment_id, activeAttempts: row.active_attempts });
     }
     eligible.sort(
@@ -2184,7 +2217,9 @@ export class AccountCoordinator extends DurableObject<Env> {
     if (chosen === undefined) {
       const explanation =
         `auto: no eligible live worker (${liveAllowing} live worker(s) ` +
-        'allowing jobs; none satisfy source authorization, requirements, and capacity)';
+        'allowing jobs; none satisfy source authorization, requirements, capacity' +
+        (needsWorkspace ? `, and workspace readiness (${readyRejected} rejected on readiness)` : '') +
+        ')';
       return { targetEnrollmentId: null, explanation };
     }
     return {

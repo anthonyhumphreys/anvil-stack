@@ -66,6 +66,7 @@ import type {
   ApprovalRecord,
   AttemptRenewResult,
   AttemptResultManifest,
+  CapabilityRequirements,
   ExecutionAttempt,
   ExecutionManifest,
   JobClaimResult,
@@ -979,6 +980,11 @@ async function executePrepareWorkspace(
     emitActivity(attempt, 'bootstrap: verified');
   }
 
+  // PLACE-01: the workspace is now materialised at this revision — the
+  // scheduler's readiness hard constraint only sees it once the replica
+  // row republishes.
+  void publishReplicas().catch(() => undefined);
+
   return {
     ok: true,
     workspaceId,
@@ -1786,6 +1792,8 @@ export function requestApprovalForTests(
 export interface DiagnosticJobInput {
   requestId: string;
   targetEnrollmentId?: string;
+  /** PLACE-01: hard capability constraints for auto placement. */
+  requirements?: CapabilityRequirements;
   manifest?: Partial<ExecutionManifest>;
 }
 
@@ -1808,7 +1816,12 @@ export async function createDiagnosticJob(input: DiagnosticJobInput): Promise<Jo
   const requestedTarget =
     input.targetEnrollmentId !== undefined
       ? { kind: 'device' as const, enrollmentId: input.targetEnrollmentId }
-      : { kind: 'auto' as const };
+      : {
+          kind: 'auto' as const,
+          ...(input.requirements === undefined
+            ? {}
+            : { requirements: input.requirements }),
+        };
   // The backend verifies the hash covers the canonical job payload; a replay
   // of the same requestId with a different payload is a conflict.
   const payloadHash = createHash('sha256')
@@ -1833,6 +1846,7 @@ export interface PrepareWorkspaceJobInput {
   workspaceId: string;
   /** Explicit device target; omitted = automatic placement. */
   targetEnrollmentId?: string;
+  requirements?: CapabilityRequirements;
   provider?: string;
   model?: string;
 }
@@ -1886,7 +1900,12 @@ export async function createPrepareWorkspaceJob(
   const requestedTarget =
     input.targetEnrollmentId !== undefined
       ? { kind: 'device' as const, enrollmentId: input.targetEnrollmentId }
-      : { kind: 'auto' as const };
+      : {
+          kind: 'auto' as const,
+          ...(input.requirements === undefined
+            ? {}
+            : { requirements: input.requirements }),
+        };
   const payloadHash = createHash('sha256')
     .update(
       canonicalJson({ kind: 'prepare-workspace', requestedTarget, inputManifest: manifest }),
@@ -1910,6 +1929,7 @@ export interface StartSessionJobInput {
   /** The initial user message the remote turn runs. */
   prompt: string;
   targetEnrollmentId?: string;
+  requirements?: CapabilityRequirements;
   provider?: 'codex' | 'azure' | 'openai';
   model?: string;
   personaId?: string;
@@ -1985,7 +2005,12 @@ export async function createStartSessionJob(
   const requestedTarget =
     input.targetEnrollmentId !== undefined
       ? { kind: 'device' as const, enrollmentId: input.targetEnrollmentId }
-      : { kind: 'auto' as const };
+      : {
+          kind: 'auto' as const,
+          ...(input.requirements === undefined
+            ? {}
+            : { requirements: input.requirements }),
+        };
   const payloadHash = createHash('sha256')
     .update(
       canonicalJson({ kind: 'start-session', requestedTarget, inputManifest: manifest }),
@@ -2009,6 +2034,7 @@ export interface CodeTaskJobInput {
   /** The task instruction the remote turn executes. */
   prompt: string;
   targetEnrollmentId?: string;
+  requirements?: CapabilityRequirements;
   provider?: 'codex' | 'azure' | 'openai';
   model?: string;
   personaId?: string;
@@ -2087,7 +2113,12 @@ export async function createCodeTaskJob(input: CodeTaskJobInput): Promise<JobSum
   const requestedTarget =
     input.targetEnrollmentId !== undefined
       ? { kind: 'device' as const, enrollmentId: input.targetEnrollmentId }
-      : { kind: 'auto' as const };
+      : {
+          kind: 'auto' as const,
+          ...(input.requirements === undefined
+            ? {}
+            : { requirements: input.requirements }),
+        };
   const payloadHash = createHash('sha256')
     .update(
       canonicalJson({ kind: 'code-task', requestedTarget, inputManifest: manifest }),
@@ -2186,7 +2217,12 @@ export async function createWorkflowNodeJob(
   const requestedTarget =
     input.targetEnrollmentId !== undefined
       ? { kind: 'device' as const, enrollmentId: input.targetEnrollmentId }
-      : { kind: 'auto' as const };
+      : {
+          kind: 'auto' as const,
+          ...(input.requirements === undefined
+            ? {}
+            : { requirements: input.requirements }),
+        };
   const payloadHash = createHash('sha256')
     .update(
       canonicalJson({ kind: 'workflow-node', requestedTarget, inputManifest: manifest }),

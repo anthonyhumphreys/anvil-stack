@@ -773,3 +773,102 @@ describe('retry policy and listing', () => {
     expect(overLimit.status).toBe(400);
   });
 });
+
+describe('auto placement workspace readiness (PLACE-01)', () => {
+  async function publishReplicas(
+    auth: string,
+    replicas: Array<{
+      workspaceId: string;
+      definitionRevision: string;
+      readiness: 'ready' | 'cloning' | 'error' | 'not-ready';
+    }>,
+  ) {
+    return expectSuccess(
+      await postRpc(
+        'worker.replica.publish',
+        {
+          replicas: replicas.map((r) => ({ ...r, observedAt: new Date().toISOString() })),
+        },
+        auth,
+      ),
+    );
+  }
+
+  function workspaceManifest(): ExecutionManifest {
+    return {
+      ...manifest(),
+      inputs: { workspaceId: 'ws-1', prompt: 'do work' },
+    };
+  }
+
+  it('leaves a workspace-consuming auto job unresolved when no ready replica exists', async () => {
+    const f = fixture('ready-none');
+    await publishPolicy(f.workerAuth);
+    await connectWorker(f.workerAuth);
+    const created = await createJob(f.sourceAuth, {
+      kind: 'code-task',
+      inputManifest: workspaceManifest(),
+      requestedTarget: { kind: 'auto' },
+    });
+    expect(created.job.targetEnrollmentId).toBeUndefined();
+    expect(created.job.placementExplanation).toMatch(/workspace readiness/);
+  });
+
+  it('resolves to the worker with a ready replica at the pinned revision', async () => {
+    const f = fixture('ready-match');
+    await publishPolicy(f.workerAuth);
+    await connectWorker(f.workerAuth);
+    await publishReplicas(f.workerAuth, [
+      { workspaceId: 'ws-1', definitionRevision: 'wsdef-rev-1', readiness: 'ready' },
+    ]);
+    const created = await createJob(f.sourceAuth, {
+      kind: 'code-task',
+      inputManifest: workspaceManifest(),
+      requestedTarget: { kind: 'auto' },
+    });
+    expect(created.job.targetEnrollmentId).toBe(f.workerEnrollmentId);
+    expect(created.job.placementExplanation).toMatch(/auto: least-loaded/);
+  });
+
+  it('rejects a replica that is ready at a stale definition revision', async () => {
+    const f = fixture('ready-stale');
+    await publishPolicy(f.workerAuth);
+    await connectWorker(f.workerAuth);
+    // Ready at rev-0 does not satisfy a job pinned at rev-1.
+    await publishReplicas(f.workerAuth, [
+      { workspaceId: 'ws-1', definitionRevision: 'wsdef-rev-0', readiness: 'ready' },
+    ]);
+    const created = await createJob(f.sourceAuth, {
+      kind: 'code-task',
+      inputManifest: workspaceManifest(),
+      requestedTarget: { kind: 'auto' },
+    });
+    expect(created.job.targetEnrollmentId).toBeUndefined();
+  });
+
+  it('prepare-workspace and diagnostic jobs do not require readiness', async () => {
+    const f = fixture('ready-free');
+    await publishPolicy(f.workerAuth);
+    await connectWorker(f.workerAuth);
+    const prep = await createJob(f.sourceAuth, {
+      kind: 'prepare-workspace',
+      inputManifest: workspaceManifest(),
+      requestedTarget: { kind: 'auto' },
+    });
+    expect(prep.job.targetEnrollmentId).toBe(f.workerEnrollmentId);
+    const diag = await createJob(f.sourceAuth, { requestedTarget: { kind: 'auto' } });
+    expect(diag.job.targetEnrollmentId).toBe(f.workerEnrollmentId);
+  });
+
+  it('an explicit device target still overrides readiness', async () => {
+    const f = fixture('ready-explicit');
+    await publishPolicy(f.workerAuth);
+    await connectWorker(f.workerAuth);
+    const created = await createJob(f.sourceAuth, {
+      kind: 'code-task',
+      inputManifest: workspaceManifest(),
+      requestedTarget: deviceTarget(f.workerEnrollmentId),
+    });
+    expect(created.job.targetEnrollmentId).toBe(f.workerEnrollmentId);
+  });
+});

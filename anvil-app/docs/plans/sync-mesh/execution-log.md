@@ -841,3 +841,33 @@ App suite 166 files / 1142 tests, gate 7/7, tsc + eslint clean.
 
 Remaining: `device.list|rename|revoke`, `account.delete*`,
 `data.export|import.*`, PLACE-01, BYOB-02, IAC-02, LAUNCH-01.
+
+## PLACE-01 — workspace-readiness placement constraint (complete)
+
+- `resolvePlacement` (auto) now enforces the §12 hard constraint:
+  workspace-consuming kinds (start-session, code-task, workflow-node)
+  require a `worker_replicas` row with `readiness='ready'` AND
+  `definition_revision` equal to the manifest's pinned revision —
+  the content digest that also proves Git inputs materialised.
+  `prepare-workspace` produces readiness and `diagnostic` needs
+  none, so neither is gated. Explicit `device` targets remain an
+  override, consistent with capabilities not being checked there.
+- No-eligible explanations now name readiness as the discriminator
+  (`N rejected on readiness`).
+- Source side: all five job creators accept `requirements`
+  (CapabilityRequirements) and forward them into
+  `requestedTarget: {kind:'auto', requirements}` —
+  `dispatchWorkflowNode` passes them through too.
+- `executePrepareWorkspace` republishes replicas on success so a
+  freshly materialised workspace becomes placement-visible without
+  waiting for the next connect.
+
+Coverage: 5 backend placement tests (unresolved without ready
+replica + readiness-named explanation, ready-at-pinned-revision
+resolves, stale revision rejected, prepare-workspace/diagnostic
+exempt, explicit device overrides) + 1 dispatch test (requirements
+reach job.create). Backend 103/103, app 166 files / 1143 tests,
+gate 7/7, tsc + eslint clean.
+
+Remaining: `device.list|rename|revoke`, `account.delete*`,
+`data.export|import.*`, BYOB-02, IAC-02, LAUNCH-01.

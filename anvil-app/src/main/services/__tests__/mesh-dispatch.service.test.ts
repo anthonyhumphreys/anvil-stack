@@ -158,6 +158,39 @@ describe('dispatchWorkflowNode', () => {
     }
   });
 
+  it('forwards capability requirements to auto placement', async () => {
+    const { workspaceId, parentRepo, sourceRepo } = seedDispatchFixture('reqs');
+    try {
+      rpcHandler = (op, params) =>
+        op === 'job.create'
+          ? {
+              job: {
+                id: 'job-1',
+                state: 'queued',
+                inputManifest: (params as { inputManifest: unknown }).inputManifest,
+              },
+            }
+          : {};
+      await dispatchWorkflowNode({
+        dispatchId: 'disp-1',
+        runId: 'run-1',
+        nodeId: 'node-1',
+        workspaceId,
+        prompt: 'gpu work',
+        requirements: { capabilities: ['gpu'], memoryMb: 65536 },
+      });
+      const create = rpcCalls.find((c) => c.operation === 'job.create');
+      expect(
+        (create!.params as { requestedTarget: unknown }).requestedTarget,
+      ).toEqual({
+        kind: 'auto',
+        requirements: { capabilities: ['gpu'], memoryMb: 65536 },
+      });
+    } finally {
+      cleanup(parentRepo, sourceRepo);
+    }
+  });
+
   it('re-dispatch with the same id re-binds — no second job is created', async () => {
     const { workspaceId, parentRepo, sourceRepo } = seedDispatchFixture('idem');
     try {

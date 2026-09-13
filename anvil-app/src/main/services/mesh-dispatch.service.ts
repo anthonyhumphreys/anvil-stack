@@ -22,6 +22,7 @@ import { createWorkflowNodeJob } from './mesh-worker.service.js';
 import { runGit, withRepoRefLock } from './mesh-worktree.service.js';
 import type {
   AttemptResultManifest,
+  CapabilityRequirements,
   JobGetResult,
   JobSummary,
 } from '../../../cloud/contract/jobs.js';
@@ -125,6 +126,8 @@ export async function dispatchWorkflowNode(input: {
   workspaceId: string;
   prompt: string;
   targetEnrollmentId?: string;
+  /** PLACE-01: hard capability constraints for auto placement. */
+  requirements?: CapabilityRequirements;
   verification?: string[];
   provider?: 'codex' | 'azure' | 'openai';
   model?: string;
@@ -144,6 +147,7 @@ export async function dispatchWorkflowNode(input: {
     ...(input.targetEnrollmentId === undefined
       ? {}
       : { targetEnrollmentId: input.targetEnrollmentId }),
+    ...(input.requirements === undefined ? {} : { requirements: input.requirements }),
     ...(input.verification === undefined ? {} : { verification: input.verification }),
     ...(input.provider === undefined ? {} : { provider: input.provider }),
     ...(input.model === undefined ? {} : { model: input.model }),
