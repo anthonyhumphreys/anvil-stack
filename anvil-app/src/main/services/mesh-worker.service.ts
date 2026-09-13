@@ -30,6 +30,12 @@ import {
 import { commonParentDir } from './codex-protocol.service.js';
 import { resolveSessionModel } from './codex-session.service.js';
 import { getSettings } from './settings.service.js';
+import { writeSessionOwnership } from './mesh-ownership.service.js';
+import type {
+  HandoffAdvanceResult,
+  HandoffGetResult,
+  SessionCheckpoint,
+} from '../../cloud/contract/handoff.js';
 import { workspaceDefinitionRevision } from './sync-entity-domain.js';
 import type { AgentProvider, ReasoningEffort } from '../../shared/types.js';
 import {
@@ -1119,6 +1125,45 @@ async function executeStartSession(
   }
   const cwd = commonParentDir(repoPaths);
 
+  // SESSION-03 target activation: a start-session job carrying a handoffId
+  // continues a session whose ownership was transferred to this device.
+  // Gate BEFORE spawn: the handoff row must show ownership-transferred to
+  // us; we advance to target-activating so a crash here is reconstructable.
+  let handoffCheckpoint: SessionCheckpoint | null = null;
+  let handoffTargetGeneration: number | null = null;
+  let handoffSessionId: string | null = null;
+  const handoffId = manifest.inputs['handoffId'];
+  if (typeof handoffId === 'string' && handoffId.length > 0) {
+    const ctx = workerContext();
+    const remote = (
+      await meshRpc<HandoffGetResult>('handoff.get', { handoffId })
+    ).handoff;
+    if (remote.targetEnrollmentId !== ctx?.enrollmentId) {
+      throw new Error('handoff-not-for-this-device');
+    }
+    if (remote.state === 'ownership-transferred') {
+      const activating = (
+        await meshRpc<HandoffAdvanceResult>('handoff.advance', {
+          handoffId,
+          from: 'ownership-transferred',
+          to: 'target-activating',
+        })
+      ).handoff;
+      appendJournal(attemptId, 'handoff-activating', { handoffId });
+      handoffCheckpoint = activating.checkpoint;
+      handoffTargetGeneration = activating.targetGeneration;
+      handoffSessionId = activating.sessionId;
+    } else if (remote.state === 'target-activating') {
+      // Re-claim after an earlier activating attempt — the journal's
+      // prior-spawn check below still applies.
+      handoffCheckpoint = remote.checkpoint;
+      handoffTargetGeneration = remote.targetGeneration;
+      handoffSessionId = remote.sessionId;
+    } else {
+      throw new Error(`handoff-not-transferred: state ${remote.state}`);
+    }
+  }
+
   const prior = priorSessionEvidence(job.id, attemptId);
   if (prior.unresolvedSpawn) {
     // A prior attempt spawned a provider and never recorded the thread —
@@ -1167,12 +1212,20 @@ async function executeStartSession(
       : 'workspace-write';
   const rawEffort = manifest.inputs['reasoningEffort'];
 
+  // SESSION-03: a handoff continuation seeds a FRESH provider thread from
+  // the checkpoint — cross-device provider resume is summary-continuation
+  // by contract (native-resume is same-home only, SESSION-01 audit).
+  const effectivePrompt =
+    handoffCheckpoint === null
+      ? prompt
+      : renderHandoffContinuationPrompt(handoffCheckpoint, prompt);
+
   const result = await runRemoteSessionTurn(
     {
       provider: provider as RemoteSessionProvider,
       model: manifest.model,
       cwd,
-      prompt,
+      prompt: effectivePrompt,
       ...(typeof rawEffort === 'string'
         ? { reasoningEffort: rawEffort as ReasoningEffort }
         : {}),
@@ -1190,8 +1243,48 @@ async function executeStartSession(
   );
 
   if (result.turnStatus === 'failed') {
+    if (typeof handoffId === 'string' && handoffId.length > 0) {
+      // The turn failed after ownership transferred — mark the handoff
+      // failed; the target keeps owning recovery (no implicit rollback).
+      await meshRpc<HandoffAdvanceResult>('handoff.advance', {
+        handoffId,
+        from: 'target-activating',
+        to: 'failed',
+      }).catch(() => undefined);
+      appendJournal(attemptId, 'handoff-failed', { handoffId });
+    }
     throw new Error('provider-turn-failed');
   }
+
+  if (
+    typeof handoffId === 'string' &&
+    handoffId.length > 0 &&
+    result.turnStatus === 'completed' &&
+    !result.cancelled
+  ) {
+    // The session is live on this device — close the handoff and record
+    // local ownership of the transferred generation.
+    await meshRpc<HandoffAdvanceResult>('handoff.advance', {
+      handoffId,
+      from: 'target-activating',
+      to: 'completed',
+    }).catch(() => undefined);
+    const ctx = workerContext();
+    if (handoffSessionId !== null && handoffTargetGeneration !== null && ctx !== null) {
+      writeSessionOwnership(
+        handoffSessionId,
+        handoffTargetGeneration,
+        ctx.enrollmentId,
+        'owned',
+      );
+    }
+    appendJournal(attemptId, 'handoff-completed', {
+      handoffId,
+      sessionId: handoffSessionId,
+      generation: handoffTargetGeneration,
+    });
+  }
+
   return {
     ok: result.turnStatus === 'completed' && !result.cancelled,
     workspaceId,
@@ -1200,7 +1293,41 @@ async function executeStartSession(
     turnStatus: result.turnStatus,
     cliVersion: result.cliVersion,
     cancelled: result.cancelled,
+    ...(handoffSessionId === null ? {} : { handoffSessionId }),
   };
+}
+
+/**
+ * Seeds a fresh provider thread with the handed-off context: the source
+ * device's summary and bounded message tail plus the new instruction. The
+ * exact-commit manifest is already verified by checkout resolution.
+ */
+function renderHandoffContinuationPrompt(
+  checkpoint: SessionCheckpoint,
+  instruction: string,
+): string {
+  const parts = [
+    'This session was handed off from another device at an exact-commit checkpoint.',
+  ];
+  if (typeof checkpoint.summary === 'string' && checkpoint.summary.length > 0) {
+    parts.push(`Prior context summary:\n${checkpoint.summary}`);
+  }
+  const tail = (checkpoint.messages ?? []).slice(-8);
+  if (tail.length > 0) {
+    parts.push(
+      `Recent conversation:\n${tail
+        .map((m) => {
+          const msg = m as { role?: unknown; content?: unknown };
+          return `${typeof msg.role === 'string' ? msg.role : 'unknown'}: ${typeof msg.content === 'string' ? msg.content : ''}`;
+        })
+        .join('\n')}`,
+    );
+  }
+  if (typeof checkpoint.planGoalState === 'string' && checkpoint.planGoalState.length > 0) {
+    parts.push(`Plan/goal state: ${checkpoint.planGoalState}`);
+  }
+  parts.push(`Continue the work. Instruction: ${instruction}`);
+  return parts.join('\n\n');
 }
 
 const execFileAsync = promisify(execFile);
@@ -1444,6 +1571,8 @@ export interface StartSessionJobInput {
   /** Pinned minimum `codex --version` the target must satisfy (audit §9). */
   cliMinVersion?: string;
   turnTimeoutMs?: number;
+  /** SESSION-03: the handoff this job activates on the target. */
+  handoffId?: string;
 }
 
 /**
@@ -1503,6 +1632,7 @@ export async function createStartSessionJob(
       ...(input.sandbox === undefined ? {} : { sandbox: input.sandbox }),
       ...(input.cliMinVersion === undefined ? {} : { cliMinVersion: input.cliMinVersion }),
       ...(input.turnTimeoutMs === undefined ? {} : { turnTimeoutMs: input.turnTimeoutMs }),
+      ...(input.handoffId === undefined ? {} : { handoffId: input.handoffId }),
     },
   };
   const requestedTarget =

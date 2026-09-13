@@ -39,6 +39,7 @@ import {
 import { emitCompanionEvent } from './companion-events.service.js';
 import { normaliseCodexModel, normaliseReasoningEffort } from '../../shared/codex-models.js';
 import { providerSpawnEnv } from './agent-spawn-env.js';
+import { assertSessionTurnAllowed } from './mesh-ownership.service.js';
 import { notifyChatActivity, type ChatActivityKind } from './notification.service.js';
 import { updateChatThreadAttention } from './chat-persistence.service.js';
 import {
@@ -344,6 +345,9 @@ export async function sendMessage(
 ): Promise<void> {
   const session = sessions.get(sessionId);
   if (!session) throw new Error(`Session not found: ${sessionId}`);
+  // SESSION-03: a session whose ownership moved to another device fails
+  // closed — the durable relinquish marker outlives restarts.
+  assertSessionTurnAllowed(sessionId);
   if (!session.process.stdin?.writable) throw new Error('Session stdin not writable');
 
   // Wait for thread to be ready before sending

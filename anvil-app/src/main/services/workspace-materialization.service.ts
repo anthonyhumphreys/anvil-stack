@@ -1040,7 +1040,7 @@ async function stepVerifyCheckout(opId: string, stage: StageRow): Promise<void> 
  * Detect unsupported cases before claiming readiness: submodules, LFS
  * pointers, and shallow history.
  */
-async function detectUnsupportedCheckout(
+export async function detectUnsupportedCheckout(
   dir: string,
 ): Promise<'submodules' | 'lfs' | 'shallow' | null> {
   const shallow = await gitResult(['-C', dir, 'rev-parse', '--is-shallow-repository']);

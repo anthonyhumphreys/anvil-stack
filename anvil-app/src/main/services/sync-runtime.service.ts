@@ -93,6 +93,11 @@ import {
   resetMeshArtifactForTests,
 } from './mesh-artifact.service.js';
 import {
+  configureMeshHandoffContext,
+  reconcileHandoffsOnBoot,
+  resetMeshHandoffForTests,
+} from './mesh-handoff.service.js';
+import {
   getOrCreateInstallationId,
   getSyncState,
   listBindings,
@@ -215,7 +220,17 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
     if (backend === null || token === null) return null;
     return { apiUrl: apiUrlFor(backend), accessToken: token };
   });
+  // SESSION-03: handoff orchestration reads the same session context; the
+  // local ownership mirror must be reconciled before any session resumes.
+  configureMeshHandoffContext(() => {
+    const backend = getActiveBackend();
+    const fields = auth?.getSessionScopeFields() ?? null;
+    const token = auth?.getAccessToken() ?? null;
+    if (backend === null || fields === null || token === null) return null;
+    return { apiUrl: apiUrlFor(backend), accessToken: token, enrollmentId: fields.enrollmentId };
+  });
   void reconcileMeshAttemptsOnBoot().catch(() => undefined);
+  void reconcileHandoffsOnBoot().catch(() => undefined);
   if (auth.getPublicSnapshot().state === 'signed-in') {
     scheduleSessionRefresh();
   }
@@ -237,6 +252,7 @@ export function resetSyncRuntimeForTests(): void {
   resetMeshObserverForTests();
   resetMeshArtifactForTests();
   resetMeshWorkerForTests();
+  resetMeshHandoffForTests();
   auth = null;
   lastError = null;
   sessionExpired = false;

@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 73;
+export const SCHEMA_VERSION = 74;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -742,6 +742,31 @@ CREATE TABLE IF NOT EXISTS mesh_attempts (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_mesh_attempts_state ON mesh_attempts(state);
+
+-- SESSION-03: local session-ownership mirror of the backend's generation
+-- authority. 'relinquished' is written BEFORE the backend advance so a
+-- restart honours it; absence of a row means an ordinary local-only
+-- session that needs no lease (spec §11).
+CREATE TABLE IF NOT EXISTS mesh_session_ownership (
+  session_id TEXT PRIMARY KEY,
+  generation INTEGER NOT NULL,
+  owner_enrollment_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('owned', 'relinquished')),
+  updated_at TEXT NOT NULL
+);
+
+-- Local mirror of handoff participation for boot reconciliation: role is
+-- this device's side; state is the last durably observed backend state.
+CREATE TABLE IF NOT EXISTS mesh_handoff_journal (
+  handoff_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('source', 'target')),
+  state TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mesh_handoff_journal_session
+  ON mesh_handoff_journal(session_id);
 
 -- WS-02: durable workspace materialisation journal. The op row and its
 -- per-repo stage rows are written BEFORE the matching filesystem mutation so
@@ -2668,5 +2693,26 @@ CREATE TABLE IF NOT EXISTS bootstrap_run_steps (
   updated_at TEXT NOT NULL,
   PRIMARY KEY (run_id, step_id)
 );
+`,
+  74: `
+-- SESSION-03: local session-ownership mirror + handoff participation
+-- journal. Keep in sync with the SCHEMA_SQL copies of these tables.
+CREATE TABLE IF NOT EXISTS mesh_session_ownership (
+  session_id TEXT PRIMARY KEY,
+  generation INTEGER NOT NULL,
+  owner_enrollment_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('owned', 'relinquished')),
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS mesh_handoff_journal (
+  handoff_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('source', 'target')),
+  state TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mesh_handoff_journal_session
+  ON mesh_handoff_journal(session_id);
 `,
 };

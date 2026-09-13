@@ -816,6 +816,7 @@ describe('start-session executor (SESSION-02)', () => {
   }
 
   beforeEach(async () => {
+    db.exec('DELETE FROM mesh_session_ownership; DELETE FROM mesh_handoff_journal;');
     probeMock.mockReset().mockResolvedValue('0.44.0');
     runTurnMock.mockReset();
     runTurnMock.mockImplementation(
@@ -959,6 +960,183 @@ describe('start-session executor (SESSION-02)', () => {
         .get('att-job-sess') as { state: string; journal_json: string };
       expect(row.state).toBe('failed');
       expect(row.journal_json).toContain('workspace-not-prepared');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('activates a transferred handoff and records local ownership', async () => {
+    const { workspaceId, portableId, repoDir, head } = seedSessionWorkspace('ho');
+    try {
+      const job = makeSessionJob('job-sess', workspaceId, portableId, head, {
+        handoffId: 'ho-1',
+      });
+      const handoff: Record<string, unknown> = {
+        id: 'ho-1',
+        sessionId: 'sess-logical',
+        state: 'ownership-transferred',
+        sourceEnrollmentId: 'enr-source',
+        targetEnrollmentId: 'enr-1',
+        sourceGeneration: 1,
+        targetGeneration: 2,
+        checkpoint: {
+          sessionId: 'sess-logical',
+          schemaVersion: 1,
+          sourceGeneration: 1,
+          repositories: [{ repositoryId: portableId, commit: head }],
+          provider: 'codex',
+          model: 'gpt-5',
+          summary: 'prior context',
+          artifactRefs: [],
+          unresolvedApprovals: [],
+        },
+        cancelledFrom: null,
+        cancelReason: null,
+        createdAt: '',
+        updatedAt: '',
+      };
+      rpcHandler = (op, rawParams) => {
+        const params = rawParams as Record<string, unknown>;
+        if (op === 'job.claim') {
+          return { job, attempt: makeAttempt(job.id), fence: 1, manifest: job.inputManifest };
+        }
+        if (op === 'attempt.report') return { status: 'applied' };
+        if (op === 'handoff.get') return { handoff };
+        if (op === 'handoff.advance') {
+          handoff['state'] = params['to'];
+          return { handoff };
+        }
+        return {};
+      };
+      await handleJobAvailable('job-sess');
+
+      // The executor advanced ownership-transferred → target-activating → completed.
+      const advances = rpcCalls
+        .filter((c) => c.operation === 'handoff.advance')
+        .map((c) => (c.params as { to: string }).to);
+      expect(advances).toEqual(['target-activating', 'completed']);
+
+      // The continuation prompt carries the checkpoint summary.
+      const spec = runTurnMock.mock.calls[0]?.[0];
+      expect(spec?.prompt).toContain('prior context');
+      expect(spec?.prompt).toContain('do the thing');
+
+      // Local ownership mirror now shows this device owning generation 2.
+      const ownership = db
+        .prepare('SELECT generation, state FROM mesh_session_ownership WHERE session_id = ?')
+        .get('sess-logical') as { generation: number; state: string };
+      expect(ownership).toEqual({ generation: 2, state: 'owned' });
+
+      const row = db
+        .prepare('SELECT state, journal_json FROM mesh_attempts WHERE id = ?')
+        .get('att-job-sess') as { state: string; journal_json: string };
+      expect(row.state).toBe('completed');
+      expect(row.journal_json).toContain('handoff-activating');
+      expect(row.journal_json).toContain('handoff-completed');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed when the handoff has not transferred ownership', async () => {
+    const { workspaceId, portableId, repoDir, head } = seedSessionWorkspace('ho-gate');
+    try {
+      const job = makeSessionJob('job-sess', workspaceId, portableId, head, {
+        handoffId: 'ho-2',
+      });
+      rpcHandler = (op) => {
+        if (op === 'job.claim') {
+          return { job, attempt: makeAttempt(job.id), fence: 1, manifest: job.inputManifest };
+        }
+        if (op === 'attempt.report') return { status: 'applied' };
+        if (op === 'handoff.get') {
+          return {
+            handoff: {
+              id: 'ho-2',
+              sessionId: 'sess-x',
+              state: 'source-quiescing',
+              sourceEnrollmentId: 'enr-source',
+              targetEnrollmentId: 'enr-1',
+              sourceGeneration: 1,
+              targetGeneration: null,
+              checkpoint: null,
+              cancelledFrom: null,
+              cancelReason: null,
+              createdAt: '',
+              updatedAt: '',
+            },
+          };
+        }
+        return {};
+      };
+      await handleJobAvailable('job-sess');
+
+      expect(runTurnMock).not.toHaveBeenCalled();
+      const row = db
+        .prepare('SELECT state, journal_json FROM mesh_attempts WHERE id = ?')
+        .get('att-job-sess') as { state: string; journal_json: string };
+      expect(row.state).toBe('failed');
+      expect(row.journal_json).toContain('handoff-not-transferred');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('marks the handoff failed when the activation turn fails', async () => {
+    const { workspaceId, portableId, repoDir, head } = seedSessionWorkspace('ho-fail');
+    try {
+      const job = makeSessionJob('job-sess', workspaceId, portableId, head, {
+        handoffId: 'ho-3',
+      });
+      const handoff: Record<string, unknown> = {
+        id: 'ho-3',
+        sessionId: 'sess-y',
+        state: 'ownership-transferred',
+        sourceEnrollmentId: 'enr-source',
+        targetEnrollmentId: 'enr-1',
+        sourceGeneration: 1,
+        targetGeneration: 2,
+        checkpoint: null,
+        cancelledFrom: null,
+        cancelReason: null,
+        createdAt: '',
+        updatedAt: '',
+      };
+      runTurnMock.mockImplementation(async () => ({
+        providerThreadId: 'thr-x',
+        turnId: 'turn-x',
+        turnStatus: 'failed' as const,
+        cliVersion: '0.44.0',
+        cancelled: false,
+      }));
+      rpcHandler = (op, rawParams) => {
+        const params = rawParams as Record<string, unknown>;
+        if (op === 'job.claim') {
+          return { job, attempt: makeAttempt(job.id), fence: 1, manifest: job.inputManifest };
+        }
+        if (op === 'attempt.report') return { status: 'applied' };
+        if (op === 'handoff.get') return { handoff };
+        if (op === 'handoff.advance') {
+          handoff['state'] = params['to'];
+          return { handoff };
+        }
+        return {};
+      };
+      await handleJobAvailable('job-sess');
+
+      const advances = rpcCalls
+        .filter((c) => c.operation === 'handoff.advance')
+        .map((c) => (c.params as { to: string }).to);
+      expect(advances).toEqual(['target-activating', 'failed']);
+      const row = db
+        .prepare('SELECT state FROM mesh_attempts WHERE id = ?')
+        .get('att-job-sess') as { state: string };
+      expect(row.state).toBe('failed');
+      // The target keeps owning recovery — no ownership restore.
+      const ownership = db
+        .prepare('SELECT COUNT(*) AS n FROM mesh_session_ownership WHERE session_id = ?')
+        .get('sess-y') as { n: number };
+      expect(ownership.n).toBe(0);
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }
