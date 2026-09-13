@@ -62,6 +62,8 @@ import {
   signOutSync,
 } from '../sync-runtime.service';
 import { createDiagnosticJob, getMeshJob } from '../mesh-worker.service';
+import { observeAttempt, type AttemptActivity } from '../mesh-observe.service';
+import { downloadMeshArtifact, listMeshArtifacts } from '../mesh-artifact.service';
 import { pinBackend } from '../sync-backend.service';
 import { saveWorkflowTemplate } from '../workflow.service';
 import type { SyncRuntimeStatus } from '../../../shared/sync-runtime';
@@ -398,6 +400,91 @@ describe.skipIf(!backendReachable)('two-profile acceptance gate (real worker)', 
       enableSync();
       const final = await getMeshJob(job.id);
       expect(final?.state).toBe('completed');
+      await signOutSync();
+    },
+  );
+
+  it(
+    'replays attempt events and round-trips an R2 artifact (MESH-03)',
+    { timeout: 60_000 },
+    async () => {
+      const accountId = `acct-gate-${Date.now()}-observe`;
+      const descriptor = await backendDescriptor();
+
+      // ---- A enrolls, C pairs in as the worker.
+      const a = openProfile('a-observe');
+      openProfiles.push(a);
+      await enrollProfile(a, await mintCode(accountId));
+      const pairing = await issueEnrollmentCode();
+
+      const c = openProfile('c-observe');
+      openProfiles.push(c);
+      const cStatus = await enrollProfile(c, pairing.code);
+      const cEnrollmentId = cStatus.auth.enrollmentId;
+      expect(cEnrollmentId).not.toBeNull();
+      const worker = await setMeshWorkerOptIn(true);
+      expect(worker.connected).toBe(true);
+
+      // ---- A creates the job; C claims via the durable sweep and runs it.
+      // The worker uploads the diagnostic result as an R2 artifact while the
+      // attempt is active, then reports.
+      reopenProfile(a);
+      pinBackend({ baseUrl: BACKEND_URL, descriptor });
+      enableSync();
+      const job = await createDiagnosticJob({
+        requestId: `diag-obs-${Date.now()}`,
+        targetEnrollmentId: cEnrollmentId ?? undefined,
+      });
+
+      const c2 = reopenProfile(c);
+      pinBackend({ baseUrl: BACKEND_URL, descriptor });
+      enableSync();
+
+      const deadline = Date.now() + 20_000;
+      let attemptId: string | null = null;
+      while (Date.now() < deadline) {
+        const row = c2.db
+          .prepare('SELECT id, state FROM mesh_attempts WHERE job_id = ?')
+          .get(job.id) as { id: string; state: string } | undefined;
+        if (row?.state === 'completed') {
+          attemptId = row.id;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      expect(attemptId).not.toBeNull();
+
+      // ---- Back on A: the durable event journal replays the attempt's
+      // lifecycle + activity through observeAttempt's event.pull path.
+      reopenProfile(a);
+      pinBackend({ baseUrl: BACKEND_URL, descriptor });
+      enableSync();
+
+      const seen: AttemptActivity[] = [];
+      const detach = observeAttempt(attemptId ?? '', (item) => seen.push(item));
+      try {
+        const replayDeadline = Date.now() + 15_000;
+        while (Date.now() < replayDeadline && seen.length === 0) {
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        }
+        expect(seen.length).toBeGreaterThan(0);
+        // Lifecycle rows reach observers as status items; the journal must
+        // contain the attempt's creation/completion history.
+        const kinds = seen.map((item) => item.kind);
+        expect(kinds).toContain('status');
+      } finally {
+        detach();
+      }
+
+      // ---- Artifact: listed account-side, manifest matches, bytes
+      // round-trip byte-for-byte through the private R2 route.
+      const artifacts = await listMeshArtifacts({ attemptId: attemptId ?? '' });
+      expect(artifacts.length).toBeGreaterThan(0);
+      const evidence = artifacts[0];
+      expect(evidence.mediaType).toBe('application/json');
+      const bytes = await downloadMeshArtifact(evidence.id);
+      const decoded = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
+      expect(decoded).toBeTypeOf('object');
       await signOutSync();
     },
   );

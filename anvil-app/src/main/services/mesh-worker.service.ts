@@ -15,6 +15,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { platform, totalmem } from 'node:os';
 import { getDb } from '../db/database.js';
+import { uploadAttemptArtifact } from './mesh-artifact.service.js';
 import { LEASE_RENEW_INTERVAL_MS } from '../../../cloud/contract/version.js';
 import { canonicalJson } from './sync-persistence.service.js';
 import { rpc as backendRpc, BackendRpcError } from './sync-backend-client.service.js';
@@ -512,6 +513,23 @@ async function runAttempt(attempt: ExecutionAttempt, job: MeshJob): Promise<void
     appendJournal(attemptId, 'running');
     const result = await executeDiagnostic(job.inputManifest, attemptId, attempt);
     const cancelled = isCancelRequested(attemptId);
+    // MESH-03: persist attempt evidence as a private R2 artifact while the
+    // attempt is still active — reserve rejects terminal attempts, so this
+    // must happen before reportAttempt. Best-effort: the outcome report is
+    // authoritative and must not be held up by an artifact failure.
+    try {
+      const evidence = new TextEncoder().encode(JSON.stringify(result, null, 2));
+      const manifest = await uploadAttemptArtifact({
+        attemptId,
+        bytes: evidence,
+        mediaType: 'application/json',
+      });
+      appendJournal(attemptId, 'artifact-uploaded', { artifactId: manifest.id });
+    } catch (artifactError) {
+      appendJournal(attemptId, 'artifact-upload-failed', {
+        error: artifactError instanceof Error ? artifactError.message : String(artifactError),
+      });
+    }
     updateAttemptState(attemptId, cancelled ? 'cancelled' : 'completed', {
       resultJson: JSON.stringify(result),
     });
