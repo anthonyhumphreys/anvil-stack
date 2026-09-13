@@ -30,12 +30,38 @@ import {
 } from '../../contract/sync';
 import {
   SOCKET_FRAME_VERSION,
+  type JobAvailableFrame,
   type SocketFrame,
   type SyncInvalidateFrame,
   type WorkerAvailableFrame,
 } from '../../contract/socket';
 import type { SyncAccountStats } from '../../contract/auth';
 import {
+  ATTEMPT_TRANSITIONS,
+  canTransitionJob,
+  type AttemptReportResult,
+  type AttemptRenewParams,
+  type AttemptRenewResult,
+  type AttemptRenewalRequest,
+  type AttemptRenewalResult,
+  type AttemptState,
+  type CapabilityRequirements,
+  type ExecutionAttempt,
+  type ExecutionManifest,
+  type JobCancelResult,
+  type JobClaimResult,
+  type JobCreateParams,
+  type JobCreateResult,
+  type JobGetResult,
+  type JobKind,
+  type JobListResult,
+  type JobState,
+  type JobSummary,
+  type RequestedTarget,
+  type RetryPolicy,
+} from '../../contract/jobs';
+import {
+  SAME_ACCOUNT_SOURCE,
   type DevicePolicy,
   type DevicePolicyPublishResult,
   type WorkerCapabilities,
@@ -50,7 +76,9 @@ import {
 import {
   SOCKET_SUBPROTOCOL,
   DEFAULT_LIMITS,
+  LEASE_DURATION_MS,
   SNAPSHOT_LIFETIME_MS,
+  USER_JOB_DEADLINE_MS,
   WORKER_LEASE_MS,
 } from '../../contract/version';
 
@@ -148,6 +176,46 @@ interface WorkerReplicaRow {
   [key: string]: string | number | null;
 }
 
+interface JobRow {
+  job_id: string;
+  account_id: string;
+  source_enrollment_id: string;
+  request_id: string;
+  payload_hash: string;
+  kind: string;
+  requested_target: string;
+  target_enrollment_id: string | null;
+  placement_explanation: string | null;
+  input_manifest: string;
+  state: string;
+  state_reason: string | null;
+  queue_deadline: number;
+  retry_policy: string;
+  retried: number;
+  next_fence: number;
+  active_attempt_id: string | null;
+  created_at: number;
+  updated_at: number;
+  [key: string]: string | number | null;
+}
+
+interface AttemptRow {
+  attempt_id: string;
+  job_id: string;
+  worker_enrollment_id: string;
+  worker_incarnation: string;
+  fence: number;
+  state: string;
+  lease_expires_at: number;
+  outcome: string | null;
+  result: string | null;
+  error: string | null;
+  late_result: string | null;
+  created_at: number;
+  updated_at: number;
+  [key: string]: string | number | null;
+}
+
 interface PushBatchOutcome {
   results: SyncPushItemResult[];
   acceptedWatermark: number | null;
@@ -173,6 +241,20 @@ const MAX_POLICY_SOURCES = 100;
 const MAX_CAPABILITY_ENTRIES = 64;
 const MAX_REPLICAS_PER_PUBLISH = 256;
 const MAX_CONCURRENT_JOBS = 64;
+/** MESH-02 bounds: metadata-only payloads, never bulk content. */
+const MAX_MANIFEST_REPOSITORIES = 64;
+const MAX_MANIFEST_CONFIG_ENTRIES = 64;
+const MAX_JOB_INPUTS_BYTES = 32 * 1024;
+const MAX_MANIFEST_BYTES = 64 * 1024;
+const MAX_REPORT_RESULT_BYTES = 64 * 1024;
+const MAX_REPORT_ERROR_LENGTH = 4096;
+const MAX_ATTEMPT_RENEWALS = 64;
+const MAX_JOB_LIST_LIMIT = 100;
+const DEFAULT_JOB_LIST_LIMIT = 50;
+/** Explicit queue deadlines may reach at most this far out (spec bound: ~24h). */
+const MAX_QUEUE_DEADLINE_HORIZON_MS = 24 * 60 * 60 * 1000;
+/** Grace beyond attempt-lease expiry before the sweep marks unknown-outcome. */
+const ATTEMPT_UNKNOWN_GRACE_MS = LEASE_DURATION_MS;
 
 function isSocketAttachment(value: unknown): value is SocketAttachment {
   if (!isRecord(value)) {
@@ -362,6 +444,23 @@ export class AccountCoordinator extends DurableObject<Env> {
           return this.handleWorkerCapabilitiesPublish(auth, rpc.requestId, rpc.params);
         case 'worker.replica.publish':
           return this.handleWorkerReplicaPublish(auth, rpc.requestId, rpc.params);
+        // MESH-02 job/attempt lifecycle. job.get/job.list/job.cancel are
+        // account-scoped reads/idempotent intents; claim/renew/report carry
+        // the worker's fail-closed policy gate.
+        case 'job.create':
+          return await this.handleJobCreate(auth, rpc.requestId, rpc.params);
+        case 'job.get':
+          return this.handleJobGet(rpc.requestId, rpc.params);
+        case 'job.list':
+          return this.handleJobList(rpc.requestId, rpc.params);
+        case 'job.claim':
+          return await this.handleJobClaim(auth, rpc.requestId, rpc.params);
+        case 'attempt.renew':
+          return this.handleAttemptRenew(auth, rpc.requestId, rpc.params);
+        case 'attempt.report':
+          return await this.handleAttemptReport(auth, rpc.requestId, rpc.params);
+        case 'job.cancel':
+          return this.handleJobCancel(rpc.requestId, rpc.params);
         default:
           return rpcErrorResponse(rpc.requestId, 'unsupported-operation');
       }
@@ -921,18 +1020,23 @@ export class AccountCoordinator extends DurableObject<Env> {
    * Live-frame fanout to this account's attached sockets.
    * `excludeEnrollmentId` skips the caller's own attachments — mailbox
    * semantics: a `worker.connect` announcement reaches the account's OTHER
-   * sockets, not the connecting device's. MESH-02's `job.available` fanout
-   * lands here as one call.
+   * sockets, not the connecting device's. `onlyEnrollmentId` narrows delivery
+   * to one enrollment's attachments — MESH-02's `job.available` targets the
+   * resolved worker's sockets only.
    */
-  private emitSocketFrame(frame: SocketFrame, options?: { excludeEnrollmentId?: string }): void {
+  private emitSocketFrame(
+    frame: SocketFrame,
+    options?: { excludeEnrollmentId?: string; onlyEnrollmentId?: string },
+  ): void {
     const encoded = JSON.stringify(frame);
     for (const socket of this.ctx.getWebSockets()) {
-      if (options?.excludeEnrollmentId !== undefined) {
+      if (options?.excludeEnrollmentId !== undefined || options?.onlyEnrollmentId !== undefined) {
         const attachment = socket.deserializeAttachment();
-        if (
-          isSocketAttachment(attachment) &&
-          attachment.enrollmentId === options.excludeEnrollmentId
-        ) {
+        const enrolled = isSocketAttachment(attachment) ? attachment.enrollmentId : null;
+        if (options.onlyEnrollmentId !== undefined && enrolled !== options.onlyEnrollmentId) {
+          continue;
+        }
+        if (options.excludeEnrollmentId !== undefined && enrolled === options.excludeEnrollmentId) {
           continue;
         }
       }
@@ -1168,6 +1272,787 @@ export class AccountCoordinator extends DurableObject<Env> {
     }
   }
 
+  // ---- MESH-02 job/attempt lifecycle --------------------------------------
+  // Durable jobs and attempts are account metadata: their writes never touch
+  // the sync change sequence and are never entity changes (spec §9/§13).
+  // Placement is resolved and persisted at create; claim enforces liveness,
+  // source policy, deadline, capacity, and duplicate checks in one
+  // transaction before allocating a per-job monotonic fence. Renew and
+  // report require attempt + incarnation + fence to match; a stale report is
+  // rejected but its recoverable result is retained on the attempt row.
+
+  /**
+   * `job.create`: idempotent on (source enrollment, requestId) + payload
+   * hash. A replay with the same hash returns the stored job; a different
+   * hash under a used requestId is a conflict. Placement is resolved eagerly
+   * and persisted with its explanation before the job can be claimed.
+   */
+  private async handleJobCreate(
+    auth: SpikeAuth,
+    requestId: string,
+    params: unknown,
+  ): Promise<Response> {
+    const create = parseJobCreateParams(params);
+    const now = Date.now();
+    let queueDeadline = now + USER_JOB_DEADLINE_MS;
+    if (create.queueDeadline !== undefined) {
+      queueDeadline = Date.parse(create.queueDeadline);
+    }
+    if (
+      !Number.isFinite(queueDeadline) ||
+      queueDeadline <= now ||
+      queueDeadline > now + MAX_QUEUE_DEADLINE_HORIZON_MS
+    ) {
+      throw new RpcFailure('malformed-request', { reason: 'queueDeadline' });
+    }
+    const created = this.ctx.storage.transactionSync(() => {
+      this.provisionEnrollment(auth);
+      const existing = this.readJobByRequest(auth.enrollmentId, create.requestId);
+      if (existing !== null) {
+        if (existing.payload_hash !== create.payloadHash) {
+          throw new RpcFailure('conflict', {
+            reason: 'request-id-hash-mismatch',
+            requestId: create.requestId,
+          });
+        }
+        return { job: this.jobSummary(existing), notifyTarget: null as string | null };
+      }
+      const placement = this.resolvePlacement(auth, create, now);
+      const jobId = crypto.randomUUID();
+      this.ctx.storage.sql.exec(
+        `INSERT INTO jobs (
+           job_id, account_id, source_enrollment_id, request_id, payload_hash, kind,
+           requested_target, target_enrollment_id, placement_explanation, input_manifest,
+           state, state_reason, queue_deadline, retry_policy, retried, next_fence,
+           active_attempt_id, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, ?, ?, 0, 1, NULL, ?, ?)`,
+        jobId,
+        auth.accountId,
+        auth.enrollmentId,
+        create.requestId,
+        create.payloadHash,
+        create.kind,
+        JSON.stringify(create.requestedTarget),
+        placement.targetEnrollmentId,
+        placement.explanation,
+        JSON.stringify(create.inputManifest),
+        queueDeadline,
+        create.retryPolicy,
+        now,
+        now,
+      );
+      this.bumpCounter('job_creates', 1);
+      return {
+        job: this.jobSummary(this.readJobRequired(jobId)),
+        notifyTarget: placement.targetEnrollmentId,
+      };
+    });
+    // A freshly queued job with a resolved target is claimable: nudge exactly
+    // that enrollment's attached sockets.
+    if (created.notifyTarget !== null) {
+      this.emitJobAvailable(created.job.id, created.notifyTarget);
+    }
+    await this.ensureSweepScheduled();
+    const result: JobCreateResult = { job: created.job };
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  /**
+   * Resolve and explain the claim-time target (spec §9/§12).
+   * - `device`: the source's explicit choice is validated eagerly — the
+   *   target must hold a live worker incarnation under an allowing policy
+   *   that authorizes the source. Failure rejects the create: an explicit
+   *   target is never silently retargeted or left dangling.
+   * - `auto`: deterministic pick — the least-loaded live worker (active
+   *   attempts, then enrollment id) whose policy authorizes the source and
+   *   whose capabilities satisfy the declared requirements, with free
+   *   capacity. Nothing qualifying leaves the job queued-but-unresolved.
+   */
+  private resolvePlacement(
+    auth: SpikeAuth,
+    create: JobCreateParams,
+    now: number,
+  ): { targetEnrollmentId: string | null; explanation: string } {
+    const requested = create.requestedTarget;
+    if (requested.kind === 'device') {
+      const enrollmentId = requested.enrollmentId as string;
+      const row = this.readWorker(enrollmentId);
+      if (row === null || row.account_id !== auth.accountId || row.revoked_at !== null) {
+        throw new RpcFailure('forbidden', {
+          reason: 'target-not-eligible',
+          targetEnrollmentId: enrollmentId,
+        });
+      }
+      const policy = parseStoredDevicePolicy(row.policy);
+      if (
+        policy.worker.allowJobs !== true ||
+        !policyAllowsSource(policy, auth.enrollmentId, enrollmentId)
+      ) {
+        throw new RpcFailure('forbidden', {
+          reason: 'target-not-eligible',
+          targetEnrollmentId: enrollmentId,
+        });
+      }
+      if (!isLeaseLive(row, now)) {
+        throw new RpcFailure('conflict', {
+          reason: 'target-not-live',
+          targetEnrollmentId: enrollmentId,
+        });
+      }
+      return {
+        targetEnrollmentId: enrollmentId,
+        explanation: `device: explicit target; live worker with allowing policy`,
+      };
+    }
+    const candidates = this.ctx.storage.sql
+      .exec<WorkerRow & { active_attempts: number }>(
+        `SELECT w.*, (
+           SELECT COUNT(*) FROM attempts a
+           WHERE a.worker_enrollment_id = w.enrollment_id
+             AND a.state IN ('claimed', 'preparing', 'running', 'stopping')
+         ) AS active_attempts
+         FROM workers w
+         WHERE w.account_id = ? AND w.revoked_at IS NULL`,
+        auth.accountId,
+      )
+      .toArray();
+    let liveAllowing = 0;
+    const eligible: { enrollmentId: string; activeAttempts: number }[] = [];
+    for (const row of candidates) {
+      const policy = parseStoredDevicePolicy(row.policy);
+      if (policy.worker.allowJobs !== true || !isLeaseLive(row, now)) {
+        continue;
+      }
+      liveAllowing += 1;
+      if (!policyAllowsSource(policy, auth.enrollmentId, row.enrollment_id)) {
+        continue;
+      }
+      const capabilities = parseStoredCapabilities(row.capabilities);
+      if (!capabilitiesSatisfy(capabilities, requested.requirements)) {
+        continue;
+      }
+      const capacity = effectiveConcurrencyCap(policy, capabilities);
+      if (row.active_attempts >= capacity) {
+        continue;
+      }
+      eligible.push({ enrollmentId: row.enrollment_id, activeAttempts: row.active_attempts });
+    }
+    eligible.sort(
+      (a, b) => a.activeAttempts - b.activeAttempts || a.enrollmentId.localeCompare(b.enrollmentId),
+    );
+    const chosen = eligible[0];
+    if (chosen === undefined) {
+      const explanation =
+        `auto: no eligible live worker (${liveAllowing} live worker(s) ` +
+        'allowing jobs; none satisfy source authorization, requirements, and capacity)';
+      return { targetEnrollmentId: null, explanation };
+    }
+    return {
+      targetEnrollmentId: chosen.enrollmentId,
+      explanation: `auto: least-loaded of ${eligible.length} eligible live worker(s)`,
+    };
+  }
+
+  /** `job.get`: job summary plus its attempts, fence-ordered. */
+  private handleJobGet(requestId: string, params: unknown): Response {
+    const { jobId } = parseJobIdParams(params);
+    const result = this.ctx.storage.transactionSync(() => {
+      this.expireQueuedJobs(Date.now());
+      const job = this.readJob(jobId);
+      if (job === null) {
+        throw new RpcFailure('not-found', { reason: 'job' });
+      }
+      const attempts = this.ctx.storage.sql
+        .exec<AttemptRow>(
+          'SELECT * FROM attempts WHERE job_id = ? ORDER BY fence ASC',
+          jobId,
+        )
+        .toArray()
+        .map((row) => this.attemptView(row));
+      const out: JobGetResult = { job: this.jobSummary(job), attempts };
+      return out;
+    });
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  /** `job.list`: newest-first, optional state filter, bounded page. */
+  private handleJobList(requestId: string, params: unknown): Response {
+    const list = parseJobListParams(params);
+    const result = this.ctx.storage.transactionSync(() => {
+      this.expireQueuedJobs(Date.now());
+      const rows =
+        list.state === undefined
+          ? this.ctx.storage.sql
+              .exec<JobRow>(
+                'SELECT * FROM jobs ORDER BY created_at DESC, job_id ASC LIMIT ?',
+                list.limit,
+              )
+              .toArray()
+          : this.ctx.storage.sql
+              .exec<JobRow>(
+                'SELECT * FROM jobs WHERE state = ? ORDER BY created_at DESC, job_id ASC LIMIT ?',
+                list.state,
+                list.limit,
+              )
+              .toArray();
+      const out: JobListResult = { jobs: rows.map((row) => this.jobSummary(row)) };
+      return out;
+    });
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  /**
+   * `job.claim` (worker actor): one transaction checks, in order —
+   * 1. caller holds a live worker incarnation (requireWorker + lease);
+   * 2. job is `queued`, unresolved-or-targeted-at-caller, inside its
+   *    queueDeadline (an expired deadline marks the job failed lazily);
+   * 3. the target worker's policy authorizes the source enrollment;
+   * 4. capacity: active attempts < min(policy, capabilities, backend cap);
+   * 5. no other non-terminal attempt exists for the job.
+   * Then it allocates the next fence, creates the `claimed` attempt, and
+   * moves the job to `running`.
+   */
+  private async handleJobClaim(
+    auth: SpikeAuth,
+    requestId: string,
+    params: unknown,
+  ): Promise<Response> {
+    const { jobId } = parseJobIdParams(params);
+    const { row: worker, policy } = this.requireWorker(auth);
+    const now = Date.now();
+    this.requireLiveIncarnation(worker, now);
+    const result = this.ctx.storage.transactionSync(() => {
+      const job = this.readJob(jobId);
+      if (job === null || job.account_id !== auth.accountId) {
+        throw new RpcFailure('not-found', { reason: 'job' });
+      }
+      if (job.state === 'queued' && job.queue_deadline <= now) {
+        this.setJobState(job, 'failed', now, {
+          stateReason: 'queue-deadline',
+          activeAttemptId: null,
+        });
+        throw new RpcFailure('conflict', { reason: 'queue-deadline', jobId });
+      }
+      if (job.state !== 'queued') {
+        throw new RpcFailure('conflict', { reason: 'job-not-queued', state: job.state });
+      }
+      if (job.target_enrollment_id !== null && job.target_enrollment_id !== auth.enrollmentId) {
+        throw new RpcFailure('forbidden', {
+          reason: 'not-the-target',
+          targetEnrollmentId: job.target_enrollment_id,
+        });
+      }
+      if (!policyAllowsSource(policy, job.source_enrollment_id, auth.enrollmentId)) {
+        throw new RpcFailure('forbidden', { reason: 'source-not-allowed' });
+      }
+      const capacity = effectiveConcurrencyCap(policy, parseStoredCapabilities(worker.capabilities));
+      const active = this.countActiveAttempts(auth.enrollmentId);
+      if (active >= capacity) {
+        throw new RpcFailure('conflict', { reason: 'worker-at-capacity', limit: capacity });
+      }
+      const duplicate = this.ctx.storage.sql
+        .exec<{ n: number }>(
+          `SELECT COUNT(*) AS n FROM attempts
+           WHERE job_id = ? AND state IN ('claimed', 'preparing', 'running', 'stopping')`,
+          jobId,
+        )
+        .one().n;
+      if (duplicate > 0) {
+        throw new RpcFailure('conflict', { reason: 'active-attempt-exists' });
+      }
+      const fence = job.next_fence;
+      const attemptId = crypto.randomUUID();
+      const leaseExpiresAt = now + LEASE_DURATION_MS;
+      this.ctx.storage.sql.exec(
+        `INSERT INTO attempts (
+           attempt_id, job_id, worker_enrollment_id, worker_incarnation, fence, state,
+           lease_expires_at, outcome, result, error, late_result, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, 'claimed', ?, NULL, NULL, NULL, NULL, ?, ?)`,
+        attemptId,
+        jobId,
+        auth.enrollmentId,
+        worker.incarnation as string,
+        fence,
+        leaseExpiresAt,
+        now,
+        now,
+      );
+      this.setJobState(job, 'running', now, {
+        activeAttemptId: attemptId,
+        nextFence: fence + 1,
+      });
+      // Claiming is worker activity: refresh the incarnation lease too.
+      this.ctx.storage.sql.exec(
+        'UPDATE workers SET last_seen_at = ?, lease_expires_at = ? WHERE enrollment_id = ?',
+        now,
+        now + WORKER_LEASE_MS,
+        auth.enrollmentId,
+      );
+      this.bumpCounter('job_claims', 1);
+      const out: JobClaimResult = {
+        job: this.jobSummary(this.readJobRequired(jobId)),
+        attempt: this.attemptView(this.readAttemptRequired(attemptId)),
+        fence,
+        manifest: JSON.parse(job.input_manifest) as ExecutionManifest,
+      };
+      return out;
+    });
+    await this.ensureSweepScheduled();
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  /**
+   * `attempt.renew` (worker actor): batched per-item lease renewals. Each
+   * item requires the attempt to belong to the caller, the incarnation and
+   * fence to match, the caller's incarnation to still be the live one, and
+   * the attempt to be non-terminal with an unexpired lease. A rejected item
+   * never fails the batch.
+   */
+  private handleAttemptRenew(auth: SpikeAuth, requestId: string, params: unknown): Response {
+    const { row: worker } = this.requireWorker(auth);
+    const renew = parseAttemptRenewParams(params);
+    const now = Date.now();
+    const results: AttemptRenewalResult[] = [];
+    this.ctx.storage.transactionSync(() => {
+      let renewed = 0;
+      for (const item of renew.renewals) {
+        const reject = (reason: string): AttemptRenewalResult => ({
+          attemptId: item.attemptId,
+          status: 'rejected',
+          reason,
+        });
+        const attempt = this.readAttempt(item.attemptId);
+        if (attempt === null) {
+          results.push(reject('not-found'));
+          continue;
+        }
+        if (attempt.worker_enrollment_id !== auth.enrollmentId) {
+          results.push(reject('not-owner'));
+          continue;
+        }
+        if (
+          attempt.worker_incarnation !== item.incarnation ||
+          worker.incarnation !== item.incarnation
+        ) {
+          results.push(reject('stale-incarnation'));
+          continue;
+        }
+        if (attempt.fence !== item.fence) {
+          results.push(reject('stale-fence'));
+          continue;
+        }
+        if (!isActiveAttemptState(attempt.state)) {
+          results.push(reject('attempt-terminal'));
+          continue;
+        }
+        if (attempt.lease_expires_at <= now) {
+          results.push(reject('lease-expired'));
+          continue;
+        }
+        if (!isLeaseLive(worker, now)) {
+          results.push(reject('worker-not-live'));
+          continue;
+        }
+        const leaseExpiresAt = now + LEASE_DURATION_MS;
+        this.ctx.storage.sql.exec(
+          'UPDATE attempts SET lease_expires_at = ?, updated_at = ? WHERE attempt_id = ?',
+          leaseExpiresAt,
+          now,
+          attempt.attempt_id,
+        );
+        results.push({
+          attemptId: item.attemptId,
+          status: 'renewed',
+          leaseExpiresAt: new Date(leaseExpiresAt).toISOString(),
+        });
+        renewed += 1;
+      }
+      if (renewed > 0) {
+        this.ctx.storage.sql.exec(
+          'UPDATE workers SET last_seen_at = ?, lease_expires_at = ? WHERE enrollment_id = ?',
+          now,
+          now + WORKER_LEASE_MS,
+          auth.enrollmentId,
+        );
+        this.bumpCounter('attempt_renews', renewed);
+      }
+    });
+    const result: AttemptRenewResult = { results };
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  /**
+   * `attempt.report` (worker actor): fence+incarnation-matched outcome
+   * publication. On a match the attempt records the outcome and transitions
+   * — `completed` completes the job unless a prior `cancel-requested` masks
+   * it (the report is the verified stop, so the job confirms `cancelled`);
+   * `failed` fails the job, except a `safe` retry policy returns it to
+   * `queued` once with a fresh deadline. A stale fence/incarnation or a
+   * terminal attempt rejects the transition but stores the report in
+   * `late_result` for forensics. An expired attempt lease does NOT reject a
+   * matched report: leases never reassign ownership, so the attempt remains
+   * the sole publisher of its outcome.
+   */
+  private async handleAttemptReport(
+    auth: SpikeAuth,
+    requestId: string,
+    params: unknown,
+  ): Promise<Response> {
+    const report = parseAttemptReportParams(params);
+    const { row: worker } = this.requireWorker(auth);
+    const now = Date.now();
+    const reported = this.ctx.storage.transactionSync(() => {
+      const attempt = this.readAttempt(report.attemptId);
+      if (attempt === null) {
+        throw new RpcFailure('not-found', { reason: 'attempt' });
+      }
+      if (attempt.worker_enrollment_id !== auth.enrollmentId) {
+        throw new RpcFailure('forbidden', { reason: 'not-attempt-owner' });
+      }
+      const job = this.readJobRequired(attempt.job_id);
+      const stale =
+        attempt.worker_incarnation !== report.incarnation ||
+        attempt.fence !== report.fence ||
+        worker.incarnation === null ||
+        worker.incarnation !== attempt.worker_incarnation;
+      if (stale || !isActiveAttemptState(attempt.state)) {
+        this.ctx.storage.sql.exec(
+          'UPDATE attempts SET late_result = ?, updated_at = ? WHERE attempt_id = ?',
+          JSON.stringify({
+            outcome: report.outcome,
+            result: report.resultJson === null ? null : (JSON.parse(report.resultJson) as unknown),
+            error: report.error ?? null,
+            reportedAt: new Date(now).toISOString(),
+          }),
+          now,
+          attempt.attempt_id,
+        );
+        const out: AttemptReportResult = {
+          status: 'late-result-retained',
+          job: this.jobSummary(job),
+          attempt: this.attemptView(this.readAttemptRequired(attempt.attempt_id)),
+        };
+        return { result: out, requeueTarget: null as string | null };
+      }
+      this.ctx.storage.sql.exec(
+        'UPDATE attempts SET outcome = ?, result = ?, error = ?, updated_at = ? WHERE attempt_id = ?',
+        report.outcome,
+        report.resultJson,
+        report.error ?? null,
+        now,
+        attempt.attempt_id,
+      );
+      let requeueTarget: string | null = null;
+      if (job.state === 'cancel-requested') {
+        // Cancellation wins: this report is the verified stop. A reported
+        // failure keeps its outcome; a reported completion is masked to
+        // 'cancelled' (stopping attempts never reach completed).
+        this.setAttemptState(attempt, report.outcome === 'failed' ? 'failed' : 'cancelled', now);
+        this.setJobState(job, report.outcome === 'failed' ? 'failed' : 'cancelled', now, {
+          stateReason: 'cancel-requested',
+          activeAttemptId: null,
+        });
+      } else if (report.outcome === 'completed') {
+        this.setAttemptState(attempt, 'completed', now);
+        this.setJobState(job, 'completed', now, {
+          stateReason: null,
+          activeAttemptId: null,
+        });
+      } else {
+        this.setAttemptState(attempt, 'failed', now);
+        if (job.retry_policy === 'safe' && job.retried === 0) {
+          // One bounded re-queue under a 'safe' retry policy: fresh queue
+          // deadline, resolved target preserved.
+          this.setJobState(job, 'queued', now, {
+            stateReason: 'retry-safe',
+            activeAttemptId: null,
+            queueDeadline: now + USER_JOB_DEADLINE_MS,
+            retried: 1,
+          });
+          requeueTarget = job.target_enrollment_id;
+        } else {
+          this.setJobState(job, 'failed', now, {
+            stateReason: 'attempt-failed',
+            activeAttemptId: null,
+          });
+        }
+      }
+      // A fence-matched report is worker activity: refresh its lease.
+      this.ctx.storage.sql.exec(
+        'UPDATE workers SET last_seen_at = ?, lease_expires_at = ? WHERE enrollment_id = ?',
+        now,
+        now + WORKER_LEASE_MS,
+        auth.enrollmentId,
+      );
+      this.bumpCounter('attempt_reports', 1);
+      const out: AttemptReportResult = {
+        status: 'applied',
+        job: this.jobSummary(this.readJobRequired(job.job_id)),
+        attempt: this.attemptView(this.readAttemptRequired(attempt.attempt_id)),
+      };
+      return { result: out, requeueTarget };
+    });
+    // A re-queued job is claimable again: nudge the (preserved) target.
+    if (reported.requeueTarget !== null) {
+      this.emitJobAvailable(reported.result.job.id, reported.requeueTarget);
+    }
+    await this.ensureSweepScheduled();
+    return rpcSuccessResponse(requestId, reported.result);
+  }
+
+  /**
+   * `job.cancel` (source enrollment or any account controller): idempotent
+   * durable intent per JOB_TRANSITIONS. `queued`/`awaiting-approval` confirm
+   * `cancelled` directly; `running` moves to `cancel-requested` and marks
+   * the active attempt `stopping` — the verified stop arrives via
+   * attempt.report or the lease-lapse sweep. Terminal states are a no-op.
+   */
+  private handleJobCancel(requestId: string, params: unknown): Response {
+    const { jobId } = parseJobIdParams(params);
+    const result = this.ctx.storage.transactionSync(() => {
+      const now = Date.now();
+      this.expireQueuedJobs(now);
+      const job = this.readJob(jobId);
+      if (job === null) {
+        throw new RpcFailure('not-found', { reason: 'job' });
+      }
+      if (!isJobState(job.state)) {
+        throw new RpcFailure('unavailable', { reason: 'corrupt-job-state' });
+      }
+      if (job.state === 'queued' || job.state === 'awaiting-approval') {
+        this.setJobState(job, 'cancelled', now, {
+          stateReason: 'cancelled',
+          activeAttemptId: null,
+        });
+      } else if (job.state === 'running') {
+        this.setJobState(job, 'cancel-requested', now, { stateReason: 'cancel-requested' });
+        const active =
+          job.active_attempt_id === null ? null : this.readAttempt(job.active_attempt_id);
+        if (active !== null && isActiveAttemptState(active.state)) {
+          this.setAttemptState(active, 'stopping', now);
+        }
+      }
+      // 'cancel-requested' loops to itself and terminal states have no edges:
+      // a repeated cancel is an idempotent no-op.
+      this.bumpCounter('job_cancels', 1);
+      const out: JobCancelResult = { job: this.jobSummary(this.readJobRequired(jobId)) };
+      return out;
+    });
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  private emitJobAvailable(jobId: string, targetEnrollmentId: string): void {
+    const frame: JobAvailableFrame = {
+      type: 'job.available',
+      version: SOCKET_FRAME_VERSION,
+      id: crypto.randomUUID(),
+      jobId,
+    };
+    this.emitSocketFrame(frame, { onlyEnrollmentId: targetEnrollmentId });
+  }
+
+  /**
+   * Lazy queue-deadline enforcement (spec §9: reads/claims must enforce
+   * expiry without relying on punctual timers). Bounded per pass; the alarm
+   * sweep runs the same helper. Returns the number of jobs marked failed.
+   */
+  private expireQueuedJobs(now: number): number {
+    const expired = this.ctx.storage.sql
+      .exec<{ job_id: string }>(
+        "SELECT job_id FROM jobs WHERE state = 'queued' AND queue_deadline <= ? LIMIT ?",
+        now,
+        SWEEP_BATCH_ROWS,
+      )
+      .toArray();
+    for (const row of expired) {
+      this.ctx.storage.sql.exec(
+        `UPDATE jobs SET state = 'failed', state_reason = 'queue-deadline',
+           active_attempt_id = NULL, updated_at = ?
+         WHERE job_id = ?`,
+        now,
+        row.job_id,
+      );
+    }
+    if (expired.length > 0) {
+      this.bumpCounter('sweep_jobs_expired', expired.length);
+    }
+    return expired.length;
+  }
+
+  private readJob(jobId: string): JobRow | null {
+    const rows = this.ctx.storage.sql
+      .exec<JobRow>('SELECT * FROM jobs WHERE job_id = ?', jobId)
+      .toArray();
+    return rows[0] ?? null;
+  }
+
+  private readJobRequired(jobId: string): JobRow {
+    const row = this.readJob(jobId);
+    if (row === null) {
+      throw new RpcFailure('unavailable', { reason: 'corrupt-job' });
+    }
+    return row;
+  }
+
+  private readJobByRequest(sourceEnrollmentId: string, requestId: string): JobRow | null {
+    const rows = this.ctx.storage.sql
+      .exec<JobRow>(
+        'SELECT * FROM jobs WHERE source_enrollment_id = ? AND request_id = ?',
+        sourceEnrollmentId,
+        requestId,
+      )
+      .toArray();
+    return rows[0] ?? null;
+  }
+
+  private readAttempt(attemptId: string): AttemptRow | null {
+    const rows = this.ctx.storage.sql
+      .exec<AttemptRow>('SELECT * FROM attempts WHERE attempt_id = ?', attemptId)
+      .toArray();
+    return rows[0] ?? null;
+  }
+
+  private readAttemptRequired(attemptId: string): AttemptRow {
+    const row = this.readAttempt(attemptId);
+    if (row === null) {
+      throw new RpcFailure('unavailable', { reason: 'corrupt-attempt' });
+    }
+    return row;
+  }
+
+  private countActiveAttempts(workerEnrollmentId: string): number {
+    return this.ctx.storage.sql
+      .exec<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM attempts
+         WHERE worker_enrollment_id = ?
+           AND state IN ('claimed', 'preparing', 'running', 'stopping')`,
+        workerEnrollmentId,
+      )
+      .one().n;
+  }
+
+  /**
+   * Conditional job transition per the frozen JOB_TRANSITIONS table. The
+   * caller's row object is updated so chained transitions see fresh state.
+   */
+  private setJobState(
+    row: JobRow,
+    target: JobState,
+    now: number,
+    extras?: {
+      stateReason?: string | null;
+      activeAttemptId?: string | null;
+      queueDeadline?: number;
+      retried?: number;
+      nextFence?: number;
+    },
+  ): void {
+    if (!isJobState(row.state) || !canTransitionJob(row.state, target)) {
+      throw new RpcFailure('unavailable', {
+        reason: 'illegal-job-transition',
+        from: row.state,
+        to: target,
+      });
+    }
+    const stateReason = extras?.stateReason !== undefined ? extras.stateReason : row.state_reason;
+    const activeAttemptId =
+      extras?.activeAttemptId !== undefined ? extras.activeAttemptId : row.active_attempt_id;
+    const queueDeadline = extras?.queueDeadline ?? row.queue_deadline;
+    const retried = extras?.retried ?? row.retried;
+    const nextFence = extras?.nextFence ?? row.next_fence;
+    this.ctx.storage.sql.exec(
+      `UPDATE jobs SET state = ?, state_reason = ?, active_attempt_id = ?, queue_deadline = ?,
+         retried = ?, next_fence = ?, updated_at = ?
+       WHERE job_id = ?`,
+      target,
+      stateReason,
+      activeAttemptId,
+      queueDeadline,
+      retried,
+      nextFence,
+      now,
+      row.job_id,
+    );
+    row.state = target;
+    row.state_reason = stateReason;
+    row.active_attempt_id = activeAttemptId;
+    row.queue_deadline = queueDeadline;
+    row.retried = retried;
+    row.next_fence = nextFence;
+    row.updated_at = now;
+  }
+
+  /**
+   * Conditional attempt transition along the frozen ATTEMPT_TRANSITIONS
+   * graph. v1 has no progress op, so a `claimed` attempt reports completion
+   * via its legal path (claimed→preparing→running→completed): reachability
+   * is verified hop by hop, the final state is stored once. No path (e.g.
+   * stopping→completed) throws.
+   */
+  private setAttemptState(row: AttemptRow, target: AttemptState, now: number): void {
+    if (!isAttemptState(row.state)) {
+      throw new RpcFailure('unavailable', {
+        reason: 'corrupt-attempt-state',
+        state: row.state,
+      });
+    }
+    if (row.state === target) {
+      return;
+    }
+    if (!attemptTransitionReachable(row.state, target)) {
+      throw new RpcFailure('unavailable', {
+        reason: 'illegal-attempt-transition',
+        from: row.state,
+        to: target,
+      });
+    }
+    this.ctx.storage.sql.exec(
+      'UPDATE attempts SET state = ?, updated_at = ? WHERE attempt_id = ?',
+      target,
+      now,
+      row.attempt_id,
+    );
+    row.state = target;
+    row.updated_at = now;
+  }
+
+  private jobSummary(row: JobRow): JobSummary {
+    if (!isJobKind(row.kind) || !isJobState(row.state) || !isRetryPolicy(row.retry_policy)) {
+      throw new RpcFailure('unavailable', { reason: 'corrupt-job' });
+    }
+    return {
+      id: row.job_id,
+      requestId: row.request_id,
+      payloadHash: row.payload_hash,
+      kind: row.kind,
+      sourceEnrollmentId: row.source_enrollment_id,
+      requestedTarget: JSON.parse(row.requested_target) as RequestedTarget,
+      ...(row.target_enrollment_id === null
+        ? {}
+        : { targetEnrollmentId: row.target_enrollment_id }),
+      inputManifest: JSON.parse(row.input_manifest) as ExecutionManifest,
+      state: row.state,
+      queueDeadline: new Date(row.queue_deadline).toISOString(),
+      retryPolicy: row.retry_policy,
+      placementExplanation: row.placement_explanation,
+      ...(row.state_reason === null ? {} : { stateReason: row.state_reason }),
+    };
+  }
+
+  private attemptView(row: AttemptRow): ExecutionAttempt {
+    if (!isAttemptState(row.state)) {
+      throw new RpcFailure('unavailable', { reason: 'corrupt-attempt-state' });
+    }
+    return {
+      id: row.attempt_id,
+      jobId: row.job_id,
+      workerIncarnation: row.worker_incarnation,
+      fence: row.fence,
+      leaseExpiresAt: new Date(row.lease_expires_at).toISOString(),
+      state: row.state,
+    };
+  }
+
   /**
    * OPS-01 retention/compaction. One alarm per account per spec §3: each pass
    * reschedules from the remaining work — soon while a bounded batch still has
@@ -1192,6 +2077,8 @@ export class AccountCoordinator extends DurableObject<Env> {
     deletedReceipts: number;
     deletedScans: number;
     deletedWorkers: number;
+    expiredJobs: number;
+    staleAttempts: number;
     continued: boolean;
   }> {
     const cutoff = now - RETENTION_MS;
@@ -1200,6 +2087,8 @@ export class AccountCoordinator extends DurableObject<Env> {
     let deletedReceipts = 0;
     let deletedScans = 0;
     let deletedWorkers = 0;
+    let expiredJobs = 0;
+    let staleAttempts = 0;
     let freedBytes = 0;
     let maxDeletedSequence: number | null = null;
     this.ctx.storage.transactionSync(() => {
@@ -1272,6 +2161,31 @@ export class AccountCoordinator extends DurableObject<Env> {
         this.ctx.storage.sql.exec('DELETE FROM workers WHERE enrollment_id = ?', row.enrollment_id);
         deletedWorkers += 1;
       }
+      // MESH-02: queued jobs past their queue deadline fail with
+      // 'queue-deadline' (same lazy pass reads/claims run). Attempts whose
+      // lease lapsed well past expiry — one full lease of grace — are marked
+      // 'unknown-outcome'. The job is deliberately NOT transitioned and no
+      // replacement attempt is created: an expired lease never auto-reassigns
+      // (spec §9); the job stays 'running'/'cancel-requested' until an
+      // explicit report or cancel reconciles it.
+      expiredJobs = this.expireQueuedJobs(now);
+      const stale = this.ctx.storage.sql
+        .exec<{ attempt_id: string }>(
+          `SELECT attempt_id FROM attempts
+           WHERE state IN ('claimed', 'preparing', 'running', 'stopping')
+             AND lease_expires_at < ? LIMIT ?`,
+          now - ATTEMPT_UNKNOWN_GRACE_MS,
+          SWEEP_BATCH_ROWS,
+        )
+        .toArray();
+      for (const row of stale) {
+        this.ctx.storage.sql.exec(
+          "UPDATE attempts SET state = 'unknown-outcome', updated_at = ? WHERE attempt_id = ?",
+          now,
+          row.attempt_id,
+        );
+        staleAttempts += 1;
+      }
       if (freedBytes > 0) {
         this.addHistoryBytes(-freedBytes);
       }
@@ -1279,15 +2193,26 @@ export class AccountCoordinator extends DurableObject<Env> {
       this.bumpCounter('sweep_receipts_deleted', deletedReceipts);
       this.bumpCounter('sweep_scans_deleted', deletedScans);
       this.bumpCounter('sweep_workers_deleted', deletedWorkers);
+      this.bumpCounter('sweep_attempts_unknown', staleAttempts);
     });
     const continued =
       deletedChanges === SWEEP_BATCH_ROWS ||
       deletedReceipts === SWEEP_BATCH_ROWS ||
-      deletedWorkers === SWEEP_BATCH_ROWS;
+      deletedWorkers === SWEEP_BATCH_ROWS ||
+      expiredJobs === SWEEP_BATCH_ROWS ||
+      staleAttempts === SWEEP_BATCH_ROWS;
     await this.ctx.storage.setAlarm(
       Date.now() + (continued ? SWEEP_CONTINUE_MS : SWEEP_INTERVAL_MS),
     );
-    return { deletedChanges, deletedReceipts, deletedScans, deletedWorkers, continued };
+    return {
+      deletedChanges,
+      deletedReceipts,
+      deletedScans,
+      deletedWorkers,
+      expiredJobs,
+      staleAttempts,
+      continued,
+    };
   }
 
   private readHistoryBytes(): number {
@@ -1789,4 +2714,454 @@ function parseReplicaPublishParams(params: unknown): WorkerReplicaPublishParams 
     replicas.push({ workspaceId, definitionRevision, readiness, observedAt });
   }
   return { replicas };
+}
+
+// ---- MESH-02 job/attempt param/storage parsing -----------------------------
+
+const JOB_KINDS: readonly string[] = [
+  'diagnostic',
+  'prepare-workspace',
+  'start-session',
+  'workflow-node',
+];
+const JOB_STATES: readonly string[] = [
+  'queued',
+  'running',
+  'awaiting-approval',
+  'completed',
+  'failed',
+  'cancel-requested',
+  'cancelled',
+  'unknown-outcome',
+];
+const ATTEMPT_STATES: readonly string[] = [
+  'claimed',
+  'preparing',
+  'running',
+  'stopping',
+  'completed',
+  'failed',
+  'cancelled',
+  'unknown-outcome',
+];
+const RETRY_POLICIES: readonly string[] = ['safe', 'inspect-before-retry', 'never'];
+/** Non-terminal attempt states: an attempt that may still hold ownership. */
+const ACTIVE_ATTEMPT_STATES: readonly string[] = ['claimed', 'preparing', 'running', 'stopping'];
+
+function isJobKind(value: unknown): value is JobKind {
+  return typeof value === 'string' && JOB_KINDS.includes(value);
+}
+
+function isJobState(value: unknown): value is JobState {
+  return typeof value === 'string' && JOB_STATES.includes(value);
+}
+
+function isAttemptState(value: unknown): value is AttemptState {
+  return typeof value === 'string' && ATTEMPT_STATES.includes(value);
+}
+
+function isRetryPolicy(value: unknown): value is RetryPolicy {
+  return typeof value === 'string' && RETRY_POLICIES.includes(value);
+}
+
+function isActiveAttemptState(state: string): boolean {
+  return ACTIVE_ATTEMPT_STATES.includes(state);
+}
+
+/**
+ * Reachability through the frozen attempt transition graph, hop by hop. v1
+ * reports only terminal outcomes, so intermediate progress states collapse:
+ * `claimed` reaches `completed` via preparing→running. Returns false where
+ * the graph forbids the outcome entirely (e.g. stopping→completed).
+ */
+function attemptTransitionReachable(from: AttemptState, to: AttemptState): boolean {
+  const seen = new Set<AttemptState>([from]);
+  const queue: AttemptState[] = [from];
+  while (queue.length > 0) {
+    const current = queue.shift() as AttemptState;
+    for (const next of ATTEMPT_TRANSITIONS[current]) {
+      if (next === to) {
+        return true;
+      }
+      if (!seen.has(next)) {
+        seen.add(next);
+        queue.push(next);
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * The worker-side source authorization check, used identically at placement
+ * (auto candidates, explicit-device validation) and at claim: the source
+ * enrollment must be listed in `allowedSources` or covered by the
+ * `same-account` literal. A job sourced on the target device itself is
+ * local consent, not remote authorization.
+ */
+function policyAllowsSource(
+  policy: DevicePolicy,
+  sourceEnrollmentId: string,
+  workerEnrollmentId: string,
+): boolean {
+  if (sourceEnrollmentId === workerEnrollmentId) {
+    return true;
+  }
+  const sources = policy.worker.allowedSources;
+  if (sources === undefined) {
+    return false;
+  }
+  return sources.includes(sourceEnrollmentId) || sources.includes(SAME_ACCOUNT_SOURCE);
+}
+
+/** min(policy.maxConcurrentJobs, capabilities.maxConcurrentJobs, backend cap). */
+function effectiveConcurrencyCap(
+  policy: DevicePolicy,
+  capabilities: WorkerCapabilities | null,
+): number {
+  return Math.min(
+    policy.worker.maxConcurrentJobs ?? MAX_CONCURRENT_JOBS,
+    capabilities?.maxConcurrentJobs ?? MAX_CONCURRENT_JOBS,
+    MAX_CONCURRENT_JOBS,
+  );
+}
+
+/**
+ * Does a published capability set satisfy a job's declared requirements?
+ * `capabilities` must cover every required entry; `os`/`cpu`/`memoryMb`
+ * match exactly/at-least when declared. No published set never satisfies a
+ * declared requirement.
+ */
+function capabilitiesSatisfy(
+  capabilities: WorkerCapabilities | null,
+  requirements: CapabilityRequirements | undefined,
+): boolean {
+  if (requirements === undefined) {
+    return true;
+  }
+  if (capabilities === null) {
+    return false;
+  }
+  for (const required of requirements.capabilities) {
+    if (!capabilities.capabilities.includes(required)) {
+      return false;
+    }
+  }
+  if (requirements.os !== undefined && capabilities.os !== requirements.os) {
+    return false;
+  }
+  if (requirements.cpu !== undefined && capabilities.arch !== requirements.cpu) {
+    return false;
+  }
+  if (
+    requirements.memoryMb !== undefined &&
+    (capabilities.memoryMb === undefined || capabilities.memoryMb < requirements.memoryMb)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Reads a stored capabilities document. Rows are written only by
+ * parseWorkerCapabilitiesParams output; a shape violation is corruption.
+ */
+function parseStoredCapabilities(raw: string | null): WorkerCapabilities | null {
+  if (raw === null) {
+    return null;
+  }
+  try {
+    return JSON.parse(raw) as WorkerCapabilities;
+  } catch {
+    throw new RpcFailure('unavailable', { reason: 'corrupt-worker-capabilities' });
+  }
+}
+
+function parseJobCreateParams(params: unknown): JobCreateParams {
+  if (!isRecord(params)) {
+    throw new RpcFailure('malformed-request', { reason: 'create-params' });
+  }
+  const requestId = params['requestId'];
+  const payloadHash = params['payloadHash'];
+  const kind = params['kind'];
+  if (!isBoundedId(requestId)) {
+    throw new RpcFailure('malformed-request', { reason: 'requestId' });
+  }
+  if (typeof payloadHash !== 'string' || !HASH_PATTERN.test(payloadHash)) {
+    throw new RpcFailure('malformed-request', { reason: 'payloadHash' });
+  }
+  if (!isJobKind(kind)) {
+    throw new RpcFailure('malformed-request', { reason: 'kind' });
+  }
+  const requestedTarget = parseRequestedTarget(params['requestedTarget']);
+  const inputManifest = parseExecutionManifest(params['inputManifest']);
+  const queueDeadline = params['queueDeadline'];
+  if (
+    queueDeadline !== undefined &&
+    (typeof queueDeadline !== 'string' || !Number.isFinite(Date.parse(queueDeadline)))
+  ) {
+    throw new RpcFailure('malformed-request', { reason: 'queueDeadline' });
+  }
+  const retryPolicy = params['retryPolicy'];
+  if (retryPolicy !== undefined && !isRetryPolicy(retryPolicy)) {
+    throw new RpcFailure('malformed-request', { reason: 'retryPolicy' });
+  }
+  return {
+    requestId,
+    payloadHash,
+    kind,
+    requestedTarget,
+    inputManifest,
+    ...(queueDeadline === undefined ? {} : { queueDeadline }),
+    // Spec §9: remote coding/bootstrap default to inspect-before-retry.
+    retryPolicy: retryPolicy ?? 'inspect-before-retry',
+  };
+}
+
+function parseRequestedTarget(value: unknown): RequestedTarget {
+  if (!isRecord(value)) {
+    throw new RpcFailure('malformed-request', { reason: 'requestedTarget' });
+  }
+  const requirements =
+    value['requirements'] === undefined
+      ? undefined
+      : parseCapabilityRequirements(value['requirements']);
+  const kind = value['kind'];
+  if (kind === 'device') {
+    const enrollmentId = value['enrollmentId'];
+    if (!isBoundedId(enrollmentId)) {
+      throw new RpcFailure('malformed-request', { reason: 'requestedTarget.enrollmentId' });
+    }
+    return {
+      kind: 'device',
+      enrollmentId,
+      ...(requirements === undefined ? {} : { requirements }),
+    };
+  }
+  if (kind === 'auto') {
+    return { kind: 'auto', ...(requirements === undefined ? {} : { requirements }) };
+  }
+  throw new RpcFailure('malformed-request', { reason: 'requestedTarget.kind' });
+}
+
+function parseCapabilityRequirements(value: unknown): CapabilityRequirements {
+  if (!isRecord(value)) {
+    throw new RpcFailure('malformed-request', { reason: 'requirements' });
+  }
+  const capabilitiesRaw = value['capabilities'];
+  if (!Array.isArray(capabilitiesRaw) || capabilitiesRaw.length > MAX_CAPABILITY_ENTRIES) {
+    throw new RpcFailure('malformed-request', { reason: 'requirements.capabilities' });
+  }
+  const capabilities: string[] = [];
+  for (const entry of capabilitiesRaw) {
+    if (!isBoundedId(entry)) {
+      throw new RpcFailure('malformed-request', { reason: 'requirements.capabilities' });
+    }
+    capabilities.push(entry);
+  }
+  const os = value['os'];
+  const cpu = value['cpu'];
+  const memoryMb = value['memoryMb'];
+  if (os !== undefined && !isBoundedId(os)) {
+    throw new RpcFailure('malformed-request', { reason: 'requirements.os' });
+  }
+  if (cpu !== undefined && !isBoundedId(cpu)) {
+    throw new RpcFailure('malformed-request', { reason: 'requirements.cpu' });
+  }
+  if (
+    memoryMb !== undefined &&
+    (typeof memoryMb !== 'number' || !Number.isInteger(memoryMb) || memoryMb < 1)
+  ) {
+    throw new RpcFailure('malformed-request', { reason: 'requirements.memoryMb' });
+  }
+  return {
+    capabilities,
+    ...(os === undefined ? {} : { os }),
+    ...(cpu === undefined ? {} : { cpu }),
+    ...(memoryMb === undefined ? {} : { memoryMb }),
+  };
+}
+
+/**
+ * Validates the pinned input manifest. Only contract fields are kept
+ * (unknown keys are dropped) and every field is bounded; `inputs` and the
+ * serialized whole carry byte caps since they hold client-declared data.
+ */
+function parseExecutionManifest(value: unknown): ExecutionManifest {
+  if (!isRecord(value)) {
+    throw new RpcFailure('malformed-request', { reason: 'inputManifest' });
+  }
+  const workspaceDefinitionRevision = value['workspaceDefinitionRevision'];
+  const bootstrapDigest = value['bootstrapDigest'];
+  const provider = value['provider'];
+  const model = value['model'];
+  if (!isBoundedId(workspaceDefinitionRevision)) {
+    throw new RpcFailure('malformed-request', { reason: 'manifest.workspaceDefinitionRevision' });
+  }
+  if (!isBoundedId(bootstrapDigest)) {
+    throw new RpcFailure('malformed-request', { reason: 'manifest.bootstrapDigest' });
+  }
+  if (!isBoundedId(provider)) {
+    throw new RpcFailure('malformed-request', { reason: 'manifest.provider' });
+  }
+  if (!isBoundedId(model)) {
+    throw new RpcFailure('malformed-request', { reason: 'manifest.model' });
+  }
+  const repositoriesRaw = value['repositories'];
+  if (!Array.isArray(repositoriesRaw) || repositoriesRaw.length > MAX_MANIFEST_REPOSITORIES) {
+    throw new RpcFailure('malformed-request', { reason: 'manifest.repositories' });
+  }
+  const repositories: ExecutionManifest['repositories'] = [];
+  for (const entry of repositoriesRaw) {
+    if (!isRecord(entry) || !isBoundedId(entry['repositoryId']) || !isBoundedId(entry['commit'])) {
+      throw new RpcFailure('malformed-request', { reason: 'manifest.repositories' });
+    }
+    repositories.push({ repositoryId: entry['repositoryId'], commit: entry['commit'] });
+  }
+  const configRaw = value['configVersions'];
+  if (!isRecord(configRaw)) {
+    throw new RpcFailure('malformed-request', { reason: 'manifest.configVersions' });
+  }
+  const configEntries = Object.entries(configRaw);
+  if (configEntries.length > MAX_MANIFEST_CONFIG_ENTRIES) {
+    throw new RpcFailure('malformed-request', { reason: 'manifest.configVersions' });
+  }
+  const configVersions: Record<string, string> = {};
+  for (const [key, configValue] of configEntries) {
+    if (!isBoundedId(key) || !isBoundedId(configValue)) {
+      throw new RpcFailure('malformed-request', { reason: 'manifest.configVersions' });
+    }
+    configVersions[key] = configValue;
+  }
+  const inputs = value['inputs'];
+  if (!isRecord(inputs)) {
+    throw new RpcFailure('malformed-request', { reason: 'manifest.inputs' });
+  }
+  const inputsBytes = utf8ByteLength(JSON.stringify(inputs));
+  if (inputsBytes > MAX_JOB_INPUTS_BYTES) {
+    throw new RpcFailure('payload-too-large', {
+      limitBytes: MAX_JOB_INPUTS_BYTES,
+      actualBytes: inputsBytes,
+      field: 'manifest.inputs',
+    });
+  }
+  const manifest: ExecutionManifest = {
+    workspaceDefinitionRevision,
+    repositories,
+    bootstrapDigest,
+    provider,
+    model,
+    configVersions,
+    inputs,
+  };
+  const manifestBytes = utf8ByteLength(JSON.stringify(manifest));
+  if (manifestBytes > MAX_MANIFEST_BYTES) {
+    throw new RpcFailure('payload-too-large', {
+      limitBytes: MAX_MANIFEST_BYTES,
+      actualBytes: manifestBytes,
+      field: 'inputManifest',
+    });
+  }
+  return manifest;
+}
+
+function parseJobIdParams(params: unknown): { jobId: string } {
+  if (!isRecord(params) || !isBoundedId(params['jobId'])) {
+    throw new RpcFailure('malformed-request', { reason: 'jobId' });
+  }
+  return { jobId: params['jobId'] };
+}
+
+function parseJobListParams(params: unknown): { state?: JobState; limit: number } {
+  if (!isRecord(params)) {
+    throw new RpcFailure('malformed-request', { reason: 'list-params' });
+  }
+  const state = params['state'];
+  if (state !== undefined && !isJobState(state)) {
+    throw new RpcFailure('malformed-request', { reason: 'state' });
+  }
+  const limit = params['limit'];
+  if (
+    limit !== undefined &&
+    (typeof limit !== 'number' ||
+      !Number.isInteger(limit) ||
+      limit < 1 ||
+      limit > MAX_JOB_LIST_LIMIT)
+  ) {
+    throw new RpcFailure('malformed-request', { reason: 'limit' });
+  }
+  return { ...(state === undefined ? {} : { state }), limit: limit ?? DEFAULT_JOB_LIST_LIMIT };
+}
+
+function parseAttemptRenewParams(params: unknown): AttemptRenewParams {
+  if (!isRecord(params) || !Array.isArray(params['renewals'])) {
+    throw new RpcFailure('malformed-request', { reason: 'renewals-required' });
+  }
+  if (params['renewals'].length < 1 || params['renewals'].length > MAX_ATTEMPT_RENEWALS) {
+    throw new RpcFailure('malformed-request', { reason: 'renewals' });
+  }
+  const renewals: AttemptRenewalRequest[] = [];
+  for (const entry of params['renewals']) {
+    if (!isRecord(entry) || !isBoundedId(entry['attemptId']) || !isBoundedId(entry['incarnation'])) {
+      throw new RpcFailure('malformed-request', { reason: 'renewal' });
+    }
+    const fence = entry['fence'];
+    if (typeof fence !== 'number' || !Number.isSafeInteger(fence) || fence < 1) {
+      throw new RpcFailure('malformed-request', { reason: 'fence' });
+    }
+    renewals.push({ attemptId: entry['attemptId'], incarnation: entry['incarnation'], fence });
+  }
+  return { renewals };
+}
+
+interface ParsedAttemptReport {
+  attemptId: string;
+  incarnation: string;
+  fence: number;
+  outcome: 'completed' | 'failed';
+  /** Pre-serialized result JSON; null when absent. */
+  resultJson: string | null;
+  error: string | undefined;
+}
+
+function parseAttemptReportParams(params: unknown): ParsedAttemptReport {
+  if (!isRecord(params)) {
+    throw new RpcFailure('malformed-request', { reason: 'report-params' });
+  }
+  const attemptId = params['attemptId'];
+  const incarnation = params['incarnation'];
+  const fence = params['fence'];
+  const outcome = params['outcome'];
+  if (!isBoundedId(attemptId)) {
+    throw new RpcFailure('malformed-request', { reason: 'attemptId' });
+  }
+  if (!isBoundedId(incarnation)) {
+    throw new RpcFailure('malformed-request', { reason: 'incarnation' });
+  }
+  if (typeof fence !== 'number' || !Number.isSafeInteger(fence) || fence < 1) {
+    throw new RpcFailure('malformed-request', { reason: 'fence' });
+  }
+  if (outcome !== 'completed' && outcome !== 'failed') {
+    throw new RpcFailure('malformed-request', { reason: 'outcome' });
+  }
+  let resultJson: string | null = null;
+  if (Object.prototype.hasOwnProperty.call(params, 'result')) {
+    resultJson = JSON.stringify(params['result']);
+    const resultBytes = utf8ByteLength(resultJson);
+    if (resultBytes > MAX_REPORT_RESULT_BYTES) {
+      throw new RpcFailure('payload-too-large', {
+        limitBytes: MAX_REPORT_RESULT_BYTES,
+        actualBytes: resultBytes,
+        field: 'result',
+      });
+    }
+  }
+  const error = params['error'];
+  if (
+    error !== undefined &&
+    (typeof error !== 'string' || error.length === 0 || error.length > MAX_REPORT_ERROR_LENGTH)
+  ) {
+    throw new RpcFailure('malformed-request', { reason: 'error' });
+  }
+  return { attemptId, incarnation, fence, outcome, resultJson, error };
 }

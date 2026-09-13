@@ -84,6 +84,68 @@ CREATE TABLE IF NOT EXISTS worker_replicas (
   updated_at INTEGER NOT NULL,
   PRIMARY KEY (enrollment_id, workspace_id)
 );
+-- MESH-02 durable jobs + execution attempts. Jobs/attempts are account
+-- metadata: their writes never touch the sync change sequence and are never
+-- emitted as entity changes (spec §13). requested_target/input_manifest hold
+-- JSON contract documents pinned at creation; placement_explanation records
+-- why the resolved target was chosen (or why none qualified). next_fence is
+-- the per-job monotonically increasing claim fence; retried bounds the one
+-- 'safe' re-queue.
+CREATE TABLE IF NOT EXISTS jobs (
+  job_id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  source_enrollment_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  requested_target TEXT NOT NULL,
+  target_enrollment_id TEXT,
+  placement_explanation TEXT,
+  input_manifest TEXT NOT NULL,
+  state TEXT NOT NULL,
+  state_reason TEXT,
+  queue_deadline INTEGER NOT NULL,
+  retry_policy TEXT NOT NULL,
+  retried INTEGER NOT NULL DEFAULT 0,
+  next_fence INTEGER NOT NULL DEFAULT 1,
+  active_attempt_id TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+-- Creation idempotency: request ids are unique per (account-scoped) source.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_request
+  ON jobs (source_enrollment_id, request_id);
+-- Claim/notify path: queued jobs for one target by deadline (spec §13 asks
+-- for a target/queued-job index; no account-wide scans on claim).
+CREATE INDEX IF NOT EXISTS idx_jobs_target_queue
+  ON jobs (target_enrollment_id, state, queue_deadline);
+-- Deadline sweeps and state-filtered job.list.
+CREATE INDEX IF NOT EXISTS idx_jobs_state_deadline
+  ON jobs (state, queue_deadline);
+CREATE TABLE IF NOT EXISTS attempts (
+  attempt_id TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL,
+  worker_enrollment_id TEXT NOT NULL,
+  worker_incarnation TEXT NOT NULL,
+  fence INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  lease_expires_at INTEGER NOT NULL,
+  outcome TEXT,
+  result TEXT,
+  error TEXT,
+  late_result TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+-- Fences are monotonic per job: at most one attempt per fence value.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_attempts_job_fence
+  ON attempts (job_id, fence);
+-- Worker capacity check on claim (active attempts per worker).
+CREATE INDEX IF NOT EXISTS idx_attempts_worker_state
+  ON attempts (worker_enrollment_id, state);
+-- Duplicate-active-attempt check and per-job attempt listing.
+CREATE INDEX IF NOT EXISTS idx_attempts_job_state
+  ON attempts (job_id, state);
 `;
 
 /** First-dataset epoch for a fresh account object. Fixed for determinism. */

@@ -42,7 +42,7 @@ describe('RPC envelope and auth', () => {
   it('rejects an unknown operation as unsupported-operation 400', async () => {
     const ids = uniqueIds('unsupported');
     const { status, body } = await postRpc(
-      'job.create',
+      'job.definitely-not-real',
       {},
       spikeBearer(ids.accountId, ids.enrollmentId),
       'req-unsupported',
