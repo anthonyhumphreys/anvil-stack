@@ -33,6 +33,12 @@ export interface SyncBackendRecord {
   authModes: string[];
   descriptor: BackendDescriptor;
   state: SyncBackendState;
+  /**
+   * The endpoint or auth issuer changed under an existing deployment ID.
+   * Sync stays paused until `resolveBackendIdentityReview` records re-review;
+   * existing credentials are never sent to the changed endpoint meanwhile.
+   */
+  identityReviewRequired: boolean;
   createdAt: string | null;
   updatedAt: string | null;
 }
@@ -51,6 +57,7 @@ interface BackendRow {
   auth_modes_json: string;
   pinned_descriptor_json: string;
   state: SyncBackendState;
+  identity_review_required: number;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -84,6 +91,7 @@ function mapRecord(row: BackendRow): SyncBackendRecord {
     authModes: JSON.parse(row.auth_modes_json) as string[],
     descriptor: JSON.parse(row.pinned_descriptor_json) as BackendDescriptor,
     state: row.state,
+    identityReviewRequired: row.identity_review_required === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -111,8 +119,11 @@ export function getActiveBackend(): SyncBackendRecord | null {
 
 /**
  * Stores the user-reviewed descriptor as a paused association. Re-pinning an
- * existing backend refreshes its metadata but preserves its state, so review
- * never silently pauses an active connection or enables upload.
+ * existing backend refreshes its metadata. When the endpoint URL or the
+ * descriptor's auth issuer changes under an existing deployment ID, the
+ * association is flagged `identity_review_required` and paused: the deployment
+ * ID alone does not prove two endpoints share authority, so credentials and
+ * sync state must not flow to the new endpoint until re-reviewed.
  */
 export function pinBackend(input: PinBackendInput): SyncBackendRecord {
   if (typeof input.baseUrl !== 'string' || input.baseUrl.trim().length === 0) {
@@ -131,11 +142,17 @@ export function pinBackend(input: PinBackendInput): SyncBackendRecord {
   const now = nowIso();
   const existing = getRowById(descriptor.deploymentId);
   if (existing) {
+    const existingDescriptor = JSON.parse(existing.pinned_descriptor_json) as BackendDescriptor;
+    const identityChanged =
+      existing.base_url !== normalized ||
+      existingDescriptor.auth.issuer !== descriptor.auth.issuer;
     getDb()
       .prepare(
         `UPDATE sync_backends
          SET base_url = ?, deployment_id = ?, display_name = ?,
              profiles_json = ?, auth_modes_json = ?, pinned_descriptor_json = ?,
+             identity_review_required = ?,
+             state = CASE WHEN ? THEN 'paused' ELSE state END,
              updated_at = ?
          WHERE id = ?`,
       )
@@ -146,6 +163,8 @@ export function pinBackend(input: PinBackendInput): SyncBackendRecord {
         JSON.stringify(descriptor.profiles),
         JSON.stringify(descriptor.authModes),
         JSON.stringify(descriptor),
+        identityChanged ? 1 : existing.identity_review_required,
+        identityChanged ? 1 : 0,
         now,
         descriptor.deploymentId,
       );
@@ -184,6 +203,11 @@ export function activateBackend(id: string): SyncBackendRecord {
     if (!existing) {
       throw new Error(`unknown backend ${id}`);
     }
+    if (existing.identity_review_required === 1) {
+      throw new Error(
+        `backend ${id} changed endpoint or issuer and must be re-reviewed before connecting`,
+      );
+    }
     db.prepare(
       "UPDATE sync_backends SET state = 'paused', updated_at = ? WHERE state = 'active'",
     ).run(nowIso());
@@ -207,6 +231,28 @@ export function disconnectBackend(): void {
     .run(nowIso());
 }
 
+/**
+ * Records that the user re-reviewed the changed endpoint/issuer for an
+ * existing association and clears the review flag. The backend stays paused;
+ * enabling sync is a separate explicit step.
+ */
+export function resolveBackendIdentityReview(id: string): SyncBackendRecord {
+  const existing = getRowById(id);
+  if (!existing) {
+    throw new Error(`unknown backend ${id}`);
+  }
+  getDb()
+    .prepare(
+      'UPDATE sync_backends SET identity_review_required = 0, updated_at = ? WHERE id = ?',
+    )
+    .run(nowIso(), id);
+  const row = getRowById(id);
+  if (!row) {
+    throw new Error(`failed to update backend ${id}`);
+  }
+  return mapRecord(row);
+}
+
 function recordToStatus(
   record: SyncBackendRecord,
   connectionMode: SyncBackendConnectionMode,
@@ -220,6 +266,7 @@ function recordToStatus(
     profiles: record.profiles,
     authModes: record.authModes,
     state: record.state,
+    identityReviewRequired: record.identityReviewRequired,
   };
 }
 
@@ -246,6 +293,7 @@ export function getBackendStatus(): SyncBackendStatus {
     profiles: [],
     authModes: [],
     state: null,
+    identityReviewRequired: false,
   };
 }
 

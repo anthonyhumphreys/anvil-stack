@@ -16,5 +16,10 @@
     "sourceMap": true,
     "lib": ["ESNext", "DOM", "DOM.Iterable"]
   },
-  "include": ["src/renderer/**/*", "src/shared/**/*"]
+  "include": [
+    "src/renderer/**/*",
+    "src/shared/**/*",
+    "cloud/contract/**/*.ts",
+    "cloud/contract/**/*.json"
+  ]
 }

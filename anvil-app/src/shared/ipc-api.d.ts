@@ -171,11 +171,15 @@ import type {
   TerminalSessionSummary,
 } from './types';
 import type { Brand } from './branding';
+import type { SyncBackendDiscovery, SyncBackendPinInput, SyncBackendStatus } from './sync-backend';
 import type {
-  SyncBackendDiscovery,
-  SyncBackendPinInput,
-  SyncBackendStatus,
-} from './sync-backend';
+  SyncAdoptionPreviewItem,
+  SyncAuthPublicSnapshot,
+  SyncConflictResolutionChoice,
+  SyncConflictView,
+  SyncRuntimeStatus,
+  SyncSpikeEnrollInput,
+} from './sync-runtime';
 
 export interface AnvilAPI {
   appWindow: {
@@ -649,7 +653,21 @@ export interface AnvilAPI {
     pin: (input: SyncBackendPinInput) => Promise<SyncBackendStatus>;
     status: () => Promise<SyncBackendStatus>;
     disconnect: () => Promise<SyncBackendStatus>;
+    resolveReview: (backendId: string) => Promise<SyncBackendStatus>;
     integrationPrompt: () => Promise<string>;
+  };
+
+  syncRuntime: {
+    status: () => Promise<SyncRuntimeStatus>;
+    preview: () => Promise<SyncAdoptionPreviewItem[]>;
+    spikeEnroll: (input: SyncSpikeEnrollInput) => Promise<SyncAuthPublicSnapshot>;
+    enable: () => Promise<SyncRuntimeStatus>;
+    signOut: () => Promise<SyncRuntimeStatus>;
+    conflicts: () => Promise<SyncConflictView[]>;
+    resolveConflict: (
+      conflictId: string,
+      resolution: SyncConflictResolutionChoice,
+    ) => Promise<SyncRuntimeStatus>;
   };
 
   anvilCloud: {

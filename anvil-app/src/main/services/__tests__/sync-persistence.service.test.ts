@@ -95,13 +95,51 @@ function applyMigrationSql(target: Database.Database, migration: string): void {
 
 beforeEach(() => {
   db.exec(
-    'DELETE FROM sync_outbox; DELETE FROM sync_bindings; DELETE FROM sync_conflicts; DELETE FROM sync_state; DELETE FROM device_enrollments; DELETE FROM workflow_templates;',
+    `DELETE FROM sync_outbox; DELETE FROM sync_bindings; DELETE FROM sync_conflicts;
+     DELETE FROM sync_state; DELETE FROM device_enrollments; DELETE FROM workflow_templates;
+     DELETE FROM sync_scan_runs; DELETE FROM sync_scan_staging; DELETE FROM sync_installation;
+     DELETE FROM sync_backends;`,
   );
 });
 
-describe('migration 67', () => {
+describe('schema migrations', () => {
   it('leaves SCHEMA_VERSION at the current schema after later packets', () => {
-    expect(SCHEMA_VERSION).toBe(68);
+    expect(SCHEMA_VERSION).toBe(69);
+  });
+
+  it('migration 69 adds the sequence allocator, review flag, and scan staging', () => {
+    const fresh = new Database(':memory:');
+    try {
+      applyMigrationSql(fresh, MIGRATIONS[67]);
+      applyMigrationSql(fresh, MIGRATIONS[68]);
+      applyMigrationSql(fresh, MIGRATIONS[69]);
+      const enrollmentColumns = new Set(
+        (
+          fresh.prepare('PRAGMA table_info(device_enrollments)').all() as Array<{
+            name: string;
+          }>
+        ).map((column) => column.name),
+      );
+      expect(enrollmentColumns.has('next_sequence')).toBe(true);
+      const backendColumns = new Set(
+        (
+          fresh.prepare('PRAGMA table_info(sync_backends)').all() as Array<{ name: string }>
+        ).map((column) => column.name),
+      );
+      expect(backendColumns.has('identity_review_required')).toBe(true);
+      const tables = new Set(
+        (
+          fresh.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{
+            name: string;
+          }>
+        ).map((row) => row.name),
+      );
+      for (const table of ['sync_installation', 'sync_scan_runs', 'sync_scan_staging']) {
+        expect(tables.has(table), `Missing table ${table}`).toBe(true);
+      }
+    } finally {
+      fresh.close();
+    }
   });
 
   it('creates the five sync tables from the migration SQL alone', () => {
@@ -112,9 +150,9 @@ describe('migration 67', () => {
       applyMigrationSql(fresh, MIGRATIONS[67]);
       const tables = new Set(
         (
-          fresh
-            .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
-            .all() as Array<{ name: string }>
+          fresh.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{
+            name: string;
+          }>
         ).map((row) => row.name),
       );
       for (const table of [
@@ -171,8 +209,20 @@ describe('recordLocalChange coalescing', () => {
   it('coalesces two saves into one pending create with the latest payload', () => {
     activateEnrollment();
     upsertBinding(SCOPE, ET, 'e1');
-    const first = change({ entityId: 'e1', entityType: ET, operation: 'create', payload: { v: 1 }, schemaVersion: 1 });
-    const second = change({ entityId: 'e1', entityType: ET, operation: 'update', payload: { v: 2 }, schemaVersion: 1 });
+    const first = change({
+      entityId: 'e1',
+      entityType: ET,
+      operation: 'create',
+      payload: { v: 1 },
+      schemaVersion: 1,
+    });
+    const second = change({
+      entityId: 'e1',
+      entityType: ET,
+      operation: 'update',
+      payload: { v: 2 },
+      schemaVersion: 1,
+    });
     expect(second).toBe(first);
     const rows = listOutboxRows(SCOPE);
     expect(rows).toHaveLength(1);
@@ -184,21 +234,47 @@ describe('recordLocalChange coalescing', () => {
   it('removes the pending row when a create is deleted before dispatch', () => {
     activateEnrollment();
     upsertBinding(SCOPE, ET, 'e2');
-    change({ entityId: 'e2', entityType: ET, operation: 'create', payload: { v: 1 }, schemaVersion: 1 });
-    expect(change({ entityId: 'e2', entityType: ET, operation: 'delete', schemaVersion: 1 })).toBeNull();
+    change({
+      entityId: 'e2',
+      entityType: ET,
+      operation: 'create',
+      payload: { v: 1 },
+      schemaVersion: 1,
+    });
+    expect(
+      change({ entityId: 'e2', entityType: ET, operation: 'delete', schemaVersion: 1 }),
+    ).toBeNull();
     expect(listOutboxRows(SCOPE)).toEqual([]);
   });
 
   it('turns an update followed by delete into a single delete', () => {
     activateEnrollment();
     upsertBinding(SCOPE, ET, 'e3', { basePayloadJson: canonicalJson({ v: 0 }), baseRevision: 5 });
-    change({ entityId: 'e3', entityType: ET, operation: 'update', payload: { v: 1 }, schemaVersion: 1 });
+    change({
+      entityId: 'e3',
+      entityType: ET,
+      operation: 'update',
+      payload: { v: 1 },
+      schemaVersion: 1,
+    });
     change({ entityId: 'e3', entityType: ET, operation: 'delete', schemaVersion: 1 });
     const rows = listOutboxRows(SCOPE);
     expect(rows).toHaveLength(1);
     expect(rows[0].operation).toBe('delete');
     expect(rows[0].payloadJson).toBeNull();
     expect(rows[0].baseRevision).toBe(5);
+  });
+
+  it('records a create when an already-saved template is bound then saved again', () => {
+    activateEnrollment();
+    const saved = saveWorkflowTemplate(templateInput('Existing'));
+    expect(listOutboxRows(SCOPE)).toEqual([]);
+    upsertBinding(SCOPE, ET, saved.id);
+    saveWorkflowTemplate({ ...templateInput('Existing renamed') }, saved.id);
+    const rows = listOutboxRows(SCOPE);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].operation).toBe('create');
+    expect(rows[0].baseRevision).toBeNull();
   });
 
   it('leaves the dispatched row untouched and adds a pending successor', () => {
@@ -229,8 +305,13 @@ describe('recordLocalChange coalescing', () => {
     const successor = rows.find((row) => row.changeId === successorId);
     expect(successor?.state).toBe('pending');
     expect(successor?.baseRevision).toBeNull();
-    // The entity is blocked while its dispatch is in flight.
-    expect(nextBatch(SCOPE, 'enrollment-1')).toEqual([]);
+    // An undelivered dispatch replays verbatim: same change, sequence, hash —
+    // the pending successor waits behind it.
+    const replay = nextBatch(SCOPE, 'enrollment-1');
+    expect(replay).toHaveLength(1);
+    expect(replay[0].changeId).toBe(dispatchedId);
+    expect(replay[0].enrollmentSequence).toBe(dispatched.enrollmentSequence);
+    expect(replay[0].payloadHash).toBe(dispatched.payloadHash);
   });
 });
 
@@ -244,7 +325,7 @@ describe('workflow template sync integration', () => {
     expect(listOutboxRows(SCOPE)).toEqual([]);
   });
 
-  it('records exactly one outbox row for a synced save and delete', () => {
+  it('records a create when a bound existing template is saved, then cancels it on delete', () => {
     activateEnrollment();
     const saved = saveWorkflowTemplate(templateInput('Original'));
     expect(listOutboxRows(SCOPE)).toEqual([]);
@@ -252,14 +333,11 @@ describe('workflow template sync integration', () => {
     saveWorkflowTemplate({ ...templateInput('Renamed') }, saved.id);
     const rows = listOutboxRows(SCOPE);
     expect(rows).toHaveLength(1);
-    expect(rows[0].operation).toBe('update');
+    expect(rows[0].operation).toBe('create');
     expect(rows[0].payloadJson).toContain('Renamed');
     expect(rows[0].schemaVersion).toBe(1);
     deleteWorkflowTemplate(saved.id);
-    const afterDelete = listOutboxRows(SCOPE);
-    expect(afterDelete).toHaveLength(1);
-    expect(afterDelete[0].operation).toBe('delete');
-    expect(afterDelete[0].payloadJson).toBeNull();
+    expect(listOutboxRows(SCOPE)).toEqual([]);
     expect(getWorkflowTemplate(saved.id)).toBeNull();
   });
 
@@ -318,10 +396,20 @@ describe('nextBatch', () => {
     activateEnrollment();
     for (const id of ['a', 'b', 'c']) {
       upsertBinding(SCOPE, ET, id);
-      change({ entityId: id, entityType: ET, operation: 'create', payload: { id }, schemaVersion: 1 });
+      change({
+        entityId: id,
+        entityType: ET,
+        operation: 'create',
+        payload: { id },
+        schemaVersion: 1,
+      });
     }
     const first = nextBatch(SCOPE, 'enrollment-1', { maxChanges: 1 });
     expect(first.map((item) => item.entityId)).toEqual(['a']);
+    // Acknowledge the dispatched row so the next batch moves past it.
+    applyPushResults(SCOPE, [
+      { changeId: first[0].changeId, revision: 1, status: 'accepted' },
+    ]);
     const rest = nextBatch(SCOPE, 'enrollment-1');
     expect(rest.map((item) => item.entityId)).toEqual(['b', 'c']);
     const sequences = [...first, ...rest].map((item) => item.enrollmentSequence);
@@ -333,18 +421,63 @@ describe('nextBatch', () => {
     activateEnrollment();
     for (const id of ['a', 'b']) {
       upsertBinding(SCOPE, ET, id);
-      change({ entityId: id, entityType: ET, operation: 'create', payload: { id }, schemaVersion: 1 });
+      change({
+        entityId: id,
+        entityType: ET,
+        operation: 'create',
+        payload: { id },
+        schemaVersion: 1,
+      });
     }
-    const limited = nextBatch(SCOPE, 'enrollment-1', { maxBytes: 15 });
+    // Serialized request bytes are budgeted: each change carries ~250 bytes of
+    // identity/hash overhead, so 400 fits exactly one.
+    const limited = nextBatch(SCOPE, 'enrollment-1', { maxBytes: 400 });
     expect(limited.map((item) => item.entityId)).toEqual(['a']);
+    applyPushResults(SCOPE, [
+      { changeId: limited[0].changeId, revision: 1, status: 'accepted' },
+    ]);
     const remainder = nextBatch(SCOPE, 'enrollment-1');
     expect(remainder.map((item) => item.entityId)).toEqual(['b']);
+  });
+
+  it('rejects an entity that can never fit the negotiated limits without blocking others', () => {
+    activateEnrollment();
+    upsertBinding(SCOPE, ET, 'big');
+    upsertBinding(SCOPE, ET, 'small');
+    change({
+      entityId: 'big',
+      entityType: ET,
+      operation: 'create',
+      payload: { blob: 'x'.repeat(5000) },
+      schemaVersion: 1,
+    });
+    change({
+      entityId: 'small',
+      entityType: ET,
+      operation: 'create',
+      payload: { id: 'small' },
+      schemaVersion: 1,
+    });
+    const batch = nextBatch(SCOPE, 'enrollment-1', { entityBytes: 1000 });
+    expect(batch.map((item) => item.entityId)).toEqual(['small']);
+    const rows = listOutboxRows(SCOPE);
+    const bigRow = rows.find((row) => row.entityId === 'big');
+    expect(bigRow?.state).toBe('rejected');
+    expect(bigRow?.resultJson).toContain('entity-too-large');
+    // The rejection does not poison the batch: the small entity dispatched.
+    expect(rows.find((row) => row.entityId === 'small')?.state).toBe('dispatched');
   });
 
   it('returns parsed payloads with matching hashes', () => {
     activateEnrollment();
     upsertBinding(SCOPE, ET, 'e');
-    change({ entityId: 'e', entityType: ET, operation: 'create', payload: { v: 1 }, schemaVersion: 1 });
+    change({
+      entityId: 'e',
+      entityType: ET,
+      operation: 'create',
+      payload: { v: 1 },
+      schemaVersion: 1,
+    });
     const [item] = nextBatch(SCOPE, 'enrollment-1');
     expect(item.payload).toEqual({ v: 1 });
     expect(item.baseRevision).toBeNull();
@@ -365,9 +498,21 @@ describe('applyPushResults', () => {
   it('advances the base and unblocks the pending successor on accept', () => {
     activateEnrollment();
     upsertBinding(SCOPE, ET, 'e');
-    change({ entityId: 'e', entityType: ET, operation: 'create', payload: { v: 1 }, schemaVersion: 1 });
+    change({
+      entityId: 'e',
+      entityType: ET,
+      operation: 'create',
+      payload: { v: 1 },
+      schemaVersion: 1,
+    });
     const [dispatched] = nextBatch(SCOPE, 'enrollment-1');
-    change({ entityId: 'e', entityType: ET, operation: 'update', payload: { v: 2 }, schemaVersion: 1 });
+    change({
+      entityId: 'e',
+      entityType: ET,
+      operation: 'update',
+      payload: { v: 2 },
+      schemaVersion: 1,
+    });
     applyPushResults(SCOPE, [{ changeId: dispatched.changeId, revision: 7, status: 'accepted' }]);
     const binding = getBinding(SCOPE, ET, 'e');
     expect(binding?.baseRevision).toBe(7);
@@ -376,16 +521,43 @@ describe('applyPushResults', () => {
     const rows = listOutboxRows(SCOPE);
     expect(rows.find((row) => row.changeId === dispatched.changeId)?.state).toBe('acknowledged');
     const successor = rows.find((row) => row.state === 'pending');
-    expect(successor?.baseRevision).toBe(7);
     expect(successor?.payloadJson).toBe(canonicalJson({ v: 2 }));
+    // The successor's base and hash are derived at dispatch time: it dispatches
+    // rebased onto revision 7 with a hash the backend verifier accepts.
+    const [next] = nextBatch(SCOPE, 'enrollment-1');
+    expect(next.changeId).toBe(successor?.changeId);
+    expect(next.baseRevision).toBe(7);
+    expect(next.operation).toBe('update');
+    expect(next.payloadHash).toBe(
+      computePayloadHash({
+        baseRevision: 7,
+        entityId: 'e',
+        entityType: ET,
+        operation: 'update',
+        payload: { v: 2 },
+        schemaVersion: 1,
+      }),
+    );
   });
 
   it('preserves base, local, and remote on conflict and blocks only that entity', () => {
     activateEnrollment();
     upsertBinding(SCOPE, ET, 'e1', { basePayloadJson: canonicalJson({ v: 0 }), baseRevision: 4 });
     upsertBinding(SCOPE, ET, 'e2');
-    change({ entityId: 'e1', entityType: ET, operation: 'update', payload: { v: 1 }, schemaVersion: 1 });
-    change({ entityId: 'e2', entityType: ET, operation: 'create', payload: { w: 1 }, schemaVersion: 1 });
+    change({
+      entityId: 'e1',
+      entityType: ET,
+      operation: 'update',
+      payload: { v: 1 },
+      schemaVersion: 1,
+    });
+    change({
+      entityId: 'e2',
+      entityType: ET,
+      operation: 'create',
+      payload: { w: 1 },
+      schemaVersion: 1,
+    });
     const batch = nextBatch(SCOPE, 'enrollment-1', { maxChanges: 1 });
     expect(batch.map((item) => item.entityId)).toEqual(['e1']);
     const e1Change = batch.find((item) => item.entityId === 'e1');
@@ -410,7 +582,17 @@ describe('applyPushResults', () => {
     // Resolving unblocks the entity for its next conditional mutation.
     resolveConflict(conflicts[0].id, 'keep-local');
     expect(listConflicts(SCOPE)).toEqual([]);
-    change({ entityId: 'e1', entityType: ET, operation: 'update', payload: { v: 10 }, schemaVersion: 1 });
+    change({
+      entityId: 'e1',
+      entityType: ET,
+      operation: 'update',
+      payload: { v: 10 },
+      schemaVersion: 1,
+    });
+    // e2's earlier dispatch is still outstanding, so it replays first.
+    const replay = nextBatch(SCOPE, 'enrollment-1');
+    expect(replay.map((item) => item.entityId)).toEqual(['e2']);
+    applyPushResults(SCOPE, [{ changeId: replay[0].changeId, revision: 7, status: 'accepted' }]);
     const retry = nextBatch(SCOPE, 'enrollment-1');
     expect(retry.map((item) => item.entityId)).toEqual(['e1']);
     expect(() => resolveConflict(conflicts[0].id, 'use-remote')).toThrow('already resolved');
@@ -419,7 +601,13 @@ describe('applyPushResults', () => {
   it('records rejections without advancing the base', () => {
     activateEnrollment();
     upsertBinding(SCOPE, ET, 'e');
-    change({ entityId: 'e', entityType: ET, operation: 'create', payload: { v: 1 }, schemaVersion: 1 });
+    change({
+      entityId: 'e',
+      entityType: ET,
+      operation: 'create',
+      payload: { v: 1 },
+      schemaVersion: 1,
+    });
     const [dispatched] = nextBatch(SCOPE, 'enrollment-1');
     applyPushResults(SCOPE, [{ changeId: dispatched.changeId, status: 'rejected' }]);
     const rows = listOutboxRows(SCOPE);
@@ -428,16 +616,27 @@ describe('applyPushResults', () => {
     expect(getBinding(SCOPE, ET, 'e')?.baseRevision).toBeNull();
   });
 
-  it('flags reset-required and receipt-expired on sync state without touching the row', () => {
+  it('flags reset-required and receipt-expired as terminal rejections on sync state', () => {
     activateEnrollment();
     upsertBinding(SCOPE, ET, 'e');
-    change({ entityId: 'e', entityType: ET, operation: 'create', payload: { v: 1 }, schemaVersion: 1 });
+    change({
+      entityId: 'e',
+      entityType: ET,
+      operation: 'create',
+      payload: { v: 1 },
+      schemaVersion: 1,
+    });
     const [dispatched] = nextBatch(SCOPE, 'enrollment-1');
     applyPushResults(SCOPE, [{ changeId: dispatched.changeId, status: 'reset-required' }]);
-    expect(listOutboxRows(SCOPE)[0].state).toBe('dispatched');
+    const rows = listOutboxRows(SCOPE);
+    // The receipt is terminal: the row is rejected with its reason preserved so
+    // replay cannot resurrect a mutation the server already declined.
+    expect(rows[0].state).toBe('rejected');
+    expect(rows[0].resultJson).toContain('reset-required');
     expect(getSyncState(SCOPE)?.resetRequired).toBe(true);
-    applyPushResults(SCOPE, [{ changeId: dispatched.changeId, status: 'receipt-expired' }]);
-    expect(getSyncState(SCOPE)?.resetRequired).toBe(true);
+    expect(getBinding(SCOPE, ET, 'e')?.localEditGeneration).toBeGreaterThan(
+      getBinding(SCOPE, ET, 'e')?.acknowledgedGeneration ?? -1,
+    );
   });
 
   it('rejects results for unknown changes', () => {

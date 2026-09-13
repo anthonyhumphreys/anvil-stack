@@ -9,6 +9,7 @@ import {
   canonicalChangeHashInput,
   type PendingChange,
   type PushItemAccepted,
+  type ScannedEntity,
   type SyncCursor,
   type SyncOperation,
   type SyncPullParams,
@@ -16,6 +17,10 @@ import {
   type SyncPushItemResult,
   type SyncPushParams,
   type SyncPushResult,
+  type SyncScanBeginParams,
+  type SyncScanBeginResult,
+  type SyncScanFinishResult,
+  type SyncScanPageResult,
   type SyncedChange,
 } from '../../../../cloud/contract/sync';
 import { DEFAULT_LIMITS, PROTOCOL } from '../../../../cloud/contract/version';
@@ -62,6 +67,16 @@ interface PreparedChange {
   entityBytes: number;
   computedHash: string;
 }
+
+interface FakeScanState {
+  scanId: string;
+  watermarkStart: number;
+  epoch: string;
+  done: boolean;
+}
+
+/** One-shot failure injected for the next call to the named operation. */
+type InjectedFailureMode = 'reject' | 'drop-response';
 
 class FakeRpcFailure extends Error {
   readonly code: ErrorCode;
@@ -161,11 +176,45 @@ export class FakeAccountCoordinator {
   private readonly entities = new Map<string, EntityRow>();
   private readonly receipts = new Map<string, ReceiptRow>();
   private readonly log: SyncedChange[] = [];
+  private readonly scans = new Map<string, FakeScanState>();
+  private readonly failureQueue: Array<{
+    operation: string;
+    mode: InjectedFailureMode;
+  }> = [];
+
+  /**
+   * Queues a one-shot failure for the next call to `operation`:
+   * - 'reject': the call fails before executing (clean transport error).
+   * - 'drop-response': the mutation executes and commits, but the client sees
+   *   a transport error — the lost-acknowledgement case.
+   */
+  injectFailure(operation: string, mode: InjectedFailureMode): void {
+    this.failureQueue.push({ operation, mode });
+  }
+
+  /** Rotates the dataset epoch (server restore). Subsequent pushes get reset-required. */
+  rotateEpoch(epoch: string): void {
+    this.epoch = epoch;
+  }
+
+  private takeFailure(operation: string): InjectedFailureMode | null {
+    const index = this.failureQueue.findIndex((entry) => entry.operation === operation);
+    if (index === -1) return null;
+    const [failure] = this.failureQueue.splice(index, 1);
+    return failure.mode;
+  }
+
+  private currentWatermark(): number {
+    return this.nextSequence - 1;
+  }
 
   push(auth: SpikeAuth, params: SyncPushParams): SyncPushResult {
     const prepared = this.prepareBatch(params.changes);
     this.provisionEnrollment(auth);
     this.assertBatchStructure(prepared);
+    if (params.epoch !== undefined && params.epoch !== this.epoch) {
+      throw new FakeRpcFailure('epoch-mismatch', { expected: this.epoch, actual: params.epoch });
+    }
     const results: SyncPushItemResult[] = [];
     for (const item of prepared) {
       results.push(this.applyPrepared(auth, item));
@@ -246,24 +295,154 @@ export class FakeAccountCoordinator {
       return errorResponse(requestId, 'malformed-request');
     }
     try {
+      const injected = this.takeFailure(operation);
+      if (injected === 'reject') {
+        return errorResponse(requestId, 'unavailable');
+      }
+      let result: unknown;
       switch (operation) {
         case 'sync.push': {
-          const result = this.push(auth, parsePushParams(parsed['params']));
-          return successResponse(requestId, result);
+          result = this.push(auth, parsePushParams(parsed['params']));
+          break;
         }
         case 'sync.pull': {
-          const result = this.pull(parsePullParams(parsed['params']));
-          return successResponse(requestId, result);
+          result = this.pull(parsePullParams(parsed['params']));
+          break;
+        }
+        case 'sync.scan.begin': {
+          result = this.scanBegin(parseScanBeginParams(parsed['params']));
+          break;
+        }
+        case 'sync.scan.page': {
+          result = this.scanPage(parseScanPageParams(parsed['params']));
+          break;
+        }
+        case 'sync.scan.finish': {
+          result = this.scanFinish(parseScanFinishParams(parsed['params']));
+          break;
         }
         default:
           return errorResponse(requestId, 'unsupported-operation');
       }
+      if (injected === 'drop-response') {
+        // Server committed; the client only sees a transport failure.
+        return errorResponse(requestId, 'unavailable');
+      }
+      return successResponse(requestId, result);
     } catch (error) {
       if (error instanceof FakeRpcFailure) {
         return errorResponse(requestId, error.code, error.details);
       }
       return errorResponse(requestId, 'unavailable');
     }
+  }
+
+  private scanBegin(params: SyncScanBeginParams): SyncScanBeginResult {
+    if (params.epoch !== undefined && params.epoch !== null && params.epoch !== this.epoch) {
+      throw new FakeRpcFailure('epoch-mismatch', { expected: this.epoch, actual: params.epoch });
+    }
+    const watermarkStart = this.currentWatermark();
+    const scan: FakeScanState = {
+      scanId: `scan-${this.scans.size + 1}`,
+      watermarkStart,
+      epoch: this.epoch,
+      done: false,
+    };
+    this.scans.set(scan.scanId, scan);
+    return {
+      scanId: scan.scanId,
+      watermarkStart,
+      resumeCursor: String(watermarkStart) as SyncCursor,
+      epoch: this.epoch,
+    };
+  }
+
+  private scanPage(params: {
+    scanId: string;
+    cursor: string | null;
+    maxBytes: number;
+  }): SyncScanPageResult {
+    const scan = this.loadScan(params.scanId);
+    const after =
+      params.cursor === null
+        ? null
+        : (JSON.parse(params.cursor) as [string, string]);
+    const rows = [...this.entities.entries()]
+      .filter(([, row]) => row.operation !== 'delete')
+      .map(([key, row]) => {
+        const [entityType, entityId] = key.split('\0') as [string, string];
+        return { entityType, entityId, row };
+      })
+      .sort((a, b) =>
+        a.entityType === b.entityType
+          ? a.entityId < b.entityId
+            ? -1
+            : a.entityId > b.entityId
+              ? 1
+              : 0
+          : a.entityType < b.entityType
+            ? -1
+            : 1,
+      )
+      .filter(
+        (entry) =>
+          after === null ||
+          entry.entityType > after[0] ||
+          (entry.entityType === after[0] && entry.entityId > after[1]),
+      );
+    const maxBytes = Math.min(params.maxBytes, DEFAULT_LIMITS.pageBytes);
+    const entities: ScannedEntity[] = [];
+    let usedBytes = 0;
+    let remaining = false;
+    for (const entry of rows) {
+      const scanned: ScannedEntity = {
+        entityType: entry.entityType,
+        entityId: entry.entityId,
+        revision: entry.row.revision,
+        schemaVersion: entry.row.schemaVersion,
+        payload: entry.row.payload,
+      };
+      const size = utf8ByteLength(JSON.stringify(scanned));
+      if (entities.length > 0 && usedBytes + size > maxBytes) {
+        remaining = true;
+        break;
+      }
+      entities.push(scanned);
+      usedBytes += size;
+    }
+    const last = entities[entities.length - 1];
+    scan.done = !remaining;
+    return {
+      entities,
+      nextCursor: remaining && last ? JSON.stringify([last.entityType, last.entityId]) : null,
+      done: scan.done,
+    };
+  }
+
+  private scanFinish(params: { scanId: string }): SyncScanFinishResult {
+    const scan = this.loadScan(params.scanId);
+    if (!scan.done) {
+      throw new FakeRpcFailure('malformed-request', { reason: 'scan-incomplete' });
+    }
+    const watermarkEnd = this.currentWatermark();
+    return {
+      scanId: scan.scanId,
+      complete: true,
+      watermarkEnd,
+      epoch: this.epoch,
+      nextCursor: String(watermarkEnd) as SyncCursor,
+    };
+  }
+
+  private loadScan(scanId: string): FakeScanState {
+    const scan = this.scans.get(scanId);
+    if (scan === undefined) {
+      throw new FakeRpcFailure('not-found', { reason: 'scan' });
+    }
+    if (scan.epoch !== this.epoch) {
+      throw new FakeRpcFailure('epoch-mismatch', { expected: this.epoch, actual: scan.epoch });
+    }
+    return scan;
   }
 
   private prepareBatch(changes: PendingChange[]): PreparedChange[] {
@@ -426,7 +605,56 @@ function parsePushParams(params: unknown): SyncPushParams {
   for (const entry of params['changes']) {
     changes.push(parsePendingChange(entry));
   }
-  return { changes };
+  const epochRaw = params['epoch'];
+  if (epochRaw !== undefined && typeof epochRaw !== 'string') {
+    throw new FakeRpcFailure('malformed-request', { reason: 'epoch-type' });
+  }
+  return { changes, epoch: epochRaw };
+}
+
+function parseScanBeginParams(params: unknown): SyncScanBeginParams {
+  if (!isRecord(params)) {
+    throw new FakeRpcFailure('malformed-request', { reason: 'scan-begin-params' });
+  }
+  const epoch = params['epoch'];
+  if (epoch !== undefined && epoch !== null && typeof epoch !== 'string') {
+    throw new FakeRpcFailure('malformed-request', { reason: 'epoch-type' });
+  }
+  return { epoch };
+}
+
+function parseScanPageParams(params: unknown): {
+  scanId: string;
+  cursor: string | null;
+  maxBytes: number;
+} {
+  if (!isRecord(params)) {
+    throw new FakeRpcFailure('malformed-request', { reason: 'scan-page-params' });
+  }
+  const scanId = params['scanId'];
+  if (typeof scanId !== 'string' || scanId.length === 0) {
+    throw new FakeRpcFailure('malformed-request', { reason: 'scanId' });
+  }
+  const cursorRaw = params['cursor'];
+  if (cursorRaw !== null && typeof cursorRaw !== 'string') {
+    throw new FakeRpcFailure('malformed-request', { reason: 'cursor' });
+  }
+  const maxBytes = params['maxBytes'];
+  if (typeof maxBytes !== 'number' || !Number.isInteger(maxBytes) || maxBytes < 1) {
+    throw new FakeRpcFailure('malformed-request', { reason: 'maxBytes' });
+  }
+  return { scanId, cursor: cursorRaw, maxBytes };
+}
+
+function parseScanFinishParams(params: unknown): { scanId: string } {
+  if (!isRecord(params)) {
+    throw new FakeRpcFailure('malformed-request', { reason: 'scan-finish-params' });
+  }
+  const scanId = params['scanId'];
+  if (typeof scanId !== 'string' || scanId.length === 0) {
+    throw new FakeRpcFailure('malformed-request', { reason: 'scanId' });
+  }
+  return { scanId };
 }
 
 function parsePullParams(params: unknown): SyncPullParams {

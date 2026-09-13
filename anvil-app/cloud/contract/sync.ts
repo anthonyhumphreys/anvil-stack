@@ -22,6 +22,8 @@ export interface PendingChange {
 
 export interface SyncPushParams {
   changes: PendingChange[];
+  /** Client's expected dataset epoch; the backend fails the batch on mismatch. */
+  epoch?: string;
 }
 
 export type PushItemStatus =
@@ -110,6 +112,12 @@ export interface SyncScanBeginParams {
 export interface SyncScanBeginResult {
   scanId: string;
   watermarkStart: number;
+  /**
+   * Pull cursor positioned at `watermarkStart`. The client stages the scan,
+   * then applies every change in (watermarkStart, watermarkEnd] starting from
+   * this cursor before activating the staged snapshot.
+   */
+  resumeCursor: SyncCursor;
   epoch: string;
 }
 
@@ -135,12 +143,19 @@ export interface SyncScanPageResult {
 
 export interface SyncScanFinishParams {
   scanId: string;
-  watermarkEnd: number;
 }
 
 export interface SyncScanFinishResult {
   scanId: string;
   complete: boolean;
+  /**
+   * Server-assigned end watermark. The activated snapshot equals the scanned
+   * entities plus the pull range (watermarkStart, watermarkEnd]; clients resume
+   * normal pulls at `nextCursor`.
+   */
+  watermarkEnd: number;
+  /** Dataset epoch proof re-checked when the scan finished. */
+  epoch: string;
   nextCursor: SyncCursor;
 }
 

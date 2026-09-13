@@ -91,7 +91,10 @@ function createFakeBackend(): FakeBackend {
       accountId: 'acct-1',
       datasetEpoch: '1',
     };
-    issuedRefreshTokens.set(rotated.refreshToken, { enrollmentId: params.enrollmentId, generation });
+    issuedRefreshTokens.set(rotated.refreshToken, {
+      enrollmentId: params.enrollmentId,
+      generation,
+    });
     return rotated;
   };
   const revoke = async (): Promise<{ revoked: boolean }> => {
@@ -136,7 +139,7 @@ beforeEach(() => {
 
 describe('enrollWithCode', () => {
   it('stores the session and reports a signed-in snapshot', async () => {
-    const snapshot = await service.enrollWithCode('HELLO', fake.enroll);
+    const snapshot = await service.enrollWithCode('HELLO', fake.enroll, 'backend-1');
 
     expect(snapshot).toEqual({
       state: 'signed-in',
@@ -153,7 +156,9 @@ describe('enrollWithCode', () => {
   });
 
   it('rejects an empty code without writing a session', async () => {
-    await expect(service.enrollWithCode('   ', fake.enroll)).rejects.toThrow(/Missing enrollment code/);
+    await expect(service.enrollWithCode('   ', fake.enroll, 'backend-1')).rejects.toThrow(
+      /Missing enrollment code/,
+    );
     expect(existsSync(sessionFilePath(userDataDir))).toBe(false);
     expect(service.getPublicSnapshot().state).toBe('signed-out');
   });
@@ -178,7 +183,9 @@ describe('PKCE login', () => {
 
     expect(result.redirectUri).toBe('http://127.0.0.1:54321/callback');
     expect(result.state.length).toBeGreaterThan(0);
-    expect(result.authorizationUrl.startsWith('https://identity.example.org/authorize?')).toBe(true);
+    expect(result.authorizationUrl.startsWith('https://identity.example.org/authorize?')).toBe(
+      true,
+    );
     expect(result.authorizationUrl).toContain('code_challenge_method=S256');
     expect(result.authorizationUrl).toContain('code_challenge=');
     expect(result.authorizationUrl).toContain(`state=${encodeURIComponent(result.state)}`);
@@ -193,7 +200,7 @@ describe('PKCE login', () => {
     const created = await svc.createPkceLogin();
 
     await expect(
-      svc.completePkceLogin({ state: 'wrong-state', authorizationCode: 'code-123' }, fake.enroll),
+      svc.completePkceLogin({ state: 'wrong-state', authorizationCode: 'code-123' }, fake.enroll, 'backend-1'),
     ).rejects.toThrow(/state mismatch/);
     expect(existsSync(sessionFilePath(userDataDir))).toBe(false);
     expect(svc.getPublicSnapshot().state).toBe('enrolling');
@@ -201,16 +208,20 @@ describe('PKCE login', () => {
     const snapshot = await svc.completePkceLogin(
       { state: created.state, authorizationCode: 'code-123' },
       fake.enroll,
+      'backend-1',
     );
     expect(snapshot.state).toBe('signed-in');
     expect(snapshot.enrollmentId).toBe('enr-oidc');
-    expect(fake.lastEnrollProof).toMatchObject({ method: 'oidc-pkce', authorizationCode: 'code-123' });
+    expect(fake.lastEnrollProof).toMatchObject({
+      method: 'oidc-pkce',
+      authorizationCode: 'code-123',
+    });
   });
 });
 
 describe('refreshSession', () => {
   it('rotates credentials and increments the credential generation', async () => {
-    await service.enrollWithCode('HELLO', fake.enroll);
+    await service.enrollWithCode('HELLO', fake.enroll, 'backend-1');
     expect(readSessionFile(userDataDir)['credentialGeneration']).toBe(1);
 
     const snapshot = await service.refreshSession(fake.refresh);
@@ -222,13 +233,15 @@ describe('refreshSession', () => {
   });
 
   it('wipes the local session when the old refresh is flagged as reused', async () => {
-    await service.enrollWithCode('HELLO', fake.enroll);
+    await service.enrollWithCode('HELLO', fake.enroll, 'backend-1');
     const oldRefresh = storedRefreshToken(userDataDir);
     await service.refreshSession(fake.refresh);
     expect(service.getPublicSnapshot().state).toBe('signed-in');
 
     // Presenting the already-rotated refresh token trips reuse detection.
-    await expect(fake.refresh({ refreshToken: oldRefresh, enrollmentId: 'enr-1' })).rejects.toMatchObject({
+    await expect(
+      fake.refresh({ refreshToken: oldRefresh, enrollmentId: 'enr-1' }),
+    ).rejects.toMatchObject({
       code: 'refresh-reuse-detected',
     });
     const snapshot = await service.refreshSession(() =>
@@ -253,7 +266,7 @@ describe('refreshSession', () => {
 
 describe('revokeSession', () => {
   it('revokes idempotently and clears the local session', async () => {
-    await service.enrollWithCode('HELLO', fake.enroll);
+    await service.enrollWithCode('HELLO', fake.enroll, 'backend-1');
     const snapshot = await service.revokeSession(fake.revoke);
 
     expect(snapshot.state).toBe('signed-out');
@@ -268,7 +281,7 @@ describe('revokeSession', () => {
 
 describe('getPublicSnapshot', () => {
   it('never exposes tokens, even when stringified', async () => {
-    await service.enrollWithCode('HELLO', fake.enroll);
+    await service.enrollWithCode('HELLO', fake.enroll, 'backend-1');
     const snapshot = service.getPublicSnapshot();
 
     expect(Object.keys(snapshot).sort()).toEqual(
@@ -286,5 +299,100 @@ describe('getPublicSnapshot', () => {
       enrollmentId: null,
       expiresAt: null,
     });
+  });
+});
+
+describe('installDeviceSession', () => {
+  it('stores a spike session whose public snapshot still has no tokens', () => {
+    const snapshot = service.installDeviceSession({
+      accessToken: 'spike:acct:enr',
+      accessExpiresAt: EXPIRES_AT,
+      refreshToken: 'spike-refresh:enr',
+      credentialGeneration: 1,
+      enrollmentId: 'enr',
+      accountId: 'acct',
+      datasetEpoch: 'spike-epoch-1',
+    }, 'backend-1');
+    expect(snapshot).toEqual({
+      state: 'signed-in',
+      accountId: 'acct',
+      enrollmentId: 'enr',
+      expiresAt: EXPIRES_AT,
+    });
+    expect(service.getAccessToken()).toBe('spike:acct:enr');
+    expect(JSON.stringify(snapshot)).not.toContain('spike:acct:enr');
+    service.signOutLocal();
+    expect(service.getAccessToken()).toBeNull();
+  });
+});
+
+describe('backend binding and session fencing', () => {
+  it('binds the session to the backend it was enrolled against', async () => {
+    await service.enrollWithCode('HELLO', fake.enroll, 'backend-1');
+    expect(service.getSessionScopeFields()).toEqual({
+      accountId: 'acct-1',
+      enrollmentId: 'enr-1',
+      datasetEpoch: '1',
+      backendId: 'backend-1',
+    });
+    expect(readSessionFile(userDataDir)['backendId']).toBe('backend-1');
+  });
+
+  it('shares one rotation between concurrent refresh callers', async () => {
+    await service.enrollWithCode('HELLO', fake.enroll, 'backend-1');
+    const [first, second] = await Promise.all([
+      service.refreshSession(fake.refresh),
+      service.refreshSession(fake.refresh),
+    ]);
+    expect(first.state).toBe('signed-in');
+    expect(second.state).toBe('signed-in');
+    expect(fake.refreshCalls).toHaveLength(1);
+    expect(readSessionFile(userDataDir)['credentialGeneration']).toBe(2);
+  });
+
+  it('discards a rotation response that lands after sign-out', async () => {
+    await service.enrollWithCode('HELLO', fake.enroll, 'backend-1');
+    let release!: (value: DeviceSession) => void;
+    const slowRefresh = () =>
+      new Promise<DeviceSession>((resolve) => {
+        release = resolve;
+      });
+    const pending = service.refreshSession(slowRefresh);
+    service.signOutLocal();
+    release({
+      accessToken: 'access-stale',
+      accessExpiresAt: EXPIRES_AT,
+      refreshToken: 'refresh-stale',
+      credentialGeneration: 2,
+      enrollmentId: 'enr-1',
+      accountId: 'acct-1',
+      datasetEpoch: '1',
+    });
+    const snapshot = await pending;
+    expect(snapshot.state).toBe('signed-out');
+    expect(existsSync(sessionFilePath(userDataDir))).toBe(false);
+    expect(service.getAccessToken()).toBeNull();
+  });
+
+  it('discards an enrollment response that lands after sign-out', async () => {
+    let release!: (value: DeviceSession) => void;
+    const slowEnroll: EnrollFn = () =>
+      new Promise<DeviceSession>((resolve) => {
+        release = resolve;
+      });
+    const pending = service.enrollWithCode('HELLO', slowEnroll, 'backend-1');
+    service.signOutLocal();
+    release({
+      accessToken: 'access-late',
+      accessExpiresAt: EXPIRES_AT,
+      refreshToken: 'refresh-late',
+      credentialGeneration: 1,
+      enrollmentId: 'enr-late',
+      accountId: 'acct-1',
+      datasetEpoch: '1',
+    });
+    const snapshot = await pending;
+    expect(snapshot.state).toBe('signed-out');
+    expect(existsSync(sessionFilePath(userDataDir))).toBe(false);
   });
 });

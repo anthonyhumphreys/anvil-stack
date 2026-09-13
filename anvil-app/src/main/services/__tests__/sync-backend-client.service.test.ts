@@ -391,6 +391,7 @@ describe('sync-backend.service association', () => {
       profiles: [],
       authModes: [],
       state: null,
+      identityReviewRequired: false,
     });
     const keys: string[] = [];
     const collect = (value: unknown): void => {

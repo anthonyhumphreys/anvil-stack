@@ -61,6 +61,8 @@ export interface SyncBackendStatus {
   profiles: string[];
   authModes: string[];
   state: SyncBackendState | null;
+  /** Endpoint or issuer changed under the same deployment ID; re-review needed. */
+  identityReviewRequired: boolean;
 }
 
 /** Exhaustive label helper so new connection modes fail closed at compile time. */

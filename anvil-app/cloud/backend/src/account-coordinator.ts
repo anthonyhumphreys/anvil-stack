@@ -527,7 +527,12 @@ export class AccountCoordinator extends DurableObject<Env> {
       storedEpoch,
       Date.now(),
     );
-    return { scanId, watermarkStart, epoch: storedEpoch };
+    return {
+      scanId,
+      watermarkStart,
+      resumeCursor: String(watermarkStart) as SyncCursor,
+      epoch: storedEpoch,
+    };
   }
 
   private handleScanPage(requestId: string, params: unknown): Response {
@@ -623,11 +628,16 @@ export class AccountCoordinator extends DurableObject<Env> {
   private finishScan(scanId: string): SyncScanFinishResult {
     const scan = this.loadScan(scanId);
     this.assertScanEpochAndRetention(scan);
+    if (scan.done !== 1) {
+      // The snapshot is only complete once paging has consumed every entity.
+      throw new RpcFailure('malformed-request', { reason: 'scan-incomplete' });
+    }
     const watermarkEnd = this.currentWatermark();
-    this.ctx.storage.sql.exec('UPDATE scans SET done = 1 WHERE scan_id = ?', scan.scan_id);
     return {
       scanId: scan.scan_id,
       complete: true,
+      watermarkEnd,
+      epoch: this.readMeta('epoch'),
       nextCursor: String(watermarkEnd) as SyncCursor,
     };
   }
@@ -851,7 +861,7 @@ function parseScanPageParams(params: unknown): {
   return { scanId, cursor: cursorRaw, maxBytes };
 }
 
-function parseScanFinishParams(params: unknown): { scanId: string; watermarkEnd: number } {
+function parseScanFinishParams(params: unknown): { scanId: string } {
   if (!isRecord(params)) {
     throw new RpcFailure('malformed-request', { reason: 'scan-finish-params' });
   }
@@ -859,11 +869,7 @@ function parseScanFinishParams(params: unknown): { scanId: string; watermarkEnd:
   if (typeof scanId !== 'string' || scanId.length === 0) {
     throw new RpcFailure('malformed-request', { reason: 'scanId' });
   }
-  const watermarkEnd = params['watermarkEnd'];
-  if (typeof watermarkEnd !== 'number' || !Number.isInteger(watermarkEnd) || watermarkEnd < 0) {
-    throw new RpcFailure('malformed-request', { reason: 'watermarkEnd' });
-  }
-  return { scanId, watermarkEnd };
+  return { scanId };
 }
 
 function encodeEntityCursor(entityType: string, entityId: string): string {

@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 68;
+export const SCHEMA_VERSION = 69;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -953,6 +953,7 @@ CREATE TABLE IF NOT EXISTS device_enrollments (
   dataset_epoch TEXT NOT NULL,
   installation_id TEXT NOT NULL,
   enrollment_generation INTEGER NOT NULL DEFAULT 1,
+  next_sequence INTEGER NOT NULL DEFAULT 1,
   display_name TEXT NOT NULL DEFAULT '',
   state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('active', 'revoked', 'pending')),
   created_at TEXT NOT NULL,
@@ -1047,11 +1048,37 @@ CREATE TABLE IF NOT EXISTS sync_backends (
   auth_modes_json TEXT NOT NULL,
   pinned_descriptor_json TEXT NOT NULL,
   state TEXT NOT NULL CHECK (state IN ('active','paused','disconnected')),
+  identity_review_required INTEGER NOT NULL DEFAULT 0,
   created_at TEXT,
   updated_at TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uq_sync_backends_one_active
   ON sync_backends(state) WHERE state = 'active';
+CREATE TABLE IF NOT EXISTS sync_installation (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  installation_id TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sync_scan_runs (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  dataset_epoch TEXT NOT NULL,
+  scan_id TEXT NOT NULL,
+  watermark_start INTEGER NOT NULL,
+  started_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, dataset_epoch)
+);
+CREATE TABLE IF NOT EXISTS sync_scan_staging (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  dataset_epoch TEXT NOT NULL,
+  entity_type TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  schema_version INTEGER NOT NULL,
+  payload_json TEXT,
+  PRIMARY KEY (backend_id, account_id, dataset_epoch, entity_type, entity_id)
+);
 `;
 
 /**
@@ -2304,5 +2331,34 @@ CREATE TABLE IF NOT EXISTS sync_backends (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uq_sync_backends_one_active
   ON sync_backends(state) WHERE state = 'active';
+`,
+  69: `
+ALTER TABLE device_enrollments ADD COLUMN next_sequence INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE sync_backends ADD COLUMN identity_review_required INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS sync_installation (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  installation_id TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sync_scan_runs (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  dataset_epoch TEXT NOT NULL,
+  scan_id TEXT NOT NULL,
+  watermark_start INTEGER NOT NULL,
+  started_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, dataset_epoch)
+);
+CREATE TABLE IF NOT EXISTS sync_scan_staging (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  dataset_epoch TEXT NOT NULL,
+  entity_type TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  schema_version INTEGER NOT NULL,
+  payload_json TEXT,
+  PRIMARY KEY (backend_id, account_id, dataset_epoch, entity_type, entity_id)
+);
 `,
 };

@@ -8,6 +8,8 @@
  * on server restore), so it is modelled as a string even though it is often numeric.
  */
 
+import type { SyncOperation } from '../../cloud/contract/sync.js';
+
 export type { PendingChange, SyncOperation } from '../../cloud/contract/sync.js';
 export {
   canonicalChangeHashInput,
@@ -43,6 +45,8 @@ export interface DeviceEnrollment {
   scope: SyncScope;
   installationId: string;
   enrollmentGeneration: number;
+  /** Durable per-enrollment dispatch sequence allocator (next value to assign). */
+  nextSequence: number;
   displayName: string;
   state: SyncEnrollmentState;
   createdAt: string;
@@ -123,11 +127,15 @@ export interface PushResult {
   revision?: number;
   remotePayload?: unknown;
   remoteRevision?: number;
+  /** Machine-readable rejection cause (e.g. 'changed-content', 'entity-too-large'). */
+  reason?: string;
 }
 
 export interface NextBatchOptions {
   maxChanges?: number;
   maxBytes?: number;
+  /** Per-entity payload byte limit; oversized pending rows are rejected locally. */
+  entityBytes?: number;
 }
 
 export interface RecordLocalChangeInput {

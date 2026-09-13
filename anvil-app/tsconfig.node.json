@@ -15,5 +15,11 @@
     "sourceMap": true,
     "types": ["node"]
   },
-  "include": ["src/main/**/*", "src/shared/**/*", "src/preload/**/*", "cloud/contract/**/*"]
+  "include": [
+    "src/main/**/*",
+    "src/shared/**/*",
+    "src/preload/**/*",
+    "cloud/contract/**/*.ts",
+    "cloud/contract/**/*.json"
+  ]
 }

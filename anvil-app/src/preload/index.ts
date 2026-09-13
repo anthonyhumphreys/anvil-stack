@@ -49,6 +49,7 @@ import type {
 } from '../shared/types.js';
 import type { RunCommand, RunStatus } from '../shared/run-types.js';
 import type { SyncBackendPinInput } from '../shared/sync-backend.js';
+import type { SyncConflictResolutionChoice, SyncSpikeEnrollInput } from '../shared/sync-runtime.js';
 import type {
   AgentUIIntentPresentationPatch,
   AgentUIPlanPatch,
@@ -691,7 +692,21 @@ const api: AnvilAPI = {
     pin: (input: SyncBackendPinInput) => ipcRenderer.invoke('sync-backend:pin', input),
     status: () => ipcRenderer.invoke('sync-backend:status'),
     disconnect: () => ipcRenderer.invoke('sync-backend:disconnect'),
+    resolveReview: (backendId: string) =>
+      ipcRenderer.invoke('sync-backend:resolve-review', { backendId }),
     integrationPrompt: () => ipcRenderer.invoke('sync-backend:integration-prompt'),
+  },
+
+  syncRuntime: {
+    status: () => ipcRenderer.invoke('sync-runtime:status'),
+    preview: () => ipcRenderer.invoke('sync-runtime:preview'),
+    spikeEnroll: (input: SyncSpikeEnrollInput) =>
+      ipcRenderer.invoke('sync-runtime:spike-enroll', input),
+    enable: () => ipcRenderer.invoke('sync-runtime:enable'),
+    signOut: () => ipcRenderer.invoke('sync-runtime:sign-out'),
+    conflicts: () => ipcRenderer.invoke('sync-runtime:conflicts'),
+    resolveConflict: (conflictId: string, resolution: SyncConflictResolutionChoice) =>
+      ipcRenderer.invoke('sync-runtime:resolve-conflict', { conflictId, resolution }),
   },
 
   anvilCloud: {

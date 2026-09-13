@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { DEFAULT_LIMITS } from '../../../cloud/contract/version.js';
 import {
   canonicalizeJson,
   hashChange,
@@ -48,9 +49,7 @@ export interface PayloadHashInput {
  * including operation, identity, base, and payload.
  */
 export function computePayloadHash(input: PayloadHashInput): string {
-  return hashChange(input, (canonical) =>
-    createHash('sha256').update(canonical).digest('hex'),
-  );
+  return hashChange(input, (canonical) => createHash('sha256').update(canonical).digest('hex'));
 }
 
 interface EnrollmentRow {
@@ -60,6 +59,7 @@ interface EnrollmentRow {
   dataset_epoch: string;
   installation_id: string;
   enrollment_generation: number;
+  next_sequence: number;
   display_name: string;
   state: SyncEnrollmentState;
   created_at: string;
@@ -137,7 +137,11 @@ interface ConflictRow {
   resolution: SyncConflict['resolution'];
 }
 
-function mapScope(row: { backend_id: string; account_id: string; dataset_epoch: string }): SyncScope {
+function mapScope(row: {
+  backend_id: string;
+  account_id: string;
+  dataset_epoch: string;
+}): SyncScope {
   return { backendId: row.backend_id, accountId: row.account_id, datasetEpoch: row.dataset_epoch };
 }
 
@@ -147,6 +151,7 @@ function mapEnrollment(row: EnrollmentRow): DeviceEnrollment {
     scope: mapScope(row),
     installationId: row.installation_id,
     enrollmentGeneration: row.enrollment_generation,
+    nextSequence: row.next_sequence,
     displayName: row.display_name,
     state: row.state,
     createdAt: row.created_at,
@@ -205,6 +210,20 @@ function mapSyncState(row: SyncStateDbRow): SyncStateRow {
     resetRequired: row.reset_required === 1,
     updatedAt: row.updated_at,
   };
+}
+
+/**
+ * First upload of an unbound entity must be `create` with a null base
+ * (BACKEND-01 rejects `update` when baseRevision is null). Domain writers
+ * often pass `update` because the local SQLite row already exists.
+ */
+function syncOperationForBinding(
+  baseRevision: number | null,
+  operation: SyncOperation,
+): SyncOperation {
+  if (operation === 'delete') return 'delete';
+  if (baseRevision === null) return 'create';
+  return operation;
 }
 
 function mapConflict(row: ConflictRow): SyncConflict {
@@ -365,11 +384,7 @@ export function upsertBinding(
 }
 
 /** A binding row means the entity is adopted for sync in that scope. */
-export function hasActiveBinding(
-  scope: SyncScope,
-  entityType: string,
-  entityId: string,
-): boolean {
+export function hasActiveBinding(scope: SyncScope, entityType: string, entityId: string): boolean {
   return getBinding(scope, entityType, entityId) !== null;
 }
 
@@ -436,10 +451,8 @@ export function recordLocalChange(scope: SyncScope, input: RecordLocalChangeInpu
       pending.operation === 'delete' || input.operation === 'delete'
         ? input.operation === 'delete'
           ? ('delete' as const)
-          : binding.baseRevision === null
-            ? ('create' as const)
-            : ('update' as const)
-        : pending.operation;
+          : syncOperationForBinding(binding.baseRevision, 'update')
+        : syncOperationForBinding(binding.baseRevision, pending.operation);
     const finalPayloadJson = input.operation === 'delete' ? null : payloadJson;
     const hash = computePayloadHash({
       baseRevision: pending.base_revision,
@@ -469,12 +482,16 @@ export function recordLocalChange(scope: SyncScope, input: RecordLocalChangeInpu
   const changeId = randomUUID();
   // A dispatched row is immutable: the successor stays pending with a NULL
   // base_revision placeholder that applyPushResults resolves after the ack.
+  // Do not coerce that successor to create; the in-flight row already created it.
   const baseRevision = dispatched ? null : binding.baseRevision;
+  const operation = dispatched
+    ? input.operation
+    : syncOperationForBinding(binding.baseRevision, input.operation);
   const hash = computePayloadHash({
     baseRevision,
     entityId: input.entityId,
     entityType: input.entityType,
-    operation: input.operation,
+    operation,
     payload: payloadJson === null ? null : JSON.parse(payloadJson),
     schemaVersion: input.schemaVersion,
   });
@@ -494,7 +511,7 @@ export function recordLocalChange(scope: SyncScope, input: RecordLocalChangeInpu
     input.entityId,
     input.schemaVersion,
     baseRevision,
-    input.operation,
+    operation,
     payloadJson,
     hash,
     generation,
@@ -511,7 +528,8 @@ export function listOutboxRows(scope: SyncScope): SyncOutboxRow[] {
 }
 
 function toPendingChange(row: OutboxRow): PendingChange {
-  if (row.enrollment_sequence === null) throw new Error(`Change ${row.change_id} was not sequenced.`);
+  if (row.enrollment_sequence === null)
+    throw new Error(`Change ${row.change_id} was not sequenced.`);
   return {
     baseRevision: row.base_revision,
     changeId: row.change_id,
@@ -519,17 +537,83 @@ function toPendingChange(row: OutboxRow): PendingChange {
     entityId: row.entity_id,
     entityType: row.entity_type,
     operation: row.operation,
-    payload: row.payload_json === null ? undefined : (JSON.parse(row.payload_json) as unknown),
+    payload:
+      row.operation === 'delete' || row.payload_json === null
+        ? undefined
+        : (JSON.parse(row.payload_json) as unknown),
     payloadHash: row.payload_hash,
     schemaVersion: row.schema_version,
   };
 }
 
 /**
- * Builds the next push batch: pending rows in created_at order, at most one
- * per entity, skipping entities with a dispatched row or an unresolved
- * conflict. Assigns increasing enrollment_sequence values and marks the rows
- * dispatched atomically (own transaction is fine here).
+ * Fences dispatched rows recorded under a different enrollment: their receipts
+ * live in that enrollment's namespace, so the current enrollment can never
+ * resolve them. Each is preserved as a reviewable conflict (the intended local
+ * version is kept in the row's payload) and marked rejected.
+ */
+function fenceOrphanedDispatches(scope: SyncScope, enrollmentId: string): void {
+  const db = getDb();
+  const params = scopeParams(scope);
+  const orphaned = db
+    .prepare(
+      `SELECT * FROM sync_outbox WHERE ${SCOPE_WHERE} AND state = 'dispatched' AND enrollment_id <> ?`,
+    )
+    .all(...params, enrollmentId) as OutboxRow[];
+  for (const row of orphaned) {
+    db.prepare(
+      "UPDATE sync_outbox SET state = 'rejected', result_json = ? WHERE change_id = ?",
+    ).run(
+      JSON.stringify({ status: 'rejected', reason: 'enrollment-superseded' }),
+      row.change_id,
+    );
+    const unresolved = db
+      .prepare(
+        `SELECT id FROM sync_conflicts
+         WHERE ${SCOPE_WHERE} AND entity_type = ? AND entity_id = ? AND resolved_at IS NULL
+         LIMIT 1`,
+      )
+      .get(...params, row.entity_type, row.entity_id) as { id: string } | undefined;
+    if (unresolved) continue;
+    const binding = getBinding(scope, row.entity_type, row.entity_id);
+    db.prepare(
+      `INSERT INTO sync_conflicts
+         (id, backend_id, account_id, dataset_epoch, entity_type, entity_id,
+          base_payload_json, local_payload_json, remote_payload_json, base_revision,
+          remote_revision, kind, created_at, resolved_at, resolution)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, NULL, NULL)`,
+    ).run(
+      randomUUID(),
+      scope.backendId,
+      scope.accountId,
+      scope.datasetEpoch,
+      row.entity_type,
+      row.entity_id,
+      binding?.basePayloadJson ?? null,
+      row.payload_json,
+      binding?.baseRevision ?? row.base_revision,
+      row.operation === 'delete' ? 'delete-edit' : 'edit-edit',
+      nowIso(),
+    );
+  }
+}
+
+/**
+ * Builds the next push batch inside one transaction.
+ *
+ * Dispatch rules (spec §5):
+ * - Outstanding `dispatched` rows under this enrollment form the replay batch:
+ *   they are returned unchanged so a retry reuses the original
+ *   enrollment_sequence and payload_hash after transport failure or restart.
+ * - Dispatched rows under a different enrollment are fenced into conflicts.
+ * - Pending rows are immutable only once dispatched: at dispatch time each row
+ *   is rebased onto the current binding base, its operation normalized
+ *   (null-base edits become `create`; a keep-local `create` re-queued after a
+ *   conflict becomes `update`), and `payload_hash` recomputed over the exact
+ *   wire content.
+ * - Entities with an unresolved conflict are skipped; one row per entity;
+ *   batch count and serialized-request bytes honor negotiated limits; an
+ *   entity over `entityBytes` is rejected locally instead of poisoning a batch.
  */
 export function nextBatch(
   scope: SyncScope,
@@ -538,22 +622,24 @@ export function nextBatch(
 ): PendingChange[] {
   const maxChanges = options?.maxChanges ?? SYNC_PUSH_DEFAULTS.maxChanges;
   const maxBytes = options?.maxBytes ?? SYNC_PUSH_DEFAULTS.maxBytes;
+  const entityBytes = options?.entityBytes ?? DEFAULT_LIMITS.entityBytes;
   const run = getDb().transaction((): PendingChange[] => {
     const db = getDb();
     const params = scopeParams(scope);
-    // Entities with an in-flight dispatch are blocked. Conflict blocking comes
-    // from unresolved sync_conflicts rows (not the historic 'conflict' outbox
-    // row), so resolving a conflict unblocks the entity's next mutation.
-    const blockedEntities = new Set(
-      (
-        db
-          .prepare(
-            `SELECT entity_type, entity_id FROM sync_outbox
-             WHERE ${SCOPE_WHERE} AND state = 'dispatched'`,
-          )
-          .all(...params) as Array<{ entity_type: string; entity_id: string }>
-      ).map((row) => `${row.entity_type}\0${row.entity_id}`),
-    );
+    const now = nowIso();
+
+    fenceOrphanedDispatches(scope, enrollmentId);
+
+    const dispatched = db
+      .prepare(
+        `SELECT * FROM sync_outbox WHERE ${SCOPE_WHERE} AND state = 'dispatched' AND enrollment_id = ?
+         ORDER BY enrollment_sequence ASC`,
+      )
+      .all(...params, enrollmentId) as OutboxRow[];
+    if (dispatched.length > 0) {
+      return dispatched.map(toPendingChange);
+    }
+
     const conflictedEntities = new Set(
       (
         db
@@ -570,47 +656,109 @@ export function nextBatch(
           `SELECT * FROM sync_outbox WHERE ${SCOPE_WHERE} AND state = 'pending' ORDER BY created_at ASC, rowid ASC`,
         )
         .all(...params) as OutboxRow[]
-    ).filter((row) => {
-      const key = `${row.entity_type}\0${row.entity_id}`;
-      return !blockedEntities.has(key) && !conflictedEntities.has(key);
-    });
+    ).filter((row) => !conflictedEntities.has(`${row.entity_type}\0${row.entity_id}`));
+
+    const enrollment = db
+      .prepare('SELECT next_sequence FROM device_enrollments WHERE id = ?')
+      .get(enrollmentId) as { next_sequence: number } | undefined;
+    if (!enrollment) {
+      throw new Error(`Unknown enrollment ${enrollmentId}.`);
+    }
+    let nextSequence = enrollment.next_sequence;
 
     const seen = new Set<string>();
     const batch: OutboxRow[] = [];
     let bytes = 0;
+    const reject = (changeId: string, reason: string): void => {
+      db.prepare("UPDATE sync_outbox SET state = 'rejected', result_json = ? WHERE change_id = ?").run(
+        JSON.stringify({ status: 'rejected', reason }),
+        changeId,
+      );
+    };
     for (const row of candidates) {
       const key = `${row.entity_type}\0${row.entity_id}`;
       if (seen.has(key)) continue;
-      const size = Buffer.byteLength(row.payload_json ?? '', 'utf8');
+      const binding = getBinding(scope, row.entity_type, row.entity_id);
+      const baseRevision = binding?.baseRevision ?? null;
+      let operation = row.operation;
+      if (baseRevision === null) {
+        if (operation === 'delete') {
+          // Nothing to delete remotely; the intent is already realized.
+          db.prepare('DELETE FROM sync_outbox WHERE change_id = ?').run(row.change_id);
+          continue;
+        }
+        operation = 'create';
+      } else if (operation === 'create') {
+        // A create re-queued onto a known remote base is a keep-local update.
+        operation = 'update';
+      }
+      const payload = row.payload_json === null ? null : (JSON.parse(row.payload_json) as unknown);
+      // Deletes carry no payload on the wire; the hash input must match the
+      // exact wire content or the backend rejects it as changed.
+      const wirePayload = operation === 'delete' ? null : payload;
+      const payloadHash = computePayloadHash({
+        baseRevision,
+        entityId: row.entity_id,
+        entityType: row.entity_type,
+        operation,
+        payload: wirePayload,
+        schemaVersion: row.schema_version,
+      });
+      if (Buffer.byteLength(row.payload_json ?? '', 'utf8') > entityBytes) {
+        reject(row.change_id, 'entity-too-large');
+        continue;
+      }
+      const serialized = JSON.stringify({
+        baseRevision,
+        changeId: row.change_id,
+        enrollmentSequence: nextSequence,
+        entityId: row.entity_id,
+        entityType: row.entity_type,
+        operation,
+        payloadHash,
+        schemaVersion: row.schema_version,
+        ...(wirePayload === null ? {} : { payload: wirePayload }),
+      });
+      const size = Buffer.byteLength(serialized, 'utf8');
+      if (size > maxBytes) {
+        reject(row.change_id, 'change-too-large');
+        continue;
+      }
       if (batch.length >= maxChanges) break;
-      if (batch.length > 0 && bytes + size > maxBytes) continue;
+      if (bytes + size > maxBytes) continue;
       seen.add(key);
+      row.operation = operation;
+      row.base_revision = baseRevision;
+      row.payload_hash = payloadHash;
+      row.enrollment_sequence = nextSequence;
       batch.push(row);
       bytes += size;
+      nextSequence += 1;
     }
 
-    const sequenceRow = db
-      .prepare(
-        `SELECT MAX(enrollment_sequence) AS max_sequence FROM sync_outbox
-         WHERE ${SCOPE_WHERE} AND enrollment_id = ?`,
-      )
-      .get(...params, enrollmentId) as { max_sequence: number | null };
-    let sequence = sequenceRow.max_sequence ?? 0;
-    const now = nowIso();
-    const dispatch = db.prepare(
-      `UPDATE sync_outbox
-       SET enrollment_id = ?, enrollment_sequence = ?, state = 'dispatched', dispatched_at = ?
-       WHERE change_id = ?`,
-    );
-    for (const row of batch) {
-      sequence += 1;
-      dispatch.run(enrollmentId, sequence, now, row.change_id);
-      row.enrollment_id = enrollmentId;
-      row.enrollment_sequence = sequence;
-      row.state = 'dispatched';
-      row.dispatched_at = now;
-    }
     if (batch.length > 0) {
+      db.prepare('UPDATE device_enrollments SET next_sequence = ?, updated_at = ? WHERE id = ?').run(
+        nextSequence,
+        now,
+        enrollmentId,
+      );
+      const dispatch = db.prepare(
+        `UPDATE sync_outbox
+         SET enrollment_id = ?, enrollment_sequence = ?, state = 'dispatched', dispatched_at = ?,
+             base_revision = ?, operation = ?, payload_hash = ?
+         WHERE change_id = ?`,
+      );
+      for (const row of batch) {
+        dispatch.run(
+          enrollmentId,
+          row.enrollment_sequence,
+          now,
+          row.base_revision,
+          row.operation,
+          row.payload_hash,
+          row.change_id,
+        );
+      }
       updateSyncState(scope, { lastPushAt: now });
     }
     return batch.map(toPendingChange);
@@ -628,9 +776,9 @@ export function applyPushResults(scope: SyncScope, results: PushResult[]): void 
   const run = getDb().transaction(() => {
     const db = getDb();
     for (const result of results) {
-      const row = db.prepare('SELECT * FROM sync_outbox WHERE change_id = ?').get(result.changeId) as
-        | OutboxRow
-        | undefined;
+      const row = db
+        .prepare('SELECT * FROM sync_outbox WHERE change_id = ?')
+        .get(result.changeId) as OutboxRow | undefined;
       if (!row) throw new Error(`Unknown change ${result.changeId}.`);
       if (
         row.backend_id !== scope.backendId ||
@@ -642,12 +790,22 @@ export function applyPushResults(scope: SyncScope, results: PushResult[]): void 
       switch (result.status) {
         case 'accepted': {
           const revision = result.revision ?? row.base_revision;
+          // Advance the base only forward: a scan/reset may already have moved
+          // the binding past this stale acknowledgement.
           db.prepare(
             `UPDATE sync_bindings
-             SET base_revision = ?, base_payload_json = ?, acknowledged_generation = ?,
+             SET base_revision = CASE
+                   WHEN base_revision IS NULL OR base_revision < ? THEN ?
+                   ELSE base_revision END,
+                 base_payload_json = CASE
+                   WHEN base_revision IS NULL OR base_revision < ? THEN ?
+                   ELSE base_payload_json END,
+                 acknowledged_generation = MAX(acknowledged_generation, ?),
                  updated_at = ?
              WHERE ${SCOPE_WHERE} AND entity_type = ? AND entity_id = ?`,
           ).run(
+            revision,
+            revision,
             revision,
             row.payload_json,
             row.local_edit_generation,
@@ -658,11 +816,12 @@ export function applyPushResults(scope: SyncScope, results: PushResult[]): void 
           );
           db.prepare(
             "UPDATE sync_outbox SET state = 'acknowledged', result_json = ? WHERE change_id = ?",
-          ).run(result.revision !== undefined ? JSON.stringify({ revision: result.revision }) : null, result.changeId);
-          db.prepare(
-            `UPDATE sync_outbox SET base_revision = ?
-             WHERE ${SCOPE_WHERE} AND entity_type = ? AND entity_id = ? AND state = 'pending'`,
-          ).run(revision, ...scopeParams(scope), row.entity_type, row.entity_id);
+          ).run(
+            result.revision !== undefined ? JSON.stringify({ revision: result.revision }) : null,
+            result.changeId,
+          );
+          // Pending successors keep their recorded payload; their base and hash
+          // are recomputed from the binding at dispatch time.
           break;
         }
         case 'conflict': {
@@ -675,28 +834,43 @@ export function applyPushResults(scope: SyncScope, results: PushResult[]): void 
               : remotePayloadJson === null
                 ? ('edit-delete' as const)
                 : ('edit-edit' as const);
+          // Dedupe: an unresolved conflict for this entity already captures the
+          // pending review; a second one must not stack up on replays.
+          const unresolved = db
+            .prepare(
+              `SELECT id FROM sync_conflicts
+               WHERE ${SCOPE_WHERE} AND entity_type = ? AND entity_id = ? AND resolved_at IS NULL
+               LIMIT 1`,
+            )
+            .get(...scopeParams(scope), row.entity_type, row.entity_id) as
+            | { id: string }
+            | undefined;
+          if (!unresolved) {
+            db.prepare(
+              `INSERT INTO sync_conflicts
+                 (id, backend_id, account_id, dataset_epoch, entity_type, entity_id,
+                  base_payload_json, local_payload_json, remote_payload_json, base_revision,
+                  remote_revision, kind, created_at, resolved_at, resolution)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
+            ).run(
+              randomUUID(),
+              scope.backendId,
+              scope.accountId,
+              scope.datasetEpoch,
+              row.entity_type,
+              row.entity_id,
+              binding?.basePayloadJson ?? null,
+              row.payload_json,
+              remotePayloadJson,
+              binding?.baseRevision ?? row.base_revision,
+              result.remoteRevision ?? null,
+              kind,
+              nowIso(),
+            );
+          }
           db.prepare(
-            `INSERT INTO sync_conflicts
-               (id, backend_id, account_id, dataset_epoch, entity_type, entity_id,
-                base_payload_json, local_payload_json, remote_payload_json, base_revision,
-                remote_revision, kind, created_at, resolved_at, resolution)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
+            "UPDATE sync_outbox SET state = 'conflict', result_json = ? WHERE change_id = ?",
           ).run(
-            randomUUID(),
-            scope.backendId,
-            scope.accountId,
-            scope.datasetEpoch,
-            row.entity_type,
-            row.entity_id,
-            binding?.basePayloadJson ?? null,
-            row.payload_json,
-            remotePayloadJson,
-            binding?.baseRevision ?? row.base_revision,
-            result.remoteRevision ?? null,
-            kind,
-            nowIso(),
-          );
-          db.prepare("UPDATE sync_outbox SET state = 'conflict', result_json = ? WHERE change_id = ?").run(
             JSON.stringify({
               remoteRevision: result.remoteRevision ?? null,
               status: result.status,
@@ -706,8 +880,10 @@ export function applyPushResults(scope: SyncScope, results: PushResult[]): void 
           break;
         }
         case 'rejected': {
-          db.prepare("UPDATE sync_outbox SET state = 'rejected', result_json = ? WHERE change_id = ?").run(
-            JSON.stringify({ status: result.status }),
+          db.prepare(
+            "UPDATE sync_outbox SET state = 'rejected', result_json = ? WHERE change_id = ?",
+          ).run(
+            JSON.stringify({ status: result.status, reason: result.reason ?? null }),
             result.changeId,
           );
           break;
@@ -715,8 +891,13 @@ export function applyPushResults(scope: SyncScope, results: PushResult[]): void 
         case 'reset-required':
         case 'receipt-expired': {
           updateSyncState(scope, { resetRequired: true });
-          db.prepare('UPDATE sync_outbox SET result_json = ? WHERE change_id = ?').run(
-            JSON.stringify({ status: result.status }),
+          // Terminal receipt: the server answered without applying the change.
+          // The entity stays dirty (local generation > acknowledged) so the
+          // scan/reset reconciliation preserves the local edit.
+          db.prepare(
+            "UPDATE sync_outbox SET state = 'rejected', result_json = ? WHERE change_id = ?",
+          ).run(
+            JSON.stringify({ status: 'rejected', reason: result.status }),
             result.changeId,
           );
           break;
@@ -795,7 +976,13 @@ export function updateSyncState(scope: SyncScope, patch: SyncStatePatch): SyncSt
       patch.retentionFloorSequence ?? null,
       patch.protocolVersion ?? null,
       patch.serverLimitsJson ?? null,
-      patch.resetRequired === undefined ? (existing.resetRequired ? 1 : 0) : patch.resetRequired ? 1 : 0,
+      patch.resetRequired === undefined
+        ? existing.resetRequired
+          ? 1
+          : 0
+        : patch.resetRequired
+          ? 1
+          : 0,
       now,
       ...scopeParams(scope),
     );
@@ -864,4 +1051,347 @@ export function withSyncedEntityWrite(
       schemaVersion,
     });
   }
+}
+
+/**
+ * Stable per-profile installation identity, persisted once in
+ * `sync_installation`. Enrollments reference it; replacing or revoking an
+ * enrollment never changes the installation id.
+ */
+export function getOrCreateInstallationId(): string {
+  const row = getDb()
+    .prepare('SELECT installation_id FROM sync_installation WHERE id = 1')
+    .get() as { installation_id: string } | undefined;
+  if (row) return row.installation_id;
+  const id = randomUUID();
+  getDb()
+    .prepare('INSERT INTO sync_installation (id, installation_id, created_at) VALUES (1, ?, ?)')
+    .run(id, nowIso());
+  return id;
+}
+
+export function listBindings(scope: SyncScope): SyncBinding[] {
+  const rows = getDb()
+    .prepare(`SELECT * FROM sync_bindings WHERE ${SCOPE_WHERE}`)
+    .all(...scopeParams(scope)) as BindingRow[];
+  return rows.map(mapBinding);
+}
+
+/** Outbox rows that can still change outcome: pending, dispatched, conflict. */
+export function listMutableOutboxRows(
+  scope: SyncScope,
+  entityType: string,
+  entityId: string,
+): SyncOutboxRow[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT * FROM sync_outbox
+       WHERE ${SCOPE_WHERE} AND entity_type = ? AND entity_id = ?
+         AND state IN ('pending', 'dispatched', 'conflict')
+       ORDER BY created_at ASC, rowid ASC`,
+    )
+    .all(...scopeParams(scope), entityType, entityId) as OutboxRow[];
+  return rows.map(mapOutboxRow);
+}
+
+export function deleteMutableOutboxRows(
+  scope: SyncScope,
+  entityType: string,
+  entityId: string,
+): void {
+  getDb()
+    .prepare(
+      `DELETE FROM sync_outbox
+       WHERE ${SCOPE_WHERE} AND entity_type = ? AND entity_id = ?
+         AND state IN ('pending', 'dispatched', 'conflict')`,
+    )
+    .run(...scopeParams(scope), entityType, entityId);
+}
+
+export function deletePendingOutboxRows(
+  scope: SyncScope,
+  entityType: string,
+  entityId: string,
+): void {
+  getDb()
+    .prepare(
+      `DELETE FROM sync_outbox
+       WHERE ${SCOPE_WHERE} AND entity_type = ? AND entity_id = ? AND state = 'pending'`,
+    )
+    .run(...scopeParams(scope), entityType, entityId);
+}
+
+/** Terminal rejection for dispatched rows whose outcome is no longer needed. */
+export function rejectDispatchedRows(
+  scope: SyncScope,
+  entityType: string,
+  entityId: string,
+  reason: string,
+): void {
+  getDb()
+    .prepare(
+      `UPDATE sync_outbox SET state = 'rejected', result_json = ?
+       WHERE ${SCOPE_WHERE} AND entity_type = ? AND entity_id = ? AND state = 'dispatched'`,
+    )
+    .run(
+      JSON.stringify({ status: 'rejected', reason }),
+      ...scopeParams(scope),
+      entityType,
+      entityId,
+    );
+}
+
+export function deleteBinding(scope: SyncScope, entityType: string, entityId: string): void {
+  getDb()
+    .prepare(`DELETE FROM sync_bindings WHERE ${SCOPE_WHERE} AND entity_type = ? AND entity_id = ?`)
+    .run(...scopeParams(scope), entityType, entityId);
+}
+
+/** Sets the acknowledged base; allows NULL so reset can rebase to "absent". */
+export function setBindingBase(
+  scope: SyncScope,
+  entityType: string,
+  entityId: string,
+  baseRevision: number | null,
+  basePayloadJson: string | null,
+): void {
+  const binding = getBinding(scope, entityType, entityId);
+  if (!binding) {
+    upsertBinding(scope, entityType, entityId, { baseRevision, basePayloadJson });
+    return;
+  }
+  getDb()
+    .prepare(
+      `UPDATE sync_bindings
+       SET base_revision = ?, base_payload_json = ?, updated_at = ?
+       WHERE id = ?`,
+    )
+    .run(baseRevision, basePayloadJson, nowIso(), binding.id);
+}
+
+export function setBindingQuarantine(
+  scope: SyncScope,
+  entityType: string,
+  entityId: string,
+  quarantineJson: string | null,
+): void {
+  const binding = getBinding(scope, entityType, entityId);
+  if (!binding) {
+    upsertBinding(scope, entityType, entityId, { quarantineJson });
+    return;
+  }
+  getDb()
+    .prepare('UPDATE sync_bindings SET quarantine_json = ?, updated_at = ? WHERE id = ?')
+    .run(quarantineJson, nowIso(), binding.id);
+}
+
+/** Marks the current local edit generation as acknowledged. */
+export function acknowledgeBindingLocalEdits(
+  scope: SyncScope,
+  entityType: string,
+  entityId: string,
+): void {
+  getDb()
+    .prepare(
+      `UPDATE sync_bindings
+       SET acknowledged_generation = local_edit_generation, updated_at = ?
+       WHERE ${SCOPE_WHERE} AND entity_type = ? AND entity_id = ?`,
+    )
+    .run(nowIso(), ...scopeParams(scope), entityType, entityId);
+}
+
+export interface InsertConflictInput {
+  entityType: string;
+  entityId: string;
+  basePayloadJson: string | null;
+  localPayloadJson: string | null;
+  remotePayloadJson: string | null;
+  baseRevision: number | null;
+  remoteRevision: number | null;
+  kind: SyncConflict['kind'];
+}
+
+/**
+ * Inserts an unresolved conflict unless one already exists for the entity.
+ * Returns the existing-or-new conflict, or null when already resolved state.
+ */
+export function insertUnresolvedConflict(
+  scope: SyncScope,
+  input: InsertConflictInput,
+): SyncConflict {
+  const db = getDb();
+  const existing = db
+    .prepare(
+      `SELECT * FROM sync_conflicts
+       WHERE ${SCOPE_WHERE} AND entity_type = ? AND entity_id = ? AND resolved_at IS NULL
+       ORDER BY created_at ASC LIMIT 1`,
+    )
+    .get(...scopeParams(scope), input.entityType, input.entityId) as ConflictRow | undefined;
+  if (existing) return mapConflict(existing);
+  const id = randomUUID();
+  db.prepare(
+    `INSERT INTO sync_conflicts
+       (id, backend_id, account_id, dataset_epoch, entity_type, entity_id,
+        base_payload_json, local_payload_json, remote_payload_json, base_revision,
+        remote_revision, kind, created_at, resolved_at, resolution)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
+  ).run(
+    id,
+    scope.backendId,
+    scope.accountId,
+    scope.datasetEpoch,
+    input.entityType,
+    input.entityId,
+    input.basePayloadJson,
+    input.localPayloadJson,
+    input.remotePayloadJson,
+    input.baseRevision,
+    input.remoteRevision,
+    input.kind,
+    nowIso(),
+  );
+  const row = db.prepare('SELECT * FROM sync_conflicts WHERE id = ?').get(id) as ConflictRow;
+  return mapConflict(row);
+}
+
+/* ------------------------------------------------------------------ */
+/* Scan staging (SYNC-02/03 reset semantics)                            */
+/* ------------------------------------------------------------------ */
+
+export interface StagedScanEntity {
+  entityType: string;
+  entityId: string;
+  revision: number;
+  schemaVersion: number;
+  payloadJson: string | null;
+}
+
+interface ScanStagingRow {
+  entity_type: string;
+  entity_id: string;
+  revision: number;
+  schema_version: number;
+  payload_json: string | null;
+}
+
+interface ScanRunRow {
+  scan_id: string;
+  watermark_start: number;
+  started_at: string;
+}
+
+/**
+ * Starts a staged scan for the scope: discards any incomplete prior run and
+ * records the new scan's start watermark. Staging is durable so an interrupted
+ * scan never produces partial visible state; a restart simply discards it.
+ */
+export function beginScanStaging(scope: SyncScope, scanId: string, watermarkStart: number): void {
+  const db = getDb();
+  const params = scopeParams(scope);
+  db.prepare(`DELETE FROM sync_scan_staging WHERE ${SCOPE_WHERE}`).run(...params);
+  db.prepare(`DELETE FROM sync_scan_runs WHERE ${SCOPE_WHERE}`).run(...params);
+  db.prepare(
+    `INSERT INTO sync_scan_runs
+       (backend_id, account_id, dataset_epoch, scan_id, watermark_start, started_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(scope.backendId, scope.accountId, scope.datasetEpoch, scanId, watermarkStart, nowIso());
+}
+
+export function getScanRun(
+  scope: SyncScope,
+): { scanId: string; watermarkStart: number; startedAt: string } | null {
+  const row = getDb()
+    .prepare(`SELECT scan_id, watermark_start, started_at FROM sync_scan_runs WHERE ${SCOPE_WHERE}`)
+    .get(...scopeParams(scope)) as ScanRunRow | undefined;
+  if (!row) return null;
+  return { scanId: row.scan_id, watermarkStart: row.watermark_start, startedAt: row.started_at };
+}
+
+export function stageScanEntities(scope: SyncScope, entities: StagedScanEntity[]): void {
+  if (entities.length === 0) return;
+  const db = getDb();
+  const params = scopeParams(scope);
+  const insert = db.prepare(
+    `INSERT INTO sync_scan_staging
+       (backend_id, account_id, dataset_epoch, entity_type, entity_id, revision, schema_version, payload_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(backend_id, account_id, dataset_epoch, entity_type, entity_id) DO UPDATE SET
+       revision = excluded.revision,
+       schema_version = excluded.schema_version,
+       payload_json = excluded.payload_json`,
+  );
+  for (const entity of entities) {
+    insert.run(
+      ...params,
+      entity.entityType,
+      entity.entityId,
+      entity.revision,
+      entity.schemaVersion,
+      entity.payloadJson,
+    );
+  }
+}
+
+/** Applies one catch-up change (from pull between watermarks) to staging. */
+export function stageScanChange(
+  scope: SyncScope,
+  change: {
+    entityType: string;
+    entityId: string;
+    revision: number;
+    schemaVersion: number;
+    operation: SyncOperation;
+    payloadJson: string | null;
+  },
+): void {
+  const db = getDb();
+  const params = scopeParams(scope);
+  if (change.operation === 'delete') {
+    db.prepare(
+      `DELETE FROM sync_scan_staging
+       WHERE ${SCOPE_WHERE} AND entity_type = ? AND entity_id = ?`,
+    ).run(...params, change.entityType, change.entityId);
+    return;
+  }
+  db.prepare(
+    `INSERT INTO sync_scan_staging
+       (backend_id, account_id, dataset_epoch, entity_type, entity_id, revision, schema_version, payload_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(backend_id, account_id, dataset_epoch, entity_type, entity_id) DO UPDATE SET
+       revision = excluded.revision,
+       schema_version = excluded.schema_version,
+       payload_json = excluded.payload_json`,
+  ).run(
+    ...params,
+    change.entityType,
+    change.entityId,
+    change.revision,
+    change.schemaVersion,
+    change.payloadJson,
+  );
+}
+
+export function listScanStaging(scope: SyncScope): StagedScanEntity[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT entity_type, entity_id, revision, schema_version, payload_json
+       FROM sync_scan_staging WHERE ${SCOPE_WHERE}
+       ORDER BY entity_type ASC, entity_id ASC`,
+    )
+    .all(...scopeParams(scope)) as ScanStagingRow[];
+  return rows.map((row) => ({
+    entityType: row.entity_type,
+    entityId: row.entity_id,
+    revision: row.revision,
+    schemaVersion: row.schema_version,
+    payloadJson: row.payload_json,
+  }));
+}
+
+/** Clears staging and the scan-run marker after activation or discard. */
+export function clearScanStaging(scope: SyncScope): void {
+  const db = getDb();
+  const params = scopeParams(scope);
+  db.prepare(`DELETE FROM sync_scan_staging WHERE ${SCOPE_WHERE}`).run(...params);
+  db.prepare(`DELETE FROM sync_scan_runs WHERE ${SCOPE_WHERE}`).run(...params);
 }

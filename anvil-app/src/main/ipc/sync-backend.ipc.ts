@@ -5,7 +5,9 @@ import {
   getBackendStatus,
   getIntegrationPrompt,
   pinBackend,
+  resolveBackendIdentityReview,
 } from '../services/sync-backend.service.js';
+import { onBackendDisconnected } from '../services/sync-runtime.service.js';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -32,6 +34,15 @@ export function registerSyncBackendHandlers(): void {
 
   ipcMain.handle('sync-backend:disconnect', () => {
     disconnectBackend();
+    onBackendDisconnected();
+    return getBackendStatus();
+  });
+
+  ipcMain.handle('sync-backend:resolve-review', (_event, payload: unknown) => {
+    if (!isRecord(payload) || typeof payload['backendId'] !== 'string') {
+      throw new Error('resolve-review requires a backendId');
+    }
+    resolveBackendIdentityReview(payload['backendId']);
     return getBackendStatus();
   });
 

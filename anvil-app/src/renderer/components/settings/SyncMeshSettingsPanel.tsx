@@ -16,6 +16,11 @@ import {
   type SyncBackendDiscovery,
   type SyncBackendStatus,
 } from '../../../shared/sync-backend';
+import type {
+  SyncAdoptionPreviewItem,
+  SyncConflictView,
+  SyncRuntimeStatus,
+} from '../../../shared/sync-runtime';
 import { copyTextToClipboard } from '../../utils/clipboard';
 
 function toErrorMessage(error: unknown): string {
@@ -54,6 +59,12 @@ export function SyncMeshSettingsPanel(): ReactNode {
   const [prompt, setPrompt] = useState<string | null>(null);
   const [promptLoading, setPromptLoading] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [runtime, setRuntime] = useState<SyncRuntimeStatus | null>(null);
+  const [preview, setPreview] = useState<SyncAdoptionPreviewItem[]>([]);
+  const [conflicts, setConflicts] = useState<SyncConflictView[]>([]);
+  const [accountId, setAccountId] = useState('account-1');
+  const [enrolling, setEnrolling] = useState(false);
+  const [enabling, setEnabling] = useState(false);
 
   const refreshStatus = async (): Promise<void> => {
     setStatusLoading(true);
@@ -63,6 +74,14 @@ export function SyncMeshSettingsPanel(): ReactNode {
       if (next.state === 'active' && next.connectionMode !== 'local') {
         setMode(next.connectionMode);
       }
+      const [runtimeNext, previewNext, conflictNext] = await Promise.all([
+        window.anvil.syncRuntime.status(),
+        window.anvil.syncRuntime.preview(),
+        window.anvil.syncRuntime.conflicts(),
+      ]);
+      setRuntime(runtimeNext);
+      setPreview(previewNext);
+      setConflicts(conflictNext);
     } catch (err) {
       setError(toErrorMessage(err));
     } finally {
@@ -114,10 +133,73 @@ export function SyncMeshSettingsPanel(): ReactNode {
     try {
       const next = await window.anvil.syncBackend.disconnect();
       setStatus(next);
+      await refreshStatus();
     } catch (err) {
       setError(toErrorMessage(err));
     } finally {
       setDisconnecting(false);
+    }
+  };
+
+  const handleSpikeEnroll = async (): Promise<void> => {
+    setEnrolling(true);
+    setError(null);
+    try {
+      await window.anvil.syncRuntime.spikeEnroll({ accountId });
+      await refreshStatus();
+    } catch (err) {
+      setError(toErrorMessage(err));
+    } finally {
+      setEnrolling(false);
+    }
+  };
+
+  const handleEnableSync = async (): Promise<void> => {
+    setEnabling(true);
+    setError(null);
+    try {
+      await window.anvil.syncRuntime.enable();
+      await refreshStatus();
+    } catch (err) {
+      setError(toErrorMessage(err));
+    } finally {
+      setEnabling(false);
+    }
+  };
+
+  const handleSignOut = async (): Promise<void> => {
+    setError(null);
+    try {
+      await window.anvil.syncRuntime.signOut();
+      await refreshStatus();
+    } catch (err) {
+      setError(toErrorMessage(err));
+    }
+  };
+
+  const handleResolve = async (
+    conflictId: string,
+    resolution: 'keep-local' | 'use-remote',
+  ): Promise<void> => {
+    setError(null);
+    try {
+      await window.anvil.syncRuntime.resolveConflict(conflictId, resolution);
+      await refreshStatus();
+    } catch (err) {
+      setError(toErrorMessage(err));
+    }
+  };
+
+  const handleResolveReview = async (): Promise<void> => {
+    if (!status?.backendId) {
+      return;
+    }
+    setError(null);
+    try {
+      await window.anvil.syncBackend.resolveReview(status.backendId);
+      await refreshStatus();
+    } catch (err) {
+      setError(toErrorMessage(err));
     }
   };
 
@@ -309,6 +391,22 @@ export function SyncMeshSettingsPanel(): ReactNode {
                       ? 'Paused — upload disabled'
                       : 'Disconnected'}
                 </p>
+                {status.identityReviewRequired && (
+                  <div className="mt-2 rounded-md border border-warning/50 bg-warning/10 p-2">
+                    <p className="flex items-start gap-2 text-xs text-text-secondary">
+                      <AlertTriangle size={13} className="mt-0.5 shrink-0 text-warning" />
+                      This backend's endpoint or sign-in issuer changed. Sync stays paused and no
+                      credentials are sent until you confirm the new identity.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => void handleResolveReview()}
+                      className="mt-2 rounded-md border border-border px-2.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+                    >
+                      I reviewed {status.baseUrl} — trust it
+                    </button>
+                  </div>
+                )}
               </div>
               {status.state === 'active' && (
                 <button
@@ -325,6 +423,108 @@ export function SyncMeshSettingsPanel(): ReactNode {
           </div>
         )}
       </Panel>
+
+      <Panel
+        title="Device enrollment"
+        description="The wrangler spike has no OIDC. Both windows must use the same account id and different devices get their own enrollment automatically."
+      >
+        {runtime?.auth.state === 'signed-in' ? (
+          <div className="space-y-2">
+            <p className="text-sm text-text-secondary">
+              Signed in as {runtime.auth.accountId} · enrollment {runtime.auth.enrollmentId}
+            </p>
+            <button
+              type="button"
+              onClick={() => void handleSignOut()}
+              className="rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+            >
+              Sign out
+            </button>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <input
+              value={accountId}
+              onChange={(event) => setAccountId(event.target.value)}
+              placeholder="account-1"
+              spellCheck={false}
+              className="min-w-0 flex-1 rounded-md border border-border bg-bg-primary px-3 py-1.5 font-mono text-sm text-text-primary placeholder:text-text-tertiary"
+            />
+            <button
+              type="button"
+              onClick={() => void handleSpikeEnroll()}
+              disabled={enrolling || accountId.trim().length === 0}
+              className="flex shrink-0 items-center justify-center gap-2 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
+            >
+              {enrolling && <Loader2 size={14} className="animate-spin" />}
+              Enroll this device
+            </button>
+          </div>
+        )}
+      </Panel>
+
+      <Panel
+        title="Enable Sync"
+        description="Pinning does not upload. Enable Sync binds local workflow templates and starts the push/pull loop. Mesh stays off."
+      >
+        {preview.length === 0 ? (
+          <p className="text-sm text-text-tertiary">No workflow templates on this device yet.</p>
+        ) : (
+          <ul className="list-inside list-disc text-sm text-text-secondary">
+            {preview.map((item) => (
+              <li key={item.entityId}>{item.name}</li>
+            ))}
+          </ul>
+        )}
+        <p className="text-xs text-text-tertiary">
+          {runtime?.syncEnabled
+            ? `Sync is on. ${runtime.pendingCount} pending · last pull ${runtime.lastPullAt ?? 'never'}`
+            : 'Sync is off until you enable it.'}
+        </p>
+        {runtime?.lastError && <p className="text-xs text-error">{runtime.lastError}</p>}
+        <button
+          type="button"
+          onClick={() => void handleEnableSync()}
+          disabled={enabling || runtime?.syncEnabled === true}
+          className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
+        >
+          {enabling ? 'Enabling…' : runtime?.syncEnabled ? 'Sync enabled' : 'Enable Sync'}
+        </button>
+      </Panel>
+
+      {conflicts.length > 0 && (
+        <Panel title="Conflicts" description="Both devices edited the same template. Pick a side.">
+          <ul className="space-y-3">
+            {conflicts.map((conflict) => (
+              <li key={conflict.id} className="rounded-md border border-border p-3">
+                <p className="text-sm text-text-primary">
+                  {conflict.localLabel ?? conflict.entityId}
+                </p>
+                <p className="text-xs text-text-tertiary">
+                  Local: {conflict.localLabel ?? 'unknown'} · Remote:{' '}
+                  {conflict.remoteLabel ?? 'unknown'}
+                </p>
+                <div className="mt-2 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void handleResolve(conflict.id, 'keep-local')}
+                    className="rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary hover:bg-bg-tertiary hover:text-text-primary"
+                  >
+                    Keep local
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleResolve(conflict.id, 'use-remote')}
+                    className="rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary hover:bg-bg-tertiary hover:text-text-primary"
+                  >
+                    Use remote
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </Panel>
+      )}
 
       <Panel
         title="Integration prompt"

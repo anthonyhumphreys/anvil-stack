@@ -9,6 +9,9 @@ import type {
   SyncPullResult,
   SyncPushParams,
   SyncPushResult,
+  SyncScanBeginResult,
+  SyncScanFinishResult,
+  SyncScanPageResult,
   SyncedChange,
 } from '../../../../cloud/contract/sync';
 import {
@@ -31,6 +34,7 @@ vi.mock('electron', () => ({
 import {
   getSyncEngineSnapshot,
   resetSyncEngineForTests,
+  resolveSyncConflict,
   runSyncCycle,
   SyncEngineError,
   type SyncEngineRpc,
@@ -41,6 +45,7 @@ import {
   listConflicts,
   listOutboxRows,
   nextBatch,
+  updateSyncState,
   upsertBinding,
   upsertEnrollment,
 } from '../sync-persistence.service';
@@ -119,6 +124,9 @@ function rpcResult<T>(result: T): RpcResult<T> {
 function fakeRpc(handlers: {
   push?: (params: unknown) => SyncPushResult | Promise<SyncPushResult>;
   pull?: (params: unknown) => SyncPullResult | Promise<SyncPullResult>;
+  scanBegin?: () => SyncScanBeginResult | Promise<SyncScanBeginResult>;
+  scanPage?: (params: unknown) => SyncScanPageResult | Promise<SyncScanPageResult>;
+  scanFinish?: (params: unknown) => SyncScanFinishResult | Promise<SyncScanFinishResult>;
   onPush?: () => void | Promise<void>;
 }): SyncEngineRpc {
   return async <R = unknown>(
@@ -136,6 +144,18 @@ function fakeRpc(handlers: {
       case 'sync.pull': {
         const result = handlers.pull ? await handlers.pull(params) : emptyPull();
         return rpcResult(result) as RpcResult<R>;
+      }
+      case 'sync.scan.begin': {
+        if (!handlers.scanBegin) throw new Error('unexpected RPC operation sync.scan.begin');
+        return rpcResult(await handlers.scanBegin()) as RpcResult<R>;
+      }
+      case 'sync.scan.page': {
+        if (!handlers.scanPage) throw new Error('unexpected RPC operation sync.scan.page');
+        return rpcResult(await handlers.scanPage(params)) as RpcResult<R>;
+      }
+      case 'sync.scan.finish': {
+        if (!handlers.scanFinish) throw new Error('unexpected RPC operation sync.scan.finish');
+        return rpcResult(await handlers.scanFinish(params)) as RpcResult<R>;
       }
       default:
         throw new Error(`unexpected RPC operation ${operation}`);
@@ -156,7 +176,9 @@ function cycle(rpc: SyncEngineRpc) {
 beforeEach(() => {
   resetSyncEngineForTests();
   db.exec(
-    'DELETE FROM sync_outbox; DELETE FROM sync_bindings; DELETE FROM sync_conflicts; DELETE FROM sync_state; DELETE FROM device_enrollments; DELETE FROM workflow_templates;',
+    `DELETE FROM sync_outbox; DELETE FROM sync_bindings; DELETE FROM sync_conflicts;
+     DELETE FROM sync_state; DELETE FROM device_enrollments; DELETE FROM workflow_templates;
+     DELETE FROM sync_scan_runs; DELETE FROM sync_scan_staging; DELETE FROM sync_installation;`,
   );
 });
 
@@ -204,7 +226,7 @@ describe('runSyncCycle push', () => {
     expect(snapshot.lastPullAt).not.toBeNull();
   });
 
-  it('reverts dispatched rows to pending when push RPC throws', async () => {
+  it('keeps dispatched rows durably replayable when push RPC throws', async () => {
     activateEnrollment();
     const saved = saveWorkflowTemplate(templateInput('Original'));
     upsertBinding(SCOPE, ET, saved.id);
@@ -227,9 +249,36 @@ describe('runSyncCycle push', () => {
 
     const rows = listOutboxRows(SCOPE);
     expect(rows).toHaveLength(1);
-    expect(rows[0].state).toBe('pending');
-    expect(rows[0].enrollmentSequence).toBeNull();
-    expect(rows[0].dispatchedAt).toBeNull();
+    // The dispatch stays durable: the same identity replays on the next cycle.
+    expect(rows[0].state).toBe('dispatched');
+    expect(rows[0].enrollmentSequence).toBe(1);
+    expect(rows[0].dispatchedAt).not.toBeNull();
+
+    const seen: Array<{ changeId: string; enrollmentSequence: number; payloadHash: string }> = [];
+    resetSyncEngineForTests();
+    await cycle(
+      fakeRpc({
+        push: (params) => {
+          const { changes } = params as SyncPushParams;
+          for (const change of changes) {
+            seen.push({
+              changeId: change.changeId,
+              enrollmentSequence: change.enrollmentSequence,
+              payloadHash: change.payloadHash,
+            });
+          }
+          return acceptPush(params, 1);
+        },
+      }),
+    );
+    expect(seen).toEqual([
+      {
+        changeId: rows[0].changeId,
+        enrollmentSequence: rows[0].enrollmentSequence,
+        payloadHash: rows[0].payloadHash,
+      },
+    ]);
+    expect(listOutboxRows(SCOPE)[0].state).toBe('acknowledged');
   });
 
   it('coalesces overlapping runSyncCycle calls onto one extra run after the in-flight cycle', async () => {
@@ -351,5 +400,131 @@ describe('runSyncCycle pull', () => {
     expect(conflicts[0].kind).toBe('edit-edit');
     expect(conflicts[0].remoteRevision).toBe(9);
     expect(getWorkflowTemplate(saved.id)?.name).toBe('Local dirty');
+  });
+
+  it('drains pull pages until hasMore is false', async () => {
+    activateEnrollment();
+    let pulls = 0;
+    await cycle(
+      fakeRpc({
+        pull: () => {
+          pulls += 1;
+          if (pulls === 1) {
+            return {
+              changes: [
+                {
+                  entityType: ET,
+                  entityId: 'page-1',
+                  operation: 'create' as const,
+                  payload: templatePayload('page-1', 'Page one'),
+                  revision: 1,
+                  schemaVersion: 1,
+                  sequence: 1,
+                },
+              ],
+              hasMore: true,
+              nextCursor: 'cursor-page-1' as SyncCursor,
+            };
+          }
+          return {
+            changes: [
+              {
+                entityType: ET,
+                entityId: 'page-2',
+                operation: 'create' as const,
+                payload: templatePayload('page-2', 'Page two'),
+                revision: 2,
+                schemaVersion: 1,
+                sequence: 2,
+              },
+            ],
+            hasMore: false,
+            nextCursor: 'cursor-page-2' as SyncCursor,
+          };
+        },
+      }),
+    );
+    expect(pulls).toBe(2);
+    expect(getWorkflowTemplate('page-1')?.name).toBe('Page one');
+    expect(getWorkflowTemplate('page-2')?.name).toBe('Page two');
+  });
+
+  it('scans when reset_required is set, then pulls', async () => {
+    activateEnrollment();
+    updateSyncState(SCOPE, { resetRequired: true });
+    let scanned = false;
+    await cycle(
+      fakeRpc({
+        scanBegin: () => ({
+          scanId: 'scan-1',
+          watermarkStart: 4,
+          resumeCursor: '4' as SyncCursor,
+          epoch: '1',
+        }),
+        scanPage: () => ({
+          entities: [
+            {
+              entityType: ET,
+              entityId: 'scanned-tpl',
+              revision: 4,
+              schemaVersion: 1,
+              payload: templatePayload('scanned-tpl', 'From scan'),
+            },
+          ],
+          nextCursor: null,
+          done: true,
+        }),
+        scanFinish: () => ({
+          scanId: 'scan-1',
+          complete: true,
+          watermarkEnd: 4,
+          epoch: '1',
+          nextCursor: '4' as SyncCursor,
+        }),
+        pull: () => {
+          scanned = true;
+          return emptyPull('4');
+        },
+      }),
+    );
+    expect(scanned).toBe(true);
+    expect(getWorkflowTemplate('scanned-tpl')?.name).toBe('From scan');
+    expect(getBinding(SCOPE, ET, 'scanned-tpl')?.baseRevision).toBe(4);
+  });
+
+  it('applies use-remote and drops the conflict', async () => {
+    activateEnrollment();
+    const saved = saveWorkflowTemplate(templateInput('Local name'));
+    upsertBinding(SCOPE, ET, saved.id, {
+      basePayloadJson: canonicalJson(templatePayload(saved.id, 'Local name')),
+      baseRevision: 1,
+    });
+    saveWorkflowTemplate({ ...templateInput('Local dirty') }, saved.id);
+    expect(nextBatch(SCOPE, ENROLLMENT)).toHaveLength(1);
+    const remote = templatePayload(saved.id, 'Remote name');
+    await cycle(
+      fakeRpc({
+        pull: () => ({
+          changes: [
+            {
+              entityType: ET,
+              entityId: saved.id,
+              operation: 'update' as const,
+              payload: remote,
+              revision: 9,
+              schemaVersion: 1,
+              sequence: 11,
+            },
+          ],
+          hasMore: false,
+          nextCursor: 'cursor-conflict' as SyncCursor,
+        }),
+      }),
+    );
+    const conflict = listConflicts(SCOPE)[0];
+    resolveSyncConflict({ conflictId: conflict.id, resolution: 'use-remote' });
+    expect(listConflicts(SCOPE)).toEqual([]);
+    expect(getWorkflowTemplate(saved.id)?.name).toBe('Remote name');
+    expect(listOutboxRows(SCOPE).filter((row) => row.state !== 'acknowledged')).toEqual([]);
   });
 });

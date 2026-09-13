@@ -39,7 +39,11 @@ import {
 } from '../sync-persistence.service';
 import { getWorkflowTemplate, saveWorkflowTemplate } from '../workflow.service';
 
-const SCOPE: SyncScope = { backendId: 'backend-1', accountId: 'account-1', datasetEpoch: '1' };
+const SCOPE: SyncScope = {
+  backendId: 'backend-1',
+  accountId: 'account-1',
+  datasetEpoch: 'spike-epoch-1',
+};
 const ET = SYNC_ENTITY_WORKFLOW_TEMPLATE;
 const CONNECTION = { apiUrl: 'https://example.test/api/' };
 const ENROLLMENT_A = 'enrollment-a';

@@ -85,6 +85,13 @@ const SESSION_FILE_VERSION = 1;
 
 interface PersistedSyncSession {
   version: number;
+  /**
+   * The reviewed backend association this session was issued against. Tokens
+   * must never be sent to a different backend: runtime compares this to the
+   * active backend before use. Null only for sessions persisted before the
+   * binding existed (treated as unbound and refused for sync).
+   */
+  backendId: string | null;
   accountId: string;
   enrollmentId: string;
   datasetEpoch: string;
@@ -249,6 +256,14 @@ export class SyncAuthService {
   private pending: PendingPkceLogin | null = null;
   private cached: PersistedSyncSession | null = null;
   private cacheLoaded = false;
+  /**
+   * Monotonic local epoch bumped on every sign-out/wipe. Async flows capture it
+   * before awaiting; a changed epoch afterwards means the session they started
+   * under is gone and their result must be discarded instead of persisted.
+   */
+  private sessionEpoch = 0;
+  /** Serializes refresh so concurrent callers share one rotation attempt. */
+  private refreshInFlight: Promise<SyncAuthSnapshot> | null = null;
 
   constructor(deps: SyncAuthServiceDeps) {
     this.userDataDir = deps.userDataDir;
@@ -286,16 +301,20 @@ export class SyncAuthService {
         this.cached = null;
         return;
       }
-      this.cached = parsed as PersistedSyncSession;
+      const session = parsed as PersistedSyncSession;
+      // Sessions persisted before backend binding existed are unbound.
+      session.backendId = typeof session.backendId === 'string' ? session.backendId : null;
+      this.cached = session;
     } catch {
       this.cached = null;
     }
   }
 
-  private persistSession(session: DeviceSession): void {
+  private persistSession(session: DeviceSession, backendId: string | null): void {
     mkdirSync(this.userDataDir, { recursive: true });
     const persisted: PersistedSyncSession = {
       version: SESSION_FILE_VERSION,
+      backendId,
       accountId: session.accountId,
       enrollmentId: session.enrollmentId,
       datasetEpoch: session.datasetEpoch,
@@ -317,13 +336,17 @@ export class SyncAuthService {
     if (this.cached === null) {
       return null;
     }
-    const decrypted = decryptSecret(fromEncryptedPayload(this.cached.refreshTokenEncrypted), 'sync-mesh refresh');
+    const decrypted = decryptSecret(
+      fromEncryptedPayload(this.cached.refreshTokenEncrypted),
+      'sync-mesh refresh',
+    );
     return decrypted ?? null;
   }
 
   private wipeSession(): void {
     this.cached = null;
     this.cacheLoaded = true;
+    this.sessionEpoch += 1;
     try {
       if (existsSync(this.sessionFilePath())) {
         unlinkSync(this.sessionFilePath());
@@ -378,6 +401,7 @@ export class SyncAuthService {
   async completePkceLogin(
     input: CompletePkceLoginInput,
     enrollFn: EnrollFn,
+    backendId: string | null,
   ): Promise<SyncAuthSnapshot> {
     const pending = this.pending;
     if (pending === null || input.state !== pending.state) {
@@ -386,6 +410,7 @@ export class SyncAuthService {
     if (input.authorizationCode.length === 0) {
       throw new Error('Missing authorization code. No session was written.');
     }
+    const epoch = this.sessionEpoch;
     const session = await enrollFn({
       proof: {
         method: 'oidc-pkce',
@@ -399,24 +424,54 @@ export class SyncAuthService {
     });
     pending.closeListener();
     this.pending = null;
-    this.persistSession(session);
+    if (this.sessionEpoch !== epoch) {
+      // Sign-out landed while the enrollment exchange was in flight: discard
+      // the result rather than resurrecting a session the user cancelled.
+      return this.getPublicSnapshot();
+    }
+    this.persistSession(session, backendId);
     return this.getPublicSnapshot();
   }
 
-  async enrollWithCode(code: string, enrollFn: EnrollFn): Promise<SyncAuthSnapshot> {
+  async enrollWithCode(
+    code: string,
+    enrollFn: EnrollFn,
+    backendId: string | null,
+  ): Promise<SyncAuthSnapshot> {
     const trimmed = code.trim();
     if (trimmed.length === 0) {
       throw new Error('Missing enrollment code. No session was written.');
     }
+    const epoch = this.sessionEpoch;
     const session = await enrollFn({
       proof: { method: 'enrollment-code', code: trimmed },
       installationId: this.installationId,
     });
-    this.persistSession(session);
+    if (this.sessionEpoch !== epoch) {
+      return this.getPublicSnapshot();
+    }
+    this.persistSession(session, backendId);
     return this.getPublicSnapshot();
   }
 
+  /**
+   * Serialized refresh: concurrent callers share one rotation. The rotated
+   * response is persisted only if the session it was issued against is still
+   * the current one — a sign-out or re-enrollment during the flight discards
+   * it instead of writing stale credentials over the new session.
+   */
   async refreshSession(refreshFn: RefreshFn): Promise<SyncAuthSnapshot> {
+    if (this.refreshInFlight !== null) {
+      return this.refreshInFlight;
+    }
+    const run = this.doRefresh(refreshFn).finally(() => {
+      this.refreshInFlight = null;
+    });
+    this.refreshInFlight = run;
+    return run;
+  }
+
+  private async doRefresh(refreshFn: RefreshFn): Promise<SyncAuthSnapshot> {
     this.ensureCacheLoaded();
     const cached = this.cached;
     if (cached === null) {
@@ -427,9 +482,21 @@ export class SyncAuthService {
       this.wipeSession();
       return this.getPublicSnapshot();
     }
+    const epoch = this.sessionEpoch;
+    const enrollmentId = cached.enrollmentId;
+    const credentialGeneration = cached.credentialGeneration;
+    const backendId = cached.backendId;
     try {
-      const rotated = await refreshFn({ refreshToken, enrollmentId: cached.enrollmentId });
-      this.persistSession(rotated);
+      const rotated = await refreshFn({ refreshToken, enrollmentId });
+      if (
+        this.sessionEpoch !== epoch ||
+        this.cached === null ||
+        this.cached.enrollmentId !== enrollmentId ||
+        this.cached.credentialGeneration !== credentialGeneration
+      ) {
+        return this.getPublicSnapshot();
+      }
+      this.persistSession(rotated, backendId);
       return this.getPublicSnapshot();
     } catch (error) {
       if (errorCodeOf(error) === 'refresh-reuse-detected') {
@@ -476,6 +543,46 @@ export class SyncAuthService {
       return { state: 'enrolling', accountId: null, enrollmentId: null, expiresAt: null };
     }
     return { state: 'signed-out', accountId: null, enrollmentId: null, expiresAt: null };
+  }
+
+  /** Writes a device session without going through enroll RPC. Used by the G1 spike injector. */
+  installDeviceSession(
+    session: DeviceSession,
+    backendId: string | null,
+  ): SyncAuthSnapshot {
+    this.persistSession(session, backendId);
+    return this.getPublicSnapshot();
+  }
+
+  getAccessToken(): string | null {
+    this.ensureCacheLoaded();
+    if (this.cached === null) return null;
+    return (
+      decryptSecret(fromEncryptedPayload(this.cached.accessTokenEncrypted), 'sync-mesh access') ??
+      null
+    );
+  }
+
+  getSessionScopeFields(): {
+    accountId: string;
+    enrollmentId: string;
+    datasetEpoch: string;
+    backendId: string | null;
+  } | null {
+    this.ensureCacheLoaded();
+    if (this.cached === null) return null;
+    return {
+      accountId: this.cached.accountId,
+      enrollmentId: this.cached.enrollmentId,
+      datasetEpoch: this.cached.datasetEpoch,
+      backendId: this.cached.backendId,
+    };
+  }
+
+  signOutLocal(): SyncAuthSnapshot {
+    this.cancelPendingLogin();
+    this.wipeSession();
+    return this.getPublicSnapshot();
   }
 
   cancelPendingLogin(): void {

@@ -9,6 +9,7 @@ import path from 'node:path';
 import { initDatabase } from './db/database.js';
 import { registerSettingsHandlers } from './ipc/settings.ipc.js';
 import { registerSyncBackendHandlers } from './ipc/sync-backend.ipc.js';
+import { registerSyncRuntimeHandlers } from './ipc/sync-runtime.ipc.js';
 import { registerCodexRegistryHandlers } from './ipc/codex-registry.ipc.js';
 import { registerCodexUsageHandlers } from './ipc/codex-usage.ipc.js';
 import { registerAnvilCloudHandlers } from './ipc/anvil-cloud.ipc.js';
@@ -74,12 +75,12 @@ import { isTelemetryEnabled } from './services/settings.service.js';
 import { initializeTelemetry } from './services/telemetry.service.js';
 import { initializeAppUpdater } from './services/app-updater.service.js';
 import { registerExternalLinkHandling } from './services/external-link.service.js';
+import { initSyncRuntime } from './services/sync-runtime.service.js';
 
 const brandId = parseBrandFromArgs(process.argv);
 const brand = getBrand(brandId);
-const isolatedDevProfileActive = Boolean(
-  process.env.ELECTRON_RENDERER_URL && process.env.ANVIL_DEV_USER_DATA_PATH?.trim(),
-);
+const isolatedDevUserDataPath = process.env.ANVIL_DEV_USER_DATA_PATH?.trim() ?? '';
+const isolatedDevProfileActive = isolatedDevUserDataPath.length > 0;
 
 function getAppIconPath(): string {
   return app.isPackaged
@@ -96,7 +97,7 @@ function configureUserDataPath(): void {
     return;
   }
   const isolatedDevPath = process.env.ANVIL_DEV_USER_DATA_PATH?.trim();
-  if (process.env.ELECTRON_RENDERER_URL && isolatedDevPath) {
+  if (isolatedDevPath) {
     app.setPath('userData', path.resolve(isolatedDevPath));
     return;
   }
@@ -115,11 +116,12 @@ app.setName(
   previewBuild
     ? `${brand.appName} Preview PR ${previewBuild.pullRequestNumber} (${previewBuild.headSha.slice(0, 8)})`
     : isolatedDevProfileActive
-      ? `${brand.appName} UI Lab`
+      ? `${brand.appName} (${path.basename(path.resolve(isolatedDevUserDataPath))})`
       : brand.appName,
 );
 configureUserDataPath();
 initDatabase(brand.defaultTheme);
+initSyncRuntime(app.getPath('userData'));
 initializeTelemetry({
   enabled: isTelemetryEnabled(),
   release: `anvil@${app.getVersion()}`,
@@ -342,6 +344,7 @@ app.whenReady().then(() => {
 
   registerSettingsHandlers();
   registerSyncBackendHandlers();
+  registerSyncRuntimeHandlers();
   registerMobileCompanionHandlers();
   registerCodexRegistryHandlers();
   registerCodexUsageHandlers();
