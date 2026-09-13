@@ -177,6 +177,7 @@ import type { Brand } from './branding';
 import type { SyncBackendDiscovery, SyncBackendPinInput, SyncBackendStatus } from './sync-backend';
 import type {
   SyncAdoptionPreviewItem,
+  MeshWorkerStatus,
   SyncAuthPublicSnapshot,
   SyncConflictResolutionChoice,
   SyncConflictView,
@@ -679,6 +680,11 @@ export interface AnvilAPI {
     ) => Promise<SyncRuntimeStatus>;
     /** Redacted sync diagnostics bundle; safe to share with an operator. */
     diagnostics: () => Promise<SyncDiagnostics>;
+    /**
+     * Device-local mesh worker opt-in (MESH-02). Publishes the device policy
+     * and connects a leased worker incarnation when enabled; requires sync.
+     */
+    setMeshWorker: (enabled: boolean) => Promise<MeshWorkerStatus>;
   };
 
   anvilCloud: {

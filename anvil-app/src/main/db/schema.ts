@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 70;
+export const SCHEMA_VERSION = 71;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -668,6 +668,35 @@ CREATE TABLE IF NOT EXISTS editable_agents (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+-- MESH-02: device-local worker opt-in + incarnation bookkeeping (never synced).
+CREATE TABLE IF NOT EXISTS mesh_worker_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  enabled INTEGER NOT NULL DEFAULT 0,
+  incarnation TEXT,
+  lease_expires_at TEXT,
+  connected_at TEXT,
+  last_error TEXT,
+  updated_at TEXT NOT NULL
+);
+
+-- Local attempt journal, written before any process/work starts.
+CREATE TABLE IF NOT EXISTS mesh_attempts (
+  id TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL,
+  enrollment_id TEXT NOT NULL,
+  incarnation TEXT NOT NULL,
+  fence INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  state TEXT NOT NULL,
+  manifest_json TEXT NOT NULL,
+  journal_json TEXT NOT NULL DEFAULT '[]',
+  result_json TEXT,
+  cancel_requested INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mesh_attempts_state ON mesh_attempts(state);
 
 CREATE TABLE IF NOT EXISTS workspace_preferences (
   workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
@@ -2418,5 +2447,38 @@ CREATE TABLE IF NOT EXISTS editable_agents (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+`,
+  71: `
+-- MESH-02: device-local worker opt-in + incarnation bookkeeping. The policy
+-- is a LOCAL consent record; it is never a synced entity and never enters
+-- the outbox. Single-row table (id = 1).
+CREATE TABLE IF NOT EXISTS mesh_worker_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  enabled INTEGER NOT NULL DEFAULT 0,
+  incarnation TEXT,
+  lease_expires_at TEXT,
+  connected_at TEXT,
+  last_error TEXT,
+  updated_at TEXT NOT NULL
+);
+-- Local attempt journal (spec §9): written BEFORE any process/work starts
+-- so a crash between spawn and recording is reconstructable. journal_json
+-- is an appendable array of {at, event, detail?} entries.
+CREATE TABLE IF NOT EXISTS mesh_attempts (
+  id TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL,
+  enrollment_id TEXT NOT NULL,
+  incarnation TEXT NOT NULL,
+  fence INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  state TEXT NOT NULL,
+  manifest_json TEXT NOT NULL,
+  journal_json TEXT NOT NULL DEFAULT '[]',
+  result_json TEXT,
+  cancel_requested INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mesh_attempts_state ON mesh_attempts(state);
 `,
 };

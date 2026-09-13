@@ -51,6 +51,7 @@ import type {
 import type { RunCommand, RunStatus } from '../shared/run-types.js';
 import type { SyncBackendPinInput } from '../shared/sync-backend.js';
 import type {
+  MeshWorkerStatus,
   SyncConflictResolutionChoice,
   SyncDiagnostics,
   SyncIssuedEnrollmentCode,
@@ -720,6 +721,8 @@ const api: AnvilAPI = {
       ipcRenderer.invoke('sync-runtime:resolve-conflict', { conflictId, resolution }),
     diagnostics: (): Promise<SyncDiagnostics> =>
       ipcRenderer.invoke('sync-runtime:diagnostics'),
+    setMeshWorker: (enabled: boolean): Promise<MeshWorkerStatus> =>
+      ipcRenderer.invoke('sync-runtime:mesh-worker-set', { enabled }),
   },
 
   anvilCloud: {

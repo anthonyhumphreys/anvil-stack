@@ -20,6 +20,7 @@ import {
   type SyncConflictResolutionChoice,
   type SyncConflictView,
   type SyncDiagnostics,
+  type MeshWorkerStatus,
   type SyncRemoteAccountStats,
   type SyncRuntimeStatus,
   type SyncScopeDiagnostics,
@@ -30,6 +31,7 @@ import {
   SYNC_ENTITY_SETTINGS,
   SYNC_ENTITY_TYPES,
   SYNC_ENTITY_WORKSPACE_DEFINITION,
+  SYNC_SETTINGS_ENTITY_ID,
   type SyncScope,
 } from '../../shared/sync-mesh.js';
 import {
@@ -68,6 +70,16 @@ import {
   SyncEngineError,
   type SyncEngineRpc,
 } from './sync-engine.service.js';
+import {
+  configureMeshWorkerContext,
+  getMeshWorkerStatus,
+  handleJobAvailable,
+  meshWorkerOnSyncGone,
+  meshWorkerOnSyncReady,
+  reconcileMeshAttemptsOnBoot,
+  resetMeshWorkerForTests,
+  setMeshWorkerEnabled,
+} from './mesh-worker.service.js';
 import {
   getOrCreateInstallationId,
   getSyncState,
@@ -151,12 +163,27 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
   // Compact terminal sync metadata (acknowledged/rejected outbox rows,
   // resolved conflicts) past the local retention window.
   sweepLocalSyncRetention();
+  // MESH-02: the worker reads its session/backend context through an
+  // injected getter so it never imports this module.
+  configureMeshWorkerContext(() => {
+    const backend = getActiveBackend();
+    const fields = auth?.getSessionScopeFields() ?? null;
+    const token = auth?.getAccessToken() ?? null;
+    if (backend === null || fields === null || token === null) return null;
+    return {
+      apiUrl: apiUrlFor(backend),
+      accessToken: token,
+      enrollmentId: fields.enrollmentId,
+    };
+  });
+  void reconcileMeshAttemptsOnBoot().catch(() => undefined);
   if (auth.getPublicSnapshot().state === 'signed-in') {
     scheduleSessionRefresh();
   }
   if (isSyncEnabled()) {
     connectLiveChannel();
     armFallbackPoll();
+    meshWorkerOnSyncReady();
     void requestSync().catch(() => {
       // Last error is stored on the runtime snapshot.
     });
@@ -168,6 +195,7 @@ export function resetSyncRuntimeForTests(): void {
   stopPolling();
   clearSessionRefresh();
   teardownLiveChannel();
+  resetMeshWorkerForTests();
   auth = null;
   lastError = null;
   sessionExpired = false;
@@ -542,6 +570,7 @@ export function enableSync(): SyncRuntimeStatus {
   bindLocalEntities(scope);
   connectLiveChannel();
   armFallbackPoll();
+  meshWorkerOnSyncReady();
   // Fire-and-forget kick: a superseded/backoff rejection must not surface as
   // an unhandled rejection; the error is already recorded in `lastError`.
   void requestSync().catch(() => undefined);
@@ -566,6 +595,7 @@ export async function signOutSync(): Promise<SyncRuntimeStatus> {
   }
   service.signOutLocal();
   disconnectBackend();
+  meshWorkerOnSyncGone();
   lastError = null;
   sessionExpired = false;
   return getRuntimeStatus();
@@ -629,10 +659,23 @@ export function getRuntimeStatus(): SyncRuntimeStatus {
     quotaExceeded: snapshot?.quotaExceeded ?? false,
     recovering: snapshot?.recovering ?? false,
     sessionExpired,
+    meshWorker: getMeshWorkerStatus(),
     lastError,
     lastPushAt: snapshot?.lastPushAt ?? null,
     lastPullAt: snapshot?.lastPullAt ?? null,
   };
+}
+
+/**
+ * MESH-02: local worker opt-in. Requires an enabled sync scope — the policy
+ * publish and worker incarnation are account-scoped operations. The toggle
+ * itself is device-local and never syncs.
+ */
+export async function setMeshWorkerOptIn(enabled: boolean): Promise<MeshWorkerStatus> {
+  if (enabled && !isSyncEnabled()) {
+    throw new Error('Enable sync before opting this device in as a worker.');
+  }
+  return setMeshWorkerEnabled(enabled);
 }
 
 function countBy<T>(items: T[], key: (item: T) => string): Record<string, number> {
@@ -776,6 +819,7 @@ export function onBackendDisconnected(): void {
   runtimeGeneration += 1;
   stopPolling();
   teardownLiveChannel();
+  meshWorkerOnSyncGone();
 }
 
 /**
@@ -861,11 +905,15 @@ function connectLiveChannel(): void {
         reconnectAttempt = 0;
         armFallbackPoll();
         // Catch up anything missed while the channel was down.
+        meshWorkerOnSyncReady();
         void requestSync().catch(() => undefined);
         break;
       case 'sync.invalidate':
       case 'gap':
         void requestSync().catch(() => undefined);
+        break;
+      case 'job.available':
+        void handleJobAvailable(frame.jobId).catch(() => undefined);
         break;
       case 'auth.expiring':
         void runSessionRefresh();

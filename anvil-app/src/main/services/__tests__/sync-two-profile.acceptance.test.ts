@@ -58,8 +58,10 @@ import {
   issueEnrollmentCode,
   requestSync,
   resetSyncRuntimeForTests,
+  setMeshWorkerOptIn,
   signOutSync,
 } from '../sync-runtime.service';
+import { createDiagnosticJob, getMeshJob } from '../mesh-worker.service';
 import { pinBackend } from '../sync-backend.service';
 import { saveWorkflowTemplate } from '../workflow.service';
 import type { SyncRuntimeStatus } from '../../../shared/sync-runtime';
@@ -321,6 +323,81 @@ describe.skipIf(!backendReachable)('two-profile acceptance gate (real worker)', 
         )
         .all() as Array<{ entity_id: string }>;
       expect(bindings).toHaveLength(2);
+      await signOutSync();
+    },
+  );
+
+  it(
+    'runs a diagnostic job end-to-end across profiles (MESH-02)',
+    { timeout: 60_000 },
+    async () => {
+      const accountId = `acct-gate-${Date.now()}-mesh`;
+      const descriptor = await backendDescriptor();
+
+      // ---- Profile A: enroll. Worker profile C is created first so its
+      // enrollment id exists to target.
+      const a = openProfile('a-mesh');
+      openProfiles.push(a);
+      await enrollProfile(a, await mintCode(accountId));
+      const pairing = await issueEnrollmentCode();
+      expect(pairing.accountId).toBe(accountId);
+
+      // ---- Profile C: enroll, opt in as a worker (policy publish + leased
+      // incarnation + capabilities over the real worker RPC surface).
+      const c = openProfile('c-mesh');
+      openProfiles.push(c);
+      const cStatus = await enrollProfile(c, pairing.code);
+      expect(cStatus.auth.accountId).toBe(accountId);
+      const cEnrollmentId = cStatus.auth.enrollmentId;
+      expect(cEnrollmentId).not.toBeNull();
+      const worker = await setMeshWorkerOptIn(true);
+      expect(worker.enabled).toBe(true);
+      expect(worker.connected).toBe(true);
+      expect(worker.workerIncarnation).not.toBeNull();
+
+      // ---- Back on A: create the diagnostic job targeted at C. Idempotent
+      // by requestId + payload hash.
+      reopenProfile(a);
+      pinBackend({ baseUrl: BACKEND_URL, descriptor });
+      enableSync();
+      const job = await createDiagnosticJob({
+        requestId: `diag-${Date.now()}`,
+        targetEnrollmentId: cEnrollmentId ?? undefined,
+      });
+      expect(job.targetEnrollmentId).toBe(cEnrollmentId);
+      expect(job.state).toBe('queued');
+      const again = await createDiagnosticJob({
+        requestId: job.requestId,
+        targetEnrollmentId: cEnrollmentId ?? undefined,
+      });
+      expect(again.id).toBe(job.id);
+
+      // ---- Back on C: reopening re-arms the worker; the durable claim sweep
+      // finds the queued job, claims it, journals, runs the diagnostic, and
+      // reports — no socket frame needed.
+      const c2 = reopenProfile(c);
+      expect(getRuntimeStatus().auth.state).toBe('signed-in');
+      pinBackend({ baseUrl: BACKEND_URL, descriptor });
+      enableSync();
+
+      const deadline = Date.now() + 20_000;
+      let attemptState: string | null = null;
+      while (Date.now() < deadline) {
+        const row = c2.db
+          .prepare('SELECT state FROM mesh_attempts WHERE job_id = ?')
+          .get(job.id) as { state: string } | undefined;
+        attemptState = row?.state ?? null;
+        if (attemptState === 'completed') break;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      expect(attemptState).toBe('completed');
+
+      // ---- Source reads the terminal state.
+      reopenProfile(a);
+      pinBackend({ baseUrl: BACKEND_URL, descriptor });
+      enableSync();
+      const final = await getMeshJob(job.id);
+      expect(final?.state).toBe('completed');
       await signOutSync();
     },
   );

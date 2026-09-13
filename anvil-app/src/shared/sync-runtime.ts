@@ -45,6 +45,18 @@ export interface SyncConflictView {
   remotePayloadJson: string | null;
 }
 
+/** MESH-02 device-local worker state — consent + incarnation, never synced. */
+export interface MeshWorkerStatus {
+  /** Local opt-in flag: this device consents to run account jobs. */
+  enabled: boolean;
+  /** The worker incarnation lease is live (fresh `worker.connect`). */
+  connected: boolean;
+  workerIncarnation: string | null;
+  leaseExpiresAt: string | null;
+  activeAttempts: number;
+  lastError: string | null;
+}
+
 export interface SyncRuntimeStatus {
   auth: SyncAuthPublicSnapshot;
   syncEnabled: boolean;
@@ -64,6 +76,8 @@ export interface SyncRuntimeStatus {
   recovering: boolean;
   /** The stored session was revoked or rejected; sign in again to resume. */
   sessionExpired: boolean;
+  /** Device-local mesh worker state (opt-in is never synced). */
+  meshWorker: MeshWorkerStatus;
   lastError: string | null;
   lastPushAt: string | null;
   lastPullAt: string | null;

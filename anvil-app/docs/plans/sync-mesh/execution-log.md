@@ -406,3 +406,67 @@ Verification: 22/22 entity-domain tests, 17/17 engine tests, 152 files /
 3/3 two-profile acceptance tests against the live `wrangler dev` worker
 (all four entity types flowing), eslint clean, node typecheck clean for
 all touched files.
+
+### MESH-02 — job/attempt lifecycle + desktop worker runtime
+
+Backend (parallel workstream), contract types in
+`cloud/contract/jobs.ts`:
+
+- `jobs`/`attempts` tables: idempotent create on
+  `(source_enrollment_id, request_id)` + `payload_hash` (mismatch →
+  `conflict`); `next_fence` monotonic claim fence; `retried` bounds the
+  one `safe`-retry re-queue; jobs never emit entity changes.
+- `job.create` resolves placement eagerly for `device` targets
+  (same-account non-revoked worker + allowing policy + live incarnation,
+  else the create is rejected — never silently retargeted); `auto` picks
+  the least-loaded eligible worker deterministically or stays queued with
+  a persisted `placementExplanation`.
+- `job.claim` is one transaction: live incarnation, lazy deadline expiry
+  (queued past deadline → `failed`), queued/target match,
+  `policyAllowsSource`, capacity `min(policy, capabilities, 64)`,
+  no duplicate active attempt — then allocates the fence, inserts a
+  `claimed` attempt, job → `running`.
+- `attempt.renew` batches per-item results (rejections never fail the
+  batch); `attempt.report` requires fence+incarnation match, masks
+  `completed` → `cancelled` when the job is `cancel-requested`, retains
+  stale/terminal reports in `late_result`. `job.cancel` is idempotent:
+  queued → `cancelled`, running → `cancel-requested` + attempt `stopping`.
+- Sweeps: queued jobs past deadline expire lazily on every job op and on
+  the alarm; attempts one lease past expiry age to `unknown-outcome` —
+  never reassigned. `job.available` socket frames go only to the resolved
+  target enrollment. Ops counters for all of it.
+
+Desktop (`src/`):
+
+- Schema 71: `mesh_worker_state` (opt-in, incarnation, lease, last error)
+  + `mesh_attempts` local journal (state, manifest, journal events,
+  cancel flag, result).
+- `mesh-worker.service.ts`: device-local opt-in publishes an allowing
+  `device.policy` (backend stays fail-closed without it), connects a
+  leased incarnation, publishes capabilities (`diagnostic` only), emits
+  replica metadata (ids/revision/readiness — never paths/config), claims
+  `job.available` frames, journals BEFORE work (crash-reconstructable),
+  renews attempt leases on the 30s heartbeat, detects cancellation via
+  `job.get` on heartbeat (no cancel frame in v1), reports fenced
+  outcomes, and sweeps `job.list?state=queued` on connect — the durable
+  recovery path for frames missed during socket downtime.
+- Fail-closed edges: disable fences in-flight attempts to
+  `unknown-outcome`; a fresh incarnation marks surviving active attempts
+  stale; boot reconcile does the same for crash survivors;
+  `late-result-retained` reports mark local rows `unknown-outcome`.
+- The service never imports `sync-runtime` — the runtime injects
+  `{apiUrl, token, enrollmentId}` via `configureMeshWorkerContext` and
+  drives `meshWorkerOnSyncReady`/`meshWorkerOnSyncGone` on enable/hello/
+  sign-out/backend-change.
+- Source side: `createDiagnosticJob` (idempotent, sha-256 payload hash),
+  `getMeshJob`, `cancelMeshJob` — account ops any enrolled device may
+  call; richer kinds land with SESSION-02+.
+- IPC/preload/shared: `sync-runtime:mesh-worker-set`,
+  `SyncRuntimeStatus.meshWorker`. Settings panel gains the opt-in toggle
+  (aria-pressed convention) with fail-closed copy.
+
+Verification: 15/15 new backend job tests (60/60 total), 11/11 mesh-worker
+service tests, **4/4 acceptance gate including a live end-to-end
+diagnostic run** — A creates the job, C's durable sweep claims/journals/
+runs/reports, A reads `completed`. Full app suite green; tsc clean on
+`cloud/` and touched files; eslint clean.

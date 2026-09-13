@@ -8,6 +8,7 @@ import {
   listConflictViews,
   previewAdoption,
   resolveRuntimeConflict,
+  setMeshWorkerOptIn,
   signInWithOidc,
   signOutSync,
   spikeEnroll,
@@ -53,6 +54,13 @@ export function registerSyncRuntimeHandlers(): void {
   ipcMain.handle('sync-runtime:conflicts', () => listConflictViews());
 
   ipcMain.handle('sync-runtime:diagnostics', () => exportSyncDiagnostics());
+
+  ipcMain.handle('sync-runtime:mesh-worker-set', (_event, payload: unknown) => {
+    if (!isRecord(payload) || typeof payload['enabled'] !== 'boolean') {
+      throw new Error('mesh-worker-set requires an enabled boolean');
+    }
+    return setMeshWorkerOptIn(payload['enabled']);
+  });
 
   ipcMain.handle('sync-runtime:resolve-conflict', (_event, payload: unknown) => {
     if (!isRecord(payload) || typeof payload['conflictId'] !== 'string') {

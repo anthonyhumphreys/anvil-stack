@@ -100,6 +100,7 @@ export function SyncMeshSettingsPanel(): ReactNode {
   const [enrolling, setEnrolling] = useState(false);
   const [enabling, setEnabling] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
+  const [meshToggling, setMeshToggling] = useState(false);
 
   const refreshStatus = async (): Promise<void> => {
     setStatusLoading(true);
@@ -288,6 +289,19 @@ export function SyncMeshSettingsPanel(): ReactNode {
       setError(toErrorMessage(err));
     } finally {
       setPromptLoading(false);
+    }
+  };
+
+  const handleSetMeshWorker = async (enabled: boolean): Promise<void> => {
+    setMeshToggling(true);
+    setError(null);
+    try {
+      await window.anvil.syncRuntime.setMeshWorker(enabled);
+      await refreshStatus();
+    } catch (err) {
+      setError(toErrorMessage(err));
+    } finally {
+      setMeshToggling(false);
     }
   };
 
@@ -670,6 +684,41 @@ export function SyncMeshSettingsPanel(): ReactNode {
             {diagnosticsCopied ? 'Diagnostics copied' : 'Copy diagnostics'}
           </button>
         </div>
+        {runtime?.syncEnabled === true && (
+          <div className="mt-2 rounded-md border border-border p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium text-text-primary">Run jobs on this device</p>
+                <p className="mt-0.5 text-xs leading-relaxed text-text-secondary">
+                  Opts this device in as a mesh worker. It publishes a local consent policy,
+                  keeps a leased worker incarnation, and runs account jobs (diagnostic kind
+                  for now). Off by default — sync alone never authorizes execution.
+                </p>
+              </div>
+              <button
+                type="button"
+                aria-pressed={runtime.meshWorker.enabled}
+                onClick={() => void handleSetMeshWorker(!runtime.meshWorker.enabled)}
+                disabled={meshToggling}
+                className={`shrink-0 rounded-md border px-3 py-1.5 text-sm font-medium transition-colors disabled:opacity-50 ${
+                  runtime.meshWorker.enabled
+                    ? 'border-accent/60 bg-accent/10 text-accent'
+                    : 'border-border text-text-secondary hover:bg-bg-tertiary'
+                }`}
+              >
+                {meshToggling ? 'Updating…' : runtime.meshWorker.enabled ? 'On' : 'Off'}
+              </button>
+            </div>
+            {runtime.meshWorker.enabled && (
+              <p className="mt-2 text-xs text-text-tertiary">
+                {runtime.meshWorker.connected
+                  ? `Worker connected (incarnation ${runtime.meshWorker.workerIncarnation?.slice(0, 8) ?? ''}…, ${runtime.meshWorker.activeAttempts} active attempt${runtime.meshWorker.activeAttempts === 1 ? '' : 's'})`
+                  : 'Worker enabled; connecting on the next heartbeat.'}
+                {runtime.meshWorker.lastError ? ` · ${runtime.meshWorker.lastError}` : ''}
+              </p>
+            )}
+          </div>
+        )}
       </Panel>
 
       {conflicts.length > 0 && (
