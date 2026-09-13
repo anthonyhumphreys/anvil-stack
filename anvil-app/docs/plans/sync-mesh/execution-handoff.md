@@ -9,9 +9,8 @@ Operating plan for the agent continuing this work. Written 11 Sep 2026 09:45 UTC
 - Conventions from `anvil-app/AGENTS.md`: semicolons, single quotes, trailing commas, printWidth 100; business logic in `src/main/services/`; IPC files validate+delegate; extend `src/shared/ipc-api.d.ts` → `src/main/ipc/*.ipc.ts` → `src/preload/index.ts` → renderer when exposing anything. Imports at top of file only. Exhaustive `switch` with a `never` default on unions.
 - Schema changes: bump `SCHEMA_VERSION`, add a new entry to `MIGRATIONS` in `src/main/db/schema.ts`. Never edit historical migrations.
 - Use subagents for disjoint packets, one implementer per packet, each with an explicit allowed-files list. Shared files (`schema.ts`, `vitest.config.ts`, preload, IPC declarations, startup wiring) have exactly one owner per wave. You (the coordinator) integrate, run checks, and commit.
-- **Subagent model:** use grok 4.6 (`cursor-grok-4.6-high-fast`) for every subagent. Do not use muse-spark or other models unless the user explicitly overrides.
 - Scratch files go in `/tmp`, never in the repo.
-- **Commit trailer gotcha:** the Cursor agent shell injects `Co-authored-by: Cursor <cursoragent@cursor.com>` into every `git commit`, which violates the repo's no-AI-attribution rule. Commit with this recipe instead, which bypasses the injection: `git add -- <paths> && sha=$(git commit-tree "$(git write-tree)" -p HEAD -m "<message>") && git reset -q --soft "$sha"`. Verify with `git log -1 --format='%b'` (must be empty). Never use `git commit -a`; other subagents' in-progress files are in the working tree.
+- Commits are plain `git commit -m` with Conventional Commits and no AI attribution trailers. Never use `git commit -a`; unrelated in-progress files may be in the working tree.
 - Verification per packet: focused vitest files → `pnpm exec tsc --noEmit` on the relevant tsconfig → `pnpm exec eslint <changed files>`. Run full `pnpm test` only before a PR.
 
 ## 1. State at handoff
@@ -27,16 +26,34 @@ Committed on the branch:
 
 - `6af4c93 refactor(sync): align local PendingChange and hash with cloud contract` — **§3 reconciliation is complete.** `src/shared/sync-mesh.ts` re-exports `PendingChange`, `SyncOperation`, `canonicalChangeHashInput`, `canonicalizeJson`, and `hashChange` from `cloud/contract/sync.ts`. `computePayloadHash` / `canonicalJson` in `sync-persistence.service.ts` delegate to those. `tsconfig.node.json` includes `cloud/contract/**`. Alignment tests live in `src/main/services/__tests__/sync-contract-hash.test.ts`.
 
-**Wave 2 is in flight** (disjoint file owners). If the working tree has their output when you arrive, verify and commit per packet; do not restart:
+**Wave 2 has landed.** Committed packets:
 
-| Packet | Owner files | Commit message |
-| --- | --- | --- |
-| BACKEND-01 | `anvil-app/cloud/backend/**` only | `feat(sync-mesh): BACKEND-01 AccountCoordinator push/pull spike` |
-| AUTH-01 | `cloud/contract/auth.ts`, `cloud/contract/index.ts` (export only), `src/main/services/sync-auth.service.ts`, tests | `feat(sync-mesh): AUTH-01 device enrollment and session contract` |
-| BYOB-01 | schema v68 `sync_backends`, client/IPC/preload/settings panel | `feat(sync-mesh): BYOB-01 generic backend discovery and connection` |
-| SESSION-01 | `docs/plans/sync-mesh/session-01-provider-portability-audit.md` only | `docs(sync-mesh): SESSION-01 provider portability audit` |
+- `e13085d docs(sync-mesh): SESSION-01 provider portability audit`
+- `f506621 feat(sync-mesh): AUTH-01 device enrollment and session contract`
+- `c9b1318 docs(sync-mesh): require grok 4.6 for all subagents` — Cursor-era instruction; superseded, no code effect.
+- `dfbfc49 feat(sync-mesh): BYOB-01 generic backend discovery and connection`
+- `7e6c49b chore(sync-mesh): keep contract typecheck independent of the backend spike`
+- `64ae257 feat(sync): SYNC-03 local serialized push/pull engine`
+- `27bf010 feat(sync-mesh): BACKEND-01 AccountCoordinator push/pull spike`
+- `4a9c590 test(sync): expect SCHEMA_VERSION 68 after backend association table`
+- `39cca48 feat(sync-mesh): SYNC-02 account-object scan begin/page/finish`
+- `51ff4e1 test(sync): round-trip workflow templates through a BACKEND-01-shaped fake`
 
-Do not let AUTH-01 and BYOB-01 both edit `schema.ts` (BYOB-01 owns 68) or both edit `index.ts` beyond AUTH adding `export * from './auth'`.
+**Uncommitted SYNC-03 runtime work** (keep; do not restart): `src/main/services/sync-runtime.service.ts`, `src/main/ipc/sync-runtime.ipc.ts`, `src/shared/sync-runtime.ts`, `src/main/services/__tests__/sync-runtime.service.test.ts`, plus modifications to `sync-auth.service.ts`, `sync-engine.service.ts`, `sync-persistence.service.ts`, `sync-backend.ipc.ts`, `src/main/index.ts`, preload, `ipc-api.d.ts`, and `SyncMeshSettingsPanel.tsx`.
+
+## 1a. Implementation review (12 Sep 2026)
+
+A full review of this branch lives in `docs/plans/sync-mesh/implementation-review-next-steps.md`. Its conclusions, in short:
+
+- **G1 is not passed.** Keep the architecture; repair the foundations before any remote-execution work.
+- High findings driving the repair wave: (1) uncertain dispatches are not durably replayable — failed pushes were reverted to `pending` with a cleared sequence, and `dispatched` rows had no startup replay; (2) rebasing changed `base_revision` without recomputing `payload_hash`; (3) scan applied pages directly to domain tables and skipped changes in `(watermarkStart, watermarkEnd]`; (4) async work was not fenced across sign-out/backend switch; (5) credentials were not bound to backend identity; (6) adoption/projection could mix account-owned data; (7) spike auth was reachable from normal IPC; (8) malformed entities could advance acknowledged state.
+- Ordered repair plan (Steps 0–3 of the review): contract/typecheck baseline → durable mutation delivery → reset/scan semantics → backend+account isolation. Then AUTH-01 completion (Step 4) and the two-profile gate (Step 5) before any Mesh execution.
+
+**Integration owner for the repair wave:** whoever edits `schema.ts`, `src/main/index.ts` startup, preload, or `src/shared/ipc-api.d.ts` owns those files end-to-end for the wave — one owner, no parallel edits.
+
+**Repair-wave status (12 Sep 2026):** Steps 0–3 are implemented in the working tree (uncommitted on top of `51ff4e1`); see `execution-log.md` "2026-09-12 — Repair wave" for the per-step detail, the failure-injection suite (`sync-failure-injection.test.ts`, 13 tests), and verification output. Steps 4 (real authentication) and 5 (two-profile gate) are still open — do not start Mesh packets.
+
+Repair-wave verification baseline (all run on the repaired tree): `tsc -p cloud/tsconfig.json --noEmit` clean; `tsc -p tsconfig.node.json --noEmit` clean for sync files — remaining diagnostics are pre-existing on `main` (`chat.ipc` AgentProvider, `agent-ui-intent`/`mobile-companion`/`notification` test typing, `codex-bridge` nullability, `embedded-editor` Dirent generics + settings index, `telemetry` options, `mobile-home-summary` fixture inclusion) and are listed as unrelated, not regressed.
 
 Baseline facts verified against the repo (do not re-audit):
 
