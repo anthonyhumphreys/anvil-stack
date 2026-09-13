@@ -2830,6 +2830,7 @@ export class AccountCoordinator extends DurableObject<Env> {
       fence: row.fence,
       leaseExpiresAt: new Date(row.lease_expires_at).toISOString(),
       state: row.state,
+      ...(row.result === null ? {} : { result: JSON.parse(row.result) as unknown }),
     };
   }
 

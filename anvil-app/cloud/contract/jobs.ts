@@ -82,6 +82,12 @@ export interface ExecutionAttempt {
   fence: number;
   leaseExpiresAt: string;
   state: AttemptState;
+  /**
+   * The attempt's terminal outcome record (FLOW-01+: a code-task /
+   * workflow-node attempt carries its AttemptResultManifest here).
+   * Absent while the attempt is non-terminal.
+   */
+  result?: unknown;
 }
 
 /**
