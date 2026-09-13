@@ -242,6 +242,42 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
     return rpcErrorResponse(envelope.request.requestId, 'unauthenticated');
   }
   switch (envelope.request.operation) {
+    // Device lifecycle lives on the session object — `device_sessions` is
+    // the authoritative record for names and revocation.
+    case 'device.list':
+    case 'device.rename':
+    case 'device.revoke': {
+      const internal =
+        envelope.request.operation === 'device.list'
+          ? '/internal/device-list'
+          : envelope.request.operation === 'device.rename'
+            ? '/internal/device-rename'
+            : '/internal/device-revoke';
+      const response = await sessionStub(env).fetch(
+        new Request(`https://internal.anvil${internal}`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-anvil-account': auth.accountId,
+            'x-anvil-enrollment': auth.enrollmentId,
+          },
+          body: JSON.stringify(envelope.request.params ?? {}),
+        }),
+      );
+      const payload = (await response.json().catch(() => null)) as {
+        error?: { code?: string };
+      } | null;
+      if (!response.ok) {
+        // Preserve the session object's precise error (not-found,
+        // malformed-request) rather than collapsing to unauthenticated.
+        const code = payload?.error?.code;
+        return rpcErrorResponse(
+          envelope.request.requestId,
+          code === 'not-found' || code === 'malformed-request' ? code : 'unauthenticated',
+        );
+      }
+      return rpcSuccessResponse(envelope.request.requestId, payload);
+    }
     case 'session.describe': {
       const response = await sessionStub(env).fetch(
         new Request('https://internal.anvil/internal/describe', {

@@ -16,7 +16,11 @@ import { DurableObject } from 'cloudflare:workers';
 import {
   authErrorHttpStatus,
   type AuthErrorCode,
+  type DeviceListResult,
+  type DeviceRenameResult,
+  type DeviceRevokeResult,
   type DeviceSession,
+  type DeviceSummary,
   type EnrollmentCodeIssueResult,
   type EnrollParams,
   type SessionDescribeResult,
@@ -24,7 +28,12 @@ import {
   type SessionRevokeParams,
   type SyncAccountStats,
 } from '../../contract/auth';
-import { generateDeviceToken, parseDeviceBearer, parseVerifiedAuth } from './auth';
+import {
+  generateDeviceToken,
+  parseDeviceBearer,
+  parseVerifiedAuth,
+  type VerifiedAuth,
+} from './auth';
 import { sha256Hex } from './hash';
 import { verifyOidcPkceProof } from './oidc';
 import { isRecord, rpcErrorResponse } from './rpc';
@@ -34,6 +43,7 @@ const ACCESS_TTL_MS = 15 * 60 * 1000;
 const REFRESH_GRACE_MS = 30 * 1000;
 const CODE_TTL_MS = 10 * 60 * 1000;
 const MAX_ACTIVE_CODES_PER_ACCOUNT = 20;
+const MAX_DEVICE_NAME_CHARS = 128;
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 /** Revoked sessions are retained this long for audit, then swept (OPS-01). */
 const REVOKED_SESSION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -146,6 +156,17 @@ export class SessionCoordinator extends DurableObject<Env> {
           return await this.handleValidate(request);
         case 'POST /internal/describe':
           return await this.handleDescribe(request);
+        case 'POST /internal/device-list':
+          return await this.handleDeviceList(request);
+        case 'POST /internal/device-rename':
+          return await this.ctx.blockConcurrencyWhile(() => this.handleDeviceRename(request));
+        case 'POST /internal/device-revoke': {
+          const response = await this.ctx.blockConcurrencyWhile(() =>
+            this.handleDeviceRevoke(request),
+          );
+          await this.ensureSweepAlarm();
+          return response;
+        }
         case 'POST /internal/sweep':
           return Response.json(await this.runSweep(Date.now()));
         default:
@@ -564,6 +585,117 @@ export class SessionCoordinator extends DurableObject<Env> {
       ...(row.display_name === null ? {} : { displayName: row.display_name }),
       ...(meta.stats === undefined ? {} : { accountStats: meta.stats }),
     };
+    return Response.json(result, { status: 200 });
+  }
+
+  /**
+   * Verified-identity gate for `/internal/device-*` routes: the worker
+   * already validated the bearer; this re-checks that the enrollment's
+   * session row is live on the claimed account (fail-closed across a
+   * revocation race).
+   */
+  private verifiedCaller(request: Request): VerifiedAuth | null {
+    const verified = parseVerifiedAuth(request);
+    if (verified === null) return null;
+    const row = this.sessionByEnrollment(verified.enrollmentId);
+    if (
+      row === null ||
+      row.account_id !== verified.accountId ||
+      row.revoked_at !== null
+    ) {
+      return null;
+    }
+    return verified;
+  }
+
+  /** `device.list` — every session on the caller's account, revoked included. */
+  private async handleDeviceList(request: Request): Promise<Response> {
+    const caller = this.verifiedCaller(request);
+    if (caller === null) return authError('unauthenticated');
+    const rows = this.ctx.storage.sql
+      .exec(
+        `SELECT enrollment_id, installation_id, display_name,
+                credential_generation, revoked_at, created_at
+         FROM device_sessions WHERE account_id = ? ORDER BY created_at ASC`,
+        caller.accountId,
+      )
+      .toArray() as unknown as SessionRow[];
+    const devices: DeviceSummary[] = rows.map((row) => ({
+      enrollmentId: row.enrollment_id,
+      ...(row.display_name === null ? {} : { displayName: row.display_name }),
+      installationId: row.installation_id,
+      credentialGeneration: row.credential_generation,
+      revoked: row.revoked_at !== null,
+      createdAt: new Date(Number(row.created_at)).toISOString(),
+      self: row.enrollment_id === caller.enrollmentId,
+    }));
+    const result: DeviceListResult = { devices };
+    return Response.json(result, { status: 200 });
+  }
+
+  /** `device.rename` — account-scoped; works on live or revoked rows. */
+  private async handleDeviceRename(request: Request): Promise<Response> {
+    const caller = this.verifiedCaller(request);
+    if (caller === null) return authError('unauthenticated');
+    const body = await readJson(request);
+    if (
+      !isRecord(body) ||
+      typeof body['enrollmentId'] !== 'string' ||
+      typeof body['displayName'] !== 'string' ||
+      body['displayName'].length > MAX_DEVICE_NAME_CHARS
+    ) {
+      return authError('malformed-request');
+    }
+    const row = this.sessionByEnrollment(body['enrollmentId']);
+    if (row === null || row.account_id !== caller.accountId) {
+      return rpcErrorResponse(undefined, 'not-found');
+    }
+    this.ctx.storage.sql.exec(
+      'UPDATE device_sessions SET display_name = ? WHERE enrollment_id = ?',
+      body['displayName'].length === 0 ? null : body['displayName'],
+      row.enrollment_id,
+    );
+    const result: DeviceRenameResult = { renamed: true, enrollmentId: row.enrollment_id };
+    return Response.json(result, { status: 200 });
+  }
+
+  /**
+   * `device.revoke` — account-scoped revocation: any live session on the
+   * account may revoke any other (or itself — a remote sign-out). The
+   * session row flips `revoked_at`; the account object then closes the
+   * enrollment's sockets and revokes its worker record (best effort —
+   * token validation is authoritative).
+   */
+  private async handleDeviceRevoke(request: Request): Promise<Response> {
+    const caller = this.verifiedCaller(request);
+    if (caller === null) return authError('unauthenticated');
+    const body = await readJson(request);
+    if (!isRecord(body) || typeof body['enrollmentId'] !== 'string') {
+      return authError('malformed-request');
+    }
+    const row = this.sessionByEnrollment(body['enrollmentId']);
+    if (row === null || row.account_id !== caller.accountId) {
+      return rpcErrorResponse(undefined, 'not-found');
+    }
+    this.ctx.storage.sql.exec(
+      'UPDATE device_sessions SET revoked_at = COALESCE(revoked_at, ?) WHERE enrollment_id = ?',
+      Date.now(),
+      row.enrollment_id,
+    );
+    try {
+      const id = this.env.ACCOUNT.idFromName(row.account_id);
+      await this.env.ACCOUNT.get(id).fetch(
+        'https://internal.anvil/internal/revoke-enrollment',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ enrollmentId: row.enrollment_id }),
+        },
+      );
+    } catch {
+      // Socket cleanup is best effort; the revoked session row is authoritative.
+    }
+    const result: DeviceRevokeResult = { revoked: true, enrollmentId: row.enrollment_id };
     return Response.json(result, { status: 200 });
   }
 

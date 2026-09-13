@@ -153,6 +153,50 @@ export interface SessionDescribeResult {
 }
 
 /**
+ * Account-scoped device view (`device.list`). One row per enrolled
+ * device session — revoked devices remain listed for audit until the
+ * session sweep ages them out. Never carries token material.
+ */
+export interface DeviceSummary {
+  enrollmentId: string;
+  displayName?: string;
+  installationId: string;
+  credentialGeneration: number;
+  revoked: boolean;
+  createdAt: string;
+  /** True when this row is the caller's own session. */
+  self: boolean;
+}
+
+export interface DeviceListResult {
+  devices: DeviceSummary[];
+}
+
+export interface DeviceRenameParams {
+  enrollmentId: string;
+  /** Empty string clears the name back to unset. */
+  displayName: string;
+}
+
+export interface DeviceRenameResult {
+  renamed: boolean;
+  enrollmentId: string;
+}
+
+export interface DeviceRevokeParams {
+  enrollmentId: string;
+}
+
+/**
+ * Idempotent like session revoke: an already-revoked (or just-revoked)
+ * device reports revoked. Unknown enrollments are `not-found`.
+ */
+export interface DeviceRevokeResult {
+  revoked: boolean;
+  enrollmentId: string;
+}
+
+/**
  * Auth failure codes owned by this contract (envelope.ts is owned by
  * another packet, so they live here). All three map to HTTP 401.
  */

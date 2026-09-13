@@ -2,6 +2,9 @@ import { env, SELF } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 
 import type {
+  DeviceListResult,
+  DeviceRenameResult,
+  DeviceRevokeResult,
   DeviceSession,
   EnrollmentCodeIssueResult,
   SessionDescribeResult,
@@ -112,13 +115,13 @@ describe('enrollment-code authentication', () => {
   });
 });
 
-describe('device session lifecycle', () => {
-  async function freshSession(): Promise<DeviceSession> {
-    env.ENROLLMENT_ADMIN_TOKEN = ADMIN_TOKEN;
-    const issued = await issueCode(`acct-${crypto.randomUUID()}`);
-    return enrollWithCode(issued.code);
-  }
+async function freshSession(): Promise<DeviceSession> {
+  env.ENROLLMENT_ADMIN_TOKEN = ADMIN_TOKEN;
+  const issued = await issueCode(`acct-${crypto.randomUUID()}`);
+  return enrollWithCode(issued.code);
+}
 
+describe('device session lifecycle', () => {
   it('rotates credentials on refresh and invalidates the old access token', async () => {
     const session = await freshSession();
     const rotated = await refresh(session);
@@ -200,6 +203,115 @@ describe('device session lifecycle', () => {
     expect(result.datasetEpoch).toBe('spike-epoch-1');
     expect(JSON.stringify(result)).not.toContain('anvil_at_');
     expect(JSON.stringify(result)).not.toContain('anvil_rt_');
+  });
+});
+
+describe('device.* account lifecycle', () => {
+  /** Two real sessions on one account: device A via admin code, device B via A's pairing code. */
+  async function twoDevices(): Promise<{ a: DeviceSession; b: DeviceSession }> {
+    env.ENROLLMENT_ADMIN_TOKEN = ADMIN_TOKEN;
+    const accountId = `acct-${crypto.randomUUID()}`;
+    const a = await enrollWithCode((await issueCode(accountId)).code, 'install-a');
+    const pairing = await issueCode('', bearer(a));
+    const b = await enrollWithCode(pairing.code, 'install-b');
+    return { a, b };
+  }
+
+  it('device.list shows both enrollments with self marked', async () => {
+    const { a, b } = await twoDevices();
+    const listed = await postRpc('device.list', {}, bearer(a));
+    const result = expectSuccess<DeviceListResult>(listed);
+    expect(result.devices).toHaveLength(2);
+    const self = result.devices.find((d) => d.enrollmentId === a.enrollmentId);
+    const other = result.devices.find((d) => d.enrollmentId === b.enrollmentId);
+    expect(self?.self).toBe(true);
+    expect(self?.displayName).toBe('Test device');
+    expect(other?.self).toBe(false);
+    expect(other?.installationId).toBe('install-b');
+    expect(other?.revoked).toBe(false);
+    expect(JSON.stringify(result)).not.toContain('anvil_at_');
+  });
+
+  it('device.rename updates a sibling device and clears on empty', async () => {
+    const { a, b } = await twoDevices();
+    const renamed = await postRpc(
+      'device.rename',
+      { enrollmentId: b.enrollmentId, displayName: 'Office Mac' },
+      bearer(a),
+    );
+    expectSuccess<DeviceRenameResult>(renamed);
+    const listed = await postRpc('device.list', {}, bearer(a));
+    const devices = expectSuccess<DeviceListResult>(listed).devices;
+    expect(devices.find((d) => d.enrollmentId === b.enrollmentId)?.displayName).toBe(
+      'Office Mac',
+    );
+    // Empty clears the name.
+    await postRpc(
+      'device.rename',
+      { enrollmentId: b.enrollmentId, displayName: '' },
+      bearer(a),
+    );
+    const cleared = expectSuccess<DeviceListResult>(
+      await postRpc('device.list', {}, bearer(a)),
+    ).devices;
+    expect(
+      cleared.find((d) => d.enrollmentId === b.enrollmentId)?.displayName,
+    ).toBeUndefined();
+  });
+
+  it('device.rename rejects cross-account and unknown enrollments', async () => {
+    const { a } = await twoDevices();
+    const foreign = await freshSession();
+    const crossAccount = await postRpc(
+      'device.rename',
+      { enrollmentId: foreign.enrollmentId, displayName: 'x' },
+      bearer(a),
+    );
+    expect(crossAccount.status).toBe(httpStatusForErrorCode('not-found'));
+    const unknown = await postRpc(
+      'device.rename',
+      { enrollmentId: 'enr-nope', displayName: 'x' },
+      bearer(a),
+    );
+    expect(unknown.status).toBe(httpStatusForErrorCode('not-found'));
+  });
+
+  it('device.revoke kills the sibling session and stays listed as revoked', async () => {
+    const { a, b } = await twoDevices();
+    const revoked = await postRpc(
+      'device.revoke',
+      { enrollmentId: b.enrollmentId },
+      bearer(a),
+    );
+    expectSuccess<DeviceRevokeResult>(revoked);
+    // The revoked device's bearer no longer authenticates.
+    const dead = await postRpc('sync.pull', { cursor: null, maxBytes: 1024 }, bearer(b));
+    expect(dead.status).toBe(httpStatusForErrorCode('unauthenticated'));
+    // And it cannot manage devices itself.
+    const deadList = await postRpc('device.list', {}, bearer(b));
+    expect(deadList.status).toBe(httpStatusForErrorCode('unauthenticated'));
+    // Still visible to the account for audit.
+    const listed = expectSuccess<DeviceListResult>(
+      await postRpc('device.list', {}, bearer(a)),
+    ).devices;
+    expect(listed.find((d) => d.enrollmentId === b.enrollmentId)?.revoked).toBe(true);
+    // Idempotent retry reports revoked.
+    const again = await postRpc(
+      'device.revoke',
+      { enrollmentId: b.enrollmentId },
+      bearer(a),
+    );
+    expectSuccess<DeviceRevokeResult>(again);
+  });
+
+  it('device.revoke of an unknown enrollment is not-found, not silently revoked', async () => {
+    const { a } = await twoDevices();
+    const missing = await postRpc(
+      'device.revoke',
+      { enrollmentId: 'enr-ghost' },
+      bearer(a),
+    );
+    expect(missing.status).toBe(httpStatusForErrorCode('not-found'));
   });
 });
 

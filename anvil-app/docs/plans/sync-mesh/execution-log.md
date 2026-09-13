@@ -871,3 +871,36 @@ gate 7/7, tsc + eslint clean.
 
 Remaining: `device.list|rename|revoke`, `account.delete*`,
 `data.export|import.*`, BYOB-02, IAC-02, LAUNCH-01.
+
+## device.list|rename|revoke — account device lifecycle (complete)
+
+- Contract (auth.ts): `DeviceSummary`/`DeviceListResult`,
+  `DeviceRenameParams|Result`, `DeviceRevokeParams|Result`. The
+  `device.*` ops were already declared sync/1 + user-role.
+- SessionCoordinator owns them (device_sessions is authoritative for
+  names + revocation): `/internal/device-list|rename|revoke` behind a
+  `verifiedCaller` gate that re-checks the caller's live session on the
+  claimed account — fail-closed across a revocation race.
+- `device.list` returns every session on the account (revoked rows
+  stay listed for audit until the OPS-01 sweep ages them), `self`
+  marked, no token material.
+- `device.rename` sets/clears display_name (≤128 chars, empty clears);
+  cross-account and unknown enrollments are `not-found` — no
+  cross-account existence leak.
+- `device.revoke` is account-scoped: any live session revokes any
+  other (or itself — remote sign-out). Flips `revoked_at`
+  (COALESCE-idempotent), then calls the existing
+  `/internal/revoke-enrollment` on the account object: sockets close,
+  worker record revokes. Unknown ids are `not-found`, not silently
+  revoked; retries report revoked.
+- Worker routing (index.ts): the three ops forward to the session
+  stub with verified headers; internal error codes (`not-found`,
+  `malformed-request`) propagate instead of collapsing to 401.
+
+Coverage: 6 tests over real enrollment flows (admin code + pairing
+code): list-with-self, rename+clear, cross-account/unknown not-found,
+revoke kills the sibling's bearer and self-management, idempotent
+re-revoke. Backend 108/108, gate 7/7, tsc clean.
+
+Remaining: `account.delete*`, `data.export|import.*`, BYOB-02,
+IAC-02, LAUNCH-01.
