@@ -4293,7 +4293,7 @@ export class AccountCoordinator extends DurableObject<Env> {
         this.journalDurableEvent({
           jobId: row.job_id,
           attemptId: row.attempt_id,
-          generation: 0,
+          generation: this.readAttempt(row.attempt_id)?.fence ?? 0,
           kind: 'artifact.deleted',
           payload: { artifactId, reason, deletedBy: actorEnrollmentId },
         });
@@ -4741,7 +4741,7 @@ export class AccountCoordinator extends DurableObject<Env> {
           this.journalDurableEvent({
             jobId: row.job_id,
             attemptId: row.attempt_id,
-            generation: 0,
+            generation: this.readAttempt(row.attempt_id)?.fence ?? 0,
             kind: 'artifact.deleted',
             payload: { artifactId: orphan.artifactId, reason: 'sweep-reconciled' },
           });

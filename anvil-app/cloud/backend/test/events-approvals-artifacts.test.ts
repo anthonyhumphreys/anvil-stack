@@ -215,11 +215,7 @@ function activityFrame(
   };
 }
 
-function controlFrame(
-  attemptId: string,
-  generation: number,
-  doc: Record<string, unknown>,
-): Frame {
+function controlFrame(attemptId: string, generation: number, doc: Record<string, unknown>): Frame {
   const text = JSON.stringify(doc);
   return {
     type: 'activity',
@@ -443,10 +439,7 @@ describe('durable event journal', () => {
       (p) =>
         p.events
           .filter((e) => e.kind === 'gap')
-          .reduce(
-            (n, e) => n + (e.payload as { droppedEvents: number }).droppedEvents,
-            0,
-          ) >= 2,
+          .reduce((n, e) => n + (e.payload as { droppedEvents: number }).droppedEvents, 0) >= 2,
     );
     const gapRows = page.events.filter((e) => e.kind === 'gap');
     expect(gapRows).toHaveLength(1);
@@ -692,9 +685,7 @@ describe('approvals', () => {
         approverEnrollmentId: f.workerEnrollmentId,
       }),
     );
-    const selfPin = await waitForFrame(workerFrames, (fr) =>
-      fr['type'] === 'error' ? fr : null,
-    );
+    const selfPin = await waitForFrame(workerFrames, (fr) => (fr['type'] === 'error' ? fr : null));
     expect(selfPin['code']).toBe('conflict');
     expect(selfPin['message']).toBe('invalid-approver');
 
@@ -706,12 +697,10 @@ describe('approvals', () => {
     expect(missingDigest['message']).toBe('actionDigest');
 
     send(workerSocket, controlFrame(job.attemptId, job.fence, { request: 'bogus' }));
-    const badRequest = await waitForFrame(
-      workerFrames,
-      (fr) =>
-        fr['type'] === 'error' && fr['id'] !== selfPin['id'] && fr['id'] !== missingDigest['id']
-          ? fr
-          : null,
+    const badRequest = await waitForFrame(workerFrames, (fr) =>
+      fr['type'] === 'error' && fr['id'] !== selfPin['id'] && fr['id'] !== missingDigest['id']
+        ? fr
+        : null,
     );
     expect(badRequest['code']).toBe('malformed-request');
     expect(badRequest['message']).toBe('control-request');
@@ -846,7 +835,11 @@ describe('artifacts', () => {
     );
     expect(listed.artifacts.map((a) => a.id)).toEqual([reserved.artifactId]);
     const byAttempt = expectSuccess<ArtifactListResult>(
-      await postRpc('artifact.list', { attemptId: job.attemptId, state: 'published' }, f.sourceAuth),
+      await postRpc(
+        'artifact.list',
+        { attemptId: job.attemptId, state: 'published' },
+        f.sourceAuth,
+      ),
     );
     expect(byAttempt.artifacts).toHaveLength(1);
 
@@ -952,11 +945,7 @@ describe('artifacts', () => {
         now + 7 * 24 * 60 * 60 * 1000,
       );
     });
-    const overQuota = await postRpc(
-      'artifact.reserve',
-      { ...base, byteLength: 100 },
-      f.workerAuth,
-    );
+    const overQuota = await postRpc('artifact.reserve', { ...base, byteLength: 100 }, f.workerAuth);
     expect(overQuota.status).toBe(413);
     if (isRpcError(overQuota.body)) {
       expect(overQuota.body.error.code).toBe('quota-exceeded');
@@ -1000,7 +989,11 @@ describe('artifacts', () => {
     expect(await env.ARTIFACTS.head(`${f.accountId}/${first.artifactId}`)).toBeNull();
 
     // Same-length but wrong bytes fail verification on finalize.
-    const put = await putArtifact(first.uploadPath, f.workerAuth, new TextEncoder().encode(badText));
+    const put = await putArtifact(
+      first.uploadPath,
+      f.workerAuth,
+      new TextEncoder().encode(badText),
+    );
     expect(put.status).toBe(200);
     const mismatch = await postRpc(
       'artifact.finalize',
@@ -1161,7 +1154,7 @@ describe('socket observation', () => {
 
     send(observer, subscribeFrame('sub-1', job.attemptId));
     // Wait for replay to prove the subscription registered.
-    await waitForFrame(frames, (fr) => fr['type'] === 'activity' ? fr : null);
+    await waitForFrame(frames, (fr) => (fr['type'] === 'activity' ? fr : null));
     send(workerSocket, activityFrame(job.attemptId, job.fence, 2, 'heard-1\n'));
     await waitForFrame(frames, (fr) => {
       const payload = fr['payload'] as { text?: string } | undefined;
@@ -1181,8 +1174,9 @@ describe('socket observation', () => {
           state
             .getWebSockets()
             .map((s) => s.deserializeAttachment() as { subscriptions?: unknown[] } | null)
-            .filter((a): a is { subscriptions: unknown[] } =>
-              a !== null && Array.isArray(a.subscriptions),
+            .filter(
+              (a): a is { subscriptions: unknown[] } =>
+                a !== null && Array.isArray(a.subscriptions),
             )
             .reduce((n, a) => n + a.subscriptions.length, 0),
         ),
@@ -1209,7 +1203,7 @@ describe('socket observation', () => {
     const workerSocket = await openSocket(f.workerAuth);
 
     send(observer, subscribeFrame('sub-1', job.attemptId));
-    await waitForFrame(frames, (fr) => fr['type'] === 'activity' ? fr : null);
+    await waitForFrame(frames, (fr) => (fr['type'] === 'activity' ? fr : null));
 
     await runInDurableObject(accountStub(f.accountId), (_i: AccountCoordinator, state) => {
       state.storage.sql.exec(
@@ -1294,9 +1288,7 @@ describe('socket observation', () => {
 
     // A non-owning enrollment cannot emit activity for the attempt.
     send(sourceSocket, activityFrame(job.attemptId, job.fence, 1, 'x'));
-    const notOwner = await waitForFrame(sourceFrames, (fr) =>
-      fr['type'] === 'error' ? fr : null,
-    );
+    const notOwner = await waitForFrame(sourceFrames, (fr) => (fr['type'] === 'error' ? fr : null));
     expect(notOwner['code']).toBe('forbidden');
     expect(notOwner['message']).toBe('not-attempt-owner');
 
@@ -1307,9 +1299,8 @@ describe('socket observation', () => {
 
     // Unknown attempts are not-found.
     send(workerSocket, activityFrame('attempt-missing', job.fence, 1, 'x'));
-    const missing = await waitForFrame(
-      workerFrames,
-      (fr) => (fr['type'] === 'error' && fr['id'] !== stale['id'] ? fr : null),
+    const missing = await waitForFrame(workerFrames, (fr) =>
+      fr['type'] === 'error' && fr['id'] !== stale['id'] ? fr : null,
     );
     expect(missing['code']).toBe('not-found');
 
@@ -1327,12 +1318,8 @@ describe('socket observation', () => {
       ),
     );
     send(workerSocket, activityFrame(job.attemptId, job.fence, 5, 'late\n'));
-    const terminal = await waitForFrame(
-      workerFrames,
-      (fr) =>
-        fr['type'] === 'error' && fr['id'] !== stale['id'] && fr['id'] !== missing['id']
-          ? fr
-          : null,
+    const terminal = await waitForFrame(workerFrames, (fr) =>
+      fr['type'] === 'error' && fr['id'] !== stale['id'] && fr['id'] !== missing['id'] ? fr : null,
     );
     expect(terminal['code']).toBe('conflict');
     expect(terminal['message']).toBe('attempt-terminal');
