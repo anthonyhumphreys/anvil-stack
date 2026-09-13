@@ -1021,3 +1021,27 @@ Remaining: BYOB-02, IAC-02, LAUNCH-01.
 - `conformance` / `conformance:fixture` npm scripts added.
 
 Remaining: IAC-02, LAUNCH-01.
+
+## 2026-09-13 — IAC-02 rehearsal harness + admin-secret recipe fix
+
+- `anvil-cloud/scripts/verify-mesh-rehearsal.mjs` (`pnpm
+  verify:mesh-rehearsal`): drives plan → secret put → apply →
+  descriptor → conformance suite → seed/export → in-place upgrade →
+  fresh-namespace restore (data.import round-trip) → remove, recording
+  a JSON evidence record. Post-deploy steps defer failures so cleanup
+  always runs — a rehearsal never leaks a worker.
+- Non-live mode verified locally: production plan is clean (no
+  dev-only keys, admin secret present, DO + R2 bindings) and
+  `apply --dry-run` compiles through wrangler. 3/3.
+- Recipe fix: `ENROLLMENT_ADMIN_TOKEN` was misclassified dev-only, so
+  production plans could never carry the deployment-admin credential
+  that bootstraps first-device enrollment (spec §268) and observes
+  account.deletionStatus post-revocation. `DEV_ONLY_ENVIRONMENT_KEYS`
+  is now `ANVIL_DEV_SPIKE` only; recipe tests updated (20/20).
+- Live leg is one command away; blocked only on scratch Cloudflare
+  credentials (no `wrangler login`/API token on this machine;
+  Temporary Accounts correctly rejected — backend needs R2).
+  Runbook in docs/plans/sync-mesh/iac-02-rehearsal.md.
+
+Remaining: LAUNCH-01 (plus one live IAC-02 run when a scratch account
+is available).
