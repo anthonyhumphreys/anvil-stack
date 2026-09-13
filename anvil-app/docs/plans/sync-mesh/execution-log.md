@@ -495,3 +495,52 @@ runs/reports, A reads `completed`. Full app suite green; tsc clean on
 
 Verification: 26/26 mesh service tests (13 worker, 7 artifact,
 6 observe), 22/22 runtime + acceptance tests.
+## WS-03 tail — approval IPC, recovery, panel; WS-02 UI; SESSION-01 env fix; MESH-03 backend + E2E (ac9eb63, 07d4086, 2dc2432, 6ee7ca6, 7d6c412, 1b98f2d)
+
+- `bootstrap-policy.service.ts`: `workspaceCheckoutRoot` (first mapped
+  repo's local path — per-repo working dirs are a contract extension),
+  `resolveWorkspaceCommits` (real HEAD pins via `rev-parse`), and
+  `recoverBootstrapRuns` wired into `index.ts` boot alongside WS-02
+  materialisation recovery — interrupted runs re-verify postconditions
+  only; unproven → `unknown-outcome`, never replayed.
+- IPC surface: `workspace:bootstrap-status|approve|run|approvals|
+  revoke-approval` + preload + `WorkspaceBootstrapStatus` wire types.
+  `bootstrap-approve` pins the digest (recipe+commits+policy) and starts
+  the run atomically; parked `awaiting-approval` rows stay as journal
+  history.
+- `WorkspaceBootstrapPanel` (workspace menu → Bootstrap…): recipe
+  explanation, shell-consent checkbox when the recipe uses shell, live
+  run/step state polling, run history.
+- `WorkspaceSetupPanel` (workspace menu → Set up checkouts… when
+  `definitionState === 'needs-setup'`): per-repo link-existing-checkout
+  or clone-all-into-root, latest materialisation op stages rendered from
+  the journal. The needs-setup marker now has a resolution path.
+- SESSION-01: `agent-spawn-env.ts` `providerSpawnEnv()` allowlist applied
+  to all provider CLI spawns (codex app-server, cursor-agent acp, codex
+  exec) — ambient tokens (GH_TOKEN/AWS_*/ANVIL_*) dropped; provider
+  credential vars, proxies, CODEX_HOME/XDG, and git transport kept as
+  target-local bindings. Audit doc §9 remediation log added.
+- MESH-03 backend (subagent): durable event journal with dual cursors;
+  `event.pull` authoritative replay with `hasGap`; activity ingest gated
+  by worker ownership + live incarnation + fence + terminal check with
+  reserved-stream protection and per-account burst throttling; durable
+  approvals bound to attempt+digest+generation with expiry, idempotent
+  decide, self-decide prohibition, cancel-on-cancel; artifacts
+  reserve→streamed PUT→finalize (sha256+length verified)→private GET
+  with account quotas and orphan sweep; subscribe/unsubscribe with
+  replay-on-subscribe and 90s expiry.
+- Worker evidence: `runAttempt` uploads the diagnostic result as an R2
+  artifact while the attempt is active, journaled best-effort.
+- Acceptance gate +1: `replays attempt events and round-trips an R2
+  artifact` — durable event replay via `event.pull` on the source
+  profile + byte-exact artifact round-trip against the live worker.
+
+Verification: backend 85/85 (25 new MESH-03 tests), app suite
+161 files / 1078 tests, 5/5 acceptance tests on the live worker,
+tsc + eslint clean on touched files.
+
+Remaining for launch: `device.list|rename|revoke`, `account.delete*`,
+`data.export|import.*`, `handoff.*` backend ops; SESSION-02 remote
+prepare/start (attempt journal before spawn, creation key, timeout
+orphan kill, CLI pin per audit §9); FLOW-01/02/03, PLACE-01, BYOB-02,
+IAC-02, LAUNCH-01.
