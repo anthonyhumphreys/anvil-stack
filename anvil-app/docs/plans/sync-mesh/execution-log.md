@@ -1045,3 +1045,35 @@ Remaining: IAC-02, LAUNCH-01.
 
 Remaining: LAUNCH-01 (plus one live IAC-02 run when a scratch account
 is available).
+
+## 2026-09-13 — LAUNCH-01 executable journey legs + acceptance matrix
+
+- New acceptance leg in
+  `sync-two-profile.acceptance.test.ts` drives the real shipped desktop
+  stack through the provider-free §1 journey: enroll A via admin code →
+  sync a workflow entity → A issues pairing code → C enrolls →
+  `device.list` shows both → `device.rename` persists → real bare-repo +
+  clone + push seeds `repos`/`chat_threads`/`chat_sessions`/`chat_messages`
+  → `initiateHandoff` targets C and reaches `ownership-transferred` with
+  the exact Git HEAD in the checkpoint → local ownership `relinquished`,
+  handoff journal `ownership-transferred` → `data.export.begin`/`page`
+  returns the synced entity → `device.revoke` C → C's next real RPC is
+  rejected `unauthenticated` → A signs out.
+- Device/data wrappers added to `sync-runtime.service.ts`:
+  `listDevices`, `renameDevice`, `revokeDevice`, `beginDataExport`,
+  `pageDataExport`, `previewDataImport`, `commitDataImport`,
+  `dataOperationStatus` — the UX surface §18's device-management and
+  portability bullets need.
+- `docs/plans/sync-mesh/launch-acceptance.md` maps every §1 journey step
+  and §18 bullet to evidence + honest status (automated / harness /
+  manual). Physical two-device fan-out, recorded demo, UI audit, and
+  cross-OS matrix remain open by definition — no automated substitute
+  claimed.
+- Verified: acceptance file 8/8 vs live dev backend; focused lint clean;
+  full desktop suite 1144/1147 (one flaky `forbidden` on the MESH-03
+  observe leg under parallel load — passes standalone and on rerun;
+  live-backend timing, not a regression).
+
+Remaining before public launch claim: one live IAC-02 run against a
+scratch Cloudflare account, physical two-device demonstration, UI audit,
+cross-OS matrix.

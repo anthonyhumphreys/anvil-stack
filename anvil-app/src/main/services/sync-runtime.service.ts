@@ -2,6 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import { resolveBackendPaths } from '../../../cloud/contract/discovery.js';
 import type {
+  DeviceListResult,
+  DeviceRenameResult,
+  DeviceRevokeResult,
   DeviceSession,
   EnrollmentCodeIssueResult,
   EnrollParams,
@@ -12,6 +15,10 @@ import type {
   SessionRevokeParams,
   SessionRevokeResult,
 } from '../../../cloud/contract/auth.js';
+import type {
+  DataExportBeginResult,
+  DataExportPageResult,
+} from '../../../cloud/contract/data.js';
 import { PROTOCOL } from '../../../cloud/contract/version.js';
 import {
   SPIKE_DATASET_EPOCH,
@@ -555,6 +562,61 @@ export async function issueEnrollmentCode(): Promise<EnrollmentCodeIssueResult> 
     { displayName: hostname() || 'Anvil device' },
     { accessToken: token, fetchFn: fetchOverride },
   );
+}
+
+/**
+ * Envelope-RPC call against the pinned backend under the active device
+ * session. Device management and data-portability operations ride this —
+ * the launch UX surfaces them in the Sync & Mesh settings.
+ */
+async function accountRpc<R>(operation: string, params: unknown): Promise<R> {
+  const backend = getActiveBackend() ?? pinnedBackend();
+  if (!backend) {
+    throw new Error('Pin a backend first.');
+  }
+  const token = requireAuth().getAccessToken();
+  if (token === null) {
+    throw new Error('Sign in first.');
+  }
+  const { result } = await backendRpc<R>(
+    { apiUrl: apiUrlFor(backend) },
+    operation,
+    params,
+    token,
+    { fetchFn: fetchOverride },
+  );
+  return result;
+}
+
+/** All device enrollments on the account, including revoked rows and self. */
+export async function listDevices(): Promise<DeviceListResult> {
+  return accountRpc<DeviceListResult>('device.list', {});
+}
+
+/** Rename another enrollment on the same account; empty string clears. */
+export async function renameDevice(
+  enrollmentId: string,
+  displayName: string,
+): Promise<DeviceRenameResult> {
+  return accountRpc<DeviceRenameResult>('device.rename', { enrollmentId, displayName });
+}
+
+/** Revoke a sibling enrollment; idempotent and severs its live sessions. */
+export async function revokeDevice(enrollmentId: string): Promise<DeviceRevokeResult> {
+  return accountRpc<DeviceRevokeResult>('device.revoke', { enrollmentId });
+}
+
+/** Begin a durable, resumable export of the account's synced entities. */
+export async function beginDataExport(): Promise<DataExportBeginResult> {
+  return accountRpc<DataExportBeginResult>('data.export.begin', {});
+}
+
+/** One bounded page of an export; the client-held cursor survives restarts. */
+export async function pageDataExport(
+  operationId: string,
+  cursor: string | null,
+): Promise<DataExportPageResult> {
+  return accountRpc<DataExportPageResult>('data.export.page', { operationId, cursor });
 }
 
 /**

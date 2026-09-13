@@ -16,7 +16,8 @@
  */
 import Database from 'better-sqlite3';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -51,17 +52,24 @@ vi.mock('electron', () => ({
 }));
 
 import {
+  beginDataExport,
   bindLocalEntities,
   enableSync,
   enrollWithEnrollmentCode,
   getRuntimeStatus,
   initSyncRuntime,
   issueEnrollmentCode,
+  listDevices,
+  pageDataExport,
+  renameDevice,
   requestSync,
   resetSyncRuntimeForTests,
+  revokeDevice,
   setMeshWorkerOptIn,
   signOutSync,
 } from '../sync-runtime.service';
+import { initiateHandoff } from '../mesh-handoff.service';
+import { readSessionOwnership, writeSessionOwnership } from '../mesh-ownership.service';
 import {
   buildDevicePolicy,
   createDiagnosticJob,
@@ -789,6 +797,140 @@ describe.skipIf(!backendReachable)('two-profile acceptance gate (real worker)', 
       expect(final?.state).toBe('failed');
       const stored = await listMeshApprovals({ approvalId: pending[0]!.id });
       expect(stored[0]?.state).toBe('denied');
+      await signOutSync();
+    },
+  );
+
+  it(
+    'LAUNCH-01 journey legs: device lifecycle, handoff transfer, export (real worker)',
+    { timeout: 90_000 },
+    async () => {
+      const accountId = `acct-gate-${Date.now()}-launch`;
+      const descriptor = await backendDescriptor();
+
+      // ---- A enrolls; C pairs in as the second device (handoff target).
+      const a = openProfile('a-launch');
+      openProfiles.push(a);
+      const aStatus = await enrollProfile(a, await mintCode(accountId));
+      const aEnrollment = aStatus.auth.enrollmentId;
+      expect(aEnrollment).not.toBeNull();
+      const aScope = scopeFor(aStatus, descriptor.deploymentId);
+
+      // A synced entity so export has real content.
+      const template = saveWorkflowTemplate({
+        name: 'launch-workflow',
+        description: 'created on profile A for export',
+        nodes: [node('n1')],
+        edges: [],
+        orchestration: DEFAULT_ORCHESTRATION,
+      });
+      bindLocalEntities(aScope);
+      await requestSync();
+      expect(getRuntimeStatus().lastError).toBeNull();
+
+      const pairing = await issueEnrollmentCode();
+      const c = openProfile('c-launch');
+      openProfiles.push(c);
+      const cStatus = await enrollProfile(c, pairing.code);
+      const cEnrollment = cStatus.auth.enrollmentId;
+      expect(cEnrollment).not.toBeNull();
+
+      // ---- Device lifecycle over the real backend via the shipped wrappers.
+      const a2 = reopenProfile(a);
+      pinBackend({ baseUrl: BACKEND_URL, descriptor });
+      enableSync();
+      const listed = await listDevices();
+      expect(listed.devices).toHaveLength(2);
+      expect(listed.devices.find((d) => d.enrollmentId === aEnrollment)?.self).toBe(true);
+      await renameDevice(cEnrollment ?? '', 'Launch worker');
+      const renamed = await listDevices();
+      expect(
+        renamed.devices.find((d) => d.enrollmentId === cEnrollment)?.displayName,
+      ).toBe('Launch worker');
+
+      // ---- Handoff: a real session + repo fixtures on A; initiateHandoff
+      // drives the durable backend state machine to ownership-transferred.
+      const bareDir = join(a.dir, 'handoff-remote.git');
+      const repoDir = join(a.dir, 'handoff-repo');
+      execFileSync('git', ['init', '--bare', bareDir]);
+      execFileSync('git', ['clone', bareDir, repoDir]);
+      execFileSync('git', ['-C', repoDir, 'config', 'user.email', 'gate@example.com']);
+      execFileSync('git', ['-C', repoDir, 'config', 'user.name', 'Gate']);
+      writeFileSync(join(repoDir, 'README.md'), 'launch acceptance\n');
+      execFileSync('git', ['-C', repoDir, 'add', '.']);
+      execFileSync('git', ['-C', repoDir, 'commit', '-m', 'init']);
+      execFileSync('git', ['-C', repoDir, 'push', '-u', 'origin', 'HEAD']);
+      const headCommit = execFileSync('git', ['-C', repoDir, 'rev-parse', 'HEAD'])
+        .toString('utf8')
+        .trim();
+
+      const sessionId = randomUUID();
+      const threadId = randomUUID();
+      const repoId = 'repo-launch-handoff';
+      a2.db.prepare('INSERT INTO repos (id, name, path) VALUES (?, ?, ?)').run(repoId, 'handoff', repoDir);
+      a2.db
+        .prepare(
+          'INSERT INTO chat_threads (id, persona_id, title, repo_ids_json) VALUES (?, ?, ?, ?)',
+        )
+        .run(threadId, 'coder', 'Launch handoff', JSON.stringify([repoId]));
+      a2.db
+        .prepare('INSERT INTO chat_sessions (id, thread_id, provider) VALUES (?, ?, ?)')
+        .run(sessionId, threadId, 'codex');
+      a2.db
+        .prepare(
+          'INSERT INTO chat_messages (id, thread_id, role, content) VALUES (?, ?, ?, ?)',
+        )
+        .run(randomUUID(), threadId, 'assistant', 'checkpoint summary for the handoff');
+      writeSessionOwnership(sessionId, 1, aEnrollment ?? '', 'owned');
+
+      const initiated = await initiateHandoff({
+        sessionId,
+        targetEnrollmentId: cEnrollment ?? '',
+      });
+      expect(initiated.ok).toBe(true);
+      if (initiated.ok) {
+        expect(initiated.handoff.state).toBe('ownership-transferred');
+        // The checkpoint carries the exact commit + bounded context.
+        expect(initiated.handoff.checkpoint?.repositories[0]?.commit).toBe(headCommit);
+      }
+      const ownership = readSessionOwnership(sessionId);
+      expect(ownership?.state).toBe('relinquished');
+      const journalRow = a2.db
+        .prepare('SELECT state FROM mesh_handoff_journal WHERE handoff_id = ?')
+        .get(initiated.ok ? initiated.handoff.id : '') as { state: string } | undefined;
+      expect(journalRow?.state).toBe('ownership-transferred');
+
+      // ---- Data portability: the synced entity leaves the account over the
+      // real export path.
+      const begin = await beginDataExport();
+      const entities: unknown[] = [];
+      let cursor: string | null = null;
+      for (let i = 0; i < 10; i += 1) {
+        const page = await pageDataExport(begin.operationId, cursor);
+        entities.push(...page.entities);
+        if (page.done) break;
+        cursor = page.nextCursor;
+      }
+      expect(
+        entities.some(
+          (e) =>
+            typeof e === 'object' &&
+            e !== null &&
+            (e as { entityId?: string }).entityId === template.id,
+        ),
+      ).toBe(true);
+
+      // ---- Revoke C: its stored credential must die remotely — the next RPC
+      // through the shipped path returns unauthenticated.
+      await revokeDevice(cEnrollment ?? '');
+      reopenProfile(c);
+      pinBackend({ baseUrl: BACKEND_URL, descriptor });
+      enableSync();
+      await expect(listDevices()).rejects.toMatchObject({ code: 'unauthenticated' });
+
+      reopenProfile(a);
+      pinBackend({ baseUrl: BACKEND_URL, descriptor });
+      enableSync();
       await signOutSync();
     },
   );
