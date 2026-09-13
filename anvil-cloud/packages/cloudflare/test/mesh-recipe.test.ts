@@ -204,7 +204,6 @@ describe("Mesh backend recipe planning", () => {
         ANVIL_DEV_SPIKE: "true",
         OIDC_ISSUER: "https://issuer.example.com",
       },
-      secrets: ["ENROLLMENT_ADMIN_TOKEN"],
     });
 
     expect(plan.diagnostics).toContainEqual(
@@ -216,13 +215,32 @@ describe("Mesh backend recipe planning", () => {
     expect(plan.vars).toEqual({
       OIDC_ISSUER: "https://issuer.example.com",
     });
-    expect(plan.secrets).toEqual([]);
-    const serialized = JSON.stringify(plan);
-    expect(serialized).not.toContain("ANVIL_DEV_SPIKE");
-    expect(serialized).not.toContain("ENROLLMENT_ADMIN_TOKEN");
+    expect(JSON.stringify(plan)).not.toContain("ANVIL_DEV_SPIKE");
   });
 
-  it("lists the admin token only for the dev recipe", async () => {
+  it("keeps the deployment-admin credential as a production secret", async () => {
+    const backendDir = await createBackendProject();
+
+    const plan = await createMeshDeploymentPlan({
+      backendDir,
+      workerName: "mesh-backend",
+      secrets: ["ENROLLMENT_ADMIN_TOKEN"],
+    });
+
+    expect(plan.dev).toBe(false);
+    expect(plan.secrets).toEqual([
+      expect.objectContaining({
+        name: "ENROLLMENT_ADMIN_TOKEN",
+        devOnly: false,
+        required: false,
+      }),
+    ]);
+    expect(
+      plan.diagnostics.filter((item) => item.severity === "block"),
+    ).toEqual([]);
+  });
+
+  it("lists the admin token for the dev recipe", async () => {
     const backendDir = await createBackendProject();
 
     const plan = await createMeshDeploymentPlan({
@@ -238,7 +256,7 @@ describe("Mesh backend recipe planning", () => {
     expect(plan.secrets).toEqual([
       expect.objectContaining({
         name: "ENROLLMENT_ADMIN_TOKEN",
-        devOnly: true,
+        devOnly: false,
         required: false,
       }),
     ]);

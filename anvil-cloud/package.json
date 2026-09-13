@@ -17,6 +17,7 @@
     "verify:notes-local": "pnpm verify:notes-golden-path",
     "verify:aws-preview": "node scripts/verify-aws-preview.mjs",
     "verify:cloudflare-preview": "pnpm build && node scripts/verify-cloudflare-preview.mjs",
+    "verify:mesh-rehearsal": "node scripts/verify-mesh-rehearsal.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },

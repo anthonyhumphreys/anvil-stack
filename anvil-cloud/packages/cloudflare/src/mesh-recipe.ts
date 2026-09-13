@@ -24,10 +24,13 @@ const WORKER_NAME_MAX_LENGTH = 63;
 /**
  * Development-only backend environment keys. They must never be emitted by a
  * non-dev recipe: the production Worker must fail closed on the development
- * bearer and admin-token issuance paths, matching the backend project's own
- * top-level/`env.dev` split.
+ * spike-bearer path, matching the backend project's own top-level/`env.dev`
+ * split. `ENROLLMENT_ADMIN_TOKEN` is deliberately not dev-only — it is the
+ * production deployment-admin credential that bootstraps the first device's
+ * enrollment code and keeps `account.deletionStatus` observable after device
+ * sessions are revoked (spec §268, account deletion).
  */
-const DEV_ONLY_ENVIRONMENT_KEYS = ["ANVIL_DEV_SPIKE", "ENROLLMENT_ADMIN_TOKEN"];
+const DEV_ONLY_ENVIRONMENT_KEYS = ["ANVIL_DEV_SPIKE"];
 
 const EXPECTED_DURABLE_OBJECTS = [
   { binding: "ACCOUNT", className: "AccountCoordinator" },
