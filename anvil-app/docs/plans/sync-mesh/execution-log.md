@@ -544,3 +544,41 @@ Remaining for launch: `device.list|rename|revoke`, `account.delete*`,
 prepare/start (attempt journal before spawn, creation key, timeout
 orphan kill, CLI pin per audit §9); FLOW-01/02/03, PLACE-01, BYOB-02,
 IAC-02, LAUNCH-01.
+## SESSION-02 slice — remote prepare-workspace + remote approval gate (1cf3116, 7eebf7e)
+
+- `prepare-workspace` executor on the worker: converges on the pinned
+  `workspaceDefinitionRevision` (stale replicas refuse), verifies each
+  mapped checkout's HEAD against the manifest pin per-repo (never mutates
+  user checkouts), and journals clone-at-commit for unmapped definitions
+  into `<userDataDir>/mesh-checkouts/<workspaceId>` via WS-02
+  `startWorkspaceClone` — worker-managed paths only, no arbitrary source
+  paths.
+- Bootstrap gate: recomputes the WS-03 digest (recipe + manifest commits
+  + `buildDevicePolicy()`) and refuses on mismatch. Local exact-digest
+  approval short-circuits; shell recipes ALWAYS require the local shell
+  pin (`shell-recipe-requires-local-approval`) — remote approval never
+  satisfies shell consent per spec §10.
+- Remote approval: worker sends `{request:'approval', actionDigest}` on
+  the reserved `control` stream, then polls `approval.get` (the approval
+  ROW is the decision authority — job state alone can't distinguish
+  "request landed + granted" from "request never arrived"). Decided rows
+  resolve approved/denied/expired; the job-state read only detects
+  cancellation. Fail-closed everywhere: dead socket → throw, dropped
+  request → TTL-cap denied, unreachable backend → denied.
+- Source side: `createPrepareWorkspaceJob` pins revision + resolved
+  HEADs + bootstrap digest (refuses unmapped defs — source can only
+  commit to what it proves), `inspect-before-retry` policy, device or
+  auto targeting; `listMeshApprovals`/`decideMeshApproval` wrap
+  `approval.get`/`approval.decide`.
+- Backend tail: `artifact.deleted` events journal under the attempt
+  fence instead of generation 0.
+
+Verification: worker suite 20/20 (5 new approval-wait failure-injection
+tests: control-frame shape, grant, denial, job-cancelled-while-pending,
+dropped-request fail-closed, dead-socket reject; 2 manifest-pin tests
+with a real git fixture), app suite 161 files / 1085 tests, backend
+85/85, tsc + eslint clean.
+
+Remaining: `start-session` typed job, SESSION-03 handoff,
+`device.list|rename|revoke`, `account.delete*`, `data.export|import.*`,
+`handoff.*`, FLOW-01/02/03, PLACE-01, BYOB-02, IAC-02, LAUNCH-01.
