@@ -18,9 +18,20 @@ import { promisify } from 'node:util';
 import { platform, totalmem } from 'node:os';
 import { getDb } from '../db/database.js';
 import { join } from 'node:path';
+import { readdirSync } from 'node:fs';
 import { uploadAttemptArtifact } from './mesh-artifact.service.js';
 import { startWorkspaceClone } from './workspace-materialization.service.js';
+import {
+  probeSessionCli,
+  runRemoteSessionTurn,
+  satisfiesCliMin,
+  type RemoteSessionProvider,
+} from './mesh-session.service.js';
+import { commonParentDir } from './codex-protocol.service.js';
+import { resolveSessionModel } from './codex-session.service.js';
+import { getSettings } from './settings.service.js';
 import { workspaceDefinitionRevision } from './sync-entity-domain.js';
+import type { AgentProvider, ReasoningEffort } from '../../shared/types.js';
 import {
   computeBootstrapDigest,
   getWorkspaceBootstrap,
@@ -102,7 +113,7 @@ let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let connectInFlight: Promise<void> | null = null;
 
 const DEFAULT_MAX_CONCURRENT_JOBS = 1;
-const WORKER_CAPABILITIES = ['diagnostic', 'prepare-workspace'];
+const WORKER_CAPABILITIES = ['diagnostic', 'prepare-workspace', 'start-session'];
 
 export function configureMeshWorkerContext(provider: () => MeshWorkerContext | null): void {
   contextProvider = provider;
@@ -666,6 +677,7 @@ const EXECUTORS: Record<
 > = {
   diagnostic: (job, attempt) => executeDiagnostic(job.inputManifest, attempt.id, attempt),
   'prepare-workspace': executePrepareWorkspace,
+  'start-session': executeStartSession,
 };
 
 /** Worker→backend control stream (`streamId: 'control'`) sequence space. */
@@ -952,6 +964,245 @@ async function executePrepareWorkspace(
   };
 }
 
+// ---- start-session ---------------------------------------------------------
+
+const SESSION_TURN_DEFAULT_TIMEOUT_MS = 10 * 60_000;
+const SESSION_TURN_MAX_TIMEOUT_MS = 60 * 60_000;
+
+/**
+ * Resolves a manifest-pinned repository to a local checkout at the exact
+ * commit. Mapped checkouts are verified, never mutated; managed checkouts
+ * come from a prior `prepare-workspace` and are identified BY their commit
+ * (the directory name is a materialization detail, not an identity).
+ */
+async function resolveSessionCheckout(
+  repositoryId: string,
+  commit: string,
+  defs: Map<string, { mapped_repo_id: string | null }>,
+  managedRoot: string | null,
+): Promise<string> {
+  const def = defs.get(repositoryId);
+  if (def === undefined) {
+    throw new Error(`manifest repository not in workspace definition: ${repositoryId}`);
+  }
+  if (def.mapped_repo_id !== null) {
+    const path = (
+      getDb().prepare('SELECT path FROM repos WHERE id = ?').get(def.mapped_repo_id) as
+        | { path: string }
+        | undefined
+    )?.path;
+    const head = path === undefined ? null : await gitHead(path);
+    if (head !== commit) {
+      throw new Error(
+        `mapped-checkout-diverged: ${repositoryId} at ${head ?? 'unknown'} != ${commit}`,
+      );
+    }
+    return path!;
+  }
+  if (managedRoot === null) {
+    throw new Error(`workspace-not-prepared: no managed checkout root for ${repositoryId}`);
+  }
+  let entries: string[] = [];
+  try {
+    entries = readdirSync(managedRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+  } catch {
+    // Root absent entirely — falls through to the not-prepared error.
+  }
+  for (const entry of entries) {
+    const candidate = join(managedRoot, entry);
+    if ((await gitHead(candidate)) === commit) return candidate;
+  }
+  throw new Error(
+    `workspace-not-prepared: no managed checkout at ${commit} for ${repositoryId} — run prepare-workspace first`,
+  );
+}
+
+/**
+ * Prior attempts' spawn evidence (spec §9 inspect-before-retry): a prior
+ * attempt that journaled `provider-spawn` but never `provider-thread`
+ * may have left an orphan provider process — the retry must NOT spawn a
+ * second one. A recorded `provider-thread` is the verified same-home
+ * resume handle (audit: codex native-resume, same CODEX_HOME).
+ */
+function priorSessionEvidence(
+  jobId: string,
+  excludeAttemptId: string,
+): { unresolvedSpawn: boolean; resumeThreadId: string | null } {
+  const rows = getDb()
+    .prepare(
+      `SELECT journal_json FROM mesh_attempts WHERE job_id = ? AND id != ? ORDER BY created_at`,
+    )
+    .all(jobId, excludeAttemptId) as Array<{ journal_json: string }>;
+  let unresolvedSpawn = false;
+  let resumeThreadId: string | null = null;
+  for (const row of rows) {
+    let events: Array<{ event?: string; detail?: Record<string, unknown> }>;
+    try {
+      events = JSON.parse(row.journal_json) as typeof events;
+    } catch {
+      continue;
+    }
+    const spawned = events.some((e) => e.event === 'provider-spawn');
+    const thread = events.find((e) => e.event === 'provider-thread');
+    const threadId = thread?.detail?.['threadId'];
+    if (typeof threadId === 'string' && threadId.length > 0) {
+      resumeThreadId = threadId;
+    } else if (spawned) {
+      unresolvedSpawn = true;
+    }
+  }
+  return { unresolvedSpawn, resumeThreadId };
+}
+
+/**
+ * `start-session`: run one provider turn on the pinned workspace. The
+ * attempt journal's `provider-spawn` entry precedes `spawn` so a crash in
+ * between is reconstructable; the provider thread id (journaled at
+ * `provider-thread`) is the durable handle a retry resumes same-home.
+ * Codex-internal approvals are auto-declined — mesh approvals gate the
+ * job, not the provider's policy prompts.
+ */
+async function executeStartSession(
+  job: MeshJob,
+  attempt: ExecutionAttempt,
+): Promise<Record<string, unknown>> {
+  const attemptId = attempt.id;
+  const manifest = job.inputManifest;
+  const workspaceId = manifest.inputs['workspaceId'];
+  const prompt = manifest.inputs['prompt'];
+  if (typeof workspaceId !== 'string' || workspaceId.length === 0) {
+    throw new Error('start-session requires manifest.inputs.workspaceId');
+  }
+  if (typeof prompt !== 'string' || prompt.length === 0) {
+    throw new Error('start-session requires manifest.inputs.prompt');
+  }
+  const provider = manifest.provider;
+  if (provider !== 'codex' && provider !== 'azure' && provider !== 'openai') {
+    // SESSION-01 audit: cursor runs ACP session/new only — no resume path,
+    // so it is not a launch provider for remote starts.
+    throw new Error(`provider-unsupported-remote: ${provider}`);
+  }
+
+  const localRevision = workspaceDefinitionRevision(workspaceId);
+  if (localRevision === null) {
+    throw new Error(`workspace not replicated on this device: ${workspaceId}`);
+  }
+  if (localRevision !== manifest.workspaceDefinitionRevision) {
+    throw new Error(
+      `definition-not-converged: local ${localRevision} != manifest ${manifest.workspaceDefinitionRevision}`,
+    );
+  }
+
+  const defs = new Map(
+    (
+      getDb()
+        .prepare(
+          `SELECT portable_id, mapped_repo_id FROM workspace_repo_definitions
+           WHERE workspace_id = ?`,
+        )
+        .all(workspaceId) as Array<{ portable_id: string; mapped_repo_id: string | null }>
+    ).map((d) => [d.portable_id, { mapped_repo_id: d.mapped_repo_id }]),
+  );
+  const userDataDir = workerContext()?.userDataDir;
+  const managedRoot =
+    userDataDir === undefined ? null : join(userDataDir, 'mesh-checkouts', workspaceId);
+  if (manifest.repositories.length === 0) {
+    throw new Error('start-session requires at least one pinned repository');
+  }
+  const repoPaths: string[] = [];
+  for (const repo of manifest.repositories) {
+    repoPaths.push(
+      await resolveSessionCheckout(repo.repositoryId, repo.commit, defs, managedRoot),
+    );
+  }
+  const cwd = commonParentDir(repoPaths);
+
+  const prior = priorSessionEvidence(job.id, attemptId);
+  if (prior.unresolvedSpawn) {
+    // A prior attempt spawned a provider and never recorded the thread —
+    // its process may still hold the checkout. Spec §9: inspect first.
+    throw new Error('prior-spawn-unresolved: inspect the orphaned provider process first');
+  }
+
+  const cliVersion = await probeSessionCli();
+  if (cliVersion === null) {
+    throw new Error('provider-cli-unavailable: codex not on PATH');
+  }
+  const cliMinVersion = manifest.inputs['cliMinVersion'];
+  if (
+    typeof cliMinVersion === 'string' &&
+    cliMinVersion.length > 0 &&
+    !satisfiesCliMin(cliVersion, cliMinVersion)
+  ) {
+    throw new Error(
+      `cli-version-pin-violation: codex ${cliVersion} < pinned minimum ${cliMinVersion}`,
+    );
+  }
+
+  // Journal the spawn intent BEFORE spawn (audit item 1): a crash between
+  // here and `provider-thread` leaves this row as the orphan evidence.
+  appendJournal(attemptId, 'provider-spawn', {
+    provider,
+    model: manifest.model,
+    cliVersion,
+    creationKey: job.requestId,
+    resumeThreadId: prior.resumeThreadId,
+    cwd,
+  });
+  emitActivity(attempt, `session: starting ${provider} on ${workspaceId}`);
+
+  const rawTimeout = manifest.inputs['turnTimeoutMs'];
+  const turnTimeoutMs = Math.min(
+    typeof rawTimeout === 'number' && Number.isFinite(rawTimeout) && rawTimeout > 0
+      ? rawTimeout
+      : SESSION_TURN_DEFAULT_TIMEOUT_MS,
+    SESSION_TURN_MAX_TIMEOUT_MS,
+  );
+  const rawSandbox = manifest.inputs['sandbox'];
+  const sandbox =
+    rawSandbox === 'read-only' || rawSandbox === 'danger-full-access'
+      ? rawSandbox
+      : 'workspace-write';
+  const rawEffort = manifest.inputs['reasoningEffort'];
+
+  const result = await runRemoteSessionTurn(
+    {
+      provider: provider as RemoteSessionProvider,
+      model: manifest.model,
+      cwd,
+      prompt,
+      ...(typeof rawEffort === 'string'
+        ? { reasoningEffort: rawEffort as ReasoningEffort }
+        : {}),
+      sandbox,
+      ...(prior.resumeThreadId !== null ? { resumeThreadId: prior.resumeThreadId } : {}),
+      turnTimeoutMs,
+    },
+    {
+      onThreadStarted: (threadId) => {
+        appendJournal(attemptId, 'provider-thread', { threadId });
+      },
+      emitActivity: (text) => emitActivity(attempt, text),
+      isCancelled: () => isCancelRequested(attemptId),
+    },
+  );
+
+  if (result.turnStatus === 'failed') {
+    throw new Error('provider-turn-failed');
+  }
+  return {
+    ok: result.turnStatus === 'completed' && !result.cancelled,
+    workspaceId,
+    providerThreadId: result.providerThreadId,
+    turnId: result.turnId,
+    turnStatus: result.turnStatus,
+    cliVersion: result.cliVersion,
+    cancelled: result.cancelled,
+  };
+}
+
 const execFileAsync = promisify(execFile);
 
 async function gitHead(cwd: string): Promise<string | null> {
@@ -1172,6 +1423,102 @@ export async function createPrepareWorkspaceJob(
     requestId: input.requestId,
     payloadHash,
     kind: 'prepare-workspace',
+    requestedTarget,
+    inputManifest: manifest,
+    retryPolicy: 'inspect-before-retry',
+  });
+  return result.job;
+}
+
+export interface StartSessionJobInput {
+  requestId: string;
+  workspaceId: string;
+  /** The initial user message the remote turn runs. */
+  prompt: string;
+  targetEnrollmentId?: string;
+  provider?: 'codex' | 'azure' | 'openai';
+  model?: string;
+  personaId?: string;
+  reasoningEffort?: string;
+  sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
+  /** Pinned minimum `codex --version` the target must satisfy (audit §9). */
+  cliMinVersion?: string;
+  turnTimeoutMs?: number;
+}
+
+/**
+ * `job.create` for `start-session` (SESSION-02). The manifest pins the
+ * canonical definition revision, exact resolved commits, the bootstrap
+ * digest (the target verifies it matches the synced recipe even though
+ * session start does not re-run bootstrap), and the provider/model/CLI
+ * requirements the worker enforces before spawn.
+ */
+export async function createStartSessionJob(
+  input: StartSessionJobInput,
+): Promise<JobSummary> {
+  const provider: RemoteSessionProvider = input.provider ?? 'codex';
+  const revision = workspaceDefinitionRevision(input.workspaceId);
+  if (revision === null) {
+    throw new Error(`workspace not found: ${input.workspaceId}`);
+  }
+  const commits = await resolveWorkspaceCommits(input.workspaceId);
+  const defs = getDb()
+    .prepare(
+      `SELECT portable_id, mapped_repo_id FROM workspace_repo_definitions WHERE workspace_id = ?`,
+    )
+    .all(input.workspaceId) as Array<{ portable_id: string; mapped_repo_id: string | null }>;
+  const repositories = defs.map((def) => {
+    const commit = commits[def.portable_id];
+    if (def.mapped_repo_id === null || commit === undefined) {
+      throw new Error(
+        `repository ${def.portable_id} has no resolved commit on this device — map a checkout first`,
+      );
+    }
+    return { repositoryId: def.portable_id, commit };
+  });
+  const recipe = getWorkspaceBootstrap(input.workspaceId);
+  const bootstrapDigest =
+    recipe === null
+      ? 'none'
+      : computeBootstrapDigest({
+          recipe,
+          repositoryCommits: commits,
+          executionPolicy: buildDevicePolicy(),
+        });
+  const model = input.model ?? resolveSessionModel(provider as AgentProvider, getSettings().openaiModel);
+  const manifest: ExecutionManifest = {
+    workspaceDefinitionRevision: revision,
+    repositories,
+    bootstrapDigest,
+    provider,
+    model,
+    configVersions: {},
+    inputs: {
+      workspaceId: input.workspaceId,
+      prompt: input.prompt,
+      ...(input.personaId === undefined ? {} : { personaId: input.personaId }),
+      ...(input.reasoningEffort === undefined
+        ? {}
+        : { reasoningEffort: input.reasoningEffort }),
+      ...(input.sandbox === undefined ? {} : { sandbox: input.sandbox }),
+      ...(input.cliMinVersion === undefined ? {} : { cliMinVersion: input.cliMinVersion }),
+      ...(input.turnTimeoutMs === undefined ? {} : { turnTimeoutMs: input.turnTimeoutMs }),
+    },
+  };
+  const requestedTarget =
+    input.targetEnrollmentId !== undefined
+      ? { kind: 'device' as const, enrollmentId: input.targetEnrollmentId }
+      : { kind: 'auto' as const };
+  const payloadHash = createHash('sha256')
+    .update(
+      canonicalJson({ kind: 'start-session', requestedTarget, inputManifest: manifest }),
+      'utf8',
+    )
+    .digest('hex');
+  const result = await meshRpc<{ job: JobSummary }>('job.create', {
+    requestId: input.requestId,
+    payloadHash,
+    kind: 'start-session',
     requestedTarget,
     inputManifest: manifest,
     retryPolicy: 'inspect-before-retry',

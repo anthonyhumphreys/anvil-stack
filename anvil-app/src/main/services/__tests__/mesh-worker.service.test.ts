@@ -43,9 +43,19 @@ vi.mock('../mesh-artifact.service.js', () => ({
   uploadAttemptArtifact: vi.fn(async () => ({ id: 'art-test' })),
 }));
 
+vi.mock('../mesh-session.service.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../mesh-session.service.js')>();
+  return {
+    ...original,
+    probeSessionCli: vi.fn(async () => '0.44.0'),
+    runRemoteSessionTurn: vi.fn(),
+  };
+});
+
 import {
   configureMeshWorkerContext,
   createPrepareWorkspaceJob,
+  createStartSessionJob,
   getMeshWorkerStatus,
   handleJobAvailable,
   isMeshWorkerEnabled,
@@ -59,6 +69,8 @@ import {
 } from '../mesh-worker.service';
 import { BackendRpcError } from '../sync-backend-client.service';
 import { workspaceDefinitionRevision } from '../sync-entity-domain';
+import { probeSessionCli, runRemoteSessionTurn } from '../mesh-session.service';
+import type { RemoteSessionHooks, RemoteSessionSpec } from '../mesh-session.service';
 
 const CTX = { apiUrl: 'https://backend.test/v1', accessToken: 'tok', enrollmentId: 'enr-1' };
 
@@ -711,5 +723,287 @@ describe('sync lifecycle hooks', () => {
     expect(status.connected).toBe(false);
     expect(status.workerIncarnation).toBeNull();
     expect(isMeshWorkerEnabled()).toBe(true);
+  });
+});
+
+describe('start-session executor (SESSION-02)', () => {
+  const runTurnMock = vi.mocked(runRemoteSessionTurn);
+  const probeMock = vi.mocked(probeSessionCli);
+
+  function seedSessionWorkspace(suffix: string, mapped = true): {
+    workspaceId: string;
+    portableId: string;
+    repoDir: string;
+    head: string;
+  } {
+    const repoDir = mkdtempSync(join(tmpdir(), `anvil-mesh-sess-${suffix}-`));
+    execFileSync('git', ['init'], { cwd: repoDir });
+    execFileSync(
+      'git',
+      ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '--allow-empty', '-m', 'init'],
+      { cwd: repoDir },
+    );
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoDir })
+      .toString()
+      .trim();
+    const workspaceId = `w-sess-${suffix}`;
+    const portableId = `p-${suffix}`;
+    db.prepare(
+      `INSERT INTO repos (id, name, path, status, created_at, updated_at)
+       VALUES (?, 'repo', ?, 'connected', datetime('now'), datetime('now'))`,
+    ).run(`repo-${suffix}`, repoDir);
+    db.prepare(
+      `INSERT INTO workspaces (id, name, created_at, updated_at)
+       VALUES (?, 'W', datetime('now'), datetime('now'))`,
+    ).run(workspaceId);
+    db.prepare(
+      `INSERT INTO workspace_repo_definitions
+       (workspace_id, portable_id, name, mapped_repo_id, created_at, updated_at)
+       VALUES (?, ?, 'repo', ?, datetime('now'), datetime('now'))`,
+    ).run(workspaceId, portableId, mapped ? `repo-${suffix}` : null);
+    return { workspaceId, portableId, repoDir, head };
+  }
+
+  function makeSessionJob(
+    id: string,
+    workspaceId: string,
+    portableId: string,
+    commit: string,
+    inputs: Record<string, unknown> = {},
+  ): MeshJob {
+    const job = makeJob(id, 'start-session');
+    job.inputManifest = {
+      workspaceDefinitionRevision: workspaceDefinitionRevision(workspaceId)!,
+      repositories: [{ repositoryId: portableId, commit }],
+      bootstrapDigest: 'none',
+      provider: 'codex',
+      model: 'gpt-5',
+      configVersions: {},
+      inputs: { workspaceId, prompt: 'do the thing', ...inputs },
+    };
+    return job;
+  }
+
+  function claimWith(job: MeshJob): void {
+    rpcHandler = (op) => {
+      if (op === 'job.claim') {
+        return {
+          job,
+          attempt: makeAttempt(job.id),
+          fence: 1,
+          manifest: job.inputManifest,
+        };
+      }
+      if (op === 'attempt.report') {
+        return { status: 'applied' };
+      }
+      return {};
+    };
+  }
+
+  function insertPriorAttempt(jobId: string, journal: Array<Record<string, unknown>>): void {
+    db.prepare(
+      `INSERT INTO mesh_attempts
+       (id, job_id, enrollment_id, incarnation, fence, kind, state, manifest_json, journal_json, created_at, updated_at)
+       VALUES (?, ?, 'enr-1', 'inc-1', 1, 'start-session', 'failed', '{}', ?, ?, ?)`,
+    ).run(
+      `prior-${jobId}`,
+      jobId,
+      JSON.stringify(journal),
+      new Date(Date.now() - 60_000).toISOString(),
+      new Date().toISOString(),
+    );
+  }
+
+  beforeEach(async () => {
+    probeMock.mockReset().mockResolvedValue('0.44.0');
+    runTurnMock.mockReset();
+    runTurnMock.mockImplementation(
+      async (_spec: RemoteSessionSpec, hooks: RemoteSessionHooks) => {
+        hooks.onThreadStarted('thr-mock');
+        return {
+          providerThreadId: 'thr-mock',
+          turnId: 'turn-1',
+          turnStatus: 'completed' as const,
+          cliVersion: '0.44.0',
+          cancelled: false,
+        };
+      },
+    );
+    rpcHandler = (op) =>
+      op === 'worker.connect'
+        ? {
+            workerIncarnation: 'inc-1',
+            leaseExpiresAt: new Date(Date.now() + 90_000).toISOString(),
+          }
+        : {};
+    await setMeshWorkerEnabled(true);
+    rpcCalls.length = 0;
+  });
+
+  it('spawns the provider, journals the lifecycle, and reports completed', async () => {
+    const { workspaceId, portableId, repoDir, head } = seedSessionWorkspace('ok');
+    try {
+      const job = makeSessionJob('job-sess', workspaceId, portableId, head);
+      claimWith(job);
+      await handleJobAvailable('job-sess');
+
+      const row = db
+        .prepare('SELECT state, journal_json, result_json FROM mesh_attempts WHERE id = ?')
+        .get('att-job-sess') as { state: string; journal_json: string; result_json: string };
+      expect(row.state).toBe('completed');
+      const journal = JSON.parse(row.journal_json) as Array<{ event: string }>;
+      const events = journal.map((j) => j.event);
+      // Spawn intent precedes the thread record; turn markers bracket the run.
+      expect(events).toContain('provider-spawn');
+      expect(events).toContain('provider-thread');
+      expect(events.indexOf('provider-spawn')).toBeLessThan(
+        events.indexOf('provider-thread'),
+      );
+      const result = JSON.parse(row.result_json) as Record<string, unknown>;
+      expect(result).toMatchObject({
+        ok: true,
+        providerThreadId: 'thr-mock',
+        turnId: 'turn-1',
+        cliVersion: '0.44.0',
+      });
+
+      const spec = runTurnMock.mock.calls[0]?.[0];
+      expect(spec).toMatchObject({
+        provider: 'codex',
+        model: 'gpt-5',
+        cwd: repoDir,
+        prompt: 'do the thing',
+        sandbox: 'workspace-write',
+      });
+      const report = rpcCalls.find((c) => c.operation === 'attempt.report');
+      expect((report!.params as { outcome: string }).outcome).toBe('completed');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a second spawn when a prior attempt journaled spawn without a thread', async () => {
+    const { workspaceId, portableId, repoDir, head } = seedSessionWorkspace('orphan');
+    try {
+      insertPriorAttempt('job-sess', [{ event: 'provider-spawn', detail: {} }]);
+      const job = makeSessionJob('job-sess', workspaceId, portableId, head);
+      claimWith(job);
+      await handleJobAvailable('job-sess');
+
+      expect(runTurnMock).not.toHaveBeenCalled();
+      const row = db
+        .prepare('SELECT state, journal_json FROM mesh_attempts WHERE id = ?')
+        .get('att-job-sess') as { state: string; journal_json: string };
+      expect(row.state).toBe('failed');
+      expect(row.journal_json).toContain('prior-spawn-unresolved');
+      const report = rpcCalls.find((c) => c.operation === 'attempt.report');
+      expect((report!.params as { outcome: string }).outcome).toBe('failed');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('resumes the provider thread recorded by a prior attempt', async () => {
+    const { workspaceId, portableId, repoDir, head } = seedSessionWorkspace('resume');
+    try {
+      insertPriorAttempt('job-sess', [
+        { event: 'provider-spawn', detail: {} },
+        { event: 'provider-thread', detail: { threadId: 'thr-9' } },
+      ]);
+      const job = makeSessionJob('job-sess', workspaceId, portableId, head);
+      claimWith(job);
+      await handleJobAvailable('job-sess');
+
+      const spec = runTurnMock.mock.calls[0]?.[0];
+      expect(spec?.resumeThreadId).toBe('thr-9');
+      const row = db
+        .prepare('SELECT state FROM mesh_attempts WHERE id = ?')
+        .get('att-job-sess') as { state: string };
+      expect(row.state).toBe('completed');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed when the installed CLI is below the pinned minimum', async () => {
+    const { workspaceId, portableId, repoDir, head } = seedSessionWorkspace('clipin');
+    try {
+      const job = makeSessionJob('job-sess', workspaceId, portableId, head, {
+        cliMinVersion: '99.0.0',
+      });
+      claimWith(job);
+      await handleJobAvailable('job-sess');
+
+      expect(runTurnMock).not.toHaveBeenCalled();
+      const row = db
+        .prepare('SELECT state, journal_json FROM mesh_attempts WHERE id = ?')
+        .get('att-job-sess') as { state: string; journal_json: string };
+      expect(row.state).toBe('failed');
+      expect(row.journal_json).toContain('cli-version-pin-violation');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails workspace-not-prepared when an unmapped repo has no managed checkout', async () => {
+    const { workspaceId, portableId, repoDir, head } = seedSessionWorkspace('unmapped', false);
+    try {
+      const job = makeSessionJob('job-sess', workspaceId, portableId, head);
+      claimWith(job);
+      await handleJobAvailable('job-sess');
+
+      expect(runTurnMock).not.toHaveBeenCalled();
+      const row = db
+        .prepare('SELECT state, journal_json FROM mesh_attempts WHERE id = ?')
+        .get('att-job-sess') as { state: string; journal_json: string };
+      expect(row.state).toBe('failed');
+      expect(row.journal_json).toContain('workspace-not-prepared');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('pins commits, provider, model, and inputs in the created job manifest', async () => {
+    const { workspaceId, portableId, repoDir, head } = seedSessionWorkspace('create');
+    try {
+      rpcHandler = (op) =>
+        op === 'job.create' ? { job: { id: 'job-s', kind: 'start-session' } } : {};
+      const job = await createStartSessionJob({
+        requestId: 'req-s',
+        workspaceId,
+        prompt: 'review the diff',
+        targetEnrollmentId: 'enr-9',
+        provider: 'codex',
+        model: 'gpt-5',
+        cliMinVersion: '0.40.0',
+        turnTimeoutMs: 120_000,
+      });
+      expect(job.id).toBe('job-s');
+      const create = rpcCalls.find((c) => c.operation === 'job.create');
+      const params = create!.params as {
+        kind: string;
+        inputManifest: {
+          workspaceDefinitionRevision: string;
+          repositories: Array<{ repositoryId: string; commit: string }>;
+          provider: string;
+          model: string;
+          inputs: Record<string, unknown>;
+        };
+      };
+      expect(params.kind).toBe('start-session');
+      expect(params.inputManifest.workspaceDefinitionRevision).toBe(
+        workspaceDefinitionRevision(workspaceId),
+      );
+      expect(params.inputManifest.repositories).toEqual([
+        { repositoryId: portableId, commit: head },
+      ]);
+      expect(params.inputManifest.provider).toBe('codex');
+      expect(params.inputManifest.model).toBe('gpt-5');
+      expect(params.inputManifest.inputs['cliMinVersion']).toBe('0.40.0');
+      expect(params.inputManifest.inputs['turnTimeoutMs']).toBe(120_000);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
   });
 });
