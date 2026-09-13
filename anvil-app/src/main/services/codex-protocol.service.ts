@@ -726,15 +726,30 @@ function parseSubagentUpdate(
     const activityKind = parseSubagentActivityKind(item.kind);
     const agentThreadId = typeof item.agentThreadId === 'string' ? item.agentThreadId : undefined;
     if (!activityKind || !agentThreadId) return null;
-    const status: CodexSubagentStatus = activityKind === 'interrupted' ? 'interrupted' : 'running';
+    let status: CodexSubagentStatus;
+    if (activityKind === 'completed') status = 'completed';
+    else if (activityKind === 'errored') status = 'errored';
+    else if (activityKind === 'interrupted') status = 'interrupted';
+    else status = 'running';
     return {
       id: item.id,
       kind: 'activity',
       receiverThreadIds: [agentThreadId],
-      agents: [{ threadId: agentThreadId, status }],
+      agents: [
+        {
+          threadId: agentThreadId,
+          status,
+          message: typeof item.message === 'string' ? item.message : undefined,
+        },
+      ],
       activityKind,
       agentThreadId,
       agentPath: typeof item.agentPath === 'string' ? item.agentPath : undefined,
+      prompt: typeof item.prompt === 'string' ? item.prompt : undefined,
+      model: typeof item.model === 'string' ? item.model : undefined,
+      reasoningEffort: parseReasoningEffort(item.reasoningEffort),
+      senderThreadId:
+        typeof item.senderThreadId === 'string' ? item.senderThreadId : undefined,
     };
   }
 
@@ -819,6 +834,8 @@ function parseSubagentActivityKind(value: unknown): CodexSubagentActivityKind | 
   switch (value) {
     case 'started':
     case 'interacted':
+    case 'completed':
+    case 'errored':
     case 'interrupted':
       return value;
     default:

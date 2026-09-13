@@ -577,6 +577,101 @@ describe('codex protocol service', () => {
     });
   });
 
+  it('parses subagent activity terminal states and metadata', () => {
+    const events = collectEvents(createState(), [
+      {
+        method: 'item/started',
+        params: {
+          item: {
+            id: 'activity-1',
+            type: 'subAgentActivity',
+            kind: 'started',
+            agentThreadId: 'thread-child',
+            senderThreadId: 'thread-1',
+            agentPath: '/root/security_review',
+            prompt: 'Audit the auth boundary.',
+            model: 'gpt-5.4',
+            reasoningEffort: 'high',
+          },
+        },
+      },
+      {
+        method: 'item/completed',
+        params: {
+          item: {
+            id: 'activity-1',
+            type: 'subAgentActivity',
+            kind: 'completed',
+            agentThreadId: 'thread-child',
+            senderThreadId: 'thread-1',
+            message: 'Found the missing event handler.',
+            model: 'gpt-5.4',
+          },
+        },
+      },
+      {
+        method: 'item/completed',
+        params: {
+          item: {
+            id: 'activity-2',
+            type: 'subAgentActivity',
+            kind: 'errored',
+            agentThreadId: 'thread-child-2',
+            senderThreadId: 'thread-1',
+            message: 'Connection reset during file read.',
+          },
+        },
+      },
+    ]);
+
+    expect(events).toHaveLength(3);
+    expect(events[0]).toMatchObject({
+      type: 'subagent_update',
+      subagent: {
+        id: 'activity-1',
+        kind: 'activity',
+        activityKind: 'started',
+        agentThreadId: 'thread-child',
+        senderThreadId: 'thread-1',
+        agentPath: '/root/security_review',
+        prompt: 'Audit the auth boundary.',
+        model: 'gpt-5.4',
+        reasoningEffort: 'high',
+        agents: [{ threadId: 'thread-child', status: 'running' }],
+      },
+    });
+    expect(events[1]).toMatchObject({
+      type: 'subagent_update',
+      subagent: {
+        id: 'activity-1',
+        kind: 'activity',
+        activityKind: 'completed',
+        agents: [
+          {
+            threadId: 'thread-child',
+            status: 'completed',
+            message: 'Found the missing event handler.',
+          },
+        ],
+      },
+    });
+    expect(events[2]).toMatchObject({
+      type: 'subagent_update',
+      subagent: {
+        id: 'activity-2',
+        kind: 'activity',
+        activityKind: 'errored',
+        agents: [
+          {
+            threadId: 'thread-child-2',
+            status: 'errored',
+            message: 'Connection reset during file read.',
+          },
+        ],
+      },
+    });
+  });
+
   it('surfaces server request resolution so stale blocking cards can be removed', () => {
     const events = collectEvents(createState(), [
       {
