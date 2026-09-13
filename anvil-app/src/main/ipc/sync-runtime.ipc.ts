@@ -56,8 +56,12 @@ export function registerSyncRuntimeHandlers(): void {
       throw new Error('resolve-conflict requires a conflictId');
     }
     const resolution = payload['resolution'];
-    if (resolution !== 'keep-local' && resolution !== 'use-remote') {
-      throw new Error('resolution must be keep-local or use-remote');
+    if (
+      resolution !== 'keep-local' &&
+      resolution !== 'use-remote' &&
+      resolution !== 'save-copy'
+    ) {
+      throw new Error('resolution must be keep-local, use-remote, or save-copy');
     }
     return resolveRuntimeConflict(payload['conflictId'], resolution);
   });

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { DEFAULT_LIMITS, type ContractLimits } from '../../../cloud/contract/version.js';
 import type {
   SyncCursor,
@@ -92,6 +93,10 @@ export interface SyncEngineSnapshot {
   inFlight: boolean;
   pendingCount: number;
   dispatchedCount: number;
+  /** Terminal-rejected outbox rows needing user attention. */
+  rejectedCount: number;
+  /** reset_required is set: the next cycle re-scans from the server. */
+  recovering: boolean;
 }
 
 export class SyncEngineError extends Error {
@@ -171,23 +176,31 @@ export function getSyncEngineSnapshot(scope: SyncScope): SyncEngineSnapshot {
     inFlight: loop?.inFlight != null,
     pendingCount: rows.pending,
     dispatchedCount: rows.dispatched,
+    rejectedCount: rows.rejected,
+    recovering: state?.resetRequired ?? false,
   };
 }
 
-function listMutableCounts(scope: SyncScope): { pending: number; dispatched: number } {
+function listMutableCounts(scope: SyncScope): {
+  pending: number;
+  dispatched: number;
+  rejected: number;
+} {
   const rows = getDb()
     .prepare(
       `SELECT state, COUNT(*) AS count FROM sync_outbox
-       WHERE ${SCOPE_WHERE} AND state IN ('pending', 'dispatched') GROUP BY state`,
+       WHERE ${SCOPE_WHERE} AND state IN ('pending', 'dispatched', 'rejected') GROUP BY state`,
     )
     .all(...scopeParams(scope)) as Array<{ state: string; count: number }>;
   let pending = 0;
   let dispatched = 0;
+  let rejected = 0;
   for (const row of rows) {
     if (row.state === 'pending') pending = row.count;
     if (row.state === 'dispatched') dispatched = row.count;
+    if (row.state === 'rejected') rejected = row.count;
   }
-  return { pending, dispatched };
+  return { pending, dispatched, rejected };
 }
 
 /**
@@ -834,7 +847,7 @@ function activateStagedScan(scope: SyncScope, nextCursor: string): void {
 
 export interface ResolveSyncConflictInput {
   conflictId: string;
-  resolution: Exclude<SyncConflictResolution, 'save-copy'>;
+  resolution: SyncConflictResolution;
   /** When set, the conflict must belong to this scope (ownership check). */
   scope?: SyncScope;
 }
@@ -844,6 +857,8 @@ export interface ResolveSyncConflictInput {
  * recorded local intent redispatches — the pending successor (or the re-queued
  * conflicted row) is rebased and re-hashed at dispatch. Use-remote: replace the
  * local row with the remote payload and drop queued mutations for that entity.
+ * Save-copy: the remote state takes the canonical entity (as use-remote) and
+ * the local version is preserved as a new, separately synced entity.
  */
 export function resolveSyncConflict(input: ResolveSyncConflictInput): void {
   const row = getConflictById(input.conflictId);
@@ -871,7 +886,10 @@ export function resolveSyncConflict(input: ResolveSyncConflictInput): void {
       resolveConflict(row.id, 'keep-local');
       return;
     }
-    if (input.resolution === 'use-remote') {
+    if (input.resolution === 'use-remote' || input.resolution === 'save-copy') {
+      if (input.resolution === 'save-copy') {
+        saveLocalConflictCopy(row);
+      }
       deleteMutableOutboxRows(row.scope, row.entityType, row.entityId);
       if (row.remotePayloadJson === null) {
         deleteBinding(row.scope, row.entityType, row.entityId);
@@ -891,7 +909,7 @@ export function resolveSyncConflict(input: ResolveSyncConflictInput): void {
         });
         writeBindingBase(row.scope, row.entityType, row.entityId, row.remoteRevision ?? 0, row.remotePayloadJson);
       }
-      resolveConflict(row.id, 'use-remote');
+      resolveConflict(row.id, input.resolution);
       return;
     }
     const unhandled: never = input.resolution;
@@ -942,6 +960,45 @@ function getConflictById(id: string): SyncConflict | null {
     resolvedAt: row.resolved_at,
     resolution: row.resolution,
   };
+}
+
+/**
+ * Save-copy resolution: writes the local version out as a brand-new entity
+ * under a fresh id, bound to the same scope and queued as a create so it
+ * syncs to the account like any other local workflow. The caller then applies
+ * the remote state to the canonical entity id.
+ */
+function saveLocalConflictCopy(conflict: SyncConflict): void {
+  if (conflict.entityType !== SYNC_ENTITY_WORKFLOW_TEMPLATE) {
+    throw new SyncEngineError(
+      `save-copy is not supported for entity type ${conflict.entityType}`,
+      { retryable: false },
+    );
+  }
+  const localJson =
+    conflict.localPayloadJson ?? readLocalPayloadJson(conflict.entityType, conflict.entityId);
+  if (localJson === null) {
+    throw new SyncEngineError('save-copy requires a local version to preserve', {
+      retryable: false,
+    });
+  }
+  const payload: unknown = JSON.parse(localJson);
+  if (!isRecord(payload)) {
+    throw new SyncEngineError('Local payload is not an object', { retryable: false });
+  }
+  const copyId = randomUUID();
+  const baseName =
+    typeof payload.name === 'string' && payload.name.length > 0 ? payload.name : 'Workflow';
+  const copyPayload = { ...payload, name: `${baseName} (local copy)` };
+  upsertWorkflowTemplateFromPayload(copyId, copyPayload);
+  upsertBinding(conflict.scope, conflict.entityType, copyId);
+  recordLocalChange(conflict.scope, {
+    entityType: conflict.entityType,
+    entityId: copyId,
+    operation: 'create',
+    payload: copyPayload,
+    schemaVersion: 1,
+  });
 }
 
 /**

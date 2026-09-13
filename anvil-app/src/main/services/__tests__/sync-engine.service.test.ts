@@ -527,4 +527,55 @@ describe('runSyncCycle pull', () => {
     expect(getWorkflowTemplate(saved.id)?.name).toBe('Remote name');
     expect(listOutboxRows(SCOPE).filter((row) => row.state !== 'acknowledged')).toEqual([]);
   });
+
+  it('save-copy applies remote to the canonical entity and preserves local as a new entity', async () => {
+    activateEnrollment();
+    const saved = saveWorkflowTemplate(templateInput('Local name'));
+    upsertBinding(SCOPE, ET, saved.id, {
+      basePayloadJson: canonicalJson(templatePayload(saved.id, 'Local name')),
+      baseRevision: 1,
+    });
+    saveWorkflowTemplate({ ...templateInput('Local dirty') }, saved.id);
+    const remote = templatePayload(saved.id, 'Remote name');
+    await cycle(
+      fakeRpc({
+        pull: () => ({
+          changes: [
+            {
+              entityType: ET,
+              entityId: saved.id,
+              operation: 'update' as const,
+              payload: remote,
+              revision: 9,
+              schemaVersion: 1,
+              sequence: 11,
+            },
+          ],
+          hasMore: false,
+          nextCursor: 'cursor-conflict' as SyncCursor,
+        }),
+      }),
+    );
+    const conflict = listConflicts(SCOPE)[0];
+    resolveSyncConflict({ conflictId: conflict.id, resolution: 'save-copy' });
+
+    // Remote wins the canonical id; conflict is resolved.
+    expect(listConflicts(SCOPE)).toEqual([]);
+    expect(getWorkflowTemplate(saved.id)?.name).toBe('Remote name');
+
+    // The local version survives as a new bound entity queued for create.
+    const creates = listOutboxRows(SCOPE).filter(
+      (row) => row.state === 'pending' && row.operation === 'create' && row.entityId !== saved.id,
+    );
+    expect(creates).toHaveLength(1);
+    const copyId = creates[0].entityId;
+    expect(copyId).not.toBe(saved.id);
+    expect(getWorkflowTemplate(copyId)?.name).toBe('Local dirty (local copy)');
+    expect(getBinding(SCOPE, ET, copyId)).toBeDefined();
+
+    // The copy syncs to the account like any other local create.
+    await cycle(fakeRpc({ push: (params) => acceptPush(params, 2) }));
+    expect(listOutboxRows(SCOPE).filter((row) => row.state === 'pending')).toEqual([]);
+    expect(getBinding(SCOPE, ET, copyId)?.baseRevision).toBe(2);
+  });
 });

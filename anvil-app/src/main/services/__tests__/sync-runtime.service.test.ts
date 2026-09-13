@@ -538,6 +538,29 @@ describe('real auth transport (contract routes over injected fetch)', () => {
     expect(status.auth.state).toBe('signed-out');
     expect(backend.calls.some((c) => c.path === '/v1/session/revoke')).toBe(true);
   });
+
+  it('flags sessionExpired when the backend rejects the refresh credential', async () => {
+    // accessTtlMs 0 → the first requestSync must refresh before cycling.
+    const backend = fakeBackend({ accessTtlMs: 0 });
+    const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
+    initSyncRuntime(dir, { fetchFn: backend.fetchFn });
+    pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: oidcDescriptorFixture() });
+    const minted = await (await backend.fetchFn(
+      'https://backend.example.test/v1/enrollment-codes',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', Authorization: 'Bearer admin-token' },
+        body: JSON.stringify({ accountId: 'account-1' }),
+      },
+    )).json() as { code: string };
+    const snapshot = await enrollWithEnrollmentCode(minted.code);
+    enableSync();
+    // Another device revoked this session server-side.
+    backend.sessions.delete(snapshot.enrollmentId ?? '');
+    expect(getRuntimeStatus().sessionExpired).toBe(false);
+    await expect(requestSync()).rejects.toThrow();
+    expect(getRuntimeStatus().sessionExpired).toBe(true);
+  });
 });
 
 /** Minimal ws-shaped fake capturing listeners so tests can emit frames. */

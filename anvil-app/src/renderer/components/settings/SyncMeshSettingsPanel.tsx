@@ -18,6 +18,7 @@ import {
 } from '../../../shared/sync-backend';
 import type {
   SyncAdoptionPreviewItem,
+  SyncConflictResolutionChoice,
   SyncConflictView,
   SyncIssuedEnrollmentCode,
   SyncRuntimeStatus,
@@ -26,6 +27,22 @@ import { copyTextToClipboard } from '../../utils/clipboard';
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Compact one-line summary of a synced workflow payload for conflict compare. */
+function summarizeConflictPayload(json: string | null): string | null {
+  if (json === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(json);
+    if (typeof parsed !== 'object' || parsed === null) return '(unreadable payload)';
+    const record = parsed as Record<string, unknown>;
+    const name = typeof record.name === 'string' ? record.name : '(unnamed)';
+    const nodes = Array.isArray(record.nodes) ? record.nodes.length : 0;
+    const edges = Array.isArray(record.edges) ? record.edges.length : 0;
+    return `${name} — ${nodes} step${nodes === 1 ? '' : 's'}, ${edges} edge${edges === 1 ? '' : 's'}`;
+  } catch {
+    return '(unreadable payload)';
+  }
 }
 
 function modeDescription(mode: SyncBackendConnectionMode): string {
@@ -220,7 +237,7 @@ export function SyncMeshSettingsPanel(): ReactNode {
 
   const handleResolve = async (
     conflictId: string,
-    resolution: 'keep-local' | 'use-remote',
+    resolution: SyncConflictResolutionChoice,
   ): Promise<void> => {
     setError(null);
     try {
@@ -583,6 +600,22 @@ export function SyncMeshSettingsPanel(): ReactNode {
             ? `Sync is on. ${runtime.pendingCount} pending · last pull ${runtime.lastPullAt ?? 'never'}`
             : 'Sync is off until you enable it.'}
         </p>
+        {runtime?.syncEnabled === true && runtime.rejectedCount > 0 && (
+          <p className="text-xs text-warning">
+            {runtime.rejectedCount} change{runtime.rejectedCount === 1 ? '' : 's'} rejected by the
+            backend — resolve any related conflict, then edit the template again to re-queue it.
+          </p>
+        )}
+        {runtime?.recovering === true && (
+          <p className="text-xs text-warning">
+            Dataset was reset server-side; rescanning and rebuilding local state.
+          </p>
+        )}
+        {runtime?.sessionExpired === true && (
+          <p className="text-xs text-error">
+            This device's session was revoked or expired. Sign in again to resume sync.
+          </p>
+        )}
         {runtime?.syncEnabled === true && (
           <p className="text-xs text-text-tertiary">
             {runtime.connectionState === 'live'
@@ -604,7 +637,10 @@ export function SyncMeshSettingsPanel(): ReactNode {
       </Panel>
 
       {conflicts.length > 0 && (
-        <Panel title="Conflicts" description="Both devices edited the same template. Pick a side.">
+        <Panel
+          title="Conflicts"
+          description="Both devices touched the same template. Compare the versions, then pick a side — or keep both."
+        >
           <ul className="space-y-3">
             {conflicts.map((conflict) => (
               <li key={conflict.id} className="rounded-md border border-border p-3">
@@ -612,9 +648,25 @@ export function SyncMeshSettingsPanel(): ReactNode {
                   {conflict.localLabel ?? conflict.entityId}
                 </p>
                 <p className="text-xs text-text-tertiary">
-                  Local: {conflict.localLabel ?? 'unknown'} · Remote:{' '}
-                  {conflict.remoteLabel ?? 'unknown'}
+                  {conflict.kind === 'edit-delete'
+                    ? 'One side edited while the other deleted it — this needs an explicit choice.'
+                    : 'Both sides edited the same entity.'}
                 </p>
+                <details className="mt-2">
+                  <summary className="cursor-pointer text-xs text-text-tertiary hover:text-text-secondary">
+                    Compare versions
+                  </summary>
+                  <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+                    <dt className="text-text-tertiary">Local</dt>
+                    <dd className="text-text-secondary">
+                      {summarizeConflictPayload(conflict.localPayloadJson) ?? 'deleted locally'}
+                    </dd>
+                    <dt className="text-text-tertiary">Remote</dt>
+                    <dd className="text-text-secondary">
+                      {summarizeConflictPayload(conflict.remotePayloadJson) ?? 'deleted remotely'}
+                    </dd>
+                  </dl>
+                </details>
                 <div className="mt-2 flex gap-2">
                   <button
                     type="button"
@@ -629,6 +681,14 @@ export function SyncMeshSettingsPanel(): ReactNode {
                     className="rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary hover:bg-bg-tertiary hover:text-text-primary"
                   >
                     Use remote
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleResolve(conflict.id, 'save-copy')}
+                    title="Apply the remote version and keep your local version as a new template"
+                    className="rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary hover:bg-bg-tertiary hover:text-text-primary"
+                  >
+                    Save a copy
                   </button>
                 </div>
               </li>

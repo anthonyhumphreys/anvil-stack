@@ -36,6 +36,7 @@ import {
   type SyncBackendRecord,
 } from './sync-backend.service.js';
 import {
+  BackendRpcError,
   computeReconnectDelayMs,
   openSocket,
   postAuthRoute,
@@ -48,6 +49,7 @@ import {
   getSyncEngineSnapshot,
   resolveSyncConflict,
   runSyncCycle,
+  SyncEngineError,
   type SyncEngineRpc,
 } from './sync-engine.service.js';
 import {
@@ -76,6 +78,7 @@ let auth: SyncAuthService | null = null;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let lastError: string | null = null;
+let sessionExpired = false;
 let rpcOverride: SyncEngineRpc | undefined;
 /**
  * Live channel state. The socket only accelerates invalidation; the fallback
@@ -142,6 +145,7 @@ export function resetSyncRuntimeForTests(): void {
   teardownLiveChannel();
   auth = null;
   lastError = null;
+  sessionExpired = false;
   rpcOverride = undefined;
   devSpikeEnabled = false;
   fetchOverride = undefined;
@@ -280,7 +284,9 @@ export function spikeEnroll(input: SyncSpikeEnrollInput): SyncAuthPublicSnapshot
     datasetEpoch: SPIKE_DATASET_EPOCH,
     displayName: hostname() || 'Anvil device',
   };
-  return requireAuth().installDeviceSession(session, backend.id);
+  const snapshot = requireAuth().installDeviceSession(session, backend.id);
+  sessionExpired = false;
+  return snapshot;
 }
 
 function requireReviewedBackend(): SyncBackendRecord {
@@ -360,6 +366,7 @@ export async function signInWithOidc(): Promise<SyncAuthPublicSnapshot> {
       enrollAgainst(backend),
       backend.id,
     );
+    sessionExpired = false;
     scheduleSessionRefresh();
     return snapshot;
   } catch (error) {
@@ -376,6 +383,7 @@ export async function enrollWithEnrollmentCode(code: string): Promise<SyncAuthPu
   }
   runtimeGeneration += 1;
   const snapshot = await requireAuth().enrollWithCode(code, enrollAgainst(backend), backend.id);
+  sessionExpired = false;
   scheduleSessionRefresh();
   return snapshot;
 }
@@ -446,12 +454,21 @@ async function runSessionRefresh(): Promise<void> {
       return;
     }
     if (snapshot.state === 'signed-in') {
+      sessionExpired = false;
       scheduleSessionRefresh();
       // The socket authenticates at connect time; rotate it onto the new token.
       reconnectLiveChannel();
+    } else if (snapshot.state === 'signed-out') {
+      // The service wiped the session (e.g. refresh-reuse detection).
+      sessionExpired = true;
     }
   } catch (error) {
     lastError = error instanceof Error ? error.message : String(error);
+    if (error instanceof BackendRpcError && !error.retryable) {
+      // The refresh credential itself was rejected or revoked; polling cannot
+      // recover it — the user must sign in again.
+      sessionExpired = true;
+    }
     // Transient refresh failures retry at the next poll tick's expiry check.
   }
 }
@@ -513,6 +530,7 @@ export async function signOutSync(): Promise<SyncRuntimeStatus> {
   service.signOutLocal();
   disconnectBackend();
   lastError = null;
+  sessionExpired = false;
   return getRuntimeStatus();
 }
 
@@ -526,6 +544,8 @@ export function listConflictViews(): SyncConflictView[] {
     kind: conflict.kind,
     localLabel: payloadLabel(conflict.localPayloadJson),
     remoteLabel: payloadLabel(conflict.remotePayloadJson),
+    localPayloadJson: conflict.localPayloadJson,
+    remotePayloadJson: conflict.remotePayloadJson,
   }));
 }
 
@@ -568,6 +588,9 @@ export function getRuntimeStatus(): SyncRuntimeStatus {
     backendIdentityReviewRequired: backend?.identityReviewRequired ?? false,
     pendingCount: snapshot?.pendingCount ?? 0,
     conflictCount: scope ? listConflicts(scope).length : 0,
+    rejectedCount: snapshot?.rejectedCount ?? 0,
+    recovering: snapshot?.recovering ?? false,
+    sessionExpired,
     lastError,
     lastPushAt: snapshot?.lastPushAt ?? null,
     lastPullAt: snapshot?.lastPullAt ?? null,
@@ -631,6 +654,13 @@ export async function requestSync(): Promise<void> {
     lastError = null;
   } catch (error) {
     lastError = error instanceof Error ? error.message : String(error);
+    if (
+      error instanceof SyncEngineError &&
+      !error.retryable &&
+      error.code === 'unauthenticated'
+    ) {
+      sessionExpired = true;
+    }
     throw error;
   }
 }

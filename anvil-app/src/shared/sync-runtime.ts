@@ -31,7 +31,7 @@ export interface SyncAdoptionPreviewItem {
   name: string;
 }
 
-export type SyncConflictResolutionChoice = 'keep-local' | 'use-remote';
+export type SyncConflictResolutionChoice = 'keep-local' | 'use-remote' | 'save-copy';
 
 export interface SyncConflictView {
   id: string;
@@ -40,6 +40,9 @@ export interface SyncConflictView {
   kind: string;
   localLabel: string | null;
   remoteLabel: string | null;
+  /** Raw entity payloads for the compare affordance; null when that side deleted the entity. */
+  localPayloadJson: string | null;
+  remotePayloadJson: string | null;
 }
 
 export interface SyncRuntimeStatus {
@@ -53,6 +56,12 @@ export interface SyncRuntimeStatus {
   backendIdentityReviewRequired: boolean;
   pendingCount: number;
   conflictCount: number;
+  /** Terminal-rejected changes that need user attention. */
+  rejectedCount: number;
+  /** Dataset was reset server-side; the next cycle re-scans and rebuilds. */
+  recovering: boolean;
+  /** The stored session was revoked or rejected; sign in again to resume. */
+  sessionExpired: boolean;
   lastError: string | null;
   lastPushAt: string | null;
   lastPullAt: string | null;
