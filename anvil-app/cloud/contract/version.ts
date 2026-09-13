@@ -58,3 +58,12 @@ export const LEASE_RENEW_INTERVAL_MS = 30_000;
 
 /** Observer interest lapses after this long without renewal. */
 export const OBSERVER_INTEREST_MS = 90_000;
+
+/**
+ * MESH-01: lifetime of a worker incarnation lease granted by
+ * `worker.connect` and refreshed by worker metadata publishes. A worker
+ * whose last-seen is older than this bound is treated as unavailable;
+ * reconnecting after expiry mints a new incarnation. Sized at three missed
+ * renewals of the attempt-lease cadence.
+ */
+export const WORKER_LEASE_MS = 3 * LEASE_RENEW_INTERVAL_MS;

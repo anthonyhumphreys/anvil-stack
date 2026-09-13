@@ -58,6 +58,32 @@ CREATE TABLE IF NOT EXISTS counters (
   key TEXT PRIMARY KEY,
   value INTEGER NOT NULL
 );
+-- MESH-01 worker lifecycle. One row per enrolled device that has published
+-- a device policy: incarnation/last_seen_at/lease_expires_at stay NULL
+-- until the first worker.connect. policy/capabilities hold JSON contract
+-- documents. revoked_at marks a session-revoked worker; re-publishing the
+-- local policy is the only re-arm path (fresh opt-in, fresh incarnation).
+CREATE TABLE IF NOT EXISTS workers (
+  enrollment_id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  policy TEXT NOT NULL,
+  incarnation TEXT,
+  capabilities TEXT,
+  connected_at INTEGER,
+  last_seen_at INTEGER,
+  lease_expires_at INTEGER,
+  revoked_at INTEGER,
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS worker_replicas (
+  enrollment_id TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  definition_revision TEXT NOT NULL,
+  readiness TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (enrollment_id, workspace_id)
+);
 `;
 
 /** First-dataset epoch for a fresh account object. Fixed for determinism. */

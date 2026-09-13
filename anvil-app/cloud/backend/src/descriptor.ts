@@ -6,8 +6,8 @@ export const SPIKE_DEPLOYMENT_ID = 'spike-0000-0000-0000-backend01demo';
 
 /**
  * Public discovery descriptor. Must satisfy `validateDescriptor` in
- * `../contract/discovery.ts`. The spike advertises `sync/1` only; `mesh/1` is
- * advertised once MESH packets land.
+ * `../contract/discovery.ts`. `sync/1` covers the sync + auth surface;
+ * `mesh/1` is advertised now that MESH-01 worker lifecycle ops are live.
  *
  * authModes advertise only what the deployment actually supports:
  * `enrollment-code` always works (admin- or device-issued), and `oidc-pkce`
@@ -31,7 +31,7 @@ export function buildDescriptor(env?: {
     deploymentId: SPIKE_DEPLOYMENT_ID,
     displayName: 'Anvil Backend Spike (BACKEND-01)',
     protocols: [PROTOCOL],
-    profiles: ['sync/1'],
+    profiles: ['sync/1', 'mesh/1'],
     apiPath: 'v1',
     socketPath: 'v1/connect',
     authModes: oidcConfigured ? ['enrollment-code', 'oidc-pkce'] : ['enrollment-code'],

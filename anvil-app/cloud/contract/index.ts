@@ -8,6 +8,7 @@ export * from './auth';
 export * from './sync';
 export * from './operations';
 export * from './jobs';
+export * from './workers';
 export * from './handoff';
 export * from './socket';
 export * from './artifacts';

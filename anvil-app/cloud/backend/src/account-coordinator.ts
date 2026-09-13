@@ -28,12 +28,30 @@ import {
   type SyncScanPageResult,
   type SyncedChange,
 } from '../../contract/sync';
-import { SOCKET_FRAME_VERSION, type SyncInvalidateFrame } from '../../contract/socket';
+import {
+  SOCKET_FRAME_VERSION,
+  type SocketFrame,
+  type SyncInvalidateFrame,
+  type WorkerAvailableFrame,
+} from '../../contract/socket';
 import type { SyncAccountStats } from '../../contract/auth';
+import {
+  type DevicePolicy,
+  type DevicePolicyPublishResult,
+  type WorkerCapabilities,
+  type WorkerCapabilitiesPublishResult,
+  type WorkerConnectResult,
+  type WorkerDescribeResult,
+  type WorkerReplicaPublishParams,
+  type WorkerReplicaPublishResult,
+  type WorkerReplicaReadiness,
+  type WorkerReplicaSummary,
+} from '../../contract/workers';
 import {
   SOCKET_SUBPROTOCOL,
   DEFAULT_LIMITS,
   SNAPSHOT_LIFETIME_MS,
+  WORKER_LEASE_MS,
 } from '../../contract/version';
 
 interface SocketAttachment {
@@ -108,6 +126,28 @@ interface ScanEntityRow {
   [key: string]: string | number | null;
 }
 
+interface WorkerRow {
+  enrollment_id: string;
+  account_id: string;
+  policy: string;
+  incarnation: string | null;
+  capabilities: string | null;
+  connected_at: number | null;
+  last_seen_at: number | null;
+  lease_expires_at: number | null;
+  revoked_at: number | null;
+  created_at: number;
+  [key: string]: string | number | null;
+}
+
+interface WorkerReplicaRow {
+  workspace_id: string;
+  definition_revision: string;
+  readiness: string;
+  observed_at: string;
+  [key: string]: string | number | null;
+}
+
 interface PushBatchOutcome {
   results: SyncPushItemResult[];
   acceptedWatermark: number | null;
@@ -125,6 +165,14 @@ const SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const SWEEP_CONTINUE_MS = 1_000;
 /** Per-account retained-history budget enforced before accepting changes. */
 const HISTORY_QUOTA_BYTES = 64 * 1024 * 1024;
+/** MESH-01: revoked worker records (+ replicas) are kept this long for audit. */
+const WORKER_AUDIT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+/** Bounds for worker metadata payloads — metadata only, never bulk content. */
+const MAX_ID_FIELD_LENGTH = 128;
+const MAX_POLICY_SOURCES = 100;
+const MAX_CAPABILITY_ENTRIES = 64;
+const MAX_REPLICAS_PER_PUBLISH = 256;
+const MAX_CONCURRENT_JOBS = 64;
 
 function isSocketAttachment(value: unknown): value is SocketAttachment {
   if (!isRecord(value)) {
@@ -199,7 +247,9 @@ export class AccountCoordinator extends DurableObject<Env> {
       return Response.json(stats);
     }
     if (url.pathname === '/internal/revoke-enrollment' && request.method === 'POST') {
-      // Worker-internal: close every socket attached to a revoked enrollment.
+      // Worker-internal: close every socket attached to a revoked enrollment,
+      // and (MESH-01) mark its worker record revoked so worker.* ops reject
+      // until the device re-publishes a local policy (a fresh opt-in).
       const body = (await request.json().catch(() => null)) as {
         enrollmentId?: unknown;
       } | null;
@@ -214,7 +264,13 @@ export class AccountCoordinator extends DurableObject<Env> {
           closed += 1;
         }
       }
-      return Response.json({ closed });
+      const workerRevoked =
+        this.ctx.storage.sql.exec(
+          'UPDATE workers SET revoked_at = ? WHERE enrollment_id = ? AND revoked_at IS NULL',
+          Date.now(),
+          body.enrollmentId,
+        ).rowsWritten > 0;
+      return Response.json({ closed, workerRevoked });
     }
     if (request.headers.get('Upgrade')?.toLowerCase() === 'websocket') {
       return this.acceptClient(request);
@@ -296,6 +352,16 @@ export class AccountCoordinator extends DurableObject<Env> {
           return this.handleScanPage(rpc.requestId, rpc.params);
         case 'sync.scan.finish':
           return this.handleScanFinish(rpc.requestId, rpc.params);
+        case 'device.policy.publish':
+          return this.handleDevicePolicyPublish(auth, rpc.requestId, rpc.params);
+        case 'worker.connect':
+          return await this.handleWorkerConnect(auth, rpc.requestId);
+        case 'worker.describe':
+          return this.handleWorkerDescribe(auth, rpc.requestId);
+        case 'worker.capabilities.publish':
+          return this.handleWorkerCapabilitiesPublish(auth, rpc.requestId, rpc.params);
+        case 'worker.replica.publish':
+          return this.handleWorkerReplicaPublish(auth, rpc.requestId, rpc.params);
         default:
           return rpcErrorResponse(rpc.requestId, 'unsupported-operation');
       }
@@ -848,9 +914,257 @@ export class AccountCoordinator extends DurableObject<Env> {
       epoch: this.readMeta('epoch'),
       watermark,
     };
+    this.emitSocketFrame(frame);
+  }
+
+  /**
+   * Live-frame fanout to this account's attached sockets.
+   * `excludeEnrollmentId` skips the caller's own attachments — mailbox
+   * semantics: a `worker.connect` announcement reaches the account's OTHER
+   * sockets, not the connecting device's. MESH-02's `job.available` fanout
+   * lands here as one call.
+   */
+  private emitSocketFrame(frame: SocketFrame, options?: { excludeEnrollmentId?: string }): void {
     const encoded = JSON.stringify(frame);
     for (const socket of this.ctx.getWebSockets()) {
+      if (options?.excludeEnrollmentId !== undefined) {
+        const attachment = socket.deserializeAttachment();
+        if (
+          isSocketAttachment(attachment) &&
+          attachment.enrollmentId === options.excludeEnrollmentId
+        ) {
+          continue;
+        }
+      }
       socket.send(encoded);
+    }
+  }
+
+  // ---- MESH-01 worker lifecycle --------------------------------------
+  // A device opts in locally via `device.policy.publish`; every worker.*
+  // operation below fails closed unless the stored policy allows jobs.
+
+  /**
+   * Stores the device policy verbatim. Re-publishing over a revoked record
+   * is a fresh local opt-in: it clears `revoked_at` and resets the
+   * incarnation so the next `worker.connect` mints a new one.
+   */
+  private handleDevicePolicyPublish(auth: SpikeAuth, requestId: string, params: unknown): Response {
+    const policy = parseDevicePolicyParams(params);
+    const now = Date.now();
+    this.ctx.storage.sql.exec(
+      `INSERT INTO workers (
+         enrollment_id, account_id, policy, incarnation, capabilities,
+         connected_at, last_seen_at, lease_expires_at, revoked_at, created_at
+       ) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, ?)
+       ON CONFLICT(enrollment_id) DO UPDATE SET
+         account_id = excluded.account_id,
+         policy = excluded.policy,
+         incarnation = CASE WHEN workers.revoked_at IS NOT NULL THEN NULL ELSE workers.incarnation END,
+         connected_at = CASE WHEN workers.revoked_at IS NOT NULL THEN NULL ELSE workers.connected_at END,
+         last_seen_at = CASE WHEN workers.revoked_at IS NOT NULL THEN NULL ELSE workers.last_seen_at END,
+         lease_expires_at = CASE WHEN workers.revoked_at IS NOT NULL THEN NULL ELSE workers.lease_expires_at END,
+         revoked_at = NULL`,
+      auth.enrollmentId,
+      auth.accountId,
+      JSON.stringify(policy),
+      now,
+    );
+    this.bumpCounter('policy_publishes', 1);
+    const result: DevicePolicyPublishResult = {
+      published: true,
+      publishedAt: new Date(now).toISOString(),
+    };
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  /**
+   * Registers or refreshes the caller's worker incarnation. A live lease
+   * (heartbeat reconnect) reuses the stored incarnation; first connect or
+   * an expired lease mints a new UUID. Announces `worker.available` to the
+   * account's other sockets.
+   */
+  private async handleWorkerConnect(auth: SpikeAuth, requestId: string): Promise<Response> {
+    const { row } = this.requireWorker(auth);
+    const now = Date.now();
+    const live = isLeaseLive(row, now);
+    const incarnation = live ? (row.incarnation as string) : crypto.randomUUID();
+    const leaseExpiresAt = now + WORKER_LEASE_MS;
+    if (live) {
+      this.ctx.storage.sql.exec(
+        'UPDATE workers SET last_seen_at = ?, lease_expires_at = ? WHERE enrollment_id = ?',
+        now,
+        leaseExpiresAt,
+        auth.enrollmentId,
+      );
+    } else {
+      this.ctx.storage.sql.exec(
+        `UPDATE workers SET incarnation = ?, connected_at = ?, last_seen_at = ?, lease_expires_at = ?
+         WHERE enrollment_id = ?`,
+        incarnation,
+        now,
+        now,
+        leaseExpiresAt,
+        auth.enrollmentId,
+      );
+    }
+    this.bumpCounter('worker_connects', 1);
+    const frame: WorkerAvailableFrame = {
+      type: 'worker.available',
+      version: SOCKET_FRAME_VERSION,
+      id: crypto.randomUUID(),
+      enrollmentId: auth.enrollmentId,
+      incarnation,
+    };
+    this.emitSocketFrame(frame, { excludeEnrollmentId: auth.enrollmentId });
+    await this.ensureSweepScheduled();
+    const result: WorkerConnectResult = {
+      workerIncarnation: incarnation,
+      leaseExpiresAt: new Date(leaseExpiresAt).toISOString(),
+    };
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  /** The caller's worker record; `available` is derived from lease freshness. */
+  private handleWorkerDescribe(auth: SpikeAuth, requestId: string): Response {
+    const { row, policy } = this.requireWorker(auth);
+    const now = Date.now();
+    const replicas: WorkerReplicaSummary[] = this.ctx.storage.sql
+      .exec<WorkerReplicaRow>(
+        `SELECT workspace_id, definition_revision, readiness, observed_at
+         FROM worker_replicas WHERE enrollment_id = ? ORDER BY workspace_id ASC`,
+        auth.enrollmentId,
+      )
+      .toArray()
+      .map((replica) => {
+        if (!isReplicaReadiness(replica.readiness)) {
+          throw new RpcFailure('unavailable', { reason: 'corrupt-replica-readiness' });
+        }
+        return {
+          workspaceId: replica.workspace_id,
+          definitionRevision: replica.definition_revision,
+          readiness: replica.readiness,
+          observedAt: replica.observed_at,
+        };
+      });
+    const result: WorkerDescribeResult = {
+      enrollmentId: row.enrollment_id,
+      workerIncarnation: row.incarnation,
+      available: isLeaseLive(row, now),
+      policy,
+      capabilities:
+        row.capabilities === null ? null : (JSON.parse(row.capabilities) as WorkerCapabilities),
+      replicas,
+      connectedAt: row.connected_at === null ? null : new Date(row.connected_at).toISOString(),
+      lastSeenAt: row.last_seen_at === null ? null : new Date(row.last_seen_at).toISOString(),
+      leaseExpiresAt:
+        row.lease_expires_at === null ? null : new Date(row.lease_expires_at).toISOString(),
+    };
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  /** Replaces the live incarnation's capability set verbatim. */
+  private handleWorkerCapabilitiesPublish(
+    auth: SpikeAuth,
+    requestId: string,
+    params: unknown,
+  ): Response {
+    // The fail-closed policy gate runs before payload validation: an
+    // unauthorized enrollment learns nothing about param shapes.
+    const { row } = this.requireWorker(auth);
+    const capabilities = parseWorkerCapabilitiesParams(params);
+    const now = Date.now();
+    this.requireLiveIncarnation(row, now);
+    this.ctx.storage.sql.exec(
+      `UPDATE workers SET capabilities = ?, last_seen_at = ?, lease_expires_at = ?
+       WHERE enrollment_id = ?`,
+      JSON.stringify(capabilities),
+      now,
+      now + WORKER_LEASE_MS,
+      auth.enrollmentId,
+    );
+    this.bumpCounter('capability_publishes', 1);
+    const result: WorkerCapabilitiesPublishResult = { published: true };
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  /** Upserts replica summaries keyed by workspaceId; metadata only. */
+  private handleWorkerReplicaPublish(
+    auth: SpikeAuth,
+    requestId: string,
+    params: unknown,
+  ): Response {
+    const { row } = this.requireWorker(auth);
+    const publish = parseReplicaPublishParams(params);
+    const now = Date.now();
+    this.requireLiveIncarnation(row, now);
+    this.ctx.storage.transactionSync(() => {
+      for (const replica of publish.replicas) {
+        this.ctx.storage.sql.exec(
+          `INSERT INTO worker_replicas (
+             enrollment_id, workspace_id, definition_revision, readiness, observed_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(enrollment_id, workspace_id) DO UPDATE SET
+             definition_revision = excluded.definition_revision,
+             readiness = excluded.readiness,
+             observed_at = excluded.observed_at,
+             updated_at = excluded.updated_at`,
+          auth.enrollmentId,
+          replica.workspaceId,
+          replica.definitionRevision,
+          replica.readiness,
+          replica.observedAt,
+          now,
+        );
+      }
+      this.ctx.storage.sql.exec(
+        'UPDATE workers SET last_seen_at = ?, lease_expires_at = ? WHERE enrollment_id = ?',
+        now,
+        now + WORKER_LEASE_MS,
+        auth.enrollmentId,
+      );
+    });
+    this.bumpCounter('replica_publishes', 1);
+    const result: WorkerReplicaPublishResult = { published: true };
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  private readWorker(enrollmentId: string): WorkerRow | null {
+    const rows = this.ctx.storage.sql
+      .exec<WorkerRow>('SELECT * FROM workers WHERE enrollment_id = ?', enrollmentId)
+      .toArray();
+    return rows[0] ?? null;
+  }
+
+  /**
+   * Fail-closed gate for `worker.*` data operations: the calling enrollment
+   * must have published a device policy allowing jobs, and its worker record
+   * must not be revoked. `device.policy.publish` is the bootstrap and is
+   * exempt — any authenticated enrollment may publish its own policy.
+   */
+  private requireWorker(auth: SpikeAuth): { row: WorkerRow; policy: DevicePolicy } {
+    const row = this.readWorker(auth.enrollmentId);
+    if (row === null || row.account_id !== auth.accountId) {
+      throw new RpcFailure('forbidden', { reason: 'worker-policy-required' });
+    }
+    if (row.revoked_at !== null) {
+      throw new RpcFailure('forbidden', { reason: 'worker-revoked' });
+    }
+    const policy = parseStoredDevicePolicy(row.policy);
+    if (policy.worker.allowJobs !== true) {
+      throw new RpcFailure('forbidden', { reason: 'jobs-not-allowed' });
+    }
+    return { row, policy };
+  }
+
+  /**
+   * Capability/replica publications belong to a live incarnation. A stale
+   * lease must be re-established through `worker.connect` first (which mints
+   * a fresh incarnation), so an old process cannot revive dead ownership.
+   */
+  private requireLiveIncarnation(row: WorkerRow, now: number): void {
+    if (!isLeaseLive(row, now)) {
+      throw new RpcFailure('forbidden', { reason: 'worker-not-connected' });
     }
   }
 
@@ -877,12 +1191,15 @@ export class AccountCoordinator extends DurableObject<Env> {
     deletedChanges: number;
     deletedReceipts: number;
     deletedScans: number;
+    deletedWorkers: number;
     continued: boolean;
   }> {
     const cutoff = now - RETENTION_MS;
+    const workerCutoff = now - WORKER_AUDIT_RETENTION_MS;
     let deletedChanges = 0;
     let deletedReceipts = 0;
     let deletedScans = 0;
+    let deletedWorkers = 0;
     let freedBytes = 0;
     let maxDeletedSequence: number | null = null;
     this.ctx.storage.transactionSync(() => {
@@ -935,19 +1252,42 @@ export class AccountCoordinator extends DurableObject<Env> {
         this.ctx.storage.sql.exec('DELETE FROM scans WHERE scan_id = ?', row.scan_id);
         deletedScans += 1;
       }
+      // MESH-01: revoked worker records are audit state; drop the row and its
+      // replica summaries once the 30-day audit window has passed. Stale (not
+      // revoked) incarnations are NOT deleted — availability is derived from
+      // lease freshness at read time, so expiry holds without a timer.
+      const staleWorkers = this.ctx.storage.sql
+        .exec<{ enrollment_id: string }>(
+          `SELECT enrollment_id FROM workers
+           WHERE revoked_at IS NOT NULL AND revoked_at < ? LIMIT ?`,
+          workerCutoff,
+          SWEEP_BATCH_ROWS,
+        )
+        .toArray();
+      for (const row of staleWorkers) {
+        this.ctx.storage.sql.exec(
+          'DELETE FROM worker_replicas WHERE enrollment_id = ?',
+          row.enrollment_id,
+        );
+        this.ctx.storage.sql.exec('DELETE FROM workers WHERE enrollment_id = ?', row.enrollment_id);
+        deletedWorkers += 1;
+      }
       if (freedBytes > 0) {
         this.addHistoryBytes(-freedBytes);
       }
       this.bumpCounter('sweep_changes_deleted', deletedChanges);
       this.bumpCounter('sweep_receipts_deleted', deletedReceipts);
       this.bumpCounter('sweep_scans_deleted', deletedScans);
+      this.bumpCounter('sweep_workers_deleted', deletedWorkers);
     });
     const continued =
-      deletedChanges === SWEEP_BATCH_ROWS || deletedReceipts === SWEEP_BATCH_ROWS;
+      deletedChanges === SWEEP_BATCH_ROWS ||
+      deletedReceipts === SWEEP_BATCH_ROWS ||
+      deletedWorkers === SWEEP_BATCH_ROWS;
     await this.ctx.storage.setAlarm(
       Date.now() + (continued ? SWEEP_CONTINUE_MS : SWEEP_INTERVAL_MS),
     );
-    return { deletedChanges, deletedReceipts, deletedScans, continued };
+    return { deletedChanges, deletedReceipts, deletedScans, deletedWorkers, continued };
   }
 
   private readHistoryBytes(): number {
@@ -1265,4 +1605,188 @@ function compareBaseRevision(
       throw new RpcFailure('malformed-request', { reason: String(exhaustive) });
     }
   }
+}
+
+// ---- MESH-01 worker param/storage parsing ------------------------------
+
+/** An incarnation is live while its lease has not lapsed. */
+function isLeaseLive(row: WorkerRow, now: number): boolean {
+  return row.incarnation !== null && row.lease_expires_at !== null && row.lease_expires_at > now;
+}
+
+function isReplicaReadiness(value: unknown): value is WorkerReplicaReadiness {
+  return value === 'ready' || value === 'cloning' || value === 'error' || value === 'not-ready';
+}
+
+function isBoundedId(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= MAX_ID_FIELD_LENGTH;
+}
+
+function parseOptionalConcurrency(value: unknown, reason: string): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (
+    typeof value !== 'number' ||
+    !Number.isInteger(value) ||
+    value < 1 ||
+    value > MAX_CONCURRENT_JOBS
+  ) {
+    throw new RpcFailure('malformed-request', { reason });
+  }
+  return value;
+}
+
+/**
+ * Validates a `device.policy.publish` payload. The stored document keeps
+ * only the fields the contract defines (unknown keys are dropped so a
+ * client cannot smuggle unbounded metadata into the worker record).
+ */
+function parseDevicePolicyParams(params: unknown): DevicePolicy {
+  if (!isRecord(params)) {
+    throw new RpcFailure('malformed-request', { reason: 'policy-params' });
+  }
+  const worker = params['worker'];
+  if (!isRecord(worker)) {
+    throw new RpcFailure('malformed-request', { reason: 'worker-section-required' });
+  }
+  const allowJobs = worker['allowJobs'];
+  if (typeof allowJobs !== 'boolean') {
+    throw new RpcFailure('malformed-request', { reason: 'allowJobs' });
+  }
+  const sourcesRaw = worker['allowedSources'];
+  let allowedSources: string[] | undefined;
+  if (sourcesRaw !== undefined) {
+    if (!Array.isArray(sourcesRaw) || sourcesRaw.length > MAX_POLICY_SOURCES) {
+      throw new RpcFailure('malformed-request', { reason: 'allowedSources' });
+    }
+    const seen = new Set<string>();
+    allowedSources = [];
+    for (const entry of sourcesRaw) {
+      if (!isBoundedId(entry) || seen.has(entry)) {
+        throw new RpcFailure('malformed-request', { reason: 'allowedSources' });
+      }
+      seen.add(entry);
+      allowedSources.push(entry);
+    }
+  }
+  const maxConcurrentJobs = parseOptionalConcurrency(
+    worker['maxConcurrentJobs'],
+    'maxConcurrentJobs',
+  );
+  return {
+    worker: {
+      allowJobs,
+      ...(allowedSources === undefined ? {} : { allowedSources }),
+      ...(maxConcurrentJobs === undefined ? {} : { maxConcurrentJobs }),
+    },
+  };
+}
+
+/**
+ * Reads a stored policy document. Rows are written only by
+ * parseDevicePolicyParams output; a shape violation means storage
+ * corruption and maps to `unavailable`, not `malformed-request`.
+ */
+function parseStoredDevicePolicy(raw: string): DevicePolicy {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new RpcFailure('unavailable', { reason: 'corrupt-worker-policy' });
+  }
+  if (
+    !isRecord(parsed) ||
+    !isRecord(parsed['worker']) ||
+    typeof parsed['worker']['allowJobs'] !== 'boolean'
+  ) {
+    throw new RpcFailure('unavailable', { reason: 'corrupt-worker-policy' });
+  }
+  return parsed as unknown as DevicePolicy;
+}
+
+function parseWorkerCapabilitiesParams(params: unknown): WorkerCapabilities {
+  if (!isRecord(params)) {
+    throw new RpcFailure('malformed-request', { reason: 'capabilities-params' });
+  }
+  const os = params['os'];
+  const arch = params['arch'];
+  if (!isBoundedId(os)) {
+    throw new RpcFailure('malformed-request', { reason: 'os' });
+  }
+  if (!isBoundedId(arch)) {
+    throw new RpcFailure('malformed-request', { reason: 'arch' });
+  }
+  const memoryMb = params['memoryMb'];
+  if (
+    memoryMb !== undefined &&
+    (typeof memoryMb !== 'number' || !Number.isInteger(memoryMb) || memoryMb < 1)
+  ) {
+    throw new RpcFailure('malformed-request', { reason: 'memoryMb' });
+  }
+  const capabilitiesRaw = params['capabilities'];
+  if (!Array.isArray(capabilitiesRaw) || capabilitiesRaw.length > MAX_CAPABILITY_ENTRIES) {
+    throw new RpcFailure('malformed-request', { reason: 'capabilities' });
+  }
+  const seen = new Set<string>();
+  const capabilities: string[] = [];
+  for (const entry of capabilitiesRaw) {
+    if (!isBoundedId(entry) || seen.has(entry)) {
+      throw new RpcFailure('malformed-request', { reason: 'capabilities' });
+    }
+    seen.add(entry);
+    capabilities.push(entry);
+  }
+  const maxConcurrentJobs = parseOptionalConcurrency(
+    params['maxConcurrentJobs'],
+    'maxConcurrentJobs',
+  );
+  return {
+    os,
+    arch,
+    ...(memoryMb === undefined ? {} : { memoryMb }),
+    capabilities,
+    ...(maxConcurrentJobs === undefined ? {} : { maxConcurrentJobs }),
+  };
+}
+
+function parseReplicaPublishParams(params: unknown): WorkerReplicaPublishParams {
+  if (!isRecord(params) || !Array.isArray(params['replicas'])) {
+    throw new RpcFailure('malformed-request', { reason: 'replicas-required' });
+  }
+  if (params['replicas'].length > MAX_REPLICAS_PER_PUBLISH) {
+    throw new RpcFailure('payload-too-large', {
+      limit: MAX_REPLICAS_PER_PUBLISH,
+      actual: params['replicas'].length,
+    });
+  }
+  const replicas: WorkerReplicaSummary[] = [];
+  const seen = new Set<string>();
+  for (const entry of params['replicas']) {
+    if (!isRecord(entry)) {
+      throw new RpcFailure('malformed-request', { reason: 'replica-object' });
+    }
+    const workspaceId = entry['workspaceId'];
+    const definitionRevision = entry['definitionRevision'];
+    const readiness = entry['readiness'];
+    const observedAt = entry['observedAt'];
+    if (!isBoundedId(workspaceId)) {
+      throw new RpcFailure('malformed-request', { reason: 'workspaceId' });
+    }
+    if (seen.has(workspaceId)) {
+      throw new RpcFailure('malformed-request', { reason: 'replica-duplicate' });
+    }
+    if (!isBoundedId(definitionRevision)) {
+      throw new RpcFailure('malformed-request', { reason: 'definitionRevision' });
+    }
+    if (!isReplicaReadiness(readiness)) {
+      throw new RpcFailure('malformed-request', { reason: 'readiness' });
+    }
+    if (typeof observedAt !== 'string' || Number.isNaN(Date.parse(observedAt))) {
+      throw new RpcFailure('malformed-request', { reason: 'observedAt' });
+    }
+    seen.add(workspaceId);
+    replicas.push({ workspaceId, definitionRevision, readiness, observedAt });
+  }
+  return { replicas };
 }

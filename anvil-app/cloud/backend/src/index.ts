@@ -214,7 +214,15 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
     case 'sync.pull':
     case 'sync.scan.begin':
     case 'sync.scan.page':
-    case 'sync.scan.finish': {
+    case 'sync.scan.finish':
+    // MESH-01 worker lifecycle. device.policy.publish is the local opt-in
+    // bootstrap; the account object enforces the fail-closed policy gate on
+    // every worker.* operation.
+    case 'device.policy.publish':
+    case 'worker.connect':
+    case 'worker.describe':
+    case 'worker.capabilities.publish':
+    case 'worker.replica.publish': {
       return forwardToAccount(env, auth, {
         method: 'POST',
         headers: new Headers(request.headers),
