@@ -663,3 +663,73 @@ backend 86/86, tsc + eslint clean.
 Remaining: `device.list|rename|revoke`, `account.delete*`,
 `data.export|import.*`, `handoff.*`, FLOW-01/02/03, PLACE-01, BYOB-02,
 IAC-02, LAUNCH-01.
+
+## SESSION-03 — exact Git checkpoint + ownership handoff (landed)
+
+Spec §11: single-writer session ownership moves between devices through a
+generation-fenced, checkpoint-bearing handoff. No dual activation across
+crash cases.
+
+Backend (`handoff.create|get|advance|cancel`, mesh/1):
+
+- `mesh_sessions` tracks the authoritative session row (generation +
+  owner enrollment + checkpoint lineage); `handoffs` is the durable
+  handoff record with a unique index enforcing ≤1 non-terminal handoff
+  per session.
+- `handoff.create` is idempotent on handoffId, conflicts on differing
+  session/source/target/generation, and binds the session's current
+  generation + owner on first write.
+- `handoff.advance` walks the strict transition graph; the
+  `source-relinquished-and-checkpointed` step requires a schema-valid
+  `SessionCheckpoint` with exact repository commit pins;
+  `ownership-transferred` performs a generation CAS
+  (`stale-generation` on mismatch) and mints targetGeneration = source+1.
+  Source enrollment authorizes pre-transfer steps; target authorizes
+  post-transfer steps.
+- `handoff.cancel` records `cancelledFrom` so post-transfer cancels
+  stay distinct from pre-transfer rollbacks. 12/12 focused tests
+  (idempotent create, conflicting reuse, authz per side, stale
+  generation, checkpoint validation, single-active invariant,
+  pre/post-transfer cancel, terminal-state rejection).
+
+Desktop:
+
+- `mesh-ownership.service.ts` — leaf module owning the
+  `mesh_session_ownership` mirror (schema 74). `assertSessionTurnAllowed`
+  fails closed when the session is locally relinquished;
+  `codex-session.service.sendMessage` consults it so a relinquished
+  session refuses new turns even while the provider process is alive.
+- `mesh-handoff.service.ts` — source orchestrator:
+  `evaluateHandoffReadiness` blocks on dirty trees, untracked inputs,
+  unpushed commits, and unsupported checkouts (submodules/LFS/shallow
+  via `detectUnsupportedCheckout`) with remediation text, all BEFORE
+  any backend call. `initiateHandoff` journals each transition to
+  `mesh_handoff_journal` durably before the RPC, mirrors the local
+  relinquish at `source-relinquished-and-checkpointed`, and on
+  pre-transfer failure cancels the backend record AND restores local
+  ownership (fresh generation on resume per spec). `captureSessionCheckpoint`
+  pins exact HEADs + a bounded message tail + provider/model/summary.
+  `reconcileHandoffsOnBoot` resolves interrupted handoffs: a
+  pre-transfer cancel restores ownership; post-transfer states keep the
+  relinquish (target owns recovery).
+- Target side lives in `executeStartSession`: when inputs carry a
+  `handoffId` the worker fetches the record, verifies it targets this
+  enrollment and sits at `ownership-transferred` (else
+  `handoff-not-transferred`), advances to `target-activating`, renders
+  a summary-continuation prompt from the checkpoint, runs the provider
+  turn, then advances to `completed` (or `failed` — target keeps
+  ownership for recovery) and writes the local ownership mirror at
+  targetGeneration.
+
+Coverage: 10 handoff-service tests (gate semantics, readiness
+blockers with remediation, full create→transfer drive with durable
+markers, pre-transfer failure rollback, boot reconciliation both ways,
+exact-commit checkpoint capture) + 3 worker tests (activation
+happy-path incl. journal ordering + ownership write, not-transferred
+refusal without spawn, failed-turn → handoff.failed). App suite
+162 files / 1109 tests, backend 98/98, acceptance gate 7/7, tsc +
+eslint clean.
+
+Remaining: `device.list|rename|revoke`, `account.delete*`,
+`data.export|import.*`, FLOW-01/02/03, PLACE-01, BYOB-02, IAC-02,
+LAUNCH-01.

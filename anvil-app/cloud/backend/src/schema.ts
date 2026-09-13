@@ -236,6 +236,41 @@ CREATE INDEX IF NOT EXISTS idx_artifacts_expiry ON artifacts (state, expires_at)
 -- Orphaned-reservation sweep (reserved past upload_expires_at).
 CREATE INDEX IF NOT EXISTS idx_artifacts_upload_expiry
   ON artifacts (state, upload_expires_at);
+-- SESSION-03 session-generation authority (spec §11): a logical session
+-- records its current execution generation and owning enrollment. Only the
+-- owner of the current generation may accept a new remote turn; ownership
+-- moves once, via the handoff transfer CAS. The first handoff.create seen
+-- for a session binds its asserted (generation, owner).
+CREATE TABLE IF NOT EXISTS mesh_sessions (
+  session_id TEXT PRIMARY KEY,
+  generation INTEGER NOT NULL,
+  owner_enrollment_id TEXT NOT NULL,
+  checkpoint_lineage TEXT NOT NULL DEFAULT '[]',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+-- SESSION-03 handoff state machine (contract handoff.ts): at most one
+-- in-flight handoff per session; handoff_id is the idempotency key.
+-- checkpoint_json carries the bounded SessionCheckpoint written when the
+-- source relinquishes; cancelled_from preserves the pre/post-transfer
+-- boundary so a cancel can resume the proven-stopped side correctly.
+CREATE TABLE IF NOT EXISTS handoffs (
+  handoff_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  state TEXT NOT NULL,
+  source_enrollment_id TEXT NOT NULL,
+  target_enrollment_id TEXT NOT NULL,
+  source_generation INTEGER NOT NULL,
+  target_generation INTEGER,
+  checkpoint_json TEXT,
+  cancelled_from TEXT,
+  cancel_reason TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_handoffs_session ON handoffs (session_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_handoffs_active_session
+  ON handoffs (session_id) WHERE state NOT IN ('completed', 'cancelled', 'failed');
 `;
 
 /** First-dataset epoch for a fresh account object. Fixed for determinism. */

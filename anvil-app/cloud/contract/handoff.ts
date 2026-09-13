@@ -65,3 +65,82 @@ export const HANDOFF_TRANSITIONS: Record<HandoffState, readonly HandoffState[]> 
 export function canAdvanceHandoff(from: HandoffState, to: HandoffState): boolean {
   return HANDOFF_TRANSITIONS[from].includes(to);
 }
+
+// ---- RPC surface -----------------------------------------------------------
+
+/**
+ * `handoff.create` (user): opens the transfer of `sessionId` from source to
+ * target. `handoffId` is the idempotency key — a repeated create with the
+ * same session/source/target/generation returns the existing row; a reuse
+ * with different parameters conflicts. `sourceGeneration` asserts the
+ * generation the source currently holds; the first create seen for a
+ * session binds that generation to the source enrollment.
+ */
+export interface HandoffCreateParams {
+  handoffId: string;
+  sessionId: string;
+  sourceEnrollmentId: string;
+  targetEnrollmentId: string;
+  sourceGeneration: number;
+}
+
+export interface HandoffGetParams {
+  handoffId: string;
+}
+
+/**
+ * `handoff.advance` (either, enrollment-checked per transition): CAS on the
+ * `from` state honoring HANDOFF_TRANSITIONS. Advancing to
+ * `source-relinquished-and-checkpointed` requires `checkpoint`; advancing to
+ * `ownership-transferred` performs the session generation CAS that makes the
+ * target the sole owner (failure surfaces as `stale-generation`).
+ */
+export interface HandoffAdvanceParams {
+  handoffId: string;
+  from: HandoffState;
+  to: HandoffState;
+  checkpoint?: SessionCheckpoint;
+}
+
+export interface HandoffCancelParams {
+  handoffId: string;
+  reason?: string;
+}
+
+/** Durable handoff row as returned by handoff.get/create/advance/cancel. */
+export interface HandoffRecord {
+  id: string;
+  sessionId: string;
+  state: HandoffState;
+  sourceEnrollmentId: string;
+  targetEnrollmentId: string;
+  sourceGeneration: number;
+  /** Set once ownership-transferred; the generation the target now owns. */
+  targetGeneration: number | null;
+  checkpoint: SessionCheckpoint | null;
+  /**
+   * State the handoff was cancelled from (null while uncancelled). Pre-
+   * transfer states mean the source may resume under its still-valid
+   * ownership; post-transfer states mean the target owns recovery.
+   */
+  cancelledFrom: HandoffState | null;
+  cancelReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface HandoffCreateResult {
+  handoff: HandoffRecord;
+}
+
+export interface HandoffGetResult {
+  handoff: HandoffRecord;
+}
+
+export interface HandoffAdvanceResult {
+  handoff: HandoffRecord;
+}
+
+export interface HandoffCancelResult {
+  handoff: HandoffRecord;
+}

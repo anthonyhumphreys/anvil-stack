@@ -84,6 +84,17 @@ import {
   type ArtifactState,
 } from '../../contract/artifacts';
 import {
+  canAdvanceHandoff,
+  HANDOFF_TRANSITIONS,
+  type HandoffAdvanceResult,
+  type HandoffCancelResult,
+  type HandoffCreateResult,
+  type HandoffGetResult,
+  type HandoffRecord,
+  type HandoffState,
+  type SessionCheckpoint,
+} from '../../contract/handoff';
+import {
   SAME_ACCOUNT_SOURCE,
   type DevicePolicy,
   type DevicePolicyPublishResult,
@@ -317,6 +328,32 @@ interface ArtifactRow {
   [key: string]: string | number | null;
 }
 
+interface MeshSessionRow {
+  session_id: string;
+  generation: number;
+  owner_enrollment_id: string;
+  checkpoint_lineage: string;
+  created_at: number;
+  updated_at: number;
+  [key: string]: string | number | null;
+}
+
+interface HandoffRow {
+  handoff_id: string;
+  session_id: string;
+  state: string;
+  source_enrollment_id: string;
+  target_enrollment_id: string;
+  source_generation: number;
+  target_generation: number | null;
+  checkpoint_json: string | null;
+  cancelled_from: string | null;
+  cancel_reason: string | null;
+  created_at: number;
+  updated_at: number;
+  [key: string]: string | number | null;
+}
+
 /**
  * A socket frame derived from a journaled event row, queued inside the
  * running transaction and delivered to subscribers only after commit.
@@ -398,6 +435,13 @@ const MAX_SUBSCRIPTIONS_PER_SOCKET = 8;
 const JOB_EVENT_BUDGET_BYTES = 1024 * 1024;
 const EVENT_PULL_DEFAULT_LIMIT = 100;
 const EVENT_PULL_MAX_LIMIT = 256;
+// ---- SESSION-03 constants -------------------------------------------------
+/**
+ * SessionCheckpoint JSON cap on the handoff row. Larger provider checkpoint
+ * packages belong in R2 and are referenced through artifactRefs (spec §10:
+ * R2 for recoverable evidence, not the only copy).
+ */
+const MAX_CHECKPOINT_BYTES = 256 * 1024;
 /** Bounded replay on (re)subscribe; deeper history goes through event.pull. */
 const SUBSCRIBE_REPLAY_READ = 512;
 const SUBSCRIBE_REPLAY_SEND = 128;
@@ -1120,6 +1164,17 @@ export class AccountCoordinator extends DurableObject<Env> {
           return this.handleArtifactList(auth, rpc.requestId, rpc.params);
         case 'artifact.delete':
           return await this.handleArtifactDelete(auth, rpc.requestId, rpc.params);
+        // SESSION-03: generation-fenced session ownership transfer. The
+        // handoff row is the state authority; the mesh_sessions row is the
+        // generation authority — ownership moves once, by CAS.
+        case 'handoff.create':
+          return this.handleHandoffCreate(auth, rpc.requestId, rpc.params);
+        case 'handoff.get':
+          return this.handleHandoffGet(auth, rpc.requestId, rpc.params);
+        case 'handoff.advance':
+          return this.handleHandoffAdvance(auth, rpc.requestId, rpc.params);
+        case 'handoff.cancel':
+          return this.handleHandoffCancel(auth, rpc.requestId, rpc.params);
         default:
           return rpcErrorResponse(rpc.requestId, 'unsupported-operation');
       }
@@ -1615,6 +1670,17 @@ export class AccountCoordinator extends DurableObject<Env> {
         enrollmentId,
       )
       .one();
+  }
+
+  private readEnrollmentOrNull(enrollmentId: string): EnrollmentRow | null {
+    return (
+      this.ctx.storage.sql
+        .exec<EnrollmentRow>(
+          'SELECT high_water, account_id FROM enrollments WHERE enrollment_id = ?',
+          enrollmentId,
+        )
+        .toArray()[0] ?? null
+    );
   }
 
   private readEntity(entityType: string, entityId: string): EntityRow | null {
@@ -4488,6 +4554,355 @@ export class AccountCoordinator extends DurableObject<Env> {
     return new Response(obj.body, { headers });
   }
 
+  // ---- SESSION-03 handoff ---------------------------------------------------
+
+  /**
+   * `handoff.create`: opens the transfer and binds the session's generation
+   * authority on first sight. Idempotent on handoffId — a replayed create
+   * with identical parameters returns the live row; a reuse with different
+   * parameters conflicts, mirroring job.create's request-id rule.
+   */
+  private handleHandoffCreate(
+    auth: SpikeAuth,
+    requestId: string,
+    params: unknown,
+  ): Response {
+    const create = parseHandoffCreateParams(params);
+    const result = this.commit((): HandoffCreateResult => {
+      this.assertNotRevoked(auth);
+      this.provisionEnrollment(auth);
+      const existing = this.readHandoff(create.handoffId);
+      if (existing !== null) {
+        if (
+          existing.session_id !== create.sessionId ||
+          existing.source_enrollment_id !== create.sourceEnrollmentId ||
+          existing.target_enrollment_id !== create.targetEnrollmentId ||
+          existing.source_generation !== create.sourceGeneration
+        ) {
+          throw new RpcFailure('conflict', {
+            reason: 'handoff-id-reuse',
+            handoffId: create.handoffId,
+          });
+        }
+        return { handoff: this.handoffRecord(existing) };
+      }
+      const target = this.readEnrollmentOrNull(create.targetEnrollmentId);
+      if (target === null || target.account_id !== auth.accountId) {
+        throw new RpcFailure('forbidden', { reason: 'target-not-enrolled' });
+      }
+      const source = this.readEnrollmentOrNull(create.sourceEnrollmentId);
+      if (source === null || source.account_id !== auth.accountId) {
+        throw new RpcFailure('forbidden', { reason: 'source-not-enrolled' });
+      }
+      this.bindSessionOwner(create.sessionId, create.sourceEnrollmentId, create.sourceGeneration);
+      const inFlight = this.ctx.storage.sql
+        .exec<{ handoff_id: string }>(
+          `SELECT handoff_id FROM handoffs
+           WHERE session_id = ?
+             AND state NOT IN ('completed', 'cancelled', 'failed')
+           LIMIT 1`,
+          create.sessionId,
+        )
+        .toArray();
+      if (inFlight.length > 0) {
+        throw new RpcFailure('conflict', {
+          reason: 'handoff-in-flight',
+          handoffId: inFlight[0]!.handoff_id,
+        });
+      }
+      const now = Date.now();
+      this.ctx.storage.sql.exec(
+        `INSERT INTO handoffs (
+           handoff_id, session_id, state, source_enrollment_id,
+           target_enrollment_id, source_generation, target_generation,
+           checkpoint_json, cancelled_from, cancel_reason, created_at, updated_at
+         ) VALUES (?, ?, 'requested', ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)`,
+        create.handoffId,
+        create.sessionId,
+        create.sourceEnrollmentId,
+        create.targetEnrollmentId,
+        create.sourceGeneration,
+        now,
+        now,
+      );
+      this.bumpCounter('handoff_creates', 1);
+      return { handoff: this.handoffRecord(this.readHandoffRequired(create.handoffId)) };
+    });
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  private handleHandoffGet(auth: SpikeAuth, requestId: string, params: unknown): Response {
+    const { handoffId } = parseHandoffIdParams(params);
+    this.commit(() => {
+      this.assertNotRevoked(auth);
+    });
+    const row = this.readHandoff(handoffId);
+    if (row === null) {
+      throw new RpcFailure('not-found', { reason: 'handoff' });
+    }
+    const result: HandoffGetResult = { handoff: this.handoffRecord(row) };
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  /**
+   * `handoff.advance`: CAS on the expected `from` state through the frozen
+   * transition table. Enrollment gates keep each side authoritative for its
+   * own steps: source-only for quiesce/relinquish, target-only for
+   * activate/complete. `ownership-transferred` performs the session
+   * generation CAS — the one moment ownership actually moves.
+   */
+  private handleHandoffAdvance(
+    auth: SpikeAuth,
+    requestId: string,
+    params: unknown,
+  ): Response {
+    const advance = parseHandoffAdvanceParams(params);
+    const result = this.commit((): HandoffAdvanceResult => {
+      this.assertNotRevoked(auth);
+      const row = this.readHandoffRequired(advance.handoffId);
+      if (!isHandoffState(row.state)) {
+        throw new RpcFailure('unavailable', { reason: 'corrupt-handoff-state' });
+      }
+      const from = row.state;
+      if (advance.from !== from) {
+        throw new RpcFailure('conflict', {
+          reason: 'state-mismatch',
+          expected: advance.from,
+          actual: from,
+        });
+      }
+      if (!canAdvanceHandoff(from, advance.to)) {
+        throw new RpcFailure('invalid-transition', { from, to: advance.to });
+      }
+      this.assertHandoffActor(row, advance.to, auth.enrollmentId);
+
+      const now = Date.now();
+      if (advance.to === 'source-relinquished-and-checkpointed') {
+        const checkpoint = advance.checkpoint as SessionCheckpoint;
+        if (
+          checkpoint.sessionId !== row.session_id ||
+          checkpoint.sourceGeneration !== row.source_generation
+        ) {
+          throw new RpcFailure('malformed-request', { reason: 'checkpoint-mismatch' });
+        }
+        const checkpointJson = JSON.stringify(checkpoint);
+        if (utf8ByteLength(checkpointJson) > MAX_CHECKPOINT_BYTES) {
+          throw new RpcFailure('payload-too-large', { limit: MAX_CHECKPOINT_BYTES });
+        }
+        this.ctx.storage.sql.exec(
+          `UPDATE handoffs SET state = ?, checkpoint_json = ?, updated_at = ?
+           WHERE handoff_id = ?`,
+          advance.to,
+          checkpointJson,
+          now,
+          advance.handoffId,
+        );
+      } else if (advance.to === 'ownership-transferred') {
+        const targetGeneration = row.source_generation + 1;
+        const moved = this.ctx.storage.sql.exec(
+          `UPDATE mesh_sessions
+           SET generation = ?, owner_enrollment_id = ?,
+               checkpoint_lineage = json_insert(checkpoint_lineage, '$[#]', ?),
+               updated_at = ?
+           WHERE session_id = ? AND generation = ? AND owner_enrollment_id = ?`,
+          targetGeneration,
+          row.target_enrollment_id,
+          row.handoff_id,
+          now,
+          row.session_id,
+          row.source_generation,
+          row.source_enrollment_id,
+        );
+        if (moved.rowsWritten === 0) {
+          // The generation/owner moved since the create bound them — a
+          // parallel handoff or a stale source. Never transfer twice.
+          throw new RpcFailure('stale-generation', {
+            reason: 'ownership-cas-failed',
+            sessionId: row.session_id,
+          });
+        }
+        this.ctx.storage.sql.exec(
+          `UPDATE handoffs SET state = ?, target_generation = ?, updated_at = ?
+           WHERE handoff_id = ?`,
+          advance.to,
+          targetGeneration,
+          now,
+          advance.handoffId,
+        );
+      } else {
+        this.ctx.storage.sql.exec(
+          `UPDATE handoffs SET state = ?, updated_at = ? WHERE handoff_id = ?`,
+          advance.to,
+          now,
+          advance.handoffId,
+        );
+      }
+      this.bumpCounter('handoff_advances', 1);
+      return { handoff: this.handoffRecord(this.readHandoffRequired(advance.handoffId)) };
+    });
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  /**
+   * `handoff.cancel`: terminal → idempotent no-op; non-terminal → cancelled
+   * with `cancelled_from` recording the pre/post-transfer boundary. The
+   * session generation is untouched — after a post-transfer cancel the
+   * target still owns recovery; resuming the source requires a fresh
+   * handoff and generation.
+   */
+  private handleHandoffCancel(
+    auth: SpikeAuth,
+    requestId: string,
+    params: unknown,
+  ): Response {
+    const cancel = parseHandoffCancelParams(params);
+    const result = this.commit((): HandoffCancelResult => {
+      this.assertNotRevoked(auth);
+      const row = this.readHandoffRequired(cancel.handoffId);
+      if (!isHandoffState(row.state)) {
+        throw new RpcFailure('unavailable', { reason: 'corrupt-handoff-state' });
+      }
+      if (row.state === 'completed' || row.state === 'cancelled' || row.state === 'failed') {
+        return { handoff: this.handoffRecord(row) };
+      }
+      if (
+        auth.enrollmentId !== row.source_enrollment_id &&
+        auth.enrollmentId !== row.target_enrollment_id
+      ) {
+        // A third enrolled device may observe, but only a participant cancels.
+        throw new RpcFailure('forbidden', { reason: 'not-handoff-participant' });
+      }
+      this.ctx.storage.sql.exec(
+        `UPDATE handoffs
+         SET state = 'cancelled', cancelled_from = ?, cancel_reason = ?, updated_at = ?
+         WHERE handoff_id = ?`,
+        row.state,
+        cancel.reason ?? null,
+        Date.now(),
+        cancel.handoffId,
+      );
+      this.bumpCounter('handoff_cancels', 1);
+      return { handoff: this.handoffRecord(this.readHandoffRequired(cancel.handoffId)) };
+    });
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  /** Per-transition enrollment authority (spec §11 ownership rules). */
+  private assertHandoffActor(
+    row: HandoffRow,
+    to: HandoffState,
+    enrollmentId: string,
+  ): void {
+    if (to === 'source-quiescing' || to === 'source-relinquished-and-checkpointed') {
+      if (enrollmentId !== row.source_enrollment_id) {
+        throw new RpcFailure('forbidden', { reason: 'not-source-enrollment' });
+      }
+      return;
+    }
+    if (to === 'target-activating' || to === 'completed') {
+      if (enrollmentId !== row.target_enrollment_id) {
+        throw new RpcFailure('forbidden', { reason: 'not-target-enrollment' });
+      }
+      return;
+    }
+    if (to === 'failed') {
+      if (
+        enrollmentId !== row.source_enrollment_id &&
+        enrollmentId !== row.target_enrollment_id
+      ) {
+        throw new RpcFailure('forbidden', { reason: 'not-handoff-participant' });
+      }
+      return;
+    }
+    // 'target-prepared-without-execution' and 'ownership-transferred' are
+    // user-controller steps — any enrollment in the account may drive them.
+  }
+
+  /**
+   * First-sight binding: the first handoff.create for a session pins its
+   * (generation, owner); later creates must assert the same or fail.
+   */
+  private bindSessionOwner(
+    sessionId: string,
+    sourceEnrollmentId: string,
+    sourceGeneration: number,
+  ): void {
+    const row = this.ctx.storage.sql
+      .exec<MeshSessionRow>(
+        'SELECT generation, owner_enrollment_id FROM mesh_sessions WHERE session_id = ?',
+        sessionId,
+      )
+      .toArray()[0];
+    const now = Date.now();
+    if (row === undefined) {
+      this.ctx.storage.sql.exec(
+        `INSERT INTO mesh_sessions
+           (session_id, generation, owner_enrollment_id, checkpoint_lineage, created_at, updated_at)
+         VALUES (?, ?, ?, '[]', ?, ?)`,
+        sessionId,
+        sourceGeneration,
+        sourceEnrollmentId,
+        now,
+        now,
+      );
+      return;
+    }
+    if (row.owner_enrollment_id !== sourceEnrollmentId) {
+      throw new RpcFailure('forbidden', {
+        reason: 'not-generation-owner',
+        owner: row.owner_enrollment_id,
+      });
+    }
+    if (row.generation !== sourceGeneration) {
+      throw new RpcFailure('stale-generation', {
+        reason: 'generation-mismatch',
+        expected: sourceGeneration,
+        actual: row.generation,
+      });
+    }
+  }
+
+  private readHandoff(handoffId: string): HandoffRow | null {
+    return (
+      this.ctx.storage.sql
+        .exec<HandoffRow>('SELECT * FROM handoffs WHERE handoff_id = ?', handoffId)
+        .toArray()[0] ?? null
+    );
+  }
+
+  private readHandoffRequired(handoffId: string): HandoffRow {
+    const row = this.readHandoff(handoffId);
+    if (row === null) {
+      throw new RpcFailure('not-found', { reason: 'handoff' });
+    }
+    return row;
+  }
+
+  private handoffRecord(row: HandoffRow): HandoffRecord {
+    let checkpoint: SessionCheckpoint | null = null;
+    if (row.checkpoint_json !== null) {
+      try {
+        checkpoint = JSON.parse(row.checkpoint_json) as SessionCheckpoint;
+      } catch {
+        throw new RpcFailure('unavailable', { reason: 'corrupt-handoff-checkpoint' });
+      }
+    }
+    return {
+      id: row.handoff_id,
+      sessionId: row.session_id,
+      state: row.state as HandoffState,
+      sourceEnrollmentId: row.source_enrollment_id,
+      targetEnrollmentId: row.target_enrollment_id,
+      sourceGeneration: row.source_generation,
+      targetGeneration: row.target_generation,
+      checkpoint,
+      cancelledFrom: row.cancelled_from as HandoffState | null,
+      cancelReason: row.cancel_reason,
+      createdAt: new Date(row.created_at).toISOString(),
+      updatedAt: new Date(row.updated_at).toISOString(),
+    };
+  }
+
   /** Any revoked worker record makes its enrollment inert on all new ops. */
   private assertNotRevoked(auth: SpikeAuth): void {
     const worker = this.readWorker(auth.enrollmentId);
@@ -6105,5 +6520,163 @@ function parseArtifactListParams(params: unknown): {
     ...(attemptId === undefined ? {} : { attemptId }),
     ...(state === undefined ? {} : { state }),
     limit: limit ?? DEFAULT_ARTIFACT_LIST_LIMIT,
+  };
+}
+
+// ---- SESSION-03 handoff param parsing ---------------------------------------
+
+const HANDOFF_STATES: readonly string[] = Object.keys(HANDOFF_TRANSITIONS);
+
+function isHandoffState(value: unknown): value is HandoffState {
+  return typeof value === 'string' && HANDOFF_STATES.includes(value);
+}
+
+function parseHandoffCreateParams(params: unknown): {
+  handoffId: string;
+  sessionId: string;
+  sourceEnrollmentId: string;
+  targetEnrollmentId: string;
+  sourceGeneration: number;
+} {
+  if (!isRecord(params)) {
+    throw new RpcFailure('malformed-request', { reason: 'handoff-params' });
+  }
+  const handoffId = params['handoffId'];
+  const sessionId = params['sessionId'];
+  const sourceEnrollmentId = params['sourceEnrollmentId'];
+  const targetEnrollmentId = params['targetEnrollmentId'];
+  const sourceGeneration = params['sourceGeneration'];
+  if (!isBoundedId(handoffId)) {
+    throw new RpcFailure('malformed-request', { reason: 'handoffId' });
+  }
+  if (!isBoundedId(sessionId)) {
+    throw new RpcFailure('malformed-request', { reason: 'sessionId' });
+  }
+  if (!isBoundedId(sourceEnrollmentId)) {
+    throw new RpcFailure('malformed-request', { reason: 'sourceEnrollmentId' });
+  }
+  if (!isBoundedId(targetEnrollmentId)) {
+    throw new RpcFailure('malformed-request', { reason: 'targetEnrollmentId' });
+  }
+  if (sourceEnrollmentId === targetEnrollmentId) {
+    throw new RpcFailure('malformed-request', { reason: 'self-handoff' });
+  }
+  if (
+    typeof sourceGeneration !== 'number' ||
+    !Number.isSafeInteger(sourceGeneration) ||
+    sourceGeneration < 1
+  ) {
+    throw new RpcFailure('malformed-request', { reason: 'sourceGeneration' });
+  }
+  return {
+    handoffId,
+    sessionId,
+    sourceEnrollmentId,
+    targetEnrollmentId,
+    sourceGeneration,
+  };
+}
+
+function parseHandoffIdParams(params: unknown): { handoffId: string } {
+  if (!isRecord(params) || !isBoundedId(params['handoffId'])) {
+    throw new RpcFailure('malformed-request', { reason: 'handoffId' });
+  }
+  return { handoffId: params['handoffId'] };
+}
+
+function parseSessionCheckpoint(input: unknown): SessionCheckpoint {
+  if (!isRecord(input)) {
+    throw new RpcFailure('malformed-request', { reason: 'checkpoint' });
+  }
+  const sessionId = input['sessionId'];
+  const schemaVersion = input['schemaVersion'];
+  const sourceGeneration = input['sourceGeneration'];
+  const repositories = input['repositories'];
+  const provider = input['provider'];
+  const model = input['model'];
+  const artifactRefs = input['artifactRefs'];
+  const unresolvedApprovals = input['unresolvedApprovals'];
+  if (!isBoundedId(sessionId)) {
+    throw new RpcFailure('malformed-request', { reason: 'checkpoint.sessionId' });
+  }
+  if (
+    typeof schemaVersion !== 'number' ||
+    !Number.isInteger(schemaVersion) ||
+    schemaVersion < 1
+  ) {
+    throw new RpcFailure('malformed-request', { reason: 'checkpoint.schemaVersion' });
+  }
+  if (
+    typeof sourceGeneration !== 'number' ||
+    !Number.isSafeInteger(sourceGeneration) ||
+    sourceGeneration < 1
+  ) {
+    throw new RpcFailure('malformed-request', { reason: 'checkpoint.sourceGeneration' });
+  }
+  if (!Array.isArray(repositories)) {
+    throw new RpcFailure('malformed-request', { reason: 'checkpoint.repositories' });
+  }
+  for (const repo of repositories) {
+    if (!isRecord(repo) || !isBoundedId(repo['repositoryId']) || !isBoundedId(repo['commit'])) {
+      throw new RpcFailure('malformed-request', { reason: 'checkpoint.repositories' });
+    }
+  }
+  if (!isBoundedId(provider) || !isBoundedId(model)) {
+    throw new RpcFailure('malformed-request', { reason: 'checkpoint.provider' });
+  }
+  if (!Array.isArray(artifactRefs) || !artifactRefs.every((a) => isBoundedId(a))) {
+    throw new RpcFailure('malformed-request', { reason: 'checkpoint.artifactRefs' });
+  }
+  if (!Array.isArray(unresolvedApprovals) || !unresolvedApprovals.every((a) => isBoundedId(a))) {
+    throw new RpcFailure('malformed-request', { reason: 'checkpoint.unresolvedApprovals' });
+  }
+  return input as unknown as SessionCheckpoint;
+}
+
+function parseHandoffAdvanceParams(params: unknown): {
+  handoffId: string;
+  from: HandoffState;
+  to: HandoffState;
+  checkpoint?: SessionCheckpoint;
+} {
+  if (!isRecord(params)) {
+    throw new RpcFailure('malformed-request', { reason: 'advance-params' });
+  }
+  const handoffId = params['handoffId'];
+  const from = params['from'];
+  const to = params['to'];
+  if (!isBoundedId(handoffId)) {
+    throw new RpcFailure('malformed-request', { reason: 'handoffId' });
+  }
+  if (!isHandoffState(from) || !isHandoffState(to)) {
+    throw new RpcFailure('malformed-request', { reason: 'state' });
+  }
+  const checkpointRaw = params['checkpoint'];
+  let checkpoint: SessionCheckpoint | undefined;
+  if (to === 'source-relinquished-and-checkpointed') {
+    if (checkpointRaw === undefined) {
+      throw new RpcFailure('malformed-request', { reason: 'checkpoint-required' });
+    }
+    checkpoint = parseSessionCheckpoint(checkpointRaw);
+  } else if (checkpointRaw !== undefined) {
+    throw new RpcFailure('malformed-request', { reason: 'checkpoint-unexpected' });
+  }
+  return { handoffId, from, to, ...(checkpoint === undefined ? {} : { checkpoint }) };
+}
+
+function parseHandoffCancelParams(params: unknown): {
+  handoffId: string;
+  reason?: string;
+} {
+  if (!isRecord(params) || !isBoundedId(params['handoffId'])) {
+    throw new RpcFailure('malformed-request', { reason: 'handoffId' });
+  }
+  const reason = params['reason'];
+  if (reason !== undefined && (typeof reason !== 'string' || reason.length > 512)) {
+    throw new RpcFailure('malformed-request', { reason: 'reason' });
+  }
+  return {
+    handoffId: params['handoffId'],
+    ...(reason === undefined ? {} : { reason }),
   };
 }

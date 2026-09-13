@@ -285,7 +285,12 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
     case 'artifact.finalize':
     case 'artifact.get':
     case 'artifact.list':
-    case 'artifact.delete': {
+    case 'artifact.delete':
+    // SESSION-03 session ownership handoff.
+    case 'handoff.create':
+    case 'handoff.get':
+    case 'handoff.advance':
+    case 'handoff.cancel': {
       return forwardToAccount(env, auth, {
         method: 'POST',
         headers: new Headers(request.headers),
