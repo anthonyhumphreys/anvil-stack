@@ -5721,6 +5721,7 @@ const JOB_KINDS: readonly string[] = [
   'diagnostic',
   'prepare-workspace',
   'start-session',
+  'code-task',
   'workflow-node',
 ];
 const JOB_STATES: readonly string[] = [

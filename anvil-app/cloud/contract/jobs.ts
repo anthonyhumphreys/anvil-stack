@@ -6,7 +6,12 @@
 // cancellation outcome. `cancelled` is confirmed only after stopping is
 // verified, so `running` never jumps directly to `cancelled`.
 
-export type JobKind = 'diagnostic' | 'prepare-workspace' | 'start-session' | 'workflow-node';
+export type JobKind =
+  | 'diagnostic'
+  | 'prepare-workspace'
+  | 'start-session'
+  | 'code-task'
+  | 'workflow-node';
 
 export type JobState =
   | 'queued'
@@ -256,6 +261,49 @@ export interface JobCancelParams {
 
 export interface JobCancelResult {
   job: JobSummary;
+}
+
+// ---- FLOW-01 attempt result manifest -------------------------------------
+// The durable proof of what a write-capable attempt produced: exact base →
+// result commits per repository, declared verification outcomes, published
+// artifacts, and provenance. Code moves through Git refs — a textual
+// "done" is context, not evidence (spec §455).
+
+export interface ResultManifestRepository {
+  /** Manifest-pinned repository identity (workspace portable id). */
+  repositoryId: string;
+  baseCommit: string;
+  /** Branch tip at finalize time — equals baseCommit when nothing changed. */
+  resultCommit: string;
+  /** The attempt's unique branch in the source checkout's ref namespace. */
+  branch: string;
+  /** resultCommit !== baseCommit, or residue was committed by the executor. */
+  changed: boolean;
+}
+
+export interface ResultManifestVerification {
+  repositoryId: string;
+  command: string;
+  exitCode: number | null;
+  timedOut: boolean;
+  durationMs: number;
+}
+
+export interface AttemptResultManifest {
+  schemaVersion: 1;
+  jobId: string;
+  attemptId: string;
+  repositories: ResultManifestRepository[];
+  verification: ResultManifestVerification[];
+  /** R2 artifact ids this attempt published (evidence bundle etc.). */
+  artifacts: Array<{ artifactId: string; label: string }>;
+  provenance: {
+    workerEnrollmentId: string;
+    workerIncarnation: string;
+    cliVersion: string | null;
+    startedAt: string;
+    completedAt: string;
+  };
 }
 
 // ---- MESH-03 durable event journal + approvals ---------------------------
