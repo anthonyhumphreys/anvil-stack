@@ -36,9 +36,13 @@ import {
   type SyncBackendRecord,
 } from './sync-backend.service.js';
 import {
+  computeReconnectDelayMs,
+  openSocket,
   postAuthRoute,
   rpc as backendRpc,
   shouldAllowLoopbackHttp,
+  type BackendSocket,
+  type WebSocketFactory,
 } from './sync-backend-client.service.js';
 import {
   getSyncEngineSnapshot,
@@ -57,17 +61,31 @@ import {
 import { listWorkflowTemplates } from './workflow.service.js';
 import { getDb } from '../db/database.js';
 
+/** Fallback cadence while the live channel is down. */
 const POLL_MS = 5_000;
+/** Slower safety-net cadence while the live channel is connected. */
+const POLL_LIVE_FALLBACK_MS = 60_000;
 const SPIKE_ACCESS_TTL_MS = 10 * 365 * 24 * 60 * 60 * 1000;
 /** Refresh this far before the access token's stated expiry. */
 const REFRESH_AHEAD_MS = 60_000;
 const REFRESH_MIN_DELAY_MS = 5_000;
+
+export type SyncConnectionState = 'offline' | 'connecting' | 'live';
 
 let auth: SyncAuthService | null = null;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let lastError: string | null = null;
 let rpcOverride: SyncEngineRpc | undefined;
+/**
+ * Live channel state. The socket only accelerates invalidation; the fallback
+ * poll and durable cursors recover anything missed, per the socket contract.
+ */
+let liveSocket: BackendSocket | null = null;
+let liveState: SyncConnectionState = 'offline';
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let reconnectAttempt = 0;
+let createSocketOverride: WebSocketFactory | undefined;
 /**
  * Development fixture gate. `spikeEnroll` exists only for tests and
  * unpackaged development; index.ts passes `!app.isPackaged`.
@@ -91,6 +109,8 @@ export interface SyncRuntimeInitOptions {
   /** Test seams for the OIDC browser/loopback boundary. */
   openExternal?: OpenExternalFn;
   listenLoopback?: ListenLoopbackFn;
+  /** Test seam: replaces the `ws`-backed socket factory for the live channel. */
+  createSocket?: WebSocketFactory;
 }
 
 export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOptions = {}): void {
@@ -102,11 +122,13 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
   });
   devSpikeEnabled = options.devSpikeEnabled === true;
   fetchOverride = options.fetchFn;
+  createSocketOverride = options.createSocket;
   if (auth.getPublicSnapshot().state === 'signed-in') {
     scheduleSessionRefresh();
   }
   if (isSyncEnabled()) {
-    startPolling();
+    connectLiveChannel();
+    armFallbackPoll();
     void requestSync().catch(() => {
       // Last error is stored on the runtime snapshot.
     });
@@ -117,11 +139,13 @@ export function resetSyncRuntimeForTests(): void {
   runtimeGeneration += 1;
   stopPolling();
   clearSessionRefresh();
+  teardownLiveChannel();
   auth = null;
   lastError = null;
   rpcOverride = undefined;
   devSpikeEnabled = false;
   fetchOverride = undefined;
+  createSocketOverride = undefined;
 }
 
 export function setSyncRuntimeRpcForTests(rpc: SyncEngineRpc | undefined): void {
@@ -423,6 +447,8 @@ async function runSessionRefresh(): Promise<void> {
     }
     if (snapshot.state === 'signed-in') {
       scheduleSessionRefresh();
+      // The socket authenticates at connect time; rotate it onto the new token.
+      reconnectLiveChannel();
     }
   } catch (error) {
     lastError = error instanceof Error ? error.message : String(error);
@@ -460,7 +486,8 @@ export function enableSync(): SyncRuntimeStatus {
     state: 'active',
   });
   bindLocalWorkflowTemplates(scope);
-  startPolling();
+  connectLiveChannel();
+  armFallbackPoll();
   // Fire-and-forget kick: a superseded/backoff rejection must not surface as
   // an unhandled rejection; the error is already recorded in `lastError`.
   void requestSync().catch(() => undefined);
@@ -473,6 +500,7 @@ export async function signOutSync(): Promise<SyncRuntimeStatus> {
   runtimeGeneration += 1;
   stopPolling();
   clearSessionRefresh();
+  teardownLiveChannel();
   const backend = pinnedBackend();
   const service = requireAuth();
   if (backend !== null) {
@@ -536,6 +564,7 @@ export function getRuntimeStatus(): SyncRuntimeStatus {
     },
     syncEnabled: isSyncEnabled(),
     devSpikeAvailable: devSpikeEnabled,
+    connectionState: liveState,
     backendIdentityReviewRequired: backend?.identityReviewRequired ?? false,
     pendingCount: snapshot?.pendingCount ?? 0,
     conflictCount: scope ? listConflicts(scope).length : 0,
@@ -609,19 +638,169 @@ export async function requestSync(): Promise<void> {
 export function onBackendDisconnected(): void {
   runtimeGeneration += 1;
   stopPolling();
+  teardownLiveChannel();
 }
 
-function startPolling(): void {
-  if (pollTimer !== null) return;
-  pollTimer = setInterval(() => {
-    void requestSync().catch(() => {
-      // lastError is recorded inside requestSync.
-    });
-  }, POLL_MS);
+/**
+ * OS sleep/wake hook (index.ts wires `powerMonitor.on('resume')` here): the
+ * socket may have died silently while suspended, so reconnect and kick a
+ * catch-up cycle. Generation-fenced inside like any other trigger.
+ */
+export function onSystemResume(): void {
+  if (!isSyncEnabled()) return;
+  connectLiveChannel();
+  void requestSync().catch(() => undefined);
+}
+
+/**
+ * Bounded fallback: the live channel drives prompt sync; this timer only
+ * guarantees eventual progress (and reconnect attempts) when the socket is
+ * down, dropping to a slow safety-net cadence while it is live.
+ */
+function armFallbackPoll(): void {
+  if (pollTimer !== null) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+  pollTimer = setInterval(
+    () => {
+      if (liveState !== 'live') {
+        connectLiveChannel();
+      }
+      void requestSync().catch(() => {
+        // lastError is recorded inside requestSync.
+      });
+    },
+    liveState === 'live' ? POLL_LIVE_FALLBACK_MS : POLL_MS,
+  );
 }
 
 function stopPolling(): void {
   if (pollTimer === null) return;
   clearInterval(pollTimer);
   pollTimer = null;
+}
+
+/**
+ * Opens the live socket for the current backend+session. The socket carries
+ * only acceleration hints (`sync.invalidate`, `auth.expiring`, `gap`); any
+ * frame triggers a generation-fenced `requestSync`, and loss of the channel
+ * schedules a full-jitter reconnect while the fallback poll keeps progress.
+ */
+function connectLiveChannel(): void {
+  if (!isSyncEnabled() || liveSocket !== null) {
+    return;
+  }
+  const backend = getActiveBackend();
+  const token = auth?.getAccessToken() ?? null;
+  if (!backend || backend.identityReviewRequired || token === null) {
+    liveState = 'offline';
+    return;
+  }
+  const paths = resolveBackendPaths(backend.baseUrl, backend.descriptor, {
+    allowLoopbackHttp: shouldAllowLoopbackHttp(backend.baseUrl),
+  });
+  const generation = runtimeGeneration;
+  liveState = 'connecting';
+  let socket: BackendSocket;
+  try {
+    socket = openSocket({ socketUrl: paths.socketUrl }, token, {
+      liveFrameBytes: backend.descriptor.limits?.liveFrameBytes,
+      ...(createSocketOverride === undefined ? {} : { createSocket: createSocketOverride }),
+    });
+  } catch {
+    liveState = 'offline';
+    scheduleLiveReconnect(generation);
+    return;
+  }
+  liveSocket = socket;
+  socket.onFrame((frame) => {
+    if (generation !== runtimeGeneration) {
+      return;
+    }
+    switch (frame.type) {
+      case 'hello':
+        liveState = 'live';
+        reconnectAttempt = 0;
+        armFallbackPoll();
+        // Catch up anything missed while the channel was down.
+        void requestSync().catch(() => undefined);
+        break;
+      case 'sync.invalidate':
+      case 'gap':
+        void requestSync().catch(() => undefined);
+        break;
+      case 'auth.expiring':
+        void runSessionRefresh();
+        break;
+      case 'error':
+        lastError = frame.message;
+        if (frame.retryable) {
+          socket.close();
+        } else {
+          socket.close(1008, 'backend error frame');
+        }
+        break;
+      default:
+        break;
+    }
+  });
+  socket.onClose(() => {
+    onLiveClosed(generation, socket);
+  });
+  socket.onError(() => {
+    // The close event that follows drives the reconnect path.
+  });
+  socket.onProtocolError(() => {
+    // openSocket already closed the transport; the close event drives it.
+  });
+}
+
+function onLiveClosed(generation: number, socket: BackendSocket): void {
+  if (liveSocket !== socket) {
+    return; // stale close event from a replaced socket
+  }
+  liveSocket = null;
+  liveState = 'offline';
+  if (generation !== runtimeGeneration) {
+    return;
+  }
+  armFallbackPoll();
+  scheduleLiveReconnect(generation);
+}
+
+function scheduleLiveReconnect(generation: number): void {
+  if (reconnectTimer !== null || !isSyncEnabled()) {
+    return;
+  }
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    if (generation !== runtimeGeneration) {
+      return;
+    }
+    connectLiveChannel();
+  }, computeReconnectDelayMs(reconnectAttempt));
+  reconnectAttempt += 1;
+}
+
+/** Re-auth the socket after a credential rotation. */
+function reconnectLiveChannel(): void {
+  const socket = liveSocket;
+  liveSocket = null;
+  liveState = 'offline';
+  socket?.close(1000, 'credential rotation');
+  connectLiveChannel();
+}
+
+function teardownLiveChannel(): void {
+  if (reconnectTimer !== null) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  reconnectAttempt = 0;
+  const socket = liveSocket;
+  liveSocket = null;
+  liveState = 'offline';
+  // onLiveClosed ignores this close: liveSocket is already null.
+  socket?.close(1000, 'sync disabled');
 }

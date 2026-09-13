@@ -3,7 +3,7 @@ import { registerChangeReviewHandlers } from './ipc/change-review.ipc.js';
 import { fixPath } from './utils/fix-path.js';
 fixPath();
 
-import { app, BrowserWindow, ipcMain, session } from 'electron';
+import { app, BrowserWindow, ipcMain, powerMonitor, session } from 'electron';
 import { cpSync, existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { initDatabase } from './db/database.js';
@@ -75,7 +75,7 @@ import { isTelemetryEnabled } from './services/settings.service.js';
 import { initializeTelemetry } from './services/telemetry.service.js';
 import { initializeAppUpdater } from './services/app-updater.service.js';
 import { registerExternalLinkHandling } from './services/external-link.service.js';
-import { initSyncRuntime } from './services/sync-runtime.service.js';
+import { initSyncRuntime, onSystemResume } from './services/sync-runtime.service.js';
 
 const brandId = parseBrandFromArgs(process.argv);
 const brand = getBrand(brandId);
@@ -122,6 +122,10 @@ app.setName(
 configureUserDataPath();
 initDatabase(brand.defaultTheme);
 initSyncRuntime(app.getPath('userData'), { devSpikeEnabled: !app.isPackaged });
+// Sleep/wake: the sync socket may have died silently while suspended.
+powerMonitor.on('resume', () => {
+  onSystemResume();
+});
 initializeTelemetry({
   enabled: isTelemetryEnabled(),
   release: `anvil@${app.getVersion()}`,

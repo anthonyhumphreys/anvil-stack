@@ -583,6 +583,15 @@ export function SyncMeshSettingsPanel(): ReactNode {
             ? `Sync is on. ${runtime.pendingCount} pending · last pull ${runtime.lastPullAt ?? 'never'}`
             : 'Sync is off until you enable it.'}
         </p>
+        {runtime?.syncEnabled === true && (
+          <p className="text-xs text-text-tertiary">
+            {runtime.connectionState === 'live'
+              ? 'Live channel connected — changes arrive instantly.'
+              : runtime.connectionState === 'connecting'
+                ? 'Live channel connecting; fallback polling is running.'
+                : 'Live channel offline; fallback polling is running.'}
+          </p>
+        )}
         {runtime?.lastError && <p className="text-xs text-error">{runtime.lastError}</p>}
         <button
           type="button"

@@ -391,6 +391,10 @@ export interface BackendSocket {
   send(data: string): void;
   onFrame(listener: (frame: SocketFrame) => void): () => void;
   onProtocolError(listener: (error: Error) => void): () => void;
+  /** Fires when the underlying transport closes (any code). */
+  onClose(listener: (code: number, reason: string) => void): () => void;
+  /** Fires on transport-level errors; a close event usually follows. */
+  onError(listener: (error: Error) => void): () => void;
 }
 
 /**
@@ -418,6 +422,21 @@ export function openSocket(
   });
   const frameListeners = new Set<(frame: SocketFrame) => void>();
   const protocolErrorListeners = new Set<(error: Error) => void>();
+  const closeListeners = new Set<(code: number, reason: string) => void>();
+  const errorListeners = new Set<(error: Error) => void>();
+  socket.on('close', (...args: Array<unknown>) => {
+    const code = typeof args[0] === 'number' ? args[0] : 1006;
+    const reason = Buffer.isBuffer(args[1]) ? args[1].toString('utf8') : String(args[1] ?? '');
+    for (const listener of closeListeners) {
+      listener(code, reason);
+    }
+  });
+  socket.on('error', (...args: Array<unknown>) => {
+    const error = args[0] instanceof Error ? args[0] : new Error(String(args[0] ?? 'socket error'));
+    for (const listener of errorListeners) {
+      listener(error);
+    }
+  });
   const failProtocol = (message: string): void => {
     const error = new Error(message);
     for (const listener of protocolErrorListeners) {
@@ -469,6 +488,18 @@ export function openSocket(
       protocolErrorListeners.add(listener);
       return () => {
         protocolErrorListeners.delete(listener);
+      };
+    },
+    onClose: (listener: (code: number, reason: string) => void) => {
+      closeListeners.add(listener);
+      return () => {
+        closeListeners.delete(listener);
+      };
+    },
+    onError: (listener: (error: Error) => void) => {
+      errorListeners.add(listener);
+      return () => {
+        errorListeners.delete(listener);
       };
     },
   };

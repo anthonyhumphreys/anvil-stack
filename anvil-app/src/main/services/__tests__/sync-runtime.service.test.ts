@@ -40,6 +40,7 @@ import {
   previewAdoption,
   resetSyncRuntimeForTests,
   requestSync,
+  setSyncRuntimeRpcForTests,
   signInWithOidc,
   signOutSync,
   spikeEnroll,
@@ -51,6 +52,8 @@ import {
   upsertEnrollment,
 } from '../sync-persistence.service';
 import { pinBackend } from '../sync-backend.service';
+import { resetSyncEngineForTests } from '../sync-engine.service';
+import type { BackendWebSocketLike } from '../sync-backend-client.service';
 import { saveWorkflowTemplate } from '../workflow.service';
 import { DESCRIPTOR_VERSION, PROTOCOL } from '../../../../cloud/contract/version';
 
@@ -103,6 +106,7 @@ function node(id: string): WorkflowNode {
 
 beforeEach(() => {
   resetSyncRuntimeForTests();
+  resetSyncEngineForTests();
   db.exec(
     `DELETE FROM sync_outbox; DELETE FROM sync_bindings; DELETE FROM sync_conflicts;
      DELETE FROM sync_state; DELETE FROM device_enrollments; DELETE FROM workflow_templates;
@@ -533,5 +537,166 @@ describe('real auth transport (contract routes over injected fetch)', () => {
     const status = await signOutSync();
     expect(status.auth.state).toBe('signed-out');
     expect(backend.calls.some((c) => c.path === '/v1/session/revoke')).toBe(true);
+  });
+});
+
+/** Minimal ws-shaped fake capturing listeners so tests can emit frames. */
+class FakeSocket implements BackendWebSocketLike {
+  readonly listeners = new Map<string, Array<(...args: unknown[]) => void>>();
+  closedWith: { code?: number; reason?: string } | null = null;
+  sent: string[] = [];
+
+  on(event: string, listener: (...args: unknown[]) => void): void {
+    const list = this.listeners.get(event) ?? [];
+    list.push(listener);
+    this.listeners.set(event, list);
+  }
+  send(data: string): void {
+    this.sent.push(data);
+  }
+  close(code?: number, reason?: string): void {
+    this.closedWith = { code, reason };
+    this.emit('close', code ?? 1000, reason ?? '');
+  }
+  emit(event: string, ...args: unknown[]): void {
+    for (const listener of this.listeners.get(event) ?? []) {
+      listener(...args);
+    }
+  }
+}
+
+function fakeSocketFactory() {
+  const sockets: FakeSocket[] = [];
+  const connections: { url: string; headers: Record<string, string> }[] = [];
+  return {
+    sockets,
+    connections,
+    createSocket: (url: string, _protocols: string[], options: { headers: Record<string, string> }) => {
+      const socket = new FakeSocket();
+      sockets.push(socket);
+      connections.push({ url, headers: options.headers });
+      return socket;
+    },
+  };
+}
+
+/** Per-operation canned answers so a real cycle can run push/scan/pull. */
+function cannedSyncRpc(onCall: () => void) {
+  return (async (_conn: unknown, operation: string) => {
+    onCall();
+    const result =
+      operation === 'sync.push'
+        ? { results: [] }
+        : operation === 'sync.pull'
+          ? { changes: [], nextCursor: '0', hasMore: false }
+          : operation === 'sync.scan.begin'
+            ? {
+                scanId: 'scan-1',
+                watermarkStart: 0,
+                resumeCursor: '0',
+                epoch: SPIKE_DATASET_EPOCH,
+              }
+            : operation === 'sync.scan.page'
+              ? { entities: [], nextCursor: null, done: true }
+              : operation === 'sync.scan.finish'
+                ? {
+                    scanId: 'scan-1',
+                    complete: true,
+                    watermarkEnd: 0,
+                    nextCursor: '0',
+                    epoch: SPIKE_DATASET_EPOCH,
+                  }
+                : {};
+    return { result, serverTime: new Date().toISOString() };
+  }) as never;
+}
+
+describe('live channel', () => {
+  beforeEach(() => {
+    // Fire-and-forget cycles kicked by enableSync must not hit real DNS.
+    setSyncRuntimeRpcForTests(cannedSyncRpc(() => undefined));
+  });
+  afterEach(() => {
+    setSyncRuntimeRpcForTests(undefined);
+  });
+
+  it('opens the socket with the session bearer and flips to live on hello', async () => {
+    const factory = fakeSocketFactory();
+    const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
+    initSyncRuntime(dir, { devSpikeEnabled: true, createSocket: factory.createSocket });
+    pinTestBackend();
+    spikeEnroll({ accountId: 'account-1' });
+    enableSync();
+
+    expect(factory.sockets).toHaveLength(1);
+    expect(factory.connections[0]?.url).toContain('/v1/connect');
+    expect(factory.connections[0]?.headers.Authorization).toMatch(/^Bearer /);
+    expect(getRuntimeStatus().connectionState).toBe('connecting');
+
+    factory.sockets[0]?.emit(
+      'message',
+      JSON.stringify({ type: 'hello', version: 1, id: 'h1', enrollmentId: 'e', profiles: [] }),
+    );
+    expect(getRuntimeStatus().connectionState).toBe('live');
+  });
+
+  it('drives a sync cycle on sync.invalidate frames', async () => {
+    const factory = fakeSocketFactory();
+    const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
+    initSyncRuntime(dir, { devSpikeEnabled: true, createSocket: factory.createSocket });
+    pinTestBackend();
+    spikeEnroll({ accountId: 'account-1' });
+    let calls = 0;
+    setSyncRuntimeRpcForTests(cannedSyncRpc(() => (calls += 1)));
+    enableSync();
+    await vi.waitFor(() => {
+      expect(getRuntimeStatus().lastError).toBeNull();
+      expect(calls).toBeGreaterThan(0);
+    });
+    const before = calls;
+    factory.sockets[0]?.emit(
+      'message',
+      JSON.stringify({ type: 'sync.invalidate', version: 1, id: 'i1' }),
+    );
+    await vi.waitFor(() => expect(calls).toBeGreaterThan(before));
+  });
+
+  it('reconnects with jittered backoff after the socket closes', async () => {
+    vi.useFakeTimers();
+    try {
+      const factory = fakeSocketFactory();
+      const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
+      initSyncRuntime(dir, { devSpikeEnabled: true, createSocket: factory.createSocket });
+      pinTestBackend();
+      spikeEnroll({ accountId: 'account-1' });
+      enableSync();
+      expect(factory.sockets).toHaveLength(1);
+
+      factory.sockets[0]?.emit('close', 1006, 'lost');
+      expect(getRuntimeStatus().connectionState).toBe('offline');
+      await vi.advanceTimersByTimeAsync(35_000);
+      expect(factory.sockets.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('tears the channel down on sign-out and does not reconnect', async () => {
+    vi.useFakeTimers();
+    try {
+      const factory = fakeSocketFactory();
+      const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
+      initSyncRuntime(dir, { devSpikeEnabled: true, createSocket: factory.createSocket });
+      pinTestBackend();
+      spikeEnroll({ accountId: 'account-1' });
+      enableSync();
+      expect(factory.sockets).toHaveLength(1);
+      await signOutSync();
+      expect(factory.sockets[0]?.closedWith).not.toBeNull();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(factory.sockets).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

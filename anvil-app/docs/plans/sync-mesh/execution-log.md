@@ -84,8 +84,29 @@ no injected RPC and no spike auth. Passing evidence:
   default suite stays hermetic. Run it with
   `ANVIL_BACKEND_URL=http://127.0.0.1:8787 pnpm vitest run src/main/services/__tests__/sync-two-profile.acceptance.test.ts`.
 
-Remaining Step 5 items beyond the workflow subset: socket invalidation +
-reconnect wiring, and the wider adoption/conflict UX sweep.
+Remaining Step 5 items beyond the workflow subset: the wider
+adoption/conflict UX sweep (the live-channel half landed next — see below).
+
+### Live channel + bounded fallback polling (same session)
+
+- `sync-backend-client.service.ts`: `BackendSocket` gains `onClose`/`onError`
+  so callers can drive reconnects; frames remain size-bounded and
+  schema-checked, bearer stays in the Authorization header.
+- `sync-runtime.service.ts`: `connectLiveChannel` opens the socket after
+  enable/init and re-auths it after every credential rotation;
+  `sync.invalidate`/`gap` frames trigger fenced `requestSync`,
+  `auth.expiring` triggers early refresh, close schedules a full-jitter
+  `computeReconnectDelayMs` reconnect. The 5s poll is now the down-state
+  fallback; a 60s safety net runs while the socket is live.
+  `onSystemResume` (wired to `powerMonitor.on('resume')` in `index.ts`)
+  reconnects + kicks catch-up after OS sleep. Status gains
+  `connectionState: 'offline' | 'connecting' | 'live'`, surfaced in the
+  settings panel.
+- Tests: 4 live-channel cases (connect+hello, invalidate→sync, jittered
+  reconnect, sign-out teardown) in `sync-runtime.service.test.ts` via an
+  injected socket factory. Full desktop suite: 952 passed — includes a stale
+  `SCHEMA_VERSION` assertion fix (68→69) missed by the repair wave's focused
+  runs.
 
 ### Verification this wave
 

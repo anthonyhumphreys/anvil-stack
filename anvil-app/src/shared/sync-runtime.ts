@@ -47,6 +47,8 @@ export interface SyncRuntimeStatus {
   syncEnabled: boolean;
   /** Spike enrollment is a dev fixture; true only in unpackaged builds. */
   devSpikeAvailable: boolean;
+  /** Live-channel state: the socket accelerates sync; fallback polling always runs. */
+  connectionState: 'offline' | 'connecting' | 'live';
   /** The pinned backend's endpoint or issuer changed; re-review is required. */
   backendIdentityReviewRequired: boolean;
   pendingCount: number;
