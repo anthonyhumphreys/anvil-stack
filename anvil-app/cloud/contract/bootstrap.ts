@@ -14,6 +14,8 @@
 // configuration. Ambient credentials are stripped by default — a recipe
 // can never smuggle a secret through a synced definition.
 
+import { canonicalizeJson } from './sync.js';
+
 export const BOOTSTRAP_RECIPE_SCHEMA = 1;
 
 export type BootstrapPlatform = 'darwin' | 'linux' | 'win32';
@@ -80,25 +82,29 @@ export function canTransitionBootstrapStep(
   return BOOTSTRAP_STEP_TRANSITIONS[from].includes(to);
 }
 
-/**
- * What a recipe digest commits to: recipe content plus the exact inputs
- * it runs against — repository commits and the effective execution
- * policy. The approval record pins this digest so a changed recipe,
- * commit, or policy silently cannot reuse an old approval.
- */
-export interface BootstrapDigestInputs {
-  /** Canonical JSON of the recipe. */
-  recipeCanonical: string;
-  /** repositoryId → resolved commit for every required repo. */
-  repositoryCommits: Readonly<Record<string, string>>;
-  /** Canonical JSON of the target's effective execution policy. */
-  executionPolicyCanonical: string;
-}
-
 /** A single verification check attached to a `verify` step's outcome. */
 export interface BootstrapVerification {
   stepId: string;
   ok: boolean;
   /** Bounded, sanitized evidence — never raw env or credentials. */
   detail: string;
+}
+
+/**
+ * Canonical string the bootstrap digest commits to: recipe content,
+ * exact repository commits, and the effective execution policy. Both
+ * sides hash this with their own sha256 (node:crypto on desktop,
+ * WebCrypto in the worker) — the contract itself stays dependency-free.
+ */
+export function bootstrapDigestInput(input: {
+  recipe: BootstrapRecipe;
+  repositoryCommits: Readonly<Record<string, string>>;
+  executionPolicy: unknown;
+}): string {
+  return canonicalizeJson({
+    schemaVersion: input.recipe.schemaVersion,
+    recipe: input.recipe,
+    repositoryCommits: input.repositoryCommits,
+    executionPolicy: input.executionPolicy,
+  });
 }
