@@ -31,6 +31,11 @@ import { commonParentDir } from './codex-protocol.service.js';
 import { resolveSessionModel } from './codex-session.service.js';
 import { getSettings } from './settings.service.js';
 import { writeSessionOwnership } from './mesh-ownership.service.js';
+import {
+  allocateAttemptWorktrees,
+  finalizeAttemptWorktrees,
+  runVerificationCommand,
+} from './mesh-worktree.service.js';
 import type {
   HandoffAdvanceResult,
   HandoffGetResult,
@@ -59,6 +64,7 @@ import type {
   ApprovalDecision,
   ApprovalRecord,
   AttemptRenewResult,
+  AttemptResultManifest,
   ExecutionAttempt,
   ExecutionManifest,
   JobClaimResult,
@@ -66,6 +72,7 @@ import type {
   JobListResult,
   JobSummary,
   MeshJob,
+  ResultManifestVerification,
 } from '../../../cloud/contract/jobs.js';
 
 export type { MeshWorkerStatus } from '../../shared/sync-runtime.js';
@@ -119,7 +126,12 @@ let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let connectInFlight: Promise<void> | null = null;
 
 const DEFAULT_MAX_CONCURRENT_JOBS = 1;
-const WORKER_CAPABILITIES = ['diagnostic', 'prepare-workspace', 'start-session'];
+const WORKER_CAPABILITIES = [
+  'diagnostic',
+  'prepare-workspace',
+  'start-session',
+  'code-task',
+];
 
 export function configureMeshWorkerContext(provider: () => MeshWorkerContext | null): void {
   contextProvider = provider;
@@ -684,6 +696,7 @@ const EXECUTORS: Record<
   diagnostic: (job, attempt) => executeDiagnostic(job.inputManifest, attempt.id, attempt),
   'prepare-workspace': executePrepareWorkspace,
   'start-session': executeStartSession,
+  'code-task': executeCodeTask,
 };
 
 /** Worker→backend control stream (`streamId: 'control'`) sequence space. */
@@ -1330,6 +1343,291 @@ function renderHandoffContinuationPrompt(
   return parts.join('\n\n');
 }
 
+// ---- FLOW-01: code-task — attempt-scoped worktrees + result manifest ------
+
+/**
+ * `code-task`: one write-capable provider turn executed in a per-attempt
+ * worktree per pinned repository. The source checkouts are never mutated
+ * — the attempt gets `mesh/attempt/<attemptId>` branches created at the
+ * pinned commits, the provider turn runs with cwd inside the attempt
+ * trees, residual changes are committed onto the attempt branch, and the
+ * durable output is a result manifest (base→result commits, declared
+ * verification outcomes, provenance) — not a textual claim (spec §455).
+ *
+ * Failure leaves every allocated worktree in place, journaled — preserved
+ * evidence a retry does not touch (the retry's attempt id names its own
+ * trees).
+ */
+async function executeCodeTask(
+  job: MeshJob,
+  attempt: ExecutionAttempt,
+): Promise<Record<string, unknown>> {
+  const attemptId = attempt.id;
+  const manifest = job.inputManifest;
+  const startedAt = new Date().toISOString();
+  const workspaceId = manifest.inputs['workspaceId'];
+  const prompt = manifest.inputs['prompt'];
+  if (typeof workspaceId !== 'string' || workspaceId.length === 0) {
+    throw new Error('code-task requires manifest.inputs.workspaceId');
+  }
+  if (typeof prompt !== 'string' || prompt.length === 0) {
+    throw new Error('code-task requires manifest.inputs.prompt');
+  }
+  const provider = manifest.provider;
+  if (provider !== 'codex' && provider !== 'azure' && provider !== 'openai') {
+    throw new Error(`provider-unsupported-remote: ${provider}`);
+  }
+  const refPolicy = manifest.inputs['refPolicy'] ?? 'local-branches';
+  if (refPolicy !== 'local-branches') {
+    // §455: remote refs require explicit policy — nothing else exists yet.
+    throw new Error(`ref-policy-unsupported: ${String(refPolicy)}`);
+  }
+
+  const localRevision = workspaceDefinitionRevision(workspaceId);
+  if (localRevision === null) {
+    throw new Error(`workspace not replicated on this device: ${workspaceId}`);
+  }
+  if (localRevision !== manifest.workspaceDefinitionRevision) {
+    throw new Error(
+      `definition-not-converged: local ${localRevision} != manifest ${manifest.workspaceDefinitionRevision}`,
+    );
+  }
+
+  const userDataDir = workerContext()?.userDataDir;
+  if (userDataDir === undefined) {
+    throw new Error('worker context has no userDataDir for attempt worktrees');
+  }
+  const managedRoot = join(userDataDir, 'mesh-checkouts', workspaceId);
+  const worktreeRoot = join(userDataDir, 'mesh-worktrees', attemptId);
+
+  const defs = new Map(
+    (
+      getDb()
+        .prepare(
+          `SELECT portable_id, mapped_repo_id FROM workspace_repo_definitions
+           WHERE workspace_id = ?`,
+        )
+        .all(workspaceId) as Array<{ portable_id: string; mapped_repo_id: string | null }>
+    ).map((d) => [d.portable_id, { mapped_repo_id: d.mapped_repo_id }]),
+  );
+  if (manifest.repositories.length === 0) {
+    throw new Error('code-task requires at least one pinned repository');
+  }
+  const sources: Array<{ repositoryId: string; sourcePath: string; commit: string }> = [];
+  for (const repo of manifest.repositories) {
+    sources.push({
+      repositoryId: repo.repositoryId,
+      sourcePath: await resolveSessionCheckout(
+        repo.repositoryId,
+        repo.commit,
+        defs,
+        managedRoot,
+      ),
+      commit: repo.commit,
+    });
+  }
+  if (isCancelRequested(attemptId)) return { ok: false, cancelled: true };
+
+  // Attempt-scoped isolation: one branch+worktree per repo, allocated at
+  // the pinned commit, journaled as it lands so a crash mid-allocation is
+  // reconstructable.
+  const worktrees = await allocateAttemptWorktrees({
+    attemptId,
+    rootDir: worktreeRoot,
+    repositories: sources,
+    onAllocated: (worktree) => {
+      appendJournal(attemptId, 'worktree-allocated', {
+        repositoryId: worktree.repositoryId,
+        worktreePath: worktree.worktreePath,
+        branch: worktree.branch,
+        baseCommit: worktree.baseCommit,
+      });
+      emitActivity(attempt, `task: worktree ready for ${worktree.repositoryId}`);
+    },
+  });
+  const cwd = commonParentDir(worktrees.map((w) => w.worktreePath));
+
+  const prior = priorSessionEvidence(job.id, attemptId);
+  if (prior.unresolvedSpawn) {
+    throw new Error('prior-spawn-unresolved: inspect the orphaned provider process first');
+  }
+  const cliVersion = await probeSessionCli();
+  if (cliVersion === null) {
+    throw new Error('provider-cli-unavailable: codex not on PATH');
+  }
+  const cliMinVersion = manifest.inputs['cliMinVersion'];
+  if (
+    typeof cliMinVersion === 'string' &&
+    cliMinVersion.length > 0 &&
+    !satisfiesCliMin(cliVersion, cliMinVersion)
+  ) {
+    throw new Error(
+      `cli-version-pin-violation: codex ${cliVersion} < pinned minimum ${cliMinVersion}`,
+    );
+  }
+
+  appendJournal(attemptId, 'provider-spawn', {
+    provider,
+    model: manifest.model,
+    cliVersion,
+    creationKey: job.requestId,
+    resumeThreadId: prior.resumeThreadId,
+    cwd,
+  });
+  emitActivity(attempt, `task: starting ${provider} in attempt worktrees`);
+
+  const rawTimeout = manifest.inputs['turnTimeoutMs'];
+  const turnTimeoutMs = Math.min(
+    typeof rawTimeout === 'number' && Number.isFinite(rawTimeout) && rawTimeout > 0
+      ? rawTimeout
+      : SESSION_TURN_DEFAULT_TIMEOUT_MS,
+    SESSION_TURN_MAX_TIMEOUT_MS,
+  );
+  const rawSandbox = manifest.inputs['sandbox'];
+  const sandbox =
+    rawSandbox === 'read-only' || rawSandbox === 'danger-full-access'
+      ? rawSandbox
+      : 'workspace-write';
+  const rawEffort = manifest.inputs['reasoningEffort'];
+
+  let turnError: Error | null = null;
+  const result = await runRemoteSessionTurn(
+    {
+      provider: provider as RemoteSessionProvider,
+      model: manifest.model,
+      cwd,
+      prompt,
+      ...(typeof rawEffort === 'string'
+        ? { reasoningEffort: rawEffort as ReasoningEffort }
+        : {}),
+      sandbox,
+      ...(prior.resumeThreadId !== null ? { resumeThreadId: prior.resumeThreadId } : {}),
+      turnTimeoutMs,
+    },
+    {
+      onThreadStarted: (threadId) => {
+        appendJournal(attemptId, 'provider-thread', { threadId });
+      },
+      emitActivity: (text) => emitActivity(attempt, text),
+      isCancelled: () => isCancelRequested(attemptId),
+    },
+  ).catch((error) => {
+    turnError = error instanceof Error ? error : new Error(String(error));
+    return null;
+  });
+
+  if (result === null || result.turnStatus === 'failed' || result.cancelled) {
+    // The attempt's trees stay on disk — journaled paths are the
+    // inventory an operator (or a future retention sweep) inspects.
+    appendJournal(attemptId, 'worktrees-preserved', {
+      paths: worktrees.map((w) => w.worktreePath),
+      reason: result === null ? (turnError?.message ?? 'turn-error') : result.turnStatus,
+    });
+    if (result !== null && result.cancelled) {
+      return { ok: false, cancelled: true };
+    }
+    throw turnError ?? new Error('provider-turn-failed');
+  }
+
+  // Commit residual changes onto each attempt branch and capture the
+  // result pins — the manifest records commits, not claims.
+  const finalized = await finalizeAttemptWorktrees(worktrees, attemptId);
+  for (const repo of finalized) {
+    appendJournal(attemptId, 'result-commit', {
+      repositoryId: repo.repositoryId,
+      baseCommit: repo.baseCommit,
+      resultCommit: repo.resultCommit,
+      branch: repo.branch,
+      changed: repo.changed,
+      residualCommitted: repo.residualCommitted,
+    });
+  }
+  emitActivity(
+    attempt,
+    `task: ${finalized.filter((r) => r.changed).length}/${finalized.length} repositories changed`,
+  );
+
+  // Declared verification runs in each attempt worktree under the
+  // restricted exec env; every outcome is recorded honestly.
+  const verificationCommands = Array.isArray(manifest.inputs['verification'])
+    ? (manifest.inputs['verification'] as unknown[]).filter(
+        (cmd): cmd is string => typeof cmd === 'string' && cmd.length > 0,
+      )
+    : [];
+  const verification: ResultManifestVerification[] = [];
+  for (const repo of finalized) {
+    for (const command of verificationCommands) {
+      const outcome = await runVerificationCommand({
+        repositoryId: repo.repositoryId,
+        command,
+        cwd: repo.worktreePath,
+      });
+      verification.push({
+        repositoryId: outcome.repositoryId,
+        command: outcome.command,
+        exitCode: outcome.exitCode,
+        timedOut: outcome.timedOut,
+        durationMs: outcome.durationMs,
+      });
+      appendJournal(attemptId, 'verification', {
+        repositoryId: outcome.repositoryId,
+        command: outcome.command,
+        exitCode: outcome.exitCode,
+        timedOut: outcome.timedOut,
+        durationMs: outcome.durationMs,
+        logTail: outcome.logTail,
+      });
+    }
+  }
+  if (isCancelRequested(attemptId)) return { ok: false, cancelled: true };
+
+  const ctx = workerContext();
+  const resultManifest: AttemptResultManifest = {
+    schemaVersion: 1,
+    jobId: job.id,
+    attemptId,
+    repositories: finalized.map((repo) => ({
+      repositoryId: repo.repositoryId,
+      baseCommit: repo.baseCommit,
+      resultCommit: repo.resultCommit,
+      branch: repo.branch,
+      changed: repo.changed,
+    })),
+    verification,
+    artifacts: [],
+    provenance: {
+      workerEnrollmentId: ctx?.enrollmentId ?? 'unknown',
+      workerIncarnation: attempt.workerIncarnation,
+      cliVersion: result.cliVersion,
+      startedAt,
+      completedAt: new Date().toISOString(),
+    },
+  };
+  appendJournal(attemptId, 'result-manifest', {
+    repositories: resultManifest.repositories,
+    verificationCount: verification.length,
+  });
+  emitActivity(attempt, 'task: result manifest recorded');
+
+  return {
+    ok: true,
+    workspaceId,
+    providerThreadId: result.providerThreadId,
+    turnId: result.turnId,
+    turnStatus: result.turnStatus,
+    cliVersion: result.cliVersion,
+    cancelled: false,
+    resultManifest,
+    // The attempt trees persist for inspection/integration — the paths are
+    // part of the result so the source can locate the refs.
+    worktrees: finalized.map((repo) => ({
+      repositoryId: repo.repositoryId,
+      worktreePath: repo.worktreePath,
+      branch: repo.branch,
+    })),
+  };
+}
+
 const execFileAsync = promisify(execFile);
 
 async function gitHead(cwd: string): Promise<string | null> {
@@ -1649,6 +1947,108 @@ export async function createStartSessionJob(
     requestId: input.requestId,
     payloadHash,
     kind: 'start-session',
+    requestedTarget,
+    inputManifest: manifest,
+    retryPolicy: 'inspect-before-retry',
+  });
+  return result.job;
+}
+
+export interface CodeTaskJobInput {
+  requestId: string;
+  workspaceId: string;
+  /** The task instruction the remote turn executes. */
+  prompt: string;
+  targetEnrollmentId?: string;
+  provider?: 'codex' | 'azure' | 'openai';
+  model?: string;
+  personaId?: string;
+  reasoningEffort?: string;
+  sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
+  cliMinVersion?: string;
+  turnTimeoutMs?: number;
+  /**
+   * Declared verification commands run per repository worktree after the
+   * turn, under the restricted exec env; outcomes go into the result
+   * manifest verbatim (spec §455 — declared, honestly recorded).
+   */
+  verification?: string[];
+}
+
+/**
+ * `job.create` for `code-task` (FLOW-01). Same pinning discipline as
+ * start-session; the worker runs the turn inside per-attempt worktrees
+ * and returns a result manifest. `inspect-before-retry`: a retry
+ * allocates a fresh attempt-scoped tree — prior attempt work is
+ * preserved, never reset.
+ */
+export async function createCodeTaskJob(input: CodeTaskJobInput): Promise<JobSummary> {
+  const provider: RemoteSessionProvider = input.provider ?? 'codex';
+  const revision = workspaceDefinitionRevision(input.workspaceId);
+  if (revision === null) {
+    throw new Error(`workspace not found: ${input.workspaceId}`);
+  }
+  const commits = await resolveWorkspaceCommits(input.workspaceId);
+  const defs = getDb()
+    .prepare(
+      `SELECT portable_id, mapped_repo_id FROM workspace_repo_definitions WHERE workspace_id = ?`,
+    )
+    .all(input.workspaceId) as Array<{ portable_id: string; mapped_repo_id: string | null }>;
+  const repositories = defs.map((def) => {
+    const commit = commits[def.portable_id];
+    if (def.mapped_repo_id === null || commit === undefined) {
+      throw new Error(
+        `repository ${def.portable_id} has no resolved commit on this device — map a checkout first`,
+      );
+    }
+    return { repositoryId: def.portable_id, commit };
+  });
+  const recipe = getWorkspaceBootstrap(input.workspaceId);
+  const bootstrapDigest =
+    recipe === null
+      ? 'none'
+      : computeBootstrapDigest({
+          recipe,
+          repositoryCommits: commits,
+          executionPolicy: buildDevicePolicy(),
+        });
+  const model =
+    input.model ?? resolveSessionModel(provider as AgentProvider, getSettings().openaiModel);
+  const manifest: ExecutionManifest = {
+    workspaceDefinitionRevision: revision,
+    repositories,
+    bootstrapDigest,
+    provider,
+    model,
+    configVersions: {},
+    inputs: {
+      workspaceId: input.workspaceId,
+      prompt: input.prompt,
+      refPolicy: 'local-branches',
+      ...(input.personaId === undefined ? {} : { personaId: input.personaId }),
+      ...(input.reasoningEffort === undefined
+        ? {}
+        : { reasoningEffort: input.reasoningEffort }),
+      ...(input.sandbox === undefined ? {} : { sandbox: input.sandbox }),
+      ...(input.cliMinVersion === undefined ? {} : { cliMinVersion: input.cliMinVersion }),
+      ...(input.turnTimeoutMs === undefined ? {} : { turnTimeoutMs: input.turnTimeoutMs }),
+      ...(input.verification === undefined ? {} : { verification: input.verification }),
+    },
+  };
+  const requestedTarget =
+    input.targetEnrollmentId !== undefined
+      ? { kind: 'device' as const, enrollmentId: input.targetEnrollmentId }
+      : { kind: 'auto' as const };
+  const payloadHash = createHash('sha256')
+    .update(
+      canonicalJson({ kind: 'code-task', requestedTarget, inputManifest: manifest }),
+      'utf8',
+    )
+    .digest('hex');
+  const result = await meshRpc<{ job: JobSummary }>('job.create', {
+    requestId: input.requestId,
+    payloadHash,
+    kind: 'code-task',
     requestedTarget,
     inputManifest: manifest,
     retryPolicy: 'inspect-before-retry',

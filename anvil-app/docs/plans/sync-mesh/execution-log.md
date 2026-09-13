@@ -733,3 +733,46 @@ eslint clean.
 Remaining: `device.list|rename|revoke`, `account.delete*`,
 `data.export|import.*`, FLOW-01/02/03, PLACE-01, BYOB-02, IAC-02,
 LAUNCH-01.
+
+## FLOW-01 — per-attempt local worktrees + result manifests (landed)
+
+Spec §451-455: write-capable execution is attempt-scoped, not run-scoped.
+
+- New `code-task` job kind (contract JobKind + backend JOB_KINDS) — one
+  write-capable provider turn inside per-attempt worktrees.
+- `mesh-worktree.service.ts`: `allocateAttemptWorktrees` creates
+  `mesh/attempt/<attemptId>` branches via `git worktree add -b` at the
+  pinned commit, serialized per source checkout (ref-mutation lane —
+  spec §451). No `-B` resets, no forced removal; a name collision fails
+  the attempt rather than destroying a ref. `finalizeAttemptWorktrees`
+  commits residual changes onto the attempt branch (work is never lost)
+  and captures base→result pins. `disposeAttemptWorktrees` is the
+  explicit-disposal path (non-forced remove + `branch -d`).
+- `executeCodeTask`: resolves pinned checkouts (verified, never
+  mutated), allocates attempt trees under
+  `userDataDir/mesh-worktrees/<attemptId>/`, reuses the prior-spawn
+  inspect-before-retry gate + CLI pin, runs the provider turn with cwd
+  inside the attempt trees, finalizes commits, runs manifest-declared
+  verification commands per worktree under the restricted `meshExecEnv`
+  (no provider/git credentials — remote-authored text), and returns an
+  `AttemptResultManifest` (base/result commits, verification outcomes,
+  provenance). Failed turns journal `worktrees-preserved` with paths —
+  the trees stay as inspectable evidence.
+- `meshExecEnv` added to agent-spawn-env: ambient+proxy vars only.
+- `refPolicy` input: only `local-branches` supported — remote refs
+  require explicit policy (§455), anything else fails closed.
+- `createCodeTaskJob` pins revision/commits/digest/model/verification
+  under `inspect-before-retry`.
+
+Coverage: 9 worktree-service tests (allocation at pinned commit,
+attempt isolation, concurrent-allocation ref serialization, branch
+collision refusal, residual commit + ref-namespace inspectability,
+explicit disposal, verification honesty incl. timeout) + 5 worker tests
+(manifest in result_json + journal ordering, verification verbatim,
+failure preserves trees + source untouched, ref-policy rejection,
+creator pinning). App suite 163 files / 1123 tests, backend 98/98,
+gate 7/7, tsc + eslint clean.
+
+Remaining: `device.list|rename|revoke`, `account.delete*`,
+`data.export|import.*`, FLOW-02/03, PLACE-01, BYOB-02, IAC-02,
+LAUNCH-01.

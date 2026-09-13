@@ -73,6 +73,21 @@ const PROVIDER_CREDENTIAL_ALLOWLIST = [
 ] as const;
 
 /**
+ * Stricter env for remote-authored commands a Mesh worker executes
+ * (FLOW-01 verification steps): ambient session + proxy vars only — no
+ * provider credentials, no git transport credentials. The command list
+ * comes from the job manifest, not the local user.
+ */
+export function meshExecEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const name of [...AMBIENT_ALLOWLIST, ...NETWORK_ALLOWLIST]) {
+    const value = process.env[name];
+    if (value !== undefined) env[name] = value;
+  }
+  return env;
+}
+
+/**
  * Allowlisted environment for a local provider CLI spawn. Never spreads
  * `process.env`. `extra` wins over ambient values for explicit bindings.
  */

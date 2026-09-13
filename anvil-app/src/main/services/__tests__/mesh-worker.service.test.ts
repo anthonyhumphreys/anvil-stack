@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -54,6 +54,7 @@ vi.mock('../mesh-session.service.js', async (importOriginal) => {
 
 import {
   configureMeshWorkerContext,
+  createCodeTaskJob,
   createPrepareWorkspaceJob,
   createStartSessionJob,
   getMeshWorkerStatus,
@@ -726,10 +727,10 @@ describe('sync lifecycle hooks', () => {
   });
 });
 
-describe('start-session executor (SESSION-02)', () => {
-  const runTurnMock = vi.mocked(runRemoteSessionTurn);
-  const probeMock = vi.mocked(probeSessionCli);
+const runTurnMock = vi.mocked(runRemoteSessionTurn);
+const probeMock = vi.mocked(probeSessionCli);
 
+describe('start-session executor (SESSION-02)', () => {
   function seedSessionWorkspace(suffix: string, mapped = true): {
     workspaceId: string;
     portableId: string;
@@ -1182,6 +1183,291 @@ describe('start-session executor (SESSION-02)', () => {
       expect(params.inputManifest.inputs['turnTimeoutMs']).toBe(120_000);
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('code-task executor (FLOW-01)', () => {
+  let userDataDir = '';
+
+  function seedTaskWorkspace(suffix: string): {
+    workspaceId: string;
+    portableId: string;
+    repoDir: string;
+    head: string;
+  } {
+    const repoDir = mkdtempSync(join(tmpdir(), `anvil-mesh-task-${suffix}-`));
+    execFileSync('git', ['init'], { cwd: repoDir });
+    execFileSync(
+      'git',
+      ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '--allow-empty', '-m', 'init'],
+      { cwd: repoDir },
+    );
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoDir }).toString().trim();
+    const workspaceId = `w-task-${suffix}`;
+    const portableId = `p-${suffix}`;
+    db.prepare(
+      `INSERT INTO repos (id, name, path, status, created_at, updated_at)
+       VALUES (?, 'repo', ?, 'connected', datetime('now'), datetime('now'))`,
+    ).run(`repo-task-${suffix}`, repoDir);
+    db.prepare(
+      `INSERT INTO workspaces (id, name, created_at, updated_at)
+       VALUES (?, 'W', datetime('now'), datetime('now'))`,
+    ).run(workspaceId);
+    db.prepare(
+      `INSERT INTO workspace_repo_definitions
+       (workspace_id, portable_id, name, mapped_repo_id, created_at, updated_at)
+       VALUES (?, ?, 'repo', ?, datetime('now'), datetime('now'))`,
+    ).run(workspaceId, portableId, `repo-task-${suffix}`);
+    return { workspaceId, portableId, repoDir, head };
+  }
+
+  function makeCodeTaskJob(
+    id: string,
+    workspaceId: string,
+    portableId: string,
+    commit: string,
+    inputs: Record<string, unknown> = {},
+  ): MeshJob {
+    const job = makeJob(id, 'code-task');
+    job.inputManifest = {
+      workspaceDefinitionRevision: workspaceDefinitionRevision(workspaceId)!,
+      repositories: [{ repositoryId: portableId, commit }],
+      bootstrapDigest: 'none',
+      provider: 'codex',
+      model: 'gpt-5',
+      configVersions: {},
+      inputs: { workspaceId, prompt: 'implement the thing', ...inputs },
+    };
+    return job;
+  }
+
+  function claimWith(job: MeshJob): void {
+    rpcHandler = (op) => {
+      if (op === 'job.claim') {
+        return {
+          job,
+          attempt: makeAttempt(job.id),
+          fence: 1,
+          manifest: job.inputManifest,
+        };
+      }
+      if (op === 'attempt.report') {
+        return { status: 'applied' };
+      }
+      return {};
+    };
+  }
+
+  beforeEach(async () => {
+    db.exec('DELETE FROM mesh_session_ownership; DELETE FROM mesh_handoff_journal;');
+    userDataDir = mkdtempSync(join(tmpdir(), 'anvil-mesh-udata-'));
+    configureMeshWorkerContext(() => ({ ...CTX, userDataDir }));
+    probeMock.mockReset().mockResolvedValue('0.44.0');
+    runTurnMock.mockReset();
+    runTurnMock.mockImplementation(async (_spec: RemoteSessionSpec, hooks: RemoteSessionHooks) => {
+      hooks.onThreadStarted('thr-mock');
+      return {
+        providerThreadId: 'thr-mock',
+        turnId: 'turn-1',
+        turnStatus: 'completed' as const,
+        cliVersion: '0.44.0',
+        cancelled: false,
+      };
+    });
+    rpcHandler = (op) =>
+      op === 'worker.connect'
+        ? {
+            workerIncarnation: 'inc-1',
+            leaseExpiresAt: new Date(Date.now() + 90_000).toISOString(),
+          }
+        : {};
+    await setMeshWorkerEnabled(true);
+    rpcCalls.length = 0;
+  });
+
+  it('runs the turn in a per-attempt worktree and publishes a result manifest', async () => {
+    const { workspaceId, portableId, repoDir, head } = seedTaskWorkspace('happy');
+    try {
+      const job = makeCodeTaskJob('job-task', workspaceId, portableId, head);
+      // The "provider" edits the attempt worktree — executor must commit it.
+      runTurnMock.mockImplementation(
+        async (spec: RemoteSessionSpec, hooks: RemoteSessionHooks) => {
+          hooks.onThreadStarted('thr-mock');
+          writeFileSync(join(spec.cwd, 'feature.ts'), 'export const task = 1;');
+          return {
+            providerThreadId: 'thr-mock',
+            turnId: 'turn-1',
+            turnStatus: 'completed' as const,
+            cliVersion: '0.44.0',
+            cancelled: false,
+          };
+        },
+      );
+      claimWith(job);
+      await handleJobAvailable('job-task');
+
+      const row = db
+        .prepare('SELECT state, journal_json, result_json FROM mesh_attempts WHERE id = ?')
+        .get('att-job-task') as {
+        state: string;
+        journal_json: string;
+        result_json: string;
+      };
+      expect(row.state).toBe('completed');
+      expect(row.journal_json).toContain('worktree-allocated');
+      expect(row.journal_json).toContain('result-commit');
+      expect(row.journal_json).toContain('result-manifest');
+
+      const result = JSON.parse(row.result_json) as {
+        resultManifest: {
+          repositories: Array<{
+            repositoryId: string;
+            baseCommit: string;
+            resultCommit: string;
+            branch: string;
+            changed: boolean;
+          }>;
+          provenance: { workerEnrollmentId: string };
+        };
+        worktrees: Array<{ worktreePath: string }>;
+      };
+      const repoResult = result.resultManifest.repositories[0]!;
+      expect(repoResult.repositoryId).toBe(portableId);
+      expect(repoResult.baseCommit).toBe(head);
+      expect(repoResult.changed).toBe(true);
+      expect(repoResult.branch).toBe('mesh/attempt/att-job-task');
+      expect(result.resultManifest.provenance.workerEnrollmentId).toBe('enr-1');
+
+      // The turn ran inside the attempt worktree, NOT the source checkout —
+      // and the residue commit is inspectable on the source repo's refs.
+      const spec = runTurnMock.mock.calls[0]?.[0];
+      expect(spec?.cwd).toBe(join(userDataDir, 'mesh-worktrees', 'att-job-task', `0-${portableId}`));
+      expect(
+        execFileSync('git', ['show', `${repoResult.resultCommit}:feature.ts`], { cwd: repoDir })
+          .toString(),
+      ).toContain('export const task = 1');
+      // Source checkout HEAD + tree untouched.
+      expect(
+        execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoDir }).toString().trim(),
+      ).toBe(head);
+      expect(execFileSync('git', ['status', '--porcelain'], { cwd: repoDir }).toString()).toBe('');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(userDataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('records declared verification outcomes in the manifest verbatim', async () => {
+    const { workspaceId, portableId, repoDir, head } = seedTaskWorkspace('verify');
+    try {
+      const job = makeCodeTaskJob('job-task', workspaceId, portableId, head, {
+        verification: ['exit 0', 'exit 2'],
+      });
+      claimWith(job);
+      await handleJobAvailable('job-task');
+
+      const row = db
+        .prepare('SELECT result_json, journal_json FROM mesh_attempts WHERE id = ?')
+        .get('att-job-task') as { result_json: string; journal_json: string };
+      const result = JSON.parse(row.result_json) as {
+        resultManifest: {
+          verification: Array<{ command: string; exitCode: number | null; timedOut: boolean }>;
+        };
+      };
+      expect(result.resultManifest.verification).toMatchObject([
+        { repositoryId: portableId, command: 'exit 0', exitCode: 0, timedOut: false },
+        { repositoryId: portableId, command: 'exit 2', exitCode: 2, timedOut: false },
+      ]);
+      expect(row.journal_json).toContain('"verification"');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(userDataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves the attempt worktrees when the turn fails', async () => {
+    const { workspaceId, portableId, repoDir, head } = seedTaskWorkspace('fail');
+    try {
+      const job = makeCodeTaskJob('job-task', workspaceId, portableId, head);
+      runTurnMock.mockImplementation(async () => ({
+        providerThreadId: 'thr-mock',
+        turnId: 'turn-1',
+        turnStatus: 'failed' as const,
+        cliVersion: '0.44.0',
+        cancelled: false,
+      }));
+      claimWith(job);
+      await handleJobAvailable('job-task');
+
+      const row = db
+        .prepare('SELECT state, journal_json FROM mesh_attempts WHERE id = ?')
+        .get('att-job-task') as { state: string; journal_json: string };
+      expect(row.state).toBe('failed');
+      expect(row.journal_json).toContain('worktrees-preserved');
+      // The tree + branch survive as inspectable evidence.
+      const wtPath = join(userDataDir, 'mesh-worktrees', 'att-job-task', `0-${portableId}`);
+      expect(existsSync(wtPath)).toBe(true);
+      expect(
+        execFileSync('git', ['branch', '--list', 'mesh/attempt/*'], { cwd: repoDir }).toString(),
+      ).toContain('mesh/attempt/att-job-task');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(userDataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a non-local ref policy — remote refs need explicit policy', async () => {
+    const { workspaceId, portableId, repoDir, head } = seedTaskWorkspace('policy');
+    try {
+      const job = makeCodeTaskJob('job-task', workspaceId, portableId, head, {
+        refPolicy: 'push-to-origin',
+      });
+      claimWith(job);
+      await handleJobAvailable('job-task');
+      const row = db
+        .prepare('SELECT state, journal_json FROM mesh_attempts WHERE id = ?')
+        .get('att-job-task') as { state: string; journal_json: string };
+      expect(row.state).toBe('failed');
+      expect(row.journal_json).toContain('ref-policy-unsupported');
+      expect(runTurnMock).not.toHaveBeenCalled();
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(userDataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('pins commits, verification, and local-branches policy in the job manifest', async () => {
+    const { workspaceId, portableId, repoDir, head } = seedTaskWorkspace('create');
+    try {
+      rpcHandler = (op) => (op === 'job.create' ? { job: { id: 'job-c', kind: 'code-task' } } : {});
+      const job = await createCodeTaskJob({
+        requestId: 'req-c',
+        workspaceId,
+        prompt: 'implement the thing',
+        targetEnrollmentId: 'enr-9',
+        verification: ['pnpm test'],
+      });
+      expect(job.id).toBe('job-c');
+      const create = rpcCalls.find((c) => c.operation === 'job.create');
+      const params = create!.params as {
+        kind: string;
+        inputManifest: {
+          repositories: Array<{ repositoryId: string; commit: string }>;
+          inputs: Record<string, unknown>;
+        };
+        retryPolicy: string;
+      };
+      expect(params.kind).toBe('code-task');
+      expect(params.inputManifest.repositories).toEqual([
+        { repositoryId: portableId, commit: head },
+      ]);
+      expect(params.inputManifest.inputs['verification']).toEqual(['pnpm test']);
+      expect(params.inputManifest.inputs['refPolicy']).toBe('local-branches');
+      expect(params.retryPolicy).toBe('inspect-before-retry');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(userDataDir, { recursive: true, force: true });
     }
   });
 });
