@@ -13,7 +13,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { rpc as backendRpc } from './sync-backend-client.service.js';
 import type {
+  ArtifactDescriptor,
   ArtifactFinalizeResult,
+  ArtifactGetResult,
+  ArtifactListResult,
   ArtifactManifest,
   ArtifactReserveResult,
 } from '../../../cloud/contract/artifacts.js';
@@ -92,37 +95,45 @@ export async function uploadAttemptArtifact(input: {
   return finalized.manifest;
 }
 
-/** Lists artifact manifests for a job or attempt (account-scoped read). */
+/** Lists artifact descriptors for a job or attempt (account-scoped read). */
 export async function listMeshArtifacts(scope: {
   jobId?: string;
   attemptId?: string;
-}): Promise<ArtifactManifest[]> {
-  const result = await artifactRpc<{ artifacts: ArtifactManifest[] }>('artifact.list', scope);
+  state?: string;
+  limit?: number;
+}): Promise<ArtifactDescriptor[]> {
+  const result = await artifactRpc<ArtifactListResult>('artifact.list', scope);
   return result.artifacts;
 }
 
-export async function getMeshArtifact(artifactId: string): Promise<ArtifactManifest | null> {
-  const result = await artifactRpc<{ manifest: ArtifactManifest | null }>('artifact.get', {
-    artifactId,
-  });
-  return result.manifest ?? null;
+export async function getMeshArtifact(
+  artifactId: string,
+): Promise<ArtifactGetResult['artifact'] | null> {
+  try {
+    const result = await artifactRpc<ArtifactGetResult>('artifact.get', { artifactId });
+    return result.artifact;
+  } catch {
+    return null;
+  }
 }
 
 /**
- * Downloads a published artifact's bytes via the worker GET route.
- * `downloadPath` comes from the manifest's companion field when present;
- * otherwise the conventional route is used.
+ * Downloads a published artifact's bytes via the `downloadPath` the
+ * backend returns from `artifact.get` — present only while the manifest
+ * is `published` and unexpired. Verifies sha256 against the manifest.
  */
 export async function downloadMeshArtifact(artifactId: string): Promise<Uint8Array> {
   const ctx = artifactContext();
   if (ctx === null) {
     throw new Error('Mesh artifacts have no active sync session.');
   }
-  const manifest = await getMeshArtifact(artifactId);
-  if (manifest === null || manifest.state !== 'published') {
+  const { artifact, downloadPath } = await artifactRpc<ArtifactGetResult>('artifact.get', {
+    artifactId,
+  });
+  if (artifact.state !== 'published' || downloadPath === null) {
     throw new Error('artifact is not published');
   }
-  const response = await fetch(new URL(`v1/artifacts/${artifactId}`, ctx.apiUrl), {
+  const response = await fetch(new URL(downloadPath, ctx.apiUrl), {
     headers: { Authorization: `Bearer ${ctx.accessToken}` },
   });
   if (!response.ok) {
@@ -130,7 +141,7 @@ export async function downloadMeshArtifact(artifactId: string): Promise<Uint8Arr
   }
   const bytes = new Uint8Array(await response.arrayBuffer());
   const sha256 = createHash('sha256').update(bytes).digest('hex');
-  if (sha256 !== manifest.sha256) {
+  if (sha256 !== artifact.sha256) {
     throw new Error('artifact checksum mismatch on download');
   }
   return bytes;

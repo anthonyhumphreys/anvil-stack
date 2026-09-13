@@ -74,11 +74,39 @@ function gapFrame(attemptId: string, from: number, to: number): GapFrame {
   };
 }
 
+function durableEvent(
+  cursor: number,
+  attemptId: string,
+  sequence: number,
+  kind: string,
+  payload: unknown,
+): Record<string, unknown> {
+  return {
+    cursor,
+    jobId: 'job-1',
+    attemptId,
+    streamId: `attempt:${attemptId}`,
+    sequence,
+    kind,
+    generation: 1,
+    payload,
+    createdAt: '2026-09-13T00:00:00.000Z',
+  };
+}
+
 beforeEach(() => {
   rpcCalls.length = 0;
   sentFrames.length = 0;
   live = true;
-  rpcHandler = () => ({ events: [], nextCursor: null, hasGap: false });
+  rpcHandler = () => ({
+    scopeKind: 'attempt',
+    scopeId: 'x',
+    jobId: 'job-1',
+    events: [],
+    nextCursor: 0,
+    hasMore: false,
+    hasGap: false,
+  });
   resetMeshObserverForTests();
   configureMeshObserverContext(() => CTX);
 });
@@ -105,25 +133,20 @@ describe('observeAttempt', () => {
     rpcHandler = (op) => {
       if (op === 'event.pull') {
         return {
+          scopeKind: 'attempt',
+          scopeId: 'att-2',
+          jobId: 'job-1',
           events: [
-            {
-              id: 'e1',
-              scope: 'attempt:att-2',
-              sequence: 1,
-              kind: 'status',
-              payloadJson: 'claimed',
-              createdAt: '2026-09-13T00:00:00.000Z',
-            },
-            {
-              id: 'e2',
-              scope: 'attempt:att-2',
-              sequence: 2,
+            durableEvent(1, 'att-2', 0, 'attempt.state', { state: 'claimed' }),
+            durableEvent(2, 'att-2', 1, 'activity', {
               kind: 'stdout',
-              payloadJson: 'running',
-              createdAt: '2026-09-13T00:00:01.000Z',
-            },
+              text: 'running',
+              byteLength: 7,
+              truncated: false,
+            }),
           ],
           nextCursor: 2,
+          hasMore: false,
           hasGap: false,
         };
       }
@@ -133,8 +156,11 @@ describe('observeAttempt', () => {
     observeAttempt('att-2', (a) => received.push(a));
     await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));
-    expect(received.map((r) => r.text)).toEqual(['claimed', 'running']);
-    expect(rpcCalls.some((c) => c.operation === 'event.pull')).toBe(true);
+    expect(received.map((r) => r.text)).toEqual(['[attempt.state]', 'running']);
+    expect(received[1].kind).toBe('stdout');
+    const pull = rpcCalls.find((c) => c.operation === 'event.pull');
+    expect(pull).toBeDefined();
+    expect((pull!.params as { scope: string }).scope).toBe('att-2');
   });
 
   it('marks a sequence following a gap frame and replays the durable journal', async () => {
@@ -154,8 +180,25 @@ describe('observeAttempt', () => {
     expect(rpcCalls.some((c) => c.operation === 'event.pull')).toBe(true);
   });
 
-  it('re-subscribes with afterSequence on reconnect (meshObserverOnLive)', async () => {
+  it('re-subscribes with the durable cursor on reconnect (meshObserverOnLive)', async () => {
+    // A prior pull advanced the durable cursor to 6; live frames do not
+    // carry a cursor, so afterSequence is the durable position only.
+    rpcHandler = (op) => {
+      if (op === 'event.pull') {
+        return {
+          scopeKind: 'attempt',
+          scopeId: 'att-4',
+          jobId: 'job-1',
+          events: [durableEvent(6, 'att-4', 3, 'attempt.state', { state: 'running' })],
+          nextCursor: 6,
+          hasMore: false,
+          hasGap: false,
+        };
+      }
+      return {};
+    };
     observeAttempt('att-4', () => undefined);
+    await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));
     handleActivityFrame(activityFrame('att-4', 7, 'seven'));
     sentFrames.length = 0;
@@ -163,7 +206,40 @@ describe('observeAttempt', () => {
     meshObserverOnLive();
     const resub = sentFrames.find((f) => f['type'] === 'subscribe');
     expect(resub).toBeDefined();
-    expect(resub!['afterSequence']).toBe(7);
+    expect(resub!['afterSequence']).toBe(6);
+  });
+
+  it('does not re-deliver activity rows already seen live when replaying', async () => {
+    const received: AttemptActivity[] = [];
+    observeAttempt('att-7', (a) => received.push(a));
+    await new Promise((resolve) => setImmediate(resolve));
+    // Live frames deliver stream positions 1-2.
+    handleActivityFrame(activityFrame('att-7', 1, 'one'));
+    handleActivityFrame(activityFrame('att-7', 2, 'two'));
+    // The durable journal replays those same rows plus a lifecycle row.
+    rpcHandler = (op) => {
+      if (op === 'event.pull') {
+        return {
+          scopeKind: 'attempt',
+          scopeId: 'att-7',
+          jobId: 'job-1',
+          events: [
+            durableEvent(1, 'att-7', 1, 'activity', { kind: 'status', text: 'one' }),
+            durableEvent(2, 'att-7', 2, 'activity', { kind: 'status', text: 'two' }),
+            durableEvent(3, 'att-7', 0, 'attempt.state', { state: 'completed' }),
+          ],
+          nextCursor: 3,
+          hasMore: false,
+          hasGap: false,
+        };
+      }
+      return {};
+    };
+    meshObserverOnLive();
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    // 'one'/'two' delivered once (live); the lifecycle row arrives via pull.
+    expect(received.map((r) => r.text)).toEqual(['one', 'two', '[attempt.state]']);
   });
 
   it('stops renewing and sending once gone', async () => {

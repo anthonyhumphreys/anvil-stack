@@ -20,22 +20,10 @@ import type {
   SubscribeFrame,
   UnsubscribeFrame,
 } from '../../../cloud/contract/socket.js';
-
-/** Durable event as returned by `event.pull` (MESH-03 contract). */
-export interface MeshEvent {
-  id: string;
-  scope: string;
-  sequence: number;
-  kind: string;
-  payloadJson: string;
-  createdAt: string;
-}
-
-interface EventPullResult {
-  events: MeshEvent[];
-  nextCursor: number | null;
-  hasGap: boolean;
-}
+import type {
+  DurableEvent,
+  EventPullResult,
+} from '../../../cloud/contract/jobs.js';
 
 interface MeshObserverContext {
   apiUrl: string;
@@ -59,9 +47,16 @@ export type AttemptObserver = (activity: AttemptActivity) => void;
 
 interface Subscription {
   id: string;
+  /** Socket subscribe scope (`attempt:<id>`). */
   scope: string;
   attemptId: string;
   listeners: Set<AttemptObserver>;
+  /**
+   * Durable cursor — the position `subscribe.afterSequence` and
+   * `event.pull` share (DurableEvent.cursor space).
+   */
+  lastCursor: number;
+  /** Highest stream-space sequence seen, for gap detection. */
   lastSequence: number;
   renewTimer: ReturnType<typeof setInterval> | null;
   /** Bounded recent-activity buffer for late listeners. */
@@ -124,6 +119,7 @@ export function observeAttempt(attemptId: string, listener: AttemptObserver): ()
       scope,
       attemptId,
       listeners: new Set(),
+      lastCursor: 0,
       lastSequence: 0,
       renewTimer: null,
       buffer: [],
@@ -164,7 +160,7 @@ function sendSubscribe(sub: Subscription): void {
     version: 1,
     id: sub.id,
     scope: sub.scope,
-    afterSequence: sub.lastSequence > 0 ? sub.lastSequence : null,
+    afterSequence: sub.lastCursor > 0 ? sub.lastCursor : null,
   });
 }
 
@@ -226,31 +222,62 @@ export function handleGapFrame(frame: GapFrame): void {
 }
 
 /**
- * Replays the durable journal after `lastSequence`, delivering events the
- * socket missed (or emitted before subscription). Gap-marked sequences the
- * journal still has are delivered and cleared; ones it no longer retains
- * stay marked so the UI can show an explicit hole rather than fabricating.
+ * Maps a journaled event to an observable activity item, or null when the
+ * row isn't stream output. `activity` rows carry the original bounded
+ * ActivityPayload; `gap` rows mark stream holes rather than producing
+ * output; lifecycle kinds surface as status lines.
+ */
+function eventToActivity(event: DurableEvent): { kind: AttemptActivity['kind']; text: string } | null {
+  if (event.kind === 'gap') return null;
+  if (event.kind === 'activity') {
+    const payload = event.payload as { kind?: string; text?: string };
+    const kind =
+      payload.kind === 'stdout' || payload.kind === 'stderr' ? payload.kind : 'status';
+    return { kind, text: payload.text ?? '' };
+  }
+  return { kind: 'status', text: `[${event.kind}]` };
+}
+
+/**
+ * Replays the durable journal after `lastCursor`, delivering events the
+ * socket missed (or emitted before subscription). Gap rows and socket gap
+ * frames mark stream sequences as holes; events the journal still retains
+ * clear them — unretained ones stay marked so the UI shows an explicit
+ * hole rather than fabricating output.
  */
 async function replayEvents(sub: Subscription): Promise<void> {
   const ctx = observerContext();
   if (ctx === null) return;
   try {
     const result = await observeRpc<EventPullResult>('event.pull', {
-      scope: sub.scope,
-      afterSequence: sub.lastSequence,
+      scope: sub.attemptId,
+      afterSequence: sub.lastCursor,
       limit: 200,
     });
     for (const event of result.events) {
-      if (event.sequence <= sub.lastSequence) continue;
+      if (event.cursor <= sub.lastCursor) continue;
+      sub.lastCursor = event.cursor;
+      if (event.kind === 'gap') {
+        const gap = event.payload as { fromSequence?: number; toSequence?: number };
+        for (let s = gap.fromSequence ?? 0; s <= (gap.toSequence ?? 0); s += 1) {
+          sub.gapped.add(s);
+        }
+        continue;
+      }
+      // Live socket frames only carry activity/gap; a journaled activity
+      // row at a stream position we already delivered live is a dup.
+      if (event.kind === 'activity' && event.sequence <= sub.lastSequence) continue;
+      const mapped = eventToActivity(event);
+      if (mapped === null) continue;
       const item: AttemptActivity = {
         at: event.createdAt,
-        kind: event.kind === 'stderr' ? 'stderr' : event.kind === 'stdout' ? 'stdout' : 'status',
-        text: event.payloadJson,
+        kind: mapped.kind,
+        text: mapped.text,
         sequence: event.sequence,
         gapBefore: hasUnresolvedGap(sub, event.sequence),
       };
       sub.gapped.delete(event.sequence);
-      sub.lastSequence = event.sequence;
+      if (event.sequence > sub.lastSequence) sub.lastSequence = event.sequence;
       sub.buffer.push(item);
       if (sub.buffer.length > BUFFER_LIMIT) sub.buffer.shift();
       for (const listener of sub.listeners) listener(item);
