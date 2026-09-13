@@ -103,6 +103,10 @@ import {
   resetMeshDispatchForTests,
 } from './mesh-dispatch.service.js';
 import {
+  configureMeshIntegrationContext,
+  resetMeshIntegrationForTests,
+} from './mesh-integration.service.js';
+import {
   getOrCreateInstallationId,
   getSyncState,
   listBindings,
@@ -243,6 +247,11 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
     if (backend === null || fields === null || token === null) return null;
     return { apiUrl: apiUrlFor(backend), accessToken: token, enrollmentId: fields.enrollmentId };
   });
+  // FLOW-03: integration runs are local-only (merge adopted refs, verify)
+  // — they need just the userData dir for worktree roots.
+  configureMeshIntegrationContext(() =>
+    runtimeUserDataDir === null ? null : { userDataDir: runtimeUserDataDir },
+  );
   void reconcileMeshAttemptsOnBoot().catch(() => undefined);
   void reconcileHandoffsOnBoot().catch(() => undefined);
   void reconcileDispatchesOnBoot().catch(() => undefined);
@@ -269,6 +278,7 @@ export function resetSyncRuntimeForTests(): void {
   resetMeshWorkerForTests();
   resetMeshHandoffForTests();
   resetMeshDispatchForTests();
+  resetMeshIntegrationForTests();
   auth = null;
   lastError = null;
   sessionExpired = false;

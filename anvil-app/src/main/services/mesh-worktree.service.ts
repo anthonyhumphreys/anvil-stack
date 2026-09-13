@@ -110,13 +110,16 @@ export async function allocateAttemptWorktrees(input: {
   /** Attempt-scoped parent dir, e.g. <userData>/mesh-worktrees/<attemptId>. */
   rootDir: string;
   repositories: Array<{ repositoryId: string; sourcePath: string; commit: string }>;
+  /** Ref namespace — `mesh/attempt` for attempts, `mesh/integrate` for integration runs. */
+  branchPrefix?: string;
   onAllocated?: (worktree: AttemptRepoWorktree) => void;
 }): Promise<AttemptRepoWorktree[]> {
   mkdirSync(input.rootDir, { recursive: true });
+  const branchPrefix = input.branchPrefix ?? 'mesh/attempt';
   const allocated: AttemptRepoWorktree[] = [];
   for (const [index, repo] of input.repositories.entries()) {
     const worktree = await withRepoRefLock(repo.sourcePath, async () => {
-      const branch = `mesh/attempt/${input.attemptId}`;
+      const branch = `${branchPrefix}/${input.attemptId}`;
       const worktreePath = join(
         input.rootDir,
         `${index}-${sanitizeComponent(repo.repositoryId)}`,

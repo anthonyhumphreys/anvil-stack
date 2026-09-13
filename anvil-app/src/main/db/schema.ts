@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 75;
+export const SCHEMA_VERSION = 76;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -787,6 +787,21 @@ CREATE TABLE IF NOT EXISTS mesh_node_dispatches (
 );
 CREATE INDEX IF NOT EXISTS idx_mesh_node_dispatches_state
   ON mesh_node_dispatches(state);
+
+-- FLOW-03: durable integration runs. An integration applies adopted node
+-- results in declared dependency order inside its own worktree; the row
+-- records the outcome — integrated commit, visible conflicts, or failure —
+-- and the working state for resume/inspection (spec §457).
+CREATE TABLE IF NOT EXISTS mesh_integrations (
+  integration_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  dispatch_ids_json TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('integrated', 'conflicted', 'failed')),
+  result_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 
 -- WS-02: durable workspace materialisation journal. The op row and its
 -- per-repo stage rows are written BEFORE the matching filesystem mutation so
@@ -2755,5 +2770,18 @@ CREATE TABLE IF NOT EXISTS mesh_node_dispatches (
 );
 CREATE INDEX IF NOT EXISTS idx_mesh_node_dispatches_state
   ON mesh_node_dispatches(state);
+`,
+  76: `
+-- FLOW-03: durable integration runs. Keep in sync with SCHEMA_SQL.
+CREATE TABLE IF NOT EXISTS mesh_integrations (
+  integration_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  dispatch_ids_json TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('integrated', 'conflicted', 'failed')),
+  result_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `,
 };

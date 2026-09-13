@@ -812,3 +812,32 @@ publishes bundle artifacts). App suite 165 files / 1136 tests, backend
 
 Remaining: `device.list|rename|revoke`, `account.delete*`,
 `data.export|import.*`, FLOW-03, PLACE-01, BYOB-02, IAC-02, LAUNCH-01.
+
+## FLOW-03 — fan-out integration + verification (desktop, complete)
+
+- `mesh-integration.service.ts`: `integrateResults` reads each
+  dispatch's adopted result refs and merges them — in declared
+  dependency order — into a dedicated `mesh/integrate/<id>` worktree
+  per repo, allocated at the manifest's pinned base. Divergent base
+  pins across dispatches are a loud `base-diverged` failure, not a
+  guessed merge.
+- Overlapping edits surface as a visible conflict record (conflicted
+  files listed via `diff --diff-filter=U`, merge aborted, dependency
+  chain for that repo stops). The integration ref records only clean
+  merges; adopted result refs and integration branches are preserved
+  for explicit disposal — nothing force-deletes.
+- Declared verification commands run against the integrated worktree
+  before the result is proposed; a nonzero exit marks the run
+  `failed` — the merge survives for inspection but is never applied
+  to the user's checkout.
+- Durable `mesh_integrations` rows (schema 76) make re-entry
+  idempotent: a restart or retry returns the persisted result instead
+  of re-allocating `mesh/integrate/<id>` refs.
+
+Coverage: 6 tests (ordered clean merge + verification, visible
+conflict with preserved refs, verification-failure → `failed`,
+base-diverged refusal, missing-dispatch refusal, restart re-bind).
+App suite 166 files / 1142 tests, gate 7/7, tsc + eslint clean.
+
+Remaining: `device.list|rename|revoke`, `account.delete*`,
+`data.export|import.*`, PLACE-01, BYOB-02, IAC-02, LAUNCH-01.
