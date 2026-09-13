@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
 import { getSettings } from './settings.service.js';
+import { providerSpawnEnv } from './agent-spawn-env.js';
 import { PRIMARY_CODEX_TEMP_PREFIX } from '../../shared/app-identity.js';
 import { DEFAULT_CODEX_MODEL } from '../../shared/codex-models.js';
 import {
@@ -285,7 +286,7 @@ async function callCursor(
         options?.onProgress?.('Sending request to Cursor CLI...');
         const child = spawn('cursor-agent', buildCursorPrintArgs(cleanPrompt, model), {
           ...(cwd && { cwd }),
-          env: { ...process.env },
+          env: providerSpawnEnv(),
           detached: process.platform !== 'win32',
         });
         let stdout = '';
@@ -358,10 +359,7 @@ async function callCodex(prompt: string, options?: LlmCallOptions): Promise<stri
 
       const child = spawn('codex', buildCodexExecArgs(outputPath), {
         ...(cwd && { cwd }),
-        env: {
-          ...process.env,
-          OTEL_SDK_DISABLED: 'true',
-        },
+        env: providerSpawnEnv({ OTEL_SDK_DISABLED: 'true' }),
         detached: process.platform !== 'win32',
       });
 

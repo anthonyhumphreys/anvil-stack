@@ -38,6 +38,7 @@ import {
 } from './codex-protocol.service.js';
 import { emitCompanionEvent } from './companion-events.service.js';
 import { normaliseCodexModel, normaliseReasoningEffort } from '../../shared/codex-models.js';
+import { providerSpawnEnv } from './agent-spawn-env.js';
 import { notifyChatActivity, type ChatActivityKind } from './notification.service.js';
 import { updateChatThreadAttention } from './chat-persistence.service.js';
 import {
@@ -163,10 +164,9 @@ export async function startSession(
       : buildSystemPrompt(personaId, repoIds, options?.workspace?.workspaceId);
   const cwd = resolveSessionCwd(repoPaths, options, app.getPath('userData'));
 
-  // Build environment
-  const env: Record<string, string> = {
-    ...(process.env as Record<string, string>),
-  };
+  // Build environment — allowlisted, never a full process.env copy
+  // (SESSION-01: ambient tokens must not leak into agent subprocesses).
+  const env: Record<string, string> = providerSpawnEnv();
 
   const provider = agentProvider === 'cursor' ? 'cursor' : 'codex';
   const command = provider === 'cursor' ? 'cursor-agent' : 'codex';

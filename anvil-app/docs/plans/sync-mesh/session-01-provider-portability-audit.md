@@ -200,3 +200,11 @@ No attempt-journal, handoff, or checkpoint table. Add in SESSION-02/03 + MESH-02
 **Out of scope for SESSION-02:** making Cursor ACP portable; checkpoint-import (vendor-dependent; only after Codex documents an export); using `run-process` or companion HTTP as Mesh transport (PLAN-01).
 
 PLAN-01 §6 findings confirmed: logical id ≠ provider thread id ≠ PID; spawn-before-persist; ambient env; in-memory approvals; workflow inspect-before-retry at run scope. This packet adds: Cursor ACP has no resume; workflow Cursor is print-only; `provider_turn_id` / `endChatSession` are dead APIs; 20s ready-timeout orphans; BA skips `chat_sessions`; no adapter declarations; summary-continuation is the honest G4 default.
+
+---
+
+## 9. Remediation log
+
+- **Env allowlist (done, this branch):** `agent-spawn-env.ts` exports `providerSpawnEnv()` — an allowlisted spawn env (base session vars, proxies, XDG/`CODEX_HOME`, git transport incl. `SSH_AUTH_SOCK` for local agent-driven git ops, and provider credential vars `OPENAI_API_KEY`/`AZURE_OPENAI_API_KEY`/`CODEX_API_KEY`/`CURSOR_API_KEY` as target-local bindings). Applied to all provider CLI spawns: `codex-session.service.ts` (interactive), `llm.service.ts` (`cursor-agent` print + `codex exec`). `run-process` keeps ambient env by design (user-invoked arbitrary shell). A remote Mesh worker job spawn uses the stricter bootstrap-runner env — `providerSpawnEnv` is local-interactive only.
+- **Capability matrix (done, `b38abc6`):** `provider-capabilities.ts` encodes the continuation-mode verdicts (`native-resume` same-`CODEX_HOME`-only for Codex, `summary-continuation` for Cursor, `unsupported` for one-shot print mode).
+- **Still open:** attempt journal before spawn; stable creation key into `thread/start`; 20s ready-timeout orphan kill; CLI version pinning on resume; `stopSession` proof; BA/automation outside `chat_sessions`.
