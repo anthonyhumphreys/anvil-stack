@@ -1,4 +1,8 @@
 import Database from 'better-sqlite3';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SCHEMA_SQL } from '../../db/schema';
 import type { ExecutionAttempt, MeshJob } from '../../../../cloud/contract/jobs';
@@ -41,6 +45,7 @@ vi.mock('../mesh-artifact.service.js', () => ({
 
 import {
   configureMeshWorkerContext,
+  createPrepareWorkspaceJob,
   getMeshWorkerStatus,
   handleJobAvailable,
   isMeshWorkerEnabled,
@@ -48,6 +53,7 @@ import {
   meshWorkerOnSyncGone,
   meshWorkerOnSyncReady,
   reconcileMeshAttemptsOnBoot,
+  requestApprovalForTests,
   resetMeshWorkerForTests,
   setMeshWorkerEnabled,
 } from '../mesh-worker.service';
@@ -411,6 +417,232 @@ describe('attempt heartbeat', () => {
       .get('att-live') as { state: string; journal_json: string };
     expect(row.state).toBe('unknown-outcome');
     expect(row.journal_json).toContain('lease-renewal-rejected');
+  });
+});
+
+describe('createPrepareWorkspaceJob (SESSION-02)', () => {
+  it('rejects when a definition has no resolved commit on this device', async () => {
+    db.prepare(
+      `INSERT INTO workspaces (id, name, created_at, updated_at) VALUES ('w1', 'W', datetime('now'), 'rev-1')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO workspace_repo_definitions (workspace_id, portable_id, name, created_at, updated_at)
+       VALUES ('w1', 'p1', 'repo', datetime('now'), datetime('now'))`,
+    ).run();
+    await expect(
+      createPrepareWorkspaceJob({ requestId: 'req-1', workspaceId: 'w1' }),
+    ).rejects.toThrow('no resolved commit');
+    expect(rpcCalls.find((c) => c.operation === 'job.create')).toBeUndefined();
+  });
+
+  it('pins resolved HEAD commits and the definition revision in the manifest', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'anvil-mesh-prepare-'));
+    try {
+      execFileSync('git', ['init'], { cwd: dir });
+      execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '--allow-empty', '-m', 'init'], { cwd: dir });
+      const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir })
+        .toString()
+        .trim();
+      db.prepare(
+        `INSERT INTO repos (id, name, path, status, created_at, updated_at)
+         VALUES ('repo-1', 'repo', ?, 'connected', datetime('now'), datetime('now'))`,
+      ).run(dir);
+      db.prepare(
+        `INSERT INTO workspaces (id, name, created_at, updated_at) VALUES ('w2', 'W', datetime('now'), 'rev-2')`,
+      ).run();
+      db.prepare(
+        `INSERT INTO workspace_repo_definitions (workspace_id, portable_id, name, mapped_repo_id, created_at, updated_at)
+         VALUES ('w2', 'p1', 'repo', 'repo-1', datetime('now'), datetime('now'))`,
+      ).run();
+
+      rpcHandler = (op) =>
+        op === 'job.create' ? { job: { id: 'job-p', kind: 'prepare-workspace' } } : {};
+      const job = await createPrepareWorkspaceJob({
+        requestId: 'req-2',
+        workspaceId: 'w2',
+        targetEnrollmentId: 'enr-9',
+      });
+      expect(job.id).toBe('job-p');
+      const create = rpcCalls.find((c) => c.operation === 'job.create');
+      expect(create).toBeDefined();
+      const params = create!.params as {
+        kind: string;
+        requestedTarget: { kind: string; enrollmentId?: string };
+        inputManifest: {
+          workspaceDefinitionRevision: string;
+          repositories: Array<{ repositoryId: string; commit: string }>;
+          bootstrapDigest: string;
+          inputs: Record<string, unknown>;
+        };
+      };
+      expect(params.kind).toBe('prepare-workspace');
+      expect(params.requestedTarget).toEqual({ kind: 'device', enrollmentId: 'enr-9' });
+      expect(params.inputManifest.workspaceDefinitionRevision).toBe('rev-2');
+      expect(params.inputManifest.repositories).toEqual([
+        { repositoryId: 'p1', commit: head },
+      ]);
+      expect(params.inputManifest.bootstrapDigest).toBe('none');
+      expect(params.inputManifest.inputs['workspaceId']).toBe('w2');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('remote approval wait (SESSION-02)', () => {
+  const sentFrames: unknown[] = [];
+  const LIVE_CTX = {
+    ...CTX,
+    sendFrame: (frame: unknown) => {
+      sentFrames.push(frame);
+    },
+    isLive: () => true,
+  };
+
+  function insertAttempt(id = 'att-approval'): void {
+    db.prepare(
+      `INSERT INTO mesh_attempts (id, job_id, enrollment_id, incarnation, fence, kind, state, manifest_json, created_at, updated_at)
+       VALUES (?, 'job-approval', 'enr-1', 'inc-1', 1, 'prepare-workspace', 'running', '{}', ?, ?)`,
+    ).run(id, new Date().toISOString(), new Date().toISOString());
+  }
+
+  beforeEach(() => {
+    sentFrames.length = 0;
+    configureMeshWorkerContext(() => LIVE_CTX);
+  });
+
+  it('sends the request on the reserved control stream and approves on a decided row', async () => {
+    insertAttempt();
+    rpcHandler = (op, _params) => {
+      if (op === 'approval.get') {
+        return {
+          approvals: [
+            {
+              id: 'ap-1',
+              jobId: 'job-approval',
+              attemptId: 'att-approval',
+              actionDigest: 'digest-1',
+              generation: 1,
+              approverRole: 'user',
+              state: 'approved',
+              expiresAt: new Date().toISOString(),
+              createdAt: new Date().toISOString(),
+            },
+          ],
+        };
+      }
+      if (op === 'job.get') return { job: { state: 'running' } };
+      return {};
+    };
+    const decision = await requestApprovalForTests(
+      makeJob('job-approval', 'prepare-workspace'),
+      { ...makeAttempt('job-approval'), id: 'att-approval' },
+      'digest-1',
+      5,
+      500,
+    );
+    expect(decision).toBe('approved');
+    const control = sentFrames[0] as {
+      type: string;
+      streamId: string;
+      payload: { kind: string; text: string };
+    };
+    expect(control.type).toBe('activity');
+    expect(control.streamId).toBe('control');
+    expect(JSON.parse(control.payload.text)).toEqual({
+      request: 'approval',
+      actionDigest: 'digest-1',
+    });
+    const row = db
+      .prepare('SELECT journal_json FROM mesh_attempts WHERE id = ?')
+      .get('att-approval') as { journal_json: string };
+    expect(row.journal_json).toContain('approval-requested');
+    expect(row.journal_json).toContain('approval-approved');
+  });
+
+  it('denies on a denied/expired approval row', async () => {
+    insertAttempt();
+    rpcHandler = (op) => {
+      if (op === 'approval.get') {
+        return {
+          approvals: [
+            {
+              id: 'ap-1',
+              jobId: 'job-approval',
+              attemptId: 'att-approval',
+              actionDigest: 'digest-1',
+              generation: 1,
+              approverRole: 'user',
+              state: 'denied',
+              expiresAt: new Date().toISOString(),
+              createdAt: new Date().toISOString(),
+            },
+          ],
+        };
+      }
+      return { job: { state: 'failed' } };
+    };
+    const decision = await requestApprovalForTests(
+      makeJob('job-approval'),
+      { ...makeAttempt('job-approval'), id: 'att-approval' },
+      'digest-1',
+      5,
+      500,
+    );
+    expect(decision).toBe('denied');
+  });
+
+  it('denies when the job leaves running/awaiting-approval while still pending', async () => {
+    insertAttempt();
+    rpcHandler = (op) =>
+      op === 'approval.get' ? { approvals: [] } : { job: { state: 'cancelled' } };
+    const decision = await requestApprovalForTests(
+      makeJob('job-approval'),
+      { ...makeAttempt('job-approval'), id: 'att-approval' },
+      'digest-1',
+      5,
+      500,
+    );
+    expect(decision).toBe('denied');
+  });
+
+  it('fails closed when the request never lands (job still running, no approval row)', async () => {
+    insertAttempt();
+    rpcHandler = (op) =>
+      op === 'approval.get' ? { approvals: [] } : { job: { state: 'running' } };
+    const decision = await requestApprovalForTests(
+      makeJob('job-approval'),
+      { ...makeAttempt('job-approval'), id: 'att-approval' },
+      'digest-1',
+      5,
+      60,
+    );
+    expect(decision).toBe('denied');
+    const row = db
+      .prepare('SELECT journal_json FROM mesh_attempts WHERE id = ?')
+      .get('att-approval') as { journal_json: string };
+    expect(row.journal_json).toContain('approval-expired');
+  });
+
+  it('rejects instead of silently dropping the request when the socket is dead', async () => {
+    insertAttempt();
+    configureMeshWorkerContext(() => ({
+      ...CTX,
+      sendFrame: (frame: unknown) => {
+        sentFrames.push(frame);
+      },
+      isLive: () => false,
+    }));
+    await expect(
+      requestApprovalForTests(
+        makeJob('job-approval'),
+        { ...makeAttempt('job-approval'), id: 'att-approval' },
+        'digest-1',
+        5,
+        500,
+      ),
+    ).rejects.toThrow('control channel unavailable');
+    expect(sentFrames).toHaveLength(0);
   });
 });
 

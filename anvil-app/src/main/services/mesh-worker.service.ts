@@ -13,9 +13,22 @@
 // and calls the lifecycle hooks below on enable/disable/frame events.
 
 import { createHash, randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { platform, totalmem } from 'node:os';
 import { getDb } from '../db/database.js';
+import { join } from 'node:path';
 import { uploadAttemptArtifact } from './mesh-artifact.service.js';
+import { startWorkspaceClone } from './workspace-materialization.service.js';
+import {
+  computeBootstrapDigest,
+  getWorkspaceBootstrap,
+  isBootstrapApproved,
+  recordBootstrapApproval,
+  resolveWorkspaceCommits,
+  startBootstrapRun,
+  workspaceCheckoutRoot,
+} from './bootstrap-policy.service.js';
 import { LEASE_RENEW_INTERVAL_MS } from '../../../cloud/contract/version.js';
 import { canonicalJson } from './sync-persistence.service.js';
 import { rpc as backendRpc, BackendRpcError } from './sync-backend-client.service.js';
@@ -25,6 +38,8 @@ import type {
   WorkerConnectResult,
 } from '../../../cloud/contract/workers.js';
 import type {
+  ApprovalDecision,
+  ApprovalRecord,
   AttemptRenewResult,
   ExecutionAttempt,
   ExecutionManifest,
@@ -42,12 +57,19 @@ interface MeshWorkerContext {
   apiUrl: string;
   accessToken: string;
   enrollmentId: string;
+  /** userData root for worker-managed checkouts (mesh-checkouts/*). */
+  userDataDir?: string;
   /**
    * Sends a frame on the account's live socket when one is connected.
    * Activity frames are an accelerator — the durable journal is the record —
    * so a null sender (socket down) just skips emission.
    */
   sendFrame?: (frame: unknown) => void;
+  /**
+   * True while the account socket is live. Control-channel sends (approval
+   * requests) must NOT silently drop — callers check this and fail closed.
+   */
+  isLive?: () => boolean;
 }
 
 interface AttemptRow {
@@ -79,7 +101,7 @@ let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let connectInFlight = false;
 
 const DEFAULT_MAX_CONCURRENT_JOBS = 1;
-const WORKER_CAPABILITIES = ['diagnostic'];
+const WORKER_CAPABILITIES = ['diagnostic', 'prepare-workspace'];
 
 export function configureMeshWorkerContext(provider: () => MeshWorkerContext | null): void {
   contextProvider = provider;
@@ -501,7 +523,8 @@ async function runAttempt(attempt: ExecutionAttempt, job: MeshJob): Promise<void
   appendJournal(attemptId, 'preparing');
   updateAttemptState(attemptId, 'preparing');
   try {
-    if (job.kind !== 'diagnostic') {
+    const executor = EXECUTORS[job.kind];
+    if (executor === undefined) {
       appendJournal(attemptId, 'unsupported-kind', { kind: job.kind });
       updateAttemptState(attemptId, 'failed');
       await reportAttempt(attemptId, 'failed', {
@@ -511,7 +534,7 @@ async function runAttempt(attempt: ExecutionAttempt, job: MeshJob): Promise<void
     }
     updateAttemptState(attemptId, 'running');
     appendJournal(attemptId, 'running');
-    const result = await executeDiagnostic(job.inputManifest, attemptId, attempt);
+    const result = await executor(job, attempt);
     const cancelled = isCancelRequested(attemptId);
     // MESH-03: persist attempt evidence as a private R2 artifact while the
     // attempt is still active — reserve rejects terminal attempts, so this
@@ -545,6 +568,9 @@ async function runAttempt(attempt: ExecutionAttempt, job: MeshJob): Promise<void
       resultJson: JSON.stringify({ error: message }),
     });
     await reportAttempt(attemptId, 'failed', { error: message });
+  } finally {
+    activitySequences.delete(`attempt:${attemptId}`);
+    controlSequences.delete(attemptId);
   }
 }
 
@@ -624,6 +650,283 @@ async function executeDiagnostic(
   };
 }
 
+// ---------------------------------------------------------------------------
+// SESSION-02: prepare-workspace + remote approval gate
+// ---------------------------------------------------------------------------
+
+const EXECUTORS: Record<
+  string,
+  (job: MeshJob, attempt: ExecutionAttempt) => Promise<Record<string, unknown>>
+> = {
+  diagnostic: (job, attempt) => executeDiagnostic(job.inputManifest, attempt.id, attempt),
+  'prepare-workspace': executePrepareWorkspace,
+};
+
+/** Worker→backend control stream (`streamId: 'control'`) sequence space. */
+const controlSequences = new Map<string, number>();
+
+/**
+ * Sends a control request on the attempt's reserved stream. Control frames
+ * need a live socket — an approval request cannot be queued for later
+ * (the backend binds it to the current fence), so a missing sender throws.
+ */
+function sendControl(attempt: ExecutionAttempt, doc: Record<string, unknown>): void {
+  const ctx = workerContext();
+  if (ctx?.sendFrame === undefined || ctx.isLive?.() === false) {
+    throw new Error('control channel unavailable: no live socket');
+  }
+  const send = ctx.sendFrame;
+  const sequence = (controlSequences.get(attempt.id) ?? 0) + 1;
+  controlSequences.set(attempt.id, sequence);
+  const text = JSON.stringify(doc);
+  send({
+    type: 'activity',
+    version: 1,
+    id: randomUUID(),
+    attemptId: attempt.id,
+    generation: attempt.fence,
+    streamId: 'control',
+    sequence,
+    payload: { kind: 'status', text, byteLength: text.length, truncated: false },
+  });
+}
+
+const APPROVAL_POLL_MS = 2_000;
+const APPROVAL_WAIT_CAP_MS = 10 * 60 * 1000; // backend default TTL
+
+/**
+ * Parks the job in `awaiting-approval` via the control stream, then polls
+ * `approval.get` until the durable request resolves. The approval ROW is the
+ * authority — the job state is 'running' both before the request lands and
+ * after a grant, so only a decided row (or a terminal job state, meaning the
+ * wait was abandoned) ends the poll. Fail-closed: reaching the TTL cap, a
+ * dropped request, or an unreachable backend all resolve 'denied'.
+ */
+async function requestAndAwaitApproval(
+  job: MeshJob,
+  attempt: ExecutionAttempt,
+  actionDigest: string,
+  pollMs = APPROVAL_POLL_MS,
+  capMs = APPROVAL_WAIT_CAP_MS,
+): Promise<'approved' | 'denied'> {
+  sendControl(attempt, { request: 'approval', actionDigest });
+  appendJournal(attempt.id, 'approval-requested', { actionDigest });
+  emitActivity(attempt, `approval requested: ${actionDigest.slice(0, 12)}…`);
+  const deadline = Date.now() + capMs;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+    try {
+      const { approvals } = await meshRpc<{ approvals: ApprovalRecord[] }>('approval.get', {
+        attemptId: attempt.id,
+      });
+      const mine = approvals.find((row) => row.actionDigest === actionDigest);
+      if (mine !== undefined && mine.state !== 'pending') {
+        appendJournal(attempt.id, `approval-${mine.state}`, {
+          actionDigest,
+          approvalId: mine.id,
+        });
+        return mine.state === 'approved' ? 'approved' : 'denied';
+      }
+      const { job: current } = await meshRpc<JobGetResult>('job.get', { jobId: job.id });
+      if (current.state !== 'running' && current.state !== 'awaiting-approval') {
+        appendJournal(attempt.id, 'approval-resolved', {
+          actionDigest,
+          jobState: current.state,
+        });
+        return 'denied';
+      }
+    } catch {
+      // Reachability blip — keep polling inside the TTL window.
+    }
+  }
+  appendJournal(attempt.id, 'approval-expired', { actionDigest });
+  return 'denied';
+}
+
+/**
+ * `prepare-workspace`: materialize the manifest's pinned repositories into
+ * a worker-managed checkout root, then run the workspace bootstrap recipe
+ * when its digest matches the manifest pin. Bootstrap needs an approval:
+ * a local pin wins; otherwise a remote approval is requested — EXCEPT for
+ * shell recipes, which spec §10 reserves to target-local consent.
+ */
+async function executePrepareWorkspace(
+  job: MeshJob,
+  attempt: ExecutionAttempt,
+): Promise<Record<string, unknown>> {
+  const attemptId = attempt.id;
+  const manifest = job.inputManifest;
+  const workspaceId = manifest.inputs['workspaceId'];
+  if (typeof workspaceId !== 'string' || workspaceId.length === 0) {
+    throw new Error('prepare-workspace requires manifest.inputs.workspaceId');
+  }
+  emitActivity(attempt, `prepare: materialising workspace ${workspaceId}`);
+
+  // The worker's synced definition must match the pinned revision — a stale
+  // replica prepares the wrong thing silently otherwise.
+  const ws = getDb()
+    .prepare('SELECT id, updated_at FROM workspaces WHERE id = ?')
+    .get(workspaceId) as { id: string; updated_at: string } | undefined;
+  if (ws === undefined) {
+    throw new Error(`workspace not replicated on this device: ${workspaceId}`);
+  }
+  if (ws.updated_at !== manifest.workspaceDefinitionRevision) {
+    throw new Error(
+      `definition-not-converged: local ${ws.updated_at} != manifest ${manifest.workspaceDefinitionRevision}`,
+    );
+  }
+
+  const userDataDir = workerContext()?.userDataDir;
+  if (userDataDir === undefined) {
+    throw new Error('worker context has no userDataDir for managed checkouts');
+  }
+  const checkoutRoot = join(userDataDir, 'mesh-checkouts', workspaceId);
+  const manifestCommits = Object.fromEntries(
+    manifest.repositories.map((repo) => [repo.repositoryId, repo.commit]),
+  );
+
+  // Mapped checkouts belong to the device's user — verify HEAD against the
+  // pin but never mutate them. Unmapped definitions clone into the managed
+  // root at the exact commit.
+  const defs = getDb()
+    .prepare(
+      `SELECT portable_id, remote_url, mapped_repo_id FROM workspace_repo_definitions
+       WHERE workspace_id = ?`,
+    )
+    .all(workspaceId) as Array<{
+    portable_id: string;
+    remote_url: string | null;
+    mapped_repo_id: string | null;
+  }>;
+  const defByPortable = new Map(defs.map((d) => [d.portable_id, d]));
+  const toClone: Array<{ portableId: string; commit: string }> = [];
+  const prepared: Array<{ portableId: string; commit: string; source: string }> = [];
+  for (const repo of manifest.repositories) {
+    const def = defByPortable.get(repo.repositoryId);
+    if (def === undefined) {
+      throw new Error(`manifest repository not in workspace definition: ${repo.repositoryId}`);
+    }
+    if (def.mapped_repo_id !== null) {
+      const checkoutPath = (
+        getDb()
+          .prepare('SELECT path FROM repos WHERE id = ?')
+          .get(def.mapped_repo_id) as { path: string } | undefined
+      )?.path;
+      const head = checkoutPath === undefined ? null : await gitHead(checkoutPath);
+      if (head !== repo.commit) {
+        throw new Error(
+          `mapped-checkout-diverged: ${repo.repositoryId} at ${head ?? 'unknown'} != ${repo.commit}`,
+        );
+      }
+      prepared.push({ portableId: repo.repositoryId, commit: repo.commit, source: 'mapped' });
+    } else {
+      toClone.push({ portableId: repo.repositoryId, commit: repo.commit });
+    }
+  }
+  if (isCancelRequested(attemptId)) return { ok: false, cancelled: true };
+
+  if (toClone.length > 0) {
+    emitActivity(attempt, `prepare: cloning ${toClone.length} repositories`);
+    const clone = await startWorkspaceClone({
+      workspaceId,
+      destinationRoot: checkoutRoot,
+      repos: toClone.map((repo) => ({ portableId: repo.portableId, commit: repo.commit })),
+    });
+    for (const repo of clone.repos) {
+      if (repo.stage !== 'mapping-published') {
+        throw new Error(
+          `clone failed for ${repo.portableId}: ${repo.reason ?? repo.stage}`,
+        );
+      }
+      prepared.push({
+        portableId: repo.portableId,
+        commit: repo.resolvedCommit ?? manifestCommits[repo.portableId] ?? '',
+        source: 'cloned',
+      });
+    }
+  }
+  appendJournal(attemptId, 'materialized', { repositories: prepared });
+  emitActivity(attempt, `prepare: ${prepared.length} repositories materialised`);
+
+  // ---- Bootstrap under the approval gate.
+  const recipe = getWorkspaceBootstrap(workspaceId);
+  let bootstrap: 'none' | 'verified' = 'none';
+  if (recipe !== null) {
+    const digest = computeBootstrapDigest({
+      recipe,
+      repositoryCommits: manifestCommits,
+      executionPolicy: buildDevicePolicy(),
+    });
+    if (digest !== manifest.bootstrapDigest) {
+      throw new Error(
+        `bootstrap-digest-mismatch: computed ${digest} != manifest ${manifest.bootstrapDigest}`,
+      );
+    }
+    const usesShell = recipe.steps.some((step) => step.shell !== undefined);
+    if (!isBootstrapApproved(workspaceId, digest, recipe)) {
+      if (usesShell) {
+        // Spec §10: shell execution is target-local consent — a remote
+        // approval cannot satisfy it.
+        throw new Error('shell-recipe-requires-local-approval');
+      }
+      const decision = await requestAndAwaitApproval(job, attempt, digest);
+      if (decision !== 'approved') {
+        throw new Error('bootstrap-approval-denied-or-expired');
+      }
+      // The remote decision binds this exact digest — record it locally so
+      // the runner's gate and audit trail see the same pin.
+      recordBootstrapApproval(workspaceId, {
+        recipe,
+        repositoryCommits: manifestCommits,
+        executionPolicy: buildDevicePolicy(),
+        shellApproved: false,
+      });
+    }
+    const root = workspaceCheckoutRoot(workspaceId) ?? checkoutRoot;
+    emitActivity(attempt, 'bootstrap: running recipe');
+    const run = startBootstrapRun({
+      workspaceId,
+      recipe,
+      repositoryCommits: manifestCommits,
+      executionPolicy: buildDevicePolicy(),
+      checkoutRoot: root,
+      definitionRevision: manifest.workspaceDefinitionRevision,
+    });
+    if (run.handle === null) {
+      throw new Error('bootstrap run parked awaiting-approval unexpectedly');
+    }
+    const runResult = await run.handle.done;
+    if (runResult.state !== 'verified') {
+      throw new Error(`bootstrap-${runResult.state}`);
+    }
+    bootstrap = 'verified';
+    emitActivity(attempt, 'bootstrap: verified');
+  }
+
+  return {
+    ok: true,
+    workspaceId,
+    checkoutRoot,
+    repositories: prepared,
+    bootstrap,
+  };
+}
+
+const execFileAsync = promisify(execFile);
+
+async function gitHead(cwd: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], {
+      cwd,
+      timeout: 10_000,
+      env: { PATH: process.env['PATH'] ?? '', GIT_TERMINAL_PROMPT: '0' },
+    });
+    return String(stdout).trim();
+  } catch {
+    return null;
+  }
+}
+
 async function reportAttempt(
   attemptId: string,
   outcome: 'completed' | 'failed',
@@ -690,11 +993,23 @@ export function resetMeshWorkerForTests(): void {
   connectInFlight = false;
   contextProvider = null;
   activitySequences.clear();
+  controlSequences.clear();
 }
 
 /** Test seam: one heartbeat tick without waiting for the 30s interval. */
 export function meshWorkerHeartbeatForTests(): Promise<void> {
   return heartbeat();
+}
+
+/** Test seam: the approval wait with injectable poll timing. */
+export function requestApprovalForTests(
+  job: MeshJob,
+  attempt: ExecutionAttempt,
+  actionDigest: string,
+  pollMs: number,
+  capMs: number,
+): Promise<'approved' | 'denied'> {
+  return requestAndAwaitApproval(job, attempt, actionDigest, pollMs, capMs);
 }
 
 // ---- source side ------------------------------------------------------------
@@ -746,6 +1061,108 @@ export async function createDiagnosticJob(input: DiagnosticJobInput): Promise<Jo
     retryPolicy: 'never',
   });
   return result.job;
+}
+
+export interface PrepareWorkspaceJobInput {
+  requestId: string;
+  workspaceId: string;
+  /** Explicit device target; omitted = automatic placement. */
+  targetEnrollmentId?: string;
+  provider?: string;
+  model?: string;
+}
+
+/**
+ * `prepare-workspace` (SESSION-02): pins the workspace's current definition
+ * revision and every repository's resolved HEAD. Unmapped local definitions
+ * cannot be pinned — the source can only commit to what it can prove.
+ */
+export async function createPrepareWorkspaceJob(
+  input: PrepareWorkspaceJobInput,
+): Promise<JobSummary> {
+  const ws = getDb()
+    .prepare('SELECT id, updated_at FROM workspaces WHERE id = ?')
+    .get(input.workspaceId) as { id: string; updated_at: string } | undefined;
+  if (ws === undefined) throw new Error(`workspace not found: ${input.workspaceId}`);
+  const commits = await resolveWorkspaceCommits(input.workspaceId);
+  const defs = getDb()
+    .prepare(
+      `SELECT portable_id, mapped_repo_id FROM workspace_repo_definitions WHERE workspace_id = ?`,
+    )
+    .all(input.workspaceId) as Array<{ portable_id: string; mapped_repo_id: string | null }>;
+  const repositories = defs.map((def) => {
+    const commit = commits[def.portable_id];
+    if (def.mapped_repo_id === null || commit === undefined) {
+      throw new Error(
+        `repository ${def.portable_id} has no resolved commit on this device — map a checkout first`,
+      );
+    }
+    return { repositoryId: def.portable_id, commit };
+  });
+  const recipe = getWorkspaceBootstrap(input.workspaceId);
+  const policy = buildDevicePolicy();
+  const bootstrapDigest =
+    recipe === null
+      ? 'none'
+      : computeBootstrapDigest({
+          recipe,
+          repositoryCommits: commits,
+          executionPolicy: policy,
+        });
+  const manifest: ExecutionManifest = {
+    workspaceDefinitionRevision: ws.updated_at,
+    repositories,
+    bootstrapDigest,
+    provider: input.provider ?? 'local',
+    model: input.model ?? 'none',
+    configVersions: {},
+    inputs: { workspaceId: input.workspaceId },
+  };
+  const requestedTarget =
+    input.targetEnrollmentId !== undefined
+      ? { kind: 'device' as const, enrollmentId: input.targetEnrollmentId }
+      : { kind: 'auto' as const };
+  const payloadHash = createHash('sha256')
+    .update(
+      canonicalJson({ kind: 'prepare-workspace', requestedTarget, inputManifest: manifest }),
+      'utf8',
+    )
+    .digest('hex');
+  const result = await meshRpc<{ job: JobSummary }>('job.create', {
+    requestId: input.requestId,
+    payloadHash,
+    kind: 'prepare-workspace',
+    requestedTarget,
+    inputManifest: manifest,
+    retryPolicy: 'inspect-before-retry',
+  });
+  return result.job;
+}
+
+/** `approval.get` — by approvalId, or list pending for a job/attempt. */
+export async function listMeshApprovals(scope: {
+  approvalId?: string;
+  jobId?: string;
+  attemptId?: string;
+}): Promise<ApprovalRecord[]> {
+  const result = await meshRpc<{ approvals: ApprovalRecord[] }>('approval.get', scope);
+  return result.approvals;
+}
+
+/**
+ * `approval.decide` — idempotent on (approvalId, decision). The executing
+ * worker can never decide its own request (backend enforces too).
+ */
+export async function decideMeshApproval(
+  approvalId: string,
+  decision: ApprovalDecision,
+  reason?: string,
+): Promise<{ approval: ApprovalRecord; job: JobSummary; duplicate: boolean }> {
+  return meshRpc('approval.decide', {
+    approvalId,
+    decision,
+    ...(reason === undefined ? {} : { reason }),
+  });
 }
 
 export async function getMeshJob(jobId: string): Promise<JobSummary | null> {

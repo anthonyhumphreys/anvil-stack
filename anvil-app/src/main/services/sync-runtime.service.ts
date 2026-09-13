@@ -142,6 +142,7 @@ let createSocketOverride: WebSocketFactory | undefined;
 let devSpikeEnabled = false;
 /** Test hook: routes ALL backend HTTP (enroll/refresh/revoke/issue + engine rpc). */
 let fetchOverride: typeof fetch | undefined;
+let runtimeUserDataDir: string | null = null;
 /**
  * Fences async engine work: bumped on every sign-out, enrollment change, and
  * backend switch. A sync cycle captures the generation (plus its scope and
@@ -163,6 +164,7 @@ export interface SyncRuntimeInitOptions {
 }
 
 export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOptions = {}): void {
+  runtimeUserDataDir = userDataDir;
   auth = createSyncAuthService({
     userDataDir,
     installationId: getOrCreateInstallationId(),
@@ -186,7 +188,9 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
       apiUrl: apiUrlFor(backend),
       accessToken: token,
       enrollmentId: fields.enrollmentId,
+      ...(runtimeUserDataDir === null ? {} : { userDataDir: runtimeUserDataDir }),
       sendFrame: (frame) => liveSocket?.send(JSON.stringify(frame)),
+      isLive: () => liveState === 'live' && liveSocket !== null,
     };
   });
   // MESH-03: the observer shares the same session context and live socket.
