@@ -25,6 +25,7 @@ import {
   getBinding,
   getSyncState,
   hasActiveBinding,
+  insertUnresolvedConflict,
   listConflicts,
   listOutboxRows,
   listSyncScopesForEntity,
@@ -32,6 +33,7 @@ import {
   recordLocalChange,
   resolveConflict,
   revokeEnrollment,
+  sweepLocalSyncRetention,
   updateSyncState,
   upsertBinding,
   upsertEnrollment,
@@ -696,5 +698,69 @@ describe('payload hashing', () => {
 
   it('canonicalizes nested objects with sorted keys', () => {
     expect(canonicalJson({ b: 1, a: { d: 4, c: 3 } })).toBe('{"a":{"c":3,"d":4},"b":1}');
+  });
+});
+
+describe('local retention sweep (OPS-01)', () => {
+  const OLD = new Date(Date.now() - 91 * 24 * 60 * 60 * 1000).toISOString();
+
+  it('compacts terminal outbox rows and resolved conflicts, never mutable rows', () => {
+    activateEnrollment();
+    const acked = saveWorkflowTemplate(templateInput('Old acknowledged'));
+    change({
+      entityType: ET,
+      entityId: acked.id,
+      operation: 'create',
+      payload: { name: 'Old acknowledged' },
+      schemaVersion: 1,
+    });
+    db.prepare(
+      `UPDATE sync_outbox SET state = 'acknowledged', created_at = ? WHERE entity_id = ?`,
+    ).run(OLD, acked.id);
+
+    const pending = saveWorkflowTemplate(templateInput('Old but pending'));
+    change({
+      entityType: ET,
+      entityId: pending.id,
+      operation: 'create',
+      payload: { name: 'Old but pending' },
+      schemaVersion: 1,
+    });
+    db.prepare(`UPDATE sync_outbox SET created_at = ? WHERE entity_id = ?`).run(OLD, pending.id);
+
+    const resolved = insertUnresolvedConflict(SCOPE, {
+      entityType: ET,
+      entityId: 'tpl-resolved',
+      kind: 'edit-edit',
+      basePayloadJson: '{"name":"base"}',
+      baseRevision: 1,
+      localPayloadJson: '{"name":"local"}',
+      remotePayloadJson: '{"name":"remote"}',
+      remoteRevision: 2,
+    });
+    resolveConflict(resolved.id, 'use-remote');
+    db.prepare(`UPDATE sync_conflicts SET resolved_at = ? WHERE id = ?`).run(OLD, resolved.id);
+
+    const open = insertUnresolvedConflict(SCOPE, {
+      entityType: ET,
+      entityId: 'tpl-open',
+      kind: 'edit-edit',
+      basePayloadJson: '{"name":"base"}',
+      baseRevision: 1,
+      localPayloadJson: '{"name":"local"}',
+      remotePayloadJson: '{"name":"remote"}',
+      remoteRevision: 3,
+    });
+    db.prepare(`UPDATE sync_conflicts SET created_at = ? WHERE id = ?`).run(OLD, open.id);
+
+    const swept = sweepLocalSyncRetention();
+    expect(swept.outboxRows).toBe(1);
+    expect(swept.conflicts).toBe(1);
+
+    // Mutable state survives: the aged pending row and the unresolved conflict.
+    const remaining = listOutboxRows(SCOPE);
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]?.entityId).toBe(pending.id);
+    expect(listConflicts(SCOPE).map((conflict) => conflict.id)).toEqual([open.id]);
   });
 });

@@ -121,6 +121,21 @@ export interface EnrollmentCodeIssueResult {
   accountId: string;
 }
 
+/**
+ * OPS-01 diagnostics: aggregate counters and retention state for the account.
+ * Optional so older backends stay compatible; never carries entity content,
+ * prompts, paths, or tokens.
+ */
+export interface SyncAccountStats {
+  /** Bytes of retained change history (journal payloads) currently stored. */
+  historyBytes: number;
+  /** Budget enforced before accepting new shared changes. */
+  historyQuotaBytes: number;
+  /** Cursors strictly below this sequence must reset and re-scan. */
+  retentionFloor: number;
+  counters: Record<string, number>;
+}
+
 /** Authenticated identity/epoch view. Never contains tokens. */
 export interface SessionDescribeResult {
   accountId: string;
@@ -129,6 +144,7 @@ export interface SessionDescribeResult {
   credentialGeneration: number;
   accessExpiresAt: string;
   displayName?: string;
+  accountStats?: SyncAccountStats;
 }
 
 /**

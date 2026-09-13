@@ -22,6 +22,7 @@ import {
   type SessionDescribeResult,
   type SessionRefreshParams,
   type SessionRevokeParams,
+  type SyncAccountStats,
 } from '../../contract/auth';
 import { generateDeviceToken, parseDeviceBearer, parseVerifiedAuth } from './auth';
 import { sha256Hex } from './hash';
@@ -34,6 +35,9 @@ const REFRESH_GRACE_MS = 30 * 1000;
 const CODE_TTL_MS = 10 * 60 * 1000;
 const MAX_ACTIVE_CODES_PER_ACCOUNT = 20;
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+/** Revoked sessions are retained this long for audit, then swept (OPS-01). */
+const REVOKED_SESSION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const SESSION_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
 
 interface SessionRow {
   enrollment_id: string;
@@ -118,18 +122,32 @@ export class SessionCoordinator extends DurableObject<Env> {
     // decisions must not observe a half-rotated row.
     try {
       switch (route) {
-        case 'POST /enroll':
-          return await this.ctx.blockConcurrencyWhile(() => this.handleEnroll(request));
-        case 'POST /session/refresh':
-          return await this.ctx.blockConcurrencyWhile(() => this.handleRefresh(request));
-        case 'POST /session/revoke':
-          return await this.ctx.blockConcurrencyWhile(() => this.handleRevoke(request));
-        case 'POST /enrollment-codes':
-          return await this.ctx.blockConcurrencyWhile(() => this.handleIssueCode(request));
+        case 'POST /enroll': {
+          const response = await this.ctx.blockConcurrencyWhile(() => this.handleEnroll(request));
+          await this.ensureSweepAlarm();
+          return response;
+        }
+        case 'POST /session/refresh': {
+          const response = await this.ctx.blockConcurrencyWhile(() => this.handleRefresh(request));
+          await this.ensureSweepAlarm();
+          return response;
+        }
+        case 'POST /session/revoke': {
+          const response = await this.ctx.blockConcurrencyWhile(() => this.handleRevoke(request));
+          await this.ensureSweepAlarm();
+          return response;
+        }
+        case 'POST /enrollment-codes': {
+          const response = await this.ctx.blockConcurrencyWhile(() => this.handleIssueCode(request));
+          await this.ensureSweepAlarm();
+          return response;
+        }
         case 'POST /internal/validate':
           return await this.handleValidate(request);
         case 'POST /internal/describe':
           return await this.handleDescribe(request);
+        case 'POST /internal/sweep':
+          return Response.json(await this.runSweep(Date.now()));
         default:
           return rpcErrorResponse(undefined, 'not-found');
       }
@@ -138,16 +156,22 @@ export class SessionCoordinator extends DurableObject<Env> {
     }
   }
 
-  /** The account object's authoritative dataset epoch (creating it lazily). */
-  private async datasetEpoch(accountId: string): Promise<string> {
+  /** The account object's epoch + OPS-01 stats (creating it lazily). */
+  private async accountMeta(
+    accountId: string,
+  ): Promise<{ epoch: string; stats?: SyncAccountStats }> {
     const id = this.env.ACCOUNT.idFromName(accountId);
     const stub = this.env.ACCOUNT.get(id);
     const response = await stub.fetch('https://internal.anvil/internal/meta');
-    const payload = (await response.json()) as { epoch?: unknown };
+    const payload = (await response.json()) as { epoch?: unknown; stats?: SyncAccountStats };
     if (typeof payload.epoch !== 'string') {
       throw new Error('account object returned no epoch');
     }
-    return payload.epoch;
+    return { epoch: payload.epoch, stats: payload.stats };
+  }
+
+  private async datasetEpoch(accountId: string): Promise<string> {
+    return (await this.accountMeta(accountId)).epoch;
   }
 
   private sessionByEnrollment(enrollmentId: string): SessionRow | null {
@@ -530,14 +554,70 @@ export class SessionCoordinator extends DurableObject<Env> {
     if (row === null || row.revoked_at !== null || row.access_expires_at <= Date.now()) {
       return authError('unauthenticated');
     }
+    const meta = await this.accountMeta(row.account_id);
     const result: SessionDescribeResult = {
       accountId: row.account_id,
       enrollmentId: row.enrollment_id,
-      datasetEpoch: await this.datasetEpoch(row.account_id),
+      datasetEpoch: meta.epoch,
       credentialGeneration: row.credential_generation,
       accessExpiresAt: new Date(row.access_expires_at).toISOString(),
       ...(row.display_name === null ? {} : { displayName: row.display_name }),
+      ...(meta.stats === undefined ? {} : { accountStats: meta.stats }),
     };
     return Response.json(result, { status: 200 });
+  }
+
+  /**
+   * OPS-01 session sweep: expires dead enrollment codes, clears lapsed
+   * refresh-grace windows (the pending rotated response and the superseded
+   * credential), and drops revoked sessions past audit retention. One alarm
+   * reschedules itself per pass.
+   */
+  async alarm(): Promise<void> {
+    await this.runSweep(Date.now());
+  }
+
+  private async ensureSweepAlarm(): Promise<void> {
+    const existing = await this.ctx.storage.getAlarm();
+    if (existing === null) {
+      await this.ctx.storage.setAlarm(Date.now() + SESSION_SWEEP_INTERVAL_MS);
+    }
+  }
+
+  private async runSweep(now: number): Promise<{
+    deletedCodes: number;
+    clearedGrace: number;
+    deletedSessions: number;
+  }> {
+    let deletedCodes = 0;
+    let clearedGrace = 0;
+    let deletedSessions = 0;
+    this.ctx.storage.transactionSync(() => {
+      deletedCodes = this.ctx.storage.sql
+        .exec<{ n: number }>(
+          `DELETE FROM enrollment_codes
+           WHERE expires_at < ? AND consumed_at IS NULL RETURNING 1 AS n`,
+          now,
+        )
+        .toArray().length;
+      clearedGrace = this.ctx.storage.sql
+        .exec<{ n: number }>(
+          `UPDATE device_sessions
+           SET prev_refresh_token_hash = NULL, prev_refresh_grace_until = NULL,
+               pending_rotated_session = NULL
+           WHERE prev_refresh_grace_until IS NOT NULL AND prev_refresh_grace_until < ?
+           RETURNING 1 AS n`,
+          now,
+        )
+        .toArray().length;
+      deletedSessions = this.ctx.storage.sql
+        .exec<{ n: number }>(
+          'DELETE FROM device_sessions WHERE revoked_at IS NOT NULL AND revoked_at < ? RETURNING 1 AS n',
+          now - REVOKED_SESSION_RETENTION_MS,
+        )
+        .toArray().length;
+    });
+    await this.ctx.storage.setAlarm(Date.now() + SESSION_SWEEP_INTERVAL_MS);
+    return { deletedCodes, clearedGrace, deletedSessions };
   }
 }

@@ -1395,3 +1395,30 @@ export function clearScanStaging(scope: SyncScope): void {
   db.prepare(`DELETE FROM sync_scan_staging WHERE ${SCOPE_WHERE}`).run(...params);
   db.prepare(`DELETE FROM sync_scan_runs WHERE ${SCOPE_WHERE}`).run(...params);
 }
+
+/**
+ * Local retention window for terminal sync metadata (spec §5, OPS-01):
+ * acknowledged/rejected outbox rows and resolved conflicts are kept for
+ * review/diagnostics, then compacted. Mutable rows (pending, dispatched,
+ * conflict, unresolved) are never swept.
+ */
+export const LOCAL_SYNC_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+
+export function sweepLocalSyncRetention(now: number = Date.now()): {
+  outboxRows: number;
+  conflicts: number;
+} {
+  const cutoff = new Date(now - LOCAL_SYNC_RETENTION_MS).toISOString();
+  const db = getDb();
+  const outboxRows = db
+    .prepare(
+      `DELETE FROM sync_outbox
+       WHERE state IN ('acknowledged', 'rejected')
+         AND COALESCE(dispatched_at, created_at) < ?`,
+    )
+    .run(cutoff).changes;
+  const conflicts = db
+    .prepare(`DELETE FROM sync_conflicts WHERE resolved_at IS NOT NULL AND resolved_at < ?`)
+    .run(cutoff).changes;
+  return { outboxRows, conflicts };
+}

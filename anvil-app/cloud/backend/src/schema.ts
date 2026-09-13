@@ -54,6 +54,10 @@ CREATE TABLE IF NOT EXISTS scans (
   done INTEGER NOT NULL DEFAULT 0,
   entity_cursor TEXT
 );
+CREATE TABLE IF NOT EXISTS counters (
+  key TEXT PRIMARY KEY,
+  value INTEGER NOT NULL
+);
 `;
 
 /** First-dataset epoch for a fresh account object. Fixed for determinism. */

@@ -29,6 +29,7 @@ import {
   type SyncedChange,
 } from '../../contract/sync';
 import { SOCKET_FRAME_VERSION, type SyncInvalidateFrame } from '../../contract/socket';
+import type { SyncAccountStats } from '../../contract/auth';
 import {
   SOCKET_SUBPROTOCOL,
   DEFAULT_LIMITS,
@@ -114,6 +115,17 @@ interface PushBatchOutcome {
 
 const HASH_PATTERN = /^[0-9a-f]{64}$/;
 
+/** Retained sync history lifetime (spec §5: changes, tombstones, receipts). */
+const RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+/** Bounded compaction batch per sweep pass — spec §5 requires bounded work. */
+const SWEEP_BATCH_ROWS = 500;
+/** Regular sweep cadence; each pass reschedules the next. */
+const SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000;
+/** Quick follow-up while a bounded pass still has expired rows left. */
+const SWEEP_CONTINUE_MS = 1_000;
+/** Per-account retained-history budget enforced before accepting changes. */
+const HISTORY_QUOTA_BYTES = 64 * 1024 * 1024;
+
 function isSocketAttachment(value: unknown): value is SocketAttachment {
   if (!isRecord(value)) {
     return false;
@@ -164,6 +176,11 @@ export class AccountCoordinator extends DurableObject<Env> {
       'retention_floor',
       '0',
     );
+    this.ctx.storage.sql.exec(
+      'INSERT OR IGNORE INTO sync_meta (key, value) VALUES (?, ?)',
+      'history_bytes',
+      '0',
+    );
     this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
   }
 
@@ -171,8 +188,15 @@ export class AccountCoordinator extends DurableObject<Env> {
     const url = new URL(request.url);
     if (url.pathname === '/internal/meta' && request.method === 'GET') {
       // Worker-internal read: the SessionCoordinator resolves the dataset
-      // epoch for enroll/refresh/describe responses.
-      return Response.json({ epoch: this.readMeta('epoch') });
+      // epoch for enroll/refresh/describe responses, and merges these
+      // aggregate counters into session.describe for diagnostics.
+      return Response.json({ epoch: this.readMeta('epoch'), stats: this.accountStats() });
+    }
+    if (url.pathname === '/internal/sweep' && request.method === 'POST') {
+      // Worker-internal retention pass (also driven by the DO alarm); the
+      // worker never routes this externally.
+      const stats = await this.runSweep(Date.now());
+      return Response.json(stats);
     }
     if (url.pathname === '/internal/revoke-enrollment' && request.method === 'POST') {
       // Worker-internal: close every socket attached to a revoked enrollment.
@@ -312,6 +336,7 @@ export class AccountCoordinator extends DurableObject<Env> {
     if (outcome.acceptedWatermark !== null) {
       this.broadcastInvalidate(outcome.acceptedWatermark);
     }
+    await this.ensureSweepScheduled();
     const result: SyncPushResult = { results: outcome.results };
     return rpcSuccessResponse(requestId, result);
   }
@@ -332,22 +357,25 @@ export class AccountCoordinator extends DurableObject<Env> {
     const results: SyncPushItemResult[] = [];
     let acceptedWatermark: number | null = null;
     for (const item of prepared) {
+      let result: SyncPushItemResult;
       if (storedEpoch !== SPIKE_INITIAL_EPOCH) {
-        const resetItem: SyncPushItemResult = {
+        result = {
           status: 'reset-required',
           changeId: item.change.changeId,
           epoch: storedEpoch,
         };
-        this.writeReceipt(auth.enrollmentId, item, resetItem);
+        this.writeReceipt(auth.enrollmentId, item, result);
         this.advanceHighWater(auth.enrollmentId, item.change.enrollmentSequence);
-        results.push(resetItem);
-        continue;
+      } else {
+        const applied = this.applyPrepared(auth, item);
+        result = applied.item;
+        if (applied.acceptedSequence !== null) {
+          acceptedWatermark = applied.acceptedSequence;
+          this.bumpCounter('bytes_accepted', item.entityBytes);
+        }
       }
-      const applied = this.applyPrepared(auth, item);
-      results.push(applied.item);
-      if (applied.acceptedSequence !== null) {
-        acceptedWatermark = applied.acceptedSequence;
-      }
+      this.bumpCounter(`push_${result.status}`, 1);
+      results.push(result);
     }
     return { results, acceptedWatermark };
   }
@@ -415,6 +443,21 @@ export class AccountCoordinator extends DurableObject<Env> {
       return { item: expired, acceptedSequence: null };
     }
 
+    // History-byte quota is enforced before acceptance (spec §5): the change
+    // is terminally rejected and consumes its sequence with a receipt; local
+    // editing continues and the client can re-queue after retention frees
+    // space. Recovery history is never silently discarded.
+    if (this.readHistoryBytes() + item.entityBytes > HISTORY_QUOTA_BYTES) {
+      const overQuota: SyncPushItemResult = {
+        status: 'rejected',
+        changeId: change.changeId,
+        reason: 'quota-exceeded',
+      };
+      this.writeReceipt(auth.enrollmentId, item, overQuota);
+      this.advanceHighWater(auth.enrollmentId, change.enrollmentSequence);
+      return { item: overQuota, acceptedSequence: null };
+    }
+
     const existing = this.readEntity(change.entityType, change.entityId);
     const compared = compareBaseRevision(change, existing);
     if (compared !== null) {
@@ -471,12 +514,25 @@ export class AccountCoordinator extends DurableObject<Env> {
       String(sequence + 1),
     );
     this.advanceHighWater(auth.enrollmentId, change.enrollmentSequence);
+    this.addHistoryBytes(item.entityBytes);
     return { item: accepted, acceptedSequence: sequence };
   }
 
   private handlePull(requestId: string, params: unknown): Response {
     const pull = parseSpikePullParams(params);
+    this.bumpCounter('pulls', 1);
     const after = pull.cursor;
+    // A cursor below the retention floor can no longer be served faithfully:
+    // the journal rows it would have consumed are gone, so the client must
+    // reset and re-scan (spec §5 cursor-retention check).
+    const floor = this.readRetentionFloor();
+    if (after < floor) {
+      throw new RpcFailure('reset-required', {
+        reason: 'retention-floor',
+        floor,
+        cursor: after,
+      });
+    }
     const maxChanges = pull.maxChanges ?? DEFAULT_LIMITS.batchChanges;
     const maxBytes = Math.min(pull.maxBytes, DEFAULT_LIMITS.pageBytes);
     const rows = this.ctx.storage.sql
@@ -532,6 +588,7 @@ export class AccountCoordinator extends DurableObject<Env> {
 
   private handleScanBegin(requestId: string, params: unknown): Response {
     const begin = parseScanBeginParams(params);
+    this.bumpCounter('scan_begins', 1);
     const result = this.ctx.storage.transactionSync(() => this.beginScan(begin.epoch));
     return rpcSuccessResponse(requestId, result);
   }
@@ -795,6 +852,143 @@ export class AccountCoordinator extends DurableObject<Env> {
     for (const socket of this.ctx.getWebSockets()) {
       socket.send(encoded);
     }
+  }
+
+  /**
+   * OPS-01 retention/compaction. One alarm per account per spec §3: each pass
+   * reschedules from the remaining work — soon while a bounded batch still has
+   * expired rows, else at the regular cadence. The sweep deletes expired
+   * change-journal rows and receipts, advances `retention_floor` past the
+   * highest deleted sequence (stale cursors below it already reset), and
+   * drops completed scans.
+   */
+  async alarm(): Promise<void> {
+    await this.runSweep(Date.now());
+  }
+
+  private async ensureSweepScheduled(): Promise<void> {
+    const existing = await this.ctx.storage.getAlarm();
+    if (existing === null) {
+      await this.ctx.storage.setAlarm(Date.now() + SWEEP_INTERVAL_MS);
+    }
+  }
+
+  private async runSweep(now: number): Promise<{
+    deletedChanges: number;
+    deletedReceipts: number;
+    deletedScans: number;
+    continued: boolean;
+  }> {
+    const cutoff = now - RETENTION_MS;
+    let deletedChanges = 0;
+    let deletedReceipts = 0;
+    let deletedScans = 0;
+    let freedBytes = 0;
+    let maxDeletedSequence: number | null = null;
+    this.ctx.storage.transactionSync(() => {
+      const expired = this.ctx.storage.sql
+        .exec<{ sequence: number; nbytes: number | null }>(
+          `SELECT sequence, length(cast(payload AS blob)) AS nbytes
+           FROM changes WHERE created_at < ? ORDER BY sequence ASC LIMIT ?`,
+          cutoff,
+          SWEEP_BATCH_ROWS,
+        )
+        .toArray();
+      for (const row of expired) {
+        this.ctx.storage.sql.exec('DELETE FROM changes WHERE sequence = ?', row.sequence);
+        freedBytes += row.nbytes ?? 0;
+        maxDeletedSequence = row.sequence;
+      }
+      deletedChanges = expired.length;
+      if (maxDeletedSequence !== null) {
+        this.ctx.storage.sql.exec(
+          `UPDATE sync_meta SET value = ?
+           WHERE key = 'retention_floor' AND CAST(value AS INTEGER) < ?`,
+          String(maxDeletedSequence),
+          maxDeletedSequence,
+        );
+      }
+      const staleReceipts = this.ctx.storage.sql
+        .exec<{ enrollment_id: string; enrollment_sequence: number }>(
+          `SELECT enrollment_id, enrollment_sequence FROM receipts
+           WHERE created_at < ? LIMIT ?`,
+          cutoff,
+          SWEEP_BATCH_ROWS,
+        )
+        .toArray();
+      for (const row of staleReceipts) {
+        this.ctx.storage.sql.exec(
+          'DELETE FROM receipts WHERE enrollment_id = ? AND enrollment_sequence = ?',
+          row.enrollment_id,
+          row.enrollment_sequence,
+        );
+        deletedReceipts += 1;
+      }
+      const staleScans = this.ctx.storage.sql
+        .exec<{ scan_id: string }>(
+          'SELECT scan_id FROM scans WHERE done = 1 AND created_at < ? LIMIT ?',
+          cutoff,
+          SWEEP_BATCH_ROWS,
+        )
+        .toArray();
+      for (const row of staleScans) {
+        this.ctx.storage.sql.exec('DELETE FROM scans WHERE scan_id = ?', row.scan_id);
+        deletedScans += 1;
+      }
+      if (freedBytes > 0) {
+        this.addHistoryBytes(-freedBytes);
+      }
+      this.bumpCounter('sweep_changes_deleted', deletedChanges);
+      this.bumpCounter('sweep_receipts_deleted', deletedReceipts);
+      this.bumpCounter('sweep_scans_deleted', deletedScans);
+    });
+    const continued =
+      deletedChanges === SWEEP_BATCH_ROWS || deletedReceipts === SWEEP_BATCH_ROWS;
+    await this.ctx.storage.setAlarm(
+      Date.now() + (continued ? SWEEP_CONTINUE_MS : SWEEP_INTERVAL_MS),
+    );
+    return { deletedChanges, deletedReceipts, deletedScans, continued };
+  }
+
+  private readHistoryBytes(): number {
+    const rows = this.ctx.storage.sql
+      .exec<MetaRow>("SELECT value FROM sync_meta WHERE key = 'history_bytes'")
+      .toArray();
+    return rows[0] === undefined ? 0 : Number(rows[0].value);
+  }
+
+  private addHistoryBytes(delta: number): void {
+    const next = Math.max(0, this.readHistoryBytes() + delta);
+    this.ctx.storage.sql.exec(
+      `INSERT INTO sync_meta (key, value) VALUES ('history_bytes', ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      String(next),
+    );
+  }
+
+  private bumpCounter(key: string, by: number): void {
+    if (by === 0) return;
+    this.ctx.storage.sql.exec(
+      `INSERT INTO counters (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = value + excluded.value`,
+      key,
+      by,
+    );
+  }
+
+  private accountStats(): SyncAccountStats {
+    const counters: Record<string, number> = {};
+    for (const row of this.ctx.storage.sql
+      .exec<{ key: string; value: number }>('SELECT key, value FROM counters')
+      .toArray()) {
+      counters[row.key] = row.value;
+    }
+    return {
+      historyBytes: this.readHistoryBytes(),
+      historyQuotaBytes: HISTORY_QUOTA_BYTES,
+      retentionFloor: this.readRetentionFloor(),
+      counters,
+    };
   }
 }
 

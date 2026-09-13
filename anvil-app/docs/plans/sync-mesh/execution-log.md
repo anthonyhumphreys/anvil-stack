@@ -258,3 +258,64 @@ Branch: `feature/sync-mesh--foundations` (base `main` @ `3ff60e2`).
 - Dual-edit on `cloud/contract/index.ts` (AUTH-01 export) vs untouched contract
 - Hibernation evidence may be unmeasurable in local tests — must not be faked
 - BYOB-01 SettingsView is ~2900 lines; keep the category addition minimal
+
+## 2026-09-12 — Step 5 UX completion + OPS-01 retention/quota slice
+
+Commits: `db20fa3` live channel, `f4192d6` save-copy + actionable states,
+this OPS-01 slice.
+
+### Step 5 UX completion
+
+- `save-copy` conflict resolution end-to-end: remote takes the canonical
+  entity; the local version is preserved under a fresh id, bound to the same
+  scope and queued as a create so it syncs like any local workflow.
+- Conflict compare: `SyncConflictView` carries local/remote payload JSON; the
+  panel renders name/step/edge summaries plus an explicit-choice hint for
+  edit-delete conflicts.
+- Actionable status: `rejectedCount` (terminal outbox rejections),
+  `recovering` (reset_required), `sessionExpired` (refresh credential
+  rejected non-retryably or session wiped server-side; clears on enroll /
+  refresh / sign-out) surfaced in `SyncRuntimeStatus` and the panel.
+
+### OPS-01 slice: retention, quota, counters
+
+- Account DO: one self-rescheduling alarm sweeps expired change-journal rows,
+  receipts, and completed scans in bounded 500-row passes; deleting journal
+  rows advances `retention_floor` to the highest deleted sequence, and
+  `sync.pull` now rejects cursors below the floor with `reset-required`
+  (previously a stale cursor silently got a partial journal).
+- History-byte quota (64 MiB/account, `HISTORY_QUOTA_BYTES`) enforced before
+  accepting each change: `rejected`/`quota-exceeded` consumes the sequence
+  with a receipt; recovery history is never discarded.
+- Aggregate counters (push per-status, bytes_accepted, pulls, scan_begins,
+  sweep deletions) in a `counters` table; `/internal/meta` now returns
+  `{ epoch, stats }` and `session.describe` merges it as `accountStats`
+  (additive, optional — contract unchanged for older backends).
+- Session DO: hourly alarm sweeps expired unconsumed enrollment codes,
+  clears lapsed refresh-grace rows, and drops revoked sessions past 30d
+  audit retention. `/internal/sweep` on both DOs is the ops-drill entrypoint
+  (worker-internal only, never routed publicly).
+- Desktop: `sweepLocalSyncRetention()` compacts acknowledged/rejected
+  outbox rows and resolved conflicts past 90d on runtime init; mutable rows
+  are never swept.
+
+### Verification
+
+- Backend: 37/37 (new `test/retention.test.ts`: quota reject+recover, sweep
+  floor advance + stale-cursor reset, retention-window preservation,
+  describe accountStats, code expiry, lapsed-grace cleanup).
+- Desktop sync suite: 109/109 (+ local retention sweep test).
+- Two-profile acceptance gate re-passed against live `wrangler dev --env dev`
+  with quota/sweep/floor active.
+- `tsc -p cloud/tsconfig.json` + backend typecheck: clean; node/web
+  typechecks: zero sync diagnostics; eslint clean on touched files.
+
+### Still open
+
+- OPS-01 remainder: metering export/redacted diagnostics bundle, restore
+  drill evidence, quota exceeded UX copy.
+- ENTITY-01: workspace/agent/settings adapters — blocked on a product
+  decision: "editable agents" do not exist as a domain entity today
+  (personas are compiled-in constants with bundled prompt files).
+- WS-01..03, MESH-01..03, SESSION-02/03, FLOW-01..03, PLACE-01, BYOB-02,
+  IAC-01/02, LAUNCH-01.

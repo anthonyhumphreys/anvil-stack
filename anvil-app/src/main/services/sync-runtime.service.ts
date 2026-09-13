@@ -57,6 +57,7 @@ import {
   listConflicts,
   listSyncScopesForEntity,
   recordLocalChange,
+  sweepLocalSyncRetention,
   upsertBinding,
   upsertEnrollment,
 } from './sync-persistence.service.js';
@@ -126,6 +127,9 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
   devSpikeEnabled = options.devSpikeEnabled === true;
   fetchOverride = options.fetchFn;
   createSocketOverride = options.createSocket;
+  // Compact terminal sync metadata (acknowledged/rejected outbox rows,
+  // resolved conflicts) past the local retention window.
+  sweepLocalSyncRetention();
   if (auth.getPublicSnapshot().state === 'signed-in') {
     scheduleSessionRefresh();
   }
