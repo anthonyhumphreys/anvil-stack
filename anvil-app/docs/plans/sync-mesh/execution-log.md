@@ -470,3 +470,28 @@ service tests, **4/4 acceptance gate including a live end-to-end
 diagnostic run** — A creates the job, C's durable sweep claims/journals/
 runs/reports, A reads `completed`. Full app suite green; tsc clean on
 `cloud/` and touched files; eslint clean.
+
+## MESH-03 desktop — live observation + artifact client (d9565ee)
+
+- `mesh-worker.service.ts`: `sendFrame` in the injected context; bounded
+  per-attempt `activity` frames (`attempt:<id>` stream, monotonic
+  sequence, fence as generation) emitted as best-effort status events —
+  send failures are swallowed, the durable journal stays authoritative.
+- `mesh-observe.service.ts`: `observeAttempt(attemptId, listener)` —
+  multiplexed socket subscriptions (shared per scope), 60s interest
+  renewal under the 90s server expiry, bounded 200-item replay buffer
+  for late listeners, `gap` frames mark explicit holes and trigger
+  `event.pull` durable replay; unretained sequences stay marked so the
+  UI shows a hole rather than fabricating output. Resubscribes on
+  socket hello; tears down on sign-out/backend change. No sync-runtime
+  import — same injected-context pattern as the worker.
+- `mesh-artifact.service.ts`: `uploadAttemptArtifact` (reserve →
+  byte PUT to `uploadPath` with bearer → finalize), `listMeshArtifacts`,
+  `getMeshArtifact`, `downloadMeshArtifact` (sha256 verified,
+  published-only), `deleteMeshArtifact`.
+- Runtime: routes `activity`/`gap` frames to the observer (mesh gaps no
+  longer kick `requestSync`), calls `meshObserverOnLive` on hello,
+  `meshObserverOnGone` on gone, injects artifact context.
+
+Verification: 26/26 mesh service tests (13 worker, 7 artifact,
+6 observe), 22/22 runtime + acceptance tests.
