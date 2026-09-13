@@ -58,6 +58,8 @@ export interface SyncRuntimeStatus {
   conflictCount: number;
   /** Terminal-rejected changes that need user attention. */
   rejectedCount: number;
+  /** A rejection was the account history quota — local edits stay local until space frees. */
+  quotaExceeded: boolean;
   /** Dataset was reset server-side; the next cycle re-scans and rebuilds. */
   recovering: boolean;
   /** The stored session was revoked or rejected; sign in again to resume. */

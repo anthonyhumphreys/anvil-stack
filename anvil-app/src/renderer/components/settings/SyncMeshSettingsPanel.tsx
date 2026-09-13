@@ -615,8 +615,9 @@ export function SyncMeshSettingsPanel(): ReactNode {
         </p>
         {runtime?.syncEnabled === true && runtime.rejectedCount > 0 && (
           <p className="text-xs text-warning">
-            {runtime.rejectedCount} change{runtime.rejectedCount === 1 ? '' : 's'} rejected by the
-            backend — resolve any related conflict, then edit the template again to re-queue it.
+            {runtime.quotaExceeded
+              ? 'The account history quota is full. Your local edits are safe and stay queued locally — free up backend history or contact your operator to raise the quota.'
+              : `${runtime.rejectedCount} change${runtime.rejectedCount === 1 ? '' : 's'} rejected by the backend — resolve any related conflict, then edit the template again to re-queue it.`}
           </p>
         )}
         {runtime?.recovering === true && (

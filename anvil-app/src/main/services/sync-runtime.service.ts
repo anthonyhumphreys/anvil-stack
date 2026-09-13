@@ -604,6 +604,7 @@ export function getRuntimeStatus(): SyncRuntimeStatus {
     pendingCount: snapshot?.pendingCount ?? 0,
     conflictCount: scope ? listConflicts(scope).length : 0,
     rejectedCount: snapshot?.rejectedCount ?? 0,
+    quotaExceeded: snapshot?.quotaExceeded ?? false,
     recovering: snapshot?.recovering ?? false,
     sessionExpired,
     lastError,

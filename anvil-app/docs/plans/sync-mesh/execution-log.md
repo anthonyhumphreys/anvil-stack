@@ -336,3 +336,16 @@ this OPS-01 slice.
 
 Verification: 18/18 runtime tests (new diagnostics coverage), 618/618 main
 suite, node+web typechecks zero sync diagnostics, eslint clean.
+
+### OPS-01 quota UX + restore drill
+
+- `quotaExceeded` flows from the engine snapshot (rejected outbox rows with
+  reason `quota-exceeded`) through `SyncRuntimeStatus` to the panel, which
+  now shows quota-specific copy instead of generic rejection text.
+- Acceptance gate gains a wipe-and-restore drill: a fresh profile (new
+  userDataDir + SQLite, no cursors) redeems a pairing code issued via the
+  production `issueEnrollmentCode` path and materializes the full account
+  dataset in one cycle — restore evidence against the real worker.
+
+Verification: 3/3 acceptance tests on live worker; 41/41 engine+runtime+
+failure-injection tests; typechecks and eslint clean.

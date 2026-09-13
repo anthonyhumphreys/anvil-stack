@@ -97,6 +97,8 @@ export interface SyncEngineSnapshot {
   rejectedCount: number;
   /** reset_required is set: the next cycle re-scans from the server. */
   recovering: boolean;
+  /** At least one rejection was the account history quota (OPS-01). */
+  quotaExceeded: boolean;
 }
 
 export class SyncEngineError extends Error {
@@ -170,6 +172,13 @@ export function getSyncEngineSnapshot(scope: SyncScope): SyncEngineSnapshot {
   const state = getSyncState(scope);
   const loop = loops.get(scopeKey(scope));
   const rows = listMutableCounts(scope);
+  const quota = getDb()
+    .prepare(
+      `SELECT COUNT(*) AS count FROM sync_outbox
+       WHERE ${SCOPE_WHERE} AND state = 'rejected'
+         AND result_json LIKE '%"quota-exceeded"%'`,
+    )
+    .get(...scopeParams(scope)) as { count: number };
   return {
     lastPushAt: state?.lastPushAt ?? null,
     lastPullAt: state?.lastPullAt ?? null,
@@ -178,6 +187,7 @@ export function getSyncEngineSnapshot(scope: SyncScope): SyncEngineSnapshot {
     dispatchedCount: rows.dispatched,
     rejectedCount: rows.rejected,
     recovering: state?.resetRequired ?? false,
+    quotaExceeded: quota.count > 0,
   };
 }
 
