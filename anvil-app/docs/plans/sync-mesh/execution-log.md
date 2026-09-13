@@ -626,3 +626,40 @@ spawn, creation key/idempotency, timeout orphan kill, CLI pin per audit
 §9; then `device.list|rename|revoke`, `account.delete*`,
 `data.export|import.*`, `handoff.*`, FLOW-01/02/03, PLACE-01, BYOB-02,
 IAC-02, LAUNCH-01.
+## SESSION-02 — remote start-session (b922a57)
+
+`start-session` is now a typed mesh job end to end:
+
+- `mesh-session.service.ts` — the provider-neutral session driver:
+  `codex app-server` over line-delimited JSON-RPC (stdin/stdout), with
+  CLI probing, minimum-version enforcement, thread start/resume, a
+  bounded turn with cancellation polling, timeout that kills the whole
+  process group, and codex-internal approval requests auto-declined
+  (mesh approvals gate the job, not the provider's prompts). Spawn is
+  injectable for tests.
+- `executeStartSession` — resolves each pinned repository to a verified
+  local checkout (mapped checkouts verified, never mutated; unmapped
+  ones resolved from the managed root BY commit, failing
+  `workspace-not-prepared` until `prepare-workspace` has run), computes
+  cwd via `commonParentDir`, journals `provider-spawn` BEFORE spawning
+  (a crash in between is the durable orphan evidence), refuses a second
+  spawn when a prior attempt journaled spawn-without-thread
+  (`prior-spawn-unresolved` — spec §9 inspect-before-retry), resumes the
+  journaled `provider-thread` handle otherwise, and reports
+  providerThreadId/turnId/cliVersion in the attempt result.
+- `createStartSessionJob` — pins workspaceDefinitionRevision (content
+  digest), exact HEAD commits, provider/model/reasoning/sandbox,
+  cliMinVersion, and turnTimeoutMs under the job's immutable
+  requestId + payloadHash with `inspect-before-retry`.
+
+Coverage: 9 focused driver tests against a fake app-server on
+PassThrough streams (thread start/resume, turn, timeout → process-group
+kill, cancel, CLI pin rejection) + 6 worker tests (spawn journal
+ordering, orphan refusal, thread resume, CLI pin violation,
+workspace-not-prepared, manifest pinning). Worker suite 27/27, app
+suite 162 files / 1103 tests, acceptance gate 7/7 on the live backend,
+backend 86/86, tsc + eslint clean.
+
+Remaining: `device.list|rename|revoke`, `account.delete*`,
+`data.export|import.*`, `handoff.*`, FLOW-01/02/03, PLACE-01, BYOB-02,
+IAC-02, LAUNCH-01.
