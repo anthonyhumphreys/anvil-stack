@@ -4,6 +4,7 @@ import {
   ChevronsUpDown,
   Download,
   ExternalLink,
+  FolderGit2,
   Pencil,
   Plus,
   Rocket,
@@ -13,6 +14,7 @@ import { useBrand } from '../../contexts/BrandContext';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { AnvilLogo } from '../brand/AnvilLogo';
 import { WorkspaceBootstrapPanel } from './WorkspaceBootstrapPanel';
+import { WorkspaceSetupPanel } from './WorkspaceSetupPanel';
 
 interface WorkspaceMenuProps {
   compact: boolean;
@@ -22,10 +24,17 @@ interface WorkspaceMenuProps {
 
 export function WorkspaceMenu({ compact, statusLabel, onCreateNew }: WorkspaceMenuProps) {
   const brand = useBrand();
-  const { workspaces, activeWorkspace, switchWorkspace, updateWorkspace, deleteWorkspace } =
-    useWorkspace();
+  const {
+    workspaces,
+    activeWorkspace,
+    switchWorkspace,
+    updateWorkspace,
+    deleteWorkspace,
+    refreshWorkspaces,
+  } = useWorkspace();
   const [open, setOpen] = useState(false);
   const [showBootstrap, setShowBootstrap] = useState(false);
+  const [showSetup, setShowSetup] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const orderedWorkspaces = activeWorkspace
     ? workspaces.toSorted(
@@ -189,6 +198,16 @@ export function WorkspaceMenu({ compact, statusLabel, onCreateNew }: WorkspaceMe
                   void window.anvil.workspace.openInNewWindow(activeWorkspace.id);
                 }}
               />
+              {activeWorkspace.definitionState === 'needs-setup' && (
+                <MenuAction
+                  icon={<FolderGit2 size={14} />}
+                  label="Set up checkouts…"
+                  onClick={() => {
+                    setOpen(false);
+                    setShowSetup(true);
+                  }}
+                />
+              )}
               <MenuAction
                 icon={<Rocket size={14} />}
                 label="Bootstrap…"
@@ -220,6 +239,14 @@ export function WorkspaceMenu({ compact, statusLabel, onCreateNew }: WorkspaceMe
           workspaceId={activeWorkspace.id}
           workspaceName={activeWorkspace.name}
           onClose={() => setShowBootstrap(false)}
+        />
+      )}
+      {showSetup && activeWorkspace && (
+        <WorkspaceSetupPanel
+          workspaceId={activeWorkspace.id}
+          workspaceName={activeWorkspace.name}
+          onClose={() => setShowSetup(false)}
+          onChanged={() => void refreshWorkspaces()}
         />
       )}
     </div>
