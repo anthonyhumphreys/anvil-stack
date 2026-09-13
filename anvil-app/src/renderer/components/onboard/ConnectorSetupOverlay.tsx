@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   BrainCircuit,
   CheckCircle,
@@ -12,9 +12,10 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { useBrand } from '../../contexts/BrandContext';
-import type { AgentProvider, AppSettings } from '../../../shared/types';
+import type { AgentProvider, AppSettings, LlmGatewayStatus } from '../../../shared/types';
 import { OnboardingPreviewBar } from './OnboardingPreviewBar';
 import { selectPrimaryAgentProvider } from '../../utils/agent-provider-settings';
+import { CodexRuntimeSetup } from '../settings/CodexRuntimeSetup';
 
 type TestStatus = 'idle' | 'testing' | 'ok' | 'error';
 
@@ -33,6 +34,9 @@ export function ConnectorSetupOverlay({
   const [settings, setSettings] = useState<Partial<AppSettings>>({});
   const [expandedCard, setExpandedCard] = useState<string | null>(null);
   const [llmStatus, setLlmStatus] = useState<TestStatus>('idle');
+  const [llmGatewayConnecting, setLlmGatewayConnecting] = useState(false);
+  const [llmGatewayStatus, setLlmGatewayStatus] = useState<LlmGatewayStatus | null>(null);
+  const gatewayRequestId = useRef(0);
   const [wiStatus, setWiStatus] = useState<TestStatus>('idle');
   const [gitStatus, setGitStatus] = useState<TestStatus>('idle');
   const [confluenceStatus, setConfluenceStatus] = useState<TestStatus>('idle');
@@ -57,8 +61,29 @@ export function ConnectorSetupOverlay({
   };
 
   const selectLlmProvider = (provider: AgentProvider) => {
+    gatewayRequestId.current += 1;
     setSettings((current) => selectPrimaryAgentProvider(current, provider));
     setLlmStatus('idle');
+    if (provider === 'llmgateway' && !preview) {
+      const requestId = gatewayRequestId.current;
+      void window.anvil.settings
+        .getLlmGatewayStatus()
+        .then((status) => {
+          if (requestId !== gatewayRequestId.current) return;
+          setLlmGatewayStatus(status);
+          if (status.models.length > 0) {
+            setSettings((current) => ({
+              ...current,
+              openaiModel:
+                current.openaiModel &&
+                status.models.some((model) => model.id === current.openaiModel)
+                  ? current.openaiModel
+                  : status.models[0].id,
+            }));
+          }
+        })
+        .catch(() => undefined);
+    }
   };
 
   const saveSettings = async () => {
@@ -81,7 +106,80 @@ export function ConnectorSetupOverlay({
 
   // --- LLM ---
   const llmProvider = settings.llmProvider ?? 'codex';
+  const selectGatewayBillingMode = (billingMode: AppSettings['llmGatewayBillingMode']) => {
+    if (!billingMode || preview || llmGatewayConnecting) return;
+    const requestId = ++gatewayRequestId.current;
+    setSettings((current) => ({
+      ...current,
+      llmGatewayBillingMode: billingMode,
+      openaiModel: undefined,
+    }));
+    setLlmGatewayStatus(null);
+    setLlmStatus('idle');
+    void window.anvil.settings
+      .getLlmGatewayStatus(true, billingMode)
+      .then((status) => {
+        if (requestId !== gatewayRequestId.current) return;
+        setLlmGatewayStatus(status);
+        if (status.models.length > 0) {
+          setSettings((current) => ({ ...current, openaiModel: status.models[0].id }));
+        }
+      })
+      .catch((error) => {
+        if (requestId !== gatewayRequestId.current) return;
+        setTestError(error instanceof Error ? error.message : 'Failed to load gateway models');
+      });
+  };
+
+  const connectLlmGateway = async () => {
+    if (preview) return;
+    const requestId = ++gatewayRequestId.current;
+    setLlmGatewayConnecting(true);
+    setTestError(null);
+    try {
+      const billingMode = settings.llmGatewayBillingMode ?? 'devpass';
+      await window.anvil.settings.update({
+        ...settings,
+        llmProvider: 'llmgateway',
+        llmGatewayBillingMode: billingMode,
+      });
+      const hasManualKey = Boolean(
+        settings.llmGatewayApiKey && !settings.llmGatewayApiKey.startsWith('••'),
+      );
+      const status = hasManualKey
+        ? await window.anvil.settings.getLlmGatewayStatus(true, billingMode)
+        : await window.anvil.settings.connectLlmGateway(billingMode);
+      if (requestId !== gatewayRequestId.current || settings.llmProvider !== 'llmgateway') return;
+      setLlmGatewayStatus(status);
+      const selectedModel = status.models.some((model) => model.id === settings.openaiModel)
+        ? settings.openaiModel!
+        : (status.models[0]?.id ?? '');
+      setSettings((current) => ({
+        ...current,
+        llmGatewayApiKey: '••••••••',
+        llmGatewayBillingMode: billingMode,
+        openaiModel: selectedModel,
+      }));
+      if (status.credentialStatus === 'valid') {
+        if (selectedModel) {
+          await window.anvil.settings.update({ openaiModel: selectedModel });
+        }
+        setLlmStatus('ok');
+        markConfigured('llm');
+      } else {
+        setLlmStatus('error');
+        setTestError(status.error ?? 'LLMGateway did not validate the connection.');
+      }
+    } catch (error) {
+      if (requestId !== gatewayRequestId.current) return;
+      setLlmStatus('error');
+      setTestError(error instanceof Error ? error.message : 'Failed to connect LLMGateway');
+    } finally {
+      if (requestId === gatewayRequestId.current) setLlmGatewayConnecting(false);
+    }
+  };
   const testLlm = async () => {
+    if (llmProvider === 'llmgateway') return connectLlmGateway();
     setLlmStatus('testing');
     setTestError(null);
     await saveSettings();
@@ -208,6 +306,11 @@ export function ConnectorSetupOverlay({
                   active={llmProvider === 'azure'}
                   onClick={() => selectLlmProvider('azure')}
                 />
+                <ProviderButton
+                  label="LLMGateway"
+                  active={llmProvider === 'llmgateway'}
+                  onClick={() => selectLlmProvider('llmgateway')}
+                />
               </div>
               {llmProvider === 'codex' && (
                 <p className="text-xs text-text-tertiary">
@@ -235,6 +338,70 @@ export function ConnectorSetupOverlay({
                     placeholder="gpt-5.6-sol"
                   />
                 </>
+              )}
+              {llmProvider === 'llmgateway' && (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 gap-2">
+                    <ProviderButton
+                      label="DevPass"
+                      active={(settings.llmGatewayBillingMode ?? 'devpass') === 'devpass'}
+                      disabled={llmGatewayConnecting}
+                      onClick={() => selectGatewayBillingMode('devpass')}
+                    />
+                    <ProviderButton
+                      label="Pay as you go"
+                      active={settings.llmGatewayBillingMode === 'payg'}
+                      disabled={llmGatewayConnecting}
+                      onClick={() => selectGatewayBillingMode('payg')}
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    disabled={preview || llmGatewayConnecting}
+                    onClick={() => void connectLlmGateway()}
+                    className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+                  >
+                    {llmGatewayConnecting && <Loader2 size={13} className="animate-spin" />}
+                    {settings.llmGatewayApiKey && !settings.llmGatewayApiKey.startsWith('••')
+                      ? 'Verify API key'
+                      : 'Connect in browser'}
+                  </button>
+                  <CodexRuntimeSetup compact disabled={preview} />
+                  <Field
+                    label="API key (alternative)"
+                    value={settings.llmGatewayApiKey ?? ''}
+                    onChange={(value) => update('llmGatewayApiKey', value)}
+                    type="password"
+                    placeholder="llmgtwy_..."
+                  />
+                  <div className="space-y-1">
+                    <label
+                      htmlFor="onboarding-llmgateway-model"
+                      className="block text-xs text-text-secondary"
+                    >
+                      Model
+                    </label>
+                    <select
+                      id="onboarding-llmgateway-model"
+                      value={settings.openaiModel ?? ''}
+                      onChange={(event) => update('openaiModel', event.target.value)}
+                      disabled={preview || !llmGatewayStatus?.models.length}
+                      className="w-full rounded-md border border-border bg-bg-primary px-2.5 py-1.5 text-xs text-text-primary focus:border-accent focus:outline-none disabled:opacity-60"
+                    >
+                      {!llmGatewayStatus?.models.length && (
+                        <option value="">Connect to load available models</option>
+                      )}
+                      {(llmGatewayStatus?.models ?? []).map((model) => (
+                        <option key={model.id} value={model.id}>
+                          {model.displayName} · {model.id}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-xs text-text-tertiary">
+                      Choose a model from the validated LLMGateway catalog.
+                    </p>
+                  </div>
+                </div>
               )}
               {llmProvider === 'azure' && (
                 <div className="rounded-md border border-border bg-bg-primary p-3 space-y-2">
@@ -633,20 +800,23 @@ function ConnectorCard({
 function ProviderButton({
   label,
   active,
+  disabled = false,
   onClick,
 }: {
   label: string;
   active: boolean;
+  disabled?: boolean;
   onClick: () => void;
 }) {
   return (
     <button
       onClick={onClick}
+      disabled={disabled}
       className={`flex-1 rounded-md border px-2 py-1.5 text-xs font-medium transition-colors ${
         active
           ? 'border-accent bg-accent/10 text-accent'
           : 'border-border bg-bg-primary text-text-secondary hover:bg-bg-tertiary'
-      }`}
+      } disabled:cursor-not-allowed disabled:opacity-50`}
     >
       {label}
     </button>

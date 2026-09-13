@@ -273,15 +273,21 @@ async function listCodexFeatureFlags(): Promise<CodexCliStatus['features']> {
 /**
  * Get install instructions for Codex CLI.
  */
-export function getCodexInstallInstructions(): string {
+export function getCodexInstallInstructions(provider: 'llmgateway' | 'codex' = 'codex'): string {
+  if (provider === 'llmgateway') {
+    return [
+      'Anvil uses Codex as the local coding engine for LLMGateway chat, workflows, and automations.',
+      '',
+      'Use Settings → Coding engine to install or repair the Anvil-managed Codex runtime.',
+      '',
+      'Your selected model is accessed with your LLMGateway key; no ChatGPT login is required.',
+    ].join('\n');
+  }
   return [
-    'Codex CLI is required for the chat feature.',
+    'Codex CLI is required for this provider.',
     '',
-    'Install or update Codex:',
-    '  curl -fsSL https://chatgpt.com/codex/install.sh | sh',
+    'Install or update Codex from the official Codex documentation.',
     '',
-    'Then run `codex` and sign in with ChatGPT.',
-    '',
-    'API-key and Azure provider paths remain available for workflows that need them.',
+    'Then configure the provider credentials required by your selected Codex provider.',
   ].join('\n');
 }

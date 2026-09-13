@@ -18,4 +18,11 @@ describe('normaliseEnabledLlmProviders', () => {
   it('falls back to the primary provider for invalid persisted data', () => {
     expect(normaliseEnabledLlmProviders('{not-json', 'openai')).toEqual(['openai']);
   });
+
+  it('preserves LLMGateway in the provider set', () => {
+    expect(normaliseEnabledLlmProviders(['codex', 'llmgateway'], 'llmgateway')).toEqual([
+      'llmgateway',
+      'codex',
+    ]);
+  });
 });

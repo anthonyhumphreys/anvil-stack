@@ -1,6 +1,6 @@
 {
   "name": "anvil",
-  "version": "0.6.27",
+  "version": "0.7.0",
   "description": "Anvil developer mission control",
   "main": "out/main/index.js",
   "type": "module",
@@ -58,6 +58,7 @@
     "process": "^0.11.10",
     "qrcode": "^1.5.4",
     "simple-git": "^3.36.0",
+    "smol-toml": "1.8.0",
     "text-decoder": "^1.2.7",
     "typescript": "^5.9.3",
     "wrappy": "^1.0.2",

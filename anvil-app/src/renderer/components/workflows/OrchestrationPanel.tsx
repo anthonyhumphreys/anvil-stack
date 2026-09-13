@@ -4,6 +4,7 @@ import type {
   AgentProvider,
   CodexCliStatus,
   CursorCliStatus,
+  LlmGatewayStatus,
   Persona,
   WorkflowAgentProfile,
   WorkflowNode,
@@ -23,6 +24,7 @@ export function OrchestrationPanel({
   personas,
   codexStatus,
   cursorStatus,
+  llmGatewayStatus,
 }: {
   value?: WorkflowOrchestration;
   onChange: (value: WorkflowOrchestration) => void;
@@ -30,6 +32,7 @@ export function OrchestrationPanel({
   personas: Persona[];
   codexStatus: CodexCliStatus | null;
   cursorStatus: CursorCliStatus | null;
+  llmGatewayStatus: LlmGatewayStatus | null;
 }) {
   const [expandedProfile, setExpandedProfile] = useState<string | null>(null);
   const config = orchestrationConfig(value);
@@ -53,7 +56,13 @@ export function OrchestrationPanel({
           onClick={() => {
             const id = crypto.randomUUID();
             const provider = providers[0] ?? 'codex';
-            const model = buildProviderModelOptions(provider, null, codexStatus, cursorStatus)[0];
+            const model = buildProviderModelOptions(
+              provider,
+              null,
+              codexStatus,
+              cursorStatus,
+              llmGatewayStatus,
+            )[0];
             update({
               profiles: [
                 ...config.profiles,
@@ -62,7 +71,7 @@ export function OrchestrationPanel({
                   name: `Specialist ${config.profiles.length + 1}`,
                   personaId: 'coder',
                   provider,
-                  model: model?.id ?? DEFAULT_CODEX_MODEL,
+                  model: model?.id ?? (provider === 'llmgateway' ? '' : DEFAULT_CODEX_MODEL),
                   reasoningEffort: model?.defaultReasoningEffort ?? 'medium',
                   capabilities: [],
                 },
@@ -87,6 +96,7 @@ export function OrchestrationPanel({
             profile.model,
             codexStatus,
             cursorStatus,
+            llmGatewayStatus,
           );
           const selectedModel = modelOptions.find((model) => model.id === profile.model);
           return (
@@ -164,10 +174,12 @@ export function OrchestrationPanel({
                           null,
                           codexStatus,
                           cursorStatus,
+                          llmGatewayStatus,
                         )[0];
                         updateProfile(profile.id, {
                           provider,
-                          model: model?.id ?? DEFAULT_CODEX_MODEL,
+                          model:
+                            model?.id ?? (provider === 'llmgateway' ? '' : DEFAULT_CODEX_MODEL),
                           reasoningEffort: model?.defaultReasoningEffort ?? 'medium',
                         });
                       }}
@@ -209,12 +221,21 @@ export function OrchestrationPanel({
                         ? cursorStatus?.models.length
                           ? `${cursorStatus.models.length} models detected from Cursor CLI.`
                           : "Cursor's model catalog is unavailable. Auto uses Cursor's default."
-                        : codexStatus?.models?.length
-                          ? `${codexStatus.models.filter((model) => !model.hidden).length} models detected from Codex CLI.`
-                          : 'Using the built-in model catalog.'}
+                        : profile.provider === 'llmgateway'
+                          ? llmGatewayStatus?.models.length
+                            ? `${llmGatewayStatus.models.filter((model) => !model.hidden).length} models available from LLMGateway.`
+                            : 'LLMGateway model catalog is unavailable. Connect or refresh it in Settings.'
+                          : codexStatus?.models?.length
+                            ? `${codexStatus.models.filter((model) => !model.hidden).length} models detected from Codex CLI.`
+                            : 'Using the built-in model catalog.'}
                     </p>
                   </label>
-                  {profile.provider !== 'cursor' ? (
+                  {profile.provider === 'llmgateway' &&
+                  !selectedModel?.supportedReasoningEfforts.length ? (
+                    <p className="text-xs text-text-tertiary">
+                      No configurable reasoning levels for this model.
+                    </p>
+                  ) : profile.provider !== 'cursor' ? (
                     <label className="block text-xs text-text-secondary">
                       Reasoning
                       <select
@@ -229,7 +250,10 @@ export function OrchestrationPanel({
                       >
                         {(
                           selectedModel?.supportedReasoningEfforts ??
-                          getCodexModelReasoningOptions(profile.model).supportedReasoningEfforts
+                          (profile.provider === 'llmgateway'
+                            ? []
+                            : getCodexModelReasoningOptions(profile.model)
+                                .supportedReasoningEfforts)
                         ).map((effort) => (
                           <option key={effort} value={effort}>
                             {effort}

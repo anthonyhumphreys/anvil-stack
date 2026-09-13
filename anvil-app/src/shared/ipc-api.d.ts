@@ -7,6 +7,7 @@ import type {
   DojoRecommendationStatus,
 } from './dojo-types';
 import type { RunCommand, RunStatus } from './run-types';
+import type { CodexRuntimeStatus } from './codex-runtime';
 import type {
   AgentUIIntent,
   AgentUIIntentPresentationPatch,
@@ -79,6 +80,8 @@ import type {
   CodeReviewScopeType,
   CodexCliStatus,
   CursorCliStatus,
+  LlmGatewayBillingMode,
+  LlmGatewayStatus,
   CodexMcpRegisterInput,
   CodexRegistryActionResult,
   CodexRegistrySnapshot,
@@ -600,7 +603,15 @@ export interface AnvilAPI {
     get: () => Promise<AppSettings>;
     update: (settings: Partial<AppSettings>) => Promise<void>;
     getCodexStatus: () => Promise<CodexCliStatus>;
+    getCodexRuntimeStatus: () => Promise<CodexRuntimeStatus>;
+    installCodexRuntime: () => Promise<CodexRuntimeStatus>;
     getCursorStatus: () => Promise<CursorCliStatus>;
+    getLlmGatewayStatus: (
+      forceModels?: boolean,
+      billingMode?: LlmGatewayBillingMode,
+    ) => Promise<LlmGatewayStatus>;
+    connectLlmGateway: (billingMode: LlmGatewayBillingMode) => Promise<LlmGatewayStatus>;
+    disconnectLlmGateway: () => Promise<LlmGatewayStatus>;
     setCodexAgentMaxThreads: (maxThreads: number) => Promise<CodexCliStatus>;
     testFoundryConnection: () => Promise<{ ok: boolean; error?: string }>;
     getLocalLlmCapabilities: () => Promise<LocalLlmCapabilities>;

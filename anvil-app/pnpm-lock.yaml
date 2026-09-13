@@ -81,6 +81,9 @@ importers:
       simple-git:
         specifier: ^3.36.0
         version: 3.36.0
+      smol-toml:
+        specifier: 1.8.0
+        version: 1.8.0
       text-decoder:
         specifier: ^1.2.7
         version: 1.2.7
@@ -7108,6 +7111,10 @@ packages:
   slugify@1.6.9:
     resolution: {integrity: sha512-vZ7rfeehZui7wQs438JXBckYLkIIdfHOXsaVEUMyS5fHo1483l1bMdo0EDSWYclY0yZKFOipDy4KHuKs6ssvdg==}
     engines: {node: '>=8.0.0'}
+
+  smol-toml@1.8.0:
+    resolution: {integrity: sha512-kCZr2V3ch9i00x8zXRhjUNVcjG9ijES5dDudkXvUVCT5QlJNQWElSJdZqyPemffHoLNUYwOcou0Fy+ojN0uHSQ==}
+    engines: {node: '>= 18'}
 
   source-map-js@1.2.1:
     resolution: {integrity: sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==}
@@ -17273,6 +17280,8 @@ snapshots:
   slash@5.1.0: {}
 
   slugify@1.6.9: {}
+
+  smol-toml@1.8.0: {}
 
   source-map-js@1.2.1: {}
 

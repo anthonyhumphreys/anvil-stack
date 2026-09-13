@@ -1,3 +1,4 @@
+import { writeGatewayCodexCatalog } from './llm-gateway-runtime.service.js';
 import { previewBuild } from '../../shared/preview-build.js';
 import { app } from 'electron';
 import { getWorkflowTemplate, startWorkflowRun, waitForWorkflowRun } from './workflow.service.js';
@@ -17,7 +18,6 @@ import type {
   WatchtowerEvent,
 } from '../../shared/types.js';
 import { getDb } from '../db/database.js';
-import { detectCodexCli } from './codex-bridge.service.js';
 import {
   appendAutomationRunEvent,
   completeAutomationRun,
@@ -59,7 +59,14 @@ import { addWorktree, getFullStatus, removeWorktree } from './git.service.js';
 import { notifyIfUnfocused } from './notification.service.js';
 import { buildSystemPrompt, getPersonaById } from './persona.service.js';
 import { getSettings } from './settings.service.js';
-import { resolvePersonaCodexPolicy } from './codex-session.service.js';
+import { getLlmGatewayCodexConfigArgs } from '../../shared/llm-gateway.js';
+import { resolveLlmGatewayModelConfig } from './llm-gateway.service.js';
+import {
+  buildCodexProcessEnvironment,
+  resolvePersonaCodexPolicy,
+} from './codex-session.service.js';
+import { resolveCodexRuntime } from './codex-runtime.service.js';
+import { resolveCodexReasoningEffort } from '../../shared/codex-models.js';
 import { parseAdoRemoteUrl, parseGitHubRemoteUrl } from './code-review-pr.service.js';
 import {
   buildExternalWatchtowerEvents,
@@ -428,11 +435,6 @@ async function runCodexAutomation(
     eventMetadata?: Record<string, unknown>;
   },
 ): Promise<{ assistantMessage: string }> {
-  const codexStatus = await detectCodexCli();
-  if (!codexStatus.installed) {
-    throw new Error('Codex CLI is not installed, so automations cannot run.');
-  }
-
   const settings = getSettings();
   const pathOverrides = Object.fromEntries(
     worktrees.map((worktree) => [worktree.repoId, worktree.path]),
@@ -457,12 +459,19 @@ async function runCodexAutomation(
   }
 
   const cwd = commonParentDir(worktrees.map((worktree) => worktree.path));
-  const env: Record<string, string> = { ...(process.env as Record<string, string>) };
-  if (settings.llmProvider === 'openai' && settings.openaiApiKey) {
-    env['OPENAI_API_KEY'] = settings.openaiApiKey;
-  }
+  const env = await buildCodexProcessEnvironment(settings.llmProvider, settings);
 
-  const proc = spawn('codex', ['app-server'], {
+  const args =
+    settings.llmProvider === 'llmgateway' ? getLlmGatewayCodexConfigArgs() : ['app-server'];
+  const executable = settings.llmProvider === 'llmgateway' ? await resolveCodexRuntime() : 'codex';
+  const model = settings.openaiModel;
+  const gatewayConfig =
+    settings.llmProvider === 'llmgateway'
+      ? await resolveLlmGatewayModelConfig(model, settings.reasoningLevel)
+      : undefined;
+  if (gatewayConfig)
+    args.push(...(await writeGatewayCodexCatalog(env.CODEX_HOME, gatewayConfig.models)));
+  const proc = spawn(executable, args, {
     cwd,
     env,
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -504,6 +513,12 @@ async function runCodexAutomation(
             sendCodexJsonRpc(proc, 'turn/start', {
               threadId: state.threadId,
               input: [{ type: 'text', text: prompt }],
+              model: gatewayConfig?.model ?? model,
+              ...(gatewayConfig
+                ? gatewayConfig.effort
+                  ? { effort: gatewayConfig.effort }
+                  : {}
+                : { effort: resolveCodexReasoningEffort(model, settings.reasoningLevel) }),
             });
           },
           onTurnCompleted: () => {
@@ -551,6 +566,7 @@ async function runCodexAutomation(
       developerInstructions: systemPrompt,
       approvalPolicy: personaPolicy.approvalPolicy,
       sandbox: personaPolicy.sandbox,
+      model: gatewayConfig?.model ?? model,
     });
   });
 }

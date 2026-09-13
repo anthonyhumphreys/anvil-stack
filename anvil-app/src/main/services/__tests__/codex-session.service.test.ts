@@ -49,6 +49,10 @@ describe('codex session service', () => {
     });
     expect(buildCodexCollaborationMode('default', 'gpt-5.6-sol', 'medium').mode).toBe('default');
     expect(buildCodexCollaborationMode(undefined, 'gpt-5.6-sol', 'medium').mode).toBe('default');
+    expect(buildCodexCollaborationMode('plan', 'gateway/model', undefined)).toMatchObject({
+      mode: 'plan',
+      settings: { model: 'gateway/model', reasoning_effort: null },
+    });
   });
 
   it('keeps Cursor model ids instead of coercing them into the Codex catalog', () => {
@@ -57,6 +61,11 @@ describe('codex session service', () => {
     );
     expect(resolveSessionModel('cursor', '  ')).toBe('auto');
     expect(resolveSessionModel('codex', '')).toBe('gpt-5.6-sol');
+  });
+
+  it('does not substitute an OpenAI model when LLMGateway has no model configured', () => {
+    expect(resolveSessionModel('llmgateway', '')).toBe('');
+    expect(resolveSessionModel('llmgateway', 'gateway/model')).toBe('gateway/model');
   });
 
   it('maps Anvil access and collaboration modes to Cursor ACP modes', () => {

@@ -652,7 +652,14 @@ const api: AnvilAPI = {
     get: () => ipcRenderer.invoke('settings:get'),
     update: (settings) => ipcRenderer.invoke('settings:update', settings),
     getCodexStatus: () => ipcRenderer.invoke('settings:codex-status'),
+    getCodexRuntimeStatus: () => ipcRenderer.invoke('settings:codex-runtime-status'),
+    installCodexRuntime: () => ipcRenderer.invoke('settings:codex-runtime-install'),
     getCursorStatus: () => ipcRenderer.invoke('settings:cursor-status'),
+    getLlmGatewayStatus: (forceModels, billingMode) =>
+      ipcRenderer.invoke('settings:llmgateway-status', forceModels, billingMode),
+    connectLlmGateway: (billingMode) =>
+      ipcRenderer.invoke('settings:llmgateway-connect', billingMode),
+    disconnectLlmGateway: () => ipcRenderer.invoke('settings:llmgateway-disconnect'),
     setCodexAgentMaxThreads: (maxThreads) =>
       ipcRenderer.invoke('settings:codex-agent-max-threads', maxThreads),
     testFoundryConnection: () => ipcRenderer.invoke('settings:test-foundry'),

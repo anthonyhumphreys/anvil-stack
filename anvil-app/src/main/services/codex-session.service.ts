@@ -4,6 +4,11 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+import {
+  syncGatewayCodexIntegrations,
+  writeGatewayCodexCatalog,
+} from './llm-gateway-runtime.service.js';
 import { app, BrowserWindow } from 'electron';
 import type {
   AgentUIPlanPatch,
@@ -39,6 +44,10 @@ import {
 import { emitCompanionEvent } from './companion-events.service.js';
 import { normaliseCodexModel, normaliseReasoningEffort } from '../../shared/codex-models.js';
 import { notifyChatActivity, type ChatActivityKind } from './notification.service.js';
+import { getLlmGatewayCodexConfigArgs } from '../../shared/llm-gateway.js';
+import { applyLlmGatewayEnvironment } from './llm-gateway.service.js';
+import { resolveLlmGatewayModelConfig } from './llm-gateway.service.js';
+import { resolveCodexRuntime } from './codex-runtime.service.js';
 import { updateChatThreadAttention } from './chat-persistence.service.js';
 import {
   dismissAgentUIIntent,
@@ -69,6 +78,7 @@ interface ManagedSession {
   process: ChildProcess;
   provider: 'codex' | 'cursor';
   agentProvider: AgentProvider;
+  gatewayModels?: import('../../shared/types.js').LlmGatewayModel[];
   model?: string;
   status: CodexSession['status'];
   startedAt: string;
@@ -119,9 +129,30 @@ const pendingApprovalDetails = new Map<string, MobileApprovalRequest>();
 const pendingPlanFeedback = new Map<string, string[]>();
 
 export function resolveSessionModel(provider: AgentProvider, configuredModel: string): string {
-  return provider === 'cursor'
-    ? configuredModel.trim() || 'auto'
-    : normaliseCodexModel(configuredModel);
+  if (provider === 'cursor') return configuredModel.trim() || 'auto';
+  if (provider === 'llmgateway') return configuredModel.trim();
+  return normaliseCodexModel(configuredModel);
+}
+
+/** Build a provider-scoped environment without changing the user's Codex state. */
+export async function buildCodexProcessEnvironment(
+  provider: AgentProvider,
+  settings: ReturnType<typeof getSettings>,
+): Promise<Record<string, string>> {
+  const env: Record<string, string> = { ...(process.env as Record<string, string>) };
+  if (provider === 'openai' && settings.openaiApiKey) env.OPENAI_API_KEY = settings.openaiApiKey;
+  if (provider === 'llmgateway') {
+    applyLlmGatewayEnvironment(env, settings.llmGatewayApiKey);
+    const gatewayHome = path.join(app.getPath('userData'), 'codex', 'llmgateway');
+    await syncGatewayCodexIntegrations(
+      gatewayHome,
+      process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
+    );
+    delete env.OPENAI_API_KEY;
+    delete env.OPENAI_BASE_URL;
+    env.CODEX_HOME = gatewayHome;
+  }
+  return env;
 }
 
 export function resolveCursorMode(
@@ -154,7 +185,12 @@ export async function startSession(
     );
   }
   const mode = settings.codexMode ?? 'on-request';
-  const model = resolveSessionModel(agentProvider, settings.openaiModel);
+  const configuredModel = resolveSessionModel(agentProvider, settings.openaiModel);
+  const gatewayConfig =
+    agentProvider === 'llmgateway'
+      ? await resolveLlmGatewayModelConfig(configuredModel, settings.reasoningLevel)
+      : undefined;
+  const model = gatewayConfig?.model ?? configuredModel;
   const codexPolicy = resolvePersonaCodexPolicy(mode, personaId);
   const systemPrompt = options?.scaffold
     ? buildScaffoldSystemPrompt(personaId, options.scaffold.rootPath)
@@ -164,12 +200,13 @@ export async function startSession(
   const cwd = resolveSessionCwd(repoPaths, options, app.getPath('userData'));
 
   // Build environment
-  const env: Record<string, string> = {
-    ...(process.env as Record<string, string>),
-  };
-
   const provider = agentProvider === 'cursor' ? 'cursor' : 'codex';
-  const command = provider === 'cursor' ? 'cursor-agent' : 'codex';
+  const command =
+    provider === 'cursor'
+      ? 'cursor-agent'
+      : agentProvider === 'llmgateway'
+        ? await resolveCodexRuntime()
+        : 'codex';
   const args =
     agentProvider === 'cursor'
       ? ['acp']
@@ -177,13 +214,15 @@ export async function startSession(
         ? ['app-server', '-c', 'model_provider="azure"']
         : agentProvider === 'openai'
           ? ['app-server', '-c', 'model_provider="openai"']
-          : ['app-server'];
+          : agentProvider === 'llmgateway'
+            ? getLlmGatewayCodexConfigArgs()
+            : ['app-server'];
 
   // Azure AI Foundry: Codex reads config from ~/.codex/config.toml (set up by user).
   // OpenAI: pass the API key via environment.
-  if (agentProvider === 'openai') {
-    if (settings.openaiApiKey) env['OPENAI_API_KEY'] = settings.openaiApiKey;
-  }
+  const env = await buildCodexProcessEnvironment(agentProvider, settings);
+  if (gatewayConfig)
+    args.push(...(await writeGatewayCodexCatalog(env.CODEX_HOME, gatewayConfig.models)));
 
   let proc: ChildProcess;
   try {
@@ -216,6 +255,7 @@ export async function startSession(
     process: proc,
     provider,
     agentProvider,
+    gatewayModels: gatewayConfig?.models,
     model,
     status: 'starting',
     startedAt: new Date().toISOString(),
@@ -349,13 +389,26 @@ export async function sendMessage(
   // Wait for thread to be ready before sending
   await session.threadReady;
 
+  const settings = getSettings();
+  const configuredModel = resolveSessionModel(
+    session.agentProvider,
+    options?.model ?? settings.openaiModel,
+  );
+  const gatewayConfig =
+    session.agentProvider === 'llmgateway'
+      ? await resolveLlmGatewayModelConfig(
+          configuredModel,
+          options?.reasoningEffort ?? settings.reasoningLevel,
+          session.gatewayModels,
+        )
+      : undefined;
+  const model = gatewayConfig?.model ?? configuredModel;
+
   session.status = 'busy';
   setSessionThreadAttention(session, 'working');
   broadcastEvent(sessionId, { type: 'status', status: 'thinking' });
 
-  const settings = getSettings();
   const mode = settings.codexMode ?? session.mode;
-  const model = resolveSessionModel(session.agentProvider, options?.model ?? settings.openaiModel);
   session.model = model;
   const codexPolicy = resolvePersonaCodexPolicy(mode, session.personaId, {
     planMode: options?.collaborationMode === 'plan',
@@ -381,7 +434,9 @@ export async function sendMessage(
     return;
   }
 
-  const effort = normaliseReasoningEffort(options?.reasoningEffort ?? settings.reasoningLevel);
+  const effort = gatewayConfig
+    ? gatewayConfig.effort
+    : normaliseReasoningEffort(options?.reasoningEffort ?? settings.reasoningLevel);
   sendCodexJsonRpc(session.process, 'turn/start', {
     threadId: session.threadId,
     input: buildUserInput(message, attachments),
@@ -389,7 +444,7 @@ export async function sendMessage(
     sandboxPolicy: sandboxModeToTurnPolicy(codexPolicy.sandbox, session.cwd),
     model,
     ...(options?.serviceTier !== undefined ? { serviceTier: options.serviceTier } : {}),
-    effort,
+    ...(effort ? { effort } : {}),
     collaborationMode: buildCodexCollaborationMode(options?.collaborationMode, model, effort),
   });
 }
@@ -397,7 +452,7 @@ export async function sendMessage(
 export function buildCodexCollaborationMode(
   mode: ChatSendOptions['collaborationMode'],
   model: string,
-  effort: ReturnType<typeof normaliseReasoningEffort>,
+  effort: ReturnType<typeof normaliseReasoningEffort> | undefined,
 ) {
   return {
     // Send default explicitly so switching back from Plan also resets the provider.

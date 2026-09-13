@@ -1923,13 +1923,15 @@ function decodeModelSelection(value: string): { provider: AgentProvider; model: 
   if (separator < 1) return null;
   const provider = value.slice(0, separator) as AgentProvider;
   const model = value.slice(separator + 1);
-  if (!['azure', 'openai', 'codex', 'cursor'].includes(provider) || !model) return null;
+  if (!['azure', 'openai', 'codex', 'cursor', 'llmgateway'].includes(provider) || !model)
+    return null;
   return { provider, model };
 }
 
 function formatProviderLabel(provider: AgentProvider): string {
   if (provider === 'codex') return 'Codex CLI';
   if (provider === 'cursor') return 'Cursor CLI';
+  if (provider === 'llmgateway') return 'LLMGateway';
   if (provider === 'openai') return 'OpenAI';
   return 'Azure Foundry';
 }

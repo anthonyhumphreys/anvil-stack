@@ -54,6 +54,7 @@ import type {
   AppSettings,
   CodexCliStatus,
   CursorCliStatus,
+  LlmGatewayStatus,
   Persona,
   WorkflowNode,
   WorkflowNodeRun,
@@ -84,6 +85,7 @@ const PROVIDER_LABELS: Record<AgentProvider, string> = {
   cursor: 'Cursor',
   openai: 'OpenAI',
   azure: 'Azure',
+  llmgateway: 'LLMGateway',
 };
 
 function WorkflowStepNode({ data, selected }: NodeProps<Node<WorkflowCanvasData>>) {
@@ -191,6 +193,7 @@ export function WorkflowsView() {
   const [agentSettings, setAgentSettings] = useState<AppSettings | null>(null);
   const [codexStatus, setCodexStatus] = useState<CodexCliStatus | null>(null);
   const [cursorStatus, setCursorStatus] = useState<CursorCliStatus | null>(null);
+  const [llmGatewayStatus, setLlmGatewayStatus] = useState<LlmGatewayStatus | null>(null);
   const [kickoff, setKickoff] = useState('');
   const [workItemRef, setWorkItemRef] = useState<WorkflowRun['workItemRef']>();
   const [supervisorQuestion, setSupervisorQuestion] = useState('');
@@ -250,9 +253,11 @@ export function WorkflowsView() {
     void Promise.all([
       window.anvil.settings.getCodexStatus().catch(() => null),
       window.anvil.settings.getCursorStatus().catch(() => null),
-    ]).then(([nextCodexStatus, nextCursorStatus]) => {
+      window.anvil.settings.getLlmGatewayStatus().catch(() => null),
+    ]).then(([nextCodexStatus, nextCursorStatus, nextLlmGatewayStatus]) => {
       setCodexStatus(nextCodexStatus);
       setCursorStatus(nextCursorStatus);
+      setLlmGatewayStatus(nextLlmGatewayStatus);
     });
   }, []);
 
@@ -1044,6 +1049,7 @@ export function WorkflowsView() {
               personas={personas}
               codexStatus={codexStatus}
               cursorStatus={cursorStatus}
+              llmGatewayStatus={llmGatewayStatus}
             />
           ) : selectedNode ? (
             <Inspector
@@ -1057,6 +1063,7 @@ export function WorkflowsView() {
               }
               codexStatus={codexStatus}
               cursorStatus={cursorStatus}
+              llmGatewayStatus={llmGatewayStatus}
               onChange={updateNode}
               onDelete={() => {
                 setDraft((current) => ({
@@ -1083,6 +1090,7 @@ function Inspector({
   enabledProviders,
   codexStatus,
   cursorStatus,
+  llmGatewayStatus,
   onChange,
   onDelete,
 }: {
@@ -1092,11 +1100,18 @@ function Inspector({
   enabledProviders: AgentProvider[];
   codexStatus: CodexCliStatus | null;
   cursorStatus: CursorCliStatus | null;
+  llmGatewayStatus: LlmGatewayStatus | null;
   onChange: (updates: Partial<WorkflowNode>) => void;
   onDelete: () => void;
 }) {
   const provider = node.provider ?? 'codex';
-  const modelOptions = buildProviderModelOptions(provider, node.model, codexStatus, cursorStatus);
+  const modelOptions = buildProviderModelOptions(
+    provider,
+    node.model,
+    codexStatus,
+    cursorStatus,
+    llmGatewayStatus,
+  );
   const selectedModel = modelOptions.find((model) => model.id === node.model);
   const reasoning = selectedModel?.supportedReasoningEfforts ?? [];
   return (
@@ -1155,7 +1170,12 @@ function Inspector({
                   const nextProvider = event.target.value as AgentProvider;
                   onChange({
                     provider: nextProvider,
-                    model: nextProvider === 'cursor' ? 'auto' : DEFAULT_CODEX_MODEL,
+                    model:
+                      nextProvider === 'cursor'
+                        ? 'auto'
+                        : nextProvider === 'llmgateway'
+                          ? (llmGatewayStatus?.models[0]?.id ?? '')
+                          : DEFAULT_CODEX_MODEL,
                     reasoningEffort: 'medium',
                   });
                 }}

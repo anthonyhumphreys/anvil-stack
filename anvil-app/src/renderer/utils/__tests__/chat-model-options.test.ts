@@ -1,8 +1,26 @@
 import { describe, expect, it } from 'vitest';
-import type { CodexCliStatus, CursorCliStatus } from '../../../shared/types';
+import type { CodexCliStatus, CursorCliStatus, LlmGatewayStatus } from '../../../shared/types';
 import { buildChatModelOptions } from '../chat-model-options';
 
 describe('buildChatModelOptions', () => {
+  it('does not invent gateway models or reasoning capabilities when its catalog is unavailable', () => {
+    const options = buildChatModelOptions(
+      ['llmgateway'],
+      'llmgateway',
+      'selected-gateway-model',
+      null,
+      null,
+      null,
+    );
+    expect(options).toEqual([
+      expect.objectContaining({
+        provider: 'llmgateway',
+        id: 'selected-gateway-model',
+        supportedReasoningEfforts: [],
+      }),
+    ]);
+    expect(buildChatModelOptions(['llmgateway'], 'llmgateway', '', null, null)).toEqual([]);
+  });
   it('uses docs-backed Codex models when the local catalog is unavailable', () => {
     const options = buildChatModelOptions(['codex'], 'codex', 'gpt-5.6-sol', null, null);
 
@@ -127,5 +145,39 @@ describe('buildChatModelOptions', () => {
     expect(
       options.some((option) => option.provider === 'cursor' && option.id === 'gpt-5.6-sol'),
     ).toBe(false);
+  });
+
+  it('uses LLMGateway models only for the gateway provider', () => {
+    const llmGatewayStatus: LlmGatewayStatus = {
+      connected: true,
+      credentialStatus: 'valid',
+      billingMode: 'devpass',
+      models: [
+        {
+          id: 'claude-sonnet-4-6',
+          displayName: 'Claude Sonnet 4.6',
+          supportedReasoningEfforts: ['low', 'medium', 'high'],
+          defaultReasoningEffort: 'medium',
+          serviceTiers: [],
+        },
+      ],
+    };
+
+    const options = buildChatModelOptions(
+      ['llmgateway'],
+      'llmgateway',
+      'claude-sonnet-4-6',
+      null,
+      null,
+      llmGatewayStatus,
+    );
+
+    expect(options).toEqual([
+      expect.objectContaining({
+        provider: 'llmgateway',
+        id: 'claude-sonnet-4-6',
+        label: 'Claude Sonnet 4.6',
+      }),
+    ]);
   });
 });

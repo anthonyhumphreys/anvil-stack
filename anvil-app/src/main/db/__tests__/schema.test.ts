@@ -37,6 +37,8 @@ describe('fresh database schema', () => {
         'github_pat',
         'github_username',
         'telemetry_enabled',
+        'llm_gateway_api_key',
+        'llm_gateway_billing_mode',
       ]) {
         expect(columns.has(requiredColumn), `Missing settings.${requiredColumn}`).toBe(true);
       }
@@ -124,7 +126,7 @@ describe('fresh database schema', () => {
         ).map((column) => column.name),
       );
 
-      expect(SCHEMA_VERSION).toBe(66);
+      expect(SCHEMA_VERSION).toBe(67);
       for (const column of [
         'local_llm_mode',
         'local_llm_provider',
@@ -202,6 +204,42 @@ describe('fresh database schema', () => {
       ]) {
         expect(columns.has(column), `Missing settings.${column}`).toBe(true);
       }
+    } finally {
+      db.close();
+    }
+  });
+
+  it('adds LLMGateway credentials when upgrading a current main database', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec(SCHEMA_SQL);
+      db.exec(`
+        INSERT INTO settings (id, llm_provider, docs_provider)
+        VALUES (1, 'cursor', 'notion');
+        ALTER TABLE settings DROP COLUMN llm_gateway_api_key;
+        ALTER TABLE settings DROP COLUMN llm_gateway_billing_mode;
+        INSERT INTO schema_meta (key, value) VALUES ('schema_version', '66');
+      `);
+
+      for (let version = 67; version <= SCHEMA_VERSION; version += 1) {
+        const migration = MIGRATIONS[version];
+        if (migration) applyMigration(db, migration);
+      }
+
+      const row = db
+        .prepare(
+          'SELECT llm_provider, docs_provider, llm_gateway_api_key, llm_gateway_billing_mode FROM settings WHERE id = 1',
+        )
+        .get() as {
+        llm_provider: string;
+        docs_provider: string;
+        llm_gateway_api_key: Buffer | null;
+        llm_gateway_billing_mode: string;
+      };
+      expect(row.llm_provider).toBe('cursor');
+      expect(row.docs_provider).toBe('notion');
+      expect(row.llm_gateway_api_key).toBeNull();
+      expect(row.llm_gateway_billing_mode).toBe('devpass');
     } finally {
       db.close();
     }

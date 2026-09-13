@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 66;
+export const SCHEMA_VERSION = 67;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -367,6 +367,8 @@ CREATE TABLE IF NOT EXISTS settings (
   github_username TEXT,
   cloud_features_enabled INTEGER NOT NULL DEFAULT 0,
   telemetry_enabled INTEGER NOT NULL DEFAULT 0,
+  llm_gateway_api_key BLOB,
+  llm_gateway_billing_mode TEXT NOT NULL DEFAULT 'devpass',
   updated_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -2088,5 +2090,9 @@ ALTER TABLE settings ADD COLUMN docs_provider TEXT DEFAULT 'confluence';
 ALTER TABLE settings ADD COLUMN notion_oauth_token BLOB;
 ALTER TABLE settings ADD COLUMN notion_oauth_expiry TEXT;
 ALTER TABLE settings ADD COLUMN notion_database_id TEXT;
+`,
+  67: `
+ALTER TABLE settings ADD COLUMN llm_gateway_api_key BLOB;
+ALTER TABLE settings ADD COLUMN llm_gateway_billing_mode TEXT NOT NULL DEFAULT 'devpass';
 `,
 };

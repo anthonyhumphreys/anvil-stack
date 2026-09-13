@@ -18,11 +18,29 @@ Release builds are attached to GitHub releases tagged `app-v*` in the [anvil-sta
 
 1. Download the latest [macOS Apple Silicon DMG](https://github.com/anthonyhumphreys/anvil-stack/releases/latest/download/Anvil-latest-arm64.dmg), or open the latest `app-v*` release and choose the `.dmg` or `.zip` asset manually.
 2. Open the disk image and drag Anvil into Applications.
-3. Launch it. If the build is not notarized, macOS Gatekeeper may require right-click → Open on first launch.
+3. Open Terminal and run the following command before launching Anvil:
+
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/Anvil.app
+   ```
+
+4. Launch Anvil from Applications.
+
+> **Info: macOS signing**
+>
+> Anvil is currently unsigned and not notarized because we do not yet have an Apple Developer account. We are working on it. The command above removes macOS quarantine from Anvil so you can open it. Only run it for a copy downloaded from our official GitHub releases.
+>
+> [Sponsor Anvil on GitHub](https://github.com/sponsors/anthonyhumphreys) to support development and help fund Apple Developer membership.
 
 The `app-v*` release workflows also publish Windows x64 NSIS installers and portable executables, plus Linux x64 AppImage, deb, and pacman packages. Choose the matching asset and inspect the included checksum files on the [release page](https://github.com/anthonyhumphreys/anvil-stack/releases). Wait for the relevant platform workflow to finish if a newly created release does not yet contain its assets.
 
-The standard macOS release is unsigned and not notarized. Automatic updates remain disabled. If Gatekeeper reports that a trusted downloaded build is damaged, the release notes include the quarantine-removal command for private testing.
+Automatic updates are currently disabled for the standard macOS release.
+
+> **Info: using LLMGateway**
+>
+> You need Codex installed to run LLMGateway coding agents in Anvil. In Anvil's LLMGateway setup, choose **Install coding engine** to let Anvil install and manage Codex for you. Codex runs locally to edit files and execute commands; LLMGateway supplies the models and handles billing.
+>
+> **No ChatGPT login or subscription is required.** Connect your LLMGateway account or API key instead. LLMGateway's own billing still applies.
 
 ## Option B: build from source
 
@@ -57,7 +75,7 @@ Artifacts land in `dist/`.
 
 On first launch the app walks you through connector setup:
 
-1. **LLM provider**: authenticate the Codex CLI for agentic chat sessions, add an OpenAI key in Settings, or configure Azure AI Foundry through `~/.codex/config.toml` plus the referenced API-key environment variable. OpenAI credentials entered in Settings are encrypted before being stored in the local SQLite database.
+1. **LLM provider**: connect LLMGateway and install its Codex coding engine as described above, authenticate the Codex CLI for ChatGPT-backed agent sessions, add an OpenAI key in Settings, or configure Azure AI Foundry through `~/.codex/config.toml` plus the referenced API-key environment variable. OpenAI credentials entered in Settings are encrypted before being stored in the local SQLite database.
 2. **Optional Apple Foundation Models route**: on macOS 26 or later, with Apple Intelligence available and enabled, set Apple Foundation Models to **Prefer simple** and run **Test Apple Models** from Settings. This only routes short, self-contained helper prompts to the on-device model; repo-aware work still uses the configured backend.
 3. **Repositories**: connect local checkouts or clone from GitHub/Azure DevOps, then let indexing run.
 4. **Optional connectors**: Azure DevOps PAT, Linear API key, or Jira token for work items; a Confluence PAT for documentation features.

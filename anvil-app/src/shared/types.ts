@@ -577,7 +577,23 @@ export type ReasoningEffort =
   | 'ultra';
 
 export type WorkflowExecutionStrategy = 'focused' | 'adaptive' | 'parallel' | 'review-team';
-export type AgentProvider = 'azure' | 'openai' | 'codex' | 'cursor';
+export type AgentProvider = 'azure' | 'openai' | 'codex' | 'cursor' | 'llmgateway';
+export type LlmGatewayBillingMode = 'devpass' | 'payg';
+
+export interface LlmGatewayModel extends CodexDetectedModel {
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  inputPrice?: number;
+  outputPrice?: number;
+}
+
+export interface LlmGatewayStatus {
+  connected: boolean;
+  credentialStatus: 'missing' | 'valid' | 'invalid' | 'unavailable';
+  billingMode: LlmGatewayBillingMode;
+  models: LlmGatewayModel[];
+  error?: string;
+}
 
 export interface WorkflowPosition {
   x: number;
@@ -2174,6 +2190,8 @@ export interface AppSettings {
 
   // OpenAI
   openaiApiKey?: string;
+  llmGatewayApiKey?: string;
+  llmGatewayBillingMode: LlmGatewayBillingMode;
   openaiModel: string; // e.g. "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"
   reasoningLevel: ReasoningEffort;
   codexMode: CodexMode;
