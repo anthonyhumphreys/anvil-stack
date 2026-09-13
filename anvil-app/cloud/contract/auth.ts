@@ -104,6 +104,23 @@ export interface SessionRevokeResult {
   revoked: boolean;
 }
 
+/**
+ * Device-pairing request: a signed-in device (or an administrator holding the
+ * deployment admin credential) asks the backend to mint a short-lived
+ * single-use enrollment code bound to the session's account.
+ */
+export interface EnrollmentCodeIssueParams {
+  /** Optional human label shown to the operator when issuing for a device. */
+  displayName?: string;
+}
+
+/** The issued code is returned once and never stored in sync data. */
+export interface EnrollmentCodeIssueResult {
+  code: string;
+  expiresAt: string;
+  accountId: string;
+}
+
 /** Authenticated identity/epoch view. Never contains tokens. */
 export interface SessionDescribeResult {
   accountId: string;

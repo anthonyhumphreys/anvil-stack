@@ -1,24 +1,35 @@
-// SPIKE-AUTH: placeholder bearer auth for the BACKEND-01 spike.
+// Backend authentication helpers (AUTH-01).
 //
-// Format: `Authorization: Bearer spike:<accountId>:<enrollmentId>`.
-// AUTH-01 replaces every helper in this file with OIDC/enrollment-code
-// device sessions (short-lived access token + rotating refresh credential,
-// generation fencing, revocation). Nothing here is production auth.
+// Real device sessions are opaque bearer tokens issued by the
+// SessionCoordinator (`anvil_at_…` access, `anvil_rt_…` refresh). Only their
+// SHA-256 hashes are stored. The spike bearer remains, but ONLY when the
+// `ANVIL_DEV_SPIKE` var is set — production deploys must leave it unset so the
+// spike format fails closed.
 //
-// The account route is ALWAYS derived from this bearer. The Worker and the
-// Durable Object never accept a client-selected tenant/account field as
-// authority for routing.
+// The account route is ALWAYS derived from the validated session. The Worker
+// and the Durable Object never accept a client-selected tenant/account field
+// as authority for routing.
+
+import { base64UrlEncode } from '../../contract/auth';
 
 export interface SpikeAuth {
   accountId: string;
   enrollmentId: string;
 }
 
+/** Verified device identity the Worker attaches to internal DO requests. */
+export interface VerifiedAuth {
+  accountId: string;
+  enrollmentId: string;
+}
+
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+const TOKEN_PATTERN = /^anvil_(at|rt)_[A-Za-z0-9_-]{32,128}$/;
 
 /**
  * SPIKE-AUTH: parse the spike bearer. Returns null when the header is
  * missing or malformed; callers map null to `unauthenticated` (HTTP 401).
+ * Accepted only under the `ANVIL_DEV_SPIKE` development flag.
  */
 export function parseSpikeAuth(header: string | null): SpikeAuth | null {
   if (header === null) {
@@ -34,6 +45,45 @@ export function parseSpikeAuth(header: string | null): SpikeAuth | null {
     return null;
   }
   if (!ID_PATTERN.test(accountId) || !ID_PATTERN.test(enrollmentId)) {
+    return null;
+  }
+  return { accountId, enrollmentId };
+}
+
+/** Extracts an opaque `anvil_at_*`/`anvil_rt_*` bearer, or null. */
+export function parseDeviceBearer(header: string | null): string | null {
+  if (header === null) {
+    return null;
+  }
+  const match = /^Bearer\s+(anvil_(?:at|rt)_[A-Za-z0-9_-]+)\s*$/.exec(header);
+  const token = match?.[1];
+  if (token === undefined || !TOKEN_PATTERN.test(token)) {
+    return null;
+  }
+  return token;
+}
+
+/** Generates an opaque device token with the given contract prefix. */
+export function generateDeviceToken(kind: 'at' | 'rt'): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return `anvil_${kind}_${base64UrlEncode(bytes)}`;
+}
+
+/**
+ * Reads the worker-verified identity headers attached to internal DO
+ * requests. Returns null when absent or malformed; the DO then falls back to
+ * its own credential check.
+ */
+export function parseVerifiedAuth(request: Request): VerifiedAuth | null {
+  const accountId = request.headers.get('x-anvil-account');
+  const enrollmentId = request.headers.get('x-anvil-enrollment');
+  if (
+    typeof accountId !== 'string' ||
+    typeof enrollmentId !== 'string' ||
+    !ID_PATTERN.test(accountId) ||
+    !ID_PATTERN.test(enrollmentId)
+  ) {
     return null;
   }
   return { accountId, enrollmentId };

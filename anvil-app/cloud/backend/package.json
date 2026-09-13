@@ -5,7 +5,7 @@
   "description": "BACKEND-01 spike: Cloudflare Worker + SQLite AccountCoordinator proving sync push/pull, hibernating WebSockets, and eviction recovery.",
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "wrangler dev --env dev",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

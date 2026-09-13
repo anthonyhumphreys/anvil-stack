@@ -177,6 +177,7 @@ import type {
   SyncAuthPublicSnapshot,
   SyncConflictResolutionChoice,
   SyncConflictView,
+  SyncIssuedEnrollmentCode,
   SyncRuntimeStatus,
   SyncSpikeEnrollInput,
 } from './sync-runtime';
@@ -660,6 +661,10 @@ export interface AnvilAPI {
   syncRuntime: {
     status: () => Promise<SyncRuntimeStatus>;
     preview: () => Promise<SyncAdoptionPreviewItem[]>;
+    /** Production sign-in: system-browser OIDC + PKCE at the pinned backend. */
+    signIn: () => Promise<SyncAuthPublicSnapshot>;
+    enrollWithCode: (code: string) => Promise<SyncAuthPublicSnapshot>;
+    issueEnrollmentCode: () => Promise<SyncIssuedEnrollmentCode>;
     spikeEnroll: (input: SyncSpikeEnrollInput) => Promise<SyncAuthPublicSnapshot>;
     enable: () => Promise<SyncRuntimeStatus>;
     signOut: () => Promise<SyncRuntimeStatus>;

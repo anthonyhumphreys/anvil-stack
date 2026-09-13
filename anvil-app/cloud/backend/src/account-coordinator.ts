@@ -1,7 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 
 import type { SpikeAuth } from './auth';
-import { parseSpikeAuth } from './auth';
+import { parseSpikeAuth, parseVerifiedAuth } from './auth';
 import { sha256Hex, utf8ByteLength } from './hash';
 import { ACCOUNT_SCHEMA, SPIKE_INITIAL_EPOCH } from './schema';
 import {
@@ -168,6 +168,30 @@ export class AccountCoordinator extends DurableObject<Env> {
   }
 
   async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.pathname === '/internal/meta' && request.method === 'GET') {
+      // Worker-internal read: the SessionCoordinator resolves the dataset
+      // epoch for enroll/refresh/describe responses.
+      return Response.json({ epoch: this.readMeta('epoch') });
+    }
+    if (url.pathname === '/internal/revoke-enrollment' && request.method === 'POST') {
+      // Worker-internal: close every socket attached to a revoked enrollment.
+      const body = (await request.json().catch(() => null)) as {
+        enrollmentId?: unknown;
+      } | null;
+      if (body === null || typeof body.enrollmentId !== 'string') {
+        return rpcErrorResponse(undefined, 'malformed-request');
+      }
+      let closed = 0;
+      for (const ws of this.ctx.getWebSockets()) {
+        const attachment = ws.deserializeAttachment();
+        if (isSocketAttachment(attachment) && attachment.enrollmentId === body.enrollmentId) {
+          ws.close(1008, 'session revoked');
+          closed += 1;
+        }
+      }
+      return Response.json({ closed });
+    }
     if (request.headers.get('Upgrade')?.toLowerCase() === 'websocket') {
       return this.acceptClient(request);
     }
@@ -175,6 +199,14 @@ export class AccountCoordinator extends DurableObject<Env> {
       return this.handleRpc(request);
     }
     return rpcErrorResponse(undefined, 'malformed-request');
+  }
+
+  /**
+   * Request identity: prefer the worker-verified internal headers, fall back
+   * to the spike bearer (which the worker only accepts under ANVIL_DEV_SPIKE).
+   */
+  private identityOf(request: Request): SpikeAuth | null {
+    return parseVerifiedAuth(request) ?? parseSpikeAuth(request.headers.get('Authorization'));
   }
 
   async webSocketMessage(ws: WebSocket, _message: string | ArrayBuffer): Promise<void> {
@@ -194,7 +226,7 @@ export class AccountCoordinator extends DurableObject<Env> {
   }
 
   private acceptClient(request: Request): Response {
-    const auth = parseSpikeAuth(request.headers.get('Authorization'));
+    const auth = this.identityOf(request);
     if (auth === null) {
       return rpcErrorResponse(undefined, 'unauthenticated');
     }
@@ -213,7 +245,7 @@ export class AccountCoordinator extends DurableObject<Env> {
   }
 
   private async handleRpc(request: Request): Promise<Response> {
-    const auth = parseSpikeAuth(request.headers.get('Authorization'));
+    const auth = this.identityOf(request);
     if (auth === null) {
       return rpcErrorResponse(undefined, 'unauthenticated');
     }

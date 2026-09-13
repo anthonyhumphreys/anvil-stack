@@ -49,7 +49,11 @@ import type {
 } from '../shared/types.js';
 import type { RunCommand, RunStatus } from '../shared/run-types.js';
 import type { SyncBackendPinInput } from '../shared/sync-backend.js';
-import type { SyncConflictResolutionChoice, SyncSpikeEnrollInput } from '../shared/sync-runtime.js';
+import type {
+  SyncConflictResolutionChoice,
+  SyncIssuedEnrollmentCode,
+  SyncSpikeEnrollInput,
+} from '../shared/sync-runtime.js';
 import type {
   AgentUIIntentPresentationPatch,
   AgentUIPlanPatch,
@@ -700,6 +704,11 @@ const api: AnvilAPI = {
   syncRuntime: {
     status: () => ipcRenderer.invoke('sync-runtime:status'),
     preview: () => ipcRenderer.invoke('sync-runtime:preview'),
+    signIn: () => ipcRenderer.invoke('sync-runtime:sign-in'),
+    enrollWithCode: (code: string) =>
+      ipcRenderer.invoke('sync-runtime:enroll-with-code', { code }),
+    issueEnrollmentCode: (): Promise<SyncIssuedEnrollmentCode> =>
+      ipcRenderer.invoke('sync-runtime:issue-enrollment-code'),
     spikeEnroll: (input: SyncSpikeEnrollInput) =>
       ipcRenderer.invoke('sync-runtime:spike-enroll', input),
     enable: () => ipcRenderer.invoke('sync-runtime:enable'),

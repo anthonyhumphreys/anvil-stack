@@ -1,10 +1,13 @@
 import { ipcMain } from 'electron';
 import {
   enableSync,
+  enrollWithEnrollmentCode,
   getRuntimeStatus,
+  issueEnrollmentCode,
   listConflictViews,
   previewAdoption,
   resolveRuntimeConflict,
+  signInWithOidc,
   signOutSync,
   spikeEnroll,
 } from '../services/sync-runtime.service.js';
@@ -18,6 +21,19 @@ export function registerSyncRuntimeHandlers(): void {
 
   ipcMain.handle('sync-runtime:preview', () => previewAdoption());
 
+  ipcMain.handle('sync-runtime:sign-in', () => signInWithOidc());
+
+  ipcMain.handle('sync-runtime:enroll-with-code', (_event, payload: unknown) => {
+    if (!isRecord(payload) || typeof payload['code'] !== 'string') {
+      throw new Error('enroll-with-code requires a code string');
+    }
+    return enrollWithEnrollmentCode(payload['code']);
+  });
+
+  ipcMain.handle('sync-runtime:issue-enrollment-code', () => issueEnrollmentCode());
+
+  // Dev-fixture enrollment. The service throws when spike is not enabled
+  // (production builds never enable it), so this fails closed.
   ipcMain.handle('sync-runtime:spike-enroll', (_event, payload: unknown) => {
     if (!isRecord(payload) || typeof payload['accountId'] !== 'string') {
       throw new Error('spike enroll requires an accountId string');

@@ -19,6 +19,7 @@ import {
 import type {
   SyncAdoptionPreviewItem,
   SyncConflictView,
+  SyncIssuedEnrollmentCode,
   SyncRuntimeStatus,
 } from '../../../shared/sync-runtime';
 import { copyTextToClipboard } from '../../utils/clipboard';
@@ -63,8 +64,11 @@ export function SyncMeshSettingsPanel(): ReactNode {
   const [preview, setPreview] = useState<SyncAdoptionPreviewItem[]>([]);
   const [conflicts, setConflicts] = useState<SyncConflictView[]>([]);
   const [accountId, setAccountId] = useState('account-1');
+  const [enrollmentCode, setEnrollmentCode] = useState('');
+  const [issuedCode, setIssuedCode] = useState<SyncIssuedEnrollmentCode | null>(null);
   const [enrolling, setEnrolling] = useState(false);
   const [enabling, setEnabling] = useState(false);
+  const [signingIn, setSigningIn] = useState(false);
 
   const refreshStatus = async (): Promise<void> => {
     setStatusLoading(true);
@@ -151,6 +155,43 @@ export function SyncMeshSettingsPanel(): ReactNode {
       setError(toErrorMessage(err));
     } finally {
       setEnrolling(false);
+    }
+  };
+
+  const handleSignIn = async (): Promise<void> => {
+    setSigningIn(true);
+    setError(null);
+    try {
+      await window.anvil.syncRuntime.signIn();
+      await refreshStatus();
+    } catch (err) {
+      setError(toErrorMessage(err));
+    } finally {
+      setSigningIn(false);
+    }
+  };
+
+  const handleEnrollWithCode = async (): Promise<void> => {
+    setEnrolling(true);
+    setError(null);
+    try {
+      await window.anvil.syncRuntime.enrollWithCode(enrollmentCode.trim());
+      setEnrollmentCode('');
+      await refreshStatus();
+    } catch (err) {
+      setError(toErrorMessage(err));
+    } finally {
+      setEnrolling(false);
+    }
+  };
+
+  const handleIssueCode = async (): Promise<void> => {
+    setError(null);
+    try {
+      const issued = await window.anvil.syncRuntime.issueEnrollmentCode();
+      setIssuedCode(issued);
+    } catch (err) {
+      setError(toErrorMessage(err));
     }
   };
 
@@ -426,39 +467,100 @@ export function SyncMeshSettingsPanel(): ReactNode {
 
       <Panel
         title="Device enrollment"
-        description="The wrangler spike has no OIDC. Both windows must use the same account id and different devices get their own enrollment automatically."
+        description="Sign in through the backend's advertised methods. Codes are single-use and expire quickly."
       >
         {runtime?.auth.state === 'signed-in' ? (
           <div className="space-y-2">
             <p className="text-sm text-text-secondary">
               Signed in as {runtime.auth.accountId} · enrollment {runtime.auth.enrollmentId}
             </p>
-            <button
-              type="button"
-              onClick={() => void handleSignOut()}
-              className="rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-            >
-              Sign out
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void handleIssueCode()}
+                className="rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+              >
+                Create pairing code
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleSignOut()}
+                className="rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+              >
+                Sign out
+              </button>
+            </div>
+            {issuedCode && (
+              <div className="rounded-md border border-border bg-bg-primary p-2">
+                <p className="font-mono text-sm text-text-primary">{issuedCode.code}</p>
+                <p className="text-xs text-text-tertiary">
+                  Single-use · expires {new Date(issuedCode.expiresAt).toLocaleTimeString()}
+                </p>
+              </div>
+            )}
           </div>
         ) : (
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <input
-              value={accountId}
-              onChange={(event) => setAccountId(event.target.value)}
-              placeholder="account-1"
-              spellCheck={false}
-              className="min-w-0 flex-1 rounded-md border border-border bg-bg-primary px-3 py-1.5 font-mono text-sm text-text-primary placeholder:text-text-tertiary"
-            />
-            <button
-              type="button"
-              onClick={() => void handleSpikeEnroll()}
-              disabled={enrolling || accountId.trim().length === 0}
-              className="flex shrink-0 items-center justify-center gap-2 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
-            >
-              {enrolling && <Loader2 size={14} className="animate-spin" />}
-              Enroll this device
-            </button>
+          <div className="space-y-3">
+            {(status?.authModes ?? []).includes('oidc-pkce') && (
+              <button
+                type="button"
+                onClick={() => void handleSignIn()}
+                disabled={signingIn}
+                className="flex items-center justify-center gap-2 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
+              >
+                {signingIn && <Loader2 size={14} className="animate-spin" />}
+                {signingIn ? 'Waiting for browser sign-in…' : 'Sign in with browser'}
+              </button>
+            )}
+            {(status?.authModes ?? []).includes('enrollment-code') && (
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <input
+                  value={enrollmentCode}
+                  onChange={(event) => setEnrollmentCode(event.target.value)}
+                  placeholder="anvil-ec-XXXXX-XXXXX-…"
+                  spellCheck={false}
+                  className="min-w-0 flex-1 rounded-md border border-border bg-bg-primary px-3 py-1.5 font-mono text-sm text-text-primary placeholder:text-text-tertiary"
+                />
+                <button
+                  type="button"
+                  onClick={() => void handleEnrollWithCode()}
+                  disabled={enrolling || enrollmentCode.trim().length === 0}
+                  className="flex shrink-0 items-center justify-center gap-2 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
+                >
+                  {enrolling && <Loader2 size={14} className="animate-spin" />}
+                  Redeem code
+                </button>
+              </div>
+            )}
+            {runtime?.devSpikeAvailable === true && (
+              <div className="rounded-md border border-dashed border-border p-2">
+                <p className="mb-2 text-xs text-text-tertiary">
+                  Development fixture only — not available in packaged builds.
+                </p>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <input
+                    value={accountId}
+                    onChange={(event) => setAccountId(event.target.value)}
+                    placeholder="account-1"
+                    spellCheck={false}
+                    className="min-w-0 flex-1 rounded-md border border-border bg-bg-primary px-3 py-1.5 font-mono text-sm text-text-primary placeholder:text-text-tertiary"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void handleSpikeEnroll()}
+                    disabled={enrolling || accountId.trim().length === 0}
+                    className="flex shrink-0 items-center justify-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
+                  >
+                    Spike enroll
+                  </button>
+                </div>
+              </div>
+            )}
+            {status !== null && status.authModes.length === 0 && (
+              <p className="text-sm text-text-tertiary">
+                The pinned backend advertises no supported sign-in methods.
+              </p>
+            )}
           </div>
         )}
       </Panel>

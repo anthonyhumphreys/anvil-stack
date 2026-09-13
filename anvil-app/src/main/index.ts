@@ -121,7 +121,7 @@ app.setName(
 );
 configureUserDataPath();
 initDatabase(brand.defaultTheme);
-initSyncRuntime(app.getPath('userData'));
+initSyncRuntime(app.getPath('userData'), { devSpikeEnabled: !app.isPackaged });
 initializeTelemetry({
   enabled: isTelemetryEnabled(),
   release: `anvil@${app.getVersion()}`,

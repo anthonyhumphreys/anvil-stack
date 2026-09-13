@@ -474,6 +474,56 @@ export function openSocket(
   };
 }
 
+/**
+ * POSTs a contract auth route (enroll/session refresh/revoke/enrollment-code
+ * issue). These are plain JSON bodies, not the RPC envelope. Error envelopes
+ * still surface as BackendRpcError so `code` reaches the auth service's
+ * AuthErrorCode mapping.
+ */
+export async function postAuthRoute<R = unknown>(
+  connection: Pick<BackendConnection, 'apiUrl'>,
+  route: 'enroll' | 'session/refresh' | 'session/revoke' | 'enrollment-codes',
+  params: unknown,
+  options: RpcOptions & { accessToken?: string } = {},
+): Promise<R> {
+  const { fetchFn = fetch, timeoutMs = DEFAULT_DISCOVERY_TIMEOUT_MS, accessToken } = options;
+  const base = connection.apiUrl.endsWith('/') ? connection.apiUrl : `${connection.apiUrl}/`;
+  let response: Response;
+  try {
+    response = await fetchFn(new URL(route, base).href, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        ...(accessToken === undefined ? {} : { Authorization: `Bearer ${accessToken}` }),
+      },
+      redirect: 'error',
+      signal: AbortSignal.timeout(timeoutMs),
+      body: JSON.stringify(params),
+    });
+  } catch (error) {
+    throw new Error(`backend auth route ${route} failed: ${toMessage(error)}`);
+  }
+  let payload: unknown;
+  try {
+    payload = (await response.json()) as unknown;
+  } catch {
+    throw new Error(`backend auth route ${route} returned an unreadable response`);
+  }
+  if (isRecord(payload) && isRecord(payload['error'])) {
+    const errorBody = payload['error'];
+    throw new BackendRpcError({
+      code: typeof errorBody['code'] === 'string' ? errorBody['code'] : 'unauthenticated',
+      retryable: errorBody['retryable'] === true,
+      message: `backend auth route ${route} rejected`,
+    });
+  }
+  if (!response.ok) {
+    throw new Error(`backend auth route ${route} failed with HTTP ${response.status}`);
+  }
+  return payload as R;
+}
+
 export interface ReconnectDelayOptions {
   baseMs?: number;
   maxMs?: number;

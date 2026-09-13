@@ -49,11 +49,22 @@ export type RevokeFn = (params: SessionRevokeParams) => Promise<SessionRevokeRes
 /** Opens the system browser. Injected so unit tests never touch Electron. */
 export type OpenExternalFn = (url: string) => Promise<void>;
 
+/** The authorization-code callback captured by the loopback listener. */
+export interface LoopbackCallback {
+  state: string;
+  authorizationCode: string;
+}
+
 /**
  * Starts an ephemeral 127.0.0.1 callback listener. Injected so unit tests
  * can stub the redirect URI instead of binding real ports.
+ * `waitForCallback` resolves with the first well-formed `/callback` hit.
  */
-export type ListenLoopbackFn = () => Promise<{ redirectUri: string; close: () => void }>;
+export type ListenLoopbackFn = () => Promise<{
+  redirectUri: string;
+  waitForCallback: () => Promise<LoopbackCallback>;
+  close: () => void;
+}>;
 
 export interface SyncAuthServiceDeps {
   userDataDir: string;
@@ -109,6 +120,7 @@ interface PendingPkceLogin {
   redirectUri: string;
   issuer: string;
   clientId: string;
+  waitForCallback: () => Promise<LoopbackCallback>;
   closeListener: () => void;
 }
 
@@ -158,21 +170,40 @@ function pickEphemeralPort(): number {
 }
 
 /**
- * Default 127.0.0.1 listener: binds a random port in 49152-65535, answers
- * exactly one frozen `/callback` shape, and ignores everything else. The
- * authorization code is delivered to completePkceLogin explicitly, so the
- * listener only proves the redirect URI is live.
+ * Default 127.0.0.1 listener: binds a random port in 49152-65535, captures the
+ * first `/callback?code&state` hit into `waitForCallback`, serves the
+ * return-to-app page, and answers everything else 404. An `error` parameter
+ * rejects the wait so the caller surfaces the provider's failure.
  */
-async function listenLoopbackDefault(): Promise<{ redirectUri: string; close: () => void }> {
+async function listenLoopbackDefault(): Promise<{
+  redirectUri: string;
+  waitForCallback: () => Promise<LoopbackCallback>;
+  close: () => void;
+}> {
   const attempts = 10;
   let server: Server | null = null;
   let redirectUri: string | null = null;
   let lastError: unknown = null;
+  let resolveCallback: ((callback: LoopbackCallback) => void) | null = null;
+  let rejectCallback: ((error: Error) => void) | null = null;
+  const callbackPromise = new Promise<LoopbackCallback>((resolve, reject) => {
+    resolveCallback = resolve;
+    rejectCallback = reject;
+  });
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const candidate = buildLoopbackRedirectUri(pickEphemeralPort());
     const candidateUrl = new URL(candidate);
     const candidateServer = createServer((req, res) => {
-      if (typeof req.url === 'string' && req.url.startsWith('/callback')) {
+      const reqUrl = typeof req.url === 'string' ? new URL(req.url, 'http://127.0.0.1') : null;
+      if (reqUrl !== null && reqUrl.pathname === '/callback') {
+        const error = reqUrl.searchParams.get('error');
+        const code = reqUrl.searchParams.get('code');
+        const state = reqUrl.searchParams.get('state');
+        if (error !== null) {
+          rejectCallback?.(new Error(`OIDC provider returned error: ${error}`));
+        } else if (code !== null && code.length > 0 && state !== null && state.length > 0) {
+          resolveCallback?.({ state, authorizationCode: code });
+        }
         res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
         res.end('Sign-in complete. You can return to Anvil.');
         return;
@@ -208,7 +239,9 @@ async function listenLoopbackDefault(): Promise<{ redirectUri: string; close: ()
   const active: Server = server;
   return {
     redirectUri,
+    waitForCallback: () => callbackPromise,
     close: () => {
+      rejectCallback?.(new Error('OIDC sign-in was cancelled.'));
       active.close();
     },
   };
@@ -369,7 +402,7 @@ export class SyncAuthService {
     );
     const state = base64UrlEncode(randomBytes(32));
     const nonce = base64UrlEncode(randomBytes(32));
-    const { redirectUri, close } = await this.listenLoopback();
+    const { redirectUri, waitForCallback, close } = await this.listenLoopback();
     if (!isAllowedOidcRedirectUri(redirectUri)) {
       close();
       throw new Error('Loopback listener returned a redirect URI outside the frozen form.');
@@ -381,6 +414,7 @@ export class SyncAuthService {
       redirectUri,
       issuer,
       clientId,
+      waitForCallback,
       closeListener: close,
     };
     const authorizationUrl = buildAuthorizationUrl({
@@ -396,6 +430,24 @@ export class SyncAuthService {
       await this.openExternal(authorizationUrl);
     }
     return { authorizationUrl, redirectUri, state };
+  }
+
+  /**
+   * Resolves with the OIDC provider's loopback callback (code + state). The
+   * caller then hands both to completePkceLogin, which verifies the state
+   * against the pending login before exchanging.
+   */
+  waitForPkceCallback(timeoutMs = 5 * 60 * 1000): Promise<LoopbackCallback> {
+    const pending = this.pending;
+    if (pending === null) {
+      return Promise.reject(new Error('No PKCE sign-in is in progress.'));
+    }
+    return Promise.race([
+      pending.waitForCallback(),
+      new Promise<LoopbackCallback>((_resolve, reject) => {
+        setTimeout(() => reject(new Error('Timed out waiting for the sign-in callback.')), timeoutMs);
+      }),
+    ]);
   }
 
   async completePkceLogin(

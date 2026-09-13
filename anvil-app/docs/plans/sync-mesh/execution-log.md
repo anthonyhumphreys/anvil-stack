@@ -1,5 +1,103 @@
 # Sync & Mesh execution log
 
+## 2026-09-13 — Step 4 real authentication + two-profile acceptance gate PASSED
+
+Branch: `feature/sync-mesh--foundations`.
+
+Implements Step 4 (replace spike authentication with the supported flows) and
+closes the workflow-sync half of Step 5 by running the two-profile acceptance
+gate against the actual Worker over real HTTP.
+
+### Contract (`cloud/contract/auth.ts`)
+
+- Enrollment-code issue/consume request+response types, `session.describe`
+  result, auth failure codes (`refresh-reuse-detected`,
+  `enrollment-code-used`, `invalid-proof`, `unauthenticated`) and their HTTP
+  401 mapping.
+- PKCE S256 helpers and the frozen loopback redirect rules
+  (`http://127.0.0.1:{49152–65535}/callback`) already present are now
+  exercised end to end.
+
+### Backend (`cloud/backend/`)
+
+- New `SessionCoordinator` Durable Object (`SESSIONS` binding, migration tag
+  `v2`): single-use short-lived enrollment codes (sha-256 hashed at rest),
+  device sessions bound to account+enrollment+installation, opaque
+  `anvil_at_`/`anvil_rt_` tokens stored as hashes only, refresh rotation with
+  credential-generation fencing, reuse detection revoking the session, a
+  bounded `pending_rotated_session` grace window so a lost refresh response
+  replays the same rotated credentials, and revoke.
+- Worker routes per the integration contract: `POST /v1/enroll`,
+  `/v1/session/refresh`, `/v1/session/revoke`, `/v1/enrollment-codes` (device
+  pairing for signed-in sessions; admin issuance gated by
+  `ENROLLMENT_ADMIN_TOKEN`). Request bodies are bounded; `AccountCoordinator`
+  trusts only worker-verified identity headers (`/internal/meta` exposes the
+  dataset epoch for enroll responses). Revocation asks the account object to
+  drop live sockets for the enrollment.
+- OIDC/PKCE proof verification in `src/oidc.ts`: discovery doc fetch, token
+  exchange, RS256 id_token signature check against issuer JWKS, `iss`/`aud`/
+  `exp`/`nonce` validation, `code_verifier` passed to the token endpoint.
+  Advertised only when `OIDC_ISSUER` + `OIDC_CLIENT_ID` are configured.
+- Spike auth now fails closed on the deployable config: `ANVIL_DEV_SPIKE`
+  lives only in `env.dev` (`wrangler dev --env dev`) and in the vitest pool's
+  `miniflare.bindings`; the top-level env has no spike flag. A dev-only
+  `ENROLLMENT_ADMIN_TOKEN` under `env.dev` lets fixtures mint codes without
+  an OIDC issuer.
+
+### Desktop
+
+- `sync-auth.service.ts`: the loopback listener now delivers the OAuth
+  `code`+`state` to the pending login instead of serving a dead success page;
+  `createPkceLogin` returns a `waitForCallback` handle. Session persistence is
+  backend-bound and encrypted; refresh is serialized and stale-write fenced.
+- `sync-runtime.service.ts`: `signInWithOidc` (system browser via injected
+  `openExternal`, issuer/clientId/scopes from the reviewed backend
+  descriptor), `enrollWithEnrollmentCode`, `issueEnrollmentCode`,
+  `signOutSync` (best-effort remote revoke), automatic refresh scheduling
+  before access expiry plus a near-expiry refresh ahead of each sync cycle.
+  `devSpikeEnabled` gates `spikeEnroll`; `index.ts` passes `!app.isPackaged`.
+- IPC/preload/shared types expose only token-free snapshots and code results.
+- Settings panel: browser sign-in button (when `oidc-pkce` advertised),
+  enrollment-code redemption, pairing-code issuance, sign-out, dev-only spike
+  section, plus the existing backend identity-review affordance.
+- Engine fix: queued `runSyncCycle` callers now receive their own cycle's
+  outcome — a predecessor's `superseded`/backoff error no longer propagates
+  to a waiter, a displaced queue entry resolves as coalesced, and
+  fire-and-forget kicks (`enableSync`, conflict resolution) catch rejections
+  instead of producing unhandled rejections.
+
+### Two-profile acceptance gate (Step 5 workflow subset)
+
+`src/main/services/__tests__/sync-two-profile.acceptance.test.ts` drives two
+isolated profiles — separate `userDataDir`, file-backed SQLite, encrypted
+session store — against the real `wrangler dev` worker over real HTTP with
+no injected RPC and no spike auth. Passing evidence:
+
+- A enrolls with an admin-minted code, creates a workflow, pushes; A issues
+  a real pairing code.
+- B redeems the code onto the same account, scans/pulls, materializes A's
+  workflow; B's update converges back to A after A's restart (SQLite closed
+  and reopened, session rehydrated from disk, no re-enrollment).
+- A's delete propagates to B. Duplicate code consumption is rejected by the
+  worker. Sign-out revokes the session remotely.
+- Skips cleanly (`describe.skipIf`) when no worker is reachable so the
+  default suite stays hermetic. Run it with
+  `ANVIL_BACKEND_URL=http://127.0.0.1:8787 pnpm vitest run src/main/services/__tests__/sync-two-profile.acceptance.test.ts`.
+
+Remaining Step 5 items beyond the workflow subset: socket invalidation +
+reconnect wiring, and the wider adoption/conflict UX sweep.
+
+### Verification this wave
+
+- Desktop sync-focused vitest: 102 tests, 9 files passed (acceptance file
+  skipped when no backend env present).
+- Acceptance gate vs `wrangler dev --env dev` on 127.0.0.1:8799: 2/2 passed.
+- `pnpm --dir cloud/backend test`: 31 passed, 7 files (workerd pool).
+- `pnpm --dir cloud/backend typecheck`: clean.
+- `tsc -p cloud/tsconfig.json --noEmit`: clean.
+- `tsc -p tsconfig.node.json --noEmit`: zero sync/cloud diagnostics.
+- `npx eslint` on all touched files: clean.
+
 ## 2026-09-12 — Repair wave: review Steps 0–3 implemented (uncommitted)
 
 Branch: `feature/sync-mesh--foundations`, HEAD `51ff4e1` plus the repair working tree.

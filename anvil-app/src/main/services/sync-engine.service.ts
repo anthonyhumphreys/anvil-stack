@@ -111,10 +111,14 @@ export class SyncEngineError extends Error {
   }
 }
 
+interface QueuedCycle {
+  input: RunSyncCycleInput;
+  settle: (error: unknown) => void;
+}
+
 interface ScopeLoop {
   inFlight: Promise<void> | null;
-  queued: boolean;
-  queuedInput: RunSyncCycleInput | null;
+  queued: QueuedCycle | null;
 }
 
 const loops = new Map<string, ScopeLoop>();
@@ -143,7 +147,7 @@ function isSyncOperation(value: unknown): value is SyncOperation {
 function getLoop(key: string): ScopeLoop {
   const existing = loops.get(key);
   if (existing) return existing;
-  const created: ScopeLoop = { inFlight: null, queued: false, queuedInput: null };
+  const created: ScopeLoop = { inFlight: null, queued: null };
   loops.set(key, created);
   return created;
 }
@@ -193,32 +197,51 @@ function listMutableCounts(scope: SyncScope): { pending: number; dispatched: num
 export async function runSyncCycle(input: RunSyncCycleInput): Promise<void> {
   const key = scopeKey(input.scope);
   const loop = getLoop(key);
-  if (loop.inFlight) {
-    loop.queued = true;
-    loop.queuedInput = input;
-    await loop.inFlight;
-    return;
+  if (loop.inFlight !== null) {
+    // A cycle for this scope is already running. This caller takes the queue
+    // slot and receives the outcome of ITS OWN cycle — a predecessor's
+    // superseded/backoff error must not propagate into this call. A caller
+    // displaced by a newer request resolves as coalesced rather than hanging.
+    return new Promise<void>((resolve, reject) => {
+      loop.queued?.settle(null);
+      loop.queued = {
+        input,
+        settle: (error) => (error === null ? resolve() : reject(error)),
+      };
+    });
   }
 
-  const run = (async () => {
-    let current = input;
-    try {
-      for (;;) {
-        loop.queued = false;
-        loop.queuedInput = null;
-        await executeOneCycle(current);
-        if (!loop.queued || loop.queuedInput === null) {
-          break;
+  const outcome = new Promise<void>((resolve, reject) => {
+    const run = (async () => {
+      let current: QueuedCycle = {
+        input,
+        settle: (error) => (error === null ? resolve() : reject(error)),
+      };
+      try {
+        for (;;) {
+          try {
+            await executeOneCycle(current.input);
+            current.settle(null);
+          } catch (error) {
+            current.settle(error);
+          }
+          const next = loop.queued;
+          loop.queued = null;
+          if (next === null) {
+            break;
+          }
+          current = next;
         }
-        current = loop.queuedInput;
+      } finally {
+        loop.inFlight = null;
       }
-    } finally {
-      loop.inFlight = null;
-    }
-  })();
-
-  loop.inFlight = run;
-  await run;
+    })();
+    loop.inFlight = run;
+    // `run` never rejects — every outcome routes through `settle` — but guard
+    // the invariant so a defect can never surface as an unhandled rejection.
+    void run.catch(() => undefined);
+  });
+  await outcome;
 }
 
 function assertCurrent(input: RunSyncCycleInput): void {

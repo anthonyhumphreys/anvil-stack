@@ -18,6 +18,13 @@ export interface SyncSpikeEnrollInput {
   enrollmentId?: string;
 }
 
+/** A single-use pairing code minted for enrolling another device. */
+export interface SyncIssuedEnrollmentCode {
+  code: string;
+  expiresAt: string;
+  accountId: string;
+}
+
 export interface SyncAdoptionPreviewItem {
   entityType: string;
   entityId: string;
@@ -38,6 +45,8 @@ export interface SyncConflictView {
 export interface SyncRuntimeStatus {
   auth: SyncAuthPublicSnapshot;
   syncEnabled: boolean;
+  /** Spike enrollment is a dev fixture; true only in unpackaged builds. */
+  devSpikeAvailable: boolean;
   /** The pinned backend's endpoint or issuer changed; re-review is required. */
   backendIdentityReviewRequired: boolean;
   pendingCount: number;

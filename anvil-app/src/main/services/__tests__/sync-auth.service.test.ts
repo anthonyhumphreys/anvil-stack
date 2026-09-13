@@ -27,6 +27,7 @@ import type {
 import {
   createSyncAuthService,
   type EnrollFn,
+  type LoopbackCallback,
   type SyncAuthService,
 } from '../sync-auth.service.js';
 
@@ -165,16 +166,33 @@ describe('enrollWithCode', () => {
 });
 
 describe('PKCE login', () => {
-  function serviceWithStubLoopback(): { svc: SyncAuthService; close: () => void } {
+  function serviceWithStubLoopback(): {
+    svc: SyncAuthService;
+    close: () => void;
+    deliver: (callback: LoopbackCallback) => void;
+  } {
     const close = vi.fn();
+    let deliver: (callback: LoopbackCallback) => void = () => undefined;
     const svc = createSyncAuthService({
       userDataDir,
-      listenLoopback: async () => ({
-        redirectUri: 'http://127.0.0.1:54321/callback',
-        close,
-      }),
+      listenLoopback: async () => {
+        let rejectWait: (error: Error) => void = () => undefined;
+        const waitForCallback = () =>
+          new Promise<LoopbackCallback>((resolve, reject) => {
+            deliver = resolve;
+            rejectWait = reject;
+          });
+        return {
+          redirectUri: 'http://127.0.0.1:54321/callback',
+          waitForCallback,
+          close: () => {
+            close();
+            rejectWait(new Error('listener closed'));
+          },
+        };
+      },
     });
-    return { svc, close };
+    return { svc, close, deliver: (cb) => deliver(cb) };
   }
 
   it('builds a placeholder authorization URL with S256 challenge and state', async () => {
@@ -216,6 +234,25 @@ describe('PKCE login', () => {
       method: 'oidc-pkce',
       authorizationCode: 'code-123',
     });
+  });
+
+  it('delivers the loopback callback through waitForPkceCallback', async () => {
+    const { svc, deliver } = serviceWithStubLoopback();
+    const created = await svc.createPkceLogin();
+    const waiting = svc.waitForPkceCallback();
+    deliver({ state: created.state, authorizationCode: 'delivered-code' });
+    await expect(waiting).resolves.toEqual({
+      state: created.state,
+      authorizationCode: 'delivered-code',
+    });
+  });
+
+  it('rejects waitForPkceCallback when the listener closes (cancelled sign-in)', async () => {
+    const { svc } = serviceWithStubLoopback();
+    await svc.createPkceLogin();
+    const waiting = svc.waitForPkceCallback();
+    svc.cancelPendingLogin();
+    await expect(waiting).rejects.toThrow();
   });
 });
 

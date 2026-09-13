@@ -1,7 +1,16 @@
 import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import { resolveBackendPaths } from '../../../cloud/contract/discovery.js';
-import type { DeviceSession } from '../../../cloud/contract/auth.js';
+import type {
+  DeviceSession,
+  EnrollmentCodeIssueResult,
+  EnrollParams,
+  EnrollResult,
+  SessionRefreshParams,
+  SessionRefreshResult,
+  SessionRevokeParams,
+  SessionRevokeResult,
+} from '../../../cloud/contract/auth.js';
 import {
   SPIKE_DATASET_EPOCH,
   type SyncAdoptionPreviewItem,
@@ -12,7 +21,12 @@ import {
   type SyncSpikeEnrollInput,
 } from '../../shared/sync-runtime.js';
 import { SYNC_ENTITY_WORKFLOW_TEMPLATE, type SyncScope } from '../../shared/sync-mesh.js';
-import { createSyncAuthService, type SyncAuthService } from './sync-auth.service.js';
+import {
+  createSyncAuthService,
+  type ListenLoopbackFn,
+  type OpenExternalFn,
+  type SyncAuthService,
+} from './sync-auth.service.js';
 import {
   activateBackend,
   disconnectBackend,
@@ -21,7 +35,11 @@ import {
   resolveBackendIdentityReview,
   type SyncBackendRecord,
 } from './sync-backend.service.js';
-import { shouldAllowLoopbackHttp } from './sync-backend-client.service.js';
+import {
+  postAuthRoute,
+  rpc as backendRpc,
+  shouldAllowLoopbackHttp,
+} from './sync-backend-client.service.js';
 import {
   getSyncEngineSnapshot,
   resolveSyncConflict,
@@ -41,11 +59,22 @@ import { getDb } from '../db/database.js';
 
 const POLL_MS = 5_000;
 const SPIKE_ACCESS_TTL_MS = 10 * 365 * 24 * 60 * 60 * 1000;
+/** Refresh this far before the access token's stated expiry. */
+const REFRESH_AHEAD_MS = 60_000;
+const REFRESH_MIN_DELAY_MS = 5_000;
 
 let auth: SyncAuthService | null = null;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let lastError: string | null = null;
 let rpcOverride: SyncEngineRpc | undefined;
+/**
+ * Development fixture gate. `spikeEnroll` exists only for tests and
+ * unpackaged development; index.ts passes `!app.isPackaged`.
+ */
+let devSpikeEnabled = false;
+/** Test hook: routes ALL backend HTTP (enroll/refresh/revoke/issue + engine rpc). */
+let fetchOverride: typeof fetch | undefined;
 /**
  * Fences async engine work: bumped on every sign-out, enrollment change, and
  * backend switch. A sync cycle captures the generation (plus its scope and
@@ -54,11 +83,28 @@ let rpcOverride: SyncEngineRpc | undefined;
  */
 let runtimeGeneration = 0;
 
-export function initSyncRuntime(userDataDir: string): void {
+export interface SyncRuntimeInitOptions {
+  /** Enables the spike enrollment fixture. Pass `!app.isPackaged`. */
+  devSpikeEnabled?: boolean;
+  /** Test seam: replaces global fetch for every backend HTTP call. */
+  fetchFn?: typeof fetch;
+  /** Test seams for the OIDC browser/loopback boundary. */
+  openExternal?: OpenExternalFn;
+  listenLoopback?: ListenLoopbackFn;
+}
+
+export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOptions = {}): void {
   auth = createSyncAuthService({
     userDataDir,
     installationId: getOrCreateInstallationId(),
+    ...(options.openExternal === undefined ? {} : { openExternal: options.openExternal }),
+    ...(options.listenLoopback === undefined ? {} : { listenLoopback: options.listenLoopback }),
   });
+  devSpikeEnabled = options.devSpikeEnabled === true;
+  fetchOverride = options.fetchFn;
+  if (auth.getPublicSnapshot().state === 'signed-in') {
+    scheduleSessionRefresh();
+  }
   if (isSyncEnabled()) {
     startPolling();
     void requestSync().catch(() => {
@@ -70,9 +116,12 @@ export function initSyncRuntime(userDataDir: string): void {
 export function resetSyncRuntimeForTests(): void {
   runtimeGeneration += 1;
   stopPolling();
+  clearSessionRefresh();
   auth = null;
   lastError = null;
   rpcOverride = undefined;
+  devSpikeEnabled = false;
+  fetchOverride = undefined;
 }
 
 export function setSyncRuntimeRpcForTests(rpc: SyncEngineRpc | undefined): void {
@@ -176,7 +225,11 @@ export function bindLocalWorkflowTemplates(scope: SyncScope): number {
   return run();
 }
 
+/** Dev/test fixture only — never reachable when `devSpikeEnabled` is false. */
 export function spikeEnroll(input: SyncSpikeEnrollInput): SyncAuthPublicSnapshot {
+  if (!devSpikeEnabled) {
+    throw new Error('Spike enrollment is only available in development builds.');
+  }
   const accountId = input.accountId.trim();
   if (accountId.length === 0 || accountId.includes(':')) {
     throw new Error('Account id must be a non-empty string without colons.');
@@ -204,6 +257,177 @@ export function spikeEnroll(input: SyncSpikeEnrollInput): SyncAuthPublicSnapshot
     displayName: hostname() || 'Anvil device',
   };
   return requireAuth().installDeviceSession(session, backend.id);
+}
+
+function requireReviewedBackend(): SyncBackendRecord {
+  const backend = pinnedBackend();
+  if (!backend) {
+    throw new Error('Pin a backend before signing in.');
+  }
+  if (backend.identityReviewRequired) {
+    throw new Error('The pinned backend changed identity and must be re-reviewed first.');
+  }
+  return backend;
+}
+
+function apiUrlFor(backend: SyncBackendRecord): string {
+  const allowLoopbackHttp = shouldAllowLoopbackHttp(backend.baseUrl);
+  return resolveBackendPaths(backend.baseUrl, backend.descriptor, { allowLoopbackHttp }).apiUrl;
+}
+
+/** Real enroll RPC against the pinned backend's contract auth route. */
+function enrollAgainst(backend: SyncBackendRecord): (params: EnrollParams) => Promise<EnrollResult> {
+  return (params) =>
+    postAuthRoute<EnrollResult>(
+      { apiUrl: apiUrlFor(backend) },
+      'enroll',
+      params as unknown as Record<string, unknown>,
+      { fetchFn: fetchOverride },
+    );
+}
+
+function refreshAgainst(
+  backend: SyncBackendRecord,
+): (params: SessionRefreshParams) => Promise<SessionRefreshResult> {
+  return (params) =>
+    postAuthRoute<SessionRefreshResult>(
+      { apiUrl: apiUrlFor(backend) },
+      'session/refresh',
+      params as unknown as Record<string, unknown>,
+      { fetchFn: fetchOverride },
+    );
+}
+
+function revokeAgainst(
+  backend: SyncBackendRecord,
+): (params: SessionRevokeParams) => Promise<SessionRevokeResult> {
+  return (params) =>
+    postAuthRoute<SessionRevokeResult>(
+      { apiUrl: apiUrlFor(backend) },
+      'session/revoke',
+      params as unknown as Record<string, unknown>,
+      { accessToken: requireAuth().getAccessToken() ?? undefined, fetchFn: fetchOverride },
+    );
+}
+
+/**
+ * Production sign-in: system-browser OIDC + PKCE against the issuer the
+ * reviewed backend advertises, then proof exchange at `<api>/enroll`. Blocks
+ * until the loopback callback arrives, the user cancels, or the wait times
+ * out. Secrets stay in the main process; only the public snapshot returns.
+ */
+export async function signInWithOidc(): Promise<SyncAuthPublicSnapshot> {
+  const backend = requireReviewedBackend();
+  if (!backend.descriptor.authModes.includes('oidc-pkce')) {
+    throw new Error('This backend does not advertise oidc-pkce sign-in.');
+  }
+  const service = requireAuth();
+  await service.createPkceLogin({
+    issuer: backend.descriptor.auth.issuer,
+    clientId: backend.descriptor.auth.publicClientId,
+    scopes: backend.descriptor.auth.scopes,
+    launchBrowser: true,
+  });
+  try {
+    const callback = await service.waitForPkceCallback();
+    runtimeGeneration += 1;
+    const snapshot = await service.completePkceLogin(
+      { state: callback.state, authorizationCode: callback.authorizationCode },
+      enrollAgainst(backend),
+      backend.id,
+    );
+    scheduleSessionRefresh();
+    return snapshot;
+  } catch (error) {
+    service.cancelPendingLogin();
+    throw error;
+  }
+}
+
+/** Redeems a short-lived single-use enrollment code at the pinned backend. */
+export async function enrollWithEnrollmentCode(code: string): Promise<SyncAuthPublicSnapshot> {
+  const backend = requireReviewedBackend();
+  if (!backend.descriptor.authModes.includes('enrollment-code')) {
+    throw new Error('This backend does not advertise enrollment-code sign-in.');
+  }
+  runtimeGeneration += 1;
+  const snapshot = await requireAuth().enrollWithCode(code, enrollAgainst(backend), backend.id);
+  scheduleSessionRefresh();
+  return snapshot;
+}
+
+/**
+ * Mints a pairing code on the signed-in account for enrolling another
+ * device. Requires an active session; the returned code is shown once.
+ */
+export async function issueEnrollmentCode(): Promise<EnrollmentCodeIssueResult> {
+  const backend = getActiveBackend() ?? pinnedBackend();
+  if (!backend) {
+    throw new Error('Pin a backend first.');
+  }
+  const token = requireAuth().getAccessToken();
+  if (token === null) {
+    throw new Error('Sign in before issuing a pairing code.');
+  }
+  return postAuthRoute<EnrollmentCodeIssueResult>(
+    { apiUrl: apiUrlFor(backend) },
+    'enrollment-codes',
+    { displayName: hostname() || 'Anvil device' },
+    { accessToken: token, fetchFn: fetchOverride },
+  );
+}
+
+/**
+ * Schedules the next credential rotation shortly before the stored access
+ * expiry. The refresh itself is serialized inside the auth service, and a
+ * stale response is fenced by the session epoch there.
+ */
+function scheduleSessionRefresh(): void {
+  clearSessionRefresh();
+  const snapshot = auth?.getPublicSnapshot() ?? null;
+  if (snapshot?.state !== 'signed-in' || snapshot.expiresAt === null) {
+    return;
+  }
+  const expiresAt = Date.parse(snapshot.expiresAt);
+  if (!Number.isFinite(expiresAt)) {
+    return;
+  }
+  const delay = Math.max(expiresAt - Date.now() - REFRESH_AHEAD_MS, REFRESH_MIN_DELAY_MS);
+  refreshTimer = setTimeout(() => {
+    void runSessionRefresh();
+  }, delay);
+}
+
+function clearSessionRefresh(): void {
+  if (refreshTimer !== null) {
+    clearTimeout(refreshTimer);
+    refreshTimer = null;
+  }
+}
+
+async function runSessionRefresh(): Promise<void> {
+  const backend = pinnedBackend();
+  const service = auth;
+  if (!backend || !service || backend.identityReviewRequired) {
+    return;
+  }
+  const generation = runtimeGeneration;
+  const fields = service.getSessionScopeFields();
+  if (fields === null || (fields.backendId !== null && fields.backendId !== backend.id)) {
+    return;
+  }
+  try {
+    const snapshot = await service.refreshSession(refreshAgainst(backend));
+    if (generation !== runtimeGeneration) {
+      return;
+    }
+    if (snapshot.state === 'signed-in') {
+      scheduleSessionRefresh();
+    }
+  } catch (error) {
+    lastError = error instanceof Error ? error.message : String(error);
+    // Transient refresh failures retry at the next poll tick's expiry check.
+  }
 }
 
 export function enableSync(): SyncRuntimeStatus {
@@ -237,16 +461,28 @@ export function enableSync(): SyncRuntimeStatus {
   });
   bindLocalWorkflowTemplates(scope);
   startPolling();
-  void requestSync();
+  // Fire-and-forget kick: a superseded/backoff rejection must not surface as
+  // an unhandled rejection; the error is already recorded in `lastError`.
+  void requestSync().catch(() => undefined);
   return getRuntimeStatus();
 }
 
-export function signOutSync(): SyncRuntimeStatus {
+export async function signOutSync(): Promise<SyncRuntimeStatus> {
   // Fence first: any in-flight engine work from the old session fails its
   // generation check at the next durable write.
   runtimeGeneration += 1;
   stopPolling();
-  requireAuth().signOutLocal();
+  clearSessionRefresh();
+  const backend = pinnedBackend();
+  const service = requireAuth();
+  if (backend !== null) {
+    try {
+      await service.revokeSession(revokeAgainst(backend));
+    } catch {
+      // Best effort: the local session is wiped regardless.
+    }
+  }
+  service.signOutLocal();
   disconnectBackend();
   lastError = null;
   return getRuntimeStatus();
@@ -274,7 +510,7 @@ export function resolveRuntimeConflict(
     throw new Error('No active sync scope; conflicts resolve only inside their account.');
   }
   resolveSyncConflict({ conflictId, resolution, scope });
-  void requestSync();
+  void requestSync().catch(() => undefined);
   return getRuntimeStatus();
 }
 
@@ -299,6 +535,7 @@ export function getRuntimeStatus(): SyncRuntimeStatus {
       expiresAt: null,
     },
     syncEnabled: isSyncEnabled(),
+    devSpikeAvailable: devSpikeEnabled,
     backendIdentityReviewRequired: backend?.identityReviewRequired ?? false,
     pendingCount: snapshot?.pendingCount ?? 0,
     conflictCount: scope ? listConflicts(scope).length : 0,
@@ -310,6 +547,15 @@ export function getRuntimeStatus(): SyncRuntimeStatus {
 
 export async function requestSync(): Promise<void> {
   if (!isSyncEnabled()) return;
+  // Refresh near-expiry credentials before they mid-flight a sync cycle.
+  const snapshot = auth?.getPublicSnapshot() ?? null;
+  if (snapshot?.state === 'signed-in' && snapshot.expiresAt !== null) {
+    const expiresAt = Date.parse(snapshot.expiresAt);
+    if (Number.isFinite(expiresAt) && expiresAt - Date.now() <= REFRESH_AHEAD_MS) {
+      await runSessionRefresh();
+      if (!isSyncEnabled()) return;
+    }
+  }
   const backend = getActiveBackend();
   const fields = auth?.getSessionScopeFields() ?? null;
   const token = auth?.getAccessToken() ?? null;
@@ -343,7 +589,14 @@ export async function requestSync(): Promise<void> {
       enrollmentId: fields.enrollmentId,
       connection: { apiUrl: paths.apiUrl, limits: backend.descriptor.limits },
       accessToken: token,
-      rpc: rpcOverride,
+      rpc:
+        rpcOverride ??
+        (fetchOverride === undefined
+          ? undefined
+          : (connection, operation, params, accessToken) =>
+              backendRpc(connection, operation, params, accessToken, {
+                fetchFn: fetchOverride,
+              })),
       guard,
     });
     lastError = null;
