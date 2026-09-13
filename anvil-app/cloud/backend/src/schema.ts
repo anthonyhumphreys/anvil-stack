@@ -311,4 +311,14 @@ CREATE TABLE IF NOT EXISTS enrollment_codes (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_codes_account ON enrollment_codes (account_id, consumed_at);
+-- Account deletion tombstones (spec §140/§560): the identity directory's
+-- durable record that an accountId was deleted. It survives the account
+-- object's purge, blocks enrollment-code issuance for the dead id, and
+-- carries the deletion generation so restore cannot revive authority.
+CREATE TABLE IF NOT EXISTS account_deletions (
+  account_id TEXT PRIMARY KEY,
+  deletion_generation INTEGER NOT NULL,
+  started_at INTEGER NOT NULL,
+  deleted_at INTEGER
+);
 `;

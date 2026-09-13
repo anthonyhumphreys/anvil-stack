@@ -219,6 +219,50 @@ async function handleArtifactBytes(
   return stub.fetch(new Request(`https://internal.anvil${path}`, init));
 }
 
+/**
+ * `account.deletionStatus` forwarding: device callers get the standard
+ * verified-identity headers; callers whose session is already revoked
+ * (i.e. post-deletion) fall back to the raw Authorization header, which
+ * the session object accepts only from the deployment admin credential.
+ */
+async function handleDeletionStatusRpc(
+  request: Request,
+  env: Env,
+  requestId: string,
+  params: unknown,
+): Promise<Response> {
+  const auth = await authenticate(request, env);
+  const headers = new Headers({ 'content-type': 'application/json' });
+  if (auth !== null) {
+    headers.set('x-anvil-account', auth.accountId);
+    headers.set('x-anvil-enrollment', auth.enrollmentId);
+  } else {
+    const authorization = request.headers.get('Authorization');
+    if (authorization === null) {
+      return rpcErrorResponse(requestId, 'unauthenticated');
+    }
+    headers.set('Authorization', authorization);
+  }
+  const response = await sessionStub(env).fetch(
+    new Request('https://internal.anvil/internal/account-deletion-status', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(params ?? {}),
+    }),
+  );
+  const payload = (await response.json().catch(() => null)) as {
+    error?: { code?: string };
+  } | null;
+  if (!response.ok) {
+    const code = payload?.error?.code;
+    return rpcErrorResponse(
+      requestId,
+      code === 'malformed-request' ? code : 'unauthenticated',
+    );
+  }
+  return rpcSuccessResponse(requestId, payload);
+}
+
 async function handleRpc(request: Request, env: Env): Promise<Response> {
   if (request.method !== 'POST') {
     return rpcErrorResponse(undefined, 'malformed-request');
@@ -237,22 +281,37 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
   if (!envelope.ok) {
     return rpcErrorResponse(envelope.requestId, envelope.code);
   }
+  // `account.deletionStatus` is the one op that must stay reachable after
+  // deletion revokes every session — authenticate when we can, otherwise
+  // forward the raw Authorization for the session object's admin check.
+  if (envelope.request.operation === 'account.deletionStatus') {
+    return handleDeletionStatusRpc(
+      request,
+      env,
+      envelope.request.requestId,
+      envelope.request.params,
+    );
+  }
   const auth = await authenticate(request, env);
   if (auth === null) {
     return rpcErrorResponse(envelope.request.requestId, 'unauthenticated');
   }
   switch (envelope.request.operation) {
     // Device lifecycle lives on the session object — `device_sessions` is
-    // the authoritative record for names and revocation.
+    // the authoritative record for names and revocation. Account deletion
+    // shares that home: the session object owns the durable tombstone.
+    case 'account.delete':
     case 'device.list':
     case 'device.rename':
     case 'device.revoke': {
       const internal =
-        envelope.request.operation === 'device.list'
-          ? '/internal/device-list'
-          : envelope.request.operation === 'device.rename'
-            ? '/internal/device-rename'
-            : '/internal/device-revoke';
+        envelope.request.operation === 'account.delete'
+          ? '/internal/account-delete'
+          : envelope.request.operation === 'device.list'
+            ? '/internal/device-list'
+            : envelope.request.operation === 'device.rename'
+              ? '/internal/device-rename'
+              : '/internal/device-revoke';
       const response = await sessionStub(env).fetch(
         new Request(`https://internal.anvil${internal}`, {
           method: 'POST',

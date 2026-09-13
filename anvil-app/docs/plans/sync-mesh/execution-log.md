@@ -904,3 +904,55 @@ re-revoke. Backend 108/108, gate 7/7, tsc clean.
 
 Remaining: `account.delete*`, `data.export|import.*`, BYOB-02,
 IAC-02, LAUNCH-01.
+
+## account.delete + account.deletionStatus — hosted-data purge (complete)
+
+- Contract (auth.ts): `AccountDeletionState` ('none'|'deleting'|
+  'deleted'), `AccountDeleteResult`, `AccountDeletionStatusResult`.
+- Session schema: `account_deletions` tombstone (account_id PK,
+  deletion_generation, started_at, deleted_at) — outlives the
+  account object's purge and permanently locks the dead accountId.
+- SessionCoordinator owns the lifecycle (spec §140 order):
+  `/internal/account-delete` tombstones, revokes every device_session
+  on the account FIRST, then drives the account object's purge.
+  `/internal/account-deletion-status` serves live sessions (own
+  account only) and — post-deletion, when all sessions are dead —
+  the deployment admin credential with an explicit accountId.
+- Stale-client lockout: `issueCode` rejects tombstoned accountIds;
+  `handleEnroll` rejects outstanding codes bound to them; OIDC
+  re-enrollment walks to the next generational identity
+  (`oidc_X~2`, `~3`, …) so a recreated account gets a NEW internal
+  identity while each dead generation stays locked (spec §140).
+- Session sweep re-drives unfinished purges (LIMIT 8/pass) —
+  covers a request chain that broke before the first pass landed.
+- AccountCoordinator: `deleteAccountData` runs bounded
+  transactionSync passes (`runPurgePass`, SWEEP_BATCH_ROWS/table)
+  over all 14 hosted tables + artifacts; artifact r2_keys queue to
+  `pendingR2Deletes` (post-commit waitUntil). First entry flips
+  `deletion_state`→'deleting', rotates `epoch`→`deleted-<uuid>`
+  (every stored cursor dies), stamps started_at; `purgeRemaining`=0
+  flips 'deleted' + stamps deleted_at. Alarm prioritizes deletion
+  over retention sweeps. `acceptClient`/`handleRpc` answer
+  `forbidden{reason:account-deleted}` once tombstoned.
+- Worker routing: `account.delete` joins the device.* session
+  forward; `account.deletionStatus` is the one op reachable without
+  live auth — device callers get verified headers, revoked callers
+  fall back to the raw Authorization for the session object's
+  admin-token check.
+- Bug found by the suite: `SELECT rowid` on tables whose declared
+  INTEGER PRIMARY KEY aliases rowid (changes.sequence) returns the
+  DECLARED column name in DO result rows — `id.rowid` was undefined,
+  `DELETE WHERE rowid = NULL` silently matched nothing and the purge
+  could never converge. Fixed as a single-statement
+  `DELETE … WHERE rowid IN (SELECT rowid … LIMIT n)` so rowid never
+  crosses the result-row boundary.
+
+Coverage: 4 tests over real enrollment flows — pre-deletion 'none' +
+auth required; delete → sessions revoked (both devices dead),
+purge converges to deleted with purgedRows>0 via admin status;
+tombstoned accountId rejects new code issuance (403 account-deleted)
+and outstanding pre-deletion codes; admin status path requires
+accountId, device bearers see only their own account. Backend 112/112,
+gate 7/7, tsc clean.
+
+Remaining: `data.export|import.*`, BYOB-02, IAC-02, LAUNCH-01.

@@ -197,6 +197,31 @@ export interface DeviceRevokeResult {
 }
 
 /**
+ * Account deletion lifecycle (spec §140): enrollments disable first,
+ * then hosted data purges in bounded retryable passes. `deleting`
+ * means the tombstone exists and purge passes are in flight;
+ * `deleted` means the account object reported its stores empty.
+ * `none` means no deletion has been requested for this account.
+ */
+export type AccountDeletionState = 'none' | 'deleting' | 'deleted';
+
+export interface AccountDeleteResult {
+  state: Exclude<AccountDeletionState, 'none'>;
+  deletionGeneration: number;
+  startedAt: string;
+}
+
+export interface AccountDeletionStatusResult {
+  state: AccountDeletionState;
+  /** Present once deletion has been requested. */
+  deletionGeneration?: number;
+  startedAt?: string;
+  deletedAt?: string;
+  /** Rows purged so far, reported by the account object. */
+  purgedRows?: number;
+}
+
+/**
  * Auth failure codes owned by this contract (envelope.ts is owned by
  * another packet, so they live here). All three map to HTTP 401.
  */

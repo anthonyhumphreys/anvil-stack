@@ -388,6 +388,28 @@ const SWEEP_BATCH_ROWS = 500;
 const SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 /** Quick follow-up while a bounded pass still has expired rows left. */
 const SWEEP_CONTINUE_MS = 1_000;
+/**
+ * Every hosted-data table account deletion purges. `artifacts` and
+ * `sync_meta` are handled specially (R2 keys / the tombstone itself);
+ * `scans`/`counters` carry only account metadata and go with the rest.
+ */
+const ACCOUNT_PURGE_TABLES = [
+  'enrollments',
+  'entities',
+  'changes',
+  'receipts',
+  'scans',
+  'counters',
+  'workers',
+  'worker_replicas',
+  'jobs',
+  'attempts',
+  'events',
+  'job_event_meta',
+  'approvals',
+  'mesh_sessions',
+  'handoffs',
+] as const;
 /** Per-account retained-history budget enforced before accepting changes. */
 const HISTORY_QUOTA_BYTES = 64 * 1024 * 1024;
 /** MESH-01: revoked worker records (+ replicas) are kept this long for audit. */
@@ -605,6 +627,16 @@ export class AccountCoordinator extends DurableObject<Env> {
           body.enrollmentId,
         ).rowsWritten > 0;
       return Response.json({ closed, workerRevoked });
+    }
+    if (url.pathname === '/internal/delete-account' && request.method === 'POST') {
+      // Worker-internal: the session object drives account deletion — the
+      // tombstone and session revocation are already durably in place by
+      // the time this runs (spec §140: enrollments disable first). This
+      // begins/continues the retryable purge; it is safe to re-invoke.
+      return Response.json(await this.deleteAccountData());
+    }
+    if (url.pathname === '/internal/deletion-status' && request.method === 'POST') {
+      return Response.json(this.deletionStatus());
     }
     // MESH-03 artifact byte routes: PUT uploads into a reservation, GET
     // downloads a published artifact. Bytes stream to/from R2 — never
@@ -1062,6 +1094,10 @@ export class AccountCoordinator extends DurableObject<Env> {
     if (auth === null) {
       return rpcErrorResponse(undefined, 'unauthenticated');
     }
+    // A deleted account accepts nothing — no socket, no resurrection.
+    if (this.readMetaOrNull('deletion_state') !== null) {
+      return rpcErrorResponse(undefined, 'forbidden', { reason: 'account-deleted' });
+    }
     const pair = new WebSocketPair();
     this.ctx.acceptWebSocket(pair[1]);
     const attachment: SocketAttachment = {
@@ -1095,6 +1131,11 @@ export class AccountCoordinator extends DurableObject<Env> {
     const auth = this.identityOf(request);
     if (auth === null) {
       return rpcErrorResponse(undefined, 'unauthenticated');
+    }
+    // Post-deletion the object answers every op with account-deleted —
+    // stale clients cannot recreate hosted state (spec §140).
+    if (this.readMetaOrNull('deletion_state') !== null) {
+      return rpcErrorResponse(undefined, 'forbidden', { reason: 'account-deleted' });
     }
     let parsed: unknown;
     try {
@@ -1728,6 +1769,21 @@ export class AccountCoordinator extends DurableObject<Env> {
     return this.ctx.storage.sql
       .exec<MetaRow>('SELECT value FROM sync_meta WHERE key = ?', key)
       .one().value;
+  }
+
+  private readMetaOrNull(key: string): string | null {
+    const row = this.ctx.storage.sql
+      .exec<MetaRow>('SELECT value FROM sync_meta WHERE key = ?', key)
+      .toArray()[0];
+    return row === undefined ? null : row.value;
+  }
+
+  private writeMeta(key: string, value: string): void {
+    this.ctx.storage.sql.exec(
+      'INSERT INTO sync_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+      key,
+      value,
+    );
   }
 
   private broadcastInvalidate(watermark: number): void {
@@ -4956,6 +5012,12 @@ export class AccountCoordinator extends DurableObject<Env> {
    * drops completed scans.
    */
   async alarm(): Promise<void> {
+    if (this.readMetaOrNull('deletion_state') === 'deleting') {
+      // A deletion pass takes precedence over retention sweeps; reschedule
+      // while work remains.
+      await this.deleteAccountData();
+      return;
+    }
     await this.runSweep(Date.now());
   }
 
@@ -5239,6 +5301,107 @@ export class AccountCoordinator extends DurableObject<Env> {
       reconciledArtifacts,
       deletedEvents,
       continued,
+    };
+  }
+
+  /**
+   * Account deletion (spec §140): once the session object has tombstoned
+   * the account and revoked its enrollments, this purges hosted data in
+   * bounded, retryable passes. First entry flips `deletion_state`,
+   * rotates the dataset epoch (every stored cursor goes stale), and
+   * records the start; each pass batch-deletes every table and queues
+   * artifact object deletes post-commit. When nothing remains the state
+   * flips to `deleted`. The alarm drives remaining passes; the op is
+   * safe to re-invoke at any point.
+   */
+  private async deleteAccountData(): Promise<{
+    state: 'deleting' | 'deleted';
+    purgedRows: number;
+  }> {
+    const now = Date.now();
+    this.commit(() => {
+      if (this.readMetaOrNull('deletion_state') === null) {
+        this.writeMeta('deletion_state', 'deleting');
+        this.writeMeta('deletion_started_at', String(now));
+        this.writeMeta('deletion_purged_rows', '0');
+        this.writeMeta('epoch', `deleted-${crypto.randomUUID()}`);
+      }
+      const purged = this.runPurgePass();
+      this.writeMeta(
+        'deletion_purged_rows',
+        String(Number(this.readMeta('deletion_purged_rows')) + purged),
+      );
+      if (this.purgeRemaining() === 0) {
+        this.writeMeta('deletion_state', 'deleted');
+        this.writeMeta('deletion_deleted_at', String(now));
+      }
+    });
+    // Every attached socket belongs to this account — sever them all.
+    for (const ws of this.ctx.getWebSockets()) {
+      ws.close(1008, 'account deleted');
+    }
+    if (this.readMetaOrNull('deletion_state') === 'deleting') {
+      await this.ctx.storage.setAlarm(now + SWEEP_CONTINUE_MS);
+    }
+    return {
+      state: this.readMetaOrNull('deletion_state') === 'deleted' ? 'deleted' : 'deleting',
+      purgedRows: Number(this.readMetaOrNull('deletion_purged_rows') ?? '0'),
+    };
+  }
+
+  /** One bounded pass over every hosted table. Returns rows purged. */
+  private runPurgePass(): number {
+    let purged = 0;
+    // Artifacts carry R2 objects — collect keys for post-commit deletion
+    // (pendingR2Deletes runs under ctx.waitUntil inside commit()).
+    const artifactRows = this.ctx.storage.sql
+      .exec<{ artifact_id: string; r2_key: string }>(
+        `SELECT artifact_id, r2_key FROM artifacts LIMIT ${SWEEP_BATCH_ROWS}`,
+      )
+      .toArray();
+    for (const row of artifactRows) {
+      this.pendingR2Deletes.push(row.r2_key);
+      this.ctx.storage.sql.exec(
+        'DELETE FROM artifacts WHERE artifact_id = ?',
+        row.artifact_id,
+      );
+      purged += 1;
+    }
+    for (const table of ACCOUNT_PURGE_TABLES) {
+      // Single-statement bounded delete: `SELECT rowid` result rows take the
+      // declared INTEGER PRIMARY KEY's name where rowid is an alias (e.g.
+      // changes.sequence), so rowid never crosses the result-row boundary.
+      purged += this.ctx.storage.sql.exec(
+        `DELETE FROM ${table} WHERE rowid IN (SELECT rowid FROM ${table} LIMIT ${SWEEP_BATCH_ROWS})`,
+      ).rowsWritten;
+    }
+    return purged;
+  }
+
+  private purgeRemaining(): number {
+    const clause = ACCOUNT_PURGE_TABLES.map((t) => `(SELECT COUNT(*) FROM ${t})`).join(' + ');
+    const row = this.ctx.storage.sql
+      .exec<{ n: number }>(`SELECT ${clause} + (SELECT COUNT(*) FROM artifacts) AS n`)
+      .one();
+    return row.n;
+  }
+
+  private deletionStatus(): {
+    state: 'none' | 'deleting' | 'deleted';
+    startedAt?: string;
+    deletedAt?: string;
+    purgedRows?: number;
+  } {
+    const state = this.readMetaOrNull('deletion_state');
+    if (state === null) return { state: 'none' };
+    const startedAt = this.readMetaOrNull('deletion_started_at');
+    const deletedAt = this.readMetaOrNull('deletion_deleted_at');
+    const purgedRows = this.readMetaOrNull('deletion_purged_rows');
+    return {
+      state: state as 'deleting' | 'deleted',
+      ...(startedAt === null ? {} : { startedAt: new Date(Number(startedAt)).toISOString() }),
+      ...(deletedAt === null ? {} : { deletedAt: new Date(Number(deletedAt)).toISOString() }),
+      ...(purgedRows === null ? {} : { purgedRows: Number(purgedRows) }),
     };
   }
 

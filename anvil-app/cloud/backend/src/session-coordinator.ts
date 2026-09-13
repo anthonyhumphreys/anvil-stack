@@ -15,6 +15,8 @@ import { DurableObject } from 'cloudflare:workers';
 
 import {
   authErrorHttpStatus,
+  type AccountDeleteResult,
+  type AccountDeletionStatusResult,
   type AuthErrorCode,
   type DeviceListResult,
   type DeviceRenameResult,
@@ -167,6 +169,20 @@ export class SessionCoordinator extends DurableObject<Env> {
           await this.ensureSweepAlarm();
           return response;
         }
+        case 'POST /internal/account-delete': {
+          const response = await this.ctx.blockConcurrencyWhile(() =>
+            this.handleAccountDelete(request),
+          );
+          await this.ensureSweepAlarm();
+          return response;
+        }
+        case 'POST /internal/account-deletion-status': {
+          const response = await this.ctx.blockConcurrencyWhile(() =>
+            this.handleAccountDeletionStatus(request),
+          );
+          await this.ensureSweepAlarm();
+          return response;
+        }
         case 'POST /internal/sweep':
           return Response.json(await this.runSweep(Date.now()));
         default:
@@ -313,8 +329,37 @@ export class SessionCoordinator extends DurableObject<Env> {
         return authError('invalid-proof');
       }
       accountId = `oidc_${await sha256Hex(`${issuer.replace(/\/+$/, '')}:${sub}`)}`;
+      // Recreated accounts get a new internal identity (spec §140): when
+      // the derived accountId is tombstoned, walk to the next generation
+      // (`oidc_X~2`, `oidc_X~3`, …). Each dead generation's tombstone keeps
+      // its stale clients locked out; the new generation is a fresh
+      // account object with its own epoch.
+      if (this.deletionRow(accountId) !== null) {
+        const base = accountId;
+        for (let generation = 2; ; generation += 1) {
+          const candidate = `${base}~${generation}`;
+          if (this.deletionRow(candidate) === null) {
+            accountId = candidate;
+            break;
+          }
+        }
+      }
     } else {
       return authError('invalid-proof');
+    }
+    // Codes bound to a tombstoned account die with it — a code issued
+    // before deletion cannot enroll a session on dead state.
+    if (proof.method === 'enrollment-code' && this.deletionRow(accountId) !== null) {
+      return Response.json(
+        {
+          error: {
+            code: 'forbidden',
+            retryable: false,
+            details: { reason: 'account-deleted' },
+          },
+        },
+        { status: 403 },
+      );
     }
 
     const enrollmentId = `enr_${crypto.randomUUID()}`;
@@ -506,6 +551,20 @@ export class SessionCoordinator extends DurableObject<Env> {
       }
       accountId = session.account_id;
       issuedBy = session.enrollment_id;
+    }
+    // A tombstoned accountId is permanently dead — deleted cloud state
+    // cannot be recreated by issuing new enrollments for it.
+    if (this.deletionRow(accountId) !== null) {
+      return Response.json(
+        {
+          error: {
+            code: 'forbidden',
+            retryable: false,
+            details: { reason: 'account-deleted' },
+          },
+        },
+        { status: 403 },
+      );
     }
 
     const now = Date.now();
@@ -699,6 +758,184 @@ export class SessionCoordinator extends DurableObject<Env> {
     return Response.json(result, { status: 200 });
   }
 
+  // ---- account deletion (spec §140) ------------------------------------
+  //
+  // The session object is the identity directory: it owns the durable
+  // tombstone (`account_deletions`) that outlives the account object's
+  // purge, blocks enrollment-code issuance for the dead id, and carries
+  // the deletion generation so a restore cannot revive authority.
+  // Order is fixed: tombstone, then revoke every session on the account,
+  // then drive the account object's retryable purge.
+
+  private deletionRow(accountId: string): {
+    account_id: string;
+    deletion_generation: number;
+    started_at: number;
+    deleted_at: number | null;
+  } | null {
+    return (
+      (this.ctx.storage.sql
+        .exec(
+          'SELECT * FROM account_deletions WHERE account_id = ?',
+          accountId,
+        )
+        .toArray()[0] as
+        | {
+            account_id: string;
+            deletion_generation: number;
+            started_at: number;
+            deleted_at: number | null;
+          }
+        | undefined) ?? null
+    );
+  }
+
+  /**
+   * Drives one purge pass on the account object and folds the result back
+   * into the tombstone. Unreachable objects are not failures — the account
+   * object's alarm and this object's sweep re-drive until `deleted`.
+   */
+  private async driveAccountPurge(
+    accountId: string,
+  ): Promise<{ state: 'deleting' | 'deleted'; purgedRows?: number }> {
+    try {
+      const id = this.env.ACCOUNT.idFromName(accountId);
+      const response = await this.env.ACCOUNT.get(id).fetch(
+        'https://internal.anvil/internal/delete-account',
+        { method: 'POST' },
+      );
+      const body = (await response.json().catch(() => null)) as {
+        state?: string;
+        purgedRows?: number;
+      } | null;
+      if (response.ok && (body?.state === 'deleted' || body?.state === 'deleting')) {
+        if (body.state === 'deleted') {
+          this.ctx.storage.sql.exec(
+            'UPDATE account_deletions SET deleted_at = COALESCE(deleted_at, ?) WHERE account_id = ?',
+            Date.now(),
+            accountId,
+          );
+        }
+        return { state: body.state, ...(body.purgedRows === undefined ? {} : { purgedRows: body.purgedRows }) };
+      }
+    } catch {
+      // Fall through: 'deleting' — the account object's alarm re-drives.
+    }
+    return { state: 'deleting' };
+  }
+
+  /**
+   * Read-only status probe — unlike `driveAccountPurge` this never advances
+   * the purge; used when the tombstone is already terminal.
+   */
+  private async readAccountDeletionStatus(
+    accountId: string,
+  ): Promise<{ state: 'none' | 'deleting' | 'deleted'; purgedRows?: number } | null> {
+    try {
+      const id = this.env.ACCOUNT.idFromName(accountId);
+      const response = await this.env.ACCOUNT.get(id).fetch(
+        'https://internal.anvil/internal/deletion-status',
+        { method: 'POST' },
+      );
+      const body = (await response.json().catch(() => null)) as {
+        state?: 'none' | 'deleting' | 'deleted';
+        purgedRows?: number;
+      } | null;
+      if (response.ok && body !== null && body.state !== undefined) {
+        return {
+          state: body.state,
+          ...(body.purgedRows === undefined ? {} : { purgedRows: body.purgedRows }),
+        };
+      }
+    } catch {
+      // Unreachable object — the tombstone remains authoritative.
+    }
+    return null;
+  }
+
+  /** `account.delete` — the caller must hold a live session on the account. */
+  private async handleAccountDelete(request: Request): Promise<Response> {
+    const caller = this.verifiedCaller(request);
+    if (caller === null) return authError('unauthenticated');
+    const accountId = caller.accountId;
+    const now = Date.now();
+    let tombstone = this.deletionRow(accountId);
+    if (tombstone === null) {
+      this.ctx.storage.sql.exec(
+        'INSERT INTO account_deletions (account_id, deletion_generation, started_at) VALUES (?, 1, ?)',
+        accountId,
+        now,
+      );
+      tombstone = this.deletionRow(accountId);
+    }
+    if (tombstone === null) throw new Error('deletion tombstone insert failed');
+    // Enrollments disable first: every session on the account is revoked
+    // before the data purge begins.
+    this.ctx.storage.sql.exec(
+      'UPDATE device_sessions SET revoked_at = COALESCE(revoked_at, ?) WHERE account_id = ?',
+      now,
+      accountId,
+    );
+    const purge = await this.driveAccountPurge(accountId);
+    const result: AccountDeleteResult = {
+      state: purge.state,
+      deletionGeneration: tombstone.deletion_generation,
+      startedAt: new Date(tombstone.started_at).toISOString(),
+    };
+    return Response.json(result, { status: 200 });
+  }
+
+  /**
+   * `account.deletionStatus` — two caller classes: a live session on the
+   * account (pre-deletion `state: 'none'`), or the deployment admin
+   * credential with an explicit `accountId` (the only usable path once
+   * sessions are revoked).
+   */
+  private async handleAccountDeletionStatus(request: Request): Promise<Response> {
+    const adminToken = this.env.ENROLLMENT_ADMIN_TOKEN;
+    const header = request.headers.get('Authorization');
+    let accountId: string;
+    if (
+      typeof adminToken === 'string' &&
+      adminToken.length > 0 &&
+      header === `Bearer ${adminToken}`
+    ) {
+      const body = await readJson(request);
+      if (!isRecord(body) || typeof body['accountId'] !== 'string') {
+        return authError('malformed-request');
+      }
+      accountId = body['accountId'];
+    } else {
+      const caller = this.verifiedCaller(request);
+      if (caller === null) return authError('unauthenticated');
+      accountId = caller.accountId;
+    }
+    const tombstone = this.deletionRow(accountId);
+    if (tombstone === null) {
+      const result: AccountDeletionStatusResult = { state: 'none' };
+      return Response.json(result, { status: 200 });
+    }
+    // A status read is also a purge driver: ask the account object for the
+    // live state and fold `deleted` back into the tombstone. Once terminal,
+    // a read-only probe supplies detail (purgedRows) without re-driving.
+    const purge =
+      tombstone.deleted_at !== null
+        ? ((await this.readAccountDeletionStatus(accountId)) ?? { state: 'deleted' as const })
+        : await this.driveAccountPurge(accountId);
+    const fresh = this.deletionRow(accountId);
+    const result: AccountDeletionStatusResult = {
+      // The tombstone is authoritative — a 'none' probe can't un-delete.
+      state: purge.state === 'none' ? 'deleted' : purge.state,
+      deletionGeneration: tombstone.deletion_generation,
+      startedAt: new Date(tombstone.started_at).toISOString(),
+      ...(fresh?.deleted_at == null
+        ? {}
+        : { deletedAt: new Date(fresh.deleted_at).toISOString() }),
+      ...(purge.purgedRows === undefined ? {} : { purgedRows: purge.purgedRows }),
+    };
+    return Response.json(result, { status: 200 });
+  }
+
   /**
    * OPS-01 session sweep: expires dead enrollment codes, clears lapsed
    * refresh-grace windows (the pending rotated response and the superseded
@@ -749,6 +986,17 @@ export class SessionCoordinator extends DurableObject<Env> {
         )
         .toArray().length;
     });
+    // Re-drive unfinished account purges — the account object's own alarm
+    // is the fast path; this covers a deletion whose request chain broke
+    // before the first pass landed.
+    const pending = this.ctx.storage.sql
+      .exec<{ account_id: string }>(
+        'SELECT account_id FROM account_deletions WHERE deleted_at IS NULL LIMIT 8',
+      )
+      .toArray();
+    for (const row of pending) {
+      await this.driveAccountPurge(row.account_id);
+    }
     await this.ctx.storage.setAlarm(Date.now() + SESSION_SWEEP_INTERVAL_MS);
     return { deletedCodes, clearedGrace, deletedSessions };
   }

@@ -544,3 +544,124 @@ describe('OIDC-PKCE proof verification', () => {
     expect(sub).toBeNull();
   });
 });
+
+describe('account deletion (spec §140)', () => {
+  /** Status via the deployment-admin credential — the post-deletion channel. */
+  async function adminStatus(accountId: string) {
+    return postRpc(
+      'account.deletionStatus',
+      { accountId },
+      `Bearer ${ADMIN_TOKEN}`,
+    );
+  }
+
+  it('reports none before deletion and requires auth', async () => {
+    const session = await freshSession();
+    const status = expectSuccess<{ state: string }>(
+      await postRpc('account.deletionStatus', {}, bearer(session)),
+    );
+    expect(status.state).toBe('none');
+
+    const anon = await postRpc('account.delete', {}, 'Bearer anvil_at_nope');
+    expect(anon.status).toBe(httpStatusForErrorCode('unauthenticated'));
+    const anonStatus = await postRpc('account.deletionStatus', {}, 'Bearer anvil_at_nope');
+    expect(anonStatus.status).toBe(httpStatusForErrorCode('unauthenticated'));
+  });
+
+  it('disables enrollments, purges hosted data, and locks stale clients out', async () => {
+    env.ENROLLMENT_ADMIN_TOKEN = ADMIN_TOKEN;
+    const accountId = `acct-${crypto.randomUUID()}`;
+    const a = await enrollWithCode((await issueCode(accountId)).code, 'install-a');
+    const pairing = await issueCode('', bearer(a));
+    const b = await enrollWithCode(pairing.code, 'install-b');
+
+    // Seed hosted data so the purge has something to delete.
+    const { hashedChange } = await import('./helpers');
+    const change = await hashedChange({
+      enrollmentSequence: 1,
+      entityId: 'ws-doomed',
+      payload: { name: 'doomed' },
+    });
+    const pushed = await postRpc('sync.push', { changes: [change] }, bearer(a));
+    expect(pushed.status).toBe(200);
+
+    const deleted = await postRpc('account.delete', {}, bearer(a));
+    const result = expectSuccess<{
+      state: string;
+      deletionGeneration: number;
+      startedAt: string;
+    }>(deleted);
+    expect(result.state === 'deleting' || result.state === 'deleted').toBe(true);
+    expect(result.deletionGeneration).toBe(1);
+    expect(typeof result.startedAt).toBe('string');
+
+    // Enrollments disabled first: every session on the account is dead,
+    // including the one that requested deletion and its sibling.
+    for (const session of [a, b]) {
+      const after = await postRpc('sync.pull', { cursor: null, maxBytes: 1024 }, bearer(session));
+      expect(after.status).toBe(httpStatusForErrorCode('unauthenticated'));
+    }
+
+    // The purge converges to deleted; the admin channel reports detail.
+    const status = await adminStatus(accountId);
+    const detail = expectSuccess<{
+      state: string;
+      deletionGeneration: number;
+      startedAt: string;
+      deletedAt?: string;
+      purgedRows?: number;
+    }>(status);
+    expect(detail.state).toBe('deleted');
+    expect(detail.deletionGeneration).toBe(1);
+    expect(typeof detail.deletedAt).toBe('string');
+    // The pushed change + entity + enrollment row prove real rows went away.
+    expect(detail.purgedRows ?? 0).toBeGreaterThan(0);
+  });
+
+  it('blocks code issuance and outstanding codes for a tombstoned account', async () => {
+    env.ENROLLMENT_ADMIN_TOKEN = ADMIN_TOKEN;
+    const accountId = `acct-${crypto.randomUUID()}`;
+    const first = await issueCode(accountId);
+    // A second code stays outstanding across the deletion.
+    const outstanding = await issueCode(accountId);
+    const session = await enrollWithCode(first.code, 'install-a');
+    expectSuccess(await postRpc('account.delete', {}, bearer(session)));
+
+    // New codes cannot be issued for the dead accountId.
+    const issued = await postAuthRoute(
+      '/v1/enrollment-codes',
+      { accountId },
+      `Bearer ${ADMIN_TOKEN}`,
+    );
+    expect(issued.status).toBe(403);
+    expect(
+      (issued.body['error'] as { details?: { reason?: string } }).details?.reason,
+    ).toBe('account-deleted');
+
+    // The pre-deletion outstanding code is dead with the account.
+    const enroll = await postAuthRoute('/v1/enroll', {
+      proof: { method: 'enrollment-code', code: outstanding.code },
+      installationId: 'install-late',
+    });
+    expect(enroll.status).toBe(403);
+    expect(
+      (enroll.body['error'] as { details?: { reason?: string } }).details?.reason,
+    ).toBe('account-deleted');
+  });
+
+  it('deletionStatus admin path requires accountId and rejects non-admin bearers', async () => {
+    env.ENROLLMENT_ADMIN_TOKEN = ADMIN_TOKEN;
+    const missing = await postRpc('account.deletionStatus', {}, `Bearer ${ADMIN_TOKEN}`);
+    expect(missing.status).toBe(400);
+
+    const session = await freshSession();
+    // A device bearer cannot ask about another account.
+    const cross = await postRpc(
+      'account.deletionStatus',
+      { accountId: 'acct-someone-else' },
+      bearer(session),
+    );
+    expect(cross.status).toBe(200);
+    expect(expectSuccess<{ state: string }>(cross).state).toBe('none');
+  });
+});
