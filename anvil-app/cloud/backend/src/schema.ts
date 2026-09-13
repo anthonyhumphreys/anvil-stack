@@ -271,6 +271,21 @@ CREATE TABLE IF NOT EXISTS handoffs (
 CREATE INDEX IF NOT EXISTS idx_handoffs_session ON handoffs (session_id, created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_handoffs_active_session
   ON handoffs (session_id) WHERE state NOT IN ('completed', 'cancelled', 'failed');
+-- Data portability (sync/1): durable export/import operations. Export rows
+-- carry the snapshot watermark + paging cursor; import rows stage the
+-- validated plan JSON until commit (idempotent via the result column).
+CREATE TABLE IF NOT EXISTS data_operations (
+  operation_id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  state TEXT NOT NULL,
+  enrollment_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  finished_at INTEGER,
+  watermark INTEGER,
+  entity_cursor TEXT,
+  plan TEXT,
+  result TEXT
+);
 `;
 
 /** First-dataset epoch for a fresh account object. Fixed for determinism. */

@@ -956,3 +956,40 @@ accountId, device bearers see only their own account. Backend 112/112,
 gate 7/7, tsc clean.
 
 Remaining: `data.export|import.*`, BYOB-02, IAC-02, LAUNCH-01.
+
+## data.export.* / data.import.* / data.operationStatus — portability (complete)
+
+- Contract (new `data.ts`, exported via index): format v1 portable
+  document — `ExportedEntity` (the ScannedEntity shape), begin/page
+  results, staged-import preview/commit results, operation status.
+- `data_operations` table on the account object: durable op rows
+  (kind, state, enrollment, watermark, entity_cursor, plan, result)
+  make every export/import re-attachable by operation ID across
+  restarts; the table joins ACCOUNT_PURGE_TABLES and the sweep
+  expires rows on the snapshot cadence.
+- `data.export.begin` opens a watermark-stamped snapshot;
+  `data.export.page` reuses the scan paging discipline (client-held
+  cursor so lost responses resume exactly, byte-bounded pages,
+  tombstoned entities excluded) and records progress on the op row.
+- `data.import.preview` validates format + entity shape, classifies
+  each entity against stored state (create / identical / conflict /
+  invalid), stages the full plan durably, and returns a bounded
+  entries view (200-cap + truncated flag).
+- `data.import.commit` applies only 'create' entries through the
+  normal change path (entities upsert at revision 1 + changes row +
+  next_sequence/history accounting + broadcastInvalidate) — re-
+  classifying at commit time so post-preview changes still preserve
+  conflicts. Committed ops store their result; a retry returns it
+  without re-applying.
+- `data.operationStatus` reports kind/state/timestamps plus progress
+  detail (watermark, cursor, stored commit result).
+- Worker routing: the five ops forward to the account object like
+  the other sync-domain ops.
+
+Coverage: 5 tests — paged export with tombstone exclusion +
+operationStatus done; import preview→commit→pull round-trip;
+conflict preserved / identical skipped / invalid rejected;
+idempotent commit; unknown-id not-found + kind-mismatch +
+unsupported formatVersion. Backend 117/117, gate 7/7, tsc clean.
+
+Remaining: BYOB-02, IAC-02, LAUNCH-01.

@@ -385,7 +385,13 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
     case 'handoff.create':
     case 'handoff.get':
     case 'handoff.advance':
-    case 'handoff.cancel': {
+    case 'handoff.cancel':
+    // Data portability (sync/1): paged export, staged import, op status.
+    case 'data.export.begin':
+    case 'data.export.page':
+    case 'data.import.preview':
+    case 'data.import.commit':
+    case 'data.operationStatus': {
       return forwardToAccount(env, auth, {
         method: 'POST',
         headers: new Headers(request.headers),

@@ -44,6 +44,15 @@ import {
 } from '../../contract/socket';
 import type { SyncAccountStats } from '../../contract/auth';
 import {
+  DATA_EXPORT_FORMAT_VERSION,
+  type DataExportBeginResult,
+  type DataExportPageResult,
+  type DataImportCommitResult,
+  type DataOperationStatusResult,
+  type ExportedEntity,
+  type ImportOutcome,
+} from '../../contract/data';
+import {
   ATTEMPT_TRANSITIONS,
   canTransitionJob,
   type ApprovalDecideResult,
@@ -328,6 +337,26 @@ interface ArtifactRow {
   [key: string]: string | number | null;
 }
 
+/** A staged import plan entry — the preview classification, persisted. */
+interface ImportPlanEntry extends ExportedEntity {
+  outcome: ImportOutcome;
+  reason?: string;
+}
+
+interface DataOperationRow {
+  operation_id: string;
+  kind: string;
+  state: string;
+  enrollment_id: string;
+  created_at: number;
+  finished_at: number | null;
+  watermark: number | null;
+  entity_cursor: string | null;
+  plan: string | null;
+  result: string | null;
+  [key: string]: string | number | null;
+}
+
 interface MeshSessionRow {
   session_id: string;
   generation: number;
@@ -409,9 +438,12 @@ const ACCOUNT_PURGE_TABLES = [
   'approvals',
   'mesh_sessions',
   'handoffs',
+  'data_operations',
 ] as const;
 /** Per-account retained-history budget enforced before accepting changes. */
 const HISTORY_QUOTA_BYTES = 64 * 1024 * 1024;
+/** Import-preview response cap — the staged plan itself is unbounded by this. */
+const DATA_IMPORT_PREVIEW_ENTRY_CAP = 200;
 /** MESH-01: revoked worker records (+ replicas) are kept this long for audit. */
 const WORKER_AUDIT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 /** Bounds for worker metadata payloads — metadata only, never bulk content. */
@@ -1216,6 +1248,18 @@ export class AccountCoordinator extends DurableObject<Env> {
           return this.handleHandoffAdvance(auth, rpc.requestId, rpc.params);
         case 'handoff.cancel':
           return this.handleHandoffCancel(auth, rpc.requestId, rpc.params);
+        // Data portability (sync/1): paged entity export, staged import
+        // preview/commit, durable operation status.
+        case 'data.export.begin':
+          return this.handleDataExportBegin(auth, rpc.requestId, rpc.params);
+        case 'data.export.page':
+          return this.handleDataExportPage(auth, rpc.requestId, rpc.params);
+        case 'data.import.preview':
+          return this.handleDataImportPreview(auth, rpc.requestId, rpc.params);
+        case 'data.import.commit':
+          return this.handleDataImportCommit(auth, rpc.requestId, rpc.params);
+        case 'data.operationStatus':
+          return this.handleDataOperationStatus(rpc.requestId, rpc.params);
         default:
           return rpcErrorResponse(rpc.requestId, 'unsupported-operation');
       }
@@ -1688,6 +1732,350 @@ export class AccountCoordinator extends DurableObject<Env> {
     const nextSequence = Number(this.readMeta('next_sequence'));
     return nextSequence > 1 ? nextSequence - 1 : 0;
   }
+
+  // ---- data portability (sync/1) --------------------------------------
+  //
+  // Export reuses the scan paging discipline (watermark snapshot, entity
+  // cursor, byte-bounded pages) on a durable `data_operations` row so a
+  // restart can re-attach by operation ID. Import stages a validated plan
+  // (`previewed`) and commits it through the normal change path — conflicts
+  // are preserved, never overwritten; live leases never migrate.
+
+  private handleDataExportBegin(
+    auth: SpikeAuth,
+    requestId: string,
+    params: unknown,
+  ): Response {
+    parseDataExportBeginParams(params);
+    const epoch = this.readMeta('epoch');
+    const watermark = this.currentWatermark();
+    const operationId = `exp_${crypto.randomUUID()}`;
+    this.ctx.storage.sql.exec(
+      `INSERT INTO data_operations
+        (operation_id, kind, state, enrollment_id, created_at, watermark)
+       VALUES (?, 'export', 'open', ?, ?, ?)`,
+      operationId,
+      auth.enrollmentId,
+      Date.now(),
+      watermark,
+    );
+    const result: DataExportBeginResult = {
+      operationId,
+      epoch,
+      watermarkStart: watermark,
+    };
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  private handleDataExportPage(
+    auth: SpikeAuth,
+    requestId: string,
+    params: unknown,
+  ): Response {
+    const page = parseDataExportPageParams(params);
+    const result = this.commit(() => {
+      const op = this.loadDataOperation(page.operationId, 'export');
+      if (op.state === 'done') {
+        return { entities: [], nextCursor: null, done: true };
+      }
+      if (op.state !== 'open') {
+        throw new RpcFailure('invalid-transition', { reason: 'export-not-open', state: op.state });
+      }
+      const after = page.cursor === null ? null : decodeEntityCursor(page.cursor);
+      const maxBytes = Math.min(page.maxBytes, DEFAULT_LIMITS.pageBytes);
+      const rows =
+        after === null
+          ? this.ctx.storage.sql
+              .exec<ScanEntityRow>(
+                `SELECT entity_type, entity_id, revision, schema_version, payload
+                 FROM entities WHERE operation != 'delete'
+                 ORDER BY entity_type ASC, entity_id ASC`,
+              )
+              .toArray()
+          : this.ctx.storage.sql
+              .exec<ScanEntityRow>(
+                `SELECT entity_type, entity_id, revision, schema_version, payload
+                 FROM entities
+                 WHERE operation != 'delete'
+                   AND (entity_type > ? OR (entity_type = ? AND entity_id > ?))
+                 ORDER BY entity_type ASC, entity_id ASC`,
+                after.entityType,
+                after.entityType,
+                after.entityId,
+              )
+              .toArray();
+      const entities: ExportedEntity[] = [];
+      let usedBytes = 0;
+      let remaining = false;
+      for (const row of rows) {
+        const entity: ExportedEntity = {
+          entityType: row.entity_type,
+          entityId: row.entity_id,
+          revision: row.revision,
+          schemaVersion: row.schema_version,
+          payload: row.payload === null ? null : (JSON.parse(row.payload) as unknown),
+        };
+        const size = utf8ByteLength(JSON.stringify(entity));
+        if (entities.length > 0 && usedBytes + size > maxBytes) {
+          remaining = true;
+          break;
+        }
+        entities.push(entity);
+        usedBytes += size;
+      }
+      if (!remaining && entities.length < rows.length) {
+        remaining = true;
+      }
+      const last = entities[entities.length - 1];
+      const nextCursor =
+        last === undefined
+          ? op.entity_cursor
+          : encodeEntityCursor(last.entityType, last.entityId);
+      this.ctx.storage.sql.exec(
+        `UPDATE data_operations SET entity_cursor = ?, state = ?, finished_at = ?
+         WHERE operation_id = ?`,
+        nextCursor,
+        remaining ? 'open' : 'done',
+        remaining ? null : Date.now(),
+        op.operation_id,
+      );
+      return { entities, nextCursor: remaining ? nextCursor : null, done: !remaining };
+    });
+    const full: DataExportPageResult = {
+      operationId: page.operationId,
+      formatVersion: DATA_EXPORT_FORMAT_VERSION,
+      epoch: this.readMeta('epoch'),
+      entities: result.entities,
+      nextCursor: result.nextCursor,
+      done: result.done,
+    };
+    return rpcSuccessResponse(requestId, full);
+  }
+
+  private handleDataImportPreview(
+    auth: SpikeAuth,
+    requestId: string,
+    params: unknown,
+  ): Response {
+    const input = parseDataImportPreviewParams(params);
+    const result = this.commit(() => {
+      const summary = { creates: 0, identical: 0, conflicts: 0, invalid: 0 };
+      const plan: ImportPlanEntry[] = [];
+      for (const entity of input.entities) {
+        const entry = this.classifyImportEntity(entity);
+        plan.push(entry);
+        summary[
+          entry.outcome === 'create'
+            ? 'creates'
+            : entry.outcome === 'identical'
+              ? 'identical'
+              : entry.outcome === 'conflict'
+                ? 'conflicts'
+                : 'invalid'
+        ] += 1;
+      }
+      const operationId = `imp_${crypto.randomUUID()}`;
+      this.ctx.storage.sql.exec(
+        `INSERT INTO data_operations
+          (operation_id, kind, state, enrollment_id, created_at, plan)
+         VALUES (?, 'import', 'previewed', ?, ?, ?)`,
+        operationId,
+        auth.enrollmentId,
+        Date.now(),
+        JSON.stringify({ formatVersion: input.formatVersion, entries: plan }),
+      );
+      const entries = plan.slice(0, DATA_IMPORT_PREVIEW_ENTRY_CAP).map((entry) => ({
+        entityType: entry.entityType,
+        entityId: entry.entityId,
+        outcome: entry.outcome,
+        ...(entry.reason === undefined ? {} : { reason: entry.reason }),
+      }));
+      return {
+        operationId,
+        summary,
+        entries,
+        truncated: plan.length > DATA_IMPORT_PREVIEW_ENTRY_CAP,
+      };
+    });
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  /**
+   * Compares an incoming entity with stored state: absent → 'create',
+   * identical content → 'identical' (commit skips), differing → 'conflict'
+   * (commit preserves the stored row — spec: conflicts are preserved,
+   * never overwritten). Shape violations → 'invalid' (commit skips).
+   */
+  private classifyImportEntity(entity: ExportedEntity): ImportPlanEntry {
+    if (
+      entity.entityType.length === 0 ||
+      entity.entityId.length === 0 ||
+      entity.entityType.length > 128 ||
+      entity.entityId.length > 512 ||
+      !Number.isInteger(entity.revision) ||
+      entity.revision < 1 ||
+      !Number.isInteger(entity.schemaVersion) ||
+      entity.schemaVersion < 1 ||
+      entity.payload === undefined
+    ) {
+      return { ...entity, outcome: 'invalid', reason: 'malformed-entity' };
+    }
+    const payloadJson = JSON.stringify(entity.payload);
+    if (utf8ByteLength(payloadJson) > DEFAULT_LIMITS.entityBytes) {
+      return { ...entity, outcome: 'invalid', reason: 'payload-too-large' };
+    }
+    const existing = this.readEntity(entity.entityType, entity.entityId);
+    if (existing === null || existing.operation === 'delete') {
+      return { ...entity, outcome: 'create' };
+    }
+    if (existing.payload === payloadJson) {
+      return { ...entity, outcome: 'identical' };
+    }
+    return { ...entity, outcome: 'conflict', reason: 'exists-different-content' };
+  }
+
+  private handleDataImportCommit(
+    auth: SpikeAuth,
+    requestId: string,
+    params: unknown,
+  ): Response {
+    const input = parseDataImportCommitParams(params);
+    let acceptedWatermark: number | null = null;
+    const outcome = this.commit(() => {
+      const op = this.loadDataOperation(input.operationId, 'import');
+      if (op.state === 'committed' && op.result !== null) {
+        // Idempotent: a retried commit returns the stored result.
+        return JSON.parse(op.result) as DataImportCommitResult;
+      }
+      if (op.state !== 'previewed') {
+        throw new RpcFailure('invalid-transition', {
+          reason: 'import-not-previewed',
+          state: op.state,
+        });
+      }
+      const plan = JSON.parse(op.plan ?? '{"entries":[]}') as { entries: ImportPlanEntry[] };
+      this.provisionEnrollment(auth);
+      let applied = 0;
+      let conflicts = 0;
+      let skipped = 0;
+      const now = Date.now();
+      for (const entry of plan.entries) {
+        if (entry.outcome !== 'create') {
+          if (entry.outcome === 'conflict') conflicts += 1;
+          else skipped += 1;
+          continue;
+        }
+        // Re-check at commit time — state may have moved since preview.
+        const current = this.classifyImportEntity(entry);
+        if (current.outcome !== 'create') {
+          if (current.outcome === 'conflict') conflicts += 1;
+          else skipped += 1;
+          continue;
+        }
+        const sequence = Number(this.readMeta('next_sequence'));
+        const payloadJson = JSON.stringify(entry.payload);
+        this.ctx.storage.sql.exec(
+          `INSERT INTO entities (
+             entity_type, entity_id, revision, operation, schema_version, payload, sequence, updated_at
+           ) VALUES (?, ?, 1, 'create', ?, ?, ?, ?)`,
+          entry.entityType,
+          entry.entityId,
+          entry.schemaVersion,
+          payloadJson,
+          sequence,
+          now,
+        );
+        this.ctx.storage.sql.exec(
+          `INSERT INTO changes (
+             sequence, entity_type, entity_id, revision, operation, schema_version, payload, created_at
+           ) VALUES (?, ?, ?, 1, 'create', ?, ?, ?)`,
+          sequence,
+          entry.entityType,
+          entry.entityId,
+          entry.schemaVersion,
+          payloadJson,
+          now,
+        );
+        this.ctx.storage.sql.exec(
+          "UPDATE sync_meta SET value = ? WHERE key = 'next_sequence'",
+          String(sequence + 1),
+        );
+        this.addHistoryBytes(utf8ByteLength(payloadJson));
+        acceptedWatermark = sequence;
+        applied += 1;
+      }
+      const result: DataImportCommitResult = {
+        operationId: op.operation_id,
+        applied,
+        conflicts,
+        skipped,
+      };
+      this.ctx.storage.sql.exec(
+        `UPDATE data_operations SET state = 'committed', finished_at = ?, result = ?
+         WHERE operation_id = ?`,
+        now,
+        JSON.stringify(result),
+        op.operation_id,
+      );
+      return result;
+    });
+    if (acceptedWatermark !== null) {
+      this.broadcastInvalidate(acceptedWatermark);
+    }
+    return rpcSuccessResponse(requestId, outcome);
+  }
+
+  private handleDataOperationStatus(requestId: string, params: unknown): Response {
+    const input = parseDataOperationStatusParams(params);
+    const rows = this.ctx.storage.sql
+      .exec<DataOperationRow>(
+        'SELECT * FROM data_operations WHERE operation_id = ?',
+        input.operationId,
+      )
+      .toArray();
+    const op = rows[0];
+    if (op === undefined) {
+      throw new RpcFailure('not-found', { reason: 'data-operation' });
+    }
+    const detail: Record<string, unknown> = {};
+    if (op.watermark !== null) detail['watermarkStart'] = op.watermark;
+    if (op.entity_cursor !== null) detail['cursor'] = op.entity_cursor;
+    if (op.state === 'committed' && op.result !== null) {
+      detail['result'] = JSON.parse(op.result) as unknown;
+    }
+    const result: DataOperationStatusResult = {
+      operationId: op.operation_id,
+      kind: op.kind as 'export' | 'import',
+      state: op.state as DataOperationStatusResult['state'],
+      createdAt: new Date(op.created_at).toISOString(),
+      ...(op.finished_at === null
+        ? {}
+        : { finishedAt: new Date(op.finished_at).toISOString() }),
+      ...(Object.keys(detail).length === 0 ? {} : { detail }),
+    };
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  private loadDataOperation(operationId: string, kind: 'export' | 'import'): DataOperationRow {
+    const rows = this.ctx.storage.sql
+      .exec<DataOperationRow>(
+        'SELECT * FROM data_operations WHERE operation_id = ?',
+        operationId,
+      )
+      .toArray();
+    const op = rows[0];
+    if (op === undefined) {
+      throw new RpcFailure('not-found', { reason: 'data-operation' });
+    }
+    if (op.kind !== kind) {
+      throw new RpcFailure('malformed-request', { reason: 'operation-kind-mismatch' });
+    }
+    if (Date.now() - op.created_at > SNAPSHOT_LIFETIME_MS) {
+      throw new RpcFailure('not-found', { reason: 'operation-expired' });
+    }
+    return op;
+  }
+
 
   private readRetentionFloor(): number {
     return Number(this.readMeta('retention_floor'));
@@ -5105,6 +5493,13 @@ export class AccountCoordinator extends DurableObject<Env> {
         this.ctx.storage.sql.exec('DELETE FROM scans WHERE scan_id = ?', row.scan_id);
         deletedScans += 1;
       }
+      // Data-portability ops expire on the snapshot cadence — finished rows
+      // past the window drop; still-open rows die with them (a paged export
+      // abandoned past its snapshot lifetime can't complete anyway).
+      this.ctx.storage.sql.exec(
+        'DELETE FROM data_operations WHERE created_at < ?',
+        now - SNAPSHOT_LIFETIME_MS,
+      );
       // MESH-01: revoked worker records are audit state; drop the row and its
       // replica summaries once the 30-day audit window has passed. Stale (not
       // revoked) incarnations are NOT deleted — availability is derived from
@@ -5584,6 +5979,119 @@ function decodeEntityCursor(cursor: string): { entityType: string; entityId: str
     throw new RpcFailure('malformed-request', { reason: 'cursor-format' });
   }
   return { entityType, entityId };
+}
+
+function parseDataExportBeginParams(params: unknown): { maxBytes?: number } {
+  if (params === undefined || params === null) return {};
+  if (!isRecord(params)) {
+    throw new RpcFailure('malformed-request', { reason: 'export-begin-params' });
+  }
+  const maxBytes = params['maxBytes'];
+  if (maxBytes !== undefined && (typeof maxBytes !== 'number' || !Number.isInteger(maxBytes) || maxBytes < 1)) {
+    throw new RpcFailure('malformed-request', { reason: 'maxBytes' });
+  }
+  return { ...(maxBytes === undefined ? {} : { maxBytes }) };
+}
+
+function parseDataExportPageParams(params: unknown): {
+  operationId: string;
+  cursor: string | null;
+  maxBytes: number;
+} {
+  if (!isRecord(params)) {
+    throw new RpcFailure('malformed-request', { reason: 'export-page-params' });
+  }
+  const operationId = params['operationId'];
+  if (typeof operationId !== 'string' || operationId.length === 0) {
+    throw new RpcFailure('malformed-request', { reason: 'operationId' });
+  }
+  const cursorRaw = params['cursor'];
+  if (cursorRaw !== null && cursorRaw !== undefined && typeof cursorRaw !== 'string') {
+    throw new RpcFailure('malformed-request', { reason: 'cursor-type' });
+  }
+  const cursor = cursorRaw === undefined ? null : cursorRaw;
+  const maxBytes = params['maxBytes'];
+  const resolved =
+    maxBytes === undefined
+      ? DEFAULT_LIMITS.pageBytes
+      : typeof maxBytes !== 'number' || !Number.isInteger(maxBytes) || maxBytes < 1
+        ? (() => {
+            throw new RpcFailure('malformed-request', { reason: 'maxBytes' });
+          })()
+        : maxBytes;
+  return { operationId, cursor, maxBytes: resolved };
+}
+
+function parseExportedEntity(input: unknown): ExportedEntity {
+  if (!isRecord(input)) {
+    throw new RpcFailure('malformed-request', { reason: 'entity-shape' });
+  }
+  const entityType = input['entityType'];
+  const entityId = input['entityId'];
+  const revision = input['revision'];
+  const schemaVersion = input['schemaVersion'];
+  if (
+    typeof entityType !== 'string' ||
+    typeof entityId !== 'string' ||
+    typeof revision !== 'number' ||
+    typeof schemaVersion !== 'number' ||
+    !Object.prototype.hasOwnProperty.call(input, 'payload')
+  ) {
+    throw new RpcFailure('malformed-request', { reason: 'entity-shape' });
+  }
+  return {
+    entityType,
+    entityId,
+    revision,
+    schemaVersion,
+    payload: input['payload'],
+  };
+}
+
+function parseDataImportPreviewParams(params: unknown): {
+  formatVersion: number;
+  entities: ExportedEntity[];
+} {
+  if (!isRecord(params)) {
+    throw new RpcFailure('malformed-request', { reason: 'import-preview-params' });
+  }
+  const formatVersion = params['formatVersion'];
+  if (formatVersion !== DATA_EXPORT_FORMAT_VERSION) {
+    throw new RpcFailure('malformed-request', {
+      reason: 'unsupported-format-version',
+      expected: DATA_EXPORT_FORMAT_VERSION,
+    });
+  }
+  const raw = params['entities'];
+  if (!Array.isArray(raw) || raw.length > DEFAULT_LIMITS.batchChanges) {
+    throw new RpcFailure('malformed-request', {
+      reason: 'entities',
+      limit: DEFAULT_LIMITS.batchChanges,
+    });
+  }
+  return { formatVersion, entities: raw.map(parseExportedEntity) };
+}
+
+function parseDataImportCommitParams(params: unknown): { operationId: string } {
+  if (!isRecord(params)) {
+    throw new RpcFailure('malformed-request', { reason: 'import-commit-params' });
+  }
+  const operationId = params['operationId'];
+  if (typeof operationId !== 'string' || operationId.length === 0) {
+    throw new RpcFailure('malformed-request', { reason: 'operationId' });
+  }
+  return { operationId };
+}
+
+function parseDataOperationStatusParams(params: unknown): { operationId: string } {
+  if (!isRecord(params)) {
+    throw new RpcFailure('malformed-request', { reason: 'operation-status-params' });
+  }
+  const operationId = params['operationId'];
+  if (typeof operationId !== 'string' || operationId.length === 0) {
+    throw new RpcFailure('malformed-request', { reason: 'operationId' });
+  }
+  return { operationId };
 }
 
 function parsePendingChange(input: unknown): PendingChange {
