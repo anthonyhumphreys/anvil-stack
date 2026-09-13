@@ -262,4 +262,66 @@ describe.skipIf(!backendReachable)('two-profile acceptance gate (real worker)', 
       expect(getRuntimeStatus().auth.state).toBe('signed-out');
     },
   );
+
+  it(
+    'restores the full account dataset onto a wiped device (OPS-01 restore drill)',
+    { timeout: 60_000 },
+    async () => {
+      const accountId = `acct-gate-${Date.now()}-restore`;
+      const descriptor = await backendDescriptor();
+
+      // ---- Profile A: enroll, create two workflows, push both.
+      const a = openProfile('a-restore');
+      openProfiles.push(a);
+      const aStatus = await enrollProfile(a, await mintCode(accountId));
+      const aScope = scopeFor(aStatus, descriptor.deploymentId);
+      const first = saveWorkflowTemplate({
+        name: 'restore-alpha',
+        nodes: [node('r1')],
+        edges: [],
+        orchestration: DEFAULT_ORCHESTRATION,
+      });
+      const second = saveWorkflowTemplate({
+        name: 'restore-beta',
+        nodes: [node('r2'), node('r3')],
+        edges: [],
+        orchestration: DEFAULT_ORCHESTRATION,
+      });
+      bindLocalWorkflowTemplates(aScope);
+      await requestSync();
+      expect(getRuntimeStatus().lastError).toBeNull();
+
+      // ---- Pairing code issued through the production path on A.
+      const pairing = await issueEnrollmentCode();
+      expect(pairing.accountId).toBe(accountId);
+
+      // ---- Profile C: a completely fresh device — new userDataDir, new
+      // SQLite, no prior cursors or bindings. Redeeming the code and running
+      // one cycle must materialize the account's entire dataset.
+      const c = openProfile('c-restore');
+      openProfiles.push(c);
+      const cStatus = await enrollProfile(c, pairing.code);
+      expect(cStatus.auth.accountId).toBe(accountId);
+      await requestSync();
+      expect(getRuntimeStatus().lastError).toBeNull();
+      expect(getRuntimeStatus().pendingCount).toBe(0);
+
+      const rows = c.db
+        .prepare(
+          `SELECT id, name FROM workflow_templates WHERE id IN ('${first.id}', '${second.id}') ORDER BY name`,
+        )
+        .all() as Array<{ id: string; name: string }>;
+      expect(rows).toEqual([
+        { id: first.id, name: 'restore-alpha' },
+        { id: second.id, name: 'restore-beta' },
+      ]);
+      const bindings = c.db
+        .prepare(
+          `SELECT entity_id FROM sync_bindings WHERE entity_id IN ('${first.id}', '${second.id}')`,
+        )
+        .all() as Array<{ entity_id: string }>;
+      expect(bindings).toHaveLength(2);
+      await signOutSync();
+    },
+  );
 });
