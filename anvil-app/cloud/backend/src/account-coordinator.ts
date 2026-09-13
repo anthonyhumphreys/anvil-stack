@@ -35,6 +35,7 @@ import {
   type ActivityFrame,
   type ActivityPayload,
   type GapFrame,
+  type HelloFrame,
   type JobAvailableFrame,
   type SocketErrorFrame,
   type SocketFrame,
@@ -100,6 +101,7 @@ import {
   DEFAULT_LIMITS,
   LEASE_DURATION_MS,
   OBSERVER_INTEREST_MS,
+  PROFILES,
   SNAPSHOT_LIFETIME_MS,
   USER_JOB_DEADLINE_MS,
   WORKER_LEASE_MS,
@@ -1023,6 +1025,21 @@ export class AccountCoordinator extends DurableObject<Env> {
       enrollmentId: auth.enrollmentId,
     };
     pair[1].serializeAttachment(attachment);
+    // `hello` opens the session — the client stays 'connecting' until it
+    // arrives, and control-channel sends (approval requests) refuse to run
+    // on a socket that was never greeted.
+    const worker = this.readWorker(auth.enrollmentId);
+    const hello: HelloFrame = {
+      type: 'hello',
+      version: SOCKET_FRAME_VERSION,
+      id: crypto.randomUUID(),
+      enrollmentId: auth.enrollmentId,
+      ...(worker !== null && worker.incarnation !== null
+        ? { workerIncarnation: worker.incarnation }
+        : {}),
+      profiles: [...PROFILES],
+    };
+    pair[1].send(JSON.stringify(hello));
     return new Response(null, {
       status: 101,
       webSocket: pair[0],

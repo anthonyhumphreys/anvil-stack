@@ -24,7 +24,7 @@ import type {
   WorkerConnectResult,
 } from '../../contract/workers';
 import type { AccountCoordinator } from '../src/account-coordinator';
-import { expectSuccess, postRpc, spikeBearer, uniqueIds } from './helpers';
+import { expectSuccess, nextFrameOfType, postRpc, spikeBearer, uniqueIds } from './helpers';
 
 function accountStub(accountId: string) {
   return env.ACCOUNT.get(env.ACCOUNT.idFromName(accountId));
@@ -641,27 +641,32 @@ describe('job.available fanout', () => {
     const sourceSocket = await openSocket(f.sourceAuth);
     const thirdSocket = await openSocket(thirdAuth);
 
-    const workerFrame = new Promise<string>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('job.available timed out')), 5_000);
-      workerSocket.addEventListener('message', (event) => {
-        clearTimeout(timer);
-        resolve(String(event.data));
-      });
-    });
+    // The session `hello` opens every socket — skip it when waiting on a
+    // specific frame, and exclude it from the silence assertions.
+    const workerFrame = nextFrameOfType(workerSocket, 'job.available');
     let sourceHeard: string | null = null;
     let thirdHeard: string | null = null;
+    const nonHello = (data: unknown): string | null => {
+      const text = String(data);
+      try {
+        if ((JSON.parse(text) as { type?: string }).type === 'hello') return null;
+      } catch {
+        // Non-JSON noise still counts as "heard".
+      }
+      return text;
+    };
     sourceSocket.addEventListener('message', (event) => {
-      sourceHeard = String(event.data);
+      sourceHeard ??= nonHello(event.data);
     });
     thirdSocket.addEventListener('message', (event) => {
-      thirdHeard = String(event.data);
+      thirdHeard ??= nonHello(event.data);
     });
 
     const created = await createJob(f.sourceAuth, {
       requestedTarget: deviceTarget(f.workerEnrollmentId),
     });
 
-    const frame = JSON.parse(await workerFrame) as {
+    const frame = (await workerFrame) as {
       type: string;
       version: number;
       id: string;

@@ -1099,6 +1099,23 @@ describe('artifacts', () => {
 });
 
 describe('socket observation', () => {
+  it('greets a fresh socket with hello carrying the enrollment identity', async () => {
+    const f = fixture('obs-hello');
+    const upgrade = await SELF.fetch('https://spike.test/v1/connect', {
+      headers: { Upgrade: 'websocket', Authorization: f.sourceAuth },
+    });
+    expect(upgrade.status).toBe(101);
+    const socket = upgrade.webSocket;
+    if (socket == null) throw new Error('expected hibernatable WebSocket');
+    // Attach before accept: the hello is queued at open time.
+    const frames = collectFrames(socket);
+    socket.accept();
+    const hello = await waitForFrame(frames, (fr) => (fr['type'] === 'hello' ? fr : null));
+    expect(hello['enrollmentId']).toBe(f.sourceEnrollmentId);
+    expect(Array.isArray(hello['profiles'])).toBe(true);
+    socket.close(1000, 'done');
+  });
+
   it('replays journaled rows on subscribe and streams live activity to subscribers', async () => {
     const f = fixture('obs-live');
     const job = await runningJob(f);

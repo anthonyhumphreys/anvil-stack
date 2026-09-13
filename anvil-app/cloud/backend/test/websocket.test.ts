@@ -2,7 +2,14 @@ import { SELF } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 
 import type { SyncPushResult } from '../../contract/sync';
-import { expectSuccess, hashedChange, postRpc, spikeBearer, uniqueIds } from './helpers';
+import {
+  expectSuccess,
+  hashedChange,
+  nextFrameOfType,
+  postRpc,
+  spikeBearer,
+  uniqueIds,
+} from './helpers';
 
 describe('live channel', () => {
   it('delivers sync.invalidate after an accepted push', async () => {
@@ -21,13 +28,9 @@ describe('live channel', () => {
     }
     socket.accept();
 
-    const invalidated = new Promise<string>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('invalidate frame timed out')), 5_000);
-      socket.addEventListener('message', (event) => {
-        clearTimeout(timer);
-        resolve(String(event.data));
-      });
-    });
+    // The session `hello` opens every socket — wait past it for the
+    // invalidate frame.
+    const invalidated = nextFrameOfType(socket, 'sync.invalidate');
 
     const change = await hashedChange({
       enrollmentSequence: 1,
@@ -39,7 +42,7 @@ describe('live channel', () => {
     );
     expect(pushed.results[0]?.status).toBe('accepted');
 
-    const frame = JSON.parse(await invalidated) as {
+    const frame = (await invalidated) as {
       type: string;
       version: number;
       epoch: string;

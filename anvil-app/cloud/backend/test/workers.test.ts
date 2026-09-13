@@ -11,7 +11,7 @@ import type {
   WorkerDescribeResult,
 } from '../../contract/workers';
 import type { AccountCoordinator } from '../src/account-coordinator';
-import { expectSuccess, postRpc, spikeBearer, uniqueIds } from './helpers';
+import { expectSuccess, nextFrameOfType, postRpc, spikeBearer, uniqueIds } from './helpers';
 
 const ADMIN_TOKEN = 'test-admin-credential';
 const WORKER_AUDIT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -398,22 +398,24 @@ describe('worker mailbox', () => {
     const workerSocket = await openSocket(workerAuth);
     const observerSocket = await openSocket(observerAuth);
 
-    const observerFrame = new Promise<string>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('worker.available timed out')), 5_000);
-      observerSocket.addEventListener('message', (event) => {
-        clearTimeout(timer);
-        resolve(String(event.data));
-      });
-    });
+    // The session `hello` opens every socket — skip it when waiting on a
+    // specific frame, and exclude it from the silence assertion.
+    const observerFrame = nextFrameOfType(observerSocket, 'worker.available');
     let workerHeard: string | null = null;
     workerSocket.addEventListener('message', (event) => {
-      workerHeard = String(event.data);
+      const text = String(event.data);
+      try {
+        if ((JSON.parse(text) as { type?: string }).type === 'hello') return;
+      } catch {
+        // Non-JSON noise still counts as "heard".
+      }
+      workerHeard ??= text;
     });
 
     await publishPolicy(workerAuth);
     const connected = await connectWorker(workerAuth);
 
-    const frame = JSON.parse(await observerFrame) as {
+    const frame = (await observerFrame) as {
       type: string;
       version: number;
       id: string;

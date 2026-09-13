@@ -73,3 +73,28 @@ export function expectSuccess<R>(response: { status: number; body: RpcResponse }
   }
   return response.body.result as R;
 }
+
+/**
+ * Resolves with the first socket frame of the given type, skipping others
+ * (notably the session `hello` that now opens every accepted socket).
+ */
+export function nextFrameOfType(
+  socket: WebSocket,
+  type: string,
+  timeoutMs = 5_000,
+): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${type} frame timed out`)), timeoutMs);
+    socket.addEventListener('message', (event) => {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(String(event.data));
+      } catch {
+        return;
+      }
+      if ((parsed as Record<string, unknown>)['type'] !== type) return;
+      clearTimeout(timer);
+      resolve(parsed as Record<string, unknown>);
+    });
+  });
+}
