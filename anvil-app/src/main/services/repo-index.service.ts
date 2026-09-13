@@ -8,7 +8,7 @@ import { notifyIfUnfocused } from './notification.service.js';
 import { getSettings } from './settings.service.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
 import { getCurrentCommitSha } from './code-review-git.service.js';
-import { buildRepositoryMapGraph } from './repository-map-graph.service.js';
+import { buildRepositoryMapInWorker } from './repository-map-worker.service.js';
 
 interface DbRepoRow {
   id: string;
@@ -31,7 +31,6 @@ export async function indexRepo(
     | DbRepoRow
     | undefined;
   if (!repoRow) throw new Error(`Repo not found: ${repoId}`);
-  const indexedCommitSha = getCurrentCommitSha(repoRow.path);
   const existingMapPreferences = db
     .prepare('SELECT map_refresh_mode FROM repo_summaries WHERE repo_id = ?')
     .get(repoId) as { map_refresh_mode: string | null } | undefined;
@@ -52,6 +51,7 @@ export async function indexRepo(
       "UPDATE repos SET status = 'indexing', updated_at = datetime('now') WHERE id = ?",
     ).run(repoId);
     sendProgress('Queued for indexing...', 0, 'queued');
+    const indexedCommitSha = await getCurrentCommitSha(repoRow.path);
 
     sendProgress('Discovering files...', 5, 'discovering');
     const analysis = await analyseRepo(repoRow.path);
@@ -168,7 +168,7 @@ export async function indexRepo(
 
     sendProgress('Saving results...', 97, 'saving');
 
-    const repositoryMapGraph = buildRepositoryMapGraph({
+    const repositoryMapGraph = await buildRepositoryMapInWorker({
       repoId,
       repositoryName: repoRow.name,
       repoPath: repoRow.path,

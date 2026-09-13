@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   Archive,
@@ -386,6 +386,16 @@ export function PlanIntentSurface({
 }
 
 export function QuestionIntentSurface({
+  intent,
+  compact = false,
+}: {
+  intent: AgentUIQuestionIntent;
+  compact?: boolean;
+}) {
+  return <QuestionForm key={intent.id} intent={intent} compact={compact} />;
+}
+
+function QuestionForm({
   intent: incomingIntent,
   compact = false,
 }: {
@@ -402,6 +412,10 @@ export function QuestionIntentSurface({
   );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const submittingRef = useRef(false);
+  const questionRef = useRef<HTMLDivElement>(null);
+  const formId = useId();
 
   useEffect(() => setIntent(incomingIntent), [incomingIntent]);
 
@@ -410,8 +424,21 @@ export function QuestionIntentSurface({
   );
   const canCancel = intent.payload.questions.every((question) => question.allowCancel);
   const canSkip = intent.payload.questions.every((question) => !question.required);
+  const questions = intent.payload.questions;
+  const activeQuestion = questions[Math.min(activeIndex, questions.length - 1)];
+  const isLast = activeIndex >= questions.length - 1;
+  const canContinue =
+    activeQuestion && (!activeQuestion.required || hasQuestionAnswer(answers[activeQuestion.id]));
+
+  const navigate = (index: number) => {
+    setActiveIndex(index);
+    setError(null);
+    questionRef.current?.focus();
+  };
 
   const submit = async (action: 'submit' | 'skip' | 'cancel') => {
+    if (submittingRef.current) return;
+    submittingRef.current = true;
     setSubmitting(true);
     setError(null);
     try {
@@ -425,6 +452,7 @@ export function QuestionIntentSurface({
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Could not send the answer.');
     } finally {
+      submittingRef.current = false;
       setSubmitting(false);
     }
   };
@@ -453,12 +481,49 @@ export function QuestionIntentSurface({
 
   return (
     <form
-      id={`agent-ui-intent-${intent.id}`}
+      id={formId}
+      aria-label={intent.payload.title ?? 'Agent questions'}
+      aria-busy={submitting}
+      onKeyDown={(event) => {
+        const target = event.target as HTMLElement;
+        if (
+          submitting ||
+          event.altKey ||
+          event.ctrlKey ||
+          event.metaKey ||
+          target.isContentEditable ||
+          target.tagName === 'TEXTAREA' ||
+          (target instanceof HTMLInputElement &&
+            target.type !== 'radio' &&
+            target.type !== 'checkbox') ||
+          !/^[1-9]$/.test(event.key) ||
+          !activeQuestion
+        )
+          return;
+        const option = activeQuestion.options?.[Number(event.key) - 1];
+        if (!option) return;
+        event.preventDefault();
+        setAnswers((previous) => {
+          const value = previous[activeQuestion.id];
+          const values = Array.isArray(value) ? value : [];
+          return {
+            ...previous,
+            [activeQuestion.id]:
+              activeQuestion.kind === 'multiple_choice'
+                ? values.includes(option.value)
+                  ? values.filter((item) => item !== option.value)
+                  : [...values, option.value]
+                : option.value,
+          };
+        });
+      }}
       onSubmit={(event) => {
         event.preventDefault();
-        if (complete) void submit('submit');
+        if (submitting || !canContinue) return;
+        if (!isLast) navigate(activeIndex + 1);
+        else if (complete) void submit('submit');
       }}
-      className={`overflow-hidden rounded-xl border border-warning/35 bg-bg-secondary ${compact ? 'mx-3 my-2' : ''}`}
+      className={`overflow-hidden rounded-xl border border-border bg-bg-secondary ${compact ? 'mx-3 my-2' : ''}`}
     >
       <div className="flex items-center gap-3 border-b border-border-subtle px-4 py-3">
         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-warning/10 text-warning">
@@ -469,24 +534,75 @@ export function QuestionIntentSurface({
             {intent.payload.title ?? 'Agent needs your input'}
           </p>
           <p className="mt-0.5 text-xs text-text-tertiary">
-            Answer here to resume the waiting agent.
+            Choose an answer to guide the next step.
           </p>
         </div>
       </div>
 
-      <div className="space-y-5 p-4">
-        {intent.payload.questions.map((question) => (
+      {questions.length > 1 && (
+        <nav
+          aria-label="Questions"
+          className="flex flex-wrap gap-1 border-b border-border-subtle px-4 py-2"
+        >
+          {questions.map((question, index) => (
+            <button
+              key={question.id}
+              type="button"
+              aria-current={index === activeIndex ? 'step' : undefined}
+              aria-label={`Question ${index + 1}${hasQuestionAnswer(answers[question.id]) ? ', answered' : ''}`}
+              disabled={submitting}
+              onClick={() => navigate(index)}
+              className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-40 ${index === activeIndex ? 'bg-accent/10 font-semibold text-accent' : 'text-text-secondary hover:bg-bg-tertiary'}`}
+            >
+              {hasQuestionAnswer(answers[question.id]) && <CheckCircle2 size={12} />}
+              {index + 1}
+            </button>
+          ))}
+        </nav>
+      )}
+      <div
+        ref={questionRef}
+        tabIndex={-1}
+        className="space-y-3 p-4 outline-none"
+        aria-live="polite"
+      >
+        <p className="text-xs text-text-tertiary">
+          Question {activeIndex + 1} of {questions.length}
+        </p>
+        {activeQuestion && (
           <QuestionField
-            key={question.id}
-            question={question}
-            value={answers[question.id]}
-            onChange={(value) => setAnswers((previous) => ({ ...previous, [question.id]: value }))}
+            key={activeQuestion.id}
+            question={activeQuestion}
+            disabled={submitting}
+            value={answers[activeQuestion.id]}
+            onChange={(value) =>
+              setAnswers((previous) => ({ ...previous, [activeQuestion.id]: value }))
+            }
           />
-        ))}
-        {error && <p className="text-xs text-error">{error}</p>}
+        )}
+        {isLast && !complete && (
+          <p className="text-xs text-text-secondary">
+            Answer each required question before sending.
+          </p>
+        )}
+        {error && (
+          <p role="alert" className="text-xs text-error">
+            {error}
+          </p>
+        )}
       </div>
 
       <div className="flex items-center justify-end gap-2 border-t border-border-subtle px-4 py-3">
+        {activeIndex > 0 && (
+          <button
+            type="button"
+            onClick={() => navigate(activeIndex - 1)}
+            disabled={submitting}
+            className="mr-auto rounded-md px-3 py-2 text-xs font-medium text-text-secondary hover:bg-bg-tertiary focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-40"
+          >
+            Back
+          </button>
+        )}
         {canCancel && (
           <button
             type="button"
@@ -509,11 +625,11 @@ export function QuestionIntentSurface({
         )}
         <button
           type="submit"
-          disabled={!complete || submitting}
-          className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-white hover:bg-accent/85 disabled:cursor-not-allowed disabled:opacity-40"
+          disabled={!canContinue || (isLast && !complete) || submitting}
+          className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-bg-primary hover:bg-accent/85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-bg-secondary disabled:cursor-not-allowed disabled:opacity-40"
         >
           {submitting && <Loader2 size={13} className="animate-spin" />}
-          Send answer
+          {isLast ? 'Send answers' : 'Next'}
         </button>
       </div>
     </form>
@@ -524,14 +640,22 @@ function QuestionField({
   question,
   value,
   onChange,
+  disabled,
 }: {
   question: AgentUIQuestion;
   value: AgentUIAnswerValue | undefined;
   onChange: (value: AgentUIAnswerValue) => void;
+  disabled: boolean;
 }) {
+  const fieldId = useId();
+  const isCustom =
+    typeof value === 'string' && !(question.options ?? []).some((option) => option.value === value);
   return (
-    <fieldset>
-      <legend className="max-w-[72ch] text-sm font-semibold leading-6 text-text-primary">
+    <fieldset disabled={disabled} aria-labelledby={`${fieldId}-label`}>
+      <legend
+        id={`${fieldId}-label`}
+        className="max-w-[72ch] break-words text-sm font-semibold leading-6 text-text-primary"
+      >
         {question.question}
         {!question.required && (
           <span className="ml-1 font-normal text-text-tertiary">Optional</span>
@@ -543,7 +667,7 @@ function QuestionField({
 
       {(question.kind === 'single_choice' || question.kind === 'multiple_choice') && (
         <div className="mt-3 space-y-2">
-          {(question.options ?? []).map((option) => {
+          {(question.options ?? []).map((option, index) => {
             const selected =
               question.kind === 'multiple_choice'
                 ? Array.isArray(value) && value.includes(option.value)
@@ -551,11 +675,11 @@ function QuestionField({
             return (
               <label
                 key={option.id}
-                className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2.5 transition-colors ${selected ? 'border-accent/60 bg-accent/10' : 'border-border-subtle hover:border-border hover:bg-bg-tertiary/55'}`}
+                className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3 py-2.5 transition-colors focus-within:ring-2 focus-within:ring-accent ${selected ? 'border-accent/60 bg-accent/10' : 'border-border-subtle hover:border-border hover:bg-bg-tertiary/55'}`}
               >
                 <input
                   type={question.kind === 'multiple_choice' ? 'checkbox' : 'radio'}
-                  name={question.id}
+                  name={fieldId}
                   checked={selected}
                   onChange={() => {
                     if (question.kind === 'multiple_choice') {
@@ -573,7 +697,7 @@ function QuestionField({
                 />
                 <span className="min-w-0 flex-1">
                   <span className="flex flex-wrap items-center gap-2 text-sm font-medium text-text-primary">
-                    {option.label}
+                    <span className="break-words">{option.label}</span>
                     {option.recommended && (
                       <span className="rounded-full bg-info/10 px-2 py-0.5 text-[11px] font-medium text-info">
                         Recommended
@@ -591,10 +715,27 @@ function QuestionField({
                     </span>
                   )}
                 </span>
+                <span aria-hidden="true" className="mt-0.5 text-xs text-text-tertiary">
+                  {index + 1}
+                </span>
               </label>
             );
           })}
         </div>
+      )}
+
+      {question.kind === 'single_choice' && question.allowOther && (
+        <label className="mt-3 block text-xs font-medium text-text-secondary">
+          Your own answer
+          <input
+            type={question.sensitive ? 'password' : 'text'}
+            value={isCustom ? value : ''}
+            onChange={(event) => onChange(event.target.value)}
+            autoComplete="off"
+            placeholder="Something else…"
+            className="mt-1.5 w-full rounded-lg border border-border bg-bg-primary px-3 py-2.5 text-sm text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
+          />
+        </label>
       )}
 
       {(question.kind === 'yes_no' || question.kind === 'approval') && (
@@ -618,6 +759,7 @@ function QuestionField({
         (question.sensitive ? (
           <input
             type="password"
+            aria-label={question.question}
             value={typeof value === 'string' ? value : ''}
             onChange={(event) => onChange(event.target.value)}
             placeholder="Enter a sensitive value"
@@ -626,6 +768,7 @@ function QuestionField({
           />
         ) : (
           <textarea
+            aria-label={question.question}
             value={typeof value === 'string' ? value : ''}
             onChange={(event) => onChange(event.target.value)}
             rows={3}

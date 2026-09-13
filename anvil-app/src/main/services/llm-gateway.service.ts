@@ -33,7 +33,13 @@ const REASONING_EFFORTS = new Set<ReasoningEffort>([
 let modelCache:
   | { billingMode: LlmGatewayBillingMode; models: LlmGatewayModel[]; expiresAt: number }
   | undefined;
-let activeLogin: Promise<LlmGatewayStatus> | undefined;
+let loginGeneration = 0;
+let activeLogin:
+  | {
+      billingMode: LlmGatewayBillingMode;
+      promise: Promise<LlmGatewayStatus>;
+    }
+  | undefined;
 
 interface ModelsDevReasoningOption {
   type?: string;
@@ -265,7 +271,10 @@ function listenOnLoopback(server: Server): Promise<number> {
   });
 }
 
-async function performLogin(billingMode: LlmGatewayBillingMode): Promise<LlmGatewayStatus> {
+async function performLogin(
+  billingMode: LlmGatewayBillingMode,
+  generation: number,
+): Promise<LlmGatewayStatus> {
   const state = randomBytes(24).toString('hex');
   let settle: ((key: string) => void) | undefined;
   let fail: ((error: Error) => void) | undefined;
@@ -325,6 +334,7 @@ async function performLogin(billingMode: LlmGatewayBillingMode): Promise<LlmGate
     const key = await keyPromise;
     const credential = await validateLlmGatewayKey(key);
     if (credential.status !== 'valid') throw new Error(credential.error);
+    if (generation !== loginGeneration) throw new Error('LLMGateway login was canceled');
     updateSettings({ llmGatewayApiKey: key, llmGatewayBillingMode: billingMode });
     return getLlmGatewayStatus(true);
   } finally {
@@ -336,15 +346,25 @@ async function performLogin(billingMode: LlmGatewayBillingMode): Promise<LlmGate
 export function startLlmGatewayLogin(
   billingMode: LlmGatewayBillingMode,
 ): Promise<LlmGatewayStatus> {
-  if (!activeLogin) {
-    activeLogin = performLogin(billingMode).finally(() => {
-      activeLogin = undefined;
-    });
+  if (activeLogin) {
+    if (activeLogin.billingMode === billingMode) return activeLogin.promise;
+    return Promise.reject(
+      new Error(
+        `An LLMGateway login is already in progress for ${activeLogin.billingMode}. Finish it before choosing ${billingMode}.`,
+      ),
+    );
   }
-  return activeLogin;
+  const generation = ++loginGeneration;
+  const promise = performLogin(billingMode, generation).finally(() => {
+    if (activeLogin?.promise === promise) activeLogin = undefined;
+  });
+  activeLogin = { billingMode, promise };
+  return promise;
 }
 
 export async function disconnectLlmGateway(): Promise<LlmGatewayStatus> {
+  loginGeneration += 1;
+  activeLogin = undefined;
   updateSettings({ llmGatewayApiKey: '' });
   return getLlmGatewayStatus();
 }

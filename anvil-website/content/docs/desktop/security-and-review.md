@@ -14,6 +14,12 @@ Anvil Desktop review surfaces should help a developer decide whether a change de
 
 That means findings need file references, severity, reasoning, and validation notes. A vague warning is not a review finding; it is an anxious tooltip.
 
+## Review a concrete change
+
+[Change review](/docs/desktop/change-review) replays a configured browser scenario against a base and candidate, stores screenshots and traces, and binds acceptance to the source snapshot and criteria version. Changes to the candidate or criteria require fresh evidence.
+
+Code and security reviews complement that replay with findings and repository context. Review Git operations run asynchronously so they do not block Electron's main process. Indexed history lookups and atomic finding batches reduce persistence overhead; they do not change review coverage or make an LLM finding independently verified.
+
 ## Code review stance
 
 Code review should prioritize:

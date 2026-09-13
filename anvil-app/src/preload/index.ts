@@ -1,3 +1,9 @@
+import type {
+  DojoAnalytics,
+  DojoPrice,
+  DojoRecommendationState,
+  DojoRecommendationStatus,
+} from '../shared/dojo-types';
 import { contextBridge, ipcRenderer } from 'electron';
 import type { AnvilAPI } from '../shared/ipc-api.js';
 import type {
@@ -13,6 +19,7 @@ import type {
   ChatArtifactAnnotationPatch,
   ChatAttachment,
   ChatNavigationTarget,
+  WorkflowNavigationTarget,
   ChatAttachmentInput,
   ChatFileMentionSearchInput,
   ChatMessage,
@@ -25,6 +32,9 @@ import type {
   CodeReviewScopeType,
   ComplianceDocType,
   DevServerTarget,
+  DojoConfig,
+  DojoConfigInput,
+  DojoReport,
   EmbeddedEditorTarget,
   SimulatorPreviewStartOptions,
   GateId,
@@ -37,7 +47,6 @@ import type {
   WorkItemProvider,
   WorkspaceCreateOptions,
 } from '../shared/types.js';
-import type { PentestScanConfig, PentestScanEvent } from '../shared/pentest-types.js';
 import type { RunCommand, RunStatus } from '../shared/run-types.js';
 import type {
   AgentUIIntentPresentationPatch,
@@ -56,6 +65,12 @@ const api: AnvilAPI = {
         callback(state);
       ipcRenderer.on('app-window:chrome-state-changed', handler);
       return () => ipcRenderer.removeListener('app-window:chrome-state-changed', handler);
+    },
+    onNavigateToWorkflow: (callback: (target: WorkflowNavigationTarget) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, target: WorkflowNavigationTarget) =>
+        callback(target);
+      ipcRenderer.on('app-window:navigate-to-workflow', handler);
+      return () => ipcRenderer.removeListener('app-window:navigate-to-workflow', handler);
     },
     onNavigateToChat: (callback: (target: ChatNavigationTarget) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, target: ChatNavigationTarget) =>
@@ -138,6 +153,16 @@ const api: AnvilAPI = {
   },
 
   chat: {
+    linkPullRequest: (threadId, input) =>
+      ipcRenderer.invoke('chat:link-pull-request', threadId, input),
+    unlinkPullRequest: (threadId, linkId) =>
+      ipcRenderer.invoke('chat:unlink-pull-request', threadId, linkId),
+    listPullRequestLinks: (threadId) =>
+      ipcRenderer.invoke('chat:list-pull-request-links', threadId),
+    listPullRequestThreads: (repoId, provider, pullRequestId) =>
+      ipcRenderer.invoke('chat:list-pull-request-threads', repoId, provider, pullRequestId),
+    refreshPullRequestLink: (threadId, linkId) =>
+      ipcRenderer.invoke('chat:refresh-pull-request-link', threadId, linkId),
     startSession: (
       repoIds: string[],
       personaId: string,
@@ -172,7 +197,8 @@ const api: AnvilAPI = {
       sessionId: string,
       requestId: string | number,
       decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel',
-    ) => ipcRenderer.invoke('chat:resolve-approval', sessionId, requestId, decision),
+      optionId?: string,
+    ) => ipcRenderer.invoke('chat:resolve-approval', sessionId, requestId, decision, optionId),
     resolveInputRequest: (
       sessionId: string,
       requestId: string | number,
@@ -272,6 +298,12 @@ const api: AnvilAPI = {
   },
 
   workflow: {
+    pauseRun: (id: string) => ipcRenderer.invoke('workflow:pause-run', id),
+    resumeRun: (id: string) => ipcRenderer.invoke('workflow:resume-run', id),
+    retryNode: (id: string, nodeId: string) =>
+      ipcRenderer.invoke('workflow:retry-node', id, nodeId),
+    decideNode: (id: string, nodeId: string, approved: boolean, note: string) =>
+      ipcRenderer.invoke('workflow:decide-node', id, nodeId, approved, note),
     listTemplates: () => ipcRenderer.invoke('workflow:list-templates'),
     draftTemplate: (request: string) => ipcRenderer.invoke('workflow:draft-template', request),
     saveTemplate: (input: import('../shared/types.js').WorkflowTemplateInput, id?: string) =>
@@ -284,6 +316,7 @@ const api: AnvilAPI = {
       workspaceId: string;
       repoIds: string[];
       kickoff: string;
+      workItemRef?: import('../shared/change-review-types').WorkItemReference;
     }) => ipcRenderer.invoke('workflow:start-run', input),
     askSupervisor: (runId: string, question: string) =>
       ipcRenderer.invoke('workflow:ask-supervisor', runId, question),
@@ -333,6 +366,40 @@ const api: AnvilAPI = {
       ipcRenderer.invoke('automations:reconcile-daemon') as Promise<AutomationDaemonStatus>,
   },
 
+  dojo: {
+    setDelivery: (workspaceId: string, workItem: string, completed: boolean) =>
+      ipcRenderer.invoke('dojo:delivery', workspaceId, workItem, completed) as Promise<void>,
+
+    getAnalytics: (workspaceId: string, days: number) =>
+      ipcRenderer.invoke('dojo:analytics', workspaceId, days) as Promise<DojoAnalytics>,
+    savePrice: (price: Omit<DojoPrice, 'updatedAt'>) =>
+      ipcRenderer.invoke('dojo:save-price', price) as Promise<DojoPrice[]>,
+    setRecommendationState: (
+      workspaceId: string,
+      reportId: string,
+      key: string,
+      status: DojoRecommendationStatus,
+    ) =>
+      ipcRenderer.invoke(
+        'dojo:recommendation-state',
+        workspaceId,
+        reportId,
+        key,
+        status,
+      ) as Promise<DojoRecommendationState>,
+
+    getConfig: (workspaceId: string) =>
+      ipcRenderer.invoke('dojo:get-config', workspaceId) as Promise<DojoConfig>,
+    updateConfig: (workspaceId: string, input: DojoConfigInput) =>
+      ipcRenderer.invoke('dojo:update-config', workspaceId, input) as Promise<DojoConfig>,
+    listReports: (workspaceId: string) =>
+      ipcRenderer.invoke('dojo:list-reports', workspaceId) as Promise<DojoReport[]>,
+    getReport: (reportId: string) =>
+      ipcRenderer.invoke('dojo:get-report', reportId) as Promise<DojoReport | null>,
+    runNow: (workspaceId: string) =>
+      ipcRenderer.invoke('dojo:run-now', workspaceId) as Promise<DojoReport>,
+  },
+
   agentRuns: {
     list: (workspaceId: string, limit?: number) =>
       ipcRenderer.invoke('agent-runs:list', workspaceId, limit),
@@ -368,9 +435,37 @@ const api: AnvilAPI = {
     },
   },
 
+  changeReview: {
+    recordAttention: (id, input) => ipcRenderer.invoke('change-review:recordAttention', id, input),
+    linkEvidence: (id, input) => ipcRenderer.invoke('change-review:linkEvidence', id, input),
+    unlinkEvidence: (id, linkId) => ipcRenderer.invoke('change-review:unlinkEvidence', id, linkId),
+    repairFinding: (id, findingId, input) =>
+      ipcRenderer.invoke('change-review:repairFinding', id, findingId, input),
+    recordNativeEvidence: (id, input) =>
+      ipcRenderer.invoke('change-review:recordNativeEvidence', id, input),
+    publish: (id, decisionId, redactedText) =>
+      ipcRenderer.invoke('change-review:publish', id, decisionId, redactedText),
+    list: (workspaceId) => ipcRenderer.invoke('change-review:list', workspaceId),
+    create: (input) => ipcRenderer.invoke('change-review:create', input),
+    get: (id) => ipcRenderer.invoke('change-review:get', id),
+    refresh: (id) => ipcRenderer.invoke('change-review:refresh', id),
+    configure: (id, scenario) => ipcRenderer.invoke('change-review:configure', id, scenario),
+    run: (id) => ipcRenderer.invoke('change-review:run', id),
+    cancel: (id) => ipcRenderer.invoke('change-review:cancel', id),
+    annotate: (id, input) => ipcRenderer.invoke('change-review:annotate', id, input),
+    resolveFinding: (id, findingId, state, runId) =>
+      ipcRenderer.invoke('change-review:resolveFinding', id, findingId, state, runId),
+    decide: (id, input) => ipcRenderer.invoke('change-review:decide', id, input),
+    artifact: (id, runId, captureId) =>
+      ipcRenderer.invoke('change-review:artifact', id, runId, captureId),
+    openTrace: (id, runId, captureId) =>
+      ipcRenderer.invoke('change-review:openTrace', id, runId, captureId),
+    export: (id, format) => ipcRenderer.invoke('change-review:export', id, format),
+  },
   workitems: {
     list: (filters) => ipcRenderer.invoke('workitems:list', filters),
-    get: (id: string) => ipcRenderer.invoke('workitems:get', id),
+    get: (id: string, connectionId?: string, fresh?: boolean) =>
+      ipcRenderer.invoke('workitems:get', id, connectionId, fresh),
     plan: (id: string) => ipcRenderer.invoke('workitems:plan', id),
     generateFixPrompt: (id: string) => ipcRenderer.invoke('workitems:fix-prompt', id),
     listIterations: () => ipcRenderer.invoke('workitems:iterations'),
@@ -399,28 +494,6 @@ const api: AnvilAPI = {
       ) => callback(data);
       ipcRenderer.on('security:audit-progress', handler);
       return () => ipcRenderer.removeListener('security:audit-progress', handler);
-    },
-  },
-
-  pentest: {
-    checkDocker: () => ipcRenderer.invoke('pentest:check-docker'),
-    startScan: (repoId: string, config: PentestScanConfig) =>
-      ipcRenderer.invoke('pentest:start-scan', repoId, config),
-    stopScan: (scanId: string) => ipcRenderer.invoke('pentest:stop-scan', scanId),
-    getScan: (scanId: string) => ipcRenderer.invoke('pentest:get-scan', scanId),
-    getRunningScan: (repoId: string) => ipcRenderer.invoke('pentest:get-running-scan', repoId),
-    listScans: (repoId: string) => ipcRenderer.invoke('pentest:list-scans', repoId),
-    getFindings: (scanId: string) => ipcRenderer.invoke('pentest:get-findings', scanId),
-    dismissFinding: (findingId: string) => ipcRenderer.invoke('pentest:dismiss-finding', findingId),
-    createWorkItem: (findingId: string) =>
-      ipcRenderer.invoke('pentest:create-work-item', findingId),
-    createWorkItemsBulk: (findingIds: string[]) =>
-      ipcRenderer.invoke('pentest:create-work-items-bulk', findingIds),
-    exportReport: (scanId: string) => ipcRenderer.invoke('pentest:export-report', scanId),
-    onScanEvent: (callback: (event: PentestScanEvent) => void) => {
-      const handler = (_e: Electron.IpcRendererEvent, event: PentestScanEvent) => callback(event);
-      ipcRenderer.on('pentest:scan-event', handler);
-      return () => ipcRenderer.removeListener('pentest:scan-event', handler);
     },
   },
 
@@ -851,10 +924,12 @@ const api: AnvilAPI = {
     listTargets: () => ipcRenderer.invoke('browser:list-targets'),
     addTarget: (url: string) => ipcRenderer.invoke('browser:add-target', url),
     getBridgeStatus: () => ipcRenderer.invoke('browser:get-bridge-status'),
-    startBridge: () => ipcRenderer.invoke('browser:start-bridge'),
+    startBridge: (id: number, workspaceId: string) =>
+      ipcRenderer.invoke('browser:start-bridge', id, workspaceId),
     stopBridge: () => ipcRenderer.invoke('browser:stop-bridge'),
-    attachDebugger: () => ipcRenderer.invoke('browser:attach-debugger'),
-    setUrl: (url: string) => ipcRenderer.invoke('browser:set-url', url),
+    attachDebugger: (id: number, workspaceId: string) =>
+      ipcRenderer.invoke('browser:attach-debugger', id, workspaceId),
+    detachDebugger: (id: number) => ipcRenderer.invoke('browser:detach-debugger', id),
     registerMcp: () =>
       ipcRenderer.invoke('browser:register-mcp') as Promise<{ success: boolean; error?: string }>,
     onTargetDetected: (callback: (target: DevServerTarget) => void) => {

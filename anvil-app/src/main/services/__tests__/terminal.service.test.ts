@@ -44,6 +44,9 @@ vi.mock('../../utils/shell.js', () => ({
 
 import {
   TERMINAL_REPLAY_CHAR_LIMIT,
+  TERMINAL_REPLAY_CHUNK_LIMIT,
+  TERMINAL_TOTAL_REPLAY_CHAR_LIMIT,
+  getTerminalDiagnostics,
   attachTerminal,
   closeAllTerminals,
   closeTerminal,
@@ -124,5 +127,33 @@ describe('terminal service sessions', () => {
     expect(ptyState.spawned[1].kill).not.toHaveBeenCalled();
     expect(listTerminals('workspace-a')).toEqual([]);
     expect(listTerminals('workspace-b')).toHaveLength(1);
+  });
+});
+
+describe('terminal replay memory budgets', () => {
+  it('bounds tiny chunks while preserving sequence-based reattachment', () => {
+    const session = createTerminal('workspace', 'repo', '/repo');
+    for (let i = 0; i < TERMINAL_REPLAY_CHUNK_LIMIT + 100; i++) ptyState.spawned[0].emitData('x');
+    const output = attachTerminal(session.terminalId).output;
+    expect(output).toHaveLength(TERMINAL_REPLAY_CHUNK_LIMIT);
+    expect(output[0].sequence).toBe(101);
+    expect(attachTerminal(session.terminalId, output.at(-2)!.sequence).output).toEqual([
+      output.at(-1),
+    ]);
+    expect(getTerminalDiagnostics().replayChunks).toBe(TERMINAL_REPLAY_CHUNK_LIMIT);
+  });
+
+  it('evicts quiet replay under aggregate pressure without killing shells', () => {
+    const count = TERMINAL_TOTAL_REPLAY_CHAR_LIMIT / TERMINAL_REPLAY_CHAR_LIMIT + 1;
+    for (let i = 0; i < count; i++) {
+      createTerminal('workspace', `repo-${i}`, '/repo');
+      ptyState.spawned[i].emitData('x'.repeat(TERMINAL_REPLAY_CHAR_LIMIT));
+    }
+    expect(getTerminalDiagnostics().replayBytes).toBe(TERMINAL_TOTAL_REPLAY_CHAR_LIMIT * 2);
+    expect(getTerminalDiagnostics().activeTerminals).toBe(count);
+    expect(attachTerminal('workspace-repo-0').output).toEqual([]);
+    for (const terminal of ptyState.spawned) expect(terminal.kill).not.toHaveBeenCalled();
+    closeAllTerminals();
+    expect(getTerminalDiagnostics()).toMatchObject({ replayBytes: 0, replayChunks: 0 });
   });
 });

@@ -1,10 +1,11 @@
+import type { ChatThreadPullRequestInput, ChatThreadPullRequestLink } from './types.js';
+import type { ChangeReviewApi } from './change-review-types.js';
 import type {
-  PentestScan,
-  PentestFinding,
-  PentestScanConfig,
-  PentestScanEvent,
-  DockerStatus,
-} from './pentest-types';
+  DojoAnalytics,
+  DojoPrice,
+  DojoRecommendationState,
+  DojoRecommendationStatus,
+} from './dojo-types';
 import type { RunCommand, RunStatus } from './run-types';
 import type { CodexRuntimeStatus } from './codex-runtime';
 import type {
@@ -47,6 +48,7 @@ import type {
   BaSession,
   ChatAttachment,
   ChatNavigationTarget,
+  WorkflowNavigationTarget,
   ChatAttachmentInput,
   ChatArtifact,
   ChatArtifactAnnotation,
@@ -103,6 +105,9 @@ import type {
   DependencyAuditResult,
   DependencyRecord,
   DiagramFile,
+  DojoConfig,
+  DojoConfigInput,
+  DojoReport,
   GitStatusResult,
   GitLogEntry,
   GitBranchInfo,
@@ -176,6 +181,7 @@ export interface AnvilAPI {
     getChromeState: () => Promise<{ isFullScreen: boolean }>;
     openToolWindow: (route: string, workspaceId?: string) => Promise<void>;
     onChromeStateChanged: (callback: (state: { isFullScreen: boolean }) => void) => () => void;
+    onNavigateToWorkflow: (callback: (target: WorkflowNavigationTarget) => void) => () => void;
     onNavigateToChat: (callback: (target: ChatNavigationTarget) => void) => () => void;
   };
 
@@ -226,6 +232,18 @@ export interface AnvilAPI {
   };
 
   chat: {
+    linkPullRequest(
+      threadId: string,
+      input: ChatThreadPullRequestInput,
+    ): Promise<ChatThreadPullRequestLink>;
+    unlinkPullRequest(threadId: string, linkId: string): Promise<void>;
+    listPullRequestLinks(threadId: string): Promise<ChatThreadPullRequestLink[]>;
+    listPullRequestThreads(
+      repoId: string,
+      provider: 'github' | 'ado',
+      pullRequestId: string,
+    ): Promise<ChatThreadPullRequestLink[]>;
+    refreshPullRequestLink(threadId: string, linkId: string): Promise<ChatThreadPullRequestLink>;
     startSession: (
       repoIds: string[],
       personaId: string,
@@ -255,6 +273,7 @@ export interface AnvilAPI {
       sessionId: string,
       requestId: string | number,
       decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel',
+      optionId?: string,
     ) => Promise<void>;
     resolveInputRequest: (
       sessionId: string,
@@ -282,6 +301,7 @@ export interface AnvilAPI {
     listThreads: (workspaceId: string | null) => Promise<ChatThread[]>;
     listWorkItemThreads: (workspaceId: string | null) => Promise<ChatThread[]>;
     createThread: (input: {
+      pullRequest?: ChatThreadPullRequestInput;
       workspaceId?: string | null;
       personaId: string;
       title?: string;
@@ -350,6 +370,15 @@ export interface AnvilAPI {
   };
 
   workflow: {
+    pauseRun: (runId: string) => Promise<WorkflowRun>;
+    resumeRun: (runId: string) => Promise<WorkflowRun>;
+    retryNode: (runId: string, nodeId: string) => Promise<WorkflowRun>;
+    decideNode: (
+      runId: string,
+      nodeId: string,
+      approved: boolean,
+      note: string,
+    ) => Promise<WorkflowRun>;
     listTemplates: () => Promise<WorkflowTemplate[]>;
     draftTemplate: (request: string) => Promise<WorkflowTemplateInput>;
     saveTemplate: (input: WorkflowTemplateInput, id?: string) => Promise<WorkflowTemplate>;
@@ -361,6 +390,7 @@ export interface AnvilAPI {
       workspaceId: string;
       repoIds: string[];
       kickoff: string;
+      workItemRef?: import('./change-review-types').WorkItemReference;
     }) => Promise<WorkflowRun>;
     askSupervisor: (runId: string, question: string) => Promise<string>;
     cancelRun: (runId: string) => Promise<WorkflowRun | null>;
@@ -396,6 +426,25 @@ export interface AnvilAPI {
     reconcileDaemon: () => Promise<AutomationDaemonStatus>;
   };
 
+  dojo: {
+    setDelivery: (workspaceId: string, workItem: string, completed: boolean) => Promise<void>;
+
+    getAnalytics: (workspaceId: string, days: number) => Promise<DojoAnalytics>;
+    savePrice: (price: Omit<DojoPrice, 'updatedAt'>) => Promise<DojoPrice[]>;
+    setRecommendationState: (
+      workspaceId: string,
+      reportId: string,
+      key: string,
+      status: DojoRecommendationStatus,
+    ) => Promise<DojoRecommendationState>;
+
+    getConfig: (workspaceId: string) => Promise<DojoConfig>;
+    updateConfig: (workspaceId: string, input: DojoConfigInput) => Promise<DojoConfig>;
+    listReports: (workspaceId: string) => Promise<DojoReport[]>;
+    getReport: (reportId: string) => Promise<DojoReport | null>;
+    runNow: (workspaceId: string) => Promise<DojoReport>;
+  };
+
   agentRuns: {
     list: (workspaceId: string, limit?: number) => Promise<AgentRunSummary[]>;
   };
@@ -417,9 +466,11 @@ export interface AnvilAPI {
     onInstallOutput: (callback: (line: string) => void) => () => void;
   };
 
+  changeReview: ChangeReviewApi;
+
   workitems: {
     list: (filters?: WorkItemFilters) => Promise<WorkItem[]>;
-    get: (id: string) => Promise<WorkItem>;
+    get: (id: string, connectionId?: string, fresh?: boolean) => Promise<WorkItem>;
     plan: (id: string) => Promise<string>;
     generateFixPrompt: (id: string) => Promise<string>;
     listIterations: () => Promise<Iteration[]>;
@@ -439,21 +490,6 @@ export interface AnvilAPI {
     onAuditProgress: (
       callback: (data: { repoId: string; message: string; percent: number }) => void,
     ) => () => void;
-  };
-
-  pentest: {
-    checkDocker(): Promise<DockerStatus>;
-    startScan(repoId: string, config: PentestScanConfig): Promise<PentestScan>;
-    stopScan(scanId: string): Promise<void>;
-    getScan(scanId: string): Promise<PentestScan | null>;
-    getRunningScan(repoId: string): Promise<PentestScan | null>;
-    listScans(repoId: string): Promise<PentestScan[]>;
-    getFindings(scanId: string): Promise<PentestFinding[]>;
-    dismissFinding(findingId: string): Promise<void>;
-    createWorkItem(findingId: string): Promise<string>;
-    createWorkItemsBulk(findingIds: string[]): Promise<string[]>;
-    exportReport(scanId: string): Promise<string>;
-    onScanEvent(callback: (event: PentestScanEvent) => void): () => void;
   };
 
   run: {
@@ -730,10 +766,10 @@ export interface AnvilAPI {
     listTargets(): Promise<DevServerTarget[]>;
     addTarget(url: string): Promise<DevServerTarget>;
     getBridgeStatus(): Promise<BrowserBridgeStatus>;
-    startBridge(): Promise<{ port: number }>;
+    startBridge(id: number, workspaceId: string): Promise<{ port: number }>;
     stopBridge(): Promise<void>;
-    attachDebugger(): Promise<void>;
-    setUrl(url: string): Promise<void>;
+    attachDebugger(id: number, workspaceId: string): Promise<void>;
+    detachDebugger(id: number): Promise<void>;
     registerMcp(): Promise<{ success: boolean; error?: string }>;
     onTargetDetected(callback: (target: DevServerTarget) => void): () => void;
   };

@@ -1,0 +1,23 @@
+flowchart TB
+    U[Manual kickoff] --> R[Workflow runtime]
+    A[Schedule or Watchtower] --> W[Automation worktrees]
+    W --> R
+    C[Profiles, strategies and runtime limits] --> R
+    R --> P[Coordinator]
+    P --> D{Delegate within limits}
+    D --> S1[Specialist A\nProvider, model, reasoning]
+    D --> S2[Specialist B\nDifferent provider or reasoning]
+    S2 --> S3[Optional nested specialist]
+    S3 --> S2R[Specialist synthesis]
+    S1 --> H[Bounded handoffs]
+    S2R --> H
+    H --> PS[Coordinator synthesis]
+    PS --> RV[Independent review or debate]
+    RV --> F[Repair and verification step]
+    F --> HD{Human decision}
+    HD -->|Accept and resume| DONE[Completed run]
+    HD -->|Reject| BLOCKED[Failed run with decision history]
+    R -. records .-> E[Graph changes, attempts, threads and events]
+    S1 -. records .-> E
+    S2 -. records .-> E
+    HD -. records .-> E

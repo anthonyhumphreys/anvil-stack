@@ -59,6 +59,19 @@ function mapRow(row: PullRequestVisualisationRow): PullRequestVisualisation {
     summary: row.summary ?? undefined,
     intent: row.intent ?? undefined,
     ...data,
+    chapters: data.chapters.map((chapter) => ({ ...chapter, verifiedCount: 0 })),
+    evidence: data.evidence.map((item) => ({
+      ...item,
+      status: item.status === 'verified' ? 'unknown' : item.status,
+    })),
+    nodes: data.nodes.map((node) => ({
+      ...node,
+      tone: node.tone === 'verified' ? 'neutral' : node.tone,
+    })),
+    edges: data.edges.map((edge) => ({
+      ...edge,
+      tone: edge.tone === 'verified' ? 'neutral' : edge.tone,
+    })),
     error: row.error ?? undefined,
     createdAt: row.created_at,
     generatedAt: row.generated_at ?? undefined,

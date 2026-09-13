@@ -73,7 +73,7 @@ export default function ThreadsScreen() {
       {visible.length === 0 ? (
         <EmptyState
           title="No threads found"
-          body={query ? 'Try a different search.' : 'Start a task from Work.'}
+          body={query ? 'Try a different search.' : 'Start a task from Home.'}
         />
       ) : (
         <View style={{ gap: 8 }}>

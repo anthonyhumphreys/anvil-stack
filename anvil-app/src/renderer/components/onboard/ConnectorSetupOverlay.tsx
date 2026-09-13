@@ -88,7 +88,12 @@ export function ConnectorSetupOverlay({
 
   const saveSettings = async () => {
     if (preview) return;
-    await window.anvil.settings.update(settings);
+    try {
+      await window.anvil.settings.update(settings);
+    } catch (err) {
+      // Persisting must not block connection tests.
+      console.warn('[Connectors] save before test failed, continuing with test', err);
+    }
   };
 
   const markConfigured = (id: string) => {
@@ -102,7 +107,7 @@ export function ConnectorSetupOverlay({
   // --- LLM ---
   const llmProvider = settings.llmProvider ?? 'codex';
   const selectGatewayBillingMode = (billingMode: AppSettings['llmGatewayBillingMode']) => {
-    if (!billingMode || preview) return;
+    if (!billingMode || preview || llmGatewayConnecting) return;
     const requestId = ++gatewayRequestId.current;
     setSettings((current) => ({
       ...current,
@@ -170,7 +175,7 @@ export function ConnectorSetupOverlay({
       setLlmStatus('error');
       setTestError(error instanceof Error ? error.message : 'Failed to connect LLMGateway');
     } finally {
-      setLlmGatewayConnecting(false);
+      if (requestId === gatewayRequestId.current) setLlmGatewayConnecting(false);
     }
   };
   const testLlm = async () => {
@@ -206,10 +211,15 @@ export function ConnectorSetupOverlay({
     setConfluenceStatus('testing');
     setTestError(null);
     await saveSettings();
-    const result = await window.anvil.settings.testConfluenceConnection();
-    setConfluenceStatus(result.ok ? 'ok' : 'error');
-    if (result.ok) markConfigured('confluence');
-    if (result.error) setTestError(result.error);
+    try {
+      const result = await window.anvil.settings.testConfluenceConnection();
+      setConfluenceStatus(result.ok ? 'ok' : 'error');
+      if (result.ok) markConfigured('confluence');
+      if (result.error) setTestError(result.error);
+    } catch (err) {
+      setConfluenceStatus('error');
+      setTestError(err instanceof Error ? err.message : 'Connection test failed');
+    }
   };
 
   // --- Git Provider ---
@@ -335,11 +345,13 @@ export function ConnectorSetupOverlay({
                     <ProviderButton
                       label="DevPass"
                       active={(settings.llmGatewayBillingMode ?? 'devpass') === 'devpass'}
+                      disabled={llmGatewayConnecting}
                       onClick={() => selectGatewayBillingMode('devpass')}
                     />
                     <ProviderButton
                       label="Pay as you go"
                       active={settings.llmGatewayBillingMode === 'payg'}
+                      disabled={llmGatewayConnecting}
                       onClick={() => selectGatewayBillingMode('payg')}
                     />
                   </div>
@@ -788,20 +800,23 @@ function ConnectorCard({
 function ProviderButton({
   label,
   active,
+  disabled = false,
   onClick,
 }: {
   label: string;
   active: boolean;
+  disabled?: boolean;
   onClick: () => void;
 }) {
   return (
     <button
       onClick={onClick}
+      disabled={disabled}
       className={`flex-1 rounded-md border px-2 py-1.5 text-xs font-medium transition-colors ${
         active
           ? 'border-accent bg-accent/10 text-accent'
           : 'border-border bg-bg-primary text-text-secondary hover:bg-bg-tertiary'
-      }`}
+      } disabled:cursor-not-allowed disabled:opacity-50`}
     >
       {label}
     </button>

@@ -24,6 +24,7 @@ describe('sidebar navigation', () => {
       expect.arrayContaining([
         '/automations',
         '/workflows',
+        '/dojo',
         '/workitems',
         '/codereview',
         '/cicd',
@@ -51,11 +52,15 @@ describe('sidebar navigation', () => {
     const developer = getAvailableSidebarNavigation('developer', false);
     const design = getAvailableSidebarNavigation('design', true);
 
-    expect(developer.automate.map((item) => item.path)).toEqual(['/automations', '/workflows']);
+    expect(developer.automate.map((item) => item.path)).toEqual([
+      '/automations',
+      '/workflows',
+      '/dojo',
+    ]);
     expect(
       developer.tools.flatMap((group) => group.items).some((item) => item.path === '/cloud'),
     ).toBe(false);
-    expect(design.automate.map((item) => item.path)).toEqual(['/workflows']);
+    expect(design.automate.map((item) => item.path)).toEqual(['/workflows', '/dojo']);
     expect(
       design.tools.flatMap((group) => group.items).some((item) => item.path === '/cloud'),
     ).toBe(true);
@@ -71,6 +76,6 @@ describe('sidebar navigation', () => {
 
     expect(isSidebarNavItemActive('/security/repo-1/dependencies', dependency)).toBe(true);
     expect(isSidebarNavItemActive('/security/repo-1/dependencies', security)).toBe(false);
-    expect(isSidebarNavItemActive('/security/repo-1/pentest', security)).toBe(true);
+    expect(isSidebarNavItemActive('/security/repo-1', security)).toBe(true);
   });
 });

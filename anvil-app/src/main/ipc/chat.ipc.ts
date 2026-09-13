@@ -1,3 +1,16 @@
+import {
+  createThreadWithPullRequest,
+  linkThreadPullRequest,
+  unlinkThreadPullRequest,
+  listThreadPullRequestLinks,
+  listPullRequestThreads,
+  refreshThreadPullRequest,
+} from '../services/thread-pull-request.service.js';
+import type { ChatThreadPullRequestInput } from '../../shared/types.js';
+import {
+  assertReviewRepairForkAllowed,
+  resolveReviewRepairPaths,
+} from '../services/change-review.service.js';
 import { ipcMain } from 'electron';
 import type {
   AgentUIIntentPresentationPatch,
@@ -60,7 +73,6 @@ import { detectCodexCli, getCodexInstallInstructions } from '../services/codex-b
 import { resolveCodexRuntime } from '../services/codex-runtime.service.js';
 import { detectCursorCli } from '../services/cursor-bridge.service.js';
 import {
-  createChatThread,
   createChatSession,
   deleteChatThread,
   ensureWorkItemChatThread,
@@ -151,6 +163,25 @@ async function tryLocalLlmChatReply(sessionId: string, message: string): Promise
 
 export function registerChatHandlers(): void {
   ipcMain.handle(
+    'chat:link-pull-request',
+    (_event, threadId: string, input: ChatThreadPullRequestInput) =>
+      linkThreadPullRequest(threadId, input),
+  );
+  ipcMain.handle('chat:unlink-pull-request', (_event, threadId: string, linkId: string) =>
+    unlinkThreadPullRequest(threadId, linkId),
+  );
+  ipcMain.handle('chat:list-pull-request-links', (_event, threadId: string) =>
+    listThreadPullRequestLinks(threadId),
+  );
+  ipcMain.handle(
+    'chat:list-pull-request-threads',
+    (_event, repoId: string, provider: 'github' | 'ado', pullRequestId: string) =>
+      listPullRequestThreads(repoId, provider, pullRequestId),
+  );
+  ipcMain.handle('chat:refresh-pull-request-link', (_event, threadId: string, linkId: string) =>
+    refreshThreadPullRequest(threadId, linkId),
+  );
+  ipcMain.handle(
     'chat:start-session',
     async (
       _event,
@@ -172,6 +203,17 @@ export function registerChatHandlers(): void {
       }
       if (repoPaths.length === 0 && !options?.scaffold && !options?.workspace) {
         throw new Error('No repos found');
+      }
+
+      const repairPaths = resolveReviewRepairPaths(
+        options?.threadId,
+        repoIds,
+        options?.changeReviewId,
+      );
+      if (repairPaths) {
+        if (options?.scaffold || options?.workspace?.cwd)
+          throw new Error('Repair sessions use the retained candidate working directory.');
+        repoPaths.splice(0, repoPaths.length, ...repairPaths);
       }
 
       // Use first repo's path as primary cwd; pass all paths for context
@@ -287,6 +329,8 @@ export function registerChatHandlers(): void {
   ipcMain.handle(
     'chat:fork-provider-thread',
     async (_event, sourceThreadId: string, targetThreadId: string): Promise<ChatThread | null> => {
+      assertReviewRepairForkAllowed(sourceThreadId);
+      assertReviewRepairForkAllowed(targetThreadId);
       const sourceBinding = getChatThreadProviderBinding(sourceThreadId);
       if (!sourceBinding) return null;
 
@@ -342,8 +386,9 @@ export function registerChatHandlers(): void {
       sessionId: string,
       requestId: string | number,
       decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel',
+      optionId?: string,
     ): void => {
-      resolveApproval(sessionId, requestId, decision);
+      resolveApproval(sessionId, requestId, decision, optionId);
     },
   );
 
@@ -422,6 +467,7 @@ export function registerChatHandlers(): void {
     (
       _event,
       input: {
+        pullRequest?: ChatThreadPullRequestInput;
         workspaceId?: string | null;
         personaId: string;
         title?: string;
@@ -433,8 +479,8 @@ export function registerChatHandlers(): void {
         settled?: boolean;
         viewed?: boolean;
       },
-    ): ChatThread => {
-      return createChatThread(input);
+    ): Promise<ChatThread> => {
+      return createThreadWithPullRequest(input);
     },
   );
 

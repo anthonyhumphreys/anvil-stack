@@ -87,6 +87,8 @@ On first launch the app walks you through connector setup — LLM provider, work
 
 ```bash
 pnpm run dist:mac:arm64
+pnpm run dist:win:x64
+pnpm run dist:linux:x64
 ```
 
 Output lands in `dist/`. Targets by platform:
@@ -94,6 +96,11 @@ Output lands in `dist/`. Targets by platform:
 - **macOS** — `.dmg` + `.zip`
 - **Windows** — NSIS installer + portable `.exe`
 - **Linux** — `.AppImage` (portable), `.deb` (Debian/Ubuntu), and `.pacman` (Arch/Omarchy)
+
+Run the matching command on its target platform. Pushing an `app-v<version>` tag
+builds and publishes all three platforms to the same GitHub Release. Windows
+also uploads the installer, portable executable, update metadata, and SHA-256
+checksums as the `anvil-windows-x64` Actions artifact. Windows builds are unsigned.
 
 ## Architecture
 

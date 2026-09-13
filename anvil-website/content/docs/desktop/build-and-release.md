@@ -64,6 +64,20 @@ Typical release concerns:
 
 The unsigned internal path and the signed/notarized path are different release modes. Do not treat a local DMG that opens on one machine as release validation.
 
+## Tag-triggered packages
+
+Bump the desktop version in `anvil-app/package.json`, commit it, and push a matching `app-v<version>` tag to run the platform release workflows:
+
+| Target | Build command | Published artifacts |
+| --- | --- | --- |
+| macOS Apple Silicon | `pnpm run dist:mac:arm64` | Versioned DMG, stable `Anvil-latest-arm64.dmg`, and ZIP |
+| Windows x64 | `pnpm run dist:win:x64` | NSIS installer and portable executable, with checksums |
+| Linux x64 | `pnpm run dist:linux:x64` | AppImage, deb, and pacman packages, with checksums |
+
+The macOS tag workflow explicitly disables signing discovery and builds without notarization. Auto-update publication stays disabled. The signed/notarized local script is a separate path and requires the appropriate credentials.
+
+Platform workflows upload to the same GitHub release and can finish at different times. Check all three jobs and the uploaded assets before declaring the release complete. Packaging success does not establish runtime feature parity across operating systems; the current browser change-review runner, for example, depends on POSIX process checks.
+
 ## Mobile companion checks
 
 Companion app work is scoped under `mobile`.

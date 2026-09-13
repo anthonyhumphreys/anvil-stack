@@ -41,7 +41,7 @@ export const FinaleScene: React.FC = () => {
                 Lead with confidence.
               </>
             }
-            body="Anvil brings chat, run, browser, review, pentest, and governance into one operating surface for modern delivery teams."
+            body="Anvil brings chat, run, browser, review, security audits, and governance into one operating surface for modern delivery teams."
             width={980}
           />
 

@@ -24,7 +24,6 @@ const TONES = new Set<PullRequestVisualisationTone>([
   'neutral',
   'action',
   'data',
-  'verified',
   'risk',
   'logic',
   'uncertainty',
@@ -151,7 +150,7 @@ export function parsePullRequestVisualisationResponse(response: string): Visuali
       summary: cleanText(chapter.summary, 'Changed behaviour'),
       nodeIds: stringArray(chapter.nodeIds),
       riskCount: safeCount(chapter.riskCount),
-      verifiedCount: safeCount(chapter.verifiedCount),
+      verifiedCount: 0,
     }));
   const chapterIds = new Set(chapters.map((chapter) => chapter.id));
 
@@ -188,7 +187,7 @@ export function parsePullRequestVisualisationResponse(response: string): Visuali
     }))
     .filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target));
 
-  const risks = arrayOfRecords(raw.risks)
+  const risks: PullRequestVisualisation['risks'] = arrayOfRecords(raw.risks)
     .slice(0, 16)
     .map((risk, index) => ({
       id: cleanId(risk.id, `risk-${index + 1}`),
@@ -204,7 +203,7 @@ export function parsePullRequestVisualisationResponse(response: string): Visuali
       evidence: optionalText(risk.evidence),
     }));
 
-  const evidence = arrayOfRecords(raw.evidence)
+  const evidence: PullRequestVisualisation['evidence'] = arrayOfRecords(raw.evidence)
     .slice(0, 24)
     .map((item, index) => ({
       id: cleanId(item.id, `evidence-${index + 1}`),
@@ -217,9 +216,7 @@ export function parsePullRequestVisualisationResponse(response: string): Visuali
           ? item.kind
           : ('file' as const),
       status:
-        item.status === 'verified' || item.status === 'risk' || item.status === 'changed'
-          ? item.status
-          : ('unknown' as const),
+        item.status === 'risk' || item.status === 'changed' ? item.status : ('unknown' as const),
       detail: optionalText(item.detail),
       nodeId: typeof item.nodeId === 'string' && nodeIds.has(item.nodeId) ? item.nodeId : undefined,
       filePath: optionalText(item.filePath),

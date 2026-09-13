@@ -347,6 +347,7 @@ export function SettingsView({
       jiraAuthMode: connection.jiraAuthMode,
       jiraProject: connection.jiraProject,
       jiraBoardId: connection.jiraBoardId,
+      jiraAcceptanceCriteriaField: connection.jiraAcceptanceCriteriaField,
       jiraEmail: connection.jiraEmail,
       jiraApiToken: connection.jiraApiToken,
     }));
@@ -393,6 +394,7 @@ export function SettingsView({
             jiraAuthMode: active.jiraAuthMode,
             jiraProject: active.jiraProject,
             jiraBoardId: active.jiraBoardId,
+            jiraAcceptanceCriteriaField: active.jiraAcceptanceCriteriaField,
             jiraEmail: active.jiraEmail,
             jiraApiToken: active.jiraApiToken,
           }
@@ -496,7 +498,13 @@ export function SettingsView({
   };
 
   const saveBeforeTest = async () => {
-    await window.anvil.settings.update(settings);
+    try {
+      await window.anvil.settings.update(settings);
+    } catch (err) {
+      // Persisting must not block connection tests (e.g. a settings save
+      // hitting a stale local DB should still let the test itself run).
+      console.warn('[Settings] save before test failed, continuing with test', err);
+    }
   };
 
   const refreshMobileCompanion = async () => {
@@ -621,11 +629,13 @@ export function SettingsView({
   };
 
   const connectLlmGateway = async (billingMode: LlmGatewayBillingMode) => {
+    const requestId = ++llmGatewayRequestId.current;
     setLlmGatewayConnecting(true);
     setTestError(null);
     update('llmGatewayBillingMode', billingMode);
     try {
       const status = await window.anvil.settings.connectLlmGateway(billingMode);
+      if (requestId !== llmGatewayRequestId.current) return;
       setLlmGatewayStatus(status);
       setSettings((current) => ({
         ...current,
@@ -634,13 +644,16 @@ export function SettingsView({
       }));
       setSaved(true);
     } catch (error) {
-      setTestError(error instanceof Error ? error.message : 'Failed to connect LLMGateway');
+      if (requestId === llmGatewayRequestId.current) {
+        setTestError(error instanceof Error ? error.message : 'Failed to connect LLMGateway');
+      }
     } finally {
-      setLlmGatewayConnecting(false);
+      if (requestId === llmGatewayRequestId.current) setLlmGatewayConnecting(false);
     }
   };
 
   const selectLlmGatewayBillingMode = (billingMode: LlmGatewayBillingMode) => {
+    if (llmGatewayConnecting) return;
     const requestId = ++llmGatewayRequestId.current;
     setSettings((current) => ({
       ...current,
@@ -662,16 +675,20 @@ export function SettingsView({
   };
 
   const disconnectLlmGateway = async () => {
+    const requestId = ++llmGatewayRequestId.current;
     setLlmGatewayConnecting(true);
     setTestError(null);
     try {
       const status = await window.anvil.settings.disconnectLlmGateway();
+      if (requestId !== llmGatewayRequestId.current) return;
       setLlmGatewayStatus(status);
       setSettings((current) => ({ ...current, llmGatewayApiKey: undefined }));
     } catch (error) {
-      setTestError(error instanceof Error ? error.message : 'Failed to disconnect LLMGateway');
+      if (requestId === llmGatewayRequestId.current) {
+        setTestError(error instanceof Error ? error.message : 'Failed to disconnect LLMGateway');
+      }
     } finally {
-      setLlmGatewayConnecting(false);
+      if (requestId === llmGatewayRequestId.current) setLlmGatewayConnecting(false);
     }
   };
 
@@ -702,9 +719,14 @@ export function SettingsView({
     setConfluenceStatus('testing');
     setTestError(null);
     await saveBeforeTest();
-    const result = await window.anvil.settings.testConfluenceConnection();
-    setConfluenceStatus(result.ok ? 'ok' : 'error');
-    if (result.error) setTestError(result.error);
+    try {
+      const result = await window.anvil.settings.testConfluenceConnection();
+      setConfluenceStatus(result.ok ? 'ok' : 'error');
+      if (result.error) setTestError(result.error);
+    } catch (err) {
+      setConfluenceStatus('error');
+      setTestError(err instanceof Error ? err.message : 'Connection test failed');
+    }
   };
 
   const testGit = async () => {
@@ -1167,12 +1189,14 @@ export function SettingsView({
                         label="DevPass"
                         description="Use subscription billing and canonical model IDs"
                         active={(settings.llmGatewayBillingMode ?? 'devpass') === 'devpass'}
+                        disabled={llmGatewayConnecting}
                         onClick={() => selectLlmGatewayBillingMode('devpass')}
                       />
                       <ProviderButton
                         label="Pay as you go"
                         description="Use gateway credits and provider-pinned model IDs"
                         active={settings.llmGatewayBillingMode === 'payg'}
+                        disabled={llmGatewayConnecting}
                         onClick={() => selectLlmGatewayBillingMode('payg')}
                       />
                     </ButtonGrid>
@@ -1968,6 +1992,12 @@ export function SettingsView({
                       value={activeWorkItemConnection?.jiraBoardId ?? ''}
                       onChange={(v) => updateWorkItemConnection('jiraBoardId', v)}
                       placeholder="Auto-discovered if blank"
+                    />
+                    <Field
+                      label="Acceptance criteria field, optional"
+                      value={activeWorkItemConnection?.jiraAcceptanceCriteriaField ?? ''}
+                      onChange={(v) => updateWorkItemConnection('jiraAcceptanceCriteriaField', v)}
+                      placeholder="customfield_12345"
                     />
                     {(activeWorkItemConnection?.jiraAuthMode ?? 'cloud') === 'cloud' && (
                       <Field
@@ -2791,19 +2821,22 @@ function ProviderButton({
   label,
   description,
   active,
+  disabled = false,
   onClick,
 }: {
   label: string;
   description: string;
   active: boolean;
+  disabled?: boolean;
   onClick: () => void;
 }) {
   return (
     <button
       onClick={onClick}
+      disabled={disabled}
       className={`min-w-0 flex-1 rounded-lg border p-3 text-left transition-colors sm:min-w-[10rem] ${
         active ? 'border-accent bg-accent/10' : 'border-border bg-bg-primary hover:bg-bg-tertiary'
-      }`}
+      } disabled:cursor-not-allowed disabled:opacity-50`}
     >
       <div className={`text-sm font-medium ${active ? 'text-accent' : 'text-text-primary'}`}>
         {label}

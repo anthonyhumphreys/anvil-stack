@@ -2,6 +2,8 @@ export {};
 
 declare global {
   interface HTMLWebViewElement extends HTMLElement {
+    getWebContentsId(): number;
+    executeJavaScript<T = unknown>(code: string): Promise<T>;
     canGoBack(): boolean;
     canGoForward(): boolean;
     goBack(): void;
@@ -23,7 +25,10 @@ declare global {
 
   namespace JSX {
     interface IntrinsicElements {
-      webview: React.DetailedHTMLProps<React.HTMLAttributes<HTMLWebViewElement>, HTMLWebViewElement> & {
+      webview: React.DetailedHTMLProps<
+        React.HTMLAttributes<HTMLWebViewElement>,
+        HTMLWebViewElement
+      > & {
         src?: string;
         allowpopups?: string | boolean;
       };

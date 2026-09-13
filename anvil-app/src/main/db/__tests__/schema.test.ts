@@ -70,6 +70,9 @@ describe('fresh database schema', () => {
       expect(tableColumns('cloud_execution_connection').has('token')).toBe(true);
       expect(tableColumns('cloud_execution_connection').has('endpoint')).toBe(true);
       expect(tableColumns('chat_threads').has('provider_thread_provider')).toBe(true);
+      expect(tableColumns('chat_sessions').has('provider')).toBe(true);
+      expect(tableColumns('dojo_configs').has('enabled')).toBe(true);
+      expect(tableColumns('dojo_reports').has('metrics_json')).toBe(true);
     } finally {
       db.close();
     }
@@ -123,7 +126,7 @@ describe('fresh database schema', () => {
         ).map((column) => column.name),
       );
 
-      expect(SCHEMA_VERSION).toBe(60);
+      expect(SCHEMA_VERSION).toBe(67);
       for (const column of [
         'local_llm_mode',
         'local_llm_provider',
@@ -134,6 +137,109 @@ describe('fresh database schema', () => {
       }
       expect(cloudColumns.has('endpoint')).toBe(true);
       expect(cloudColumns.has('token')).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it.each(['main', 'review development', 'workflow development'])(
+    'reconciles version 62 from %s without losing review records',
+    (variant) => {
+      const db = new Database(':memory:');
+      try {
+        db.exec(SCHEMA_SQL);
+        db.exec('ALTER TABLE automation_definitions DROP COLUMN workflow_template_id');
+        if (variant !== 'main') {
+          db.exec(`
+            DROP TABLE change_reviews;
+            DROP TABLE scoped_work_items_cache;
+            ALTER TABLE code_reviews DROP COLUMN source_tree;
+            ALTER TABLE security_audits DROP COLUMN source_tree;
+          `);
+        }
+        if (variant === 'workflow development') {
+          db.exec('ALTER TABLE automation_definitions ADD COLUMN workflow_template_id TEXT');
+        }
+        db.exec(`
+          INSERT INTO repos (id, name, path) VALUES ('repo', 'Repo', '/repo');
+          INSERT INTO code_reviews (id, repo_id, mode, scope_type)
+            VALUES ('review', 'repo', 'quick_glance', 'latest_commit');
+        `);
+        applyMigration(db, MIGRATIONS[63]);
+        applyMigration(db, MIGRATIONS[64]);
+        expect(db.prepare('SELECT id, source_tree FROM code_reviews').get()).toEqual({
+          id: 'review',
+          source_tree: null,
+        });
+        expect(db.prepare('SELECT workflow_template_id FROM automation_definitions').all()).toEqual(
+          [],
+        );
+        expect(db.prepare('SELECT * FROM change_reviews').all()).toEqual([]);
+        expect(db.prepare('SELECT * FROM scoped_work_items_cache').all()).toEqual([]);
+        expect(db.prepare('SELECT source_tree FROM security_audits').all()).toEqual([]);
+      } finally {
+        db.close();
+      }
+    },
+  );
+
+  it('reconciles a v65 database missing the v20 docs columns', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec('CREATE TABLE settings (id INTEGER PRIMARY KEY, confluence_base_url TEXT)');
+      applyMigration(db, MIGRATIONS[66]);
+      // Re-running must be a no-op for databases that already have the columns.
+      applyMigration(db, MIGRATIONS[66]);
+
+      const columns = new Set(
+        (db.prepare('PRAGMA table_info(settings)').all() as Array<{ name: string }>).map(
+          (column) => column.name,
+        ),
+      );
+      for (const column of [
+        'docs_provider',
+        'notion_oauth_token',
+        'notion_oauth_expiry',
+        'notion_database_id',
+      ]) {
+        expect(columns.has(column), `Missing settings.${column}`).toBe(true);
+      }
+    } finally {
+      db.close();
+    }
+  });
+
+  it('adds LLMGateway credentials when upgrading a current main database', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec(SCHEMA_SQL);
+      db.exec(`
+        INSERT INTO settings (id, llm_provider, docs_provider)
+        VALUES (1, 'cursor', 'notion');
+        ALTER TABLE settings DROP COLUMN llm_gateway_api_key;
+        ALTER TABLE settings DROP COLUMN llm_gateway_billing_mode;
+        INSERT INTO schema_meta (key, value) VALUES ('schema_version', '66');
+      `);
+
+      for (let version = 67; version <= SCHEMA_VERSION; version += 1) {
+        const migration = MIGRATIONS[version];
+        if (migration) applyMigration(db, migration);
+      }
+
+      const row = db
+        .prepare(
+          'SELECT llm_provider, docs_provider, llm_gateway_api_key, llm_gateway_billing_mode FROM settings WHERE id = 1',
+        )
+        .get() as {
+        llm_provider: string;
+        docs_provider: string;
+        llm_gateway_api_key: Buffer | null;
+        llm_gateway_billing_mode: string;
+      };
+      expect(row.llm_provider).toBe('cursor');
+      expect(row.docs_provider).toBe('notion');
+      expect(row.llm_gateway_api_key).toBeNull();
+      expect(row.llm_gateway_billing_mode).toBe('devpass');
     } finally {
       db.close();
     }
@@ -171,18 +277,33 @@ describe('fresh database schema', () => {
     }
   });
 
-  it('adds encrypted LLMGateway credentials and defaults to DevPass', () => {
+  it('adds Dojo storage and backfills session providers', () => {
     const db = new Database(':memory:');
     try {
-      db.exec('CREATE TABLE settings (id INTEGER PRIMARY KEY)');
+      db.exec(`
+        CREATE TABLE workspaces (id TEXT PRIMARY KEY);
+        CREATE TABLE chat_threads (
+          id TEXT PRIMARY KEY,
+          provider_thread_provider TEXT
+        );
+        CREATE TABLE chat_sessions (
+          id TEXT PRIMARY KEY,
+          thread_id TEXT
+        );
+        INSERT INTO chat_threads (id, provider_thread_provider) VALUES ('thread-1', 'cursor');
+        INSERT INTO chat_sessions (id, thread_id) VALUES ('session-1', 'thread-1');
+      `);
       applyMigration(db, MIGRATIONS[60]);
-      db.exec('INSERT INTO settings (id) VALUES (1)');
 
-      const row = db
-        .prepare('SELECT llm_gateway_api_key, llm_gateway_billing_mode FROM settings WHERE id = 1')
-        .get() as { llm_gateway_api_key: Buffer | null; llm_gateway_billing_mode: string };
-      expect(row.llm_gateway_api_key).toBeNull();
-      expect(row.llm_gateway_billing_mode).toBe('devpass');
+      const session = db
+        .prepare('SELECT provider FROM chat_sessions WHERE id = ?')
+        .get('session-1') as { provider: string };
+      expect(session.provider).toBe('cursor');
+      expect(
+        db
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'dojo_reports'")
+          .get(),
+      ).toBeTruthy();
     } finally {
       db.close();
     }

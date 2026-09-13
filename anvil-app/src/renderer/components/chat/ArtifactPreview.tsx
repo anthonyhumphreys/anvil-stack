@@ -1,11 +1,11 @@
+import { renderMermaid } from '../../utils/mermaid';
 import { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, FileWarning, LoaderCircle } from 'lucide-react';
 import DOMPurify from 'dompurify';
-import mermaid from 'mermaid';
 import type { ChatArtifact, ChatArtifactFile } from '../../../shared/types';
 import { MarkdownRenderer } from './MarkdownRenderer';
 
-mermaid.initialize({
+const MERMAID_CONFIG: import('mermaid').MermaidConfig = {
   startOnLoad: false,
   securityLevel: 'strict',
   theme: 'dark',
@@ -19,7 +19,7 @@ mermaid.initialize({
     edgeLabelBackground: '#111827',
     fontFamily: 'IBM Plex Sans, system-ui, sans-serif',
   },
-});
+};
 
 interface ArtifactPreviewProps {
   artifact: ChatArtifact;
@@ -109,8 +109,7 @@ function MermaidPreview({ source }: { source: string }) {
     const id = `canvas-mermaid-${crypto.randomUUID()}`;
     setError(null);
 
-    void mermaid
-      .render(id, source.replace(/\\n/g, '\n'))
+    void renderMermaid(id, source.replace(/\\n/g, '\n'), MERMAID_CONFIG)
       .then(({ svg }) => {
         if (cancelled || !ref.current) return;
         ref.current.innerHTML = DOMPurify.sanitize(svg, {
@@ -140,11 +139,13 @@ function MermaidPreview({ source }: { source: string }) {
   );
 }
 
+type PreviewFile = Omit<ChatArtifactFile, 'dataBase64'> & { data: ArrayBuffer };
+
 function useArtifactFile(artifact: ChatArtifact): {
-  file: ChatArtifactFile | null;
+  file: PreviewFile | null;
   error: string | null;
 } {
-  const [file, setFile] = useState<ChatArtifactFile | null>(null);
+  const [file, setFile] = useState<PreviewFile | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -154,7 +155,9 @@ function useArtifactFile(artifact: ChatArtifact): {
     void window.anvil.chat
       .readArtifactFile(artifact.id)
       .then((nextFile) => {
-        if (!cancelled) setFile(nextFile);
+        if (cancelled) return;
+        const { dataBase64, ...metadata } = nextFile;
+        setFile({ ...metadata, data: base64ToArrayBuffer(dataBase64) });
       })
       .catch((readError: unknown) => {
         if (!cancelled) {
@@ -187,9 +190,7 @@ function DocxPreview({ artifact }: { artifact: ChatArtifact }) {
     setHtml(null);
     setConversionError(null);
     void import('mammoth/mammoth.browser')
-      .then((mammoth) =>
-        mammoth.convertToHtml({ arrayBuffer: base64ToArrayBuffer(file.dataBase64) }),
-      )
+      .then((mammoth) => mammoth.convertToHtml({ arrayBuffer: file.data }))
       .then(({ value }) => {
         if (!cancelled) setHtml(DOMPurify.sanitize(value));
       })
@@ -204,7 +205,9 @@ function DocxPreview({ artifact }: { artifact: ChatArtifact }) {
   }, [file]);
 
   if (error || conversionError) {
-    return <PreviewError title="Word document could not be rendered" detail={error ?? conversionError} />;
+    return (
+      <PreviewError title="Word document could not be rendered" detail={error ?? conversionError} />
+    );
   }
   if (!html) return <PreviewLoading label="Rendering Word document" />;
 
@@ -233,7 +236,7 @@ function PptxPreview({ artifact }: { artifact: ChatArtifact }) {
     const container = containerRef.current;
     void import('@aiden0z/pptx-renderer/browser')
       .then(({ PptxViewer, RECOMMENDED_ZIP_LIMITS }) =>
-        PptxViewer.open(base64ToArrayBuffer(file.dataBase64), container, {
+        PptxViewer.open(file.data, container, {
           zipLimits: RECOMMENDED_ZIP_LIMITS,
           lazySlides: true,
           lazyMedia: true,
@@ -278,16 +281,16 @@ function PdfPreview({ artifact }: { artifact: ChatArtifact }) {
       setUrl(null);
       return;
     }
-    const nextUrl = URL.createObjectURL(
-      new Blob([base64ToArrayBuffer(file.dataBase64)], { type: file.mimeType }),
-    );
+    const nextUrl = URL.createObjectURL(new Blob([file.data], { type: file.mimeType }));
     setUrl(nextUrl);
     return () => URL.revokeObjectURL(nextUrl);
   }, [file]);
 
   if (error) return <PreviewError title="PDF could not be opened" detail={error} />;
   if (!url) return <PreviewLoading label="Opening PDF" />;
-  return <iframe title={artifact.title} src={url} className="h-full min-h-[640px] w-full bg-slate-100" />;
+  return (
+    <iframe title={artifact.title} src={url} className="h-full min-h-[640px] w-full bg-slate-100" />
+  );
 }
 
 interface PreviewSheet {
@@ -307,7 +310,7 @@ function XlsxPreview({ artifact }: { artifact: ChatArtifact }) {
       void import('xlsx')
         .then((XLSX) => {
           if (cancelled) return;
-          const workbook = XLSX.read(base64ToArrayBuffer(file.dataBase64), {
+          const workbook = XLSX.read(file.data, {
             type: 'array',
             cellDates: true,
           });
@@ -489,7 +492,9 @@ function PreviewError({ title, detail }: { title: string; detail?: string | null
           <AlertTriangle size={15} />
           {title}
         </div>
-        {detail && <p className="mt-2 break-words text-xs leading-relaxed text-text-tertiary">{detail}</p>}
+        {detail && (
+          <p className="mt-2 break-words text-xs leading-relaxed text-text-tertiary">{detail}</p>
+        )}
       </div>
     </div>
   );

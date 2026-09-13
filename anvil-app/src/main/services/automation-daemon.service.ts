@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { previewBuild } from '../../shared/preview-build.js';
 import type { AutomationDaemonStatus } from '../../shared/types.js';
 
 const AUTOMATION_DAEMON_LABEL = 'dev.anthonyhumphreys.anvil.automation-daemon';
@@ -136,10 +137,19 @@ function isSystemdServiceLoaded(): boolean {
 }
 
 export function isAutomationDaemonMode(): boolean {
-  return process.argv.includes('--automation-daemon');
+  return !previewBuild && process.argv.includes('--automation-daemon');
 }
 
 export function getAutomationDaemonStatus(): AutomationDaemonStatus {
+  if (previewBuild) {
+    return {
+      supported: false,
+      installed: false,
+      loaded: false,
+      mode: 'app',
+      lastError: 'Background daemon controls are disabled in candidate previews.',
+    };
+  }
   const plistPath = getLaunchAgentPath();
   const servicePath = getSystemdServicePath();
   if (isLinux()) {
@@ -174,6 +184,7 @@ export function getAutomationDaemonStatus(): AutomationDaemonStatus {
 }
 
 export function installAutomationDaemon(): AutomationDaemonStatus {
+  if (previewBuild) return getAutomationDaemonStatus();
   if (isLinux()) {
     if (!isSystemdAvailable()) return getAutomationDaemonStatus();
     const servicePath = getSystemdServicePath();
@@ -194,6 +205,7 @@ export function installAutomationDaemon(): AutomationDaemonStatus {
 }
 
 export function uninstallAutomationDaemon(): AutomationDaemonStatus {
+  if (previewBuild) return getAutomationDaemonStatus();
   if (isLinux()) {
     const servicePath = getSystemdServicePath();
     runSystemctl(['disable', '--now', SYSTEMD_SERVICE_NAME], true);

@@ -2,6 +2,11 @@ import { ipcMain } from 'electron';
 import type { WorkflowTemplateInput } from '../../shared/types.js';
 import {
   askWorkflowSupervisor,
+  pauseWorkflowRun,
+  resumeWorkflowRun,
+  decideWorkflowNode,
+  retryWorkflowNode,
+  recoverInterruptedWorkflowRuns,
   cancelWorkflowRun,
   deleteWorkflowTemplate,
   draftWorkflowTemplate,
@@ -13,6 +18,17 @@ import {
 } from '../services/workflow.service.js';
 
 export function registerWorkflowHandlers(): void {
+  recoverInterruptedWorkflowRuns();
+  ipcMain.handle('workflow:pause-run', (_event, id: string) => pauseWorkflowRun(id));
+  ipcMain.handle('workflow:resume-run', (_event, id: string) => resumeWorkflowRun(id));
+  ipcMain.handle('workflow:retry-node', (_event, id: string, nodeId: string) =>
+    retryWorkflowNode(id, nodeId),
+  );
+  ipcMain.handle(
+    'workflow:decide-node',
+    (_event, id: string, nodeId: string, approved: boolean, note: string) =>
+      decideWorkflowNode(id, nodeId, approved, note),
+  );
   ipcMain.handle('workflow:list-templates', () => listWorkflowTemplates());
   ipcMain.handle('workflow:draft-template', (_event, request: string) =>
     draftWorkflowTemplate(request),
@@ -25,12 +41,14 @@ export function registerWorkflowHandlers(): void {
     listWorkflowRuns(workspaceId),
   );
   ipcMain.handle('workflow:get-run', (_event, id: string) => getWorkflowRun(id));
-  ipcMain.handle(
-    'workflow:start-run',
-    (
-      _event,
-      input: { templateId: string; workspaceId: string; repoIds: string[]; kickoff: string },
-    ) => startWorkflowRun(input),
+  ipcMain.handle('workflow:start-run', (_event, input: Parameters<typeof startWorkflowRun>[0]) =>
+    startWorkflowRun({
+      templateId: input.templateId,
+      workspaceId: input.workspaceId,
+      repoIds: input.repoIds,
+      kickoff: input.kickoff,
+      workItemRef: input.workItemRef,
+    }),
   );
   ipcMain.handle('workflow:ask-supervisor', (_event, runId: string, question: string) =>
     askWorkflowSupervisor(runId, question),

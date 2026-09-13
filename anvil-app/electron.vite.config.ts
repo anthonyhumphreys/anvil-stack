@@ -5,6 +5,7 @@ import tailwindcss from '@tailwindcss/vite';
 const buildBrand = process.env.ANVIL_BRAND ?? process.env.npm_config_brand ?? '';
 const updateOrigin = process.env.ANVIL_UPDATE_ORIGIN ?? '';
 const define = {
+  'process.env.ANVIL_PREVIEW_BUILD': JSON.stringify(process.env.ANVIL_PREVIEW_BUILD ?? ''),
   'process.env.ANVIL_BUILD_BRAND': JSON.stringify(buildBrand),
   'process.env.ANVIL_UPDATE_ORIGIN': JSON.stringify(updateOrigin),
 };
@@ -16,7 +17,10 @@ export default defineConfig({
     build: {
       outDir: 'out/main',
       lib: {
-        entry: 'src/main/index.ts',
+        entry: {
+          index: 'src/main/index.ts',
+          'repository-map.worker': 'src/main/workers/repository-map.worker.ts',
+        },
       },
     },
   },
@@ -42,6 +46,7 @@ export default defineConfig({
     plugins: [react(), tailwindcss()],
     build: {
       outDir: 'out/renderer',
+      manifest: true,
       rollupOptions: {
         input: 'src/renderer/index.html',
       },

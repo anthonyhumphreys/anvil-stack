@@ -16,7 +16,7 @@ export default function RootLayout() {
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
       <CompanionProvider>
         <Stack>
-          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+          <Stack.Screen name="(tabs)" options={{ headerShown: false, title: 'Home' }} />
           <Stack.Screen
             name="thread"
             options={{
@@ -26,6 +26,7 @@ export default function RootLayout() {
               contentStyle: { backgroundColor: companionColors.screen },
             }}
           />
+          <Stack.Screen name="work-items" options={{ title: 'Work items' }} />
           <Stack.Screen
             name="new-task"
             options={{

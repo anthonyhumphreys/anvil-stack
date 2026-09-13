@@ -1,0 +1,99 @@
+name: Anvil App Windows x64
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/app-windows-x64.yml"
+      - "anvil-app/**"
+  push:
+    tags:
+      - "app-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: app-release-windows-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CI: true
+  CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+defaults:
+  run:
+    working-directory: anvil-app
+    shell: bash
+
+jobs:
+  package:
+    name: Build and release Windows x64 installer and portable app
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: anvil-app/pnpm-lock.yaml
+
+      - name: Verify release tag
+        if: github.ref_type == 'tag'
+        run: |
+          set -euo pipefail
+          package_version="$(node -p "require('./package.json').version")"
+          if [[ "${GITHUB_REF_NAME}" != "app-v${package_version}" ]]; then
+            echo "Release tag does not match package.json version ${package_version}." >&2
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Package Windows x64
+        run: pnpm run dist:win:x64
+
+      - name: Verify Windows artifacts and generate checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          test -f "Anvil Setup $(node -p "require('../package.json').version").exe"
+          test -f "Anvil $(node -p "require('../package.json').version").exe"
+          test -f latest.yml
+          sha256sum ./*.exe ./*.blockmap ./latest.yml > SHA256SUMS-windows-x64
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: anvil-windows-x64
+          if-no-files-found: error
+          path: |
+            anvil-app/dist/*.exe
+            anvil-app/dist/*.blockmap
+            anvil-app/dist/latest.yml
+            anvil-app/dist/SHA256SUMS-windows-x64
+
+      - name: Create or update GitHub Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            # Another platform can create the shared release concurrently.
+            gh release create "${GITHUB_REF_NAME}" --verify-tag \
+              --title "Anvil ${GITHUB_REF_NAME}" --generate-notes \
+              || gh release view "${GITHUB_REF_NAME}" >/dev/null
+          fi
+          gh release upload "${GITHUB_REF_NAME}" \
+            dist/*.exe dist/*.blockmap dist/latest.yml dist/SHA256SUMS-windows-x64 --clobber

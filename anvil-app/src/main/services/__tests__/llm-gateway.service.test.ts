@@ -14,6 +14,7 @@ import {
   parseLlmGatewayModels,
   resolveLlmGatewayModelConfig,
   startLlmGatewayLogin,
+  disconnectLlmGateway,
 } from '../llm-gateway.service.js';
 import { getLlmGatewayCodexConfigArgs } from '../../../shared/llm-gateway.js';
 
@@ -224,6 +225,52 @@ describe('LLMGateway service', () => {
     expect(validResponse.status).toBe(200);
     expect(await validResponse.text()).toContain('Authorization received');
     await expect(login).resolves.toMatchObject({ connected: true });
+  });
+
+  it('reuses a pending login only for the requested billing mode', async () => {
+    electron.openExternal.mockRejectedValue(new Error('browser unavailable'));
+
+    const devpassLogin = startLlmGatewayLogin('devpass');
+    expect(startLlmGatewayLogin('devpass')).toBe(devpassLogin);
+    await expect(startLlmGatewayLogin('payg')).rejects.toThrow(
+      'An LLMGateway login is already in progress for devpass',
+    );
+    await expect(devpassLogin).rejects.toThrow('browser unavailable');
+  });
+
+  it('does not restore a key from a login callback after disconnect', async () => {
+    electron.openExternal.mockResolvedValue(undefined);
+    settings.getSettings.mockReturnValue({ llmGatewayBillingMode: 'devpass' });
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).startsWith('http://127.0.0.1:')) return realFetch(input, init);
+      return new Response(
+        JSON.stringify({
+          data: { label: 'Anvil test key', usage: '0', limit: null, devPlan: 'none' },
+        }),
+        { status: 200 },
+      );
+    });
+
+    const login = startLlmGatewayLogin('devpass');
+    const canceledLogin = expect(login).rejects.toThrow('LLMGateway login was canceled');
+    await vi.waitFor(() => expect(electron.openExternal).toHaveBeenCalledTimes(1));
+    const loginUrl = new URL(electron.openExternal.mock.calls[0][0] as string);
+    await expect(disconnectLlmGateway()).resolves.toMatchObject({
+      connected: false,
+      credentialStatus: 'missing',
+    });
+
+    const callback = loginUrl.searchParams.get('callback')!;
+    const response = await realFetch(
+      `${callback}?state=${loginUrl.searchParams.get('state')}&key=late-key`,
+    );
+    expect(response.status).toBe(200);
+    await canceledLogin;
+    expect(settings.updateSettings).toHaveBeenCalledWith({ llmGatewayApiKey: '' });
+    expect(settings.updateSettings).not.toHaveBeenCalledWith(
+      expect.objectContaining({ llmGatewayApiKey: 'late-key' }),
+    );
   });
 
   it('resolves only supported reasoning effort for an available catalog model', async () => {

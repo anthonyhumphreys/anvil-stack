@@ -1,5 +1,5 @@
 import { Notification, BrowserWindow } from 'electron';
-import type { ChatNavigationTarget } from '../../shared/types.js';
+import type { ChatNavigationTarget, WorkflowNavigationTarget } from '../../shared/types.js';
 import { getChatThread } from './chat-persistence.service.js';
 
 function isAppFocused(): boolean {
@@ -76,4 +76,23 @@ function getChatActivityCopy(
     case 'complete':
       return { title: 'Chat complete', body: `${threadTitle} is ready.` };
   }
+}
+
+/** One banner for a paused run, even when several steps need decisions. */
+export function notifyWorkflowDecision(target: WorkflowNavigationTarget, name: string): void {
+  if (isAppFocused() || !Notification.isSupported()) return;
+  const notification = new Notification({
+    title: 'Workflow needs your decision',
+    body: `${name} is waiting for you.`,
+    actions:
+      process.platform === 'darwin' ? [{ type: 'button', text: 'Open workflow' }] : undefined,
+  });
+  const openWorkflow = () => {
+    focusApp()?.webContents.send('app-window:navigate-to-workflow', target);
+  };
+  notification.on('click', openWorkflow);
+  notification.on('action', (_event, actionIndex) => {
+    if (actionIndex === 0) openWorkflow();
+  });
+  notification.show();
 }

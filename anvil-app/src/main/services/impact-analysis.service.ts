@@ -115,8 +115,8 @@ export async function runAnalysis(
 
       const diffFiles =
         opts.scopeType === 'branch_diff'
-          ? getBranchDiff(repoPath, scopeRef.baseBranch, scopeRef.compareBranch)
-          : getCommitRangeDiff(repoPath, scopeRef.fromSha, scopeRef.toSha);
+          ? await getBranchDiff(repoPath, scopeRef.baseBranch, scopeRef.compareBranch)
+          : await getCommitRangeDiff(repoPath, scopeRef.fromSha, scopeRef.toSha);
 
       const gitDiff = diffFiles.map((f) => `--- ${f.filePath}\n${f.diff}`).join('\n\n');
       const changedFilesMapping = diffFiles

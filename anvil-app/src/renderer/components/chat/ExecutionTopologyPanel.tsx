@@ -59,8 +59,8 @@ export function ExecutionTopologyPanel({
                 ? `${topology.runningCount} agent${topology.runningCount === 1 ? '' : 's'} working`
                 : failedCount > 0
                   ? 'Run needs attention'
-                  : completedCount > 0
-                    ? 'Run complete'
+                  : completedCount === delegates.length && completedCount > 0
+                    ? 'Delegated tasks complete'
                     : 'No agents working'}
             </p>
           </div>
@@ -76,7 +76,9 @@ export function ExecutionTopologyPanel({
         </div>
         <div className="flex items-start gap-2 border-t border-border-subtle/70 px-3 py-2.5">
           <span className="shrink-0 pt-0.5 text-[11px] font-medium text-text-muted">Task</span>
-          <p className="line-clamp-2 text-xs leading-relaxed text-text-primary">{root.label}</p>
+          <p className="line-clamp-2 text-xs leading-relaxed text-text-primary">
+            {root.prompt ?? root.label}
+          </p>
         </div>
       </div>
 
@@ -250,8 +252,12 @@ function AgentRow({
         <StatusIcon status={node.status} kind={node.kind} />
         <span className="min-w-0 flex-1">
           <span className="block truncate text-xs font-medium text-text-primary">{node.label}</span>
-          <span className="mt-0.5 block truncate text-[11px] text-text-tertiary">
-            {node.prompt ?? node.detail}
+          <span className="mt-0.5 block line-clamp-2 text-xs leading-5 text-text-secondary">
+            {node.prompt ?? 'Task details unavailable'}
+          </span>
+          <span className="mt-1 block text-xs text-text-tertiary">{node.detail}</span>
+          <span className="mt-1 block line-clamp-2 text-xs leading-5 text-text-secondary">
+            {node.latestMessage ? `Latest: ${node.latestMessage}` : 'No agent update received yet.'}
           </span>
         </span>
         <span className={`shrink-0 text-[10px] ${statusTone(node.status)}`}>

@@ -1,6 +1,22 @@
-export const SCHEMA_VERSION = 60;
+export const SCHEMA_VERSION = 67;
 
 export const SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS change_reviews (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  record_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_change_reviews_workspace ON change_reviews(workspace_id, updated_at DESC);
+CREATE TABLE IF NOT EXISTS scoped_work_items_cache (
+  connection_key TEXT NOT NULL,
+  id TEXT NOT NULL,
+  raw_json TEXT NOT NULL,
+  fetched_at TEXT NOT NULL,
+  PRIMARY KEY(connection_key, id)
+);
+
 CREATE TABLE IF NOT EXISTS schema_meta (
   key TEXT PRIMARY KEY,
   value TEXT
@@ -92,6 +108,7 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
   persona_id TEXT,
   provider_thread_id TEXT,
   provider_turn_id TEXT,
+  provider TEXT,
   started_at TEXT DEFAULT (datetime('now')),
   ended_at TEXT
 );
@@ -139,6 +156,22 @@ CREATE TABLE IF NOT EXISTS agent_ui_intents (
 
 CREATE INDEX IF NOT EXISTS idx_agent_ui_intents_thread_lifecycle
   ON agent_ui_intents(thread_id, lifecycle, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS chat_thread_pull_requests (
+  id TEXT PRIMARY KEY,
+  thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL CHECK (provider IN ('github', 'ado')),
+  pull_request_id TEXT NOT NULL,
+  remote_url TEXT NOT NULL,
+  pull_request_json TEXT NOT NULL,
+  linked_at TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  UNIQUE(thread_id, repo_id, provider, pull_request_id)
+);
+CREATE INDEX IF NOT EXISTS idx_chat_thread_pr_reverse
+  ON chat_thread_pull_requests(repo_id, provider, pull_request_id);
 
 CREATE TABLE IF NOT EXISTS agent_ui_intent_events (
   id TEXT PRIMARY KEY,
@@ -293,8 +326,6 @@ CREATE TABLE IF NOT EXISTS settings (
   foundry_api_version TEXT DEFAULT '2024-10-21',
   foundry_api_key BLOB,
   openai_api_key BLOB,
-  llm_gateway_api_key BLOB,
-  llm_gateway_billing_mode TEXT NOT NULL DEFAULT 'devpass',
   openai_model TEXT DEFAULT 'gpt-5.6-sol',
   reasoning_level TEXT DEFAULT 'medium',
   codex_mode TEXT DEFAULT 'on-request',
@@ -336,6 +367,8 @@ CREATE TABLE IF NOT EXISTS settings (
   github_username TEXT,
   cloud_features_enabled INTEGER NOT NULL DEFAULT 0,
   telemetry_enabled INTEGER NOT NULL DEFAULT 0,
+  llm_gateway_api_key BLOB,
+  llm_gateway_billing_mode TEXT NOT NULL DEFAULT 'devpass',
   updated_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -464,7 +497,8 @@ CREATE TABLE IF NOT EXISTS code_reviews (
   verification_worktree_path TEXT,
   verification_worktree_kept INTEGER NOT NULL DEFAULT 0,
   started_at    TEXT NOT NULL DEFAULT (datetime('now')),
-  completed_at  TEXT
+  completed_at  TEXT,
+  source_tree TEXT
 );
 
 CREATE TABLE IF NOT EXISTS code_review_findings (
@@ -513,7 +547,8 @@ CREATE TABLE IF NOT EXISTS security_audits (
   summary       TEXT,
   started_at    TEXT NOT NULL DEFAULT (datetime('now')),
   completed_at  TEXT,
-  model_version TEXT
+  model_version TEXT,
+  source_tree TEXT
 );
 
 CREATE TABLE IF NOT EXISTS security_findings (
@@ -529,6 +564,19 @@ CREATE TABLE IF NOT EXISTS security_findings (
   work_item_id   TEXT,
   dismissed      INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE INDEX IF NOT EXISTS idx_code_reviews_repo_started
+  ON code_reviews(repo_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_code_reviews_running
+  ON code_reviews(repo_id, started_at DESC) WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS idx_code_review_findings_review
+  ON code_review_findings(review_id);
+CREATE INDEX IF NOT EXISTS idx_security_audits_repo_started
+  ON security_audits(repo_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_security_audits_running
+  ON security_audits(repo_id, started_at DESC) WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS idx_security_findings_audit
+  ON security_findings(audit_id);
 
 CREATE TABLE IF NOT EXISTS pentest_scans (
   id              TEXT PRIMARY KEY,
@@ -617,6 +665,7 @@ CREATE INDEX IF NOT EXISTS idx_workspace_scaffold_sessions_status
   ON workspace_scaffold_sessions(status);
 
 CREATE TABLE IF NOT EXISTS automation_definitions (
+  workflow_template_id TEXT,
   id TEXT PRIMARY KEY,
   workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
@@ -698,6 +747,38 @@ CREATE TABLE IF NOT EXISTS watchtower_events (
 
 CREATE INDEX IF NOT EXISTS idx_watchtower_events_pending
   ON watchtower_events(status, observed_at ASC);
+
+CREATE TABLE IF NOT EXISTS dojo_configs (
+  workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+  enabled INTEGER NOT NULL DEFAULT 0,
+  lookback_days INTEGER NOT NULL DEFAULT 30,
+  schedule_cron TEXT NOT NULL DEFAULT '0 9 * * 1',
+  timezone TEXT NOT NULL DEFAULT 'UTC',
+  last_run_at TEXT,
+  next_run_at TEXT,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_dojo_configs_due
+  ON dojo_configs(enabled, next_run_at);
+
+CREATE TABLE IF NOT EXISTS dojo_reports (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  status TEXT NOT NULL,
+  trigger TEXT NOT NULL,
+  window_start TEXT NOT NULL,
+  window_end TEXT NOT NULL,
+  metrics_json TEXT NOT NULL,
+  analysis_json TEXT,
+  sample_message_count INTEGER NOT NULL DEFAULT 0,
+  error_message TEXT,
+  started_at TEXT NOT NULL,
+  completed_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_dojo_reports_workspace
+  ON dojo_reports(workspace_id, started_at DESC);
 
 CREATE TABLE IF NOT EXISTS governance_boards (
   id TEXT PRIMARY KEY,
@@ -835,6 +916,37 @@ CREATE TABLE IF NOT EXISTS handover_packs (
   generated_at TEXT NOT NULL,
   output_path TEXT NOT NULL,
   sections TEXT NOT NULL DEFAULT '[]'
+);
+
+CREATE TABLE IF NOT EXISTS dojo_execution_events (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+  event_json TEXT NOT NULL,
+  timestamp TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dojo_execution_events_session ON dojo_execution_events(session_id, timestamp);
+CREATE TABLE IF NOT EXISTS dojo_deliveries (
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  work_item TEXT NOT NULL,
+  completed_at TEXT NOT NULL,
+  PRIMARY KEY (workspace_id, work_item)
+);
+CREATE TABLE IF NOT EXISTS dojo_prices (
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  input REAL NOT NULL,
+  cached_input REAL NOT NULL,
+  output REAL NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (provider, model)
+);
+CREATE TABLE IF NOT EXISTS dojo_recommendation_states (
+  report_id TEXT NOT NULL REFERENCES dojo_reports(id) ON DELETE CASCADE,
+  recommendation_key TEXT NOT NULL,
+  status TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  applied_at TEXT,
+  PRIMARY KEY (report_id, recommendation_key)
 );
 `;
 
@@ -1825,7 +1937,162 @@ export const MIGRATIONS: Record<number, string> = {
       WHERE provider_thread_id IS NOT NULL AND provider_thread_provider IS NULL;
   `,
   60: `
-    ALTER TABLE settings ADD COLUMN llm_gateway_api_key BLOB;
-    ALTER TABLE settings ADD COLUMN llm_gateway_billing_mode TEXT NOT NULL DEFAULT 'devpass';
+    ALTER TABLE chat_sessions ADD COLUMN provider TEXT;
+
+    UPDATE chat_sessions
+      SET provider = COALESCE(
+        (SELECT provider_thread_provider
+         FROM chat_threads
+         WHERE chat_threads.id = chat_sessions.thread_id),
+        'codex'
+      )
+      WHERE provider IS NULL;
+
+    CREATE TABLE IF NOT EXISTS dojo_configs (
+      workspace_id TEXT PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+      enabled INTEGER NOT NULL DEFAULT 0,
+      lookback_days INTEGER NOT NULL DEFAULT 30,
+      schedule_cron TEXT NOT NULL DEFAULT '0 9 * * 1',
+      timezone TEXT NOT NULL DEFAULT 'UTC',
+      last_run_at TEXT,
+      next_run_at TEXT,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_dojo_configs_due
+      ON dojo_configs(enabled, next_run_at);
+
+    CREATE TABLE IF NOT EXISTS dojo_reports (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      status TEXT NOT NULL,
+      trigger TEXT NOT NULL,
+      window_start TEXT NOT NULL,
+      window_end TEXT NOT NULL,
+      metrics_json TEXT NOT NULL,
+      analysis_json TEXT,
+      sample_message_count INTEGER NOT NULL DEFAULT 0,
+      error_message TEXT,
+      started_at TEXT NOT NULL,
+      completed_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_dojo_reports_workspace
+      ON dojo_reports(workspace_id, started_at DESC);
   `,
+  61: `
+CREATE TABLE IF NOT EXISTS dojo_execution_events (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+  event_json TEXT NOT NULL,
+  timestamp TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dojo_execution_events_session ON dojo_execution_events(session_id, timestamp);
+CREATE TABLE IF NOT EXISTS dojo_deliveries (
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  work_item TEXT NOT NULL,
+  completed_at TEXT NOT NULL,
+  PRIMARY KEY (workspace_id, work_item)
+);
+CREATE TABLE IF NOT EXISTS dojo_prices (
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  input REAL NOT NULL,
+  cached_input REAL NOT NULL,
+  output REAL NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (provider, model)
+);
+CREATE TABLE IF NOT EXISTS dojo_recommendation_states (
+  report_id TEXT NOT NULL REFERENCES dojo_reports(id) ON DELETE CASCADE,
+  recommendation_key TEXT NOT NULL,
+  status TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  applied_at TEXT,
+  PRIMARY KEY (report_id, recommendation_key)
+);
+`,
+  62: `
+CREATE TABLE IF NOT EXISTS change_reviews (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  record_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_change_reviews_workspace ON change_reviews(workspace_id, updated_at DESC);
+CREATE TABLE IF NOT EXISTS scoped_work_items_cache (
+  connection_key TEXT NOT NULL,
+  id TEXT NOT NULL,
+  raw_json TEXT NOT NULL,
+  fetched_at TEXT NOT NULL,
+  PRIMARY KEY(connection_key, id)
+);
+ALTER TABLE code_reviews ADD COLUMN source_tree TEXT;
+ALTER TABLE security_audits ADD COLUMN source_tree TEXT;
+UPDATE pull_request_visualisations SET status = 'failed' WHERE status = 'ready';
+`,
+  // Development review/workflow builds also used v62. Reconcile their missing main tables.
+  63: `
+CREATE TABLE IF NOT EXISTS change_reviews (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  record_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_change_reviews_workspace ON change_reviews(workspace_id, updated_at DESC);
+CREATE TABLE IF NOT EXISTS scoped_work_items_cache (
+  connection_key TEXT NOT NULL,
+  id TEXT NOT NULL,
+  raw_json TEXT NOT NULL,
+  fetched_at TEXT NOT NULL,
+  PRIMARY KEY(connection_key, id)
+);
+ALTER TABLE code_reviews ADD COLUMN source_tree TEXT;
+ALTER TABLE security_audits ADD COLUMN source_tree TEXT;
+UPDATE pull_request_visualisations SET status = 'failed' WHERE status = 'ready';
+CREATE INDEX IF NOT EXISTS idx_code_reviews_repo_started
+  ON code_reviews(repo_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_code_reviews_running
+  ON code_reviews(repo_id, started_at DESC) WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS idx_code_review_findings_review
+  ON code_review_findings(review_id);
+CREATE INDEX IF NOT EXISTS idx_security_audits_repo_started
+  ON security_audits(repo_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_security_audits_running
+  ON security_audits(repo_id, started_at DESC) WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS idx_security_findings_audit
+  ON security_findings(audit_id);
+  `,
+  64: `ALTER TABLE automation_definitions ADD COLUMN workflow_template_id TEXT;`,
+  65: `CREATE TABLE IF NOT EXISTS chat_thread_pull_requests (
+  id TEXT PRIMARY KEY,
+  thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL CHECK (provider IN ('github', 'ado')),
+  pull_request_id TEXT NOT NULL,
+  remote_url TEXT NOT NULL,
+  pull_request_json TEXT NOT NULL,
+  linked_at TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  UNIQUE(thread_id, repo_id, provider, pull_request_id)
+);
+CREATE INDEX IF NOT EXISTS idx_chat_thread_pr_reverse
+  ON chat_thread_pull_requests(repo_id, provider, pull_request_id);
+`,
+  // Reconcile databases that reached v65 without the v20 docs columns
+  // (e.g. a build that stamped a newer schema_version before v20 ran).
+  // The migration runner skips statements whose column already exists.
+  66: `
+ALTER TABLE settings ADD COLUMN docs_provider TEXT DEFAULT 'confluence';
+ALTER TABLE settings ADD COLUMN notion_oauth_token BLOB;
+ALTER TABLE settings ADD COLUMN notion_oauth_expiry TEXT;
+ALTER TABLE settings ADD COLUMN notion_database_id TEXT;
+`,
+  67: `
+ALTER TABLE settings ADD COLUMN llm_gateway_api_key BLOB;
+ALTER TABLE settings ADD COLUMN llm_gateway_billing_mode TEXT NOT NULL DEFAULT 'devpass';
+`,
 };

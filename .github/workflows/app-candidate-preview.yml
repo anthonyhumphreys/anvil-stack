@@ -1,0 +1,62 @@
+name: Anvil candidate macOS preview
+
+on:
+  workflow_dispatch:
+    inputs:
+      pull_request:
+        description: Pull request number
+        required: true
+        type: string
+      head_sha:
+        description: Full candidate head SHA, must match the current PR head
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  preview:
+    runs-on: macos-15
+    steps:
+      - name: Verify candidate
+        id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pull_request }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          [[ "$PR" =~ ^[1-9][0-9]*$ ]]
+          [[ "$HEAD_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$HEAD_SHA" == "$GITHUB_SHA" ]] || { echo 'Select the PR source branch as the workflow ref'; exit 1; }
+          actual=$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha')
+          [[ "$actual" == "$HEAD_SHA" ]] || { echo 'Candidate is stale'; exit 1; }
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        working-directory: anvil-app
+        run: pnpm install --frozen-lockfile
+      - name: Build isolated unsigned preview
+        working-directory: anvil-app
+        env:
+          PR: ${{ inputs.pull_request }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+        run: node scripts/build-candidate-preview.mjs "$PR" "$HEAD_SHA" arm64
+      - name: Retain build evidence and installable preview
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: anvil-preview-pr-${{ inputs.pull_request }}-${{ inputs.head_sha }}-darwin-arm64
+          path: anvil-app/dist/previews/
+          if-no-files-found: warn
+          retention-days: 14

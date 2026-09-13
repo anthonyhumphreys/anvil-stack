@@ -69,7 +69,9 @@ export const productLines = [
     points: [
       "Local Electron shell with SQLite persistence and typed IPC boundaries",
       "Chat-first workspace with focused navigation, thread history, and cross-workspace activity indicators",
-      "Codex and LLM workflows grounded in checked-out repositories, with per-turn reasoning controls",
+      "Cross-provider workflow teams with bounded delegation, persisted handoffs, and human decisions",
+      "Change review binds acceptance to source snapshots, criteria, screenshots, and replay traces",
+      "Dojo analytics and coaching connect agent activity to evidence-linked prompt and skill recommendations",
       "Optional Apple Foundation Models routing for short on-device helper prompts",
       "Workspace terminals reattach with buffered output while the desktop process is running",
       "Desktop notifications open the exact thread waiting for approval or input, or ready after completion",
@@ -77,7 +79,7 @@ export const productLines = [
     ],
     links: [
       { label: "Architecture", href: "/docs/desktop/architecture" },
-      { label: "Agent workflows", href: "/docs/desktop/agent-workflows" },
+      { label: "Workflow teams", href: "/docs/desktop/workflow-graphs" },
       { label: "Operating guide", href: "/docs/desktop/operating-guide" }
     ]
   },

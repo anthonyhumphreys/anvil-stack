@@ -127,7 +127,7 @@ export function registerRepoHandlers(): void {
     };
   });
 
-  ipcMain.handle('repo:map-status', (_event, repoId: string): RepoMapStatus => {
+  ipcMain.handle('repo:map-status', (_event, repoId: string): Promise<RepoMapStatus> => {
     return getRepoMapStatus(repoId);
   });
 
@@ -146,7 +146,7 @@ export function registerRepoHandlers(): void {
 
   ipcMain.handle(
     'repo:set-map-refresh-mode',
-    (_event, repoId: string, refreshMode: RepoMapRefreshMode): RepoMapStatus => {
+    (_event, repoId: string, refreshMode: RepoMapRefreshMode): Promise<RepoMapStatus> => {
       if (refreshMode !== 'manual' && refreshMode !== 'on_commit') {
         throw new Error(`Unsupported repository map refresh mode: ${refreshMode}`);
       }
@@ -246,7 +246,7 @@ async function refreshStaleRepositoryMaps(): Promise<void> {
       .all() as Array<{ id: string; path: string; generated_commit_sha: string | null }>;
 
     for (const repo of repos) {
-      const currentCommitSha = getCurrentCommitSha(repo.path);
+      const currentCommitSha = await getCurrentCommitSha(repo.path);
       if (!currentCommitSha || currentCommitSha === repo.generated_commit_sha) continue;
 
       try {
@@ -363,7 +363,7 @@ function safeParseJson<T>(json: string | null, fallback: T): T {
   }
 }
 
-function getRepoMapStatus(repoId: string): RepoMapStatus {
+async function getRepoMapStatus(repoId: string): Promise<RepoMapStatus> {
   const row = getDb()
     .prepare(
       `SELECT r.path, s.map_refresh_mode, s.generated_commit_sha, s.generated_at
@@ -374,7 +374,7 @@ function getRepoMapStatus(repoId: string): RepoMapStatus {
     .get(repoId) as DbMapStatusRow | undefined;
   if (!row) throw new Error(`Repo not found: ${repoId}`);
 
-  const currentCommitSha = getCurrentCommitSha(row.path);
+  const currentCommitSha = await getCurrentCommitSha(row.path);
   const indexedCommitSha = row.generated_commit_sha ?? undefined;
 
   return {

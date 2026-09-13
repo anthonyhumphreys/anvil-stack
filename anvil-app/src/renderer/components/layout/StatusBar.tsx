@@ -1,3 +1,4 @@
+import { pollWhileVisible } from '../../utils/visible-polling';
 import { useEffect, useState } from 'react';
 import { TerminalSquare, GitBranch } from 'lucide-react';
 import { useBrand } from '../../contexts/BrandContext';
@@ -42,15 +43,20 @@ export function StatusBar({ connectionStatus, onToggleTerminal, terminalOpen }: 
       return;
     }
 
+    let cancelled = false;
     const fetchBranch = () => {
-      window.anvil.git
+      return window.anvil.git
         .status(repo.id)
-        .then((s) => setActiveBranch(s.branch))
+        .then((s) => {
+          if (!cancelled) setActiveBranch(s.branch);
+        })
         .catch(() => {});
     };
-    fetchBranch();
-    const interval = setInterval(fetchBranch, 5000);
-    return () => clearInterval(interval);
+    const stop = pollWhileVisible(fetchBranch, 5000);
+    return () => {
+      cancelled = true;
+      stop();
+    };
   }, [repos]);
 
   const connectedCount = [

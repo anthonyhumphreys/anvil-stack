@@ -1,4 +1,4 @@
-import type { CodexSession, CodexSubagentStatus } from '../../shared/types';
+import type { CodexEvent, CodexSession, CodexSubagentStatus } from '../../shared/types';
 import type { ChatEntry } from '../contexts/ChatContext';
 
 export type ExecutionTopologyNodeStatus =
@@ -36,6 +36,7 @@ interface ExecutionTopologyInput {
   sessions: CodexSession[];
   threadId: string | null;
   rootLabel: string;
+  sessionStates?: Record<string, ExecutionTopologyNodeStatus>;
 }
 
 export function buildExecutionTopology({
@@ -43,6 +44,7 @@ export function buildExecutionTopology({
   sessions,
   threadId,
   rootLabel,
+  sessionStates = {},
 }: ExecutionTopologyInput): ExecutionTopology {
   const rootId = `thread:${threadId ?? 'new'}`;
   const nodes = new Map<string, ExecutionTopologyNode>();
@@ -58,11 +60,12 @@ export function buildExecutionTopology({
     label: rootLabel,
     detail: 'Chat thread',
     status: relevantSessions.some(
-      (session) => session.status === 'busy' || session.status === 'starting',
+      (session) => (sessionStates[session.id] ?? sessionStatus(session.status)) === 'running',
     )
       ? 'running'
       : 'idle',
     kind: 'thread',
+    prompt: [...entries].reverse().find((entry) => entry.kind === 'user')?.content,
   });
 
   for (const session of relevantSessions) {
@@ -72,7 +75,7 @@ export function buildExecutionTopology({
       parentId: rootId,
       label: formatSessionLabel(session.personaId),
       detail: session.kind ? `${session.kind} session` : 'Agent session',
-      status: sessionStatus(session.status),
+      status: sessionStates[session.id] ?? sessionStatus(session.status),
       kind: 'session',
       sessionId: session.id,
       appThreadId: session.appThreadId,
@@ -84,52 +87,80 @@ export function buildExecutionTopology({
     [...nodes.values()].find((node) => node.kind === 'session')?.id ?? rootId;
 
   for (const entry of entries) {
+    if (entry.kind === 'user') {
+      for (const node of nodes.values()) {
+        if (node.kind === 'subagent' && (node.status === 'running' || node.status === 'waiting')) {
+          node.status = 'idle';
+          node.detail = 'Earlier turn · no current activity';
+        }
+      }
+    }
     if (entry.kind !== 'event' || entry.event.type !== 'subagent_update') continue;
     const update = entry.event.subagent;
     if (!update) continue;
 
-    const senderId = update.senderThreadId
-      ? (protocolNodeIds.get(update.senderThreadId) ?? fallbackSessionId)
+    const eventSessionId = entry.event.sessionId
+      ? `session:${entry.event.sessionId}`
       : fallbackSessionId;
+    const senderId = update.senderThreadId
+      ? (protocolNodeIds.get(update.senderThreadId) ?? eventSessionId)
+      : eventSessionId;
     const statusByThreadId = new Map(update.agents.map((agent) => [agent.threadId, agent.status]));
     const messageByThreadId = new Map(
       update.agents.map((agent) => [agent.threadId, agent.message]),
     );
 
-    for (const receiverThreadId of update.receiverThreadIds) {
+    const receivers = new Set([
+      ...update.receiverThreadIds,
+      ...update.agents.map((agent) => agent.threadId),
+      ...(update.agentThreadId ? [update.agentThreadId] : []),
+    ]);
+    for (const receiverThreadId of receivers) {
       const nodeId = protocolNodeIds.get(receiverThreadId) ?? `subagent:${receiverThreadId}`;
       const existing = nodes.get(nodeId);
       const label = formatAgentLabel(update.agentPath, receiverThreadId);
       nodes.set(nodeId, {
         id: nodeId,
         parentId: existing?.parentId ?? senderId,
-        label: existing?.label ?? label,
+        label: update.agentPath ? label : (existing?.label ?? label),
         detail: formatAgentDetail(update.activityKind, update.tool),
-        status: subagentStatus(statusByThreadId.get(receiverThreadId), update.status),
+        status: statusByThreadId.has(receiverThreadId)
+          ? subagentStatus(statusByThreadId.get(receiverThreadId), update.status)
+          : update.activityKind === 'interrupted' ||
+              (update.tool === 'closeAgent' && update.status === 'completed')
+            ? 'stopped'
+            : (existing?.status ??
+              (update.tool === 'spawnAgent' || update.activityKind === 'started'
+                ? 'running'
+                : 'idle')),
         kind: 'subagent',
-        prompt: update.prompt ?? existing?.prompt,
+        prompt: existing?.prompt ?? update.prompt,
         model: update.model ?? existing?.model,
         reasoningEffort: update.reasoningEffort ?? existing?.reasoningEffort,
         latestMessage: messageByThreadId.get(receiverThreadId) ?? existing?.latestMessage,
       });
       protocolNodeIds.set(receiverThreadId, nodeId);
     }
+  }
 
-    if (update.agentThreadId && !protocolNodeIds.has(update.agentThreadId)) {
-      const nodeId = `subagent:${update.agentThreadId}`;
-      nodes.set(nodeId, {
-        id: nodeId,
-        parentId: senderId,
-        label: formatAgentLabel(update.agentPath, update.agentThreadId),
-        detail: formatAgentDetail(update.activityKind, update.tool),
-        status: subagentStatus(statusByThreadId.get(update.agentThreadId), update.status),
-        kind: 'subagent',
-        prompt: update.prompt,
-        model: update.model,
-        reasoningEffort: update.reasoningEffort,
-        latestMessage: messageByThreadId.get(update.agentThreadId),
-      });
-      protocolNodeIds.set(update.agentThreadId, nodeId);
+  // A remembered spawn event is not proof that an agent is still alive.
+  for (const node of nodes.values()) {
+    if (node.kind !== 'subagent' || !['running', 'waiting'].includes(node.status)) continue;
+    let parent = node.parentId ? nodes.get(node.parentId) : undefined;
+    const visited = new Set<string>();
+    while (parent?.kind === 'subagent' && !visited.has(parent.id)) {
+      visited.add(parent.id);
+      parent = parent.parentId ? nodes.get(parent.parentId) : undefined;
+    }
+    if (!parent || parent.status !== 'running') {
+      const terminal =
+        parent?.status === 'completed' ||
+        parent?.status === 'failed' ||
+        parent?.status === 'stopped';
+      node.status = terminal ? 'stopped' : 'idle';
+      node.detail = terminal
+        ? `Parent run ${parent!.status} · no final agent update`
+        : 'No active run · last observed activity';
     }
   }
 
@@ -178,7 +209,7 @@ function subagentStatus(
     case 'notFound':
       return 'failed';
     case 'interrupted':
-      return 'waiting';
+      return 'stopped';
     case 'shutdown':
       return 'stopped';
     default:
@@ -204,4 +235,39 @@ function formatAgentDetail(
   if (tool === 'wait') return 'Coordinating';
   if (tool === 'closeAgent') return 'Closed';
   return 'Subagent';
+}
+
+/** Provider lifecycle beats a stale polling snapshot, including explicit interruption. */
+export function applyExecutionLifecycle(
+  states: Record<string, ExecutionTopologyNodeStatus>,
+  event: CodexEvent & { sessionId?: string },
+): Record<string, ExecutionTopologyNodeStatus> {
+  if (!event.sessionId) return states;
+  let status: ExecutionTopologyNodeStatus | undefined;
+  if (event.type === 'turn_outcome') {
+    status =
+      event.turnOutcome === 'interrupted'
+        ? 'stopped'
+        : event.turnOutcome === 'failed'
+          ? 'failed'
+          : event.turnOutcome === 'completed'
+            ? 'completed'
+            : event.turnOutcome === 'inProgress'
+              ? 'running'
+              : undefined;
+  } else if (event.type === 'status') {
+    status =
+      event.status === 'error'
+        ? 'failed'
+        : event.status === 'complete'
+          ? states[event.sessionId] === 'stopped' || states[event.sessionId] === 'failed'
+            ? states[event.sessionId]
+            : 'completed'
+          : event.status === 'thinking' || event.status === 'executing'
+            ? 'running'
+            : undefined;
+  }
+  return !status || states[event.sessionId] === status
+    ? states
+    : { ...states, [event.sessionId]: status };
 }

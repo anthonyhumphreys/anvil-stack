@@ -482,15 +482,6 @@ export function CommandPalette({
         action: () => go('/db-insights'),
       },
       {
-        id: 'act-pentest',
-        label: 'Run Dynamic Pentest',
-        section: 'Actions',
-        icon: <Shield size={16} />,
-        feature: 'security',
-        keywords: ['strix', 'pentest', 'dynamic', 'security', 'scan'],
-        action: () => go('/security'),
-      },
-      {
         id: 'act-create-diagram',
         label: 'Create Architecture Diagram',
         section: 'Actions',

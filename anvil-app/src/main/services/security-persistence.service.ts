@@ -1,3 +1,4 @@
+import { bindAnalysisStart, validateAnalysisBinding } from './review-binding.service.js';
 import { randomUUID } from 'node:crypto';
 import type {
   SecurityAudit,
@@ -100,6 +101,7 @@ export function createAudit(input: CreateAuditInput): string {
      (id, repo_id, scope, status, started_at, model_version)
      VALUES (?, ?, ?, 'running', ?, ?)`,
   ).run(id, input.repoId, JSON.stringify(input.scope), now, input.modelVersion ?? null);
+  bindAnalysisStart('security_audits', id, input.repoId);
   return id;
 }
 
@@ -151,6 +153,7 @@ export function getRunningAudit(repoId: string): SecurityAudit | null {
  * Update the status (and optionally summary) of a security audit.
  */
 export function updateAuditStatus(id: string, status: SecurityAuditStatus, summary?: string): void {
+  if (status === 'completed') validateAnalysisBinding('security_audits', id);
   const db = getDb();
   const now = new Date().toISOString();
   if (summary !== undefined) {
@@ -185,24 +188,35 @@ export interface CreateFindingInput {
  * Create a security finding and return its ID.
  */
 export function createFinding(input: CreateFindingInput): string {
+  return createFindings([input])[0];
+}
+
+/** Save a completed review's findings atomically, with one prepared insert. */
+export function createFindings(inputs: CreateFindingInput[]): string[] {
+  if (inputs.length === 0) return [];
   const db = getDb();
-  const id = randomUUID();
-  db.prepare(
+  const insert = db.prepare(
     `INSERT INTO security_findings
      (id, audit_id, severity, category, owasp_ref, cwe_ref, affected_files, description, remediation)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    id,
-    input.auditId,
-    input.severity,
-    input.category,
-    input.owaspRef ?? null,
-    input.cweRef ?? null,
-    JSON.stringify(input.affectedFiles),
-    input.description,
-    input.remediation ?? null,
   );
-  return id;
+  return db.transaction(() =>
+    inputs.map((input) => {
+      const id = randomUUID();
+      insert.run(
+        id,
+        input.auditId,
+        input.severity,
+        input.category,
+        input.owaspRef ?? null,
+        input.cweRef ?? null,
+        JSON.stringify(input.affectedFiles),
+        input.description,
+        input.remediation ?? null,
+      );
+      return id;
+    }),
+  )();
 }
 
 /**

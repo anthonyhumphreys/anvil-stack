@@ -129,6 +129,32 @@ function makeQuestion(): AgentUIQuestionIntent {
 }
 
 describe('Agent UI intent service', () => {
+  it('accepts custom single-choice answers only when the question permits them', () => {
+    const question = makeQuestion();
+    question.payload.questions = [question.payload.questions[0]];
+    const resolution = {
+      intentId: question.id,
+      action: 'submit' as const,
+      answers: { single: 'A local sandbox' },
+      answeredAt: '2026-08-19T10:01:00.000Z',
+    };
+    expect(() => validateAgentUIQuestionResolution(question, resolution)).toThrow(
+      'not one of the available options',
+    );
+    question.payload.questions[0].allowOther = true;
+    expect(() => validateAgentUIQuestionResolution(question, resolution)).not.toThrow();
+    expect(() =>
+      validateAgentUIQuestionResolution(question, {
+        ...resolution,
+        answers: { single: '   ' },
+      }),
+    ).toThrow('requires an answer');
+    question.payload.questions[0].defaultValue = 'A local sandbox';
+    expect(() =>
+      upsertAgentUIIntent({ intent: question, binding: { provider: 'codex' } }),
+    ).not.toThrow();
+  });
+
   it('creates, lists, and incrementally updates plans while maintaining compatibility state', () => {
     const created = upsertAgentUIIntent({ intent: makePlan(), binding: { provider: 'codex' } });
     expect(listAgentUIIntents('thread-1')).toEqual([created]);

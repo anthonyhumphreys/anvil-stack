@@ -1,0 +1,23 @@
+flowchart TB
+    Manual[Manual kickoff] --> Runtime
+    Events[Schedule or Watchtower] --> Worktrees[Automation worktrees]
+    Worktrees --> Runtime
+    Config[Specialist profiles and runtime limits] --> Runtime
+
+    Runtime[Anvil workflow runtime] --> Coordinator
+    Coordinator --> A[Specialist A<br/>Provider, model, reasoning]
+    Coordinator --> B[Specialist B<br/>Different provider or reasoning]
+    B --> Nested[Optional nested specialist]
+    Nested --> Handoffs
+    A --> Handoffs
+    B --> Handoffs
+
+    Handoffs[Bounded handoffs with attempt references] --> Synthesis[Coordinator synthesis]
+    Synthesis --> Review[Independent review or debate]
+    Review --> Repair[Repair and verification]
+    Repair --> Human{Human decision}
+    Human -->|Accept and resume| Completed
+    Human -->|Reject| Failed[Decision preserved]
+
+    Runtime -. records .-> History[Graph changes, attempts, threads and events]
+    Human -. records .-> History

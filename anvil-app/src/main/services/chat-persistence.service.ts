@@ -1,3 +1,4 @@
+import { listThreadPullRequestLinks } from './thread-pull-request.service.js';
 import { randomUUID } from 'node:crypto';
 import type {
   AgentProvider,
@@ -199,6 +200,7 @@ function parseGoalSnapshot(value: string | null | undefined): ChatGoalSnapshot |
 function mapThreadRow(row: ChatThreadRow): ChatThread {
   return {
     id: row.id,
+    pullRequestLinks: listThreadPullRequestLinks(row.id),
     workspaceId: row.workspace_id ?? undefined,
     personaId: row.persona_id,
     title: row.title,
@@ -650,9 +652,9 @@ export function createChatSession(
   const id = sessionId ?? randomUUID();
   db.prepare(
     `INSERT INTO chat_sessions
-     (id, thread_id, repo_id, persona_id, provider_thread_id, started_at)
-     VALUES (?, ?, ?, ?, ?, datetime('now'))`,
-  ).run(id, threadId, repoId, personaId, providerThreadId ?? null);
+     (id, thread_id, repo_id, persona_id, provider_thread_id, provider, started_at)
+     VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
+  ).run(id, threadId, repoId, personaId, providerThreadId ?? null, provider ?? 'codex');
 
   if (threadId && providerThreadId) {
     setChatThreadProviderThreadId(threadId, providerThreadId, provider ?? 'codex');

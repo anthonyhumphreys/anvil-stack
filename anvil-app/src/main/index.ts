@@ -1,8 +1,10 @@
+import { cleanupChangeReviews } from './services/change-review.service.js';
+import { registerChangeReviewHandlers } from './ipc/change-review.ipc.js';
 import { fixPath } from './utils/fix-path.js';
 fixPath();
 
 import { app, BrowserWindow, ipcMain, session } from 'electron';
-import { cpSync, existsSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { initDatabase } from './db/database.js';
 import { registerSettingsHandlers } from './ipc/settings.ipc.js';
@@ -19,18 +21,19 @@ import { registerWorkItemsHandlers } from './ipc/workitems.ipc.js';
 import { registerDocsHandlers } from './ipc/docs.ipc.js';
 import { registerBaHandlers, cleanupBaSessions, handleOrphanedBaSessions } from './ipc/ba.ipc.js';
 import { registerSecurityHandlers } from './ipc/security.ipc.js';
-import { registerPentestHandlers, cleanupPentest } from './ipc/pentest.ipc.js';
 import { registerCodeReviewHandlers } from './ipc/codereview.ipc.js';
 import { registerDiagramFileHandlers, cleanupDiagramServices } from './ipc/diagram-file.ipc.js';
 import { registerWorkspaceHandlers } from './ipc/workspace.ipc.js';
 import { registerWorkspaceNotesHandlers } from './ipc/workspace-notes.ipc.js';
 import { registerWorkspaceScaffoldHandlers } from './ipc/workspace-scaffold.ipc.js';
 import { registerLaunchHandlers } from './ipc/launch.ipc.js';
+import { previewBuild, previewProfileDirectory } from '../shared/preview-build.js';
 import { parseBrandFromArgs, getBrand } from '../shared/branding.js';
 import { registerTerminalHandlers, cleanupTerminals } from './ipc/terminal.ipc.js';
 import { registerGovernanceHandlers } from './ipc/governance.ipc.js';
 import { registerDbInsightsHandlers } from './ipc/db-insights.ipc.js';
 import { registerAutomationHandlers } from './ipc/automation.ipc.js';
+import { registerDojoHandlers } from './ipc/dojo.ipc.js';
 import { registerWorkflowHandlers } from './ipc/workflow.ipc.js';
 import { registerAgentRunHandlers } from './ipc/agent-run.ipc.js';
 import { registerDesignHandlers } from './ipc/design.ipc.js';
@@ -84,6 +87,13 @@ function getAppIconPath(): string {
 }
 
 function configureUserDataPath(): void {
+  if (previewBuild) {
+    const previewPath = path.join(app.getPath('appData'), previewProfileDirectory(previewBuild));
+    mkdirSync(previewPath, { recursive: true });
+    app.setPath('userData', previewPath);
+    app.setPath('sessionData', previewPath);
+    return;
+  }
   const isolatedDevPath = process.env.ANVIL_DEV_USER_DATA_PATH?.trim();
   if (process.env.ELECTRON_RENDERER_URL && isolatedDevPath) {
     app.setPath('userData', path.resolve(isolatedDevPath));
@@ -100,7 +110,13 @@ function configureUserDataPath(): void {
   app.setPath('userData', targetPath);
 }
 
-app.setName(isolatedDevProfileActive ? `${brand.appName} UI Lab` : brand.appName);
+app.setName(
+  previewBuild
+    ? `${brand.appName} Preview PR ${previewBuild.pullRequestNumber} (${previewBuild.headSha.slice(0, 8)})`
+    : isolatedDevProfileActive
+      ? `${brand.appName} UI Lab`
+      : brand.appName,
+);
 configureUserDataPath();
 initDatabase(brand.defaultTheme);
 initializeTelemetry({
@@ -186,9 +202,7 @@ function createWindow(
     minHeight: isToolWindow ? 520 : 700,
     title: app.getName(),
     titleBarStyle: process.platform === 'darwin' ? 'hidden' : 'default',
-    ...(process.platform === 'darwin'
-      ? { trafficLightPosition: { x: 16, y: 16 } }
-      : {}),
+    ...(process.platform === 'darwin' ? { trafficLightPosition: { x: 16, y: 16 } } : {}),
     backgroundColor: '#0b1020',
     icon: getAppIconPath(),
     webPreferences: {
@@ -323,7 +337,7 @@ app.whenReady().then(() => {
   }
 
   initializeStatusBar(brand);
-  initializeAppUpdater();
+  if (!previewBuild) initializeAppUpdater();
 
   registerSettingsHandlers();
   registerMobileCompanionHandlers();
@@ -335,10 +349,10 @@ app.whenReady().then(() => {
   registerChatHandlers();
   registerOnboardHandlers();
   registerWorkItemsHandlers();
+  registerChangeReviewHandlers();
   registerDocsHandlers();
   registerBaHandlers();
   registerSecurityHandlers();
-  registerPentestHandlers();
   registerCodeReviewHandlers();
   registerDiagramFileHandlers();
   registerWorkspaceHandlers({
@@ -355,6 +369,7 @@ app.whenReady().then(() => {
   registerGovernanceHandlers();
   registerDbInsightsHandlers();
   registerAutomationHandlers();
+  registerDojoHandlers();
   registerWorkflowHandlers();
   registerAgentRunHandlers();
   registerDesignHandlers();
@@ -376,10 +391,12 @@ app.whenReady().then(() => {
   handleOrphanedBaSessions();
   handleStaleIndexingRepos();
 
-  // Register Repobase MCP with Codex (background, non-blocking)
-  ensureRepobaseMcp().catch(() => {});
-  app.setAsDefaultProtocolClient(PRIMARY_PROTOCOL);
-  app.setAsDefaultProtocolClient(LEGACY_PROTOCOL);
+  if (!previewBuild) {
+    // Preview startup must not change the user's normal Codex or protocol registrations.
+    ensureRepobaseMcp().catch(() => {});
+    app.setAsDefaultProtocolClient(PRIMARY_PROTOCOL);
+    app.setAsDefaultProtocolClient(LEGACY_PROTOCOL);
+  }
 
   ipcMain.handle('brand:get', () => brand);
   ipcMain.handle('app-window:get-version', () => app.getVersion());
@@ -418,10 +435,10 @@ app.on('before-quit', () => {
   cleanupDiagramServices();
   cleanupTerminals();
   cleanupBrowser();
+  cleanupChangeReviews();
   cleanupSimulatorPreview();
   void stopMobileCompanionServer();
   void cleanupEmbeddedEditor();
-  cleanupPentest();
   cleanupRunProcesses();
   cleanupStatusBar();
 });

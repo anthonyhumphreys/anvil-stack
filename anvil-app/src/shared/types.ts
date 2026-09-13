@@ -1,3 +1,5 @@
+import type { DojoCraftedSkill, DojoTokenUsage, DojoPrice } from './dojo-types.js';
+import type { WorkItemReference } from './change-review-types.js';
 import type { AgentUIIntent } from './agent-ui-intents.js';
 
 export interface RepoInfo {
@@ -307,6 +309,7 @@ export interface WorkItemConnection {
   jiraAuthMode?: 'cloud' | 'server';
   jiraProject?: string;
   jiraBoardId?: string;
+  jiraAcceptanceCriteriaField?: string;
   jiraEmail?: string;
   jiraApiToken?: string;
 }
@@ -597,6 +600,50 @@ export interface WorkflowPosition {
   y: number;
 }
 
+export interface WorkflowAgentProfile {
+  id: string;
+  name: string;
+  personaId: string;
+  provider: AgentProvider;
+  model: string;
+  reasoningEffort: ReasoningEffort;
+  capabilities: string[];
+}
+
+export type WorkflowTeamStrategy = 'manual' | 'map-reduce' | 'review' | 'debate' | 'autonomous';
+
+export interface WorkflowOrchestration {
+  maxConcurrency: number;
+  maxNodes: number;
+  maxDepth: number;
+  maxAttempts: number;
+  timeoutMinutes: number;
+  handoffChars: number;
+  profiles: WorkflowAgentProfile[];
+}
+
+export interface WorkflowRuntimeEvent {
+  id: string;
+  at: string;
+  type: 'run' | 'dispatch' | 'completed' | 'failed' | 'delegated' | 'decision' | 'retry';
+  nodeId?: string;
+  message: string;
+}
+
+export interface WorkflowAttempt {
+  id: string;
+  startedAt: string;
+  completedAt?: string;
+  status: 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+  provider: AgentProvider;
+  model: string;
+  reasoningEffort: ReasoningEffort;
+  threadId?: string;
+  sessionId?: string;
+  output?: string;
+  error?: string;
+}
+
 export interface WorkflowNode {
   id: string;
   name: string;
@@ -608,6 +655,11 @@ export interface WorkflowNode {
   reasoningEffort: ReasoningEffort;
   executionStrategy: WorkflowExecutionStrategy;
   position: WorkflowPosition;
+  kind?: 'agent' | 'human';
+  teamStrategy?: WorkflowTeamStrategy;
+  teamProfileIds?: string[];
+  parentNodeId?: string;
+  depth?: number;
 }
 
 export interface WorkflowEdge {
@@ -617,6 +669,7 @@ export interface WorkflowEdge {
 }
 
 export interface WorkflowTemplate {
+  orchestration?: WorkflowOrchestration;
   id: string;
   name: string;
   description: string;
@@ -627,6 +680,7 @@ export interface WorkflowTemplate {
 }
 
 export interface WorkflowTemplateInput {
+  orchestration?: WorkflowOrchestration;
   name: string;
   description?: string;
   nodes: WorkflowNode[];
@@ -642,6 +696,8 @@ export type WorkflowRunStatus =
   | 'cancelled';
 
 export type WorkflowNodeRunStatus =
+  | 'waiting'
+  | 'interrupted'
   | 'queued'
   | 'running'
   | 'completed'
@@ -650,6 +706,10 @@ export type WorkflowNodeRunStatus =
   | 'cancelled';
 
 export interface WorkflowNodeRun {
+  attempts?: WorkflowAttempt[];
+  teamExpanded?: boolean;
+  delegationCount?: number;
+  decision?: { approved: boolean; note: string; at: string };
   nodeId: string;
   status: WorkflowNodeRunStatus;
   threadId?: string;
@@ -661,6 +721,13 @@ export interface WorkflowNodeRun {
 }
 
 export interface WorkflowRun {
+  workItemRef?: WorkItemReference;
+  runtimeOwnerPid?: number;
+  executionPaths?: Array<{ id: string; path: string }>;
+  orchestration?: WorkflowOrchestration;
+  events?: WorkflowRuntimeEvent[];
+  deadlineAt?: string;
+  sourceAutomationRunId?: string;
   id: string;
   templateId: string;
   templateName: string;
@@ -700,7 +767,26 @@ export interface ChatFileMentionSearchResult {
   size: number;
 }
 
+export interface ChatThreadPullRequestInput {
+  repoId: string;
+  provider: 'github' | 'ado';
+  pullRequestId: string;
+}
+export interface ChatThreadPullRequestLink {
+  availability: 'current' | 'repository_changed' | 'thread_changed';
+  id: string;
+  threadId: string;
+  threadTitle: string;
+  workspaceId: string;
+  repoId: string;
+  pullRequest: CodeReviewPullRequest;
+  linkedAt: string;
+  /** Last successful provider lookup; this snapshot is not a live status claim. */
+  observedAt: string;
+}
+
 export interface ChatThread {
+  pullRequestLinks?: ChatThreadPullRequestLink[];
   id: string;
   personaId: string;
   title: string;
@@ -732,6 +818,11 @@ export type ChatThreadAttentionState =
   | 'input'
   | 'failed'
   | 'complete';
+
+export interface WorkflowNavigationTarget {
+  workspaceId: string;
+  runId: string;
+}
 
 export interface ChatNavigationTarget {
   workspaceId: string;
@@ -840,7 +931,9 @@ export interface AutomationTriageItem {
   errorMessage?: string;
   retainedWorktreeCount: number;
   worktrees: AutomationRunWorktree[];
-  attention: 'blocked' | 'changes' | 'running';
+  attention: 'blocked' | 'changes' | 'running' | 'decision';
+  workflowRunId?: string;
+  nextAction?: string;
 }
 
 export type JsonRpcRequestId = string | number;
@@ -894,16 +987,42 @@ export interface CodexUserInputQuestion {
   options?: CodexUserInputOption[];
 }
 
-export interface CodexInputRequest {
-  kind: 'user_input' | 'mcp_elicitation';
-  questions?: CodexUserInputQuestion[];
-  autoResolutionMs?: number;
-  message?: string;
-  serverName?: string;
-  mode?: 'form' | 'openai/form' | 'url';
-  requestedSchema?: unknown;
-  url?: string;
+export interface CursorQuestionOption {
+  id: string;
+  label: string;
 }
+
+export interface CursorQuestion {
+  id: string;
+  prompt: string;
+  options: CursorQuestionOption[];
+  allowMultiple?: boolean;
+}
+
+export type CodexInputRequest =
+  | {
+      kind: 'user_input';
+      questions?: CodexUserInputQuestion[];
+      autoResolutionMs?: number;
+    }
+  | {
+      kind: 'mcp_elicitation';
+      message?: string;
+      serverName?: string;
+      mode?: 'form' | 'openai/form' | 'url';
+      requestedSchema?: unknown;
+      url?: string;
+    }
+  | {
+      kind: 'cursor_ask_question';
+      title?: string;
+      questions: CursorQuestion[];
+    }
+  | {
+      kind: 'cursor_create_plan';
+      title?: string;
+      plan: string;
+    };
 
 export type CodexInputResponse =
   | {
@@ -914,6 +1033,15 @@ export type CodexInputResponse =
       kind: 'mcp_elicitation';
       action: 'accept' | 'decline' | 'cancel';
       content?: unknown;
+    }
+  | {
+      kind: 'cursor_ask_question';
+      action: 'submit' | 'skip' | 'cancel';
+      answers: Array<{ questionId: string; selectedOptionIds: string[] }>;
+    }
+  | {
+      kind: 'cursor_create_plan';
+      action: 'submit' | 'skip' | 'cancel';
     };
 
 export interface CodexEvent {
@@ -935,7 +1063,22 @@ export interface CodexEvent {
     | 'goal_update'
     | 'goal_cleared'
     | 'error'
-    | 'status';
+    | 'status'
+    | 'usage'
+    | 'turn_outcome'
+    | 'context_compaction'
+    | 'usage_context';
+  /** App routing metadata attached to live provider events. */
+  sessionId?: string;
+  appThreadId?: string;
+  contextUsage?: { used: number; size: number };
+  observedCostUsd?: number;
+  usage?: DojoTokenUsage;
+  usageId?: string;
+  usagePrice?: DojoPrice;
+  model?: string;
+  turnOutcome?: 'completed' | 'failed' | 'interrupted' | 'inProgress';
+  protocolTurnId?: string;
   text?: string;
   filePath?: string;
   diff?: string;
@@ -943,6 +1086,7 @@ export interface CodexEvent {
   command?: string;
   output?: string;
   exitCode?: number;
+  toolStatus?: 'running' | 'completed' | 'failed';
   toolName?: string;
   toolInput?: Record<string, unknown>;
   approvalRequestId?: JsonRpcRequestId;
@@ -1719,6 +1863,8 @@ export type WatchtowerEventType =
   | 'workflow.failed'
   | 'pull_request.merged'
   | 'pull_request.closed'
+  | 'pull_request.review_comment'
+  | 'pull_request.head_changed'
   | 'pipeline.completed'
   | 'pipeline.failed';
 export type AutomationRunTrigger = 'manual' | 'schedule' | 'watchtower';
@@ -1762,6 +1908,8 @@ export interface WatchtowerTarget {
 }
 
 export interface WatchtowerState {
+  headSha?: string;
+  reviewCommentIds?: string[];
   sourceId?: string;
   sourceLabel?: string;
   status?: string;
@@ -1784,6 +1932,7 @@ export interface AutomationDefinitionInput {
   allowRepoWrite: boolean;
   allowCommandRun: boolean;
   loopConfig?: AutomationLoopConfig;
+  workflowTemplateId?: string;
 }
 
 export interface AutomationDefinition extends Omit<
@@ -1845,6 +1994,88 @@ export interface AutomationDaemonStatus {
   plistPath?: string;
   servicePath?: string;
   lastError?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Dojo
+// ---------------------------------------------------------------------------
+
+export interface DojoConfigInput {
+  enabled: boolean;
+  lookbackDays: number;
+  scheduleCron: string;
+  timezone: string;
+}
+
+export interface DojoConfig extends DojoConfigInput {
+  workspaceId: string;
+  lastRunAt?: string;
+  nextRunAt?: string;
+  updatedAt: string;
+}
+
+export interface DojoProviderMetrics {
+  provider: AgentProvider | 'unknown';
+  enabled: boolean;
+  status: 'covered' | 'no-activity';
+  threadCount: number;
+  sessionCount: number;
+  userMessageCount: number;
+  assistantMessageCount: number;
+}
+
+export interface DojoMetrics {
+  threadCount: number;
+  sessionCount: number;
+  userMessageCount: number;
+  assistantMessageCount: number;
+  estimatedInputTokens: number;
+  estimatedOutputTokens: number;
+  frustrationCount: number;
+  profanityCount: number;
+  correctionCount: number;
+  providers: DojoProviderMetrics[];
+}
+
+export interface DojoObservation {
+  title: string;
+  detail: string;
+  impact: 'high' | 'medium' | 'low';
+  category: 'accuracy' | 'efficiency' | 'communication' | 'workflow';
+}
+
+export interface DojoPromptRecommendation {
+  title: string;
+  prompt: string;
+  reason: string;
+  evidenceCount: number;
+}
+
+export interface DojoSkillRecommendation {
+  rank: number;
+  library: 'Matt Pocock skills' | 'pstack';
+  skill: string;
+  reason: string;
+  url: string;
+}
+
+export interface DojoReport {
+  id: string;
+  workspaceId: string;
+  status: 'running' | 'completed' | 'failed';
+  trigger: 'manual' | 'schedule';
+  windowStart: string;
+  windowEnd: string;
+  metrics: DojoMetrics;
+  summary?: string;
+  observations: DojoObservation[];
+  promptRecommendations: DojoPromptRecommendation[];
+  skillRecommendations: DojoSkillRecommendation[];
+  craftedSkills?: DojoCraftedSkill[];
+  sampleMessageCount: number;
+  errorMessage?: string;
+  startedAt: string;
+  completedAt?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -1986,6 +2217,7 @@ export interface AppSettings {
   jiraAuthMode?: 'cloud' | 'server';
   jiraProject?: string;
   jiraBoardId?: string;
+  jiraAcceptanceCriteriaField?: string;
   jiraEmail?: string;
   jiraApiToken?: string;
 
@@ -2411,6 +2643,7 @@ export type Feature =
   | 'chat'
   | 'editor'
   | 'automations'
+  | 'dojo'
   | 'workflows'
   | 'dbinsights'
   | 'onboard'
@@ -2437,6 +2670,7 @@ export const ROLE_FEATURES: Record<UserRole, readonly Feature[]> = {
     'chat',
     'editor',
     'automations',
+    'dojo',
     'workflows',
     'dbinsights',
     'onboard',
@@ -2460,6 +2694,7 @@ export const ROLE_FEATURES: Record<UserRole, readonly Feature[]> = {
   'ba-brm': [
     'repos',
     'chat',
+    'dojo',
     'workflows',
     'editor',
     'dbinsights',
@@ -2478,6 +2713,7 @@ export const ROLE_FEATURES: Record<UserRole, readonly Feature[]> = {
   design: [
     'repos',
     'chat',
+    'dojo',
     'workflows',
     'dbinsights',
     'docs',
@@ -2491,6 +2727,7 @@ export const ROLE_FEATURES: Record<UserRole, readonly Feature[]> = {
   itsm: [
     'repos',
     'chat',
+    'dojo',
     'workflows',
     'dbinsights',
     'workitems',

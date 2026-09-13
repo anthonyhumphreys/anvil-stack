@@ -3,35 +3,6 @@ import { createJavaScriptRegexEngine } from 'shiki/engine/javascript';
 import { LRUCache } from 'lru-cache';
 import DOMPurify from 'dompurify';
 
-// Static language imports — Vite can statically analyze these (no dynamic template literals)
-import langTypescript from '@shikijs/langs/typescript';
-import langJavascript from '@shikijs/langs/javascript';
-import langJson from '@shikijs/langs/json';
-import langCss from '@shikijs/langs/css';
-import langHtml from '@shikijs/langs/html';
-import langPython from '@shikijs/langs/python';
-import langCsharp from '@shikijs/langs/csharp';
-import langBash from '@shikijs/langs/bash';
-import langYaml from '@shikijs/langs/yaml';
-import langMarkdown from '@shikijs/langs/markdown';
-import langSql from '@shikijs/langs/sql';
-import langDiff from '@shikijs/langs/diff';
-
-const DEFAULT_LANGS = [
-  langTypescript,
-  langJavascript,
-  langJson,
-  langCss,
-  langHtml,
-  langPython,
-  langCsharp,
-  langBash,
-  langYaml,
-  langMarkdown,
-  langSql,
-  langDiff,
-];
-
 // Create CSS variables theme — emits var(--shiki-*) references defined in global.css
 const cssVarsTheme = createCssVariablesTheme({
   name: 'css-variables',
@@ -40,31 +11,39 @@ const cssVarsTheme = createCssVariablesTheme({
   fontStyle: true,
 });
 
-const LANGUAGE_REGISTRY: Record<string, { id: string; grammar: unknown }> = {
-  typescript: { id: 'typescript', grammar: langTypescript },
-  ts: { id: 'typescript', grammar: langTypescript },
-  tsx: { id: 'typescript', grammar: langTypescript },
-  javascript: { id: 'javascript', grammar: langJavascript },
-  js: { id: 'javascript', grammar: langJavascript },
-  jsx: { id: 'javascript', grammar: langJavascript },
-  json: { id: 'json', grammar: langJson },
-  css: { id: 'css', grammar: langCss },
-  html: { id: 'html', grammar: langHtml },
-  htm: { id: 'html', grammar: langHtml },
-  python: { id: 'python', grammar: langPython },
-  py: { id: 'python', grammar: langPython },
-  csharp: { id: 'csharp', grammar: langCsharp },
-  cs: { id: 'csharp', grammar: langCsharp },
-  bash: { id: 'bash', grammar: langBash },
-  sh: { id: 'bash', grammar: langBash },
-  shell: { id: 'bash', grammar: langBash },
-  zsh: { id: 'bash', grammar: langBash },
-  yaml: { id: 'yaml', grammar: langYaml },
-  yml: { id: 'yaml', grammar: langYaml },
-  markdown: { id: 'markdown', grammar: langMarkdown },
-  md: { id: 'markdown', grammar: langMarkdown },
-  sql: { id: 'sql', grammar: langSql },
-  diff: { id: 'diff', grammar: langDiff },
+const LANGUAGE_REGISTRY: Record<
+  string,
+  {
+    id: string;
+    grammar: () => Promise<{
+      default: Parameters<Awaited<ReturnType<typeof createHighlighterCore>>['loadLanguage']>[0];
+    }>;
+  }
+> = {
+  typescript: { id: 'typescript', grammar: () => import('@shikijs/langs/typescript') },
+  ts: { id: 'typescript', grammar: () => import('@shikijs/langs/typescript') },
+  tsx: { id: 'typescript', grammar: () => import('@shikijs/langs/typescript') },
+  javascript: { id: 'javascript', grammar: () => import('@shikijs/langs/javascript') },
+  js: { id: 'javascript', grammar: () => import('@shikijs/langs/javascript') },
+  jsx: { id: 'javascript', grammar: () => import('@shikijs/langs/javascript') },
+  json: { id: 'json', grammar: () => import('@shikijs/langs/json') },
+  css: { id: 'css', grammar: () => import('@shikijs/langs/css') },
+  html: { id: 'html', grammar: () => import('@shikijs/langs/html') },
+  htm: { id: 'html', grammar: () => import('@shikijs/langs/html') },
+  python: { id: 'python', grammar: () => import('@shikijs/langs/python') },
+  py: { id: 'python', grammar: () => import('@shikijs/langs/python') },
+  csharp: { id: 'csharp', grammar: () => import('@shikijs/langs/csharp') },
+  cs: { id: 'csharp', grammar: () => import('@shikijs/langs/csharp') },
+  bash: { id: 'bash', grammar: () => import('@shikijs/langs/bash') },
+  sh: { id: 'bash', grammar: () => import('@shikijs/langs/bash') },
+  shell: { id: 'bash', grammar: () => import('@shikijs/langs/bash') },
+  zsh: { id: 'bash', grammar: () => import('@shikijs/langs/bash') },
+  yaml: { id: 'yaml', grammar: () => import('@shikijs/langs/yaml') },
+  yml: { id: 'yaml', grammar: () => import('@shikijs/langs/yaml') },
+  markdown: { id: 'markdown', grammar: () => import('@shikijs/langs/markdown') },
+  md: { id: 'markdown', grammar: () => import('@shikijs/langs/markdown') },
+  sql: { id: 'sql', grammar: () => import('@shikijs/langs/sql') },
+  diff: { id: 'diff', grammar: () => import('@shikijs/langs/diff') },
 };
 
 let highlighterPromise: ReturnType<typeof createHighlighterCore> | null = null;
@@ -73,7 +52,7 @@ function getHighlighter() {
   if (!highlighterPromise) {
     highlighterPromise = createHighlighterCore({
       themes: [cssVarsTheme],
-      langs: DEFAULT_LANGS,
+      langs: [],
       engine: createJavaScriptRegexEngine(),
     });
   }
@@ -85,7 +64,7 @@ const MAX_CACHEABLE_CODE_CHARS = 12_000;
 
 const cache = new LRUCache<string, string>({
   maxSize: MAX_HIGHLIGHT_CACHE_BYTES,
-  sizeCalculation: (value, key) => value.length + key.length,
+  sizeCalculation: (value, key) => 2 * (value.length + key.length),
 });
 
 /**
@@ -107,9 +86,7 @@ export async function highlightCode(code: string, language: string): Promise<str
     const loadedLangs = highlighter.getLoadedLanguages();
     if (!loadedLangs.includes(resolvedLanguage as any)) {
       if (registryEntry) {
-        await highlighter.loadLanguage(
-          registryEntry.grammar as Parameters<typeof highlighter.loadLanguage>[0],
-        );
+        await highlighter.loadLanguage((await registryEntry.grammar()).default);
       } else {
         const plaintext = wrapPlaintext(code);
         if (cacheable) cache.set(key, plaintext);

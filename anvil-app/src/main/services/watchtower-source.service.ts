@@ -14,6 +14,8 @@ const execFileAsync = promisify(execFile);
 const EXTERNAL_WATCHTOWER_EVENTS = new Set<WatchtowerEventType>([
   'pull_request.merged',
   'pull_request.closed',
+  'pull_request.review_comment',
+  'pull_request.head_changed',
   'pipeline.completed',
   'pipeline.failed',
 ]);
@@ -31,7 +33,18 @@ interface WatchtowerRepoRow {
   remote_url: string | null;
 }
 
+export interface WatchtowerReviewComment {
+  id: string;
+  body: string;
+  headSha?: string;
+  url?: string;
+  author?: string;
+  occurredAt?: string;
+}
+
 export interface WatchtowerObservation {
+  headSha?: string;
+  reviewComments?: WatchtowerReviewComment[];
   sourceId: string;
   sourceLabel: string;
   status: string;
@@ -50,6 +63,7 @@ interface GitHubPullRequestResponse {
   closedAt?: string | null;
   url: string;
   headRefName?: string;
+  headRefOid?: string;
   baseRefName?: string;
   mergeCommit?: { oid?: string | null } | null;
 }
@@ -76,6 +90,7 @@ interface AdoPullRequestResponse {
   sourceRefName?: string;
   targetRefName?: string;
   lastMergeCommit?: { commitId?: string };
+  lastMergeSourceCommit?: { commitId?: string };
   _links?: { web?: { href?: string } };
 }
 
@@ -109,6 +124,18 @@ export function shouldTriggerWatchtowerObservation(
   observation: WatchtowerObservation,
 ): boolean {
   if (!previous?.sourceId || !previous.status) return false;
+  if (previous.sourceId !== observation.sourceId && eventType.startsWith('pull_request.'))
+    return false;
+  if (eventType === 'pull_request.head_changed') {
+    return Boolean(
+      previous.headSha && observation.headSha && previous.headSha !== observation.headSha,
+    );
+  }
+  if (eventType === 'pull_request.review_comment') {
+    return (observation.reviewComments ?? []).some(
+      (comment) => !previous.reviewCommentIds?.includes(comment.id),
+    );
+  }
   if (previous.sourceId === observation.sourceId && previous.status === observation.status) {
     return false;
   }
@@ -126,6 +153,8 @@ export function watchtowerStateFromObservation(
   return {
     sourceId: observation.sourceId,
     sourceLabel: observation.sourceLabel,
+    headSha: observation.headSha,
+    reviewCommentIds: observation.reviewComments?.map((comment) => comment.id),
     status: observation.status,
     observedAt: observation.observedAt,
     occurredAt: observation.occurredAt,
@@ -159,6 +188,44 @@ export function buildExternalWatchtowerEvent(
   };
 }
 
+/** One queue identity per remote comment/head; the queue's unique ID survives restarts. */
+export function buildExternalWatchtowerEvents(
+  automation: AutomationDefinition,
+  repo: { id: string; name: string },
+  observation: WatchtowerObservation,
+): WatchtowerEvent[] {
+  if (
+    !automation.watchEvent ||
+    !shouldTriggerWatchtowerObservation(automation.watchEvent, automation.watchState, observation)
+  )
+    return [];
+  const event = buildExternalWatchtowerEvent(automation, repo, observation);
+  if (automation.watchEvent === 'pull_request.head_changed') {
+    return [
+      {
+        ...event,
+        id: `${event.id}:head:${observation.headSha}`,
+        metadata: {
+          ...event.metadata,
+          headSha: observation.headSha,
+          previousHeadSha: automation.watchState?.headSha,
+        },
+      },
+    ];
+  }
+  if (automation.watchEvent === 'pull_request.review_comment') {
+    return (observation.reviewComments ?? [])
+      .filter((comment) => !automation.watchState?.reviewCommentIds?.includes(comment.id))
+      .map((comment) => ({
+        ...event,
+        id: `${event.id}:comment:${comment.id}`,
+        occurredAt: comment.occurredAt ?? event.occurredAt,
+        metadata: { ...event.metadata, headSha: observation.headSha, feedback: comment },
+      }));
+  }
+  return [event];
+}
+
 export async function observeExternalWatchtowerSource(automation: AutomationDefinition): Promise<{
   repo: { id: string; name: string };
   observation: WatchtowerObservation;
@@ -175,7 +242,7 @@ export async function observeExternalWatchtowerSource(automation: AutomationDefi
   const github = parseGitHubRemoteUrl(repo.remote_url);
   if (github) {
     const observation = automation.watchEvent?.startsWith('pull_request.')
-      ? await observeGitHubPullRequest(github, target.pullRequestNumber)
+      ? await observeGitHubPullRequest(github, target.pullRequestNumber, automation.watchEvent)
       : await observeGitHubPipeline(github, target.pipelineIdentifier, target.branch);
     return { repo, observation };
   }
@@ -183,7 +250,7 @@ export async function observeExternalWatchtowerSource(automation: AutomationDefi
   const ado = parseAdoRemoteUrl(repo.remote_url);
   if (ado) {
     const observation = automation.watchEvent?.startsWith('pull_request.')
-      ? await observeAdoPullRequest(ado, target.pullRequestNumber)
+      ? await observeAdoPullRequest(ado, target.pullRequestNumber, automation.watchEvent)
       : await observeAdoPipeline(ado, target.pipelineIdentifier, target.branch);
     return { repo, observation };
   }
@@ -194,18 +261,52 @@ export async function observeExternalWatchtowerSource(automation: AutomationDefi
 async function observeGitHubPullRequest(
   repo: { owner: string; repo: string },
   pullRequestNumber?: number,
+  eventType?: WatchtowerEventType,
 ): Promise<WatchtowerObservation> {
   if (!pullRequestNumber) throw new Error('Enter a pull request number.');
-  const response = await runGhJson<GitHubPullRequestResponse>([
+  const args = [
     'pr',
     'view',
     String(pullRequestNumber),
     '--repo',
     `${repo.owner}/${repo.repo}`,
     '--json',
-    'number,title,state,mergedAt,closedAt,url,headRefName,baseRefName,mergeCommit',
-  ]);
-  return normaliseGitHubPullRequest(response);
+    'number,title,state,mergedAt,closedAt,url,headRefName,headRefOid,baseRefName,mergeCommit',
+  ];
+  const response = await runGhJson<GitHubPullRequestResponse>(args);
+  const observation = normaliseGitHubPullRequest(response);
+  if (eventType === 'pull_request.review_comment') {
+    const pages = await runGhJson<
+      Array<
+        Array<{
+          id: number;
+          body: string;
+          commit_id?: string;
+          html_url?: string;
+          user?: { login?: string };
+          created_at?: string;
+        }>
+      >
+    >([
+      'api',
+      '--paginate',
+      '--slurp',
+      `repos/${repo.owner}/${repo.repo}/pulls/${pullRequestNumber}/comments?per_page=100`,
+    ]);
+    observation.reviewComments = pages.flat().map((comment) => ({
+      id: String(comment.id),
+      body: comment.body,
+      headSha: comment.commit_id,
+      url: comment.html_url,
+      author: comment.user?.login,
+      occurredAt: comment.created_at,
+    }));
+    const latest = await runGhJson<GitHubPullRequestResponse>(args);
+    if (latest.headRefOid !== response.headRefOid) {
+      throw new Error('The PR head changed while reading review comments. Watchtower will retry.');
+    }
+  }
+  return observation;
 }
 
 async function observeGitHubPipeline(
@@ -251,13 +352,45 @@ async function observeGitHubPipeline(
 async function observeAdoPullRequest(
   repo: { baseUrl: string; project: string; repo: string },
   pullRequestNumber?: number,
+  eventType?: WatchtowerEventType,
 ): Promise<WatchtowerObservation> {
   if (!pullRequestNumber) throw new Error('Enter a pull request number.');
   const url = `${repo.baseUrl}/${encodeURIComponent(repo.project)}/_apis/git/repositories/${encodeURIComponent(repo.repo)}/pullRequests/${pullRequestNumber}?api-version=7.1`;
   const response = await fetchAdoJson<AdoPullRequestResponse>(url);
   const merged = response.status.toLowerCase() === 'completed';
   const closed = response.status.toLowerCase() === 'abandoned';
+  let reviewComments: WatchtowerReviewComment[] | undefined;
+  if (eventType === 'pull_request.review_comment') {
+    const threads = await fetchAdoJson<{
+      value: Array<{
+        id: number;
+        comments: Array<{
+          id: number;
+          content?: string;
+          commentType?: string;
+          publishedDate?: string;
+          author?: { displayName?: string };
+        }>;
+      }>;
+    }>(
+      `${repo.baseUrl}/${encodeURIComponent(repo.project)}/_apis/git/repositories/${encodeURIComponent(repo.repo)}/pullRequests/${pullRequestNumber}/threads?api-version=7.1`,
+    );
+    // ADO thread comments do not reliably identify a commit. Leave the head unknown
+    // so feedback execution defers them until a reviewer confirms their scope.
+    reviewComments = threads.value.flatMap((thread) =>
+      thread.comments
+        .filter((comment) => comment.content && comment.commentType !== 'system')
+        .map((comment) => ({
+          id: `${thread.id}:${comment.id}`,
+          body: comment.content!,
+          author: comment.author?.displayName,
+          occurredAt: comment.publishedDate,
+        })),
+    );
+  }
   return {
+    headSha: response.lastMergeSourceCommit?.commitId,
+    reviewComments,
     sourceId: `ado-pr:${response.pullRequestId}`,
     sourceLabel: `PR #${response.pullRequestId} · ${response.title}`,
     status: merged ? 'merged' : closed ? 'closed' : 'open',
@@ -324,6 +457,7 @@ export function normaliseGitHubPullRequest(
   const merged = Boolean(response.mergedAt);
   const closed = response.state.toLowerCase() === 'closed';
   return {
+    headSha: response.headRefOid,
     sourceId: `github-pr:${response.number}`,
     sourceLabel: `PR #${response.number} · ${response.title}`,
     status: merged ? 'merged' : closed ? 'closed' : 'open',
@@ -335,6 +469,7 @@ export function normaliseGitHubPullRequest(
       provider: 'github',
       pullRequestNumber: response.number,
       url: response.url,
+      headSha: response.headRefOid,
       headBranch: response.headRefName,
       baseBranch: response.baseRefName,
       mergeCommitSha: response.mergeCommit?.oid,
@@ -414,6 +549,7 @@ async function fetchAdoJson<T>(url: string): Promise<T> {
   const settings = getSettings();
   if (!settings.adoPat) throw new Error('Azure DevOps credentials are not configured.');
   const response = await fetch(url, {
+    signal: AbortSignal.timeout(30_000),
     headers: {
       Authorization: `Basic ${Buffer.from(`:${settings.adoPat}`).toString('base64')}`,
       Accept: 'application/json',

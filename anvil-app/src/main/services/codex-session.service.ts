@@ -1,3 +1,4 @@
+import { listDojoPrices, recordDojoExecutionEvent } from './dojo-analytics.service.js';
 import { spawn, type ChildProcess } from 'node:child_process';
 
 import { randomUUID } from 'node:crypto';
@@ -78,6 +79,7 @@ interface ManagedSession {
   provider: 'codex' | 'cursor';
   agentProvider: AgentProvider;
   gatewayModels?: import('../../shared/types.js').LlmGatewayModel[];
+  model?: string;
   status: CodexSession['status'];
   startedAt: string;
   cwd: string;
@@ -119,7 +121,7 @@ type PendingServerRequest =
   | {
       sessionId: string;
       requestId: JsonRpcRequestId;
-      kind: 'user_input' | 'mcp_elicitation';
+      kind: 'user_input' | 'mcp_elicitation' | 'cursor_ask_question' | 'cursor_create_plan';
     };
 
 const pendingServerRequests = new Map<string, PendingServerRequest>();
@@ -151,6 +153,14 @@ export async function buildCodexProcessEnvironment(
     env.CODEX_HOME = gatewayHome;
   }
   return env;
+}
+
+export function resolveCursorMode(
+  codexMode: CodexMode,
+  collaborationMode?: ChatSendOptions['collaborationMode'],
+): 'agent' | 'plan' | 'ask' {
+  if (collaborationMode === 'plan') return 'plan';
+  return codexMode === 'read-only' ? 'ask' : 'agent';
 }
 
 /**
@@ -246,6 +256,7 @@ export async function startSession(
     provider,
     agentProvider,
     gatewayModels: gatewayConfig?.models,
+    model,
     status: 'starting',
     startedAt: new Date().toISOString(),
     cwd,
@@ -398,6 +409,7 @@ export async function sendMessage(
   broadcastEvent(sessionId, { type: 'status', status: 'thinking' });
 
   const mode = settings.codexMode ?? session.mode;
+  session.model = model;
   const codexPolicy = resolvePersonaCodexPolicy(mode, session.personaId, {
     planMode: options?.collaborationMode === 'plan',
   });
@@ -410,6 +422,11 @@ export async function sendMessage(
       configId: 'model',
       value: model,
     });
+    sendCodexJsonRpc(session.process, 'session/set_config', {
+      sessionId: session.threadId,
+      configId: 'mode',
+      value: resolveCursorMode(mode, options?.collaborationMode),
+    });
     sendCodexJsonRpc(session.process, 'session/prompt', {
       sessionId: session.threadId,
       prompt: buildCursorPrompt(message, attachments),
@@ -417,6 +434,9 @@ export async function sendMessage(
     return;
   }
 
+  const effort = gatewayConfig
+    ? gatewayConfig.effort
+    : normaliseReasoningEffort(options?.reasoningEffort ?? settings.reasoningLevel);
   sendCodexJsonRpc(session.process, 'turn/start', {
     threadId: session.threadId,
     input: buildUserInput(message, attachments),
@@ -424,12 +444,25 @@ export async function sendMessage(
     sandboxPolicy: sandboxModeToTurnPolicy(codexPolicy.sandbox, session.cwd),
     model,
     ...(options?.serviceTier !== undefined ? { serviceTier: options.serviceTier } : {}),
-    ...(session.agentProvider === 'llmgateway'
-      ? gatewayConfig?.effort
-        ? { effort: gatewayConfig.effort }
-        : {}
-      : { effort: normaliseReasoningEffort(options?.reasoningEffort ?? settings.reasoningLevel) }),
+    ...(effort ? { effort } : {}),
+    collaborationMode: buildCodexCollaborationMode(options?.collaborationMode, model, effort),
   });
+}
+
+export function buildCodexCollaborationMode(
+  mode: ChatSendOptions['collaborationMode'],
+  model: string,
+  effort: ReturnType<typeof normaliseReasoningEffort> | undefined,
+) {
+  return {
+    // Send default explicitly so switching back from Plan also resets the provider.
+    mode: mode ?? 'default',
+    settings: {
+      model,
+      reasoning_effort: effort ?? null,
+      developer_instructions: null,
+    },
+  };
 }
 
 export async function steerTurn(
@@ -505,6 +538,7 @@ export function emitLocalAssistantTurn(sessionId: string, text: string): void {
   broadcastEvent(sessionId, { type: 'text', text });
   session.status = 'ready';
   setSessionThreadAttention(session, 'complete');
+  broadcastEvent(sessionId, { type: 'turn_outcome', turnOutcome: 'completed', model: 'on-device' });
   broadcastEvent(sessionId, { type: 'status', status: 'complete' });
   emitCompanionEvent('sessions');
 }
@@ -513,6 +547,7 @@ export function interruptTurn(sessionId: string): void {
   const session = sessions.get(sessionId);
   if (!session) return;
   if (!session.threadId) return;
+  broadcastEvent(sessionId, { type: 'turn_outcome', turnOutcome: 'interrupted' });
   if (session.provider === 'cursor') {
     sendCodexJsonRpcNotification(session.process, 'session/cancel', {
       sessionId: session.threadId,
@@ -615,6 +650,7 @@ export function resolveApproval(
   sessionId: string,
   requestId: JsonRpcRequestId,
   decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel',
+  optionId?: string,
 ): void {
   const session = sessions.get(sessionId);
   if (!session) throw new Error(`Session not found: ${sessionId}`);
@@ -633,6 +669,7 @@ export function resolveApproval(
     request.kind,
     request.kind === 'permissions' ? request.permissions : undefined,
     decision,
+    optionId,
   );
   sendCodexJsonRpcResult(session.process, requestId, result);
   setSessionThreadAttention(session, 'working');
@@ -751,16 +788,42 @@ export function buildApprovalResponse(
   kind: 'command' | 'file_change' | 'permissions',
   permissions: Record<string, unknown> | undefined,
   decision: 'accept' | 'acceptForSession' | 'decline' | 'cancel',
+  optionId?: string,
 ): Record<string, unknown> {
   if (kind !== 'permissions') return { decision };
   const acpOptions = Array.isArray(permissions?.options) ? permissions.options : [];
-  const acpOption = acpOptions.find((option) => {
-    if (typeof option !== 'object' || option === null) return false;
-    const optionKind = (option as { kind?: unknown }).kind;
-    return decision === 'decline' || decision === 'cancel'
-      ? optionKind === 'reject_once' || optionKind === 'reject_always'
-      : optionKind === 'allow_once' || optionKind === 'allow_always';
-  }) as { optionId?: unknown } | undefined;
+  if (decision === 'cancel' && acpOptions.length > 0) {
+    return { outcome: { outcome: 'cancelled' } };
+  }
+  const explicitlySelectedOption =
+    typeof optionId === 'string'
+      ? acpOptions.find(
+          (option) =>
+            typeof option === 'object' &&
+            option !== null &&
+            (option as { optionId?: unknown }).optionId === optionId,
+        )
+      : undefined;
+  const optionKinds =
+    decision === 'decline'
+      ? ['reject_once', 'reject_always']
+      : decision === 'acceptForSession'
+        ? ['allow_always', 'allow_once']
+        : ['allow_once', 'allow_always'];
+  const acpOption =
+    explicitlySelectedOption ??
+    optionKinds
+      .map((kind) =>
+        acpOptions.find(
+          (option) =>
+            typeof option === 'object' &&
+            option !== null &&
+            (option as { kind?: unknown }).kind === kind,
+        ),
+      )
+      .find(
+        (option): option is { optionId?: unknown } => typeof option === 'object' && option !== null,
+      );
   if (typeof acpOption?.optionId === 'string') {
     return { outcome: { outcome: 'selected', optionId: acpOption.optionId } };
   }
@@ -777,6 +840,26 @@ export function buildInputResponse(response: CodexInputResponse): Record<string,
       answers: Object.fromEntries(
         Object.entries(response.answers).map(([questionId, answers]) => [questionId, { answers }]),
       ),
+    };
+  }
+  if (response.kind === 'cursor_ask_question') {
+    return {
+      outcome:
+        response.action === 'submit'
+          ? { outcome: 'answered', answers: response.answers }
+          : response.action === 'skip'
+            ? { outcome: 'skipped' }
+            : { outcome: 'cancelled' },
+    };
+  }
+  if (response.kind === 'cursor_create_plan') {
+    return {
+      outcome:
+        response.action === 'submit'
+          ? { outcome: 'accepted' }
+          : response.action === 'skip'
+            ? { outcome: 'rejected' }
+            : { outcome: 'cancelled' },
     };
   }
   return {
@@ -890,7 +973,12 @@ function handleServerMessage(session: ManagedSession, line: string): void {
       }
       if (event.type === 'input_request' && event.inputRequestId !== undefined) {
         const kind = event.inputRequest?.kind;
-        if (kind === 'user_input' || kind === 'mcp_elicitation') {
+        if (
+          kind === 'user_input' ||
+          kind === 'mcp_elicitation' ||
+          kind === 'cursor_ask_question' ||
+          kind === 'cursor_create_plan'
+        ) {
           pendingServerRequests.set(buildPendingRequestKey(session.id, event.inputRequestId), {
             sessionId: session.id,
             requestId: event.inputRequestId,
@@ -1022,6 +1110,28 @@ function notifyForChatEvent(session: ManagedSession, event: CodexEvent): void {
 
 function broadcastEvent(sessionId: string, event: CodexEvent): void {
   const session = sessions.get(sessionId);
+  if (
+    session?.appThreadId &&
+    ['usage', 'usage_context', 'turn_outcome', 'context_compaction', 'status'].includes(event.type)
+  ) {
+    try {
+      const model = event.model ?? session.model;
+      const usagePrice =
+        event.type === 'usage'
+          ? listDojoPrices().find(
+              (price) => price.provider === session.agentProvider && price.model === model,
+            )
+          : undefined;
+      recordDojoExecutionEvent(
+        sessionId,
+        { ...event, model, usagePrice },
+        new Date().toISOString(),
+      );
+    } catch (error) {
+      console.error('[Dojo] Could not persist execution telemetry:', error);
+    }
+  }
+  if (['usage', 'usage_context', 'turn_outcome', 'context_compaction'].includes(event.type)) return;
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send('chat:event', {
       sessionId,

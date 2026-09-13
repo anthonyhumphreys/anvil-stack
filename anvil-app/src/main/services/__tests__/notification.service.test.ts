@@ -48,7 +48,7 @@ vi.mock('../chat-persistence.service.js', () => ({
   getChatThread: () => ({ title: 'Fix the workspace switch' }),
 }));
 
-import { notifyChatActivity } from '../notification.service.js';
+import { notifyChatActivity, notifyWorkflowDecision } from '../notification.service.js';
 
 function createWindow(focused = false) {
   return {
@@ -125,5 +125,40 @@ describe('chat activity notifications', () => {
     expect(win.show).toHaveBeenCalledOnce();
     expect(win.focus).toHaveBeenCalledOnce();
     expect(win.webContents.send).toHaveBeenCalledWith('app-window:navigate-to-chat', target);
+  });
+});
+
+describe('workflow decision notifications', () => {
+  beforeEach(() => {
+    electron.notificationSupported = true;
+    electron.notifications.length = 0;
+    electron.windows.length = 0;
+  });
+
+  it.each(['click', 'action'])(
+    '%s opens the owning workflow while Anvil is in the background',
+    (event) => {
+      const win = createWindow(false);
+      electron.windows.push(win);
+      const target = { workspaceId: 'workspace-1', runId: 'run-1' };
+      notifyWorkflowDecision(target, 'Verified delivery');
+      expect(electron.notifications).toHaveLength(1);
+      const notification = electron.notifications[0];
+      expect(notification.options.title).toBe('Workflow needs your decision');
+      notification.handlers.get(event)?.(...(event === 'action' ? [{}, 0] : []));
+      expect(win.webContents.send).toHaveBeenCalledWith('app-window:navigate-to-workflow', target);
+    },
+  );
+
+  it('stays quiet while Anvil is focused', () => {
+    electron.windows.push(createWindow(true));
+    notifyWorkflowDecision({ workspaceId: 'workspace-1', runId: 'run-1' }, 'Delivery');
+    expect(electron.notifications).toHaveLength(0);
+  });
+
+  it('does not construct notifications on unsupported platforms', () => {
+    electron.notificationSupported = false;
+    notifyWorkflowDecision({ workspaceId: 'workspace-1', runId: 'run-1' }, 'Delivery');
+    expect(electron.notifications).toHaveLength(0);
   });
 });

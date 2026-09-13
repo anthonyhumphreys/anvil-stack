@@ -35,11 +35,12 @@ describe('parsePullRequestVisualisationResponse', () => {
 
     expect(result.summary).toBe('Routes requests through the new policy service.');
     expect(result.chapters[0].id).toBe('policy-path');
+    expect(result.chapters[0].verifiedCount).toBe(0);
     expect(result.nodes).toHaveLength(2);
     expect(result.edges).toHaveLength(1);
     expect(result.edges[0]).toMatchObject({ source: 'controller', target: 'policy' });
     expect(result.risks[0]).toMatchObject({ severity: 'major', nodeId: 'policy' });
-    expect(result.evidence[0]).toMatchObject({ status: 'verified', nodeId: 'policy' });
+    expect(result.evidence[0]).toMatchObject({ status: 'unknown', nodeId: 'policy' });
 
     const markdown = buildPullRequestVisualisationMarkdown({
       id: 'visualisation-1',

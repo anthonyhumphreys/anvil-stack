@@ -1,3 +1,4 @@
+import type { DojoTokenUsage } from '../../shared/dojo-types.js';
 import type { ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import type {
@@ -13,6 +14,7 @@ import type {
   CodexSubagentToolStatus,
   CodexSubagentUpdate,
   CodexUserInputQuestion,
+  CursorQuestion,
   ReasoningEffort,
 } from '../../shared/types.js';
 
@@ -22,6 +24,8 @@ export interface CodexProtocolState {
   threadId: string | null;
   turnId: string | null;
   initialized: boolean;
+  tokenUsageTotal?: DojoTokenUsage;
+  acpCostUsd?: number;
   pendingFileChanges?: Map<string, Map<string, PendingFileChange>>;
   assistantPhases?: Map<string, ChatAssistantPhase>;
 }
@@ -170,8 +174,15 @@ export function handleCodexServerLine(
       callbacks.onThreadReady?.();
     }
     if (result?.stopReason) {
+      const outcome =
+        result.stopReason === 'cancelled'
+          ? 'interrupted'
+          : result.stopReason === 'end_turn'
+            ? 'completed'
+            : 'failed';
+      callbacks.onEvent?.({ type: 'turn_outcome', turnOutcome: outcome });
       callbacks.onEvent?.({ type: 'status', status: 'complete' });
-      callbacks.onTurnCompleted?.('completed');
+      callbacks.onTurnCompleted?.(outcome);
     }
     return;
   }
@@ -181,7 +192,37 @@ export function handleCodexServerLine(
       const params = msg.params as Record<string, unknown>;
       const update = params?.update as Record<string, unknown> | undefined;
       const kind = update?.sessionUpdate;
-      if (kind === 'agent_message_chunk') {
+      if (kind === 'usage_update') {
+        const cost = isRecord(update?.cost) ? update.cost : null;
+        const amount =
+          cost?.currency === 'USD' &&
+          typeof cost.amount === 'number' &&
+          Number.isFinite(cost.amount) &&
+          cost.amount >= 0
+            ? cost.amount
+            : undefined;
+        const observedCostUsd =
+          amount !== undefined && state.acpCostUsd !== undefined && amount >= state.acpCostUsd
+            ? amount - state.acpCostUsd
+            : undefined;
+        if (amount !== undefined) state.acpCostUsd = amount;
+        const used = update?.used;
+        const size = update?.size;
+        if (
+          typeof used === 'number' &&
+          Number.isSafeInteger(used) &&
+          used >= 0 &&
+          typeof size === 'number' &&
+          Number.isSafeInteger(size) &&
+          size > 0
+        ) {
+          callbacks.onEvent?.({
+            type: 'usage_context',
+            contextUsage: { used, size },
+            observedCostUsd,
+          });
+        }
+      } else if (kind === 'agent_message_chunk') {
         const text = extractAcpText(update?.content);
         if (text) callbacks.onEvent?.({ type: 'text', text });
       } else if (kind === 'agent_thought_chunk') {
@@ -208,6 +249,13 @@ export function handleCodexServerLine(
       } else if (kind === 'tool_call' || kind === 'tool_call_update') {
         callbacks.onEvent?.({
           type: 'tool_call',
+          itemId: typeof update?.toolCallId === 'string' ? update.toolCallId : undefined,
+          toolStatus:
+            update?.status === 'failed'
+              ? 'failed'
+              : update?.status === 'completed'
+                ? 'completed'
+                : 'running',
           toolName: (update?.title as string) ?? (update?.kind as string) ?? 'Cursor tool',
           toolInput: isRecord(update?.rawInput) ? update.rawInput : {},
         });
@@ -218,12 +266,54 @@ export function handleCodexServerLine(
     case 'session/request_permission': {
       const params = msg.params as Record<string, unknown>;
       const toolCall = params?.toolCall as Record<string, unknown> | undefined;
+      const metadata = isRecord(params?._meta) ? params._meta : undefined;
+      const permissionMeta = isRecord(metadata?.permission) ? metadata.permission : undefined;
       callbacks.onEvent?.({
         type: 'approval_request',
         approvalRequestId: requestId,
         approvalKind: 'permissions',
-        approvalReason: typeof toolCall?.title === 'string' ? toolCall.title : undefined,
+        approvalReason:
+          isRecord(permissionMeta) && typeof permissionMeta.description === 'string'
+            ? permissionMeta.description
+            : undefined,
+        toolName:
+          typeof toolCall?.title === 'string'
+            ? toolCall.title
+            : typeof toolCall?.kind === 'string'
+              ? toolCall.kind
+              : 'Cursor tool',
+        toolInput: isRecord(toolCall?.rawInput) ? toolCall.rawInput : undefined,
         approvalPermissions: { options: Array.isArray(params?.options) ? params.options : [] },
+      });
+      break;
+    }
+
+    case 'cursor/ask_question': {
+      const params = msg.params as Record<string, unknown>;
+      const questions = parseCursorQuestions(params?.questions);
+      callbacks.onEvent?.({
+        type: 'input_request',
+        inputRequestId: requestId,
+        inputRequest: {
+          kind: 'cursor_ask_question',
+          title: typeof params?.title === 'string' ? params.title : undefined,
+          questions,
+        },
+      });
+      break;
+    }
+
+    case 'cursor/create_plan': {
+      const params = msg.params as Record<string, unknown>;
+      if (typeof params?.plan !== 'string') break;
+      callbacks.onEvent?.({
+        type: 'input_request',
+        inputRequestId: requestId,
+        inputRequest: {
+          kind: 'cursor_create_plan',
+          title: typeof params.title === 'string' ? params.title : undefined,
+          plan: params.plan,
+        },
       });
       break;
     }
@@ -275,6 +365,38 @@ export function handleCodexServerLine(
       break;
     }
 
+    case 'thread/tokenUsage/updated': {
+      const params = msg.params as Record<string, unknown>;
+      if (params?.threadId !== state.threadId) break;
+      const tokenUsage = params?.tokenUsage as Record<string, unknown> | undefined;
+      const total = readProtocolUsage(tokenUsage?.total);
+      const last = readProtocolUsage(tokenUsage?.last);
+      if (!total) break;
+      const previous = state.tokenUsageTotal;
+      state.tokenUsageTotal = total;
+      // Restored thread totals establish a baseline; they are never new consumption.
+      if (!state.turnId || params?.turnId !== state.turnId) break;
+      const delta = previous
+        ? {
+            input: total.input - previous.input,
+            cachedInput: total.cachedInput - previous.cachedInput,
+            output: total.output - previous.output,
+          }
+        : last;
+      if (!delta || !isValidUsage(delta) || delta.input + delta.output === 0) break;
+      callbacks.onEvent?.({
+        type: 'usage',
+        usage: delta,
+        usageId: `${state.threadId}:${state.turnId}:${total.input}:${total.cachedInput}:${total.output}`,
+        protocolTurnId: state.turnId,
+      });
+      break;
+    }
+
+    case 'thread/compacted':
+      callbacks.onEvent?.({ type: 'context_compaction' });
+      break;
+
     case 'turn/started': {
       const params = msg.params as Record<string, unknown>;
       const turn = params?.turn as Record<string, unknown> | undefined;
@@ -294,6 +416,11 @@ export function handleCodexServerLine(
           ? rawStatus
           : 'completed';
       flushAllPendingFileChanges(state, callbacks);
+      callbacks.onEvent?.({
+        type: 'turn_outcome',
+        turnOutcome: status,
+        protocolTurnId: state.turnId ?? undefined,
+      });
       state.turnId = null;
       callbacks.onTurnIdChanged?.(null);
       if (status === 'failed') {
@@ -351,6 +478,7 @@ export function handleCodexServerLine(
       } else if (itemType === 'commandExecution') {
         callbacks.onEvent?.({
           type: 'command_exec',
+          itemId: getItemId(params, item),
           command: (item?.command as string) ?? '',
           output: '',
         });
@@ -379,6 +507,7 @@ export function handleCodexServerLine(
       if (itemType === 'commandExecution') {
         callbacks.onEvent?.({
           type: 'command_exec',
+          itemId: getItemId(params, item),
           command: (item?.command as string) ?? '',
           output: limitTail(
             (item?.aggregatedOutput as string) ?? '',
@@ -748,6 +877,34 @@ function parseUserInputQuestions(value: unknown): CodexUserInputQuestion[] {
   });
 }
 
+function parseCursorQuestions(value: unknown): CursorQuestion[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((candidate) => {
+    if (!isRecord(candidate)) return [];
+    if (typeof candidate.id !== 'string' || typeof candidate.prompt !== 'string') return [];
+    const options = Array.isArray(candidate.options)
+      ? candidate.options.flatMap((option) => {
+          if (
+            !isRecord(option) ||
+            typeof option.id !== 'string' ||
+            typeof option.label !== 'string'
+          ) {
+            return [];
+          }
+          return [{ id: option.id, label: option.label }];
+        })
+      : [];
+    return [
+      {
+        id: candidate.id,
+        prompt: candidate.prompt,
+        options,
+        allowMultiple: candidate.allowMultiple === true,
+      },
+    ];
+  });
+}
+
 function parseElicitationMode(value: unknown): 'form' | 'openai/form' | 'url' | undefined {
   return value === 'form' || value === 'openai/form' || value === 'url' ? value : undefined;
 }
@@ -1003,4 +1160,21 @@ function limitTail(text: string, maxChars: number): string {
   const marker = `\n... truncated ${text.length - maxChars} chars ...\n`;
   const available = Math.max(maxChars - marker.length, 0);
   return `${marker}${text.slice(-available)}`;
+}
+
+function isValidUsage(value: DojoTokenUsage): boolean {
+  return (
+    [value.input, value.cachedInput, value.output].every(
+      (n) => Number.isSafeInteger(n) && n >= 0,
+    ) && value.cachedInput <= value.input
+  );
+}
+function readProtocolUsage(value: unknown): DojoTokenUsage | null {
+  if (!isRecord(value)) return null;
+  const usage = {
+    input: value.inputTokens as number,
+    cachedInput: value.cachedInputTokens as number,
+    output: value.outputTokens as number,
+  };
+  return isValidUsage(usage) ? usage : null;
 }

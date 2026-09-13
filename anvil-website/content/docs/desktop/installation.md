@@ -12,7 +12,7 @@ order: 101
 
 Anvil Desktop is an Electron app. You can run a packaged release build or build it from source. Both paths end at the same first-launch flow.
 
-## Option A: release build (macOS Apple Silicon)
+## Option A: release build
 
 Release builds are attached to GitHub releases tagged `app-v*` in the [anvil-stack repository](https://github.com/anthonyhumphreys/anvil-stack/releases).
 
@@ -20,13 +20,15 @@ Release builds are attached to GitHub releases tagged `app-v*` in the [anvil-sta
 2. Open the disk image and drag Anvil into Applications.
 3. Launch it. If the build is not notarized, macOS Gatekeeper may require right-click → Open on first launch.
 
-Other platforms do not have published builds yet; use the source path below. The packaging config supports Windows (NSIS, portable) and Linux (AppImage, deb) targets for local builds.
+The `app-v*` release workflows also publish Windows x64 NSIS installers and portable executables, plus Linux x64 AppImage, deb, and pacman packages. Choose the matching asset and inspect the included checksum files on the [release page](https://github.com/anthonyhumphreys/anvil-stack/releases). Wait for the relevant platform workflow to finish if a newly created release does not yet contain its assets.
+
+The standard macOS release is unsigned and not notarized. Automatic updates remain disabled. If Gatekeeper reports that a trusted downloaded build is damaged, the release notes include the quarantine-removal command for private testing.
 
 ## Option B: build from source
 
 Prerequisites:
 
-- Node.js 20 LTS or later
+- Node.js 22.12.0 or later
 - pnpm 10 (`corepack enable` is the simplest route)
 - A C/C++ toolchain for the native modules (`better-sqlite3`, `node-pty`):
   - macOS: Xcode Command Line Tools (`xcode-select --install`)

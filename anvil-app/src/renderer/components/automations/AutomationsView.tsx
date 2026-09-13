@@ -26,6 +26,7 @@ import type {
   AutomationTriageItem,
   CodexEvent,
   Persona,
+  WorkflowTemplate,
   WatchtowerEventType,
 } from '../../../shared/types';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
@@ -92,6 +93,7 @@ function automationToDraft(automation: AutomationDefinition): AutomationDefiniti
     allowRepoWrite: automation.allowRepoWrite,
     allowCommandRun: automation.allowCommandRun,
     loopConfig: automation.loopConfig ?? DEFAULT_LOOP_CONFIG,
+    workflowTemplateId: automation.workflowTemplateId,
   };
 }
 
@@ -125,6 +127,8 @@ function watchEventLabel(event: AutomationDefinition['watchEvent']): string {
     'workflow.failed': 'Workflow failed',
     'pull_request.merged': 'Pull request merged',
     'pull_request.closed': 'Pull request closed',
+    'pull_request.review_comment': 'New PR review comment',
+    'pull_request.head_changed': 'PR head changed',
     'pipeline.completed': 'Pipeline completed',
     'pipeline.failed': 'Pipeline failed',
   };
@@ -132,7 +136,7 @@ function watchEventLabel(event: AutomationDefinition['watchEvent']): string {
 }
 
 function isPullRequestWatch(event: WatchtowerEventType | undefined): boolean {
-  return event === 'pull_request.merged' || event === 'pull_request.closed';
+  return event?.startsWith('pull_request.') ?? false;
 }
 
 function isPipelineWatch(event: WatchtowerEventType | undefined): boolean {
@@ -156,6 +160,13 @@ export function AutomationsView() {
   const workspaceId = activeWorkspace?.id;
   const repos = activeWorkspace?.repos ?? [];
 
+  const [workflowTemplates, setWorkflowTemplates] = useState<WorkflowTemplate[]>([]);
+  useEffect(() => {
+    void window.anvil.workflow
+      .listTemplates()
+      .then(setWorkflowTemplates)
+      .catch(() => undefined);
+  }, []);
   const [personas, setPersonas] = useState<Persona[]>([]);
   const [automations, setAutomations] = useState<AutomationDefinition[]>([]);
   const [selectedAutomationId, setSelectedAutomationId] = useState<string | null>(() =>
@@ -362,6 +373,10 @@ export function AutomationsView() {
   };
 
   const handleSelectTriageItem = async (item: AutomationTriageItem) => {
+    if (item.workflowRunId && item.attention !== 'changes') {
+      navigate(`/workflows?run=${encodeURIComponent(item.workflowRunId)}`);
+      return;
+    }
     const automation = automations.find((candidate) => candidate.id === item.automationId);
     if (automation) {
       setSelectedAutomationId(automation.id);
@@ -479,7 +494,11 @@ export function AutomationsView() {
                   <span className="truncate text-sm font-medium text-text-primary">
                     {item.automationName}
                   </span>
-                  <span className={`text-xs ${statusTone(item.status)}`}>{item.status}</span>
+                  <span
+                    className={`text-xs ${item.attention === 'decision' ? 'text-warning' : statusTone(item.status)}`}
+                  >
+                    {item.attention === 'decision' ? 'Decision needed' : item.status}
+                  </span>
                 </div>
                 <div className="mt-1 text-xs text-text-secondary">
                   {item.changedFileCount} file{item.changedFileCount === 1 ? '' : 's'} ·{' '}
@@ -489,6 +508,7 @@ export function AutomationsView() {
                 <div className="mt-1 truncate text-xs text-text-tertiary">
                   {item.errorMessage ?? item.summary ?? formatTimestamp(item.startedAt)}
                 </div>
+                <div className="mt-2 text-xs text-text-secondary">{item.nextAction}</div>
               </button>
             ))}
           </div>
@@ -712,6 +732,37 @@ export function AutomationsView() {
                 </div>
               </div>
 
+              <label className="block text-sm text-text-primary">
+                Workflow execution
+                <select
+                  aria-label="Automation workflow"
+                  className="mt-2 w-full rounded-lg border border-border bg-bg-primary p-2"
+                  value={draft.workflowTemplateId ?? ''}
+                  onChange={(event) =>
+                    setDraft((current) => ({
+                      ...current,
+                      workflowTemplateId: event.target.value || undefined,
+                      loopConfig: {
+                        ...(current.loopConfig ?? DEFAULT_LOOP_CONFIG),
+                        enabled: false,
+                      },
+                    }))
+                  }
+                >
+                  <option value="">Run the configured persona</option>
+                  {workflowTemplates.map((template) => (
+                    <option key={template.id} value={template.id}>
+                      {template.name}
+                    </option>
+                  ))}
+                </select>
+                <span className="mt-2 block text-xs text-text-secondary">
+                  Schedules and Watchtower can launch an entire agent graph in automation worktrees.
+                  Workflow runs require write and command permissions. Human gates continue in
+                  Workflows. Automation-generated workflow events do not trigger another automation.
+                </span>
+              </label>
+
               <div className="rounded-lg border border-border-subtle bg-bg-primary p-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
@@ -726,6 +777,7 @@ export function AutomationsView() {
                   <label className="flex items-center gap-2 text-sm text-text-primary">
                     <input
                       type="checkbox"
+                      disabled={!!draft.workflowTemplateId}
                       checked={draft.loopConfig?.enabled === true}
                       onChange={(event) =>
                         setDraft((current) => ({
@@ -919,6 +971,8 @@ export function AutomationsView() {
                         <option value="workflow.failed">Workflow failed</option>
                       </optgroup>
                       <optgroup label="Pull requests">
+                        <option value="pull_request.review_comment">New review comment</option>
+                        <option value="pull_request.head_changed">Head commit changed</option>
                         <option value="pull_request.merged">Pull request merged</option>
                         <option value="pull_request.closed">
                           Pull request closed without merge
@@ -1272,6 +1326,9 @@ function AutomationRunDetail({
   activeTab: AutomationRunDetailTab;
   onTabChange: (tab: AutomationRunDetailTab) => void;
 }) {
+  const navigate = useNavigate();
+  const workflowRunId = runEvents.find((event) => typeof event.metadata?.workflowRunId === 'string')
+    ?.metadata?.workflowRunId;
   const hasRetainedWorktree =
     selectedRun?.worktrees.some((worktree) => worktree.kept && worktree.path) ?? false;
   const transcriptEntries = displayEntries.filter(isTranscriptEntry);
@@ -1307,12 +1364,22 @@ function AutomationRunDetail({
               </div>
             )}
           </div>
+          {typeof workflowRunId === 'string' && (
+            <button
+              className="shrink-0 rounded-lg border border-border px-3 py-2 text-xs text-accent"
+              onClick={() => navigate(`/workflows?run=${encodeURIComponent(workflowRunId)}`)}
+            >
+              Open workflow graph
+            </button>
+          )}
           {hasRetainedWorktree && (
             <span className="shrink-0 rounded-full border border-border px-2 py-1 text-xs text-text-secondary">
               Worktree retained
             </span>
           )}
         </div>
+
+        {selectedRun && <PrFeedbackDetail run={selectedRun} events={runEvents} />}
 
         {selectedRun && (
           <div className="mt-3 flex gap-1 rounded-lg border border-border-subtle bg-bg-primary p-1">
@@ -1352,6 +1419,106 @@ function AutomationRunDetail({
         )}
       </div>
     </div>
+  );
+}
+
+function metadataText(
+  metadata: Record<string, unknown> | undefined,
+  key: string,
+): string | undefined {
+  const value = metadata?.[key];
+  return typeof value === 'string' && value.trim() ? value : undefined;
+}
+
+function PrFeedbackDetail({ run, events }: { run: AutomationRun; events: AutomationRunEvent[] }) {
+  const navigate = useNavigate();
+  const decision = events.find((event) =>
+    ['accepted', 'rejected', 'deferred'].includes(String(event.metadata?.feedbackDisposition)),
+  );
+  if (!decision) return null;
+  const metadata = decision.metadata;
+  const disposition = metadataText(metadata, 'feedbackDisposition');
+  const repoId = metadataText(metadata, 'repoId') ?? run.triggerContext?.repoIds[0];
+  const prNumber = metadata?.pullRequestNumber ?? run.triggerContext?.metadata?.pullRequestNumber;
+  const pullRequestId =
+    typeof prNumber === 'number' && Number.isSafeInteger(prNumber) && prNumber > 0
+      ? String(prNumber)
+      : undefined;
+  const branch = metadataText(run.triggerContext?.metadata, 'headBranch');
+  const observedHead = metadataText(metadata, 'observedHead');
+  const latestHead = metadataText(metadata, 'latestHead');
+  const commentHead = metadataText(metadata, 'commentHead');
+  const body = metadataText(metadata, 'feedbackBody');
+  const author = metadataText(metadata, 'feedbackAuthor');
+
+  return (
+    <section aria-label="PR feedback decision" className="mt-4 border-t border-border-subtle pt-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h3 className="text-sm font-medium text-text-primary">
+          {disposition === 'rejected'
+            ? 'Feedback needs a fresh review'
+            : 'Feedback awaits manual review'}
+        </h3>
+        {repoId && pullRequestId && (
+          <button
+            type="button"
+            onClick={() =>
+              navigate(
+                `/codereview/${encodeURIComponent(repoId)}?pr=${encodeURIComponent(pullRequestId)}&view=diff`,
+              )
+            }
+            className="rounded-md bg-accent px-3 py-2 text-xs font-medium text-bg-primary hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          >
+            Open PR #{pullRequestId} review
+          </button>
+        )}
+      </div>
+      <p className="mt-2 max-w-prose text-xs leading-relaxed text-text-secondary">
+        {decision.content}
+      </p>
+      <dl className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-xs">
+        <div>
+          <dt className="text-text-tertiary">Decision</dt>
+          <dd className="mt-0.5 capitalize text-text-primary">{disposition}</dd>
+        </div>
+        {branch && (
+          <div>
+            <dt className="text-text-tertiary">Branch</dt>
+            <dd className="mt-0.5 break-all text-text-primary">{branch}</dd>
+          </div>
+        )}
+        {(
+          [
+            ['Observed head', observedHead],
+            ['Comment head', commentHead],
+            ['Latest observed head', latestHead],
+          ] as const
+        ).map(([label, sha]) =>
+          sha ? (
+            <div key={label}>
+              <dt className="text-text-tertiary">{label}</dt>
+              <dd className="mt-0.5 font-mono text-text-primary" title={sha}>
+                {sha.slice(0, 12)}
+              </dd>
+            </div>
+          ) : null,
+        )}
+        <div>
+          <dt className="text-text-tertiary">Automatic repairs</dt>
+          <dd className="mt-0.5 text-text-primary">Not run</dd>
+        </div>
+      </dl>
+      {body && (
+        <details className="mt-3 text-xs">
+          <summary className="cursor-pointer rounded-sm py-1 text-text-secondary focus-visible:outline-2 focus-visible:outline-accent">
+            Review comment{author ? ` from ${author}` : ''}
+          </summary>
+          <blockquote className="mt-2 max-h-48 overflow-y-auto whitespace-pre-wrap break-words border-l border-border pl-3 leading-relaxed text-text-primary">
+            {body}
+          </blockquote>
+        </details>
+      )}
+    </section>
   );
 }
 
@@ -1525,6 +1692,7 @@ function ActivityTab({ activityEntries }: { activityEntries: AutomationDisplayEn
 }
 
 function WorktreesTab({ selectedRun }: { selectedRun: AutomationRun }) {
+  const navigate = useNavigate();
   if (selectedRun.worktrees.length === 0) {
     return (
       <div className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-text-secondary">
@@ -1546,15 +1714,31 @@ function WorktreesTab({ selectedRun }: { selectedRun: AutomationRun }) {
             </div>
             <div className="truncate text-xs text-text-tertiary">{worktree.branchName}</div>
           </div>
-          {worktree.path ? (
-            <button
-              type="button"
-              onClick={() => window.anvil.repo.openInVSCode(worktree.path!)}
-              className="flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary"
-            >
-              <Wrench size={12} />
-              Open worktree
-            </button>
+          {worktree.kept && worktree.path ? (
+            <div className="flex shrink-0 flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const params = new URLSearchParams({
+                    repo: worktree.repoId,
+                    automationRun: selectedRun.id,
+                    executionPath: worktree.path!,
+                  });
+                  navigate(`/review?${params}`);
+                }}
+                className="rounded-md border border-border px-2 py-1 text-xs text-accent hover:bg-bg-tertiary focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+              >
+                Review candidate
+              </button>
+              <button
+                type="button"
+                onClick={() => window.anvil.repo.openInVSCode(worktree.path!)}
+                className="flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-text-secondary hover:text-text-primary"
+              >
+                <Wrench size={12} />
+                Open worktree
+              </button>
+            </div>
           ) : (
             <span className="shrink-0 text-xs text-text-tertiary">Cleaned up</span>
           )}
@@ -1590,6 +1774,16 @@ function RawEventsTab({ runEvents }: { runEvents: AutomationRunEvent[] }) {
             <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md bg-bg-secondary p-2 font-mono text-xs leading-relaxed text-text-secondary">
               {event.content}
             </pre>
+          )}
+          {event.metadata && Object.keys(event.metadata).length > 0 && (
+            <details className="mt-2 text-xs">
+              <summary className="cursor-pointer rounded-sm py-1 text-text-secondary focus-visible:outline-2 focus-visible:outline-accent">
+                Event evidence
+              </summary>
+              <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono leading-relaxed text-text-secondary">
+                {JSON.stringify(event.metadata, null, 2)}
+              </pre>
+            </details>
           )}
         </div>
       ))}
