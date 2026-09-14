@@ -327,25 +327,6 @@ try {
         throw new Error(`live rehearsal requires ${required}`);
     }
 
-    await step("apply: provision ENROLLMENT_ADMIN_TOKEN secret", async () => {
-      const put = spawnSync(
-        "pnpm",
-        [
-          "exec",
-          "wrangler",
-          "secret",
-          "put",
-          "ENROLLMENT_ADMIN_TOKEN",
-          "--name",
-          workerName,
-        ],
-        { cwd: backendDir, encoding: "utf8", input: `${adminToken}\n` },
-      );
-      if (put.status !== 0)
-        throw new Error(`secret put failed: ${put.stderr || put.stdout}`);
-      return { provisioned: true };
-    });
-
     const deploy = await step(
       "apply: deploy to the clean account",
       async () => {
@@ -364,6 +345,49 @@ try {
     let liveError = null;
     let restoredName = null;
     try {
+      // Secret after deploy: `secret put` on a never-deployed worker creates a
+      // stub version the real deploy does not carry forward — on a truly clean
+      // account that left ENROLLMENT_ADMIN_TOKEN unbound and the admin route
+      // 404'd. Provision against the deployed worker, then readiness-gate on
+      // the admin route itself (covers worker + secret-version propagation).
+      await step(
+        "apply: provision ENROLLMENT_ADMIN_TOKEN secret",
+        async () => {
+          const put = spawnSync(
+            "pnpm",
+            [
+              "exec",
+              "wrangler",
+              "secret",
+              "put",
+              "ENROLLMENT_ADMIN_TOKEN",
+              "--name",
+              workerName,
+            ],
+            { cwd: backendDir, encoding: "utf8", input: `${adminToken}\n` },
+          );
+          if (put.status !== 0)
+            throw new Error(`secret put failed: ${put.stderr || put.stdout}`);
+
+          const deadline = Date.now() + 120_000;
+          let res = null;
+          do {
+            if (res !== null) await new Promise((r) => setTimeout(r, 3_000));
+            res = await postJson(
+              deployedUrl,
+              "/v1/enrollment-codes",
+              { accountId: `iac02-readiness-${randomUUID()}` },
+              `Bearer ${adminToken}`,
+            );
+          } while (res.status !== 200 && Date.now() < deadline);
+          if (res.status !== 200)
+            throw new Error(
+              `admin route never became ready: HTTP ${res.status} ${JSON.stringify(res.body)}`,
+            );
+          return { provisioned: true };
+        },
+      );
+
       await step("descriptor: frozen contract advertised", async () => {
         const res = await waitForDescriptor(deployedUrl);
         if (!res || !res.ok)
