@@ -188,6 +188,9 @@ import type {
   SyncAuthPublicSnapshot,
   SyncConflictResolutionChoice,
   SyncConflictView,
+  SyncDevice,
+  SyncDeviceRenameResult,
+  SyncDeviceRevokeResult,
   SyncDiagnostics,
   SyncIssuedEnrollmentCode,
   SyncRuntimeStatus,
@@ -692,6 +695,15 @@ export interface AnvilAPI {
      * and connects a leased worker incarnation when enabled; requires sync.
      */
     setMeshWorker: (enabled: boolean) => Promise<MeshWorkerStatus>;
+    /** All enrollments on the account, including revoked rows and self. */
+    listDevices: () => Promise<SyncDevice[]>;
+    /** Rename any same-account enrollment; empty string clears the name. */
+    renameDevice: (
+      enrollmentId: string,
+      displayName: string,
+    ) => Promise<SyncDeviceRenameResult>;
+    /** Revoke an enrollment; idempotent and severs its live sessions. */
+    revokeDevice: (enrollmentId: string) => Promise<SyncDeviceRevokeResult>;
   };
 
   anvilCloud: {

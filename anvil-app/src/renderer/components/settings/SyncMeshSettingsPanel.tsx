@@ -6,7 +6,9 @@ import {
   Cloud,
   Copy,
   HardDrive,
+  Laptop,
   Loader2,
+  Pencil,
   Server,
   Unplug,
 } from 'lucide-react';
@@ -20,6 +22,7 @@ import type {
   SyncAdoptionPreviewItem,
   SyncConflictResolutionChoice,
   SyncConflictView,
+  SyncDevice,
   SyncIssuedEnrollmentCode,
   SyncRuntimeStatus,
 } from '../../../shared/sync-runtime';
@@ -101,6 +104,11 @@ export function SyncMeshSettingsPanel(): ReactNode {
   const [enabling, setEnabling] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
   const [meshToggling, setMeshToggling] = useState(false);
+  const [devices, setDevices] = useState<SyncDevice[]>([]);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
+  const [confirmingRevokeId, setConfirmingRevokeId] = useState<string | null>(null);
+  const [deviceBusy, setDeviceBusy] = useState<string | null>(null);
 
   const refreshStatus = async (): Promise<void> => {
     setStatusLoading(true);
@@ -118,6 +126,15 @@ export function SyncMeshSettingsPanel(): ReactNode {
       setRuntime(runtimeNext);
       setPreview(previewNext);
       setConflicts(conflictNext);
+      if (runtimeNext.auth.state === 'signed-in') {
+        try {
+          setDevices(await window.anvil.syncRuntime.listDevices());
+        } catch {
+          // Device management is supplementary — a blip leaves the last list.
+        }
+      } else {
+        setDevices([]);
+      }
     } catch (err) {
       setError(toErrorMessage(err));
     } finally {
@@ -314,6 +331,34 @@ export function SyncMeshSettingsPanel(): ReactNode {
       window.setTimeout(() => setDiagnosticsCopied(false), 2000);
     } catch (err) {
       setError(toErrorMessage(err));
+    }
+  };
+
+  const handleRenameDevice = async (enrollmentId: string): Promise<void> => {
+    setDeviceBusy(enrollmentId);
+    setError(null);
+    try {
+      await window.anvil.syncRuntime.renameDevice(enrollmentId, renameDraft.trim());
+      setRenamingId(null);
+      await refreshStatus();
+    } catch (err) {
+      setError(toErrorMessage(err));
+    } finally {
+      setDeviceBusy(null);
+    }
+  };
+
+  const handleRevokeDevice = async (enrollmentId: string): Promise<void> => {
+    setDeviceBusy(enrollmentId);
+    setError(null);
+    try {
+      await window.anvil.syncRuntime.revokeDevice(enrollmentId);
+      setConfirmingRevokeId(null);
+      await refreshStatus();
+    } catch (err) {
+      setError(toErrorMessage(err));
+    } finally {
+      setDeviceBusy(null);
     }
   };
 
@@ -621,6 +666,141 @@ export function SyncMeshSettingsPanel(): ReactNode {
           </div>
         )}
       </Panel>
+
+      {runtime?.auth.state === 'signed-in' && (
+        <Panel
+          title="Devices"
+          description="Enrollments on this account. Revoking a device ends its session immediately — use it for lost or retired hardware."
+        >
+          {devices.length === 0 ? (
+            <p className="text-sm text-text-tertiary">No devices enrolled yet.</p>
+          ) : (
+            <ul className="space-y-2">
+              {devices.map((device) => (
+                <li key={device.enrollmentId} className="rounded-md border border-border p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex min-w-0 items-start gap-2">
+                      <Laptop size={15} className="mt-0.5 shrink-0 text-text-tertiary" />
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium text-text-primary">
+                          {device.displayName || `Device ${device.enrollmentId.slice(0, 8)}`}
+                          {device.self && (
+                            <span className="ml-2 rounded bg-accent/15 px-1.5 py-0.5 text-xs font-medium text-accent">
+                              This device
+                            </span>
+                          )}
+                          {device.revoked && (
+                            <span className="ml-2 rounded bg-error/15 px-1.5 py-0.5 text-xs font-medium text-error">
+                              Revoked
+                            </span>
+                          )}
+                        </p>
+                        <p className="mt-0.5 font-mono text-xs text-text-tertiary">
+                          {device.enrollmentId.slice(0, 12)}… · added{' '}
+                          {new Date(device.createdAt).toLocaleDateString()}
+                        </p>
+                      </div>
+                    </div>
+                    {!device.revoked && (
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (renamingId === device.enrollmentId) {
+                              setRenamingId(null);
+                            } else {
+                              setRenamingId(device.enrollmentId);
+                              setRenameDraft(device.displayName ?? '');
+                              setConfirmingRevokeId(null);
+                            }
+                          }}
+                          disabled={deviceBusy === device.enrollmentId}
+                          className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
+                        >
+                          <Pencil size={12} />
+                          Rename
+                        </button>
+                        {!device.self && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setConfirmingRevokeId(
+                                confirmingRevokeId === device.enrollmentId
+                                  ? null
+                                  : device.enrollmentId,
+                              )
+                            }
+                            disabled={deviceBusy === device.enrollmentId}
+                            className="rounded-md border border-border px-2.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-error disabled:opacity-50"
+                          >
+                            Revoke
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  {renamingId === device.enrollmentId && (
+                    <div className="mt-2 flex flex-col gap-2 sm:flex-row">
+                      <input
+                        value={renameDraft}
+                        onChange={(event) => setRenameDraft(event.target.value)}
+                        placeholder="Device name (empty clears it)"
+                        spellCheck={false}
+                        className="min-w-0 flex-1 rounded-md border border-border bg-bg-primary px-3 py-1.5 text-sm text-text-primary placeholder:text-text-tertiary"
+                      />
+                      <div className="flex shrink-0 gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => void handleRenameDevice(device.enrollmentId)}
+                          disabled={deviceBusy === device.enrollmentId}
+                          className="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
+                        >
+                          {deviceBusy === device.enrollmentId ? 'Saving…' : 'Save'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setRenamingId(null)}
+                          className="rounded-md border border-border px-3 py-1.5 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  {confirmingRevokeId === device.enrollmentId && (
+                    <div className="mt-2 rounded-md border border-error/30 bg-error/5 p-2">
+                      <p className="text-xs text-text-secondary">
+                        Revoke{' '}
+                        <span className="font-medium text-text-primary">
+                          {device.displayName || `device ${device.enrollmentId.slice(0, 8)}`}
+                        </span>
+                        ? Its session stops working immediately and it must re-enroll.
+                      </p>
+                      <div className="mt-2 flex gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => void handleRevokeDevice(device.enrollmentId)}
+                          disabled={deviceBusy === device.enrollmentId}
+                          className="rounded-md border border-error/50 bg-error/10 px-3 py-1 text-xs font-medium text-error transition-colors hover:bg-error/20 disabled:opacity-50"
+                        >
+                          {deviceBusy === device.enrollmentId ? 'Revoking…' : 'Revoke device'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmingRevokeId(null)}
+                          className="rounded-md border border-border px-3 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </Panel>
+      )}
 
       <Panel
         title="Enable Sync"

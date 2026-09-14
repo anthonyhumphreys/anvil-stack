@@ -6,8 +6,11 @@ import {
   getRuntimeStatus,
   issueEnrollmentCode,
   listConflictViews,
+  listDevices,
   previewAdoption,
+  renameDevice,
   resolveRuntimeConflict,
+  revokeDevice,
   setMeshWorkerOptIn,
   signInWithOidc,
   signOutSync,
@@ -75,5 +78,25 @@ export function registerSyncRuntimeHandlers(): void {
       throw new Error('resolution must be keep-local, use-remote, or save-copy');
     }
     return resolveRuntimeConflict(payload['conflictId'], resolution);
+  });
+
+  ipcMain.handle('sync-runtime:devices-list', async () => (await listDevices()).devices);
+
+  ipcMain.handle('sync-runtime:device-rename', (_event, payload: unknown) => {
+    if (
+      !isRecord(payload) ||
+      typeof payload['enrollmentId'] !== 'string' ||
+      typeof payload['displayName'] !== 'string'
+    ) {
+      throw new Error('device-rename requires enrollmentId and displayName strings');
+    }
+    return renameDevice(payload['enrollmentId'], payload['displayName']);
+  });
+
+  ipcMain.handle('sync-runtime:device-revoke', (_event, payload: unknown) => {
+    if (!isRecord(payload) || typeof payload['enrollmentId'] !== 'string') {
+      throw new Error('device-revoke requires an enrollmentId string');
+    }
+    return revokeDevice(payload['enrollmentId']);
   });
 }

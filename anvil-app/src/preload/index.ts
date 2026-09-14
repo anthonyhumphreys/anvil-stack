@@ -54,6 +54,9 @@ import type { SyncBackendPinInput } from '../shared/sync-backend.js';
 import type {
   MeshWorkerStatus,
   SyncConflictResolutionChoice,
+  SyncDevice,
+  SyncDeviceRenameResult,
+  SyncDeviceRevokeResult,
   SyncDiagnostics,
   SyncIssuedEnrollmentCode,
   SyncSpikeEnrollInput,
@@ -724,6 +727,12 @@ const api: AnvilAPI = {
       ipcRenderer.invoke('sync-runtime:diagnostics'),
     setMeshWorker: (enabled: boolean): Promise<MeshWorkerStatus> =>
       ipcRenderer.invoke('sync-runtime:mesh-worker-set', { enabled }),
+    listDevices: (): Promise<SyncDevice[]> =>
+      ipcRenderer.invoke('sync-runtime:devices-list'),
+    renameDevice: (enrollmentId: string, displayName: string): Promise<SyncDeviceRenameResult> =>
+      ipcRenderer.invoke('sync-runtime:device-rename', { enrollmentId, displayName }),
+    revokeDevice: (enrollmentId: string): Promise<SyncDeviceRevokeResult> =>
+      ipcRenderer.invoke('sync-runtime:device-revoke', { enrollmentId }),
   },
 
   anvilCloud: {

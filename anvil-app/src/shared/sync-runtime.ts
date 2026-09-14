@@ -45,6 +45,30 @@ export interface SyncConflictView {
   remotePayloadJson: string | null;
 }
 
+/**
+ * Account-scoped device row (`device.list`). `self` marks the caller's own
+ * enrollment; revoked rows stay listed for audit until the server sweep
+ * ages them out. Never carries token material.
+ */
+export interface SyncDevice {
+  enrollmentId: string;
+  displayName?: string;
+  installationId: string;
+  revoked: boolean;
+  createdAt: string;
+  self: boolean;
+}
+
+export interface SyncDeviceRenameResult {
+  renamed: boolean;
+  enrollmentId: string;
+}
+
+export interface SyncDeviceRevokeResult {
+  revoked: boolean;
+  enrollmentId: string;
+}
+
 /** MESH-02 device-local worker state — consent + incarnation, never synced. */
 export interface MeshWorkerStatus {
   /** Local opt-in flag: this device consents to run account jobs. */
