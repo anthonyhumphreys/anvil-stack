@@ -153,7 +153,7 @@ describe("Mesh backend recipe planning", () => {
     expect(config).not.toHaveProperty("env");
   });
 
-  it("omits new-class migrations for an existing deployment", async () => {
+  it("carries cumulative migrations on every deploy, including existing", async () => {
     const backendDir = await createBackendProject();
 
     const plan = await createMeshDeploymentPlan({
@@ -162,9 +162,17 @@ describe("Mesh backend recipe planning", () => {
     });
     const config = JSON.parse(plan.config.contents);
 
+    // Wrangler dedupes migrations by tag; omitting them produces a config the
+    // API rejects (10061) on fresh workers and restored namespaces.
     expect(plan.migrationMode).toBe("existing");
-    expect(plan.migrations).toEqual([]);
-    expect(config).not.toHaveProperty("migrations");
+    expect(plan.migrations).toEqual([
+      { tag: "v1", newClasses: [], newSqliteClasses: ["AccountCoordinator"] },
+      { tag: "v2", newClasses: [], newSqliteClasses: ["SessionCoordinator"] },
+    ]);
+    expect(config.migrations).toEqual([
+      { tag: "v1", new_sqlite_classes: ["AccountCoordinator"] },
+      { tag: "v2", new_sqlite_classes: ["SessionCoordinator"] },
+    ]);
   });
 
   it("emits an optional named environment that repeats the bindings", async () => {

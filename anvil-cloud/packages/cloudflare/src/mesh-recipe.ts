@@ -185,7 +185,7 @@ export type CreateMeshDeploymentPlanOptions = {
   vars?: Record<string, string>;
   /** Secret names the operator provisions out of band. Never values. */
   secrets?: string[];
-  /** Emit the first-deploy Durable Object new-class migrations. */
+  /** Records first-deploy intent in the plan. Migrations are always emitted. */
   firstDeploy?: boolean;
   /** Development recipe: permits development-only environment keys. */
   dev?: boolean;
@@ -395,8 +395,11 @@ export async function createMeshDeploymentPlan(
   }
 
   const migrationMode = options.firstDeploy ? "create" : "existing";
-  const migrations =
-    migrationMode === "create" ? (source?.newClassMigrations ?? []) : [];
+  // Wrangler migrations are cumulative, append-only history: the platform
+  // dedupes by tag, so every deploy must carry the source's full list. Gating
+  // them on firstDeploy emits an undeployable config (API error 10061) on any
+  // fresh worker or restored namespace.
+  const migrations = source?.newClassMigrations ?? [];
 
   const connection = resolveConnectionPlan(options, diagnostics);
 
@@ -619,6 +622,11 @@ export async function removeMeshDeployment(
 ): Promise<MeshLifecycleResult> {
   const gate = evaluateLifecycleGate(options.plan, "remove", options);
   if (gate) return gate;
+
+  // Regenerate the config for this plan's worker name before deleting —
+  // wrangler reads the file on disk, which may hold a stale name from an
+  // intervening apply (deleting the wrong worker or nothing at all).
+  await writeMeshWranglerConfig(options.plan);
 
   const deletion = await runCloudflareWranglerDelete({
     artifacts: {

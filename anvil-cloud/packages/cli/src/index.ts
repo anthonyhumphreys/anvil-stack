@@ -3606,12 +3606,10 @@ function formatMeshPlan(
         .join(", ") || "none"
     }`,
     `Migrations: ${
-      plan.migrationMode === "create"
-        ? plan.migrations
-            .map((migration) => `${migration.tag} (new classes)`)
-            .join(", ") || "none"
-        : "none (existing classes)"
-    }`,
+      plan.migrations
+        .map((migration) => `${migration.tag} (new classes)`)
+        .join(", ") || "none"
+    }${plan.migrationMode === "existing" ? " (idempotent — applied tags are skipped)" : ""}`,
     `Auth modes: ${plan.advertisedAuthModes.join(", ")}`,
     plan.connection.ready
       ? `Connection: ${plan.connection.descriptorUrl}`

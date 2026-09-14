@@ -80,6 +80,15 @@ function step(name, fn) {
   );
 }
 
+// The recipe spawns `wrangler` by name; resolve it from the backend
+// project's devDependencies. Every CLI spawn must inherit this env.
+function meshEnv() {
+  return {
+    ...process.env,
+    PATH: `${path.join(backendDir, "node_modules", ".bin")}${path.delimiter}${process.env.PATH ?? ""}`,
+  };
+}
+
 function mesh(subcommand, extraArgs = []) {
   const args = [
     cli,
@@ -94,12 +103,7 @@ function mesh(subcommand, extraArgs = []) {
   ];
   const run = spawnSync(process.execPath, args, {
     encoding: "utf8",
-    env: {
-      ...process.env,
-      // The recipe spawns `wrangler` by name; resolve it from the backend
-      // project's devDependencies.
-      PATH: `${path.join(backendDir, "node_modules", ".bin")}${path.delimiter}${process.env.PATH ?? ""}`,
-    },
+    env: meshEnv(),
   });
   const stdout = run.stdout ?? "";
   let parsed = null;
@@ -172,6 +176,19 @@ async function rpc(base, operation, params, authorization) {
   return body.result;
 }
 
+// Freshly deployed workers.dev routes and `secret put` versions take seconds
+// to propagate; callers poll rather than single-shot so propagation latency
+// is never a false failure.
+async function waitForDescriptor(base, timeoutMs = 120_000) {
+  const deadline = Date.now() + timeoutMs;
+  let res = null;
+  do {
+    if (res !== null) await new Promise((r) => setTimeout(r, 3_000));
+    res = await fetch(`${base}/.well-known/anvil-backend`).catch(() => null);
+  } while ((!res || !res.ok) && Date.now() < deadline);
+  return res;
+}
+
 async function enroll(base, accountId) {
   const issued = await postJson(
     base,
@@ -188,6 +205,19 @@ async function enroll(base, accountId) {
   if (enroll.status !== 200)
     throw new Error(`enroll: ${JSON.stringify(enroll.body)}`);
   return enroll.body;
+}
+
+async function enrollWithRetry(base, accountId, attempts = 10) {
+  let lastError = null;
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      return await enroll(base, accountId);
+    } catch (error) {
+      lastError = error;
+      await new Promise((r) => setTimeout(r, 3_000));
+    }
+  }
+  throw lastError;
 }
 
 function hashedChange(enrollmentSequence, entityId, payload) {
@@ -335,8 +365,9 @@ try {
     let restoredName = null;
     try {
       await step("descriptor: frozen contract advertised", async () => {
-        const res = await fetch(`${deployedUrl}/.well-known/anvil-backend`);
-        if (!res.ok) throw new Error(`descriptor HTTP ${res.status}`);
+        const res = await waitForDescriptor(deployedUrl);
+        if (!res || !res.ok)
+          throw new Error(`descriptor HTTP ${res?.status ?? "unreachable"}`);
         const d = await res.json();
         if (
           d.descriptorVersion !== 1 ||
@@ -359,23 +390,30 @@ try {
         "conformance: standalone suite passes on the fresh deploy",
         async () => {
           const suitePath = path.join(backendDir, "conformance/suite.mjs");
-          const run = spawnSync(
-            process.execPath,
-            [suitePath, "--url", deployedUrl, "--admin-token", adminToken],
-            { encoding: "utf8" },
-          );
-          if (run.status !== 0) {
-            throw new Error(
-              `conformance failed:\n${run.stdout}\n${run.stderr}`,
+          // Retry only while the suite's descriptor probe 404s — workers.dev
+          // propagation is per-edge, so the just-passed descriptor fetch can
+          // still flap for a fresh client. Any other failure is real.
+          let lastOut = "";
+          for (let i = 0; i < 10; i += 1) {
+            const run = spawnSync(
+              process.execPath,
+              [suitePath, "--url", deployedUrl, "--admin-token", adminToken],
+              { encoding: "utf8" },
             );
+            lastOut = `${run.stdout ?? ""}\n${run.stderr ?? ""}`;
+            if (run.status === 0) {
+              return { output: run.stdout.trim().split("\n").pop() };
+            }
+            if (!lastOut.includes("descriptor status: expected 200")) break;
+            await new Promise((r) => setTimeout(r, 5_000));
           }
-          return { output: run.stdout.trim().split("\n").pop() };
+          throw new Error(`conformance failed:\n${lastOut}`);
         },
       );
 
       const seedAccount = `iac02-${randomUUID()}`;
       const seeded = await step("backup: enroll + seed + export", async () => {
-        const s = await enroll(deployedUrl, seedAccount);
+        const s = await enrollWithRetry(deployedUrl, seedAccount);
         const auth = `Bearer ${s.accessToken}`;
         for (let i = 0; i < 3; i += 1) {
           await rpc(
@@ -427,8 +465,8 @@ try {
           "  SKIP restore (needs --subdomain for the restored worker URL)",
         );
       } else {
-        restoredName = `${workerName}-restored`.slice(0, 63);
-        const restoredUrl = `https://${restoredName}.${subdomain}.workers.dev`;
+        const restoredWorkerName = `${workerName}-restored`.slice(0, 63);
+        const restoredUrl = `https://${restoredWorkerName}.${subdomain}.workers.dev`;
         await step(
           "restore: redeploy to a fresh namespace and import the backup",
           async () => {
@@ -441,14 +479,14 @@ try {
                 "--backend",
                 backendDir,
                 "--name",
-                restoredName,
+                restoredWorkerName,
                 "--first-deploy",
                 "--evidence",
                 evidenceReference,
                 "--json",
                 ...planArgs,
               ],
-              { encoding: "utf8" },
+              { encoding: "utf8", env: meshEnv() },
             );
             let parsed = null;
             try {
@@ -461,6 +499,9 @@ try {
                 `restore apply failed: ${restored.stderr || restored.stdout}`,
               );
             }
+            // Only mark the restored worker for cleanup once it actually
+            // deployed — otherwise the remove step chases a phantom worker.
+            restoredName = restoredWorkerName;
             const secretPut = spawnSync(
               "pnpm",
               [
@@ -470,7 +511,7 @@ try {
                 "put",
                 "ENROLLMENT_ADMIN_TOKEN",
                 "--name",
-                restoredName,
+                restoredWorkerName,
               ],
               { cwd: backendDir, encoding: "utf8", input: `${adminToken}\n` },
             );
@@ -478,7 +519,13 @@ try {
               throw new Error(
                 `restored secret put failed: ${secretPut.stderr}`,
               );
-            const s2 = await enroll(
+            const ready = await waitForDescriptor(restoredUrl);
+            if (!ready || !ready.ok) {
+              throw new Error(
+                `restored worker never advertised its descriptor (HTTP ${ready?.status ?? "unreachable"})`,
+              );
+            }
+            const s2 = await enrollWithRetry(
               restoredUrl,
               `iac02-restore-${randomUUID()}`,
             );
@@ -535,9 +582,14 @@ try {
       "remove: delete rehearsal workers (state retained)",
       async () => {
         const removed = [];
+        const errors = [];
         if (!keepDeployed) {
-          mustMesh("remove", ["--evidence", evidenceReference, ...planArgs]);
-          removed.push(workerName);
+          try {
+            mustMesh("remove", ["--evidence", evidenceReference, ...planArgs]);
+            removed.push(workerName);
+          } catch (e) {
+            errors.push(`${workerName}: ${e?.message ?? e}`);
+          }
         }
         if (restoredName !== null) {
           const rm = spawnSync(
@@ -555,15 +607,17 @@ try {
               "--json",
               ...planArgs,
             ],
-            { encoding: "utf8" },
+            { encoding: "utf8", env: meshEnv() },
           );
           if (rm.status !== 0) {
-            throw new Error(
-              `restored worker remove failed: ${rm.stderr || rm.stdout}`,
+            errors.push(
+              `${restoredName}: ${rm.stderr || rm.stdout}`,
             );
+          } else {
+            removed.push(restoredName);
           }
-          removed.push(restoredName);
         }
+        if (errors.length > 0) throw new Error(errors.join("; "));
         return { removed };
       },
     ).catch((cleanupError) => {
