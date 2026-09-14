@@ -43,28 +43,48 @@ Non-live mode (the default) validates everything requiring no provider
 mutation: the production plan must be clean and `apply --dry-run` must
 compile the Worker through wrangler. Both pass today.
 
-## Recipe fix this packet surfaced
+## Recipe fixes the live run surfaced
 
-`ENROLLMENT_ADMIN_TOKEN` was classified as a development-only key, so a
-production plan could never carry the deployment-admin credential — which
-is exactly the credential that bootstraps the first device's enrollment
-code on a clean deployment (spec §268) and keeps `account.deletionStatus`
-reachable after device sessions are revoked. `DEV_ONLY_ENVIRONMENT_KEYS`
-is now `ANVIL_DEV_SPIKE` alone; `ENROLLMENT_ADMIN_TOKEN` plans as a normal
-production secret.
+1. **`ENROLLMENT_ADMIN_TOKEN` misclassified dev-only** — a production plan
+   could never carry the deployment-admin credential that bootstraps the
+   first enrollment code (spec §268) and keeps `account.deletionStatus`
+   reachable after device revocation. `DEV_ONLY_ENVIRONMENT_KEYS` is now
+   `ANVIL_DEV_SPIKE` alone.
+2. **Migrations gated on `--first-deploy`** — the generated config dropped
+   `migrations` on the default path, so every fresh-worker or
+   fresh-namespace apply was rejected by the API (`10061`). Migrations are
+   cumulative, append-only history deduped by tag; the config now always
+   emits them and `--first-deploy` only records plan intent.
+3. **`remove` never wrote its config** — `wrangler delete` read a stale
+   `wrangler.mesh.jsonc` (last apply's worker name), so remove could
+   delete the wrong worker or nothing at all. `removeMeshDeployment` now
+   regenerates the config for its own plan first.
 
-## Status
+Harness hardening the live run surfaced: descriptor/enroll/conformance
+now tolerate workers.dev and secret-version propagation latency
+(poll + bounded retry instead of single-shot), the restored worker is
+only scheduled for cleanup after its apply actually lands, and the
+remove step attempts each worker independently.
 
-Harness complete and verified locally (non-live 3/3: plan clean, dry-run
-compiles, evidence written). The live run is one command away and is
-blocked only on scratch-account credentials — this machine has no
-Cloudflare auth (`wrangler whoami`: unauthenticated) and Temporary
-Accounts are correctly rejected because the backend requires R2. To run:
+## Status — live run PASSED
+
+`evidence/mesh-rehearsal-1789385691518.json` — 10/10 steps against
+account `3912de85…` (workers.dev `anthony-humphreys`):
+
+deploy `mesh-rehearsal-live1` → descriptor advertises `anvil-backend/1`
++ `sync/1` + `enrollment-code` → **11/11 conformance** on the fresh
+deploy → enroll + seed + `data.export` (3 entities) → in-place
+`mesh apply` upgrade with data verified intact → `mesh-rehearsal-live1
+-restored` deploy + `data.import` round-trip (3/3 restored) → both
+workers removed, zero residue (worker list, DO namespaces, and R2
+verified clean).
+
+Reproduce:
 
 ```sh
 cd anvil-cloud
 ANVIL_CLOUDFLARE_LIVE=1 \
-CLOUDFLARE_ACCOUNT_ID=<scratch account id> \
+CLOUDFLARE_ACCOUNT_ID=<account id> \
 CLOUDFLARE_API_TOKEN=<scoped token> \
 ANVIL_MESH_ADMIN_TOKEN=<chosen admin secret> \
 pnpm verify:mesh-rehearsal -- --name <worker> --subdomain <workers.dev sub>

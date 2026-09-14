@@ -20,14 +20,14 @@ must perform it — no automated substitute exists or is claimed.
 | 5 | Three agents in separate worktrees spanning two devices, placement visible | FLOW-01: `code-task` executor runs each attempt in `mesh/attempt/<id>` worktrees at pinned commits; PLACE-01: capability/readiness-constrained placement. Two-device span requires physical hardware | automated (single-device) + manual (cross-device) |
 | 6 | Integrate results in an isolated checkout, verify combined result, one reviewable change | FLOW-02/03: thin-bundle artifact transfer + `integrateResults` dependency-order merge + declared verification + honest conflict surfacing | automated |
 | 7 | Offline edit / disconnected worker without losing work or silent re-execution | restore drill leg (wipe → full dataset restore in one cycle); durable job/attempt reclaim semantics; failure-injection suites | automated |
-| 8 | Same unmodified app → user-owned Cloudflare + non-Cloudflare proof | IAC-02 rehearsal driver + BYOB-02 conformance suite (11/11 vs both backends) + `byob-conformance.test.ts` (unmodified desktop stack vs fixture) | harness (live CF leg) + automated (fixture leg) |
+| 8 | Same unmodified app → user-owned Cloudflare + non-Cloudflare proof | **IAC-02 live rehearsal PASSED 10/10** on a real Cloudflare account (evidence/mesh-rehearsal-1789385691518.json) + BYOB-02 conformance suite (11/11 vs both backends) + `byob-conformance.test.ts` | automated |
 
 ## §18 acceptance bullets
 
 | Requirement | Evidence | Status |
 |---|---|---|
 | Fresh device sets up a workspace without manual edits | prepare-workspace acceptance + WS-02 materialization tests | automated |
-| User-owned Cloudflare deploy via published IaC; no Anvil-hosted dependency | `verify-mesh-rehearsal.mjs` — plan asserts zero dev-only keys; live run needs scratch account creds | harness |
+| User-owned Cloudflare deploy via published IaC; no Anvil-hosted dependency | `verify-mesh-rehearsal` live run: deploy→conformance→upgrade→restore→remove, 10/10, evidence record committed | automated |
 | Third-party backend passes conformance + connects by URL from installed app | `conformance/suite.mjs` 11/11 vs fixture; `byob-conformance.test.ts` proves the shipped client path | automated |
 | Setup shows stages/progress/actionable failures/restart-safe retry | journaled materialization + attempt journal; UI review pending | partial — manual UX check |
 | Session view: target, freshness, approvals, activity, stop controls; lost connection ≠ cancelled | observer + artifact + approval paths proven; UI surface review pending | partial — manual UX check |

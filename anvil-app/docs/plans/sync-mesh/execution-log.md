@@ -1077,3 +1077,30 @@ is available).
 Remaining before public launch claim: one live IAC-02 run against a
 scratch Cloudflare account, physical two-device demonstration, UI audit,
 cross-OS matrix.
+
+## 2026-09-14 — IAC-02 live rehearsal PASSED on real Cloudflare account
+
+- Ran `verify-mesh-rehearsal --live` end-to-end against account
+  3912de85… (workers.dev `anthony-humphreys`): deploy → descriptor →
+  11/11 conformance → enroll/seed/export → in-place upgrade (data
+  intact) → fresh-namespace restore (3/3 imported) → remove both
+  workers. Evidence: `anvil-cloud/evidence/mesh-rehearsal-1789385691518.json`.
+- Three real bugs the live run surfaced and fixed:
+  1. Generated config dropped `migrations` unless `--first-deploy` was
+     passed — every default-path fresh apply failed API-side (10061).
+     Migrations are cumulative history; the config now always emits them.
+  2. `mesh remove` never wrote its generated config — `wrangler delete`
+     read a stale file and targeted the wrong worker name. Remove now
+     regenerates config before deleting.
+  3. Harness races: workers.dev/secret propagation 404s — descriptor,
+     enroll, and conformance now poll/retry within bounded windows;
+     restored worker only scheduled for cleanup after its apply lands;
+     remove attempts each worker independently.
+- Account verified clean post-run: only pre-existing worker/bucket
+  remain; zero DO namespaces; empty rehearsal bucket deleted.
+- MCP-only deployment probe also validated the mechanism (bucket create,
+  multipart upload w/ DO migrations, secrets, workers.dev, teardown)
+  independent of wrangler.
+
+IAC-02 gate satisfied with recorded provider evidence. Remaining before
+public launch claim: physical two-device demo, UI audit, cross-OS matrix.
