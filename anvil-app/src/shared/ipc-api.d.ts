@@ -80,6 +80,7 @@ import type {
   CodeReviewScopeType,
   CodexCliStatus,
   CursorCliStatus,
+  DevinCliStatus,
   LlmGatewayBillingMode,
   LlmGatewayStatus,
   CodexMcpRegisterInput,
@@ -606,6 +607,8 @@ export interface AnvilAPI {
     getCodexRuntimeStatus: () => Promise<CodexRuntimeStatus>;
     installCodexRuntime: () => Promise<CodexRuntimeStatus>;
     getCursorStatus: () => Promise<CursorCliStatus>;
+    getDevinStatus: () => Promise<DevinCliStatus>;
+    startDevinLogin: () => Promise<{ ok: boolean; error?: string }>;
     getLlmGatewayStatus: (
       forceModels?: boolean,
       billingMode?: LlmGatewayBillingMode,

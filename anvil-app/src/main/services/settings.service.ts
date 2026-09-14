@@ -87,7 +87,14 @@ const CODEX_MODES: CodexMode[] = ['read-only', 'on-request', 'workspace-auto', '
 const CHAT_LAYOUTS: ChatLayout[] = ['classic', 'workitems'];
 const LOCAL_LLM_MODES: LocalLlmMode[] = ['off', 'prefer-simple'];
 const LOCAL_LLM_PROVIDERS: LocalLlmProvider[] = ['apple', 'ollama', 'lm-studio'];
-const AGENT_PROVIDERS: AgentProvider[] = ['codex', 'cursor', 'openai', 'azure', 'llmgateway'];
+const AGENT_PROVIDERS: AgentProvider[] = [
+  'codex',
+  'cursor',
+  'devin',
+  'openai',
+  'azure',
+  'llmgateway',
+];
 
 function normaliseTheme(theme: string | null | undefined): AppTheme {
   return APP_THEMES.includes(theme as AppTheme) ? (theme as AppTheme) : 'system';

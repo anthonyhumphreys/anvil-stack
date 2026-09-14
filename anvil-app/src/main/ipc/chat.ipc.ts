@@ -72,6 +72,7 @@ import { getPersonas } from '../services/persona.service.js';
 import { detectCodexCli, getCodexInstallInstructions } from '../services/codex-bridge.service.js';
 import { resolveCodexRuntime } from '../services/codex-runtime.service.js';
 import { detectCursorCli } from '../services/cursor-bridge.service.js';
+import { detectDevinCli } from '../services/devin-bridge.service.js';
 import {
   createChatSession,
   deleteChatThread,
@@ -115,6 +116,21 @@ async function assertChatProviderAvailable(provider: AgentProvider): Promise<voi
     if (!status.installed) {
       throw new Error(
         'Cursor CLI is not installed. Install it and run `cursor-agent login` before starting a Cursor chat.',
+      );
+    }
+    return;
+  }
+
+  if (provider === 'devin') {
+    const status = await detectDevinCli();
+    if (!status.installed) {
+      throw new Error(
+        'Devin CLI is not installed. Install it from https://devin.ai and run `devin auth login` before starting a Devin chat.',
+      );
+    }
+    if (status.authenticated === false) {
+      throw new Error(
+        'Devin CLI is not signed in. Run `devin auth login` or sign in from Settings → AI Providers.',
       );
     }
     return;

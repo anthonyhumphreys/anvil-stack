@@ -20,7 +20,7 @@ const DEFAULT_SCHEDULE_CRON = '0 9 * * 1';
 const MAX_ANALYSIS_MESSAGES = 240;
 const MAX_ANALYSIS_CHARS = 60_000;
 const MESSAGE_CONTENT_LIMIT = 2_000;
-const AGENT_PROVIDERS: AgentProvider[] = ['codex', 'cursor', 'openai', 'azure'];
+const AGENT_PROVIDERS: AgentProvider[] = ['codex', 'cursor', 'devin', 'openai', 'azure'];
 
 const PROFANITY_PATTERNS = [
   /\b(?:fuck|fucking|fucked|shit|bullshit|damn|bastard|bollocks|crap)\b/i,

@@ -75,7 +75,7 @@ export function validateOrchestration(value?: WorkflowOrchestration): void {
     ids.add(id);
     if (!profile.name?.trim() || !profile.model?.trim() || !profile.personaId?.trim())
       throw new Error('Every specialist needs a name, persona, and model.');
-    if (!['codex', 'cursor', 'openai', 'azure'].includes(profile.provider))
+    if (!['codex', 'cursor', 'devin', 'openai', 'azure'].includes(profile.provider))
       throw new Error('Unknown specialist provider.');
     if (
       !['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(

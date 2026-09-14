@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import type { CodexCliStatus, CursorCliStatus, LlmGatewayStatus } from '../../../shared/types';
+import type {
+  CodexCliStatus,
+  CursorCliStatus,
+  DevinCliStatus,
+  LlmGatewayStatus,
+} from '../../../shared/types';
 import { buildChatModelOptions } from '../chat-model-options';
 
 describe('buildChatModelOptions', () => {
@@ -53,6 +58,11 @@ describe('buildChatModelOptions', () => {
         cursorStatus,
       ),
     ).toEqual([
+      expect.objectContaining({
+        provider: 'cursor',
+        id: 'auto',
+        label: 'Auto (Cursor default)',
+      }),
       {
         provider: 'cursor',
         id: 'claude-fable-5-thinking-high',
@@ -145,6 +155,68 @@ describe('buildChatModelOptions', () => {
     expect(
       options.some((option) => option.provider === 'cursor' && option.id === 'gpt-5.6-sol'),
     ).toBe(false);
+  });
+
+  it('uses the local Devin catalog with an auto option pinned to the detected default', () => {
+    const devinStatus: DevinCliStatus = {
+      installed: true,
+      models: [
+        { id: 'swe-2-max', label: 'SWE-2 Max' },
+        { id: 'claude-opus-5-high', label: 'Claude Opus 5 High' },
+      ],
+      defaultModel: 'swe-2-max',
+    };
+
+    expect(
+      buildChatModelOptions(['devin'], 'devin', 'swe-2-max', null, null, null, devinStatus),
+    ).toEqual([
+      expect.objectContaining({
+        provider: 'devin',
+        id: 'auto',
+        label: 'Auto (swe-2-max default)',
+      }),
+      {
+        provider: 'devin',
+        id: 'swe-2-max',
+        label: 'SWE-2 Max',
+        description: 'Detected from the local Devin CLI model catalog.',
+        supportedReasoningEfforts: [],
+        defaultReasoningEffort: 'medium',
+        serviceTiers: [],
+      },
+      {
+        provider: 'devin',
+        id: 'claude-opus-5-high',
+        label: 'Claude Opus 5 High',
+        description: 'Detected from the local Devin CLI model catalog.',
+        supportedReasoningEfforts: [],
+        defaultReasoningEffort: 'medium',
+        serviceTiers: [],
+      },
+    ]);
+  });
+
+  it('keeps Devin selectable when its catalog is unavailable', () => {
+    const options = buildChatModelOptions(
+      ['codex', 'devin'],
+      'codex',
+      'gpt-5.6-sol',
+      null,
+      null,
+      null,
+      {
+        installed: false,
+        models: [],
+      },
+    );
+
+    expect(options).toContainEqual(
+      expect.objectContaining({
+        provider: 'devin',
+        id: 'auto',
+        label: 'Auto (Devin default)',
+      }),
+    );
   });
 
   it('uses LLMGateway models only for the gateway provider', () => {

@@ -54,6 +54,7 @@ import type {
   AppSettings,
   CodexCliStatus,
   CursorCliStatus,
+  DevinCliStatus,
   LlmGatewayStatus,
   Persona,
   WorkflowNode,
@@ -62,6 +63,7 @@ import type {
   WorkflowTemplate,
 } from '../../../shared/types';
 import { DEFAULT_CODEX_MODEL, getCodexModelReasoningOptions } from '../../../shared/codex-models';
+import { isAcpAgentProvider } from '../../../shared/agent-providers';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { buildProviderModelOptions } from '../../utils/chat-model-options';
 
@@ -83,6 +85,7 @@ const EMPTY_TEMPLATE: WorkflowTemplate = {
 const PROVIDER_LABELS: Record<AgentProvider, string> = {
   codex: 'Codex',
   cursor: 'Cursor',
+  devin: 'Devin',
   openai: 'OpenAI',
   azure: 'Azure',
   llmgateway: 'LLMGateway',
@@ -136,7 +139,7 @@ function WorkflowStepNode({ data, selected }: NodeProps<Node<WorkflowCanvasData>
               <>
                 <span aria-hidden="true">·</span>
                 <span>{PROVIDER_LABELS[data.node.provider ?? 'codex']}</span>
-                {(data.node.provider ?? 'codex') !== 'cursor' && (
+                {!isAcpAgentProvider(data.node.provider ?? 'codex') && (
                   <>
                     <span aria-hidden="true">·</span>
                     <span>{data.node.reasoningEffort}</span>
@@ -193,6 +196,7 @@ export function WorkflowsView() {
   const [agentSettings, setAgentSettings] = useState<AppSettings | null>(null);
   const [codexStatus, setCodexStatus] = useState<CodexCliStatus | null>(null);
   const [cursorStatus, setCursorStatus] = useState<CursorCliStatus | null>(null);
+  const [devinStatus, setDevinStatus] = useState<DevinCliStatus | null>(null);
   const [llmGatewayStatus, setLlmGatewayStatus] = useState<LlmGatewayStatus | null>(null);
   const [kickoff, setKickoff] = useState('');
   const [workItemRef, setWorkItemRef] = useState<WorkflowRun['workItemRef']>();
@@ -253,10 +257,12 @@ export function WorkflowsView() {
     void Promise.all([
       window.anvil.settings.getCodexStatus().catch(() => null),
       window.anvil.settings.getCursorStatus().catch(() => null),
+      window.anvil.settings.getDevinStatus().catch(() => null),
       window.anvil.settings.getLlmGatewayStatus().catch(() => null),
-    ]).then(([nextCodexStatus, nextCursorStatus, nextLlmGatewayStatus]) => {
+    ]).then(([nextCodexStatus, nextCursorStatus, nextDevinStatus, nextLlmGatewayStatus]) => {
       setCodexStatus(nextCodexStatus);
       setCursorStatus(nextCursorStatus);
+      setDevinStatus(nextDevinStatus);
       setLlmGatewayStatus(nextLlmGatewayStatus);
     });
   }, []);
@@ -407,7 +413,9 @@ export function WorkflowsView() {
       prompt: 'Describe what this step should accomplish and what it should hand off.',
       personaId: 'coder',
       provider,
-      model: provider === 'cursor' ? 'auto' : (agentSettings?.openaiModel ?? DEFAULT_CODEX_MODEL),
+      model: isAcpAgentProvider(provider)
+        ? 'auto'
+        : (agentSettings?.openaiModel ?? DEFAULT_CODEX_MODEL),
       reasoningEffort: 'medium',
       executionStrategy: 'focused',
       teamStrategy: 'manual',
@@ -519,7 +527,7 @@ export function WorkflowsView() {
   const loadPreset = (kind: WorkflowPreset) => {
     const provider = agentSettings?.llmProvider ?? 'codex';
     const model =
-      agentSettings?.openaiModel ?? (provider === 'cursor' ? 'auto' : DEFAULT_CODEX_MODEL);
+      agentSettings?.openaiModel ?? (isAcpAgentProvider(provider) ? 'auto' : DEFAULT_CODEX_MODEL);
     const profiles = orchestrationConfig(draft.orchestration).profiles;
     const generated = createOrchestrationPreset(
       kind,
@@ -1049,6 +1057,7 @@ export function WorkflowsView() {
               personas={personas}
               codexStatus={codexStatus}
               cursorStatus={cursorStatus}
+              devinStatus={devinStatus}
               llmGatewayStatus={llmGatewayStatus}
             />
           ) : selectedNode ? (
@@ -1063,6 +1072,7 @@ export function WorkflowsView() {
               }
               codexStatus={codexStatus}
               cursorStatus={cursorStatus}
+              devinStatus={devinStatus}
               llmGatewayStatus={llmGatewayStatus}
               onChange={updateNode}
               onDelete={() => {
@@ -1090,6 +1100,7 @@ function Inspector({
   enabledProviders,
   codexStatus,
   cursorStatus,
+  devinStatus,
   llmGatewayStatus,
   onChange,
   onDelete,
@@ -1100,6 +1111,7 @@ function Inspector({
   enabledProviders: AgentProvider[];
   codexStatus: CodexCliStatus | null;
   cursorStatus: CursorCliStatus | null;
+  devinStatus: DevinCliStatus | null;
   llmGatewayStatus: LlmGatewayStatus | null;
   onChange: (updates: Partial<WorkflowNode>) => void;
   onDelete: () => void;
@@ -1111,6 +1123,7 @@ function Inspector({
     codexStatus,
     cursorStatus,
     llmGatewayStatus,
+    devinStatus,
   );
   const selectedModel = modelOptions.find((model) => model.id === node.model);
   const reasoning = selectedModel?.supportedReasoningEfforts ?? [];
@@ -1170,12 +1183,11 @@ function Inspector({
                   const nextProvider = event.target.value as AgentProvider;
                   onChange({
                     provider: nextProvider,
-                    model:
-                      nextProvider === 'cursor'
-                        ? 'auto'
-                        : nextProvider === 'llmgateway'
-                          ? (llmGatewayStatus?.models[0]?.id ?? '')
-                          : DEFAULT_CODEX_MODEL,
+                    model: isAcpAgentProvider(nextProvider)
+                      ? 'auto'
+                      : nextProvider === 'llmgateway'
+                        ? (llmGatewayStatus?.models[0]?.id ?? '')
+                        : DEFAULT_CODEX_MODEL,
                     reasoningEffort: 'medium',
                   });
                 }}
@@ -1197,7 +1209,7 @@ function Inspector({
                 value={node.model}
                 onChange={(event) => {
                   const model = event.target.value;
-                  if (provider === 'cursor') {
+                  if (isAcpAgentProvider(provider)) {
                     onChange({ model });
                   } else {
                     const options = modelOptions.find((option) => option.id === model);
@@ -1231,11 +1243,18 @@ function Inspector({
                     : 'Enter a Cursor model id, or use auto.'}
                 </p>
               )}
+              {provider === 'devin' && (
+                <p className="mt-1 text-xs text-text-tertiary">
+                  {devinStatus?.models.length
+                    ? `${devinStatus.models.length} models detected from Devin CLI.`
+                    : 'Enter a Devin model id, or use auto.'}
+                </p>
+              )}
             </Field>
-            {provider === 'cursor' ? (
+            {isAcpAgentProvider(provider) ? (
               <p className="text-xs text-text-tertiary">
-                Cursor model ids carry their own reasoning level, such as <code>-high</code> or{' '}
-                <code>-xhigh</code>.
+                {provider === 'devin' ? 'Devin' : 'Cursor'} model ids carry their own reasoning
+                level, such as <code>-high</code> or <code>-xhigh</code>.
               </p>
             ) : (
               <Field label="Reasoning">

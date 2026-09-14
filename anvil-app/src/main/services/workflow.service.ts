@@ -43,6 +43,7 @@ import { resolveCodexRuntime } from './codex-runtime.service.js';
 import { getLlmGatewayCodexConfigArgs } from '../../shared/llm-gateway.js';
 import { resolveLlmGatewayModelConfig } from './llm-gateway.service.js';
 import { triggerWatchtowerEvent } from './automation.service.js';
+import { isAcpAgentProvider, type AcpAgentProvider } from '../../shared/agent-providers.js';
 
 interface WorkflowTemplateRow {
   id: string;
@@ -86,7 +87,14 @@ const activeRuns = new Map<
   string,
   { run: WorkflowRun; controller: AbortController; completion: Promise<void> }
 >();
-const AGENT_PROVIDERS: AgentProvider[] = ['codex', 'cursor', 'openai', 'azure', 'llmgateway'];
+const AGENT_PROVIDERS: AgentProvider[] = [
+  'codex',
+  'cursor',
+  'devin',
+  'openai',
+  'azure',
+  'llmgateway',
+];
 
 export function normaliseWorkflowNodes(
   nodes: WorkflowNode[],
@@ -448,7 +456,7 @@ async function runCodexThread(input: {
   repoRows: RepoRow[];
   workspaceId: string;
   personaId: string;
-  provider: Exclude<AgentProvider, 'cursor'>;
+  provider: Exclude<AgentProvider, AcpAgentProvider>;
   model: string;
   reasoningEffort: WorkflowNode['reasoningEffort'];
   systemPrompt: string;
@@ -627,7 +635,9 @@ async function runCodexThread(input: {
   });
 }
 
-export function buildCodexWorkflowArgs(provider: Exclude<AgentProvider, 'cursor'>): string[] {
+export function buildCodexWorkflowArgs(
+  provider: Exclude<AgentProvider, AcpAgentProvider>,
+): string[] {
   return provider === 'azure'
     ? ['app-server', '-c', 'model_provider="azure"']
     : provider === 'openai'
@@ -637,12 +647,18 @@ export function buildCodexWorkflowArgs(provider: Exclude<AgentProvider, 'cursor'
         : ['app-server'];
 }
 
-async function runCursorThread(input: {
+/**
+ * One-shot CLI run for ACP chat providers. Cursor uses `cursor-agent -p`;
+ * Devin uses `devin --print` in `smart` permission mode so workflow steps can
+ * run safe commands and workspace edits without interactive prompts.
+ */
+async function runAcpCliThread(input: {
   key: string;
   threadId: string;
   repoRows: RepoRow[];
   workspaceId: string;
   personaId: string;
+  provider: AcpAgentProvider;
   model: string;
   systemPrompt: string;
   prompt: string;
@@ -662,7 +678,7 @@ async function runCursorThread(input: {
     input.personaId,
     sessionId,
     null,
-    'cursor',
+    input.provider,
   );
   saveMessage(input.threadId, input.repoRows[0]?.id ?? null, sessionId, {
     id: randomUUID(),
@@ -674,15 +690,31 @@ async function runCursorThread(input: {
   });
 
   const combinedPrompt = [input.systemPrompt, input.prompt].join('\n\n');
-  const proc = spawn(
-    'cursor-agent',
-    ['-p', '--output-format', 'text', '--model', input.model || 'auto', combinedPrompt],
-    {
-      cwd,
-      env: { ...(process.env as Record<string, string>) },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    },
-  );
+  const label = input.provider === 'devin' ? 'Devin' : 'Cursor';
+  const [executable, args] =
+    input.provider === 'devin'
+      ? [
+          'devin',
+          [
+            '--print',
+            '--permission-mode',
+            'smart',
+            '--respect-workspace-trust',
+            'false',
+            ...(input.model && input.model !== 'auto' ? ['--model', input.model] : []),
+            '--',
+            combinedPrompt,
+          ],
+        ]
+      : [
+          'cursor-agent',
+          ['-p', '--output-format', 'text', '--model', input.model || 'auto', combinedPrompt],
+        ];
+  const proc = spawn(executable, args, {
+    cwd,
+    env: { ...(process.env as Record<string, string>) },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
   activeProcesses.set(input.key, proc);
 
   return new Promise((resolve, reject) => {
@@ -691,7 +723,7 @@ async function runCursorThread(input: {
     let completed = false;
     const timeout = setTimeout(() => {
       if (!proc.killed) proc.kill('SIGTERM');
-      finish(new Error('Cursor workflow step timed out after 5 minutes.'));
+      finish(new Error(`${label} workflow step timed out after 5 minutes.`));
     }, 300_000);
     const finish = (error?: Error) => {
       if (completed) return;
@@ -706,7 +738,7 @@ async function runCursorThread(input: {
       }
       const finalOutput = output.trim();
       if (!finalOutput) {
-        reject(new Error(stderr.trim() || 'Cursor returned no workflow output.'));
+        reject(new Error(stderr.trim() || `${label} returned no workflow output.`));
         return;
       }
       saveMessage(input.threadId, input.repoRows[0]?.id ?? null, sessionId, {
@@ -734,14 +766,15 @@ async function runCursorThread(input: {
       stderr += chunk.toString();
     });
     proc.on('error', (error) =>
-      finish(new Error(`Failed to start Cursor workflow step: ${error.message}`)),
+      finish(new Error(`Failed to start ${label} workflow step: ${error.message}`)),
     );
     proc.on('exit', (code, signal) => {
       if (code === 0) finish();
       else
         finish(
           new Error(
-            stderr.trim() || `Cursor workflow step exited early (code=${code}, signal=${signal}).`,
+            stderr.trim() ||
+              `${label} workflow step exited early (code=${code}, signal=${signal}).`,
           ),
         );
     });
@@ -760,8 +793,8 @@ async function runAgentThread(
       `${input.provider} is not enabled. Activate it in Settings before running this workflow.`,
     );
   }
-  if (input.provider === 'cursor') {
-    return runCursorThread(input);
+  if (isAcpAgentProvider(input.provider)) {
+    return runAcpCliThread({ ...input, provider: input.provider });
   }
   return runCodexThread({
     ...input,

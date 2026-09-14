@@ -684,6 +684,7 @@ export function getChatThreadProviderBinding(
       provider === 'azure' ||
       provider === 'openai' ||
       provider === 'cursor' ||
+      provider === 'devin' ||
       provider === 'codex' ||
       provider === 'llmgateway'
         ? provider
