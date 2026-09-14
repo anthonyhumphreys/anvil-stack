@@ -1,13 +1,16 @@
 import { ipcMain } from 'electron';
 import {
+  commitDataImport,
   enableSync,
   enrollWithEnrollmentCode,
+  exportAccountDataToFile,
   exportSyncDiagnostics,
   getRuntimeStatus,
   issueEnrollmentCode,
   listConflictViews,
   listDevices,
   previewAdoption,
+  previewDataImportFromFile,
   renameDevice,
   resolveRuntimeConflict,
   revokeDevice,
@@ -98,5 +101,16 @@ export function registerSyncRuntimeHandlers(): void {
       throw new Error('device-revoke requires an enrollmentId string');
     }
     return revokeDevice(payload['enrollmentId']);
+  });
+
+  ipcMain.handle('sync-runtime:data-export-file', () => exportAccountDataToFile());
+
+  ipcMain.handle('sync-runtime:data-import-preview-file', () => previewDataImportFromFile());
+
+  ipcMain.handle('sync-runtime:data-import-commit', (_event, payload: unknown) => {
+    if (!isRecord(payload) || typeof payload['operationId'] !== 'string') {
+      throw new Error('data-import-commit requires an operationId string');
+    }
+    return commitDataImport(payload['operationId']);
   });
 }

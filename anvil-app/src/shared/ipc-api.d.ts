@@ -188,6 +188,9 @@ import type {
   SyncAuthPublicSnapshot,
   SyncConflictResolutionChoice,
   SyncConflictView,
+  SyncDataExportFileResult,
+  SyncDataImportCommitResult,
+  SyncDataImportFilePreview,
   SyncDevice,
   SyncDeviceRenameResult,
   SyncDeviceRevokeResult,
@@ -704,6 +707,12 @@ export interface AnvilAPI {
     ) => Promise<SyncDeviceRenameResult>;
     /** Revoke an enrollment; idempotent and severs its live sessions. */
     revokeDevice: (enrollmentId: string) => Promise<SyncDeviceRevokeResult>;
+    /** Export the account's synced entities to a user-chosen JSON file. */
+    exportDataToFile: () => Promise<SyncDataExportFileResult>;
+    /** Pick an export file and stage an import plan; nothing applies yet. */
+    previewDataImportFromFile: () => Promise<SyncDataImportFilePreview>;
+    /** Apply a staged import plan. */
+    commitDataImport: (operationId: string) => Promise<SyncDataImportCommitResult>;
   };
 
   anvilCloud: {

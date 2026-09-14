@@ -15,9 +15,13 @@ import type {
   SessionRevokeParams,
   SessionRevokeResult,
 } from '../../../cloud/contract/auth.js';
-import type {
-  DataExportBeginResult,
-  DataExportPageResult,
+import {
+  DATA_EXPORT_FORMAT_VERSION,
+  type DataExportBeginResult,
+  type DataExportPageResult,
+  type DataImportCommitResult,
+  type DataImportPreviewResult,
+  type ExportedEntity,
 } from '../../../cloud/contract/data.js';
 import { PROTOCOL } from '../../../cloud/contract/version.js';
 import {
@@ -617,6 +621,103 @@ export async function pageDataExport(
   cursor: string | null,
 ): Promise<DataExportPageResult> {
   return accountRpc<DataExportPageResult>('data.export.page', { operationId, cursor });
+}
+
+/**
+ * Gathers every export page and writes a portable document to a
+ * user-chosen file. The document is `{ formatVersion, epoch, exportedAt,
+ * entities }` — the shape `data.import.preview` accepts.
+ */
+export async function exportAccountDataToFile(): Promise<{
+  saved: boolean;
+  filePath: string | null;
+  entityCount: number;
+}> {
+  const begin = await beginDataExport();
+  const entities: ExportedEntity[] = [];
+  let cursor: string | null = null;
+  for (;;) {
+    const page = await pageDataExport(begin.operationId, cursor);
+    entities.push(...page.entities);
+    if (page.done || page.nextCursor === null) break;
+    cursor = page.nextCursor;
+  }
+  const { BrowserWindow, dialog } = await import('electron');
+  const win = BrowserWindow.getAllWindows()[0];
+  const { canceled, filePath } = await dialog.showSaveDialog(win!, {
+    title: 'Export account data',
+    defaultPath: `anvil-export-${new Date().toISOString().slice(0, 10)}.json`,
+    filters: [{ name: 'Anvil data export', extensions: ['json'] }],
+  });
+  if (canceled || !filePath) {
+    return { saved: false, filePath: null, entityCount: entities.length };
+  }
+  const { writeFileSync } = await import('node:fs');
+  writeFileSync(
+    filePath,
+    JSON.stringify(
+      {
+        formatVersion: DATA_EXPORT_FORMAT_VERSION,
+        epoch: begin.epoch,
+        exportedAt: new Date().toISOString(),
+        entities,
+      },
+      null,
+      2,
+    ),
+    'utf-8',
+  );
+  return { saved: true, filePath, entityCount: entities.length };
+}
+
+/**
+ * Reads a user-chosen export file and stages an import plan. The returned
+ * `operationId` commits via `commitDataImport`; nothing applies at preview.
+ */
+export async function previewDataImportFromFile(): Promise<
+  | { canceled: true }
+  | ({ canceled: false; fileName: string } & DataImportPreviewResult)
+> {
+  const { BrowserWindow, dialog } = await import('electron');
+  const win = BrowserWindow.getAllWindows()[0];
+  const picked = await dialog.showOpenDialog(win!, {
+    title: 'Import account data',
+    properties: ['openFile'],
+    filters: [{ name: 'Anvil data export', extensions: ['json'] }],
+  });
+  const filePath = picked.filePaths[0];
+  if (picked.canceled || !filePath) {
+    return { canceled: true };
+  }
+  const { readFileSync } = await import('node:fs');
+  const { basename } = await import('node:path');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(filePath, 'utf-8'));
+  } catch {
+    throw new Error('That file is not valid JSON.');
+  }
+  const record = parsed as Record<string, unknown>;
+  if (
+    typeof record !== 'object' ||
+    record === null ||
+    record['formatVersion'] !== DATA_EXPORT_FORMAT_VERSION ||
+    !Array.isArray(record['entities'])
+  ) {
+    throw new Error('That file is not an Anvil data export (unsupported format).');
+  }
+  const preview = await accountRpc<DataImportPreviewResult>('data.import.preview', {
+    formatVersion: DATA_EXPORT_FORMAT_VERSION,
+    entities: record['entities'],
+  });
+  return { canceled: false, fileName: basename(filePath), ...preview };
+}
+
+/** Applies a staged import plan from `data.import.preview`. */
+export async function commitDataImport(
+  operationId: string,
+): Promise<DataImportCommitResult> {
+  return accountRpc<DataImportCommitResult>('data.import.commit', { operationId });
 }
 
 /**

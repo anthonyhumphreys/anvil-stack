@@ -22,6 +22,7 @@ import type {
   SyncAdoptionPreviewItem,
   SyncConflictResolutionChoice,
   SyncConflictView,
+  SyncDataImportFilePreview,
   SyncDevice,
   SyncIssuedEnrollmentCode,
   SyncRuntimeStatus,
@@ -109,6 +110,15 @@ export function SyncMeshSettingsPanel(): ReactNode {
   const [renameDraft, setRenameDraft] = useState('');
   const [confirmingRevokeId, setConfirmingRevokeId] = useState<string | null>(null);
   const [deviceBusy, setDeviceBusy] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [exportResult, setExportResult] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [importPreview, setImportPreview] = useState<Exclude<
+    SyncDataImportFilePreview,
+    { canceled: true }
+  > | null>(null);
+  const [committing, setCommitting] = useState(false);
+  const [importResult, setImportResult] = useState<string | null>(null);
 
   const refreshStatus = async (): Promise<void> => {
     setStatusLoading(true);
@@ -359,6 +369,57 @@ export function SyncMeshSettingsPanel(): ReactNode {
       setError(toErrorMessage(err));
     } finally {
       setDeviceBusy(null);
+    }
+  };
+
+  const handleExportData = async (): Promise<void> => {
+    setExporting(true);
+    setError(null);
+    setExportResult(null);
+    try {
+      const result = await window.anvil.syncRuntime.exportDataToFile();
+      if (result.saved) {
+        setExportResult(
+          `Exported ${result.entityCount} ${result.entityCount === 1 ? 'entity' : 'entities'} to ${result.filePath}`,
+        );
+      }
+    } catch (err) {
+      setError(toErrorMessage(err));
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleImportPreview = async (): Promise<void> => {
+    setImporting(true);
+    setError(null);
+    setImportResult(null);
+    try {
+      const preview = await window.anvil.syncRuntime.previewDataImportFromFile();
+      setImportPreview(preview.canceled ? null : preview);
+    } catch (err) {
+      setError(toErrorMessage(err));
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const handleCommitImport = async (): Promise<void> => {
+    if (importPreview === null) return;
+    setCommitting(true);
+    setError(null);
+    try {
+      const result = await window.anvil.syncRuntime.commitDataImport(importPreview.operationId);
+      setImportResult(
+        `Imported ${result.applied} ${result.applied === 1 ? 'entity' : 'entities'} · ` +
+          `${result.conflicts} arrived as conflicts · ${result.skipped} skipped`,
+      );
+      setImportPreview(null);
+      await refreshStatus();
+    } catch (err) {
+      setError(toErrorMessage(err));
+    } finally {
+      setCommitting(false);
     }
   };
 
@@ -798,6 +859,82 @@ export function SyncMeshSettingsPanel(): ReactNode {
                 </li>
               ))}
             </ul>
+          )}
+        </Panel>
+      )}
+
+      {runtime?.auth.state === 'signed-in' && (
+        <Panel
+          title="Your data"
+          description="Back up or move synced entities between accounts. Import never silently overwrites — differing entities arrive as conflicts for review."
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void handleExportData()}
+              disabled={exporting}
+              className="flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
+            >
+              {exporting && <Loader2 size={14} className="animate-spin" />}
+              {exporting ? 'Exporting…' : 'Export account data'}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleImportPreview()}
+              disabled={importing}
+              className="flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
+            >
+              {importing && <Loader2 size={14} className="animate-spin" />}
+              {importing ? 'Reading file…' : 'Import from file'}
+            </button>
+          </div>
+          {exportResult !== null && (
+            <p className="text-xs text-text-tertiary">{exportResult}</p>
+          )}
+          {importResult !== null && (
+            <p className="text-xs text-text-tertiary">{importResult}</p>
+          )}
+          {importPreview !== null && (
+            <div className="space-y-2 rounded-md border border-border bg-bg-primary p-3">
+              <p className="text-sm text-text-secondary">
+                <span className="font-medium text-text-primary">{importPreview.fileName}</span>:{' '}
+                {importPreview.summary.creates} new · {importPreview.summary.identical} unchanged
+                · {importPreview.summary.conflicts} conflict
+                {importPreview.summary.conflicts === 1 ? '' : 's'} · {importPreview.summary.invalid}{' '}
+                invalid
+                {importPreview.truncated ? ' (details truncated)' : ''}
+              </p>
+              {importPreview.entries.filter((e) => e.outcome === 'conflict').length > 0 && (
+                <ul className="list-inside list-disc text-xs text-text-tertiary">
+                  {importPreview.entries
+                    .filter((e) => e.outcome === 'conflict')
+                    .slice(0, 5)
+                    .map((entry) => (
+                      <li key={`${entry.entityType}:${entry.entityId}`}>
+                        {entry.entityType} {entry.entityId.slice(0, 8)}…
+                        {entry.reason ? ` — ${entry.reason}` : ''}
+                      </li>
+                    ))}
+                </ul>
+              )}
+              <div className="flex gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => void handleCommitImport()}
+                  disabled={committing}
+                  className="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
+                >
+                  {committing ? 'Importing…' : 'Apply import'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setImportPreview(null)}
+                  className="rounded-md border border-border px-3 py-1.5 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
           )}
         </Panel>
       )}

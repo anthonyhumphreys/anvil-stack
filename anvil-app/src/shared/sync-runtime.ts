@@ -69,6 +69,45 @@ export interface SyncDeviceRevokeResult {
   enrollmentId: string;
 }
 
+/** Result of exporting the account's synced entities to a chosen file. */
+export interface SyncDataExportFileResult {
+  saved: boolean;
+  filePath: string | null;
+  entityCount: number;
+}
+
+export interface SyncDataImportSummary {
+  creates: number;
+  identical: number;
+  conflicts: number;
+  invalid: number;
+}
+
+export interface SyncImportPreviewEntry {
+  entityType: string;
+  entityId: string;
+  outcome: 'create' | 'identical' | 'conflict' | 'invalid';
+  reason?: string;
+}
+
+/** Staged import plan — nothing applies until `commitDataImport` runs. */
+export type SyncDataImportFilePreview =
+  | { canceled: true }
+  | {
+      canceled: false;
+      fileName: string;
+      operationId: string;
+      summary: SyncDataImportSummary;
+      entries: SyncImportPreviewEntry[];
+      truncated: boolean;
+    };
+
+export interface SyncDataImportCommitResult {
+  applied: number;
+  conflicts: number;
+  skipped: number;
+}
+
 /** MESH-02 device-local worker state — consent + incarnation, never synced. */
 export interface MeshWorkerStatus {
   /** Local opt-in flag: this device consents to run account jobs. */

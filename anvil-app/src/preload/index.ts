@@ -54,6 +54,9 @@ import type { SyncBackendPinInput } from '../shared/sync-backend.js';
 import type {
   MeshWorkerStatus,
   SyncConflictResolutionChoice,
+  SyncDataExportFileResult,
+  SyncDataImportCommitResult,
+  SyncDataImportFilePreview,
   SyncDevice,
   SyncDeviceRenameResult,
   SyncDeviceRevokeResult,
@@ -733,6 +736,12 @@ const api: AnvilAPI = {
       ipcRenderer.invoke('sync-runtime:device-rename', { enrollmentId, displayName }),
     revokeDevice: (enrollmentId: string): Promise<SyncDeviceRevokeResult> =>
       ipcRenderer.invoke('sync-runtime:device-revoke', { enrollmentId }),
+    exportDataToFile: (): Promise<SyncDataExportFileResult> =>
+      ipcRenderer.invoke('sync-runtime:data-export-file'),
+    previewDataImportFromFile: (): Promise<SyncDataImportFilePreview> =>
+      ipcRenderer.invoke('sync-runtime:data-import-preview-file'),
+    commitDataImport: (operationId: string): Promise<SyncDataImportCommitResult> =>
+      ipcRenderer.invoke('sync-runtime:data-import-commit', { operationId }),
   },
 
   anvilCloud: {
