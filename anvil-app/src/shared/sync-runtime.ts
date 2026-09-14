@@ -2,6 +2,8 @@
  * Renderer-safe Sync runtime contracts. Tokens never appear here.
  */
 
+import type { HandoffRecord } from '../../cloud/contract/handoff.js';
+
 export const SPIKE_DATASET_EPOCH = 'spike-epoch-1';
 
 export type SyncAuthPublicState = 'signed-out' | 'enrolling' | 'signed-in';
@@ -106,6 +108,53 @@ export interface SyncDataImportCommitResult {
   applied: number;
   conflicts: number;
   skipped: number;
+}
+
+// ---- Mesh session view (spec §18) ----------------------------------------
+// Wire types are re-exported from the provider-neutral contract (the
+// `sync-mesh.ts` precedent) so desktop and backend share one schema.
+
+export type { HandoffRecord, HandoffState } from '../../cloud/contract/handoff.js';
+export type {
+  ApprovalDecision,
+  ApprovalRecord,
+  ExecutionAttempt,
+  JobState,
+  JobSummary,
+} from '../../cloud/contract/jobs.js';
+
+/** Live attempt activity item pushed to observers (mesh-observe mirror). */
+export interface SyncAttemptActivity {
+  at: string;
+  kind: 'stdout' | 'stderr' | 'status';
+  text: string;
+  sequence: number;
+  /** True when a gap frame/replay marks skipped sequence numbers. */
+  gapBefore: boolean;
+}
+
+/**
+ * Readiness blocker returned when a session can't hand off yet — each
+ * carries a concrete remediation (dirty tree, unpushed commits, …).
+ */
+export interface SyncHandoffBlocker {
+  repositoryId?: string;
+  code: string;
+  remediation: string;
+}
+
+export type SyncInitiateHandoffResult =
+  | { ok: true; handoff: HandoffRecord }
+  | { ok: false; blockers: SyncHandoffBlocker[] };
+
+/** Local ownership mirror + live handoff rows for one chat session. */
+export interface SessionMeshState {
+  ownership: {
+    state: 'owned' | 'relinquished';
+    generation: number;
+    ownerEnrollmentId: string;
+  } | null;
+  handoffs: HandoffRecord[];
 }
 
 /** MESH-02 device-local worker state — consent + incarnation, never synced. */

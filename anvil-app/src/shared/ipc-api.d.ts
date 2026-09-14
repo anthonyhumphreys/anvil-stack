@@ -183,8 +183,15 @@ import type {
 import type { Brand } from './branding';
 import type { SyncBackendDiscovery, SyncBackendPinInput, SyncBackendStatus } from './sync-backend';
 import type {
+  ApprovalDecision,
+  ApprovalRecord,
+  ExecutionAttempt,
+  HandoffRecord,
+  JobSummary,
+  SessionMeshState,
   SyncAdoptionPreviewItem,
   MeshWorkerStatus,
+  SyncAttemptActivity,
   SyncAuthPublicSnapshot,
   SyncConflictResolutionChoice,
   SyncConflictView,
@@ -195,6 +202,7 @@ import type {
   SyncDeviceRenameResult,
   SyncDeviceRevokeResult,
   SyncDiagnostics,
+  SyncInitiateHandoffResult,
   SyncIssuedEnrollmentCode,
   SyncRuntimeStatus,
   SyncSpikeEnrollInput,
@@ -713,6 +721,45 @@ export interface AnvilAPI {
     previewDataImportFromFile: () => Promise<SyncDataImportFilePreview>;
     /** Apply a staged import plan. */
     commitDataImport: (operationId: string) => Promise<SyncDataImportCommitResult>;
+    /** Account-wide mesh jobs (most recent 100). */
+    listMeshJobs: () => Promise<JobSummary[]>;
+    /** One job plus its execution attempts. */
+    getMeshJob: (
+      jobId: string,
+    ) => Promise<{ job: JobSummary; attempts: ExecutionAttempt[] }>;
+    /**
+     * Request cancellation — the job sits in `cancel-requested` until
+     * stopping is verified; it never masks as `cancelled` early.
+     */
+    cancelMeshJob: (jobId: string) => Promise<JobSummary>;
+    /** Approval records for a job (pending and decided). */
+    getMeshApprovals: (jobId: string) => Promise<ApprovalRecord[]>;
+    decideMeshApproval: (
+      approvalId: string,
+      decision: ApprovalDecision,
+      reason?: string,
+    ) => Promise<{ approval: ApprovalRecord; job: JobSummary; duplicate: boolean }>;
+    /** Handoffs this device participated in, refreshed against the backend. */
+    listMeshHandoffs: () => Promise<HandoffRecord[]>;
+    /** Local ownership mirror + live handoff rows for a chat session. */
+    getSessionMeshState: (sessionId: string) => Promise<SessionMeshState>;
+    /**
+     * Move a chat session to another device (SESSION-03). Runs the
+     * readiness gate first — `{ok:false}` returns remediations, never a
+     * half-moved session.
+     */
+    initiateSessionHandoff: (
+      sessionId: string,
+      targetEnrollmentId: string,
+    ) => Promise<SyncInitiateHandoffResult>;
+    /**
+     * Subscribe to an attempt's activity stream (live socket + durable
+     * replay). Returns the unsubscribe function.
+     */
+    observeAttemptActivity: (
+      attemptId: string,
+      listener: (item: SyncAttemptActivity) => void,
+    ) => () => void;
   };
 
   anvilCloud: {

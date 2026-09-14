@@ -23,6 +23,17 @@ import {
   type DataImportPreviewResult,
   type ExportedEntity,
 } from '../../../cloud/contract/data.js';
+import type {
+  ApprovalDecision,
+  ApprovalDecideResult,
+  ApprovalGetResult,
+  ApprovalRecord,
+  JobCancelResult,
+  JobGetResult,
+  JobListResult,
+  JobSummary,
+} from '../../../cloud/contract/jobs.js';
+import type { HandoffGetResult, HandoffRecord } from '../../../cloud/contract/handoff.js';
 import { PROTOCOL } from '../../../cloud/contract/version.js';
 import {
   SPIKE_DATASET_EPOCH,
@@ -30,6 +41,7 @@ import {
   type SyncAuthPublicSnapshot,
   type SyncConflictResolutionChoice,
   type SyncConflictView,
+  type SessionMeshState,
   type SyncDiagnostics,
   type MeshWorkerStatus,
   type SyncRemoteAccountStats,
@@ -97,7 +109,9 @@ import {
   handleGapFrame,
   meshObserverOnGone,
   meshObserverOnLive,
+  observeAttempt,
   resetMeshObserverForTests,
+  type AttemptObserver,
 } from './mesh-observe.service.js';
 import {
   configureMeshArtifactContext,
@@ -105,9 +119,12 @@ import {
 } from './mesh-artifact.service.js';
 import {
   configureMeshHandoffContext,
+  initiateHandoff,
   reconcileHandoffsOnBoot,
   resetMeshHandoffForTests,
+  type InitiateHandoffResult,
 } from './mesh-handoff.service.js';
+import { readSessionOwnership } from './mesh-ownership.service.js';
 import {
   configureMeshDispatchContext,
   reconcileDispatchesOnBoot,
@@ -718,6 +735,118 @@ export async function commitDataImport(
   operationId: string,
 ): Promise<DataImportCommitResult> {
   return accountRpc<DataImportCommitResult>('data.import.commit', { operationId });
+}
+
+// ---- Mesh session view (spec §18) -----------------------------------------
+// Read/control surface for remote executions. All ops go through the same
+// account-authenticated RPC path as device management; the observe channel
+// delegates to mesh-observe's socket + durable-replay machinery.
+
+export async function listMeshJobs(): Promise<JobSummary[]> {
+  const result = await accountRpc<JobListResult>('job.list', { limit: 100 });
+  return result.jobs;
+}
+
+export async function getMeshJob(jobId: string): Promise<JobGetResult> {
+  return accountRpc<JobGetResult>('job.get', { jobId });
+}
+
+export async function cancelMeshJob(jobId: string): Promise<JobSummary> {
+  const result = await accountRpc<JobCancelResult>('job.cancel', { jobId });
+  return result.job;
+}
+
+export async function getMeshApprovals(jobId: string): Promise<ApprovalRecord[]> {
+  const result = await accountRpc<ApprovalGetResult>('approval.get', { jobId });
+  return result.approvals;
+}
+
+export async function decideMeshApproval(
+  approvalId: string,
+  decision: ApprovalDecision,
+  reason?: string,
+): Promise<ApprovalDecideResult> {
+  return accountRpc<ApprovalDecideResult>('approval.decide', {
+    approvalId,
+    decision,
+    ...(reason === undefined ? {} : { reason }),
+  });
+}
+
+/**
+ * Subscribes to an attempt's live + journaled activity. Returns the
+ * unsubscribe — callers must pair it (the IPC layer scopes it per sender).
+ */
+export function observeAttemptActivity(
+  attemptId: string,
+  listener: AttemptObserver,
+): () => void {
+  return observeAttempt(attemptId, listener);
+}
+
+/**
+ * Every handoff this device participated in, refreshed against the backend.
+ * Journal rows give identity; `handoff.get` is authoritative for state.
+ */
+export async function listMeshHandoffs(): Promise<HandoffRecord[]> {
+  const rows = getDb()
+    .prepare('SELECT handoff_id FROM mesh_handoff_journal ORDER BY updated_at DESC')
+    .all() as Array<{ handoff_id: string }>;
+  const handoffs: HandoffRecord[] = [];
+  for (const row of rows) {
+    try {
+      const result = await accountRpc<HandoffGetResult>('handoff.get', {
+        handoffId: row.handoff_id,
+      });
+      handoffs.push(result.handoff);
+    } catch {
+      // Row may predate the current backend or be unreachable — skip it.
+    }
+  }
+  return handoffs;
+}
+
+/** Ownership mirror + live handoff rows for one chat session. */
+export async function getSessionMeshState(sessionId: string): Promise<SessionMeshState> {
+  const ownership = readSessionOwnership(sessionId);
+  const rows = getDb()
+    .prepare(
+      'SELECT handoff_id FROM mesh_handoff_journal WHERE session_id = ? ORDER BY updated_at DESC',
+    )
+    .all(sessionId) as Array<{ handoff_id: string }>;
+  const handoffs: HandoffRecord[] = [];
+  for (const row of rows) {
+    try {
+      const result = await accountRpc<HandoffGetResult>('handoff.get', {
+        handoffId: row.handoff_id,
+      });
+      handoffs.push(result.handoff);
+    } catch {
+      // Skip unreachable rows — the journal remains the local record.
+    }
+  }
+  return {
+    ownership:
+      ownership === null
+        ? null
+        : {
+            state: ownership.state,
+            generation: ownership.generation,
+            ownerEnrollmentId: ownership.owner_enrollment_id,
+          },
+    handoffs,
+  };
+}
+
+/**
+ * Session handoff initiation (SESSION-03): readiness gate → durable reject →
+ * quiesce → checkpoint → ownership CAS. Blockers surface for remediation.
+ */
+export async function initiateSessionHandoff(
+  sessionId: string,
+  targetEnrollmentId: string,
+): Promise<InitiateHandoffResult> {
+  return initiateHandoff({ sessionId, targetEnrollmentId });
 }
 
 /**

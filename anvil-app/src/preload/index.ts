@@ -52,7 +52,14 @@ import type {
 import type { RunCommand, RunStatus } from '../shared/run-types.js';
 import type { SyncBackendPinInput } from '../shared/sync-backend.js';
 import type {
+  ApprovalDecision,
+  ApprovalRecord,
+  ExecutionAttempt,
+  HandoffRecord,
+  JobSummary,
   MeshWorkerStatus,
+  SessionMeshState,
+  SyncAttemptActivity,
   SyncConflictResolutionChoice,
   SyncDataExportFileResult,
   SyncDataImportCommitResult,
@@ -61,6 +68,7 @@ import type {
   SyncDeviceRenameResult,
   SyncDeviceRevokeResult,
   SyncDiagnostics,
+  SyncInitiateHandoffResult,
   SyncIssuedEnrollmentCode,
   SyncSpikeEnrollInput,
 } from '../shared/sync-runtime.js';
@@ -742,6 +750,54 @@ const api: AnvilAPI = {
       ipcRenderer.invoke('sync-runtime:data-import-preview-file'),
     commitDataImport: (operationId: string): Promise<SyncDataImportCommitResult> =>
       ipcRenderer.invoke('sync-runtime:data-import-commit', { operationId }),
+    listMeshJobs: (): Promise<JobSummary[]> =>
+      ipcRenderer.invoke('sync-runtime:mesh-jobs-list'),
+    getMeshJob: (
+      jobId: string,
+    ): Promise<{ job: JobSummary; attempts: ExecutionAttempt[] }> =>
+      ipcRenderer.invoke('sync-runtime:mesh-job-get', { jobId }),
+    cancelMeshJob: (jobId: string): Promise<JobSummary> =>
+      ipcRenderer.invoke('sync-runtime:mesh-job-cancel', { jobId }),
+    getMeshApprovals: (jobId: string): Promise<ApprovalRecord[]> =>
+      ipcRenderer.invoke('sync-runtime:mesh-approvals', { jobId }),
+    decideMeshApproval: (
+      approvalId: string,
+      decision: ApprovalDecision,
+      reason?: string,
+    ): Promise<{ approval: ApprovalRecord; job: JobSummary; duplicate: boolean }> =>
+      ipcRenderer.invoke('sync-runtime:mesh-approval-decide', {
+        approvalId,
+        decision,
+        ...(reason === undefined ? {} : { reason }),
+      }),
+    listMeshHandoffs: (): Promise<HandoffRecord[]> =>
+      ipcRenderer.invoke('sync-runtime:mesh-handoffs'),
+    getSessionMeshState: (sessionId: string): Promise<SessionMeshState> =>
+      ipcRenderer.invoke('sync-runtime:session-mesh-state', { sessionId }),
+    initiateSessionHandoff: (
+      sessionId: string,
+      targetEnrollmentId: string,
+    ): Promise<SyncInitiateHandoffResult> =>
+      ipcRenderer.invoke('sync-runtime:session-handoff', { sessionId, targetEnrollmentId }),
+    observeAttemptActivity: (
+      attemptId: string,
+      listener: (item: SyncAttemptActivity) => void,
+    ): (() => void) => {
+      const channel = 'sync-runtime:attempt-activity';
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        id: string,
+        item: SyncAttemptActivity,
+      ) => {
+        if (id === attemptId) listener(item);
+      };
+      ipcRenderer.on(channel, handler);
+      void ipcRenderer.invoke('sync-runtime:attempt-observe', { attemptId });
+      return () => {
+        ipcRenderer.removeListener(channel, handler);
+        void ipcRenderer.invoke('sync-runtime:attempt-unobserve', { attemptId });
+      };
+    },
   },
 
   anvilCloud: {
