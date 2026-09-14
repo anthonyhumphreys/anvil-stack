@@ -231,7 +231,9 @@ export function App() {
       const hasLlm =
         settings.llmProvider === 'azure'
           ? true // Azure is configured via Codex CLI's config.toml
-          : settings.llmProvider === 'codex' || settings.llmProvider === 'cursor'
+          : settings.llmProvider === 'codex' ||
+              settings.llmProvider === 'cursor' ||
+              settings.llmProvider === 'devin'
             ? true // CLI-backed providers use their own local auth — always test
             : settings.llmProvider === 'llmgateway'
               ? !!settings.llmGatewayApiKey

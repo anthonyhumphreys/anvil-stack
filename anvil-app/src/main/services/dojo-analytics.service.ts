@@ -35,7 +35,7 @@ export function listDojoPrices(): DojoPrice[] {
 export function saveDojoPrice(input: Omit<DojoPrice, 'updatedAt'>): DojoPrice[] {
   if (
     !input ||
-    !['codex', 'cursor', 'openai', 'azure'].includes(input.provider) ||
+    !['codex', 'cursor', 'devin', 'openai', 'azure'].includes(input.provider) ||
     typeof input.model !== 'string' ||
     !input.model.trim() ||
     input.model.length > 160 ||

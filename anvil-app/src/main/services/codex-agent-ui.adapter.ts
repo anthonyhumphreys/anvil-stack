@@ -20,7 +20,7 @@ interface AgentProviderUIContext {
   workspaceId?: string;
   providerThreadId?: string;
   sessionId: string;
-  provider: 'codex' | 'cursor';
+  provider: 'codex' | 'cursor' | 'devin';
 }
 
 export function adaptProviderEventToAgentUIIntent(

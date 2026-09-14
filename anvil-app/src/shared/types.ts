@@ -484,6 +484,22 @@ export interface CursorCliStatus {
   error?: string;
 }
 
+export interface DevinDetectedModel {
+  id: string;
+  label: string;
+}
+
+export interface DevinCliStatus {
+  installed: boolean;
+  version?: string;
+  path?: string;
+  authenticated?: boolean;
+  models: DevinDetectedModel[];
+  /** The session's own default when no model is configured (e.g. Adaptive). */
+  defaultModel?: string;
+  error?: string;
+}
+
 export interface ChatArtifact {
   id: string;
   threadId: string;
@@ -577,7 +593,7 @@ export type ReasoningEffort =
   | 'ultra';
 
 export type WorkflowExecutionStrategy = 'focused' | 'adaptive' | 'parallel' | 'review-team';
-export type AgentProvider = 'azure' | 'openai' | 'codex' | 'cursor' | 'llmgateway';
+export type AgentProvider = 'azure' | 'openai' | 'codex' | 'cursor' | 'devin' | 'llmgateway';
 export type LlmGatewayBillingMode = 'devpass' | 'payg';
 
 export interface LlmGatewayModel extends CodexDetectedModel {
@@ -949,7 +965,12 @@ export type CodexSubagentStatus =
   | 'errored'
   | 'shutdown'
   | 'notFound';
-export type CodexSubagentActivityKind = 'started' | 'interacted' | 'completed' | 'errored' | 'interrupted';
+export type CodexSubagentActivityKind =
+  | 'started'
+  | 'interacted'
+  | 'completed'
+  | 'errored'
+  | 'interrupted';
 
 export interface CodexSubagentState {
   threadId: string;
@@ -1089,6 +1110,7 @@ export interface CodexEvent {
   toolStatus?: 'running' | 'completed' | 'failed';
   toolName?: string;
   toolInput?: Record<string, unknown>;
+  toolOutput?: string;
   approvalRequestId?: JsonRpcRequestId;
   approvalKind?: 'command' | 'file_change' | 'permissions';
   approvalReason?: string;

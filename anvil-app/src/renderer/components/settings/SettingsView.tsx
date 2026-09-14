@@ -36,6 +36,7 @@ import type {
   CodexCliStatus,
   CodexUsageSnapshot,
   CursorCliStatus,
+  DevinCliStatus,
   DocsProvider,
   LocalLlmCapabilities,
   LocalLlmProvider,
@@ -88,6 +89,11 @@ const AGENT_PROVIDER_OPTIONS: Array<{
     id: 'cursor',
     label: 'Cursor CLI',
     description: 'Cursor models and agent tools through cursor-agent.',
+  },
+  {
+    id: 'devin',
+    label: 'Devin CLI',
+    description: 'Devin models and agent tools through the local Devin CLI.',
   },
   {
     id: 'openai',
@@ -280,6 +286,8 @@ export function SettingsView({
   const [codexUsageLoading, setCodexUsageLoading] = useState(false);
   const [codexStatus, setCodexStatus] = useState<CodexCliStatus | null>(null);
   const [cursorStatus, setCursorStatus] = useState<CursorCliStatus | null>(null);
+  const [devinStatus, setDevinStatus] = useState<DevinCliStatus | null>(null);
+  const [devinSigningIn, setDevinSigningIn] = useState(false);
   const [llmGatewayStatus, setLlmGatewayStatus] = useState<LlmGatewayStatus | null>(null);
   const [llmGatewayConnecting, setLlmGatewayConnecting] = useState(false);
   const llmGatewayRequestId = useRef(0);
@@ -323,6 +331,7 @@ export function SettingsView({
       })
       .catch(console.warn);
     window.anvil.settings.getCursorStatus().then(setCursorStatus).catch(console.warn);
+    window.anvil.settings.getDevinStatus().then(setDevinStatus).catch(console.warn);
     window.anvil.settings.getLlmGatewayStatus().then(setLlmGatewayStatus).catch(console.warn);
     window.anvil.settings
       .getLocalLlmCapabilities()
@@ -832,13 +841,21 @@ export function SettingsView({
   ];
   const setPrimaryProvider = (nextProvider: AgentProvider) => {
     setSettings((current) =>
-      selectPrimaryAgentProvider(
-        current,
-        nextProvider,
-        cursorStatus?.models.map((model) => model.id) ?? [],
-      ),
+      selectPrimaryAgentProvider(current, nextProvider, {
+        cursor: cursorStatus?.models.map((model) => model.id) ?? [],
+        devin: devinStatus?.models.map((model) => model.id) ?? [],
+      }),
     );
     setSaved(false);
+  };
+  const startDevinLogin = () => {
+    setDevinSigningIn(true);
+    void window.anvil.settings
+      .startDevinLogin()
+      .then(() => window.anvil.settings.getDevinStatus())
+      .then(setDevinStatus)
+      .catch(console.warn)
+      .finally(() => setDevinSigningIn(false));
   };
   const toggleProvider = (providerId: AgentProvider) => {
     if (providerId === provider) return;
@@ -1169,6 +1186,56 @@ export function SettingsView({
                   </p>
                 )}
 
+                {enabledProviders.includes('devin') && (
+                  <div className="space-y-3 rounded-md border border-border bg-bg-primary p-4">
+                    <p className="text-sm text-text-secondary">
+                      Devin runs locally through the installed Devin CLI (<code>devin acp</code>)
+                      and your Devin sign-in.
+                    </p>
+                    <div className="flex flex-wrap items-center gap-3">
+                      {devinStatus?.installed && devinStatus.authenticated === false && (
+                        <button
+                          type="button"
+                          disabled={devinSigningIn}
+                          onClick={startDevinLogin}
+                          className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-sm font-medium text-white transition-opacity disabled:opacity-50"
+                        >
+                          {devinSigningIn && <Loader2 size={14} className="animate-spin" />}
+                          Sign in with Devin
+                        </button>
+                      )}
+                      {!devinStatus?.installed && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void window.anvil.settings
+                              .getDevinStatus()
+                              .then(setDevinStatus)
+                              .catch(console.warn)
+                          }
+                          className="rounded-md border border-border px-3 py-2 text-sm text-text-secondary hover:bg-bg-tertiary"
+                        >
+                          Check again
+                        </button>
+                      )}
+                      <span className="text-xs text-text-tertiary">
+                        {!devinStatus
+                          ? 'Checking for the Devin CLI…'
+                          : !devinStatus.installed
+                            ? 'Devin CLI was not detected. Install it, then check again.'
+                            : devinStatus.authenticated === false
+                              ? `${devinStatus.version ?? 'Devin CLI installed'} · sign-in required — the button opens a browser login (equivalent to devin auth login).`
+                              : `${devinStatus.version ?? 'Devin CLI installed'} · ${
+                                  devinStatus.models.length
+                                } models detected`}
+                      </span>
+                    </div>
+                    {devinStatus?.error && (
+                      <p className="text-xs text-error">{devinStatus.error}</p>
+                    )}
+                  </div>
+                )}
+
                 {enabledProviders.includes('openai') && (
                   <>
                     <Field
@@ -1275,6 +1342,37 @@ export function SettingsView({
                             cursorStatus.models.length
                           } models detected`
                         : 'Cursor CLI was not detected. Install it or enter a model id manually.'}
+                    </p>
+                  </div>
+                )}
+
+                {provider === 'devin' && (
+                  <div className="space-y-2 rounded-md border border-border bg-bg-primary p-4">
+                    <label className="block text-sm text-text-secondary">Primary Devin model</label>
+                    <input
+                      list="settings-devin-models"
+                      value={settings.openaiModel ?? 'auto'}
+                      onChange={(event) => update('openaiModel', event.target.value)}
+                      className="w-full rounded-md border border-border bg-bg-secondary px-3 py-2 text-sm text-text-primary outline-none focus:border-accent"
+                    />
+                    <datalist id="settings-devin-models">
+                      <option value="auto">Auto (Devin default)</option>
+                      {(devinStatus?.models ?? []).map((model) => (
+                        <option key={model.id} value={model.id}>
+                          {model.label}
+                        </option>
+                      ))}
+                    </datalist>
+                    <p className="text-xs text-text-tertiary">
+                      {devinStatus?.installed
+                        ? `${devinStatus.version ?? 'Devin CLI installed'} · ${
+                            devinStatus.models.length
+                          } models detected${
+                            devinStatus.defaultModel
+                              ? ` · default: ${devinStatus.defaultModel}`
+                              : ''
+                          }`
+                        : 'Devin CLI was not detected. Install it or enter a model id manually.'}
                     </p>
                   </div>
                 )}

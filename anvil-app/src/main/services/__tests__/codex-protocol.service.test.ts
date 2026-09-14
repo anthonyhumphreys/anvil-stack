@@ -780,8 +780,8 @@ describe('codex protocol service', () => {
         type: 'plan_update',
         plan: {
           steps: [
-            { id: 'cursor-plan-0', step: 'Inspect Cursor ACP output', status: 'in_progress' },
-            { id: 'cursor-plan-1', step: 'Report result', status: 'pending' },
+            { id: 'acp-plan-0', step: 'Inspect Cursor ACP output', status: 'in_progress' },
+            { id: 'acp-plan-1', step: 'Report result', status: 'pending' },
           ],
           updatedAt: expect.any(String),
         },
@@ -790,7 +790,7 @@ describe('codex protocol service', () => {
   });
 
   it('normalises Cursor ACP form elicitation into a structured input request', () => {
-    const events = collectEvents(createState(), [
+    const events = collectEvents({ ...createState(), agentLabel: 'Cursor' }, [
       {
         jsonrpc: '2.0',
         id: 17,
@@ -831,6 +831,95 @@ describe('codex protocol service', () => {
         },
       },
     ]);
+  });
+
+  it('normalises ACP tool calls and their lifecycle updates with stable ids', () => {
+    const events = collectEvents({ ...createState(), agentLabel: 'Devin' }, [
+      {
+        method: 'session/update',
+        params: {
+          sessionId: 'devin-session-1',
+          update: {
+            sessionUpdate: 'tool_call',
+            toolCallId: 'tool-1',
+            title: 'Run tests',
+            kind: 'execute',
+            status: 'in_progress',
+            rawInput: { command: 'pnpm test' },
+          },
+        },
+      },
+      {
+        method: 'session/update',
+        params: {
+          sessionId: 'devin-session-1',
+          update: {
+            sessionUpdate: 'tool_call_update',
+            toolCallId: 'tool-1',
+            status: 'completed',
+            content: [
+              { type: 'content', content: { type: 'text', text: 'All tests passed' } },
+              { type: 'diff', path: '/repo/src/app.ts' },
+            ],
+            locations: [{ path: '/repo/src/app.ts' }],
+          },
+        },
+      },
+      {
+        method: 'session/update',
+        params: {
+          sessionId: 'devin-session-1',
+          update: {
+            sessionUpdate: 'tool_call_update',
+            toolCallId: 'tool-2',
+            title: 'Apply patch',
+            kind: 'edit',
+            status: 'failed',
+          },
+        },
+      },
+    ]);
+
+    expect(events).toEqual([
+      {
+        type: 'tool_call',
+        itemId: 'tool-1',
+        toolStatus: 'running',
+        toolName: 'Run tests',
+        toolInput: { command: 'pnpm test' },
+        toolOutput: undefined,
+      },
+      {
+        type: 'tool_call',
+        itemId: 'tool-1',
+        toolStatus: 'completed',
+        toolName: undefined,
+        toolInput: {},
+        toolOutput: 'All tests passed\nEdited /repo/src/app.ts\nTouched /repo/src/app.ts',
+      },
+      {
+        type: 'tool_call',
+        itemId: 'tool-2',
+        toolStatus: 'failed',
+        toolName: 'Apply patch',
+        toolInput: {},
+        toolOutput: undefined,
+      },
+    ]);
+  });
+
+  it('labels generic ACP tool calls with the provider name', () => {
+    const events = collectEvents({ ...createState(), agentLabel: 'Devin' }, [
+      {
+        method: 'session/update',
+        params: {
+          sessionId: 'devin-session-1',
+          update: { sessionUpdate: 'tool_call', toolCallId: 'tool-9', kind: 'other' },
+        },
+      },
+    ]);
+
+    expect(events[0].toolName).toBe('Devin tool');
   });
 
   it('marks Cursor ACP session/new results as thread ready', () => {

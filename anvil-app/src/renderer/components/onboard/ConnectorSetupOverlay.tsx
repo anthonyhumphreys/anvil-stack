@@ -12,7 +12,12 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { useBrand } from '../../contexts/BrandContext';
-import type { AgentProvider, AppSettings, LlmGatewayStatus } from '../../../shared/types';
+import type {
+  AgentProvider,
+  AppSettings,
+  DevinCliStatus,
+  LlmGatewayStatus,
+} from '../../../shared/types';
 import { OnboardingPreviewBar } from './OnboardingPreviewBar';
 import { selectPrimaryAgentProvider } from '../../utils/agent-provider-settings';
 import { CodexRuntimeSetup } from '../settings/CodexRuntimeSetup';
@@ -36,6 +41,8 @@ export function ConnectorSetupOverlay({
   const [llmStatus, setLlmStatus] = useState<TestStatus>('idle');
   const [llmGatewayConnecting, setLlmGatewayConnecting] = useState(false);
   const [llmGatewayStatus, setLlmGatewayStatus] = useState<LlmGatewayStatus | null>(null);
+  const [devinStatus, setDevinStatus] = useState<DevinCliStatus | null>(null);
+  const [devinSigningIn, setDevinSigningIn] = useState(false);
   const gatewayRequestId = useRef(0);
   const [wiStatus, setWiStatus] = useState<TestStatus>('idle');
   const [gitStatus, setGitStatus] = useState<TestStatus>('idle');
@@ -84,6 +91,31 @@ export function ConnectorSetupOverlay({
         })
         .catch(() => undefined);
     }
+    if (provider === 'devin' && !preview) {
+      void refreshDevinStatus();
+    }
+  };
+
+  const refreshDevinStatus = () =>
+    window.anvil.settings
+      .getDevinStatus()
+      .then(setDevinStatus)
+      .catch(() => undefined);
+
+  const startDevinLogin = () => {
+    if (preview) return;
+    setDevinSigningIn(true);
+    setTestError(null);
+    void window.anvil.settings
+      .startDevinLogin()
+      .then((result) => {
+        if (!result.ok) setTestError(result.error ?? 'Devin sign-in did not complete.');
+      })
+      .then(refreshDevinStatus)
+      .catch((err) => {
+        setTestError(err instanceof Error ? err.message : 'Devin sign-in failed');
+      })
+      .finally(() => setDevinSigningIn(false));
   };
 
   const saveSettings = async () => {
@@ -297,6 +329,11 @@ export function ConnectorSetupOverlay({
                   onClick={() => selectLlmProvider('cursor')}
                 />
                 <ProviderButton
+                  label="Devin CLI"
+                  active={llmProvider === 'devin'}
+                  onClick={() => selectLlmProvider('devin')}
+                />
+                <ProviderButton
                   label="OpenAI"
                   active={llmProvider === 'openai'}
                   onClick={() => selectLlmProvider('openai')}
@@ -321,6 +358,61 @@ export function ConnectorSetupOverlay({
                 <p className="text-xs text-text-tertiary">
                   Uses your local Cursor CLI login. Run <code>cursor-agent login</code> first.
                 </p>
+              )}
+              {llmProvider === 'devin' && (
+                <div className="space-y-2 rounded-md border border-border bg-bg-primary p-3">
+                  <p className="text-xs text-text-tertiary">
+                    Devin runs locally through the installed Devin CLI and your Devin account
+                    sign-in — no API key needed.
+                  </p>
+                  {!devinStatus ? (
+                    <p className="flex items-center gap-2 text-xs text-text-secondary">
+                      <Loader2 size={12} className="animate-spin" /> Checking for the Devin CLI…
+                    </p>
+                  ) : !devinStatus.installed ? (
+                    <div className="space-y-2">
+                      <p className="text-xs text-warning">
+                        Devin CLI was not detected on this machine.
+                      </p>
+                      <p className="text-xs text-text-tertiary">
+                        Install it from <code>devin.ai/cli</code>, then check again.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => void refreshDevinStatus()}
+                        className="rounded-md border border-border px-2.5 py-1.5 text-xs text-text-secondary hover:bg-bg-tertiary"
+                      >
+                        Check again
+                      </button>
+                    </div>
+                  ) : devinStatus.authenticated === false ? (
+                    <div className="space-y-2">
+                      <p className="text-xs text-text-secondary">
+                        {devinStatus.version ?? 'Devin CLI installed'} — sign in to continue.
+                      </p>
+                      <button
+                        type="button"
+                        disabled={preview || devinSigningIn}
+                        onClick={startDevinLogin}
+                        className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
+                      >
+                        {devinSigningIn && <Loader2 size={13} className="animate-spin" />}
+                        Sign in with Devin
+                      </button>
+                      <p className="text-xs text-text-tertiary">
+                        Opens a browser login, same as running <code>devin auth login</code>.
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="flex items-center gap-1.5 text-xs text-success">
+                      <CheckCircle size={12} />
+                      {devinStatus.version ?? 'Devin CLI installed'} · {devinStatus.models.length}{' '}
+                      models detected
+                      {devinStatus.defaultModel ? ` · default ${devinStatus.defaultModel}` : ''}
+                    </p>
+                  )}
+                  {devinStatus?.error && <p className="text-xs text-error">{devinStatus.error}</p>}
+                </div>
               )}
               {llmProvider === 'openai' && (
                 <>

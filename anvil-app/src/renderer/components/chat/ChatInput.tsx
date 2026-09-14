@@ -27,6 +27,7 @@ import type {
   ReasoningEffort,
 } from '../../../shared/types';
 import { VoiceInputButton } from './VoiceInputButton';
+import { isAcpAgentProvider } from '../../../shared/agent-providers';
 import { slugForDomId } from '../../utils/dom-id';
 import { getNextListboxIndex } from '../../utils/list-navigation';
 import { EXECUTION_STRATEGIES, type ExecutionStrategy } from '../../utils/execution-strategy';
@@ -1592,8 +1593,8 @@ export function getCompactModelLabel(
   label: string,
   provider: AgentProvider,
 ): string {
-  if (provider !== 'cursor') return label;
-  if (model === 'auto') return 'Cursor auto';
+  if (!isAcpAgentProvider(provider)) return label;
+  if (model === 'auto') return provider === 'devin' ? 'Devin auto' : 'Cursor auto';
 
   const reasoning = getCursorModelReasoningEffort(model);
   const reasoningSuffix = reasoning ? new RegExp(`\\s+${reasoning}$`, 'i') : null;
@@ -1694,7 +1695,7 @@ function RunSettingsDropdown({
   const label = getRunSettingsLabel(
     modelLabel,
     collaborationMode,
-    modelProvider === 'cursor' ? getCursorModelReasoningEffort(model) : reasoningLevel,
+    isAcpAgentProvider(modelProvider) ? getCursorModelReasoningEffort(model) : reasoningLevel,
   );
 
   return (
@@ -1820,16 +1821,17 @@ function RunSettingsDropdown({
               </label>
             )}
 
-            {modelProvider === 'cursor' ? (
+            {isAcpAgentProvider(modelProvider) ? (
               <div>
                 <span className="mb-1 block text-[11px] font-medium text-text-muted">
                   Reasoning
                 </span>
                 <div className="rounded-lg border border-border-subtle bg-bg-secondary px-2.5 py-2 text-xs text-text-secondary">
-                  Set by the Cursor model
+                  Set by the {modelProvider === 'devin' ? 'Devin' : 'Cursor'} model
                 </div>
                 <span className="mt-1 block text-[11px] leading-4 text-text-tertiary">
-                  Cursor model IDs include their reasoning level where supported.
+                  {modelProvider === 'devin' ? 'Devin' : 'Cursor'} model IDs include their reasoning
+                  level where supported.
                 </span>
               </div>
             ) : (
@@ -1927,7 +1929,7 @@ function decodeModelSelection(value: string): { provider: AgentProvider; model: 
   if (separator < 1) return null;
   const provider = value.slice(0, separator) as AgentProvider;
   const model = value.slice(separator + 1);
-  if (!['azure', 'openai', 'codex', 'cursor', 'llmgateway'].includes(provider) || !model)
+  if (!['azure', 'openai', 'codex', 'cursor', 'devin', 'llmgateway'].includes(provider) || !model)
     return null;
   return { provider, model };
 }
@@ -1935,6 +1937,7 @@ function decodeModelSelection(value: string): { provider: AgentProvider; model: 
 function formatProviderLabel(provider: AgentProvider): string {
   if (provider === 'codex') return 'Codex CLI';
   if (provider === 'cursor') return 'Cursor CLI';
+  if (provider === 'devin') return 'Devin CLI';
   if (provider === 'llmgateway') return 'LLMGateway';
   if (provider === 'openai') return 'OpenAI';
   return 'Azure Foundry';

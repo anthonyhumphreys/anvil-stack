@@ -18,6 +18,7 @@ import {
 } from '../services/codex-agents-file.service.js';
 import { detectCodexCli, setCodexAgentMaxThreads } from '../services/codex-bridge.service.js';
 import { detectCursorCli } from '../services/cursor-bridge.service.js';
+import { detectDevinCli, startDevinAuthLogin } from '../services/devin-bridge.service.js';
 import { getCodexRuntimeStatus, installCodexRuntime } from '../services/codex-runtime.service.js';
 import {
   disconnectLlmGateway,
@@ -101,6 +102,24 @@ export function registerSettingsHandlers(): void {
     } catch (err) {
       console.error('[Settings IPC] Error detecting Cursor CLI:', err);
       throw err;
+    }
+  });
+
+  ipcMain.handle('settings:devin-status', async () => {
+    try {
+      return await detectDevinCli();
+    } catch (err) {
+      console.error('[Settings IPC] Error detecting Devin CLI:', err);
+      throw err;
+    }
+  });
+
+  ipcMain.handle('settings:devin-login', async () => {
+    try {
+      return await startDevinAuthLogin();
+    } catch (err) {
+      console.error('[Settings IPC] Error starting Devin login:', err);
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
   });
 

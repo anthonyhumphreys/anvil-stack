@@ -50,6 +50,7 @@ import {
 } from '../utils/codex-selection';
 import { buildChatModelOptions, type ChatModelOption } from '../utils/chat-model-options';
 import { resolveChatFastModeTarget } from '../utils/chat-fast-mode';
+import { isAcpAgentProvider } from '../../shared/agent-providers';
 
 export type ChatEntry =
   | { kind: 'user'; content: string; attachments?: ChatAttachment[]; id?: string }
@@ -871,12 +872,15 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       const enabledProviders = [
         ...new Set<AgentProvider>([settings.llmProvider, ...(settings.enabledLlmProviders ?? [])]),
       ];
-      const [codexStatus, cursorStatus, llmGatewayStatus] = await Promise.all([
+      const [codexStatus, cursorStatus, devinStatus, llmGatewayStatus] = await Promise.all([
         enabledProviders.some((provider) => ['codex', 'openai', 'azure'].includes(provider))
           ? window.anvil.settings.getCodexStatus().catch(() => null)
           : Promise.resolve(null),
         enabledProviders.includes('cursor')
           ? window.anvil.settings.getCursorStatus().catch(() => null)
+          : Promise.resolve(null),
+        enabledProviders.includes('devin')
+          ? window.anvil.settings.getDevinStatus().catch(() => null)
           : Promise.resolve(null),
         enabledProviders.includes('llmgateway')
           ? window.anvil.settings.getLlmGatewayStatus().catch(() => null)
@@ -891,19 +895,19 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         codexStatus,
         cursorStatus,
         llmGatewayStatus,
+        devinStatus,
       );
       const selectedOption = options.find(
         (option) => option.provider === provider && option.id === model,
       );
       const reasoning = selectedOption?.supportedReasoningEfforts ?? [];
-      const effort =
-        provider === 'cursor'
-          ? (selection?.reasoningEffort ?? settings.reasoningLevel)
-          : resolveCodexReasoningEffort(
-              model,
-              selection?.reasoningEffort ?? settings.reasoningLevel,
-              provider === 'llmgateway' ? llmGatewayStatus?.models : codexStatus?.models,
-            );
+      const effort = isAcpAgentProvider(provider)
+        ? (selection?.reasoningEffort ?? settings.reasoningLevel)
+        : resolveCodexReasoningEffort(
+            model,
+            selection?.reasoningEffort ?? settings.reasoningLevel,
+            provider === 'llmgateway' ? llmGatewayStatus?.models : codexStatus?.models,
+          );
       const currentSession = sessionRef.current;
       if (currentSession?.provider && currentSession.provider !== provider) {
         const threadId = findThreadIdForSession(currentSession.id);
@@ -931,18 +935,17 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       const option = modelOptions.find(
         (candidate) => candidate.provider === nextProvider && candidate.id === nextModel,
       );
-      const nextReasoning =
-        nextProvider === 'cursor'
+      const nextReasoning = isAcpAgentProvider(nextProvider)
+        ? reasoningLevelRef.current
+        : option?.supportedReasoningEfforts.includes(reasoningLevelRef.current)
           ? reasoningLevelRef.current
-          : option?.supportedReasoningEfforts.includes(reasoningLevelRef.current)
-            ? reasoningLevelRef.current
-            : (option?.defaultReasoningEffort ?? 'medium');
+          : (option?.defaultReasoningEffort ?? 'medium');
       if (nextProvider !== modelProvider && activeThreadId) {
         void stopThreadLiveSession(activeThreadId);
       }
       setModelState(nextModel);
       setModelProvider(nextProvider);
-      if (nextProvider !== 'cursor') {
+      if (!isAcpAgentProvider(nextProvider)) {
         setReasoningOptions(option?.supportedReasoningEfforts ?? CODEX_REASONING_EFFORTS);
         setReasoningLevel(nextReasoning);
       } else {
@@ -952,7 +955,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         .update({
           llmProvider: nextProvider,
           openaiModel: nextModel,
-          ...(nextProvider === 'cursor' ? {} : { reasoningLevel: nextReasoning }),
+          ...(isAcpAgentProvider(nextProvider) ? {} : { reasoningLevel: nextReasoning }),
         })
         .catch(console.error);
     },
@@ -1521,6 +1524,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           }
           return [...prev, { kind: 'event', event }];
         });
+      } else if (event.type === 'tool_call') {
+        flushPendingStreamEntry();
+        setEntries((prev) => upsertToolCallEntry(prev, event));
       } else if (event.type === 'command_exec' && event.output && !event.command) {
         const output = event.output;
         flushPendingStreamEntry();
@@ -2686,6 +2692,53 @@ function shouldPersistEvidenceEvent(event: CodexEvent): boolean {
   );
 }
 
+/**
+ * ACP tool calls stream lifecycle updates (`tool_call` then repeated
+ * `tool_call_update`s with the same toolCallId). Merge them into one entry so
+ * a single tool renders one row whose status/output evolves in place.
+ */
+function upsertToolCallEntry(entries: ChatEntry[], event: CodexEvent): ChatEntry[] {
+  const itemId = event.itemId;
+  if (!itemId) {
+    const last = entries[entries.length - 1];
+    // Bare updates with no id attach to the most recent tool call when one is
+    // still running, instead of piling up anonymous rows.
+    if (
+      last?.kind === 'event' &&
+      last.event.type === 'tool_call' &&
+      !event.toolOutput &&
+      event.toolStatus === 'running'
+    ) {
+      return entries;
+    }
+    return [...entries, { kind: 'event', event }];
+  }
+  const existingIndex = entries.findIndex(
+    (entry) =>
+      entry.kind === 'event' && entry.event.type === 'tool_call' && entry.event.itemId === itemId,
+  );
+  if (existingIndex < 0) return [...entries, { kind: 'event', event }];
+  const existing = entries[existingIndex];
+  if (existing.kind !== 'event') return entries;
+  const updated = [...entries];
+  updated[existingIndex] = {
+    kind: 'event',
+    event: {
+      ...existing.event,
+      ...event,
+      // ACP sends full content snapshots on each update; keep the newest.
+      toolOutput: event.toolOutput ?? existing.event.toolOutput,
+      toolInput:
+        event.toolInput && Object.keys(event.toolInput).length > 0
+          ? event.toolInput
+          : existing.event.toolInput,
+      toolName: event.toolName ?? existing.event.toolName,
+      toolStatus: event.toolStatus ?? existing.event.toolStatus,
+    },
+  };
+  return updated;
+}
+
 function upsertSubagentEntry(entries: ChatEntry[], event: CodexEvent): ChatEntry[] {
   const subagentId = event.subagent?.id;
   if (!subagentId) return [...entries, { kind: 'event', event }];
@@ -2792,6 +2845,12 @@ export function chatMessagesToEntries(history: ChatMessage[]): ChatEntry[] {
     if (message.role === 'assistant') {
       // Legacy history was persisted as one flattened assistant row without metadata.
       entries.push({ kind: 'assistant', content: message.content, id: message.id });
+      continue;
+    }
+
+    if (message.event?.type === 'tool_call') {
+      const next = upsertToolCallEntry(entries, message.event);
+      entries.splice(0, entries.length, ...next);
       continue;
     }
 

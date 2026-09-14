@@ -655,6 +655,8 @@ const api: AnvilAPI = {
     getCodexRuntimeStatus: () => ipcRenderer.invoke('settings:codex-runtime-status'),
     installCodexRuntime: () => ipcRenderer.invoke('settings:codex-runtime-install'),
     getCursorStatus: () => ipcRenderer.invoke('settings:cursor-status'),
+    getDevinStatus: () => ipcRenderer.invoke('settings:devin-status'),
+    startDevinLogin: () => ipcRenderer.invoke('settings:devin-login'),
     getLlmGatewayStatus: (forceModels, billingMode) =>
       ipcRenderer.invoke('settings:llmgateway-status', forceModels, billingMode),
     connectLlmGateway: (billingMode) =>
