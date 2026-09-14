@@ -275,7 +275,7 @@ export function MeshExecutionsPanel({
 
       {jobs === null ? (
         <p className="flex items-center gap-2 text-sm text-text-tertiary">
-          <Loader2 size={14} className="animate-spin" /> Loading jobs…
+          <Loader2 size={14} className="animate-spin motion-reduce:animate-none" /> Loading jobs…
         </p>
       ) : jobs.length === 0 ? (
         <p className="text-sm text-text-tertiary">No remote executions on this account yet.</p>
@@ -287,6 +287,7 @@ export function MeshExecutionsPanel({
                 <button
                   type="button"
                   onClick={() => void handleExpand(job.id)}
+                  aria-expanded={expandedJobId === job.id}
                   className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-bg-tertiary/50"
                 >
                   {expandedJobId === job.id ? (
@@ -352,6 +353,8 @@ export function MeshExecutionsPanel({
                             {observingAttemptId === attempt.id && (
                               <div
                                 ref={activityRef}
+                                role="log"
+                                aria-label="Attempt activity"
                                 className="mt-2 max-h-48 overflow-y-auto rounded-md border border-border bg-bg-primary p-2 font-mono text-xs leading-relaxed text-text-secondary"
                               >
                                 {activity.length === 0 ? (
@@ -362,7 +365,7 @@ export function MeshExecutionsPanel({
                                   activity.map((item, index) => (
                                     <div key={`${item.sequence}:${index}`}>
                                       {item.gapBefore && (
-                                        <p className="my-1 border-y border-dashed border-warning/40 py-0.5 text-center text-[10px] text-warning">
+                                        <p className="my-1 border-y border-dashed border-warning/40 py-0.5 text-center text-xs text-warning">
                                           gap in stream — replay may still be filling it
                                         </p>
                                       )}
@@ -499,7 +502,11 @@ export function MeshExecutionsPanel({
         </div>
       )}
 
-      {error !== null && <p className="text-xs text-error">{error}</p>}
+      {error !== null && (
+        <p role="alert" className="text-xs text-error">
+          {error}
+        </p>
+      )}
     </div>
   );
 }

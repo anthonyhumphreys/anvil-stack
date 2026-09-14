@@ -434,7 +434,7 @@ export function SyncMeshSettingsPanel(): ReactNode {
       >
         {statusLoading ? (
           <p className="flex items-center gap-2 text-sm text-text-tertiary">
-            <Loader2 size={14} className="animate-spin" /> Loading connection status…
+            <Loader2 size={14} className="animate-spin motion-reduce:animate-none" /> Loading connection status…
           </p>
         ) : (
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -509,7 +509,7 @@ export function SyncMeshSettingsPanel(): ReactNode {
               disabled={discovering || url.trim().length === 0}
               className="flex shrink-0 items-center justify-center gap-2 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
             >
-              {discovering && <Loader2 size={14} className="animate-spin" />}
+              {discovering && <Loader2 size={14} className="animate-spin motion-reduce:animate-none" />}
               Discover
             </button>
           </div>
@@ -672,7 +672,7 @@ export function SyncMeshSettingsPanel(): ReactNode {
                 disabled={signingIn}
                 className="flex items-center justify-center gap-2 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
               >
-                {signingIn && <Loader2 size={14} className="animate-spin" />}
+                {signingIn && <Loader2 size={14} className="animate-spin motion-reduce:animate-none" />}
                 {signingIn ? 'Waiting for browser sign-in…' : 'Sign in with browser'}
               </button>
             )}
@@ -691,7 +691,7 @@ export function SyncMeshSettingsPanel(): ReactNode {
                   disabled={enrolling || enrollmentCode.trim().length === 0}
                   className="flex shrink-0 items-center justify-center gap-2 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
                 >
-                  {enrolling && <Loader2 size={14} className="animate-spin" />}
+                  {enrolling && <Loader2 size={14} className="animate-spin motion-reduce:animate-none" />}
                   Redeem code
                 </button>
               </div>
@@ -777,6 +777,7 @@ export function SyncMeshSettingsPanel(): ReactNode {
                             }
                           }}
                           disabled={deviceBusy === device.enrollmentId}
+                          aria-expanded={renamingId === device.enrollmentId}
                           className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
                         >
                           <Pencil size={12} />
@@ -792,6 +793,7 @@ export function SyncMeshSettingsPanel(): ReactNode {
                                   : device.enrollmentId,
                               )
                             }
+                            aria-expanded={confirmingRevokeId === device.enrollmentId}
                             disabled={deviceBusy === device.enrollmentId}
                             className="rounded-md border border-border px-2.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-error disabled:opacity-50"
                           >
@@ -807,6 +809,7 @@ export function SyncMeshSettingsPanel(): ReactNode {
                         value={renameDraft}
                         onChange={(event) => setRenameDraft(event.target.value)}
                         placeholder="Device name (empty clears it)"
+                        aria-label="Device name"
                         spellCheck={false}
                         className="min-w-0 flex-1 rounded-md border border-border bg-bg-primary px-3 py-1.5 text-sm text-text-primary placeholder:text-text-tertiary"
                       />
@@ -876,7 +879,7 @@ export function SyncMeshSettingsPanel(): ReactNode {
               disabled={exporting}
               className="flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
             >
-              {exporting && <Loader2 size={14} className="animate-spin" />}
+              {exporting && <Loader2 size={14} className="animate-spin motion-reduce:animate-none" />}
               {exporting ? 'Exporting…' : 'Export account data'}
             </button>
             <button
@@ -885,15 +888,19 @@ export function SyncMeshSettingsPanel(): ReactNode {
               disabled={importing}
               className="flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
             >
-              {importing && <Loader2 size={14} className="animate-spin" />}
+              {importing && <Loader2 size={14} className="animate-spin motion-reduce:animate-none" />}
               {importing ? 'Reading file…' : 'Import from file'}
             </button>
           </div>
           {exportResult !== null && (
-            <p className="text-xs text-text-tertiary">{exportResult}</p>
+            <p aria-live="polite" className="text-xs text-text-tertiary">
+              {exportResult}
+            </p>
           )}
           {importResult !== null && (
-            <p className="text-xs text-text-tertiary">{importResult}</p>
+            <p aria-live="polite" className="text-xs text-text-tertiary">
+              {importResult}
+            </p>
           )}
           {importPreview !== null && (
             <div className="space-y-2 rounded-md border border-border bg-bg-primary p-3">

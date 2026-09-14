@@ -15,6 +15,7 @@ import type {
   ExecutionTopologyNode,
   ExecutionTopologyNodeStatus,
 } from '../../utils/execution-topology';
+import { SessionOwnershipChip } from './SessionOwnershipChip';
 
 interface ExecutionTopologyPanelProps {
   topology: ExecutionTopology;
@@ -119,6 +120,8 @@ export function ExecutionTopologyPanel({
           </div>
         )}
       </div>
+
+      {coordinator.sessionId && <SessionOwnershipChip sessionId={coordinator.sessionId} />}
 
       <RunFooter
         coordinator={coordinator}
