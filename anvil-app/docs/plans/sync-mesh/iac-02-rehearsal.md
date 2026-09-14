@@ -59,6 +59,11 @@ compile the Worker through wrangler. Both pass today.
    `wrangler.mesh.jsonc` (last apply's worker name), so remove could
    delete the wrong worker or nothing at all. `removeMeshDeployment` now
    regenerates the config for its own plan first.
+4. **Secrets provisioned before first deploy** — `wrangler secret put` on
+   a never-deployed worker creates a stub version the real deploy does
+   not carry forward; on a truly clean account the admin route 404'd.
+   The rehearsal now provisions secrets against the deployed worker and
+   readiness-gates on the admin route before running checks.
 
 Harness hardening the live run surfaced: descriptor/enroll/conformance
 now tolerate workers.dev and secret-version propagation latency
@@ -66,18 +71,21 @@ now tolerate workers.dev and secret-version propagation latency
 only scheduled for cleanup after its apply actually lands, and the
 remove step attempts each worker independently.
 
-## Status — live run PASSED
+## Status — live run PASSED (two accounts)
 
-`evidence/mesh-rehearsal-1789385691518.json` — 10/10 steps against
-account `3912de85…` (workers.dev `anthony-humphreys`):
+`evidence/mesh-rehearsal-1789385691518.json` — 10/10 against account
+`3912de85…` (workers.dev `anthony-humphreys`), and
+`evidence/mesh-rehearsal-1789391438943.json` — 10/10 against account
+`71506091…` (workers.dev `still-glitter-7d20`), a genuinely clean account
+that had never run Anvil:
 
-deploy `mesh-rehearsal-live1` → descriptor advertises `anvil-backend/1`
+deploy `mesh-rehearsal-live2` → descriptor advertises `anvil-backend/1`
 + `sync/1` + `enrollment-code` → **11/11 conformance** on the fresh
 deploy → enroll + seed + `data.export` (3 entities) → in-place
-`mesh apply` upgrade with data verified intact → `mesh-rehearsal-live1
+`mesh apply` upgrade with data verified intact → `mesh-rehearsal-live2
 -restored` deploy + `data.import` round-trip (3/3 restored) → both
 workers removed, zero residue (worker list, DO namespaces, and R2
-verified clean).
+verified clean on both accounts).
 
 Reproduce:
 

@@ -1104,3 +1104,16 @@ cross-OS matrix.
 
 IAC-02 gate satisfied with recorded provider evidence. Remaining before
 public launch claim: physical two-device demo, UI audit, cross-OS matrix.
+
+## 2026-09-14 (later) — IAC-02 re-proven on a genuinely clean account
+
+- After switching wrangler to account 71506091… (workers.dev
+  `still-glitter-7d20`, zero prior Anvil resources) the rehearsal
+  surfaced one more harness bug: `secret put` ran before the worker
+  existed; the stub version it created was not carried forward by the
+  real deploy, leaving ENROLLMENT_ADMIN_TOKEN unbound (admin route
+  404'd). Secrets are now provisioned after apply with an admin-route
+  readiness gate.
+- Final run 10/10 — evidence
+  `anvil-cloud/evidence/mesh-rehearsal-1789391438943.json`. Old account
+  verified residue-free; new account verified clean post-run.
