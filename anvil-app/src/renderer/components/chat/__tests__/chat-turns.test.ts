@@ -99,6 +99,47 @@ describe('composeChatTurns', () => {
     ]);
     expect(turns[0].answer?.content).toBe('The release is now complete.');
   });
+
+  it('coalesces consecutive reasoning fragments into one trace', () => {
+    const turns = composeChatTurns([
+      { kind: 'user', content: 'Think out loud' },
+      { kind: 'thinking', content: 'First, check the config.' },
+      { kind: 'thinking', content: ' It points at staging.' },
+      { kind: 'event', event: { type: 'file_read', filePath: 'config.ts' } },
+      { kind: 'thinking', content: 'Now read the file.' },
+      { kind: 'assistant', content: 'Found it.', phase: 'final' },
+    ]);
+
+    expect(turns[0].work).toEqual([
+      { kind: 'thinking', content: 'First, check the config. It points at staging.', sourceIndex: 2 },
+      expect.objectContaining({ kind: 'event' }),
+      { kind: 'thinking', content: 'Now read the file.', sourceIndex: 4 },
+    ]);
+    expect(turns[0].answer?.content).toBe('Found it.');
+  });
+
+  it('keeps a final answer separate from an untagged trailing progress update', () => {
+    const turns = composeChatTurns([
+      { kind: 'user', content: 'Deploy it' },
+      { kind: 'assistant', content: 'Checking the pipeline', phase: 'progress' },
+      { kind: 'assistant', content: 'The release is live.', phase: 'final' },
+    ]);
+
+    expect(turns[0].work).toEqual([
+      { kind: 'progress', content: 'Checking the pipeline', sourceIndex: 1 },
+    ]);
+    expect(turns[0].answer?.content).toBe('The release is live.');
+  });
+
+  it('falls back to the last assistant segment as the answer for untagged providers', () => {
+    const turns = composeChatTurns([
+      { kind: 'user', content: 'Summarise' },
+      { kind: 'assistant', content: 'Here is the summary.' },
+    ]);
+
+    expect(turns[0].answer?.content).toBe('Here is the summary.');
+    expect(turns[0].work).toEqual([]);
+  });
 });
 
 describe('shouldJoinAssistantSegments', () => {
@@ -115,5 +156,20 @@ describe('shouldJoinAssistantSegments', () => {
         { content: ' second', itemId: 'message-2' },
       ),
     ).toBe(false);
+  });
+
+  it('does not join segments across phases', () => {
+    expect(
+      shouldJoinAssistantSegments(
+        { content: 'Checking the pipeline', phase: 'progress' },
+        { content: 'The release is live.', phase: 'final' },
+      ),
+    ).toBe(false);
+    expect(
+      shouldJoinAssistantSegments(
+        { content: 'The deployment', phase: 'progress' },
+        { content: ' is progressing normally.', phase: 'progress' },
+      ),
+    ).toBe(true);
   });
 });

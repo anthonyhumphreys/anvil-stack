@@ -2158,6 +2158,7 @@ export interface OpenInAnvilLaunchIntent {
 
 export type AppTheme =
   | 'system'
+  | 'light'
   | 'dark'
   | 'prompt-whisperer'
   | 'merge-conflict'

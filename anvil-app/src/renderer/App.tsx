@@ -187,7 +187,9 @@ function LaunchIntentRouter() {
 export function App() {
   const fallbackBrand = getBrand(getBuildBrandId());
   const resolveSystemTheme = useCallback((): Exclude<AppTheme, 'system'> => {
-    return fallbackBrand.defaultTheme === 'system' ? 'dark' : fallbackBrand.defaultTheme;
+    if (fallbackBrand.defaultTheme !== 'system') return fallbackBrand.defaultTheme;
+    const prefersDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? true;
+    return prefersDark ? 'dark' : 'light';
   }, [fallbackBrand.defaultTheme]);
   const [connectionStatus, setConnectionStatus] = useState<{
     foundry: boolean | null;
