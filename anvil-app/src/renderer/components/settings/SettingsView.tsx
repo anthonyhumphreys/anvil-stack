@@ -173,13 +173,19 @@ const THEME_OPTIONS: Array<{
   {
     id: 'system',
     label: 'System',
-    description: 'Use the default Anvil workspace theme.',
-    swatches: ['#0b1020', '#1f2937', '#ff8a3d'],
+    description: 'Follows your device appearance, light or dark.',
+    swatches: ['#fbfbfc', '#111318', '#4f46e5'],
+  },
+  {
+    id: 'light',
+    label: 'Anvil Light',
+    description: 'Minimal, bright, stays out of the way.',
+    swatches: ['#fbfbfc', '#ffffff', '#4f46e5'],
   },
   {
     id: 'dark',
-    label: 'Anvil Core',
-    description: 'Cooler default, less toasted workshop.',
+    label: 'Anvil Dark',
+    description: 'Minimal dark workspace for low-light sessions.',
     swatches: ['#0b1020', '#14213d', '#ff8a3d'],
   },
   {

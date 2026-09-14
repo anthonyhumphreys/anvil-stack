@@ -70,10 +70,13 @@ function composeTurn(entries: Array<IndexedChatEntry>, active: boolean): Compose
   const explicitFinal = [...assistantSegments]
     .reverse()
     .find((segment) => segment.entry.phase === 'final');
-  const unknownFinal = active
-    ? undefined
-    : [...assistantSegments].reverse().find((segment) => segment.entry.phase !== 'progress');
-  const answerSegment = explicitFinal ?? unknownFinal;
+  // When no provider tagged a final segment (or phases are unknown), fall back
+  // to the last progress-free segment so the answer always renders as an
+  // answer rather than being buried in the work log.
+  const fallbackFinal = [...assistantSegments]
+    .reverse()
+    .find((segment) => segment.entry.phase !== 'progress');
+  const answerSegment = explicitFinal ?? (active ? undefined : fallbackFinal);
   const answerSourceIndexes = new Set(answerSegment?.sourceIndexes ?? []);
   const answerEndSourceIndex =
     answerSegment && answerSegment.sourceIndexes.length > 0
@@ -106,7 +109,16 @@ function composeTurn(entries: Array<IndexedChatEntry>, active: boolean): Compose
     }
 
     if (entry.kind === 'thinking') {
-      target.push({ kind: 'thinking', content: entry.content, sourceIndex: entry.sourceIndex });
+      // Reasoning streams as many small fragments (providers emit COT deltas
+      // without a stable item id). Coalesce consecutive fragments so the chain
+      // renders as one collapsible trace regardless of provider chunking.
+      const previous = target[target.length - 1];
+      if (previous?.kind === 'thinking') {
+        previous.content += entry.content;
+        previous.sourceIndex = entry.sourceIndex;
+      } else {
+        target.push({ kind: 'thinking', content: entry.content, sourceIndex: entry.sourceIndex });
+      }
     } else {
       target.push({ kind: 'event', event: entry.event, sourceIndex: entry.sourceIndex });
     }
@@ -144,11 +156,15 @@ function coalesceAssistantSegments(entries: Array<IndexedChatEntry>): AssistantS
 }
 
 export function shouldJoinAssistantSegments(
-  previous: Pick<AssistantEntry, 'content' | 'itemId'>,
-  next: Pick<AssistantEntry, 'content' | 'itemId'>,
+  previous: Pick<AssistantEntry, 'content' | 'itemId' | 'phase'>,
+  next: Pick<AssistantEntry, 'content' | 'itemId' | 'phase'>,
 ): boolean {
   if (previous.itemId && next.itemId) return previous.itemId === next.itemId;
   if (previous.itemId || next.itemId) return false;
+  // Providers tag phases inconsistently (some tag every item, some none). Only
+  // merge fragments that plausibly belong to the same message so a final
+  // answer is never glued onto a trailing progress update.
+  if (previous.phase !== next.phase) return false;
 
   return (
     /^\s/.test(next.content) ||

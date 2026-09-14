@@ -298,9 +298,12 @@ export function TurnWorkMessage({
                 return (
                   <div
                     key={`thinking-${item.sourceIndex}`}
-                    className="pr-2 text-xs italic leading-relaxed text-text-tertiary"
+                    className="border-l-2 border-border-subtle py-0.5 pl-3 pr-2 text-xs italic leading-relaxed text-text-tertiary"
                   >
-                    {item.content}
+                    <p className="mb-1 text-[11px] font-medium not-italic text-text-muted">
+                      Reasoning
+                    </p>
+                    <p className="whitespace-pre-wrap">{item.content}</p>
                   </div>
                 );
               }
@@ -1737,7 +1740,7 @@ export function AssistantMessage({
 
   return (
     <div className="message-bubble group flex justify-start">
-      <div className="relative w-full max-w-[75ch]">
+      <div className="relative w-full">
         <div
           className="mb-1.5 flex items-center gap-2 px-1 text-xs font-medium text-text-tertiary"
           role={active ? 'status' : undefined}
@@ -1797,7 +1800,7 @@ export function UserMessage({
     <div className="message-bubble group flex justify-end">
       <div
         className={`relative ${
-          collapsible ? 'w-full max-w-[88%] sm:max-w-[75ch]' : 'w-fit max-w-[88%] sm:max-w-[72ch]'
+          collapsible ? 'w-full max-w-[50%]' : 'w-fit max-w-[50%] min-w-0'
         }`}
       >
         <p className="mb-1.5 text-right text-xs font-medium text-text-tertiary">You</p>

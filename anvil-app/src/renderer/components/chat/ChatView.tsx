@@ -842,9 +842,25 @@ export function ChatView({ userRole }: ChatViewProps) {
               repoIds={activeThread.repoIds ?? []}
             />
           ) : null}
+
+          {/* Session status */}
+          {scaffoldModeActive && (
+            <span className="rounded-full bg-accent/10 px-2.5 py-1 text-xs font-medium text-accent">
+              {scaffoldStatus === 'indexing'
+                ? 'Indexing repos'
+                : scaffoldStatus === 'syncing'
+                  ? 'Syncing repos'
+                  : scaffoldStatus === 'failed'
+                    ? 'Scaffold needs attention'
+                    : 'Scaffolding'}
+            </span>
+          )}
+        </div>
+
+        <div className="ml-auto flex shrink-0 items-center justify-end gap-2">
           {!scaffoldModeActive && (
             <div
-              className="ml-auto flex shrink-0 items-center rounded-lg bg-bg-primary/55 p-0.5"
+              className="flex shrink-0 items-center rounded-lg bg-bg-primary/55 p-0.5"
               role="group"
               aria-label="Thread source"
             >
@@ -877,97 +893,6 @@ export function ChatView({ userRole }: ChatViewProps) {
                 <span className="hidden xl:inline">Tickets</span>
               </button>
             </div>
-          )}
-
-          <div ref={personaMenuRef} className="relative shrink-0">
-            <button
-              type="button"
-              onClick={() => {
-                if (!scaffoldModeActive) setShowPersonaDropdown((open) => !open);
-              }}
-              className="flex h-8 max-w-48 items-center gap-1.5 rounded-md px-2 text-xs text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-default"
-              aria-label="Select persona"
-              aria-expanded={showPersonaDropdown}
-              disabled={scaffoldModeActive}
-            >
-              <span
-                className="inline-block h-2 w-2 shrink-0 rounded-full"
-                style={{ backgroundColor: personaColour }}
-              />
-              {activePersona ? PERSONA_ICONS[activePersona.icon] : null}
-              <span className="truncate">{activePersona?.name ?? 'Select persona'}</span>
-              {!scaffoldModeActive && <ChevronDown size={11} className="shrink-0" />}
-            </button>
-
-            {showPersonaDropdown && !scaffoldModeActive && (
-              <div className="absolute left-0 top-full z-50 mt-1.5 max-h-[min(32rem,calc(100vh-8rem))] w-72 overflow-y-auto rounded-xl border border-border bg-bg-elevated shadow-2xl ring-1 ring-black/10">
-                <div className="p-1.5">
-                  {groupPersonasForRole(personas, userRole).map((group, groupIndex) => (
-                    <div
-                      key={group.id}
-                      className={groupIndex > 0 ? 'mt-1 border-t border-border/60 pt-1' : ''}
-                    >
-                      {group.label && (
-                        <p className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">
-                          {group.label}
-                        </p>
-                      )}
-                      {group.personas.map((persona) => (
-                        <button
-                          key={persona.id}
-                          onClick={() => handleSwitchPersona(persona)}
-                          className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm transition-colors hover:bg-bg-tertiary ${
-                            activePersona?.id === persona.id ? 'bg-bg-tertiary' : ''
-                          }`}
-                        >
-                          <span
-                            className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
-                            style={{ backgroundColor: persona.colour }}
-                          />
-                          <span className="shrink-0 text-text-secondary">
-                            {PERSONA_ICONS[persona.icon]}
-                          </span>
-                          <div className="min-w-0">
-                            <div className="font-medium text-text-primary">{persona.name}</div>
-                            <div className="truncate text-xs text-text-tertiary">
-                              {persona.description}
-                            </div>
-                          </div>
-                        </button>
-                      ))}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Session status */}
-          {scaffoldModeActive && (
-            <span className="rounded-full bg-accent/10 px-2.5 py-1 text-xs font-medium text-accent">
-              {scaffoldStatus === 'indexing'
-                ? 'Indexing repos'
-                : scaffoldStatus === 'syncing'
-                  ? 'Syncing repos'
-                  : scaffoldStatus === 'failed'
-                    ? 'Scaffold needs attention'
-                    : 'Scaffolding'}
-            </span>
-          )}
-        </div>
-
-        <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">
-          {!isWorkItemLayout && (
-            <button
-              onClick={() => void startNewSession()}
-              disabled={scaffoldModeActive}
-              className="flex items-center gap-1.5 rounded-xl border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
-              title={getNewChatThreadActionLabel()}
-              aria-label={getNewChatThreadActionLabel()}
-            >
-              <MessageSquarePlus size={13} />
-              <span className="hidden xl:inline">{getNewChatThreadActionLabel()}</span>
-            </button>
           )}
 
           {!isDesignPersona && !isBaPersona && (
@@ -1384,6 +1309,84 @@ export function ChatView({ userRole }: ChatViewProps) {
             fastMode={fastMode}
             fastModeAvailable={fastModeTarget.available}
             onFastModeChange={scaffoldModeActive ? undefined : setFastMode}
+            leadingControls={
+              <>
+                {!scaffoldModeActive && (
+                  <div ref={personaMenuRef} className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setShowPersonaDropdown((open) => !open)}
+                      className="flex h-8 max-w-44 items-center gap-1.5 rounded-lg px-2 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
+                      aria-label="Select persona"
+                      aria-expanded={showPersonaDropdown}
+                    >
+                      <span
+                        className="inline-block h-2 w-2 shrink-0 rounded-full"
+                        style={{ backgroundColor: personaColour }}
+                      />
+                      {activePersona ? PERSONA_ICONS[activePersona.icon] : null}
+                      <span className="truncate">{activePersona?.name ?? 'Select persona'}</span>
+                      <ChevronDown size={11} className="shrink-0" />
+                    </button>
+
+                    {showPersonaDropdown && (
+                      <div className="absolute bottom-full left-0 z-50 mb-2 max-h-[min(32rem,calc(100vh-8rem))] w-72 overflow-y-auto rounded-xl border border-border bg-bg-elevated shadow-2xl ring-1 ring-overlay">
+                        <div className="p-1.5">
+                          {groupPersonasForRole(personas, userRole).map((group, groupIndex) => (
+                            <div
+                              key={group.id}
+                              className={groupIndex > 0 ? 'mt-1 border-t border-border/60 pt-1' : ''}
+                            >
+                              {group.label && (
+                                <p className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">
+                                  {group.label}
+                                </p>
+                              )}
+                              {group.personas.map((persona) => (
+                                <button
+                                  key={persona.id}
+                                  onClick={() => handleSwitchPersona(persona)}
+                                  className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm transition-colors hover:bg-bg-tertiary ${
+                                    activePersona?.id === persona.id ? 'bg-bg-tertiary' : ''
+                                  }`}
+                                >
+                                  <span
+                                    className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
+                                    style={{ backgroundColor: persona.colour }}
+                                  />
+                                  <span className="shrink-0 text-text-secondary">
+                                    {PERSONA_ICONS[persona.icon]}
+                                  </span>
+                                  <div className="min-w-0">
+                                    <div className="font-medium text-text-primary">
+                                      {persona.name}
+                                    </div>
+                                    <div className="truncate text-xs text-text-tertiary">
+                                      {persona.description}
+                                    </div>
+                                  </div>
+                                </button>
+                              ))}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {!scaffoldModeActive && !isWorkItemLayout && (
+                  <button
+                    type="button"
+                    onClick={() => void startNewSession()}
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
+                    title={getNewChatThreadActionLabel()}
+                    aria-label={getNewChatThreadActionLabel()}
+                  >
+                    <MessageSquarePlus size={15} />
+                  </button>
+                )}
+              </>
+            }
             contextControls={
               scaffoldModeActive ? null : (
                 <>
@@ -1997,7 +2000,7 @@ function GoalControl({
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full z-50 mt-1.5 w-80 max-w-[calc(100vw-2rem)] rounded-xl border border-border bg-bg-elevated p-3 shadow-2xl ring-1 ring-black/10">
+        <div className="absolute right-0 top-full z-50 mt-1.5 w-80 max-w-[calc(100vw-2rem)] rounded-xl border border-border bg-bg-elevated p-3 shadow-2xl ring-1 ring-overlay">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="text-sm font-medium text-text-primary">

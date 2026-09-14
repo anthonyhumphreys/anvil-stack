@@ -76,6 +76,7 @@ interface SettingsRow {
 
 const APP_THEMES: AppTheme[] = [
   'system',
+  'light',
   'dark',
   'prompt-whisperer',
   'merge-conflict',
