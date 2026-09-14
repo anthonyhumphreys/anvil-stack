@@ -473,6 +473,46 @@ destroy returns `AWS_DESTROY_TIMEOUT`. If an AWS SDK operation fails while
 emptying buckets, deleting the stack, or deleting deployment metadata, destroy
 returns `AWS_DESTROY_OPERATION_FAILED`.
 
+## `anvil-cloud mesh`
+
+The `mesh` family deploys and manages the Sync & Mesh backend — the
+provider-neutral sync/remote-execution service Anvil Desktop connects to —
+on your own Cloudflare account. It is unrelated to Cell deployments; the
+target is the account sync worker, not an app.
+
+```bash
+anvil-cloud mesh plan --backend <path> --name <worker> \
+  [--stage production] [--env <name>] [--account-id <id>] \
+  [--base-url <url> | --subdomain <sub>] [--bucket <name>] \
+  [--oidc-issuer <url> --oidc-client-id <id>] [--first-deploy] [--json]
+
+anvil-cloud mesh apply --backend <path> --name <worker> \
+  [--evidence <ref>] [--dry-run] [--json]
+
+anvil-cloud mesh remove --backend <path> --name <worker> \
+  [--evidence <ref>] [--json]
+
+anvil-cloud mesh connection --name <worker> --base-url <url> \
+  [--stage production] [--out <path>] [--allow-insecure] [--json]
+```
+
+- `plan` computes the deployment and writes a generated `wrangler.mesh.jsonc`:
+  Durable Object bindings, cumulative SQLite migrations, and the R2 artifact
+  bucket. `--first-deploy` records intent only; migrations are always emitted
+  because a deployable config carries its full migration history.
+- `apply` deploys through Wrangler, then provisions secrets and waits for the
+  admin route to report ready before succeeding.
+- `remove` regenerates the config for its own plan before calling
+  `wrangler delete`, so teardown always targets the worker it was asked to
+  remove rather than whatever config was last generated.
+- `connection` writes the backend discovery file the desktop app's Sync & Mesh
+  settings consume.
+
+Backend source is `--backend <path>` (the `anvil-app/cloud/backend` worker).
+`--evidence <ref>` attaches a rehearsal or review record to lifecycle output.
+The full rehearsal driver — deploy, conformance, upgrade, restore, remove —
+lives in `anvil-cloud/scripts/verify-mesh-rehearsal.mjs`.
+
 ## Exit codes
 
 | Code | Meaning                                             |

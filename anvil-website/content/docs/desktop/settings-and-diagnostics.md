@@ -54,6 +54,12 @@ Mobile companion settings start or stop the local companion service, create a sh
 
 Cloud features are off by default. Enabling them reveals the Cloud Workbench; it does not configure a Cloud execution endpoint for you.
 
+## Sync & Mesh
+
+The Sync & Mesh settings section chooses the backend mode — local only, your own Cloudflare deployment, or a compatible third-party backend — and handles sign-in and device enrollment. Signed-in accounts get device management (rename, revoke), remote execution supervision (jobs, attempts, approvals, live activity, handoffs), a mesh worker opt-in that stays device-local, and data portability (export to file, staged import with conflict preview, account deletion).
+
+Full behavior, limits, and the self-deploy path are in [Sync and Mesh](/docs/desktop/sync-and-mesh).
+
 ## Updates and crash reporting
 
 Packaged Desktop builds initialize the update service and use the configured release feed for the platform. Availability and installation behavior depend on the packaged target and release configuration, not the development server.
