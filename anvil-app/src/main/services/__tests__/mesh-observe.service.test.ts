@@ -242,6 +242,86 @@ describe('observeAttempt', () => {
     expect(received.map((r) => r.text)).toEqual(['one', 'two', '[attempt.state]']);
   });
 
+  it('delivers a re-sent live frame once — subscribe replays on renewal dedup', async () => {
+    const received: AttemptActivity[] = [];
+    observeAttempt('att-8', (a) => received.push(a));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    handleActivityFrame(activityFrame('att-8', 1, 'once'));
+    // Backend replays journaled rows on every subscribe (including the
+    // 60s renewal): the same stream position must not re-deliver.
+    handleActivityFrame(activityFrame('att-8', 1, 'once'));
+    handleActivityFrame(activityFrame('att-8', 2, 'twice'));
+    handleActivityFrame(activityFrame('att-8', 2, 'twice'));
+
+    expect(received.map((r) => r.text)).toEqual(['once', 'twice']);
+  });
+
+  it('dedups a lifecycle row delivered via pull then re-pushed by socket replay', async () => {
+    rpcHandler = (op) => {
+      if (op === 'event.pull') {
+        return {
+          scopeKind: 'attempt',
+          scopeId: 'att-9',
+          jobId: 'job-1',
+          events: [
+            durableEvent(1, 'att-9', 0, 'attempt.state', { state: 'claimed' }),
+            durableEvent(2, 'att-9', 1, 'activity', { kind: 'status', text: 'live-1' }),
+          ],
+          nextCursor: 2,
+          hasMore: false,
+          hasGap: false,
+        };
+      }
+      return {};
+    };
+    const received: AttemptActivity[] = [];
+    observeAttempt('att-9', (a) => received.push(a));
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(received.map((r) => r.text)).toEqual(['[attempt.state]', 'live-1']);
+
+    // The backend maps the same journaled lifecycle row to a status frame
+    // and re-pushes it on the socket — it must not render twice.
+    handleActivityFrame(activityFrame('att-9', 0, '{"type":"attempt.state"}'));
+    handleActivityFrame(activityFrame('att-9', 1, 'live-1'));
+    expect(received.map((r) => r.text)).toEqual(['[attempt.state]', 'live-1']);
+  });
+
+  it('follows event.pull hasMore pages within the replay budget', async () => {
+    let page = 0;
+    rpcHandler = (op) => {
+      if (op === 'event.pull') {
+        page += 1;
+        return {
+          scopeKind: 'attempt',
+          scopeId: 'att-10',
+          jobId: 'job-1',
+          events: [
+            durableEvent(page, 'att-10', page, 'activity', {
+              kind: 'stdout',
+              text: `page-${page}`,
+            }),
+          ],
+          nextCursor: page,
+          hasMore: page < 3,
+          hasGap: false,
+        };
+      }
+      return {};
+    };
+    const received: AttemptActivity[] = [];
+    observeAttempt('att-10', (a) => received.push(a));
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(received.map((r) => r.text)).toEqual(['page-1', 'page-2', 'page-3']);
+    const pulls = rpcCalls.filter((c) => c.operation === 'event.pull');
+    expect(pulls).toHaveLength(3);
+    expect((pulls[2].params as { afterSequence: number }).afterSequence).toBe(2);
+  });
+
   it('stops renewing and sending once gone', async () => {
     observeAttempt('att-5', () => undefined);
     sentFrames.length = 0;

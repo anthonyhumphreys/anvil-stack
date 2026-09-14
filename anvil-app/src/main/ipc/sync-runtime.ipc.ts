@@ -201,16 +201,18 @@ export function registerSyncRuntimeHandlers(): void {
         attemptObservers.delete(sender.id);
       });
     }
-    if (!subs.has(attemptId)) {
-      subs.set(
-        attemptId,
-        observeAttemptActivity(attemptId, (item) => {
-          if (!sender.isDestroyed()) {
-            sender.send('sync-runtime:attempt-activity', attemptId, item);
-          }
-        }),
-      );
-    }
+    // Always resubscribe rather than skip when a key exists: the service
+    // drops subscriptions on sign-out/backend disconnect, and a surviving
+    // map entry would otherwise swallow re-observe requests silently.
+    subs.get(attemptId)?.();
+    subs.set(
+      attemptId,
+      observeAttemptActivity(attemptId, (item) => {
+        if (!sender.isDestroyed()) {
+          sender.send('sync-runtime:attempt-activity', attemptId, item);
+        }
+      }),
+    );
   });
 
   ipcMain.handle('sync-runtime:attempt-unobserve', (event, payload: unknown) => {

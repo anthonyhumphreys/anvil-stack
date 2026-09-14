@@ -28,7 +28,7 @@ import type {
   SyncRuntimeStatus,
 } from '../../../shared/sync-runtime';
 import { copyTextToClipboard } from '../../utils/clipboard';
-import { RemoteExecutionsPanel } from './RemoteExecutionsPanel';
+import { MeshExecutionsPanel } from './MeshExecutionsPanel';
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -940,12 +940,14 @@ export function SyncMeshSettingsPanel(): ReactNode {
         </Panel>
       )}
 
-      {runtime?.auth.state === 'signed-in' && (
+      {runtime?.auth.state === 'signed-in' && status?.state === 'active' && (
         <Panel
           title="Remote executions"
           description="Jobs this account dispatched to enrolled devices. 'Lost contact' means the outcome is unknown — it is never shown as cancelled."
         >
-          <RemoteExecutionsPanel devices={devices} />
+          <MeshExecutionsPanel
+            localWorkerIncarnation={runtime.meshWorker.workerIncarnation}
+          />
         </Panel>
       )}
 

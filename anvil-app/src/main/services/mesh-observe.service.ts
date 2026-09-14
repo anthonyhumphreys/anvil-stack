@@ -63,6 +63,12 @@ interface Subscription {
   buffer: AttemptActivity[];
   /** Sequences the backend told us were skipped (gap frames). */
   gapped: Set<number>;
+  /**
+   * Delivered stream positions (`streamId:sequence`). The backend replays
+   * journaled rows on every subscribe — including renewals — and the
+   * durable pull overlaps the socket, so delivery is deduped client-side.
+   */
+  seen: Set<string>;
 }
 
 let contextProvider: (() => MeshObserverContext | null) | null = null;
@@ -70,6 +76,11 @@ const subscriptions = new Map<string, Subscription>();
 
 const OBSERVER_RENEW_MS = 60_000; // < 90s server-side expiry
 const BUFFER_LIMIT = 200;
+/** Cap on the dedup set; overflow trims entries below the recent window. */
+const SEEN_LIMIT = 4000;
+const SEEN_TRIM_BELOW = 500;
+/** `event.pull` page budget per replay — bounds a pathological backlog. */
+const REPLAY_MAX_PAGES = 10;
 
 export function configureMeshObserverContext(
   provider: () => MeshObserverContext | null,
@@ -124,6 +135,7 @@ export function observeAttempt(attemptId: string, listener: AttemptObserver): ()
       renewTimer: null,
       buffer: [],
       gapped: new Set(),
+      seen: new Set(),
     };
     subscriptions.set(scope, sub);
     sendSubscribe(sub);
@@ -192,10 +204,36 @@ function hasUnresolvedGap(sub: Subscription, seq: number): boolean {
   return false;
 }
 
+/**
+ * Bounded dedup on `(streamId, sequence)`: returns true when the position
+ * was already delivered — whether live, via subscribe replay, or via pull.
+ * Overflow trims entries far below the newest sequence; a trimmed position
+ * re-delivering would be a stale replay anyway, so re-delivery after a
+ * trim is acceptable and bounded by the window.
+ */
+function markSeen(sub: Subscription, streamId: string, sequence: number): boolean {
+  const key = `${streamId}:${sequence}`;
+  if (sub.seen.has(key)) return true;
+  sub.seen.add(key);
+  if (sub.seen.size > SEEN_LIMIT) {
+    const floor = sub.lastSequence - SEEN_TRIM_BELOW;
+    const next = new Set<string>();
+    for (const entry of sub.seen) {
+      const seq = Number(entry.slice(entry.lastIndexOf(':') + 1));
+      if (!Number.isFinite(seq) || seq > floor) next.add(entry);
+    }
+    sub.seen = next;
+  }
+  return false;
+}
+
 /** Runtime routes inbound `activity` frames here. */
 export function handleActivityFrame(frame: ActivityFrame): void {
   const sub = subscriptions.get(frame.streamId) ?? subscriptions.get(`attempt:${frame.attemptId}`);
   if (sub === undefined) return;
+  if (frame.sequence > sub.lastSequence) sub.lastSequence = frame.sequence;
+  sub.gapped.delete(frame.sequence);
+  if (markSeen(sub, frame.streamId, frame.sequence)) return;
   const item: AttemptActivity = {
     at: new Date().toISOString(),
     kind: frame.payload.kind,
@@ -203,8 +241,6 @@ export function handleActivityFrame(frame: ActivityFrame): void {
     sequence: frame.sequence,
     gapBefore: hasUnresolvedGap(sub, frame.sequence),
   };
-  sub.gapped.delete(frame.sequence);
-  if (frame.sequence > sub.lastSequence) sub.lastSequence = frame.sequence;
   sub.buffer.push(item);
   if (sub.buffer.length > BUFFER_LIMIT) sub.buffer.shift();
   for (const listener of sub.listeners) listener(item);
@@ -249,38 +285,41 @@ async function replayEvents(sub: Subscription): Promise<void> {
   const ctx = observerContext();
   if (ctx === null) return;
   try {
-    const result = await observeRpc<EventPullResult>('event.pull', {
-      scope: sub.attemptId,
-      afterSequence: sub.lastCursor,
-      limit: 200,
-    });
-    for (const event of result.events) {
-      if (event.cursor <= sub.lastCursor) continue;
-      sub.lastCursor = event.cursor;
-      if (event.kind === 'gap') {
-        const gap = event.payload as { fromSequence?: number; toSequence?: number };
-        for (let s = gap.fromSequence ?? 0; s <= (gap.toSequence ?? 0); s += 1) {
-          sub.gapped.add(s);
+    for (let page = 0; page < REPLAY_MAX_PAGES; page += 1) {
+      const result = await observeRpc<EventPullResult>('event.pull', {
+        scope: sub.attemptId,
+        afterSequence: sub.lastCursor,
+        limit: 200,
+      });
+      for (const event of result.events) {
+        if (event.cursor <= sub.lastCursor) continue;
+        sub.lastCursor = event.cursor;
+        if (event.kind === 'gap') {
+          const gap = event.payload as { fromSequence?: number; toSequence?: number };
+          for (let s = gap.fromSequence ?? 0; s <= (gap.toSequence ?? 0); s += 1) {
+            sub.gapped.add(s);
+          }
+          continue;
         }
-        continue;
+        sub.gapped.delete(event.sequence);
+        if (event.sequence > sub.lastSequence) sub.lastSequence = event.sequence;
+        // Socket frames, subscribe replays, and pulls overlap — dedup every
+        // row kind on its durable stream position, not just activity.
+        if (markSeen(sub, event.streamId, event.sequence)) continue;
+        const mapped = eventToActivity(event);
+        if (mapped === null) continue;
+        const item: AttemptActivity = {
+          at: event.createdAt,
+          kind: mapped.kind,
+          text: mapped.text,
+          sequence: event.sequence,
+          gapBefore: hasUnresolvedGap(sub, event.sequence),
+        };
+        sub.buffer.push(item);
+        if (sub.buffer.length > BUFFER_LIMIT) sub.buffer.shift();
+        for (const listener of sub.listeners) listener(item);
       }
-      // Live socket frames only carry activity/gap; a journaled activity
-      // row at a stream position we already delivered live is a dup.
-      if (event.kind === 'activity' && event.sequence <= sub.lastSequence) continue;
-      const mapped = eventToActivity(event);
-      if (mapped === null) continue;
-      const item: AttemptActivity = {
-        at: event.createdAt,
-        kind: mapped.kind,
-        text: mapped.text,
-        sequence: event.sequence,
-        gapBefore: hasUnresolvedGap(sub, event.sequence),
-      };
-      sub.gapped.delete(event.sequence);
-      if (event.sequence > sub.lastSequence) sub.lastSequence = event.sequence;
-      sub.buffer.push(item);
-      if (sub.buffer.length > BUFFER_LIMIT) sub.buffer.shift();
-      for (const listener of sub.listeners) listener(item);
+      if (!result.hasMore) break;
     }
   } catch (error) {
     if (!(error instanceof BackendRpcError)) throw error;
