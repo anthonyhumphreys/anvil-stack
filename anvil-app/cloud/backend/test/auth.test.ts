@@ -1,5 +1,5 @@
 import { env, SELF } from 'cloudflare:test';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type {
   DeviceListResult,
@@ -429,28 +429,54 @@ describe('OIDC-PKCE proof verification', () => {
     return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   }
 
-  it('verifies a real signed id_token and returns the subject', async () => {
-    const { codes, fetchFn } = await makeIssuer();
-    codes.set('code-1', {
-      redirectUri: 'http://127.0.0.1:50000/callback',
-      verifier: 'verifier-1',
-      nonce: 'nonce-1',
-      sub: 'user-42',
-    });
-    const sub = await verifyOidcPkceProof(
-      {
-        method: 'oidc-pkce',
-        issuer,
-        authorizationCode: 'code-1',
-        codeVerifier: 'verifier-1',
+  it.each(['', '/', '////'])(
+    'verifies a real signed id_token and returns the subject (issuer suffix %j)',
+    async (suffix) => {
+      const { codes, fetchFn } = await makeIssuer();
+      codes.set('code-1', {
         redirectUri: 'http://127.0.0.1:50000/callback',
+        verifier: 'verifier-1',
         nonce: 'nonce-1',
-      },
-      { issuer, clientId },
-      fetchFn,
-    );
-    expect(sub).toBe('user-42');
-  });
+        sub: 'user-42',
+      });
+      const sub = await verifyOidcPkceProof(
+        {
+          method: 'oidc-pkce',
+          issuer: issuer + suffix,
+          authorizationCode: 'code-1',
+          codeVerifier: 'verifier-1',
+          redirectUri: 'http://127.0.0.1:50000/callback',
+          nonce: 'nonce-1',
+        },
+        { issuer: issuer + suffix, clientId },
+        fetchFn,
+      );
+      expect(sub).toBe('user-42');
+    },
+  );
+
+  it.each([`${issuer}${'/'.repeat(100_000)}x`, '/'.repeat(100_000)])(
+    'rejects a pathological proof issuer without touching the network',
+    async (proofIssuer) => {
+      const fetchSpy = vi.fn(() => {
+        throw new Error('fetch must not be called');
+      });
+      const sub = await verifyOidcPkceProof(
+        {
+          method: 'oidc-pkce',
+          issuer: proofIssuer,
+          authorizationCode: 'code-x',
+          codeVerifier: 'v',
+          redirectUri: 'http://127.0.0.1:50000/callback',
+          nonce: 'n',
+        },
+        { issuer, clientId },
+        fetchSpy as unknown as typeof fetch,
+      );
+      expect(sub).toBeNull();
+      expect(fetchSpy).not.toHaveBeenCalled();
+    },
+  );
 
   it('rejects a wrong code_verifier at the token exchange', async () => {
     const { codes, fetchFn } = await makeIssuer();

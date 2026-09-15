@@ -67,6 +67,12 @@ async function fetchJson(
   }
 }
 
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47) end -= 1;
+  return value.slice(0, end);
+}
+
 /**
  * Discovers the issuer's token and JWKS endpoints via RFC 8414 metadata.
  * The metadata document must declare the same issuer string it was fetched
@@ -76,7 +82,7 @@ async function fetchOidcMetadata(
   issuer: string,
   fetchFn: typeof fetch,
 ): Promise<OidcMetadata | null> {
-  const base = issuer.replace(/\/+$/, '');
+  const base = trimTrailingSlashes(issuer);
   const metadata = await fetchJson(`${base}/.well-known/openid-configuration`, fetchFn);
   if (metadata === null) {
     return null;
@@ -130,8 +136,8 @@ export async function verifyOidcPkceProof(
   config: OidcAuthorityConfig,
   fetchFn: typeof fetch = fetch,
 ): Promise<string | null> {
-  const issuer = config.issuer.replace(/\/+$/, '');
-  if (proof.issuer.replace(/\/+$/, '') !== issuer) {
+  const issuer = trimTrailingSlashes(config.issuer);
+  if (trimTrailingSlashes(proof.issuer) !== issuer) {
     return null;
   }
   const metadata = await fetchOidcMetadata(issuer, fetchFn);
