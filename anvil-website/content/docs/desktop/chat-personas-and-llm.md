@@ -78,7 +78,22 @@ It is deliberately *not* used for repository-aware work: file reads, edits, comm
 
 The Settings status card shows what this Mac can actually do: which backend is active (`fm` CLI or a compiled Swift helper), the model's availability state, its context size, and whether streaming, image prompts, and token counting are supported. If the `fm` legal notice is pending, the card shows the `sudo fm license` command to run once.
 
-This is the only local model assist path currently implemented in the app. It is not a replacement for agentic Codex work. It is useful for small wording, summarisation, or helper prompts where involving a larger backend would be theatre with an invoice.
+Local routing is not a replacement for agentic Codex work. It is useful for small wording, summarisation, or helper prompts where involving a larger backend would be theatre with an invoice.
+
+## Thread titles and summaries
+
+Threads start with a title taken from the first message (or the persona or work item that created them). Settings → AI → **Thread assistance** can instead generate a short title and a rolling one-line summary after each completed turn:
+
+| Provider | Behaviour |
+| --- | --- |
+| Off | Default. Titles stay as the first-message text until you rename the thread. |
+| Primary provider | Uses the configured agent model through the shared LLM gateway path. |
+| Apple Intelligence | Uses the on-device model — free, private, and works offline. macOS only. |
+| Ollama / LM Studio | Uses the endpoints configured under **Local model servers**, which can point at remote hosts such as a cluster node. |
+
+Summaries appear under the thread title in the sidebar and are refreshed periodically as turns complete. Renaming a thread manually locks its title so assistance never overwrites it; the summary keeps updating.
+
+Threads can also carry a **linked pull request** (the chain icon in the thread row). Linking attaches an existing GitHub or Azure DevOps PR to the thread by number — Anvil snapshots its state, watches for drift as the PR moves, and surfaces checks and review status from the chat surface instead of sending you back to the provider UI.
 
 ## Chat personas
 

@@ -49,6 +49,7 @@ import { applyLlmGatewayEnvironment } from './llm-gateway.service.js';
 import { resolveLlmGatewayModelConfig } from './llm-gateway.service.js';
 import { resolveCodexRuntime } from './codex-runtime.service.js';
 import { updateChatThreadAttention } from './chat-persistence.service.js';
+import { scheduleThreadMetadataRefresh } from './thread-assist.service.js';
 import {
   dismissAgentUIIntent,
   expireAgentUIIntentsForSession,
@@ -1285,6 +1286,9 @@ function broadcastEvent(sessionId: string, event: CodexEvent): void {
     } catch (error) {
       console.error('[Dojo] Could not persist execution telemetry:', error);
     }
+  }
+  if (event.type === 'turn_outcome' && event.turnOutcome === 'completed' && session?.appThreadId) {
+    scheduleThreadMetadataRefresh(session.appThreadId);
   }
   if (['usage', 'usage_context', 'turn_outcome', 'context_compaction'].includes(event.type)) return;
   for (const win of BrowserWindow.getAllWindows()) {

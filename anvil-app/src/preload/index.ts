@@ -256,6 +256,7 @@ const api: AnvilAPI = {
         activeRepoId?: string | null;
         settled?: boolean;
         viewed?: boolean;
+        titleLocked?: boolean;
       },
     ) => ipcRenderer.invoke('chat:update-thread', threadId, updates),
     deleteThread: (threadId: string) => ipcRenderer.invoke('chat:delete-thread', threadId),

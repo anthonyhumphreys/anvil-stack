@@ -519,7 +519,8 @@ export async function getAppleLocalModelStatus(force = false): Promise<AppleLoca
   if (statusInFlight) return statusInFlight;
 
   const generation = statusGeneration;
-  const flight = (async () => {
+  let flight: Promise<AppleLocalModelStatus>;
+  flight = (async () => {
     const version = await getMacOsVersion();
     const fm = await probeFmCli();
 
@@ -565,10 +566,12 @@ export async function getAppleLocalModelStatus(force = false): Promise<AppleLoca
       features,
     };
     if (generation === statusGeneration) cachedStatus = { at: Date.now(), status };
-    if (statusInFlight === flight) statusInFlight = null;
     return status;
   })();
   statusInFlight = flight;
+  void flight.finally(() => {
+    if (statusInFlight === flight) statusInFlight = null;
+  });
 
   return flight;
 }

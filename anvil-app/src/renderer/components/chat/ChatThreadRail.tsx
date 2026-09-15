@@ -125,6 +125,11 @@ export function ChatThreadRail({
                   {thread.title}
                 </p>
               )}
+              {!compact && thread.summary && (
+                <p className="mt-0.5 line-clamp-1 text-xs leading-snug text-text-tertiary">
+                  {thread.summary}
+                </p>
+              )}
               {!compact && (
                 <div className="mt-1.5 flex min-w-0 items-center gap-2 text-xs">
                   <span className={threadStateTextClass(displayState)}>

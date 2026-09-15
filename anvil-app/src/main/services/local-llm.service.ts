@@ -23,6 +23,8 @@ export interface LocalLlmCallOptions {
   images?: string[];
   /** Receives streamed response deltas when the backend supports it. */
   onPartial?: (delta: string) => void;
+  /** Call a specific provider instead of the configured localLlmProvider. */
+  provider?: LocalLlmProvider;
 }
 
 export type LocalLlmRoute = 'local' | 'cloud';
@@ -58,6 +60,22 @@ function normaliseOpenAiBaseUrl(provider: Exclude<LocalLlmProvider, 'apple'>, va
   return endpoint.endsWith('/v1') ? endpoint : `${endpoint}/v1`;
 }
 
+/** Per-provider endpoint/model with a legacy shared-field fallback. */
+function resolveServerConfig(
+  provider: Exclude<LocalLlmProvider, 'apple'>,
+  settings: ReturnType<typeof getSettings>,
+): { endpoint: string; model: string } {
+  const legacyActive = settings.localLlmProvider === provider;
+  return {
+    endpoint:
+      (provider === 'ollama' ? settings.ollamaEndpoint : settings.lmStudioEndpoint) ||
+      (legacyActive ? settings.localLlmEndpoint : ''),
+    model:
+      (provider === 'ollama' ? settings.ollamaModel : settings.lmStudioModel) ||
+      (legacyActive ? settings.localLlmModel : ''),
+  };
+}
+
 async function readError(response: Response): Promise<string> {
   const body = await response.text().catch(() => '');
   return body.trim().slice(0, 500) || `${response.status} ${response.statusText}`;
@@ -81,10 +99,11 @@ async function callOpenAiCompatibleLocalModel(
   maxTokens: number,
 ): Promise<LocalLlmResult> {
   const settings = getSettings();
-  const baseUrl = normaliseOpenAiBaseUrl(provider, settings.localLlmEndpoint);
+  const server = resolveServerConfig(provider, settings);
+  const baseUrl = normaliseOpenAiBaseUrl(provider, server.endpoint);
 
   try {
-    const model = await resolveModel(baseUrl, settings.localLlmModel);
+    const model = await resolveModel(baseUrl, server.model);
     const response = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -122,7 +141,7 @@ export async function callPreferredLocalModel(
   maxTokens = 4096,
   options: LocalLlmCallOptions = {},
 ): Promise<LocalLlmResult> {
-  const provider = getSettings().localLlmProvider;
+  const provider = options.provider ?? getSettings().localLlmProvider;
   if (provider === 'apple') {
     if (process.platform !== 'darwin') {
       return { ok: false, unavailable: true, error: 'Apple Intelligence requires macOS.' };

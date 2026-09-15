@@ -587,6 +587,8 @@ export function registerChatHandlers(): void {
         workItemTitle?: string;
         repoIds?: string[];
         activeRepoId?: string | null;
+        /** Set by manual renames so generated titles stop overwriting the thread. */
+        titleLocked?: boolean;
       },
     ): ChatThread | null => {
       return updateChatThread(threadId, updates);

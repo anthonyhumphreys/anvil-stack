@@ -1724,18 +1724,7 @@ export function SettingsView({
                             }
                             active={settings.localLlmProvider === providerId}
                             onClick={() => {
-                              const providerChanged = settings.localLlmProvider !== providerId;
                               update('localLlmProvider', providerId as LocalLlmProvider);
-                              if (providerChanged) {
-                                update(
-                                  'localLlmEndpoint',
-                                  providerId === 'ollama'
-                                    ? 'http://127.0.0.1:11434/v1'
-                                    : providerId === 'lm-studio'
-                                      ? 'http://127.0.0.1:1234/v1'
-                                      : '',
-                                );
-                              }
                               setLocalLlmStatus('idle');
                             }}
                           />
@@ -1817,26 +1806,42 @@ export function SettingsView({
                       </div>
                     </div>
                   )}
-                  {settings.localLlmProvider !== 'apple' && (
+                  <div className="space-y-3">
+                    <label className="block text-sm text-text-secondary">
+                      Local model servers
+                    </label>
+                    <p className="text-xs text-text-tertiary">
+                      Endpoint and model are stored per server, so you can point Ollama at a remote
+                      host (a DGX Spark cluster, a LAN box) while keeping LM Studio local — or vice
+                      versa. Leave an endpoint empty to use the provider&apos;s localhost default.
+                    </p>
                     <div className="grid gap-3 md:grid-cols-2">
                       <Field
-                        label="OpenAI-compatible endpoint"
-                        value={settings.localLlmEndpoint ?? ''}
-                        onChange={(value) => update('localLlmEndpoint', value)}
-                        placeholder={
-                          settings.localLlmProvider === 'lm-studio'
-                            ? 'http://127.0.0.1:1234/v1'
-                            : 'http://127.0.0.1:11434/v1'
-                        }
+                        label="Ollama endpoint"
+                        value={settings.ollamaEndpoint ?? ''}
+                        onChange={(value) => update('ollamaEndpoint', value)}
+                        placeholder="http://127.0.0.1:11434/v1"
                       />
                       <Field
-                        label="Model ID (optional)"
-                        value={settings.localLlmModel ?? ''}
-                        onChange={(value) => update('localLlmModel', value)}
+                        label="Ollama model (optional)"
+                        value={settings.ollamaModel ?? ''}
+                        onChange={(value) => update('ollamaModel', value)}
+                        placeholder="Use the first loaded model"
+                      />
+                      <Field
+                        label="LM Studio endpoint"
+                        value={settings.lmStudioEndpoint ?? ''}
+                        onChange={(value) => update('lmStudioEndpoint', value)}
+                        placeholder="http://127.0.0.1:1234/v1"
+                      />
+                      <Field
+                        label="LM Studio model (optional)"
+                        value={settings.lmStudioModel ?? ''}
+                        onChange={(value) => update('lmStudioModel', value)}
                         placeholder="Use the first loaded model"
                       />
                     </div>
-                  )}
+                  </div>
                   <p className="text-xs text-text-tertiary">
                     Apple Intelligence is offered only on macOS. Ollama and LM Studio work on any
                     supported desktop platform. Repository work, tools, code edits, and long-context
@@ -1847,6 +1852,55 @@ export function SettingsView({
                     onClick={testLocalLlm}
                     label="Test Local Model"
                   />
+                </div>
+
+                <div className="rounded-md border border-border bg-bg-primary p-4 space-y-4">
+                  <div className="space-y-1">
+                    <label className="block text-sm text-text-secondary">Thread assistance</label>
+                    <p className="text-sm text-text-secondary">
+                      Generate a short title and a rolling one-line summary for each thread after a
+                      turn completes. Summaries appear under the thread title in the sidebar.
+                    </p>
+                  </div>
+                  <ButtonGrid>
+                    <ProviderButton
+                      label="Off"
+                      description="Keep first-message titles"
+                      active={(settings.threadAssistProvider ?? 'off') === 'off'}
+                      onClick={() => update('threadAssistProvider', 'off')}
+                    />
+                    <ProviderButton
+                      label="Primary provider"
+                      description="Use the configured agent model"
+                      active={settings.threadAssistProvider === 'configured'}
+                      onClick={() => update('threadAssistProvider', 'configured')}
+                    />
+                    {localLlmCapabilities?.providers.includes('apple') && (
+                      <ProviderButton
+                        label="Apple Intelligence"
+                        description="On-device, free and private"
+                        active={settings.threadAssistProvider === 'apple'}
+                        onClick={() => update('threadAssistProvider', 'apple')}
+                      />
+                    )}
+                    <ProviderButton
+                      label="Ollama"
+                      description="Use the Ollama server below"
+                      active={settings.threadAssistProvider === 'ollama'}
+                      onClick={() => update('threadAssistProvider', 'ollama')}
+                    />
+                    <ProviderButton
+                      label="LM Studio"
+                      description="Use the LM Studio server"
+                      active={settings.threadAssistProvider === 'lm-studio'}
+                      onClick={() => update('threadAssistProvider', 'lm-studio')}
+                    />
+                  </ButtonGrid>
+                  <p className="text-xs text-text-tertiary">
+                    Threads are refreshed periodically as turns complete. Renaming a thread manually
+                    locks its title so assistance never overwrites it. Local providers use the
+                    endpoints configured in Local model servers above.
+                  </p>
                 </div>
 
                 {provider !== 'azure' && <TestButton status={llmStatus} onClick={testLlm} />}

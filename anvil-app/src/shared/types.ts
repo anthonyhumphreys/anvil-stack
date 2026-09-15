@@ -825,6 +825,10 @@ export interface ChatThread {
   activeTurnStartedAt?: string;
   lastViewedAt?: string;
   settledAt?: string;
+  /** Generated rolling summary of the conversation so far. */
+  summary?: string;
+  /** True once the user has renamed the thread; generated titles stop applying. */
+  titleLocked?: boolean;
 }
 
 export type ChatThreadAttentionState =
@@ -1088,7 +1092,8 @@ export interface CodexEvent {
     | 'usage'
     | 'turn_outcome'
     | 'context_compaction'
-    | 'usage_context';
+    | 'usage_context'
+    | 'thread_metadata';
   /** App routing metadata attached to live provider events. */
   sessionId?: string;
   appThreadId?: string;
@@ -1128,6 +1133,9 @@ export interface CodexEvent {
   agentUIIntent?: AgentUIIntent;
   agentUIIntentId?: string;
   goal?: ChatGoalSnapshot;
+  /** Generated title/summary pushed after a thread-metadata refresh. */
+  threadTitle?: string;
+  threadSummary?: string;
   status?: 'thinking' | 'executing' | 'complete' | 'error';
   errorMessage?: string;
   /** Stable app-server item identity for composing streamed assistant messages. */
@@ -2189,6 +2197,11 @@ export type AppTheme =
 
 export type LocalLlmProvider = 'apple' | 'ollama' | 'lm-studio';
 export type LocalLlmMode = 'off' | 'prefer-simple';
+/**
+ * Which backend generates thread titles and periodic summaries.
+ * 'configured' follows the primary agent provider via the shared LLM call path.
+ */
+export type ThreadAssistProvider = 'off' | 'configured' | LocalLlmProvider;
 
 export interface AppleModelFeatureFlags {
   streaming: boolean;
@@ -2237,6 +2250,13 @@ export interface AppSettings {
   localLlmProvider: LocalLlmProvider;
   localLlmEndpoint: string;
   localLlmModel: string;
+  /** Per-provider OpenAI-compatible endpoints; can point at remote hosts. */
+  ollamaEndpoint: string;
+  ollamaModel: string;
+  lmStudioEndpoint: string;
+  lmStudioModel: string;
+  /** Backend for generated thread titles and rolling summaries. */
+  threadAssistProvider: ThreadAssistProvider;
 
   // Azure AI Foundry
   foundryEndpoint: string;
