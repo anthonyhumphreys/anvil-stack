@@ -196,8 +196,9 @@ export function registerSyncRuntimeHandlers(): void {
     if (subs === undefined) {
       subs = new Map();
       attemptObservers.set(sender.id, subs);
+      const ownedSubscriptions = subs;
       sender.once('destroyed', () => {
-        for (const unsubscribe of subs.values()) unsubscribe();
+        for (const unsubscribe of ownedSubscriptions.values()) unsubscribe();
         attemptObservers.delete(sender.id);
       });
     }

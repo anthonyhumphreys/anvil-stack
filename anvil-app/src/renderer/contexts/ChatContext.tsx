@@ -1568,7 +1568,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         setEntries((prev) => upsertThreadStatusEntry(prev, event));
       } else if (event.type === 'request_resolved' && event.resolvedRequestId !== undefined) {
         flushPendingStreamEntry();
-        setEntries((prev) => removeResolvedRequestEntry(prev, event.resolvedRequestId));
+        const resolvedRequestId = event.resolvedRequestId;
+        setEntries((prev) => removeResolvedRequestEntry(prev, resolvedRequestId));
       } else {
         flushPendingStreamEntry();
         setEntries((prev) => [...prev, { kind: 'event', event }]);

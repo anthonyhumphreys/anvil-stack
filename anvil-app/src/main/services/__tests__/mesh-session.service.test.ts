@@ -28,8 +28,10 @@ import {
   satisfiesCliMin,
 } from '../mesh-session.service.js';
 
+type MutableProcess = { -readonly [K in keyof ChildProcess]: ChildProcess[K] };
+
 interface FakeServer {
-  proc: ChildProcess;
+  proc: MutableProcess;
   /** JSON-RPC messages the driver wrote to the child's stdin. */
   received: Array<Record<string, unknown>>;
   /** Respond to the next server→client request id (asserts auto-decline). */
@@ -53,7 +55,7 @@ function fakeAppServer(behavior: FakeBehavior = {}): FakeServer {
     holdTurn = false,
     turnStatus = 'completed',
   } = behavior;
-  const proc = new EventEmitter() as ChildProcess & {
+  const proc = new EventEmitter() as MutableProcess & {
     stdout: PassThrough;
     stdin: PassThrough;
     stderr: PassThrough;
@@ -253,7 +255,7 @@ describe('satisfiesCliMin', () => {
 
 describe('killProcessGroup', () => {
   it('returns immediately for an already-exited process', async () => {
-    const proc = new EventEmitter() as ChildProcess;
+    const proc = new EventEmitter() as MutableProcess;
     proc.exitCode = 0;
     proc.signalCode = null;
     proc.kill = vi.fn(() => true);

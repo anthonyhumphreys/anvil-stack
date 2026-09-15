@@ -6,7 +6,7 @@ import {
 } from '../provider-capability.service';
 import type { AgentProvider } from '../../../shared/types';
 
-const ALL: AgentProvider[] = ['azure', 'openai', 'codex', 'cursor'];
+const ALL: AgentProvider[] = ['azure', 'openai', 'codex', 'cursor', 'devin', 'llmgateway'];
 
 describe('provider capability matrix (SESSION-01 audit)', () => {
   it('declares every AgentProvider — no silent gaps', () => {
@@ -35,6 +35,16 @@ describe('provider capability matrix (SESSION-01 audit)', () => {
     expect(cap.modes[0].verified).toBe(false);
     expect(bestVerifiedMode('cursor')).toBeUndefined();
     expect(supportsCrossDeviceResume('cursor')).toBe(false);
+  });
+
+  it('devin and llmgateway declare no verified continuation mode', () => {
+    for (const p of ['devin', 'llmgateway'] as const) {
+      const cap = getProviderCapability(p);
+      expect(cap).toBeDefined();
+      expect(cap.modes[0].mode).toBe('unsupported');
+      expect(bestVerifiedMode(p)).toBeUndefined();
+      expect(supportsCrossDeviceResume(p)).toBe(false);
+    }
   });
 
   it('no provider claims verified cross-device resume yet', () => {

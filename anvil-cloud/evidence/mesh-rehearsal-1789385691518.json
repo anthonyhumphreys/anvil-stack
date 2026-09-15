@@ -90,9 +90,9 @@
           }
         ],
         "session": {
-          "accessToken": "anvil_at_ntTeLK5UZ_cOGv-En6iS7Pqv4EGaduoleFgIrEu5kdY",
+          "accessToken": "[REDACTED]",
           "accessExpiresAt": "2026-09-14T11:51:11.937Z",
-          "refreshToken": "anvil_rt_5qAVQEaD4peKqc5RYt9e8DeWedBLxZBLsTYClpRYq8M",
+          "refreshToken": "[REDACTED]",
           "credentialGeneration": 1,
           "enrollmentId": "enr_7e9a11f8-4dd7-4598-8af4-35d0c491d6f2",
           "accountId": "iac02-2e3aa26a-ac5d-41c7-9efc-dc37f49f154c",

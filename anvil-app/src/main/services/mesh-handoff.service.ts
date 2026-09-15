@@ -27,7 +27,7 @@ import type {
   HandoffGetResult,
   HandoffRecord,
   SessionCheckpoint,
-} from '../../cloud/contract/handoff.js';
+} from '../../../cloud/contract/handoff.js';
 
 const execFileAsync = promisify(execFile);
 

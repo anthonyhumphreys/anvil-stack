@@ -83,6 +83,18 @@ const PROVIDER_CAPABILITIES: Record<AgentProvider, ProviderCapability> = {
     caveat:
       'Cursor cannot resume a thread; a handoff starts a new session from a summary and prior context is omitted.',
   },
+  devin: {
+    provider: 'devin',
+    modes: [{ mode: 'unsupported', scope: 'cross-device', verified: false }],
+    evidence: 'codex-session.service.ts: local ACP session/new; no verified mesh continuation',
+    caveat: 'Devin mesh continuation has not been verified.',
+  },
+  llmgateway: {
+    provider: 'llmgateway',
+    modes: [{ mode: 'unsupported', scope: 'cross-device', verified: false }],
+    evidence: 'codex-session.service.ts: local managed runtime; no verified mesh continuation',
+    caveat: 'LLMGateway mesh continuation has not been verified.',
+  },
 };
 
 export function getProviderCapability(provider: AgentProvider): ProviderCapability {

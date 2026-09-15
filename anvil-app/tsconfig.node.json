@@ -20,6 +20,7 @@
     "src/shared/**/*",
     "src/preload/**/*",
     "cloud/contract/**/*.ts",
-    "cloud/contract/**/*.json"
+    "cloud/contract/**/*.json",
+    "mobile/lib/home-summary.ts"
   ]
 }

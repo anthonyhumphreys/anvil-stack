@@ -105,7 +105,7 @@ describe('BYOB-02: unmodified desktop client against the non-Cloudflare fixture'
       entityId: 'byob-entity',
       schemaVersion: 1,
       baseRevision: null,
-      operation: 'create',
+      operation: 'create' as const,
       payload: { name: 'Pushed from the desktop stack' },
       payloadHash: '',
     };

@@ -28,6 +28,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
+import { redactRehearsalEvidence } from "./mesh-rehearsal-redaction.mjs";
+
 const workspaceRoot = path.resolve(import.meta.dirname, "..");
 const cli = path.join(workspaceRoot, "packages/cli/dist/index.js");
 
@@ -68,13 +70,14 @@ const steps = [];
 function step(name, fn) {
   return fn().then(
     (detail) => {
-      steps.push({ name, ok: true, detail });
+      steps.push({ name, ok: true, detail: redactRehearsalEvidence(detail) });
       console.log(`  PASS ${name}`);
       return detail;
     },
     (error) => {
-      steps.push({ name, ok: false, error: String(error?.message ?? error) });
-      console.log(`  FAIL ${name}: ${error?.message ?? error}`);
+      const sanitized = redactRehearsalEvidence(String(error?.message ?? error));
+      steps.push({ name, ok: false, error: sanitized });
+      console.log(`  FAIL ${name}: ${sanitized}`);
       throw error;
     },
   );
@@ -311,10 +314,11 @@ try {
     steps.push({
       name: "live rehearsal",
       ok: true,
-      detail:
+      detail: redactRehearsalEvidence(
         "skipped — set ANVIL_CLOUDFLARE_LIVE=1 with CLOUDFLARE_ACCOUNT_ID, " +
-        "CLOUDFLARE_API_TOKEN, and ANVIL_MESH_ADMIN_TOKEN to run the full " +
-        "deploy → conformance → upgrade → restore sequence",
+          "CLOUDFLARE_API_TOKEN, and ANVIL_MESH_ADMIN_TOKEN to run the full " +
+          "deploy → conformance → upgrade → restore sequence",
+      ),
     });
     console.log("  SKIP live rehearsal (ANVIL_CLOUDFLARE_LIVE != 1)");
   } else {
@@ -482,8 +486,9 @@ try {
         steps.push({
           name: "restore",
           ok: true,
-          detail:
+          detail: redactRehearsalEvidence(
             "skipped — restore leg requires --subdomain (custom base-url cannot host a second worker)",
+          ),
         });
         console.log(
           "  SKIP restore (needs --subdomain for the restored worker URL)",
@@ -659,7 +664,7 @@ try {
   writeFileSync(
     evidenceOut,
     JSON.stringify(
-      {
+      redactRehearsalEvidence({
         reference: evidenceReference,
         recordedAt: new Date().toISOString(),
         live,
@@ -667,7 +672,7 @@ try {
         backendDir,
         baseUrl: publicBaseUrl,
         steps,
-      },
+      }),
       null,
       2,
     ),

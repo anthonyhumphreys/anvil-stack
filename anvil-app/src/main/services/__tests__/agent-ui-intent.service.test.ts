@@ -158,6 +158,7 @@ describe('Agent UI intent service', () => {
   it('creates, lists, and incrementally updates plans while maintaining compatibility state', () => {
     const created = upsertAgentUIIntent({ intent: makePlan(), binding: { provider: 'codex' } });
     expect(listAgentUIIntents('thread-1')).toEqual([created]);
+    if (created.kind !== 'plan') throw new Error('Expected plan');
 
     const updated = patchAgentUIPlan(created.id, {
       planId: created.payload.planId,

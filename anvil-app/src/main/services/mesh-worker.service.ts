@@ -41,7 +41,7 @@ import type {
   HandoffAdvanceResult,
   HandoffGetResult,
   SessionCheckpoint,
-} from '../../cloud/contract/handoff.js';
+} from '../../../cloud/contract/handoff.js';
 import { workspaceDefinitionRevision } from './sync-entity-domain.js';
 import type { AgentProvider, ReasoningEffort } from '../../shared/types.js';
 import {
@@ -1505,7 +1505,7 @@ async function executeCodeTask(
       : 'workspace-write';
   const rawEffort = manifest.inputs['reasoningEffort'];
 
-  let turnError: Error | null = null;
+  const turnFailure: { error: Error | null } = { error: null };
   const result = await runRemoteSessionTurn(
     {
       provider: provider as RemoteSessionProvider,
@@ -1527,7 +1527,7 @@ async function executeCodeTask(
       isCancelled: () => isCancelRequested(attemptId),
     },
   ).catch((error) => {
-    turnError = error instanceof Error ? error : new Error(String(error));
+    turnFailure.error = error instanceof Error ? error : new Error(String(error));
     return null;
   });
 
@@ -1536,12 +1536,12 @@ async function executeCodeTask(
     // inventory an operator (or a future retention sweep) inspects.
     appendJournal(attemptId, 'worktrees-preserved', {
       paths: worktrees.map((w) => w.worktreePath),
-      reason: result === null ? (turnError?.message ?? 'turn-error') : result.turnStatus,
+      reason: result === null ? (turnFailure.error?.message ?? 'turn-error') : result.turnStatus,
     });
     if (result !== null && result.cancelled) {
       return { ok: false, cancelled: true };
     }
-    throw turnError ?? new Error('provider-turn-failed');
+    throw turnFailure.error ?? new Error('provider-turn-failed');
   }
 
   // Commit residual changes onto each attempt branch and capture the

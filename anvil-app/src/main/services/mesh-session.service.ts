@@ -378,8 +378,9 @@ export async function runRemoteSessionTurn(
       cancelled: false,
     };
   } catch (error) {
-    if (spawnError !== null && error === spawnError) {
-      throw new Error(`provider-spawn-failed: ${spawnError.message}`);
+    const spawnFailure = spawnError as Error | null;
+    if (error instanceof Error && error === spawnFailure) {
+      throw new Error(`provider-spawn-failed: ${error.message}`);
     }
     throw error;
   } finally {

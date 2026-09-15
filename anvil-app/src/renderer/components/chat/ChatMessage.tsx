@@ -740,7 +740,8 @@ function InputRequestEvent({ event }: { event: CodexEvent & { sessionId?: string
 }
 
 function UserInputRequestEvent({ event }: { event: CodexEvent & { sessionId?: string } }) {
-  const questions = event.inputRequest?.questions ?? [];
+  const request = event.inputRequest?.kind === 'user_input' ? event.inputRequest : undefined;
+  const questions = request?.questions ?? [];
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [activeIndex, setActiveIndex] = useState(0);
   const [resolved, setResolved] = useState(false);
@@ -808,8 +809,8 @@ function UserInputRequestEvent({ event }: { event: CodexEvent & { sessionId?: st
             {questions.length > 0
               ? `Question ${activeIndex + 1} of ${questions.length}`
               : 'No questions were provided'}
-            {event.inputRequest?.autoResolutionMs
-              ? ` · may continue after ${Math.ceil(event.inputRequest.autoResolutionMs / 1000)}s`
+            {request?.autoResolutionMs
+              ? ` · may continue after ${Math.ceil(request.autoResolutionMs / 1000)}s`
               : ''}
           </p>
         </div>
@@ -1111,7 +1112,7 @@ function CursorPlanRequestEvent({ event }: { event: CodexEvent & { sessionId?: s
 }
 
 function McpElicitationRequestEvent({ event }: { event: CodexEvent & { sessionId?: string } }) {
-  const request = event.inputRequest;
+  const request = event.inputRequest?.kind === 'mcp_elicitation' ? event.inputRequest : undefined;
   const [content, setContent] = useState('{}');
   const [resolved, setResolved] = useState<'accepted' | 'declined' | 'cancelled' | null>(null);
   const [error, setError] = useState<string | null>(null);

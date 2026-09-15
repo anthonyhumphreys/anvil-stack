@@ -423,6 +423,14 @@ describe('durable event journal', () => {
 
     send(workerSocket, activityFrame(job.attemptId, job.fence, 1, 'kept\n'));
 
+    const initial = await pollUntil(
+      () => pullEvents(f.sourceAuth, job.jobId),
+      (page) => page.events.some((event) => event.kind === 'activity' && event.sequence === 1),
+    );
+    expect(initial.events.some((event) => event.kind === 'activity' && event.sequence === 1)).toBe(
+      true,
+    );
+
     // Exhaust the per-job activity budget so subsequent frames drop to gaps.
     await runInDurableObject(accountStub(f.accountId), (_i: AccountCoordinator, state) => {
       state.storage.sql.exec(

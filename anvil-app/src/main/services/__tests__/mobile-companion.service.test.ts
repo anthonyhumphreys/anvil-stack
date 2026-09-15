@@ -68,7 +68,7 @@ const workspace = {
       branchCount: 3,
     },
   ],
-} as MobileOverview['activeWorkspace'];
+} as NonNullable<MobileOverview['activeWorkspace']>;
 
 describe('mobile companion workspace selection', () => {
   const getWorkspaceMock = vi.mocked(getWorkspace);
@@ -199,6 +199,7 @@ describe('mobile companion work queue', () => {
           personaId: 'coder',
           title: 'Release check',
           workspaceId: 'ws-1',
+          repoIds: ['repo-1'],
           preview: 'Checking the release.',
           messageCount: 2,
           updatedAt: '2026-05-26T10:02:00.000Z',
@@ -244,6 +245,7 @@ describe('mobile companion work queue', () => {
           personaId: 'coder',
           title: 'Ready session',
           workspaceId: 'ws-1',
+          repoIds: ['repo-1'],
           messageCount: 3,
           updatedAt: '2026-05-26T10:03:00.000Z',
           activeSessionId: 'session-1',
@@ -255,6 +257,7 @@ describe('mobile companion work queue', () => {
           personaId: 'reviewer',
           title: 'Yesterday review',
           workspaceId: 'ws-1',
+          repoIds: ['repo-1'],
           preview: 'No findings.',
           messageCount: 4,
           updatedAt: '2026-05-26T09:00:00.000Z',

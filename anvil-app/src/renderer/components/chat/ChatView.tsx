@@ -1023,7 +1023,7 @@ export function ChatView({ userRole }: ChatViewProps) {
                       ? 'Hide canvas'
                       : 'Show canvas'
                 }
-                aria-pressed={showCanvasSidebar}
+                aria-pressed={Boolean(showCanvasSidebar)}
               >
                 {canvasDetached ? (
                   <PictureInPicture2 size={13} />

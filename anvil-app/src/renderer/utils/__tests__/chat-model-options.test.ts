@@ -94,6 +94,7 @@ describe('buildChatModelOptions', () => {
   it('keeps a custom configured model visible when it is absent from the catalog', () => {
     const codexStatus: CodexCliStatus = {
       installed: true,
+      configuredForFoundry: false,
       models: [],
     };
 
@@ -116,6 +117,7 @@ describe('buildChatModelOptions', () => {
   it('carries provider-advertised service tiers into the chat model capability', () => {
     const codexStatus: CodexCliStatus = {
       installed: true,
+      configuredForFoundry: false,
       models: [
         {
           id: 'gpt-5.6-sol',

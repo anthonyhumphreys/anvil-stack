@@ -27,8 +27,9 @@ export function groupPersonasForRole(personas: Persona[], role: UserRole): Perso
     .filter((persona): persona is Persona => Boolean(persona));
   const other = personas.filter((persona) => !recommendedSet.has(persona.id));
 
-  return [
+  const groups: PersonaGroup[] = [
     { id: 'recommended', label: 'Recommended for ITSM', personas: recommended },
     { id: 'other', label: 'Other personas', personas: other },
-  ].filter((group) => group.personas.length > 0);
+  ];
+  return groups.filter((group) => group.personas.length > 0);
 }

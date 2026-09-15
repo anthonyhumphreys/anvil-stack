@@ -89,7 +89,7 @@ export function buildNewChatThreadCommandMetadata() {
 }
 
 export function buildToggleChatLayoutCommandMetadata(currentLayout: ChatLayout) {
-  const nextLayout = currentLayout === 'workitems' ? 'classic' : 'workitems';
+  const nextLayout: ChatLayout = currentLayout === 'workitems' ? 'classic' : 'workitems';
   return {
     id: 'act-toggle-chat-layout',
     label: nextLayout === 'workitems' ? 'Switch to Work-Item Chat' : 'Switch to Classic Chat',
