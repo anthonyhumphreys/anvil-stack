@@ -121,7 +121,10 @@ export function scheduleThreadMetadataRefresh(threadId: string): void {
       if (!transcript.trim()) return;
 
       const metadata = await generateThreadMetadata(provider, transcript);
-      if (!metadata) return;
+      if (!metadata) {
+        console.warn(`[ThreadAssist] No metadata generated for thread ${threadId} (${provider})`);
+        return;
+      }
 
       const updated = updateChatThread(threadId, {
         title: !thread.titleLocked && metadata.title ? metadata.title : undefined,

@@ -16,6 +16,7 @@ import { registerMobileCompanionHandlers } from './ipc/mobile-companion.ipc.js';
 import { registerRepoHandlers, handleStaleIndexingRepos } from './ipc/repo.ipc.js';
 import { ensureRepobaseMcp } from './services/repobase.service.js';
 import { registerChatHandlers, cleanupChatSessions } from './ipc/chat.ipc.js';
+import { startThreadPullRequestWatcher } from './services/thread-pull-request.service.js';
 import { registerOnboardHandlers } from './ipc/onboard.ipc.js';
 import { registerWorkItemsHandlers } from './ipc/workitems.ipc.js';
 import { registerDocsHandlers } from './ipc/docs.ipc.js';
@@ -347,6 +348,7 @@ app.whenReady().then(() => {
   registerDiagnosticsHandlers();
   registerRepoHandlers();
   registerChatHandlers();
+  startThreadPullRequestWatcher();
   registerOnboardHandlers();
   registerWorkItemsHandlers();
   registerChangeReviewHandlers();

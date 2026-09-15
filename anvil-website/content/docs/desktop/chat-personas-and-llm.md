@@ -93,7 +93,7 @@ Threads start with a title taken from the first message (or the persona or work 
 
 Summaries appear under the thread title in the sidebar and are refreshed periodically as turns complete. Renaming a thread manually locks its title so assistance never overwrites it; the summary keeps updating.
 
-Threads can also carry a **linked pull request** (the chain icon in the thread row). Linking attaches an existing GitHub or Azure DevOps PR to the thread by number — Anvil snapshots its state, watches for drift as the PR moves, and surfaces checks and review status from the chat surface instead of sending you back to the provider UI.
+Threads can also carry a **linked pull request** (the chain icon in the thread row). Linking attaches an existing GitHub or Azure DevOps PR to the thread by number — Anvil snapshots its state, watches for drift as the PR moves, and surfaces checks and review status from the chat surface instead of sending you back to the provider UI. Linked PRs are re-observed periodically, and when a linked PR is merged or closed the thread settles itself out of the active list.
 
 ## Chat personas
 

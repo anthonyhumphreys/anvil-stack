@@ -1287,7 +1287,11 @@ function broadcastEvent(sessionId: string, event: CodexEvent): void {
       console.error('[Dojo] Could not persist execution telemetry:', error);
     }
   }
-  if (event.type === 'turn_outcome' && event.turnOutcome === 'completed' && session?.appThreadId) {
+  if (
+    session?.appThreadId &&
+    ((event.type === 'turn_outcome' && event.turnOutcome === 'completed') ||
+      (event.type === 'status' && event.status === 'complete'))
+  ) {
     scheduleThreadMetadataRefresh(session.appThreadId);
   }
   if (['usage', 'usage_context', 'turn_outcome', 'context_compaction'].includes(event.type)) return;

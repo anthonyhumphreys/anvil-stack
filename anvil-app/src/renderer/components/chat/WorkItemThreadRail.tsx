@@ -213,11 +213,11 @@ export function WorkItemThreadRail({
                   <span className={threadStateTextClass(displayState)}>
                     {threadStateLabel(displayState)}
                   </span>
-                  {thread.preview && (
+                  {(thread.summary ?? thread.preview) && (
                     <>
                       <span className="text-text-tertiary/60">·</span>
                       <span className="truncate text-text-tertiary">
-                        {thread.preview.replace(/\s+/g, ' ').trim()}
+                        {(thread.summary ?? thread.preview)?.replace(/\s+/g, ' ').trim()}
                       </span>
                     </>
                   )}

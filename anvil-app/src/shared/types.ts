@@ -1136,6 +1136,7 @@ export interface CodexEvent {
   /** Generated title/summary pushed after a thread-metadata refresh. */
   threadTitle?: string;
   threadSummary?: string;
+  threadSettledAt?: string | null;
   status?: 'thinking' | 'executing' | 'complete' | 'error';
   errorMessage?: string;
   /** Stable app-server item identity for composing streamed assistant messages. */

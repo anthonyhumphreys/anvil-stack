@@ -1375,14 +1375,20 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
       if (event.type === 'thread_metadata' && eventThreadId) {
         setThreads((previous) =>
-          previous.map((thread) =>
-            thread.id === eventThreadId
-              ? {
-                  ...thread,
-                  title: event.threadTitle ?? thread.title,
-                  summary: event.threadSummary ?? thread.summary,
-                }
-              : thread,
+          sortThreads(
+            previous.map((thread) =>
+              thread.id === eventThreadId
+                ? {
+                    ...thread,
+                    title: event.threadTitle ?? thread.title,
+                    summary: event.threadSummary ?? thread.summary,
+                    settledAt:
+                      event.threadSettledAt !== undefined
+                        ? (event.threadSettledAt ?? undefined)
+                        : thread.settledAt,
+                  }
+                : thread,
+            ),
           ),
         );
       }
