@@ -1,0 +1,55 @@
+{
+  "reference": "iac02-rehearsal-mesh-rehearsal-live1-mu15ienb",
+  "recordedAt": "2026-09-14T11:20:33.684Z",
+  "live": true,
+  "workerName": "mesh-rehearsal-live1",
+  "backendDir": "/Users/anthonyhumphreys/Code/anvil/anvil-app/cloud/backend",
+  "baseUrl": "https://mesh-rehearsal-live1.anthony-humphreys.workers.dev",
+  "steps": [
+    {
+      "name": "plan: first-deploy production plan is clean",
+      "ok": true,
+      "detail": {
+        "migrationMode": "create",
+        "secrets": [
+          "ENROLLMENT_ADMIN_TOKEN"
+        ]
+      }
+    },
+    {
+      "name": "apply: dry-run compiles without provider mutation",
+      "ok": true,
+      "detail": {
+        "dryRun": true
+      }
+    },
+    {
+      "name": "apply: provision ENROLLMENT_ADMIN_TOKEN secret",
+      "ok": true,
+      "detail": {
+        "provisioned": true
+      }
+    },
+    {
+      "name": "apply: deploy to the clean account",
+      "ok": true,
+      "detail": {
+        "workerUrl": "https://mesh-rehearsal-live1.anthony-humphreys.workers.dev"
+      }
+    },
+    {
+      "name": "descriptor: frozen contract advertised",
+      "ok": false,
+      "error": "descriptor HTTP 404"
+    },
+    {
+      "name": "remove: delete rehearsal workers (state retained)",
+      "ok": true,
+      "detail": {
+        "removed": [
+          "mesh-rehearsal-live1"
+        ]
+      }
+    }
+  ]
+}

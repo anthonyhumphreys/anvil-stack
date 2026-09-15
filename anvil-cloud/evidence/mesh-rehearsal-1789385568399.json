@@ -1,0 +1,66 @@
+{
+  "reference": "iac02-rehearsal-mesh-rehearsal-live1-mu15yt1r",
+  "recordedAt": "2026-09-14T11:33:35.934Z",
+  "live": true,
+  "workerName": "mesh-rehearsal-live1",
+  "backendDir": "/Users/anthonyhumphreys/Code/anvil/anvil-app/cloud/backend",
+  "baseUrl": "https://mesh-rehearsal-live1.anthony-humphreys.workers.dev",
+  "steps": [
+    {
+      "name": "plan: first-deploy production plan is clean",
+      "ok": true,
+      "detail": {
+        "migrationMode": "create",
+        "secrets": [
+          "ENROLLMENT_ADMIN_TOKEN"
+        ]
+      }
+    },
+    {
+      "name": "apply: dry-run compiles without provider mutation",
+      "ok": true,
+      "detail": {
+        "dryRun": true
+      }
+    },
+    {
+      "name": "apply: provision ENROLLMENT_ADMIN_TOKEN secret",
+      "ok": true,
+      "detail": {
+        "provisioned": true
+      }
+    },
+    {
+      "name": "apply: deploy to the clean account",
+      "ok": true,
+      "detail": {
+        "workerUrl": "https://mesh-rehearsal-live1.anthony-humphreys.workers.dev"
+      }
+    },
+    {
+      "name": "descriptor: frozen contract advertised",
+      "ok": true,
+      "detail": {
+        "deploymentId": "spike-0000-0000-0000-backend01demo",
+        "profiles": [
+          "sync/1",
+          "mesh/1"
+        ]
+      }
+    },
+    {
+      "name": "conformance: standalone suite passes on the fresh deploy",
+      "ok": false,
+      "error": "conformance failed:\nconformance: https://mesh-rehearsal-live1.anthony-humphreys.workers.dev\n  FAIL discovery descriptor advertises the frozen contract: descriptor status: expected 200, got 404\n  FAIL rejects unauthenticated rpc: status: expected 401, got 404\n  FAIL enrollment-code enroll + session.describe identity: issue code status: expected 200, got 404\n  FAIL sync.push accepts, receipts idempotently replay, pull returns the change: issue code status: expected 200, got 404\n  FAIL sync.push rejects a mutated payload hash: issue code status: expected 200, got 404\n  FAIL conditional revision conflict on a stale baseRevision: issue code status: expected 200, got 404\n  FAIL sync.scan pages entities and finish reports watermark: issue code status: expected 200, got 404\n  FAIL device lifecycle: list, rename, revoke sibling: issue code status: expected 200, got 404\n  FAIL session refresh rotates credentials and kills the old access token: issue code status: expected 200, got 404\n  FAIL data.export pages entities; data.import previews and commits on another account: issue code status: expected 200, got 404\n  FAIL account.delete revokes sessions, purges, and locks the accountId: issue code status: expected 200, got 404\n\n0/11 conformance checks passed\n\n"
+    },
+    {
+      "name": "remove: delete rehearsal workers (state retained)",
+      "ok": true,
+      "detail": {
+        "removed": [
+          "mesh-rehearsal-live1"
+        ]
+      }
+    }
+  ]
+}
