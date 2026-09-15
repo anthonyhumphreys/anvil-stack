@@ -279,9 +279,25 @@ export function WorkItemThreadRail({
         defaultWidth={320}
         minWidth={260}
         maxWidth={480}
-        collapsedWidth={0}
+        collapsedWidth={44}
         autoCollapseBelow={1500}
         className="border-r border-border/60 bg-bg-secondary/50"
+        renderCollapsed={({ expand }) => (
+          <div className="flex h-full w-full flex-col items-center gap-3 border-r border-border/60 bg-bg-secondary/50 py-2">
+            <button
+              type="button"
+              onClick={expand}
+              className="flex h-8 w-7 items-center justify-center rounded-lg border border-border bg-bg-elevated text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+              title="Expand work items"
+              aria-label="Expand work items"
+            >
+              <ChevronRight size={14} />
+            </button>
+            <span className="mt-1 [writing-mode:vertical-rl] rotate-180 text-[10px] font-medium uppercase tracking-[0.2em] text-text-tertiary">
+              Work items
+            </span>
+          </div>
+        )}
       >
         <div className="border-b border-border/60 px-3 py-3">
           <div className="flex items-start justify-between gap-2">

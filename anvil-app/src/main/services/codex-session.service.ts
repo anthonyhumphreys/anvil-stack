@@ -516,7 +516,7 @@ export async function sendMessage(
     }
     sendCodexJsonRpc(session.process, 'session/prompt', {
       sessionId: session.threadId,
-      prompt: buildAcpPrompt(session.provider, session, message, attachments),
+      prompt: buildAcpPrompt(session, message, attachments),
     });
     session.acpSystemPromptDelivered = true;
     return;
@@ -575,21 +575,27 @@ export async function steerTurn(
 }
 
 function buildAcpPrompt(
-  provider: AcpAgentProvider,
   session: ManagedSession,
   message: string,
   attachments: ChatAttachment[],
 ): Array<Record<string, unknown>> {
-  return buildUserInput(
-    message,
-    attachments,
-    provider,
-    session.acpSystemPromptDelivered ? undefined : session.systemPrompt,
-  ).map((item) => {
-    if (item.type === 'text') return { type: 'text', text: item.text };
-    if (item.type === 'localImage') return { type: 'resource_link', uri: `file://${item.path}` };
-    return { type: 'resource_link', uri: `file://${item.path}`, name: item.name };
-  });
+  const text =
+    session.acpSystemPromptDelivered || !session.systemPrompt?.trim()
+      ? message
+      : `[System instructions]\n${session.systemPrompt.trim()}\n\n${message}`;
+  const prompt: Array<Record<string, unknown>> = [{ type: 'text', text }];
+  // ACP resource_link blocks require `name`; omitting it (or other fields the
+  // agent validates) gets the whole prompt rejected with invalid params.
+  for (const attachment of attachments) {
+    prompt.push({
+      type: 'resource_link',
+      uri: `file://${attachment.path}`,
+      name: attachment.name,
+      ...(attachment.mimeType ? { mimeType: attachment.mimeType } : {}),
+      ...(attachment.size ? { size: attachment.size } : {}),
+    });
+  }
+  return prompt;
 }
 
 function buildUserInput(

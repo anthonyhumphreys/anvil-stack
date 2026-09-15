@@ -65,6 +65,19 @@ When enabled, Anvil tries the on-device model for plain chat messages — includ
 4. If the classifier says `cloud`, fails, refuses, returns empty output, or the prompt is too large, Anvil sends the turn to the configured backend.
 5. If the local answer is accepted, Anvil streams it through the normal chat event stream so the renderer displays and persists it like any other assistant reply.
 
+## What the on-device model is used for
+
+The Apple route exists for prompts where a cloud round-trip adds nothing:
+
+- **Quick questions and explanations** — "what does `git rebase -i` do", "difference between `let` and `const`". Short answers stream in place like any other reply.
+- **Rewording and summarising** — tightening a sentence, condensing pasted text, suggesting a clearer phrasing for a commit message or review comment.
+- **Image questions on macOS 27** — attaching a screenshot and asking what it shows, when the installed build exposes the vision API.
+- **Offline or privacy-sensitive prompts** — the request never leaves the Mac; nothing is sent to an API key or remote provider.
+
+It is deliberately *not* used for repository-aware work: file reads, edits, commands, approvals, multi-step agent turns, and anything needing repo context always go to the configured backend. That boundary is a design choice, not a model limitation — the on-device model has no tools.
+
+The Settings status card shows what this Mac can actually do: which backend is active (`fm` CLI or a compiled Swift helper), the model's availability state, its context size, and whether streaming, image prompts, and token counting are supported. If the `fm` legal notice is pending, the card shows the `sudo fm license` command to run once.
+
 This is the only local model assist path currently implemented in the app. It is not a replacement for agentic Codex work. It is useful for small wording, summarisation, or helper prompts where involving a larger backend would be theatre with an invoice.
 
 ## Chat personas

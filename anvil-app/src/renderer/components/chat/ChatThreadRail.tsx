@@ -4,6 +4,7 @@ import {
   ArchiveRestore,
   Check,
   CheckCircle2,
+  ChevronRight,
   CircleAlert,
   CircleHelp,
   LoaderCircle,
@@ -196,9 +197,25 @@ export function ChatThreadRail({
       defaultWidth={280}
       minWidth={240}
       maxWidth={440}
-      collapsedWidth={0}
+      collapsedWidth={44}
       autoCollapseBelow={1500}
       className="border-r border-border/60 bg-bg-secondary/50"
+      renderCollapsed={({ expand }) => (
+        <div className="flex h-full w-full flex-col items-center gap-3 border-r border-border/60 bg-bg-secondary/50 py-2">
+          <button
+            type="button"
+            onClick={expand}
+            className="flex h-8 w-7 items-center justify-center rounded-lg border border-border bg-bg-elevated text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+            title="Expand threads"
+            aria-label="Expand threads"
+          >
+            <ChevronRight size={14} />
+          </button>
+          <span className="mt-1 [writing-mode:vertical-rl] rotate-180 text-[10px] font-medium uppercase tracking-[0.2em] text-text-tertiary">
+            Threads
+          </span>
+        </div>
+      )}
     >
       <div className="border-b border-border/60 px-3 py-3">
         <div className="flex items-center justify-between gap-2">
@@ -351,5 +368,7 @@ export function shouldSelectThreadFromKey(event: Pick<KeyboardEvent, 'key' | 'ta
 }
 
 export function getThreadActionVisibilityClass(): string {
-  return 'flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100';
+  // Absolute overlay: keeping the buttons in flow would reserve ~80px of row
+  // width even while invisible, truncating every thread title.
+  return 'absolute right-1.5 top-1.5 flex items-center gap-0.5 rounded-lg border border-border/60 bg-bg-secondary/95 p-0.5 opacity-0 shadow-sm backdrop-blur transition-opacity group-hover:opacity-100 group-focus-within:opacity-100';
 }

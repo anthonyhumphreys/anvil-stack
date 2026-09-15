@@ -57,7 +57,11 @@ Apple added an evaluations framework and Instruments signposts for prompts, late
 
 `fm respond --use-case`/`--guardrails` and helper equivalents are already wired through `AppleModelCallOptions`. Next step: per-persona/per-surface policy (e.g. `contentTagging` for the classifier, stricter guardrails for user-facing summaries).
 
-### 10. Token-aware routing
+### 10. On-device thread titles — *cheap, high-visibility*
+
+Thread titles today are static (`defaultThreadTitle`, work-item names) or manual renames. A first-message → title generation pass is a textbook local-model task: short input, self-contained, runs once per thread, and keeps early conversation content off any cloud route. Route: after the first completed turn, ask the on-device model for a ≤8-word title; fall back to the current default when unavailable.
+
+### 11. Token-aware routing
 
 `count-tokens` + `contextSize` are exposed; use them to (a) skip classification for prompts that can't fit, (b) chunk summarization of pasted content, (c) display "fits on-device" hints in the composer.
 
@@ -67,6 +71,7 @@ Apple added an evaluations framework and Instruments signposts for prompts, late
 | --- | --- | --- |
 | P1 | `fm serve` provider | Biggest simplification; reuses HTTP path; streaming for free |
 | P1 | Structured classifier output | Removes the flakiest part of local routing |
+| P2 | Thread titles | One-line change per thread, instantly visible, zero cost |
 | P2 | Token-aware routing | APIs already plumbed; prevents silent truncation |
 | P2 | PCC tier | Bridges the 8K gap without third-party cloud |
 | P3 | Multi-turn threads, Dynamic Profiles, MLX providers | Valuable but dependent on usage proving out P1/P2 |
