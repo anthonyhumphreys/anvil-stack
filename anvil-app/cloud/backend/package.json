@@ -9,7 +9,8 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "conformance": "node conformance/suite.mjs",
-    "conformance:fixture": "node conformance/suite.mjs --fixture"
+    "conformance:fixture": "node conformance/suite.mjs --fixture",
+    "verify:hosted-config": "node scripts/verify-hosted-config.mjs"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.1.7",

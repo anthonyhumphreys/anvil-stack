@@ -65,5 +65,9 @@ jobs:
         working-directory: .
         run: node --test .github/scripts/publish-r2-immutable.test.mjs
 
+      - name: Verify hosted config validator
+        working-directory: anvil-app/cloud/backend
+        run: node scripts/verify-hosted-config.mjs --self-check
+
       - name: Build
         run: pnpm build

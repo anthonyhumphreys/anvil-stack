@@ -66,3 +66,22 @@ Deviations / notes:
 - `handleArtifactDownload` and internal `/internal/*` routes are intentionally ungated: download is an authenticated read of retained data; internal routes power deletion/revocation/sweep paths that must keep working on restricted accounts.
 - Enforcement cache stores `revision` for observability; practical invalidation is the 5-minute TTL plus explicit `fetched_at` aging (used by tests).
 - No new deps, no wire changes (existing `forbidden` code + optional `details.reason`), no commits made; no deploy or real credentials touched.
+
+## BILL-06 status
+
+Implemented (operations surface only — no production provisioning):
+
+- `anvil-app/cloud/backend/scripts/verify-hosted-config.mjs` — deployment validation gate. Dependency-free JSONC parse (string-aware comment + trailing-comma strip), then: HOSTED_DB binding present with a real `database_id` (placeholder/empty **fails**, per the plan's "missing billing configuration must fail hosted deployment validation"), `HOSTED_BILLING_ENFORCEMENT === 'true'`, `vars` free of `ANVIL_DEV_SPIKE`/`ENROLLMENT_ADMIN_TOKEN`, and DO bindings + `migrations` + R2 parity against `wrangler.jsonc`. `--json` emits stable `{ok, issues, warnings}`; `--self-check` validates inline known-good/broken fixtures so CI proves the validator without a real database_id. Secrets (`HOSTED_SERVICE_KEYS`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`) are checked as documented-in-comments warnings — they can't be verified from a config file. Wired as `pnpm verify:hosted-config`; `--self-check` runs in `.github/workflows/app-ci.yml` (the workflow whose `anvil-app/**` filter covers `cloud/backend`; the backend workspace is not in the root pnpm workspace, and the script needs no deps).
+- `anvil-app/docs/runbooks/hosted-sync/` — `deploy.md` (provision → verify → migrate → deploy checkout-off → secrets-after-first-deploy per the IAC-02 stub-version lesson → smoke → Stripe webhook → checkout vars), `rollback.md` (checkout off → keep webhooks flowing → never drop D1 → schema-compatible code only → enforcement flag last), `webhook-failures.md` (the implemented 500-on-throw / 200-on-poison split, replay, alerting), `reconciliation.md` (signed `/internal/hosted/reconcile` incl. a runnable operator signing snippet, 24h `last_reconcile_at` target), `entitlement-incidents.md` (five states, `hosted_entitlement_cache` 5-min TTL + safe row deletion, outage-grace bounds, `preview_eligible` lever, fail-closed posture), `account-deletion.md` (delete flow, 90-day window as policy-not-mechanism, WorkOS as a separate deletion), `launch-checklist.md` (gate list), `metrics.md` (metric list + suggested thresholds, log hygiene).
+
+Verified: `node --check` clean; `--self-check` exits 0; the real config exits 1 naming the `<placeholder-not-created>` database_id (correct pre-launch); a tmp copy with a real-looking id exits 0.
+
+NOT done — requires live credentials/approvals, not more code:
+
+- No real Stripe test-mode lifecycle run — stubbed outbound only; needs live-mode sandbox credentials.
+- No production deployment — `database_id` placeholder remains; nothing was provisioned or deployed.
+- Website copy/nav/theme and its env example are the website workspace's packet (BILL-04); a docs-site nav entry listing the runbooks is still owed there.
+- No metrics/alerts implementation — `metrics.md` is the spec; wiring is launch work.
+- No scheduled reconciler — `/internal/hosted/reconcile` exists; per-account on demand until a scheduled trigger is added.
+
+Precise remaining manual steps to go live: (1) `wrangler d1 create anvil-hosted-billing` → real `database_id` into `wrangler.hosted.jsonc`; (2) `verify-hosted-config` green; (3) `wrangler d1 migrations apply --remote`; (4) `wrangler deploy --config wrangler.hosted.jsonc`; (5) `wrangler secret put` × 3 after first deploy; (6) descriptor + signed smoke; (7) register the Stripe webhook endpoint (event list in `deploy.md`/`launch-checklist.md`); (8) Anth approves prices/limits/tax → set `HOSTED_CHECKOUT_*`/`STRIPE_PRICE_*` vars + `HOSTED_CHECKOUT_ENABLED` → redeploy; (9) website `WORKOS_*`/`ANVIL_BACKEND_ORIGIN`/`ANVIL_HOSTED_*` env on the website host; (10) walk `launch-checklist.md` with a named approver.
