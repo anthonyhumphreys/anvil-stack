@@ -49,7 +49,9 @@ import {
   steerTurn,
   stopSession,
   interruptTurn,
-  emitLocalAssistantTurn,
+  emitLocalAssistantTurnStart,
+  emitLocalAssistantText,
+  emitLocalAssistantTurnEnd,
   getSessionStatus,
   stopAllSessions,
   getSessionForRepo,
@@ -67,6 +69,7 @@ import {
   classifyPromptForLocalModel,
   isLikelyLocalModelRefusal,
 } from '../services/local-llm.service.js';
+import { getAppleLocalModelStatus } from '../services/apple-foundation-models.service.js';
 import { getSettings } from '../services/settings.service.js';
 import { getPersonas } from '../services/persona.service.js';
 import { detectCodexCli, getCodexInstallInstructions } from '../services/codex-bridge.service.js';
@@ -109,6 +112,8 @@ import {
 import { listAgentUIIntents } from '../services/agent-ui-intent.service.js';
 
 const LOCAL_LLM_CHAT_MAX_PROMPT_CHARS = 8_000;
+// Hold back this many streamed characters so early refusals never reach the UI.
+const LOCAL_LLM_STREAM_HOLDBACK_CHARS = 48;
 
 async function assertChatProviderAvailable(provider: AgentProvider): Promise<void> {
   if (provider === 'cursor') {
@@ -156,24 +161,72 @@ async function assertChatProviderAvailable(provider: AgentProvider): Promise<voi
 /**
  * When the local-model opt-in is enabled, classify the prompt and —
  * if it is simple enough — answer it locally instead of starting a Codex turn.
- * Returns true when the message was fully handled on-device.
+ * Image attachments are eligible when the Apple provider reports vision
+ * support (macOS 27+). Returns true when the message was fully handled
+ * on-device.
  */
-async function tryLocalLlmChatReply(sessionId: string, message: string): Promise<boolean> {
-  if (getSettings().localLlmMode !== 'prefer-simple') return false;
+async function tryLocalLlmChatReply(
+  sessionId: string,
+  message: string,
+  attachments?: ChatAttachment[],
+): Promise<boolean> {
+  const settings = getSettings();
+  if (settings.localLlmMode !== 'prefer-simple') return false;
   if (message.length > LOCAL_LLM_CHAT_MAX_PROMPT_CHARS) return false;
 
-  const route = await classifyPromptForLocalModel(message);
+  let imagePaths: string[] | undefined;
+  if (attachments?.length) {
+    if (attachments.some((attachment) => attachment.kind !== 'image')) return false;
+    if (settings.localLlmProvider !== 'apple') return false;
+    const status = await getAppleLocalModelStatus();
+    // Require probed availability, not just the feature flag — a backend can
+    // advertise image API support while the model itself is not ready.
+    if (!status.available || !status.features.images) return false;
+    imagePaths = attachments.map((attachment) => attachment.path);
+  }
+
+  const route = await classifyPromptForLocalModel(message, (imagePaths?.length ?? 0) > 0);
   if (route !== 'local') return false;
 
-  const result = await callPreferredLocalModel(message);
-  const content = result.ok ? (result.content?.trim() ?? '') : '';
-  if (!content || isLikelyLocalModelRefusal(content)) {
+  let started = false;
+  let emittedChars = 0;
+  let pending = '';
+  const start = () => {
+    if (!started) {
+      emitLocalAssistantTurnStart(sessionId);
+      started = true;
+    }
+  };
+  const result = await callPreferredLocalModel(message, 4096, {
+    images: imagePaths,
+    onPartial: (delta) => {
+      pending += delta;
+      // Check the buffered prefix for refusal phrasing on every delta so a
+      // refusal is caught before its text ever reaches the transcript.
+      if (isLikelyLocalModelRefusal(pending)) return;
+      if (pending.length > LOCAL_LLM_STREAM_HOLDBACK_CHARS) {
+        start();
+        emitLocalAssistantText(sessionId, pending);
+        emittedChars += pending.length;
+        pending = '';
+      }
+    },
+  });
+  const full = result.ok ? (result.content ?? '') : '';
+  const content = full.trim();
+  if (!result.ok || !content || isLikelyLocalModelRefusal(content)) {
+    if (started) emitLocalAssistantTurnEnd(sessionId, 'interrupted');
     console.warn('[Chat] Local model reply unusable; falling back to configured provider');
     return false;
   }
 
   console.log(`[Chat] Answered via local model (${content.length} chars)`);
-  emitLocalAssistantTurn(sessionId, content);
+  start();
+  // Streamed text is already on screen; emit only the unstreamed remainder (or
+  // the trimmed body when the backend didn't stream at all).
+  const remainder = emittedChars > 0 ? full.slice(emittedChars) : content;
+  if (remainder) emitLocalAssistantText(sessionId, remainder);
+  emitLocalAssistantTurnEnd(sessionId);
   return true;
 }
 
@@ -317,9 +370,14 @@ export function registerChatHandlers(): void {
         enrichedMessage = `[Work Item ${parsed.workItemId}] ${parsed.command}: ${message}`;
       }
 
-      // Plain messages without attachments may be answerable on-device.
-      if (!parsed.command && (!attachments || attachments.length === 0)) {
-        const handledLocally = await tryLocalLlmChatReply(sessionId, enrichedMessage);
+      // Plain messages — and, on macOS 27+, image-only attachments — may be
+      // answerable on-device.
+      if (!parsed.command) {
+        const handledLocally = await tryLocalLlmChatReply(
+          sessionId,
+          enrichedMessage,
+          attachments,
+        );
         if (handledLocally) return;
       }
 
@@ -529,6 +587,8 @@ export function registerChatHandlers(): void {
         workItemTitle?: string;
         repoIds?: string[];
         activeRepoId?: string | null;
+        /** Set by manual renames so generated titles stop overwriting the thread. */
+        titleLocked?: boolean;
       },
     ): ChatThread | null => {
       return updateChatThread(threadId, updates);

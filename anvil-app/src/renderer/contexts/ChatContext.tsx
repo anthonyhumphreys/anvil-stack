@@ -634,7 +634,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const renameThread = useCallback(
     async (threadId: string, title: string) => {
-      const updated = await window.anvil.chat.updateThread(threadId, { title });
+      const updated = await window.anvil.chat.updateThread(threadId, {
+        title,
+        titleLocked: true,
+      });
       if (updated) {
         applyThreadState(updated);
       }
@@ -1366,6 +1369,26 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             intent.id === event.agentUIIntentId
               ? { ...intent, lifecycle: 'resolved' as const, resolvedAt: new Date().toISOString() }
               : intent,
+          ),
+        );
+      }
+
+      if (event.type === 'thread_metadata' && eventThreadId) {
+        setThreads((previous) =>
+          sortThreads(
+            previous.map((thread) =>
+              thread.id === eventThreadId
+                ? {
+                    ...thread,
+                    title: event.threadTitle ?? thread.title,
+                    summary: event.threadSummary ?? thread.summary,
+                    settledAt:
+                      event.threadSettledAt !== undefined
+                        ? (event.threadSettledAt ?? undefined)
+                        : thread.settledAt,
+                  }
+                : thread,
+            ),
           ),
         );
       }

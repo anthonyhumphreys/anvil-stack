@@ -31,6 +31,9 @@ interface UpdateChatThreadInput {
   activeRepoId?: string | null;
   settled?: boolean;
   viewed?: boolean;
+  summary?: string | null;
+  /** Pass true when the user sets the title manually; generated titles stop. */
+  titleLocked?: boolean;
 }
 
 interface EnsureWorkItemThreadInput {
@@ -67,6 +70,8 @@ interface ChatThreadRow {
   active_turn_started_at: string | null;
   last_viewed_at: string | null;
   settled_at: string | null;
+  summary: string | null;
+  title_locked: number;
 }
 
 function defaultThreadTitle(personaId: string): string {
@@ -222,6 +227,8 @@ function mapThreadRow(row: ChatThreadRow): ChatThread {
     activeTurnStartedAt: row.active_turn_started_at ?? undefined,
     lastViewedAt: row.last_viewed_at ?? undefined,
     settledAt: row.settled_at ?? undefined,
+    summary: row.summary?.trim() ? row.summary : undefined,
+    titleLocked: row.title_locked === 1,
   };
 }
 
@@ -265,6 +272,8 @@ export function listChatThreads(workspaceId: string | null, personaId?: string):
          t.active_turn_started_at,
          t.last_viewed_at,
          t.settled_at,
+         t.summary,
+         t.title_locked,
          (
            SELECT m2.content
            FROM chat_messages m2
@@ -319,6 +328,8 @@ export function listWorkItemChatThreads(workspaceId: string | null): ChatThread[
          t.active_turn_started_at,
          t.last_viewed_at,
          t.settled_at,
+         t.summary,
+         t.title_locked,
          (
            SELECT m2.content
            FROM chat_messages m2
@@ -372,6 +383,8 @@ export function getChatThread(threadId: string): ChatThread | null {
          t.active_turn_started_at,
          t.last_viewed_at,
          t.settled_at,
+         t.summary,
+         t.title_locked,
          (
            SELECT m2.content
            FROM chat_messages m2
@@ -420,6 +433,8 @@ export function findWorkItemChatThread(
          t.active_turn_started_at,
          t.last_viewed_at,
          t.settled_at,
+         t.summary,
+         t.title_locked,
          (
            SELECT m2.content
            FROM chat_messages m2
@@ -563,6 +578,15 @@ export function updateChatThread(
   if (updates.viewed) {
     assignments.push('last_viewed_at = ?');
     values.push(new Date().toISOString());
+  }
+
+  if (updates.summary !== undefined) {
+    assignments.push('summary = ?');
+    values.push(updates.summary?.trim() || null);
+  }
+
+  if (updates.titleLocked === true) {
+    assignments.push('title_locked = 1');
   }
 
   db.prepare(`UPDATE chat_threads SET ${assignments.join(', ')} WHERE id = ?`).run(

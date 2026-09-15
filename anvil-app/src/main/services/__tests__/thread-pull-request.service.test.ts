@@ -6,7 +6,10 @@ import { join } from 'node:path';
 import { MIGRATIONS, SCHEMA_SQL } from '../../db/schema.js';
 import type { CodeReviewPullRequest } from '../../../shared/types.js';
 
-const mocks = vi.hoisted(() => ({ metadata: vi.fn() }));
+const mocks = vi.hoisted(() => ({ metadata: vi.fn(), send: vi.fn() }));
+vi.mock('electron', () => ({
+  BrowserWindow: { getAllWindows: () => [{ webContents: { send: mocks.send } }] },
+}));
 vi.mock('../code-review-pr.service.js', () => ({ getPullRequestMetadata: mocks.metadata }));
 vi.mock('../../db/database.js', () => ({ getDb: () => db }));
 import {
@@ -103,6 +106,27 @@ describe('durable thread pull request associations', () => {
       'Provider offline',
     );
     expect(listThreadPullRequestLinks(original.id)).toEqual([updated]);
+  });
+  it('settles the thread when a linked pull request reaches a terminal state', async () => {
+    const original = thread();
+    await linkThreadPullRequest(original.id, input);
+    expect(getChatThread(original.id)?.settledAt).toBeFalsy();
+
+    mocks.metadata.mockResolvedValue({ ...pullRequest, state: 'merged' });
+    const links = listThreadPullRequestLinks(original.id);
+    await refreshThreadPullRequest(original.id, links[0].id);
+
+    await vi.waitFor(() =>
+      expect(getChatThread(original.id)?.settledAt).toBeTruthy(),
+    );
+    expect(mocks.send).toHaveBeenCalledWith(
+      'chat:event',
+      expect.objectContaining({
+        type: 'thread_metadata',
+        appThreadId: original.id,
+        threadSettledAt: expect.any(String),
+      }),
+    );
   });
   it('rejects wrong provider identity, thread membership and workspace membership', async () => {
     const original = thread();

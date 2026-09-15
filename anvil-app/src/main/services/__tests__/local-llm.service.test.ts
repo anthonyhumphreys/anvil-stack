@@ -4,11 +4,14 @@ import type { AppSettings } from '../../../shared/types.js';
 const mocks = vi.hoisted(() => ({
   getSettings: vi.fn(),
   callAppleFoundationModel: vi.fn(),
+  getAppleLocalModelStatus: vi.fn(),
 }));
 
 vi.mock('../settings.service.js', () => ({ getSettings: mocks.getSettings }));
 vi.mock('../apple-foundation-models.service.js', () => ({
   callAppleFoundationModel: mocks.callAppleFoundationModel,
+  getAppleLocalModelStatus: mocks.getAppleLocalModelStatus,
+  invalidateAppleLocalModelStatus: vi.fn(),
 }));
 
 import {
@@ -32,11 +35,30 @@ describe('local LLM providers', () => {
     vi.clearAllMocks();
   });
 
-  it('only offers Apple Intelligence on macOS', () => {
-    const capabilities = getLocalLlmCapabilities();
+  it('only offers Apple Intelligence on macOS', async () => {
+    mocks.getAppleLocalModelStatus.mockResolvedValue({
+      platform: 'darwin',
+      available: true,
+      reason: 'available',
+      backend: 'fm-cli',
+      features: {
+        streaming: true,
+        instructions: true,
+        images: true,
+        tokenCounting: true,
+        contextSize: true,
+        useCases: true,
+        structuredOutput: false,
+      },
+    });
+    const capabilities = await getLocalLlmCapabilities();
     expect(capabilities.providers).toContain('ollama');
     expect(capabilities.providers).toContain('lm-studio');
     expect(capabilities.providers.includes('apple')).toBe(process.platform === 'darwin');
+    if (process.platform === 'darwin') {
+      expect(capabilities.apple?.backend).toBe('fm-cli');
+      expect(capabilities.apple?.features.images).toBe(true);
+    }
   });
 
   it('uses provider-specific loopback defaults', () => {
