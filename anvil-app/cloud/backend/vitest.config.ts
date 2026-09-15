@@ -65,6 +65,10 @@ export default defineConfig({
         d1Databases: { HOSTED_DB: 'hosted-test' },
         bindings: {
           ANVIL_DEV_SPIKE: 'true',
+          // BILL-03: enforcement is on for the whole suite — every
+          // pre-existing test account is unlinked and therefore
+          // preview-entitled, proving enforcement doesn't disturb them.
+          HOSTED_BILLING_ENFORCEMENT: 'true',
           HOSTED_SERVICE_KEYS: JSON.stringify({ test: 'a'.repeat(32) }),
           STRIPE_SECRET_KEY: 'sk_test_fake',
           STRIPE_WEBHOOK_SECRET: 'whsec_testfake0123456789',
@@ -81,5 +85,9 @@ export default defineConfig({
   ],
   test: {
     globals: false,
+    // D1 is fresh per test file; hosted migrations must exist before any
+    // module-level fixtures run, so they land in a setup file rather than
+    // per-suite beforeEach.
+    setupFiles: ['./test/hosted-migrations.setup.ts'],
   },
 });

@@ -44,6 +44,11 @@ import {
 } from '../../contract/socket';
 import type { SyncAccountStats } from '../../contract/auth';
 import {
+  HOSTED_OPERATION_CLASS,
+  type OperationName,
+} from '../../contract/operations';
+import { checkHostedAccess, ENTITLEMENT_CACHE_DDL } from './hosted/enforcement';
+import {
   DATA_EXPORT_FORMAT_VERSION,
   type DataExportBeginResult,
   type DataExportPageResult,
@@ -617,6 +622,10 @@ export class AccountCoordinator extends DurableObject<Env> {
       'history_bytes',
       '0',
     );
+    // BILL-03: the entitlement cache is deliberately separate from the
+    // frozen ACCOUNT_SCHEMA — a per-object row bounding how long a hosted
+    // access decision may be reused.
+    this.ctx.storage.sql.exec(ENTITLEMENT_CACHE_DDL);
     this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
   }
 
@@ -904,6 +913,14 @@ export class AccountCoordinator extends DurableObject<Env> {
    * `generation` must equal the attempt fence. `control` is a reserved
    * backend channel (approval requests); ordinary streams journal under the
    * per-job budget and fan out to subscribers, coalescing under backpressure.
+   *
+   * BILL-03 classification: control. An activity frame only reports on an
+   * attempt that already exists — it cannot create work, and it cannot
+   * extend the attempt's lease (attempt.renew is the mutating op and is
+   * gated). Denying it would break the launch-plan guarantee that running
+   * work stays observable and stoppable after restriction, including the
+   * approval channel on `control` streams. The attempt's existing fences
+   * and deadline still bound everything a frame can do.
    */
   private handleActivityFrame(
     ws: WebSocket,
@@ -1180,6 +1197,15 @@ export class AccountCoordinator extends DurableObject<Env> {
       return rpcErrorResponse(envelope.requestId, envelope.code);
     }
     const { request: rpc } = envelope;
+    // BILL-03: the hosted entitlement gate runs after authentication and
+    // envelope validation but before any dispatch — a denied mutating op
+    // consumes no receipts, sequences, or durable state.
+    if (HOSTED_OPERATION_CLASS[rpc.operation as OperationName] === 'mutating') {
+      const denial = await this.hostedWriteDenial(auth, rpc.requestId);
+      if (denial !== null) {
+        return denial;
+      }
+    }
     try {
       switch (rpc.operation) {
         case 'sync.push':
@@ -1269,6 +1295,29 @@ export class AccountCoordinator extends DurableObject<Env> {
       }
       return rpcErrorResponse(rpc.requestId, 'unavailable');
     }
+  }
+
+  /**
+   * BILL-03: denies mutating work for restricted/unknown hosted
+   * entitlements. Self-host deployments and flag-off hosted deployments
+   * never reach a denial — `checkHostedAccess` is inert there. Denials
+   * are `forbidden` with the entitlement reason; 401 stays auth-only and
+   * 413 stays quota.
+   */
+  private async hostedWriteDenial(
+    auth: SpikeAuth,
+    requestId: string | undefined,
+  ): Promise<Response | null> {
+    const access = await checkHostedAccess(
+      this.ctx.storage,
+      this.env,
+      auth.accountId,
+      Date.now(),
+    );
+    if (access.allowed) {
+      return null;
+    }
+    return rpcErrorResponse(requestId, 'forbidden', { reason: access.reason });
   }
 
   private async handlePush(
@@ -4670,6 +4719,13 @@ export class AccountCoordinator extends DurableObject<Env> {
     const auth = this.identityOf(request);
     if (auth === null) {
       return rpcErrorResponse(undefined, 'unauthenticated');
+    }
+    // BILL-03: the byte route is the mutating half of artifact.reserve —
+    // a restricted account must not land new billable bytes even on a
+    // still-open reservation window.
+    const denial = await this.hostedWriteDenial(auth, undefined);
+    if (denial !== null) {
+      return denial;
     }
     const now = Date.now();
     let artifact: ArtifactRow;

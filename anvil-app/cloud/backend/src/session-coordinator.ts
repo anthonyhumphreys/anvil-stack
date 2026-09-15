@@ -37,6 +37,7 @@ import {
   type VerifiedAuth,
 } from './auth';
 import { sha256Hex } from './hash';
+import { resolveAccountEntitlement } from './hosted/enforcement';
 import { verifyOidcPkceProof } from './oidc';
 import { isRecord, rpcErrorResponse } from './rpc';
 import { SESSION_SCHEMA } from './schema';
@@ -711,6 +712,15 @@ export class SessionCoordinator extends DurableObject<Env> {
       return authError('unauthenticated');
     }
     const meta = await this.accountMeta(row.account_id);
+    // BILL-03: hosted deployments surface the account's entitlement so
+    // clients can render access state. Resolution failure omits the field
+    // rather than failing describe; self-host (no HOSTED_DB) omits it too.
+    const entitlement =
+      this.env.HOSTED_DB === undefined
+        ? null
+        : await resolveAccountEntitlement(this.env, row.account_id, Date.now()).catch(
+            () => null,
+          );
     const result: SessionDescribeResult = {
       accountId: row.account_id,
       enrollmentId: row.enrollment_id,
@@ -719,6 +729,7 @@ export class SessionCoordinator extends DurableObject<Env> {
       accessExpiresAt: new Date(row.access_expires_at).toISOString(),
       ...(row.display_name === null ? {} : { displayName: row.display_name }),
       ...(meta.stats === undefined ? {} : { accountStats: meta.stats }),
+      ...(entitlement === null ? {} : { entitlement }),
     };
     return Response.json(result, { status: 200 });
   }

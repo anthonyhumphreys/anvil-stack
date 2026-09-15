@@ -162,3 +162,63 @@ export function profileForOperation(operation: OperationName): OperationProfile 
 export function requiredActorRole(operation: OperationName): ActorRole {
   return OPERATION_ROLE[operation];
 }
+
+/**
+ * BILL-03 hosted access classes. `mutating` operations create or extend
+ * billable work/data and are denied with 403 when the hosted entitlement
+ * is restricted; `control` operations (reads, cancellation, completion
+ * reporting, deletion) stay available so users can observe, stop, or
+ * finish already-running work and export/delete their data.
+ *
+ * `attempt.report` and `artifact.finalize` stay `control` deliberately: a
+ * restricted account cannot create new attempts or reservations, so any
+ * attempt or reservation they complete predates the restriction and is
+ * bounded by its existing fences, leases, and quota. The same holds for
+ * `job.cancel`, `handoff.cancel`, `approval.decide`, `artifact.delete`,
+ * and `account.delete` — stopping, deciding, and deleting must never
+ * require payment.
+ */
+export type HostedOperationClass = 'mutating' | 'control';
+
+export const HOSTED_OPERATION_CLASS: Record<OperationName, HostedOperationClass> = {
+  'session.describe': 'control',
+  'account.delete': 'control',
+  'account.deletionStatus': 'control',
+  'device.list': 'control',
+  'device.rename': 'control',
+  'device.revoke': 'control',
+  'device.policy.publish': 'mutating',
+  'sync.push': 'mutating',
+  'sync.pull': 'control',
+  'sync.scan.begin': 'mutating',
+  'sync.scan.page': 'control',
+  'sync.scan.finish': 'control',
+  'data.export.begin': 'control',
+  'data.export.page': 'control',
+  'data.import.preview': 'mutating',
+  'data.import.commit': 'mutating',
+  'data.operationStatus': 'control',
+  'worker.connect': 'mutating',
+  'worker.capabilities.publish': 'mutating',
+  'worker.replica.publish': 'mutating',
+  'worker.describe': 'control',
+  'job.create': 'mutating',
+  'job.get': 'control',
+  'job.list': 'control',
+  'job.claim': 'mutating',
+  'attempt.renew': 'mutating',
+  'attempt.report': 'control',
+  'job.cancel': 'control',
+  'event.pull': 'control',
+  'approval.get': 'control',
+  'approval.decide': 'control',
+  'handoff.create': 'mutating',
+  'handoff.get': 'control',
+  'handoff.advance': 'mutating',
+  'handoff.cancel': 'control',
+  'artifact.reserve': 'mutating',
+  'artifact.finalize': 'control',
+  'artifact.get': 'control',
+  'artifact.list': 'control',
+  'artifact.delete': 'control',
+};

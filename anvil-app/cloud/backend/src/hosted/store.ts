@@ -28,6 +28,8 @@ export interface BillingAccountRow {
   sync_account_id: string | null;
   generation: number;
   lifecycle: 'active' | 'deleting' | 'deleted';
+  /** BILL-03 per-account preview lever (migration 0003, default 1). */
+  preview_eligible: number;
   created_at: number;
   updated_at: number;
 }

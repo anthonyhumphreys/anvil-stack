@@ -39,6 +39,13 @@ declare namespace Cloudflare {
     HOSTED_PORTAL_RETURN_URL?: string;
     /** JSON partial override of DEFAULT_HOSTED_LIMITS. */
     HOSTED_SYNC_LIMITS?: string;
+    /**
+     * BILL-03 enforcement switch. 'true' denies mutating operations for
+     * restricted/unknown hosted entitlements inside AccountCoordinator;
+     * anything else leaves every operation allowed while HOSTED_DB still
+     * surfaces entitlement state on session.describe.
+     */
+    HOSTED_BILLING_ENFORCEMENT?: string;
   }
 }
 

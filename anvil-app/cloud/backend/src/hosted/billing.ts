@@ -428,6 +428,38 @@ export async function loadSubscriptions(
 }
 
 /**
+ * Entitlement evaluation plus the pieces the BILL-03 enforcement cache
+ * needs alongside it: `paidThrough` is the max stored subscription period
+ * end, which bounds the outage-grace path when billing is unreachable.
+ * Never calls Stripe — billingUnavailable is the caller's statement that
+ * provider truth cannot currently be refreshed, which unlocks the bounded
+ * outage-grace path. `preview_eligible` (migration 0003) is the
+ * per-account preview lever, independent of lifecycle.
+ */
+export async function getEntitlementSnapshot(
+  db: D1Database,
+  billingAccount: BillingAccountRow,
+  now: number,
+  limits: HostedLimits,
+  billingUnavailable: boolean,
+): Promise<{ entitlement: HostedEntitlement; paidThrough: number | null }> {
+  const subscriptions = await loadSubscriptions(db, billingAccount.id);
+  const entitlement = evaluateHostedEntitlement({
+    now,
+    lifecycle: billingAccount.lifecycle,
+    previewEligible: billingAccount.preview_eligible === 1,
+    revision: Math.max(0, ...subscriptions.map((s) => s.verifiedAt)),
+    limits,
+    subscriptions,
+    billingUnavailable,
+    renewalGraceDays: RENEWAL_GRACE_DAYS,
+    outageGraceHours: OUTAGE_GRACE_HOURS,
+  });
+  const paidThrough = Math.max(0, ...subscriptions.map((s) => s.paidThrough));
+  return { entitlement, paidThrough: paidThrough > 0 ? paidThrough : null };
+}
+
+/**
  * Entitlement snapshot over stored provider truth. Never calls Stripe —
  * billingUnavailable is the caller's statement that provider truth cannot
  * currently be refreshed, which unlocks the bounded outage-grace path.
@@ -439,18 +471,8 @@ export async function getEntitlement(
   limits: HostedLimits,
   billingUnavailable: boolean,
 ): Promise<HostedEntitlement> {
-  const subscriptions = await loadSubscriptions(db, billingAccount.id);
-  return evaluateHostedEntitlement({
-    now,
-    lifecycle: billingAccount.lifecycle,
-    previewEligible: billingAccount.lifecycle === 'active',
-    revision: Math.max(0, ...subscriptions.map((s) => s.verifiedAt)),
-    limits,
-    subscriptions,
-    billingUnavailable,
-    renewalGraceDays: RENEWAL_GRACE_DAYS,
-    outageGraceHours: OUTAGE_GRACE_HOURS,
-  });
+  return (await getEntitlementSnapshot(db, billingAccount, now, limits, billingUnavailable))
+    .entitlement;
 }
 
 /** HOSTED_SYNC_LIMITS is a JSON partial override over the defaults. */

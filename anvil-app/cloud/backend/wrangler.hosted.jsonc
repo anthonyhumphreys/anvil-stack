@@ -32,6 +32,12 @@
   //   STRIPE_PRICE_SYNC_ANNUAL      allowlisted Price id, annual
   //   STRIPE_API_BASE               test-only API base override
   //   HOSTED_SYNC_LIMITS            JSON partial override of default quotas
+  //
+  // BILL-03: HOSTED_BILLING_ENFORCEMENT is the kill switch for hosted
+  // write gating inside AccountCoordinator — 'true' denies mutating
+  // operations on restricted/unknown entitlements; anything else (or
+  // absence) leaves every operation allowed while session.describe still
+  // surfaces entitlement state.
   "durable_objects": {
     "bindings": [
       {
@@ -72,5 +78,7 @@
     // See wrangler.jsonc for OIDC_* / ENROLLMENT_ADMIN_TOKEN notes. The dev
     // spike flag stays absent here exactly as it does in the self-host
     // config — production must fail closed.
+    // BILL-03: mutating-work enforcement is on for hosted deployments.
+    "HOSTED_BILLING_ENFORCEMENT": "true",
   },
 }
