@@ -10,6 +10,8 @@
 // single-use enrollment code, and a reused (already-rotated) refresh token
 // are all authentication failures, never 403/409.
 
+import type { HostedEntitlement } from './entitlements';
+
 /** Frozen desktop OIDC loopback host. Only this literal host is accepted. */
 export const OIDC_LOOPBACK_HOST = '127.0.0.1' as const;
 
@@ -150,6 +152,7 @@ export interface SessionDescribeResult {
   accessExpiresAt: string;
   displayName?: string;
   accountStats?: SyncAccountStats;
+  entitlement?: HostedEntitlement;
 }
 
 /**

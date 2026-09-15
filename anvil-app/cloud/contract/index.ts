@@ -14,3 +14,4 @@ export * from './socket';
 export * from './artifacts';
 export * from './data';
 export * from './bootstrap';
+export * from './entitlements';

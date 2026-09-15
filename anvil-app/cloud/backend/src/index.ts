@@ -2,6 +2,7 @@ import { parseDeviceBearer, parseSpikeAuth, type VerifiedAuth } from './auth';
 import { AccountCoordinator } from './account-coordinator';
 import { SessionCoordinator } from './session-coordinator';
 import { buildDescriptor } from './descriptor';
+import { handleHostedRequest } from './hosted/routes';
 import { parseRpcRequest, rpcErrorResponse, rpcSuccessResponse } from './rpc';
 
 export { AccountCoordinator, SessionCoordinator };
@@ -122,6 +123,14 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
 
   if (request.method === 'GET' && path === '/.well-known/anvil-backend') {
     return Response.json(buildDescriptor(env));
+  }
+
+  // BILL-01 hosted surface: /v1/hosted/link is the public link-code
+  // redemption route; /internal/hosted/* is the HMAC-signed website
+  // service channel. Every hosted path 404s when HOSTED_DB is unbound,
+  // so self-host deployments expose nothing here.
+  if (path === '/v1/hosted/link' || path.startsWith('/internal/hosted/')) {
+    return handleHostedRequest(request, env);
   }
 
   if (path === '/v1/connect') {

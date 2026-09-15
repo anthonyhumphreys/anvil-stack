@@ -156,6 +156,17 @@ export class SessionCoordinator extends DurableObject<Env> {
         }
         case 'POST /internal/validate':
           return await this.handleValidate(request);
+        case 'POST /internal/resolve-device':
+          return await this.handleResolveDevice(request);
+        case 'POST /internal/issue-enrollment-code': {
+          const response = await this.ctx.blockConcurrencyWhile(() =>
+            this.handleInternalIssueCode(request),
+          );
+          await this.ensureSweepAlarm();
+          return response;
+        }
+        case 'GET /internal/deletion-state':
+          return this.handleDeletionState(url);
         case 'POST /internal/describe':
           return await this.handleDescribe(request);
         case 'POST /internal/device-list':
@@ -552,6 +563,20 @@ export class SessionCoordinator extends DurableObject<Env> {
       accountId = session.account_id;
       issuedBy = session.enrollment_id;
     }
+    const displayName = typeof body['displayName'] === 'string' ? body['displayName'] : null;
+    return this.issueCodeForAccount(accountId, displayName, issuedBy);
+  }
+
+  /**
+   * Shared code-issuance path for every caller class: tombstoned accounts
+   * are dead, live codes per account are capped, and only the SHA-256 of
+   * the normalized code is stored. Callers own their auth checks.
+   */
+  private async issueCodeForAccount(
+    accountId: string,
+    displayName: string | null,
+    issuedBy: string,
+  ): Promise<Response> {
     // A tombstoned accountId is permanently dead — deleted cloud state
     // cannot be recreated by issuing new enrollments for it.
     if (this.deletionRow(accountId) !== null) {
@@ -581,7 +606,6 @@ export class SessionCoordinator extends DurableObject<Env> {
 
     const { code, normalized } = generateEnrollmentCode();
     const codeHash = await sha256Hex(normalized);
-    const displayName = typeof body['displayName'] === 'string' ? body['displayName'] : null;
     this.ctx.storage.sql.exec(
       `INSERT INTO enrollment_codes
         (code_hash, account_id, issued_by, display_name, expires_at, consumed_at, created_at)
@@ -599,6 +623,58 @@ export class SessionCoordinator extends DurableObject<Env> {
       accountId,
     };
     return Response.json(result, { status: 200 });
+  }
+
+  /**
+   * BILL-01 hosted pairing: the worker's `/internal/hosted/*` channel has
+   * already verified the service signature, so this handler trusts the
+   * body-supplied accountId and never sees a device credential. Reachable
+   * only through `stub.fetch` — index.ts routes no public traffic here.
+   */
+  private async handleInternalIssueCode(request: Request): Promise<Response> {
+    const body = await readJson(request);
+    if (
+      !isRecord(body) ||
+      typeof body['accountId'] !== 'string' ||
+      body['accountId'].length === 0
+    ) {
+      return authError('malformed-request');
+    }
+    const displayName = typeof body['displayName'] === 'string' ? body['displayName'] : null;
+    const issuedBy =
+      typeof body['issuedBy'] === 'string' && body['issuedBy'].length > 0
+        ? body['issuedBy']
+        : 'internal';
+    return this.issueCodeForAccount(body['accountId'], displayName, issuedBy);
+  }
+
+  /** Worker-internal: is this accountId under a deletion tombstone? */
+  private handleDeletionState(url: URL): Response {
+    const accountId = url.searchParams.get('accountId');
+    if (accountId === null || accountId.length === 0) {
+      return authError('malformed-request');
+    }
+    return Response.json({ tombstoned: this.deletionRow(accountId) !== null });
+  }
+
+  /**
+   * Worker-internal bearer → {accountId, enrollmentId} for the hosted link
+   * route — same lookup as /internal/validate, reading the Authorization
+   * header instead of a JSON body so the caller need not re-wrap the token.
+   */
+  private async handleResolveDevice(request: Request): Promise<Response> {
+    const bearer = parseDeviceBearer(request.headers.get('Authorization'));
+    if (bearer === null) {
+      return authError('unauthenticated');
+    }
+    const row = this.sessionByAccessHash(await sha256Hex(bearer));
+    if (row === null || row.revoked_at !== null || row.access_expires_at <= Date.now()) {
+      return authError('unauthenticated');
+    }
+    return Response.json(
+      { accountId: row.account_id, enrollmentId: row.enrollment_id },
+      { status: 200 },
+    );
   }
 
   /** Worker-internal: bearer → verified identity for routing. */

@@ -6,8 +6,15 @@ export default defineConfig({
     cloudflareTest({
       wrangler: { configPath: './wrangler.jsonc' },
       // The deployable config fails closed on spike auth; the dev flag exists
-      // only inside the test pool's worker options.
-      miniflare: { bindings: { ANVIL_DEV_SPIKE: 'true' } },
+      // only inside the test pool's worker options. HOSTED_DB + a test service
+      // key stand up the BILL-01 hosted surface in tests.
+      miniflare: {
+        d1Databases: { HOSTED_DB: 'hosted-test' },
+        bindings: {
+          ANVIL_DEV_SPIKE: 'true',
+          HOSTED_SERVICE_KEYS: JSON.stringify({ test: 'a'.repeat(32) }),
+        },
+      },
     }),
   ],
   test: {

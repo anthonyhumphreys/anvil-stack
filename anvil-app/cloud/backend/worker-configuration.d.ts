@@ -12,6 +12,14 @@ declare namespace Cloudflare {
     OIDC_SCOPES?: string;
     /** Deployment-admin credential for `POST /v1/enrollment-codes`. */
     ENROLLMENT_ADMIN_TOKEN?: string;
+    /**
+     * BILL-01 hosted-only D1 billing/identity store. Bound by
+     * wrangler.hosted.jsonc; absent on self-host deployments, which then
+     * expose no hosted routes at all.
+     */
+    HOSTED_DB?: D1Database;
+    /** JSON `{"keyId":"secret"}` map for /internal/hosted/* HMAC auth. */
+    HOSTED_SERVICE_KEYS?: string;
   }
 }
 

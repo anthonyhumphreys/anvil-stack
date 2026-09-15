@@ -1,0 +1,60 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "anvil-backend-hosted",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  // BILL-01 hosted deployment: same Worker + Durable Objects + R2 surface as
+  // wrangler.jsonc, plus the D1 billing store that unlocks /v1/hosted/link
+  // and the /internal/hosted/* service channel. Self-host deploys keep using
+  // wrangler.jsonc and never provision D1.
+  //
+  // HOSTED_SERVICE_KEYS is a `wrangler secret put` value — a JSON map of
+  // {"keyId":"secret"} for the website -> backend HMAC channel. Never a var.
+  //
+  // Provision once, then deploy with `wrangler deploy --config
+  // wrangler.hosted.jsonc`:
+  //   wrangler d1 create anvil-hosted-billing --config wrangler.hosted.jsonc
+  //   wrangler d1 migrations apply anvil-hosted-billing --config wrangler.hosted.jsonc
+  //   wrangler secret put HOSTED_SERVICE_KEYS --config wrangler.hosted.jsonc
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "ACCOUNT",
+        "class_name": "AccountCoordinator",
+      },
+      {
+        "name": "SESSIONS",
+        "class_name": "SessionCoordinator",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["AccountCoordinator"],
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["SessionCoordinator"],
+    },
+  ],
+  "r2_buckets": [
+    {
+      "binding": "ARTIFACTS",
+      "bucket_name": "anvil-spike-artifacts",
+    },
+  ],
+  "d1_databases": [
+    {
+      "binding": "HOSTED_DB",
+      "database_name": "anvil-hosted-billing",
+      "database_id": "<placeholder-not-created>",
+      "migrations_dir": "migrations/hosted-billing",
+    },
+  ],
+  "vars": {
+    // See wrangler.jsonc for OIDC_* / ENROLLMENT_ADMIN_TOKEN notes. The dev
+    // spike flag stays absent here exactly as it does in the self-host
+    // config — production must fail closed.
+  },
+}
