@@ -27,6 +27,7 @@ import type {
   ReasoningEffort,
 } from '../../../shared/types';
 import { VoiceInputButton } from './VoiceInputButton';
+import { isAcpAgentProvider } from '../../../shared/agent-providers';
 import { slugForDomId } from '../../utils/dom-id';
 import { getNextListboxIndex } from '../../utils/list-navigation';
 import { EXECUTION_STRATEGIES, type ExecutionStrategy } from '../../utils/execution-strategy';
@@ -95,6 +96,8 @@ interface ChatInputProps {
   fastModeAvailable?: boolean;
   onFastModeChange?: (enabled: boolean) => void;
   contextControls?: ReactNode;
+  /** Leading controls rendered in the composer footer before attachments. */
+  leadingControls?: ReactNode;
   prefill?: { id: string; text: string } | null;
   draftKey?: string;
   mentionRepoIds?: string[];
@@ -134,6 +137,7 @@ export function ChatInput({
   fastModeAvailable = false,
   onFastModeChange,
   contextControls,
+  leadingControls,
   prefill,
   draftKey,
   mentionRepoIds = [],
@@ -751,10 +755,10 @@ export function ChatInput({
         : undefined;
 
   return (
-    <div className="border-t border-border-subtle bg-bg-primary px-3 pb-3 pt-2 xl:px-5 xl:pb-4 xl:pt-3">
+    <div className="bg-transparent px-3 pb-3 pt-2 xl:px-5 xl:pb-4 xl:pt-3">
       <div className="mx-auto w-full max-w-[1040px]">
         <div
-          className={`relative rounded-xl border bg-bg-secondary transition-[border-color,background-color,box-shadow] duration-200 focus-within:border-accent/70 focus-within:ring-1 focus-within:ring-accent/25 ${
+          className={`relative rounded-xl border bg-bg-secondary shadow-lg shadow-text-primary/10 transition-[border-color,background-color,box-shadow] duration-200 focus-within:border-accent/70 focus-within:ring-1 focus-within:ring-accent/25 ${
             disabled && !busy ? 'opacity-60' : ''
           } ${
             draggingFiles
@@ -888,6 +892,7 @@ export function ChatInput({
 
           <div className="flex min-h-12 flex-wrap items-center justify-between gap-2 px-2.5 pb-2 pt-1">
             <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
+              {leadingControls}
               <button
                 type="button"
                 onClick={() => void handleSelectAttachments()}
@@ -924,7 +929,7 @@ export function ChatInput({
                       id="chat-context-menu"
                       role="dialog"
                       aria-label="Conversation context"
-                      className="absolute bottom-full left-0 z-50 mb-2 min-w-64 rounded-xl border border-border bg-bg-elevated p-2 shadow-lg ring-1 ring-black/20"
+                      className="absolute bottom-full left-0 z-50 mb-2 min-w-64 rounded-xl border border-border bg-bg-elevated p-2 shadow-lg ring-1 ring-overlay"
                     >
                       <p className="px-2 pb-2 text-xs leading-4 text-text-tertiary">
                         Choose repositories and documents for this conversation.
@@ -997,7 +1002,7 @@ export function ChatInput({
                   }}
                   aria-label="Send message"
                 >
-                  <Send size={16} className="text-white" />
+                  <Send size={16} style={{ color: 'var(--color-bg-primary)' }} />
                 </button>
               )}
             </div>
@@ -1113,7 +1118,7 @@ function FileMentionMenu({
   return (
     <div
       id={id}
-      className="absolute bottom-full left-3 right-3 z-50 mb-2 overflow-hidden rounded-xl border border-border bg-bg-elevated shadow-2xl ring-1 ring-black/20"
+      className="absolute bottom-full left-3 right-3 z-50 mb-2 overflow-hidden rounded-xl border border-border bg-bg-elevated shadow-2xl ring-1 ring-overlay"
       role="listbox"
       aria-label="File mentions"
     >
@@ -1190,7 +1195,7 @@ function SlashCommandMenu({
   return (
     <div
       id={id}
-      className="absolute bottom-full left-3 right-3 z-50 mb-2 overflow-hidden rounded-xl border border-border bg-bg-elevated shadow-2xl ring-1 ring-black/20"
+      className="absolute bottom-full left-3 right-3 z-50 mb-2 overflow-hidden rounded-xl border border-border bg-bg-elevated shadow-2xl ring-1 ring-overlay"
       role="listbox"
       aria-label="Slash commands"
     >
@@ -1255,7 +1260,7 @@ function SkillMentionMenu({
   return (
     <div
       id={id}
-      className="absolute bottom-full left-3 right-3 z-50 mb-2 overflow-hidden rounded-xl border border-border bg-bg-elevated shadow-2xl ring-1 ring-black/20"
+      className="absolute bottom-full left-3 right-3 z-50 mb-2 overflow-hidden rounded-xl border border-border bg-bg-elevated shadow-2xl ring-1 ring-overlay"
       role="listbox"
       aria-label="Skill mentions"
     >
@@ -1588,8 +1593,8 @@ export function getCompactModelLabel(
   label: string,
   provider: AgentProvider,
 ): string {
-  if (provider !== 'cursor') return label;
-  if (model === 'auto') return 'Cursor auto';
+  if (!isAcpAgentProvider(provider)) return label;
+  if (model === 'auto') return provider === 'devin' ? 'Devin auto' : 'Cursor auto';
 
   const reasoning = getCursorModelReasoningEffort(model);
   const reasoningSuffix = reasoning ? new RegExp(`\\s+${reasoning}$`, 'i') : null;
@@ -1690,7 +1695,7 @@ function RunSettingsDropdown({
   const label = getRunSettingsLabel(
     modelLabel,
     collaborationMode,
-    modelProvider === 'cursor' ? getCursorModelReasoningEffort(model) : reasoningLevel,
+    isAcpAgentProvider(modelProvider) ? getCursorModelReasoningEffort(model) : reasoningLevel,
   );
 
   return (
@@ -1717,7 +1722,7 @@ function RunSettingsDropdown({
       {open && (
         <div
           id={RUN_SETTINGS_MENU_ID}
-          className="absolute bottom-full right-0 z-50 mb-2 max-h-[min(38rem,calc(100vh-8rem))] w-72 overflow-y-auto rounded-xl border border-border bg-bg-elevated p-3 shadow-lg ring-1 ring-black/20"
+          className="absolute bottom-full right-0 z-50 mb-2 max-h-[min(38rem,calc(100vh-8rem))] w-72 overflow-y-auto rounded-xl border border-border bg-bg-elevated p-3 shadow-lg ring-1 ring-overlay"
           role="dialog"
           aria-label="Run settings"
         >
@@ -1816,16 +1821,17 @@ function RunSettingsDropdown({
               </label>
             )}
 
-            {modelProvider === 'cursor' ? (
+            {isAcpAgentProvider(modelProvider) ? (
               <div>
                 <span className="mb-1 block text-[11px] font-medium text-text-muted">
                   Reasoning
                 </span>
                 <div className="rounded-lg border border-border-subtle bg-bg-secondary px-2.5 py-2 text-xs text-text-secondary">
-                  Set by the Cursor model
+                  Set by the {modelProvider === 'devin' ? 'Devin' : 'Cursor'} model
                 </div>
                 <span className="mt-1 block text-[11px] leading-4 text-text-tertiary">
-                  Cursor model IDs include their reasoning level where supported.
+                  {modelProvider === 'devin' ? 'Devin' : 'Cursor'} model IDs include their reasoning
+                  level where supported.
                 </span>
               </div>
             ) : (
@@ -1923,13 +1929,16 @@ function decodeModelSelection(value: string): { provider: AgentProvider; model: 
   if (separator < 1) return null;
   const provider = value.slice(0, separator) as AgentProvider;
   const model = value.slice(separator + 1);
-  if (!['azure', 'openai', 'codex', 'cursor'].includes(provider) || !model) return null;
+  if (!['azure', 'openai', 'codex', 'cursor', 'devin', 'llmgateway'].includes(provider) || !model)
+    return null;
   return { provider, model };
 }
 
 function formatProviderLabel(provider: AgentProvider): string {
   if (provider === 'codex') return 'Codex CLI';
   if (provider === 'cursor') return 'Cursor CLI';
+  if (provider === 'devin') return 'Devin CLI';
+  if (provider === 'llmgateway') return 'LLMGateway';
   if (provider === 'openai') return 'OpenAI';
   return 'Azure Foundry';
 }

@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 76;
+export const SCHEMA_VERSION = 78;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -367,6 +367,8 @@ CREATE TABLE IF NOT EXISTS settings (
   github_username TEXT,
   cloud_features_enabled INTEGER NOT NULL DEFAULT 0,
   telemetry_enabled INTEGER NOT NULL DEFAULT 0,
+  llm_gateway_api_key BLOB,
+  llm_gateway_billing_mode TEXT NOT NULL DEFAULT 'devpass',
   updated_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -2441,6 +2443,10 @@ ALTER TABLE settings ADD COLUMN notion_oauth_expiry TEXT;
 ALTER TABLE settings ADD COLUMN notion_database_id TEXT;
 `,
   67: `
+ALTER TABLE settings ADD COLUMN llm_gateway_api_key BLOB;
+ALTER TABLE settings ADD COLUMN llm_gateway_billing_mode TEXT NOT NULL DEFAULT 'devpass';
+`,
+  68: `
 CREATE TABLE IF NOT EXISTS device_enrollments (
   id TEXT PRIMARY KEY,
   backend_id TEXT NOT NULL,
@@ -2534,7 +2540,7 @@ CREATE TABLE IF NOT EXISTS sync_conflicts (
 CREATE INDEX IF NOT EXISTS idx_sync_conflicts_scope_entity
   ON sync_conflicts(backend_id, account_id, dataset_epoch, entity_type, entity_id);
 `,
-  68: `
+  69: `
 CREATE TABLE IF NOT EXISTS sync_backends (
   id TEXT PRIMARY KEY,
   base_url TEXT NOT NULL,
@@ -2550,7 +2556,7 @@ CREATE TABLE IF NOT EXISTS sync_backends (
 CREATE UNIQUE INDEX IF NOT EXISTS uq_sync_backends_one_active
   ON sync_backends(state) WHERE state = 'active';
 `,
-  69: `
+  70: `
 ALTER TABLE device_enrollments ADD COLUMN next_sequence INTEGER NOT NULL DEFAULT 1;
 ALTER TABLE sync_backends ADD COLUMN identity_review_required INTEGER NOT NULL DEFAULT 0;
 CREATE TABLE IF NOT EXISTS sync_installation (
@@ -2579,7 +2585,7 @@ CREATE TABLE IF NOT EXISTS sync_scan_staging (
   PRIMARY KEY (backend_id, account_id, dataset_epoch, entity_type, entity_id)
 );
 `,
-  70: `
+  71: `
 ALTER TABLE workspaces ADD COLUMN definition_state TEXT NOT NULL DEFAULT 'ready';
 CREATE TABLE IF NOT EXISTS workspace_repo_definitions (
   workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
@@ -2606,7 +2612,7 @@ CREATE TABLE IF NOT EXISTS editable_agents (
   updated_at TEXT NOT NULL
 );
 `,
-  71: `
+  72: `
 -- MESH-02: device-local worker opt-in + incarnation bookkeeping. The policy
 -- is a LOCAL consent record; it is never a synced entity and never enters
 -- the outbox. Single-row table (id = 1).
@@ -2639,7 +2645,7 @@ CREATE TABLE IF NOT EXISTS mesh_attempts (
 );
 CREATE INDEX IF NOT EXISTS idx_mesh_attempts_state ON mesh_attempts(state);
 `,
-  72: `
+  73: `
 -- WS-02: durable workspace materialisation journal (spec §7). Written before
 -- each filesystem mutation so an interrupted clone/link/remove is
 -- reconstructable. Keep in sync with the SCHEMA_SQL copy of these tables.
@@ -2688,7 +2694,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_wm_repo_stages_active_destination
   WHERE stage NOT IN ('failed', 'unsupported', 'mapping-published', 'detached', 'quarantined')
     AND destination IS NOT NULL;
 `,
-  73: `
+  74: `
 -- WS-03: bootstrap recipe on the workspace + local-only approval records
 -- and the run journal (step outcomes + bounded evidence). Approvals pin a
 -- sha256 digest of recipe + commits + effective policy and NEVER sync.
@@ -2729,7 +2735,7 @@ CREATE TABLE IF NOT EXISTS bootstrap_run_steps (
   PRIMARY KEY (run_id, step_id)
 );
 `,
-  74: `
+  75: `
 -- SESSION-03: local session-ownership mirror + handoff participation
 -- journal. Keep in sync with the SCHEMA_SQL copies of these tables.
 CREATE TABLE IF NOT EXISTS mesh_session_ownership (
@@ -2750,7 +2756,7 @@ CREATE TABLE IF NOT EXISTS mesh_handoff_journal (
 CREATE INDEX IF NOT EXISTS idx_mesh_handoff_journal_session
   ON mesh_handoff_journal(session_id);
 `,
-  75: `
+  76: `
 -- FLOW-02: parent-side node dispatch records. The dispatch id is the
 -- stable identity — a parent restart re-adopts the recorded job rather
 -- than recreating one (spec §449). Keep in sync with SCHEMA_SQL.
@@ -2771,7 +2777,7 @@ CREATE TABLE IF NOT EXISTS mesh_node_dispatches (
 CREATE INDEX IF NOT EXISTS idx_mesh_node_dispatches_state
   ON mesh_node_dispatches(state);
 `,
-  76: `
+  77: `
 -- FLOW-03: durable integration runs. Keep in sync with SCHEMA_SQL.
 CREATE TABLE IF NOT EXISTS mesh_integrations (
   integration_id TEXT PRIMARY KEY,
@@ -2783,5 +2789,9 @@ CREATE TABLE IF NOT EXISTS mesh_integrations (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+`,
+  78: `
+ALTER TABLE settings ADD COLUMN llm_gateway_api_key BLOB;
+ALTER TABLE settings ADD COLUMN llm_gateway_billing_mode TEXT NOT NULL DEFAULT 'devpass';
 `,
 };

@@ -984,7 +984,7 @@ function PriceEditor({
             value={provider}
             onChange={(e) => setProvider(e.target.value)}
           >
-            {['codex', 'cursor', 'openai', 'azure'].map((p) => (
+            {['codex', 'cursor', 'devin', 'openai', 'azure'].map((p) => (
               <option key={p}>{p}</option>
             ))}
           </select>

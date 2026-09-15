@@ -28,6 +28,8 @@ export interface CodexProtocolState {
   acpCostUsd?: number;
   pendingFileChanges?: Map<string, Map<string, PendingFileChange>>;
   assistantPhases?: Map<string, ChatAssistantPhase>;
+  /** Display name for the connected agent (e.g. 'Cursor', 'Devin'). */
+  agentLabel?: string;
 }
 
 interface PendingFileChange {
@@ -43,6 +45,16 @@ export interface CodexProtocolCallbacks {
   onTurnIdChanged?: (turnId: string | null) => void;
   onEvent?: (event: CodexEvent) => void;
   onServerRequestResolved?: (requestId: JsonRpcRequestId) => void;
+  /**
+   * Called for JSON-RPC error responses. Return true to mark the error as
+   * handled (e.g. a provider auth retry) and suppress the default
+   * thread-error/event propagation.
+   */
+  onRequestError?: (error: {
+    requestId: JsonRpcRequestId;
+    code?: number;
+    message: string;
+  }) => boolean | void;
   onLog?: (message: string) => void;
 }
 
@@ -154,9 +166,16 @@ export function handleCodexServerLine(
 
   if (!method && requestId !== undefined) {
     if (msg.error) {
-      const err = msg.error as { message?: string };
+      const err = msg.error as { message?: string; code?: number };
+      const handled =
+        callbacks.onRequestError?.({
+          requestId,
+          code: typeof err.code === 'number' ? err.code : undefined,
+          message: err.message ?? '',
+        }) === true;
+      if (handled) return;
       if (!state.threadId) {
-        callbacks.onThreadError?.(err.message ?? 'Codex app-server request failed');
+        callbacks.onThreadError?.(err.message ?? 'Agent request failed');
       }
       callbacks.onEvent?.({
         type: 'error',
@@ -173,15 +192,24 @@ export function handleCodexServerLine(
       state.initialized = true;
       callbacks.onThreadReady?.();
     }
-    if (result?.stopReason) {
+    if (typeof result?.stopReason === 'string' && result.stopReason) {
+      const stopReason = result.stopReason;
       const outcome =
-        result.stopReason === 'cancelled'
+        stopReason === 'cancelled'
           ? 'interrupted'
-          : result.stopReason === 'end_turn'
+          : stopReason === 'end_turn'
             ? 'completed'
             : 'failed';
       callbacks.onEvent?.({ type: 'turn_outcome', turnOutcome: outcome });
-      callbacks.onEvent?.({ type: 'status', status: 'complete' });
+      if (outcome === 'failed') {
+        callbacks.onEvent?.({
+          type: 'status',
+          status: 'error',
+          errorMessage: `${acpAgentLabel(state)} ended the turn early (${stopReason}).`,
+        });
+      } else {
+        callbacks.onEvent?.({ type: 'status', status: 'complete' });
+      }
       callbacks.onTurnCompleted?.(outcome);
     }
     return;
@@ -237,7 +265,7 @@ export function handleCodexServerLine(
               if (!isRecord(entry) || typeof entry.content !== 'string') return [];
               return [
                 {
-                  id: `cursor-plan-${index}`,
+                  id: `acp-plan-${index}`,
                   step: entry.content,
                   status: parseAcpPlanStatus(entry.status),
                 },
@@ -256,9 +284,23 @@ export function handleCodexServerLine(
               : update?.status === 'completed'
                 ? 'completed'
                 : 'running',
-          toolName: (update?.title as string) ?? (update?.kind as string) ?? 'Cursor tool',
+          // Only the initial tool_call gets a generic fallback — updates must
+          // leave toolName undefined so the renderer keeps the first title.
+          toolName:
+            (update?.title as string) ??
+            acpToolKindLabel(update?.kind) ??
+            (kind === 'tool_call' ? `${acpAgentLabel(state)} tool` : undefined),
           toolInput: isRecord(update?.rawInput) ? update.rawInput : {},
+          toolOutput: extractAcpToolOutput(update),
         });
+      } else if (
+        kind === 'config_option_update' ||
+        kind === 'current_mode_update' ||
+        kind === 'available_commands_update' ||
+        kind === 'user_message_chunk' ||
+        kind === 'session_info_update'
+      ) {
+        // Lifecycle/catalog notifications — nothing to render.
       }
       break;
     }
@@ -279,9 +321,7 @@ export function handleCodexServerLine(
         toolName:
           typeof toolCall?.title === 'string'
             ? toolCall.title
-            : typeof toolCall?.kind === 'string'
-              ? toolCall.kind
-              : 'Cursor tool',
+            : (acpToolKindLabel(toolCall?.kind) ?? `${acpAgentLabel(state)} tool`),
         toolInput: isRecord(toolCall?.rawInput) ? toolCall.rawInput : undefined,
         approvalPermissions: { options: Array.isArray(params?.options) ? params.options : [] },
       });
@@ -326,7 +366,7 @@ export function handleCodexServerLine(
         protocolThreadId: typeof params?.sessionId === 'string' ? params.sessionId : undefined,
         inputRequest: {
           kind: 'mcp_elicitation',
-          serverName: 'Cursor',
+          serverName: acpAgentLabel(state),
           message: typeof params?.message === 'string' ? params.message : undefined,
           mode: params?.mode === 'form' || params?.mode === 'url' ? params.mode : undefined,
           requestedSchema: params?.requestedSchema,
@@ -694,6 +734,10 @@ function getItemId(
 
 function extractAcpText(content: unknown): string {
   if (typeof content === 'string') return content;
+  // A single ContentBlock, e.g. tool_call content[].content.
+  if (isRecord(content) && content.type === 'text' && typeof content.text === 'string') {
+    return content.text;
+  }
   if (!Array.isArray(content)) return '';
   return content
     .map((item) => {
@@ -702,6 +746,84 @@ function extractAcpText(content: unknown): string {
       return '';
     })
     .join('');
+}
+
+function acpAgentLabel(state: CodexProtocolState): string {
+  return state.agentLabel ?? 'Agent';
+}
+
+function acpToolKindLabel(kind: unknown): string | undefined {
+  if (typeof kind !== 'string') return undefined;
+  switch (kind) {
+    case 'read':
+      return 'Read';
+    case 'edit':
+      return 'Edit';
+    case 'delete':
+      return 'Delete';
+    case 'move':
+      return 'Move';
+    case 'execute':
+      return 'Command';
+    case 'fetch':
+      return 'Fetch';
+    case 'search':
+      return 'Search';
+    case 'think':
+      return 'Think';
+    case 'switch_mode':
+      return 'Switch mode';
+    case 'other':
+      return undefined;
+    default:
+      return kind;
+  }
+}
+
+/**
+ * Flatten ACP tool-call `content` blocks, touched `locations`, and rawOutput
+ * into a single display string so tool updates can show what the tool did.
+ */
+function extractAcpToolOutput(update: Record<string, unknown> | undefined): string | undefined {
+  if (!update) return undefined;
+  const parts: string[] = [];
+  const seen = new Set<string>();
+
+  const push = (text: string) => {
+    const trimmed = text.trim();
+    if (trimmed && !seen.has(trimmed)) {
+      seen.add(trimmed);
+      parts.push(trimmed);
+    }
+  };
+
+  const content = update.content;
+  if (Array.isArray(content)) {
+    for (const item of content) {
+      if (!isRecord(item)) continue;
+      if (item.type === 'content') {
+        push(extractAcpText(item.content));
+      } else if (item.type === 'diff' && typeof item.path === 'string') {
+        push(`Edited ${item.path}`);
+      }
+    }
+  }
+
+  const locations = update.locations;
+  if (Array.isArray(locations)) {
+    for (const location of locations) {
+      if (isRecord(location) && typeof location.path === 'string') {
+        push(`Touched ${location.path}`);
+      }
+    }
+  }
+
+  if (typeof update.rawOutput === 'string') {
+    push(update.rawOutput);
+  }
+
+  if (parts.length === 0) return undefined;
+  return limitTail(parts.join('\n'), MAX_RENDERED_COMMAND_OUTPUT_CHARS);
 }
 
 function parseAcpPlanStatus(value: unknown): ChatPlanStepStatus {
@@ -726,15 +848,29 @@ function parseSubagentUpdate(
     const activityKind = parseSubagentActivityKind(item.kind);
     const agentThreadId = typeof item.agentThreadId === 'string' ? item.agentThreadId : undefined;
     if (!activityKind || !agentThreadId) return null;
-    const status: CodexSubagentStatus = activityKind === 'interrupted' ? 'interrupted' : 'running';
+    let status: CodexSubagentStatus;
+    if (activityKind === 'completed') status = 'completed';
+    else if (activityKind === 'errored') status = 'errored';
+    else if (activityKind === 'interrupted') status = 'interrupted';
+    else status = 'running';
     return {
       id: item.id,
       kind: 'activity',
       receiverThreadIds: [agentThreadId],
-      agents: [{ threadId: agentThreadId, status }],
+      agents: [
+        {
+          threadId: agentThreadId,
+          status,
+          message: typeof item.message === 'string' ? item.message : undefined,
+        },
+      ],
       activityKind,
       agentThreadId,
       agentPath: typeof item.agentPath === 'string' ? item.agentPath : undefined,
+      prompt: typeof item.prompt === 'string' ? item.prompt : undefined,
+      model: typeof item.model === 'string' ? item.model : undefined,
+      reasoningEffort: parseReasoningEffort(item.reasoningEffort),
+      senderThreadId: typeof item.senderThreadId === 'string' ? item.senderThreadId : undefined,
     };
   }
 
@@ -819,6 +955,8 @@ function parseSubagentActivityKind(value: unknown): CodexSubagentActivityKind | 
   switch (value) {
     case 'started':
     case 'interacted':
+    case 'completed':
+    case 'errored':
     case 'interrupted':
       return value;
     default:

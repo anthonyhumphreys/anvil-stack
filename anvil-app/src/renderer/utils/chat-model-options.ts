@@ -1,8 +1,11 @@
 import { CODEX_MODEL_OPTIONS, CODEX_REASONING_EFFORTS } from '../../shared/codex-models';
+import { isAcpAgentProvider } from '../../shared/agent-providers';
 import type {
   AgentProvider,
   CodexCliStatus,
   CursorCliStatus,
+  DevinCliStatus,
+  LlmGatewayStatus,
   ReasoningEffort,
 } from '../../shared/types';
 
@@ -21,37 +24,69 @@ export function buildProviderModelOptions(
   selectedModel: string | null,
   codexStatus: CodexCliStatus | null,
   cursorStatus: CursorCliStatus | null,
+  llmGatewayStatus?: LlmGatewayStatus | null,
+  devinStatus?: DevinCliStatus | null,
 ): ChatModelOption[] {
-  const detectedCodexOptions = codexStatus?.models
+  const catalogModels = provider === 'llmgateway' ? llmGatewayStatus?.models : codexStatus?.models;
+  const detectedCodexOptions = catalogModels
     ?.filter((model) => !model.hidden)
     .map((model) => ({
       provider,
       id: model.id,
       label: model.displayName ?? model.id,
-      description: model.description ?? 'Detected from the local Codex CLI model catalog.',
+      description:
+        model.description ??
+        (provider === 'llmgateway'
+          ? 'Available through the LLMGateway model catalog.'
+          : 'Detected from the local Codex CLI model catalog.'),
       supportedReasoningEfforts: model.supportedReasoningEfforts,
       defaultReasoningEffort: model.defaultReasoningEffort ?? 'medium',
       serviceTiers: model.serviceTiers,
     }));
-  const options =
+  const acpModels =
     provider === 'cursor'
-      ? cursorStatus?.models?.length
-        ? cursorStatus.models.map((model) => ({
-            provider,
-            id: model.id,
-            label: model.label,
-            description: 'Detected from the local Cursor CLI model catalog.',
-            supportedReasoningEfforts: [],
-            defaultReasoningEffort: 'medium' as ReasoningEffort,
-            serviceTiers: [],
-          }))
+      ? cursorStatus?.models
+      : provider === 'devin'
+        ? devinStatus?.models
+        : undefined;
+  const options =
+    provider === 'cursor' || provider === 'devin'
+      ? acpModels?.length
+        ? [
+            {
+              provider,
+              id: 'auto',
+              label:
+                provider === 'devin'
+                  ? `Auto (${devinStatus?.defaultModel ?? 'Devin'} default)`
+                  : 'Auto (Cursor default)',
+              description:
+                provider === 'devin'
+                  ? 'Let Devin pick the model for each session.'
+                  : "Use Cursor's default model selection.",
+              supportedReasoningEfforts: [],
+              defaultReasoningEffort: 'medium' as ReasoningEffort,
+              serviceTiers: [],
+            },
+            ...acpModels.map((model) => ({
+              provider,
+              id: model.id,
+              label: model.label,
+              description: `Detected from the local ${provider === 'devin' ? 'Devin' : 'Cursor'} CLI model catalog.`,
+              supportedReasoningEfforts: [],
+              defaultReasoningEffort: 'medium' as ReasoningEffort,
+              serviceTiers: [],
+            })),
+          ]
         : [
             {
               provider,
               id: 'auto',
-              label: 'Auto (Cursor default)',
+              label: `Auto (${provider === 'devin' ? 'Devin' : 'Cursor'} default)`,
               description:
-                "Cursor model catalog unavailable. Use Cursor's default model, or sign in to list specific models.",
+                provider === 'devin'
+                  ? 'Devin model catalog unavailable. Use the Devin default model, or sign in to list specific models.'
+                  : "Cursor model catalog unavailable. Use Cursor's default model, or sign in to list specific models.",
               supportedReasoningEfforts: [],
               defaultReasoningEffort: 'medium' as ReasoningEffort,
               serviceTiers: [],
@@ -59,15 +94,17 @@ export function buildProviderModelOptions(
           ]
       : detectedCodexOptions?.length
         ? detectedCodexOptions
-        : CODEX_MODEL_OPTIONS.map((model) => ({
-            provider,
-            id: model.id,
-            label: model.label,
-            description: model.description,
-            supportedReasoningEfforts: model.supportedReasoningEfforts,
-            defaultReasoningEffort: model.defaultReasoningEffort,
-            serviceTiers: [],
-          }));
+        : provider === 'llmgateway'
+          ? []
+          : CODEX_MODEL_OPTIONS.map((model) => ({
+              provider,
+              id: model.id,
+              label: model.label,
+              description: model.description,
+              supportedReasoningEfforts: model.supportedReasoningEfforts,
+              defaultReasoningEffort: model.defaultReasoningEffort,
+              serviceTiers: [],
+            }));
 
   if (!selectedModel || options.some((option) => option.id === selectedModel)) return options;
   return [
@@ -75,11 +112,13 @@ export function buildProviderModelOptions(
       provider,
       id: selectedModel,
       label: selectedModel,
-      description:
-        provider === 'cursor'
-          ? 'Custom Cursor model selected in Settings.'
+      description: isAcpAgentProvider(provider)
+        ? `Custom ${provider === 'devin' ? 'Devin' : 'Cursor'} model selected in Settings.`
+        : provider === 'llmgateway'
+          ? 'Selected model is unavailable in the LLMGateway catalog. Refresh models in Settings.'
           : 'Custom model or deployment selected in Settings.',
-      supportedReasoningEfforts: provider === 'cursor' ? [] : CODEX_REASONING_EFFORTS,
+      supportedReasoningEfforts:
+        isAcpAgentProvider(provider) || provider === 'llmgateway' ? [] : CODEX_REASONING_EFFORTS,
       defaultReasoningEffort: 'medium',
       serviceTiers: [],
     },
@@ -93,6 +132,8 @@ export function buildChatModelOptions(
   selectedModel: string,
   codexStatus: CodexCliStatus | null,
   cursorStatus: CursorCliStatus | null,
+  llmGatewayStatus?: LlmGatewayStatus | null,
+  devinStatus?: DevinCliStatus | null,
 ): ChatModelOption[] {
   return [...new Set([selectedProvider, ...enabledProviders])].flatMap((provider) =>
     buildProviderModelOptions(
@@ -100,6 +141,8 @@ export function buildChatModelOptions(
       provider === selectedProvider ? selectedModel : null,
       codexStatus,
       cursorStatus,
+      llmGatewayStatus,
+      devinStatus,
     ),
   );
 }

@@ -4,6 +4,8 @@ import type {
   AgentProvider,
   CodexCliStatus,
   CursorCliStatus,
+  DevinCliStatus,
+  LlmGatewayStatus,
   Persona,
   WorkflowAgentProfile,
   WorkflowNode,
@@ -11,6 +13,7 @@ import type {
   WorkflowRun,
 } from '../../../shared/types';
 import { DEFAULT_CODEX_MODEL, getCodexModelReasoningOptions } from '../../../shared/codex-models';
+import { isAcpAgentProvider } from '../../../shared/agent-providers';
 import { orchestrationConfig, TEAM_STRATEGIES } from '../../../shared/workflow-orchestration';
 import { buildProviderModelOptions } from '../../utils/chat-model-options';
 
@@ -23,6 +26,8 @@ export function OrchestrationPanel({
   personas,
   codexStatus,
   cursorStatus,
+  devinStatus,
+  llmGatewayStatus,
 }: {
   value?: WorkflowOrchestration;
   onChange: (value: WorkflowOrchestration) => void;
@@ -30,6 +35,8 @@ export function OrchestrationPanel({
   personas: Persona[];
   codexStatus: CodexCliStatus | null;
   cursorStatus: CursorCliStatus | null;
+  devinStatus: DevinCliStatus | null;
+  llmGatewayStatus: LlmGatewayStatus | null;
 }) {
   const [expandedProfile, setExpandedProfile] = useState<string | null>(null);
   const config = orchestrationConfig(value);
@@ -53,7 +60,14 @@ export function OrchestrationPanel({
           onClick={() => {
             const id = crypto.randomUUID();
             const provider = providers[0] ?? 'codex';
-            const model = buildProviderModelOptions(provider, null, codexStatus, cursorStatus)[0];
+            const model = buildProviderModelOptions(
+              provider,
+              null,
+              codexStatus,
+              cursorStatus,
+              llmGatewayStatus,
+              devinStatus,
+            )[0];
             update({
               profiles: [
                 ...config.profiles,
@@ -62,7 +76,7 @@ export function OrchestrationPanel({
                   name: `Specialist ${config.profiles.length + 1}`,
                   personaId: 'coder',
                   provider,
-                  model: model?.id ?? DEFAULT_CODEX_MODEL,
+                  model: model?.id ?? (provider === 'llmgateway' ? '' : DEFAULT_CODEX_MODEL),
                   reasoningEffort: model?.defaultReasoningEffort ?? 'medium',
                   capabilities: [],
                 },
@@ -87,6 +101,8 @@ export function OrchestrationPanel({
             profile.model,
             codexStatus,
             cursorStatus,
+            llmGatewayStatus,
+            devinStatus,
           );
           const selectedModel = modelOptions.find((model) => model.id === profile.model);
           return (
@@ -107,7 +123,7 @@ export function OrchestrationPanel({
                   </span>
                   <span className="mt-1 block truncate text-xs text-text-tertiary">
                     {profile.provider} · {profile.model}
-                    {profile.provider !== 'cursor' ? ` · ${profile.reasoningEffort}` : ''}
+                    {!isAcpAgentProvider(profile.provider) ? ` · ${profile.reasoningEffort}` : ''}
                   </span>
                 </span>
                 <span className="text-xs text-accent">
@@ -164,10 +180,13 @@ export function OrchestrationPanel({
                           null,
                           codexStatus,
                           cursorStatus,
+                          llmGatewayStatus,
+                          devinStatus,
                         )[0];
                         updateProfile(profile.id, {
                           provider,
-                          model: model?.id ?? DEFAULT_CODEX_MODEL,
+                          model:
+                            model?.id ?? (provider === 'llmgateway' ? '' : DEFAULT_CODEX_MODEL),
                           reasoningEffort: model?.defaultReasoningEffort ?? 'medium',
                         });
                       }}
@@ -209,12 +228,25 @@ export function OrchestrationPanel({
                         ? cursorStatus?.models.length
                           ? `${cursorStatus.models.length} models detected from Cursor CLI.`
                           : "Cursor's model catalog is unavailable. Auto uses Cursor's default."
-                        : codexStatus?.models?.length
-                          ? `${codexStatus.models.filter((model) => !model.hidden).length} models detected from Codex CLI.`
-                          : 'Using the built-in model catalog.'}
+                        : profile.provider === 'devin'
+                          ? devinStatus?.models.length
+                            ? `${devinStatus.models.length} models detected from Devin CLI.`
+                            : "Devin's model catalog is unavailable. Auto uses Devin's default."
+                          : profile.provider === 'llmgateway'
+                            ? llmGatewayStatus?.models.length
+                              ? `${llmGatewayStatus.models.filter((model) => !model.hidden).length} models available from LLMGateway.`
+                              : 'LLMGateway model catalog is unavailable. Connect or refresh it in Settings.'
+                            : codexStatus?.models?.length
+                              ? `${codexStatus.models.filter((model) => !model.hidden).length} models detected from Codex CLI.`
+                              : 'Using the built-in model catalog.'}
                     </p>
                   </label>
-                  {profile.provider !== 'cursor' ? (
+                  {profile.provider === 'llmgateway' &&
+                  !selectedModel?.supportedReasoningEfforts.length ? (
+                    <p className="text-xs text-text-tertiary">
+                      No configurable reasoning levels for this model.
+                    </p>
+                  ) : !isAcpAgentProvider(profile.provider) ? (
                     <label className="block text-xs text-text-secondary">
                       Reasoning
                       <select
@@ -229,7 +261,10 @@ export function OrchestrationPanel({
                       >
                         {(
                           selectedModel?.supportedReasoningEfforts ??
-                          getCodexModelReasoningOptions(profile.model).supportedReasoningEfforts
+                          (profile.provider === 'llmgateway'
+                            ? []
+                            : getCodexModelReasoningOptions(profile.model)
+                                .supportedReasoningEfforts)
                         ).map((effort) => (
                           <option key={effort} value={effort}>
                             {effort}
@@ -239,7 +274,8 @@ export function OrchestrationPanel({
                     </label>
                   ) : (
                     <p className="text-xs text-text-tertiary">
-                      Cursor reasoning is selected through its model ID.
+                      {profile.provider === 'devin' ? 'Devin' : 'Cursor'} reasoning is selected
+                      through its model ID.
                     </p>
                   )}
                   <label className="block text-xs text-text-secondary">
@@ -386,7 +422,9 @@ export function TeamSettings({
                       {profile.name}
                       <span className="block text-text-tertiary">
                         {profile.provider} · {profile.model}
-                        {profile.provider !== 'cursor' ? ` · ${profile.reasoningEffort}` : ''}
+                        {!isAcpAgentProvider(profile.provider)
+                          ? ` · ${profile.reasoningEffort}`
+                          : ''}
                       </span>
                     </span>
                   </label>

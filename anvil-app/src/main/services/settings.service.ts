@@ -8,6 +8,7 @@ import type {
   CodexMode,
   LocalLlmMode,
   LocalLlmProvider,
+  LlmGatewayBillingMode,
   WorkItemConnection,
 } from '../../shared/types.js';
 import {
@@ -40,6 +41,8 @@ interface SettingsRow {
   foundry_api_version: string | null;
   foundry_api_key: Buffer | null;
   openai_api_key: Buffer | null;
+  llm_gateway_api_key: Buffer | null;
+  llm_gateway_billing_mode: string | null;
   openai_model: string | null;
   reasoning_level: string | null;
   codex_mode: string | null;
@@ -80,6 +83,7 @@ interface SettingsRow {
 
 const APP_THEMES: AppTheme[] = [
   'system',
+  'light',
   'dark',
   'prompt-whisperer',
   'merge-conflict',
@@ -90,7 +94,14 @@ const CODEX_MODES: CodexMode[] = ['read-only', 'on-request', 'workspace-auto', '
 const CHAT_LAYOUTS: ChatLayout[] = ['classic', 'workitems'];
 const LOCAL_LLM_MODES: LocalLlmMode[] = ['off', 'prefer-simple'];
 const LOCAL_LLM_PROVIDERS: LocalLlmProvider[] = ['apple', 'ollama', 'lm-studio'];
-const AGENT_PROVIDERS: AgentProvider[] = ['codex', 'cursor', 'openai', 'azure'];
+const AGENT_PROVIDERS: AgentProvider[] = [
+  'codex',
+  'cursor',
+  'devin',
+  'openai',
+  'azure',
+  'llmgateway',
+];
 
 function normaliseTheme(theme: string | null | undefined): AppTheme {
   return APP_THEMES.includes(theme as AppTheme) ? (theme as AppTheme) : 'system';
@@ -119,6 +130,10 @@ function normaliseLocalLlmProvider(provider: string | null | undefined): LocalLl
 
 function normaliseAgentProvider(value: string | null | undefined): AgentProvider {
   return AGENT_PROVIDERS.includes(value as AgentProvider) ? (value as AgentProvider) : 'codex';
+}
+
+function normaliseLlmGatewayBillingMode(value: string | null | undefined): LlmGatewayBillingMode {
+  return value === 'payg' ? 'payg' : 'devpass';
 }
 
 export function normaliseEnabledLlmProviders(
@@ -325,7 +340,12 @@ export function getSettings(): AppSettings {
     foundryApiVersion: row.foundry_api_version ?? '2024-10-21',
     foundryApiKey: decryptSecret(row.foundry_api_key, 'settings.foundryApiKey'),
     openaiApiKey: decryptSecret(row.openai_api_key, 'settings.openaiApiKey'),
-    openaiModel: normaliseCodexModel(row.openai_model),
+    llmGatewayApiKey: decryptSecret(row.llm_gateway_api_key, 'settings.llmGatewayApiKey'),
+    llmGatewayBillingMode: normaliseLlmGatewayBillingMode(row.llm_gateway_billing_mode),
+    openaiModel:
+      llmProvider === 'llmgateway'
+        ? (row.openai_model?.trim() ?? '')
+        : normaliseCodexModel(row.openai_model),
     reasoningLevel: normaliseReasoningEffort(row.reasoning_level),
     codexMode: normaliseCodexMode(row.codex_mode),
     chatLayout: normaliseChatLayout(row.chat_layout),
@@ -423,6 +443,14 @@ export function updateSettings(partial: Partial<AppSettings>): void {
   if (partial.openaiApiKey !== undefined) {
     setClauses.push('openai_api_key = ?');
     values.push(partial.openaiApiKey ? encryptSecret(partial.openaiApiKey) : null);
+  }
+  if (partial.llmGatewayApiKey !== undefined) {
+    setClauses.push('llm_gateway_api_key = ?');
+    values.push(partial.llmGatewayApiKey ? encryptSecret(partial.llmGatewayApiKey) : null);
+  }
+  if (partial.llmGatewayBillingMode !== undefined) {
+    setClauses.push('llm_gateway_billing_mode = ?');
+    values.push(normaliseLlmGatewayBillingMode(partial.llmGatewayBillingMode));
   }
   if (partial.openaiModel !== undefined) {
     setClauses.push('openai_model = ?');
@@ -670,6 +698,7 @@ function defaultSettings(): AppSettings {
     foundryDeploymentName: '',
     foundryApiVersion: '2024-10-21',
     openaiModel: DEFAULT_CODEX_MODEL,
+    llmGatewayBillingMode: 'devpass',
     reasoningLevel: DEFAULT_CODEX_REASONING_EFFORT,
     codexMode: 'on-request',
     chatLayout: 'classic',

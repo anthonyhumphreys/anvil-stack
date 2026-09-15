@@ -355,4 +355,69 @@ describe('buildExecutionTopology', () => {
     expect(result.runningCount).toBe(0);
     expect(result.startedAt).toBeUndefined();
   });
+
+  it('preserves model, prompt, and result from completed activity events', () => {
+    const entries: ChatEntry[] = [
+      {
+        kind: 'event',
+        event: {
+          type: 'subagent_update',
+          sessionId: 'live',
+          subagent: {
+            id: 'spawn',
+            kind: 'tool_call',
+            tool: 'spawnAgent',
+            status: 'inProgress',
+            senderThreadId: 'parent',
+            receiverThreadIds: ['child'],
+            prompt: 'Check cancellation races.',
+            model: 'gpt-5.4',
+            reasoningEffort: 'high',
+            agents: [{ threadId: 'child', status: 'running' }],
+          },
+        },
+      },
+      {
+        kind: 'event',
+        event: {
+          type: 'subagent_update',
+          sessionId: 'live',
+          subagent: {
+            id: 'done',
+            kind: 'activity',
+            activityKind: 'completed',
+            agentThreadId: 'child',
+            senderThreadId: 'parent',
+            receiverThreadIds: ['child'],
+            prompt: 'Check cancellation races.',
+            model: 'gpt-5.4',
+            reasoningEffort: 'high',
+            agents: [
+              {
+                threadId: 'child',
+                status: 'completed',
+                message: 'Race checks passed with three fixes.',
+              },
+            ],
+          },
+        },
+      },
+    ];
+    const result = buildExecutionTopology({
+      entries,
+      sessions: [activeSession],
+      threadId: 'thread',
+      rootLabel: 'Review',
+    });
+    const node = result.nodes.find((n) => n.kind === 'subagent');
+    expect(node).toMatchObject({
+      status: 'completed',
+      prompt: 'Check cancellation races.',
+      model: 'gpt-5.4',
+      reasoningEffort: 'high',
+      latestMessage: 'Race checks passed with three fixes.',
+      detail: 'Completed',
+    });
+  });
+
 });

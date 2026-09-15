@@ -54,6 +54,7 @@ function runMigrations(database: Database.Database, defaultTheme: AppTheme): voi
           console.log(`[Database] Running migration to v${v}`);
           // Run each ALTER statement separately (SQLite doesn't support multiple ALTERs in one exec)
           for (const stmt of migration
+            .replace(/^[ \t]*--[^\r\n]*/gm, '')
             .split(';')
             .map((s) => s.trim())
             .filter(Boolean)) {

@@ -25,6 +25,7 @@ import {
   Users,
   MessageSquare,
   ShieldAlert,
+  XCircle,
 } from 'lucide-react';
 import type { ChatAttachment, ChatPlanStep, CodexEvent } from '../../../shared/types';
 import { MarkdownRenderer } from './MarkdownRenderer';
@@ -57,7 +58,7 @@ export function ChatEventRenderer({ event }: ChatEventProps) {
         />
       );
     case 'tool_call':
-      return <ToolCallEvent toolName={event.toolName ?? ''} toolInput={event.toolInput} />;
+      return <ToolCallEvent event={event} />;
     case 'approval_request':
       return <ApprovalRequestEvent event={event} />;
     case 'input_request':
@@ -97,7 +98,11 @@ export function ActivityGroupMessage({
   const fileEdits = events.filter((event) => event.type === 'file_edit' && event.filePath);
   const failedCommands = events.filter(
     (event) =>
-      event.type === 'command_exec' && typeof event.exitCode === 'number' && event.exitCode !== 0,
+      (event.type === 'command_exec' &&
+        typeof event.exitCode === 'number' &&
+        event.exitCode !== 0) ||
+      (event.type === 'tool_call' && event.toolStatus === 'failed') ||
+      event.type === 'error',
   );
   const selectedEdit = fileEdits[Math.min(selectedEditIndex, Math.max(fileEdits.length - 1, 0))];
   const preview = events
@@ -219,6 +224,7 @@ export function TurnWorkMessage({
       (event.type === 'command_exec' &&
         typeof event.exitCode === 'number' &&
         event.exitCode !== 0) ||
+      (event.type === 'tool_call' && event.toolStatus === 'failed') ||
       (event.type === 'subagent_update' && event.subagent?.status === 'failed'),
   ).length;
   const summaryParts = [
@@ -298,9 +304,12 @@ export function TurnWorkMessage({
                 return (
                   <div
                     key={`thinking-${item.sourceIndex}`}
-                    className="pr-2 text-xs italic leading-relaxed text-text-tertiary"
+                    className="border-l-2 border-border-subtle py-0.5 pl-3 pr-2 text-xs italic leading-relaxed text-text-tertiary"
                   >
-                    {item.content}
+                    <p className="mb-1 text-[11px] font-medium not-italic text-text-muted">
+                      Reasoning
+                    </p>
+                    <p className="whitespace-pre-wrap">{item.content}</p>
                   </div>
                 );
               }
@@ -403,6 +412,9 @@ function describeWorkItem(item: ChatTurnWorkItem | undefined): string {
     case 'file_edit':
       return 'Applying changes';
     case 'tool_call':
+      if (item.event.toolStatus === 'failed') {
+        return item.event.toolName ? `Tool failed: ${item.event.toolName}` : 'Tool failed';
+      }
       return item.event.toolName ? `Using ${item.event.toolName}` : 'Using a tool';
     case 'approval_request':
       return 'Waiting for approval';
@@ -1363,7 +1375,11 @@ function formatSubagentAction(
   tool: NonNullable<CodexEvent['subagent']>['tool'],
   activityKind: NonNullable<CodexEvent['subagent']>['activityKind'],
 ): string {
-  if (activityKind) return `Subagent ${activityKind}`;
+  if (activityKind === 'completed') return 'Subagent completed';
+  if (activityKind === 'errored') return 'Subagent failed';
+  if (activityKind === 'started') return 'Subagent started';
+  if (activityKind === 'interacted') return 'Subagent update';
+  if (activityKind === 'interrupted') return 'Subagent interrupted';
   switch (tool) {
     case 'spawnAgent':
       return 'Spawn subagent';
@@ -1469,31 +1485,48 @@ function CommandExecEvent({
   );
 }
 
-function ToolCallEvent({
-  toolName,
-  toolInput,
-}: {
-  toolName: string;
-  toolInput?: Record<string, unknown>;
-}) {
+function ToolCallEvent({ event }: { event: CodexEvent }) {
   const [expanded, setExpanded] = useState(false);
+  const status = event.toolStatus ?? 'running';
+  const toolName = event.toolName ?? 'Tool';
+  const hasDetails = Boolean(event.toolOutput) || Boolean(event.toolInput);
 
   return (
-    <div className="rounded-xl border border-border-subtle bg-bg-tertiary/60 shadow-sm overflow-hidden">
+    <div
+      className={`rounded-xl border shadow-sm overflow-hidden ${
+        status === 'failed'
+          ? 'border-error/30 bg-error/5'
+          : 'border-border-subtle bg-bg-tertiary/60'
+      }`}
+    >
       <button
         onClick={() => setExpanded(!expanded)}
         className="flex w-full items-center gap-2.5 px-4 py-2.5 text-sm text-text-tertiary transition-colors hover:bg-bg-tertiary/80"
         aria-label={expanded ? 'Collapse tool call details' : 'Expand tool call details'}
       >
         {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-        <Wrench size={12} />
+        {status === 'failed' ? (
+          <XCircle size={12} className="shrink-0 text-error" />
+        ) : status === 'completed' ? (
+          <CheckCircle2 size={12} className="shrink-0 text-success" />
+        ) : (
+          <Loader2 size={12} className="shrink-0 animate-spin text-text-tertiary" />
+        )}
         <span>
-          Tool: <span className="text-text-secondary">{toolName}</span>
+          Tool:{' '}
+          <span className={status === 'failed' ? 'text-error' : 'text-text-secondary'}>
+            {toolName}
+          </span>
         </span>
+        {status === 'failed' && (
+          <span className="ml-auto rounded-full bg-error/10 px-2 py-0.5 text-[11px] font-medium text-error">
+            failed
+          </span>
+        )}
       </button>
-      {expanded && toolInput && (
-        <pre className="max-h-40 overflow-auto border-t border-border-subtle p-4 text-xs font-mono text-text-tertiary leading-relaxed">
-          {JSON.stringify(toolInput, null, 2)}
+      {expanded && hasDetails && (
+        <pre className="max-h-40 overflow-auto border-t border-border-subtle p-4 text-xs font-mono text-text-tertiary leading-relaxed whitespace-pre-wrap">
+          {event.toolOutput ?? (event.toolInput ? JSON.stringify(event.toolInput, null, 2) : '')}
         </pre>
       )}
     </div>
@@ -1733,7 +1766,7 @@ export function AssistantMessage({
 
   return (
     <div className="message-bubble group flex justify-start">
-      <div className="relative w-full max-w-[75ch]">
+      <div className="relative w-full">
         <div
           className="mb-1.5 flex items-center gap-2 px-1 text-xs font-medium text-text-tertiary"
           role={active ? 'status' : undefined}
@@ -1792,9 +1825,7 @@ export function UserMessage({
   return (
     <div className="message-bubble group flex justify-end">
       <div
-        className={`relative ${
-          collapsible ? 'w-full max-w-[88%] sm:max-w-[75ch]' : 'w-fit max-w-[88%] sm:max-w-[72ch]'
-        }`}
+        className={`relative ${collapsible ? 'w-full max-w-[50%]' : 'w-fit max-w-[50%] min-w-0'}`}
       >
         <p className="mb-1.5 text-right text-xs font-medium text-text-tertiary">You</p>
         <div
@@ -1920,6 +1951,9 @@ function summarizeActivityCount(
 function formatActivityPreview(event: CodexEvent & { sessionId?: string }): string | null {
   switch (event.type) {
     case 'tool_call':
+      if (event.toolStatus === 'failed') {
+        return event.toolName ? `Tool failed: ${event.toolName}` : 'Tool call failed';
+      }
       return event.toolName ? `Tool: ${event.toolName}` : 'Tool call';
     case 'command_exec':
       return event.command?.trim() || 'Command output';
@@ -1962,7 +1996,9 @@ function formatActivityPreview(event: CodexEvent & { sessionId?: string }): stri
 function buildActivityEventKey(event: CodexEvent & { sessionId?: string }, index: number): string {
   return [
     event.type,
+    event.itemId,
     event.toolName,
+    event.toolStatus,
     event.command,
     event.filePath,
     event.approvalRequestId === undefined ? undefined : String(event.approvalRequestId),

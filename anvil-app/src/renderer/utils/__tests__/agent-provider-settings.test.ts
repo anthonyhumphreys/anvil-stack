@@ -21,10 +21,26 @@ describe('selectPrimaryAgentProvider', () => {
 
   it('keeps a known Cursor model when Cursor becomes primary', () => {
     expect(
-      selectPrimaryAgentProvider({ llmProvider: 'codex', openaiModel: 'cursor-pro' }, 'cursor', [
-        'cursor-pro',
-      ]).openaiModel,
+      selectPrimaryAgentProvider({ llmProvider: 'codex', openaiModel: 'cursor-pro' }, 'cursor', {
+        cursor: ['cursor-pro'],
+      }).openaiModel,
     ).toBe('cursor-pro');
+  });
+
+  it('selects Devin auto when the current model is not a Devin model', () => {
+    expect(
+      selectPrimaryAgentProvider({ llmProvider: 'codex', openaiModel: 'gpt-5.6-sol' }, 'devin', {
+        devin: ['swe-2-max'],
+      }),
+    ).toMatchObject({ llmProvider: 'devin', openaiModel: 'auto' });
+  });
+
+  it('keeps a known Devin model when Devin becomes primary', () => {
+    expect(
+      selectPrimaryAgentProvider({ llmProvider: 'codex', openaiModel: 'swe-2-max' }, 'devin', {
+        devin: ['swe-2-max'],
+      }).openaiModel,
+    ).toBe('swe-2-max');
   });
 
   it('restores the Codex default when leaving Cursor auto', () => {

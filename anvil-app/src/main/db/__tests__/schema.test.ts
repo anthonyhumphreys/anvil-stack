@@ -1,9 +1,15 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { MIGRATIONS, SCHEMA_SQL, SCHEMA_VERSION } from '../schema';
+import {
+  MAIN_V67_SCHEMA_SQL,
+  MERGE_BASE_V66_SCHEMA_SQL,
+  PRE_MERGE_BRANCH_MIGRATIONS,
+} from './schema-merge-fixtures';
 
 function applyMigration(db: Database.Database, migration: string): void {
   for (const statement of migration
+    .replace(/^[ \t]*--[^\r\n]*/gm, '')
     .split(';')
     .map((value) => value.trim())
     .filter(Boolean)) {
@@ -37,6 +43,8 @@ describe('fresh database schema', () => {
         'github_pat',
         'github_username',
         'telemetry_enabled',
+        'llm_gateway_api_key',
+        'llm_gateway_billing_mode',
       ]) {
         expect(columns.has(requiredColumn), `Missing settings.${requiredColumn}`).toBe(true);
       }
@@ -124,7 +132,7 @@ describe('fresh database schema', () => {
         ).map((column) => column.name),
       );
 
-      expect(SCHEMA_VERSION).toBe(76);
+      expect(SCHEMA_VERSION).toBe(78);
       for (const column of [
         'local_llm_mode',
         'local_llm_provider',
@@ -190,11 +198,11 @@ describe('fresh database schema', () => {
     }
   });
 
-  it('migrates a v67 database to the backend association table', () => {
+  it('migrates a v68 database to the backend association table', () => {
     const db = new Database(':memory:');
     try {
       db.exec('CREATE TABLE settings (id INTEGER PRIMARY KEY)');
-      applyMigration(db, MIGRATIONS[68]);
+      applyMigration(db, MIGRATIONS[69]);
       const tables = new Set(
         (
           db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{
@@ -256,11 +264,11 @@ describe('fresh database schema', () => {
     }
   });
 
-  it('migrates a v66 database to the sync mesh tables', () => {
+  it('migrates a v67 database to the sync mesh tables', () => {
     const db = new Database(':memory:');
     try {
       db.exec('CREATE TABLE settings (id INTEGER PRIMARY KEY)');
-      applyMigration(db, MIGRATIONS[67]);
+      applyMigration(db, MIGRATIONS[68]);
       const tables = new Set(
         (
           db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{
@@ -349,6 +357,55 @@ describe('fresh database schema', () => {
     }
   });
 
+  it('adds LLMGateway credentials when upgrading a current main database', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec(SCHEMA_SQL);
+      db.exec(`
+        INSERT INTO settings (id, llm_provider, docs_provider)
+        VALUES (1, 'cursor', 'notion');
+        ALTER TABLE settings DROP COLUMN llm_gateway_api_key;
+        ALTER TABLE settings DROP COLUMN llm_gateway_billing_mode;
+        INSERT INTO schema_meta (key, value) VALUES ('schema_version', '66');
+      `);
+
+      for (let version = 67; version <= SCHEMA_VERSION; version += 1) {
+        const migration = MIGRATIONS[version];
+        if (migration) applyMigration(db, migration);
+      }
+
+      const row = db
+        .prepare(
+          'SELECT llm_provider, docs_provider, llm_gateway_api_key, llm_gateway_billing_mode FROM settings WHERE id = 1',
+        )
+        .get() as {
+        llm_provider: string;
+        docs_provider: string;
+        llm_gateway_api_key: Buffer | null;
+        llm_gateway_billing_mode: string;
+      };
+      expect(row.llm_provider).toBe('cursor');
+      expect(row.docs_provider).toBe('notion');
+      expect(row.llm_gateway_api_key).toBeNull();
+      expect(row.llm_gateway_billing_mode).toBe('devpass');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('ignores semicolons inside standalone SQL comment lines', () => {
+    const db = new Database(':memory:');
+    try {
+      applyMigration(
+        db,
+        'CREATE TABLE retained (id INTEGER);\n-- a comment; not SQL\nINSERT INTO retained VALUES (1);',
+      );
+      expect(db.prepare('SELECT id FROM retained').all()).toEqual([{ id: 1 }]);
+    } finally {
+      db.close();
+    }
+  });
+
   it('adds opt-in telemetry disabled by default', () => {
     const db = new Database(':memory:');
     try {
@@ -411,5 +468,136 @@ describe('fresh database schema', () => {
     } finally {
       db.close();
     }
+  });
+
+  describe('post-merge migration convergence', () => {
+    const schemaShape = (db: Database.Database) => {
+      const objects = (
+        db
+          .prepare(
+            "SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
+          )
+          .all() as Array<{ type: string; name: string }>
+      ).map((row) => `${row.type}:${row.name}`);
+      const columns: Record<string, string[]> = {};
+      for (const row of db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+        .all() as Array<{ name: string }>) {
+        columns[row.name] = (
+          db.prepare(`PRAGMA table_info(${row.name})`).all() as Array<{ name: string }>
+        )
+          .map((column) => column.name)
+          .sort();
+      }
+      return { objects, columns };
+    };
+
+    const freshShape = () => {
+      const db = new Database(':memory:');
+      try {
+        db.exec(SCHEMA_SQL);
+        return schemaShape(db);
+      } finally {
+        db.close();
+      }
+    };
+
+    const seedRows = (db: Database.Database, includeOutbox: boolean) => {
+      db.exec(`
+        INSERT INTO settings (id, llm_provider) VALUES (1, 'cursor');
+        INSERT INTO workspaces (id, name, created_at, updated_at)
+          VALUES ('ws-1', 'Seeded', '2026-09-11T00:00:00.000Z', '2026-09-11T00:00:00.000Z');
+      `);
+      if (includeOutbox) {
+        db.exec(`
+          INSERT INTO sync_outbox (
+            change_id, backend_id, account_id, dataset_epoch, enrollment_id,
+            entity_type, entity_id, schema_version, operation, payload_hash,
+            local_edit_generation, created_at
+          ) VALUES (
+            'change-1', 'backend', 'account', 'epoch', 'enrollment',
+            'workspace', 'ws-1', 76, 'update', 'hash', 1,
+            '2026-09-11T00:00:00.000Z'
+          );
+        `);
+      }
+    };
+
+    const buildBranchSnapshot = (throughVersion: number) => {
+      const db = new Database(':memory:');
+      db.exec(MERGE_BASE_V66_SCHEMA_SQL);
+      for (let version = 67; version <= throughVersion; version += 1) {
+        applyMigration(db, PRE_MERGE_BRANCH_MIGRATIONS[version]);
+      }
+      return db;
+    };
+
+    it.each([
+      {
+        name: 'main v67 (released gateway migration)',
+        fromVersion: 67,
+        includeOutbox: false,
+        build: () => {
+          const db = new Database(':memory:');
+          db.exec(MAIN_V67_SCHEMA_SQL);
+          return db;
+        },
+      },
+      {
+        name: 'pre-merge branch v67',
+        fromVersion: 67,
+        includeOutbox: false,
+        build: () => buildBranchSnapshot(67),
+      },
+      {
+        name: 'pre-merge branch v69',
+        fromVersion: 69,
+        includeOutbox: false,
+        build: () => buildBranchSnapshot(69),
+      },
+      {
+        name: 'pre-merge branch v76',
+        fromVersion: 76,
+        includeOutbox: true,
+        build: () => buildBranchSnapshot(76),
+      },
+      {
+        name: 'fresh merged schema',
+        fromVersion: SCHEMA_VERSION,
+        includeOutbox: true,
+        build: () => {
+          const db = new Database(':memory:');
+          db.exec(SCHEMA_SQL);
+          return db;
+        },
+      },
+    ])('converges $name to the merged schema', ({ fromVersion, includeOutbox, build }) => {
+      const db = build();
+      try {
+        seedRows(db, includeOutbox);
+        for (let version = fromVersion + 1; version <= SCHEMA_VERSION; version += 1) {
+          const migration = MIGRATIONS[version];
+          if (migration) applyMigration(db, migration);
+        }
+
+        expect(schemaShape(db)).toEqual(freshShape());
+        expect(
+          db.prepare('SELECT id, llm_provider FROM settings WHERE id = 1').get(),
+        ).toEqual({ id: 1, llm_provider: 'cursor' });
+        expect(db.prepare('SELECT id, name FROM workspaces WHERE id = ?').get('ws-1')).toEqual({
+          id: 'ws-1',
+          name: 'Seeded',
+        });
+        if (includeOutbox) {
+          expect(
+            db
+              .prepare('SELECT change_id, entity_id, state FROM sync_outbox WHERE change_id = ?')
+              .get('change-1'),
+          ).toEqual({ change_id: 'change-1', entity_id: 'ws-1', state: 'pending' });
+        }
+      } finally {
+        db.close();
+      }
+    });
   });
 });

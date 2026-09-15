@@ -4,6 +4,11 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+import {
+  syncGatewayCodexIntegrations,
+  writeGatewayCodexCatalog,
+} from './llm-gateway-runtime.service.js';
 import { app, BrowserWindow } from 'electron';
 import type {
   AgentUIPlanPatch,
@@ -41,6 +46,10 @@ import { normaliseCodexModel, normaliseReasoningEffort } from '../../shared/code
 import { providerSpawnEnv } from './agent-spawn-env.js';
 import { assertSessionTurnAllowed } from './mesh-ownership.service.js';
 import { notifyChatActivity, type ChatActivityKind } from './notification.service.js';
+import { getLlmGatewayCodexConfigArgs } from '../../shared/llm-gateway.js';
+import { applyLlmGatewayEnvironment } from './llm-gateway.service.js';
+import { resolveLlmGatewayModelConfig } from './llm-gateway.service.js';
+import { resolveCodexRuntime } from './codex-runtime.service.js';
 import { updateChatThreadAttention } from './chat-persistence.service.js';
 import {
   dismissAgentUIIntent,
@@ -59,6 +68,17 @@ import {
   adaptProviderEventToAgentUIIntent,
   providerResponseFromAgentUIResolution,
 } from './codex-agent-ui.adapter.js';
+import { isAcpAgentProvider, type AcpAgentProvider } from '../../shared/agent-providers.js';
+
+const ACP_PROVIDER_LABELS: Record<AcpAgentProvider, string> = {
+  cursor: 'Cursor',
+  devin: 'Devin',
+};
+
+const ACP_AUTH_METHODS: Record<AcpAgentProvider, string> = {
+  cursor: 'cursor_login',
+  devin: 'devin-browser',
+};
 
 interface ManagedSession {
   id: string;
@@ -69,9 +89,17 @@ interface ManagedSession {
   personaId: string;
   mode: CodexMode;
   process: ChildProcess;
-  provider: 'codex' | 'cursor';
+  provider: 'codex' | AcpAgentProvider;
   agentProvider: AgentProvider;
+  gatewayModels?: import('../../shared/types.js').LlmGatewayModel[];
   model?: string;
+  systemPrompt?: string;
+  /** Display name passed to the protocol layer for ACP event labels. */
+  agentLabel?: string;
+  /** True once the persona prompt has been delivered to an ACP session. */
+  acpSystemPromptDelivered?: boolean;
+  /** True after one handshake auth retry so we never loop on auth failures. */
+  acpAuthRetried?: boolean;
   status: CodexSession['status'];
   startedAt: string;
   cwd: string;
@@ -121,17 +149,80 @@ const pendingApprovalDetails = new Map<string, MobileApprovalRequest>();
 const pendingPlanFeedback = new Map<string, string[]>();
 
 export function resolveSessionModel(provider: AgentProvider, configuredModel: string): string {
-  return provider === 'cursor'
-    ? configuredModel.trim() || 'auto'
-    : normaliseCodexModel(configuredModel);
+  if (isAcpAgentProvider(provider)) return configuredModel.trim() || 'auto';
+  if (provider === 'llmgateway') return configuredModel.trim();
+  return normaliseCodexModel(configuredModel);
 }
 
-export function resolveCursorMode(
+/** Build a provider-scoped environment without changing the user's Codex state. */
+export async function buildCodexProcessEnvironment(
+  provider: AgentProvider,
+  settings: ReturnType<typeof getSettings>,
+): Promise<Record<string, string>> {
+  const env: Record<string, string> = providerSpawnEnv();
+  if (provider === 'openai' && settings.openaiApiKey) env.OPENAI_API_KEY = settings.openaiApiKey;
+  if (provider === 'llmgateway') {
+    applyLlmGatewayEnvironment(env, settings.llmGatewayApiKey);
+    const gatewayHome = path.join(app.getPath('userData'), 'codex', 'llmgateway');
+    await syncGatewayCodexIntegrations(
+      gatewayHome,
+      process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
+    );
+    delete env.OPENAI_API_KEY;
+    delete env.OPENAI_BASE_URL;
+    env.CODEX_HOME = gatewayHome;
+  }
+  return env;
+}
+
+/**
+ * Map Anvil's sandbox/collaboration modes onto each ACP agent's mode ids.
+ * Cursor exposes agent/plan/ask; Devin exposes accept-edits/smart/ask/plan/
+ * bypass, where `smart` auto-approves safe operations and `bypass` never asks.
+ */
+export function resolveAcpSessionMode(
+  provider: AcpAgentProvider,
   codexMode: CodexMode,
   collaborationMode?: ChatSendOptions['collaborationMode'],
-): 'agent' | 'plan' | 'ask' {
+): string {
+  if (provider === 'devin') {
+    if (collaborationMode === 'plan') return 'plan';
+    switch (codexMode) {
+      case 'read-only':
+        return 'ask';
+      case 'workspace-auto':
+        return 'smart';
+      case 'full-access':
+        return 'bypass';
+      default:
+        return 'accept-edits';
+    }
+  }
   if (collaborationMode === 'plan') return 'plan';
   return codexMode === 'read-only' ? 'ask' : 'agent';
+}
+
+/**
+ * Translate Anvil's stored model value into the provider's configOption value.
+ * 'auto' maps to Cursor's `default[]` option; for Devin it means "leave the
+ * session default" (Adaptive), so no set_config_option call is made.
+ */
+export function resolveAcpModelValue(provider: AcpAgentProvider, model: string): string | null {
+  const trimmed = model.trim();
+  if (!trimmed || trimmed === 'auto') {
+    return provider === 'cursor' ? 'default[]' : null;
+  }
+  return trimmed;
+}
+
+function acpProviderLabel(provider: ManagedSession['provider']): string {
+  return isAcpAgentProvider(provider) ? ACP_PROVIDER_LABELS[provider] : 'Codex';
+}
+
+function acpProcessLabel(provider: ManagedSession['provider']): string {
+  if (provider === 'cursor') return 'cursor-agent acp';
+  if (provider === 'devin') return 'devin acp';
+  return 'codex app-server';
 }
 
 /**
@@ -156,7 +247,12 @@ export async function startSession(
     );
   }
   const mode = settings.codexMode ?? 'on-request';
-  const model = resolveSessionModel(agentProvider, settings.openaiModel);
+  const configuredModel = resolveSessionModel(agentProvider, settings.openaiModel);
+  const gatewayConfig =
+    agentProvider === 'llmgateway'
+      ? await resolveLlmGatewayModelConfig(configuredModel, settings.reasoningLevel)
+      : undefined;
+  const model = gatewayConfig?.model ?? configuredModel;
   const codexPolicy = resolvePersonaCodexPolicy(mode, personaId);
   const systemPrompt = options?.scaffold
     ? buildScaffoldSystemPrompt(personaId, options.scaffold.rootPath)
@@ -167,24 +263,32 @@ export async function startSession(
 
   // Build environment — allowlisted, never a full process.env copy
   // (SESSION-01: ambient tokens must not leak into agent subprocesses).
-  const env: Record<string, string> = providerSpawnEnv();
-
-  const provider = agentProvider === 'cursor' ? 'cursor' : 'codex';
-  const command = provider === 'cursor' ? 'cursor-agent' : 'codex';
-  const args =
-    agentProvider === 'cursor'
-      ? ['acp']
-      : agentProvider === 'azure'
-        ? ['app-server', '-c', 'model_provider="azure"']
-        : agentProvider === 'openai'
-          ? ['app-server', '-c', 'model_provider="openai"']
+  const provider: ManagedSession['provider'] = isAcpAgentProvider(agentProvider)
+    ? agentProvider
+    : 'codex';
+  const command =
+    provider === 'cursor'
+      ? 'cursor-agent'
+      : provider === 'devin'
+        ? 'devin'
+        : agentProvider === 'llmgateway'
+          ? await resolveCodexRuntime()
+          : 'codex';
+  const args = isAcpAgentProvider(provider)
+    ? ['acp']
+    : agentProvider === 'azure'
+      ? ['app-server', '-c', 'model_provider="azure"']
+      : agentProvider === 'openai'
+        ? ['app-server', '-c', 'model_provider="openai"']
+        : agentProvider === 'llmgateway'
+          ? getLlmGatewayCodexConfigArgs()
           : ['app-server'];
 
   // Azure AI Foundry: Codex reads config from ~/.codex/config.toml (set up by user).
   // OpenAI: pass the API key via environment.
-  if (agentProvider === 'openai') {
-    if (settings.openaiApiKey) env['OPENAI_API_KEY'] = settings.openaiApiKey;
-  }
+  const env = await buildCodexProcessEnvironment(agentProvider, settings);
+  if (gatewayConfig)
+    args.push(...(await writeGatewayCodexCatalog(env.CODEX_HOME, gatewayConfig.models)));
 
   let proc: ChildProcess;
   try {
@@ -195,7 +299,7 @@ export async function startSession(
     });
   } catch (err) {
     throw new Error(
-      `Failed to spawn ${provider === 'cursor' ? 'cursor-agent acp' : 'codex app-server'}: ${err instanceof Error ? err.message : err}`,
+      `Failed to spawn ${acpProcessLabel(provider)}: ${err instanceof Error ? err.message : err}`,
     );
   }
 
@@ -217,7 +321,10 @@ export async function startSession(
     process: proc,
     provider,
     agentProvider,
+    gatewayModels: gatewayConfig?.models,
     model,
+    systemPrompt,
+    agentLabel: isAcpAgentProvider(provider) ? ACP_PROVIDER_LABELS[provider] : undefined,
     status: 'starting',
     startedAt: new Date().toISOString(),
     cwd,
@@ -263,14 +370,16 @@ export async function startSession(
     }
     session.status = 'error';
     session.rejectThreadReady?.(
-      new Error(`Codex app-server exited before thread was ready (code=${code}, signal=${signal})`),
+      new Error(
+        `${acpProcessLabel(provider)} exited before the session was ready (code=${code}, signal=${signal})`,
+      ),
     );
     session.rejectThreadReady = null;
     setSessionThreadAttention(session, 'failed');
     broadcastEvent(id, {
       type: 'status',
       status: 'error',
-      errorMessage: `Codex app-server exited (code=${code}, signal=${signal}).`,
+      errorMessage: `${acpProcessLabel(provider)} exited (code=${code}, signal=${signal}).`,
     });
   });
 
@@ -280,17 +389,30 @@ export async function startSession(
     session.rejectThreadReady?.(err);
     session.rejectThreadReady = null;
     setSessionThreadAttention(session, 'failed');
-    broadcastEvent(id, { type: 'error', errorMessage: `Codex process error: ${err.message}` });
+    broadcastEvent(id, {
+      type: 'error',
+      errorMessage: `${acpProviderLabel(provider)} process error: ${err.message}`,
+    });
   });
 
-  if (provider === 'cursor') {
+  if (isAcpAgentProvider(provider)) {
     sendCodexJsonRpc(proc, 'initialize', {
       protocolVersion: 1,
-      clientCapabilities: buildCursorClientCapabilities(),
+      clientCapabilities: buildAcpClientCapabilities(),
       clientInfo: { name: 'anvil', version: app.getVersion() },
     });
-    sendCodexJsonRpc(proc, 'authenticate', { methodId: 'cursor_login' });
-    sendCodexJsonRpc(proc, 'session/new', { cwd, mcpServers: [] });
+    // Cursor requires an explicit authenticate call; Devin reads stored
+    // `devin auth login` credentials, so authenticate is only sent after an
+    // auth-related failure (see onRequestError) — never eagerly, since
+    // devin-browser opens a browser window.
+    if (provider === 'cursor') {
+      sendCodexJsonRpc(proc, 'authenticate', { methodId: ACP_AUTH_METHODS.cursor });
+    }
+    sendCodexJsonRpc(proc, 'session/new', {
+      cwd,
+      mcpServers: [],
+      _meta: { systemPrompt },
+    });
   } else {
     // Step 1: Send initialize
     sendCodexJsonRpc(proc, 'initialize', {
@@ -353,39 +475,62 @@ export async function sendMessage(
   // Wait for thread to be ready before sending
   await session.threadReady;
 
+  const settings = getSettings();
+  const configuredModel = resolveSessionModel(
+    session.agentProvider,
+    options?.model ?? settings.openaiModel,
+  );
+  const gatewayConfig =
+    session.agentProvider === 'llmgateway'
+      ? await resolveLlmGatewayModelConfig(
+          configuredModel,
+          options?.reasoningEffort ?? settings.reasoningLevel,
+          session.gatewayModels,
+        )
+      : undefined;
+  const model = gatewayConfig?.model ?? configuredModel;
+
   session.status = 'busy';
   setSessionThreadAttention(session, 'working');
   broadcastEvent(sessionId, { type: 'status', status: 'thinking' });
 
-  const settings = getSettings();
   const mode = settings.codexMode ?? session.mode;
-  const model = resolveSessionModel(session.agentProvider, options?.model ?? settings.openaiModel);
   session.model = model;
   const codexPolicy = resolvePersonaCodexPolicy(mode, session.personaId, {
     planMode: options?.collaborationMode === 'plan',
   });
   session.mode = codexPolicy.sandbox === 'read-only' ? 'read-only' : mode;
 
-  if (session.provider === 'cursor') {
-    if (!session.threadId) throw new Error('Cursor ACP session is not ready.');
-    sendCodexJsonRpc(session.process, 'session/set_config', {
+  if (isAcpAgentProvider(session.provider)) {
+    if (!session.threadId) {
+      throw new Error(`${acpProviderLabel(session.provider)} ACP session is not ready.`);
+    }
+    // Mode changes go through the standard `session/set_mode`; model selection
+    // uses `session/set_config_option` against the agent's `model` config
+    // option. Both agents reject the legacy `session/set_config` method.
+    sendCodexJsonRpc(session.process, 'session/set_mode', {
       sessionId: session.threadId,
-      configId: 'model',
-      value: model,
+      modeId: resolveAcpSessionMode(session.provider, mode, options?.collaborationMode),
     });
-    sendCodexJsonRpc(session.process, 'session/set_config', {
-      sessionId: session.threadId,
-      configId: 'mode',
-      value: resolveCursorMode(mode, options?.collaborationMode),
-    });
+    const acpModel = resolveAcpModelValue(session.provider, model);
+    if (acpModel) {
+      sendCodexJsonRpc(session.process, 'session/set_config_option', {
+        sessionId: session.threadId,
+        configId: 'model',
+        value: acpModel,
+      });
+    }
     sendCodexJsonRpc(session.process, 'session/prompt', {
       sessionId: session.threadId,
-      prompt: buildCursorPrompt(message, attachments),
+      prompt: buildAcpPrompt(session.provider, session, message, attachments),
     });
+    session.acpSystemPromptDelivered = true;
     return;
   }
 
-  const effort = normaliseReasoningEffort(options?.reasoningEffort ?? settings.reasoningLevel);
+  const effort = gatewayConfig
+    ? gatewayConfig.effort
+    : normaliseReasoningEffort(options?.reasoningEffort ?? settings.reasoningLevel);
   sendCodexJsonRpc(session.process, 'turn/start', {
     threadId: session.threadId,
     input: buildUserInput(message, attachments),
@@ -393,7 +538,7 @@ export async function sendMessage(
     sandboxPolicy: sandboxModeToTurnPolicy(codexPolicy.sandbox, session.cwd),
     model,
     ...(options?.serviceTier !== undefined ? { serviceTier: options.serviceTier } : {}),
-    effort,
+    ...(effort ? { effort } : {}),
     collaborationMode: buildCodexCollaborationMode(options?.collaborationMode, model, effort),
   });
 }
@@ -401,7 +546,7 @@ export async function sendMessage(
 export function buildCodexCollaborationMode(
   mode: ChatSendOptions['collaborationMode'],
   model: string,
-  effort: ReturnType<typeof normaliseReasoningEffort>,
+  effort: ReturnType<typeof normaliseReasoningEffort> | undefined,
 ) {
   return {
     // Send default explicitly so switching back from Plan also resets the provider.
@@ -435,19 +580,35 @@ export async function steerTurn(
   );
 }
 
-function buildCursorPrompt(
+function buildAcpPrompt(
+  provider: AcpAgentProvider,
+  session: ManagedSession,
   message: string,
   attachments: ChatAttachment[],
 ): Array<Record<string, unknown>> {
-  return buildUserInput(message, attachments).map((item) => {
+  return buildUserInput(
+    message,
+    attachments,
+    provider,
+    session.acpSystemPromptDelivered ? undefined : session.systemPrompt,
+  ).map((item) => {
     if (item.type === 'text') return { type: 'text', text: item.text };
     if (item.type === 'localImage') return { type: 'resource_link', uri: `file://${item.path}` };
     return { type: 'resource_link', uri: `file://${item.path}`, name: item.name };
   });
 }
 
-function buildUserInput(message: string, attachments: ChatAttachment[]): CodexUserInput[] {
-  const input: CodexUserInput[] = [{ type: 'text', text: message, text_elements: [] }];
+function buildUserInput(
+  message: string,
+  attachments: ChatAttachment[],
+  provider?: ManagedSession['provider'],
+  systemPrompt?: string,
+): CodexUserInput[] {
+  const text =
+    provider && isAcpAgentProvider(provider) && systemPrompt?.trim()
+      ? `[System instructions]\n${systemPrompt.trim()}\n\n${message}`
+      : message;
+  const input: CodexUserInput[] = [{ type: 'text', text, text_elements: [] }];
 
   for (const attachment of attachments) {
     if (attachment.kind === 'image') {
@@ -497,7 +658,7 @@ export function interruptTurn(sessionId: string): void {
   if (!session) return;
   if (!session.threadId) return;
   broadcastEvent(sessionId, { type: 'turn_outcome', turnOutcome: 'interrupted' });
-  if (session.provider === 'cursor') {
+  if (isAcpAgentProvider(session.provider)) {
     sendCodexJsonRpcNotification(session.process, 'session/cancel', {
       sessionId: session.threadId,
     });
@@ -818,7 +979,7 @@ export function buildInputResponse(response: CodexInputResponse): Record<string,
   };
 }
 
-export function buildCursorClientCapabilities(): Record<string, unknown> {
+export function buildAcpClientCapabilities(): Record<string, unknown> {
   return {
     fs: { readTextFile: false, writeTextFile: false },
     terminal: false,
@@ -834,7 +995,8 @@ export function resolvePlanFeedbackDelivery(
 ): 'steer' | 'prompt' | 'queue' | 'none' {
   if (status === 'ready') return 'prompt';
   if (status !== 'busy') return 'none';
-  if (provider === 'cursor') return 'queue';
+  // ACP has no mid-turn steer; queue plan feedback for the next prompt.
+  if (isAcpAgentProvider(provider)) return 'queue';
   return turnId ? 'steer' : 'none';
 }
 
@@ -989,6 +1151,29 @@ function handleServerMessage(session: ManagedSession, line: string): void {
     onLog: (message) => {
       console.log(`[Codex:${session.id.slice(0, 8)}] ${message}`);
     },
+    onRequestError: (error) => {
+      // Devin only needs `authenticate` when stored credentials are missing or
+      // expired. Retry the handshake once via devin-browser, which opens a
+      // browser sign-in — triggered by failure, never eagerly.
+      if (
+        session.provider === 'devin' &&
+        !session.threadId &&
+        !session.acpAuthRetried &&
+        isAcpAuthError(error.message)
+      ) {
+        session.acpAuthRetried = true;
+        sendCodexJsonRpc(session.process, 'authenticate', {
+          methodId: ACP_AUTH_METHODS.devin,
+        });
+        sendCodexJsonRpc(session.process, 'session/new', {
+          cwd: session.cwd,
+          mcpServers: [],
+          _meta: { systemPrompt: session.systemPrompt },
+        });
+        return true;
+      }
+      return false;
+    },
     onServerRequestResolved: (requestId) => {
       const requestKey = buildPendingRequestKey(session.id, requestId);
       pendingServerRequests.delete(requestKey);
@@ -1109,6 +1294,10 @@ function broadcastAgentUIIntent(
 
 function buildPendingRequestKey(sessionId: string, requestId: JsonRpcRequestId): string {
   return `${sessionId}:${typeof requestId}:${String(requestId)}`;
+}
+
+function isAcpAuthError(message: string): boolean {
+  return /auth|login|sign.?in|credential|unauthorized|401|forbidden|403/i.test(message);
 }
 
 function sessionToPublic(session: ManagedSession): CodexSession {

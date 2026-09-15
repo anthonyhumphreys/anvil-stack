@@ -225,9 +225,11 @@ function formatAgentLabel(agentPath: string | undefined, threadId: string): stri
 }
 
 function formatAgentDetail(
-  activityKind: 'started' | 'interacted' | 'interrupted' | undefined,
+  activityKind: 'started' | 'interacted' | 'completed' | 'errored' | 'interrupted' | undefined,
   tool: 'spawnAgent' | 'sendInput' | 'resumeAgent' | 'wait' | 'closeAgent' | undefined,
 ): string {
+  if (activityKind === 'completed') return 'Completed';
+  if (activityKind === 'errored') return 'Failed';
   if (activityKind === 'started' || tool === 'spawnAgent') return 'Delegated task';
   if (activityKind === 'interrupted') return 'Interrupted';
   if (tool === 'sendInput') return 'Received follow-up';

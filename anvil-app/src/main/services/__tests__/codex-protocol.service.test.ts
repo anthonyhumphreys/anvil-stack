@@ -577,6 +577,101 @@ describe('codex protocol service', () => {
     });
   });
 
+  it('parses subagent activity terminal states and metadata', () => {
+    const events = collectEvents(createState(), [
+      {
+        method: 'item/started',
+        params: {
+          item: {
+            id: 'activity-1',
+            type: 'subAgentActivity',
+            kind: 'started',
+            agentThreadId: 'thread-child',
+            senderThreadId: 'thread-1',
+            agentPath: '/root/security_review',
+            prompt: 'Audit the auth boundary.',
+            model: 'gpt-5.4',
+            reasoningEffort: 'high',
+          },
+        },
+      },
+      {
+        method: 'item/completed',
+        params: {
+          item: {
+            id: 'activity-1',
+            type: 'subAgentActivity',
+            kind: 'completed',
+            agentThreadId: 'thread-child',
+            senderThreadId: 'thread-1',
+            message: 'Found the missing event handler.',
+            model: 'gpt-5.4',
+          },
+        },
+      },
+      {
+        method: 'item/completed',
+        params: {
+          item: {
+            id: 'activity-2',
+            type: 'subAgentActivity',
+            kind: 'errored',
+            agentThreadId: 'thread-child-2',
+            senderThreadId: 'thread-1',
+            message: 'Connection reset during file read.',
+          },
+        },
+      },
+    ]);
+
+    expect(events).toHaveLength(3);
+    expect(events[0]).toMatchObject({
+      type: 'subagent_update',
+      subagent: {
+        id: 'activity-1',
+        kind: 'activity',
+        activityKind: 'started',
+        agentThreadId: 'thread-child',
+        senderThreadId: 'thread-1',
+        agentPath: '/root/security_review',
+        prompt: 'Audit the auth boundary.',
+        model: 'gpt-5.4',
+        reasoningEffort: 'high',
+        agents: [{ threadId: 'thread-child', status: 'running' }],
+      },
+    });
+    expect(events[1]).toMatchObject({
+      type: 'subagent_update',
+      subagent: {
+        id: 'activity-1',
+        kind: 'activity',
+        activityKind: 'completed',
+        agents: [
+          {
+            threadId: 'thread-child',
+            status: 'completed',
+            message: 'Found the missing event handler.',
+          },
+        ],
+      },
+    });
+    expect(events[2]).toMatchObject({
+      type: 'subagent_update',
+      subagent: {
+        id: 'activity-2',
+        kind: 'activity',
+        activityKind: 'errored',
+        agents: [
+          {
+            threadId: 'thread-child-2',
+            status: 'errored',
+            message: 'Connection reset during file read.',
+          },
+        ],
+      },
+    });
+  });
+
   it('surfaces server request resolution so stale blocking cards can be removed', () => {
     const events = collectEvents(createState(), [
       {
@@ -685,8 +780,8 @@ describe('codex protocol service', () => {
         type: 'plan_update',
         plan: {
           steps: [
-            { id: 'cursor-plan-0', step: 'Inspect Cursor ACP output', status: 'in_progress' },
-            { id: 'cursor-plan-1', step: 'Report result', status: 'pending' },
+            { id: 'acp-plan-0', step: 'Inspect Cursor ACP output', status: 'in_progress' },
+            { id: 'acp-plan-1', step: 'Report result', status: 'pending' },
           ],
           updatedAt: expect.any(String),
         },
@@ -695,7 +790,7 @@ describe('codex protocol service', () => {
   });
 
   it('normalises Cursor ACP form elicitation into a structured input request', () => {
-    const events = collectEvents(createState(), [
+    const events = collectEvents({ ...createState(), agentLabel: 'Cursor' }, [
       {
         jsonrpc: '2.0',
         id: 17,
@@ -736,6 +831,95 @@ describe('codex protocol service', () => {
         },
       },
     ]);
+  });
+
+  it('normalises ACP tool calls and their lifecycle updates with stable ids', () => {
+    const events = collectEvents({ ...createState(), agentLabel: 'Devin' }, [
+      {
+        method: 'session/update',
+        params: {
+          sessionId: 'devin-session-1',
+          update: {
+            sessionUpdate: 'tool_call',
+            toolCallId: 'tool-1',
+            title: 'Run tests',
+            kind: 'execute',
+            status: 'in_progress',
+            rawInput: { command: 'pnpm test' },
+          },
+        },
+      },
+      {
+        method: 'session/update',
+        params: {
+          sessionId: 'devin-session-1',
+          update: {
+            sessionUpdate: 'tool_call_update',
+            toolCallId: 'tool-1',
+            status: 'completed',
+            content: [
+              { type: 'content', content: { type: 'text', text: 'All tests passed' } },
+              { type: 'diff', path: '/repo/src/app.ts' },
+            ],
+            locations: [{ path: '/repo/src/app.ts' }],
+          },
+        },
+      },
+      {
+        method: 'session/update',
+        params: {
+          sessionId: 'devin-session-1',
+          update: {
+            sessionUpdate: 'tool_call_update',
+            toolCallId: 'tool-2',
+            title: 'Apply patch',
+            kind: 'edit',
+            status: 'failed',
+          },
+        },
+      },
+    ]);
+
+    expect(events).toEqual([
+      {
+        type: 'tool_call',
+        itemId: 'tool-1',
+        toolStatus: 'running',
+        toolName: 'Run tests',
+        toolInput: { command: 'pnpm test' },
+        toolOutput: undefined,
+      },
+      {
+        type: 'tool_call',
+        itemId: 'tool-1',
+        toolStatus: 'completed',
+        toolName: undefined,
+        toolInput: {},
+        toolOutput: 'All tests passed\nEdited /repo/src/app.ts\nTouched /repo/src/app.ts',
+      },
+      {
+        type: 'tool_call',
+        itemId: 'tool-2',
+        toolStatus: 'failed',
+        toolName: 'Apply patch',
+        toolInput: {},
+        toolOutput: undefined,
+      },
+    ]);
+  });
+
+  it('labels generic ACP tool calls with the provider name', () => {
+    const events = collectEvents({ ...createState(), agentLabel: 'Devin' }, [
+      {
+        method: 'session/update',
+        params: {
+          sessionId: 'devin-session-1',
+          update: { sessionUpdate: 'tool_call', toolCallId: 'tool-9', kind: 'other' },
+        },
+      },
+    ]);
+
+    expect(events[0].toolName).toBe('Devin tool');
   });
 
   it('marks Cursor ACP session/new results as thread ready', () => {

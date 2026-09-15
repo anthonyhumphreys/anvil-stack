@@ -88,6 +88,7 @@ function change(input: RecordLocalChangeInput): string | null {
 
 function applyMigrationSql(target: Database.Database, migration: string): void {
   for (const statement of migration
+    .replace(/^[ \t]*--[^\r\n]*/gm, '')
     .split(';')
     .map((value) => value.trim())
     .filter(Boolean)) {
@@ -106,15 +107,15 @@ beforeEach(() => {
 
 describe('schema migrations', () => {
   it('leaves SCHEMA_VERSION at the current schema after later packets', () => {
-    expect(SCHEMA_VERSION).toBe(76);
+    expect(SCHEMA_VERSION).toBe(78);
   });
 
-  it('migration 69 adds the sequence allocator, review flag, and scan staging', () => {
+  it('migration 70 adds the sequence allocator, review flag, and scan staging', () => {
     const fresh = new Database(':memory:');
     try {
-      applyMigrationSql(fresh, MIGRATIONS[67]);
       applyMigrationSql(fresh, MIGRATIONS[68]);
       applyMigrationSql(fresh, MIGRATIONS[69]);
+      applyMigrationSql(fresh, MIGRATIONS[70]);
       const enrollmentColumns = new Set(
         (
           fresh.prepare('PRAGMA table_info(device_enrollments)').all() as Array<{
@@ -147,9 +148,9 @@ describe('schema migrations', () => {
   it('creates the five sync tables from the migration SQL alone', () => {
     const fresh = new Database(':memory:');
     try {
-      applyMigrationSql(fresh, MIGRATIONS[67]);
+      applyMigrationSql(fresh, MIGRATIONS[68]);
       // Re-running is a safe no-op.
-      applyMigrationSql(fresh, MIGRATIONS[67]);
+      applyMigrationSql(fresh, MIGRATIONS[68]);
       const tables = new Set(
         (
           fresh.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{

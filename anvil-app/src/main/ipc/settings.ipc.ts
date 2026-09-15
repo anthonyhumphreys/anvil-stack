@@ -1,5 +1,5 @@
 import { ipcMain } from 'electron';
-import type { AppSettings } from '../../shared/types.js';
+import type { AppSettings, LlmGatewayBillingMode } from '../../shared/types.js';
 import {
   getSettings,
   updateSettings,
@@ -10,10 +10,7 @@ import {
 } from '../services/settings.service.js';
 import { resetLlmClient } from '../services/llm.service.js';
 import { emitCompanionEvent } from '../services/companion-events.service.js';
-import {
-  getLocalLlmCapabilities,
-  testPreferredLocalModel,
-} from '../services/local-llm.service.js';
+import { getLocalLlmCapabilities, testPreferredLocalModel } from '../services/local-llm.service.js';
 import { getActiveProvider } from '../services/workitem-provider.js';
 import {
   readCodexAgentsFile,
@@ -21,6 +18,13 @@ import {
 } from '../services/codex-agents-file.service.js';
 import { detectCodexCli, setCodexAgentMaxThreads } from '../services/codex-bridge.service.js';
 import { detectCursorCli } from '../services/cursor-bridge.service.js';
+import { detectDevinCli, startDevinAuthLogin } from '../services/devin-bridge.service.js';
+import { getCodexRuntimeStatus, installCodexRuntime } from '../services/codex-runtime.service.js';
+import {
+  disconnectLlmGateway,
+  getLlmGatewayStatus,
+  startLlmGatewayLogin,
+} from '../services/llm-gateway.service.js';
 import {
   isNotionMcpInstalled,
   installNotionMcp,
@@ -29,6 +33,9 @@ import {
 } from '../services/notion.service.js';
 
 export function registerSettingsHandlers(): void {
+  ipcMain.handle('settings:codex-runtime-status', () => getCodexRuntimeStatus());
+  ipcMain.handle('settings:codex-runtime-install', () => installCodexRuntime());
+
   ipcMain.handle('settings:get', () => {
     try {
       const settings = getSettings();
@@ -43,6 +50,7 @@ export function registerSettingsHandlers(): void {
         })),
         foundryApiKey: settings.foundryApiKey ? '••••••••' : undefined,
         openaiApiKey: settings.openaiApiKey ? '••••••••' : undefined,
+        llmGatewayApiKey: settings.llmGatewayApiKey ? '••••••••' : undefined,
         adoPat: settings.adoPat ? '••••••••' : undefined,
         linearApiKey: settings.linearApiKey ? '••••••••' : undefined,
         jiraApiToken: settings.jiraApiToken ? '••••••••' : undefined,
@@ -62,6 +70,7 @@ export function registerSettingsHandlers(): void {
       const cleaned = { ...partial };
       if (cleaned.foundryApiKey === '••••••••') delete cleaned.foundryApiKey;
       if (cleaned.openaiApiKey === '••••••••') delete cleaned.openaiApiKey;
+      if (cleaned.llmGatewayApiKey === '••••••••') delete cleaned.llmGatewayApiKey;
       if (cleaned.adoPat === '••••••••') delete cleaned.adoPat;
       if (cleaned.linearApiKey === '••••••••') delete cleaned.linearApiKey;
       if (cleaned.jiraApiToken === '••••••••') delete cleaned.jiraApiToken;
@@ -94,6 +103,47 @@ export function registerSettingsHandlers(): void {
       console.error('[Settings IPC] Error detecting Cursor CLI:', err);
       throw err;
     }
+  });
+
+  ipcMain.handle('settings:devin-status', async () => {
+    try {
+      return await detectDevinCli();
+    } catch (err) {
+      console.error('[Settings IPC] Error detecting Devin CLI:', err);
+      throw err;
+    }
+  });
+
+  ipcMain.handle('settings:devin-login', async () => {
+    try {
+      return await startDevinAuthLogin();
+    } catch (err) {
+      console.error('[Settings IPC] Error starting Devin login:', err);
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  ipcMain.handle(
+    'settings:llmgateway-status',
+    (_event, forceModels?: boolean, billingMode?: LlmGatewayBillingMode) =>
+      getLlmGatewayStatus(forceModels, billingMode),
+  );
+
+  ipcMain.handle(
+    'settings:llmgateway-connect',
+    async (_event, billingMode: LlmGatewayBillingMode) => {
+      const status = await startLlmGatewayLogin(billingMode);
+      resetLlmClient();
+      emitCompanionEvent('settings');
+      return status;
+    },
+  );
+
+  ipcMain.handle('settings:llmgateway-disconnect', async () => {
+    const status = await disconnectLlmGateway();
+    resetLlmClient();
+    emitCompanionEvent('settings');
+    return status;
   });
 
   ipcMain.handle('settings:codex-agent-max-threads', async (_event, maxThreads: number) => {

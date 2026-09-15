@@ -12,6 +12,7 @@ import {
   classifyPromptForLocalModel,
   isLikelyLocalModelRefusal,
 } from './local-llm.service.js';
+import { LLM_GATEWAY_API_URL, LLM_GATEWAY_SOURCE } from '../../shared/llm-gateway.js';
 
 let cachedClient: AzureOpenAI | OpenAI | null = null;
 let cachedProvider: string | null = null;
@@ -63,11 +64,7 @@ function isLikelyJsonResponse(value: string): boolean {
   }
 }
 
-function isLocalLlmEligible(
-  prompt: string,
-  maxTokens: number,
-  options?: LlmCallOptions,
-): boolean {
+function isLocalLlmEligible(prompt: string, maxTokens: number, options?: LlmCallOptions): boolean {
   if (!options?.taskClass) return false;
   if (prompt.length > LOCAL_LLM_MAX_PROMPT_CHARS) return false;
   if (maxTokens > 4096) return false;
@@ -158,7 +155,7 @@ function readCodexConfig(): { baseUrl: string; model: string; envKey: string } |
 
 /**
  * Get or create the LLM client based on the configured provider.
- * Only used for azure and openai providers — codex routes through the CLI.
+ * Only used for API-backed providers. Codex and Cursor route through their CLIs.
  */
 function getClient(): { client: AzureOpenAI | OpenAI; model: string } {
   const settings = getSettings();
@@ -195,6 +192,24 @@ function getClient(): { client: AzureOpenAI | OpenAI; model: string } {
       });
     }
     return { client: cachedClient, model: codexConfig.model };
+  }
+
+  if (provider === 'llmgateway') {
+    if (!settings.llmGatewayApiKey) {
+      throw new Error('Connect LLMGateway in Settings before using this provider');
+    }
+    const model = settings.openaiModel?.trim();
+    if (!model)
+      throw new Error('Choose an LLMGateway model in Settings before using this provider.');
+    if (!cachedClient) {
+      console.log('[LLM] Creating LLMGateway client');
+      cachedClient = new OpenAI({
+        apiKey: settings.llmGatewayApiKey,
+        baseURL: LLM_GATEWAY_API_URL,
+        defaultHeaders: { 'x-source': LLM_GATEWAY_SOURCE },
+      });
+    }
+    return { client: cachedClient, model };
   }
 
   // OpenAI API key
@@ -253,6 +268,19 @@ function summariseCliStderr(stderr: string): string | null {
 
 export function buildCursorPrintArgs(prompt: string, model = 'auto'): string[] {
   return ['-p', '--model', model, prompt];
+}
+
+/**
+ * Non-interactive Devin call. `auto` permission mode keeps the one-shot run
+ * read-only, and workspace trust is skipped because print mode cannot show the
+ * trust prompt and would fail in untrusted directories.
+ */
+export function buildDevinPrintArgs(prompt: string, model?: string): string[] {
+  const args = ['--print', '--permission-mode', 'auto', '--respect-workspace-trust', 'false'];
+  const trimmed = model?.trim();
+  if (trimmed && trimmed !== 'auto') args.push('--model', trimmed);
+  args.push('--', prompt);
+  return args;
 }
 
 export function buildCodexExecArgs(outputPath: string): string[] {
@@ -319,6 +347,67 @@ async function callCursor(
             reject(
               new EmptyLlmResponseError(
                 `Cursor CLI returned an empty response${detail ? `: ${detail}` : ''}`,
+              ),
+            );
+            return;
+          }
+          resolve(result);
+        });
+      }),
+    options?.onProgress,
+  );
+}
+
+async function callDevin(
+  prompt: string,
+  options?: LlmCallOptions,
+  model?: string,
+): Promise<string> {
+  const cleanPrompt = prompt.replace(/\0/g, '');
+  const cwd = options?.cwd;
+  console.log(
+    `[LLM] Devin CLI: sending prompt (${cleanPrompt.length} chars)${cwd ? ` cwd=${cwd}` : ''}`,
+  );
+
+  return enqueueCodexExec(
+    async () =>
+      new Promise((resolve, reject) => {
+        options?.onProgress?.('Sending request to Devin CLI...');
+        const child = spawn('devin', buildDevinPrintArgs(cleanPrompt, model), {
+          ...(cwd && { cwd }),
+          env: { ...process.env },
+          detached: process.platform !== 'win32',
+        });
+        let stdout = '';
+        let stderr = '';
+        const timeout = setTimeout(() => {
+          stderr += '\nDevin CLI timed out after 300 seconds.\n';
+          killProcessTree(child.pid, 'SIGTERM');
+        }, 300_000);
+        child.stdout.on('data', (chunk: Buffer) => {
+          stdout += chunk.toString();
+        });
+        child.stderr.on('data', (chunk: Buffer) => {
+          stderr += chunk.toString();
+        });
+        child.on('error', (err) => {
+          clearTimeout(timeout);
+          reject(new Error(`Devin CLI error: ${err.message}`));
+        });
+        child.on('close', (code, signal) => {
+          clearTimeout(timeout);
+          const result = stdout.trim();
+          if (code !== 0) {
+            const msg =
+              stderr.trim() || (signal ? `terminated by ${signal}` : `exited with code ${code}`);
+            reject(new Error(`Devin CLI error: ${msg}`));
+            return;
+          }
+          if (!result) {
+            const detail = summariseCliStderr(stderr);
+            reject(
+              new EmptyLlmResponseError(
+                `Devin CLI returned an empty response${detail ? `: ${detail}` : ''}`,
               ),
             );
             return;
@@ -467,12 +556,18 @@ export async function callLlm(
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     let result: string;
 
-    if (settings.llmProvider === 'codex' || settings.llmProvider === 'cursor') {
+    if (
+      settings.llmProvider === 'codex' ||
+      settings.llmProvider === 'cursor' ||
+      settings.llmProvider === 'devin'
+    ) {
       try {
         result =
           settings.llmProvider === 'cursor'
             ? await callCursor(userMessage, options, settings.openaiModel || 'auto')
-            : await callCodex(userMessage, options);
+            : settings.llmProvider === 'devin'
+              ? await callDevin(userMessage, options, settings.openaiModel)
+              : await callCodex(userMessage, options);
       } catch (err) {
         if (err instanceof EmptyLlmResponseError) {
           lastEmptyResponseMessage = err.message;
@@ -555,10 +650,16 @@ export async function testLlmConnection(): Promise<{ ok: boolean; error?: string
   console.log('[LLM] Testing connection...');
   try {
     const settings = getSettings();
-    if (settings.llmProvider === 'codex' || settings.llmProvider === 'cursor') {
+    if (
+      settings.llmProvider === 'codex' ||
+      settings.llmProvider === 'cursor' ||
+      settings.llmProvider === 'devin'
+    ) {
       console.log(`[LLM] Test: running ${settings.llmProvider} CLI ping`);
       if (settings.llmProvider === 'cursor') {
         await callCursor('respond with the word pong', undefined, settings.openaiModel || 'auto');
+      } else if (settings.llmProvider === 'devin') {
+        await callDevin('respond with the word pong', undefined, settings.openaiModel);
       } else {
         await callCodex('respond with the word pong');
       }

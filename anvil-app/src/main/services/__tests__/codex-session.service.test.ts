@@ -17,14 +17,16 @@ vi.mock('electron', () => ({
 }));
 
 import {
+  buildAcpClientCapabilities,
   buildApprovalResponse,
   buildCodexCollaborationMode,
-  buildCursorClientCapabilities,
+  buildCodexProcessEnvironment,
   buildInputResponse,
   buildTurnSteerParams,
+  resolveAcpModelValue,
+  resolveAcpSessionMode,
   resolveSessionModel,
   resolvePersonaCodexPolicy,
-  resolveCursorMode,
   resolvePlanFeedbackDelivery,
   resolveSessionCwd,
 } from '../codex-session.service.js';
@@ -32,6 +34,7 @@ import {
 const tempDirs: string[] = [];
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const tempDir of tempDirs.splice(0)) {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
@@ -49,6 +52,25 @@ describe('codex session service', () => {
     });
     expect(buildCodexCollaborationMode('default', 'gpt-5.6-sol', 'medium').mode).toBe('default');
     expect(buildCodexCollaborationMode(undefined, 'gpt-5.6-sol', 'medium').mode).toBe('default');
+    expect(buildCodexCollaborationMode('plan', 'gateway/model', undefined)).toMatchObject({
+      mode: 'plan',
+      settings: { model: 'gateway/model', reasoning_effort: null },
+    });
+  });
+
+  it('strips ambient secrets from the provider spawn environment', async () => {
+    vi.stubEnv('GH_TOKEN', 'gh-secret');
+    vi.stubEnv('ANVIL_SYNC_TOKEN', 'anvil-secret');
+    vi.stubEnv('PATH', '/usr/bin:/bin');
+
+    const env = await buildCodexProcessEnvironment('openai', {
+      openaiApiKey: 'sk-from-settings',
+    } as Parameters<typeof buildCodexProcessEnvironment>[1]);
+
+    expect(env.GH_TOKEN).toBeUndefined();
+    expect(env.ANVIL_SYNC_TOKEN).toBeUndefined();
+    expect(env.PATH).toBe('/usr/bin:/bin');
+    expect(env.OPENAI_API_KEY).toBe('sk-from-settings');
   });
 
   it('keeps Cursor model ids instead of coercing them into the Codex catalog', () => {
@@ -59,17 +81,47 @@ describe('codex session service', () => {
     expect(resolveSessionModel('codex', '')).toBe('gpt-5.6-sol');
   });
 
+  it('keeps Devin model ids instead of coercing them into the Codex catalog', () => {
+    expect(resolveSessionModel('devin', 'swe-2-max')).toBe('swe-2-max');
+    expect(resolveSessionModel('devin', '')).toBe('auto');
+  });
+
+  it('does not substitute an OpenAI model when LLMGateway has no model configured', () => {
+    expect(resolveSessionModel('llmgateway', '')).toBe('');
+    expect(resolveSessionModel('llmgateway', 'gateway/model')).toBe('gateway/model');
+  });
+
   it('maps Anvil access and collaboration modes to Cursor ACP modes', () => {
-    expect(resolveCursorMode('read-only')).toBe('ask');
-    expect(resolveCursorMode('on-request')).toBe('agent');
-    expect(resolveCursorMode('full-access', 'plan')).toBe('plan');
+    expect(resolveAcpSessionMode('cursor', 'read-only')).toBe('ask');
+    expect(resolveAcpSessionMode('cursor', 'on-request')).toBe('agent');
+    expect(resolveAcpSessionMode('cursor', 'full-access', 'plan')).toBe('plan');
+  });
+
+  it('maps Anvil access and collaboration modes to Devin ACP modes', () => {
+    expect(resolveAcpSessionMode('devin', 'read-only')).toBe('ask');
+    expect(resolveAcpSessionMode('devin', 'workspace-auto')).toBe('smart');
+    expect(resolveAcpSessionMode('devin', 'full-access')).toBe('bypass');
+    expect(resolveAcpSessionMode('devin', 'on-request')).toBe('accept-edits');
+    expect(resolveAcpSessionMode('devin', 'full-access', 'plan')).toBe('plan');
+    expect(resolveAcpSessionMode('devin', 'read-only', 'plan')).toBe('plan');
+  });
+
+  it('translates Anvil model values into ACP config option values', () => {
+    expect(resolveAcpModelValue('cursor', 'auto')).toBe('default[]');
+    expect(resolveAcpModelValue('cursor', 'claude-fable-5-thinking-high')).toBe(
+      'claude-fable-5-thinking-high',
+    );
+    // Devin 'auto' leaves the session default untouched — no set_config_option.
+    expect(resolveAcpModelValue('devin', 'auto')).toBeNull();
+    expect(resolveAcpModelValue('devin', '  ')).toBeNull();
+    expect(resolveAcpModelValue('devin', 'swe-2-max')).toBe('swe-2-max');
   });
 
   it('advertises ACP form elicitation without claiming unsupported URL elicitation', () => {
-    expect(buildCursorClientCapabilities()).toMatchObject({
+    expect(buildAcpClientCapabilities()).toMatchObject({
       elicitation: { form: {} },
     });
-    expect(buildCursorClientCapabilities()).not.toMatchObject({
+    expect(buildAcpClientCapabilities()).not.toMatchObject({
       elicitation: { url: {} },
     });
   });

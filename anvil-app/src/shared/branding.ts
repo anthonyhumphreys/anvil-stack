@@ -31,7 +31,7 @@ const anvilBrand: Brand = {
   copyright: 'AnthonyHumphreys.dev',
   showBrandLogo: false,
   outroLabel: 'Anvil',
-  defaultTheme: 'dark',
+  defaultTheme: 'system',
 };
 
 const brands: Record<BrandId, Brand> = {

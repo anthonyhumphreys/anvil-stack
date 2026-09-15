@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { OpenAI } from 'openai';
 
 const mocks = vi.hoisted(() => ({
   getSettings: vi.fn(),
@@ -148,6 +149,40 @@ describe('callLlm local model routing', () => {
     expect(mocks.classifyPromptForLocalModel).not.toHaveBeenCalled();
     expect(mocks.callPreferredLocalModel).not.toHaveBeenCalled();
     expect(mocks.completionCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls LLMGateway directly with its key and selected model without a coding runtime', async () => {
+    mocks.getSettings.mockReturnValue({
+      ...openAiSettings(),
+      llmProvider: 'llmgateway',
+      llmGatewayApiKey: 'gateway-test-key',
+      openaiApiKey: undefined,
+      openaiModel: 'deepseek-v4-flash',
+    });
+    await expect(callLlm('Summarize this', 1024, 0.2, 0)).resolves.toBe('fallback response');
+    expect(OpenAI).toHaveBeenCalledWith({
+      apiKey: 'gateway-test-key',
+      baseURL: 'https://api.llmgateway.io/v1',
+      defaultHeaders: { 'x-source': 'anvil' },
+    });
+    expect(mocks.completionCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: 'deepseek-v4-flash',
+      }),
+    );
+  });
+
+  it('requires a gateway model instead of silently selecting an OpenAI model', async () => {
+    mocks.getSettings.mockReturnValue({
+      ...openAiSettings(),
+      llmProvider: 'llmgateway',
+      llmGatewayApiKey: 'gateway-test-key',
+      openaiModel: '',
+    });
+    await expect(callLlm('Summarize this', 1024, 0.2, 0)).rejects.toThrow(
+      'Choose an LLMGateway model',
+    );
+    expect(mocks.completionCreate).not.toHaveBeenCalled();
   });
 
   it('does not attempt local routing when max tokens exceed the local cap', async () => {

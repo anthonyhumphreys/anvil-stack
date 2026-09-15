@@ -23,6 +23,7 @@
   --color-persona-security: #ff6b8a;
   --color-persona-reviewer: #ffd166;
   --color-persona-docs: #a78bfa;
+  --overlay-ring: rgba(0, 0, 0, 0.18);
   --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
   --radius-sm: 4px;
@@ -30,6 +31,40 @@
   --radius-lg: 8px;
   --radius-xl: 12px;
   --radius-2xl: 16px;
+}
+
+
+@theme inline {
+  --color-overlay-ring: var(--overlay-ring);
+}
+
+/* Minimal, neutral themes. The default `dark` theme (above) and this `light`
+   theme are the quiet pair used when following the system appearance; the
+   themed variants below stay for flavour. */
+html[data-theme='light'] {
+  --color-bg-primary: #fbfbfc;
+  --color-bg-secondary: #ffffff;
+  --color-bg-tertiary: #f3f4f6;
+  --color-bg-elevated: #ffffff;
+  --color-bg-hover: #eceef1;
+  --color-border: #e2e4e9;
+  --color-border-subtle: #ecedf1;
+  --color-text-primary: #181b21;
+  --color-text-secondary: #3d4450;
+  --color-text-tertiary: #6b7280;
+  --color-text-muted: #9aa1ad;
+  --color-accent: #4f46e5;
+  --color-accent-glow: rgba(79, 70, 229, 0.14);
+  --color-success: #15803d;
+  --color-warning: #b45309;
+  --color-info: #0369a1;
+  --color-error: #dc2626;
+  --color-persona-coder: #15803d;
+  --color-persona-architect: #0369a1;
+  --color-persona-security: #dc2626;
+  --color-persona-reviewer: #b45309;
+  --color-persona-docs: #7c3aed;
+  --overlay-ring: rgba(15, 23, 42, 0.12);
 }
 
 html[data-theme='prompt-whisperer'] {
@@ -132,6 +167,10 @@ body,
   letter-spacing: 0.008em;
   -webkit-font-smoothing: antialiased;
   color-scheme: dark;
+}
+
+html[data-theme='light'] {
+  color-scheme: light;
 }
 
 /* Focus-visible styles for keyboard navigation */

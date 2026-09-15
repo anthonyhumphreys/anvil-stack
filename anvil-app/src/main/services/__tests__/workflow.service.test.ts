@@ -60,7 +60,7 @@ describe('normaliseWorkflowNodes', () => {
 });
 
 describe('workflow provider routing', () => {
-  it('selects the configured Codex model provider for Azure and OpenAI steps', () => {
+  it('selects the configured Codex model provider for API-backed steps', () => {
     expect(buildCodexWorkflowArgs('codex')).toEqual(['app-server']);
     expect(buildCodexWorkflowArgs('azure')).toEqual(['app-server', '-c', 'model_provider="azure"']);
     expect(buildCodexWorkflowArgs('openai')).toEqual([
@@ -68,5 +68,8 @@ describe('workflow provider routing', () => {
       '-c',
       'model_provider="openai"',
     ]);
+    expect(buildCodexWorkflowArgs('llmgateway')).toContain(
+      'model_providers.llmgateway.wire_api="responses"',
+    );
   });
 });

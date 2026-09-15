@@ -1,3 +1,4 @@
+import { isAcpAgentProvider } from '../../shared/agent-providers';
 import type { AgentProvider } from '../../shared/types';
 import type { ChatModelOption } from './chat-model-options';
 
@@ -12,7 +13,7 @@ export function resolveChatFastModeTarget(
   model: string,
   modelOptions: ChatModelOption[],
 ): ChatFastModeTarget {
-  if (provider !== 'cursor') {
+  if (!isAcpAgentProvider(provider)) {
     const selected = modelOptions.find(
       (option) => option.provider === provider && option.id === model,
     );
