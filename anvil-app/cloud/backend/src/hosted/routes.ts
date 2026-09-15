@@ -22,6 +22,13 @@ import {
   handleStripeWebhook,
 } from './billing-routes';
 import {
+  handleHostedDataStatus,
+  handleHostedDeleteAccount,
+  handleHostedDeviceRename,
+  handleHostedDeviceRevoke,
+  handleHostedDevices,
+} from './device-routes';
+import {
   initialHostedSyncAccountId,
   validateHostedIdentity,
   type HostedIdentity,
@@ -375,6 +382,17 @@ export async function handleHostedRequest(request: Request, env: Env): Promise<R
           return await handleEntitlement(json, env, db);
         case '/internal/hosted/reconcile':
           return await handleReconcile(json, env, db);
+        // BILL-04: website-facing device management + data/deletion state.
+        case '/internal/hosted/devices':
+          return await handleHostedDevices(json, env, db);
+        case '/internal/hosted/device-rename':
+          return await handleHostedDeviceRename(json, env, db);
+        case '/internal/hosted/device-revoke':
+          return await handleHostedDeviceRevoke(json, env, db);
+        case '/internal/hosted/data-status':
+          return await handleHostedDataStatus(json, env, db);
+        case '/internal/hosted/delete-account':
+          return await handleHostedDeleteAccount(json, env, db);
         default:
           return rpcErrorResponse(undefined, 'not-found');
       }

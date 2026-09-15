@@ -181,9 +181,34 @@ export class SessionCoordinator extends DurableObject<Env> {
           await this.ensureSweepAlarm();
           return response;
         }
+        // BILL-04 website channel: the worker's /internal/hosted/* surface
+        // already verified the service signature and resolved the billing
+        // account's sync_account_id, so these routes take an explicit
+        // accountId and never see a caller session. Reachable only through
+        // stub.fetch — index.ts routes no public traffic here.
+        case 'POST /internal/device-list-for-account':
+          return await this.handleDeviceListForAccount(request);
+        case 'POST /internal/device-rename-for-account':
+          return await this.ctx.blockConcurrencyWhile(() =>
+            this.handleDeviceRenameForAccount(request),
+          );
+        case 'POST /internal/device-revoke-for-account': {
+          const response = await this.ctx.blockConcurrencyWhile(() =>
+            this.handleDeviceRevokeForAccount(request),
+          );
+          await this.ensureSweepAlarm();
+          return response;
+        }
         case 'POST /internal/account-delete': {
           const response = await this.ctx.blockConcurrencyWhile(() =>
             this.handleAccountDelete(request),
+          );
+          await this.ensureSweepAlarm();
+          return response;
+        }
+        case 'POST /internal/delete-account-by-id': {
+          const response = await this.ctx.blockConcurrencyWhile(() =>
+            this.handleDeleteAccountById(request),
           );
           await this.ensureSweepAlarm();
           return response;
@@ -754,16 +779,21 @@ export class SessionCoordinator extends DurableObject<Env> {
     return verified;
   }
 
-  /** `device.list` — every session on the caller's account, revoked included. */
-  private async handleDeviceList(request: Request): Promise<Response> {
-    const caller = this.verifiedCaller(request);
-    if (caller === null) return authError('unauthenticated');
+  /**
+   * Every session row on an account as a DeviceSummary list, revoked rows
+   * included. `selfEnrollmentId` marks the caller's own row; callers with
+   * no session (the website channel) pass null so no row is self.
+   */
+  private deviceListResult(
+    accountId: string,
+    selfEnrollmentId: string | null,
+  ): DeviceListResult {
     const rows = this.ctx.storage.sql
       .exec(
         `SELECT enrollment_id, installation_id, display_name,
                 credential_generation, revoked_at, created_at
          FROM device_sessions WHERE account_id = ? ORDER BY created_at ASC`,
-        caller.accountId,
+        accountId,
       )
       .toArray() as unknown as SessionRow[];
     const devices: DeviceSummary[] = rows.map((row) => ({
@@ -773,9 +803,55 @@ export class SessionCoordinator extends DurableObject<Env> {
       credentialGeneration: row.credential_generation,
       revoked: row.revoked_at !== null,
       createdAt: new Date(Number(row.created_at)).toISOString(),
-      self: row.enrollment_id === caller.enrollmentId,
+      self: row.enrollment_id === selfEnrollmentId,
     }));
-    const result: DeviceListResult = { devices };
+    return { devices };
+  }
+
+  /** `device.list` — every session on the caller's account, revoked included. */
+  private async handleDeviceList(request: Request): Promise<Response> {
+    const caller = this.verifiedCaller(request);
+    if (caller === null) return authError('unauthenticated');
+    const result = this.deviceListResult(caller.accountId, caller.enrollmentId);
+    return Response.json(result, { status: 200 });
+  }
+
+  /**
+   * BILL-04: `/internal/hosted/devices` backend — the accountId arrives in
+   * the verified body, so the list is identical to `device.list` except no
+   * row can be `self` (the website user holds no enrollment).
+   */
+  private async handleDeviceListForAccount(request: Request): Promise<Response> {
+    const body = await readJson(request);
+    if (
+      !isRecord(body) ||
+      typeof body['accountId'] !== 'string' ||
+      body['accountId'].length === 0
+    ) {
+      return authError('malformed-request');
+    }
+    return Response.json(this.deviceListResult(body['accountId'], null), { status: 200 });
+  }
+
+  /**
+   * Shared rename: any session on the account may be renamed, live or
+   * revoked. Unknown enrollments and cross-account rows are not-found.
+   */
+  private renameDeviceOnAccount(
+    accountId: string,
+    enrollmentId: string,
+    displayName: string,
+  ): Response {
+    const row = this.sessionByEnrollment(enrollmentId);
+    if (row === null || row.account_id !== accountId) {
+      return rpcErrorResponse(undefined, 'not-found');
+    }
+    this.ctx.storage.sql.exec(
+      'UPDATE device_sessions SET display_name = ? WHERE enrollment_id = ?',
+      displayName.length === 0 ? null : displayName,
+      row.enrollment_id,
+    );
+    const result: DeviceRenameResult = { renamed: true, enrollmentId: row.enrollment_id };
     return Response.json(result, { status: 200 });
   }
 
@@ -792,35 +868,49 @@ export class SessionCoordinator extends DurableObject<Env> {
     ) {
       return authError('malformed-request');
     }
-    const row = this.sessionByEnrollment(body['enrollmentId']);
-    if (row === null || row.account_id !== caller.accountId) {
-      return rpcErrorResponse(undefined, 'not-found');
-    }
-    this.ctx.storage.sql.exec(
-      'UPDATE device_sessions SET display_name = ? WHERE enrollment_id = ?',
-      body['displayName'].length === 0 ? null : body['displayName'],
-      row.enrollment_id,
+    return this.renameDeviceOnAccount(
+      caller.accountId,
+      body['enrollmentId'],
+      body['displayName'],
     );
-    const result: DeviceRenameResult = { renamed: true, enrollmentId: row.enrollment_id };
-    return Response.json(result, { status: 200 });
   }
 
   /**
-   * `device.revoke` — account-scoped revocation: any live session on the
-   * account may revoke any other (or itself — a remote sign-out). The
-   * session row flips `revoked_at`; the account object then closes the
-   * enrollment's sockets and revokes its worker record (best effort —
-   * token validation is authoritative).
+   * BILL-04: `/internal/hosted/device-rename` backend — identical scoping
+   * rule (the enrollment must live on the account) with the accountId taken
+   * from the verified body instead of a caller session.
    */
-  private async handleDeviceRevoke(request: Request): Promise<Response> {
-    const caller = this.verifiedCaller(request);
-    if (caller === null) return authError('unauthenticated');
+  private async handleDeviceRenameForAccount(request: Request): Promise<Response> {
     const body = await readJson(request);
-    if (!isRecord(body) || typeof body['enrollmentId'] !== 'string') {
+    if (
+      !isRecord(body) ||
+      typeof body['accountId'] !== 'string' ||
+      body['accountId'].length === 0 ||
+      typeof body['enrollmentId'] !== 'string' ||
+      typeof body['displayName'] !== 'string' ||
+      body['displayName'].length > MAX_DEVICE_NAME_CHARS
+    ) {
       return authError('malformed-request');
     }
-    const row = this.sessionByEnrollment(body['enrollmentId']);
-    if (row === null || row.account_id !== caller.accountId) {
+    return this.renameDeviceOnAccount(
+      body['accountId'],
+      body['enrollmentId'],
+      body['displayName'],
+    );
+  }
+
+  /**
+   * Shared revocation: the session row flips `revoked_at` (idempotent via
+   * COALESCE); the account object then closes the enrollment's sockets and
+   * revokes its worker record (best effort — token validation is
+   * authoritative). Unknown or cross-account enrollments are not-found.
+   */
+  private async revokeDeviceOnAccount(
+    accountId: string,
+    enrollmentId: string,
+  ): Promise<Response> {
+    const row = this.sessionByEnrollment(enrollmentId);
+    if (row === null || row.account_id !== accountId) {
       return rpcErrorResponse(undefined, 'not-found');
     }
     this.ctx.storage.sql.exec(
@@ -843,6 +933,38 @@ export class SessionCoordinator extends DurableObject<Env> {
     }
     const result: DeviceRevokeResult = { revoked: true, enrollmentId: row.enrollment_id };
     return Response.json(result, { status: 200 });
+  }
+
+  /**
+   * `device.revoke` — account-scoped revocation: any live session on the
+   * account may revoke any other (or itself — a remote sign-out).
+   */
+  private async handleDeviceRevoke(request: Request): Promise<Response> {
+    const caller = this.verifiedCaller(request);
+    if (caller === null) return authError('unauthenticated');
+    const body = await readJson(request);
+    if (!isRecord(body) || typeof body['enrollmentId'] !== 'string') {
+      return authError('malformed-request');
+    }
+    return this.revokeDeviceOnAccount(caller.accountId, body['enrollmentId']);
+  }
+
+  /**
+   * BILL-04: `/internal/hosted/device-revoke` backend — the website user is
+   * the account owner, so any enrollment on the account may be revoked;
+   * there is no caller session to spare from revocation.
+   */
+  private async handleDeviceRevokeForAccount(request: Request): Promise<Response> {
+    const body = await readJson(request);
+    if (
+      !isRecord(body) ||
+      typeof body['accountId'] !== 'string' ||
+      body['accountId'].length === 0 ||
+      typeof body['enrollmentId'] !== 'string'
+    ) {
+      return authError('malformed-request');
+    }
+    return this.revokeDeviceOnAccount(body['accountId'], body['enrollmentId']);
   }
 
   // ---- account deletion (spec §140) ------------------------------------
@@ -940,11 +1062,14 @@ export class SessionCoordinator extends DurableObject<Env> {
     return null;
   }
 
-  /** `account.delete` — the caller must hold a live session on the account. */
-  private async handleAccountDelete(request: Request): Promise<Response> {
-    const caller = this.verifiedCaller(request);
-    if (caller === null) return authError('unauthenticated');
-    const accountId = caller.accountId;
+  /**
+   * The §140 deletion flow, shared by the device-facing `account.delete`
+   * and the BILL-04 website channel's `/internal/delete-account-by-id`:
+   * tombstone, then revoke every session on the account, then drive the
+   * account object's retryable purge. Safe to re-invoke — an existing
+   * tombstone and revoked rows are left in place and the purge re-drives.
+   */
+  private async deleteAccountById(accountId: string): Promise<Response> {
     const now = Date.now();
     let tombstone = this.deletionRow(accountId);
     if (tombstone === null) {
@@ -970,6 +1095,31 @@ export class SessionCoordinator extends DurableObject<Env> {
       startedAt: new Date(tombstone.started_at).toISOString(),
     };
     return Response.json(result, { status: 200 });
+  }
+
+  /** `account.delete` — the caller must hold a live session on the account. */
+  private async handleAccountDelete(request: Request): Promise<Response> {
+    const caller = this.verifiedCaller(request);
+    if (caller === null) return authError('unauthenticated');
+    return this.deleteAccountById(caller.accountId);
+  }
+
+  /**
+   * BILL-04: `/internal/hosted/delete-account` backend — the signed service
+   * channel already authenticated the website user and resolved the mapped
+   * sync account, so the accountId arrives in the verified body instead of
+   * a caller session.
+   */
+  private async handleDeleteAccountById(request: Request): Promise<Response> {
+    const body = await readJson(request);
+    if (
+      !isRecord(body) ||
+      typeof body['accountId'] !== 'string' ||
+      body['accountId'].length === 0
+    ) {
+      return authError('malformed-request');
+    }
+    return this.deleteAccountById(body['accountId']);
   }
 
   /**
