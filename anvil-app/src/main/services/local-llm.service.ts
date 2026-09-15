@@ -198,7 +198,9 @@ export async function classifyPromptForLocalModel(
 }
 
 export async function testPreferredLocalModel(): Promise<{ ok: boolean; error?: string }> {
-  const result = await callPreferredLocalModel('Respond with only the word pong.', 8);
+  // No token cap: a strict cap would route Apple calls to a helper even when
+  // fm is the active backend, so the test should exercise the real path.
+  const result = await callPreferredLocalModel('Respond with only the word pong.');
   return result.ok
     ? { ok: true }
     : { ok: false, error: result.error ?? 'The selected local model is unavailable.' };

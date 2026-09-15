@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const spawnMock = vi.hoisted(() => vi.fn());
 const existsSyncMock = vi.hoisted(() => vi.fn().mockReturnValue(true));
@@ -65,6 +65,14 @@ function stubSpawn(behaviors: Array<{ match: RegExp; run: SpawnBehavior }>) {
   });
 }
 
+// The service gates everything on process.platform; stub it so the suite
+// exercises the macOS paths on Linux CI as well.
+const realPlatform = process.platform;
+function setPlatform(platform: string) {
+  Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+}
+afterAll(() => setPlatform(realPlatform));
+
 const SW_VERS_27 = {
   match: /sw_vers/,
   run: (child: FakeChild) => {
@@ -123,13 +131,14 @@ function helperCaps(id: string) {
 }
 
 beforeEach(() => {
+  setPlatform('darwin');
   spawnMock.mockReset();
   invalidateAppleLocalModelStatus();
 });
 
 describe('apple-foundation-models.service', () => {
   it('returns requiresMacOS status off macOS', async () => {
-    if (process.platform === 'darwin') return;
+    setPlatform('linux');
     const status = await getAppleLocalModelStatus();
     expect(status.available).toBe(false);
     expect(status.reason).toBe('requiresMacOS');
@@ -160,6 +169,62 @@ describe('apple-foundation-models.service', () => {
     expect(result.ok).toBe(true);
     expect(result.content).toBe('pong');
     expect(result.backend).toBe('fm-cli');
+  });
+
+  it('streams deltas through fm CLI when streaming is requested', async () => {
+    stubSpawn([
+      SW_VERS_27,
+      FM_LICENSED,
+      {
+        match: /fm respond/,
+        run: (child, args) => {
+          expect(args).toContain('--stream');
+          expect(args).not.toContain('--no-stream');
+          child.emitOut('hel');
+          child.emitOut('lo\n');
+          child.close(0);
+        },
+      },
+    ]);
+
+    const deltas: string[] = [];
+    const result = await callAppleFoundationModel('hi', { onPartial: (d) => deltas.push(d) });
+    expect(result.ok).toBe(true);
+    expect(result.backend).toBe('fm-cli');
+    expect(deltas).toEqual(['hel', 'lo\n']);
+  });
+
+  it('routes strict-output calls (small token cap) to a helper even when fm is licensed', async () => {
+    const fmRespond = vi.fn();
+    stubSpawn([
+      SW_VERS_27,
+      FM_LICENSED,
+      SWIFTC_OK,
+      {
+        match: /fm respond/,
+        run: (child) => {
+          fmRespond();
+          child.close(0);
+        },
+      },
+      {
+        match: /swift-helper-27/,
+        run: (child) => {
+          child.emitOut(
+            '{"type":"final","ok":true,"content":"{\\"route\\":\\"local\\"}","unavailable":false}\n',
+          );
+          child.close(0);
+        },
+      },
+    ]);
+
+    const result = await callAppleFoundationModel('classify this', {
+      instructions: 'Reply with JSON only.',
+      maxTokens: 32,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.backend).toBe('swift-helper-27');
+    expect(fmRespond).not.toHaveBeenCalled();
   });
 
   it('detects the fm license gate and falls back to the compiled helper', async () => {

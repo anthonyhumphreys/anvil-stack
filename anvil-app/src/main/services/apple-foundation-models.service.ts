@@ -17,6 +17,7 @@ export interface AppleModelCallOptions {
   temperature?: number;
   greedy?: boolean;
   useCase?: 'general' | 'contentTagging';
+  guardrails?: 'default' | 'permissive-content-transformations';
   /** Stream deltas through onPartial when the backend supports it. */
   stream?: boolean;
   onPartial?: (delta: string) => void;
@@ -73,6 +74,7 @@ const HELPERS: HelperSpec[] = [
 let cachedStatus: { at: number; status: AppleLocalModelStatus } | null = null;
 let statusInFlight: Promise<AppleLocalModelStatus> | null = null;
 let fmProbeCache: { at: number; state: FmCliState } | null = null;
+let statusGeneration = 0;
 const helperBinaryCache = new Map<string, Promise<string | null>>();
 
 function helperSourcePath(file: string): string {
@@ -178,29 +180,31 @@ async function probeFmCli(): Promise<FmCliState> {
   if (fmProbeCache && Date.now() - fmProbeCache.at < STATUS_CACHE_MS) {
     return fmProbeCache.state;
   }
+  const generation = statusGeneration;
   const path = fmCliPath();
   if (!path) return { installed: false, licenseAccepted: false };
+
+  const cache = (state: FmCliState): FmCliState => {
+    if (generation === statusGeneration) fmProbeCache = { at: Date.now(), state };
+    return state;
+  };
 
   const result = await runCommand(path, ['available']);
   const combined = `${result.stdout}\n${result.stderr}`;
   if (FM_LICENSE_MARKER.test(combined)) {
+    // Deliberately uncached: the user can accept the notice at any time.
     return { installed: true, licenseAccepted: false, detail: 'licenseRequired' };
   }
   if (result.error) {
-    fmProbeCache = { at: Date.now(), state: { installed: true, licenseAccepted: false, detail: result.error } };
-    return fmProbeCache.state;
+    return cache({ installed: true, licenseAccepted: false, detail: result.error });
   }
   const unavailable = /unavailable|not available/i.test(result.stdout) && result.code !== 0;
-  fmProbeCache = {
-    at: Date.now(),
-    state: {
-      installed: true,
-      licenseAccepted: true,
-      available: result.code === 0 && !unavailable,
-      detail: result.stdout.trim().slice(0, 200) || undefined,
-    },
-  };
-  return fmProbeCache.state;
+  return cache({
+    installed: true,
+    licenseAccepted: true,
+    available: result.code === 0 && !unavailable,
+    detail: result.stdout.trim().slice(0, 200) || undefined,
+  });
 }
 
 async function callViaFmCli(
@@ -213,10 +217,12 @@ async function callViaFmCli(
     return { ok: false, unavailable: true, error: 'fm CLI unavailable', backend: 'fm-cli' };
   }
 
-  const args = ['respond', '--no-stream'];
+  const stream = options.stream === true || options.onPartial !== undefined;
+  const args = ['respond', stream ? '--stream' : '--no-stream'];
   if (options.instructions?.trim()) args.push('--instructions', options.instructions.trim());
   for (const image of options.images ?? []) args.push('--image', image);
   if (options.useCase === 'contentTagging') args.push('--use-case', 'content-tagging');
+  if (options.guardrails) args.push('--guardrails', options.guardrails);
   if (options.greedy) args.push('--greedy');
   args.push('--', prompt);
 
@@ -241,7 +247,9 @@ async function callViaFmCli(
     }, options.timeoutMs ?? RESPOND_TIMEOUT_MS);
 
     child.stdout.on('data', (chunk: Buffer) => {
-      stdout += chunk.toString();
+      const text = chunk.toString();
+      stdout += text;
+      if (stream) options.onPartial?.(text);
     });
     child.stderr.on('data', (chunk: Buffer) => {
       stderr += chunk.toString();
@@ -487,8 +495,12 @@ function mergeFeatures(parts: Array<Partial<AppleModelFeatureFlags> | undefined>
 }
 
 export function invalidateAppleLocalModelStatus(): void {
+  statusGeneration += 1;
   cachedStatus = null;
   fmProbeCache = null;
+  // Drop the reference so a new probe starts immediately; the orphaned
+  // in-flight probe still resolves but can't repopulate the caches.
+  statusInFlight = null;
 }
 
 export async function getAppleLocalModelStatus(force = false): Promise<AppleLocalModelStatus> {
@@ -506,7 +518,8 @@ export async function getAppleLocalModelStatus(force = false): Promise<AppleLoca
   }
   if (statusInFlight) return statusInFlight;
 
-  statusInFlight = (async () => {
+  const generation = statusGeneration;
+  const flight = (async () => {
     const version = await getMacOsVersion();
     const fm = await probeFmCli();
 
@@ -520,17 +533,17 @@ export async function getAppleLocalModelStatus(force = false): Promise<AppleLoca
     const visionCaps = capsById.get('swift-helper-vision');
 
     const helperStatus = caps27 ?? baseCaps;
-    const backend: AppleLocalBackend | undefined =
-      fm.installed && fm.licenseAccepted
-        ? 'fm-cli'
-        : caps27
-          ? 'swift-helper-27'
-          : baseCaps
-            ? 'swift-helper'
-            : undefined;
+    const fmReady = fm.installed && fm.licenseAccepted && fm.available !== false;
+    const backend: AppleLocalBackend | undefined = fmReady
+      ? 'fm-cli'
+      : caps27
+        ? 'swift-helper-27'
+        : baseCaps
+          ? 'swift-helper'
+          : undefined;
 
     const features = mergeFeatures([
-      fm.licenseAccepted ? { images: true, tokenCounting: true, instructions: true } : undefined,
+      fmReady ? { images: true, tokenCounting: true, instructions: true } : undefined,
       helperStatus?.features,
       visionCaps?.features,
     ]);
@@ -538,13 +551,10 @@ export async function getAppleLocalModelStatus(force = false): Promise<AppleLoca
     const status: AppleLocalModelStatus = {
       platform: 'darwin',
       osVersion: version ? `${version.major}.${version.minor}` : undefined,
-      available:
-        (fm.licenseAccepted && fm.available !== false) || helperStatus?.available === true,
-      reason:
-        fm.licenseAccepted && fm.available !== false
-          ? 'available'
-          : (helperStatus?.reason ??
-            (fm.installed ? (fm.detail ?? 'fmUnavailable') : 'noBackend')),
+      available: fmReady || helperStatus?.available === true,
+      reason: fmReady
+        ? 'available'
+        : (helperStatus?.reason ?? (fm.installed ? (fm.detail ?? 'fmUnavailable') : 'noBackend')),
       backend,
       contextSize: caps27?.contextSize,
       fmCli: {
@@ -554,12 +564,13 @@ export async function getAppleLocalModelStatus(force = false): Promise<AppleLoca
       },
       features,
     };
-    cachedStatus = { at: Date.now(), status };
-    statusInFlight = null;
+    if (generation === statusGeneration) cachedStatus = { at: Date.now(), status };
+    if (statusInFlight === flight) statusInFlight = null;
     return status;
   })();
+  statusInFlight = flight;
 
-  return statusInFlight;
+  return flight;
 }
 
 /**
@@ -577,10 +588,18 @@ export async function callAppleFoundationModel(
 
   const version = await getMacOsVersion();
   const hasImages = (options.images ?? []).length > 0;
+  const wantsStream = options.stream === true || options.onPartial !== undefined;
 
-  // 1. fm CLI — preferred on macOS 27 when licensed.
+  // fm has no --max-tokens/--temperature flags. A small token cap or an
+  // explicit temperature marks a strict-output call (e.g. the route
+  // classifier); helpers honor those controls, fm does not.
+  const needsHelperControls =
+    options.temperature !== undefined ||
+    (options.maxTokens !== undefined && options.maxTokens < 512);
+
+  // 1. fm CLI — preferred on macOS 27 when licensed and available.
   const fm = await probeFmCli();
-  if (fm.installed && fm.licenseAccepted) {
+  if (fm.installed && fm.licenseAccepted && fm.available !== false && !needsHelperControls) {
     const result = await callViaFmCli(prompt, options, fm);
     if (result.ok || !result.unavailable) return result;
     // Backend reported unavailable — fall through to helpers.
@@ -589,6 +608,7 @@ export async function callAppleFoundationModel(
   const helperInput = {
     instructions: options.instructions,
     useCase: options.useCase,
+    guardrails: options.guardrails,
     options:
       options.temperature !== undefined || options.maxTokens !== undefined || options.greedy
         ? {
@@ -598,7 +618,6 @@ export async function callAppleFoundationModel(
           }
         : undefined,
   };
-  const wantsStream = options.stream === true || options.onPartial !== undefined;
 
   // 2. Vision helper for image prompts.
   const visionSpec = HELPERS.find((h) => h.id === 'swift-helper-vision')!;

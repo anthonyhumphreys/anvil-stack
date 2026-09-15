@@ -179,7 +179,9 @@ async function tryLocalLlmChatReply(
     if (attachments.some((attachment) => attachment.kind !== 'image')) return false;
     if (settings.localLlmProvider !== 'apple') return false;
     const status = await getAppleLocalModelStatus();
-    if (!status.features.images) return false;
+    // Require probed availability, not just the feature flag — a backend can
+    // advertise image API support while the model itself is not ready.
+    if (!status.available || !status.features.images) return false;
     imagePaths = attachments.map((attachment) => attachment.path);
   }
 
@@ -199,6 +201,9 @@ async function tryLocalLlmChatReply(
     images: imagePaths,
     onPartial: (delta) => {
       pending += delta;
+      // Check the buffered prefix for refusal phrasing on every delta so a
+      // refusal is caught before its text ever reaches the transcript.
+      if (isLikelyLocalModelRefusal(pending)) return;
       if (pending.length > LOCAL_LLM_STREAM_HOLDBACK_CHARS) {
         start();
         emitLocalAssistantText(sessionId, pending);
@@ -219,7 +224,8 @@ async function tryLocalLlmChatReply(
   start();
   // Streamed text is already on screen; emit only the unstreamed remainder (or
   // the trimmed body when the backend didn't stream at all).
-  emitLocalAssistantText(sessionId, emittedChars > 0 ? full.slice(emittedChars) : content);
+  const remainder = emittedChars > 0 ? full.slice(emittedChars) : content;
+  if (remainder) emitLocalAssistantText(sessionId, remainder);
   emitLocalAssistantTurnEnd(sessionId);
   return true;
 }
