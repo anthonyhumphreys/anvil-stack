@@ -14,7 +14,7 @@ export function SiteFooter() {
           </div>
         </div>
         <FooterLinks title="Products" links={productLines.map((product) => ({ label: product.title.replace("Anvil ", ""), href: `/docs/${product.id}` }))} />
-        <FooterLinks title="Project" links={[{ label: "Documentation", href: "/docs" }, { label: "Monorepo map", href: repositoryUrl }, { label: "GitHub", href: githubRepositoryUrl }, { label: "Contributing", href: "/docs/project/contributing" }]} />
+        <FooterLinks title="Project" links={[{ label: "Documentation", href: "/docs" }, { label: "Sync", href: "/sync" }, { label: "Pricing", href: "/pricing" }, { label: "Monorepo map", href: repositoryUrl }, { label: "GitHub", href: githubRepositoryUrl }, { label: "Contributing", href: "/docs/project/contributing" }]} />
       </div>
     </footer>
   );

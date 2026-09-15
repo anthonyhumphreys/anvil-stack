@@ -42,10 +42,20 @@ export const latestDesktopDmgUrl =
 export const navItems = [
   { label: "Products", href: "/#products" },
   { label: "Docs", href: "/docs" },
+  { label: "Sync", href: "/sync" },
+  { label: "Pricing", href: "/pricing" },
   { label: "Cloud", href: "/docs/cloud/overview" },
   { label: "Registry", href: "/docs/registry/quickstart" },
   { label: "Desktop", href: "/docs/desktop/overview" },
   { label: "OSS", href: "/docs/project/open-source" }
+];
+
+export const accountNavItems = [
+  { label: "Overview", href: "/account" },
+  { label: "Billing", href: "/account/billing" },
+  { label: "Devices", href: "/account/devices" },
+  { label: "Security", href: "/account/security" },
+  { label: "Data", href: "/account/data" }
 ];
 
 export const productLines = [

@@ -15,6 +15,7 @@
   "dependencies": {
     "@radix-ui/react-slot": "^1.2.3",
     "@vercel/analytics": "^2.0.1",
+    "@workos-inc/authkit-nextjs": "4.3.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "js-yaml": "^4.3.1",
@@ -23,13 +24,14 @@
     "next": "^16.3.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "server-only": "^0.0.1",
     "tailwind-merge": "^2.5.5"
   },
   "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.10.1",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "@types/js-yaml": "^4.0.9",
     "autoprefixer": "^10.4.20",
     "eslint": "^9.16.0",
     "eslint-config-next": "^16.3.0",
