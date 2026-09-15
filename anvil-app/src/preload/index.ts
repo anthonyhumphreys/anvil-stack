@@ -68,6 +68,7 @@ import type {
   SyncDeviceRenameResult,
   SyncDeviceRevokeResult,
   SyncDiagnostics,
+  SyncHostedStatus,
   SyncInitiateHandoffResult,
   SyncIssuedEnrollmentCode,
   SyncSpikeEnrollInput,
@@ -745,6 +746,10 @@ const api: AnvilAPI = {
       ipcRenderer.invoke('sync-runtime:resolve-conflict', { conflictId, resolution }),
     diagnostics: (): Promise<SyncDiagnostics> =>
       ipcRenderer.invoke('sync-runtime:diagnostics'),
+    refreshHostedEntitlement: (): Promise<SyncHostedStatus | null> =>
+      ipcRenderer.invoke('sync-runtime:hosted-refresh'),
+    openHostedAccount: (): Promise<void> =>
+      ipcRenderer.invoke('sync-runtime:open-hosted-account'),
     setMeshWorker: (enabled: boolean): Promise<MeshWorkerStatus> =>
       ipcRenderer.invoke('sync-runtime:mesh-worker-set', { enabled }),
     listDevices: (): Promise<SyncDevice[]> =>

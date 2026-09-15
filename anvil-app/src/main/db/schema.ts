@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 78;
+export const SCHEMA_VERSION = 79;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -1298,6 +1298,25 @@ CREATE TABLE IF NOT EXISTS sync_scan_staging (
   schema_version INTEGER NOT NULL,
   payload_json TEXT,
   PRIMARY KEY (backend_id, account_id, dataset_epoch, entity_type, entity_id)
+);
+-- BILL-05: last-known hosted entitlement per (backend, account). Self-host
+-- backends never write a row; restricted pauses sync writes only — pulls,
+-- outbox, cursors, and conflicts are untouched. No secrets or tokens.
+CREATE TABLE IF NOT EXISTS sync_entitlement (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  state TEXT NOT NULL,
+  source TEXT NOT NULL,
+  plan_key TEXT,
+  preview_ends_at TEXT,
+  access_until TEXT,
+  grace_until TEXT,
+  checked_at TEXT NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 0,
+  reason TEXT NOT NULL,
+  restricted INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id)
 );
 `;
 
@@ -2793,5 +2812,25 @@ CREATE TABLE IF NOT EXISTS mesh_integrations (
   78: `
 ALTER TABLE settings ADD COLUMN llm_gateway_api_key BLOB;
 ALTER TABLE settings ADD COLUMN llm_gateway_billing_mode TEXT NOT NULL DEFAULT 'devpass';
+`,
+  79: `
+-- BILL-05: last-known hosted entitlement per (backend, account). Keep in
+-- sync with the SCHEMA_SQL copy of this table.
+CREATE TABLE IF NOT EXISTS sync_entitlement (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  state TEXT NOT NULL,
+  source TEXT NOT NULL,
+  plan_key TEXT,
+  preview_ends_at TEXT,
+  access_until TEXT,
+  grace_until TEXT,
+  checked_at TEXT NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 0,
+  reason TEXT NOT NULL,
+  restricted INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id)
+);
 `,
 };

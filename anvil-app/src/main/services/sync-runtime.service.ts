@@ -34,6 +34,7 @@ import type {
   JobSummary,
 } from '../../../cloud/contract/jobs.js';
 import type { HandoffGetResult, HandoffRecord } from '../../../cloud/contract/handoff.js';
+import type { HostedEntitlement } from '../../../cloud/contract/entitlements.js';
 import { PROTOCOL } from '../../../cloud/contract/version.js';
 import {
   SPIKE_DATASET_EPOCH,
@@ -44,6 +45,7 @@ import {
   type SessionMeshState,
   type SyncDiagnostics,
   type MeshWorkerStatus,
+  type SyncHostedStatus,
   type SyncRemoteAccountStats,
   type SyncRuntimeStatus,
   type SyncScopeDiagnostics,
@@ -135,7 +137,9 @@ import {
   resetMeshIntegrationForTests,
 } from './mesh-integration.service.js';
 import {
+  clearSyncEntitlement,
   getOrCreateInstallationId,
+  getSyncEntitlement,
   getSyncState,
   listBindings,
   listConflicts,
@@ -147,6 +151,7 @@ import {
   sweepLocalSyncRetention,
   upsertBinding,
   upsertEnrollment,
+  upsertSyncEntitlement,
 } from './sync-persistence.service.js';
 import { getDb } from '../db/database.js';
 import { SCHEMA_VERSION } from '../db/schema.js';
@@ -159,6 +164,35 @@ const SPIKE_ACCESS_TTL_MS = 10 * 365 * 24 * 60 * 60 * 1000;
 /** Refresh this far before the access token's stated expiry. */
 const REFRESH_AHEAD_MS = 60_000;
 const REFRESH_MIN_DELAY_MS = 5_000;
+
+/**
+ * BILL-05: the hosted account page origin is fixed — never derived from user
+ * input, a backend descriptor, or a deep-link parameter. Returning from the
+ * browser only re-triggers `session.describe`; no payment state is ever
+ * accepted back through a URL.
+ */
+const HOSTED_SITE_ORIGIN = 'https://anvil.dev';
+const HOSTED_ACCOUNT_URL = `${HOSTED_SITE_ORIGIN}/account`;
+/** Focus/reconnect refreshes are throttled so focus cycling can't spam it. */
+const HOSTED_REFRESH_MIN_INTERVAL_MS = 60_000;
+/**
+ * `error.details.reason` values on a 403 that mean "hosted access paused"
+ * (BILL-03 classification). `account-deleted` is deliberately absent — it is
+ * a permanent account teardown handled by the deletion path, not a pause.
+ */
+const HOSTED_DENIAL_REASONS: ReadonlySet<string> = new Set([
+  'subscription-required',
+  'preview-ended',
+  'billing-unavailable',
+]);
+/** Entitlement states the renderer chip understands; anything else → 'unknown'. */
+const HOSTED_STATES: ReadonlySet<string> = new Set([
+  'preview',
+  'active',
+  'grace',
+  'restricted',
+  'unknown',
+]);
 
 export type SyncConnectionState = 'offline' | 'connecting' | 'live';
 
@@ -194,6 +228,8 @@ let runtimeUserDataDir: string | null = null;
  * callback from an old account/backend can never mutate new-scope state.
  */
 let runtimeGeneration = 0;
+/** Timestamp of the last attempted session.describe entitlement refresh. */
+let lastHostedRefreshAt = 0;
 
 export interface SyncRuntimeInitOptions {
   /** Enables the spike enrollment fixture. Pass `!app.isPackaged`. */
@@ -290,6 +326,8 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
     connectLiveChannel();
     armFallbackPoll();
     meshWorkerOnSyncReady();
+    // BILL-05: pick up any hosted-access change made while the app was off.
+    maybeRefreshHostedEntitlement();
     void requestSync().catch(() => {
       // Last error is stored on the runtime snapshot.
     });
@@ -314,6 +352,7 @@ export function resetSyncRuntimeForTests(): void {
   devSpikeEnabled = false;
   fetchOverride = undefined;
   createSocketOverride = undefined;
+  lastHostedRefreshAt = 0;
 }
 
 export function setSyncRuntimeRpcForTests(rpc: SyncEngineRpc | undefined): void {
@@ -544,6 +583,9 @@ export async function signInWithOidc(): Promise<SyncAuthPublicSnapshot> {
     );
     sessionExpired = false;
     scheduleSessionRefresh();
+    // BILL-05: pull hosted access now so a restricted account never gets one
+    // free mutating cycle before the first describe lands.
+    void refreshHostedEntitlement().catch(() => undefined);
     return snapshot;
   } catch (error) {
     service.cancelPendingLogin();
@@ -561,6 +603,7 @@ export async function enrollWithEnrollmentCode(code: string): Promise<SyncAuthPu
   const snapshot = await requireAuth().enrollWithCode(code, enrollAgainst(backend), backend.id);
   sessionExpired = false;
   scheduleSessionRefresh();
+  void refreshHostedEntitlement().catch(() => undefined);
   return snapshot;
 }
 
@@ -1036,10 +1079,154 @@ export function getRuntimeStatus(): SyncRuntimeStatus {
     recovering: snapshot?.recovering ?? false,
     sessionExpired,
     meshWorker: getMeshWorkerStatus(),
+    hosted: scope === null ? null : hostedStatusFor(scope.backendId, scope.accountId),
     lastError,
     lastPushAt: snapshot?.lastPushAt ?? null,
     lastPullAt: snapshot?.lastPullAt ?? null,
   };
+}
+
+// ---- BILL-05 hosted entitlement ------------------------------------------
+// The hosted backend reports access through `session.describe`; self-host
+// backends omit the field entirely. The persisted row gates sync *writes*
+// only — pulls, conflicts, cursors, the outbox, and all control ops keep
+// working — so a restricted account pauses resumably rather than losing work.
+
+function hostedStatusFor(backendId: string, accountId: string): SyncHostedStatus | null {
+  const row = getSyncEntitlement(backendId, accountId);
+  if (row === null) return null;
+  return {
+    state: HOSTED_STATES.has(row.state) ? (row.state as SyncHostedStatus['state']) : 'unknown',
+    source: row.source,
+    planKey: row.planKey,
+    previewEndsAt: row.previewEndsAt,
+    accessUntil: row.accessUntil,
+    graceUntil: row.graceUntil,
+    checkedAt: row.checkedAt,
+    reason: row.reason,
+    restricted: row.restricted,
+  };
+}
+
+/** The hosted view for the current scope; null when signed out or self-host. */
+function currentHostedStatus(): SyncHostedStatus | null {
+  const scope = currentScope();
+  return scope === null ? null : hostedStatusFor(scope.backendId, scope.accountId);
+}
+
+/**
+ * Persists the backend's reported entitlement. `entitlement === null` means
+ * `session.describe` omitted the field — a self-host backend — so any stale
+ * row is deleted rather than left gating. `restrictedReason` is set only on
+ * the mid-flight 403 path, where no entitlement payload exists yet; it writes
+ * a minimal restricted row that the immediately-fired describe refresh then
+ * replaces with the authoritative record.
+ */
+function recordEntitlement(
+  pair: { backendId: string; accountId: string },
+  entitlement: HostedEntitlement | null,
+  restrictedReason?: string,
+): void {
+  if (entitlement === null) {
+    if (restrictedReason === undefined) {
+      clearSyncEntitlement(pair.backendId, pair.accountId);
+      return;
+    }
+    upsertSyncEntitlement({
+      backendId: pair.backendId,
+      accountId: pair.accountId,
+      state: 'restricted',
+      source: 'none',
+      planKey: null,
+      previewEndsAt: null,
+      accessUntil: null,
+      graceUntil: null,
+      checkedAt: new Date().toISOString(),
+      revision: 0,
+      reason: restrictedReason,
+      restricted: true,
+    });
+    return;
+  }
+  upsertSyncEntitlement({
+    backendId: pair.backendId,
+    accountId: pair.accountId,
+    state: entitlement.state,
+    source: entitlement.source,
+    planKey: entitlement.planKey,
+    previewEndsAt: entitlement.previewEndsAt,
+    accessUntil: entitlement.accessUntil,
+    graceUntil: entitlement.graceUntil,
+    checkedAt: entitlement.checkedAt,
+    revision: entitlement.revision,
+    reason: entitlement.reason,
+    // 'unknown' is not free access: while billing is unverifiable the backend
+    // refuses mutating ops anyway, so the local write gate mirrors that pause.
+    restricted: entitlement.state === 'restricted' || entitlement.state === 'unknown',
+  });
+}
+
+/**
+ * Re-reads hosted access from `session.describe` and persists it. Self-host
+ * backends omit the field → the row is cleared. Failures keep the last-known
+ * row: a status outage must not look like either paid access or lost access.
+ * Returns the current renderer-safe view either way.
+ */
+export async function refreshHostedEntitlement(): Promise<SyncHostedStatus | null> {
+  const backend = getActiveBackend() ?? pinnedBackend();
+  const fields = auth?.getSessionScopeFields() ?? null;
+  const token = auth?.getAccessToken() ?? null;
+  if (
+    backend === null ||
+    fields === null ||
+    token === null ||
+    (fields.backendId !== null && fields.backendId !== backend.id)
+  ) {
+    return currentHostedStatus();
+  }
+  const generation = runtimeGeneration;
+  lastHostedRefreshAt = Date.now();
+  try {
+    const { result } = await backendRpc<SessionDescribeResult>(
+      { apiUrl: apiUrlFor(backend) },
+      'session.describe',
+      {},
+      token,
+      { fetchFn: fetchOverride },
+    );
+    if (generation === runtimeGeneration) {
+      recordEntitlement(
+        { backendId: backend.id, accountId: fields.accountId },
+        result.entitlement ?? null,
+      );
+    }
+  } catch {
+    // Keep the last-known row; the next trigger retries.
+  }
+  return hostedStatusFor(backend.id, fields.accountId);
+}
+
+/** Throttled refresh for focus/reconnect triggers; skips when signed out. */
+function maybeRefreshHostedEntitlement(): void {
+  if (!isSyncEnabled()) return;
+  if (Date.now() - lastHostedRefreshAt < HOSTED_REFRESH_MIN_INTERVAL_MS) return;
+  void refreshHostedEntitlement().catch(() => undefined);
+}
+
+/**
+ * Window-focus hook (index.ts wires every BrowserWindow 'focus' here):
+ * returning from the hosted account page is how users come back after fixing
+ * billing, so re-check `session.describe`. Throttled — and no payment state
+ * is ever accepted from a URL; the backend remains the only source of truth.
+ */
+export function onAppFocus(): void {
+  maybeRefreshHostedEntitlement();
+}
+
+/** Opens the fixed hosted account page in the system browser. */
+export async function openHostedAccountPage(): Promise<void> {
+  const { shell } = await import('electron');
+  await shell.openExternal(HOSTED_ACCOUNT_URL);
 }
 
 /**
@@ -1107,6 +1294,15 @@ export async function exportSyncDiagnostics(): Promise<SyncDiagnostics> {
         fetchOverride === undefined ? {} : { fetchFn: fetchOverride },
       );
       remote = result.result.accountStats ?? null;
+      // Same describe payload keeps the hosted row fresh without an extra
+      // call; an omitted field (self-host) clears it.
+      const fields = auth?.getSessionScopeFields() ?? null;
+      if (fields !== null && (fields.backendId === null || fields.backendId === backend.id)) {
+        recordEntitlement(
+          { backendId: backend.id, accountId: fields.accountId },
+          result.result.entitlement ?? null,
+        );
+      }
     } catch {
       remote = null;
     }
@@ -1167,6 +1363,12 @@ export async function requestSync(): Promise<void> {
       enrollmentId: fields.enrollmentId,
       connection: { apiUrl: paths.apiUrl, limits: backend.descriptor.limits },
       accessToken: token,
+      // BILL-05 write gate: a restricted hosted row pauses push/scan while
+      // pull and control ops keep running. No row (self-host) means writes
+      // are unrestricted.
+      writeGate: () => ({
+        allowed: getSyncEntitlement(scope.backendId, scope.accountId)?.restricted !== true,
+      }),
       rpc:
         rpcOverride ??
         (fetchOverride === undefined
@@ -1179,6 +1381,25 @@ export async function requestSync(): Promise<void> {
     });
     lastError = null;
   } catch (error) {
+    const hostedReason =
+      error instanceof SyncEngineError && error.code === 'forbidden'
+        ? error.details?.['reason']
+        : undefined;
+    if (typeof hostedReason === 'string' && HOSTED_DENIAL_REASONS.has(hostedReason)) {
+      // Hosted-access refusal on a mutating op: persist the pause and refresh
+      // the authoritative record best-effort. The cycle is paused, not failed
+      // — the engine already ran the pull and left outbox rows, cursors, and
+      // conflicts untouched, so this resolves quietly rather than surfacing
+      // as a sync failure.
+      recordEntitlement(
+        { backendId: scope.backendId, accountId: scope.accountId },
+        null,
+        hostedReason,
+      );
+      lastError = null;
+      void refreshHostedEntitlement().catch(() => undefined);
+      return;
+    }
     lastError = error instanceof Error ? error.message : String(error);
     if (
       error instanceof SyncEngineError &&
@@ -1297,6 +1518,7 @@ function connectLiveChannel(): void {
         // Catch up anything missed while the channel was down.
         meshWorkerOnSyncReady();
         meshObserverOnLive();
+        maybeRefreshHostedEntitlement();
         void requestSync().catch(() => undefined);
         break;
       case 'sync.invalidate':

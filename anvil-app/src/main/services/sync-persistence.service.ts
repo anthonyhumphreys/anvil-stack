@@ -13,6 +13,7 @@ import {
   type SyncConflict,
   type SyncConflictResolution,
   type SyncEnrollmentState,
+  type SyncEntitlementRecord,
   type SyncOperation,
   type SyncOutboxRow,
   type SyncScope,
@@ -1409,6 +1410,111 @@ export function clearScanStaging(scope: SyncScope): void {
   const params = scopeParams(scope);
   db.prepare(`DELETE FROM sync_scan_staging WHERE ${SCOPE_WHERE}`).run(...params);
   db.prepare(`DELETE FROM sync_scan_runs WHERE ${SCOPE_WHERE}`).run(...params);
+}
+
+interface EntitlementDbRow {
+  backend_id: string;
+  account_id: string;
+  state: string;
+  source: string;
+  plan_key: string | null;
+  preview_ends_at: string | null;
+  access_until: string | null;
+  grace_until: string | null;
+  checked_at: string;
+  revision: number;
+  reason: string;
+  restricted: number;
+  updated_at: string;
+}
+
+function mapEntitlement(row: EntitlementDbRow): SyncEntitlementRecord {
+  return {
+    backendId: row.backend_id,
+    accountId: row.account_id,
+    state: row.state,
+    source: row.source,
+    planKey: row.plan_key,
+    previewEndsAt: row.preview_ends_at,
+    accessUntil: row.access_until,
+    graceUntil: row.grace_until,
+    checkedAt: row.checked_at,
+    revision: row.revision,
+    reason: row.reason,
+    restricted: row.restricted === 1,
+    updatedAt: row.updated_at,
+  };
+}
+
+/**
+ * Last-known hosted entitlement for a (backend, account) pair — deliberately
+ * not keyed by dataset epoch. Null means the backend does not report hosted
+ * entitlements (self-host) or no check has completed yet; it is never a
+ * restriction signal.
+ */
+export function getSyncEntitlement(
+  backendId: string,
+  accountId: string,
+): SyncEntitlementRecord | null {
+  const row = getDb()
+    .prepare('SELECT * FROM sync_entitlement WHERE backend_id = ? AND account_id = ?')
+    .get(backendId, accountId) as EntitlementDbRow | undefined;
+  return row ? mapEntitlement(row) : null;
+}
+
+export type UpsertSyncEntitlementInput = Omit<SyncEntitlementRecord, 'updatedAt'>;
+
+/** Stores the entitlement exactly as reported; `restricted` is authoritative. */
+export function upsertSyncEntitlement(
+  input: UpsertSyncEntitlementInput,
+): SyncEntitlementRecord {
+  getDb()
+    .prepare(
+      `INSERT INTO sync_entitlement
+         (backend_id, account_id, state, source, plan_key, preview_ends_at,
+          access_until, grace_until, checked_at, revision, reason, restricted, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(backend_id, account_id) DO UPDATE SET
+         state = excluded.state,
+         source = excluded.source,
+         plan_key = excluded.plan_key,
+         preview_ends_at = excluded.preview_ends_at,
+         access_until = excluded.access_until,
+         grace_until = excluded.grace_until,
+         checked_at = excluded.checked_at,
+         revision = excluded.revision,
+         reason = excluded.reason,
+         restricted = excluded.restricted,
+         updated_at = excluded.updated_at`,
+    )
+    .run(
+      input.backendId,
+      input.accountId,
+      input.state,
+      input.source,
+      input.planKey,
+      input.previewEndsAt,
+      input.accessUntil,
+      input.graceUntil,
+      input.checkedAt,
+      input.revision,
+      input.reason,
+      input.restricted ? 1 : 0,
+      nowIso(),
+    );
+  const row = getSyncEntitlement(input.backendId, input.accountId);
+  if (!row) throw new Error('Failed to persist sync entitlement.');
+  return row;
+}
+
+/**
+ * Deletes the row entirely — used when a backend stops reporting entitlements
+ * (self-host) so a stale hosted row can never keep gating sync writes.
+ */
+export function clearSyncEntitlement(backendId: string, accountId: string): void {
+  getDb()
+    .prepare('DELETE FROM sync_entitlement WHERE backend_id = ? AND account_id = ?')
+    .run(backendId, accountId);
 }
 
 /**

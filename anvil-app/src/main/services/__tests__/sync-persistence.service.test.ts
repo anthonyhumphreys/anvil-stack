@@ -20,9 +20,11 @@ vi.mock('../persona.service.js', () => ({
 import {
   applyPushResults,
   canonicalJson,
+  clearSyncEntitlement,
   computePayloadHash,
   getActiveEnrollment,
   getBinding,
+  getSyncEntitlement,
   getSyncState,
   hasActiveBinding,
   insertUnresolvedConflict,
@@ -37,6 +39,7 @@ import {
   updateSyncState,
   upsertBinding,
   upsertEnrollment,
+  upsertSyncEntitlement,
   withSyncedEntityWrite,
 } from '../sync-persistence.service';
 import {
@@ -101,13 +104,13 @@ beforeEach(() => {
     `DELETE FROM sync_outbox; DELETE FROM sync_bindings; DELETE FROM sync_conflicts;
      DELETE FROM sync_state; DELETE FROM device_enrollments; DELETE FROM workflow_templates;
      DELETE FROM sync_scan_runs; DELETE FROM sync_scan_staging; DELETE FROM sync_installation;
-     DELETE FROM sync_backends;`,
+     DELETE FROM sync_backends; DELETE FROM sync_entitlement;`,
   );
 });
 
 describe('schema migrations', () => {
   it('leaves SCHEMA_VERSION at the current schema after later packets', () => {
-    expect(SCHEMA_VERSION).toBe(78);
+    expect(SCHEMA_VERSION).toBe(79);
   });
 
   it('migration 70 adds the sequence allocator, review flag, and scan staging', () => {
@@ -763,5 +766,66 @@ describe('local retention sweep (OPS-01)', () => {
     expect(remaining).toHaveLength(1);
     expect(remaining[0]?.entityId).toBe(pending.id);
     expect(listConflicts(SCOPE).map((conflict) => conflict.id)).toEqual([open.id]);
+  });
+});
+
+describe('sync entitlement (BILL-05)', () => {
+  const ENTITLEMENT = {
+    backendId: 'backend-1',
+    accountId: 'account-1',
+    state: 'preview',
+    source: 'preview',
+    planKey: null,
+    previewEndsAt: '2026-11-01T00:00:00Z',
+    accessUntil: null,
+    graceUntil: null,
+    checkedAt: '2026-09-11T10:00:00Z',
+    revision: 3,
+    reason: 'preview',
+    restricted: false,
+  };
+
+  it('round-trips an upserted row including nulls and the restricted flag', () => {
+    const stored = upsertSyncEntitlement(ENTITLEMENT);
+    expect(stored.updatedAt).toBeTruthy();
+
+    const read = getSyncEntitlement('backend-1', 'account-1');
+    expect(read).toMatchObject({
+      ...ENTITLEMENT,
+      restricted: false,
+    });
+
+    upsertSyncEntitlement({
+      ...ENTITLEMENT,
+      state: 'restricted',
+      source: 'none',
+      reason: 'subscription-required',
+      restricted: true,
+      revision: 4,
+    });
+    const paused = getSyncEntitlement('backend-1', 'account-1');
+    expect(paused?.state).toBe('restricted');
+    expect(paused?.restricted).toBe(true);
+    expect(paused?.reason).toBe('subscription-required');
+    expect(paused?.revision).toBe(4);
+  });
+
+  it('returns null for a missing row and clears by (backend, account)', () => {
+    expect(getSyncEntitlement('backend-1', 'account-1')).toBeNull();
+    upsertSyncEntitlement(ENTITLEMENT);
+    clearSyncEntitlement('backend-1', 'account-1');
+    expect(getSyncEntitlement('backend-1', 'account-1')).toBeNull();
+  });
+
+  it('keeps the same account on a different backend isolated', () => {
+    upsertSyncEntitlement(ENTITLEMENT);
+    upsertSyncEntitlement({ ...ENTITLEMENT, backendId: 'backend-2', restricted: true });
+
+    clearSyncEntitlement('backend-1', 'account-1');
+    expect(getSyncEntitlement('backend-1', 'account-1')).toBeNull();
+    const other = getSyncEntitlement('backend-2', 'account-1');
+    expect(other?.restricted).toBe(true);
+    clearSyncEntitlement('backend-2', 'account-1');
+    expect(getSyncEntitlement('backend-2', 'account-1')).toBeNull();
   });
 });

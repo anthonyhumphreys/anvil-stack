@@ -75,6 +75,12 @@ export class BackendRpcError extends Error {
   readonly retryable: boolean;
   readonly retryAfterMs?: number;
   readonly requestId?: string;
+  /**
+   * Backend-supplied error detail (e.g. `details.reason` on a 403 hosted
+   * entitlement refusal). Untrusted input — kept as a plain record, never
+   * interpolated into messages or URLs.
+   */
+  readonly details?: Record<string, unknown>;
 
   constructor(input: {
     code: string;
@@ -82,6 +88,7 @@ export class BackendRpcError extends Error {
     retryAfterMs?: number;
     requestId?: string;
     message?: string;
+    details?: Record<string, unknown>;
   }) {
     super(input.message ?? `backend RPC failed: ${input.code}`);
     this.name = 'BackendRpcError';
@@ -89,6 +96,7 @@ export class BackendRpcError extends Error {
     this.retryable = input.retryable;
     this.retryAfterMs = input.retryAfterMs;
     this.requestId = input.requestId;
+    this.details = input.details;
   }
 }
 
@@ -330,6 +338,7 @@ export async function rpc<R = unknown>(
       retryAfterMs:
         typeof errorBody['retryAfterMs'] === 'number' ? errorBody['retryAfterMs'] : undefined,
       requestId: responseId,
+      details: isRecord(errorBody['details']) ? errorBody['details'] : undefined,
     });
   }
   if (!response.ok) {
@@ -547,6 +556,7 @@ export async function postAuthRoute<R = unknown>(
       code: typeof errorBody['code'] === 'string' ? errorBody['code'] : 'unauthenticated',
       retryable: errorBody['retryable'] === true,
       message: `backend auth route ${route} rejected`,
+      details: isRecord(errorBody['details']) ? errorBody['details'] : undefined,
     });
   }
   if (!response.ok) {

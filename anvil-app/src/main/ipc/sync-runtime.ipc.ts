@@ -14,6 +14,8 @@ import {
   initiateSessionHandoff,
   issueEnrollmentCode,
   listConflictViews,
+  openHostedAccountPage,
+  refreshHostedEntitlement,
   listDevices,
   listMeshHandoffs,
   listMeshJobs,
@@ -70,6 +72,13 @@ export function registerSyncRuntimeHandlers(): void {
   ipcMain.handle('sync-runtime:conflicts', () => listConflictViews());
 
   ipcMain.handle('sync-runtime:diagnostics', () => exportSyncDiagnostics());
+
+  // BILL-05: re-check hosted access via session.describe (self-host backends
+  // omit the field → returns null). Explicit user/panel trigger — unthrottled.
+  ipcMain.handle('sync-runtime:hosted-refresh', () => refreshHostedEntitlement());
+
+  // Fixed https://anvil.dev/account — never derived from user input or URLs.
+  ipcMain.handle('sync-runtime:open-hosted-account', () => openHostedAccountPage());
 
   ipcMain.handle('sync-runtime:mesh-worker-set', (_event, payload: unknown) => {
     if (!isRecord(payload) || typeof payload['enabled'] !== 'boolean') {

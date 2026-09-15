@@ -81,7 +81,11 @@ import { isTelemetryEnabled } from './services/settings.service.js';
 import { initializeTelemetry } from './services/telemetry.service.js';
 import { initializeAppUpdater } from './services/app-updater.service.js';
 import { registerExternalLinkHandling } from './services/external-link.service.js';
-import { initSyncRuntime, onSystemResume } from './services/sync-runtime.service.js';
+import {
+  initSyncRuntime,
+  onAppFocus,
+  onSystemResume,
+} from './services/sync-runtime.service.js';
 
 const brandId = parseBrandFromArgs(process.argv);
 const brand = getBrand(brandId);
@@ -232,6 +236,13 @@ function createWindow(
   }
 
   registerExternalLinkHandling(createdWindow.webContents);
+
+  // BILL-05: returning from the hosted account page re-checks hosted access
+  // via session.describe (throttled in the service). Nothing about billing
+  // state is ever read from a URL — the backend remains the source of truth.
+  createdWindow.on('focus', () => {
+    onAppFocus();
+  });
 
   createdWindow.on('enter-full-screen', () => sendWindowChromeState(createdWindow));
   createdWindow.on('leave-full-screen', () => sendWindowChromeState(createdWindow));

@@ -157,6 +157,26 @@ export interface SessionMeshState {
   handoffs: HandoffRecord[];
 }
 
+/**
+ * BILL-05 renderer-safe view of the hosted entitlement row. Mirrors the
+ * backend `HostedEntitlement` minus capability/limit detail; `restricted`
+ * flattens the sync-write pause decision. All dates are ISO strings.
+ * `null` on `SyncRuntimeStatus.hosted` means the backend does not report
+ * hosted entitlements (self-host) or no check has completed yet — never a
+ * restriction signal on its own.
+ */
+export interface SyncHostedStatus {
+  state: 'preview' | 'active' | 'grace' | 'restricted' | 'unknown';
+  source: string;
+  planKey: string | null;
+  previewEndsAt: string | null;
+  accessUntil: string | null;
+  graceUntil: string | null;
+  checkedAt: string;
+  reason: string;
+  restricted: boolean;
+}
+
 /** MESH-02 device-local worker state — consent + incarnation, never synced. */
 export interface MeshWorkerStatus {
   /** Local opt-in flag: this device consents to run account jobs. */
@@ -190,6 +210,8 @@ export interface SyncRuntimeStatus {
   sessionExpired: boolean;
   /** Device-local mesh worker state (opt-in is never synced). */
   meshWorker: MeshWorkerStatus;
+  /** Last-known hosted entitlement; null for self-host backends. */
+  hosted: SyncHostedStatus | null;
   lastError: string | null;
   lastPushAt: string | null;
   lastPullAt: string | null;

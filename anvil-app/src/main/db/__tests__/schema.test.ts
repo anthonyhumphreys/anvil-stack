@@ -132,7 +132,7 @@ describe('fresh database schema', () => {
         ).map((column) => column.name),
       );
 
-      expect(SCHEMA_VERSION).toBe(78);
+      expect(SCHEMA_VERSION).toBe(79);
       for (const column of [
         'local_llm_mode',
         'local_llm_provider',
@@ -180,6 +180,14 @@ describe('fresh database schema', () => {
       expect(tableColumns('sync_backends').has('state')).toBe(true);
       expect(tableColumns('sync_backends').has('created_at')).toBe(true);
       expect(tableColumns('sync_backends').has('updated_at')).toBe(true);
+      expect(tableColumns('sync_entitlement').has('backend_id')).toBe(true);
+      expect(tableColumns('sync_entitlement').has('account_id')).toBe(true);
+      expect(tableColumns('sync_entitlement').has('state')).toBe(true);
+      expect(tableColumns('sync_entitlement').has('source')).toBe(true);
+      expect(tableColumns('sync_entitlement').has('checked_at')).toBe(true);
+      expect(tableColumns('sync_entitlement').has('revision')).toBe(true);
+      expect(tableColumns('sync_entitlement').has('reason')).toBe(true);
+      expect(tableColumns('sync_entitlement').has('restricted')).toBe(true);
 
       const indexes = new Set(
         (
@@ -285,6 +293,39 @@ describe('fresh database schema', () => {
       ]) {
         expect(tables.has(table), `Missing table ${table}`).toBe(true);
       }
+    } finally {
+      db.close();
+    }
+  });
+
+  it('migrates a v78 database to the hosted entitlement table', () => {
+    const db = new Database(':memory:');
+    try {
+      applyMigration(db, MIGRATIONS[79]);
+      const columns = new Set(
+        (db.prepare('PRAGMA table_info(sync_entitlement)').all() as Array<{ name: string }>).map(
+          (column) => column.name,
+        ),
+      );
+      for (const column of [
+        'backend_id',
+        'account_id',
+        'state',
+        'source',
+        'plan_key',
+        'preview_ends_at',
+        'access_until',
+        'grace_until',
+        'checked_at',
+        'revision',
+        'reason',
+        'restricted',
+        'updated_at',
+      ]) {
+        expect(columns.has(column), `Missing column ${column}`).toBe(true);
+      }
+      // Re-running must be a no-op for databases that already have the table.
+      applyMigration(db, MIGRATIONS[79]);
     } finally {
       db.close();
     }

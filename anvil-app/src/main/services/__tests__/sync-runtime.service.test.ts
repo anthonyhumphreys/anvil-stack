@@ -23,8 +23,16 @@ vi.mock('../persona.service.js', () => ({
   getPersonaById: (id: string) => (id === 'coder' ? { id } : null),
   buildSystemPrompt: () => '',
 }));
+const { openExternalCalls } = vi.hoisted(() => ({
+  openExternalCalls: [] as string[],
+}));
 vi.mock('electron', () => ({
   app: { getPath: () => '/tmp', getVersion: () => 'test' },
+  shell: {
+    openExternal: async (url: string) => {
+      openExternalCalls.push(url);
+    },
+  },
   safeStorage: {
     isEncryptionAvailable: () => true,
     encryptString: (value: string) => Buffer.from(`enc:${value}`, 'utf-8'),
@@ -43,7 +51,10 @@ import {
   getRuntimeStatus,
   initSyncRuntime,
   issueEnrollmentCode,
+  onAppFocus,
+  openHostedAccountPage,
   previewAdoption,
+  refreshHostedEntitlement,
   resetSyncRuntimeForTests,
   requestSync,
   setSyncRuntimeRpcForTests,
@@ -52,10 +63,13 @@ import {
   spikeEnroll,
 } from '../sync-runtime.service';
 import {
+  clearSyncEntitlement,
+  getSyncEntitlement,
   getBinding,
   listOutboxRows,
   upsertBinding,
   upsertEnrollment,
+  upsertSyncEntitlement,
 } from '../sync-persistence.service';
 import { pinBackend } from '../sync-backend.service';
 import { resetSyncEngineForTests } from '../sync-engine.service';
@@ -117,8 +131,9 @@ beforeEach(() => {
     `DELETE FROM sync_outbox; DELETE FROM sync_bindings; DELETE FROM sync_conflicts;
      DELETE FROM sync_state; DELETE FROM device_enrollments; DELETE FROM workflow_templates;
      DELETE FROM sync_scan_runs; DELETE FROM sync_scan_staging; DELETE FROM sync_installation;
-     DELETE FROM sync_backends;`,
+     DELETE FROM sync_backends; DELETE FROM sync_entitlement;`,
   );
+  openExternalCalls.length = 0;
 });
 
 afterEach(() => {
@@ -253,21 +268,29 @@ interface FakeSession {
   accessExpiresAt: string;
 }
 
-function fakeBackend(options: { accessTtlMs?: number } = {}) {
+function fakeBackend(
+  options: {
+    accessTtlMs?: number;
+    /** When set, `session.describe` reports this hosted entitlement (BILL-05). */
+    entitlement?: Record<string, unknown> | (() => Record<string, unknown> | undefined);
+    /** When set, `sync.push` is refused 403 with this `details.reason`. */
+    denyPush?: string;
+  } = {},
+) {
   const accessTtlMs = options.accessTtlMs ?? 15 * 60 * 1000;
   const codes = new Map<string, string>();
   const sessions = new Map<string, FakeSession>();
   const refreshIndex = new Map<string, string>();
   const accessIndex = new Map<string, string>();
-  const calls: { path: string; authorization: string | null }[] = [];
+  const calls: { path: string; operation: string | null; authorization: string | null }[] = [];
 
   const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     const path = new URL(url).pathname;
     const headers = new Headers(init?.headers);
     const authorization = headers.get('Authorization');
-    calls.push({ path, authorization });
     const body = JSON.parse((init?.body as string) ?? '{}') as Record<string, unknown>;
+    calls.push({ path, operation: (body['operation'] as string) ?? null, authorization });
     const err = (code: string, status = 401) =>
       Response.json({ error: { code, retryable: false } }, { status });
 
@@ -408,6 +431,14 @@ function fakeBackend(options: { accessTtlMs?: number } = {}) {
               retentionFloor: 7,
               counters: { push_total: 3, pull_total: 5 },
             },
+            // Self-host shape: the field is simply absent.
+            ...((() => {
+              const entitlement =
+                typeof options.entitlement === 'function'
+                  ? options.entitlement()
+                  : options.entitlement;
+              return entitlement === undefined ? {} : { entitlement };
+            })()),
           },
         });
       }
@@ -419,6 +450,19 @@ function fakeBackend(options: { accessTtlMs?: number } = {}) {
         });
       }
       if (operation === 'sync.push') {
+        if (options.denyPush !== undefined) {
+          return Response.json(
+            {
+              requestId,
+              error: {
+                code: 'forbidden',
+                retryable: false,
+                details: { reason: options.denyPush },
+              },
+            },
+            { status: 403 },
+          );
+        }
         return Response.json({ requestId, serverTime: new Date().toISOString(), result: { results: [] } });
       }
       return Response.json(
@@ -785,5 +829,221 @@ describe('live channel', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('hosted entitlement (BILL-05)', () => {
+  const RESTRICTED_ENTITLEMENT = {
+    state: 'restricted',
+    source: 'none',
+    planKey: null,
+    capabilities: { syncWrite: false, meshSubmit: false },
+    limits: { devices: 3, artifactBytes: 0, historyBytes: 0 },
+    previewEndsAt: '2026-11-01T00:00:00Z',
+    accessUntil: null,
+    graceUntil: null,
+    checkedAt: '2026-09-11T10:00:00Z',
+    revision: 7,
+    reason: 'subscription-required',
+  };
+  const PREVIEW_ENTITLEMENT = {
+    state: 'preview',
+    source: 'preview',
+    planKey: 'hosted-preview',
+    capabilities: { syncWrite: true, meshSubmit: true },
+    limits: { devices: 3, artifactBytes: 1048576, historyBytes: 67108864 },
+    previewEndsAt: '2026-11-01T00:00:00Z',
+    accessUntil: '2026-11-01T00:00:00Z',
+    graceUntil: null,
+    checkedAt: '2026-09-11T10:00:00Z',
+    revision: 2,
+    reason: 'preview',
+  };
+
+  async function enrollOn(backend: ReturnType<typeof fakeBackend>) {
+    const minted = (await (
+      await backend.fetchFn('https://backend.example.test/v1/enrollment-codes', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', Authorization: 'Bearer admin-token' },
+        body: JSON.stringify({ accountId: 'account-1' }),
+      })
+    ).json()) as { code: string };
+    return enrollWithEnrollmentCode(minted.code);
+  }
+
+  function rpcOps(backend: ReturnType<typeof fakeBackend>): string[] {
+    return backend.calls
+      .map((c) => c.operation)
+      .filter((op): op is string => op !== null);
+  }
+
+  it('persists the session.describe entitlement and exposes it on runtime status', async () => {
+    const backend = fakeBackend({ entitlement: PREVIEW_ENTITLEMENT });
+    const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
+    initSyncRuntime(dir, {
+      fetchFn: backend.fetchFn,
+      createSocket: fakeSocketFactory().createSocket,
+    });
+    pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: oidcDescriptorFixture() });
+    await enrollOn(backend);
+    enableSync(); // hosted rides status only for the active scope
+
+    const hosted = await refreshHostedEntitlement();
+    expect(hosted?.state).toBe('preview');
+    expect(hosted?.restricted).toBe(false);
+    expect(hosted?.planKey).toBe('hosted-preview');
+    expect(hosted?.previewEndsAt).toBe('2026-11-01T00:00:00Z');
+    expect(getRuntimeStatus().hosted).toEqual(hosted);
+    const row = getSyncEntitlement('backend-1', 'account-1');
+    expect(row?.revision).toBe(2);
+    expect(row?.reason).toBe('preview');
+  });
+
+  it('clears a stale hosted row when session.describe omits entitlement (self-host)', async () => {
+    const backend = fakeBackend();
+    const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
+    initSyncRuntime(dir, { fetchFn: backend.fetchFn });
+    pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: oidcDescriptorFixture() });
+    await enrollOn(backend);
+
+    upsertSyncEntitlement({
+      backendId: 'backend-1',
+      accountId: 'account-1',
+      state: 'restricted',
+      source: 'none',
+      planKey: null,
+      previewEndsAt: null,
+      accessUntil: null,
+      graceUntil: null,
+      checkedAt: '2026-09-11T10:00:00Z',
+      revision: 7,
+      reason: 'subscription-required',
+      restricted: true,
+    });
+    const hosted = await refreshHostedEntitlement();
+    expect(hosted).toBeNull();
+    expect(getSyncEntitlement('backend-1', 'account-1')).toBeNull();
+    expect(getRuntimeStatus().hosted).toBeNull();
+  });
+
+  it('a restricted entitlement pauses sync writes while pulls keep running', async () => {
+    const backend = fakeBackend({ entitlement: RESTRICTED_ENTITLEMENT });
+    const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
+    initSyncRuntime(dir, {
+      fetchFn: backend.fetchFn,
+      createSocket: fakeSocketFactory().createSocket,
+    });
+    pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: oidcDescriptorFixture() });
+    await enrollOn(backend);
+    enableSync();
+    await refreshHostedEntitlement(); // deterministic restricted row
+
+    backend.calls.length = 0;
+    await requestSync();
+    const ops = rpcOps(backend);
+    expect(ops).not.toContain('sync.push');
+    expect(ops).not.toContain('sync.scan.begin');
+    expect(ops).toContain('sync.pull');
+    expect(getRuntimeStatus().lastError).toBeNull();
+    // Outbox rows stay queued — nothing was dispatched or dropped.
+    expect(listOutboxRows(SCOPE).length).toBeGreaterThan(0);
+  });
+
+  it('un-gates the next cycle once session.describe reports access restored', async () => {
+    const options: { entitlement?: Record<string, unknown> } = {
+      entitlement: RESTRICTED_ENTITLEMENT,
+    };
+    const backend = fakeBackend(options);
+    const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
+    initSyncRuntime(dir, {
+      fetchFn: backend.fetchFn,
+      createSocket: fakeSocketFactory().createSocket,
+    });
+    pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: oidcDescriptorFixture() });
+    await enrollOn(backend);
+    enableSync();
+    await refreshHostedEntitlement();
+
+    options.entitlement = PREVIEW_ENTITLEMENT;
+    const hosted = await refreshHostedEntitlement();
+    expect(hosted?.restricted).toBe(false);
+
+    backend.calls.length = 0;
+    await requestSync();
+    expect(rpcOps(backend)).toContain('sync.push');
+  });
+
+  it('a mid-flight hosted 403 still pulls, keeps outbox rows, and stays quiet', async () => {
+    const backend = fakeBackend({
+      // Authoritative describe flips to restricted the moment a push was denied.
+      entitlement: () =>
+        backend.calls.some((c) => c.operation === 'sync.push')
+          ? RESTRICTED_ENTITLEMENT
+          : PREVIEW_ENTITLEMENT,
+      denyPush: 'subscription-required',
+    });
+    const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
+    initSyncRuntime(dir, {
+      fetchFn: backend.fetchFn,
+      createSocket: fakeSocketFactory().createSocket,
+    });
+    pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: oidcDescriptorFixture() });
+    await enrollOn(backend);
+    enableSync(); // the kick itself runs the denied cycle
+
+    // The 403 → record → refresh sequence converges on a restricted row.
+    await vi.waitFor(() => {
+      const row = getSyncEntitlement('backend-1', 'account-1');
+      expect(row?.restricted).toBe(true);
+      expect(row?.reason).toBe('subscription-required');
+    });
+    // The pull still ran before the refusal propagated.
+    expect(rpcOps(backend)).toContain('sync.pull');
+    expect(getRuntimeStatus().lastError).toBeNull();
+    // The denied push must not consume or drop local outbox rows.
+    expect(listOutboxRows(SCOPE).length).toBeGreaterThan(0);
+
+    // An explicit cycle resolves quietly too — the pause is not a failure.
+    await requestSync();
+    expect(getRuntimeStatus().lastError).toBeNull();
+  });
+
+  it('onAppFocus re-reads hosted access once the throttle window passes', async () => {
+    const backend = fakeBackend({ entitlement: PREVIEW_ENTITLEMENT });
+    const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
+    initSyncRuntime(dir, {
+      fetchFn: backend.fetchFn,
+      createSocket: fakeSocketFactory().createSocket,
+    });
+    pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: oidcDescriptorFixture() });
+    await enrollOn(backend);
+    enableSync();
+
+    let describes = 0;
+    vi.useFakeTimers();
+    try {
+      await vi.advanceTimersByTimeAsync(61_000);
+      describes = backend.calls.filter((c) => c.operation === 'session.describe').length;
+      clearSyncEntitlement('backend-1', 'account-1');
+      onAppFocus();
+      await vi.advanceTimersByTimeAsync(0);
+    } finally {
+      vi.useRealTimers();
+    }
+    await vi.waitFor(() => {
+      expect(
+        backend.calls.filter((c) => c.operation === 'session.describe').length,
+      ).toBeGreaterThan(describes);
+    });
+    await vi.waitFor(() => {
+      expect(getSyncEntitlement('backend-1', 'account-1')?.state).toBe('preview');
+    });
+  });
+
+  it('opens only the fixed hosted account URL in the system browser', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
+    initSyncRuntime(dir, {});
+    await openHostedAccountPage();
+    expect(openExternalCalls).toEqual(['https://anvil.dev/account']);
   });
 });

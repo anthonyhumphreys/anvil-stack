@@ -49,6 +49,7 @@ import {
 import {
   canonicalJson,
   getBinding,
+  getSyncState,
   listConflicts,
   listOutboxRows,
   nextBatch,
@@ -881,5 +882,134 @@ describe('runSyncCycle pull — ENTITY-01 types', () => {
     );
     expect(creates).toHaveLength(1);
     expect(getEditableAgent(creates[0].entityId)?.name).toBe('Mine (local copy)');
+  });
+});
+
+describe('runSyncCycle BILL-05 hosted write gate', () => {
+  it('a gated cycle never pushes, still pulls, and skips the rescan', async () => {
+    activateEnrollment();
+    const saved = saveWorkflowTemplate(templateInput('Original'));
+    upsertBinding(SCOPE, ET, saved.id);
+    saveWorkflowTemplate({ ...templateInput('Renamed') }, saved.id);
+    updateSyncState(SCOPE, { resetRequired: true });
+    expect(listOutboxRows(SCOPE)[0].state).toBe('pending');
+
+    let pushCalls = 0;
+    let pullCalls = 0;
+    let scanCalls = 0;
+    await runSyncCycle({
+      accessToken: TOKEN,
+      connection: CONNECTION,
+      enrollmentId: ENROLLMENT,
+      scope: SCOPE,
+      writeGate: () => ({ allowed: false }),
+      rpc: fakeRpc({
+        push: (params) => {
+          pushCalls += 1;
+          return acceptPush(params);
+        },
+        pull: () => {
+          pullCalls += 1;
+          return emptyPull('cursor-gated');
+        },
+        scanBegin: () => {
+          scanCalls += 1;
+          return {
+            scanId: 'scan-1',
+            watermarkStart: 0,
+            resumeCursor: '0' as SyncCursor,
+            epoch: '1',
+          };
+        },
+      }),
+    });
+
+    expect(pushCalls).toBe(0);
+    expect(scanCalls).toBe(0);
+    expect(pullCalls).toBe(1);
+    // Nothing was consumed or rejected: the pending row and the rescan flag
+    // both survive for the cycle that runs after access resumes.
+    expect(listOutboxRows(SCOPE)[0].state).toBe('pending');
+    expect(listOutboxRows(SCOPE)[0].enrollmentSequence).toBeNull();
+    expect(getSyncState(SCOPE)?.resetRequired).toBe(true);
+  });
+
+  it('re-opens the gate transparently on the next cycle', async () => {
+    activateEnrollment();
+    const saved = saveWorkflowTemplate(templateInput('Original'));
+    upsertBinding(SCOPE, ET, saved.id);
+    saveWorkflowTemplate({ ...templateInput('Renamed') }, saved.id);
+
+    let allowed = false;
+    const gate = () => ({ allowed });
+    let pushCalls = 0;
+    const rpc = fakeRpc({
+      push: (params) => {
+        pushCalls += 1;
+        return acceptPush(params, 1);
+      },
+    });
+    await runSyncCycle({
+      accessToken: TOKEN,
+      connection: CONNECTION,
+      enrollmentId: ENROLLMENT,
+      scope: SCOPE,
+      writeGate: gate,
+      rpc,
+    });
+    expect(pushCalls).toBe(0);
+
+    allowed = true;
+    resetSyncEngineForTests();
+    await runSyncCycle({
+      accessToken: TOKEN,
+      connection: CONNECTION,
+      enrollmentId: ENROLLMENT,
+      scope: SCOPE,
+      writeGate: gate,
+      rpc,
+    });
+    expect(pushCalls).toBe(1);
+    expect(listOutboxRows(SCOPE)[0].state).toBe('acknowledged');
+  });
+
+  it('a 403 forbidden push still pulls, keeps outbox rows, and propagates with details', async () => {
+    activateEnrollment();
+    const saved = saveWorkflowTemplate(templateInput('Original'));
+    upsertBinding(SCOPE, ET, saved.id);
+    saveWorkflowTemplate({ ...templateInput('Renamed') }, saved.id);
+
+    let pullCalls = 0;
+    let thrown: unknown;
+    try {
+      await cycle(
+        fakeRpc({
+          push: () => {
+            throw new BackendRpcError({
+              code: 'forbidden',
+              retryable: false,
+              details: { reason: 'subscription-required' },
+            });
+          },
+          pull: () => {
+            pullCalls += 1;
+            return emptyPull('cursor-after-denial');
+          },
+        }),
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(SyncEngineError);
+    expect((thrown as SyncEngineError).code).toBe('forbidden');
+    expect((thrown as SyncEngineError).details).toEqual({ reason: 'subscription-required' });
+    // Control ops ran, and the denial is a pause: rows stay dispatched, never rejected.
+    expect(pullCalls).toBe(1);
+    const rows = listOutboxRows(SCOPE);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].state).toBe('dispatched');
+    expect(rows[0].resultJson).toBeNull();
+    expect(getSyncState(SCOPE)?.cursor).toBe('cursor-after-denial');
   });
 });

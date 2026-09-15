@@ -24,6 +24,7 @@ import type {
   SyncConflictView,
   SyncDataImportFilePreview,
   SyncDevice,
+  SyncHostedStatus,
   SyncIssuedEnrollmentCode,
   SyncRuntimeStatus,
 } from '../../../shared/sync-runtime';
@@ -82,6 +83,47 @@ function modeDescription(mode: SyncBackendConnectionMode): string {
 
 const MODE_ORDER: SyncBackendConnectionMode[] = ['local', 'hosted', 'cloudflare', 'compatible'];
 
+/** BILL-05 chip labels: `restricted` flattens to the pause the user sees. */
+function hostedStateLabel(hosted: SyncHostedStatus): string {
+  if (hosted.restricted || hosted.state === 'restricted') return 'Paused';
+  switch (hosted.state) {
+    case 'preview':
+      return 'Preview';
+    case 'active':
+      return 'Active paid';
+    case 'grace':
+      return 'Grace';
+    default:
+      return 'Unavailable';
+  }
+}
+
+function hostedStateChipClass(hosted: SyncHostedStatus): string {
+  if (hosted.restricted || hosted.state === 'restricted') return 'bg-error/15 text-error';
+  switch (hosted.state) {
+    case 'preview':
+      return 'bg-accent/15 text-accent';
+    case 'active':
+      return 'bg-success/15 text-success';
+    case 'grace':
+      return 'bg-warning/15 text-warning';
+    default:
+      return 'bg-bg-tertiary text-text-tertiary';
+  }
+}
+
+/** Short localized date for entitlement timestamps; null when unparseable. */
+function formatHostedDate(iso: string | null): string | null {
+  if (iso === null) return null;
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toLocaleDateString(undefined, {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
+}
+
 export function SyncMeshSettingsPanel(): ReactNode {
   const [mode, setMode] = useState<SyncBackendConnectionMode>('local');
   const [status, setStatus] = useState<SyncBackendStatus | null>(null);
@@ -134,7 +176,15 @@ export function SyncMeshSettingsPanel(): ReactNode {
         window.anvil.syncRuntime.preview(),
         window.anvil.syncRuntime.conflicts(),
       ]);
-      setRuntime(runtimeNext);
+      // BILL-05: mount/refresh re-checks hosted access via session.describe.
+      // A failure keeps the last-known row already carried on the snapshot.
+      const hosted =
+        runtimeNext.auth.state === 'signed-in'
+          ? await window.anvil.syncRuntime
+              .refreshHostedEntitlement()
+              .catch(() => runtimeNext.hosted)
+          : runtimeNext.hosted;
+      setRuntime({ ...runtimeNext, hosted });
       setPreview(previewNext);
       setConflicts(conflictNext);
       if (runtimeNext.auth.state === 'signed-in') {
@@ -155,6 +205,23 @@ export function SyncMeshSettingsPanel(): ReactNode {
 
   useEffect(() => {
     void refreshStatus();
+  }, []);
+
+  // BILL-05: refocus (e.g. returning from the hosted account page) re-reads
+  // hosted access for this view. The authoritative backend check is
+  // BrowserWindow 'focus' → onAppFocus in the main process; this keeps the
+  // panel's rendered snapshot in step without rerunning the whole status load.
+  useEffect(() => {
+    const onWindowFocus = (): void => {
+      void window.anvil.syncRuntime
+        .refreshHostedEntitlement()
+        .then((hosted) => {
+          setRuntime((prev) => (prev === null ? prev : { ...prev, hosted }));
+        })
+        .catch(() => undefined);
+    };
+    window.addEventListener('focus', onWindowFocus);
+    return () => window.removeEventListener('focus', onWindowFocus);
   }, []);
 
   const handleDiscover = async (): Promise<void> => {
@@ -273,6 +340,15 @@ export function SyncMeshSettingsPanel(): ReactNode {
     try {
       await window.anvil.syncRuntime.signOut();
       await refreshStatus();
+    } catch (err) {
+      setError(toErrorMessage(err));
+    }
+  };
+
+  const handleOpenHostedAccount = async (): Promise<void> => {
+    setError(null);
+    try {
+      await window.anvil.syncRuntime.openHostedAccount();
     } catch (err) {
       setError(toErrorMessage(err));
     }
@@ -425,6 +501,7 @@ export function SyncMeshSettingsPanel(): ReactNode {
   };
 
   const showEndpointFlow = mode === 'compatible' || mode === 'cloudflare';
+  const hosted = runtime?.hosted ?? null;
 
   return (
     <div className="space-y-3">
@@ -728,6 +805,57 @@ export function SyncMeshSettingsPanel(): ReactNode {
           </div>
         )}
       </Panel>
+
+      {hosted !== null && (
+        <Panel
+          title="Hosted access"
+          description="Hosted sync access reported by the backend. Billing is managed on the Anvil website — never charged in-app."
+        >
+          <div className="flex items-center gap-2">
+            <span
+              className={`rounded px-1.5 py-0.5 text-xs font-medium ${hostedStateChipClass(hosted)}`}
+            >
+              {hostedStateLabel(hosted)}
+            </span>
+            {hosted.planKey !== null && (
+              <span className="text-xs text-text-tertiary">{hosted.planKey}</span>
+            )}
+          </div>
+          {hosted.state === 'preview' && (
+            <p className="text-xs text-text-tertiary">
+              {formatHostedDate(hosted.previewEndsAt) !== null
+                ? `Hosted preview ends ${formatHostedDate(hosted.previewEndsAt)}.`
+                : 'Hosted preview is active.'}
+            </p>
+          )}
+          {formatHostedDate(hosted.accessUntil) !== null && (
+            <p className="text-xs text-text-tertiary">
+              Paid access until {formatHostedDate(hosted.accessUntil)}.
+            </p>
+          )}
+          {formatHostedDate(hosted.graceUntil) !== null && (
+            <p className="text-xs text-text-tertiary">
+              Grace period ends {formatHostedDate(hosted.graceUntil)}.
+            </p>
+          )}
+          {hosted.restricted && (
+            <div className="rounded-md border border-error/30 bg-error/5 p-2">
+              <p className="flex items-start gap-2 text-xs text-text-secondary">
+                <AlertTriangle size={13} className="mt-0.5 shrink-0 text-error" />
+                Hosted sync is paused. Your local changes, cursors and conflicts are preserved —
+                sync resumes automatically once access is restored.
+              </p>
+              <button
+                type="button"
+                onClick={() => void handleOpenHostedAccount()}
+                className="mt-2 rounded-md border border-border px-2.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+              >
+                Manage account
+              </button>
+            </div>
+          )}
+        </Panel>
+      )}
 
       {runtime?.auth.state === 'signed-in' && (
         <Panel

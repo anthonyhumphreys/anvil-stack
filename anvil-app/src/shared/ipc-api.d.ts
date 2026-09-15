@@ -206,6 +206,7 @@ import type {
   SyncDeviceRenameResult,
   SyncDeviceRevokeResult,
   SyncDiagnostics,
+  SyncHostedStatus,
   SyncInitiateHandoffResult,
   SyncIssuedEnrollmentCode,
   SyncRuntimeStatus,
@@ -715,6 +716,18 @@ export interface AnvilAPI {
     ) => Promise<SyncRuntimeStatus>;
     /** Redacted sync diagnostics bundle; safe to share with an operator. */
     diagnostics: () => Promise<SyncDiagnostics>;
+    /**
+     * BILL-05: re-check hosted access via session.describe and return the
+     * current renderer-safe view. Null when the backend reports no hosted
+     * entitlement (self-host) or the session is signed out.
+     */
+    refreshHostedEntitlement: () => Promise<SyncHostedStatus | null>;
+    /**
+     * Opens the fixed hosted account page (https://anvil.dev/account) in the
+     * system browser. Payment state is never read back from a URL — the
+     * backend remains the only source of truth.
+     */
+    openHostedAccount: () => Promise<void>;
     /**
      * Device-local mesh worker opt-in (MESH-02). Publishes the device policy
      * and connects a leased worker incarnation when enabled; requires sync.

@@ -37,6 +37,9 @@ export function parseOpenInAnvilUrl(rawUrl: string): OpenInAnvilLaunchIntent | n
   if (!SUPPORTED_PROTOCOL_PREFIXES.some((prefix) => rawUrl.startsWith(prefix))) return null;
 
   const url = new URL(rawUrl);
+  // BILL-05: only the explicit allowlist below is read. Billing/entitlement
+  // parameters (e.g. `paid=true`, `checkout=...`) are never honored here —
+  // payment state is only ever learned from the backend via session.describe.
   const repos = url.searchParams.getAll('repo').map<OpenInAnvilRepoSpec>((cloneUrl) => ({
     cloneUrl,
     provider: inferRepoProvider(cloneUrl),

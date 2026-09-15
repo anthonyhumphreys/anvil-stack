@@ -259,7 +259,12 @@ describe('discover over HTTP (127.0.0.1 fake server)', () => {
       res.end(
         JSON.stringify({
           requestId: body.requestId,
-          error: { code: 'throttled', retryable: true, retryAfterMs: 100 },
+          error: {
+            code: 'throttled',
+            retryable: true,
+            retryAfterMs: 100,
+            details: { reason: 'subscription-required' },
+          },
         }),
       );
     });
@@ -277,6 +282,8 @@ describe('discover over HTTP (127.0.0.1 fake server)', () => {
       expect(rpcError.code).toBe('throttled');
       expect(rpcError.retryable).toBe(true);
       expect(rpcError.retryAfterMs).toBe(100);
+      // BILL-05: hosted-refusal detail survives for the runtime to classify.
+      expect(rpcError.details).toEqual({ reason: 'subscription-required' });
     } finally {
       await server.close();
     }

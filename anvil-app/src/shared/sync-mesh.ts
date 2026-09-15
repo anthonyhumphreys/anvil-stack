@@ -119,6 +119,30 @@ export interface SyncConflict {
   resolution: SyncConflictResolution | null;
 }
 
+/**
+ * BILL-05 hosted entitlement row (schema 79). Unlike the other sync tables it
+ * is keyed only by (backendId, accountId): hosted access is an account-level
+ * fact and survives dataset-epoch rotations. `state`/`source`/`reason` are
+ * stored verbatim so a newer backend vocabulary never breaks the mapper.
+ * Self-host backends never produce a row. `restricted` is the local
+ * sync-write pause decision, stored explicitly by the caller.
+ */
+export interface SyncEntitlementRecord {
+  backendId: string;
+  accountId: string;
+  state: string;
+  source: string;
+  planKey: string | null;
+  previewEndsAt: string | null;
+  accessUntil: string | null;
+  graceUntil: string | null;
+  checkedAt: string;
+  revision: number;
+  reason: string;
+  restricted: boolean;
+  updatedAt: string;
+}
+
 export interface PushResult {
   changeId: string;
   status: PushResultStatus;

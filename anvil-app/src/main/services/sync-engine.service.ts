@@ -93,6 +93,15 @@ export interface RunSyncCycleInput {
    * sign-out or backend switch cannot let stale in-flight work land.
    */
   guard?: () => boolean;
+  /**
+   * BILL-05 hosted-access write gate. Evaluated before the push and before the
+   * rescan; when it reports `allowed: false`, mutating calls (sync.push,
+   * sync.scan.begin) are skipped while control/read calls (sync.pull) still
+   * run. Outbox rows, cursors, conflicts, and reset_required are untouched, so
+   * a restricted account pauses resumably instead of shedding local work.
+   * Absent means writes are unrestricted (self-host backends).
+   */
+  writeGate?: () => { allowed: boolean };
 }
 
 export interface SyncEngineSnapshot {
@@ -113,16 +122,24 @@ export class SyncEngineError extends Error {
   readonly retryable: boolean;
   readonly retryAfterMs?: number;
   readonly code?: string;
+  /** Backend-supplied error detail (e.g. `reason` on a hosted 403 refusal). */
+  readonly details?: Record<string, unknown>;
 
   constructor(
     message: string,
-    options: { retryable: boolean; retryAfterMs?: number; code?: string },
+    options: {
+      retryable: boolean;
+      retryAfterMs?: number;
+      code?: string;
+      details?: Record<string, unknown>;
+    },
   ) {
     super(message);
     this.name = 'SyncEngineError';
     this.retryable = options.retryable;
     this.retryAfterMs = options.retryAfterMs;
     this.code = options.code;
+    this.details = options.details;
   }
 }
 
@@ -316,27 +333,44 @@ async function executeOneCycle(input: RunSyncCycleInput): Promise<void> {
   }
 
   const rpcFn = input.rpc ?? defaultRpc;
+  const writesAllowed = (): boolean =>
+    input.writeGate === undefined || input.writeGate().allowed;
   try {
     // Fence before any durable write: a superseded cycle must not even mark
     // outbox rows dispatched under the dead scope.
     assertCurrent(input);
-    try {
-      await pushCycle(input, rpcFn);
-    } catch (error) {
-      // A top-level reset/receipt-expired/epoch answer cannot be retried into
-      // success; flag the scope and continue into the scan recovery path.
-      const mapped = toSyncEngineError(error);
-      if (
-        mapped.code === 'reset-required' ||
-        mapped.code === 'receipt-expired' ||
-        mapped.code === 'epoch-mismatch'
-      ) {
-        updateSyncState(input.scope, { resetRequired: true });
-      } else {
-        throw mapped;
+    if (writesAllowed()) {
+      try {
+        await pushCycle(input, rpcFn);
+      } catch (error) {
+        // A top-level reset/receipt-expired/epoch answer cannot be retried into
+        // success; flag the scope and continue into the scan recovery path.
+        const mapped = toSyncEngineError(error);
+        if (
+          mapped.code === 'reset-required' ||
+          mapped.code === 'receipt-expired' ||
+          mapped.code === 'epoch-mismatch'
+        ) {
+          updateSyncState(input.scope, { resetRequired: true });
+        } else if (mapped.code === 'forbidden') {
+          // BILL-05 hosted-access refusal: writes pause but control/read ops
+          // stay available, so the pull still runs before the error
+          // propagates. Pending/dispatched outbox rows are never rejected or
+          // rewritten — this is a resumable pause, not data loss.
+          try {
+            await pullCycle(input, rpcFn);
+          } catch {
+            // The forbidden answer is the meaningful signal for the caller.
+          }
+          throw mapped;
+        } else {
+          throw mapped;
+        }
       }
     }
-    if (getSyncState(input.scope)?.resetRequired === true) {
+    // sync.scan.begin is a mutating op: gated out while restricted so
+    // reset_required stays set and the rescan runs once access resumes.
+    if (writesAllowed() && getSyncState(input.scope)?.resetRequired === true) {
       await scanCycle(input, rpcFn);
     }
     await pullCycle(input, rpcFn);
@@ -1241,6 +1275,7 @@ function toSyncEngineError(error: unknown): SyncEngineError {
       code: error.code,
       retryable: error.retryable,
       retryAfterMs: error.retryAfterMs,
+      details: error.details,
     });
   }
   const message = error instanceof Error ? error.message : String(error);
