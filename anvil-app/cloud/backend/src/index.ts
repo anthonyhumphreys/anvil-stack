@@ -126,10 +126,11 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   }
 
   // BILL-01 hosted surface: /v1/hosted/link is the public link-code
-  // redemption route; /internal/hosted/* is the HMAC-signed website
-  // service channel. Every hosted path 404s when HOSTED_DB is unbound,
-  // so self-host deployments expose nothing here.
-  if (path === '/v1/hosted/link' || path.startsWith('/internal/hosted/')) {
+  // redemption route and /v1/hosted/stripe-webhook (BILL-02) is the
+  // signature-verified Stripe inbox; /internal/hosted/* is the HMAC-signed
+  // website service channel. Every hosted path 404s when HOSTED_DB is
+  // unbound, so self-host deployments expose nothing here.
+  if (path.startsWith('/v1/hosted/') || path.startsWith('/internal/hosted/')) {
     return handleHostedRequest(request, env);
   }
 

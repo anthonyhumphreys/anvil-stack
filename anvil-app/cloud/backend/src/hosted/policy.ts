@@ -5,6 +5,13 @@ export const PREVIEW_END_MS = Date.parse(PREVIEW_ENDS_AT);
 const DAY = 86_400_000;
 const MAX_DATE_MS = 8_640_000_000_000_000;
 
+/** Provisional hosted quotas — test fixtures, not advertised product limits. */
+export const DEFAULT_HOSTED_LIMITS: HostedLimits = {
+  devices: 10,
+  artifactBytes: 5 * 1024 * 1024 * 1024,
+  historyBytes: 1024 * 1024 * 1024,
+};
+
 export interface HostedSubscriptionState {
   planKey: 'sync_personal';
   status:

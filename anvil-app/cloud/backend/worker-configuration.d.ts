@@ -20,6 +20,25 @@ declare namespace Cloudflare {
     HOSTED_DB?: D1Database;
     /** JSON `{"keyId":"secret"}` map for /internal/hosted/* HMAC auth. */
     HOSTED_SERVICE_KEYS?: string;
+    /**
+     * BILL-02 hosted billing provider config. All optional; absence fails
+     * closed — checkout/portal/reconcile answer unavailable and the
+     * webhook route answers not-found, never a guessed billing state.
+     */
+    STRIPE_SECRET_KEY?: string;
+    /** Endpoint secret for `Stripe-Signature` on /v1/hosted/stripe-webhook. */
+    STRIPE_WEBHOOK_SECRET?: string;
+    /** Test-only API base override; defaults to https://api.stripe.com. */
+    STRIPE_API_BASE?: string;
+    STRIPE_PRICE_SYNC_MONTHLY?: string;
+    STRIPE_PRICE_SYNC_ANNUAL?: string;
+    /** 'true' publishes checkout creation; anything else refuses with 403. */
+    HOSTED_CHECKOUT_ENABLED?: string;
+    HOSTED_CHECKOUT_SUCCESS_URL?: string;
+    HOSTED_CHECKOUT_CANCEL_URL?: string;
+    HOSTED_PORTAL_RETURN_URL?: string;
+    /** JSON partial override of DEFAULT_HOSTED_LIMITS. */
+    HOSTED_SYNC_LIMITS?: string;
   }
 }
 

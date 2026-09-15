@@ -14,6 +14,14 @@ import type { EnrollmentCodeIssueResult } from '../../../contract/auth';
 import { parseDeviceBearer } from '../auth';
 import { isRecord, rpcErrorResponse } from '../rpc';
 import {
+  handleBillingOverview,
+  handleCheckout,
+  handleEntitlement,
+  handlePortal,
+  handleReconcile,
+  handleStripeWebhook,
+} from './billing-routes';
+import {
   initialHostedSyncAccountId,
   validateHostedIdentity,
   type HostedIdentity,
@@ -315,6 +323,14 @@ export async function handleHostedRequest(request: Request, env: Env): Promise<R
       }
       return await handleHostedLink(request, env, db);
     }
+    // BILL-02: the one unauthenticated-but-signed public route — Stripe
+    // calls it directly, so the webhook secret doubles as the gate.
+    if (path === '/v1/hosted/stripe-webhook') {
+      if (request.method !== 'POST') {
+        return rpcErrorResponse(undefined, 'malformed-request');
+      }
+      return await handleStripeWebhook(request, env, db);
+    }
     if (path.startsWith('/internal/hosted/')) {
       if (request.method !== 'POST') {
         return rpcErrorResponse(undefined, 'malformed-request');
@@ -349,6 +365,16 @@ export async function handleHostedRequest(request: Request, env: Env): Promise<R
           return await handleLinkCode(json, db);
         case '/internal/hosted/account':
           return await handleHostedAccount(json, db);
+        case '/internal/hosted/checkout':
+          return await handleCheckout(json, env, db);
+        case '/internal/hosted/portal':
+          return await handlePortal(json, env, db);
+        case '/internal/hosted/billing':
+          return await handleBillingOverview(json, env, db);
+        case '/internal/hosted/entitlement':
+          return await handleEntitlement(json, env, db);
+        case '/internal/hosted/reconcile':
+          return await handleReconcile(json, env, db);
         default:
           return rpcErrorResponse(undefined, 'not-found');
       }

@@ -16,6 +16,22 @@
   //   wrangler d1 create anvil-hosted-billing --config wrangler.hosted.jsonc
   //   wrangler d1 migrations apply anvil-hosted-billing --config wrangler.hosted.jsonc
   //   wrangler secret put HOSTED_SERVICE_KEYS --config wrangler.hosted.jsonc
+  //
+  // BILL-02 hosted billing config — every value is optional and absence
+  // fails closed (no hosted surface on self-host, unavailable/not-found
+  // on hosted). Secrets via `wrangler secret put`, never in vars:
+  //   STRIPE_SECRET_KEY       Stripe secret key for the REST client
+  //   STRIPE_WEBHOOK_SECRET   endpoint secret for /v1/hosted/stripe-webhook
+  //   HOSTED_SERVICE_KEYS     website -> backend HMAC map (BILL-01)
+  // Vars, when billing is enabled for the deployment:
+  //   HOSTED_CHECKOUT_ENABLED       literal 'true' to publish checkout
+  //   HOSTED_CHECKOUT_SUCCESS_URL   fixed same-origin return target
+  //   HOSTED_CHECKOUT_CANCEL_URL    fixed same-origin return target
+  //   HOSTED_PORTAL_RETURN_URL      fixed portal return target
+  //   STRIPE_PRICE_SYNC_MONTHLY     allowlisted Price id, monthly
+  //   STRIPE_PRICE_SYNC_ANNUAL      allowlisted Price id, annual
+  //   STRIPE_API_BASE               test-only API base override
+  //   HOSTED_SYNC_LIMITS            JSON partial override of default quotas
   "durable_objects": {
     "bindings": [
       {
