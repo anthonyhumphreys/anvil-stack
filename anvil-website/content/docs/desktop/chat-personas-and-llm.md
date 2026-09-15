@@ -21,7 +21,7 @@ Anvil Desktop can route chat sessions through multiple backends:
 | OpenAI API | API key in Settings | Direct API calls from the main process for configured OpenAI models. |
 | Azure AI Foundry | `~/.codex/config.toml` provider config plus the configured API-key environment variable | For organisations with Azure OpenAI deployments. The app reads the same provider config used by Codex. |
 | Codex CLI | Codex CLI installed and authenticated | Uses the local `codex` command through the Codex bridge. Good for agentic sessions that need local file access. |
-| Apple Foundation Models | macOS 26+, Apple Intelligence support, Apple Intelligence enabled, and a Swift toolchain with `FoundationModels` | Optional on-device route for short helper prompts. No API key. Falls back to the configured backend when unavailable or unsuitable. |
+| Apple Foundation Models | macOS 26+, Apple Intelligence support, Apple Intelligence enabled; on macOS 27 the built-in `fm` CLI (after `sudo fm license`) or a Swift toolchain with `FoundationModels` | Optional on-device route for short helper prompts, including image attachments on macOS 27. No API key. Falls back to the configured backend when unavailable or unsuitable. |
 
 Credentials are stored encrypted in SQLite by the main-process settings service. The renderer never sees raw API keys.
 
@@ -53,15 +53,17 @@ Anvil sends the selected effort with each Codex `turn/start` request. The global
 
 ## Apple Foundation Models routing
 
-Apple Foundation Models support is opt-in. In Settings, set **Apple Foundation Models** to **Prefer simple**, then use **Test Apple Models** to verify the helper can call the local framework.
+Apple Foundation Models support is opt-in. In Settings, set **Apple Foundation Models** to **Prefer simple**, then use **Test Apple Models** to verify the route. The status card under the provider picker shows which backend is active, the model's availability reason, and which features this Mac supports.
 
-When enabled, Anvil tries the on-device model only for plain chat messages without attachments or slash-style commands. The flow is deliberately conservative:
+On macOS 27, Anvil prefers the built-in `fm` command-line tool — a prebuilt binary, so calls skip the Swift toolchain entirely and start faster. Run `sudo fm license` once to accept its legal notice; until then Anvil falls back to a bundled Swift helper compiled on first use. On macOS 26 the Swift helper path is the only option, so a Swift toolchain that can import `FoundationModels` is required.
+
+When enabled, Anvil tries the on-device model for plain chat messages — including image attachments on macOS 27 builds with the vision API — while slash-style commands and file attachments stay on the configured backend. The flow is deliberately conservative:
 
 1. The normal Anvil chat session starts first. That still means the Codex CLI must be installed and authenticated for Codex-backed chat.
-2. Anvil asks the Apple model to classify the prompt as `local` or `cloud`.
+2. Anvil asks the Apple model to classify the prompt as `local` or `cloud`, using session instructions rather than prompt stuffing.
 3. `local` is accepted only for short, self-contained prompts that need no repository access, file edits, command execution, web access, or deep multi-step reasoning.
 4. If the classifier says `cloud`, fails, refuses, returns empty output, or the prompt is too large, Anvil sends the turn to the configured backend.
-5. If the local answer is accepted, Anvil emits it through the normal chat event stream so the renderer displays and persists it like any other assistant reply.
+5. If the local answer is accepted, Anvil streams it through the normal chat event stream so the renderer displays and persists it like any other assistant reply.
 
 This is the only local model assist path currently implemented in the app. It is not a replacement for agentic Codex work. It is useful for small wording, summarisation, or helper prompts where involving a larger backend would be theatre with an invoice.
 
@@ -115,7 +117,7 @@ Read [Agent workflows](/docs/desktop/agent-workflows) for the full session playb
 
 - Context windows still matter. Large repos need module summaries, not full file dumps.
 - Personas do not change model capabilities. A security persona cannot make an unsafe model safe.
-- Apple Foundation Models require macOS 26 or later, an Apple Intelligence-compatible Mac, Apple Intelligence enabled, and a Swift toolchain that can import `FoundationModels`.
+- Apple Foundation Models require macOS 26 or later, an Apple Intelligence-compatible Mac, and Apple Intelligence enabled. The fastest path on macOS 27 is the built-in `fm` CLI (one-time `sudo fm license`); otherwise a Swift toolchain that can import `FoundationModels` is needed.
 - The Apple on-device model varies in capability and availability. Use it for sensitive or offline helper work where it fits, but verify important output with the configured backend when possible.
 - Codex CLI sessions depend on the local `codex` binary and its auth state.
 

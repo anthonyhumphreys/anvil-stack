@@ -714,6 +714,11 @@ export function SettingsView({
     const result = await window.anvil.settings.testLocalLlm();
     setLocalLlmStatus(result.ok ? 'ok' : 'error');
     if (result.error) setTestError(result.error);
+    // Re-probe capabilities so backend/license state stays current after a test.
+    window.anvil.settings
+      .getLocalLlmCapabilities()
+      .then(setLocalLlmCapabilities)
+      .catch(console.warn);
   };
 
   const testWi = async () => {
@@ -1739,6 +1744,79 @@ export function SettingsView({
                     </ButtonGrid>
                   </div>
 
+                  {settings.localLlmProvider === 'apple' && localLlmCapabilities?.apple && (
+                    <div className="rounded-md border border-border bg-bg-secondary p-3 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-sm font-medium text-text-primary">
+                          {localLlmCapabilities.apple.available
+                            ? 'Apple Intelligence is ready'
+                            : 'Apple Intelligence is not available'}
+                        </span>
+                        {localLlmCapabilities.apple.backend && (
+                          <span className="rounded bg-bg-tertiary px-1.5 py-0.5 text-xs font-mono text-text-tertiary">
+                            {localLlmCapabilities.apple.backend === 'fm-cli'
+                              ? 'fm CLI'
+                              : localLlmCapabilities.apple.backend === 'swift-helper-27'
+                                ? 'Swift helper (macOS 27)'
+                                : 'Swift helper'}
+                          </span>
+                        )}
+                      </div>
+                      {!localLlmCapabilities.apple.available &&
+                        localLlmCapabilities.apple.reason && (
+                          <p className="text-xs text-text-secondary">
+                            {localLlmCapabilities.apple.reason === 'deviceNotEligible'
+                              ? 'This Mac is not eligible for Apple Intelligence.'
+                              : localLlmCapabilities.apple.reason ===
+                                  'appleIntelligenceNotEnabled'
+                                ? 'Apple Intelligence is disabled. Enable it in System Settings → Apple Intelligence.'
+                                : localLlmCapabilities.apple.reason === 'modelNotReady'
+                                  ? 'The on-device model is still downloading or preparing. Try again shortly.'
+                                  : localLlmCapabilities.apple.reason === 'licenseRequired'
+                                    ? 'fm CLI is installed but its legal notice has not been accepted.'
+                                    : `Reason: ${localLlmCapabilities.apple.reason}`}
+                          </p>
+                        )}
+                      {localLlmCapabilities.apple.fmCli?.installed &&
+                        !localLlmCapabilities.apple.fmCli.licenseAccepted && (
+                          <p className="text-xs text-text-secondary">
+                            macOS 27 ships the <code className="font-mono">fm</code> CLI, a faster
+                            backend that also supports image prompts. Run{' '}
+                            <code className="rounded bg-bg-tertiary px-1 py-0.5 font-mono">
+                              sudo fm license
+                            </code>{' '}
+                            once to enable it.
+                          </p>
+                        )}
+                      <div className="flex flex-wrap gap-1.5">
+                        {localLlmCapabilities.apple.features.streaming && (
+                          <span className="rounded bg-bg-tertiary px-1.5 py-0.5 text-xs text-text-secondary">
+                            streaming
+                          </span>
+                        )}
+                        {localLlmCapabilities.apple.features.images && (
+                          <span className="rounded bg-bg-tertiary px-1.5 py-0.5 text-xs text-text-secondary">
+                            image prompts
+                          </span>
+                        )}
+                        {localLlmCapabilities.apple.features.tokenCounting && (
+                          <span className="rounded bg-bg-tertiary px-1.5 py-0.5 text-xs text-text-secondary">
+                            token counting
+                          </span>
+                        )}
+                        {localLlmCapabilities.apple.contextSize && (
+                          <span className="rounded bg-bg-tertiary px-1.5 py-0.5 text-xs text-text-secondary">
+                            {localLlmCapabilities.apple.contextSize.toLocaleString()}-token context
+                          </span>
+                        )}
+                        {localLlmCapabilities.apple.osVersion && (
+                          <span className="rounded bg-bg-tertiary px-1.5 py-0.5 text-xs text-text-tertiary">
+                            macOS {localLlmCapabilities.apple.osVersion}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  )}
                   {settings.localLlmProvider !== 'apple' && (
                     <div className="grid gap-3 md:grid-cols-2">
                       <Field

@@ -634,15 +634,36 @@ export function buildTurnSteerParams(
  * renderer displays and persists it without a Codex round-trip.
  */
 export function emitLocalAssistantTurn(sessionId: string, text: string): void {
+  emitLocalAssistantTurnStart(sessionId);
+  emitLocalAssistantText(sessionId, text);
+  emitLocalAssistantTurnEnd(sessionId);
+}
+
+/** Begin a locally-produced assistant turn: marks the session thinking. */
+export function emitLocalAssistantTurnStart(sessionId: string): void {
   const session = sessions.get(sessionId);
   if (!session) throw new Error(`Session not found: ${sessionId}`);
-
   broadcastEvent(sessionId, { type: 'status', status: 'thinking' });
   setSessionThreadAttention(session, 'working');
+}
+
+/** Append text to an in-progress local assistant turn (streaming deltas). */
+export function emitLocalAssistantText(sessionId: string, text: string): void {
+  const session = sessions.get(sessionId);
+  if (!session) return;
   broadcastEvent(sessionId, { type: 'text', text });
+}
+
+/** Close a local assistant turn; use 'interrupted' when it aborted mid-stream. */
+export function emitLocalAssistantTurnEnd(
+  sessionId: string,
+  outcome: 'completed' | 'interrupted' = 'completed',
+): void {
+  const session = sessions.get(sessionId);
+  if (!session) return;
   session.status = 'ready';
-  setSessionThreadAttention(session, 'complete');
-  broadcastEvent(sessionId, { type: 'turn_outcome', turnOutcome: 'completed', model: 'on-device' });
+  setSessionThreadAttention(session, outcome === 'completed' ? 'complete' : 'idle');
+  broadcastEvent(sessionId, { type: 'turn_outcome', turnOutcome: outcome, model: 'on-device' });
   broadcastEvent(sessionId, { type: 'status', status: 'complete' });
   emitCompanionEvent('sessions');
 }

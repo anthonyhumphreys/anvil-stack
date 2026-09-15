@@ -76,7 +76,7 @@ Artifacts land in `dist/`.
 On first launch the app walks you through connector setup:
 
 1. **LLM provider**: connect LLMGateway and install its Codex coding engine as described above, authenticate the Codex CLI for ChatGPT-backed agent sessions, add an OpenAI key in Settings, or configure Azure AI Foundry through `~/.codex/config.toml` plus the referenced API-key environment variable. OpenAI credentials entered in Settings are encrypted before being stored in the local SQLite database.
-2. **Optional Apple Foundation Models route**: on macOS 26 or later, with Apple Intelligence available and enabled, set Apple Foundation Models to **Prefer simple** and run **Test Apple Models** from Settings. This only routes short, self-contained helper prompts to the on-device model; repo-aware work still uses the configured backend.
+2. **Optional Apple Foundation Models route**: on macOS 26 or later, with Apple Intelligence available and enabled, set Apple Foundation Models to **Prefer simple** and run **Test Apple Models** from Settings. On macOS 27, run `sudo fm license` once to unlock the faster `fm` CLI backend and image prompts. This only routes short, self-contained helper prompts to the on-device model; repo-aware work still uses the configured backend.
 3. **Repositories**: connect local checkouts or clone from GitHub/Azure DevOps, then let indexing run.
 4. **Optional connectors**: Azure DevOps PAT, Linear API key, or Jira token for work items; a Confluence PAT for documentation features.
 

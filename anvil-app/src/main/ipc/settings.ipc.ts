@@ -10,7 +10,11 @@ import {
 } from '../services/settings.service.js';
 import { resetLlmClient } from '../services/llm.service.js';
 import { emitCompanionEvent } from '../services/companion-events.service.js';
-import { getLocalLlmCapabilities, testPreferredLocalModel } from '../services/local-llm.service.js';
+import {
+  getLocalLlmCapabilities,
+  invalidateAppleLocalModelStatus,
+  testPreferredLocalModel,
+} from '../services/local-llm.service.js';
 import { getActiveProvider } from '../services/workitem-provider.js';
 import {
   readCodexAgentsFile,
@@ -80,6 +84,7 @@ export function registerSettingsHandlers(): void {
 
       updateSettings(cleaned);
       resetLlmClient();
+      invalidateAppleLocalModelStatus();
       emitCompanionEvent('settings');
     } catch (err) {
       console.error('[Settings IPC] Error updating settings:', err);

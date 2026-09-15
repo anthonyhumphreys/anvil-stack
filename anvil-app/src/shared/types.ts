@@ -2190,9 +2190,42 @@ export type AppTheme =
 export type LocalLlmProvider = 'apple' | 'ollama' | 'lm-studio';
 export type LocalLlmMode = 'off' | 'prefer-simple';
 
+export interface AppleModelFeatureFlags {
+  streaming: boolean;
+  instructions: boolean;
+  images: boolean;
+  tokenCounting: boolean;
+  contextSize: boolean;
+  useCases: boolean;
+  structuredOutput: boolean;
+}
+
+/**
+ * Probed state of the on-device Apple Foundation Model stack on this machine.
+ * `reason` is a machine-readable availability reason reported by the active
+ * backend ('available', 'deviceNotEligible', 'appleIntelligenceNotEnabled',
+ * 'modelNotReady', 'licenseRequired', 'requiresMacOS', 'noBackend', ...).
+ */
+export interface AppleLocalModelStatus {
+  platform: NodeJS.Platform;
+  osVersion?: string;
+  available: boolean;
+  reason?: string;
+  backend?: 'fm-cli' | 'swift-helper-27' | 'swift-helper-vision' | 'swift-helper';
+  contextSize?: number;
+  fmCli?: {
+    installed: boolean;
+    licenseAccepted: boolean;
+    detail?: string;
+  };
+  features: AppleModelFeatureFlags;
+}
+
 export interface LocalLlmCapabilities {
   platform: NodeJS.Platform;
   providers: LocalLlmProvider[];
+  /** Present only on macOS; probed state of the Apple Foundation Models stack. */
+  apple?: AppleLocalModelStatus;
 }
 
 export interface AppSettings {

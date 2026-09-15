@@ -2,7 +2,12 @@ import type {
   LocalLlmCapabilities,
   LocalLlmProvider,
 } from '../../shared/types.js';
-import { callAppleFoundationModel } from './apple-foundation-models.service.js';
+import {
+  callAppleFoundationModel,
+  getAppleLocalModelStatus,
+  invalidateAppleLocalModelStatus,
+  type AppleModelCallOptions,
+} from './apple-foundation-models.service.js';
 import { getSettings } from './settings.service.js';
 
 export interface LocalLlmResult {
@@ -10,6 +15,14 @@ export interface LocalLlmResult {
   content?: string;
   unavailable?: boolean;
   error?: string;
+}
+
+export interface LocalLlmCallOptions {
+  instructions?: string;
+  /** Absolute paths to image files. Only supported by the Apple provider on macOS 27+. */
+  images?: string[];
+  /** Receives streamed response deltas when the backend supports it. */
+  onPartial?: (delta: string) => void;
 }
 
 export type LocalLlmRoute = 'local' | 'cloud';
@@ -22,12 +35,19 @@ const DEFAULT_ENDPOINTS: Record<Exclude<LocalLlmProvider, 'apple'>, string> = {
   'lm-studio': 'http://127.0.0.1:1234/v1',
 };
 
-export function getLocalLlmCapabilities(): LocalLlmCapabilities {
-  return {
+export async function getLocalLlmCapabilities(): Promise<LocalLlmCapabilities> {
+  const capabilities: LocalLlmCapabilities = {
     platform: process.platform,
-    providers: process.platform === 'darwin' ? ['apple', 'ollama', 'lm-studio'] : ['ollama', 'lm-studio'],
+    providers:
+      process.platform === 'darwin' ? ['apple', 'ollama', 'lm-studio'] : ['ollama', 'lm-studio'],
   };
+  if (process.platform === 'darwin') {
+    capabilities.apple = await getAppleLocalModelStatus();
+  }
+  return capabilities;
 }
+
+export { invalidateAppleLocalModelStatus };
 
 export function getDefaultLocalLlmEndpoint(provider: LocalLlmProvider): string {
   return provider === 'apple' ? '' : DEFAULT_ENDPOINTS[provider];
@@ -100,13 +120,27 @@ async function callOpenAiCompatibleLocalModel(
 export async function callPreferredLocalModel(
   prompt: string,
   maxTokens = 4096,
+  options: LocalLlmCallOptions = {},
 ): Promise<LocalLlmResult> {
   const provider = getSettings().localLlmProvider;
   if (provider === 'apple') {
     if (process.platform !== 'darwin') {
       return { ok: false, unavailable: true, error: 'Apple Intelligence requires macOS.' };
     }
-    return callAppleFoundationModel(prompt);
+    const appleOptions: AppleModelCallOptions = {
+      instructions: options.instructions,
+      images: options.images,
+      onPartial: options.onPartial,
+      maxTokens,
+    };
+    return callAppleFoundationModel(prompt, appleOptions);
+  }
+  if (options.images?.length) {
+    return {
+      ok: false,
+      unavailable: true,
+      error: `${provider} does not support image inputs through the local-model path.`,
+    };
   }
   return callOpenAiCompatibleLocalModel(provider, prompt, maxTokens);
 }
@@ -133,21 +167,33 @@ export function parseLocalLlmRouteResponse(content: string | undefined | null): 
   return null;
 }
 
-export async function classifyPromptForLocalModel(prompt: string): Promise<LocalLlmRoute | null> {
+const ROUTER_INSTRUCTIONS = [
+  'You are a routing classifier. Decide whether the user prompt can be fully answered by a small local language model with no tools.',
+  '',
+  'Answer "local" ONLY if the prompt is simple, self-contained, and needs no repository or file access, no code edits, no command execution, no web access, and no deep multi-step reasoning.',
+  'Answer "cloud" for anything involving code changes, repositories, files, tools, long or complex analysis, or anything you are unsure about.',
+  '',
+  'Respond with ONLY this JSON, nothing else: {"route": "local"} or {"route": "cloud"}',
+].join('\n');
+
+export async function classifyPromptForLocalModel(
+  prompt: string,
+  hasImages = false,
+): Promise<LocalLlmRoute | null> {
   const sample = prompt.slice(0, CLASSIFIER_MAX_SAMPLE_CHARS);
   const classificationPrompt = [
-    'You are a routing classifier. Decide whether the user prompt below can be fully answered by a small local language model with no tools.',
-    '',
-    'Answer "local" ONLY if the prompt is simple, self-contained, and needs no repository or file access, no code edits, no command execution, no web access, and no deep multi-step reasoning.',
-    'Answer "cloud" for anything involving code changes, repositories, files, tools, long or complex analysis, or anything you are unsure about.',
-    '',
-    'Respond with ONLY this JSON, nothing else: {"route": "local"} or {"route": "cloud"}',
-    '',
+    hasImages
+      ? 'The user prompt includes image attachments that the local model can see.'
+      : undefined,
     '--- USER PROMPT START ---',
     sample,
     '--- USER PROMPT END ---',
-  ].join('\n');
-  const result = await callPreferredLocalModel(classificationPrompt, 32);
+  ]
+    .filter(Boolean)
+    .join('\n');
+  const result = await callPreferredLocalModel(classificationPrompt, 32, {
+    instructions: ROUTER_INSTRUCTIONS,
+  });
   return result.ok ? parseLocalLlmRouteResponse(result.content) : null;
 }
 

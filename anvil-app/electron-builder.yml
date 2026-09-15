@@ -21,6 +21,10 @@ extraResources:
     to: anvil.png
   - from: resources/apple-foundation-models-helper.swift
     to: apple-foundation-models-helper.swift
+  - from: resources/apple-foundation-models-helper-27.swift
+    to: apple-foundation-models-helper-27.swift
+  - from: resources/apple-foundation-models-helper-vision.swift
+    to: apple-foundation-models-helper-vision.swift
 
 mac:
   target: [dmg, zip]
