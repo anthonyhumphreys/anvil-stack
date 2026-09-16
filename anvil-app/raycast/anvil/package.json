@@ -45,9 +45,9 @@
     {
       "name": "baseUrl",
       "title": "Companion Base URL",
-      "description": "Base URL shown when creating a Raycast token in desktop app settings.",
+      "description": "Base URL shown when creating a Raycast token in desktop app settings. Leave empty to use account sign-in instead.",
       "type": "textfield",
-      "required": true,
+      "required": false,
       "placeholder": "http://127.0.0.1:47631"
     },
     {
@@ -55,7 +55,22 @@
       "title": "Companion Token",
       "description": "Bearer token created from desktop app settings for this Raycast extension.",
       "type": "password",
-      "required": true
+      "required": false
+    },
+    {
+      "name": "accountApiUrl",
+      "title": "Account API URL",
+      "description": "Sync backend URL for account-connected mode (used when no companion token is set).",
+      "type": "textfield",
+      "required": false,
+      "placeholder": "https://your-anvil-backend"
+    },
+    {
+      "name": "accountEnrollmentCode",
+      "title": "Account Enrollment Code",
+      "description": "Single-use enrollment code minted from the account website or an enrolled device. Redeemed once, then discarded.",
+      "type": "password",
+      "required": false
     }
   ],
   "scripts": {
