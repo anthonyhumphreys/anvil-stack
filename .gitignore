@@ -13,6 +13,6 @@ node_modules/
 coverage/
 *.tsbuildinfo
 
-# Canvas artifacts belong in .anvil/artifacts/<category>/, never a nested
-# .anvil working directory created from an already-prefixed artifact path.
-/.anvil/artifacts/.anvil/
+# Canvas/session artifacts are session scratch — kept locally under
+# .anvil/artifacts/<category>/ but not committed to the repository.
+/.anvil/artifacts/

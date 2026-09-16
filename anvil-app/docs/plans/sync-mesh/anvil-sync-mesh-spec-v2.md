@@ -106,7 +106,7 @@ Domain IDs, payload schemas, revisions, errors, and transitions remain provider-
 
 Publish the network contract, machine-readable schemas, conformance suite, and a version-pinned backend-builder prompt. The prompt is a convenience; schema and behavioural conformance define compatibility. Test the actual unmodified release artifact against the official backend, a fresh user-owned Cloudflare deployment, and a small non-Cloudflare conformance reference. The reference is test infrastructure, not a second hosted production service.
 
-See [Backend integration contract](anvil-backend-integration-contract.md) for discovery, connection UX, fixed auth methods, transport, operation inventory, and bundle requirements. See [Backend-builder prompt](anvil-backend-builder-prompt.md) for the prompt shipped alongside the frozen bundle. These documents currently specify work to implement; they do not imply the current released binary already has this capability.
+See [Backend integration contract](anvil-backend-integration-contract.md) for discovery, connection UX, fixed auth methods, transport, operation inventory, and bundle requirements. The companion spec is [cloud-connected-companion.md](cloud-connected-companion.md); current implementation status lives in [README.md](README.md). These documents currently specify work to implement; they do not imply the current released binary already has this capability.
 
 ### Own Cloudflare through Anvil Cloud
 
