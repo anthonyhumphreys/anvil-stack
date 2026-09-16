@@ -739,6 +739,7 @@ const api: AnvilAPI = {
 
   workspace: {
     list: () => ipcRenderer.invoke('workspace:list'),
+    activityFeed: () => ipcRenderer.invoke('workspace:activity-feed'),
     get: (id: string) => ipcRenderer.invoke('workspace:get', id),
     getPreferences: (id: string) => ipcRenderer.invoke('workspace:get-preferences', id),
     create: (opts: WorkspaceCreateOptions) => ipcRenderer.invoke('workspace:create', opts),

@@ -125,6 +125,7 @@ import type {
   WorkspacePreferences,
   WorkspaceWithRepos,
   WorkspaceSummary,
+  WorkspaceActivitySummary,
   Persona,
   RepoInfo,
   RepoMapRefreshMode,
@@ -708,6 +709,7 @@ export interface AnvilAPI {
 
   workspace: {
     list: () => Promise<WorkspaceSummary[]>;
+    activityFeed: () => Promise<WorkspaceActivitySummary[]>;
     get: (id: string) => Promise<WorkspaceWithRepos>;
     getPreferences: (id: string) => Promise<WorkspacePreferences | null>;
     create: (opts: WorkspaceCreateOptions) => Promise<Workspace>;

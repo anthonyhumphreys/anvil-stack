@@ -16,10 +16,13 @@ import type {
   WorkspaceScaffoldSession,
   WorkspaceWithRepos,
   WorkspaceSummary,
+  WorkspaceActivitySummary,
 } from '../../shared/types';
 
 interface WorkspaceContextValue {
   workspaces: WorkspaceSummary[];
+  /** Cross-workspace attention/activity feed, refreshed on a poll. */
+  workspaceActivity: WorkspaceActivitySummary[];
   activeWorkspace: WorkspaceWithRepos | null;
   activeScaffoldSession: WorkspaceScaffoldSession | null;
   featureAvailability: WorkspaceFeatureAvailability;
@@ -66,6 +69,7 @@ export function useWorkspace(): WorkspaceContextValue {
 
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
+  const [workspaceActivity, setWorkspaceActivity] = useState<WorkspaceActivitySummary[]>([]);
   const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceWithRepos | null>(null);
   const [loading, setLoading] = useState(true);
   const [initialWorkspaceId] = useState(() => readInitialWorkspaceIdFromLocation(window.location));
@@ -170,6 +174,28 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     const list = await window.anvil.workspace.list();
     setWorkspaces(list);
     return list;
+  }, []);
+
+  // Cross-workspace attention feed — powers the workspace rail badges and the
+  // activity view. Polled rather than pushed; the query is a single cheap pass.
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () => {
+      window.anvil.workspace
+        .activityFeed()
+        .then((feed) => {
+          if (!cancelled) setWorkspaceActivity(feed);
+        })
+        .catch(() => {
+          if (!cancelled) setWorkspaceActivity([]);
+        });
+    };
+    refresh();
+    const interval = window.setInterval(refresh, 8000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
   }, []);
 
   // Load workspaces and active workspace on mount
@@ -344,6 +370,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     <WorkspaceContext.Provider
       value={{
         workspaces,
+        workspaceActivity,
         activeWorkspace,
         activeScaffoldSession,
         featureAvailability,

@@ -201,12 +201,12 @@ export function CommandPalette({
       // Navigation
       {
         id: 'nav-inbox',
-        label: 'Go to Inbox',
-        description: 'Review work that needs you and work still in progress.',
+        label: 'Go to Activity',
+        description: 'Review work that needs you and work still in progress across workspaces.',
         section: 'Navigation',
         icon: <Bell size={16} />,
         feature: 'chat',
-        keywords: ['inbox', 'attention', 'approval', 'failed', 'completed'],
+        keywords: ['inbox', 'activity', 'attention', 'approval', 'failed', 'completed'],
         action: () => go('/inbox'),
       },
       {
