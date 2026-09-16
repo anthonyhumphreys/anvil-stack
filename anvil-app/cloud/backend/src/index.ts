@@ -4,6 +4,7 @@ import { SessionCoordinator } from './session-coordinator';
 import { buildDescriptor } from './descriptor';
 import { handleHostedRequest } from './hosted/routes';
 import { parseRpcRequest, rpcErrorResponse, rpcSuccessResponse } from './rpc';
+import { validateSessionAttestParams } from '../../contract/companion';
 
 export { AccountCoordinator, SessionCoordinator };
 
@@ -362,6 +363,28 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
       }
       return rpcSuccessResponse(envelope.request.requestId, await response.json());
     }
+    // MOB-01: a host presents a companion's device access token; the
+    // session object's validate lookup returns its verified claims. The
+    // caller is already authenticated — a failure here is about the
+    // *presented* token, so it maps to unauthenticated, never a new grant.
+    case 'session.attest': {
+      if (!validateSessionAttestParams(envelope.request.params)) {
+        return rpcErrorResponse(envelope.request.requestId, 'malformed-request');
+      }
+      const response = await sessionStub(env).fetch(
+        new Request('https://internal.anvil/internal/validate', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ accessToken: envelope.request.params.accessToken }),
+        }),
+      );
+      if (!response.ok) {
+        return rpcErrorResponse(envelope.request.requestId, 'unauthenticated');
+      }
+      return rpcSuccessResponse(envelope.request.requestId, await response.json());
+    }
+    case 'device.advertise':
+    case 'device.presence':
     case 'sync.push':
     case 'sync.pull':
     case 'sync.scan.begin':

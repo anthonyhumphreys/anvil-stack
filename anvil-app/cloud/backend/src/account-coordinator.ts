@@ -47,6 +47,16 @@ import {
   HOSTED_OPERATION_CLASS,
   type OperationName,
 } from '../../contract/operations';
+import {
+  COMPANION_ADVERTISEMENT_TTL_MS,
+  COMPANION_PROTOCOL_VERSION,
+  validateDeviceAdvertiseParams,
+  type CompanionCapability,
+  type CompanionEndpoint,
+  type DeviceAdvertiseResult,
+  type DevicePresenceEntry,
+  type DevicePresenceResult,
+} from '../../contract/companion';
 import { checkHostedAccess, ENTITLEMENT_CACHE_DDL } from './hosted/enforcement';
 import {
   DATA_EXPORT_FORMAT_VERSION,
@@ -1220,6 +1230,12 @@ export class AccountCoordinator extends DurableObject<Env> {
           return this.handleScanFinish(rpc.requestId, rpc.params);
         case 'device.policy.publish':
           return this.handleDevicePolicyPublish(auth, rpc.requestId, rpc.params);
+        // MOB-01 companion presence: self-scoped advertisement publish and
+        // the account roster read. Ephemeral metadata — never sync changes.
+        case 'device.advertise':
+          return this.handleDeviceAdvertise(auth, rpc.requestId, rpc.params);
+        case 'device.presence':
+          return this.handleDevicePresence(auth, rpc.requestId);
         case 'worker.connect':
           return await this.handleWorkerConnect(auth, rpc.requestId);
         case 'worker.describe':
@@ -2297,6 +2313,118 @@ export class AccountCoordinator extends DurableObject<Env> {
       published: true,
       publishedAt: new Date(now).toISOString(),
     };
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  // ---- MOB-01 companion presence --------------------------------------
+  // Advertisements are self-scoped: the enrollment id always comes from the
+  // verified session, never from params. Presence rows merge the durable
+  // enrollment roster, fresh advertisements, and live socket attachments.
+
+  /**
+   * `device.advertise`: upserts the caller's endpoint advertisement.
+   * Republishing replaces the row verbatim — this is a latest-state
+   * document, not a journal.
+   */
+  private handleDeviceAdvertise(auth: SpikeAuth, requestId: string, params: unknown): Response {
+    if (!validateDeviceAdvertiseParams(params)) {
+      return rpcErrorResponse(requestId, 'malformed-request');
+    }
+    const now = Date.now();
+    this.ctx.storage.sql.exec(
+      `INSERT INTO presence_advertisements (enrollment_id, endpoints, capabilities, protocol, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(enrollment_id) DO UPDATE SET
+         endpoints = excluded.endpoints,
+         capabilities = excluded.capabilities,
+         protocol = excluded.protocol,
+         updated_at = excluded.updated_at`,
+      auth.enrollmentId,
+      JSON.stringify(params.endpoints),
+      JSON.stringify(params.capabilities),
+      params.protocol ?? COMPANION_PROTOCOL_VERSION,
+      now,
+    );
+    this.bumpCounter('presence_advertises', 1);
+    const result: DeviceAdvertiseResult = { advertised: true };
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  /**
+   * `device.presence`: roster = every enrollment the account knows
+   * (enrollments, workers, fresh advertisements, live sockets). `online`
+   * means a live socket attachment; endpoints ship only while the entry is
+   * online or its advertisement is fresh — stale offline endpoints would
+   * only produce failed dials.
+   */
+  private handleDevicePresence(auth: SpikeAuth, requestId: string): Response {
+    const now = Date.now();
+    interface PresenceRow {
+      enrollment_id: string;
+      last_seen: number;
+    }
+    const lastSeen = new Map<string, number>();
+    const note = (enrollmentId: string, seenAt: number | null): void => {
+      if (seenAt === null) return;
+      const current = lastSeen.get(enrollmentId);
+      if (current === undefined || seenAt > current) lastSeen.set(enrollmentId, seenAt);
+    };
+    for (const row of this.ctx.storage.sql
+      .exec<PresenceRow>('SELECT enrollment_id, created_at AS last_seen FROM enrollments')
+      .toArray()) {
+      note(row.enrollment_id, row.last_seen);
+    }
+    for (const row of this.ctx.storage.sql
+      .exec<PresenceRow>(
+        `SELECT enrollment_id, COALESCE(last_seen_at, created_at) AS last_seen FROM workers`,
+      )
+      .toArray()) {
+      note(row.enrollment_id, row.last_seen);
+    }
+    interface AdRow {
+      enrollment_id: string;
+      endpoints: string;
+      capabilities: string;
+      protocol: number;
+      updated_at: number;
+    }
+    const ads = new Map<string, AdRow>();
+    for (const row of this.ctx.storage.sql
+      .exec<AdRow>('SELECT * FROM presence_advertisements')
+      .toArray()) {
+      ads.set(row.enrollment_id, row);
+      note(row.enrollment_id, row.updated_at);
+    }
+    const online = new Set<string>();
+    for (const socket of this.ctx.getWebSockets()) {
+      const attachment = socket.deserializeAttachment();
+      if (isSocketAttachment(attachment)) {
+        online.add(attachment.enrollmentId);
+        note(attachment.enrollmentId, now);
+      }
+    }
+    const devices: DevicePresenceEntry[] = [...lastSeen.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([enrollmentId, seenAt]) => {
+        const isOnline = online.has(enrollmentId);
+        const ad = ads.get(enrollmentId);
+        const freshAd = ad !== undefined && ad.updated_at > now - COMPANION_ADVERTISEMENT_TTL_MS;
+        const showAd = ad !== undefined && (isOnline || freshAd);
+        return {
+          enrollmentId,
+          online: isOnline,
+          lastSeenAt: new Date(seenAt).toISOString(),
+          ...(showAd
+            ? {
+                endpoints: JSON.parse(ad.endpoints) as CompanionEndpoint[],
+                capabilities: JSON.parse(ad.capabilities) as CompanionCapability[],
+                protocol: ad.protocol,
+              }
+            : {}),
+          self: enrollmentId === auth.enrollmentId,
+        };
+      });
+    const result: DevicePresenceResult = { devices };
     return rpcSuccessResponse(requestId, result);
   }
 

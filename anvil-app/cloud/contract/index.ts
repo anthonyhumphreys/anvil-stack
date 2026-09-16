@@ -15,3 +15,4 @@ export * from './artifacts';
 export * from './data';
 export * from './bootstrap';
 export * from './entitlements';
+export * from './companion';

@@ -286,6 +286,16 @@ CREATE TABLE IF NOT EXISTS data_operations (
   plan TEXT,
   result TEXT
 );
+-- MOB-01 companion presence: one row per enrollment's latest endpoint
+-- advertisement. Ephemeral metadata — TTL'd at read time, never a sync
+-- change, never part of the durable entity store.
+CREATE TABLE IF NOT EXISTS presence_advertisements (
+  enrollment_id TEXT PRIMARY KEY,
+  endpoints TEXT NOT NULL,
+  capabilities TEXT NOT NULL,
+  protocol INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 `;
 
 /** First-dataset epoch for a fresh account object. Fixed for determinism. */

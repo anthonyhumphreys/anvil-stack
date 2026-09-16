@@ -9,6 +9,7 @@
 export const OPERATIONS = [
   // Session/account
   'session.describe',
+  'session.attest',
   'account.delete',
   'account.deletionStatus',
   // Devices
@@ -16,6 +17,8 @@ export const OPERATIONS = [
   'device.rename',
   'device.revoke',
   'device.policy.publish',
+  'device.advertise',
+  'device.presence',
   // Sync
   'sync.push',
   'sync.pull',
@@ -66,12 +69,15 @@ export type ActorRole = 'user' | 'worker' | 'either';
 
 export const OPERATION_PROFILE: Record<OperationName, OperationProfile> = {
   'session.describe': 'sync/1',
+  'session.attest': 'sync/1',
   'account.delete': 'sync/1',
   'account.deletionStatus': 'sync/1',
   'device.list': 'sync/1',
   'device.rename': 'sync/1',
   'device.revoke': 'sync/1',
   'device.policy.publish': 'sync/1',
+  'device.advertise': 'sync/1',
+  'device.presence': 'sync/1',
   'sync.push': 'sync/1',
   'sync.pull': 'sync/1',
   'sync.scan.begin': 'sync/1',
@@ -114,12 +120,15 @@ export const OPERATION_PROFILE: Record<OperationName, OperationProfile> = {
  */
 export const OPERATION_ROLE: Record<OperationName, ActorRole> = {
   'session.describe': 'either',
+  'session.attest': 'either',
   'account.delete': 'user',
   'account.deletionStatus': 'user',
   'device.list': 'user',
   'device.rename': 'user',
   'device.revoke': 'user',
   'device.policy.publish': 'worker',
+  'device.advertise': 'either',
+  'device.presence': 'either',
   'sync.push': 'either',
   'sync.pull': 'either',
   'sync.scan.begin': 'either',
@@ -182,12 +191,15 @@ export type HostedOperationClass = 'mutating' | 'control';
 
 export const HOSTED_OPERATION_CLASS: Record<OperationName, HostedOperationClass> = {
   'session.describe': 'control',
+  'session.attest': 'control',
   'account.delete': 'control',
   'account.deletionStatus': 'control',
   'device.list': 'control',
   'device.rename': 'control',
   'device.revoke': 'control',
   'device.policy.publish': 'mutating',
+  'device.advertise': 'mutating',
+  'device.presence': 'control',
   'sync.push': 'mutating',
   'sync.pull': 'control',
   'sync.scan.begin': 'mutating',
