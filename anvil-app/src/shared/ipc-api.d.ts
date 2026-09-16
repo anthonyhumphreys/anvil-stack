@@ -161,6 +161,9 @@ import type {
   LifecycleStageDefinition,
   LifecycleStageUpdate,
   LicenseAuditResult,
+  CompanionEnrollmentPolicy,
+  CompanionEvent,
+  CompanionPolicyState,
   MobileCompanionDevice,
   MobileCompanionStatus,
   MobilePairingTicket,
@@ -234,6 +237,13 @@ export interface AnvilAPI {
     createRaycastToken: () => Promise<RaycastCompanionToken>;
     listDevices: () => Promise<MobileCompanionDevice[]>;
     revokeDevice: (deviceId: string) => Promise<void>;
+    listEnrollmentPolicies: () => Promise<CompanionEnrollmentPolicy[]>;
+    setEnrollmentPolicy: (
+      enrollmentId: string,
+      tier: CompanionPolicyState,
+    ) => Promise<CompanionEnrollmentPolicy | null>;
+    removeEnrollmentPolicy: (enrollmentId: string) => Promise<void>;
+    onEvent: (callback: (event: CompanionEvent) => void) => () => void;
   };
 
   workspaceNotes: {

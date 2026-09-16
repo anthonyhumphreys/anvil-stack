@@ -10,6 +10,9 @@ import type {
   CarPlayDriveSnapshot,
   CarPlayNoteRequest,
   CarPlaySessionSummary,
+  CompanionEnrollmentPolicy,
+  CompanionPolicyState,
+  CompanionPolicyTier,
   MobileChatThreadSummary,
   MobileCompanionAdvertisedAddress,
   MobileCompanionClientType,
@@ -67,6 +70,12 @@ import {
   getItem as getLifecycleItem,
   listItems as listLifecycleItems,
 } from './lifecycle.service.js';
+import {
+  attestDeviceAccessToken,
+  getRuntimeStatus,
+  publishCompanionAdvertisement,
+} from './sync-runtime.service.js';
+import type { CompanionEndpoint } from '../../../cloud/contract/companion.js';
 
 interface MobileCompanionSettingsRow {
   enabled: number;
@@ -84,6 +93,40 @@ interface MobileCompanionDeviceRow {
   last_seen_at: string | null;
   revoked_at: string | null;
 }
+
+// ---- MOB-01 enrollment attestation + per-enrollment policy -------------
+// Two credential kinds reach this server: legacy paired-device bearer
+// tokens (mobile_companion_devices) and account device-session access
+// tokens. The latter are attested through the backend (`session.attest`)
+// and authorized by the per-enrollment policy table — enrollment proves
+// identity, the host decides authority (auto-authenticate ≠
+// auto-authorize).
+
+interface CompanionEnrollmentPolicyRow {
+  enrollment_id: string;
+  account_id: string;
+  display_name: string | null;
+  tier: CompanionPolicyState;
+  first_seen_at: string;
+  decided_at: string | null;
+  updated_at: string;
+}
+
+type CompanionRequestAuth =
+  | { kind: 'paired'; device: MobileCompanionDeviceRow }
+  | { kind: 'enrollment'; enrollmentId: string; tier: CompanionPolicyTier };
+
+type CompanionAuthResult =
+  | { ok: true; auth: CompanionRequestAuth }
+  | { ok: false; status: number; error: string; enrollmentId?: string };
+
+const TIER_RANK: Record<CompanionPolicyTier, number> = { observe: 1, approve: 2, steer: 3 };
+const ATTEST_POSITIVE_TTL_MS = 60_000;
+const ATTEST_NEGATIVE_TTL_MS = 15_000;
+const attestCache = new Map<
+  string,
+  { enrollmentId: string | null; accountId: string | null; expiresAt: number }
+>();
 
 interface ChatThreadRow {
   id: string;
@@ -302,9 +345,15 @@ export async function startMobileCompanionServer(): Promise<void> {
       resolve();
     });
   });
+
+  startAdvertisementLoop();
 }
 
 export async function stopMobileCompanionServer(): Promise<void> {
+  if (advertiseTimer !== null) {
+    clearInterval(advertiseTimer);
+    advertiseTimer = null;
+  }
   if (!server) {
     serverRunning = false;
     return;
@@ -316,6 +365,47 @@ export async function stopMobileCompanionServer(): Promise<void> {
     closing.close(() => resolve());
   });
   serverRunning = false;
+}
+
+// ---- MOB-01 endpoint advertisement -------------------------------------
+// While the companion server runs and this host is signed in, publish its
+// dialable endpoints (TS → LAN → loopback) to the account object so
+// enrolled companions can find it. Refreshed well inside the ad TTL;
+// unsigned/offline hosts simply stay unadvertised.
+
+const ADVERTISE_REFRESH_MS = 10 * 60 * 1000;
+let advertiseTimer: ReturnType<typeof setInterval> | null = null;
+
+function currentCompanionEndpoints(): CompanionEndpoint[] {
+  const settings = ensureMobileCompanionSettings();
+  return getAdvertisedAddresses(settings.port).map((address) => {
+    const parsed = new URL(address.url);
+    return {
+      kind: address.kind,
+      host: parsed.hostname,
+      port: Number(parsed.port) || settings.port,
+    };
+  });
+}
+
+async function advertiseCompanionPresence(): Promise<void> {
+  try {
+    await publishCompanionAdvertisement({
+      endpoints: currentCompanionEndpoints(),
+      capabilities: ['observe', 'approve', 'steer'],
+    });
+  } catch {
+    // Signed out or unreachable — this host simply isn't advertised.
+  }
+}
+
+function startAdvertisementLoop(): void {
+  if (advertiseTimer !== null) return;
+  void advertiseCompanionPresence();
+  advertiseTimer = setInterval(() => {
+    void advertiseCompanionPresence();
+  }, ADVERTISE_REFRESH_MS);
+  advertiseTimer.unref();
 }
 
 export async function createMobilePairingTicket(): Promise<MobilePairingTicket> {
@@ -491,13 +581,30 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 
   const allowQueryToken =
     req.method === 'GET' && (url.pathname === '/api/events' || isChatAttachmentRoute(pathParts));
-  const device = authenticateRequest(req, allowQueryToken);
-  if (!device) {
-    sendJson(res, 401, { error: 'Missing or invalid mobile companion token.' });
+  const authn = await authenticateRequest(req, allowQueryToken);
+  if (!authn.ok) {
+    sendJson(res, authn.status, {
+      error: authn.error,
+      ...(authn.enrollmentId === undefined ? {} : { enrollmentId: authn.enrollmentId }),
+    });
     return;
   }
 
-  touchDevice(device.id);
+  // Per-enrollment policy gates what an account credential may do; paired
+  // tokens keep their existing full-access semantics.
+  if (authn.auth.kind === 'enrollment') {
+    const required = requiredCompanionTier(req.method ?? 'GET', pathParts);
+    if (TIER_RANK[authn.auth.tier] < TIER_RANK[required]) {
+      sendJson(res, 403, {
+        error: `This device does not have '${required}' access on the host.`,
+        required,
+        granted: authn.auth.tier,
+      });
+      return;
+    }
+  } else {
+    touchDevice(authn.auth.device.id);
+  }
 
   if (req.method === 'GET' && url.pathname === '/api/overview') {
     sendJson(res, 200, getMobileOverview(url.searchParams.get('workspaceId') ?? undefined));
@@ -813,10 +920,179 @@ function createCompanionDevice(
   };
 }
 
-function authenticateRequest(
+/**
+ * MOB-01: verifies a bearer that is not a paired-device token by attesting
+ * it through the backend (`session.attest` via sync-runtime). A token is
+ * valid only when it resolves to a non-revoked enrollment on THIS host's
+ * signed-in account. Results are cached briefly — positive attestations
+ * age out in 60s (bounding the window where a backend-side revocation has
+ * not yet reached us), failures in 15s to keep bad tokens cheap.
+ */
+async function attestEnrollment(
+  token: string,
+): Promise<{ enrollmentId: string; accountId: string } | null> {
+  const tokenHash = hashToken(token);
+  const now = Date.now();
+  const cached = attestCache.get(tokenHash);
+  if (cached !== undefined && cached.expiresAt > now) {
+    if (cached.enrollmentId === null) return null;
+    const snapshot = getRuntimeStatus().auth;
+    // A cached positive is only valid while this host stays signed in to
+    // the same account the claims were verified against.
+    if (
+      snapshot.state === 'signed-in' &&
+      snapshot.accountId !== null &&
+      snapshot.accountId === cached.accountId
+    ) {
+      return { enrollmentId: cached.enrollmentId, accountId: cached.accountId as string };
+    }
+    return null;
+  }
+  const snapshot = getRuntimeStatus().auth;
+  if (snapshot.state !== 'signed-in' || snapshot.accountId === null) {
+    // Signed out: attestation is impossible. P2P paired tokens still work.
+    return null;
+  }
+  const claims = await attestDeviceAccessToken(token).catch(() => null);
+  const verified =
+    claims !== null && claims.accountId === snapshot.accountId ? claims : null;
+  attestCache.set(tokenHash, {
+    enrollmentId: verified === null ? null : verified.enrollmentId,
+    accountId: verified === null ? null : verified.accountId,
+    expiresAt: now + (verified === null ? ATTEST_NEGATIVE_TTL_MS : ATTEST_POSITIVE_TTL_MS),
+  });
+  return verified === null
+    ? null
+    : { enrollmentId: verified.enrollmentId, accountId: verified.accountId };
+}
+
+/** Drops all cached attestations (sign-in changes, revocation notices). */
+export function clearCompanionAttestationCache(): void {
+  attestCache.clear();
+}
+
+function readPolicyRow(enrollmentId: string): CompanionEnrollmentPolicyRow | undefined {
+  return getDb()
+    .prepare('SELECT * FROM companion_enrollment_policies WHERE enrollment_id = ?')
+    .get(enrollmentId) as CompanionEnrollmentPolicyRow | undefined;
+}
+
+function mapPolicyRow(row: CompanionEnrollmentPolicyRow): CompanionEnrollmentPolicy {
+  return {
+    enrollmentId: row.enrollment_id,
+    accountId: row.account_id,
+    displayName: row.display_name,
+    tier: row.tier,
+    firstSeenAt: row.first_seen_at,
+    decidedAt: row.decided_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/**
+ * First contact from a verified enrollment creates a `pending` policy row
+ * and surfaces it (settings event) — the host decides the tier; nothing is
+ * granted by account membership alone. Best-effort name enrichment runs
+ * in the background through `device.list`.
+ */
+function ensurePolicyRow(enrollmentId: string, accountId: string): CompanionEnrollmentPolicyRow {
+  const existing = readPolicyRow(enrollmentId);
+  if (existing !== undefined) {
+    return existing;
+  }
+  const now = new Date().toISOString();
+  getDb()
+    .prepare(
+      `INSERT INTO companion_enrollment_policies
+       (enrollment_id, account_id, display_name, tier, first_seen_at, decided_at, updated_at)
+       VALUES (?, ?, NULL, 'pending', ?, NULL, ?)`,
+    )
+    .run(enrollmentId, accountId, now, now);
+  emitCompanionEvent('settings');
+  void enrichPendingPolicyName(enrollmentId);
+  return readPolicyRow(enrollmentId) as CompanionEnrollmentPolicyRow;
+}
+
+async function enrichPendingPolicyName(enrollmentId: string): Promise<void> {
+  try {
+    const { listDevices } = await import('./sync-runtime.service.js');
+    const { devices } = await listDevices();
+    const match = devices.find((d) => d.enrollmentId === enrollmentId);
+    if (match?.displayName !== undefined && match.displayName !== null) {
+      getDb()
+        .prepare('UPDATE companion_enrollment_policies SET display_name = ? WHERE enrollment_id = ?')
+        .run(match.displayName, enrollmentId);
+    }
+  } catch {
+    // Name enrichment is cosmetic; a null displayName falls back to the id.
+  }
+}
+
+function touchPolicy(enrollmentId: string): void {
+  getDb()
+    .prepare('UPDATE companion_enrollment_policies SET updated_at = ? WHERE enrollment_id = ?')
+    .run(new Date().toISOString(), enrollmentId);
+}
+
+export function listCompanionEnrollmentPolicies(): CompanionEnrollmentPolicy[] {
+  const rows = getDb()
+    .prepare('SELECT * FROM companion_enrollment_policies ORDER BY first_seen_at DESC')
+    .all() as CompanionEnrollmentPolicyRow[];
+  return rows.map(mapPolicyRow);
+}
+
+/**
+ * Host decision on an enrollment. `pending` resets to undecided; 'denied'
+ * blocks without deleting the audit row.
+ */
+export function setCompanionEnrollmentPolicy(
+  enrollmentId: string,
+  tier: CompanionPolicyState,
+): CompanionEnrollmentPolicy | null {
+  const row = readPolicyRow(enrollmentId);
+  if (row === undefined) return null;
+  const now = new Date().toISOString();
+  getDb()
+    .prepare(
+      `UPDATE companion_enrollment_policies
+       SET tier = ?, decided_at = ?, updated_at = ? WHERE enrollment_id = ?`,
+    )
+    .run(tier, tier === 'pending' ? null : now, now, enrollmentId);
+  emitCompanionEvent('settings');
+  const updated = readPolicyRow(enrollmentId);
+  return updated === undefined ? null : mapPolicyRow(updated);
+}
+
+/** Forgets an enrollment row entirely; the next contact re-pends. */
+export function removeCompanionEnrollmentPolicy(enrollmentId: string): void {
+  getDb()
+    .prepare('DELETE FROM companion_enrollment_policies WHERE enrollment_id = ?')
+    .run(enrollmentId);
+  emitCompanionEvent('settings');
+}
+
+/** Minimum tier each request needs; paired tokens bypass tiering entirely. */
+function requiredCompanionTier(
+  method: string | undefined,
+  pathParts: string[],
+): CompanionPolicyTier {
+  if (method === 'GET' || method === 'HEAD') return 'observe';
+  if (pathParts[0] === 'api' && pathParts[1] === 'approvals') return 'approve';
+  if (
+    pathParts[0] === 'api' &&
+    pathParts[1] === 'chat' &&
+    pathParts[2] === 'file-mentions' &&
+    pathParts[3] === 'search'
+  ) {
+    return 'observe';
+  }
+  return 'steer';
+}
+
+async function authenticateRequest(
   req: IncomingMessage,
   allowQueryToken = false,
-): MobileCompanionDeviceRow | null {
+): Promise<CompanionAuthResult> {
   const header = req.headers.authorization;
   const eventStreamToken = allowQueryToken
     ? new URL(req.url ?? '/', 'http://127.0.0.1').searchParams.get('access_token')
@@ -824,7 +1100,9 @@ function authenticateRequest(
   const token = header?.startsWith('Bearer ')
     ? header.slice('Bearer '.length).trim()
     : eventStreamToken?.trim();
-  if (!token) return null;
+  if (!token) {
+    return { ok: false, status: 401, error: 'Missing or invalid mobile companion token.' };
+  }
   const tokenHash = hashToken(token);
   const row = getDb()
     .prepare(
@@ -832,7 +1110,36 @@ function authenticateRequest(
        WHERE token_hash = ? AND revoked_at IS NULL`,
     )
     .get(tokenHash) as MobileCompanionDeviceRow | undefined;
-  return row ?? null;
+  if (row !== undefined) {
+    return { ok: true, auth: { kind: 'paired', device: row } };
+  }
+  // Enrollment credential path: attest → same-account check → host policy.
+  const attested = await attestEnrollment(token);
+  if (attested === null) {
+    return { ok: false, status: 401, error: 'Missing or invalid mobile companion token.' };
+  }
+  const policy = ensurePolicyRow(attested.enrollmentId, attested.accountId);
+  touchPolicy(attested.enrollmentId);
+  if (policy.tier === 'pending') {
+    return {
+      ok: false,
+      status: 403,
+      error: 'This device is waiting for approval on the host.',
+      enrollmentId: attested.enrollmentId,
+    };
+  }
+  if (policy.tier === 'denied') {
+    return {
+      ok: false,
+      status: 403,
+      error: 'This device was denied access on the host.',
+      enrollmentId: attested.enrollmentId,
+    };
+  }
+  return {
+    ok: true,
+    auth: { kind: 'enrollment', enrollmentId: attested.enrollmentId, tier: policy.tier },
+  };
 }
 
 function touchDevice(deviceId: string): void {

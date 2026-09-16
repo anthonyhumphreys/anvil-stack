@@ -84,6 +84,42 @@ describe('fresh database schema', () => {
     }
   });
 
+  it('includes the MOB-01 companion enrollment policy table', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec(SCHEMA_SQL);
+      const columns = new Set(
+        (
+          db.prepare('PRAGMA table_info(companion_enrollment_policies)').all() as Array<{
+            name: string;
+          }>
+        ).map((column) => column.name),
+      );
+      for (const requiredColumn of [
+        'enrollment_id',
+        'account_id',
+        'display_name',
+        'tier',
+        'first_seen_at',
+        'decided_at',
+        'updated_at',
+      ]) {
+        expect(columns.has(requiredColumn), `Missing ${requiredColumn}`).toBe(true);
+      }
+      // Migration 80 is idempotent over a fresh schema.
+      applyMigration(db, MIGRATIONS[80]);
+      expect(
+        db
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'companion_enrollment_policies'",
+          )
+          .get(),
+      ).toEqual({ name: 'companion_enrollment_policies' });
+    } finally {
+      db.close();
+    }
+  });
+
   it.each([
     {
       name: 'cloud execution version 56',
@@ -132,7 +168,7 @@ describe('fresh database schema', () => {
         ).map((column) => column.name),
       );
 
-      expect(SCHEMA_VERSION).toBe(79);
+      expect(SCHEMA_VERSION).toBe(80);
       for (const column of [
         'local_llm_mode',
         'local_llm_provider',

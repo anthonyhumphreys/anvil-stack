@@ -19,6 +19,8 @@ import type {
   ChatArtifactAnnotationPatch,
   ChatAttachment,
   ChatNavigationTarget,
+  CompanionEvent,
+  CompanionPolicyState,
   WorkflowNavigationTarget,
   ChatAttachmentInput,
   ChatFileMentionSearchInput,
@@ -117,6 +119,17 @@ const api: AnvilAPI = {
     listDevices: () => ipcRenderer.invoke('mobile-companion:list-devices'),
     revokeDevice: (deviceId: string) =>
       ipcRenderer.invoke('mobile-companion:revoke-device', deviceId),
+    listEnrollmentPolicies: () =>
+      ipcRenderer.invoke('mobile-companion:list-enrollment-policies'),
+    setEnrollmentPolicy: (enrollmentId: string, tier: CompanionPolicyState) =>
+      ipcRenderer.invoke('mobile-companion:set-enrollment-policy', enrollmentId, tier),
+    removeEnrollmentPolicy: (enrollmentId: string) =>
+      ipcRenderer.invoke('mobile-companion:remove-enrollment-policy', enrollmentId),
+    onEvent: (callback: (event: CompanionEvent) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, evt: CompanionEvent) => callback(evt);
+      ipcRenderer.on('mobile-companion:event', handler);
+      return () => ipcRenderer.removeListener('mobile-companion:event', handler);
+    },
   },
 
   workspaceNotes: {

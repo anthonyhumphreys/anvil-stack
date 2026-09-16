@@ -35,6 +35,12 @@ import type {
 } from '../../../cloud/contract/jobs.js';
 import type { HandoffGetResult, HandoffRecord } from '../../../cloud/contract/handoff.js';
 import type { HostedEntitlement } from '../../../cloud/contract/entitlements.js';
+import type {
+  DeviceAdvertiseParams,
+  DeviceAdvertiseResult,
+  DevicePresenceResult,
+  SessionAttestResult,
+} from '../../../cloud/contract/companion.js';
 import { PROTOCOL } from '../../../cloud/contract/version.js';
 import {
   SPIKE_DATASET_EPOCH,
@@ -668,6 +674,38 @@ export async function renameDevice(
 /** Revoke a sibling enrollment; idempotent and severs its live sessions. */
 export async function revokeDevice(enrollmentId: string): Promise<DeviceRevokeResult> {
   return accountRpc<DeviceRevokeResult>('device.revoke', { enrollmentId });
+}
+
+/**
+ * MOB-01: verifies a companion's presented device access token through the
+ * backend (`session.attest`). Returns the verified identity claims, or null
+ * when the token is invalid/expired/revoked — or when this desktop is not
+ * signed in and so cannot attest at all.
+ */
+export async function attestDeviceAccessToken(
+  accessToken: string,
+): Promise<SessionAttestResult | null> {
+  try {
+    return await accountRpc<SessionAttestResult>('session.attest', { accessToken });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * MOB-01: publishes this host's companion endpoints/capabilities to the
+ * account object. Best-effort presence metadata; callers tolerate failure
+ * (offline, unsigned) by simply not advertising.
+ */
+export async function publishCompanionAdvertisement(
+  params: DeviceAdvertiseParams,
+): Promise<DeviceAdvertiseResult> {
+  return accountRpc<DeviceAdvertiseResult>('device.advertise', params);
+}
+
+/** MOB-01: the account's companion presence roster. */
+export async function getDevicePresence(): Promise<DevicePresenceResult> {
+  return accountRpc<DevicePresenceResult>('device.presence', {});
 }
 
 /** Begin a durable, resumable export of the account's synced entities. */

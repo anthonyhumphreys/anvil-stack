@@ -1226,6 +1226,36 @@ export interface MobileCompanionDevice {
   revokedAt?: string;
 }
 
+/** Cumulative per-enrollment capability tiers (MOB-01). */
+export type CompanionPolicyTier = 'observe' | 'approve' | 'steer';
+
+/** Per-enrollment authorization state on a host. */
+export type CompanionPolicyState = 'pending' | 'denied' | CompanionPolicyTier;
+
+export interface CompanionEnrollmentPolicy {
+  enrollmentId: string;
+  accountId: string;
+  displayName: string | null;
+  tier: CompanionPolicyState;
+  firstSeenAt: string;
+  decidedAt: string | null;
+  updatedAt: string;
+}
+
+export type CompanionEventType =
+  | 'overview'
+  | 'approvals'
+  | 'sessions'
+  | 'settings'
+  | 'notes'
+  | 'carplay'
+  | 'handover';
+
+export interface CompanionEvent {
+  type: CompanionEventType;
+  generatedAt: string;
+}
+
 export interface MobileApprovalRequest {
   sessionId: string;
   requestKey: string;

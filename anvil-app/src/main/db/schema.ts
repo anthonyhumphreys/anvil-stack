@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 79;
+export const SCHEMA_VERSION = 80;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -396,6 +396,16 @@ CREATE TABLE IF NOT EXISTS mobile_companion_devices (
   created_at TEXT NOT NULL,
   last_seen_at TEXT,
   revoked_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS companion_enrollment_policies (
+  enrollment_id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  display_name TEXT,
+  tier TEXT NOT NULL DEFAULT 'pending',
+  first_seen_at TEXT NOT NULL,
+  decided_at TEXT,
+  updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS workspace_notes (
@@ -2831,6 +2841,20 @@ CREATE TABLE IF NOT EXISTS sync_entitlement (
   restricted INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (backend_id, account_id)
+);
+`,
+  80: `
+-- MOB-01: per-enrollment companion authorization on this host. tier is
+-- 'pending' (first contact, awaiting host decision), 'observe', 'approve',
+-- 'steer', or 'denied'. Keep in sync with the SCHEMA_SQL copy.
+CREATE TABLE IF NOT EXISTS companion_enrollment_policies (
+  enrollment_id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  display_name TEXT,
+  tier TEXT NOT NULL DEFAULT 'pending',
+  first_seen_at TEXT NOT NULL,
+  decided_at TEXT,
+  updated_at TEXT NOT NULL
 );
 `,
 };
