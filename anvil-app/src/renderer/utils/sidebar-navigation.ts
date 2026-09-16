@@ -16,7 +16,7 @@ export interface SidebarToolGroupDefinition {
 }
 
 export const PRIMARY_NAV_ITEMS: SidebarNavItemDefinition[] = [
-  { path: '/inbox', label: 'Inbox', feature: 'chat' },
+  { path: '/inbox', label: 'Activity', feature: 'chat' },
   { path: '/chat', label: 'Chat', feature: 'chat', requiresChat: true },
   { path: '/repos', label: 'Workspace', feature: 'repos' },
 ];

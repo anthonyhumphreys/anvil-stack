@@ -9,7 +9,7 @@ import {
 
 describe('sidebar navigation', () => {
   it('keeps the primary navigation focused on Inbox, Chat, and Workspace', () => {
-    expect(PRIMARY_NAV_ITEMS.map((item) => item.label)).toEqual(['Inbox', 'Chat', 'Workspace']);
+    expect(PRIMARY_NAV_ITEMS.map((item) => item.label)).toEqual(['Activity', 'Chat', 'Workspace']);
   });
 
   it('organises every existing work surface exactly once', () => {

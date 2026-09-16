@@ -1874,6 +1874,28 @@ export interface WorkspaceSummary extends Workspace {
   repoCount: number;
 }
 
+export type WorkspaceActivityStatus = 'running' | 'queued' | 'ready' | 'warning' | 'error';
+
+export interface WorkspaceActivityItem {
+  id: string;
+  workspaceId: string;
+  feature: Feature;
+  route: string;
+  title: string;
+  detail: string;
+  status: WorkspaceActivityStatus;
+  startedAt?: string;
+}
+
+export interface WorkspaceActivitySummary {
+  workspaceId: string;
+  workspaceName: string;
+  /** Worst status across the workspace's current items, for badge colouring. */
+  status: WorkspaceActivityStatus;
+  count: number;
+  items: WorkspaceActivityItem[];
+}
+
 export interface WorkspaceScaffoldStartResult {
   workspaceId: string;
   scaffoldSession: WorkspaceScaffoldSession;
