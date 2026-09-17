@@ -995,19 +995,31 @@ function mapPolicyRow(row: CompanionEnrollmentPolicyRow): CompanionEnrollmentPol
  * granted by account membership alone. Best-effort name enrichment runs
  * in the background through `device.list`.
  */
+// DAEMON-01: headless hosts have no first-contact approval UX, so a daemon
+// may set a default tier for first-seen enrollments. Desktops leave this
+// null — every new enrollment still lands as pending there.
+let defaultPolicyTier: 'observe' | 'approve' | 'steer' | 'denied' | null = null;
+
+export function setCompanionDefaultPolicyTier(
+  tier: 'observe' | 'approve' | 'steer' | 'denied' | null,
+): void {
+  defaultPolicyTier = tier;
+}
+
 function ensurePolicyRow(enrollmentId: string, accountId: string): CompanionEnrollmentPolicyRow {
   const existing = readPolicyRow(enrollmentId);
   if (existing !== undefined) {
     return existing;
   }
   const now = new Date().toISOString();
+  const tier = defaultPolicyTier ?? 'pending';
   getDb()
     .prepare(
       `INSERT INTO companion_enrollment_policies
        (enrollment_id, account_id, display_name, tier, first_seen_at, decided_at, updated_at)
-       VALUES (?, ?, NULL, 'pending', ?, NULL, ?)`,
+       VALUES (?, ?, NULL, ?, ?, ?, ?)`,
     )
-    .run(enrollmentId, accountId, now, now);
+    .run(enrollmentId, accountId, tier, now, tier === 'pending' ? null : now, now);
   emitCompanionEvent('settings');
   void enrichPendingPolicyName(enrollmentId);
   return readPolicyRow(enrollmentId) as CompanionEnrollmentPolicyRow;

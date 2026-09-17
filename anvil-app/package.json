@@ -18,6 +18,8 @@
     "dev": "electron-vite dev",
     "prebuild": "pnpm run rebuild:native:electron",
     "build": "electron-vite build",
+    "build:daemon": "node scripts/build-daemon.mjs",
+    "daemon": "node scripts/build-daemon.mjs && node dist-daemon/anvil-daemon.mjs",
     "dist:mac:arm64": "node scripts/dist.mjs --mac dmg zip --arm64 --publish never --brand=anvil",
     "dist:mac:arm64:anvil": "node scripts/dist.mjs --mac dmg zip --arm64 --publish never --brand=anvil",
     "dist:mac:arm64:anvil:notarized": "bash scripts/build-macos-arm64-anvil-notarized.sh",

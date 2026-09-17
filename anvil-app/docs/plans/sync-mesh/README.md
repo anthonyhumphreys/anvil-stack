@@ -48,6 +48,13 @@ Anvil's hosted sync layer replaces the "master desktop" model with an **account-
 - Mobile: enrollment-code sign-in (SecureStore session, refresh-on-401), presence discovery, direct dial, account-mode connections, settings panel.
 - Raycast: account-connected mode (LocalStorage session, presence dial); manual token config still wins when set.
 
+### Headless daemon — DAEMON-01 (landed)
+
+- `src/daemon/`: plain-Node entrypoint bundling the host services with an `electron` stub (`app.getPath` → data dir, `safeStorage` → AES-256-GCM file store, UI surfaces inert).
+- `anvil-daemon enroll --api-url --code` / `run` / `status` / `policy …` / `worker` / `companion` / `sign-out`.
+- `defaultPolicyTier` config for zero-touch hosts; desktop still defaults first contact to `pending`.
+- Service templates: `daemon/com.anvil.daemon.plist`, `daemon/anvil-daemon.service`; runbook: `docs/runbooks/hosted-sync/headless-daemon.md`.
+
 ## Verified state
 
 - App suite: 174 files / 1228 tests. Backend: 21 files / 258 tests. Contract: 52 tests.

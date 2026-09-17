@@ -340,6 +340,17 @@ Avoid periodic `setInterval` in account objects and avoid outgoing sockets, both
 
 Default to one write-capable attempt until the user enables more capacity. The launch supports at least three isolated attempts on a capable worker, with explicit CPU/memory/disk and provider budgets. Reserve capacity during claim and revalidate locally. Unknown-outcome attempts keep their local reservations until inspected. Read-only diagnostics have a separate small bounded allowance.
 
+### Headless daemon mode (DAEMON-01)
+
+A headless build of the Anvil host services — sync runtime, mesh worker, companion server — runs as an OS service on always-on machines (homelab boxes, NAS, VPS, CI runners). It carries no renderer, no IPC surface, and no Electron dependency at runtime; the `electron` module is satisfied by a stub providing data-dir resolution and a file-backed secret store.
+
+- **Enrollment is code-only.** `anvil-daemon enroll --api-url <url> --code <code>` discovers the backend descriptor (`<base>/.well-known/anvil-backend`), pins it, redeems the code, enables sync, and persists the `DeviceSession` under the daemon data dir. OIDC is a desktop flow; a daemon that needs re-enrollment is re-enrolled with a fresh code.
+- **State dir.** `ANVIL_DATA_DIR` or `~/.anvil-daemon/`. Holds the SQLite DB, session file (`0600`, file-permission security — same trust level as `~/.ssh`), and config. No Keychain/safeStorage: headless secret storage is a `0600` AES-256-GCM-encrypted file keyed by a locally generated master key, which is itself `0600`-protected — honest equivalent to ssh-agent's trust model, documented as such.
+- **Policy grants are CLI-managed.** `anvil-daemon policy list|set <enrollmentId> <tier>|forget`. A `defaultTier` config (`denied` unless set) covers zero-touch personal deployments; `steer` is never auto-granted by default.
+- **Same protocol surface.** The daemon is an ordinary enrollment: it advertises companion endpoints, claims mesh jobs within its capability set, renews leases, and dies by revocation identically to a desktop. Provider-dependent job kinds (codex sessions, etc.) claim only if the provider CLI is installed; capability reporting must reflect what the host can actually run.
+- **No wake promise.** A daemon on an always-on host converts "queued until the app opens" into "runs now", but a sleeping machine is still asleep — unchanged from §8.
+- **Service management is the user's.** Ship reference `launchd`/`systemd` unit templates and a build script; Anvil does not manage the daemon lifecycle from the desktop app.
+
 ## 9. Durable jobs, attempts, and cancellation
 
 All remote materialisation, readiness probes, session starts, and later workflow nodes use typed jobs. They share delivery and recovery semantics but retain domain-specific payload schemas. No independently writable placement request queue exists.

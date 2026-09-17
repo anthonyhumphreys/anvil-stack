@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- launchd template for anvil-daemon (DAEMON-01).
+     Install: copy to ~/Library/LaunchAgents/com.anvil.daemon.plist,
+     replace __ANVIL_APP_DIR__, then `launchctl load` the plist. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.anvil.daemon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/env</string>
+    <string>node</string>
+    <string>__ANVIL_APP_DIR__/dist-daemon/anvil-daemon.mjs</string>
+    <string>run</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__ANVIL_APP_DIR__</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>ANVIL_DATA_DIR</key>
+    <string>__HOME__/.anvil-daemon</string>
+    <key>PATH</key>
+    <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>__HOME__/.anvil-daemon/daemon.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/.anvil-daemon/daemon.err.log</string>
+</dict>
+</plist>
