@@ -16,3 +16,6 @@ coverage/
 # Canvas/session artifacts are session scratch — kept locally under
 # .anvil/artifacts/<category>/ but not committed to the repository.
 /.anvil/artifacts/
+
+# Headless daemon bundle output
+anvil-app/dist-daemon/
