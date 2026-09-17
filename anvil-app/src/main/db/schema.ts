@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 68;
+export const SCHEMA_VERSION = 69;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -338,6 +338,7 @@ CREATE TABLE IF NOT EXISTS settings (
   local_llm_endpoint TEXT,
   local_llm_model TEXT,
   thread_assist_provider TEXT DEFAULT 'off',
+  thread_assist_model TEXT,
   ollama_endpoint TEXT,
   ollama_model TEXT,
   lm_studio_endpoint TEXT,
@@ -2110,5 +2111,8 @@ ALTER TABLE settings ADD COLUMN lm_studio_endpoint TEXT;
 ALTER TABLE settings ADD COLUMN lm_studio_model TEXT;
 ALTER TABLE chat_threads ADD COLUMN summary TEXT;
 ALTER TABLE chat_threads ADD COLUMN title_locked INTEGER NOT NULL DEFAULT 0;
+`,
+  69: `
+ALTER TABLE settings ADD COLUMN thread_assist_model TEXT;
 `,
 };

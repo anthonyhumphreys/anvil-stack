@@ -64,9 +64,8 @@ describe('thread assistance', () => {
     mocks.getSettings.mockReturnValue(settings());
     mocks.getChatThread.mockReturnValue(thread());
     mocks.loadChatHistory.mockReturnValue(history);
-    mocks.updateChatThread.mockImplementation(
-      (_id: string, updates: Record<string, unknown>) =>
-        thread({ title: (updates.title as string) ?? 'x', summary: updates.summary as string }),
+    mocks.updateChatThread.mockImplementation((_id: string, updates: Record<string, unknown>) =>
+      thread({ title: (updates.title as string) ?? 'x', summary: updates.summary as string }),
     );
     mocks.callPreferredLocalModel.mockResolvedValue({
       ok: true,
@@ -126,6 +125,30 @@ describe('thread assistance', () => {
       0.3,
       1,
       expect.objectContaining({ taskClass: 'short-summary' }),
+    );
+    expect(mocks.callPreferredLocalModel).not.toHaveBeenCalled();
+  });
+
+  it('routes a connected provider through callLlm with the chosen model', async () => {
+    mocks.getSettings.mockReturnValue(
+      settings({ threadAssistProvider: 'llmgateway', threadAssistModel: 'gpt-5.6-sol' }),
+    );
+    mocks.callLlm.mockResolvedValue(
+      '{"title": "Gateway title", "summary": "From a connected provider."}',
+    );
+    scheduleThreadMetadataRefresh('thread-3');
+    await flushAssist();
+
+    expect(mocks.callLlm).toHaveBeenCalledWith(
+      expect.stringContaining('debug this failing test'),
+      160,
+      0.3,
+      1,
+      expect.objectContaining({
+        taskClass: 'short-summary',
+        provider: 'llmgateway',
+        model: 'gpt-5.6-sol',
+      }),
     );
     expect(mocks.callPreferredLocalModel).not.toHaveBeenCalled();
   });

@@ -1,15 +1,13 @@
 import { BrowserWindow } from 'electron';
-import type { ChatThread, ThreadAssistProvider } from '../../shared/types.js';
-import {
-  getChatThread,
-  loadChatHistory,
-  updateChatThread,
-} from './chat-persistence.service.js';
+import type {
+  AgentProvider,
+  ChatThread,
+  LocalLlmProvider,
+  ThreadAssistProvider,
+} from '../../shared/types.js';
+import { getChatThread, loadChatHistory, updateChatThread } from './chat-persistence.service.js';
 import { getSettings } from './settings.service.js';
-import {
-  callPreferredLocalModel,
-  isLikelyLocalModelRefusal,
-} from './local-llm.service.js';
+import { callPreferredLocalModel, isLikelyLocalModelRefusal } from './local-llm.service.js';
 import { callLlm } from './llm.service.js';
 
 const ASSIST_MIN_INTERVAL_MS = 45_000;
@@ -45,7 +43,10 @@ function parseAssistResponse(content: string): { title?: string; summary?: strin
     return {
       title:
         typeof parsed.title === 'string'
-          ? parsed.title.replace(/^["'`]+|["'`]+$/g, '').trim().slice(0, MAX_TITLE_CHARS)
+          ? parsed.title
+              .replace(/^["'`]+|["'`]+$/g, '')
+              .trim()
+              .slice(0, MAX_TITLE_CHARS)
           : undefined,
       summary:
         typeof parsed.summary === 'string'
@@ -55,6 +56,12 @@ function parseAssistResponse(content: string): { title?: string; summary?: strin
   } catch {
     return null;
   }
+}
+
+const LOCAL_ASSIST_PROVIDERS: LocalLlmProvider[] = ['apple', 'ollama', 'lm-studio'];
+
+function isLocalAssistProvider(provider: ThreadAssistProvider): provider is LocalLlmProvider {
+  return LOCAL_ASSIST_PROVIDERS.includes(provider as LocalLlmProvider);
 }
 
 async function generateThreadMetadata(
@@ -70,13 +77,24 @@ async function generateThreadMetadata(
     } catch {
       return null;
     }
-  } else {
+  } else if (isLocalAssistProvider(provider)) {
     const result = await callPreferredLocalModel(prompt, 160, {
       provider,
       instructions: ASSIST_INSTRUCTIONS,
     });
     if (!result.ok || isLikelyLocalModelRefusal(result.content ?? '')) return null;
     content = result.content;
+  } else {
+    // A connected agent provider — call it directly with the chosen model.
+    try {
+      content = await callLlm(prompt, 160, 0.3, 1, {
+        taskClass: 'short-summary',
+        provider: provider as AgentProvider,
+        model: getSettings().threadAssistModel,
+      });
+    } catch {
+      return null;
+    }
   }
 
   const parsed = content ? parseAssistResponse(content) : null;

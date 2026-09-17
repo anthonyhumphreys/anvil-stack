@@ -60,6 +60,7 @@ import {
 import { useBrand } from '../../contexts/BrandContext';
 import { dispatchCodexSelectionChanged } from '../../utils/codex-selection';
 import { selectPrimaryAgentProvider } from '../../utils/agent-provider-settings';
+import { buildProviderModelOptions } from '../../utils/chat-model-options';
 import { InlineNotice } from '../layout/ViewScaffold';
 import { CodexRuntimeSetup } from './CodexRuntimeSetup';
 
@@ -885,6 +886,20 @@ export function SettingsView({
     ? persistedTheme
     : brand.defaultTheme;
   const selectedChatLayout = settings.chatLayout ?? 'classic';
+  const assistProvider = settings.threadAssistProvider ?? 'off';
+  const assistAgentProvider = AGENT_PROVIDER_OPTIONS.some((option) => option.id === assistProvider)
+    ? (assistProvider as AgentProvider)
+    : null;
+  const assistModelOptions = assistAgentProvider
+    ? buildProviderModelOptions(
+        assistAgentProvider,
+        settings.threadAssistModel || null,
+        codexStatus,
+        cursorStatus,
+        llmGatewayStatus,
+        devinStatus,
+      )
+    : [];
   const codexModelOptions = buildCodexModelOptions(codexStatus);
   const selectedModelId =
     settings.openaiModel ?? (provider === 'llmgateway' ? '' : DEFAULT_CODEX_MODEL);
@@ -1756,8 +1771,7 @@ export function SettingsView({
                           <p className="text-xs text-text-secondary">
                             {localLlmCapabilities.apple.reason === 'deviceNotEligible'
                               ? 'This Mac is not eligible for Apple Intelligence.'
-                              : localLlmCapabilities.apple.reason ===
-                                  'appleIntelligenceNotEnabled'
+                              : localLlmCapabilities.apple.reason === 'appleIntelligenceNotEnabled'
                                 ? 'Apple Intelligence is disabled. Enable it in System Settings → Apple Intelligence.'
                                 : localLlmCapabilities.apple.reason === 'modelNotReady'
                                   ? 'The on-device model is still downloading or preparing. Try again shortly.'
@@ -1807,9 +1821,7 @@ export function SettingsView({
                     </div>
                   )}
                   <div className="space-y-3">
-                    <label className="block text-sm text-text-secondary">
-                      Local model servers
-                    </label>
+                    <label className="block text-sm text-text-secondary">Local model servers</label>
                     <p className="text-xs text-text-tertiary">
                       Endpoint and model are stored per server, so you can point Ollama at a remote
                       host (a DGX Spark cluster, a LAN box) while keeping LM Studio local — or vice
@@ -1866,40 +1878,69 @@ export function SettingsView({
                     <ProviderButton
                       label="Off"
                       description="Keep first-message titles"
-                      active={(settings.threadAssistProvider ?? 'off') === 'off'}
+                      active={assistProvider === 'off'}
                       onClick={() => update('threadAssistProvider', 'off')}
                     />
                     <ProviderButton
                       label="Primary provider"
                       description="Use the configured agent model"
-                      active={settings.threadAssistProvider === 'configured'}
+                      active={assistProvider === 'configured'}
                       onClick={() => update('threadAssistProvider', 'configured')}
                     />
                     {localLlmCapabilities?.providers.includes('apple') && (
                       <ProviderButton
                         label="Apple Intelligence"
                         description="On-device, free and private"
-                        active={settings.threadAssistProvider === 'apple'}
+                        active={assistProvider === 'apple'}
                         onClick={() => update('threadAssistProvider', 'apple')}
                       />
                     )}
-                    <ProviderButton
-                      label="Ollama"
-                      description="Use the Ollama server below"
-                      active={settings.threadAssistProvider === 'ollama'}
-                      onClick={() => update('threadAssistProvider', 'ollama')}
-                    />
-                    <ProviderButton
-                      label="LM Studio"
-                      description="Use the LM Studio server"
-                      active={settings.threadAssistProvider === 'lm-studio'}
-                      onClick={() => update('threadAssistProvider', 'lm-studio')}
-                    />
+                    {AGENT_PROVIDER_OPTIONS.filter((option) =>
+                      enabledProviders.includes(option.id),
+                    ).map((option) => (
+                      <ProviderButton
+                        key={option.id}
+                        label={option.label}
+                        description={option.description}
+                        active={assistProvider === option.id}
+                        onClick={() => update('threadAssistProvider', option.id)}
+                      />
+                    ))}
                   </ButtonGrid>
+                  {assistAgentProvider && (
+                    <div className="space-y-1">
+                      <label className="block text-sm text-text-secondary">
+                        Thread assistance model
+                      </label>
+                      <select
+                        value={settings.threadAssistModel ?? ''}
+                        onChange={(event) => update('threadAssistModel', event.target.value)}
+                        className="w-full rounded-md border border-border bg-bg-secondary px-3 py-2 text-sm text-text-primary outline-none focus:border-accent"
+                      >
+                        <option value="">Provider default</option>
+                        {assistModelOptions.map((model) => (
+                          <option key={model.id} value={model.id}>
+                            {model.label} - {model.id}
+                          </option>
+                        ))}
+                      </select>
+                      <p className="text-xs text-text-tertiary">
+                        {assistModelOptions.length
+                          ? `${assistModelOptions.length} models detected for ${assistAgentProvider}.`
+                          : 'No model catalog detected — the provider default will be used.'}
+                      </p>
+                    </div>
+                  )}
+                  {(assistProvider === 'ollama' || assistProvider === 'lm-studio') && (
+                    <p className="text-xs text-text-tertiary">
+                      Currently using the legacy{' '}
+                      {assistProvider === 'ollama' ? 'Ollama' : 'LM Studio'} server selection. Pick
+                      a provider above to switch.
+                    </p>
+                  )}
                   <p className="text-xs text-text-tertiary">
                     Threads are refreshed periodically as turns complete. Renaming a thread manually
-                    locks its title so assistance never overwrites it. Local providers use the
-                    endpoints configured in Local model servers above.
+                    locks its title so assistance never overwrites it.
                   </p>
                 </div>
 

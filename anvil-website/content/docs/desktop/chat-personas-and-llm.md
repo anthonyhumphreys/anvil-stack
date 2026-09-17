@@ -89,7 +89,7 @@ Threads start with a title taken from the first message (or the persona or work 
 | Off | Default. Titles stay as the first-message text until you rename the thread. |
 | Primary provider | Uses the configured agent model through the shared LLM gateway path. |
 | Apple Intelligence | Uses the on-device model — free, private, and works offline. macOS only. |
-| Ollama / LM Studio | Uses the endpoints configured under **Local model servers**, which can point at remote hosts such as a cluster node. |
+| A connected provider | Uses any provider activated under **Agent providers** — pick a specific model from its catalog, or leave the provider default. |
 
 Summaries appear under the thread title in the sidebar and are refreshed periodically as turns complete. Renaming a thread manually locks its title so assistance never overwrites it; the summary keeps updating.
 

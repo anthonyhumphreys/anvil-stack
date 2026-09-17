@@ -2223,8 +2223,10 @@ export type LocalLlmMode = 'off' | 'prefer-simple';
 /**
  * Which backend generates thread titles and periodic summaries.
  * 'configured' follows the primary agent provider via the shared LLM call path.
+ * Any connected AgentProvider can be picked directly with a specific model.
+ * Legacy 'ollama'/'lm-studio' values remain valid for existing installs.
  */
-export type ThreadAssistProvider = 'off' | 'configured' | LocalLlmProvider;
+export type ThreadAssistProvider = 'off' | 'configured' | LocalLlmProvider | AgentProvider;
 
 export interface AppleModelFeatureFlags {
   streaming: boolean;
@@ -2280,6 +2282,8 @@ export interface AppSettings {
   lmStudioModel: string;
   /** Backend for generated thread titles and rolling summaries. */
   threadAssistProvider: ThreadAssistProvider;
+  /** Model used when threadAssistProvider is a connected agent provider. Empty = provider default. */
+  threadAssistModel?: string;
 
   // Azure AI Foundry
   foundryEndpoint: string;

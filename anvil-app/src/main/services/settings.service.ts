@@ -34,6 +34,7 @@ interface SettingsRow {
   lm_studio_endpoint: string | null;
   lm_studio_model: string | null;
   thread_assist_provider: string | null;
+  thread_assist_model: string | null;
   foundry_endpoint: string | null;
   foundry_deployment: string | null;
   foundry_api_version: string | null;
@@ -133,6 +134,7 @@ function normaliseThreadAssistProvider(
   if (provider === 'apple' || provider === 'ollama' || provider === 'lm-studio') {
     return provider === 'apple' && process.platform !== 'darwin' ? 'ollama' : provider;
   }
+  if (AGENT_PROVIDERS.includes(provider as AgentProvider)) return provider as AgentProvider;
   return 'off';
 }
 
@@ -366,6 +368,7 @@ export function getSettings(): AppSettings {
         ? (row.local_llm_model ?? '')
         : ''),
     threadAssistProvider: normaliseThreadAssistProvider(row.thread_assist_provider),
+    threadAssistModel: row.thread_assist_model ?? '',
     foundryEndpoint: row.foundry_endpoint ?? '',
     foundryDeploymentName: row.foundry_deployment ?? '',
     foundryApiVersion: row.foundry_api_version ?? '2024-10-21',
@@ -474,6 +477,10 @@ export function updateSettings(partial: Partial<AppSettings>): void {
   if (partial.threadAssistProvider !== undefined) {
     setClauses.push('thread_assist_provider = ?');
     values.push(normaliseThreadAssistProvider(partial.threadAssistProvider));
+  }
+  if (partial.threadAssistModel !== undefined) {
+    setClauses.push('thread_assist_model = ?');
+    values.push(partial.threadAssistModel.trim());
   }
   if (partial.foundryEndpoint !== undefined) {
     setClauses.push('foundry_endpoint = ?');
@@ -737,6 +744,7 @@ function defaultSettings(): AppSettings {
     lmStudioEndpoint: '',
     lmStudioModel: '',
     threadAssistProvider: 'off',
+    threadAssistModel: '',
     foundryEndpoint: '',
     foundryDeploymentName: '',
     foundryApiVersion: '2024-10-21',
