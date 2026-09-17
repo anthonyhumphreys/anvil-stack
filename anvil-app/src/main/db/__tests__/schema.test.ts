@@ -168,7 +168,7 @@ describe('fresh database schema', () => {
         ).map((column) => column.name),
       );
 
-      expect(SCHEMA_VERSION).toBe(80);
+      expect(SCHEMA_VERSION).toBe(82);
       for (const column of [
         'local_llm_mode',
         'local_llm_provider',
@@ -658,9 +658,10 @@ describe('fresh database schema', () => {
         }
 
         expect(schemaShape(db)).toEqual(freshShape());
-        expect(
-          db.prepare('SELECT id, llm_provider FROM settings WHERE id = 1').get(),
-        ).toEqual({ id: 1, llm_provider: 'cursor' });
+        expect(db.prepare('SELECT id, llm_provider FROM settings WHERE id = 1').get()).toEqual({
+          id: 1,
+          llm_provider: 'cursor',
+        });
         expect(db.prepare('SELECT id, name FROM workspaces WHERE id = ?').get('ws-1')).toEqual({
           id: 'ws-1',
           name: 'Seeded',

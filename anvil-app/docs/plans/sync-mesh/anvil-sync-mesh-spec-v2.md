@@ -235,6 +235,22 @@ If incoming state differs from the base while local work is pending, preserve ba
 
 An acknowledgement advances the base. It replaces visible local content only if the acknowledged local generation is still current. User timestamps never select a winner.
 
+### Payload sealing (E2E)
+
+Domain `payload` travels as a sealed envelope `{enc, keyVersion, nonce, ct}` — AES-256-GCM under a versioned 256-bit account data key (ADK) with a random 96-bit nonce. Associated data binds the envelope to backend id, account id, entity type, entity id, and key version; operation and schemaVersion are covered by the backend-verified `payloadHash` instead, so quarantined envelopes re-open without reconstructing the mutation. `payloadHash` covers the canonical sealed envelope, preserving dedupe and receipt semantics. Deletes carry no payload and are not sealed.
+
+The backend validates envelope structure (`enc`, positive integer `keyVersion`, 12-byte nonce, ciphertext carrying at least the GCM tag) and stores ciphertext it cannot open. It never sees plaintext and never sees key material.
+
+Sealing happens at dispatch, not at edit time: `sealed_json` on the outbox row persists the exact wire envelope so replays reuse identical ciphertext and payload hash. Local domain state stays plaintext. A missing ADK defers the change — plaintext is never sent for a domain entity on a scoped session.
+
+Crypto-boundary entity types (`device-identity`, `keyring-wrap`, `keyring-pairing`) carry their own payloads and bypass domain sealing. They are consumed by the keyring on pull before any domain/binding handling.
+
+Unseal failure on pull quarantines the raw envelope on the binding with its revision; a later key delivery retries the quarantined envelopes without re-fetch.
+
+Artifact bytes and handoff checkpoints seal under the same ADK. Artifact manifests record `sealed`, `keyVersion`, and `plaintextBytes`; hashes cover stored ciphertext. Checkpoints keep `sessionId` and `sourceGeneration` clear for backend CAS; the remaining body is sealed. Shared-artifact bytes seal under a fresh per-share key carried only in the share URL fragment — the server never receives it.
+
+Key hierarchy and distribution live in §6.
+
 ### Retention, reset, and long-offline recovery
 
 Keep incremental changes, full delete tombstones, and receipts for 90 days initially. Enforce an account history-byte quota before accepting new shared changes; never accept a change and then silently discard required recovery history. Local editing remains available while quota is exceeded. Compact asynchronously in bounded batches.
@@ -274,6 +290,14 @@ Derive account, enrollment, and credential generation from the authenticated dev
 Socket operations check current enrollment generation and session expiry. Revocation closes matching connections and blocks refresh, reconnect, claims, and artifact access. Expired sockets cannot keep operating merely because a timer has not closed them yet. OIDC/enrollment proofs, device credentials, and cloud deployment credentials are distinct and never appear in discovery, connection descriptors, normal logs, or renderer state.
 
 Sync enrollment does not authorize Mesh. On each target, enable remote sessions/workflow tasks locally and approve which source enrollments may request execution. New sources require fresh approval. The backend cannot use synced configuration to enable a target's local execution policy. Account recovery does not silently restore remote authority.
+
+### Account data key distribution
+
+Each enrolled device generates an X25519 identity keypair at enrollment and publishes the public half as a `device-identity` entity. The ADK moves between devices only in forms the backend cannot open: a `keyring-wrap` entity seals the ADK to a recipient's X25519 public key, and a `keyring-pairing` entity seals it under a one-time secret carried in the out-of-band pairing payload (`anvil-pair-…`, scanned or typed) alongside the enrollment code. The server sees the enrollment code; it never sees the pairing secret or any key material. Key material rests in local SQLite wrapped by OS credential storage (`safeStorage`, or the daemon's `0600` AES-256-GCM file).
+
+The first device on an account mints ADK v1 at first seal. A device that knows it has peers but holds no ADK defers sealing until a wrap or pairing blob arrives — it never falls back to plaintext or mints a divergent key.
+
+Revoking a device rotates the ADK: a trusted device mints the next version and queues wraps for every surviving enrolled device, excluding the revoked set and itself. The revoked device keeps content it already decrypted; rotation limits future reads only. A short authentication string derived from both device public keys and the account id is available for manual verification of a pairing.
 
 Before claim and each new remote action, the worker validates local policy, source authorization, enrollment, job kind, workspace scope, and resource limits. Diagnostic handlers are built-in operations, not arbitrary shell strings. The renderer sees safe state only; IPC validates callers and payloads through existing patterns.
 

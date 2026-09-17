@@ -23,6 +23,7 @@ import {
   latestOpenCheckout,
   latestSubscriptionForAccount,
   lastWebhookProcessedAt,
+  reconcileMetaKey,
   markCheckoutComplete,
   markCheckoutExpired,
   markSubscriptionDeleted,
@@ -37,6 +38,7 @@ import {
   upsertSubscriptionFromStripe,
 } from './billing';
 import { validateHostedIdentity, type HostedIdentity } from './identity';
+import { emitMetric } from './metrics';
 import {
   parseStripeCheckoutSession,
   parseStripeInvoice,
@@ -281,6 +283,7 @@ export async function handleStripeWebhook(
     Date.now(),
   );
   if (!verified) {
+    emitMetric('webhook.rejected', { reason: 'signature' });
     return rpcErrorResponse(undefined, 'unauthenticated');
   }
   const event = parseStripeEvent(parseJson(rawBody));
@@ -292,23 +295,27 @@ export async function handleStripeWebhook(
   if (!fresh) {
     const existing = await getWebhookEvent(db, event.id);
     if (existing !== null && existing.status === 'processed') {
+      emitMetric('webhook.event', { type: event.type, outcome: 'duplicate' });
       return Response.json({ received: true, duplicate: true });
     }
   }
   try {
     if (!(await processStripeEvent(db, event))) {
       await markWebhookFailed(db, event.id, 'event could not be applied', now);
+      emitMetric('webhook.event', { type: event.type, outcome: 'failed-deterministic' });
       return Response.json({ received: true });
     }
     await markWebhookProcessed(db, event.id, now);
+    emitMetric('webhook.event', { type: event.type, outcome: 'processed' });
     return Response.json({ received: true });
   } catch (error) {
     await markWebhookFailed(db, event.id, errorMessage(error), now);
+    emitMetric('webhook.event', { type: event.type, outcome: 'failed-fault' });
     return rpcErrorResponse(undefined, 'unavailable');
   }
 }
 
-function stripeConfigured(env: Env): boolean {
+export function stripeConfigured(env: Env): boolean {
   return typeof env.STRIPE_SECRET_KEY === 'string' && env.STRIPE_SECRET_KEY.length > 0;
 }
 
@@ -530,6 +537,7 @@ export async function handleReconcile(
   if (customer === null) {
     // Webhooks can legitimately be ahead of any subscription existing.
     await setBillingMeta(db, LAST_RECONCILE_KEY, String(now));
+    await setBillingMeta(db, reconcileMetaKey(account.id), String(now));
     await audit(db, account.id, 'reconcile', { subscriptions: 0 });
     return Response.json({ reconciled: true, subscriptions: 0 });
   }
@@ -547,6 +555,7 @@ export async function handleReconcile(
     count += 1;
   }
   await setBillingMeta(db, LAST_RECONCILE_KEY, String(now));
+  await setBillingMeta(db, reconcileMetaKey(account.id), String(now));
   await audit(db, account.id, 'reconcile', { subscriptions: count });
   return Response.json({ reconciled: true, subscriptions: count });
 }

@@ -518,6 +518,11 @@ export interface ChatArtifact {
   source: 'assistant' | 'user' | 'imported';
   model?: string;
   reasoningEffort?: ReasoningEffort;
+  /** Backend share id once published via share.* (hosted deployments). */
+  shareId?: string;
+  /** Public URL (anvilstack.dev/artifacts/{shareId}) while shared. */
+  sharedUrl?: string;
+  sharedAt?: string;
   createdAt: string;
   updatedAt: string;
 }

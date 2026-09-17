@@ -17,11 +17,25 @@ export interface ArtifactManifest {
   id: string;
   /** Account identity is server-derived; never accepted client-side. */
   attemptId: string;
+  /**
+   * Stored byte length — ciphertext length when `sealed`, plaintext length
+   * otherwise. `sha256` always covers the stored bytes.
+   */
   byteLength: number;
   sha256: string;
   mediaType: string;
   retentionDays: number;
   state: ArtifactState;
+  /**
+   * E2E marker: when true the stored bytes are AES-256-GCM ciphertext
+   * sealed client-side under the account data key. Absent/false on
+   * pre-sealing manifests.
+   */
+  sealed?: boolean;
+  /** ADK version the ciphertext was sealed under; present when sealed. */
+  keyVersion?: number;
+  /** Pre-encryption byte length for quota/display; present when sealed. */
+  plaintextBytes?: number;
 }
 
 export interface ArtifactReserveParams {
@@ -30,6 +44,10 @@ export interface ArtifactReserveParams {
   sha256: string;
   mediaType: string;
   retentionDays?: number;
+  /** True when the uploaded bytes will be client-sealed ciphertext. */
+  sealed?: boolean;
+  keyVersion?: number;
+  plaintextBytes?: number;
 }
 
 export interface ArtifactReserveResult {
@@ -43,6 +61,9 @@ export interface ArtifactFinalizeParams {
   artifactId: string;
   byteLength: number;
   sha256: string;
+  sealed?: boolean;
+  keyVersion?: number;
+  plaintextBytes?: number;
 }
 
 export interface ArtifactFinalizeResult {

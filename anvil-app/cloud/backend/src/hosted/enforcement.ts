@@ -28,6 +28,7 @@ import {
   RENEWAL_GRACE_DAYS,
   resolveHostedLimits,
 } from './billing';
+import { emitMetric } from './metrics';
 import { evaluateHostedEntitlement, PREVIEW_ENDS_AT, PREVIEW_END_MS } from './policy';
 import { findActiveBillingBySyncAccount } from './store';
 
@@ -259,7 +260,14 @@ export async function checkHostedAccess(
     (cached.access_until === null || cached.access_until > now)
   ) {
     const entitlement = entitlementFromCache(cached, env);
+    emitMetric('entitlement.decision', {
+      state: entitlement.state,
+      source: entitlement.source,
+      reason: entitlement.reason,
+      cached: true,
+    });
     if (allowsWrite(entitlement)) return { allowed: true, entitlement };
+    emitMetric('enforcement.denial', { reason: entitlement.reason });
     return { allowed: false, entitlement, reason: entitlement.reason };
   }
   let entitlement: HostedEntitlement;
@@ -287,13 +295,29 @@ export async function checkHostedAccess(
       paidThrough = snapshot.paidThrough;
     }
   } catch {
-    return outageFallback(cached, env, now);
+    const fallback = outageFallback(cached, env, now);
+    emitMetric('entitlement.decision', {
+      state: fallback.entitlement?.state ?? 'unknown',
+      source: fallback.entitlement?.source ?? 'none',
+      reason: fallback.entitlement?.reason ?? 'billing-unavailable',
+      cached: false,
+      outageFallback: true,
+    });
+    if (!fallback.allowed) emitMetric('enforcement.denial', { reason: fallback.reason });
+    return fallback;
   }
   try {
     writeCache(storage, entitlement, paidThrough, now);
   } catch {
     // A cache write failure must not change the decision itself.
   }
+  emitMetric('entitlement.decision', {
+    state: entitlement.state,
+    source: entitlement.source,
+    reason: entitlement.reason,
+    cached: false,
+  });
   if (allowsWrite(entitlement)) return { allowed: true, entitlement };
+  emitMetric('enforcement.denial', { reason: entitlement.reason });
   return { allowed: false, entitlement, reason: entitlement.reason };
 }

@@ -172,4 +172,57 @@ describe('sync.push', () => {
     );
     expect(pulled.changes).toEqual([]);
   });
+
+  it('accepts a well-formed sealed envelope payload and journals it opaque', async () => {
+    const ids = uniqueIds('sealed-ok');
+    const auth = spikeBearer(ids.accountId, ids.enrollmentId);
+    const envelope = {
+      enc: 'aes-256-gcm',
+      keyVersion: 1,
+      // 12-byte nonce and ≥16-byte ciphertext||tag, base64 — the backend
+      // validates shape only; it never opens the envelope.
+      nonce: Buffer.alloc(12, 1).toString('base64'),
+      ct: Buffer.alloc(40, 2).toString('base64'),
+    };
+    const change = await hashedChange({
+      enrollmentSequence: 1,
+      entityId: 'ws-sealed',
+      payload: envelope,
+    });
+    const pushed = await postRpc('sync.push', { changes: [change] }, auth);
+    const result = expectSuccess<SyncPushResult>(pushed);
+    expect(result.results[0].status).toBe('accepted');
+
+    const pulled = expectSuccess<{ changes: Array<{ payload: unknown }> }>(
+      await postRpc('sync.pull', { cursor: null, maxBytes: DEFAULT_LIMITS.pageBytes }, auth),
+    );
+    expect(pulled.changes[0].payload).toEqual(envelope);
+  });
+
+  it('rejects a malformed sealed envelope without journaling anything', async () => {
+    const ids = uniqueIds('sealed-bad');
+    const auth = spikeBearer(ids.accountId, ids.enrollmentId);
+    const malformed = {
+      enc: 'aes-256-gcm',
+      keyVersion: 1,
+      nonce: 'not-base64!!!',
+      ct: Buffer.alloc(40, 2).toString('base64'),
+    };
+    const change = await hashedChange({
+      enrollmentSequence: 1,
+      entityId: 'ws-sealed-bad',
+      payload: malformed,
+    });
+    const { status, body } = await postRpc('sync.push', { changes: [change] }, auth);
+    expect(status).toBe(httpStatusForErrorCode('malformed-request'));
+    expect(isRpcError(body)).toBe(true);
+    if (isRpcError(body)) {
+      expect(body.error.details?.['reason']).toBe('envelope-invalid');
+    }
+
+    const pulled = expectSuccess<{ changes: unknown[] }>(
+      await postRpc('sync.pull', { cursor: null, maxBytes: DEFAULT_LIMITS.pageBytes }, auth),
+    );
+    expect(pulled.changes).toEqual([]);
+  });
 });

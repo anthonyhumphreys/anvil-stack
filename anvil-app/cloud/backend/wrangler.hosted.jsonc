@@ -60,6 +60,12 @@
       "new_sqlite_classes": ["SessionCoordinator"],
     },
   ],
+  // BILL-06: hourly reconcile + metrics sweep. Off-the-hour to avoid the
+  // top-of-hour cron pile-up; per-account staleness and batch limits are
+  // in src/hosted/reconciler.ts.
+  "triggers": {
+    "crons": ["17 * * * *"],
+  },
   "r2_buckets": [
     {
       "binding": "ARTIFACTS",

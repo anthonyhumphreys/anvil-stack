@@ -882,6 +882,122 @@ describe('artifacts', () => {
     expect(kinds).toContain('artifact.deleted');
   });
 
+  it('persists sealed-artifact metadata through reserve → finalize → get/list', async () => {
+    const f = fixture('art-sealed');
+    const job = await runningJob(f);
+    // Stored bytes are ciphertext — opaque to the backend, hash-bound.
+    const ciphertext = new TextEncoder().encode('sealed-artifact-bytes');
+    const sha = await sha256Hex('sealed-artifact-bytes');
+
+    const reserved = expectSuccess<ArtifactReserveResult>(
+      await postRpc(
+        'artifact.reserve',
+        {
+          attemptId: job.attemptId,
+          byteLength: ciphertext.byteLength,
+          sha256: sha,
+          mediaType: 'application/octet-stream',
+          sealed: true,
+          keyVersion: 1,
+          plaintextBytes: 128,
+        },
+        f.workerAuth,
+      ),
+    );
+    const put = await putArtifact(reserved.uploadPath, f.workerAuth, ciphertext);
+    expect(put.status).toBe(200);
+
+    const finalized = expectSuccess<ArtifactFinalizeResult>(
+      await postRpc(
+        'artifact.finalize',
+        {
+          artifactId: reserved.artifactId,
+          byteLength: ciphertext.byteLength,
+          sha256: sha,
+          sealed: true,
+          keyVersion: 1,
+          plaintextBytes: 128,
+        },
+        f.workerAuth,
+      ),
+    );
+    expect(finalized.manifest.sealed).toBe(true);
+    expect(finalized.manifest.keyVersion).toBe(1);
+    expect(finalized.manifest.plaintextBytes).toBe(128);
+    expect(finalized.manifest.byteLength).toBe(ciphertext.byteLength);
+
+    const got = expectSuccess<ArtifactGetResult>(
+      await postRpc('artifact.get', { artifactId: reserved.artifactId }, f.sourceAuth),
+    );
+    expect(got.artifact.sealed).toBe(true);
+    expect(got.artifact.keyVersion).toBe(1);
+    expect(got.artifact.plaintextBytes).toBe(128);
+
+    const listed = expectSuccess<ArtifactListResult>(
+      await postRpc('artifact.list', { jobId: job.jobId }, f.sourceAuth),
+    );
+    expect(listed.artifacts[0]?.sealed).toBe(true);
+    expect(listed.artifacts[0]?.plaintextBytes).toBe(128);
+  });
+
+  it('rejects reserve/finalize seal manifests that disagree or lack a key version', async () => {
+    const f = fixture('art-sealed-bad');
+    const job = await runningJob(f);
+    const ciphertext = new TextEncoder().encode('blob');
+    const sha = await sha256Hex('blob');
+
+    // sealed without keyVersion is malformed at reserve.
+    const noVersion = await postRpc(
+      'artifact.reserve',
+      {
+        attemptId: job.attemptId,
+        byteLength: ciphertext.byteLength,
+        sha256: sha,
+        mediaType: 'application/octet-stream',
+        sealed: true,
+      },
+      f.workerAuth,
+    );
+    expect(noVersion.status).toBe(400);
+    if (isRpcError(noVersion.body)) {
+      expect(noVersion.body.error.details?.['reason']).toBe('keyVersion-required');
+    }
+
+    const reserved = expectSuccess<ArtifactReserveResult>(
+      await postRpc(
+        'artifact.reserve',
+        {
+          attemptId: job.attemptId,
+          byteLength: ciphertext.byteLength,
+          sha256: sha,
+          mediaType: 'application/octet-stream',
+          sealed: true,
+          keyVersion: 1,
+        },
+        f.workerAuth,
+      ),
+    );
+    const put = await putArtifact(reserved.uploadPath, f.workerAuth, ciphertext);
+    expect(put.status).toBe(200);
+
+    // A finalize declaring a different seal manifest conflicts.
+    const mismatch = await postRpc(
+      'artifact.finalize',
+      {
+        artifactId: reserved.artifactId,
+        byteLength: ciphertext.byteLength,
+        sha256: sha,
+        sealed: true,
+        keyVersion: 2,
+      },
+      f.workerAuth,
+    );
+    expect(mismatch.status).toBe(409);
+    if (isRpcError(mismatch.body)) {
+      expect(mismatch.body.error.details?.['reason']).toBe('manifest-mismatch');
+    }
+  });
+
   it('enforces reservation validation, actor rules, and quotas', async () => {
     const f = fixture('art-guard');
     const job = await runningJob(f);

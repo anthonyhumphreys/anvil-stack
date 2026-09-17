@@ -30,11 +30,7 @@ vi.mock('electron', () => ({
   app: { getPath: () => '/tmp', getVersion: () => 'test' },
 }));
 
-import {
-  rpc,
-  type BackendConnection,
-  type RpcResult,
-} from '../sync-backend-client.service';
+import { rpc, type BackendConnection, type RpcResult } from '../sync-backend-client.service';
 import {
   resetSyncEngineForTests,
   runSyncCycle,
@@ -293,18 +289,28 @@ describe('durable dispatch and retry identity', () => {
     await expect(cycle(account)).rejects.toBeInstanceOf(SyncEngineError);
     restart();
 
-    // Corrupt the durable row before replay: same sequence, different content.
-    const tampered = { tampered: true };
+    // Corrupt the durable row before replay: same sequence, different wire
+    // content. Replays send sealed_json, so the tamper must rewrite the
+    // stored envelope (and rehash over it) — not just the domain payload.
+    const tamperedEnvelope = {
+      enc: 'aes-256-gcm',
+      keyVersion: 1,
+      nonce: Buffer.alloc(12, 9).toString('base64'),
+      ct: Buffer.alloc(32, 9).toString('base64'),
+    };
     active.db
-      .prepare('UPDATE sync_outbox SET payload_json = ?, payload_hash = ? WHERE entity_id = ?')
+      .prepare(
+        'UPDATE sync_outbox SET payload_json = ?, sealed_json = ?, payload_hash = ? WHERE entity_id = ?',
+      )
       .run(
-        JSON.stringify(tampered),
+        JSON.stringify({ tampered: true }),
+        JSON.stringify(tamperedEnvelope),
         computePayloadHash({
           baseRevision: null,
           entityId: saved.id,
           entityType: ET,
           operation: 'create',
-          payload: tampered,
+          payload: tamperedEnvelope,
           schemaVersion: 1,
         }),
         saved.id,
@@ -456,8 +462,9 @@ describe('scope isolation and guard fencing', () => {
       }
       return response;
     };
-    await expect(cycle(account, { guard: () => current, rpc: flipDuringPush })).rejects
-      .toBeInstanceOf(SyncEngineError);
+    await expect(
+      cycle(account, { guard: () => current, rpc: flipDuringPush }),
+    ).rejects.toBeInstanceOf(SyncEngineError);
 
     // The acknowledgement arrived for the dead scope: it was NOT applied.
     const row = listOutboxRows(SCOPE).find((item) => item.entityId === saved.id);

@@ -15,6 +15,7 @@ import {
   rpcSuccessResponse,
 } from './rpc';
 import type { ErrorCode } from '../../contract/envelope';
+import { sealedEnvelopeIssue } from '../../contract/sealed';
 import {
   canonicalChangeHashInput,
   type PendingChange,
@@ -43,10 +44,7 @@ import {
   type WorkerAvailableFrame,
 } from '../../contract/socket';
 import type { SyncAccountStats } from '../../contract/auth';
-import {
-  HOSTED_OPERATION_CLASS,
-  type OperationName,
-} from '../../contract/operations';
+import { HOSTED_OPERATION_CLASS, type OperationName } from '../../contract/operations';
 import {
   COMPANION_ADVERTISEMENT_TTL_MS,
   COMPANION_PROTOCOL_VERSION,
@@ -117,6 +115,8 @@ import {
   type HandoffRecord,
   type HandoffState,
   type SessionCheckpoint,
+  type HandoffCheckpoint,
+  type SealedSessionCheckpoint,
 } from '../../contract/handoff';
 import {
   SAME_ACCOUNT_SOURCE,
@@ -349,6 +349,9 @@ interface ArtifactRow {
   published_at: number | null;
   expires_at: number | null;
   deleted_at: number | null;
+  sealed: number;
+  key_version: number | null;
+  plaintext_bytes: number | null;
   [key: string]: string | number | null;
 }
 
@@ -636,7 +639,35 @@ export class AccountCoordinator extends DurableObject<Env> {
     // frozen ACCOUNT_SCHEMA — a per-object row bounding how long a hosted
     // access decision may be reused.
     this.ctx.storage.sql.exec(ENTITLEMENT_CACHE_DDL);
+    // E2E: additive columns on objects created before sealing existed —
+    // CREATE TABLE IF NOT EXISTS never alters an existing table.
+    this.ensureColumn(
+      'artifacts',
+      'sealed',
+      'ALTER TABLE artifacts ADD COLUMN sealed INTEGER NOT NULL DEFAULT 0',
+    );
+    this.ensureColumn(
+      'artifacts',
+      'key_version',
+      'ALTER TABLE artifacts ADD COLUMN key_version INTEGER',
+    );
+    this.ensureColumn(
+      'artifacts',
+      'plaintext_bytes',
+      'ALTER TABLE artifacts ADD COLUMN plaintext_bytes INTEGER',
+    );
     this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
+  }
+
+  /** Adds a column to an existing DO SQLite table when it is missing. */
+  private ensureColumn(table: string, name: string, ddl: string): void {
+    const columns = this.ctx.storage.sql
+      .exec<{ name: string }>(`PRAGMA table_info(${table})`)
+      .toArray()
+      .map((row) => row.name);
+    if (!columns.includes(name)) {
+      this.ctx.storage.sql.exec(ddl);
+    }
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -952,11 +983,7 @@ export class AccountCoordinator extends DurableObject<Env> {
     ) {
       throw new RpcFailure('malformed-request', { reason: 'streamId' });
     }
-    if (
-      typeof generation !== 'number' ||
-      !Number.isSafeInteger(generation) ||
-      generation < 1
-    ) {
+    if (typeof generation !== 'number' || !Number.isSafeInteger(generation) || generation < 1) {
       throw new RpcFailure('malformed-request', { reason: 'generation' });
     }
     if (typeof sequence !== 'number' || !Number.isSafeInteger(sequence) || sequence < 1) {
@@ -1324,23 +1351,14 @@ export class AccountCoordinator extends DurableObject<Env> {
     auth: SpikeAuth,
     requestId: string | undefined,
   ): Promise<Response | null> {
-    const access = await checkHostedAccess(
-      this.ctx.storage,
-      this.env,
-      auth.accountId,
-      Date.now(),
-    );
+    const access = await checkHostedAccess(this.ctx.storage, this.env, auth.accountId, Date.now());
     if (access.allowed) {
       return null;
     }
     return rpcErrorResponse(requestId, 'forbidden', { reason: access.reason });
   }
 
-  private async handlePush(
-    auth: SpikeAuth,
-    requestId: string,
-    params: unknown,
-  ): Promise<Response> {
+  private async handlePush(auth: SpikeAuth, requestId: string, params: unknown): Promise<Response> {
     const push = parseSpikePushParams(params);
     const prepared: PreparedChange[] = [];
     for (const change of push.changes) {
@@ -1352,9 +1370,7 @@ export class AccountCoordinator extends DurableObject<Env> {
 
     let outcome: PushBatchOutcome;
     try {
-      outcome = this.commit(() =>
-        this.pushInTransaction(auth, push.epoch, prepared),
-      );
+      outcome = this.commit(() => this.pushInTransaction(auth, push.epoch, prepared));
     } catch (error) {
       if (isRpcFailure(error)) {
         return failureResponse(requestId, error);
@@ -1419,6 +1435,21 @@ export class AccountCoordinator extends DurableObject<Env> {
     let totalBytes = 0;
     for (const item of prepared) {
       assertPendingChange(item.change);
+      // E2E: any payload carrying an `enc` field must be a well-formed
+      // sealed envelope. The backend never opens it — this is structural
+      // validation only, and plaintext (pre-sealing) payloads still pass.
+      const payload = item.change.payload;
+      if (
+        payload !== null &&
+        typeof payload === 'object' &&
+        'enc' in payload &&
+        sealedEnvelopeIssue(payload) !== null
+      ) {
+        throw new RpcFailure('malformed-request', {
+          reason: 'envelope-invalid',
+          changeId: item.change.changeId,
+        });
+      }
       if (item.computedHash !== item.change.payloadHash) {
         throw new RpcFailure('malformed-request', {
           reason: 'payload-hash-mismatch',
@@ -1655,9 +1686,7 @@ export class AccountCoordinator extends DurableObject<Env> {
 
   private handleScanPage(requestId: string, params: unknown): Response {
     const page = parseScanPageParams(params);
-    const result = this.commit(() =>
-      this.pageScan(page.scanId, page.cursor, page.maxBytes),
-    );
+    const result = this.commit(() => this.pageScan(page.scanId, page.cursor, page.maxBytes));
     return rpcSuccessResponse(requestId, result);
   }
 
@@ -1806,11 +1835,7 @@ export class AccountCoordinator extends DurableObject<Env> {
   // (`previewed`) and commits it through the normal change path — conflicts
   // are preserved, never overwritten; live leases never migrate.
 
-  private handleDataExportBegin(
-    auth: SpikeAuth,
-    requestId: string,
-    params: unknown,
-  ): Response {
+  private handleDataExportBegin(auth: SpikeAuth, requestId: string, params: unknown): Response {
     parseDataExportBeginParams(params);
     const epoch = this.readMeta('epoch');
     const watermark = this.currentWatermark();
@@ -1832,11 +1857,7 @@ export class AccountCoordinator extends DurableObject<Env> {
     return rpcSuccessResponse(requestId, result);
   }
 
-  private handleDataExportPage(
-    auth: SpikeAuth,
-    requestId: string,
-    params: unknown,
-  ): Response {
+  private handleDataExportPage(auth: SpikeAuth, requestId: string, params: unknown): Response {
     const page = parseDataExportPageParams(params);
     const result = this.commit(() => {
       const op = this.loadDataOperation(page.operationId, 'export');
@@ -1893,9 +1914,7 @@ export class AccountCoordinator extends DurableObject<Env> {
       }
       const last = entities[entities.length - 1];
       const nextCursor =
-        last === undefined
-          ? op.entity_cursor
-          : encodeEntityCursor(last.entityType, last.entityId);
+        last === undefined ? op.entity_cursor : encodeEntityCursor(last.entityType, last.entityId);
       this.ctx.storage.sql.exec(
         `UPDATE data_operations SET entity_cursor = ?, state = ?, finished_at = ?
          WHERE operation_id = ?`,
@@ -1917,11 +1936,7 @@ export class AccountCoordinator extends DurableObject<Env> {
     return rpcSuccessResponse(requestId, full);
   }
 
-  private handleDataImportPreview(
-    auth: SpikeAuth,
-    requestId: string,
-    params: unknown,
-  ): Response {
+  private handleDataImportPreview(auth: SpikeAuth, requestId: string, params: unknown): Response {
     const input = parseDataImportPreviewParams(params);
     const result = this.commit(() => {
       const summary = { creates: 0, identical: 0, conflicts: 0, invalid: 0 };
@@ -1999,11 +2014,7 @@ export class AccountCoordinator extends DurableObject<Env> {
     return { ...entity, outcome: 'conflict', reason: 'exists-different-content' };
   }
 
-  private handleDataImportCommit(
-    auth: SpikeAuth,
-    requestId: string,
-    params: unknown,
-  ): Response {
+  private handleDataImportCommit(auth: SpikeAuth, requestId: string, params: unknown): Response {
     const input = parseDataImportCommitParams(params);
     let acceptedWatermark: number | null = null;
     const outcome = this.commit(() => {
@@ -2113,9 +2124,7 @@ export class AccountCoordinator extends DurableObject<Env> {
       kind: op.kind as 'export' | 'import',
       state: op.state as DataOperationStatusResult['state'],
       createdAt: new Date(op.created_at).toISOString(),
-      ...(op.finished_at === null
-        ? {}
-        : { finishedAt: new Date(op.finished_at).toISOString() }),
+      ...(op.finished_at === null ? {} : { finishedAt: new Date(op.finished_at).toISOString() }),
       ...(Object.keys(detail).length === 0 ? {} : { detail }),
     };
     return rpcSuccessResponse(requestId, result);
@@ -2123,10 +2132,7 @@ export class AccountCoordinator extends DurableObject<Env> {
 
   private loadDataOperation(operationId: string, kind: 'export' | 'import'): DataOperationRow {
     const rows = this.ctx.storage.sql
-      .exec<DataOperationRow>(
-        'SELECT * FROM data_operations WHERE operation_id = ?',
-        operationId,
-      )
+      .exec<DataOperationRow>('SELECT * FROM data_operations WHERE operation_id = ?', operationId)
       .toArray();
     const op = rows[0];
     if (op === undefined) {
@@ -2140,7 +2146,6 @@ export class AccountCoordinator extends DurableObject<Env> {
     }
     return op;
   }
-
 
   private readRetentionFloor(): number {
     return Number(this.readMeta('retention_floor'));
@@ -2359,7 +2364,7 @@ export class AccountCoordinator extends DurableObject<Env> {
    */
   private handleDevicePresence(auth: SpikeAuth, requestId: string): Response {
     const now = Date.now();
-    interface PresenceRow {
+    interface PresenceRow extends Record<string, SqlStorageValue> {
       enrollment_id: string;
       last_seen: number;
     }
@@ -2381,7 +2386,7 @@ export class AccountCoordinator extends DurableObject<Env> {
       .toArray()) {
       note(row.enrollment_id, row.last_seen);
     }
-    interface AdRow {
+    interface AdRow extends Record<string, SqlStorageValue> {
       enrollment_id: string;
       endpoints: string;
       capabilities: string;
@@ -2781,8 +2786,7 @@ export class AccountCoordinator extends DurableObject<Env> {
     // require a 'ready' replica at the manifest's pinned definition
     // revision (the digest that also proves Git inputs materialised).
     // prepare-workspace produces readiness and diagnostic needs none.
-    const needsWorkspace =
-      create.kind !== 'diagnostic' && create.kind !== 'prepare-workspace';
+    const needsWorkspace = create.kind !== 'diagnostic' && create.kind !== 'prepare-workspace';
     const manifestWorkspaceId =
       needsWorkspace && typeof create.inputManifest.inputs['workspaceId'] === 'string'
         ? (create.inputManifest.inputs['workspaceId'] as string)
@@ -2812,14 +2816,14 @@ export class AccountCoordinator extends DurableObject<Env> {
         const replica =
           manifestWorkspaceId === null
             ? null
-            : this.ctx.storage.sql
+            : (this.ctx.storage.sql
                 .exec<{ readiness: string; definition_revision: string }>(
                   `SELECT readiness, definition_revision FROM worker_replicas
                    WHERE enrollment_id = ? AND workspace_id = ?`,
                   row.enrollment_id,
                   manifestWorkspaceId,
                 )
-                .toArray()[0] ?? null;
+                .toArray()[0] ?? null);
         if (
           replica === null ||
           replica.readiness !== 'ready' ||
@@ -2839,7 +2843,9 @@ export class AccountCoordinator extends DurableObject<Env> {
       const explanation =
         `auto: no eligible live worker (${liveAllowing} live worker(s) ` +
         'allowing jobs; none satisfy source authorization, requirements, capacity' +
-        (needsWorkspace ? `, and workspace readiness (${readyRejected} rejected on readiness)` : '') +
+        (needsWorkspace
+          ? `, and workspace readiness (${readyRejected} rejected on readiness)`
+          : '') +
         ')';
       return { targetEnrollmentId: null, explanation };
     }
@@ -2862,10 +2868,7 @@ export class AccountCoordinator extends DurableObject<Env> {
       // MESH-03: reads also enforce pending-approval expiry lazily.
       this.expireJobApprovals(jobId, now);
       const attempts = this.ctx.storage.sql
-        .exec<AttemptRow>(
-          'SELECT * FROM attempts WHERE job_id = ? ORDER BY fence ASC',
-          jobId,
-        )
+        .exec<AttemptRow>('SELECT * FROM attempts WHERE job_id = ? ORDER BY fence ASC', jobId)
         .toArray()
         .map((row) => this.attemptView(row));
       const out: JobGetResult = { job: this.jobSummary(job), attempts };
@@ -2944,7 +2947,10 @@ export class AccountCoordinator extends DurableObject<Env> {
       if (!policyAllowsSource(policy, job.source_enrollment_id, auth.enrollmentId)) {
         throw new RpcFailure('forbidden', { reason: 'source-not-allowed' });
       }
-      const capacity = effectiveConcurrencyCap(policy, parseStoredCapabilities(worker.capabilities));
+      const capacity = effectiveConcurrencyCap(
+        policy,
+        parseStoredCapabilities(worker.capabilities),
+      );
       const active = this.countActiveAttempts(auth.enrollmentId);
       if (active >= capacity) {
         throw new RpcFailure('conflict', { reason: 'worker-at-capacity', limit: capacity });
@@ -3273,11 +3279,9 @@ export class AccountCoordinator extends DurableObject<Env> {
    */
   private expireQueuedJobs(now: number): number {
     const expired = this.ctx.storage.sql
-      .exec<{ job_id: string }>(
-        "SELECT job_id FROM jobs WHERE state = 'queued' AND queue_deadline <= ? LIMIT ?",
-        now,
-        SWEEP_BATCH_ROWS,
-      )
+      .exec<{
+        job_id: string;
+      }>("SELECT job_id FROM jobs WHERE state = 'queued' AND queue_deadline <= ? LIMIT ?", now, SWEEP_BATCH_ROWS)
       .toArray();
     for (const row of expired) {
       const job = this.readJob(row.job_id);
@@ -3692,12 +3696,22 @@ export class AccountCoordinator extends DurableObject<Env> {
    * gap row's stream-space range instead of writing a row per drop.
    */
   private recordEventGap(
-    input: { jobId: string; attemptId: string; streamId: string; sequence: number; generation: number },
+    input: {
+      jobId: string;
+      attemptId: string;
+      streamId: string;
+      sequence: number;
+      generation: number;
+    },
     eventSeq: number,
     now: number,
   ): void {
     const prior = this.ctx.storage.sql
-      .exec<EventRow>('SELECT * FROM events WHERE job_id = ? AND event_seq = ?', input.jobId, eventSeq - 1)
+      .exec<EventRow>(
+        'SELECT * FROM events WHERE job_id = ? AND event_seq = ?',
+        input.jobId,
+        eventSeq - 1,
+      )
       .toArray()[0];
     if (
       prior !== undefined &&
@@ -3722,7 +3736,11 @@ export class AccountCoordinator extends DurableObject<Env> {
         input.jobId,
         prior.event_seq,
       );
-      this.queueDeliverable({ ...prior, payload: JSON.stringify(payload), covers_through: eventSeq });
+      this.queueDeliverable({
+        ...prior,
+        payload: JSON.stringify(payload),
+        covers_through: eventSeq,
+      });
       return;
     }
     const payload = {
@@ -4084,12 +4102,7 @@ export class AccountCoordinator extends DurableObject<Env> {
    * the replay window collapses into per-stream gap frames before the live
    * tail (deeper history is always available via event.pull).
    */
-  private replaySubscription(
-    ws: WebSocket,
-    jobId: string,
-    attemptId: string,
-    after: number,
-  ): void {
+  private replaySubscription(ws: WebSocket, jobId: string, attemptId: string, after: number): void {
     const covered = (
       attemptId === ''
         ? this.ctx.storage.sql.exec<EventRow>(
@@ -4133,12 +4146,20 @@ export class AccountCoordinator extends DurableObject<Env> {
     if (rows.length > SUBSCRIBE_REPLAY_SEND) {
       const skipped = rows.slice(0, rows.length - SUBSCRIBE_REPLAY_SEND);
       window = rows.slice(rows.length - SUBSCRIBE_REPLAY_SEND);
-      const ranges = new Map<string, { attemptId: string; streamId: string; from: number; to: number }>();
+      const ranges = new Map<
+        string,
+        { attemptId: string; streamId: string; from: number; to: number }
+      >();
       for (const row of skipped) {
         const key = `${row.attempt_id}|${row.stream_id}`;
         const range =
           ranges.get(key) ??
-          ({ attemptId: row.attempt_id, streamId: row.stream_id, from: row.sequence, to: row.sequence } as {
+          ({
+            attemptId: row.attempt_id,
+            streamId: row.stream_id,
+            from: row.sequence,
+            to: row.sequence,
+          } as {
             attemptId: string;
             streamId: string;
             from: number;
@@ -4412,9 +4433,7 @@ export class AccountCoordinator extends DurableObject<Env> {
       approverRole: 'user',
       state: row.state,
       ...(row.decided_by === null ? {} : { decidedBy: row.decided_by }),
-      ...(row.decided_at === null
-        ? {}
-        : { decidedAt: new Date(row.decided_at).toISOString() }),
+      ...(row.decided_at === null ? {} : { decidedAt: new Date(row.decided_at).toISOString() }),
       expiresAt: new Date(row.expires_at).toISOString(),
       createdAt: new Date(row.created_at).toISOString(),
     };
@@ -4528,7 +4547,11 @@ export class AccountCoordinator extends DurableObject<Env> {
             attemptId: approval.attempt_id,
             generation: approval.generation,
             kind: 'approval.decided',
-            payload: { approvalId: approval.approval_id, outcome: 'cancelled', reason: 'stale-generation' },
+            payload: {
+              approvalId: approval.approval_id,
+              outcome: 'cancelled',
+              reason: 'stale-generation',
+            },
           });
           return {
             ok: false,
@@ -4554,7 +4577,11 @@ export class AccountCoordinator extends DurableObject<Env> {
             attemptId: approval.attempt_id,
             generation: approval.generation,
             kind: 'approval.decided',
-            payload: { approvalId: approval.approval_id, outcome: 'cancelled', reason: 'job-not-awaiting-approval' },
+            payload: {
+              approvalId: approval.approval_id,
+              outcome: 'cancelled',
+              reason: 'job-not-awaiting-approval',
+            },
           });
           return {
             ok: false,
@@ -4701,6 +4728,9 @@ export class AccountCoordinator extends DurableObject<Env> {
       mediaType: row.media_type,
       retentionDays: row.retention_days,
       state: row.state,
+      sealed: row.sealed === 1,
+      ...(row.key_version === null ? {} : { keyVersion: row.key_version }),
+      ...(row.plaintext_bytes === null ? {} : { plaintextBytes: row.plaintext_bytes }),
     };
   }
 
@@ -4767,22 +4797,20 @@ export class AccountCoordinator extends DurableObject<Env> {
       if (attempt.worker_enrollment_id !== auth.enrollmentId) {
         throw new RpcFailure('forbidden', { reason: 'not-attempt-owner' });
       }
-      if (
-        worker.incarnation === null ||
-        worker.incarnation !== attempt.worker_incarnation
-      ) {
+      if (worker.incarnation === null || worker.incarnation !== attempt.worker_incarnation) {
         throw new RpcFailure('forbidden', { reason: 'stale-incarnation' });
       }
       if (!isActiveAttemptState(attempt.state)) {
         throw new RpcFailure('conflict', { reason: 'attempt-terminal' });
       }
-      const used = this.ctx.storage.sql
-        .exec<{ total: number | null }>(
-          `SELECT COALESCE(SUM(byte_length), 0) AS total FROM artifacts
+      const used =
+        this.ctx.storage.sql
+          .exec<{ total: number | null }>(
+            `SELECT COALESCE(SUM(byte_length), 0) AS total FROM artifacts
            WHERE account_id = ? AND state NOT IN ('deleted', 'expired')`,
-          auth.accountId,
-        )
-        .one().total ?? 0;
+            auth.accountId,
+          )
+          .one().total ?? 0;
       if (used + reserve.byteLength > ACCOUNT_ARTIFACT_MAX_BYTES) {
         throw new RpcFailure('quota-exceeded', {
           reason: 'account-artifact-bytes',
@@ -4796,8 +4824,9 @@ export class AccountCoordinator extends DurableObject<Env> {
         `INSERT INTO artifacts (
            artifact_id, account_id, job_id, attempt_id, byte_length, sha256,
            media_type, retention_days, state, r2_key, upload_expires_at,
-           created_at, updated_at, published_at, expires_at, deleted_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?, ?, ?, NULL, NULL, NULL)`,
+           created_at, updated_at, published_at, expires_at, deleted_at,
+           sealed, key_version, plaintext_bytes
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?)`,
         artifactId,
         auth.accountId,
         job.job_id,
@@ -4810,6 +4839,9 @@ export class AccountCoordinator extends DurableObject<Env> {
         uploadExpiresAt,
         now,
         now,
+        reserve.sealed ? 1 : 0,
+        reserve.keyVersion ?? null,
+        reserve.plaintextBytes ?? null,
       );
       this.journalDurableEvent({
         jobId: job.job_id,
@@ -4954,6 +4986,15 @@ export class AccountCoordinator extends DurableObject<Env> {
       if (finalize.byteLength !== row.byte_length || finalize.sha256 !== row.sha256) {
         throw new RpcFailure('conflict', { reason: 'manifest-mismatch' });
       }
+      // E2E: a declared seal manifest must agree with the reservation — the
+      // bytes being finalized cannot silently change protection class.
+      if (
+        (finalize.sealed !== undefined && finalize.sealed !== (row.sealed === 1)) ||
+        (finalize.keyVersion !== undefined && finalize.keyVersion !== row.key_version) ||
+        (finalize.plaintextBytes !== undefined && finalize.plaintextBytes !== row.plaintext_bytes)
+      ) {
+        throw new RpcFailure('conflict', { reason: 'manifest-mismatch' });
+      }
       return row;
     });
     const probe = await this.readArtifactObjectDigest(artifact.r2_key);
@@ -4961,11 +5002,7 @@ export class AccountCoordinator extends DurableObject<Env> {
       throw new RpcFailure('conflict', { reason: 'artifact-not-uploaded' });
     }
     if (probe.size !== artifact.byte_length || probe.sha256 !== artifact.sha256) {
-      await this.discardArtifact(
-        artifact.artifact_id,
-        'verify-mismatch',
-        auth.enrollmentId,
-      );
+      await this.discardArtifact(artifact.artifact_id, 'verify-mismatch', auth.enrollmentId);
       throw new RpcFailure('conflict', {
         reason: 'checksum-mismatch',
         expectedBytes: artifact.byte_length,
@@ -5226,11 +5263,7 @@ export class AccountCoordinator extends DurableObject<Env> {
    * with identical parameters returns the live row; a reuse with different
    * parameters conflicts, mirroring job.create's request-id rule.
    */
-  private handleHandoffCreate(
-    auth: SpikeAuth,
-    requestId: string,
-    params: unknown,
-  ): Response {
+  private handleHandoffCreate(auth: SpikeAuth, requestId: string, params: unknown): Response {
     const create = parseHandoffCreateParams(params);
     const result = this.commit((): HandoffCreateResult => {
       this.assertNotRevoked(auth);
@@ -5315,11 +5348,7 @@ export class AccountCoordinator extends DurableObject<Env> {
    * activate/complete. `ownership-transferred` performs the session
    * generation CAS — the one moment ownership actually moves.
    */
-  private handleHandoffAdvance(
-    auth: SpikeAuth,
-    requestId: string,
-    params: unknown,
-  ): Response {
+  private handleHandoffAdvance(auth: SpikeAuth, requestId: string, params: unknown): Response {
     const advance = parseHandoffAdvanceParams(params);
     const result = this.commit((): HandoffAdvanceResult => {
       this.assertNotRevoked(auth);
@@ -5342,7 +5371,7 @@ export class AccountCoordinator extends DurableObject<Env> {
 
       const now = Date.now();
       if (advance.to === 'source-relinquished-and-checkpointed') {
-        const checkpoint = advance.checkpoint as SessionCheckpoint;
+        const checkpoint = advance.checkpoint as HandoffCheckpoint;
         if (
           checkpoint.sessionId !== row.session_id ||
           checkpoint.sourceGeneration !== row.source_generation
@@ -5414,11 +5443,7 @@ export class AccountCoordinator extends DurableObject<Env> {
    * target still owns recovery; resuming the source requires a fresh
    * handoff and generation.
    */
-  private handleHandoffCancel(
-    auth: SpikeAuth,
-    requestId: string,
-    params: unknown,
-  ): Response {
+  private handleHandoffCancel(auth: SpikeAuth, requestId: string, params: unknown): Response {
     const cancel = parseHandoffCancelParams(params);
     const result = this.commit((): HandoffCancelResult => {
       this.assertNotRevoked(auth);
@@ -5452,11 +5477,7 @@ export class AccountCoordinator extends DurableObject<Env> {
   }
 
   /** Per-transition enrollment authority (spec §11 ownership rules). */
-  private assertHandoffActor(
-    row: HandoffRow,
-    to: HandoffState,
-    enrollmentId: string,
-  ): void {
+  private assertHandoffActor(row: HandoffRow, to: HandoffState, enrollmentId: string): void {
     if (to === 'source-quiescing' || to === 'source-relinquished-and-checkpointed') {
       if (enrollmentId !== row.source_enrollment_id) {
         throw new RpcFailure('forbidden', { reason: 'not-source-enrollment' });
@@ -5470,10 +5491,7 @@ export class AccountCoordinator extends DurableObject<Env> {
       return;
     }
     if (to === 'failed') {
-      if (
-        enrollmentId !== row.source_enrollment_id &&
-        enrollmentId !== row.target_enrollment_id
-      ) {
+      if (enrollmentId !== row.source_enrollment_id && enrollmentId !== row.target_enrollment_id) {
         throw new RpcFailure('forbidden', { reason: 'not-handoff-participant' });
       }
       return;
@@ -5543,10 +5561,10 @@ export class AccountCoordinator extends DurableObject<Env> {
   }
 
   private handoffRecord(row: HandoffRow): HandoffRecord {
-    let checkpoint: SessionCheckpoint | null = null;
+    let checkpoint: HandoffCheckpoint | null = null;
     if (row.checkpoint_json !== null) {
       try {
-        checkpoint = JSON.parse(row.checkpoint_json) as SessionCheckpoint;
+        checkpoint = JSON.parse(row.checkpoint_json) as HandoffCheckpoint;
       } catch {
         throw new RpcFailure('unavailable', { reason: 'corrupt-handoff-checkpoint' });
       }
@@ -5667,11 +5685,9 @@ export class AccountCoordinator extends DurableObject<Env> {
         deletedReceipts += 1;
       }
       const staleScans = this.ctx.storage.sql
-        .exec<{ scan_id: string }>(
-          'SELECT scan_id FROM scans WHERE done = 1 AND created_at < ? LIMIT ?',
-          cutoff,
-          SWEEP_BATCH_ROWS,
-        )
+        .exec<{
+          scan_id: string;
+        }>('SELECT scan_id FROM scans WHERE done = 1 AND created_at < ? LIMIT ?', cutoff, SWEEP_BATCH_ROWS)
         .toArray();
       for (const row of staleScans) {
         this.ctx.storage.sql.exec('DELETE FROM scans WHERE scan_id = ?', row.scan_id);
@@ -5788,19 +5804,15 @@ export class AccountCoordinator extends DurableObject<Env> {
         )
         .toArray();
       for (const row of staleArtifacts) {
-        this.ctx.storage.sql.exec(
-          'DELETE FROM artifacts WHERE artifact_id = ?',
-          row.artifact_id,
-        );
+        this.ctx.storage.sql.exec('DELETE FROM artifacts WHERE artifact_id = ?', row.artifact_id);
       }
       // MESH-03: the durable journal keeps the same 90-day horizon as the
       // change log; job_event_meta rows persist so cursors never rewind.
       const staleEvents = this.ctx.storage.sql
-        .exec<{ job_id: string; event_seq: number }>(
-          'SELECT job_id, event_seq FROM events WHERE created_at < ? LIMIT ?',
-          cutoff,
-          SWEEP_BATCH_ROWS,
-        )
+        .exec<{
+          job_id: string;
+          event_seq: number;
+        }>('SELECT job_id, event_seq FROM events WHERE created_at < ? LIMIT ?', cutoff, SWEEP_BATCH_ROWS)
         .toArray();
       for (const row of staleEvents) {
         this.ctx.storage.sql.exec(
@@ -5934,16 +5946,14 @@ export class AccountCoordinator extends DurableObject<Env> {
     // Artifacts carry R2 objects — collect keys for post-commit deletion
     // (pendingR2Deletes runs under ctx.waitUntil inside commit()).
     const artifactRows = this.ctx.storage.sql
-      .exec<{ artifact_id: string; r2_key: string }>(
-        `SELECT artifact_id, r2_key FROM artifacts LIMIT ${SWEEP_BATCH_ROWS}`,
-      )
+      .exec<{
+        artifact_id: string;
+        r2_key: string;
+      }>(`SELECT artifact_id, r2_key FROM artifacts LIMIT ${SWEEP_BATCH_ROWS}`)
       .toArray();
     for (const row of artifactRows) {
       this.pendingR2Deletes.push(row.r2_key);
-      this.ctx.storage.sql.exec(
-        'DELETE FROM artifacts WHERE artifact_id = ?',
-        row.artifact_id,
-      );
+      this.ctx.storage.sql.exec('DELETE FROM artifacts WHERE artifact_id = ?', row.artifact_id);
       purged += 1;
     }
     for (const table of ACCOUNT_PURGE_TABLES) {
@@ -6049,7 +6059,11 @@ function parseSpikePushParams(params: unknown): SpikePushParams {
   return { changes, epoch: epochRaw };
 }
 
-function parseSpikePullParams(params: unknown): { cursor: number; maxBytes: number; maxChanges?: number } {
+function parseSpikePullParams(params: unknown): {
+  cursor: number;
+  maxBytes: number;
+  maxChanges?: number;
+} {
   if (!isRecord(params)) {
     throw new RpcFailure('malformed-request', { reason: 'pull-params' });
   }
@@ -6171,7 +6185,10 @@ function parseDataExportBeginParams(params: unknown): { maxBytes?: number } {
     throw new RpcFailure('malformed-request', { reason: 'export-begin-params' });
   }
   const maxBytes = params['maxBytes'];
-  if (maxBytes !== undefined && (typeof maxBytes !== 'number' || !Number.isInteger(maxBytes) || maxBytes < 1)) {
+  if (
+    maxBytes !== undefined &&
+    (typeof maxBytes !== 'number' || !Number.isInteger(maxBytes) || maxBytes < 1)
+  ) {
     throw new RpcFailure('malformed-request', { reason: 'maxBytes' });
   }
   return { ...(maxBytes === undefined ? {} : { maxBytes }) };
@@ -6293,7 +6310,11 @@ function parsePendingChange(input: unknown): PendingChange {
   if (typeof changeId !== 'string' || changeId.length === 0) {
     throw new RpcFailure('malformed-request', { reason: 'changeId' });
   }
-  if (typeof enrollmentSequence !== 'number' || !Number.isInteger(enrollmentSequence) || enrollmentSequence < 1) {
+  if (
+    typeof enrollmentSequence !== 'number' ||
+    !Number.isInteger(enrollmentSequence) ||
+    enrollmentSequence < 1
+  ) {
     throw new RpcFailure('malformed-request', { reason: 'enrollmentSequence' });
   }
   if (typeof entityType !== 'string' || entityType.length === 0) {
@@ -6305,7 +6326,9 @@ function parsePendingChange(input: unknown): PendingChange {
   if (typeof schemaVersion !== 'number' || !Number.isInteger(schemaVersion) || schemaVersion < 1) {
     throw new RpcFailure('malformed-request', { reason: 'schemaVersion' });
   }
-  if (!(baseRevision === null || (typeof baseRevision === 'number' && Number.isInteger(baseRevision)))) {
+  if (
+    !(baseRevision === null || (typeof baseRevision === 'number' && Number.isInteger(baseRevision)))
+  ) {
     throw new RpcFailure('malformed-request', { reason: 'baseRevision' });
   }
   if (!isSyncOperation(operation)) {
@@ -6993,7 +7016,11 @@ function parseAttemptRenewParams(params: unknown): AttemptRenewParams {
   }
   const renewals: AttemptRenewalRequest[] = [];
   for (const entry of params['renewals']) {
-    if (!isRecord(entry) || !isBoundedId(entry['attemptId']) || !isBoundedId(entry['incarnation'])) {
+    if (
+      !isRecord(entry) ||
+      !isBoundedId(entry['attemptId']) ||
+      !isBoundedId(entry['incarnation'])
+    ) {
       throw new RpcFailure('malformed-request', { reason: 'renewal' });
     }
     const fence = entry['fence'];
@@ -7285,6 +7312,9 @@ function parseArtifactReserveParams(params: unknown): {
   sha256: string;
   mediaType: string;
   retentionDays: number;
+  sealed: boolean;
+  keyVersion?: number;
+  plaintextBytes?: number;
 } {
   if (!isRecord(params)) {
     throw new RpcFailure('malformed-request', { reason: 'reserve-params' });
@@ -7294,11 +7324,7 @@ function parseArtifactReserveParams(params: unknown): {
     throw new RpcFailure('malformed-request', { reason: 'attemptId' });
   }
   const byteLength = params['byteLength'];
-  if (
-    typeof byteLength !== 'number' ||
-    !Number.isSafeInteger(byteLength) ||
-    byteLength < 1
-  ) {
+  if (typeof byteLength !== 'number' || !Number.isSafeInteger(byteLength) || byteLength < 1) {
     throw new RpcFailure('malformed-request', { reason: 'byteLength' });
   }
   if (byteLength > ARTIFACT_MAX_BYTES) {
@@ -7330,12 +7356,55 @@ function parseArtifactReserveParams(params: unknown): {
   ) {
     throw new RpcFailure('malformed-request', { reason: 'retentionDays' });
   }
+  const sealedMeta = parseSealedByteMeta(params);
   return {
     attemptId,
     byteLength,
     sha256,
     mediaType,
     retentionDays: retentionDays ?? ARTIFACT_DEFAULT_RETENTION_DAYS,
+    ...sealedMeta,
+  };
+}
+
+/**
+ * Parses the optional E2E byte-manifest fields shared by artifact.reserve,
+ * artifact.finalize, share.create and share.finalize: `sealed` marks the
+ * stored bytes as client-encrypted, `keyVersion` is required when sealed,
+ * `plaintextBytes` records the pre-encryption size for display and quota.
+ */
+function parseSealedByteMeta(params: Record<string, unknown>): {
+  sealed: boolean;
+  keyVersion?: number;
+  plaintextBytes?: number;
+} {
+  const sealed = params['sealed'];
+  if (sealed !== undefined && typeof sealed !== 'boolean') {
+    throw new RpcFailure('malformed-request', { reason: 'sealed' });
+  }
+  const keyVersion = params['keyVersion'];
+  if (
+    keyVersion !== undefined &&
+    (typeof keyVersion !== 'number' || !Number.isSafeInteger(keyVersion) || keyVersion < 1)
+  ) {
+    throw new RpcFailure('malformed-request', { reason: 'keyVersion' });
+  }
+  const plaintextBytes = params['plaintextBytes'];
+  if (
+    plaintextBytes !== undefined &&
+    (typeof plaintextBytes !== 'number' ||
+      !Number.isSafeInteger(plaintextBytes) ||
+      plaintextBytes < 1)
+  ) {
+    throw new RpcFailure('malformed-request', { reason: 'plaintextBytes' });
+  }
+  if (sealed === true && keyVersion === undefined) {
+    throw new RpcFailure('malformed-request', { reason: 'keyVersion-required' });
+  }
+  return {
+    sealed: sealed === true,
+    ...(keyVersion === undefined ? {} : { keyVersion }),
+    ...(plaintextBytes === undefined ? {} : { plaintextBytes }),
   };
 }
 
@@ -7343,6 +7412,9 @@ function parseArtifactFinalizeParams(params: unknown): {
   artifactId: string;
   byteLength: number;
   sha256: string;
+  sealed?: boolean;
+  keyVersion?: number;
+  plaintextBytes?: number;
 } {
   if (!isRecord(params)) {
     throw new RpcFailure('malformed-request', { reason: 'finalize-params' });
@@ -7352,18 +7424,24 @@ function parseArtifactFinalizeParams(params: unknown): {
     throw new RpcFailure('malformed-request', { reason: 'artifactId' });
   }
   const byteLength = params['byteLength'];
-  if (
-    typeof byteLength !== 'number' ||
-    !Number.isSafeInteger(byteLength) ||
-    byteLength < 1
-  ) {
+  if (typeof byteLength !== 'number' || !Number.isSafeInteger(byteLength) || byteLength < 1) {
     throw new RpcFailure('malformed-request', { reason: 'byteLength' });
   }
   const sha256 = params['sha256'];
   if (typeof sha256 !== 'string' || !HASH_PATTERN.test(sha256)) {
     throw new RpcFailure('malformed-request', { reason: 'sha256' });
   }
-  return { artifactId, byteLength, sha256 };
+  const sealedMeta = parseSealedByteMeta(params);
+  return {
+    artifactId,
+    byteLength,
+    sha256,
+    ...(sealedMeta.sealed === false &&
+    sealedMeta.keyVersion === undefined &&
+    sealedMeta.plaintextBytes === undefined
+      ? {}
+      : sealedMeta),
+  };
 }
 
 function parseArtifactIdParams(params: unknown): { artifactId: string } {
@@ -7476,9 +7554,29 @@ function parseHandoffIdParams(params: unknown): { handoffId: string } {
   return { handoffId: params['handoffId'] };
 }
 
-function parseSessionCheckpoint(input: unknown): SessionCheckpoint {
+function parseSessionCheckpoint(input: unknown): HandoffCheckpoint {
   if (!isRecord(input)) {
     throw new RpcFailure('malformed-request', { reason: 'checkpoint' });
+  }
+  // E2E: a sealed checkpoint carries the clear CAS assertions plus the
+  // envelope — the backend validates structure and stores it unopened.
+  if (input['enc'] !== undefined) {
+    if (sealedEnvelopeIssue(input) !== null) {
+      throw new RpcFailure('malformed-request', { reason: 'checkpoint' });
+    }
+    const sealedSessionId = input['sessionId'];
+    const sealedGeneration = input['sourceGeneration'];
+    if (!isBoundedId(sealedSessionId)) {
+      throw new RpcFailure('malformed-request', { reason: 'checkpoint.sessionId' });
+    }
+    if (
+      typeof sealedGeneration !== 'number' ||
+      !Number.isSafeInteger(sealedGeneration) ||
+      sealedGeneration < 1
+    ) {
+      throw new RpcFailure('malformed-request', { reason: 'checkpoint.sourceGeneration' });
+    }
+    return input as unknown as SealedSessionCheckpoint;
   }
   const sessionId = input['sessionId'];
   const schemaVersion = input['schemaVersion'];
@@ -7491,11 +7589,7 @@ function parseSessionCheckpoint(input: unknown): SessionCheckpoint {
   if (!isBoundedId(sessionId)) {
     throw new RpcFailure('malformed-request', { reason: 'checkpoint.sessionId' });
   }
-  if (
-    typeof schemaVersion !== 'number' ||
-    !Number.isInteger(schemaVersion) ||
-    schemaVersion < 1
-  ) {
+  if (typeof schemaVersion !== 'number' || !Number.isInteger(schemaVersion) || schemaVersion < 1) {
     throw new RpcFailure('malformed-request', { reason: 'checkpoint.schemaVersion' });
   }
   if (
@@ -7529,7 +7623,7 @@ function parseHandoffAdvanceParams(params: unknown): {
   handoffId: string;
   from: HandoffState;
   to: HandoffState;
-  checkpoint?: SessionCheckpoint;
+  checkpoint?: HandoffCheckpoint;
 } {
   if (!isRecord(params)) {
     throw new RpcFailure('malformed-request', { reason: 'advance-params' });
@@ -7544,7 +7638,7 @@ function parseHandoffAdvanceParams(params: unknown): {
     throw new RpcFailure('malformed-request', { reason: 'state' });
   }
   const checkpointRaw = params['checkpoint'];
-  let checkpoint: SessionCheckpoint | undefined;
+  let checkpoint: HandoffCheckpoint | undefined;
   if (to === 'source-relinquished-and-checkpointed') {
     if (checkpointRaw === undefined) {
       throw new RpcFailure('malformed-request', { reason: 'checkpoint-required' });

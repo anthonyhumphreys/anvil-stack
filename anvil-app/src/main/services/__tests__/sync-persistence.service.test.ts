@@ -104,13 +104,14 @@ beforeEach(() => {
     `DELETE FROM sync_outbox; DELETE FROM sync_bindings; DELETE FROM sync_conflicts;
      DELETE FROM sync_state; DELETE FROM device_enrollments; DELETE FROM workflow_templates;
      DELETE FROM sync_scan_runs; DELETE FROM sync_scan_staging; DELETE FROM sync_installation;
-     DELETE FROM sync_backends; DELETE FROM sync_entitlement;`,
+     DELETE FROM sync_backends; DELETE FROM sync_entitlement; DELETE FROM sync_keyring;
+     DELETE FROM sync_device_keys; DELETE FROM sync_pairing; DELETE FROM sync_keyring_deliveries;`,
   );
 });
 
 describe('schema migrations', () => {
   it('leaves SCHEMA_VERSION at the current schema after later packets', () => {
-    expect(SCHEMA_VERSION).toBe(80);
+    expect(SCHEMA_VERSION).toBe(82);
   });
 
   it('migration 70 adds the sequence allocator, review flag, and scan staging', () => {
@@ -128,9 +129,9 @@ describe('schema migrations', () => {
       );
       expect(enrollmentColumns.has('next_sequence')).toBe(true);
       const backendColumns = new Set(
-        (
-          fresh.prepare('PRAGMA table_info(sync_backends)').all() as Array<{ name: string }>
-        ).map((column) => column.name),
+        (fresh.prepare('PRAGMA table_info(sync_backends)').all() as Array<{ name: string }>).map(
+          (column) => column.name,
+        ),
       );
       expect(backendColumns.has('identity_review_required')).toBe(true);
       const tables = new Set(
@@ -413,9 +414,7 @@ describe('nextBatch', () => {
     const first = nextBatch(SCOPE, 'enrollment-1', { maxChanges: 1 });
     expect(first.map((item) => item.entityId)).toEqual(['a']);
     // Acknowledge the dispatched row so the next batch moves past it.
-    applyPushResults(SCOPE, [
-      { changeId: first[0].changeId, revision: 1, status: 'accepted' },
-    ]);
+    applyPushResults(SCOPE, [{ changeId: first[0].changeId, revision: 1, status: 'accepted' }]);
     const rest = nextBatch(SCOPE, 'enrollment-1');
     expect(rest.map((item) => item.entityId)).toEqual(['b', 'c']);
     const sequences = [...first, ...rest].map((item) => item.enrollmentSequence);
@@ -439,9 +438,7 @@ describe('nextBatch', () => {
     // identity/hash overhead, so 400 fits exactly one.
     const limited = nextBatch(SCOPE, 'enrollment-1', { maxBytes: 400 });
     expect(limited.map((item) => item.entityId)).toEqual(['a']);
-    applyPushResults(SCOPE, [
-      { changeId: limited[0].changeId, revision: 1, status: 'accepted' },
-    ]);
+    applyPushResults(SCOPE, [{ changeId: limited[0].changeId, revision: 1, status: 'accepted' }]);
     const remainder = nextBatch(SCOPE, 'enrollment-1');
     expect(remainder.map((item) => item.entityId)).toEqual(['b']);
   });
@@ -649,6 +646,92 @@ describe('applyPushResults', () => {
     expect(() => applyPushResults(SCOPE, [{ changeId: 'missing', status: 'accepted' }])).toThrow(
       'Unknown change',
     );
+  });
+});
+
+describe('nextBatch sealing', () => {
+  const fakeEnvelope = { enc: 'aes-256-gcm', keyVersion: 1, nonce: 'AA==', ct: 'BB==' };
+
+  it('dispatches the sealed wire payload and hashes the envelope, not the plaintext', () => {
+    activateEnrollment();
+    upsertBinding(SCOPE, ET, 'e');
+    change({
+      entityId: 'e',
+      entityType: ET,
+      operation: 'create',
+      payload: { v: 1 },
+      schemaVersion: 1,
+    });
+    const [item] = nextBatch(SCOPE, 'enrollment-1', {
+      seal: () => fakeEnvelope,
+    });
+    expect(item.payload).toEqual(fakeEnvelope);
+    const row = listOutboxRows(SCOPE)[0];
+    expect(row.sealedJson).toBe(canonicalJson(fakeEnvelope));
+    expect(row.payloadHash).toBe(
+      computePayloadHash({
+        baseRevision: null,
+        entityId: 'e',
+        entityType: ET,
+        operation: 'create',
+        payload: fakeEnvelope,
+        schemaVersion: 1,
+      }),
+    );
+    // The local source payload stays plaintext for conflict/merge logic.
+    expect(row.payloadJson).toBe(canonicalJson({ v: 1 }));
+  });
+
+  it('replays the identical sealed ciphertext and hash on redispatch', () => {
+    activateEnrollment();
+    upsertBinding(SCOPE, ET, 'e');
+    change({
+      entityId: 'e',
+      entityType: ET,
+      operation: 'create',
+      payload: { v: 1 },
+      schemaVersion: 1,
+    });
+    let calls = 0;
+    const seal = () => {
+      calls += 1;
+      return { ...fakeEnvelope, nonce: `nonce-${calls}` };
+    };
+    const first = nextBatch(SCOPE, 'enrollment-1', { seal });
+    // An unacked dispatched row replays through nextBatch — the stored
+    // sealed_json wins, so the seal hook is never invoked again and the
+    // wire payload (and its hash) is byte-identical to the first attempt.
+    const replay = nextBatch(SCOPE, 'enrollment-1', { seal });
+    expect(calls).toBe(1);
+    expect(replay[0].payload).toEqual(first[0].payload);
+    expect(replay[0].payloadHash).toBe(first[0].payloadHash);
+  });
+
+  it('defers the row instead of sending plaintext when the seal hook declines', () => {
+    activateEnrollment();
+    upsertBinding(SCOPE, ET, 'e');
+    change({
+      entityId: 'e',
+      entityType: ET,
+      operation: 'create',
+      payload: { v: 1 },
+      schemaVersion: 1,
+    });
+    const batch = nextBatch(SCOPE, 'enrollment-1', { seal: () => undefined });
+    expect(batch).toEqual([]);
+    expect(listOutboxRows(SCOPE)[0].state).toBe('pending');
+  });
+
+  it('does not invoke the seal hook for deletes', () => {
+    activateEnrollment();
+    upsertBinding(SCOPE, ET, 'e');
+    getDb().prepare("UPDATE sync_bindings SET base_revision = 3 WHERE entity_id = 'e'").run();
+    change({ entityId: 'e', entityType: ET, operation: 'delete', schemaVersion: 1 });
+    const seal = vi.fn(() => fakeEnvelope);
+    const [item] = nextBatch(SCOPE, 'enrollment-1', { seal });
+    expect(seal).not.toHaveBeenCalled();
+    expect(item.operation).toBe('delete');
+    expect(item.payload).toBeUndefined();
   });
 });
 

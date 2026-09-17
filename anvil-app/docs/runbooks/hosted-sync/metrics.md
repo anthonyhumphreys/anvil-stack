@@ -1,10 +1,37 @@
 # Hosted sync metrics and alerts — what to watch
 
-Packet: **BILL-06**. List only — no implementation lives here yet. Sources:
-D1 (`webhook_events`, `checkout_sessions`, `billing_meta`, `billing_audit`),
-Worker logs/analytics, and the entitlement decisions AccountCoordinator
-already computes. Suggested thresholds are starting points — tune after the
-first week of real traffic.
+Packet: **BILL-06**. Emission is implemented in the worker as structured
+JSON log lines (`src/hosted/metrics.ts`) — one `{metric, ts, ...fields}`
+object per line, picked up by Workers Logs/observability and Logpush.
+Alert routing, dashboards, and named on-call ownership remain deployment
+configuration, not code. Suggested thresholds are starting points — tune
+after the first week of real traffic.
+
+## Emitted signals
+
+| Log metric | Source | Fields |
+| --- | --- | --- |
+| `entitlement.decision` | `checkHostedAccess` (cached, fresh, and outage-fallback paths) | `state`, `source`, `reason`, `cached`, `outageFallback?` |
+| `enforcement.denial` | `checkHostedAccess` when a mutating op is refused | `reason` |
+| `webhook.event` | Stripe webhook handler | `type`, `outcome` (`processed`/`duplicate`/`failed-deterministic`/`failed-fault`) |
+| `webhook.rejected` | Webhook signature failure | `reason: 'signature'` |
+| `service_auth.failure` | `/internal/hosted/*` signature rejection | `path` |
+| `hosted.route_error` | Hosted dispatch catch-all | `path` |
+| `config.issue` | Cron run, enforcement-flag sanity check | `missing` |
+| `reconcile.run` | Cron run | `candidates`, `attempted`, `reconciled`, `failed` |
+| `reconcile.failure` | Per-account reconcile error | — |
+| `reconcile.skipped` | Cron run with Stripe unconfigured | `reason` |
+| `reconcile.error` | Candidate-query failure | `stage` |
+| `webhook.backlog` | Cron sweep | `oldestUnprocessedAgeMs` |
+| `webhook.failed` | Cron sweep | `total`, `lastHour` |
+| `checkout.stale` | Cron sweep | `count` (open > 24h) |
+| `reconcile.freshness` | Cron sweep | `staleAccounts` (> 24h, subscribed) |
+| `sweep.error` | Per-signal sweep failure | `signal` |
+
+The hourly cron (`triggers.crons` in `wrangler.hosted.jsonc`) reconciles
+stale billing accounts and emits the sweep signals; see
+`src/hosted/reconciler.ts`. Query the metrics below by filtering Workers
+Logs on the `metric` field.
 
 ## Metrics
 

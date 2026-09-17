@@ -69,6 +69,9 @@ import {
   signOutSync,
 } from '../sync-runtime.service';
 import { initiateHandoff } from '../mesh-handoff.service';
+import { unsealScopedJson } from '../sync-keyring.service';
+import { isSealedCheckpoint } from '../../../../cloud/contract/handoff';
+import type { SessionCheckpoint } from '../../../../cloud/contract/handoff';
 import { readSessionOwnership, writeSessionOwnership } from '../mesh-ownership.service';
 import {
   buildDevicePolicy,
@@ -520,12 +523,19 @@ describe.skipIf(!backendReachable)('two-profile acceptance gate (real worker)', 
       execFileSync('git', ['init'], { cwd: repoDir });
       execFileSync(
         'git',
-        ['-c', 'user.email=gate@t', '-c', 'user.name=gate', 'commit', '--allow-empty', '-m', 'init'],
+        [
+          '-c',
+          'user.email=gate@t',
+          '-c',
+          'user.name=gate',
+          'commit',
+          '--allow-empty',
+          '-m',
+          'init',
+        ],
         { cwd: repoDir },
       );
-      const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoDir })
-        .toString()
-        .trim();
+      const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoDir }).toString().trim();
       const recipe = {
         schemaVersion: 1,
         steps: [
@@ -591,9 +601,9 @@ describe.skipIf(!backendReachable)('two-profile acceptance gate (real worker)', 
       expect(cDef).toBeDefined();
       const cCheckout = mkdtempSync(join(tmpdir(), 'anvil-gate-checkout-'));
       execFileSync('git', ['clone', `file://${repoDir}`, cCheckout]);
-      expect(
-        execFileSync('git', ['rev-parse', 'HEAD'], { cwd: cCheckout }).toString().trim(),
-      ).toBe(head);
+      expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: cCheckout }).toString().trim()).toBe(
+        head,
+      );
       c.db
         .prepare(
           `INSERT INTO repos (id, name, path, remote_url, default_branch, status, created_at, updated_at)
@@ -606,9 +616,7 @@ describe.skipIf(!backendReachable)('two-profile acceptance gate (real worker)', 
            WHERE workspace_id = 'ws-gate' AND portable_id = ?`,
         )
         .run(cDef!.portable_id);
-      c.db
-        .prepare(`UPDATE workspaces SET definition_state = 'ready' WHERE id = 'ws-gate'`)
-        .run();
+      c.db.prepare(`UPDATE workspaces SET definition_state = 'ready' WHERE id = 'ws-gate'`).run();
       recordBootstrapApproval('ws-gate', {
         recipe: recipe as never,
         repositoryCommits: { [cDef!.portable_id]: head },
@@ -670,7 +678,16 @@ describe.skipIf(!backendReachable)('two-profile acceptance gate (real worker)', 
       execFileSync('git', ['init'], { cwd: repoDir });
       execFileSync(
         'git',
-        ['-c', 'user.email=gate@t', '-c', 'user.name=gate', 'commit', '--allow-empty', '-m', 'init'],
+        [
+          '-c',
+          'user.email=gate@t',
+          '-c',
+          'user.name=gate',
+          'commit',
+          '--allow-empty',
+          '-m',
+          'init',
+        ],
         { cwd: repoDir },
       );
       const recipe = {
@@ -745,9 +762,7 @@ describe.skipIf(!backendReachable)('two-profile acceptance gate (real worker)', 
            WHERE workspace_id = 'ws-gate' AND portable_id = ?`,
         )
         .run(cDef!.portable_id);
-      c.db
-        .prepare(`UPDATE workspaces SET definition_state = 'ready' WHERE id = 'ws-gate'`)
-        .run();
+      c.db.prepare(`UPDATE workspaces SET definition_state = 'ready' WHERE id = 'ws-gate'`).run();
 
       // ---- A creates the job; C claims it and parks at the approval gate.
       reopenProfile(a);
@@ -844,9 +859,9 @@ describe.skipIf(!backendReachable)('two-profile acceptance gate (real worker)', 
       expect(listed.devices.find((d) => d.enrollmentId === aEnrollment)?.self).toBe(true);
       await renameDevice(cEnrollment ?? '', 'Launch worker');
       const renamed = await listDevices();
-      expect(
-        renamed.devices.find((d) => d.enrollmentId === cEnrollment)?.displayName,
-      ).toBe('Launch worker');
+      expect(renamed.devices.find((d) => d.enrollmentId === cEnrollment)?.displayName).toBe(
+        'Launch worker',
+      );
 
       // ---- Handoff: a real session + repo fixtures on A; initiateHandoff
       // drives the durable backend state machine to ownership-transferred.
@@ -867,7 +882,9 @@ describe.skipIf(!backendReachable)('two-profile acceptance gate (real worker)', 
       const sessionId = randomUUID();
       const threadId = randomUUID();
       const repoId = 'repo-launch-handoff';
-      a2.db.prepare('INSERT INTO repos (id, name, path) VALUES (?, ?, ?)').run(repoId, 'handoff', repoDir);
+      a2.db
+        .prepare('INSERT INTO repos (id, name, path) VALUES (?, ?, ?)')
+        .run(repoId, 'handoff', repoDir);
       a2.db
         .prepare(
           'INSERT INTO chat_threads (id, persona_id, title, repo_ids_json) VALUES (?, ?, ?, ?)',
@@ -877,9 +894,7 @@ describe.skipIf(!backendReachable)('two-profile acceptance gate (real worker)', 
         .prepare('INSERT INTO chat_sessions (id, thread_id, provider) VALUES (?, ?, ?)')
         .run(sessionId, threadId, 'codex');
       a2.db
-        .prepare(
-          'INSERT INTO chat_messages (id, thread_id, role, content) VALUES (?, ?, ?, ?)',
-        )
+        .prepare('INSERT INTO chat_messages (id, thread_id, role, content) VALUES (?, ?, ?, ?)')
         .run(randomUUID(), threadId, 'assistant', 'checkpoint summary for the handoff');
       writeSessionOwnership(sessionId, 1, aEnrollment ?? '', 'owned');
 
@@ -890,8 +905,21 @@ describe.skipIf(!backendReachable)('two-profile acceptance gate (real worker)', 
       expect(initiated.ok).toBe(true);
       if (initiated.ok) {
         expect(initiated.handoff.state).toBe('ownership-transferred');
-        // The checkpoint carries the exact commit + bounded context.
-        expect(initiated.handoff.checkpoint?.repositories[0]?.commit).toBe(headCommit);
+        // The checkpoint carries the exact commit + bounded context. On a
+        // scoped session it travels sealed — open it the same way the
+        // handoff target does before reading the plaintext fields.
+        const wire = initiated.handoff.checkpoint;
+        const opened: SessionCheckpoint | null =
+          wire === null
+            ? null
+            : isSealedCheckpoint(wire)
+              ? (unsealScopedJson(
+                  aScope,
+                  `anvil/checkpoint/v1:${initiated.handoff.id}`,
+                  wire,
+                ) as SessionCheckpoint)
+              : wire;
+        expect(opened?.repositories[0]?.commit).toBe(headCommit);
       }
       const ownership = readSessionOwnership(sessionId);
       expect(ownership?.state).toBe('relinquished');

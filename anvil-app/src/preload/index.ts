@@ -253,6 +253,9 @@ const api: AnvilAPI = {
     upsertArtifact: (input: ChatArtifactInput) => ipcRenderer.invoke('chat:upsert-artifact', input),
     discardArtifact: (id: string) => ipcRenderer.invoke('chat:discard-artifact', id),
     readArtifactFile: (id: string) => ipcRenderer.invoke('chat:read-artifact-file', id),
+    shareArtifact: (id: string) => ipcRenderer.invoke('chat:share-artifact', id),
+    unshareArtifact: (id: string) => ipcRenderer.invoke('chat:unshare-artifact', id),
+    artifactSharingAvailable: () => ipcRenderer.invoke('chat:artifact-sharing-available'),
     listArtifactAnnotations: (artifactId: string) =>
       ipcRenderer.invoke('chat:list-artifact-annotations', artifactId),
     createArtifactAnnotation: (input: ChatArtifactAnnotationInput) =>

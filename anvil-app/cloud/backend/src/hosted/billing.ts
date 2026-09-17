@@ -376,6 +376,11 @@ export async function getBillingMeta(db: D1Database, key: string): Promise<strin
   return row?.value ?? null;
 }
 
+/** Per-account reconcile freshness marker, stored alongside the global key. */
+export function reconcileMetaKey(billingAccountId: string): string {
+  return `reconcile_at:${billingAccountId}`;
+}
+
 export async function setBillingMeta(db: D1Database, key: string, value: string): Promise<void> {
   await db
     .prepare('INSERT INTO billing_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')

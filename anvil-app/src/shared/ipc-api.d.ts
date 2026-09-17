@@ -337,6 +337,9 @@ export interface AnvilAPI {
     upsertArtifact: (input: ChatArtifactInput) => Promise<ChatArtifact>;
     discardArtifact: (id: string) => Promise<boolean>;
     readArtifactFile: (id: string) => Promise<ChatArtifactFile>;
+    shareArtifact: (id: string) => Promise<ChatArtifact>;
+    unshareArtifact: (id: string) => Promise<ChatArtifact>;
+    artifactSharingAvailable: () => Promise<boolean>;
     listArtifactAnnotations: (artifactId: string) => Promise<ChatArtifactAnnotation[]>;
     createArtifactAnnotation: (
       input: ChatArtifactAnnotationInput,

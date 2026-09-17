@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 80;
+export const SCHEMA_VERSION = 82;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -242,6 +242,9 @@ CREATE TABLE IF NOT EXISTS chat_artifacts (
   source TEXT NOT NULL DEFAULT 'assistant',
   model TEXT,
   reasoning_effort TEXT,
+  share_id TEXT,
+  shared_url TEXT,
+  shared_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE(thread_id, relative_path)
@@ -1228,7 +1231,8 @@ CREATE TABLE IF NOT EXISTS sync_outbox (
     CHECK (state IN ('pending', 'dispatched', 'acknowledged', 'conflict', 'rejected')),
   created_at TEXT NOT NULL,
   dispatched_at TEXT,
-  result_json TEXT
+  result_json TEXT,
+  sealed_json TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sync_outbox_scope_state
   ON sync_outbox(backend_id, account_id, dataset_epoch, state, created_at);
@@ -1327,6 +1331,50 @@ CREATE TABLE IF NOT EXISTS sync_entitlement (
   restricted INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (backend_id, account_id)
+);
+-- E2E key material. Keyed by (backend, account) — the account data key
+-- survives dataset-epoch rotation. key_wrapped is safeStorage-encrypted
+-- ADK bytes; nothing here is ever sent to the backend.
+CREATE TABLE IF NOT EXISTS sync_keyring (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  key_version INTEGER NOT NULL,
+  key_wrapped BLOB NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, key_version)
+);
+-- Per-enrollment X25519 device identities. identity_priv_wrapped is set
+-- only on this device's own enrollment row; other rows are pubkey-only
+-- caches learned from device-identity entities.
+CREATE TABLE IF NOT EXISTS sync_device_keys (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  enrollment_id TEXT NOT NULL,
+  identity_pub TEXT NOT NULL,
+  identity_priv_wrapped BLOB,
+  seen_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, enrollment_id)
+);
+-- Out-of-band pairing secrets. secret_wrapped is safeStorage-encrypted;
+-- role 'issuer' minted the pairing payload, 'redeemer' typed it in and is
+-- awaiting the matching keyring-pairing entity.
+CREATE TABLE IF NOT EXISTS sync_pairing (
+  nonce TEXT PRIMARY KEY,
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  secret_wrapped BLOB NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('issuer', 'redeemer')),
+  created_at TEXT NOT NULL
+);
+-- Delivery ledger: which ADK versions this device has wrapped to which
+-- enrollment, so re-wraps on rotation are idempotent.
+CREATE TABLE IF NOT EXISTS sync_keyring_deliveries (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  enrollment_id TEXT NOT NULL,
+  key_version INTEGER NOT NULL,
+  delivered_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, enrollment_id, key_version)
 );
 `;
 
@@ -2855,6 +2903,54 @@ CREATE TABLE IF NOT EXISTS companion_enrollment_policies (
   first_seen_at TEXT NOT NULL,
   decided_at TEXT,
   updated_at TEXT NOT NULL
+);
+`,
+  81: `
+-- Hosted artifact sharing: the backend share id and public URL stamped
+-- on a chat artifact when the user publishes it (share.* ops on the
+-- session object). Keep in sync with the SCHEMA_SQL copy of chat_artifacts.
+ALTER TABLE chat_artifacts ADD COLUMN share_id TEXT;
+ALTER TABLE chat_artifacts ADD COLUMN shared_url TEXT;
+ALTER TABLE chat_artifacts ADD COLUMN shared_at TEXT;
+`,
+  82: `
+-- E2E sealing: sealed_json stores the exact wire payload produced at
+-- dispatch (sealed envelope for domain entities, passthrough for
+-- crypto-boundary entities) so replays reuse a stable payload_hash.
+-- Keep the new tables in sync with the SCHEMA_SQL copies.
+ALTER TABLE sync_outbox ADD COLUMN sealed_json TEXT;
+CREATE TABLE IF NOT EXISTS sync_keyring (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  key_version INTEGER NOT NULL,
+  key_wrapped BLOB NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, key_version)
+);
+CREATE TABLE IF NOT EXISTS sync_device_keys (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  enrollment_id TEXT NOT NULL,
+  identity_pub TEXT NOT NULL,
+  identity_priv_wrapped BLOB,
+  seen_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, enrollment_id)
+);
+CREATE TABLE IF NOT EXISTS sync_pairing (
+  nonce TEXT PRIMARY KEY,
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  secret_wrapped BLOB NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('issuer', 'redeemer')),
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sync_keyring_deliveries (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  enrollment_id TEXT NOT NULL,
+  key_version INTEGER NOT NULL,
+  delivered_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, enrollment_id, key_version)
 );
 `,
 };

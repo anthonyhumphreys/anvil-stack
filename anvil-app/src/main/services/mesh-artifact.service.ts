@@ -12,6 +12,9 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 import { rpc as backendRpc } from './sync-backend-client.service.js';
+import { sealAccountBytes, unsealAccountBytes } from './sync-keyring.service.js';
+import { artifactSealAssociatedData } from '../../../cloud/contract/sealed.js';
+import type { SyncScope } from '../../shared/sync-mesh.js';
 import type {
   ArtifactDescriptor,
   ArtifactFinalizeResult,
@@ -24,13 +27,13 @@ import type {
 interface MeshArtifactContext {
   apiUrl: string;
   accessToken: string;
+  /** Sync scope for E2E sealing; absent contexts upload/download plaintext. */
+  scope?: SyncScope;
 }
 
 let contextProvider: (() => MeshArtifactContext | null) | null = null;
 
-export function configureMeshArtifactContext(
-  provider: () => MeshArtifactContext | null,
-): void {
+export function configureMeshArtifactContext(provider: () => MeshArtifactContext | null): void {
   contextProvider = provider;
 }
 
@@ -68,13 +71,23 @@ export async function uploadAttemptArtifact(input: {
   if (ctx === null) {
     throw new Error('Mesh artifacts have no active sync session.');
   }
-  const sha256 = createHash('sha256').update(input.bytes).digest('hex');
+  // E2E: when the session carries a sync scope, the uploaded bytes are
+  // ADK-sealed ciphertext — the manifest records the seal so the backend
+  // stores bytes it cannot read, and download unseals after checksum.
+  const aad = artifactSealAssociatedData({ mediaType: input.mediaType });
+  const sealed =
+    ctx.scope !== undefined ? sealAccountBytes(ctx.scope, aad, Buffer.from(input.bytes)) : null;
+  const wireBytes: Uint8Array = sealed !== null ? new Uint8Array(sealed.bytes) : input.bytes;
+  const sha256 = createHash('sha256').update(wireBytes).digest('hex');
   const reservation = await artifactRpc<ArtifactReserveResult>('artifact.reserve', {
     attemptId: input.attemptId,
-    byteLength: input.bytes.byteLength,
+    byteLength: wireBytes.byteLength,
     sha256,
     mediaType: input.mediaType,
     ...(input.retentionDays !== undefined ? { retentionDays: input.retentionDays } : {}),
+    ...(sealed !== null
+      ? { sealed: true, keyVersion: sealed.keyVersion, plaintextBytes: input.bytes.byteLength }
+      : {}),
   });
   const response = await fetch(new URL(reservation.uploadPath, ctx.apiUrl), {
     method: 'PUT',
@@ -82,15 +95,18 @@ export async function uploadAttemptArtifact(input: {
       Authorization: `Bearer ${ctx.accessToken}`,
       'Content-Type': input.mediaType,
     },
-    body: new Blob([new Uint8Array(input.bytes)]),
+    body: new Blob([new Uint8Array(wireBytes)]),
   });
   if (!response.ok) {
     throw new Error(`artifact upload failed: HTTP ${response.status}`);
   }
   const finalized = await artifactRpc<ArtifactFinalizeResult>('artifact.finalize', {
     artifactId: reservation.artifactId,
-    byteLength: input.bytes.byteLength,
+    byteLength: wireBytes.byteLength,
     sha256,
+    ...(sealed !== null
+      ? { sealed: true, keyVersion: sealed.keyVersion, plaintextBytes: input.bytes.byteLength }
+      : {}),
   });
   return finalized.manifest;
 }
@@ -143,6 +159,24 @@ export async function downloadMeshArtifact(artifactId: string): Promise<Uint8Arr
   const sha256 = createHash('sha256').update(bytes).digest('hex');
   if (sha256 !== artifact.sha256) {
     throw new Error('artifact checksum mismatch on download');
+  }
+  // E2E: sealed manifests carry ciphertext — open it under the declared
+  // ADK version. A missing key or tamper throws UnsealError; plaintext is
+  // never returned for a sealed manifest.
+  if (artifact.sealed === true) {
+    if (ctx.scope === undefined || artifact.keyVersion === undefined) {
+      throw new Error('artifact is sealed but this session has no sync scope');
+    }
+    const plain = unsealAccountBytes(
+      ctx.scope,
+      artifactSealAssociatedData({ mediaType: artifact.mediaType }),
+      artifact.keyVersion,
+      Buffer.from(bytes),
+    );
+    if (artifact.plaintextBytes !== undefined && plain.byteLength !== artifact.plaintextBytes) {
+      throw new Error('artifact plaintext length mismatch after unseal');
+    }
+    return new Uint8Array(plain);
   }
   return bytes;
 }

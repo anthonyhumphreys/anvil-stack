@@ -61,6 +61,17 @@ import {
   type BackendConnection,
   type RpcResult,
 } from './sync-backend-client.service.js';
+import {
+  isCryptoBoundaryEntityType,
+  isSealedEntityPayload,
+} from '../../../cloud/contract/sealed.js';
+import {
+  AccountKeyUnavailableError,
+  UnsealError,
+  handleCryptoBoundaryEntity,
+  sealEntityPayload,
+  unsealEntityPayload,
+} from './sync-keyring.service.js';
 import { getDb } from '../db/database.js';
 
 const SCOPE_WHERE = 'backend_id = ? AND account_id = ? AND dataset_epoch = ?';
@@ -333,8 +344,7 @@ async function executeOneCycle(input: RunSyncCycleInput): Promise<void> {
   }
 
   const rpcFn = input.rpc ?? defaultRpc;
-  const writesAllowed = (): boolean =>
-    input.writeGate === undefined || input.writeGate().allowed;
+  const writesAllowed = (): boolean => input.writeGate === undefined || input.writeGate().allowed;
   try {
     // Fence before any durable write: a superseded cycle must not even mark
     // outbox rows dispatched under the dead scope.
@@ -384,12 +394,72 @@ async function executeOneCycle(input: RunSyncCycleInput): Promise<void> {
   }
 }
 
+/**
+ * Wire-form producer for nextBatch: crypto-boundary entities pass through
+ * (they carry their own envelopes), domain payloads seal under the current
+ * ADK. A missing ADK defers the change — plaintext is never sent.
+ */
+function sealWirePayload(
+  scope: SyncScope,
+  input: {
+    entityType: string;
+    entityId: string;
+    operation: SyncOperation;
+    schemaVersion: number;
+    payload: unknown;
+  },
+): unknown {
+  if (isCryptoBoundaryEntityType(input.entityType)) return input.payload;
+  try {
+    return sealEntityPayload(scope, input, input.payload);
+  } catch (error) {
+    if (error instanceof AccountKeyUnavailableError) return undefined;
+    throw error;
+  }
+}
+
+type WireDomainResult =
+  | { kind: 'domain'; json: string | null }
+  | { kind: 'quarantined'; reason: string; rawJson: string };
+
+/**
+ * Converts a wire payload to domain JSON. Sealed envelopes unseal locally;
+ * failures quarantine the raw envelope JSON so a later key delivery can
+ * retry without a re-fetch. Plaintext payloads (crypto-boundary entities,
+ * pre-sealing history) pass through unchanged.
+ */
+function wirePayloadToDomain(
+  scope: SyncScope,
+  entityType: string,
+  entityId: string,
+  payload: unknown,
+): WireDomainResult {
+  if (payload === undefined) return { kind: 'domain', json: null };
+  if (!isSealedEntityPayload(payload)) {
+    return { kind: 'domain', json: canonicalJson(payload) };
+  }
+  try {
+    const domain = unsealEntityPayload(scope, { entityType, entityId }, payload);
+    return { kind: 'domain', json: canonicalJson(domain) };
+  } catch (error) {
+    if (error instanceof UnsealError) {
+      return {
+        kind: 'quarantined',
+        reason: `unseal-${error.reason}`,
+        rawJson: canonicalJson(payload),
+      };
+    }
+    throw error;
+  }
+}
+
 async function pushCycle(input: RunSyncCycleInput, rpcFn: SyncEngineRpc): Promise<void> {
   const limits = negotiatedLimits(input);
   const batch = nextBatch(input.scope, input.enrollmentId, {
     entityBytes: limits.entityBytes,
     maxBytes: limits.pageBytes,
     maxChanges: limits.batchChanges,
+    seal: (sealInput) => sealWirePayload(input.scope, sealInput),
   });
   if (batch.length === 0) return;
   const { result } = await rpcFn<SyncPushResult>(
@@ -405,7 +475,16 @@ async function pushCycle(input: RunSyncCycleInput, rpcFn: SyncEngineRpc): Promis
       code: 'malformed',
     });
   }
-  applyPushResults(input.scope, result.results.map(mapPushItemResult));
+  const entityByChangeId = new Map(
+    batch.map((change) => [
+      change.changeId,
+      { entityType: change.entityType, entityId: change.entityId },
+    ]),
+  );
+  applyPushResults(
+    input.scope,
+    result.results.map((item) => mapPushItemResult(input.scope, entityByChangeId, item)),
+  );
   updateSyncState(input.scope, { lastPushAt: nowIso() });
 }
 
@@ -497,7 +576,7 @@ async function scanCycle(input: RunSyncCycleInput, rpcFn: SyncEngineRpc): Promis
       });
     }
     assertCurrent(input);
-    stageScanEntities(input.scope, toStagedEntities(scanned.entities));
+    stageScanEntities(input.scope, stagedEntitiesForWire(input, scanned.entities));
     if (scanned.done) break;
     if (typeof scanned.nextCursor !== 'string') {
       throw new SyncEngineError('sync.scan.page omitted nextCursor before done', {
@@ -574,12 +653,29 @@ async function scanCycle(input: RunSyncCycleInput, rpcFn: SyncEngineRpc): Promis
         reachedEnd = true;
         break;
       }
+      if (isCryptoBoundaryEntityType(validated.entityType)) {
+        if (validated.operation !== 'delete') {
+          handleCryptoBoundaryEntity(
+            input.scope,
+            input.enrollmentId,
+            validated.entityType,
+            validated.entityId,
+            validated.payload,
+          );
+        }
+        continue;
+      }
+      const wire = wirePayloadToDomain(
+        input.scope,
+        validated.entityType,
+        validated.entityId,
+        validated.payload,
+      );
       stageScanChange(input.scope, {
         entityType: validated.entityType,
         entityId: validated.entityId,
         operation: validated.operation,
-        payloadJson:
-          validated.payload === undefined ? null : canonicalJson(validated.payload),
+        payloadJson: wire.kind === 'domain' ? wire.json : wire.rawJson,
         revision: validated.revision,
         schemaVersion: validated.schemaVersion,
       });
@@ -598,17 +694,39 @@ async function scanCycle(input: RunSyncCycleInput, rpcFn: SyncEngineRpc): Promis
   activateStagedScan(input.scope, finish.nextCursor);
 }
 
-function mapPushItemResult(item: SyncPushItemResult): PushResult {
+function mapPushItemResult(
+  scope: SyncScope,
+  entityByChangeId: Map<string, { entityType: string; entityId: string }>,
+  item: SyncPushItemResult,
+): PushResult {
   switch (item.status) {
     case 'accepted':
       return { changeId: item.changeId, revision: item.revision, status: 'accepted' };
-    case 'conflict':
+    case 'conflict': {
+      // Conflict content arrives in wire form: unseal it so the conflict
+      // record and any merge UI see the domain payload. If it cannot be
+      // opened (missing key version, tamper), the raw envelope is kept —
+      // the conflict stays reviewable, just not mergeable yet.
+      const entity = entityByChangeId.get(item.changeId);
+      let remotePayload: unknown = item.remoteContent;
+      if (entity !== undefined && isSealedEntityPayload(item.remoteContent)) {
+        try {
+          remotePayload = unsealEntityPayload(
+            scope,
+            { entityType: entity.entityType, entityId: entity.entityId },
+            item.remoteContent,
+          );
+        } catch {
+          // Keep the sealed envelope.
+        }
+      }
       return {
         changeId: item.changeId,
-        remotePayload: item.remoteContent,
+        remotePayload,
         remoteRevision: item.remoteRevision,
         status: 'conflict',
       };
+    }
     case 'rejected':
       return { changeId: item.changeId, reason: item.reason, status: 'rejected' };
     case 'reset-required':
@@ -635,7 +753,7 @@ function applyPullPage(input: RunSyncCycleInput, page: SyncPullResult): void {
           code: 'malformed',
         });
       }
-      applySyncedChange(input.scope, change);
+      applySyncedChange(input.scope, input.enrollmentId, change);
     }
     updateSyncState(input.scope, { cursor: page.nextCursor, lastPullAt: nowIso() });
   });
@@ -670,7 +788,16 @@ function toSyncedChange(value: unknown): SyncedChange | null {
   return change;
 }
 
-function toStagedEntities(value: unknown[]): Array<{
+/**
+ * Scan-page entities validated and converted for staging. Crypto-boundary
+ * entities are consumed by the keyring immediately (never staged); sealed
+ * payloads unseal to domain JSON, with failures staged as raw envelopes so
+ * activation quarantines them for later key-delivery retry.
+ */
+function stagedEntitiesForWire(
+  input: RunSyncCycleInput,
+  value: unknown[],
+): Array<{
   entityType: string;
   entityId: string;
   revision: number;
@@ -690,10 +817,21 @@ function toStagedEntities(value: unknown[]): Array<{
     if (typeof item.entityId !== 'string' || item.entityId.length === 0) continue;
     if (typeof item.revision !== 'number' || !Number.isInteger(item.revision)) continue;
     if (typeof item.schemaVersion !== 'number' || !Number.isInteger(item.schemaVersion)) continue;
+    if (isCryptoBoundaryEntityType(item.entityType)) {
+      handleCryptoBoundaryEntity(
+        input.scope,
+        input.enrollmentId,
+        item.entityType,
+        item.entityId,
+        item.payload,
+      );
+      continue;
+    }
+    const wire = wirePayloadToDomain(input.scope, item.entityType, item.entityId, item.payload);
     entities.push({
       entityType: item.entityType,
       entityId: item.entityId,
-      payloadJson: item.payload === undefined ? null : canonicalJson(item.payload),
+      payloadJson: wire.kind === 'domain' ? wire.json : wire.rawJson,
       revision: item.revision,
       schemaVersion: item.schemaVersion,
     });
@@ -734,15 +872,11 @@ function entityQuarantineReason(
 function activateStagedScan(scope: SyncScope, nextCursor: string): void {
   const run = getDb().transaction(() => {
     const staged = listScanStaging(scope);
-    const stagedKeys = new Map(staged.map((entity) => [
-      `${entity.entityType}\0${entity.entityId}`,
-      entity,
-    ]));
+    const stagedKeys = new Map(
+      staged.map((entity) => [`${entity.entityType}\0${entity.entityId}`, entity]),
+    );
     const bindings = new Map(
-      listBindings(scope).map((binding) => [
-        `${binding.entityType}\0${binding.entityId}`,
-        binding,
-      ]),
+      listBindings(scope).map((binding) => [`${binding.entityType}\0${binding.entityId}`, binding]),
     );
 
     for (const entity of staged) {
@@ -763,8 +897,7 @@ function activateStagedScan(scope: SyncScope, nextCursor: string): void {
           continue;
         }
         const domainJson = readLocalPayloadJson(entity.entityType, entity.entityId);
-        const foreignBound =
-          listSyncScopesForEntity(entity.entityType, entity.entityId).length > 0;
+        const foreignBound = listSyncScopesForEntity(entity.entityType, entity.entityId).length > 0;
         if (domainJson === null && !foreignBound) {
           upsertBinding(scope, entity.entityType, entity.entityId, {
             baseRevision: entity.revision,
@@ -806,7 +939,13 @@ function activateStagedScan(scope: SyncScope, nextCursor: string): void {
       }
 
       if (quarantineReason !== null) {
-        setBindingBase(scope, entity.entityType, entity.entityId, entity.revision, entity.payloadJson);
+        setBindingBase(
+          scope,
+          entity.entityType,
+          entity.entityId,
+          entity.revision,
+          entity.payloadJson,
+        );
         setBindingQuarantine(scope, entity.entityType, entity.entityId, entity.payloadJson);
         continue;
       }
@@ -816,15 +955,20 @@ function activateStagedScan(scope: SyncScope, nextCursor: string): void {
         binding.localEditGeneration > binding.acknowledgedGeneration ||
         listMutableOutboxRows(scope, entity.entityType, entity.entityId).length > 0;
       if (!dirty) {
-        setBindingBase(scope, entity.entityType, entity.entityId, entity.revision, entity.payloadJson);
+        setBindingBase(
+          scope,
+          entity.entityType,
+          entity.entityId,
+          entity.revision,
+          entity.payloadJson,
+        );
         setBindingQuarantine(scope, entity.entityType, entity.entityId, null);
         if (domainJson !== entity.payloadJson) {
           applyDomainProjection({
             entityType: entity.entityType,
             entityId: entity.entityId,
             operation: domainJson === null ? 'create' : 'update',
-            payload:
-              entity.payloadJson === null ? undefined : JSON.parse(entity.payloadJson),
+            payload: entity.payloadJson === null ? undefined : JSON.parse(entity.payloadJson),
             revision: entity.revision,
             schemaVersion: entity.schemaVersion,
             sequence: entity.revision,
@@ -835,7 +979,13 @@ function activateStagedScan(scope: SyncScope, nextCursor: string): void {
       if (domainJson !== null && domainJson === entity.payloadJson) {
         // Converged: remote state equals the local edit. Adopt the base and
         // retire the queued intent without sending a no-op mutation.
-        setBindingBase(scope, entity.entityType, entity.entityId, entity.revision, entity.payloadJson);
+        setBindingBase(
+          scope,
+          entity.entityType,
+          entity.entityId,
+          entity.revision,
+          entity.payloadJson,
+        );
         acknowledgeBindingLocalEdits(scope, entity.entityType, entity.entityId);
         deletePendingOutboxRows(scope, entity.entityType, entity.entityId);
         rejectDispatchedRows(scope, entity.entityType, entity.entityId, 'reset-uncertain');
@@ -854,7 +1004,13 @@ function activateStagedScan(scope: SyncScope, nextCursor: string): void {
         remotePayloadJson: entity.payloadJson,
         remoteRevision: entity.revision,
       });
-      setBindingBase(scope, entity.entityType, entity.entityId, entity.revision, entity.payloadJson);
+      setBindingBase(
+        scope,
+        entity.entityType,
+        entity.entityId,
+        entity.revision,
+        entity.payloadJson,
+      );
     }
 
     // Bound entities absent from the rebuilt remote state.
@@ -963,7 +1119,13 @@ export function resolveSyncConflict(input: ResolveSyncConflictInput): void {
           schemaVersion: 1,
           sequence: row.remoteRevision ?? 0,
         });
-        writeBindingBase(row.scope, row.entityType, row.entityId, row.remoteRevision ?? 0, row.remotePayloadJson);
+        writeBindingBase(
+          row.scope,
+          row.entityType,
+          row.entityId,
+          row.remoteRevision ?? 0,
+          row.remotePayloadJson,
+        );
       }
       resolveConflict(row.id, input.resolution);
       return;
@@ -1038,10 +1200,9 @@ function saveLocalConflictCopy(conflict: SyncConflict): void {
   }
   const copy = persistConflictCopy(conflict.entityType, payload);
   if (copy === null) {
-    throw new SyncEngineError(
-      `save-copy is not supported for entity type ${conflict.entityType}`,
-      { retryable: false },
-    );
+    throw new SyncEngineError(`save-copy is not supported for entity type ${conflict.entityType}`, {
+      retryable: false,
+    });
   }
   upsertBinding(conflict.scope, conflict.entityType, copy.entityId);
   recordLocalChange(conflict.scope, {
@@ -1124,15 +1285,32 @@ function requeueEntityForKeepLocal(
   }
 }
 
-function applySyncedChange(scope: SyncScope, change: SyncedChange): void {
+function applySyncedChange(scope: SyncScope, enrollmentId: string, change: SyncedChange): void {
+  // Crypto-boundary entities (device identities, key wraps, pairing blobs)
+  // are consumed by the keyring, never by domain/binding machinery.
+  if (isCryptoBoundaryEntityType(change.entityType)) {
+    if (change.operation !== 'delete') {
+      handleCryptoBoundaryEntity(
+        scope,
+        enrollmentId,
+        change.entityType,
+        change.entityId,
+        change.payload,
+      );
+    }
+    return;
+  }
   const binding = getBinding(scope, change.entityType, change.entityId);
-  const payloadJson = change.payload === undefined ? null : canonicalJson(change.payload);
+  const wire = wirePayloadToDomain(scope, change.entityType, change.entityId, change.payload);
+  const payloadJson = wire.kind === 'domain' ? wire.json : wire.rawJson;
   const quarantineReason =
     change.operation === 'delete'
       ? isSupportedEntityType(change.entityType)
         ? null
         : 'unsupported-entity-type'
-      : entityQuarantineReason(change.entityType, change.schemaVersion, payloadJson);
+      : wire.kind === 'quarantined'
+        ? wire.reason
+        : entityQuarantineReason(change.entityType, change.schemaVersion, payloadJson);
   if (binding) {
     if (binding.baseRevision !== null && change.revision <= binding.baseRevision) {
       return;
@@ -1152,7 +1330,10 @@ function applySyncedChange(scope: SyncScope, change: SyncedChange): void {
       return;
     }
     setBindingQuarantine(scope, change.entityType, change.entityId, null);
-    applyDomainProjection(change);
+    applyDomainProjection({
+      ...change,
+      payload: payloadJson === null ? undefined : JSON.parse(payloadJson),
+    });
     return;
   }
 
@@ -1174,7 +1355,10 @@ function applySyncedChange(scope: SyncScope, change: SyncedChange): void {
       baseRevision: change.revision,
       basePayloadJson: payloadJson,
     });
-    applyDomainProjection(change);
+    applyDomainProjection({
+      ...change,
+      payload: payloadJson === null ? undefined : JSON.parse(payloadJson),
+    });
     return;
   }
   // The entity id is already claimed by local-only content or another scope's

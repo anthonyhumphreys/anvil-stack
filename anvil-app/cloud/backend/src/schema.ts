@@ -227,7 +227,10 @@ CREATE TABLE IF NOT EXISTS artifacts (
   updated_at INTEGER NOT NULL,
   published_at INTEGER,
   expires_at INTEGER,
-  deleted_at INTEGER
+  deleted_at INTEGER,
+  sealed INTEGER NOT NULL DEFAULT 0,
+  key_version INTEGER,
+  plaintext_bytes INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_artifacts_job ON artifacts (job_id, state);
 CREATE INDEX IF NOT EXISTS idx_artifacts_attempt ON artifacts (attempt_id, state);
@@ -346,4 +349,35 @@ CREATE TABLE IF NOT EXISTS account_deletions (
   started_at INTEGER NOT NULL,
   deleted_at INTEGER
 );
+-- Hosted artifact shares (contract shares.ts): user-published durable
+-- content behind a revocable, unguessable share id. The row is the state
+-- authority; the R2 object at r2_key is reconciled against it
+-- (reserved→uploaded→published, revoked/expired terminal). Lives on the
+-- session object because public resolution must find a share from its id
+-- alone — an account-object row cannot be located without the accountId.
+CREATE TABLE IF NOT EXISTS shared_artifacts (
+  share_id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  enrollment_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  media_type TEXT NOT NULL,
+  byte_length INTEGER NOT NULL,
+  sha256 TEXT NOT NULL,
+  expires_in_days INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  r2_key TEXT NOT NULL,
+  upload_expires_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  published_at INTEGER,
+  expires_at INTEGER,
+  revoked_at INTEGER,
+  sealed INTEGER NOT NULL DEFAULT 0,
+  plaintext_bytes INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_shared_artifacts_account
+  ON shared_artifacts (account_id, state);
+CREATE INDEX IF NOT EXISTS idx_shared_artifacts_expiry
+  ON shared_artifacts (state, expires_at);
+CREATE INDEX IF NOT EXISTS idx_shared_artifacts_upload_expiry
+  ON shared_artifacts (state, upload_expires_at);
 `;

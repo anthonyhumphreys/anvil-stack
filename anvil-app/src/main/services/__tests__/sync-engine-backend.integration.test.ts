@@ -160,6 +160,29 @@ describe('SYNC-03 engine through BACKEND-01 apply rules', () => {
     activateEnrollment(ENROLLMENT_B, 'installation-b');
     expect(getWorkflowTemplate(saved.id)).toBeNull();
 
+    // E2E: device B pulls ciphertext, so it needs the ADK A sealed under.
+    // The shipped path is a keyring-wrap entity delivered over sync; in
+    // this Node fake the equivalent is copying the wrapped key rows.
+    const keyRows = deviceA
+      .prepare(
+        'SELECT backend_id, account_id, key_version, key_wrapped, created_at FROM sync_keyring',
+      )
+      .all() as Array<{
+      backend_id: string;
+      account_id: string;
+      key_version: number;
+      key_wrapped: Buffer;
+      created_at: string;
+    }>;
+    for (const row of keyRows) {
+      deviceB
+        .prepare(
+          `INSERT OR REPLACE INTO sync_keyring (backend_id, account_id, key_version, key_wrapped, created_at)
+           VALUES (?, ?, ?, ?, ?)`,
+        )
+        .run(row.backend_id, row.account_id, row.key_version, row.key_wrapped, row.created_at);
+    }
+
     await cycle(account, ENROLLMENT_B);
 
     const pulled = getWorkflowTemplate(saved.id);

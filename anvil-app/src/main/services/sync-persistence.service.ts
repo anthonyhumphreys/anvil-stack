@@ -103,6 +103,7 @@ interface OutboxRow {
   created_at: string;
   dispatched_at: string | null;
   result_json: string | null;
+  sealed_json: string | null;
 }
 
 interface SyncStateDbRow {
@@ -189,6 +190,7 @@ function mapOutboxRow(row: OutboxRow): SyncOutboxRow {
     baseRevision: row.base_revision,
     operation: row.operation,
     payloadJson: row.payload_json,
+    sealedJson: row.sealed_json,
     payloadHash: row.payload_hash,
     localEditGeneration: row.local_edit_generation,
     state: row.state,
@@ -546,6 +548,10 @@ export function listOutboxRows(scope: SyncScope): SyncOutboxRow[] {
 function toPendingChange(row: OutboxRow): PendingChange {
   if (row.enrollment_sequence === null)
     throw new Error(`Change ${row.change_id} was not sequenced.`);
+  // The wire payload is sealed_json when dispatch produced one (the sealed
+  // envelope for domain entities); rows dispatched before sealing existed
+  // fall back to the stored plaintext payload.
+  const wireJson = row.sealed_json ?? row.payload_json;
   return {
     baseRevision: row.base_revision,
     changeId: row.change_id,
@@ -554,9 +560,9 @@ function toPendingChange(row: OutboxRow): PendingChange {
     entityType: row.entity_type,
     operation: row.operation,
     payload:
-      row.operation === 'delete' || row.payload_json === null
+      row.operation === 'delete' || wireJson === null
         ? undefined
-        : (JSON.parse(row.payload_json) as unknown),
+        : (JSON.parse(wireJson) as unknown),
     payloadHash: row.payload_hash,
     schemaVersion: row.schema_version,
   };
@@ -579,10 +585,7 @@ function fenceOrphanedDispatches(scope: SyncScope, enrollmentId: string): void {
   for (const row of orphaned) {
     db.prepare(
       "UPDATE sync_outbox SET state = 'rejected', result_json = ? WHERE change_id = ?",
-    ).run(
-      JSON.stringify({ status: 'rejected', reason: 'enrollment-superseded' }),
-      row.change_id,
-    );
+    ).run(JSON.stringify({ status: 'rejected', reason: 'enrollment-superseded' }), row.change_id);
     const unresolved = db
       .prepare(
         `SELECT id FROM sync_conflicts
@@ -686,10 +689,9 @@ export function nextBatch(
     const batch: OutboxRow[] = [];
     let bytes = 0;
     const reject = (changeId: string, reason: string): void => {
-      db.prepare("UPDATE sync_outbox SET state = 'rejected', result_json = ? WHERE change_id = ?").run(
-        JSON.stringify({ status: 'rejected', reason }),
-        changeId,
-      );
+      db.prepare(
+        "UPDATE sync_outbox SET state = 'rejected', result_json = ? WHERE change_id = ?",
+      ).run(JSON.stringify({ status: 'rejected', reason }), changeId);
     };
     for (const row of candidates) {
       const key = `${row.entity_type}\0${row.entity_id}`;
@@ -710,8 +712,23 @@ export function nextBatch(
       }
       const payload = row.payload_json === null ? null : (JSON.parse(row.payload_json) as unknown);
       // Deletes carry no payload on the wire; the hash input must match the
-      // exact wire content or the backend rejects it as changed.
-      const wirePayload = operation === 'delete' ? null : payload;
+      // exact wire content or the backend rejects it as changed. When a seal
+      // hook is configured, the wire payload is its output (a sealed
+      // envelope); returning undefined defers the row until key material
+      // arrives — it stays pending and is never sent as plaintext.
+      let wirePayload: unknown = operation === 'delete' ? null : payload;
+      if (operation !== 'delete' && payload !== null && options?.seal !== undefined) {
+        wirePayload = options.seal({
+          entityType: row.entity_type,
+          entityId: row.entity_id,
+          operation,
+          schemaVersion: row.schema_version,
+          payload,
+        });
+        if (wirePayload === undefined) continue;
+      }
+      const sealedJson =
+        operation === 'delete' || wirePayload === null ? null : canonicalJson(wirePayload);
       const payloadHash = computePayloadHash({
         baseRevision,
         entityId: row.entity_id,
@@ -720,7 +737,7 @@ export function nextBatch(
         payload: wirePayload,
         schemaVersion: row.schema_version,
       });
-      if (Buffer.byteLength(row.payload_json ?? '', 'utf8') > entityBytes) {
+      if (Buffer.byteLength(sealedJson ?? row.payload_json ?? '', 'utf8') > entityBytes) {
         reject(row.change_id, 'entity-too-large');
         continue;
       }
@@ -747,21 +764,20 @@ export function nextBatch(
       row.base_revision = baseRevision;
       row.payload_hash = payloadHash;
       row.enrollment_sequence = nextSequence;
+      row.sealed_json = sealedJson;
       batch.push(row);
       bytes += size;
       nextSequence += 1;
     }
 
     if (batch.length > 0) {
-      db.prepare('UPDATE device_enrollments SET next_sequence = ?, updated_at = ? WHERE id = ?').run(
-        nextSequence,
-        now,
-        enrollmentId,
-      );
+      db.prepare(
+        'UPDATE device_enrollments SET next_sequence = ?, updated_at = ? WHERE id = ?',
+      ).run(nextSequence, now, enrollmentId);
       const dispatch = db.prepare(
         `UPDATE sync_outbox
          SET enrollment_id = ?, enrollment_sequence = ?, state = 'dispatched', dispatched_at = ?,
-             base_revision = ?, operation = ?, payload_hash = ?
+             base_revision = ?, operation = ?, payload_hash = ?, sealed_json = ?
          WHERE change_id = ?`,
       );
       for (const row of batch) {
@@ -772,6 +788,7 @@ export function nextBatch(
           row.base_revision,
           row.operation,
           row.payload_hash,
+          row.sealed_json,
           row.change_id,
         );
       }
@@ -912,10 +929,7 @@ export function applyPushResults(scope: SyncScope, results: PushResult[]): void 
           // scan/reset reconciliation preserves the local edit.
           db.prepare(
             "UPDATE sync_outbox SET state = 'rejected', result_json = ? WHERE change_id = ?",
-          ).run(
-            JSON.stringify({ status: 'rejected', reason: result.status }),
-            result.changeId,
-          );
+          ).run(JSON.stringify({ status: 'rejected', reason: result.status }), result.changeId);
           break;
         }
         default: {
@@ -1465,9 +1479,7 @@ export function getSyncEntitlement(
 export type UpsertSyncEntitlementInput = Omit<SyncEntitlementRecord, 'updatedAt'>;
 
 /** Stores the entitlement exactly as reported; `restricted` is authoritative. */
-export function upsertSyncEntitlement(
-  input: UpsertSyncEntitlementInput,
-): SyncEntitlementRecord {
+export function upsertSyncEntitlement(input: UpsertSyncEntitlementInput): SyncEntitlementRecord {
   getDb()
     .prepare(
       `INSERT INTO sync_entitlement

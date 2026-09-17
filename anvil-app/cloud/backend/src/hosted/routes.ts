@@ -33,6 +33,7 @@ import {
   validateHostedIdentity,
   type HostedIdentity,
 } from './identity';
+import { emitMetric } from './metrics';
 import { verifyHostedServiceRequest } from './service-auth';
 import {
   HostedConflictError,
@@ -362,6 +363,7 @@ export async function handleHostedRequest(request: Request, env: Env): Promise<R
         Date.now(),
       );
       if (!verified) {
+        emitMetric('service_auth.failure', { path });
         return rpcErrorResponse(undefined, 'unauthenticated');
       }
       const json = parseJsonBody(body);
@@ -393,12 +395,29 @@ export async function handleHostedRequest(request: Request, env: Env): Promise<R
           return await handleHostedDataStatus(json, env, db);
         case '/internal/hosted/delete-account':
           return await handleHostedDeleteAccount(json, env, db);
+        // Hosted artifact sharing: the website's /artifacts/{shareId}
+        // page resolves published shares through this signed channel.
+        // The session object streams R2 bytes with metadata headers, so
+        // the response passes through untouched (no JSON envelope).
+        case '/internal/hosted/shared-artifact': {
+          if (!isRecord(json) || typeof json['shareId'] !== 'string') {
+            return rpcErrorResponse(undefined, 'malformed-request');
+          }
+          return await sessionStub(env).fetch(
+            new Request('https://internal.anvil/internal/shared-artifact', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ shareId: json['shareId'] }),
+            }),
+          );
+        }
         default:
           return rpcErrorResponse(undefined, 'not-found');
       }
     }
     return rpcErrorResponse(undefined, 'not-found');
   } catch {
+    emitMetric('hosted.route_error', { path });
     return rpcErrorResponse(undefined, 'unavailable');
   }
 }

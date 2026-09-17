@@ -120,6 +120,48 @@ export async function hostedCall<T>(path: string, body: unknown): Promise<T> {
   return payload as T;
 }
 
+/**
+ * Signed POST like {@link hostedCall} but returns the raw Response — for
+ * routes that stream artifact bytes with `x-anvil-*` metadata headers
+ * instead of a JSON payload.
+ */
+export async function hostedCallRaw(path: string, body: unknown): Promise<Response> {
+  const origin = backendOrigin();
+  const key = signingKey();
+  if (origin === null || key === null) {
+    throw new HostedApiError(0, "unconfigured");
+  }
+  const bodyBytes = encoder.encode(JSON.stringify(body ?? {}));
+  const pathWithQuery = normalizePathWithQuery(path);
+  const signature = await signRequest(pathWithQuery, "POST", bodyBytes);
+  try {
+    return await fetch(`${origin}${pathWithQuery}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...signature
+      },
+      body: bodyBytes,
+      cache: "no-store",
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+    });
+  } catch (error) {
+    throw new HostedApiError(
+      0,
+      error instanceof Error && error.name === "TimeoutError" ? "timeout" : "unavailable"
+    );
+  }
+}
+
+/**
+ * POST /internal/hosted/shared-artifact — resolves a published share to
+ * its bytes plus `x-anvil-share-*` metadata headers. Non-2xx means the
+ * share is revoked, expired, or never existed.
+ */
+export function fetchSharedArtifact(shareId: string): Promise<Response> {
+  return hostedCallRaw("/internal/hosted/shared-artifact", { shareId });
+}
+
 /** POST /internal/hosted/account — billing-account lookup for the identity. */
 export function getAccount(identity: HostedIdentity): Promise<HostedAccount> {
   return hostedCall<HostedAccount>("/internal/hosted/account", identity);

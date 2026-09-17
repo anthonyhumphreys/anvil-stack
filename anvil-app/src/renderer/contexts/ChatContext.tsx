@@ -93,6 +93,8 @@ interface ChatContextValue {
   activeGoal: ChatGoalSnapshot | null;
   activeArtifacts: ChatArtifact[];
   discardArtifact: (artifactId: string) => Promise<void>;
+  shareArtifact: (artifactId: string) => Promise<ChatArtifact>;
+  unshareArtifact: (artifactId: string) => Promise<ChatArtifact>;
   chatLayout: ChatLayout;
   setActiveRepo: (repo: RepoInfo) => void;
   setActiveRepos: (repos: RepoInfo[]) => void;
@@ -2557,6 +2559,22 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const shareArtifact = useCallback(async (artifactId: string) => {
+    const updated = await window.anvil.chat.shareArtifact(artifactId);
+    setActiveArtifacts((prev) =>
+      prev.map((artifact) => (artifact.id === artifactId ? updated : artifact)),
+    );
+    return updated;
+  }, []);
+
+  const unshareArtifact = useCallback(async (artifactId: string) => {
+    const updated = await window.anvil.chat.unshareArtifact(artifactId);
+    setActiveArtifacts((prev) =>
+      prev.map((artifact) => (artifact.id === artifactId ? updated : artifact)),
+    );
+    return updated;
+  }, []);
+
   return (
     <ChatContext.Provider
       value={{
@@ -2588,6 +2606,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         activeGoal,
         activeArtifacts,
         discardArtifact,
+        shareArtifact,
+        unshareArtifact,
         chatLayout,
         setActiveRepo,
         setActiveRepos,

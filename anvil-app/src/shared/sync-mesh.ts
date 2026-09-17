@@ -81,6 +81,8 @@ export interface SyncOutboxRow {
   baseRevision: number | null;
   operation: SyncOperation;
   payloadJson: string | null;
+  /** Exact sealed wire payload persisted at dispatch; replays reuse it. */
+  sealedJson: string | null;
   payloadHash: string;
   localEditGeneration: number;
   state: SyncOutboxState;
@@ -158,6 +160,18 @@ export interface NextBatchOptions {
   maxBytes?: number;
   /** Per-entity payload byte limit; oversized pending rows are rejected locally. */
   entityBytes?: number;
+  /**
+   * E2E seal hook: converts a domain payload into its wire form at
+   * dispatch. Returning `undefined` defers the change (e.g. no account
+   * data key yet); it is neither dispatched nor rejected.
+   */
+  seal?: (input: {
+    entityType: string;
+    entityId: string;
+    operation: SyncOperation;
+    schemaVersion: number;
+    payload: unknown;
+  }) => unknown;
 }
 
 export interface RecordLocalChangeInput {

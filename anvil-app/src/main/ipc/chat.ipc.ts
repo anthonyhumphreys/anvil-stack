@@ -98,8 +98,11 @@ import {
   discardChatArtifact,
   listChatArtifacts,
   readChatArtifactFile,
+  shareChatArtifact,
+  unshareChatArtifact,
   upsertChatArtifact,
 } from '../services/chat-artifact.service.js';
+import { isArtifactSharingAvailable } from '../services/artifact-share.service.js';
 import {
   createChatArtifactAnnotation,
   deleteChatArtifactAnnotation,
@@ -565,6 +568,18 @@ export function registerChatHandlers(): void {
 
   ipcMain.handle('chat:read-artifact-file', (_event, id: string): ChatArtifactFile => {
     return readChatArtifactFile(id);
+  });
+
+  ipcMain.handle('chat:share-artifact', (_event, id: string): Promise<ChatArtifact> => {
+    return shareChatArtifact(id);
+  });
+
+  ipcMain.handle('chat:unshare-artifact', (_event, id: string): Promise<ChatArtifact> => {
+    return unshareChatArtifact(id);
+  });
+
+  ipcMain.handle('chat:artifact-sharing-available', (): boolean => {
+    return isArtifactSharingAvailable();
   });
 
   ipcMain.handle(

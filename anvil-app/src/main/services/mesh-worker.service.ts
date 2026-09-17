@@ -39,9 +39,13 @@ import {
 } from './mesh-worktree.service.js';
 import type {
   HandoffAdvanceResult,
+  HandoffCheckpoint,
   HandoffGetResult,
   SessionCheckpoint,
 } from '../../../cloud/contract/handoff.js';
+import { isSealedCheckpoint } from '../../../cloud/contract/handoff.js';
+import { unsealScopedJson } from './sync-keyring.service.js';
+import type { SyncScope } from '../../shared/sync-mesh.js';
 import { workspaceDefinitionRevision } from './sync-entity-domain.js';
 import type { AgentProvider, ReasoningEffort } from '../../shared/types.js';
 import {
@@ -84,6 +88,8 @@ interface MeshWorkerContext {
   apiUrl: string;
   accessToken: string;
   enrollmentId: string;
+  /** Sync scope for E2E unsealing (handoff checkpoints); optional. */
+  scope?: SyncScope;
   /** userData root for worker-managed checkouts (mesh-checkouts/*). */
   userDataDir?: string;
   /**
@@ -166,9 +172,9 @@ function nowIso(): string {
 
 function readWorkerState(): WorkerStateRow {
   const db = getDb();
-  const row = db
-    .prepare('SELECT * FROM mesh_worker_state WHERE id = 1')
-    .get() as WorkerStateRow | undefined;
+  const row = db.prepare('SELECT * FROM mesh_worker_state WHERE id = 1').get() as
+    | WorkerStateRow
+    | undefined;
   return (
     row ?? {
       enabled: 0,
@@ -209,9 +215,9 @@ function writeWorkerState(patch: Partial<WorkerStateRow>): void {
 
 function appendJournal(attemptId: string, event: string, detail?: Record<string, unknown>): void {
   const db = getDb();
-  const row = db
-    .prepare('SELECT journal_json FROM mesh_attempts WHERE id = ?')
-    .get(attemptId) as { journal_json: string } | undefined;
+  const row = db.prepare('SELECT journal_json FROM mesh_attempts WHERE id = ?').get(attemptId) as
+    | { journal_json: string }
+    | undefined;
   if (!row) return;
   const journal = JSON.parse(row.journal_json) as unknown[];
   journal.push({ at: nowIso(), event, ...(detail !== undefined ? { detail } : {}) });
@@ -231,7 +237,13 @@ function updateAttemptState(
   db.prepare(
     `UPDATE mesh_attempts SET state = ?, result_json = COALESCE(?, result_json),
        cancel_requested = MAX(cancel_requested, ?), updated_at = ? WHERE id = ?`,
-  ).run(state, patch?.resultJson ?? null, patch?.cancelRequested === true ? 1 : 0, nowIso(), attemptId);
+  ).run(
+    state,
+    patch?.resultJson ?? null,
+    patch?.cancelRequested === true ? 1 : 0,
+    nowIso(),
+    attemptId,
+  );
 }
 
 function activeAttempts(): AttemptRow[] {
@@ -885,9 +897,9 @@ async function executePrepareWorkspace(
     }
     if (def.mapped_repo_id !== null) {
       const checkoutPath = (
-        getDb()
-          .prepare('SELECT path FROM repos WHERE id = ?')
-          .get(def.mapped_repo_id) as { path: string } | undefined
+        getDb().prepare('SELECT path FROM repos WHERE id = ?').get(def.mapped_repo_id) as
+          | { path: string }
+          | undefined
       )?.path;
       const head = checkoutPath === undefined ? null : await gitHead(checkoutPath);
       if (head !== repo.commit) {
@@ -911,9 +923,7 @@ async function executePrepareWorkspace(
     });
     for (const repo of clone.repos) {
       if (repo.stage !== 'mapping-published') {
-        throw new Error(
-          `clone failed for ${repo.portableId}: ${repo.reason ?? repo.stage}`,
-        );
+        throw new Error(`clone failed for ${repo.portableId}: ${repo.reason ?? repo.stage}`);
       }
       prepared.push({
         portableId: repo.portableId,
@@ -1143,9 +1153,7 @@ async function executeStartSession(
   }
   const repoPaths: string[] = [];
   for (const repo of manifest.repositories) {
-    repoPaths.push(
-      await resolveSessionCheckout(repo.repositoryId, repo.commit, defs, managedRoot),
-    );
+    repoPaths.push(await resolveSessionCheckout(repo.repositoryId, repo.commit, defs, managedRoot));
   }
   const cwd = commonParentDir(repoPaths);
 
@@ -1159,9 +1167,7 @@ async function executeStartSession(
   const handoffId = manifest.inputs['handoffId'];
   if (typeof handoffId === 'string' && handoffId.length > 0) {
     const ctx = workerContext();
-    const remote = (
-      await meshRpc<HandoffGetResult>('handoff.get', { handoffId })
-    ).handoff;
+    const remote = (await meshRpc<HandoffGetResult>('handoff.get', { handoffId })).handoff;
     if (remote.targetEnrollmentId !== ctx?.enrollmentId) {
       throw new Error('handoff-not-for-this-device');
     }
@@ -1174,13 +1180,13 @@ async function executeStartSession(
         })
       ).handoff;
       appendJournal(attemptId, 'handoff-activating', { handoffId });
-      handoffCheckpoint = activating.checkpoint;
+      handoffCheckpoint = openHandoffCheckpoint(activating.checkpoint, handoffId, ctx?.scope);
       handoffTargetGeneration = activating.targetGeneration;
       handoffSessionId = activating.sessionId;
     } else if (remote.state === 'target-activating') {
       // Re-claim after an earlier activating attempt — the journal's
       // prior-spawn check below still applies.
-      handoffCheckpoint = remote.checkpoint;
+      handoffCheckpoint = openHandoffCheckpoint(remote.checkpoint, handoffId, ctx?.scope);
       handoffTargetGeneration = remote.targetGeneration;
       handoffSessionId = remote.sessionId;
     } else {
@@ -1250,9 +1256,7 @@ async function executeStartSession(
       model: manifest.model,
       cwd,
       prompt: effectivePrompt,
-      ...(typeof rawEffort === 'string'
-        ? { reasoningEffort: rawEffort as ReasoningEffort }
-        : {}),
+      ...(typeof rawEffort === 'string' ? { reasoningEffort: rawEffort as ReasoningEffort } : {}),
       sandbox,
       ...(prior.resumeThreadId !== null ? { resumeThreadId: prior.resumeThreadId } : {}),
       turnTimeoutMs,
@@ -1295,12 +1299,7 @@ async function executeStartSession(
     }).catch(() => undefined);
     const ctx = workerContext();
     if (handoffSessionId !== null && handoffTargetGeneration !== null && ctx !== null) {
-      writeSessionOwnership(
-        handoffSessionId,
-        handoffTargetGeneration,
-        ctx.enrollmentId,
-        'owned',
-      );
+      writeSessionOwnership(handoffSessionId, handoffTargetGeneration, ctx.enrollmentId, 'owned');
     }
     appendJournal(attemptId, 'handoff-completed', {
       handoffId,
@@ -1322,6 +1321,26 @@ async function executeStartSession(
 }
 
 /**
+ * Opens a handoff checkpoint for the continuation prompt. A sealed
+ * checkpoint is unsealed under the ADK bound to `handoffId`; a missing
+ * key or tamper fails the activation rather than feeding the provider
+ * garbage. Plaintext checkpoints pass through (self-host / pre-E2E).
+ */
+function openHandoffCheckpoint(
+  checkpoint: HandoffCheckpoint | null,
+  handoffId: string,
+  scope: SyncScope | undefined,
+): SessionCheckpoint | null {
+  if (checkpoint === null) return null;
+  if (!isSealedCheckpoint(checkpoint)) return checkpoint;
+  if (scope === undefined) {
+    throw new Error('handoff checkpoint is sealed but this device has no sync scope');
+  }
+  const opened = unsealScopedJson(scope, `anvil/checkpoint/v1:${handoffId}`, checkpoint);
+  return opened as SessionCheckpoint;
+}
+
+/**
  * Seeds a fresh provider thread with the handed-off context: the source
  * device's summary and bounded message tail plus the new instruction. The
  * exact-commit manifest is already verified by checkout resolution.
@@ -1330,9 +1349,7 @@ function renderHandoffContinuationPrompt(
   checkpoint: SessionCheckpoint,
   instruction: string,
 ): string {
-  const parts = [
-    'This session was handed off from another device at an exact-commit checkpoint.',
-  ];
+  const parts = ['This session was handed off from another device at an exact-commit checkpoint.'];
   if (typeof checkpoint.summary === 'string' && checkpoint.summary.length > 0) {
     parts.push(`Prior context summary:\n${checkpoint.summary}`);
   }
@@ -1432,12 +1449,7 @@ async function executeCodeTask(
   for (const repo of manifest.repositories) {
     sources.push({
       repositoryId: repo.repositoryId,
-      sourcePath: await resolveSessionCheckout(
-        repo.repositoryId,
-        repo.commit,
-        defs,
-        managedRoot,
-      ),
+      sourcePath: await resolveSessionCheckout(repo.repositoryId, repo.commit, defs, managedRoot),
       commit: repo.commit,
     });
   }
@@ -1512,9 +1524,7 @@ async function executeCodeTask(
       model: manifest.model,
       cwd,
       prompt,
-      ...(typeof rawEffort === 'string'
-        ? { reasoningEffort: rawEffort as ReasoningEffort }
-        : {}),
+      ...(typeof rawEffort === 'string' ? { reasoningEffort: rawEffort as ReasoningEffort } : {}),
       sandbox,
       ...(prior.resumeThreadId !== null ? { resumeThreadId: prior.resumeThreadId } : {}),
       turnTimeoutMs,
@@ -1818,17 +1828,12 @@ export async function createDiagnosticJob(input: DiagnosticJobInput): Promise<Jo
       ? { kind: 'device' as const, enrollmentId: input.targetEnrollmentId }
       : {
           kind: 'auto' as const,
-          ...(input.requirements === undefined
-            ? {}
-            : { requirements: input.requirements }),
+          ...(input.requirements === undefined ? {} : { requirements: input.requirements }),
         };
   // The backend verifies the hash covers the canonical job payload; a replay
   // of the same requestId with a different payload is a conflict.
   const payloadHash = createHash('sha256')
-    .update(
-      canonicalJson({ kind: 'diagnostic', requestedTarget, inputManifest: manifest }),
-      'utf8',
-    )
+    .update(canonicalJson({ kind: 'diagnostic', requestedTarget, inputManifest: manifest }), 'utf8')
     .digest('hex');
   const result = await meshRpc<{ job: JobSummary }>('job.create', {
     requestId: input.requestId,
@@ -1902,9 +1907,7 @@ export async function createPrepareWorkspaceJob(
       ? { kind: 'device' as const, enrollmentId: input.targetEnrollmentId }
       : {
           kind: 'auto' as const,
-          ...(input.requirements === undefined
-            ? {}
-            : { requirements: input.requirements }),
+          ...(input.requirements === undefined ? {} : { requirements: input.requirements }),
         };
   const payloadHash = createHash('sha256')
     .update(
@@ -1949,9 +1952,7 @@ export interface StartSessionJobInput {
  * session start does not re-run bootstrap), and the provider/model/CLI
  * requirements the worker enforces before spawn.
  */
-export async function createStartSessionJob(
-  input: StartSessionJobInput,
-): Promise<JobSummary> {
+export async function createStartSessionJob(input: StartSessionJobInput): Promise<JobSummary> {
   const provider: RemoteSessionProvider = input.provider ?? 'codex';
   const revision = workspaceDefinitionRevision(input.workspaceId);
   if (revision === null) {
@@ -1981,7 +1982,8 @@ export async function createStartSessionJob(
           repositoryCommits: commits,
           executionPolicy: buildDevicePolicy(),
         });
-  const model = input.model ?? resolveSessionModel(provider as AgentProvider, getSettings().openaiModel);
+  const model =
+    input.model ?? resolveSessionModel(provider as AgentProvider, getSettings().openaiModel);
   const manifest: ExecutionManifest = {
     workspaceDefinitionRevision: revision,
     repositories,
@@ -1993,9 +1995,7 @@ export async function createStartSessionJob(
       workspaceId: input.workspaceId,
       prompt: input.prompt,
       ...(input.personaId === undefined ? {} : { personaId: input.personaId }),
-      ...(input.reasoningEffort === undefined
-        ? {}
-        : { reasoningEffort: input.reasoningEffort }),
+      ...(input.reasoningEffort === undefined ? {} : { reasoningEffort: input.reasoningEffort }),
       ...(input.sandbox === undefined ? {} : { sandbox: input.sandbox }),
       ...(input.cliMinVersion === undefined ? {} : { cliMinVersion: input.cliMinVersion }),
       ...(input.turnTimeoutMs === undefined ? {} : { turnTimeoutMs: input.turnTimeoutMs }),
@@ -2007,9 +2007,7 @@ export async function createStartSessionJob(
       ? { kind: 'device' as const, enrollmentId: input.targetEnrollmentId }
       : {
           kind: 'auto' as const,
-          ...(input.requirements === undefined
-            ? {}
-            : { requirements: input.requirements }),
+          ...(input.requirements === undefined ? {} : { requirements: input.requirements }),
         };
   const payloadHash = createHash('sha256')
     .update(
@@ -2101,9 +2099,7 @@ export async function createCodeTaskJob(input: CodeTaskJobInput): Promise<JobSum
       prompt: input.prompt,
       refPolicy: 'local-branches',
       ...(input.personaId === undefined ? {} : { personaId: input.personaId }),
-      ...(input.reasoningEffort === undefined
-        ? {}
-        : { reasoningEffort: input.reasoningEffort }),
+      ...(input.reasoningEffort === undefined ? {} : { reasoningEffort: input.reasoningEffort }),
       ...(input.sandbox === undefined ? {} : { sandbox: input.sandbox }),
       ...(input.cliMinVersion === undefined ? {} : { cliMinVersion: input.cliMinVersion }),
       ...(input.turnTimeoutMs === undefined ? {} : { turnTimeoutMs: input.turnTimeoutMs }),
@@ -2115,15 +2111,10 @@ export async function createCodeTaskJob(input: CodeTaskJobInput): Promise<JobSum
       ? { kind: 'device' as const, enrollmentId: input.targetEnrollmentId }
       : {
           kind: 'auto' as const,
-          ...(input.requirements === undefined
-            ? {}
-            : { requirements: input.requirements }),
+          ...(input.requirements === undefined ? {} : { requirements: input.requirements }),
         };
   const payloadHash = createHash('sha256')
-    .update(
-      canonicalJson({ kind: 'code-task', requestedTarget, inputManifest: manifest }),
-      'utf8',
-    )
+    .update(canonicalJson({ kind: 'code-task', requestedTarget, inputManifest: manifest }), 'utf8')
     .digest('hex');
   const result = await meshRpc<{ job: JobSummary }>('job.create', {
     requestId: input.requestId,
@@ -2154,9 +2145,7 @@ export interface WorkflowNodeJobInput extends Omit<CodeTaskJobInput, 'requestId'
  * the result refs. requestId is `node-dispatch/<dispatchId>`: the
  * backend's (source, requestId) idempotency makes re-dispatch safe.
  */
-export async function createWorkflowNodeJob(
-  input: WorkflowNodeJobInput,
-): Promise<JobSummary> {
+export async function createWorkflowNodeJob(input: WorkflowNodeJobInput): Promise<JobSummary> {
   const requestId = `node-dispatch/${input.dispatchId}`;
   const provider: RemoteSessionProvider = input.provider ?? 'codex';
   const revision = workspaceDefinitionRevision(input.workspaceId);
@@ -2205,9 +2194,7 @@ export async function createWorkflowNodeJob(
       runId: input.runId,
       nodeId: input.nodeId,
       ...(input.personaId === undefined ? {} : { personaId: input.personaId }),
-      ...(input.reasoningEffort === undefined
-        ? {}
-        : { reasoningEffort: input.reasoningEffort }),
+      ...(input.reasoningEffort === undefined ? {} : { reasoningEffort: input.reasoningEffort }),
       ...(input.sandbox === undefined ? {} : { sandbox: input.sandbox }),
       ...(input.cliMinVersion === undefined ? {} : { cliMinVersion: input.cliMinVersion }),
       ...(input.turnTimeoutMs === undefined ? {} : { turnTimeoutMs: input.turnTimeoutMs }),
@@ -2219,9 +2206,7 @@ export async function createWorkflowNodeJob(
       ? { kind: 'device' as const, enrollmentId: input.targetEnrollmentId }
       : {
           kind: 'auto' as const,
-          ...(input.requirements === undefined
-            ? {}
-            : { requirements: input.requirements }),
+          ...(input.requirements === undefined ? {} : { requirements: input.requirements }),
         };
   const payloadHash = createHash('sha256')
     .update(

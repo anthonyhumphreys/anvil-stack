@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import type { HandoffRecord, SessionCheckpoint } from '../../contract/handoff';
+import type {
+  HandoffCheckpoint,
+  HandoffRecord,
+  SealedSessionCheckpoint,
+  SessionCheckpoint,
+} from '../../contract/handoff';
+import { isSealedCheckpoint } from '../../contract/handoff';
 import type { RpcError } from '../../contract/envelope';
 import { expectSuccess, postRpc, spikeBearer, uniqueIds } from './helpers';
 
@@ -55,7 +61,7 @@ async function advance(
   from: string,
   to: string,
   auth: string,
-  checkpoint?: SessionCheckpoint,
+  checkpoint?: HandoffCheckpoint,
 ) {
   return postRpc(
     'handoff.advance',
@@ -69,7 +75,7 @@ async function advanceOk(
   from: string,
   to: string,
   auth: string,
-  checkpoint?: SessionCheckpoint,
+  checkpoint?: HandoffCheckpoint,
 ): Promise<HandoffRecord> {
   return expectSuccess<{ handoff: HandoffRecord }>(
     await advance(handoffId, from, to, auth, checkpoint),
@@ -182,11 +188,21 @@ describe('handoff.advance', () => {
     const sessionId = `sess-${crypto.randomUUID()}`;
     const h = await createHandoff(sessionId, 1);
 
-    const prepared = await advanceOk(h.id, 'requested', 'target-prepared-without-execution', SRC_AUTH);
+    const prepared = await advanceOk(
+      h.id,
+      'requested',
+      'target-prepared-without-execution',
+      SRC_AUTH,
+    );
     expect(prepared.state).toBe('target-prepared-without-execution');
 
     // Only the source enrollment may quiesce/relinquish.
-    const wrongSide = await advance(h.id, 'target-prepared-without-execution', 'source-quiescing', TGT_AUTH);
+    const wrongSide = await advance(
+      h.id,
+      'target-prepared-without-execution',
+      'source-quiescing',
+      TGT_AUTH,
+    );
     expect((wrongSide.body as RpcError).error.code).toBe('forbidden');
 
     await advanceOk(h.id, 'target-prepared-without-execution', 'source-quiescing', SRC_AUTH);
@@ -197,7 +213,11 @@ describe('handoff.advance', () => {
       SRC_AUTH,
       checkpointFor(sessionId, 1),
     );
-    expect(relinquished.checkpoint?.summary).toBe('turn summary');
+    expect(
+      relinquished.checkpoint !== null &&
+        !isSealedCheckpoint(relinquished.checkpoint) &&
+        relinquished.checkpoint.summary,
+    ).toBe('turn summary');
 
     const transferred = await advanceOk(
       h.id,
@@ -208,7 +228,12 @@ describe('handoff.advance', () => {
     expect(transferred.targetGeneration).toBe(2);
 
     // Only the target enrollment may activate/complete.
-    const wrongActivate = await advance(h.id, 'ownership-transferred', 'target-activating', SRC_AUTH);
+    const wrongActivate = await advance(
+      h.id,
+      'ownership-transferred',
+      'target-activating',
+      SRC_AUTH,
+    );
     expect((wrongActivate.body as RpcError).error.code).toBe('forbidden');
 
     await advanceOk(h.id, 'ownership-transferred', 'target-activating', TGT_AUTH);
@@ -228,7 +253,12 @@ describe('handoff.advance', () => {
       SRC_AUTH,
       checkpointFor(sessionId, 1),
     );
-    await advanceOk(h.id, 'source-relinquished-and-checkpointed', 'ownership-transferred', SRC_AUTH);
+    await advanceOk(
+      h.id,
+      'source-relinquished-and-checkpointed',
+      'ownership-transferred',
+      SRC_AUTH,
+    );
     await advanceOk(h.id, 'ownership-transferred', 'target-activating', TGT_AUTH);
     await advanceOk(h.id, 'target-activating', 'completed', TGT_AUTH);
 
@@ -281,7 +311,12 @@ describe('handoff.advance', () => {
     await advanceOk(h.id, 'requested', 'target-prepared-without-execution', SRC_AUTH);
     await advanceOk(h.id, 'target-prepared-without-execution', 'source-quiescing', SRC_AUTH);
 
-    const missing = await advance(h.id, 'source-quiescing', 'source-relinquished-and-checkpointed', SRC_AUTH);
+    const missing = await advance(
+      h.id,
+      'source-quiescing',
+      'source-relinquished-and-checkpointed',
+      SRC_AUTH,
+    );
     expect((missing.body as RpcError).error.code).toBe('malformed-request');
 
     const wrongSession = await advance(
@@ -292,6 +327,57 @@ describe('handoff.advance', () => {
       checkpointFor('sess-other', 1),
     );
     expect((wrongSession.body as RpcError).error.code).toBe('malformed-request');
+  });
+
+  it('accepts a sealed checkpoint: clear CAS fields, opaque body', async () => {
+    const sessionId = `sess-${crypto.randomUUID()}`;
+    const h = await createHandoff(sessionId, 1);
+    await advanceOk(h.id, 'requested', 'target-prepared-without-execution', SRC_AUTH);
+    await advanceOk(h.id, 'target-prepared-without-execution', 'source-quiescing', SRC_AUTH);
+
+    const sealed: SealedSessionCheckpoint = {
+      enc: 'aes-256-gcm',
+      keyVersion: 1,
+      nonce: Buffer.alloc(12, 3).toString('base64'),
+      ct: Buffer.alloc(48, 4).toString('base64'),
+      sessionId,
+      sourceGeneration: 1,
+    };
+    const relinquished = await advanceOk(
+      h.id,
+      'source-quiescing',
+      'source-relinquished-and-checkpointed',
+      SRC_AUTH,
+      sealed,
+    );
+    expect(isSealedCheckpoint(relinquished.checkpoint!)).toBe(true);
+    expect((relinquished.checkpoint as typeof sealed).ct).toBe(sealed.ct);
+
+    // The CAS assertions still apply to the clear fields.
+    const h2 = await createHandoff(`sess-${crypto.randomUUID()}`, 1);
+    await advanceOk(h2.id, 'requested', 'target-prepared-without-execution', SRC_AUTH);
+    await advanceOk(h2.id, 'target-prepared-without-execution', 'source-quiescing', SRC_AUTH);
+    const mismatch = await advance(
+      h2.id,
+      'source-quiescing',
+      'source-relinquished-and-checkpointed',
+      SRC_AUTH,
+      { ...sealed, sessionId: 'sess-other' },
+    );
+    expect((mismatch.body as RpcError).error.code).toBe('malformed-request');
+
+    // And a malformed sealed body is rejected outright.
+    const h3 = await createHandoff(`sess-${crypto.randomUUID()}`, 1);
+    await advanceOk(h3.id, 'requested', 'target-prepared-without-execution', SRC_AUTH);
+    await advanceOk(h3.id, 'target-prepared-without-execution', 'source-quiescing', SRC_AUTH);
+    const bad = await advance(
+      h3.id,
+      'source-quiescing',
+      'source-relinquished-and-checkpointed',
+      SRC_AUTH,
+      { ...sealed, nonce: '!!bad!!' },
+    );
+    expect((bad.body as RpcError).error.code).toBe('malformed-request');
   });
 });
 
@@ -324,7 +410,12 @@ describe('handoff.cancel', () => {
       SRC_AUTH,
       checkpointFor(sessionId, 1),
     );
-    await advanceOk(h.id, 'source-relinquished-and-checkpointed', 'ownership-transferred', SRC_AUTH);
+    await advanceOk(
+      h.id,
+      'source-relinquished-and-checkpointed',
+      'ownership-transferred',
+      SRC_AUTH,
+    );
 
     const cancelled = expectSuccess<{ handoff: HandoffRecord }>(
       await postRpc('handoff.cancel', { handoffId: h.id }, TGT_AUTH),

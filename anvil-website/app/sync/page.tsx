@@ -10,20 +10,20 @@ import { SiteHeader } from "@/components/site/header";
 export const metadata: Metadata = {
   title: "Hosted sync | Anvil",
   description:
-    "Anvil hosted sync: encrypted replication of your Anvil state across devices, mesh execution coordination, and artifact storage — free through 31 October 2026."
+    "Anvil hosted sync: replication of your Anvil state across devices, mesh execution coordination, and artifact storage — free through 31 October 2026."
 };
 
 const includes = [
-  "Encrypted sync of account-owned Anvil state — workspace definitions, workflow templates, editable agents, and approved settings — across your devices.",
+  "End-to-end encrypted sync of account-owned Anvil state — workspace definitions, workflow templates, editable agents, and approved settings — sealed on your device under your account key (AES-256-GCM) and opened only by your paired devices.",
   "Mesh execution: enrolled devices pick up jobs such as workspace preparation, provider sessions, and delegated workflow nodes.",
-  "Artifact storage for run outputs within the account's hosted limits.",
-  "Device pairing by single-use codes, with revoke and rename surfaced in the account area."
+  "Sealed artifact storage for run outputs within the account's hosted limits — bytes are ciphertext on the backend.",
+  "Device pairing with an out-of-band pairing payload the server never sees, plus revoke and rename surfaced in the account area. Revoking a device rotates the account key for future writes."
 ];
 
 const notIncluded = [
   "Your machines supply the compute. Enrolled devices run the jobs — the hosted backend does not execute your code.",
   "Your LLM providers supply the models. Hosted sync coordinates work; it does not run inference or resell tokens.",
-  "The backend sees sealed payloads and metadata needed to coordinate — content stays encrypted for your devices."
+  "The backend cannot read synced content, but it sees the shape of your sync: entity ids and types, revisions and timing, payload sizes, and the device roster. Keep secrets out of entity ids and names. Key rotation also cannot erase content a revoked device already decrypted — it only closes off future writes."
 ];
 
 export default function SyncPage() {

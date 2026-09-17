@@ -86,10 +86,17 @@ rejected by the nonce table.
 ## Freshness target
 
 `billing_meta.last_reconcile_at` (epoch-ms string) records the last
-successful reconcile. Alert when it exceeds **24h** for any account with a
-live subscription — see `metrics.md`. There is no scheduled reconciler yet
-(deferred from BILL-02); until a scheduled trigger exists, run per-account
-on demand.
+successful reconcile, and `billing_meta.reconcile_at:{billingAccountId}`
+the per-account marker. Alert when the per-account marker exceeds **24h**
+for any account with a live subscription — the `reconcile.freshness`
+sweep signal counts exactly this (see `metrics.md`).
+
+The hourly cron trigger (`src/hosted/reconciler.ts`, `triggers.crons` in
+`wrangler.hosted.jsonc`) reconciles accounts whose marker is older than
+12h, batched at 10 provider calls per run, and emits
+`reconcile.run`/`reconcile.failure` metric lines. The manual route below
+remains the repair path for single-account support cases and for forcing
+an account to converge before the cron gets to it.
 
 Check the marker:
 

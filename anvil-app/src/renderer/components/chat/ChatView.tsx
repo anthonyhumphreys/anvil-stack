@@ -44,6 +44,8 @@ import {
   LifeBuoy,
   Trash2,
   Globe,
+  Link2,
+  Link2Off,
   MonitorSmartphone,
   Minus,
   Plus,
@@ -193,6 +195,8 @@ export function ChatView({ userRole }: ChatViewProps) {
     activeGoal,
     activeArtifacts,
     discardArtifact,
+    shareArtifact,
+    unshareArtifact,
     chatLayout,
     send,
     steer,
@@ -1575,6 +1579,8 @@ export function ChatView({ userRole }: ChatViewProps) {
                 setSelectedArtifactId(artifactId);
               }}
               onDiscardArtifact={discardArtifact}
+              onShareArtifact={shareArtifact}
+              onUnshareArtifact={unshareArtifact}
               zoom={canvasZoom}
               onZoomChange={setCanvasZoom}
               presentation="sidebar"
@@ -1601,6 +1607,8 @@ export function ChatView({ userRole }: ChatViewProps) {
                   setSelectedArtifactId(artifactId);
                 }}
                 onDiscardArtifact={discardArtifact}
+                onShareArtifact={shareArtifact}
+                onUnshareArtifact={unshareArtifact}
                 zoom={canvasZoom}
                 onZoomChange={setCanvasZoom}
                 presentation="expanded"
@@ -1628,6 +1636,8 @@ export function ChatView({ userRole }: ChatViewProps) {
                 setSelectedArtifactId(artifactId);
               }}
               onDiscardArtifact={discardArtifact}
+              onShareArtifact={shareArtifact}
+              onUnshareArtifact={unshareArtifact}
               zoom={canvasZoom}
               onZoomChange={setCanvasZoom}
               presentation="detached"
@@ -2092,6 +2102,8 @@ function ChatCanvasSidebar({
   onSelectPlan,
   onSelectArtifact,
   onDiscardArtifact,
+  onShareArtifact,
+  onUnshareArtifact,
   zoom,
   onZoomChange,
   presentation,
@@ -2107,6 +2119,8 @@ function ChatCanvasSidebar({
   onSelectPlan: () => void;
   onSelectArtifact: (artifactId: string) => void;
   onDiscardArtifact: (artifactId: string) => Promise<void>;
+  onShareArtifact: (artifactId: string) => Promise<ChatArtifact>;
+  onUnshareArtifact: (artifactId: string) => Promise<ChatArtifact>;
   zoom: number;
   onZoomChange: (zoom: number) => void;
   presentation: 'sidebar' | 'expanded' | 'detached';
@@ -2134,6 +2148,56 @@ function ChatCanvasSidebar({
     if (!window.confirm(`Discard the session-only artifact “${selectedArtifact.title}”?`)) return;
     void onDiscardArtifact(selectedArtifact.id);
   }, [onDiscardArtifact, selectedArtifact]);
+
+  const [sharingAvailable, setSharingAvailable] = useState(false);
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareLinkCopied, setShareLinkCopied] = useState(false);
+  const [shareError, setShareError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void window.anvil.chat
+      .artifactSharingAvailable()
+      .then((available) => {
+        if (!cancelled) setSharingAvailable(available);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleShare = useCallback(() => {
+    if (!selectedArtifact || shareBusy) return;
+    setShareBusy(true);
+    setShareError(null);
+    void onShareArtifact(selectedArtifact.id)
+      .then((updated) => {
+        if (updated.sharedUrl) {
+          void navigator.clipboard.writeText(updated.sharedUrl).then(() => {
+            setShareLinkCopied(true);
+            window.setTimeout(() => setShareLinkCopied(false), 1400);
+          });
+        }
+      })
+      .catch((err: unknown) => {
+        setShareError(err instanceof Error ? err.message : 'Share failed');
+      })
+      .finally(() => setShareBusy(false));
+  }, [onShareArtifact, selectedArtifact, shareBusy]);
+
+  const handleUnshare = useCallback(() => {
+    if (!selectedArtifact || shareBusy) return;
+    if (!window.confirm(`Stop sharing “${selectedArtifact.title}”? The public link will break.`))
+      return;
+    setShareBusy(true);
+    setShareError(null);
+    void onUnshareArtifact(selectedArtifact.id)
+      .catch((err: unknown) => {
+        setShareError(err instanceof Error ? err.message : 'Unshare failed');
+      })
+      .finally(() => setShareBusy(false));
+  }, [onUnshareArtifact, selectedArtifact, shareBusy]);
 
   return (
     <div
@@ -2271,6 +2335,10 @@ function ChatCanvasSidebar({
                   {selectedArtifact.reasoningEffort && (
                     <ArtifactMetaChip label={selectedArtifact.reasoningEffort} />
                   )}
+                  {selectedArtifact.sharedUrl && <ArtifactMetaChip label="shared" />}
+                  {shareError && (
+                    <span className="text-[11px] text-error">{shareError}</span>
+                  )}
                 </div>
               </div>
               <div className="flex shrink-0 items-center gap-1">
@@ -2340,6 +2408,52 @@ function ChatCanvasSidebar({
                 >
                   {copied ? <Check size={13} className="text-success" /> : <Copy size={13} />}
                 </button>
+                {sharingAvailable && !selectedArtifact.sharedUrl && (
+                  <button
+                    type="button"
+                    onClick={handleShare}
+                    disabled={shareBusy}
+                    className="rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-35"
+                    title="Share artifact — creates a public link and copies it"
+                    aria-label="Share artifact"
+                  >
+                    <Link2 size={13} />
+                  </button>
+                )}
+                {selectedArtifact.sharedUrl && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void navigator.clipboard
+                          .writeText(selectedArtifact.sharedUrl as string)
+                          .then(() => {
+                            setShareLinkCopied(true);
+                            window.setTimeout(() => setShareLinkCopied(false), 1400);
+                          })
+                      }
+                      className="rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+                      title={shareLinkCopied ? 'Copied' : `Copy share link: ${selectedArtifact.sharedUrl}`}
+                      aria-label={shareLinkCopied ? 'Copied share link' : 'Copy share link'}
+                    >
+                      {shareLinkCopied ? (
+                        <Check size={13} className="text-success" />
+                      ) : (
+                        <Link2 size={13} />
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleUnshare}
+                      disabled={shareBusy}
+                      className="rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-error/10 hover:text-error disabled:opacity-35"
+                      title="Stop sharing — revokes the public link"
+                      aria-label="Stop sharing artifact"
+                    >
+                      <Link2Off size={13} />
+                    </button>
+                  </>
+                )}
                 {selectedArtifact.filePath && (
                   <button
                     type="button"

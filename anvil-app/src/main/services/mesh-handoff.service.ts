@@ -15,19 +15,19 @@ import { getDb } from '../db/database.js';
 import { rpc } from './sync-backend-client.service.js';
 import { getFullStatus } from './git.service.js';
 import { detectUnsupportedCheckout } from './workspace-materialization.service.js';
-import {
-  readSessionOwnership,
-  writeSessionOwnership,
-} from './mesh-ownership.service.js';
+import { readSessionOwnership, writeSessionOwnership } from './mesh-ownership.service.js';
 import { interruptTurn, stopSession } from './codex-session.service.js';
 import type {
   HandoffAdvanceResult,
   HandoffCancelResult,
+  HandoffCheckpoint,
   HandoffCreateResult,
   HandoffGetResult,
   HandoffRecord,
   SessionCheckpoint,
 } from '../../../cloud/contract/handoff.js';
+import type { SyncScope } from '../../shared/sync-mesh.js';
+import { sealScopedJson } from './sync-keyring.service.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -37,13 +37,13 @@ export interface MeshHandoffContext {
   apiUrl: string;
   accessToken: string;
   enrollmentId: string;
+  /** Sync scope for E2E checkpoint sealing; absent contexts send plaintext. */
+  scope?: SyncScope;
 }
 
 let contextProvider: (() => MeshHandoffContext | null) | null = null;
 
-export function configureMeshHandoffContext(
-  provider: () => MeshHandoffContext | null,
-): void {
+export function configureMeshHandoffContext(provider: () => MeshHandoffContext | null): void {
   contextProvider = provider;
 }
 
@@ -131,9 +131,9 @@ function sessionRepositories(sessionId: string): SessionRepoRef[] {
   }
   const out: SessionRepoRef[] = [];
   for (const repoId of repoIds) {
-    const repo = getDb()
-      .prepare('SELECT id, path FROM repos WHERE id = ?')
-      .get(repoId) as { id: string; path: string } | undefined;
+    const repo = getDb().prepare('SELECT id, path FROM repos WHERE id = ?').get(repoId) as
+      | { id: string; path: string }
+      | undefined;
     if (repo !== undefined) out.push({ repositoryId: repoId, path: repo.path });
   }
   return out;
@@ -235,14 +235,14 @@ function sessionCheckpointContext(sessionId: string): {
        WHERE s.id = ?`,
     )
     .get(sessionId) as
-      | {
-          thread_id: string;
-          provider: string | null;
-          provider_thread_provider: string | null;
-          active_plan_json: string | null;
-          active_goal_json: string | null;
-        }
-      | undefined;
+    | {
+        thread_id: string;
+        provider: string | null;
+        provider_thread_provider: string | null;
+        active_plan_json: string | null;
+        active_goal_json: string | null;
+      }
+    | undefined;
   if (row === undefined) return null;
   return {
     threadId: row.thread_id,
@@ -305,9 +305,7 @@ export async function captureSessionCheckpoint(
 
 function handoffRpc<R>(operation: string, params: unknown): Promise<R> {
   const ctx = handoffContext();
-  return rpc<R>({ apiUrl: ctx.apiUrl }, operation, params, ctx.accessToken).then(
-    (r) => r.result,
-  );
+  return rpc<R>({ apiUrl: ctx.apiUrl }, operation, params, ctx.accessToken).then((r) => r.result);
 }
 
 export type InitiateHandoffResult =
@@ -358,13 +356,28 @@ export async function initiateHandoff(input: {
     writeSessionOwnership(input.sessionId, generation, ctx.enrollmentId, 'owned');
   }
 
-  const advance = (from: string, to: string, checkpoint?: SessionCheckpoint) =>
-    handoffRpc<HandoffAdvanceResult>('handoff.advance', {
+  const advance = (from: string, to: string, checkpoint?: SessionCheckpoint) => {
+    // E2E: the checkpoint body is sealed under the ADK when this session
+    // carries a sync scope; sessionId/sourceGeneration stay clear for the
+    // backend's CAS assertions. Without a scope the legacy plaintext shape
+    // is sent (self-host, or pre-key bootstrap).
+    const wireCheckpoint: HandoffCheckpoint | undefined =
+      checkpoint === undefined
+        ? undefined
+        : ctx.scope !== undefined
+          ? {
+              ...sealScopedJson(ctx.scope, `anvil/checkpoint/v1:${handoffId}`, checkpoint),
+              sessionId: checkpoint.sessionId,
+              sourceGeneration: checkpoint.sourceGeneration,
+            }
+          : checkpoint;
+    return handoffRpc<HandoffAdvanceResult>('handoff.advance', {
       handoffId,
       from,
       to,
-      ...(checkpoint === undefined ? {} : { checkpoint }),
+      ...(wireCheckpoint === undefined ? {} : { checkpoint: wireCheckpoint }),
     });
+  };
 
   try {
     const prepared = await advance('requested', 'target-prepared-without-execution');
@@ -414,9 +427,7 @@ export async function initiateHandoff(input: {
       const row = getDb()
         .prepare('SELECT state FROM mesh_handoff_journal WHERE handoff_id = ?')
         .get(handoffId) as { state: string } | undefined;
-      const preTransfer =
-        row === undefined ||
-        row.state !== 'ownership-transferred';
+      const preTransfer = row === undefined || row.state !== 'ownership-transferred';
       if (preTransfer) {
         writeSessionOwnership(input.sessionId, generation, ctx.enrollmentId, 'owned');
       }

@@ -32,9 +32,9 @@ const selfHostPoints = [
 ];
 
 const hostedPoints = [
-  "Encrypted sync of workspaces, templates, agents, and approved settings",
+  "End-to-end encrypted sync of workspaces, templates, agents, and approved settings — sealed on your device, stored as ciphertext",
   "Mesh job dispatch to your enrolled devices",
-  "Artifact storage within account limits",
+  "Sealed artifact storage within account limits",
   "Device pairing, rename, and revoke from the web account"
 ];
 

@@ -37,7 +37,19 @@ import {
   type VerifiedAuth,
 } from './auth';
 import { sha256Hex } from './hash';
-import { resolveAccountEntitlement } from './hosted/enforcement';
+import {
+  checkHostedAccess,
+  resolveAccountEntitlement,
+  ENTITLEMENT_CACHE_DDL,
+} from './hosted/enforcement';
+import type {
+  ShareCreateResult,
+  ShareFinalizeResult,
+  ShareListResult,
+  ShareRevokeResult,
+  SharedArtifactDescriptor,
+  SharedArtifactState,
+} from '../../contract/shares';
 import { verifyOidcPkceProof } from './oidc';
 import { isRecord, rpcErrorResponse } from './rpc';
 import { SESSION_SCHEMA } from './schema';
@@ -51,6 +63,15 @@ const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 /** Revoked sessions are retained this long for audit, then swept (OPS-01). */
 const REVOKED_SESSION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const SESSION_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
+// Hosted artifact sharing bounds (contract shares.ts).
+const SHARE_UPLOAD_TTL_MS = 15 * 60 * 1000;
+const SHARE_MAX_BYTES = 16 * 1024 * 1024;
+const SHARE_ACCOUNT_MAX_BYTES = 256 * 1024 * 1024;
+const SHARE_MAX_TITLE_BYTES = 256;
+const SHARE_MAX_MEDIA_TYPE_CHARS = 128;
+const SHARE_DEFAULT_EXPIRES_DAYS = 30;
+const SHARE_MAX_EXPIRES_DAYS = 365;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 interface SessionRow {
   enrollment_id: string;
@@ -76,12 +97,34 @@ interface CodeRow {
   [key: string]: string | number | null;
 }
 
+interface SharedArtifactRow {
+  share_id: string;
+  account_id: string;
+  enrollment_id: string;
+  title: string;
+  media_type: string;
+  byte_length: number;
+  sha256: string;
+  expires_in_days: number;
+  state: string;
+  r2_key: string;
+  upload_expires_at: number;
+  created_at: number;
+  published_at: number | null;
+  expires_at: number | null;
+  revoked_at: number | null;
+  sealed: number;
+  plaintext_bytes: number | null;
+  [key: string]: string | number | null;
+}
+
 function authError(code: AuthErrorCode | 'unauthenticated' | 'throttled' | 'malformed-request') {
-  const status = code === 'unauthenticated' || code === 'malformed-request'
-    ? authErrorHttpStatus('invalid-proof')
-    : code === 'throttled'
-      ? 429
-      : authErrorHttpStatus(code);
+  const status =
+    code === 'unauthenticated' || code === 'malformed-request'
+      ? authErrorHttpStatus('invalid-proof')
+      : code === 'throttled'
+        ? 429
+        : authErrorHttpStatus(code);
   return Response.json(
     { error: { code, retryable: code === 'throttled' } },
     { status: code === 'malformed-request' ? 400 : status },
@@ -125,6 +168,31 @@ export class SessionCoordinator extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.ctx.storage.sql.exec(SESSION_SCHEMA);
+    // checkHostedAccess reuses the same DO-local cache table as the
+    // account object; create it so write denial checks work here too.
+    this.ctx.storage.sql.exec(ENTITLEMENT_CACHE_DDL);
+    // E2E: additive columns for objects created before sealed shares existed.
+    this.ensureColumn(
+      'shared_artifacts',
+      'sealed',
+      'ALTER TABLE shared_artifacts ADD COLUMN sealed INTEGER NOT NULL DEFAULT 0',
+    );
+    this.ensureColumn(
+      'shared_artifacts',
+      'plaintext_bytes',
+      'ALTER TABLE shared_artifacts ADD COLUMN plaintext_bytes INTEGER',
+    );
+  }
+
+  /** Adds a column to an existing DO SQLite table when it is missing. */
+  private ensureColumn(table: string, name: string, ddl: string): void {
+    const columns = this.ctx.storage.sql
+      .exec<{ name: string }>(`PRAGMA table_info(${table})`)
+      .toArray()
+      .map((row) => row.name);
+    if (!columns.includes(name)) {
+      this.ctx.storage.sql.exec(ddl);
+    }
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -151,7 +219,9 @@ export class SessionCoordinator extends DurableObject<Env> {
           return response;
         }
         case 'POST /enrollment-codes': {
-          const response = await this.ctx.blockConcurrencyWhile(() => this.handleIssueCode(request));
+          const response = await this.ctx.blockConcurrencyWhile(() =>
+            this.handleIssueCode(request),
+          );
           await this.ensureSweepAlarm();
           return response;
         }
@@ -220,10 +290,42 @@ export class SessionCoordinator extends DurableObject<Env> {
           await this.ensureSweepAlarm();
           return response;
         }
+        // Hosted artifact sharing: the device-facing share.* ops arrive
+        // here with worker-verified identity headers (index.ts), the byte
+        // upload streams into R2 on PUT /v1/shared/{shareId}, and the
+        // website's signed service channel resolves published shares via
+        // /internal/shared-artifact.
+        case 'POST /internal/share-create': {
+          const response = await this.ctx.blockConcurrencyWhile(() =>
+            this.handleShareCreate(request),
+          );
+          await this.ensureSweepAlarm();
+          return response;
+        }
+        case 'POST /internal/share-finalize':
+          return await this.handleShareFinalize(request);
+        case 'POST /internal/share-list':
+          return await this.handleShareList(request);
+        case 'POST /internal/share-revoke': {
+          const response = await this.ctx.blockConcurrencyWhile(() =>
+            this.handleShareRevoke(request),
+          );
+          await this.ensureSweepAlarm();
+          return response;
+        }
+        case 'POST /internal/shared-artifact':
+          return await this.handleSharedArtifactRead(request);
         case 'POST /internal/sweep':
           return Response.json(await this.runSweep(Date.now()));
-        default:
+        default: {
+          // Share byte uploads stream straight into R2 under a reservation;
+          // they never fit the POST-route switch above.
+          const shareUploadMatch = /^\/v1\/shared\/([A-Za-z0-9_-]{1,128})$/.exec(url.pathname);
+          if (request.method === 'PUT' && shareUploadMatch !== null) {
+            return await this.handleShareUpload(request, shareUploadMatch[1] as string);
+          }
           return rpcErrorResponse(undefined, 'not-found');
+        }
       }
     } catch {
       return rpcErrorResponse(undefined, 'unavailable');
@@ -517,15 +619,13 @@ export class SessionCoordinator extends DurableObject<Env> {
     if (typeof params.refreshToken === 'string') {
       const presentedHash = await sha256Hex(params.refreshToken);
       authorized =
-        presentedHash === row.refresh_token_hash ||
-        presentedHash === row.prev_refresh_token_hash;
+        presentedHash === row.refresh_token_hash || presentedHash === row.prev_refresh_token_hash;
     }
     if (!authorized) {
       const bearer = parseDeviceBearer(request.headers.get('Authorization'));
       if (bearer !== null) {
         const bearerHash = await sha256Hex(bearer);
-        authorized =
-          bearerHash === row.access_token_hash && row.revoked_at === null;
+        authorized = bearerHash === row.access_token_hash && row.revoked_at === null;
       }
     }
     if (!authorized) {
@@ -583,7 +683,11 @@ export class SessionCoordinator extends DurableObject<Env> {
         return authError('unauthenticated');
       }
       const session = this.sessionByAccessHash(await sha256Hex(bearer));
-      if (session === null || session.revoked_at !== null || session.access_expires_at <= Date.now()) {
+      if (
+        session === null ||
+        session.revoked_at !== null ||
+        session.access_expires_at <= Date.now()
+      ) {
         return authError('unauthenticated');
       }
       accountId = session.account_id;
@@ -743,9 +847,7 @@ export class SessionCoordinator extends DurableObject<Env> {
     const entitlement =
       this.env.HOSTED_DB === undefined
         ? null
-        : await resolveAccountEntitlement(this.env, row.account_id, Date.now()).catch(
-            () => null,
-          );
+        : await resolveAccountEntitlement(this.env, row.account_id, Date.now()).catch(() => null);
     const result: SessionDescribeResult = {
       accountId: row.account_id,
       enrollmentId: row.enrollment_id,
@@ -769,11 +871,7 @@ export class SessionCoordinator extends DurableObject<Env> {
     const verified = parseVerifiedAuth(request);
     if (verified === null) return null;
     const row = this.sessionByEnrollment(verified.enrollmentId);
-    if (
-      row === null ||
-      row.account_id !== verified.accountId ||
-      row.revoked_at !== null
-    ) {
+    if (row === null || row.account_id !== verified.accountId || row.revoked_at !== null) {
       return null;
     }
     return verified;
@@ -784,10 +882,7 @@ export class SessionCoordinator extends DurableObject<Env> {
    * included. `selfEnrollmentId` marks the caller's own row; callers with
    * no session (the website channel) pass null so no row is self.
    */
-  private deviceListResult(
-    accountId: string,
-    selfEnrollmentId: string | null,
-  ): DeviceListResult {
+  private deviceListResult(accountId: string, selfEnrollmentId: string | null): DeviceListResult {
     const rows = this.ctx.storage.sql
       .exec(
         `SELECT enrollment_id, installation_id, display_name,
@@ -868,11 +963,7 @@ export class SessionCoordinator extends DurableObject<Env> {
     ) {
       return authError('malformed-request');
     }
-    return this.renameDeviceOnAccount(
-      caller.accountId,
-      body['enrollmentId'],
-      body['displayName'],
-    );
+    return this.renameDeviceOnAccount(caller.accountId, body['enrollmentId'], body['displayName']);
   }
 
   /**
@@ -892,11 +983,7 @@ export class SessionCoordinator extends DurableObject<Env> {
     ) {
       return authError('malformed-request');
     }
-    return this.renameDeviceOnAccount(
-      body['accountId'],
-      body['enrollmentId'],
-      body['displayName'],
-    );
+    return this.renameDeviceOnAccount(body['accountId'], body['enrollmentId'], body['displayName']);
   }
 
   /**
@@ -905,10 +992,7 @@ export class SessionCoordinator extends DurableObject<Env> {
    * revokes its worker record (best effort — token validation is
    * authoritative). Unknown or cross-account enrollments are not-found.
    */
-  private async revokeDeviceOnAccount(
-    accountId: string,
-    enrollmentId: string,
-  ): Promise<Response> {
+  private async revokeDeviceOnAccount(accountId: string, enrollmentId: string): Promise<Response> {
     const row = this.sessionByEnrollment(enrollmentId);
     if (row === null || row.account_id !== accountId) {
       return rpcErrorResponse(undefined, 'not-found');
@@ -920,14 +1004,11 @@ export class SessionCoordinator extends DurableObject<Env> {
     );
     try {
       const id = this.env.ACCOUNT.idFromName(row.account_id);
-      await this.env.ACCOUNT.get(id).fetch(
-        'https://internal.anvil/internal/revoke-enrollment',
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ enrollmentId: row.enrollment_id }),
-        },
-      );
+      await this.env.ACCOUNT.get(id).fetch('https://internal.anvil/internal/revoke-enrollment', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ enrollmentId: row.enrollment_id }),
+      });
     } catch {
       // Socket cleanup is best effort; the revoked session row is authoritative.
     }
@@ -967,6 +1048,442 @@ export class SessionCoordinator extends DurableObject<Env> {
     return this.revokeDeviceOnAccount(body['accountId'], body['enrollmentId']);
   }
 
+  // ---- hosted artifact shares ------------------------------------------
+  // The shared_artifacts row is the state authority; the R2 object at
+  // r2_key is reconciled against it. Uploads stream under a reservation,
+  // finalize verifies size + sha256 before publish, and every public read
+  // re-checks state/expiry/revocation — a share URL never outlives
+  // revocation. Rows live here (not the account object) so the website
+  // channel can resolve a share id without knowing the accountId.
+
+  private readShare(shareId: string): SharedArtifactRow | null {
+    const rows = this.ctx.storage.sql
+      .exec('SELECT * FROM shared_artifacts WHERE share_id = ?', shareId)
+      .toArray();
+    return (rows[0] as SharedArtifactRow | undefined) ?? null;
+  }
+
+  private shareDescriptor(row: SharedArtifactRow): SharedArtifactDescriptor {
+    return {
+      shareId: row.share_id,
+      title: row.title,
+      mediaType: row.media_type,
+      byteLength: row.byte_length,
+      sha256: row.sha256,
+      state: row.state as SharedArtifactState,
+      createdAt: new Date(row.created_at).toISOString(),
+      publishedAt: row.published_at === null ? null : new Date(row.published_at).toISOString(),
+      expiresAt: row.expires_at === null ? null : new Date(row.expires_at).toISOString(),
+      revokedAt: row.revoked_at === null ? null : new Date(row.revoked_at).toISOString(),
+      sealed: row.sealed === 1,
+      ...(row.plaintext_bytes === null ? {} : { plaintextBytes: row.plaintext_bytes }),
+    };
+  }
+
+  /**
+   * Lazy expiry for one share: `uploaded`/`published` rows past their
+   * deadline become `expired` and the R2 object is deleted best-effort.
+   * Reserved rows lapse via the sweep's orphan cleanup instead.
+   */
+  private async expireShareIfDue(row: SharedArtifactRow, now: number): Promise<SharedArtifactRow> {
+    if (
+      (row.state === 'published' || row.state === 'uploaded') &&
+      row.expires_at !== null &&
+      row.expires_at <= now
+    ) {
+      this.ctx.storage.sql.exec(
+        "UPDATE shared_artifacts SET state = 'expired' WHERE share_id = ?",
+        row.share_id,
+      );
+      row.state = 'expired';
+      await this.env.ARTIFACTS.delete(row.r2_key).catch(() => undefined);
+    }
+    return row;
+  }
+
+  /** Streams + verifies an R2 object's sha256 without buffering it whole. */
+  private async readShareObjectDigest(
+    r2Key: string,
+  ): Promise<{ size: number; sha256: string } | null> {
+    const obj = await this.env.ARTIFACTS.get(r2Key);
+    if (obj === null) {
+      return null;
+    }
+    if (typeof crypto.DigestStream === 'function' && obj.body !== null) {
+      const stream = new crypto.DigestStream('SHA-256');
+      await obj.body.pipeTo(stream);
+      const digest = await stream.digest;
+      const bytes = new Uint8Array(digest);
+      let hex = '';
+      for (const byte of bytes) {
+        hex += byte.toString(16).padStart(2, '0');
+      }
+      return { size: obj.size, sha256: hex };
+    }
+    const bytes = await obj.arrayBuffer();
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+    let hex = '';
+    for (const byte of digest) {
+      hex += byte.toString(16).padStart(2, '0');
+    }
+    return { size: obj.size, sha256: hex };
+  }
+
+  /**
+   * `share.create` (user actor): a byte-length + sha256 reservation under
+   * per-share and per-account quotas. Returns the bounded upload route and
+   * its expiry; the R2 key is `shared/{shareId}`.
+   */
+  private async handleShareCreate(request: Request): Promise<Response> {
+    const caller = this.verifiedCaller(request);
+    if (caller === null) return authError('unauthenticated');
+    const body = await readJson(request);
+    if (
+      !isRecord(body) ||
+      typeof body['title'] !== 'string' ||
+      body['title'].length === 0 ||
+      new TextEncoder().encode(body['title']).byteLength > SHARE_MAX_TITLE_BYTES ||
+      typeof body['mediaType'] !== 'string' ||
+      !/^[\w.+-]{1,64}\/[\w.+-]{1,64}$/.test(body['mediaType']) ||
+      body['mediaType'].length > SHARE_MAX_MEDIA_TYPE_CHARS ||
+      typeof body['byteLength'] !== 'number' ||
+      !Number.isInteger(body['byteLength']) ||
+      body['byteLength'] < 1 ||
+      body['byteLength'] > SHARE_MAX_BYTES ||
+      typeof body['sha256'] !== 'string' ||
+      !/^[0-9a-f]{64}$/.test(body['sha256']) ||
+      (body['expiresInDays'] !== undefined &&
+        (typeof body['expiresInDays'] !== 'number' ||
+          !Number.isInteger(body['expiresInDays']) ||
+          body['expiresInDays'] < 1 ||
+          body['expiresInDays'] > SHARE_MAX_EXPIRES_DAYS)) ||
+      (body['sealed'] !== undefined && typeof body['sealed'] !== 'boolean') ||
+      (body['plaintextBytes'] !== undefined &&
+        (typeof body['plaintextBytes'] !== 'number' ||
+          !Number.isInteger(body['plaintextBytes']) ||
+          body['plaintextBytes'] < 1))
+    ) {
+      return authError('malformed-request');
+    }
+    const now = Date.now();
+    if (this.deletionRow(caller.accountId) !== null) {
+      return Response.json(
+        { error: { code: 'forbidden', retryable: false, details: { reason: 'account-deleted' } } },
+        { status: 403 },
+      );
+    }
+    // BILL-03: share.create is mutating — a restricted account must not
+    // land new billable bytes.
+    const access = await checkHostedAccess(this.ctx.storage, this.env, caller.accountId, now);
+    if (!access.allowed) {
+      return Response.json(
+        { error: { code: 'forbidden', retryable: false, details: { reason: access.reason } } },
+        { status: 403 },
+      );
+    }
+    const used = this.ctx.storage.sql
+      .exec(
+        `SELECT COALESCE(SUM(byte_length), 0) AS total FROM shared_artifacts
+         WHERE account_id = ? AND state NOT IN ('revoked', 'expired')`,
+        caller.accountId,
+      )
+      .toArray()[0] as { total: number } | undefined;
+    if ((used?.total ?? 0) + body['byteLength'] > SHARE_ACCOUNT_MAX_BYTES) {
+      return Response.json(
+        {
+          error: {
+            code: 'quota-exceeded',
+            retryable: false,
+            details: {
+              reason: 'account-share-bytes',
+              limitBytes: SHARE_ACCOUNT_MAX_BYTES,
+              usedBytes: used?.total ?? 0,
+            },
+          },
+        },
+        { status: 403 },
+      );
+    }
+    const shareId = `shr_${crypto.randomUUID()}`;
+    const uploadExpiresAt = now + SHARE_UPLOAD_TTL_MS;
+    this.ctx.storage.sql.exec(
+      `INSERT INTO shared_artifacts (
+         share_id, account_id, enrollment_id, title, media_type, byte_length,
+         sha256, expires_in_days, state, r2_key, upload_expires_at,
+         created_at, published_at, expires_at, revoked_at, sealed, plaintext_bytes
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?, ?, NULL, NULL, NULL, ?, ?)`,
+      shareId,
+      caller.accountId,
+      caller.enrollmentId,
+      body['title'],
+      body['mediaType'],
+      body['byteLength'],
+      body['sha256'],
+      body['expiresInDays'] ?? SHARE_DEFAULT_EXPIRES_DAYS,
+      `shared/${shareId}`,
+      uploadExpiresAt,
+      now,
+      body['sealed'] === true ? 1 : 0,
+      typeof body['plaintextBytes'] === 'number' ? body['plaintextBytes'] : null,
+    );
+    const result: ShareCreateResult = {
+      shareId,
+      uploadPath: `/v1/shared/${shareId}`,
+      expiresAt: new Date(uploadExpiresAt).toISOString(),
+    };
+    return Response.json(result, { status: 200 });
+  }
+
+  /**
+   * Streams a share reservation's bytes into R2. Same rule as artifact
+   * uploads: `content-length` must equal the reservation so the body
+   * streams straight into R2, and the stored size is verified after write.
+   */
+  private async handleShareUpload(request: Request, shareId: string): Promise<Response> {
+    const caller = this.verifiedCaller(request);
+    if (caller === null) return authError('unauthenticated');
+    const now = Date.now();
+    const access = await checkHostedAccess(this.ctx.storage, this.env, caller.accountId, now);
+    if (!access.allowed) {
+      return Response.json(
+        { error: { code: 'forbidden', retryable: false, details: { reason: access.reason } } },
+        { status: 403 },
+      );
+    }
+    const row = this.readShare(shareId);
+    if (row === null || row.account_id !== caller.accountId) {
+      return rpcErrorResponse(undefined, 'not-found');
+    }
+    if (row.state !== 'reserved') {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'share-not-reserved' });
+    }
+    if (row.upload_expires_at <= now) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'reservation-expired' });
+    }
+    const declared = Number(request.headers.get('content-length') ?? 'NaN');
+    if (!Number.isFinite(declared) || declared !== row.byte_length) {
+      return rpcErrorResponse(undefined, 'conflict', {
+        reason: 'size-mismatch',
+        expected: row.byte_length,
+      });
+    }
+    if (request.body === null) {
+      return rpcErrorResponse(undefined, 'malformed-request');
+    }
+    let stored: R2Object;
+    try {
+      stored = await this.env.ARTIFACTS.put(row.r2_key, request.body, {
+        httpMetadata: { contentType: row.media_type },
+      });
+    } catch {
+      await this.env.ARTIFACTS.delete(row.r2_key).catch(() => undefined);
+      return rpcErrorResponse(undefined, 'unavailable', { reason: 'share-upload-failed' });
+    }
+    if (stored.size !== row.byte_length) {
+      await this.env.ARTIFACTS.delete(row.r2_key).catch(() => undefined);
+      return rpcErrorResponse(undefined, 'conflict', {
+        reason: 'size-mismatch',
+        expected: row.byte_length,
+        actual: stored.size,
+      });
+    }
+    this.ctx.storage.sql.exec(
+      "UPDATE shared_artifacts SET state = 'uploaded' WHERE share_id = ? AND state = 'reserved'",
+      shareId,
+    );
+    return Response.json({ shareId, byteLength: stored.size, state: 'uploaded' });
+  }
+
+  /**
+   * `share.finalize` (user actor): verifies the stored R2 object against
+   * the reservation and publishes. A verification mismatch discards the
+   * object and the row — mismatched bytes are never published.
+   */
+  private async handleShareFinalize(request: Request): Promise<Response> {
+    const caller = this.verifiedCaller(request);
+    if (caller === null) return authError('unauthenticated');
+    const body = await readJson(request);
+    if (
+      !isRecord(body) ||
+      typeof body['shareId'] !== 'string' ||
+      typeof body['byteLength'] !== 'number' ||
+      typeof body['sha256'] !== 'string'
+    ) {
+      return authError('malformed-request');
+    }
+    const row = this.readShare(body['shareId']);
+    if (row === null || row.account_id !== caller.accountId) {
+      return rpcErrorResponse(undefined, 'not-found');
+    }
+    if (row.state !== 'reserved' && row.state !== 'uploaded') {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'share-state', state: row.state });
+    }
+    if (body['byteLength'] !== row.byte_length || body['sha256'] !== row.sha256) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'manifest-mismatch' });
+    }
+    // E2E: a declared seal flag must agree with the reservation — the bytes
+    // being finalized cannot silently change protection class.
+    if (
+      body['sealed'] !== undefined &&
+      (typeof body['sealed'] !== 'boolean' || body['sealed'] !== (row.sealed === 1))
+    ) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'manifest-mismatch' });
+    }
+    const probe = await this.readShareObjectDigest(row.r2_key);
+    if (probe === null) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'share-not-uploaded' });
+    }
+    if (probe.size !== row.byte_length || probe.sha256 !== row.sha256) {
+      await this.env.ARTIFACTS.delete(row.r2_key).catch(() => undefined);
+      this.ctx.storage.sql.exec('DELETE FROM shared_artifacts WHERE share_id = ?', row.share_id);
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'checksum-mismatch' });
+    }
+    const now = Date.now();
+    const expiresAt = now + row.expires_in_days * DAY_MS;
+    this.ctx.storage.sql.exec(
+      `UPDATE shared_artifacts
+       SET state = 'published', published_at = ?, expires_at = ?
+       WHERE share_id = ?`,
+      now,
+      expiresAt,
+      row.share_id,
+    );
+    const fresh = this.readShare(row.share_id);
+    const result: ShareFinalizeResult = {
+      share: this.shareDescriptor(
+        fresh ?? { ...row, state: 'published', published_at: now, expires_at: expiresAt },
+      ),
+    };
+    return Response.json(result, { status: 200 });
+  }
+
+  /** `share.list` (user actor): the caller account's shares, newest first. */
+  private async handleShareList(request: Request): Promise<Response> {
+    const caller = this.verifiedCaller(request);
+    if (caller === null) return authError('unauthenticated');
+    const body = await readJson(request);
+    const stateFilter = isRecord(body) && typeof body['state'] === 'string' ? body['state'] : null;
+    const limit =
+      isRecord(body) && typeof body['limit'] === 'number' && Number.isInteger(body['limit'])
+        ? Math.min(Math.max(body['limit'], 1), 100)
+        : 50;
+    const now = Date.now();
+    const rows = this.ctx.storage.sql
+      .exec(
+        `SELECT * FROM shared_artifacts
+         WHERE account_id = ?
+         ORDER BY created_at DESC, share_id ASC LIMIT ?`,
+        caller.accountId,
+        Math.min(limit * 2, 200),
+      )
+      .toArray() as SharedArtifactRow[];
+    const shares: SharedArtifactDescriptor[] = [];
+    for (const row of rows) {
+      const fresh = await this.expireShareIfDue(row, now);
+      if (stateFilter !== null && fresh.state !== stateFilter) continue;
+      shares.push(this.shareDescriptor(fresh));
+      if (shares.length >= limit) break;
+    }
+    const result: ShareListResult = { shares };
+    return Response.json(result, { status: 200 });
+  }
+
+  /**
+   * `share.revoke` (user actor): published → revoked; in-flight
+   * reservations lapse to `expired`. Terminal rows return as-is so the op
+   * is idempotent. The R2 object is deleted best-effort.
+   */
+  private async handleShareRevoke(request: Request): Promise<Response> {
+    const caller = this.verifiedCaller(request);
+    if (caller === null) return authError('unauthenticated');
+    const body = await readJson(request);
+    if (!isRecord(body) || typeof body['shareId'] !== 'string') {
+      return authError('malformed-request');
+    }
+    const row = this.readShare(body['shareId']);
+    if (row === null || row.account_id !== caller.accountId) {
+      return rpcErrorResponse(undefined, 'not-found');
+    }
+    const now = Date.now();
+    if (row.state === 'published') {
+      this.ctx.storage.sql.exec(
+        "UPDATE shared_artifacts SET state = 'revoked', revoked_at = ? WHERE share_id = ?",
+        now,
+        row.share_id,
+      );
+      row.state = 'revoked';
+      row.revoked_at = now;
+      await this.env.ARTIFACTS.delete(row.r2_key).catch(() => undefined);
+    } else if (row.state === 'reserved' || row.state === 'uploaded') {
+      this.ctx.storage.sql.exec(
+        "UPDATE shared_artifacts SET state = 'expired' WHERE share_id = ?",
+        row.share_id,
+      );
+      row.state = 'expired';
+      await this.env.ARTIFACTS.delete(row.r2_key).catch(() => undefined);
+    }
+    const result: ShareRevokeResult = { share: this.shareDescriptor(row) };
+    return Response.json(result, { status: 200 });
+  }
+
+  /**
+   * `/internal/shared-artifact` — the website's signed service channel
+   * resolves a share id to streamed bytes plus metadata headers. Every
+   * read re-enforces state, expiry, and revocation; nothing here is a
+   * long-lived public bearer.
+   */
+  private async handleSharedArtifactRead(request: Request): Promise<Response> {
+    const body = await readJson(request);
+    if (!isRecord(body) || typeof body['shareId'] !== 'string') {
+      return authError('malformed-request');
+    }
+    const now = Date.now();
+    let row = this.readShare(body['shareId']);
+    if (row === null) {
+      return rpcErrorResponse(undefined, 'not-found');
+    }
+    row = await this.expireShareIfDue(row, now);
+    if (row.state !== 'published') {
+      return rpcErrorResponse(undefined, 'not-found');
+    }
+    const obj = await this.env.ARTIFACTS.get(row.r2_key);
+    if (obj === null) {
+      return rpcErrorResponse(undefined, 'unavailable', { reason: 'share-object-missing' });
+    }
+    const headers = new Headers();
+    headers.set('content-type', row.media_type);
+    headers.set('content-length', String(row.byte_length));
+    headers.set('x-anvil-share-id', row.share_id);
+    headers.set('x-anvil-share-title', encodeURIComponent(row.title));
+    headers.set('x-anvil-share-state', row.state);
+    if (row.sealed === 1) {
+      headers.set('x-anvil-share-sealed', '1');
+      headers.set('x-anvil-share-sha256', row.sha256);
+      if (row.plaintext_bytes !== null) {
+        headers.set('x-anvil-share-plaintext-bytes', String(row.plaintext_bytes));
+      }
+    }
+    if (row.published_at !== null) {
+      headers.set('x-anvil-share-published-at', new Date(row.published_at).toISOString());
+    }
+    if (row.expires_at !== null) {
+      headers.set('x-anvil-share-expires-at', new Date(row.expires_at).toISOString());
+    }
+    headers.set('cache-control', 'private, no-store');
+    return new Response(obj.body, { headers });
+  }
+
+  /** Purges every share row + R2 object for a deleted account. */
+  private async purgeAccountShares(accountId: string): Promise<void> {
+    const rows = this.ctx.storage.sql
+      .exec('SELECT share_id, r2_key FROM shared_artifacts WHERE account_id = ?', accountId)
+      .toArray() as { share_id: string; r2_key: string }[];
+    for (const row of rows) {
+      await this.env.ARTIFACTS.delete(row.r2_key).catch(() => undefined);
+    }
+    this.ctx.storage.sql.exec('DELETE FROM shared_artifacts WHERE account_id = ?', accountId);
+  }
+
   // ---- account deletion (spec §140) ------------------------------------
   //
   // The session object is the identity directory: it owns the durable
@@ -984,10 +1501,7 @@ export class SessionCoordinator extends DurableObject<Env> {
   } | null {
     return (
       (this.ctx.storage.sql
-        .exec(
-          'SELECT * FROM account_deletions WHERE account_id = ?',
-          accountId,
-        )
+        .exec('SELECT * FROM account_deletions WHERE account_id = ?', accountId)
         .toArray()[0] as
         | {
             account_id: string;
@@ -1025,7 +1539,10 @@ export class SessionCoordinator extends DurableObject<Env> {
             accountId,
           );
         }
-        return { state: body.state, ...(body.purgedRows === undefined ? {} : { purgedRows: body.purgedRows }) };
+        return {
+          state: body.state,
+          ...(body.purgedRows === undefined ? {} : { purgedRows: body.purgedRows }),
+        };
       }
     } catch {
       // Fall through: 'deleting' — the account object's alarm re-drives.
@@ -1088,6 +1605,8 @@ export class SessionCoordinator extends DurableObject<Env> {
       now,
       accountId,
     );
+    // Shared artifacts die with the account: rows plus their R2 objects.
+    await this.purgeAccountShares(accountId);
     const purge = await this.driveAccountPurge(accountId);
     const result: AccountDeleteResult = {
       state: purge.state,
@@ -1165,9 +1684,7 @@ export class SessionCoordinator extends DurableObject<Env> {
       state: purge.state === 'none' ? 'deleted' : purge.state,
       deletionGeneration: tombstone.deletion_generation,
       startedAt: new Date(tombstone.started_at).toISOString(),
-      ...(fresh?.deleted_at == null
-        ? {}
-        : { deletedAt: new Date(fresh.deleted_at).toISOString() }),
+      ...(fresh?.deleted_at == null ? {} : { deletedAt: new Date(fresh.deleted_at).toISOString() }),
       ...(purge.purgedRows === undefined ? {} : { purgedRows: purge.purgedRows }),
     };
     return Response.json(result, { status: 200 });
@@ -1217,19 +1734,45 @@ export class SessionCoordinator extends DurableObject<Env> {
         )
         .toArray().length;
       deletedSessions = this.ctx.storage.sql
-        .exec<{ n: number }>(
-          'DELETE FROM device_sessions WHERE revoked_at IS NOT NULL AND revoked_at < ? RETURNING 1 AS n',
-          now - REVOKED_SESSION_RETENTION_MS,
-        )
+        .exec<{
+          n: number;
+        }>('DELETE FROM device_sessions WHERE revoked_at IS NOT NULL AND revoked_at < ? RETURNING 1 AS n', now - REVOKED_SESSION_RETENTION_MS)
         .toArray().length;
     });
+    // Share maintenance: lapse orphaned reservations (upload window
+    // missed) and expire published/uploaded shares past their deadline,
+    // deleting the R2 objects outside the transaction.
+    const shareSweeps = this.ctx.storage.sql
+      .exec(
+        `SELECT share_id, r2_key FROM shared_artifacts
+         WHERE (state = 'reserved' AND upload_expires_at < ?)
+            OR (state IN ('uploaded', 'published') AND expires_at IS NOT NULL AND expires_at < ?)`,
+        now,
+        now,
+      )
+      .toArray() as { share_id: string; r2_key: string }[];
+    for (const row of shareSweeps) {
+      await this.env.ARTIFACTS.delete(row.r2_key).catch(() => undefined);
+      this.ctx.storage.sql.exec(
+        "UPDATE shared_artifacts SET state = 'expired' WHERE share_id = ?",
+        row.share_id,
+      );
+    }
+    // Terminal shares whose objects are already gone: keep the row for
+    // audit until retention, then drop it.
+    this.ctx.storage.sql.exec(
+      `DELETE FROM shared_artifacts
+       WHERE state IN ('revoked', 'expired')
+         AND created_at < ?`,
+      now - REVOKED_SESSION_RETENTION_MS,
+    );
     // Re-drive unfinished account purges — the account object's own alarm
     // is the fast path; this covers a deletion whose request chain broke
     // before the first pass landed.
     const pending = this.ctx.storage.sql
-      .exec<{ account_id: string }>(
-        'SELECT account_id FROM account_deletions WHERE deleted_at IS NULL LIMIT 8',
-      )
+      .exec<{
+        account_id: string;
+      }>('SELECT account_id FROM account_deletions WHERE deleted_at IS NULL LIMIT 8')
       .toArray();
     for (const row of pending) {
       await this.driveAccountPurge(row.account_id);

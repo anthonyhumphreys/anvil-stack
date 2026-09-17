@@ -125,6 +125,14 @@ import {
   configureMeshArtifactContext,
   resetMeshArtifactForTests,
 } from './mesh-artifact.service.js';
+import { configureArtifactShareContext } from './artifact-share.service.js';
+import { decodePairingPayload, isPairingPayloadString } from '../../../cloud/contract/sealed.js';
+import {
+  mintPairingPayload,
+  publishDeviceIdentity,
+  registerPairingRedemption,
+  rotateAccountKey,
+} from './sync-keyring.service.js';
 import {
   configureMeshHandoffContext,
   initiateHandoff,
@@ -269,11 +277,13 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
     const backend = getActiveBackend();
     const fields = auth?.getSessionScopeFields() ?? null;
     const token = auth?.getAccessToken() ?? null;
+    const scope = currentScope();
     if (backend === null || fields === null || token === null) return null;
     return {
       apiUrl: apiUrlFor(backend),
       accessToken: token,
       enrollmentId: fields.enrollmentId,
+      ...(scope === null ? {} : { scope }),
       ...(runtimeUserDataDir === null ? {} : { userDataDir: runtimeUserDataDir }),
       sendFrame: (frame) => liveSocket?.send(JSON.stringify(frame)),
       isLive: () => liveState === 'live' && liveSocket !== null,
@@ -296,6 +306,18 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
   configureMeshArtifactContext(() => {
     const backend = getActiveBackend();
     const token = auth?.getAccessToken() ?? null;
+    const scope = currentScope();
+    if (backend === null || token === null) return null;
+    return {
+      apiUrl: apiUrlFor(backend),
+      accessToken: token,
+      ...(scope === null ? {} : { scope }),
+    };
+  });
+  // Hosted artifact sharing: same session context; user-actor share.* ops.
+  configureArtifactShareContext(() => {
+    const backend = getActiveBackend();
+    const token = auth?.getAccessToken() ?? null;
     if (backend === null || token === null) return null;
     return { apiUrl: apiUrlFor(backend), accessToken: token };
   });
@@ -305,8 +327,14 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
     const backend = getActiveBackend();
     const fields = auth?.getSessionScopeFields() ?? null;
     const token = auth?.getAccessToken() ?? null;
+    const scope = currentScope();
     if (backend === null || fields === null || token === null) return null;
-    return { apiUrl: apiUrlFor(backend), accessToken: token, enrollmentId: fields.enrollmentId };
+    return {
+      apiUrl: apiUrlFor(backend),
+      accessToken: token,
+      enrollmentId: fields.enrollmentId,
+      ...(scope === null ? {} : { scope }),
+    };
   });
   // FLOW-02: node dispatches are source-side; same session context, and
   // boot reconciliation re-adopts persisted jobs (never recreates them).
@@ -527,7 +555,9 @@ function apiUrlFor(backend: SyncBackendRecord): string {
 }
 
 /** Real enroll RPC against the pinned backend's contract auth route. */
-function enrollAgainst(backend: SyncBackendRecord): (params: EnrollParams) => Promise<EnrollResult> {
+function enrollAgainst(
+  backend: SyncBackendRecord,
+): (params: EnrollParams) => Promise<EnrollResult> {
   return (params) =>
     postAuthRoute<EnrollResult>(
       { apiUrl: apiUrlFor(backend) },
@@ -589,6 +619,10 @@ export async function signInWithOidc(): Promise<SyncAuthPublicSnapshot> {
     );
     sessionExpired = false;
     scheduleSessionRefresh();
+    // OIDC enrollment has no pairing channel; this device publishes its
+    // identity and receives the ADK via a keyring wrap from a device that
+    // already holds it (or provisions v1 itself on a fresh account).
+    initializeSyncCrypto();
     // BILL-05: pull hosted access now so a restricted account never gets one
     // free mutating cycle before the first describe lands.
     void refreshHostedEntitlement().catch(() => undefined);
@@ -599,25 +633,67 @@ export async function signInWithOidc(): Promise<SyncAuthPublicSnapshot> {
   }
 }
 
+/**
+ * E2E bootstrap after any successful enrollment: publishes this device's
+ * X25519 identity and, when the enrollment carried a pairing payload,
+ * registers the pairing secret so the issuer's keyring blob can be
+ * unwrapped on the next pull. Best-effort — a failure here defers sealing
+ * rather than breaking the session.
+ */
+function initializeSyncCrypto(pairing?: { pairingNonce: string; pairingSecret: string }): void {
+  const scope = currentScope();
+  const fields = requireAuth().getSessionScopeFields();
+  if (scope === null || fields === null) return;
+  try {
+    if (pairing !== undefined) {
+      registerPairingRedemption(scope, pairing.pairingNonce, pairing.pairingSecret);
+    }
+    publishDeviceIdentity(scope, fields.enrollmentId);
+  } catch (error) {
+    console.warn(
+      `[sync] E2E crypto bootstrap failed; sealed pushes defer until keys arrive: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
 /** Redeems a short-lived single-use enrollment code at the pinned backend. */
 export async function enrollWithEnrollmentCode(code: string): Promise<SyncAuthPublicSnapshot> {
   const backend = requireReviewedBackend();
   if (!backend.descriptor.authModes.includes('enrollment-code')) {
     throw new Error('This backend does not advertise enrollment-code sign-in.');
   }
+  // A pairing payload carries the enrollment code plus the out-of-band
+  // keyring secret; the server only ever sees the code portion.
+  const pairing = isPairingPayloadString(code) ? decodePairingPayload(code) : null;
+  const redeemCode = pairing === null ? code : pairing.enrollmentCode;
   runtimeGeneration += 1;
-  const snapshot = await requireAuth().enrollWithCode(code, enrollAgainst(backend), backend.id);
+  const snapshot = await requireAuth().enrollWithCode(
+    redeemCode,
+    enrollAgainst(backend),
+    backend.id,
+  );
   sessionExpired = false;
   scheduleSessionRefresh();
+  initializeSyncCrypto(
+    pairing === null
+      ? undefined
+      : { pairingNonce: pairing.pairingNonce, pairingSecret: pairing.pairingSecret },
+  );
   void refreshHostedEntitlement().catch(() => undefined);
   return snapshot;
 }
 
 /**
- * Mints a pairing code on the signed-in account for enrolling another
- * device. Requires an active session; the returned code is shown once.
+ * Mints a pairing payload on the signed-in account for enrolling another
+ * device. The returned `pairingPayload` is the `anvil-pair-…` string the
+ * new device types or scans: it embeds the enrollment code plus the
+ * out-of-band keyring secret and is shown once.
  */
-export async function issueEnrollmentCode(): Promise<EnrollmentCodeIssueResult> {
+export async function issueEnrollmentCode(): Promise<
+  EnrollmentCodeIssueResult & { pairingPayload: string | null }
+> {
   const backend = getActiveBackend() ?? pinnedBackend();
   if (!backend) {
     throw new Error('Pin a backend first.');
@@ -626,12 +702,26 @@ export async function issueEnrollmentCode(): Promise<EnrollmentCodeIssueResult> 
   if (token === null) {
     throw new Error('Sign in before issuing a pairing code.');
   }
-  return postAuthRoute<EnrollmentCodeIssueResult>(
+  const result = await postAuthRoute<EnrollmentCodeIssueResult>(
     { apiUrl: apiUrlFor(backend) },
     'enrollment-codes',
     { displayName: hostname() || 'Anvil device' },
     { accessToken: token, fetchFn: fetchOverride },
   );
+  // Seal the current ADK under a fresh pairing secret and queue it for the
+  // redeeming device. No key yet (fresh account, or this device is itself
+  // awaiting a wrap) → the caller still gets a usable enrollment code.
+  const scope = currentScope();
+  const fields = requireAuth().getSessionScopeFields();
+  let pairingPayload: string | null = null;
+  if (scope !== null && fields !== null) {
+    try {
+      pairingPayload = mintPairingPayload(scope, fields.enrollmentId, result.code).pairingPayload;
+    } catch {
+      pairingPayload = null;
+    }
+  }
+  return { ...result, pairingPayload };
 }
 
 /**
@@ -648,13 +738,9 @@ async function accountRpc<R>(operation: string, params: unknown): Promise<R> {
   if (token === null) {
     throw new Error('Sign in first.');
   }
-  const { result } = await backendRpc<R>(
-    { apiUrl: apiUrlFor(backend) },
-    operation,
-    params,
-    token,
-    { fetchFn: fetchOverride },
-  );
+  const { result } = await backendRpc<R>({ apiUrl: apiUrlFor(backend) }, operation, params, token, {
+    fetchFn: fetchOverride,
+  });
   return result;
 }
 
@@ -671,9 +757,28 @@ export async function renameDevice(
   return accountRpc<DeviceRenameResult>('device.rename', { enrollmentId, displayName });
 }
 
-/** Revoke a sibling enrollment; idempotent and severs its live sessions. */
+/**
+ * Revoke a sibling enrollment; idempotent and severs its live sessions.
+ * On success the ADK rotates: every surviving known device gets a
+ * keyring-wrap of v(N+1) and new writes seal under it, so the revoked
+ * device cannot decrypt anything written after this point. It retains
+ * what it already decrypted — that bound is inherent.
+ */
 export async function revokeDevice(enrollmentId: string): Promise<DeviceRevokeResult> {
-  return accountRpc<DeviceRevokeResult>('device.revoke', { enrollmentId });
+  const result = await accountRpc<DeviceRevokeResult>('device.revoke', { enrollmentId });
+  const scope = currentScope();
+  if (scope !== null) {
+    try {
+      rotateAccountKey(scope, [enrollmentId]);
+    } catch (error) {
+      console.warn(
+        `[sync] ADK rotation after revoke failed; new writes keep the current key: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+  return result;
 }
 
 /**
@@ -773,8 +878,7 @@ export async function exportAccountDataToFile(): Promise<{
  * `operationId` commits via `commitDataImport`; nothing applies at preview.
  */
 export async function previewDataImportFromFile(): Promise<
-  | { canceled: true }
-  | ({ canceled: false; fileName: string } & DataImportPreviewResult)
+  { canceled: true } | ({ canceled: false; fileName: string } & DataImportPreviewResult)
 > {
   const { BrowserWindow, dialog } = await import('electron');
   const win = BrowserWindow.getAllWindows()[0];
@@ -812,9 +916,7 @@ export async function previewDataImportFromFile(): Promise<
 }
 
 /** Applies a staged import plan from `data.import.preview`. */
-export async function commitDataImport(
-  operationId: string,
-): Promise<DataImportCommitResult> {
+export async function commitDataImport(operationId: string): Promise<DataImportCommitResult> {
   return accountRpc<DataImportCommitResult>('data.import.commit', { operationId });
 }
 
@@ -858,10 +960,7 @@ export async function decideMeshApproval(
  * Subscribes to an attempt's live + journaled activity. Returns the
  * unsubscribe — callers must pair it (the IPC layer scopes it per sender).
  */
-export function observeAttemptActivity(
-  attemptId: string,
-  listener: AttemptObserver,
-): () => void {
+export function observeAttemptActivity(attemptId: string, listener: AttemptObserver): () => void {
   return observeAttempt(attemptId, listener);
 }
 
@@ -1439,11 +1538,7 @@ export async function requestSync(): Promise<void> {
       return;
     }
     lastError = error instanceof Error ? error.message : String(error);
-    if (
-      error instanceof SyncEngineError &&
-      !error.retryable &&
-      error.code === 'unauthenticated'
-    ) {
+    if (error instanceof SyncEngineError && !error.retryable && error.code === 'unauthenticated') {
       sessionExpired = true;
     }
     throw error;

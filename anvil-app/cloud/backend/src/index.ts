@@ -3,7 +3,9 @@ import { AccountCoordinator } from './account-coordinator';
 import { SessionCoordinator } from './session-coordinator';
 import { buildDescriptor } from './descriptor';
 import { handleHostedRequest } from './hosted/routes';
+import { runHostedReconcile } from './hosted/reconciler';
 import { parseRpcRequest, rpcErrorResponse, rpcSuccessResponse } from './rpc';
+import type { ErrorCode } from '../../contract/envelope';
 import { validateSessionAttestParams } from '../../contract/companion';
 
 export { AccountCoordinator, SessionCoordinator };
@@ -146,6 +148,13 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     return handleArtifactBytes(request, env, artifactMatch[1] as string, url.pathname);
   }
 
+  // Hosted share byte uploads: same streaming rule as artifacts, but the
+  // reservation lives on the session object (globally resolvable by id).
+  const shareMatch = /^\/v1\/shared\/([A-Za-z0-9_-]{1,128})$/.exec(path);
+  if (shareMatch !== null) {
+    return handleShareBytes(request, env, url.pathname);
+  }
+
   if (request.method === 'POST' && path.startsWith('/v1/')) {
     const authRoute =
       path === '/v1/enroll'
@@ -231,6 +240,38 @@ async function handleArtifactBytes(
 }
 
 /**
+ * PUT `/v1/shared/{shareId}`: authenticated like any other route, then
+ * forwarded to the session object with verified identity headers and the
+ * request body streamed into R2 (never buffered in the Worker).
+ */
+async function handleShareBytes(request: Request, env: Env, path: string): Promise<Response> {
+  if (request.method !== 'PUT') {
+    return rpcErrorResponse(undefined, 'malformed-request');
+  }
+  const auth = await authenticate(request, env);
+  if (auth === null) {
+    return rpcErrorResponse(undefined, 'unauthenticated');
+  }
+  const headers = new Headers();
+  headers.set('x-anvil-account', auth.accountId);
+  headers.set('x-anvil-enrollment', auth.enrollmentId);
+  const contentType = request.headers.get('content-type');
+  if (contentType !== null) {
+    headers.set('content-type', contentType);
+  }
+  const contentLength = request.headers.get('content-length');
+  if (contentLength !== null) {
+    headers.set('content-length', contentLength);
+  }
+  const init = {
+    method: 'PUT',
+    headers,
+    ...(request.body !== null ? { body: request.body, duplex: 'half' } : {}),
+  } as RequestInit;
+  return sessionStub(env).fetch(new Request(`https://internal.anvil${path}`, init));
+}
+
+/**
  * `account.deletionStatus` forwarding: device callers get the standard
  * verified-identity headers; callers whose session is already revoked
  * (i.e. post-deletion) fall back to the raw Authorization header, which
@@ -266,10 +307,7 @@ async function handleDeletionStatusRpc(
   } | null;
   if (!response.ok) {
     const code = payload?.error?.code;
-    return rpcErrorResponse(
-      requestId,
-      code === 'malformed-request' ? code : 'unauthenticated',
-    );
+    return rpcErrorResponse(requestId, code === 'malformed-request' ? code : 'unauthenticated');
   }
   return rpcSuccessResponse(requestId, payload);
 }
@@ -383,6 +421,47 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
       }
       return rpcSuccessResponse(envelope.request.requestId, await response.json());
     }
+    // Hosted artifact sharing (share.*): metadata ops live on the session
+    // object so a share id resolves globally; byte uploads ride
+    // PUT /v1/shared/{shareId}. Error codes pass through verbatim —
+    // quota-exceeded/conflict/forbidden are meaningful to the client.
+    case 'share.create':
+    case 'share.finalize':
+    case 'share.list':
+    case 'share.revoke': {
+      const internal =
+        envelope.request.operation === 'share.create'
+          ? '/internal/share-create'
+          : envelope.request.operation === 'share.finalize'
+            ? '/internal/share-finalize'
+            : envelope.request.operation === 'share.list'
+              ? '/internal/share-list'
+              : '/internal/share-revoke';
+      const response = await sessionStub(env).fetch(
+        new Request(`https://internal.anvil${internal}`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-anvil-account': auth.accountId,
+            'x-anvil-enrollment': auth.enrollmentId,
+          },
+          body: JSON.stringify(envelope.request.params ?? {}),
+        }),
+      );
+      const payload = (await response.json().catch(() => null)) as {
+        error?: { code?: string; details?: Record<string, unknown>; retryable?: boolean };
+      } | null;
+      if (!response.ok) {
+        const code = payload?.error?.code;
+        return rpcErrorResponse(
+          envelope.request.requestId,
+          typeof code === 'string' && code.length > 0 ? (code as ErrorCode) : 'unavailable',
+          payload?.error?.details,
+          payload?.error?.retryable,
+        );
+      }
+      return rpcSuccessResponse(envelope.request.requestId, payload);
+    }
     case 'device.advertise':
     case 'device.presence':
     case 'sync.push':
@@ -438,4 +517,9 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
 
 export default {
   fetch: handleRequest,
+  // BILL-06: hosted cron — reconciles stale billing accounts and emits
+  // the aggregate sweep. No-op on self-host (HOSTED_DB unbound).
+  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(runHostedReconcile(env));
+  },
 } satisfies ExportedHandler<Env>;

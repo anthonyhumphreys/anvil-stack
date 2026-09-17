@@ -45,6 +45,29 @@ export interface SessionCheckpoint {
 }
 
 /**
+ * E2E checkpoint: the full SessionCheckpoint JSON sealed under the account
+ * data key. `sessionId`/`sourceGeneration` stay in the clear — they are the
+ * backend's CAS assertions, already implied by the handoff row itself.
+ * Everything else (messages, summaries, provider detail) is ciphertext.
+ */
+export interface SealedSessionCheckpoint {
+  enc: 'aes-256-gcm';
+  keyVersion: number;
+  nonce: string;
+  ct: string;
+  sessionId: string;
+  sourceGeneration: number;
+}
+
+export type HandoffCheckpoint = SessionCheckpoint | SealedSessionCheckpoint;
+
+export function isSealedCheckpoint(
+  checkpoint: HandoffCheckpoint,
+): checkpoint is SealedSessionCheckpoint {
+  return 'enc' in checkpoint && checkpoint.enc === 'aes-256-gcm';
+}
+
+/**
  * Allowed handoff advances. `completed` is reachable only from
  * `target-activating`; `cancelled`/`failed` are reachable from every
  * non-terminal state, with pre/post-transfer cancel semantics resolved by
@@ -99,7 +122,7 @@ export interface HandoffAdvanceParams {
   handoffId: string;
   from: HandoffState;
   to: HandoffState;
-  checkpoint?: SessionCheckpoint;
+  checkpoint?: HandoffCheckpoint;
 }
 
 export interface HandoffCancelParams {
@@ -117,7 +140,7 @@ export interface HandoffRecord {
   sourceGeneration: number;
   /** Set once ownership-transferred; the generation the target now owns. */
   targetGeneration: number | null;
-  checkpoint: SessionCheckpoint | null;
+  checkpoint: HandoffCheckpoint | null;
   /**
    * State the handoff was cancelled from (null while uncancelled). Pre-
    * transfer states mean the source may resume under its still-valid

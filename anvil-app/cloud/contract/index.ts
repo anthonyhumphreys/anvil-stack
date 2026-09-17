@@ -12,6 +12,8 @@ export * from './workers';
 export * from './handoff';
 export * from './socket';
 export * from './artifacts';
+export * from './shares';
+export * from './sealed';
 export * from './data';
 export * from './bootstrap';
 export * from './entitlements';

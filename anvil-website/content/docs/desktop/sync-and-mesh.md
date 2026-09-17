@@ -61,6 +61,34 @@ immediately, and is idempotent — revoking an already-revoked device is a no-op
 The current device cannot be revoked from its own UI to avoid stranding the
 session; revoke it from another enrolled device.
 
+## Encryption
+
+Synced content is end-to-end encrypted. Entity payloads, artifact bytes,
+handoff checkpoints, and shared-artifact bytes are sealed on your device with
+AES-256-GCM under a versioned account data key (ADK). The backend stores and
+replicates ciphertext; it validates envelope structure but cannot open it.
+
+Each device generates an X25519 identity keypair at enrollment. The ADK moves
+between devices wrapped to a recipient's public key, or inside a pairing blob
+sealed under a one-time secret that travels in the out-of-band pairing payload
+(scanned or typed) — never through the server. Key material rests in local
+SQLite wrapped by the OS credential store (`safeStorage`).
+
+Revoking a device rotates the ADK: a trusted online device mints the next key
+version and wraps it to every surviving device. The revoked device cannot read
+anything written after rotation. It keeps what it already decrypted — rotation
+limits future access, it does not reach back and erase a device.
+
+Shared-artifact links work differently by design: each share is sealed under a
+fresh random key carried in the URL fragment (`#k=…`). Fragments never reach
+the server, so the share page fetches ciphertext and decrypts it in your
+browser. Anyone holding the full link can decrypt; revoking the share removes
+the ciphertext.
+
+What the server still sees — the metadata needed to replicate and coordinate:
+entity ids and types, revisions, sequences, payload sizes, timestamps, session
+and job records, and the device roster. Treat those fields as readable.
+
 ## Remote executions
 
 The Remote executions section lists jobs this account dispatched: source and

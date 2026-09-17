@@ -59,6 +59,11 @@ export const OPERATIONS = [
   'artifact.get',
   'artifact.list',
   'artifact.delete',
+  // Hosted sharing (user-published artifacts behind revocable share ids)
+  'share.create',
+  'share.finalize',
+  'share.list',
+  'share.revoke',
 ] as const;
 
 export type OperationName = (typeof OPERATIONS)[number];
@@ -111,6 +116,10 @@ export const OPERATION_PROFILE: Record<OperationName, OperationProfile> = {
   'artifact.get': 'mesh/1',
   'artifact.list': 'mesh/1',
   'artifact.delete': 'mesh/1',
+  'share.create': 'sync/1',
+  'share.finalize': 'sync/1',
+  'share.list': 'sync/1',
+  'share.revoke': 'sync/1',
 };
 
 /**
@@ -162,6 +171,10 @@ export const OPERATION_ROLE: Record<OperationName, ActorRole> = {
   'artifact.get': 'either',
   'artifact.list': 'either',
   'artifact.delete': 'user',
+  'share.create': 'user',
+  'share.finalize': 'user',
+  'share.list': 'user',
+  'share.revoke': 'user',
 };
 
 export function profileForOperation(operation: OperationName): OperationProfile {
@@ -233,4 +246,8 @@ export const HOSTED_OPERATION_CLASS: Record<OperationName, HostedOperationClass>
   'artifact.get': 'control',
   'artifact.list': 'control',
   'artifact.delete': 'control',
+  'share.create': 'mutating',
+  'share.finalize': 'control',
+  'share.list': 'control',
+  'share.revoke': 'control',
 };
