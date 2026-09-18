@@ -14,11 +14,11 @@ Anvil is an open source family of developer tools for work that needs evidence b
 
 The public site covers three main repositories:
 
-- **anvil-app**: Anvil Desktop, a local Electron workspace for repo-aware agent delivery, work items, review, security checks, terminals, documentation, diagrams, companion controls, Sync & Mesh account connectivity, and handover evidence.
+- **anvil-app**: Anvil Desktop, a local Electron workspace for agent workflows on your repos: work items, review, security checks, terminals, documentation, diagrams, companion controls, Sync & Mesh account connectivity, and handover evidence.
 - **anvil-registry**: Anvil Registry plus Anvil Node Base, a TypeScript npm gateway and hardened Node devcontainer image for policy, package analysis, cache identity, safer installs, reports, and explicit overrides.
 - **anvil-cloud**: Anvil Cloud, a local-first TypeScript platform for Anvil Cells, shared runtime contracts, builder output, local inspection, generated clients, and adapter-driven deployment.
 
-The tools are separate because they own different risk boundaries. Desktop owns local delivery context. Registry owns dependency ingress. Cloud owns the app runtime contract. Node Base owns install execution inside a safer container.
+The tools are separate because they own different risk boundaries. Desktop owns local workflow context. Registry owns dependency ingress. Cloud owns the app runtime contract. Node Base owns install execution inside a safer container.
 
 ## First run paths
 
@@ -80,7 +80,7 @@ anvil registry doctor
 
 ### Anvil Desktop
 
-Read these when you want to understand the desktop app as a local delivery workspace:
+Read these when you want to understand the desktop app as a local agent workspace:
 
 - [Overview](/docs/desktop/overview)
 - [Architecture](/docs/desktop/architecture)

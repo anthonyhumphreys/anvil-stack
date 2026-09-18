@@ -150,10 +150,10 @@ export const productLines = [
     id: "desktop",
     title: "Anvil Desktop",
     repoName: "anvil-app/",
-    eyebrow: "Local delivery workspace",
+    eyebrow: "Local agent workspace",
     description:
-      "A chat-first Electron workspace for repo-aware agent delivery. It keeps conversations, repositories, work items, Git state, reviews, terminals, and handover evidence together while active work continues across workspace switches.",
-    boundary: "Owns local delivery orchestration and evidence capture.",
+      "A chat-first Electron app for running agent workflows on your own repos. It keeps conversations, repositories, work items, Git state, reviews, terminals, and handover evidence together while active work continues across workspace switches.",
+    boundary: "Owns local workflow orchestration and evidence capture.",
     status: "Active desktop app with main, preload, shared IPC, and React renderer surfaces.",
     icon: Terminal,
     image: "/anvil-app-homepage.png",
@@ -211,7 +211,7 @@ export const productLines = [
     id: "cloud",
     title: "Anvil Cloud",
     repoName: "anvil-cloud/",
-    eyebrow: "Inspectable app runtime",
+    eyebrow: "Portable app runtime",
     description:
       "A local-first TypeScript platform for Anvil Cells and contract-first Agents: small runtime units with explicit capabilities, generated manifests, local inspection, approval gates, and adapter-driven deployment.",
     boundary:

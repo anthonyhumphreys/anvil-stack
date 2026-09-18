@@ -1,7 +1,7 @@
 ---
 title: Anvil Desktop
 navTitle: Overview
-description: The local desktop workspace for repo-aware agent delivery work.
+description: The local desktop workspace for agent workflows on your repos.
 product: Anvil Desktop
 section: Start here
 journey: learn
@@ -10,11 +10,11 @@ order: 10
 
 # Anvil Desktop
 
-Anvil Desktop is the product in `anvil-app`: an Electron desktop app for local, repo-aware delivery work.
+Anvil Desktop is the product in `anvil-app`: an Electron desktop app for agent workflows on your own repos.
 
 It uses chat as the primary workspace, with repositories, work items, Git state, code review, security review, dependency analysis, documentation, diagrams, terminals, browser checks, companion controls, and handover evidence kept close to each conversation.
 
-The point is not to make a giant dashboard. The point is to keep delivery context close enough that a developer can inspect the work, verify the change, and hand over what happened without reconstructing the past from chat tabs and terminal scrollback.
+The point is not to make a giant dashboard. The point is to keep work context close enough that a developer can inspect the change, verify it, and hand over what happened without reconstructing the past from chat tabs and terminal scrollback.
 
 ## Who it is for
 

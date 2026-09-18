@@ -58,10 +58,10 @@ function HeroSection() {
               Evidence, everywhere you work.
             </h1>
             <p className="max-w-2xl text-lg leading-8 text-muted-foreground">
-              Anvil is an open-source stack for inspectable developer work: Desktop for
-              repo-aware delivery, Registry for dependency policy, Node Base for safer
-              installs, Cloud for runtime contracts — and Sync&nbsp;&amp;&nbsp;Mesh to keep
-              every machine you own in step.
+              Anvil is a family of open-source developer tools: a desktop app for agent
+              workflows on your repos, an npm gateway with deterministic install policy,
+              a hardened Node base image, a portable app runtime — and
+              Sync&nbsp;&amp;&nbsp;Mesh to keep every machine you own in step.
             </p>
           </div>
           <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">

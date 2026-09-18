@@ -29,7 +29,7 @@ export function SiteFooter() {
           <div>
             <p className="font-semibold">Anvil</p>
             <p className="max-w-xs text-sm leading-6 text-muted-foreground">
-              Open source tools for inspectable developer work.
+              Open source developer tools that run on your machines.
             </p>
             <p className="mt-3 font-mono text-[0.6875rem] text-muted-foreground">
               anvil-stack · local-first · provider-neutral
