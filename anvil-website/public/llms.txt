@@ -1,6 +1,6 @@
 # Anvil
 
-> Anvil is an open source family of developer tools: a desktop app for agent workflows on your own repos, an npm gateway enforcing deterministic install policy, a hardened Node base image, and a portable app runtime — plus an account layer (Sync & Mesh) that keeps a user's own machines in step with end-to-end encrypted replication.
+> Anvil Desktop is an open source app for agent workflows on your own repos. The anvil-stack also publishes Sync & Mesh — the end-to-end encrypted account layer that keeps a user's own machines in step — alongside companion OSS tools: an npm policy gateway (Anvil Registry), a hardened Node base image (Anvil Node Base), and the portable app runtime (Anvil Cloud) that also powers the sync backend.
 
 The public documentation is organized by product and by task: Learn, Build, and Reference. Product status and limits are part of the documentation; do not infer production readiness from alpha surfaces.
 

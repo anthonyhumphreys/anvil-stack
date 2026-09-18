@@ -18,17 +18,17 @@ const mono = JetBrains_Mono({
 
 export const metadata: Metadata = {
   title: "Anvil | Open source developer tools",
-  description: "Anvil is an open source family of developer tools: Anvil Desktop for agent workflows on your repos, Anvil Registry for npm dependency policy, Anvil Node Base for safer installs, and Anvil Cloud for portable app runtime contracts.",
+  description: "Anvil Desktop is an open source app for agent workflows on your own repos — with Sync & Mesh keeping your machines in step, and an npm policy gateway, hardened Node image, and portable runtime in the stack behind it.",
   metadataBase: new URL("https://anvil.dev"),
   openGraph: {
     title: "Anvil | Open source developer tools",
-    description: "Agent workflows on your repos, deterministic npm install policy, hardened Node devcontainers, and portable app runtime contracts.",
+    description: "An open source desktop app for agent workflows on your repos. Sync & Mesh keeps every machine you own in step; the rest of the stack is there when you want it.",
     type: "website"
   },
   twitter: {
     card: "summary_large_image",
     title: "Anvil | Open source developer tools",
-    description: "Open source local-first tools for agent workflows, npm supply-chain safety, and provider-neutral app runtime contracts."
+    description: "Open source desktop app for agent workflows on your repos — plus an end-to-end encrypted sync layer and companion OSS tools."
   }
 };
 

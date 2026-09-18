@@ -37,7 +37,7 @@ export function SiteFooter() {
           </div>
         </div>
         <FooterLinks
-          title="Products"
+          title="The stack"
           links={productLines.map((product) => ({
             label: product.title.replace("Anvil ", ""),
             href: `/docs/${product.id}`

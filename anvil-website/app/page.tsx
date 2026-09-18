@@ -37,8 +37,9 @@ export default function HomePage() {
       <SiteHeader active="home" />
       <main id="main-content">
         <HeroSection />
+        <DesktopSection />
         <SyncLayerSection />
-        <ProductsSection />
+        <StackSection />
         <ProofSection />
         <DocsSection />
         <ClosingSection />
@@ -58,10 +59,10 @@ function HeroSection() {
               Evidence, everywhere you work.
             </h1>
             <p className="max-w-2xl text-lg leading-8 text-muted-foreground">
-              Anvil is a family of open-source developer tools: a desktop app for agent
-              workflows on your repos, an npm gateway with deterministic install policy,
-              a hardened Node base image, a portable app runtime — and
-              Sync&nbsp;&amp;&nbsp;Mesh to keep every machine you own in step.
+              Anvil Desktop is an open-source app for agent workflows on your own
+              repos — chat, reviews, terminals, work items, and handover evidence in
+              one local workspace. Sync&nbsp;&amp;&nbsp;Mesh keeps every machine you
+              own in step; the rest of the stack is there when you want it.
             </p>
           </div>
           <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
@@ -189,26 +190,49 @@ function SyncLayerSection() {
   );
 }
 
-function ProductsSection() {
-  const [desktop, registry, cloud, nodeBase] = productLines;
+function DesktopSection() {
+  const [desktop] = productLines;
 
   return (
     <section id="products" className="border-b py-16 lg:py-20">
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         <SectionHeading
-          title="One repo, four tools"
-          description="Everything lives in the anvil-stack monorepo, but the split is intentional. Each project owns a boundary you can inspect on its own."
+          title="Anvil Desktop is the product"
+          description="Everything else on this site is optional. This is the app you install: a local Electron workspace where agent runs, reviews, terminals, and evidence stay next to the repos they belong to."
         />
-        <div className="mt-10 grid gap-5 lg:grid-cols-[1.05fr_0.95fr]">
+        <div className="mt-10">
           {desktop ? <ProductFeature product={desktop} /> : null}
-          <div className="grid gap-5">
-            {cloud ? <ProductRow product={cloud} /> : null}
-            {registry ? <ProductRow product={registry} /> : null}
-            {nodeBase ? <ProductRow product={nodeBase} compact /> : null}
-          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function StackSection() {
+  const [, registry, cloud, nodeBase] = productLines;
+  const companions = [cloud, registry, nodeBase].filter(Boolean);
+
+  return (
+    <section className="border-b py-16 lg:py-20">
+      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+        <SectionHeading
+          title="Elsewhere in the stack"
+          description="Three companion projects, each open source on its own terms — none required for Desktop. Anvil Cloud is the one with a second job: it is the codebase behind the Sync & Mesh backend, whether Anvil operates it or you deploy it to your own Cloudflare account."
+        />
+        <div className="mt-10 grid gap-5 md:grid-cols-3">
+          {companions.map((product) => (
+            <StackCard
+              key={product.id}
+              product={product}
+              note={product.id === "cloud" ? "also powers the sync backend" : undefined}
+            />
+          ))}
         </div>
 
-        <div className="mt-6 grid gap-3">
+        <p className="mt-10 font-mono text-[0.6875rem] uppercase tracking-[0.08em] text-muted-foreground">
+          The monorepo map — each workspace owns one boundary
+        </p>
+        <div className="mt-4 grid gap-3">
           {repoComparison.map((item) => (
             <article key={item.repo} className="grid gap-4 rounded-lg border bg-background p-5 md:grid-cols-[13rem_1fr]">
               <div>
@@ -239,43 +263,62 @@ function RepoFact({ label, value }: { label: string; value: string }) {
 
 function ProductFeature({ product }: { product: (typeof productLines)[number] }) {
   return (
-    <article className="overflow-hidden rounded-lg border bg-card">
-      <div className="relative aspect-[16/10] border-b bg-muted">
+    <article className="overflow-hidden rounded-lg border bg-card lg:grid lg:grid-cols-[1.08fr_0.92fr]">
+      <div className="grid gap-7 p-6 sm:p-8">
+        <ProductHeading product={product} />
+        <p className="max-w-2xl text-base leading-7 text-muted-foreground">{product.description}</p>
+        <ProductDetails product={product} />
+      </div>
+      <div className="relative aspect-[16/10] border-t bg-muted lg:aspect-auto lg:border-l lg:border-t-0">
         <Image
           src={product.image}
           alt={product.imageAlt}
           fill
           priority
-          className="object-cover"
-          sizes="(min-width: 1024px) 680px, 100vw"
+          className="object-cover object-top"
+          sizes="(min-width: 1024px) 560px, 100vw"
         />
-      </div>
-      <div className="grid gap-7 p-6">
-        <ProductHeading product={product} />
-        <p className="max-w-2xl text-base leading-7 text-muted-foreground">{product.description}</p>
-        <ProductDetails product={product} />
       </div>
     </article>
   );
 }
 
-function ProductRow({
+function StackCard({
   product,
-  compact = false
+  note
 }: {
   product: (typeof productLines)[number];
-  compact?: boolean;
+  note?: string;
 }) {
   return (
-    <article className="rounded-lg border bg-card p-5">
-      <div className="grid gap-5">
-        <ProductHeading product={product} />
-        <p className="text-sm leading-6 text-muted-foreground">{product.description}</p>
-        {compact ? (
-          <div className="rounded-md border bg-muted/45 px-3 py-3 font-mono text-xs text-muted-foreground">{product.command}</div>
-        ) : (
-          <ProductDetails product={product} />
-        )}
+    <article className="flex flex-col rounded-lg border bg-card p-5">
+      <div className="flex items-start gap-3.5">
+        <span className="flex size-10 shrink-0 items-center justify-center rounded-md border bg-background">
+          <product.icon className="size-5 text-accent" aria-hidden="true" />
+        </span>
+        <div>
+          <h3 className="text-lg font-semibold tracking-[-0.015em]">{product.title}</h3>
+          <p className="mt-0.5 font-mono text-[0.6875rem] text-muted-foreground">{product.repoName}</p>
+        </div>
+      </div>
+      <p className="mt-4 flex-1 text-sm leading-6 text-muted-foreground">{product.description}</p>
+      <p
+        className={`mt-3 font-mono text-[0.6875rem] tracking-wide ${note ? "text-accent" : "select-none text-transparent"}`}
+        aria-hidden={note ? undefined : true}
+      >
+        {note ?? " "}
+      </p>
+      <div className="mt-4 rounded-md border bg-muted/45 px-3 py-3 font-mono text-xs text-muted-foreground">{product.command}</div>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <Button asChild size="sm" variant="outline">
+          <Link href={product.href}>
+            Docs
+            <ArrowRight data-icon="inline-end" aria-hidden="true" />
+          </Link>
+        </Button>
+        <Button asChild size="sm" variant="ghost">
+          <Link href={product.repoHref}>Repository</Link>
+        </Button>
       </div>
     </article>
   );
