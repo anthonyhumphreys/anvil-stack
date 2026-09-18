@@ -1,4 +1,3 @@
-import { marked } from "marked";
 import type { Metadata } from "next";
 
 import { SiteFooter } from "@/components/site/footer";
@@ -6,6 +5,7 @@ import { SiteHeader } from "@/components/site/header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { fetchSharedArtifact, HostedApiError } from "@/lib/hosted/client";
+import { renderSharedMarkdown } from "@/lib/markdown";
 import { parseCsv, mediaTypeLabel, formatBytes } from "./csv";
 import { SandboxedHtml } from "./sandboxed-html";
 import { SealedShareView } from "./sealed-share-view";
@@ -17,8 +17,6 @@ export const metadata: Metadata = {
   title: "Shared artifact | Anvil",
   description: "Anvilユーザーが共有したアーティファクト"
 };
-
-marked.use({ gfm: true, breaks: false });
 
 const MAX_TEXT_BYTES = 4 * 1024 * 1024;
 
@@ -133,7 +131,7 @@ export default async function SharedArtifactPage({
 
   let body: React.ReactNode;
   if (mediaType === "text/markdown" && text !== null) {
-    const html = await marked.parse(text);
+    const html = await renderSharedMarkdown(text);
     body = (
       <div
         className="doc-markdown rounded-lg border bg-card p-6"

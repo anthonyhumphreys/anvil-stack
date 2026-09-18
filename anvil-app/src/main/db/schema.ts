@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 82;
+export const SCHEMA_VERSION = 83;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -1340,6 +1340,7 @@ CREATE TABLE IF NOT EXISTS sync_keyring (
   account_id TEXT NOT NULL,
   key_version INTEGER NOT NULL,
   key_wrapped BLOB NOT NULL,
+  source TEXT NOT NULL DEFAULT 'minted' CHECK (source IN ('minted', 'wrap', 'pairing', 'rotation')),
   created_at TEXT NOT NULL,
   PRIMARY KEY (backend_id, account_id, key_version)
 );
@@ -1357,14 +1358,16 @@ CREATE TABLE IF NOT EXISTS sync_device_keys (
 );
 -- Out-of-band pairing secrets. secret_wrapped is safeStorage-encrypted;
 -- role 'issuer' minted the pairing payload, 'redeemer' typed it in and is
--- awaiting the matching keyring-pairing entity.
+-- awaiting the matching keyring-pairing entity. Scoped by
+-- (backend, account) so a nonce can never resolve across accounts.
 CREATE TABLE IF NOT EXISTS sync_pairing (
-  nonce TEXT PRIMARY KEY,
+  nonce TEXT NOT NULL,
   backend_id TEXT NOT NULL,
   account_id TEXT NOT NULL,
   secret_wrapped BLOB NOT NULL,
   role TEXT NOT NULL CHECK (role IN ('issuer', 'redeemer')),
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, nonce)
 );
 -- Delivery ledger: which ADK versions this device has wrapped to which
 -- enrollment, so re-wraps on rotation are idempotent.
@@ -2952,5 +2955,30 @@ CREATE TABLE IF NOT EXISTS sync_keyring_deliveries (
   delivered_at TEXT NOT NULL,
   PRIMARY KEY (backend_id, account_id, enrollment_id, key_version)
 );
+`,
+  83: `
+-- ADK provenance + scoped pairing. sync_keyring.source records where a
+-- key came from ('minted' = provisional self-mint, 'wrap'/'pairing' =
+-- delivered by a peer, 'rotation' = authoritative local rotation);
+-- pre-existing rows are treated as 'minted' so a divergent first-use v1
+-- can still be healed by the authoritative wrap when it arrives.
+-- sync_pairing gains a composite scope key so a nonce can never resolve
+-- or be replaced across backends/accounts. Keep both tables in sync with
+-- the SCHEMA_SQL copies.
+ALTER TABLE sync_keyring ADD COLUMN source TEXT NOT NULL DEFAULT 'minted'
+  CHECK (source IN ('minted', 'wrap', 'pairing', 'rotation'));
+CREATE TABLE sync_pairing_scoped (
+  nonce TEXT NOT NULL,
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  secret_wrapped BLOB NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('issuer', 'redeemer')),
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, nonce)
+);
+INSERT INTO sync_pairing_scoped (nonce, backend_id, account_id, secret_wrapped, role, created_at)
+  SELECT nonce, backend_id, account_id, secret_wrapped, role, created_at FROM sync_pairing;
+DROP TABLE sync_pairing;
+ALTER TABLE sync_pairing_scoped RENAME TO sync_pairing;
 `,
 };

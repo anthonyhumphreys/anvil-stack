@@ -150,6 +150,10 @@ describe('SYNC-03 engine through BACKEND-01 apply rules', () => {
     })();
     expect(listOutboxRows(SCOPE)).toHaveLength(1);
 
+    // A fresh device cannot mint ADK v1 until it has completed a pull, so
+    // the first cycle defers the sealed change; the second pushes it.
+    await cycle(account, ENROLLMENT_A);
+    expect(listOutboxRows(SCOPE)[0]?.state).toBe('pending');
     await cycle(account, ENROLLMENT_A);
 
     expect(listOutboxRows(SCOPE)[0]?.state).toBe('acknowledged');

@@ -52,15 +52,20 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   if (!upstream.ok || upstream.body === null) {
     return new Response("Not found", { status: 404 });
   }
-  const mediaType = upstream.headers.get("content-type") ?? "application/octet-stream";
+  // Sealed shares carry ciphertext: serve them as opaque binary so a
+  // direct /raw download never lands a ".md" full of encrypted bytes.
+  const sealed = upstream.headers.get("x-anvil-share-sealed") === "1";
+  const mediaType = sealed
+    ? "application/octet-stream"
+    : (upstream.headers.get("content-type") ?? "application/octet-stream");
   const titleHeader = upstream.headers.get("x-anvil-share-title");
   const title = titleHeader === null ? "artifact" : decodeURIComponent(titleHeader);
   const headers = new Headers();
   headers.set("content-type", mediaType);
-  headers.set(
-    "content-disposition",
-    `attachment; filename="${safeFilename(title, mediaType).replace(/"/g, "")}"`
-  );
+  const filename = sealed
+    ? `${safeFilename(title, mediaType).replace(/\.[a-z0-9]{1,8}$/i, "")}.bin`
+    : safeFilename(title, mediaType);
+  headers.set("content-disposition", `attachment; filename="${filename.replace(/"/g, "")}"`);
   const length = upstream.headers.get("content-length");
   if (length !== null) headers.set("content-length", length);
   headers.set("cache-control", "private, no-store");

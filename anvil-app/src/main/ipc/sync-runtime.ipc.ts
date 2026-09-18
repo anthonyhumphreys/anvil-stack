@@ -3,6 +3,7 @@ import {
   cancelMeshJob,
   commitDataImport,
   decideMeshApproval,
+  deviceVerificationCode,
   enableSync,
   enrollWithEnrollmentCode,
   exportAccountDataToFile,
@@ -120,6 +121,13 @@ export function registerSyncRuntimeHandlers(): void {
       throw new Error('device-revoke requires an enrollmentId string');
     }
     return revokeDevice(payload['enrollmentId']);
+  });
+
+  ipcMain.handle('sync-runtime:device-verify', (_event, payload: unknown) => {
+    if (!isRecord(payload) || typeof payload['enrollmentId'] !== 'string') {
+      throw new Error('device-verify requires an enrollmentId string');
+    }
+    return deviceVerificationCode(payload['enrollmentId']);
   });
 
   ipcMain.handle('sync-runtime:data-export-file', () => exportAccountDataToFile());

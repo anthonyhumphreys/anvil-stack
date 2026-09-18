@@ -45,6 +45,7 @@ vi.mock('electron', () => ({
 
 import {
   bindLocalEntities,
+  deviceVerificationCode,
   enableSync,
   enrollWithEnrollmentCode,
   exportSyncDiagnostics,
@@ -62,11 +63,13 @@ import {
   signOutSync,
   spikeEnroll,
 } from '../sync-runtime.service';
+import { deriveSas, ensureDeviceIdentity } from '../sync-keyring.service';
 import {
   clearSyncEntitlement,
   getSyncEntitlement,
   getBinding,
   listOutboxRows,
+  updateSyncState,
   upsertBinding,
   upsertEnrollment,
   upsertSyncEntitlement,
@@ -131,7 +134,9 @@ beforeEach(() => {
     `DELETE FROM sync_outbox; DELETE FROM sync_bindings; DELETE FROM sync_conflicts;
      DELETE FROM sync_state; DELETE FROM device_enrollments; DELETE FROM workflow_templates;
      DELETE FROM sync_scan_runs; DELETE FROM sync_scan_staging; DELETE FROM sync_installation;
-     DELETE FROM sync_backends; DELETE FROM sync_entitlement;`,
+     DELETE FROM sync_backends; DELETE FROM sync_entitlement;
+     DELETE FROM sync_keyring; DELETE FROM sync_device_keys; DELETE FROM sync_pairing;
+     DELETE FROM sync_keyring_deliveries;`,
   );
   openExternalCalls.length = 0;
 });
@@ -222,6 +227,43 @@ describe('spikeEnroll', () => {
     initSyncRuntime(dir);
     pinTestBackend();
     expect(() => spikeEnroll({ accountId: 'account-1' })).toThrow(/development builds/);
+  });
+});
+
+describe('deviceVerificationCode', () => {
+  async function enrollTestDevice(): Promise<string> {
+    const backend = fakeBackend();
+    const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
+    initSyncRuntime(dir, { fetchFn: backend.fetchFn });
+    pinBackend({
+      baseUrl: 'https://backend.example.test/',
+      descriptor: oidcDescriptorFixture(),
+    });
+    const minted = (await (
+      await backend.fetchFn('https://backend.example.test/v1/enrollment-codes', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', Authorization: 'Bearer admin-token' },
+        body: JSON.stringify({ accountId: 'account-1' }),
+      })
+    ).json()) as { code: string };
+    const snapshot = await enrollWithEnrollmentCode(minted.code);
+    enableSync();
+    return snapshot.enrollmentId!;
+  }
+
+  it('derives the same 9-digit code both devices compute', async () => {
+    const enrollmentId = await enrollTestDevice();
+    const peer = ensureDeviceIdentity(SCOPE, 'enr-peer');
+
+    const { code } = deviceVerificationCode('enr-peer');
+    expect(code).toMatch(/^\d{9}$/);
+    const own = ensureDeviceIdentity(SCOPE, enrollmentId);
+    expect(code).toBe(deriveSas('account-1', own.pub, peer.pub));
+  });
+
+  it('throws when the peer identity has not been seen yet', async () => {
+    await enrollTestDevice();
+    expect(() => deviceVerificationCode('enr-unseen')).toThrow(/not seen yet/);
   });
 });
 
@@ -868,7 +910,11 @@ describe('hosted entitlement (BILL-05)', () => {
         body: JSON.stringify({ accountId: 'account-1' }),
       })
     ).json()) as { code: string };
-    return enrollWithEnrollmentCode(minted.code);
+    const snapshot = await enrollWithEnrollmentCode(minted.code);
+    // These scenarios model an established device: provisioned keys require a
+    // completed pull, which a fresh enrollment has not done yet.
+    updateSyncState(SCOPE, { lastPullAt: new Date().toISOString() });
+    return snapshot;
   }
 
   function rpcOps(backend: ReturnType<typeof fakeBackend>): string[] {

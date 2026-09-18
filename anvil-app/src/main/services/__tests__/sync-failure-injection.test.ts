@@ -116,6 +116,11 @@ function activateEnrollment(enrollmentId: string, scope: SyncScope = SCOPE): voi
   });
 }
 
+/** Marks the first pull as completed — lazy ADK minting is gated on it. */
+function markPullCompleted(scope: SyncScope = SCOPE): void {
+  updateSyncState(scope, { lastPullAt: '2026-01-01T00:00:00.000Z' });
+}
+
 function injectRpc(account: FakeAccountCoordinator): SyncEngineRpc {
   return (connection, operation, params, accessToken) =>
     rpc(connection, operation, params, accessToken, { fetchFn: account.fetch });
@@ -185,6 +190,7 @@ afterEach(() => {
 describe('durable dispatch and retry identity', () => {
   it('replays the same change after the server committed but the response was lost', async () => {
     activateEnrollment(ENROLLMENT);
+    markPullCompleted();
     const saved = seedSyncedTemplate('Lost ack');
 
     // Server commits the mutation; the client only sees a transport error.
@@ -219,6 +225,7 @@ describe('durable dispatch and retry identity', () => {
 
   it('keeps a local edit that lands while the dispatch is in flight', async () => {
     activateEnrollment(ENROLLMENT);
+    markPullCompleted();
     const saved = seedSyncedTemplate('Original');
     account.injectFailure('sync.push', 'drop-response');
     await expect(cycle(account)).rejects.toBeInstanceOf(SyncEngineError);
@@ -245,6 +252,7 @@ describe('durable dispatch and retry identity', () => {
 
   it('never replays a dispatch orphaned under a different enrollment', async () => {
     activateEnrollment(ENROLLMENT);
+    markPullCompleted();
     const saved = seedSyncedTemplate('Orphaned');
     account.injectFailure('sync.push', 'drop-response');
     await expect(cycle(account)).rejects.toBeInstanceOf(SyncEngineError);
@@ -284,6 +292,7 @@ describe('durable dispatch and retry identity', () => {
 
   it('rejects a replay whose stored content no longer matches the original dispatch', async () => {
     activateEnrollment(ENROLLMENT);
+    markPullCompleted();
     const saved = seedSyncedTemplate('Tamper check');
     account.injectFailure('sync.push', 'drop-response');
     await expect(cycle(account)).rejects.toBeInstanceOf(SyncEngineError);
@@ -329,6 +338,7 @@ describe('durable dispatch and retry identity', () => {
 describe('reset and scan boundaries', () => {
   it('flags reset when the backend epoch rotated and keeps the local edit safe', async () => {
     activateEnrollment(ENROLLMENT);
+    markPullCompleted();
     const saved = seedSyncedTemplate('Local edit');
     // Server dataset was restored: its epoch rotated under our scope.
     account.rotateEpoch('spike-epoch-2');
@@ -341,6 +351,7 @@ describe('reset and scan boundaries', () => {
 
   it('leaves no partial state when a scan is interrupted mid-page', async () => {
     activateEnrollment(ENROLLMENT);
+    markPullCompleted();
     const remote = seedSyncedTemplate('Remote copy');
     await cycle(account);
     expect(getBinding(SCOPE, ET, remote.id)?.baseRevision).toBe(1);
@@ -385,6 +396,7 @@ describe('reset and scan boundaries', () => {
 
   it('does not activate when the scan cannot finish', async () => {
     activateEnrollment(ENROLLMENT);
+    markPullCompleted();
     const remote = seedSyncedTemplate('Paged');
     await cycle(account);
     updateSyncState(SCOPE, { resetRequired: true });
@@ -396,6 +408,7 @@ describe('reset and scan boundaries', () => {
 
   it('does not activate when catch-up pulls fail after scan finish', async () => {
     activateEnrollment(ENROLLMENT);
+    markPullCompleted();
     const remote = seedSyncedTemplate('Catchup target');
     await cycle(account);
     const baseBefore = getBinding(SCOPE, ET, remote.id)?.baseRevision;
@@ -417,6 +430,7 @@ describe('reset and scan boundaries', () => {
 
   it('aborts when the backend epoch rotates mid-scan', async () => {
     activateEnrollment(ENROLLMENT);
+    markPullCompleted();
     seedSyncedTemplate('Epoch probe');
     await cycle(account);
 
@@ -447,6 +461,7 @@ describe('reset and scan boundaries', () => {
 describe('scope isolation and guard fencing', () => {
   it('writes nothing when the scope is superseded while a push is in flight', async () => {
     activateEnrollment(ENROLLMENT);
+    markPullCompleted();
     const saved = seedSyncedTemplate('Guarded');
     let current = true;
     const flipDuringPush: SyncEngineRpc = async <R = unknown>(
@@ -481,6 +496,7 @@ describe('scope isolation and guard fencing', () => {
 
   it('refuses to start a cycle when the guard is already superseded', async () => {
     activateEnrollment(ENROLLMENT);
+    markPullCompleted();
     seedSyncedTemplate('Never sent');
     const ops: string[] = [];
     await expect(
@@ -499,6 +515,7 @@ describe('scope isolation and guard fencing', () => {
 
   it('keeps outbox, bindings, and cursors isolated between two account scopes', async () => {
     activateEnrollment(ENROLLMENT, SCOPE);
+    markPullCompleted();
     activateEnrollment('enrollment-b', OTHER_SCOPE);
     const aOwned = saveWorkflowTemplate(templateInput('A owned'));
     upsertBinding(SCOPE, ET, aOwned.id);

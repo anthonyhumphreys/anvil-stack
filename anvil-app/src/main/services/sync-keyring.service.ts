@@ -89,15 +89,25 @@ function unwrapSecretBytes(stored: Buffer): Buffer | null {
 
 // ---- ADK storage -------------------------------------------------------------
 
+/**
+ * Where an ADK version came from. 'minted' is a provisional self-mint —
+ * v1 created before this device could rule out other enrolled devices;
+ * it is the only source a peer-delivered key may displace. 'wrap' and
+ * 'pairing' are account-authoritative deliveries, 'rotation' is this
+ * device's own authoritative mint on revoke.
+ */
+export type AccountKeySource = 'minted' | 'wrap' | 'pairing' | 'rotation';
+
 interface KeyringRow {
   key_version: number;
   key_wrapped: Buffer;
+  source: string;
 }
 
 function keyringRows(scope: SyncScope): KeyringRow[] {
   return getDb()
     .prepare(
-      `SELECT key_version, key_wrapped FROM sync_keyring
+      `SELECT key_version, key_wrapped, source FROM sync_keyring
        WHERE backend_id = ? AND account_id = ? ORDER BY key_version ASC`,
     )
     .all(scope.backendId, scope.accountId) as KeyringRow[];
@@ -127,18 +137,48 @@ export function hasAccountKey(scope: SyncScope): boolean {
   return currentAccountKey(scope) !== null;
 }
 
-/** Idempotent install of an ADK version; existing rows are never overwritten. */
-export function installAccountKey(scope: SyncScope, version: number, key: Buffer): void {
+/**
+ * Installs an ADK version. Idempotent for identical bytes. On a
+ * same-version/different-bytes conflict the incoming key wins only when
+ * the stored key is a provisional 'minted' row and the incoming key was
+ * peer-delivered ('wrap' | 'pairing') — that heals a v1 minted before
+ * this device learned the account's real key. Every other conflict keeps
+ * the stored row: delivered and rotated keys are never displaced.
+ */
+export function installAccountKey(
+  scope: SyncScope,
+  version: number,
+  key: Buffer,
+  source: AccountKeySource,
+): void {
   if (key.byteLength !== 32) {
     throw new Error('ADK must be 32 bytes');
   }
-  getDb()
+  const db = getDb();
+  const existing = db
     .prepare(
-      `INSERT OR IGNORE INTO sync_keyring
-         (backend_id, account_id, key_version, key_wrapped, created_at)
-       VALUES (?, ?, ?, ?, ?)`,
+      `SELECT key_wrapped, source FROM sync_keyring
+       WHERE backend_id = ? AND account_id = ? AND key_version = ?`,
     )
-    .run(scope.backendId, scope.accountId, version, wrapSecretBytes(key), nowIso());
+    .get(scope.backendId, scope.accountId, version) as
+    | { key_wrapped: Buffer; source: string }
+    | undefined;
+  if (existing === undefined) {
+    db.prepare(
+      `INSERT INTO sync_keyring
+         (backend_id, account_id, key_version, key_wrapped, source, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(scope.backendId, scope.accountId, version, wrapSecretBytes(key), source, nowIso());
+    return;
+  }
+  const existingKey = unwrapSecretBytes(existing.key_wrapped);
+  if (existingKey !== null && existingKey.equals(key)) return;
+  if (existing.source === 'minted' && (source === 'wrap' || source === 'pairing')) {
+    db.prepare(
+      `UPDATE sync_keyring SET key_wrapped = ?, source = ?
+       WHERE backend_id = ? AND account_id = ? AND key_version = ?`,
+    ).run(wrapSecretBytes(key), source, scope.backendId, scope.accountId, version);
+  }
 }
 
 /**
@@ -149,27 +189,43 @@ export function installAccountKey(scope: SyncScope, version: number, key: Buffer
 export function provisionAccountKey(scope: SyncScope): number {
   const existing = currentAccountKey(scope);
   if (existing !== null) return existing.version;
-  installAccountKey(scope, 1, randomBytes(32));
+  installAccountKey(scope, 1, randomBytes(32), 'minted');
   return 1;
 }
 
 /**
  * Lazy first-device provisioning gate. It is safe to mint ADK v1 only when
- * there is no evidence the account is already keyed elsewhere: no other
- * device identities have been seen, no pairing redemption is pending, and
- * no quarantined sealed envelopes are waiting on a key. A second device
- * that enrolled via OIDC without pairing sees the issuer's device-identity
- * on its first pull and fails this gate until the wrap arrives.
+ * there is no evidence the account is already keyed elsewhere: the device
+ * has completed a pull (so peer identities and wraps have had a chance to
+ * arrive), no other device identities have been seen, no pairing
+ * redemption is pending, and no quarantined sealed envelopes are waiting
+ * on a key. A second device that enrolled via OIDC without pairing sees
+ * the issuer's device-identity on its first pull and fails this gate
+ * until the wrap arrives.
  */
 export function canProvisionAccountKey(scope: SyncScope, ownEnrollmentId: string): boolean {
   const db = getDb();
+  // A device that has never pulled cannot know whether the account is
+  // already keyed elsewhere — minting now risks a divergent v1.
+  const pulled = db
+    .prepare(
+      `SELECT last_pull_at FROM sync_state
+       WHERE backend_id = ? AND account_id = ? AND dataset_epoch = ?`,
+    )
+    .get(scope.backendId, scope.accountId, scope.datasetEpoch) as
+    | { last_pull_at: string | null }
+    | undefined;
+  if (pulled?.last_pull_at == null) return false;
   const otherIdentities = listDeviceIdentities(scope).some(
     (device) => device.enrollmentId !== ownEnrollmentId,
   );
   if (otherIdentities) return false;
   const pendingRedeemer = db
-    .prepare(`SELECT COUNT(*) AS n FROM sync_pairing WHERE role = 'redeemer'`)
-    .get() as { n: number };
+    .prepare(
+      `SELECT COUNT(*) AS n FROM sync_pairing
+       WHERE backend_id = ? AND account_id = ? AND role = 'redeemer'`,
+    )
+    .get(scope.backendId, scope.accountId) as { n: number };
   if (pendingRedeemer.n > 0) return false;
   const sealedQuarantine = db
     .prepare(
@@ -725,10 +781,15 @@ export function registerPairingRedemption(
     );
 }
 
-function pairingSecretFor(nonce: string): Buffer | null {
+function pairingSecretFor(scope: SyncScope, nonce: string): Buffer | null {
   const row = getDb()
-    .prepare(`SELECT secret_wrapped, role FROM sync_pairing WHERE nonce = ?`)
-    .get(nonce) as { secret_wrapped: Buffer; role: string } | undefined;
+    .prepare(
+      `SELECT secret_wrapped, role FROM sync_pairing
+       WHERE backend_id = ? AND account_id = ? AND nonce = ?`,
+    )
+    .get(scope.backendId, scope.accountId, nonce) as
+    | { secret_wrapped: Buffer; role: string }
+    | undefined;
   if (row === undefined || row.role !== 'redeemer') return null;
   return unwrapSecretBytes(row.secret_wrapped);
 }
@@ -783,8 +844,22 @@ export function handleCryptoBoundaryEntity(
       if (
         wrap.v !== 1 ||
         wrap.enc !== 'x25519-aes-256-gcm' ||
-        typeof wrap.keyVersion !== 'number'
+        !Number.isInteger(wrap.keyVersion) ||
+        wrap.keyVersion < 1
       ) {
+        return true;
+      }
+      // Version floor: when this device already holds keys, only the
+      // expected next version (or a known version) may be installed. A
+      // jump means intermediate rotations were missed — adopting an
+      // unverifiable key as current would let a peer force this device to
+      // seal under bytes nobody else holds. The device keeps sealing
+      // under its last known-good version and recovers via re-pairing.
+      // (Residual: a wrap for exactly maxHeld+1 is indistinguishable from
+      // a legitimate rotation; enrolled peers are inside the trust model.)
+      const held = keyringRows(scope);
+      const maxHeld = held.length === 0 ? 0 : held[held.length - 1].key_version;
+      if (maxHeld > 0 && wrap.keyVersion > maxHeld + 1) {
         return true;
       }
       const aad = keyringWrapAssociatedData({
@@ -795,7 +870,7 @@ export function handleCryptoBoundaryEntity(
       });
       const adk = unwrapKeyMaterial(scope, ownEnrollmentId, wrap, aad);
       if (adk !== null) {
-        installAccountKey(scope, wrap.keyVersion, adk);
+        installAccountKey(scope, wrap.keyVersion, adk, 'wrap');
         retryQuarantinedEntities(scope);
         // The wrap has done its job; queue its removal from the account.
         recordLocalChange(scope, {
@@ -809,7 +884,7 @@ export function handleCryptoBoundaryEntity(
     }
     case CRYPTO_ENTITY_KEYRING_PAIRING: {
       if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return true;
-      const secret = pairingSecretFor(entityId);
+      const secret = pairingSecretFor(scope, entityId);
       if (secret === null) return true;
       const blob = payload as PairingKeyringPayload;
       if (blob.v !== 1 || blob.enc !== 'pairing-aes-256-gcm') return true;
@@ -829,7 +904,7 @@ export function handleCryptoBoundaryEntity(
       if (inner.v !== 1 || typeof inner.adk !== 'string' || typeof inner.keyVersion !== 'number') {
         return true;
       }
-      installAccountKey(scope, inner.keyVersion, Buffer.from(inner.adk, 'base64'));
+      installAccountKey(scope, inner.keyVersion, Buffer.from(inner.adk, 'base64'), 'pairing');
       retryQuarantinedEntities(scope);
       recordLocalChange(scope, {
         entityType: CRYPTO_ENTITY_KEYRING_PAIRING,
@@ -837,7 +912,9 @@ export function handleCryptoBoundaryEntity(
         operation: 'delete',
         schemaVersion: 1,
       });
-      getDb().prepare(`DELETE FROM sync_pairing WHERE nonce = ?`).run(entityId);
+      getDb()
+        .prepare(`DELETE FROM sync_pairing WHERE backend_id = ? AND account_id = ? AND nonce = ?`)
+        .run(scope.backendId, scope.accountId, entityId);
       return true;
     }
     default:
@@ -913,7 +990,7 @@ export function rotateAccountKey(scope: SyncScope, revokedEnrollmentIds: string[
   const db = getDb();
   const current = currentAccountKey(scope);
   const nextVersion = (current?.version ?? 0) + 1;
-  installAccountKey(scope, nextVersion, randomBytes(32));
+  installAccountKey(scope, nextVersion, randomBytes(32), 'rotation');
   const excluded = new Set(revokedEnrollmentIds);
   const own = getActiveEnrollmentId(scope);
   if (own !== null) excluded.add(own);

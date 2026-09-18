@@ -143,6 +143,29 @@ describe('runHostedReconcile', () => {
     expect(run?.['reconciled']).toBe(1);
   });
 
+  it('reaches accounts beyond the candidate window over successive runs', async () => {
+    const db = hostedDb();
+    const accountIds: string[] = [];
+    // One past the candidate limit: created_at ordering would re-examine
+    // the same oldest 50 every run and starve the 51st account forever.
+    for (let i = 0; i < 51; i += 1) {
+      const account = await getOrCreateBillingAccount(db, makeIdentity(`starve-${i}`));
+      await upsertStripeCustomer(db, account.id, `cus_starve_${i}`);
+      accountIds.push(account.id);
+    }
+    // Every account lacks a marker → all stale. Stalest-first ordering
+    // walks the whole set at RECONCILE_BATCH_LIMIT per run.
+    for (let i = 0; i < 51; i += 1) {
+      await stubStripe('GET', '/v1/subscriptions', { object: 'list', data: [] });
+    }
+    for (let run = 0; run < 6; run += 1) {
+      await runHostedReconcile(env);
+    }
+    for (const id of accountIds) {
+      expect(await getBillingMeta(db, reconcileMetaKey(id))).not.toBeNull();
+    }
+  });
+
   it('emits reconcile.failure and leaves the marker unset when Stripe errors', async () => {
     const account = await getOrCreateBillingAccount(hostedDb(), makeIdentity('fail'));
     await upsertStripeCustomer(hostedDb(), account.id, 'cus_fail');

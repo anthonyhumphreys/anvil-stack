@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import DOMPurify from "dompurify";
 import { marked } from "marked";
 
 import { Button } from "@/components/ui/button";
@@ -50,7 +51,6 @@ export function SealedShareView(props: {
 
   useEffect(() => {
     let cancelled = false;
-    const objectUrls: string[] = [];
     const run = async () => {
       const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ""));
       const keyParam = fragment.get("k");
@@ -116,7 +116,6 @@ export function SealedShareView(props: {
     });
     return () => {
       cancelled = true;
-      for (const url of objectUrls) URL.revokeObjectURL(url);
     };
   }, [props.id, props.mediaType, props.sha256, props.plaintextBytes]);
 
@@ -138,10 +137,6 @@ export function SealedShareView(props: {
   const { bytes } = status;
   const isTextual = props.mediaType.startsWith("text/") || props.mediaType === "application/json";
   const text = isTextual ? new TextDecoder().decode(bytes) : null;
-  const downloadUrl = () => {
-    const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: props.mediaType }));
-    return url;
-  };
 
   let body: React.ReactNode;
   if (props.mediaType === "text/markdown" && text !== null) {
@@ -187,9 +182,7 @@ export function SealedShareView(props: {
           ）はプレビューできません。
         </p>
         <Button asChild className="mt-4">
-          <a href={downloadUrl()} download={props.title}>
-            復号してダウンロード
-          </a>
+          <DownloadLink bytes={bytes} mediaType={props.mediaType} filename={props.title} />
         </Button>
       </div>
     );
@@ -220,8 +213,10 @@ function MarkdownBody({ text }: { text: string }) {
   const [html, setHtml] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
+    // Shared markdown is untrusted: marked emits raw HTML, so the output
+    // is sanitized in-browser before it reaches dangerouslySetInnerHTML.
     void Promise.resolve(marked.parse(text)).then((rendered: string) => {
-      if (!cancelled) setHtml(rendered);
+      if (!cancelled) setHtml(DOMPurify.sanitize(rendered));
     });
     return () => {
       cancelled = true;
@@ -238,13 +233,32 @@ function MarkdownBody({ text }: { text: string }) {
   );
 }
 
+function DownloadLink({
+  bytes,
+  mediaType,
+  filename
+}: {
+  bytes: Uint8Array;
+  mediaType: string;
+  filename: string;
+}) {
+  const url = useMemo(
+    () => URL.createObjectURL(new Blob([bytes as BlobPart], { type: mediaType })),
+    [bytes, mediaType]
+  );
+  useEffect(() => () => URL.revokeObjectURL(url), [url]);
+  return (
+    <a href={url} download={filename}>
+      復号してダウンロード
+    </a>
+  );
+}
+
 function PdfFrame({ bytes, title }: { bytes: Uint8Array; title: string }) {
-  const [url, setUrl] = useState<string | null>(null);
-  useEffect(() => {
-    const objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: "application/pdf" }));
-    setUrl(objectUrl);
-    return () => URL.revokeObjectURL(objectUrl);
-  }, [bytes]);
-  if (url === null) return null;
+  const url = useMemo(
+    () => URL.createObjectURL(new Blob([bytes as BlobPart], { type: "application/pdf" })),
+    [bytes]
+  );
+  useEffect(() => () => URL.revokeObjectURL(url), [url]);
   return <iframe src={url} title={title} className="h-[80vh] w-full rounded-lg border" />;
 }

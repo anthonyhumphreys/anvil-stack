@@ -47,7 +47,6 @@ import {
   provisionAccountKey,
   publishDeviceIdentity,
   registerPairingRedemption,
-  retryQuarantinedEntities,
   rotateAccountKey,
   sealAccountBytes,
   sealBytesWithKey,
@@ -60,7 +59,7 @@ import {
   unsealScopedJson,
   wrapAccountKeyFor,
 } from '../sync-keyring.service';
-import { canonicalJson, upsertEnrollment } from '../sync-persistence.service';
+import { updateSyncState, upsertEnrollment } from '../sync-persistence.service';
 
 const SCOPE: SyncScope = { backendId: 'backend-1', accountId: 'account-1', datasetEpoch: '1' };
 const ENROLLMENT = 'enr-own';
@@ -73,6 +72,11 @@ function activateEnrollment(id = ENROLLMENT): void {
     scope: SCOPE,
     state: 'active',
   });
+}
+
+/** Marks the first pull as completed — lazy ADK minting is gated on it. */
+function markPullCompleted(): void {
+  updateSyncState(SCOPE, { lastPullAt: new Date().toISOString() });
 }
 
 function pairingRows(): Array<{ nonce: string; role: string }> {
@@ -102,6 +106,7 @@ beforeEach(() => {
 describe('entity seal/unseal', () => {
   it('round-trips a domain payload through the envelope', () => {
     activateEnrollment();
+    markPullCompleted();
     const envelope = sealEntityPayload(
       SCOPE,
       { entityType: 'workflow-template', entityId: 'w1', operation: 'create', schemaVersion: 1 },
@@ -119,6 +124,7 @@ describe('entity seal/unseal', () => {
 
   it('provisions ADK v1 lazily on the first seal for a first device', () => {
     activateEnrollment();
+    markPullCompleted();
     expect(hasAccountKey(SCOPE)).toBe(false);
     sealEntityPayload(
       SCOPE,
@@ -130,6 +136,7 @@ describe('entity seal/unseal', () => {
 
   it('rejects an unknown key version', () => {
     activateEnrollment();
+    markPullCompleted();
     const envelope = sealEntityPayload(
       SCOPE,
       { entityType: 't', entityId: 'e', operation: 'create', schemaVersion: 1 },
@@ -155,6 +162,7 @@ describe('entity seal/unseal', () => {
 
   it('rejects tampered ciphertext', () => {
     activateEnrollment();
+    markPullCompleted();
     const envelope = sealEntityPayload(
       SCOPE,
       { entityType: 't', entityId: 'e', operation: 'create', schemaVersion: 1 },
@@ -176,6 +184,7 @@ describe('entity seal/unseal', () => {
 
   it('binds the envelope to the entity identity', () => {
     activateEnrollment();
+    markPullCompleted();
     const envelope = sealEntityPayload(
       SCOPE,
       { entityType: 't', entityId: 'e', operation: 'create', schemaVersion: 1 },
@@ -193,11 +202,26 @@ describe('entity seal/unseal', () => {
 describe('provisioning gate', () => {
   it('lets a lone first device mint ADK v1', () => {
     activateEnrollment();
+    markPullCompleted();
     expect(canProvisionAccountKey(SCOPE, ENROLLMENT)).toBe(true);
+  });
+
+  it('blocks minting before the first pull completes', () => {
+    activateEnrollment();
+    expect(canProvisionAccountKey(SCOPE, ENROLLMENT)).toBe(false);
+    expect(() =>
+      sealEntityPayload(
+        SCOPE,
+        { entityType: 't', entityId: 'e', operation: 'create', schemaVersion: 1 },
+        { x: 1 },
+      ),
+    ).toThrowError(AccountKeyUnavailableError);
+    expect(hasAccountKey(SCOPE)).toBe(false);
   });
 
   it('blocks a second device that has seen another device identity', () => {
     activateEnrollment();
+    markPullCompleted();
     ensureDeviceIdentity(SCOPE, 'enr-other');
     expect(canProvisionAccountKey(SCOPE, ENROLLMENT)).toBe(false);
     expect(() =>
@@ -211,6 +235,7 @@ describe('provisioning gate', () => {
 
   it('blocks a device with a pending pairing redemption', () => {
     activateEnrollment();
+    markPullCompleted();
     registerPairingRedemption(SCOPE, 'abc123', '00'.repeat(32));
     expect(canProvisionAccountKey(SCOPE, ENROLLMENT)).toBe(false);
   });
@@ -444,5 +469,108 @@ describe('device identity listing', () => {
       .map((d) => d.enrollmentId)
       .sort();
     expect(ids).toEqual(['enr-peer', ENROLLMENT].sort());
+  });
+});
+
+describe('ADK provenance + wrap floor', () => {
+  const KEY_A = Buffer.alloc(32, 1);
+  const KEY_B = Buffer.alloc(32, 2);
+  const KEY_C = Buffer.alloc(32, 3);
+
+  /** Produces a wrap entity (for own enrollment) carrying `key` at `version`. */
+  function wrapPayloadFor(version: number, key: Buffer): KeyringWrapPayload {
+    db.prepare('DELETE FROM sync_keyring').run();
+    installAccountKey(SCOPE, version, key, 'wrap');
+    wrapAccountKeyFor(SCOPE, ENROLLMENT, ensureDeviceIdentity(SCOPE, ENROLLMENT).pub, version);
+    const wrap = outboxPayloads(CRYPTO_ENTITY_KEYRING_WRAP).at(-1) as KeyringWrapPayload;
+    db.prepare('DELETE FROM sync_keyring').run();
+    return wrap;
+  }
+
+  it('heals a provisional minted v1 when the authoritative wrap arrives', () => {
+    activateEnrollment();
+    const wrap = wrapPayloadFor(1, KEY_A);
+    // Divergent first-use mint: this device sealed before learning the real key.
+    installAccountKey(SCOPE, 1, KEY_B, 'minted');
+    handleCryptoBoundaryEntity(SCOPE, ENROLLMENT, CRYPTO_ENTITY_KEYRING_WRAP, ENROLLMENT, wrap);
+    expect(accountKeyFor(SCOPE, 1)).toEqual(KEY_A);
+  });
+
+  it('does not displace a peer-delivered key on a same-version conflict', () => {
+    activateEnrollment();
+    const fakeWrap = wrapPayloadFor(1, KEY_B);
+    installAccountKey(SCOPE, 1, KEY_A, 'wrap');
+    handleCryptoBoundaryEntity(
+      SCOPE,
+      ENROLLMENT,
+      CRYPTO_ENTITY_KEYRING_WRAP,
+      ENROLLMENT,
+      fakeWrap,
+    );
+    expect(accountKeyFor(SCOPE, 1)).toEqual(KEY_A);
+  });
+
+  it('accepts the expected next-version wrap but rejects version jumps', () => {
+    activateEnrollment();
+    const wrapV2 = wrapPayloadFor(2, KEY_B);
+    const wrapV3 = wrapPayloadFor(3, KEY_C);
+    installAccountKey(SCOPE, 1, KEY_A, 'wrap');
+    // Holding v1, a v3 wrap is a jump — refused even though it unwraps fine.
+    handleCryptoBoundaryEntity(SCOPE, ENROLLMENT, CRYPTO_ENTITY_KEYRING_WRAP, ENROLLMENT, wrapV3);
+    expect(accountKeyFor(SCOPE, 3)).toBeNull();
+    expect(currentAccountKey(SCOPE)?.version).toBe(1);
+    // The in-order v2 wrap is the expected next version and installs.
+    handleCryptoBoundaryEntity(SCOPE, ENROLLMENT, CRYPTO_ENTITY_KEYRING_WRAP, ENROLLMENT, wrapV2);
+    expect(accountKeyFor(SCOPE, 2)).toEqual(KEY_B);
+    // Now holding v2, the previously rejected v3 wrap is acceptable.
+    handleCryptoBoundaryEntity(SCOPE, ENROLLMENT, CRYPTO_ENTITY_KEYRING_WRAP, ENROLLMENT, wrapV3);
+    expect(accountKeyFor(SCOPE, 3)).toEqual(KEY_C);
+  });
+
+  it('accepts any first-version wrap on a keyless device', () => {
+    activateEnrollment();
+    const wrapV3 = wrapPayloadFor(3, KEY_C);
+    handleCryptoBoundaryEntity(SCOPE, ENROLLMENT, CRYPTO_ENTITY_KEYRING_WRAP, ENROLLMENT, wrapV3);
+    expect(accountKeyFor(SCOPE, 3)).toEqual(KEY_C);
+  });
+});
+
+describe('pairing scope', () => {
+  const OTHER_SCOPE: SyncScope = { ...SCOPE, accountId: 'account-2' };
+
+  it('stores the same nonce under different accounts independently', () => {
+    registerPairingRedemption(SCOPE, 'deadbeef', '00'.repeat(32));
+    registerPairingRedemption(OTHER_SCOPE, 'deadbeef', '11'.repeat(32));
+    const rows = db
+      .prepare('SELECT backend_id, account_id, nonce FROM sync_pairing ORDER BY account_id')
+      .all() as Array<{ account_id: string }>;
+    expect(rows).toHaveLength(2);
+    // A same-scope re-register replaces; the other account's row is untouched.
+    registerPairingRedemption(SCOPE, 'deadbeef', '22'.repeat(32));
+    expect(db.prepare('SELECT COUNT(*) AS n FROM sync_pairing').get()).toEqual({ n: 2 });
+  });
+
+  it('does not let another account\'s redeemer block provisioning here', () => {
+    activateEnrollment();
+    markPullCompleted();
+    registerPairingRedemption(OTHER_SCOPE, 'abc123', '00'.repeat(32));
+    expect(canProvisionAccountKey(SCOPE, ENROLLMENT)).toBe(true);
+  });
+
+  it('does not open a pairing entity without a same-scope redemption', () => {
+    activateEnrollment();
+    provisionAccountKey(SCOPE);
+    const { pairingNonce } = mintPairingPayload(
+      SCOPE,
+      ENROLLMENT,
+      'anvil-ec-AAAAA-BBBBB-CCCCC-DDDDD',
+    );
+    const blob = outboxPayloads(CRYPTO_ENTITY_KEYRING_PAIRING)[0] as PairingKeyringPayload;
+    db.prepare('DELETE FROM sync_keyring').run();
+    db.prepare("DELETE FROM sync_pairing WHERE role = 'issuer'").run();
+    // The redeemer registered under a different account — same nonce string.
+    registerPairingRedemption(OTHER_SCOPE, pairingNonce, '00'.repeat(32));
+    handleCryptoBoundaryEntity(SCOPE, 'enr-new', CRYPTO_ENTITY_KEYRING_PAIRING, pairingNonce, blob);
+    expect(hasAccountKey(SCOPE)).toBe(false);
   });
 });

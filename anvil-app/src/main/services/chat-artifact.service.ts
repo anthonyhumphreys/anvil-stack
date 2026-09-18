@@ -19,6 +19,7 @@ import type {
 import { normaliseReasoningEffort } from '../../shared/codex-models.js';
 import { getDb } from '../db/database.js';
 import { publishSharedArtifact, revokeSharedArtifact } from './artifact-share.service.js';
+import { BackendRpcError } from './sync-backend-client.service.js';
 
 interface ChatArtifactRow {
   id: string;
@@ -538,7 +539,17 @@ export async function unshareChatArtifact(id: string): Promise<ChatArtifact> {
   if (!row) throw new Error('Artifact not found');
 
   if (row.share_id) {
-    await revokeSharedArtifact(row.share_id);
+    try {
+      await revokeSharedArtifact(row.share_id);
+    } catch (error) {
+      // The share row is already gone server-side (swept, expired, or the
+      // account was deleted): the goal state holds, so clear locally.
+      // Anything else (auth, transport) may mean the URL is still live —
+      // keep share_id so the user can retry.
+      if (!(error instanceof BackendRpcError) || error.code !== 'not-found') {
+        throw error;
+      }
+    }
   }
   db.prepare(
     `UPDATE chat_artifacts

@@ -25,6 +25,14 @@ export interface SyncIssuedEnrollmentCode {
   code: string;
   expiresAt: string;
   accountId: string;
+  /**
+   * The full `anvil-pair-…` string to type on the new device — it embeds
+   * the enrollment code plus the out-of-band keyring secret, so the new
+   * device can read history immediately. `null` when this device holds no
+   * account key to seal (fresh account); the bare `code` still enrolls,
+   * and the key arrives by wrap on the next pull.
+   */
+  pairingPayload: string | null;
 }
 
 export interface SyncAdoptionPreviewItem {
@@ -69,6 +77,16 @@ export interface SyncDeviceRenameResult {
 export interface SyncDeviceRevokeResult {
   revoked: boolean;
   enrollmentId: string;
+}
+
+/**
+ * Short authentication string for verifying a sibling device. Both
+ * devices derive the same 9-digit code from the account id and their
+ * identity public keys — matching codes on both screens prove the
+ * enrolled identities were not substituted.
+ */
+export interface SyncDeviceVerification {
+  code: string;
 }
 
 /** Result of exporting the account's synced entities to a chosen file. */

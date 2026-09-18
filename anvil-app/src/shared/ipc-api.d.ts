@@ -208,6 +208,7 @@ import type {
   SyncDevice,
   SyncDeviceRenameResult,
   SyncDeviceRevokeResult,
+  SyncDeviceVerification,
   SyncDiagnostics,
   SyncHostedStatus,
   SyncInitiateHandoffResult,
@@ -755,6 +756,8 @@ export interface AnvilAPI {
     ) => Promise<SyncDeviceRenameResult>;
     /** Revoke an enrollment; idempotent and severs its live sessions. */
     revokeDevice: (enrollmentId: string) => Promise<SyncDeviceRevokeResult>;
+    /** Short authentication string for out-of-band device verification. */
+    verifyDevice: (enrollmentId: string) => Promise<SyncDeviceVerification>;
     /** Export the account's synced entities to a user-chosen JSON file. */
     exportDataToFile: () => Promise<SyncDataExportFileResult>;
     /** Pick an export file and stage an import plan; nothing applies yet. */

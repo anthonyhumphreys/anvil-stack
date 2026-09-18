@@ -110,6 +110,8 @@ function activateEnrollment(id = ENROLLMENT): void {
     scope: SCOPE,
     state: 'active',
   });
+  // Established-device fixture: lazy ADK minting is gated on a completed pull.
+  updateSyncState(SCOPE, { lastPullAt: '2026-01-01T00:00:00.000Z' });
 }
 
 function emptyPull(nextCursor: string = EMPTY_CURSOR): SyncPullResult {

@@ -170,8 +170,12 @@ export async function runHostedReconcile(env: Env): Promise<void> {
         `SELECT ba.id AS billing_account_id, sc.stripe_customer_id
          FROM billing_accounts ba
          JOIN stripe_customers sc ON sc.billing_account_id = ba.id
+         LEFT JOIN billing_meta bm ON bm.key = 'reconcile_at:' || ba.id
          WHERE ba.lifecycle = 'active'
-         ORDER BY ba.created_at ASC
+         -- Stalest first: a missing marker (NULL) sorts before the oldest
+         -- timestamp, so every account reaches the head of the queue
+         -- instead of the same oldest-50 being re-examined every run.
+         ORDER BY CAST(bm.value AS INTEGER) ASC, ba.created_at ASC
          LIMIT ?`,
       )
       .bind(RECONCILE_CANDIDATE_LIMIT)

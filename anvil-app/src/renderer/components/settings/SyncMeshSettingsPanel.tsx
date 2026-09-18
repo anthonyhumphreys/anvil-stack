@@ -144,6 +144,7 @@ export function SyncMeshSettingsPanel(): ReactNode {
   const [accountId, setAccountId] = useState('account-1');
   const [enrollmentCode, setEnrollmentCode] = useState('');
   const [issuedCode, setIssuedCode] = useState<SyncIssuedEnrollmentCode | null>(null);
+  const [pairingCopied, setPairingCopied] = useState(false);
   const [enrolling, setEnrolling] = useState(false);
   const [enabling, setEnabling] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
@@ -152,6 +153,10 @@ export function SyncMeshSettingsPanel(): ReactNode {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
   const [confirmingRevokeId, setConfirmingRevokeId] = useState<string | null>(null);
+  const [verification, setVerification] = useState<{
+    enrollmentId: string;
+    code: string;
+  } | null>(null);
   const [deviceBusy, setDeviceBusy] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [exportResult, setExportResult] = useState<string | null>(null);
@@ -317,6 +322,7 @@ export function SyncMeshSettingsPanel(): ReactNode {
     try {
       const issued = await window.anvil.syncRuntime.issueEnrollmentCode();
       setIssuedCode(issued);
+      setPairingCopied(false);
     } catch (err) {
       setError(toErrorMessage(err));
     }
@@ -443,6 +449,26 @@ export function SyncMeshSettingsPanel(): ReactNode {
       setConfirmingRevokeId(null);
       await refreshStatus();
     } catch (err) {
+      setError(toErrorMessage(err));
+    } finally {
+      setDeviceBusy(null);
+    }
+  };
+
+  const handleVerifyDevice = async (enrollmentId: string): Promise<void> => {
+    if (verification?.enrollmentId === enrollmentId) {
+      setVerification(null);
+      return;
+    }
+    setDeviceBusy(enrollmentId);
+    setError(null);
+    try {
+      const result = await window.anvil.syncRuntime.verifyDevice(enrollmentId);
+      setVerification({ enrollmentId, code: result.code });
+      setRenamingId(null);
+      setConfirmingRevokeId(null);
+    } catch (err) {
+      setVerification(null);
       setError(toErrorMessage(err));
     } finally {
       setDeviceBusy(null);
@@ -732,8 +758,39 @@ export function SyncMeshSettingsPanel(): ReactNode {
               </button>
             </div>
             {issuedCode && (
-              <div className="rounded-md border border-border bg-bg-primary p-2">
-                <p className="font-mono text-sm text-text-primary">{issuedCode.code}</p>
+              <div className="space-y-2 rounded-md border border-border bg-bg-primary p-2">
+                {issuedCode.pairingPayload !== null ? (
+                  <div>
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="break-all font-mono text-sm text-text-primary">
+                        {issuedCode.pairingPayload}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void copyTextToClipboard(issuedCode.pairingPayload ?? '').then(() =>
+                            setPairingCopied(true),
+                          )
+                        }
+                        title="Copy pairing string"
+                        aria-label="Copy pairing string"
+                        className="shrink-0 rounded p-1 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+                      >
+                        {pairingCopied ? (
+                          <Check size={13} className="text-success" />
+                        ) : (
+                          <Copy size={13} />
+                        )}
+                      </button>
+                    </div>
+                    <p className="mt-1 text-xs text-text-tertiary">
+                      Type this whole string on the new device — it carries the encryption key
+                      out-of-band, so the device can read synced data right away.
+                    </p>
+                  </div>
+                ) : (
+                  <p className="font-mono text-sm text-text-primary">{issuedCode.code}</p>
+                )}
                 <p className="text-xs text-text-tertiary">
                   Single-use · expires {new Date(issuedCode.expiresAt).toLocaleTimeString()}
                 </p>
@@ -912,21 +969,32 @@ export function SyncMeshSettingsPanel(): ReactNode {
                           Rename
                         </button>
                         {!device.self && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setConfirmingRevokeId(
-                                confirmingRevokeId === device.enrollmentId
-                                  ? null
-                                  : device.enrollmentId,
-                              )
-                            }
-                            aria-expanded={confirmingRevokeId === device.enrollmentId}
-                            disabled={deviceBusy === device.enrollmentId}
-                            className="rounded-md border border-border px-2.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-error disabled:opacity-50"
-                          >
-                            Revoke
-                          </button>
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => void handleVerifyDevice(device.enrollmentId)}
+                              aria-expanded={verification?.enrollmentId === device.enrollmentId}
+                              disabled={deviceBusy === device.enrollmentId}
+                              className="rounded-md border border-border px-2.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
+                            >
+                              {deviceBusy === device.enrollmentId ? 'Verifying…' : 'Verify'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setConfirmingRevokeId(
+                                  confirmingRevokeId === device.enrollmentId
+                                    ? null
+                                    : device.enrollmentId,
+                                )
+                              }
+                              aria-expanded={confirmingRevokeId === device.enrollmentId}
+                              disabled={deviceBusy === device.enrollmentId}
+                              className="rounded-md border border-border px-2.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-error disabled:opacity-50"
+                            >
+                              Revoke
+                            </button>
+                          </>
                         )}
                       </div>
                     )}
@@ -958,6 +1026,21 @@ export function SyncMeshSettingsPanel(): ReactNode {
                           Cancel
                         </button>
                       </div>
+                    </div>
+                  )}
+                  {verification?.enrollmentId === device.enrollmentId && (
+                    <div className="mt-2 rounded-md border border-border bg-bg-primary p-2">
+                      <p className="font-mono text-lg tracking-[0.2em] text-text-primary">
+                        {verification.code}
+                      </p>
+                      <p className="mt-1 text-xs text-text-tertiary">
+                        Open Sync settings on{' '}
+                        <span className="font-medium text-text-secondary">
+                          {device.displayName || `device ${device.enrollmentId.slice(0, 8)}`}
+                        </span>{' '}
+                        and compare — both devices must show this code. A mismatch means the
+                        enrollment was tampered with.
+                      </p>
                     </div>
                   )}
                   {confirmingRevokeId === device.enrollmentId && (

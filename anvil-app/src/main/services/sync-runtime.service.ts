@@ -128,6 +128,9 @@ import {
 import { configureArtifactShareContext } from './artifact-share.service.js';
 import { decodePairingPayload, isPairingPayloadString } from '../../../cloud/contract/sealed.js';
 import {
+  deriveSas,
+  ensureDeviceIdentity,
+  listDeviceIdentities,
   mintPairingPayload,
   publishDeviceIdentity,
   registerPairingRedemption,
@@ -779,6 +782,29 @@ export async function revokeDevice(enrollmentId: string): Promise<DeviceRevokeRe
     }
   }
   return result;
+}
+
+/**
+ * Short authentication string for verifying a sibling device: both
+ * devices derive the same 9-digit code from the account id and their
+ * X25519 identity public keys, so matching codes on both screens prove
+ * neither enrollment's identity was substituted. Throws when the peer's
+ * identity has not been seen yet (arrives via sync).
+ */
+export function deviceVerificationCode(targetEnrollmentId: string): { code: string } {
+  const scope = currentScope();
+  const fields = requireAuth().getSessionScopeFields();
+  if (scope === null || fields === null) {
+    throw new Error('Sign in before verifying a device.');
+  }
+  const peer = listDeviceIdentities(scope).find(
+    (device) => device.enrollmentId === targetEnrollmentId,
+  );
+  if (peer === undefined) {
+    throw new Error('Device identity not seen yet — sync, then try again.');
+  }
+  const own = ensureDeviceIdentity(scope, fields.enrollmentId);
+  return { code: deriveSas(scope.accountId, own.pub, peer.pub) };
 }
 
 /**
