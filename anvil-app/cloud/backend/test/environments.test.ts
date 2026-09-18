@@ -8,6 +8,7 @@ import type {
   JobClaimResult,
   JobCreateParams,
   JobCreateResult,
+  JobGetResult,
 } from '../../contract/jobs';
 import type {
   EnvironmentGetResult,
@@ -458,5 +459,280 @@ describe('credential grants', () => {
       fx.provisionerAuth,
     );
     expect(isRpcError(pullDenied.body)).toBe(true);
+  });
+});
+
+describe('managed environments (ENV-09)', () => {
+  const MANAGED_PAIRING = 'anvil-pair-AAAAA-BBBBB-CCCCC-DDDDD-EEEEE-FFFFF';
+
+  function managedManifest(environmentId: string, ttlSeconds: number): ExecutionManifest {
+    return {
+      ...manifest(),
+      inputs: { environmentId, provider: 'anvil-managed', ttlSeconds },
+    };
+  }
+
+  function createManagedJob(
+    auth: string,
+    environmentId: string,
+    ttlSeconds = 1800,
+    requestId = crypto.randomUUID(),
+  ) {
+    return postRpc(
+      'job.create',
+      {
+        requestId,
+        payloadHash: 'e'.repeat(64),
+        kind: 'provision-environment',
+        requestedTarget: {
+          kind: 'auto',
+          requirements: { capabilities: ['provision:anvil-managed'] },
+        },
+        inputManifest: managedManifest(environmentId, ttlSeconds),
+      } satisfies JobCreateParams,
+      auth,
+    );
+  }
+
+  async function sweepAccount(accountId: string) {
+    const response = await accountStub(accountId).fetch(
+      new Request('https://internal.anvil/internal/sweep', { method: 'POST' }),
+    );
+    return (await response.json()) as Record<string, number>;
+  }
+
+  /** The stub binding is always injected by vitest.config.ts for this suite. */
+  function provisioner(): Fetcher {
+    if (!env.MANAGED_PROVISIONER) throw new Error('MANAGED_PROVISIONER stub missing');
+    return env.MANAGED_PROVISIONER;
+  }
+
+  async function provisionerEnqueue(rule: {
+    method: string;
+    path: string;
+    status?: number;
+    body?: unknown;
+  }) {
+    await provisioner().fetch(
+      new Request('https://provisioner.stub/__provisioner-stub/enqueue', {
+        method: 'POST',
+        body: JSON.stringify(rule),
+      }),
+    );
+  }
+
+  async function provisionerReset() {
+    await provisioner().fetch(
+      new Request('https://provisioner.stub/__provisioner-stub/reset', { method: 'POST' }),
+    );
+  }
+
+  async function provisionerLast(): Promise<{
+    method: string;
+    path: string;
+    body: { bootstrap?: Record<string, unknown>; environmentId?: string } | null;
+  } | null> {
+    const response = await provisioner().fetch(
+      new Request('https://provisioner.stub/__provisioner-stub/last'),
+    );
+    return (await response.json()) as never;
+  }
+
+  async function waitJobTerminal(
+    auth: string,
+    jobId: string,
+  ): Promise<JobGetResult> {
+    for (let i = 0; i < 60; i++) {
+      const got = expectSuccess<JobGetResult>(
+        await postRpc('job.get', { jobId }, auth),
+      );
+      if (got.job.state === 'completed' || got.job.state === 'failed') return got;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error(`job ${jobId} never reached a terminal state`);
+  }
+
+  it('stages a bootstrap payload and rejects malformed ones', async () => {
+    const fx = fixture('bootstrap');
+    const staged = expectSuccess<{ ok: true }>(
+      await postRpc(
+        'environment.bootstrap',
+        { environmentId: fx.environmentId, payload: MANAGED_PAIRING },
+        fx.provisionerAuth,
+      ),
+    );
+    expect(staged.ok).toBe(true);
+
+    const missing = await postRpc(
+      'environment.bootstrap',
+      { environmentId: fx.environmentId },
+      fx.provisionerAuth,
+    );
+    expect(isRpcError(missing.body)).toBe(true);
+    const oversized = await postRpc(
+      'environment.bootstrap',
+      { environmentId: fx.environmentId, payload: 'x'.repeat(5000) },
+      fx.provisionerAuth,
+    );
+    expect(isRpcError(oversized.body)).toBe(true);
+  });
+
+  it('enforces free-tier caps: TTL bound and concurrency 1', async () => {
+    const fx = fixture('caps');
+    // Free entitlement (unlinked account): 30-minute TTL cap.
+    const overTtl = await createManagedJob(fx.provisionerAuth, 'env_c1', 1801);
+    expect(isRpcError(overTtl.body)).toBe(true);
+    const underMin = await createManagedJob(fx.provisionerAuth, 'env_c2', 30);
+    expect(isRpcError(underMin.body)).toBe(true);
+
+    // A first provision at the cap succeeds — the env record it leaves is
+    // live, so the next managed create trips the concurrency cap.
+    await postRpc(
+      'environment.bootstrap',
+      { environmentId: 'env_c3', payload: MANAGED_PAIRING },
+      fx.provisionerAuth,
+    );
+    const firstRequestId = crypto.randomUUID();
+    const first = expectSuccess<JobCreateResult>(
+      await createManagedJob(fx.provisionerAuth, 'env_c3', 1800, firstRequestId),
+    );
+    await sweepAccount(fx.accountId);
+    await waitJobTerminal(fx.provisionerAuth, first.job.id);
+
+    const second = await createManagedJob(fx.provisionerAuth, 'env_c4', 1800);
+    expect(isRpcError(second.body)).toBe(true);
+
+    // Replaying the first request returns the stored job, not a cap
+    // rejection — the slot was already accounted when the job was born.
+    const replay = expectSuccess<JobCreateResult>(
+      await createManagedJob(fx.provisionerAuth, 'env_c3', 1800, firstRequestId),
+    );
+    expect(replay.job.id).toBe(first.job.id);
+  });
+
+  it('skips managed caps for BYO providers', async () => {
+    const fx = fixture('byo');
+    const response = await postRpc(
+      'job.create',
+      {
+        requestId: crypto.randomUUID(),
+        payloadHash: 'f'.repeat(64),
+        kind: 'provision-environment',
+        requestedTarget: {
+          kind: 'auto',
+          requirements: { capabilities: ['provision:aws-lambda-microvm'] },
+        },
+        inputManifest: {
+          ...manifest(),
+          inputs: {
+            environmentId: 'env_byo',
+            provider: 'aws-lambda-microvm',
+            ttlSeconds: 86_400,
+          },
+        },
+      } satisfies JobCreateParams,
+      fx.provisionerAuth,
+    );
+    expect(isRpcError(response.body)).toBe(false);
+  });
+
+  it('claims, consumes the bootstrap payload, calls the provisioner, records the env', async () => {
+    const fx = fixture('claim');
+    await provisionerReset();
+    await postRpc(
+      'environment.bootstrap',
+      { environmentId: fx.environmentId, payload: MANAGED_PAIRING },
+      fx.provisionerAuth,
+    );
+    const created = expectSuccess<JobCreateResult>(
+      await createManagedJob(fx.provisionerAuth, fx.environmentId, 1800),
+    );
+    await sweepAccount(fx.accountId);
+    const terminal = await waitJobTerminal(fx.provisionerAuth, created.job.id);
+    expect(terminal.job.state).toBe('completed');
+
+    // The provisioner received the staged pairing inside the bootstrap doc —
+    // never journaled, never returned to a client.
+    const last = await provisionerLast();
+    expect(last?.method).toBe('POST');
+    expect(last?.path).toBe('/v1/environments');
+    expect(last?.body?.environmentId).toBe(fx.environmentId);
+    expect(last?.body?.bootstrap?.['pairing']).toBe(MANAGED_PAIRING);
+    expect(last?.body?.bootstrap?.['provider']).toBe('anvil-managed');
+    expect(last?.body?.bootstrap?.['backendUrl']).toBe('https://api.anvil.test');
+
+    const record = expectSuccess<EnvironmentGetResult>(
+      await postRpc('environment.get', { environmentId: fx.environmentId }, fx.provisionerAuth),
+    );
+    expect(record.environment.provider).toBe('anvil-managed');
+    expect(record.environment.state).toBe('provisioning');
+    expect(record.environment.handle?.['providerRef']).toBe(`sb-${fx.environmentId}`);
+    expect(record.environment.jobId).toBe(created.job.id);
+  });
+
+  it('fails the job honestly when no bootstrap payload was staged', async () => {
+    const fx = fixture('noboot');
+    await provisionerReset();
+    const created = expectSuccess<JobCreateResult>(
+      await createManagedJob(fx.provisionerAuth, fx.environmentId, 1800),
+    );
+    await sweepAccount(fx.accountId);
+    const terminal = await waitJobTerminal(fx.provisionerAuth, created.job.id);
+    expect(terminal.job.state).toBe('failed');
+    // No provisioner call happened — nothing was staged to consume.
+    expect(await provisionerLast()).toBeNull();
+  });
+
+  it('fails the job when the provisioner rejects', async () => {
+    const fx = fixture('procfail');
+    await provisionerReset();
+    await provisionerEnqueue({
+      method: 'POST',
+      path: '/v1/environments',
+      status: 500,
+      body: { error: 'boom' },
+    });
+    await postRpc(
+      'environment.bootstrap',
+      { environmentId: fx.environmentId, payload: MANAGED_PAIRING },
+      fx.provisionerAuth,
+    );
+    const created = expectSuccess<JobCreateResult>(
+      await createManagedJob(fx.provisionerAuth, fx.environmentId, 1800),
+    );
+    await sweepAccount(fx.accountId);
+    const terminal = await waitJobTerminal(fx.provisionerAuth, created.job.id);
+    expect(terminal.job.state).toBe('failed');
+  });
+
+  it('enacts provider teardown for managed envs holding reap intent', async () => {
+    const fx = fixture('mreap');
+    await provisionerReset();
+    await postRpc(
+      'environment.bootstrap',
+      { environmentId: fx.environmentId, payload: MANAGED_PAIRING },
+      fx.provisionerAuth,
+    );
+    const created = expectSuccess<JobCreateResult>(
+      await createManagedJob(fx.provisionerAuth, fx.environmentId, 1800),
+    );
+    await sweepAccount(fx.accountId);
+    await waitJobTerminal(fx.provisionerAuth, created.job.id);
+
+    await provisionerReset();
+    const reaped = expectSuccess<EnvironmentReapResult>(
+      await postRpc('environment.reap', { environmentId: fx.environmentId }, fx.provisionerAuth),
+    );
+    expect(reaped.environment.state).toBe('reap-requested');
+
+    await sweepAccount(fx.accountId);
+    const last = await provisionerLast();
+    expect(last?.method).toBe('DELETE');
+    expect(last?.path).toBe(`/v1/environments/sb-${fx.environmentId}`);
+
+    const record = expectSuccess<EnvironmentGetResult>(
+      await postRpc('environment.get', { environmentId: fx.environmentId }, fx.provisionerAuth),
+    );
+    expect(record.environment.reapedAt).toBeDefined();
   });
 });

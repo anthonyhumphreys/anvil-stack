@@ -82,7 +82,9 @@ import type {
   ResultManifestVerification,
 } from '../../../cloud/contract/jobs.js';
 import {
+  EPHEMERAL_ENV_CAPABILITY,
   isEnvironmentProviderId,
+  type EnvironmentProviderId,
   type ProvisionEnvironmentInputs,
 } from '../../../cloud/contract/environment.js';
 import {
@@ -170,6 +172,28 @@ export function configureMeshWorkerContext(provider: () => MeshWorkerContext | n
 
 function workerContext(): MeshWorkerContext | null {
   return contextProvider?.() ?? null;
+}
+
+/**
+ * ENV-04/05/09: when this process IS a cloud environment, the anvil-worker
+ * image boot exports `ANVIL_ENVIRONMENT_ID` + `ANVIL_ENVIRONMENT_PROVIDER`
+ * so the worker advertises `ephemeral-env` and self-reports `enrolled`
+ * (image contract: docs/plans/sync-mesh/cloud-environments.md). The env's
+ * pairing code is already bound to the environment record, so the backend
+ * authorizes the report — the env vars only *describe* identity, never
+ * authorize it.
+ */
+function environmentBinding(): { environmentId: string; provider: EnvironmentProviderId } | null {
+  const environmentId = process.env['ANVIL_ENVIRONMENT_ID'];
+  const provider = process.env['ANVIL_ENVIRONMENT_PROVIDER'];
+  if (
+    typeof environmentId !== 'string' ||
+    environmentId.length === 0 ||
+    !isEnvironmentProviderId(provider)
+  ) {
+    return null;
+  }
+  return { environmentId, provider };
 }
 
 /** ENV-01: the worker's sync scope as a provisioner scope, when present. */
@@ -378,11 +402,14 @@ function buildCapabilities(): WorkerCapabilities {
   // provision-environment jobs route here via kind:'auto' placement.
   const scope = provisionerScope();
   const provisionCaps = scope === null ? [] : provisionCapabilities(scope);
+  // ENV-09: a cloud environment advertises itself so grants/env-targeted
+  // placement can recognize ephemeral capacity.
+  const envCaps = environmentBinding() === null ? [] : [EPHEMERAL_ENV_CAPABILITY];
   return {
     os: platform(),
     arch: process.arch,
     memoryMb: Math.round(totalmem() / (1024 * 1024)),
-    capabilities: [...WORKER_CAPABILITIES, ...provisionCaps],
+    capabilities: [...WORKER_CAPABILITIES, ...envCaps, ...provisionCaps],
     maxConcurrentJobs: DEFAULT_MAX_CONCURRENT_JOBS,
   };
 }
@@ -413,6 +440,19 @@ async function doConnectWorker(): Promise<void> {
     });
     if (result.workerIncarnation !== hadIncarnation) {
       await meshRpc('worker.capabilities.publish', buildCapabilities());
+      // ENV-09: a cloud environment links its enrollment to the environment
+      // record — this is the self-report that resolves env-targeted jobs.
+      // The report must not break the connect: enrollment is already done.
+      const binding = environmentBinding();
+      const ctx = workerContext();
+      if (binding !== null && ctx !== null) {
+        await meshRpc('environment.report', {
+          environmentId: binding.environmentId,
+          provider: binding.provider,
+          state: 'enrolled',
+          enrollmentId: ctx.enrollmentId,
+        }).catch(() => undefined);
+      }
       // A fresh incarnation means the backend forgot prior lease state; any
       // local attempt rows still marked active are stale — mark them for
       // inspection rather than assuming the backend still honors them.

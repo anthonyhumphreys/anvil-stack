@@ -346,6 +346,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_credential_grants_dedupe
   ON credential_grants (job_id, attempt_id, envelope_sha);
 CREATE INDEX IF NOT EXISTS idx_credential_grants_attempt
   ON credential_grants (attempt_id, fence, expires_at);
+-- ENV-09 managed-environment bootstrap staging: the anvil-pair payload
+-- a source minted for a backend-provisioned environment. These rows ARE
+-- plaintext pairing material held inside the hosted trust boundary —
+-- never journaled, consume-once (the managed claimer deletes what it
+-- reads), and swept at expiry. BYO providers never touch this table:
+-- their pairings are minted on the claiming device.
+CREATE TABLE IF NOT EXISTS environment_bootstrap (
+  environment_id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
 `;
 
 /** First-dataset epoch for a fresh account object. Fixed for determinism. */

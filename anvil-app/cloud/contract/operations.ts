@@ -64,6 +64,7 @@ export const OPERATIONS = [
   'environment.get',
   'environment.list',
   'environment.reap',
+  'environment.bootstrap',
   'credential.deliver',
   'credential.pull',
   // Hosted sharing (user-published artifacts behind revocable share ids)
@@ -127,6 +128,7 @@ export const OPERATION_PROFILE: Record<OperationName, OperationProfile> = {
   'environment.get': 'mesh/1',
   'environment.list': 'mesh/1',
   'environment.reap': 'mesh/1',
+  'environment.bootstrap': 'mesh/1',
   'credential.deliver': 'mesh/1',
   'credential.pull': 'mesh/1',
   'share.create': 'sync/1',
@@ -188,6 +190,7 @@ export const OPERATION_ROLE: Record<OperationName, ActorRole> = {
   'environment.get': 'either',
   'environment.list': 'either',
   'environment.reap': 'either',
+  'environment.bootstrap': 'user',
   'credential.deliver': 'user',
   'credential.pull': 'worker',
   'share.create': 'user',
@@ -319,6 +322,10 @@ export const HOSTED_OPERATION_CLASS: Record<OperationName, HostedOperationClass>
   'environment.get': 'control',
   'environment.list': 'control',
   'environment.reap': 'control',
+  // Staging a bootstrap payload extends a provision the user is already
+  // authorized to request — gated like job.create so a restricted account
+  // cannot mint managed capacity through the back door.
+  'environment.bootstrap': 'mutating',
   // Grants are scoped to a claimed attempt's existing fence — delivery and
   // pull finish work that mutating job.claim already authorized.
   'credential.deliver': 'control',

@@ -524,6 +524,7 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
     case 'environment.get':
     case 'environment.list':
     case 'environment.reap':
+    case 'environment.bootstrap':
     case 'credential.deliver':
     case 'credential.pull':
     // SESSION-03 session ownership handoff.

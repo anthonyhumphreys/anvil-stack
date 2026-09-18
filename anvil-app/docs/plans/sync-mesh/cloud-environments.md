@@ -1,9 +1,11 @@
 # Cloud agent environments (ENV-01…ENV-09)
 
-Status: contract + backend + provisioner plumbing landed on
-`feature/sync-mesh--foundations`. AWS Lambda MicroVM provisioning is
-implemented; Cloudflare Sandbox, Vercel Sandbox, and the Anvil-managed
-tier land behind the same contracts next.
+Status: contract, backend, all four provider adapters, the managed
+tier, and the `anvil-worker` image build landed on
+`feature/sync-mesh--foundations`. AWS Lambda MicroVM, Cloudflare
+Sandbox, Vercel Sandbox, and `anvil-managed` all provision behind the
+same contract; the reference Cloudflare provisioner lives at
+`cloud/provisioner/` and doubles as the managed tier's runtime.
 
 A cloud environment is a remote machine that runs Anvil work on the
 account's behalf: an AWS microVM, a Cloudflare Sandbox, a Vercel Sandbox,
@@ -98,14 +100,15 @@ The environment's boot process is the only provider-specific surface —
 and it is still a contract, not a per-provider fork:
 
 1. The provisioner passes a JSON bootstrap payload through the provider's
-   opaque bootstrap channel (`runHookPayload` on AWS; equivalent
-   sandbox-start payloads on Cloudflare/Vercel):
+   opaque bootstrap channel (`runHookPayload` on AWS; the provisioner
+   request body on Cloudflare; `ANVIL_BOOTSTRAP_JSON` on Vercel):
 
    ```json
    {
      "kind": "anvil.mesh-environment",
      "schemaVersion": "0.1",
      "environmentId": "env_…",
+     "provider": "vercel-sandbox",
      "backendUrl": "https://sync.anvil.example",
      "pairing": "anvil-pair-…",
      "ttlSeconds": 1800,
@@ -113,10 +116,18 @@ and it is still a contract, not a per-provider fork:
    }
    ```
 
-2. The image's run hook redeems it:
-   `anvil-daemon enroll --api-url $backendUrl --pair $pairing --worker`,
-   then `anvil-daemon run`. Equivalent flows are fine — the daemon
-   commands are the reference implementation.
+   `provider` feeds `ANVIL_ENVIRONMENT_PROVIDER` so the worker's
+   self-report and `provision:<provider>` capability line up with the
+   record the provisioner created.
+
+2. The image's run hook (`boot.mjs`, wrapped by `anvil-worker-boot`)
+   parses the payload, scrubs `ANVIL_BOOTSTRAP_JSON` from its own
+   environment, writes `ANVIL_ENVIRONMENT_ID` /
+   `ANVIL_ENVIRONMENT_PROVIDER` for the daemon, redeems
+   `anvil-daemon enroll --api-url $backendUrl --pair $pairing`, and runs
+   `anvil-daemon run --worker` with the companion server disabled. The
+   pairing code is consume-once so the payload is spent within seconds of
+   enrollment.
 
 3. On boot the worker publishes `device.policy { worker.allowJobs: true }`
    and `worker.connect`, advertises the `ephemeral-env` capability plus
@@ -155,8 +166,41 @@ anvil-daemon provider list
 anvil-daemon provider remove <connectionId>
 ```
 
+Environments are requested and reaped headlessly the same way:
+
+```sh
+anvil-daemon env request anvil-managed --ttl 1800 --name ci-runner
+anvil-daemon env request vercel-sandbox --ttl 3600 --connection <id>
+anvil-daemon env list
+anvil-daemon env terminate <environmentId>
+```
+
+`env request` mints the environment id, stages the source-side pairing
+payload via `environment.bootstrap` for `anvil-managed`, and creates the
+`provision-environment` job. `env terminate` records durable reap intent
+— teardown lands wherever the provider lives.
+
 A connection makes the host advertise `provision:<provider>` and become
 eligible for `provision-environment` jobs via `kind:'auto'` placement.
+
+`anvil-managed` needs no connection — the backend holds the provider
+identity and claims the job itself.
+
+Each adapter's `config`/`secret` surface:
+
+- `aws-lambda-microvm` — config: `region`, `imageIdentifier`,
+  `idlePolicy`, `logGroup`, subnets/security groups; secret:
+  `{accessKeyId, secretAccessKey, sessionToken?}`. Provisions via the
+  Lambda MicroVM API; bootstrap rides `runHookPayload`.
+- `cloudflare-sandbox` — config: `url` (required, the deployed
+  provisioner Worker); secret: `{token?}` sent as a bearer token. Calls
+  a customer-deployed provisioner Worker over `POST/GET/DELETE
+  /v1/environments[/:ref]`; the bootstrap payload rides in the create
+  request body. The reference provisioner is `cloud/provisioner/`.
+- `vercel-sandbox` — config: `image` (default image ref), `region?`,
+  `teamId`, `projectId`; secret: `{token}`. Creates non-persistent
+  `Sandbox`es via `@vercel/sandbox`; bootstrap rides
+  `ANVIL_BOOTSTRAP_JSON` and the boot script is launched detached.
 
 ## Job targeting
 
@@ -173,14 +217,63 @@ environmentId }`:
 `provision:<provider>` requirement so any credentialed provisioner
 claims it.
 
-## Managed tier (ENV-09, next)
+## Managed tier (ENV-09)
 
 `anvil-managed` uses the identical contract; the provisioner identity is
-Anvil-operated Cloudflare infrastructure. Caps land at the authoritative
-handler through `hosted/enforcement.ts`:
+Anvil-operated Cloudflare infrastructure. The backend owns the whole
+lifecycle — no device-side provider connection is involved:
+
+1. The source device calls `requestCloudEnvironment({ provider:
+   'anvil-managed' })`, which mints an ephemeral pairing (code + sealed
+   ADK, bound to the environment id) and stages it through
+   `environment.bootstrap` — a consume-once, TTL'd channel keyed by
+   `environment_id`. The backend never holds the sealed ADK; it only
+   brokers the opaque payload.
+2. `job.create { kind:'provision-environment', provider:'anvil-managed' }`
+   is gated at the authoritative handler: the `MANAGED_PROVISIONER`
+   service binding must exist (fail closed), hosted entitlement access
+   must hold, `ttlSeconds` is clamped to the tier cap, and active
+   managed environments + queued/running managed jobs must fit the
+   concurrency cap. Idempotent replay returns the existing job before
+   any cap check.
+3. The account DO's managed claimer (kicked on create and on every
+   sweep) claims the job internally, consumes the bootstrap payload,
+   calls the provisioner service binding, records the environment
+   handle, and journals lifecycle onto the job observers already watch.
+4. The provisioner — the same `cloud/provisioner/` Worker a BYO
+   customer deploys, bound via `MANAGED_PROVISIONER` — boots the
+   environment. The env self-reports `enrolled` and joins the mesh.
+
+Caps land through `hosted/enforcement.ts`:
 
 | Tier | Cap |
 | --- | --- |
-| Free | hard `maxExecutionSeconds` (~30 min), concurrency 1, monthly minute quota |
-| Paid | larger cap (~8 h), higher concurrency, Stripe metering |
+| Free | hard `maxTtlSeconds` 30 min, concurrency 1, monthly minute quota |
+| Paid | `maxTtlSeconds` 8 h, concurrency 4, Stripe metering |
 | BYO provider | no Anvil cap — provider limits + `ttlSeconds` govern |
+
+`null`/`active`/`grace` entitlements get paid caps; everything else gets
+free caps. The reap sweep terminates managed environments through the
+provisioner binding and expires staged bootstrap payloads that were
+never consumed.
+
+## The anvil-worker image
+
+`cloud/images/anvil-worker/` builds the OCI image every provider boots:
+
+- `Dockerfile` — generic `node:22-bookworm-slim` image: build
+  prerequisites for `better-sqlite3`/`node-pty`, Git, the bundled
+  daemon, `boot.mjs` + `anvil-worker-boot` on PATH. Used for Vercel VCR
+  and generic OCI/AWS microVM environments.
+- `Dockerfile.cloudflare` — same image plus the Cloudflare Sandbox
+  container contract (the boot binary at the path the provisioner
+  execs).
+- `prepare.sh` — stages the daemon bundle + node_modules into the
+  build context.
+- `boot.mjs` — reads `ANVIL_BOOTSTRAP_JSON` (or a provider-delivered
+  payload file), validates `kind:'anvil.mesh-environment'`, exports
+  `ANVIL_ENVIRONMENT_ID`/`ANVIL_ENVIRONMENT_PROVIDER`, scrubs the
+  bootstrap var, enrolls, and execs `anvil-daemon run --worker`.
+
+The image intentionally disables the companion server — an ephemeral
+environment exists to run jobs, not to serve UI.

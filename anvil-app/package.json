@@ -49,6 +49,7 @@
     "@anvilstack/registry-cli": "^0.1.1",
     "@aws-sdk/client-lambda-microvms": "3.1077.0",
     "@sentry/electron": "^7.17.0",
+    "@vercel/sandbox": "3.2.2",
     "abort-controller": "^3.0.0",
     "ansi-regex": "^6.2.2",
     "balanced-match": "^1.0.2",

@@ -38,6 +38,14 @@
   // operations on restricted/unknown entitlements; anything else (or
   // absence) leaves every operation allowed while session.describe still
   // surfaces entitlement state.
+  //
+  // ENV-09: MANAGED_PROVISIONER binds the anvil-mesh-provisioner worker
+  // (cloud/provisioner) so `anvil-managed` environments run on Anvil-operated
+  // Cloudflare Sandbox capacity. Absence fails closed — job.create rejects
+  // managed provisions with provider-unavailable. Secrets:
+  //   MANAGED_PROVISIONER_TOKEN   bearer sent on the service-binding channel
+  // Vars:
+  //   ANVIL_PUBLIC_API_URL        public backend URL injected into env bootstrap
   "durable_objects": {
     "bindings": [
       {
@@ -72,6 +80,15 @@
       "bucket_name": "anvil-spike-artifacts",
     },
   ],
+  // ENV-09: the managed provisioner is a separate worker (cloud/provisioner)
+  // reached over a service binding — uncomment once it is deployed in the
+  // same account, and `wrangler secret put MANAGED_PROVISIONER_TOKEN`.
+  // "services": [
+  //   {
+  //     "binding": "MANAGED_PROVISIONER",
+  //     "service": "anvil-mesh-provisioner",
+  //   },
+  // ],
   "d1_databases": [
     {
       "binding": "HOSTED_DB",

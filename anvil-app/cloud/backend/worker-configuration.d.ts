@@ -46,6 +46,24 @@ declare namespace Cloudflare {
      * surfaces entitlement state on session.describe.
      */
     HOSTED_BILLING_ENFORCEMENT?: string;
+    /**
+     * ENV-09: service binding to the `anvil-mesh-provisioner` worker that
+     * turns `anvil-managed` provision-environment jobs into Cloudflare
+     * Sandbox environments. Absence rejects managed provisions with
+     * `provider-unavailable` — self-host deploys never bind it.
+     */
+    MANAGED_PROVISIONER?: Fetcher;
+    /**
+     * Shared bearer for the MANAGED_PROVISIONER channel (`wrangler secret
+     * put`). Absent = the provisioner accepts unauthenticated requests —
+     * only safe inside a private network/service-binding setup.
+     */
+    MANAGED_PROVISIONER_TOKEN?: string;
+    /**
+     * Public base URL of this backend (https://…) — embedded in the
+     * managed bootstrap so the environment's worker knows where to dial.
+     */
+    ANVIL_PUBLIC_API_URL?: string;
   }
 }
 

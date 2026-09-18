@@ -17,6 +17,9 @@ import {
   enableSync,
   getRuntimeStatus,
   initSyncRuntime,
+  listCloudEnvironments,
+  reapCloudEnvironment,
+  requestCloudEnvironment,
   setMeshWorkerOptIn,
   signOutSync,
 } from '../main/services/sync-runtime.service.js';
@@ -79,6 +82,9 @@ function usage(): never {
   anvil-daemon provider list
   anvil-daemon provider add <provider> [--name <name>] [--config <json>] [--secret <json>]
   anvil-daemon provider remove <connectionId>
+  anvil-daemon env list [--all]
+  anvil-daemon env request <provider> --ttl <seconds> [--image <ref>] [--name <name>] [--connection <id>]
+  anvil-daemon env terminate <environmentId>
   anvil-daemon policy list
   anvil-daemon policy set <enrollmentId> <observe|approve|steer|denied>
   anvil-daemon policy forget <enrollmentId>
@@ -237,6 +243,55 @@ function cmdProvider(sub: string | undefined): void {
   }
 }
 
+/**
+ * ENV-01/ENV-09: `env request` creates a `provision-environment` job —
+ * `anvil-managed` provisions on Anvil capacity (pairing staged via
+ * environment.bootstrap), BYO providers wait for a provisioner-capable
+ * device holding the connection. `env terminate` records durable reap
+ * intent; teardown lands wherever the provider lives.
+ */
+async function cmdEnv(sub: string | undefined): Promise<void> {
+  boot();
+  switch (sub) {
+    case 'list': {
+      const listed = await listCloudEnvironments(process.argv[4] === '--all');
+      console.log(JSON.stringify(listed.environments, null, 2));
+      return;
+    }
+    case 'request': {
+      const provider = process.argv[4];
+      const ttlSeconds = Number(arg('--ttl'));
+      if (!isEnvironmentProviderId(provider) || !Number.isFinite(ttlSeconds) || ttlSeconds < 60) {
+        console.error(
+          'usage: env request <aws-lambda-microvm|cloudflare-sandbox|vercel-sandbox|anvil-managed> --ttl <seconds> [--image <ref>] [--name <name>] [--connection <id>]',
+        );
+        process.exit(1);
+      }
+      const requested = await requestCloudEnvironment({
+        provider,
+        ttlSeconds,
+        ...(arg('--image') === undefined ? {} : { imageRef: arg('--image') }),
+        ...(arg('--name') === undefined ? {} : { displayName: arg('--name') }),
+        ...(arg('--connection') === undefined ? {} : { connectionId: arg('--connection') }),
+      });
+      console.log(JSON.stringify(requested, null, 2));
+      return;
+    }
+    case 'terminate': {
+      const environmentId = process.argv[4];
+      if (!environmentId) {
+        console.error('usage: env terminate <environmentId>');
+        process.exit(1);
+      }
+      const reaped = await reapCloudEnvironment(environmentId);
+      console.log(JSON.stringify(reaped.environment, null, 2));
+      return;
+    }
+    default:
+      usage();
+  }
+}
+
 async function cmdPolicy(sub: string | undefined): Promise<void> {
   boot();
   switch (sub) {
@@ -321,6 +376,9 @@ async function main(): Promise<void> {
     }
     case 'provider':
       cmdProvider(process.argv[3]);
+      break;
+    case 'env':
+      await cmdEnv(process.argv[3]);
       break;
     case 'policy':
       await cmdPolicy(process.argv[3]);

@@ -147,6 +147,7 @@ import type {
   CredentialGrantPayload,
   CredentialPullResult,
 } from '../../contract/sealed';
+import type { HostedEntitlement } from '../../contract/entitlements';
 import { ephemeralOperationAllowed } from '../../contract/operations';
 import {
   SOCKET_SUBPROTOCOL,
@@ -512,6 +513,7 @@ const ACCOUNT_PURGE_TABLES = [
   // data — purged with everything else on account deletion.
   'environments',
   'credential_grants',
+  'environment_bootstrap',
 ] as const;
 /** Per-account retained-history budget enforced before accepting changes. */
 const HISTORY_QUOTA_BYTES = 64 * 1024 * 1024;
@@ -547,6 +549,22 @@ const ENVIRONMENT_AUDIT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_GRANT_ENVELOPE_BYTES = 16 * 1024;
 const MAX_GRANTS_PER_ATTEMPT = 16;
 const GRANT_MAX_TTL_MS = 60 * 60 * 1000;
+/**
+ * ENV-09: managed (`anvil-managed`) environments — provisioned by the
+ * backend's own provisioner rather than a user device. Bootstrap payloads
+ * are consume-once with a one-hour ceiling; the provision call gets a
+ * bounded budget so a wedged provider cannot pin the internal attempt
+ * forever; entitlement caps bound TTL + live concurrency per tier.
+ */
+const MANAGED_PROVISIONER_ENROLLMENT = 'anvil-managed';
+const MANAGED_PROVISIONER_INCARNATION = 'managed';
+const MANAGED_PROVISION_BUDGET_MS = 10 * 60 * 1000;
+const MANAGED_BOOTSTRAP_TTL_MS = 60 * 60 * 1000;
+const BOOTSTRAP_PAYLOAD_MAX_BYTES = 4096;
+const MANAGED_PROVISION_BATCH = 4;
+const MANAGED_REAP_BATCH = 8;
+const MANAGED_FREE_CAPS = { maxTtlSeconds: 30 * 60, maxConcurrent: 1 } as const;
+const MANAGED_PAID_CAPS = { maxTtlSeconds: 8 * 60 * 60, maxConcurrent: 4 } as const;
 
 // ---- MESH-03 constants ----------------------------------------------------
 /** Raw inbound socket frame cap; payload text is separately bounded below. */
@@ -1415,6 +1433,8 @@ export class AccountCoordinator extends DurableObject<Env> {
           return this.handleEnvironmentList(auth, rpc.requestId, rpc.params);
         case 'environment.reap':
           return this.handleEnvironmentReap(auth, rpc.requestId, rpc.params);
+        case 'environment.bootstrap':
+          return this.handleEnvironmentBootstrap(auth, rpc.requestId, rpc.params);
         // ENV-06 per-attempt sealed credential grants.
         case 'credential.deliver':
           return await this.handleCredentialDeliver(auth, rpc.requestId, rpc.params);
@@ -2812,6 +2832,21 @@ export class AccountCoordinator extends DurableObject<Env> {
     ) {
       throw new RpcFailure('malformed-request', { reason: 'queueDeadline' });
     }
+    // ENV-09: `anvil-managed` provisions run on Anvil-operated capacity, so
+    // hosted entitlements bound TTL + concurrency at the authoritative
+    // handler. BYO providers skip this path — their limits are the user's
+    // own cloud account's, not Anvil's.
+    const isManagedProvision =
+      create.kind === 'provision-environment' &&
+      create.inputManifest.inputs['provider'] === 'anvil-managed';
+    if (isManagedProvision) {
+      // Idempotent replays must return the existing job, not a fresh cap
+      // rejection — the slot was accounted when the job was born.
+      const replay = this.readJobByRequest(auth.enrollmentId, create.requestId);
+      if (replay === null) {
+        await this.assertManagedProvisionAllowed(auth, create.inputManifest, now);
+      }
+    }
     const created = this.commit(() => {
       this.provisionEnrollment(auth);
       const existing = this.readJobByRequest(auth.enrollmentId, create.requestId);
@@ -2873,6 +2908,12 @@ export class AccountCoordinator extends DurableObject<Env> {
     // that enrollment's attached sockets.
     if (created.notifyTarget !== null) {
       this.emitJobAvailable(created.job.id, created.notifyTarget);
+    }
+    // ENV-09: managed provisions are claimed by the backend itself — kick
+    // the claimer now rather than waiting for the next sweep tick. The
+    // sweep remains the durability path if this waitUntil dies mid-call.
+    if (isManagedProvision) {
+      this.ctx.waitUntil(this.runManagedWork().catch(() => undefined));
     }
     await this.ensureSweepScheduled();
     const result: JobCreateResult = { job: created.job };
@@ -5768,6 +5809,434 @@ export class AccountCoordinator extends DurableObject<Env> {
     }
   }
 
+  /**
+   * `environment.bootstrap` (user role): stage the `anvil-pair-…` payload a
+   * backend-side provisioner will inject into the environment. Currently
+   * only `anvil-managed` consumes these — BYO claimers mint pairings on
+   * their own device and never read this table. The payload is
+   * consume-once, never journaled, and swept at expiry.
+   */
+  private handleEnvironmentBootstrap(
+    auth: SpikeAuth,
+    requestId: string,
+    params: unknown,
+  ): Response {
+    const input = parseEnvironmentBootstrapParams(params);
+    this.commit((): void => {
+      this.assertNotRevoked(auth);
+      this.provisionEnrollment(auth);
+      const now = Date.now();
+      this.ctx.storage.sql.exec(
+        `INSERT INTO environment_bootstrap
+           (environment_id, account_id, payload, expires_at, created_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(environment_id) DO UPDATE SET
+           payload = excluded.payload,
+           expires_at = excluded.expires_at`,
+        input.environmentId,
+        auth.accountId,
+        input.payload,
+        now + MANAGED_BOOTSTRAP_TTL_MS,
+        now,
+      );
+    });
+    return rpcSuccessResponse(requestId, { ok: true });
+  }
+
+  // ---- ENV-09 managed provisioning ------------------------------------------
+  //
+  // `anvil-managed` provision-environment jobs are claimed by the backend
+  // itself: no user device advertises `provision:anvil-managed`, so the
+  // jobs stay queued for `kind:'auto'` placement and this internal claimer
+  // takes them. The claimer mints a real attempt (fence discipline is
+  // unchanged), consumes the staged bootstrap payload, calls the bound
+  // MANAGED_PROVISIONER service, and records the environment + outcome
+  // through the same rows/events an external provisioner would write.
+
+  /**
+   * The entitlement tier's managed-environment caps. `null` means this
+   * deployment does not provision managed environments at all (no
+   * provisioner binding) — the request is rejected before a job is born.
+   */
+  private managedCaps(entitlement: HostedEntitlement | null): {
+    maxTtlSeconds: number;
+    maxConcurrent: number;
+  } {
+    if (entitlement === null || entitlement.state === 'active' || entitlement.state === 'grace') {
+      return { ...MANAGED_PAID_CAPS };
+    }
+    return { ...MANAGED_FREE_CAPS };
+  }
+
+  /**
+   * `job.create` gate for `provision-environment` + `anvil-managed`:
+   * hosted entitlements bound the environment's TTL and the account's
+   * live managed concurrency at the authoritative handler. BYO providers
+   * skip this path entirely — their limits are the user's own cloud's.
+   */
+  private async assertManagedProvisionAllowed(
+    auth: SpikeAuth,
+    manifest: ExecutionManifest,
+    now: number,
+  ): Promise<void> {
+    if (this.env.MANAGED_PROVISIONER === undefined) {
+      throw new RpcFailure('forbidden', {
+        reason: 'provider-unavailable',
+        provider: 'anvil-managed',
+      });
+    }
+    const access = await checkHostedAccess(this.ctx.storage, this.env, auth.accountId, now);
+    if (!access.allowed) {
+      throw new RpcFailure('forbidden', { reason: access.reason });
+    }
+    const caps = this.managedCaps(access.entitlement);
+    const ttlSeconds = manifest.inputs['ttlSeconds'];
+    if (typeof ttlSeconds !== 'number' || !Number.isFinite(ttlSeconds) || ttlSeconds < 60) {
+      throw new RpcFailure('malformed-request', { reason: 'manifest.inputs.ttlSeconds' });
+    }
+    if (ttlSeconds > caps.maxTtlSeconds) {
+      throw new RpcFailure('forbidden', {
+        reason: 'managed-ttl-exceeds-cap',
+        maxTtlSeconds: caps.maxTtlSeconds,
+        requestedTtlSeconds: ttlSeconds,
+      });
+    }
+    // Concurrency counts live managed environments AND managed provision
+    // jobs still in flight — a burst of creates cannot slip the window
+    // between job.create and the claimer writing the environment row.
+    const live = this.ctx.storage.sql
+      .exec<{ n: number }>(
+        `SELECT (
+           SELECT COUNT(*) FROM environments
+           WHERE account_id = ? AND provider = 'anvil-managed'
+             AND reaped_at IS NULL AND state NOT IN ('terminated', 'failed', 'expired')
+         ) + (
+           SELECT COUNT(*) FROM jobs
+           WHERE account_id = ? AND kind = 'provision-environment'
+             AND state IN ('queued', 'running')
+             AND json_extract(input_manifest, '$.inputs.provider') = 'anvil-managed'
+         ) AS n`,
+        auth.accountId,
+        auth.accountId,
+      )
+      .one().n;
+    if (live >= caps.maxConcurrent) {
+      throw new RpcFailure('forbidden', {
+        reason: 'managed-concurrency-cap',
+        maxConcurrent: caps.maxConcurrent,
+      });
+    }
+  }
+
+  /**
+   * Drive one pass of managed work: claim queued `anvil-managed` provision
+   * jobs (internal attempt → consume bootstrap → provisioner call → record
+   * + outcome), and enact provider-side teardown for managed environments
+   * holding reap intent. Called after job.create (latency) and from the
+   * sweep (durability) — every step is idempotent.
+   */
+  private async runManagedWork(): Promise<void> {
+    const provisioner = this.env.MANAGED_PROVISIONER;
+    if (provisioner === undefined) return;
+    const now = Date.now();
+    // Phase 1 (commit): take queued managed provision jobs into internal
+    // attempts and consume their bootstrap payloads.
+    const claimed = this.commit((): {
+      jobId: string;
+      attemptId: string;
+      fence: number;
+      environmentId: string;
+      ttlSeconds: number;
+      payload: string | null;
+    }[] => {
+      const jobs = this.ctx.storage.sql
+        .exec<JobRow>(
+          `SELECT * FROM jobs
+           WHERE kind = 'provision-environment' AND state = 'queued'
+             AND queue_deadline > ?
+             AND json_extract(input_manifest, '$.inputs.provider') = 'anvil-managed'
+           ORDER BY created_at ASC LIMIT ?`,
+          now,
+          MANAGED_PROVISION_BATCH,
+        )
+        .toArray();
+      const out: {
+        jobId: string;
+        attemptId: string;
+        fence: number;
+        environmentId: string;
+        ttlSeconds: number;
+        payload: string | null;
+      }[] = [];
+      for (const job of jobs) {
+        const manifest = JSON.parse(job.input_manifest) as ExecutionManifest;
+        const environmentId = manifest.inputs['environmentId'];
+        const ttlSeconds = manifest.inputs['ttlSeconds'];
+        if (
+          typeof environmentId !== 'string' ||
+          typeof ttlSeconds !== 'number' ||
+          !Number.isFinite(ttlSeconds)
+        ) {
+          this.setJobState(job, 'failed', now, { stateReason: 'malformed-inputs' });
+          continue;
+        }
+        const fence = job.next_fence;
+        const attemptId = crypto.randomUUID();
+        this.ctx.storage.sql.exec(
+          `INSERT INTO attempts (
+             attempt_id, job_id, worker_enrollment_id, worker_incarnation, fence, state,
+             lease_expires_at, outcome, result, error, late_result, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, 'claimed', ?, NULL, NULL, NULL, NULL, ?, ?)`,
+          attemptId,
+          job.job_id,
+          MANAGED_PROVISIONER_ENROLLMENT,
+          MANAGED_PROVISIONER_INCARNATION,
+          fence,
+          now + MANAGED_PROVISION_BUDGET_MS,
+          now,
+          now,
+        );
+        this.journalDurableEvent({
+          jobId: job.job_id,
+          attemptId,
+          generation: fence,
+          kind: 'attempt.created',
+          payload: {
+            fence,
+            workerEnrollmentId: MANAGED_PROVISIONER_ENROLLMENT,
+            workerIncarnation: MANAGED_PROVISIONER_INCARNATION,
+            leaseExpiresAt: new Date(now + MANAGED_PROVISION_BUDGET_MS).toISOString(),
+            internal: 'managed-provisioner',
+          },
+        });
+        this.setJobState(job, 'running', now, {
+          activeAttemptId: attemptId,
+          nextFence: fence + 1,
+        });
+        // Consume-once: the payload leaves the table when the attempt is
+        // born. A job with no staged payload fails honestly — the source
+        // skipped environment.bootstrap (or it expired unconsumed).
+        const staged = this.ctx.storage.sql
+          .exec<{ payload: string }>(
+            'DELETE FROM environment_bootstrap WHERE environment_id = ? RETURNING payload',
+            environmentId,
+          )
+          .toArray()[0];
+        out.push({
+          jobId: job.job_id,
+          attemptId,
+          fence,
+          environmentId,
+          ttlSeconds,
+          payload: staged?.payload ?? null,
+        });
+      }
+      return out;
+    });
+    // Phase 2 (async): the provisioner call per claimed job.
+    for (const item of claimed) {
+      const attempt = this.readAttempt(item.attemptId);
+      const job = this.readJob(item.jobId);
+      if (attempt === null || job === null) continue;
+      const finish = (
+        ok: boolean,
+        result: Record<string, unknown> | null,
+        error: string | null,
+      ): void => {
+        this.commit((): void => {
+          this.ctx.storage.sql.exec(
+            'UPDATE attempts SET outcome = ?, result = ?, error = ?, updated_at = ? WHERE attempt_id = ?',
+            ok ? 'completed' : 'failed',
+            result === null ? null : JSON.stringify(result),
+            error,
+            now,
+            item.attemptId,
+          );
+          const freshAttempt = this.readAttemptRequired(item.attemptId);
+          const freshJob = this.readJobRequired(item.jobId);
+          this.setAttemptState(freshAttempt, ok ? 'completed' : 'failed', Date.now());
+          this.setJobState(freshJob, ok ? 'completed' : 'failed', Date.now(), {
+            stateReason: ok ? null : 'provision-failed',
+            activeAttemptId: null,
+          });
+        });
+      };
+      if (item.payload === null) {
+        finish(false, null, 'bootstrap-payload-missing');
+        continue;
+      }
+      try {
+        const response = await provisioner.fetch('https://provisioner.internal/v1/environments', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            ...(typeof this.env.MANAGED_PROVISIONER_TOKEN === 'string'
+              ? { authorization: `Bearer ${this.env.MANAGED_PROVISIONER_TOKEN}` }
+              : {}),
+          },
+          body: JSON.stringify({
+            environmentId: item.environmentId,
+            ttlSeconds: item.ttlSeconds,
+            bootstrap: {
+              kind: 'anvil.mesh-environment',
+              schemaVersion: '0.1',
+              environmentId: item.environmentId,
+              provider: 'anvil-managed',
+              backendUrl: this.env.ANVIL_PUBLIC_API_URL ?? '',
+              pairing: item.payload,
+              ttlSeconds: item.ttlSeconds,
+            },
+          }),
+        });
+        const body = (await response.json().catch(() => null)) as {
+          providerRef?: string;
+          error?: string;
+        } | null;
+        if (!response.ok || typeof body?.providerRef !== 'string' || body.providerRef.length === 0) {
+          finish(
+            false,
+            null,
+            `provisioner-${response.status}${typeof body?.error === 'string' ? `:${body.error}` : ''}`,
+          );
+          continue;
+        }
+        this.commit((): void => {
+          this.upsertEnvironmentRecord({
+            environmentId: item.environmentId,
+            accountId: job.account_id,
+            provider: 'anvil-managed',
+            state: 'provisioning',
+            handle: { providerRef: body.providerRef },
+            jobId: item.jobId,
+            createdBy: MANAGED_PROVISIONER_ENROLLMENT,
+            expiresAt: Date.now() + item.ttlSeconds * 1000,
+            now: Date.now(),
+          });
+          this.journalDurableEvent({
+            jobId: item.jobId,
+            attemptId: item.attemptId,
+            generation: item.fence,
+            kind: 'environment.provisioning',
+            payload: {
+              environmentId: item.environmentId,
+              provider: 'anvil-managed',
+              providerRef: body.providerRef,
+            },
+          });
+        });
+        finish(true, {
+          environmentId: item.environmentId,
+          provider: 'anvil-managed',
+          providerRef: body.providerRef,
+        }, null);
+      } catch (error) {
+        finish(false, null, error instanceof Error ? error.message : String(error));
+      }
+    }
+    // Phase 3: enact provider teardown for managed envs with reap intent.
+    const reaping = this.ctx.storage.sql
+      .exec<EnvironmentRow>(
+        `SELECT * FROM environments
+         WHERE provider = 'anvil-managed' AND reaped_at IS NULL
+           AND state IN ('reap-requested', 'expired', 'terminating')
+         LIMIT ?`,
+        MANAGED_REAP_BATCH,
+      )
+      .toArray();
+    for (const env of reaping) {
+      const handle = env.handle === null ? null : (JSON.parse(env.handle) as Record<string, unknown>);
+      const providerRef = typeof handle?.['providerRef'] === 'string' ? handle['providerRef'] : null;
+      if (providerRef === null) {
+        // No provider handle ever materialized — the record is the whole
+        // environment; nothing to terminate downstream.
+        this.commit((): void => {
+          this.markEnvironmentReaped(env.environment_id, Date.now());
+        });
+        continue;
+      }
+      try {
+        const response = await provisioner.fetch(
+          `https://provisioner.internal/v1/environments/${encodeURIComponent(providerRef)}`,
+          {
+            method: 'DELETE',
+            headers:
+              typeof this.env.MANAGED_PROVISIONER_TOKEN === 'string'
+                ? { authorization: `Bearer ${this.env.MANAGED_PROVISIONER_TOKEN}` }
+                : {},
+          },
+        );
+        if (!response.ok && response.status !== 404) continue; // next sweep retries
+        this.commit((): void => {
+          this.markEnvironmentReaped(env.environment_id, Date.now());
+        });
+      } catch {
+        // Provisioner unreachable — the sweep retries; TTL remains the bound.
+      }
+    }
+  }
+
+  /**
+   * Insert-or-update an environment row from the internal claimer — the
+   * same shape `environment.report` writes, minus the caller auth (the
+   * claimer IS the account object acting on Anvil-operated capacity).
+   */
+  private upsertEnvironmentRecord(input: {
+    environmentId: string;
+    accountId: string;
+    provider: string;
+    state: string;
+    handle: Record<string, unknown>;
+    jobId: string;
+    createdBy: string;
+    expiresAt: number;
+    now: number;
+  }): void {
+    this.ctx.storage.sql.exec(
+      `INSERT INTO environments
+         (environment_id, account_id, provider, state, handle, enrollment_id, job_id,
+          created_by, expires_at, reap_requested_at, reaped_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, NULL, ?, ?)
+       ON CONFLICT(environment_id) DO UPDATE SET
+         provider = excluded.provider,
+         state = excluded.state,
+         handle = excluded.handle,
+         job_id = COALESCE(environments.job_id, excluded.job_id),
+         expires_at = excluded.expires_at,
+         updated_at = excluded.updated_at`,
+      input.environmentId,
+      input.accountId,
+      input.provider,
+      input.state,
+      JSON.stringify(input.handle),
+      input.jobId,
+      input.createdBy,
+      input.expiresAt,
+      input.now,
+      input.now,
+    );
+  }
+
+  /** Managed reaper: provider teardown accepted — close the record. */
+  private markEnvironmentReaped(environmentId: string, now: number): void {
+    this.ctx.storage.sql.exec(
+      `UPDATE environments SET state = 'terminated', reaped_at = ?, updated_at = ?
+       WHERE environment_id = ? AND reaped_at IS NULL`,
+      now,
+      now,
+      environmentId,
+    );
+    const row = this.readEnvironment(environmentId);
+    if (row !== null && row.job_id !== null) {
+      this.journalDurableEvent({
+        jobId: row.job_id,
+        attemptId: '',
+        generation: 0,
+        kind: 'environment.terminated',
+        payload: { environmentId, provider: row.provider, internal: 'managed-provisioner' },
+      });
+    }
+  }
+
   // ---- ENV-06 credential grants ----------------------------------------------
   //
   // Grants are sealed envelopes bound to (job, attempt, fence, target
@@ -6479,6 +6948,12 @@ export class AccountCoordinator extends DurableObject<Env> {
       // rows, so purge them on the sweep cadence. Undelivered grants die
       // with their expiry too; the plaintext was never visible here anyway.
       this.ctx.storage.sql.exec('DELETE FROM credential_grants WHERE expires_at <= ?', now);
+      // ENV-09: staged bootstrap payloads the managed claimer never
+      // consumed expire — the pairing inside is already dead by TTL.
+      this.ctx.storage.sql.exec(
+        'DELETE FROM environment_bootstrap WHERE expires_at <= ?',
+        now,
+      );
       // MESH-03: the durable journal keeps the same 90-day horizon as the
       // change log; job_event_meta rows persist so cursors never rewind.
       const staleEvents = this.ctx.storage.sql
@@ -6543,6 +7018,10 @@ export class AccountCoordinator extends DurableObject<Env> {
       });
       reconciledArtifacts += 1;
     }
+    // ENV-09: managed provisions/reaps run post-commit alongside artifact
+    // reconciliation — same pattern (collect in-commit, fetch post-commit,
+    // commit outcomes). No-op without the provisioner binding.
+    await this.runManagedWork().catch(() => undefined);
     const continued =
       deletedChanges === SWEEP_BATCH_ROWS ||
       deletedReceipts === SWEEP_BATCH_ROWS ||
@@ -8429,6 +8908,26 @@ function parseEnvironmentIdParams(params: unknown): { environmentId: string } {
     throw new RpcFailure('malformed-request', { reason: 'environmentId' });
   }
   return { environmentId: params['environmentId'] };
+}
+
+function parseEnvironmentBootstrapParams(params: unknown): {
+  environmentId: string;
+  payload: string;
+} {
+  if (!isRecord(params) || !isBoundedId(params['environmentId'])) {
+    throw new RpcFailure('malformed-request', { reason: 'environmentId' });
+  }
+  const payload = params['payload'];
+  if (typeof payload !== 'string' || payload.length === 0) {
+    throw new RpcFailure('malformed-request', { reason: 'payload' });
+  }
+  if (utf8ByteLength(payload) > BOOTSTRAP_PAYLOAD_MAX_BYTES) {
+    throw new RpcFailure('payload-too-large', {
+      limitBytes: BOOTSTRAP_PAYLOAD_MAX_BYTES,
+      field: 'payload',
+    });
+  }
+  return { environmentId: params['environmentId'], payload };
 }
 
 function parseEnvironmentListParams(params: unknown): { includeTerminal?: boolean } {

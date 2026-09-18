@@ -1,0 +1,40 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "anvil-mesh-provisioner",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "Sandbox",
+        "class_name": "Sandbox",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["Sandbox"],
+    },
+  ],
+  "containers": [
+    {
+      "class_name": "Sandbox",
+      // Build context = ../images/anvil-worker — run its prepare.sh first.
+      "image": "../images/anvil-worker/Dockerfile.cloudflare",
+      "max_instances": 20,
+    },
+  ],
+  "vars": {
+    // BYO deployments (reachable over the internet): set PROVISIONER_TOKEN as
+    // a secret (`wrangler secret put PROVISIONER_TOKEN`) and store the same
+    // token in the app's provider connection.
+    //
+    // Managed deployments (bound to the backend via a service binding): keep
+    // PROVISIONER_TOKEN set to the same value as the backend's
+    // MANAGED_PROVISIONER_TOKEN secret — the binding authenticates with a
+    // bearer exactly like the BYO path. ALLOW_UNAUTHENTICATED=true exists
+    // only for local dev; never deploy it publicly reachable.
+    "ALLOW_UNAUTHENTICATED": "false",
+  },
+}

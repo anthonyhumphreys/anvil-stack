@@ -218,6 +218,27 @@ export interface EnvironmentReapResult {
   environment: CloudEnvironment;
 }
 
+/**
+ * `environment.bootstrap` (user role): stage the environment's bootstrap
+ * payload for a backend-side provisioner — currently only `anvil-managed`,
+ * where no user device ever claims the provision job. The payload is the
+ * full `anvil-pair-…` string the source minted (enrollment code + pairing
+ * secret; the sealed keyring-pairing entity travels the normal sync path).
+ * Rows are consume-once: the managed claimer deletes what it reads, they
+ * are never journaled, and unconsumed payloads expire within the hour.
+ * BYO provisioners never use this channel — they mint pairings on the
+ * claiming device, so the payload never transits backend storage.
+ */
+export interface EnvironmentBootstrapParams {
+  environmentId: string;
+  /** The `anvil-pair-…` payload. Bounded; see BOOTSTRAP_PAYLOAD_MAX_BYTES. */
+  payload: string;
+}
+
+export interface EnvironmentBootstrapResult {
+  ok: true;
+}
+
 // ---- App-side provider contract --------------------------------------------
 // Implemented in the device process that holds provider credentials
 // (desktop or daemon). The backend never sees these objects.

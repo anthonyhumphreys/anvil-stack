@@ -36,6 +36,16 @@ import type {
 import type { HandoffGetResult, HandoffRecord } from '../../../cloud/contract/handoff.js';
 import type { HostedEntitlement } from '../../../cloud/contract/entitlements.js';
 import type {
+  EnvironmentListResult,
+  EnvironmentReapResult,
+} from '../../../cloud/contract/environment.js';
+import {
+  requestEnvironment,
+  type ProvisionerScope,
+  type RequestEnvironmentInput,
+  type RequestEnvironmentResult,
+} from './cloud-environment.service.js';
+import type {
   DeviceAdvertiseParams,
   DeviceAdvertiseResult,
   DevicePresenceResult,
@@ -763,6 +773,63 @@ export async function issueEnrollmentCode(options?: {
     }
   }
   return { ...result, pairingPayload };
+}
+
+/**
+ * ENV-01/ENV-09: request a cloud environment on the signed-in account —
+ * `provision-environment` job with `kind:'auto'` placement. For
+ * `anvil-managed` the ephemeral pairing is minted here and staged via
+ * `environment.bootstrap` so the backend's internal claimer can boot the
+ * environment; BYO jobs wait for a provisioner-capable device to claim
+ * them. Daemon `env` and future UI callers share this path.
+ */
+export async function requestCloudEnvironment(
+  input: RequestEnvironmentInput,
+): Promise<RequestEnvironmentResult> {
+  const backend = getActiveBackend() ?? pinnedBackend();
+  const token = requireAuth().getAccessToken();
+  const scope = currentScope();
+  const fields = requireAuth().getSessionScopeFields();
+  if (backend === null || token === null || scope === null || fields === null) {
+    throw new Error('Sign in before requesting an environment.');
+  }
+  const provisionerScope: ProvisionerScope = {
+    backendId: scope.backendId,
+    accountId: scope.accountId,
+    enrollmentId: fields.enrollmentId,
+    apiUrl: apiUrlFor(backend),
+    accessToken: token,
+  };
+  return requestEnvironment(provisionerScope, input, {
+    mintEnvironmentPairing: async (options) => {
+      const issued = await issueEnrollmentCode({
+        enrollmentClass: 'ephemeral',
+        provider: options.provider,
+        sessionTtlSeconds: options.ttlSeconds,
+        displayName: options.displayName,
+        environmentId: options.environmentId,
+      });
+      return issued.pairingPayload;
+    },
+  });
+}
+
+/** Account-wide environment records (terminal rows only with includeTerminal). */
+export async function listCloudEnvironments(
+  includeTerminal = false,
+): Promise<EnvironmentListResult> {
+  return accountRpc<EnvironmentListResult>('environment.list', { includeTerminal });
+}
+
+/**
+ * Durable teardown intent for any environment on the account — managed
+ * envs are deleted by the backend's provisioner, BYO envs by the claiming
+ * device's reap sweep. Provider-neutral by design.
+ */
+export async function reapCloudEnvironment(
+  environmentId: string,
+): Promise<EnvironmentReapResult> {
+  return accountRpc<EnvironmentReapResult>('environment.reap', { environmentId });
 }
 
 /**
