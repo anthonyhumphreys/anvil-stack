@@ -29,7 +29,7 @@ export default async function DocsIndexPage() {
         <section className="border-b py-14 sm:py-20">
           <div className="mx-auto grid max-w-7xl gap-10 px-4 sm:px-6 lg:grid-cols-[minmax(0,0.9fr)_minmax(22rem,0.7fr)] lg:items-end lg:px-8">
             <div>
-              <h1 className="max-w-3xl text-balance text-5xl font-semibold leading-[1.02] tracking-[-0.035em] sm:text-6xl">Find the right surface. Follow the work.</h1>
+              <h1 className="max-w-3xl text-balance text-5xl font-semibold leading-[1.02] tracking-[-0.035em] sm:text-6xl">Docs that assume nothing.</h1>
               <p className="mt-5 max-w-[65ch] text-pretty text-lg leading-8 text-muted-foreground">Choose a product when you know where you are working, or a path when you know what you need to do.</p>
             </div>
             <DocsSearch docs={toSearchItems(docs)} className="min-h-14 text-base" />

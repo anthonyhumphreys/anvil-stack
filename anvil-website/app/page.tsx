@@ -197,8 +197,8 @@ function DesktopSection() {
     <section id="products" className="border-b py-16 lg:py-20">
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         <SectionHeading
-          title="Anvil Desktop is the product"
-          description="Everything else on this site is optional. This is the app you install: a local Electron workspace where agent runs, reviews, terminals, and evidence stay next to the repos they belong to."
+          title="Agent work on your repos, in one window."
+          description="Anvil Desktop is a local Electron app — and the only part of this site you actually need. Everything else is optional."
         />
         <div className="mt-10">
           {desktop ? <ProductFeature product={desktop} /> : null}
@@ -391,7 +391,7 @@ function ProofSection() {
     <section className="border-b bg-muted/20 py-16 lg:py-20">
       <div className="mx-auto grid max-w-7xl gap-10 px-4 sm:px-6 lg:grid-cols-[0.72fr_1.28fr] lg:px-8">
         <SectionHeading
-          title="The useful promise is narrow"
+          title="Nothing here asks for trust."
           description="Anvil does not claim that agents, heuristics, or abstractions remove engineering judgement. It gives reviewers better artefacts to judge."
         />
         <div className="grid gap-x-10 sm:grid-cols-2">
@@ -460,7 +460,7 @@ function ClosingSection() {
       <div className="mx-auto grid max-w-7xl items-center gap-10 px-4 sm:px-6 lg:grid-cols-[1fr_1.1fr] lg:px-8">
         <div>
           <h2 className="max-w-xl text-3xl font-semibold tracking-[-0.02em] text-foreground sm:text-4xl">
-            Run it, read it, or run it yourself.
+            Use ours, read ours, or run yours.
           </h2>
           <p className="mt-4 max-w-lg text-base leading-7 text-muted-foreground">
             The whole stack is open source and the backend contract is frozen. Use the
