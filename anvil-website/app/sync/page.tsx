@@ -76,7 +76,7 @@ export default function SyncPage() {
           <div className="mx-auto grid max-w-7xl gap-12 px-4 py-14 sm:px-6 lg:grid-cols-[0.85fr_1.15fr] lg:items-center lg:px-8 lg:py-24">
             <div className="flex flex-col gap-7">
               <h1 className="max-w-3xl text-4xl font-semibold leading-[1.02] tracking-[-0.03em] sm:text-5xl lg:text-6xl">
-                Sealed here. Readable only where you pair it.
+                Sealed. Delivered. Executed.
               </h1>
               <p className="max-w-2xl text-lg leading-8 text-muted-foreground">
                 Sync &amp; Mesh replicates your Anvil state across your devices as

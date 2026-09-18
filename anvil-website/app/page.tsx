@@ -56,7 +56,7 @@ function HeroSection() {
         <div className="flex flex-col gap-8">
           <div className="flex flex-col gap-5">
             <h1 className="max-w-4xl text-5xl font-semibold leading-[0.96] tracking-[-0.03em] text-foreground sm:text-6xl lg:text-[4.4rem]">
-              Evidence, everywhere you work.
+              Your machines do the work.
             </h1>
             <p className="max-w-2xl text-lg leading-8 text-muted-foreground">
               Anvil Desktop is an open-source app for agent workflows on your own
