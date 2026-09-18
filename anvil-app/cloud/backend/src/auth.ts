@@ -10,17 +10,25 @@
 // and the Durable Object never accept a client-selected tenant/account field
 // as authority for routing.
 
-import { base64UrlEncode } from '../../contract/auth';
+import { base64UrlEncode, type EnrollmentClass } from '../../contract/auth';
 
 export interface SpikeAuth {
   accountId: string;
   enrollmentId: string;
+  /** ENV-01: absent means 'device' (spike auth and pre-class backends). */
+  enrollmentClass?: EnrollmentClass;
+  /** ENV-01: environment record the session is bound to, when any. */
+  environmentId?: string;
 }
 
 /** Verified device identity the Worker attaches to internal DO requests. */
 export interface VerifiedAuth {
   accountId: string;
   enrollmentId: string;
+  /** ENV-01: absent means 'device' (spike auth and pre-class backends). */
+  enrollmentClass?: EnrollmentClass;
+  /** ENV-01: environment record the session is bound to, when any. */
+  environmentId?: string;
 }
 
 const ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -86,5 +94,21 @@ export function parseVerifiedAuth(request: Request): VerifiedAuth | null {
   ) {
     return null;
   }
-  return { accountId, enrollmentId };
+  // ENV-01: the worker forwards the session's enrollment class. Anything
+  // outside the two contract values fails closed to 'device' privileges.
+  const rawClass = request.headers.get('x-anvil-enrollment-class');
+  const enrollmentClass: EnrollmentClass = rawClass === 'ephemeral' ? 'ephemeral' : 'device';
+  // ENV-01: the environment binding is a verified session fact too — the
+  // account object pins it on first sight like the class.
+  const rawEnvironmentId = request.headers.get('x-anvil-environment-id');
+  const environmentId =
+    typeof rawEnvironmentId === 'string' && ID_PATTERN.test(rawEnvironmentId)
+      ? rawEnvironmentId
+      : undefined;
+  return {
+    accountId,
+    enrollmentId,
+    enrollmentClass,
+    ...(environmentId === undefined ? {} : { environmentId }),
+  };
 }

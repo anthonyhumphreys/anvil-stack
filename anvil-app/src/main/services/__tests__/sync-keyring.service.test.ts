@@ -50,11 +50,13 @@ import {
   rotateAccountKey,
   sealAccountBytes,
   sealBytesWithKey,
+  sealCredentialGrant,
   sealEntityPayload,
   sealScopedJson,
   UnsealError,
   unsealAccountBytes,
   unsealBytesWithKey,
+  unsealCredentialGrant,
   unsealEntityPayload,
   unsealScopedJson,
   wrapAccountKeyFor,
@@ -447,6 +449,48 @@ describe('scoped JSON + byte sealing', () => {
       unsealBytesWithKey('anvil/share-seal/v1|text/markdown', Buffer.alloc(32, 9), blob),
     ).toBeNull();
     expect(unsealBytesWithKey('anvil/share-seal/v1|text/plain', key, blob)).toBeNull();
+  });
+});
+
+describe('credential grants (ENV-06)', () => {
+  function sealGrant(overrides: Record<string, unknown> = {}) {
+    return sealCredentialGrant({
+      recipientPubB64: ensureDeviceIdentity(SCOPE, ENROLLMENT).pub,
+      jobId: 'job_1',
+      attemptId: 'att_1',
+      fence: 3,
+      targetEnrollmentId: ENROLLMENT,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      kind: 'credential-name',
+      env: { OPENAI_API_KEY: 'sk-test', GITHUB_TOKEN: 'ghp_t' },
+      ...overrides,
+    });
+  }
+
+  it('round-trips a sealed grant to the recipient identity', () => {
+    activateEnrollment();
+    const grant = sealGrant();
+    expect(grant.enc).toBe('x25519-aes-256-gcm');
+    const inner = unsealCredentialGrant(SCOPE, ENROLLMENT, grant);
+    expect(inner?.kind).toBe('credential-name');
+    expect(inner?.env).toEqual({ OPENAI_API_KEY: 'sk-test', GITHUB_TOKEN: 'ghp_t' });
+  });
+
+  it('rejects the grant when a plaintext binding field is tampered', () => {
+    activateEnrollment();
+    const grant = sealGrant();
+    // The fence rides the AAD — changing it breaks the seal's authentication.
+    expect(unsealCredentialGrant(SCOPE, ENROLLMENT, { ...grant, fence: 4 })).toBeNull();
+    expect(
+      unsealCredentialGrant(SCOPE, ENROLLMENT, { ...grant, jobId: 'job_other' }),
+    ).toBeNull();
+  });
+
+  it('returns null for a device identity that cannot open the seal', () => {
+    activateEnrollment();
+    const grant = sealGrant();
+    // A different enrollment has no matching private key.
+    expect(unsealCredentialGrant(SCOPE, 'enr-stranger', grant)).toBeNull();
   });
 });
 

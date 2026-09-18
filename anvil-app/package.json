@@ -47,6 +47,7 @@
   "dependencies": {
     "@anvilstack/cloud-cli": "^0.1.1",
     "@anvilstack/registry-cli": "^0.1.1",
+    "@aws-sdk/client-lambda-microvms": "3.1077.0",
     "@sentry/electron": "^7.17.0",
     "abort-controller": "^3.0.0",
     "ansi-regex": "^6.2.2",

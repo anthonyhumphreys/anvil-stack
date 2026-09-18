@@ -38,6 +38,13 @@ Anvil's hosted sync layer replaces the "master desktop" model with an **account-
 - BILL-05: desktop entitlement status + resumable pause.
 - IAC-01/02: deploy + rehearsal harness; live rehearsal passed on a clean account (evidence was in `iac-02-rehearsal.md`, since removed as transitive — the runbooks carry the durable procedures).
 - `device.list`/`rename`/`revoke`, `data.export`/`import`, `account.delete`/`deletionStatus` ops; hosted device + account-deletion service routes.
+
+### Cloud agent environments (foundations landed)
+
+- ENV-01 contract: provider-neutral environment lifecycle (`aws-lambda-microvm`, `cloudflare-sandbox`, `vercel-sandbox`, `anvil-managed`), `provision-environment` job kind, `{ kind:'environment' }` job targets that resolve on env enrollment, per-attempt sealed credential grants (`credential.deliver`/`credential.pull`).
+- Ephemeral enrollments: class-bound codes with `environment_id` binding, restricted op allowlist pinned on first sight, own session quota + bounded lifetime.
+- Provisioner plumbing: provider connections (encrypted at rest), AWS Lambda MicroVM provider, `provision:<provider>` capability advertisement, `provision-environment` executor, `anvil-daemon enroll --pair` + `provider` commands, orphan/TTL reap sweep, per-attempt grant pull → env-var injection.
+- Remaining: Cloudflare/Vercel provider adapters, `anvil-managed` hosted provisioner + entitlement caps (ENV-09), anvil-worker image build. Spec: `cloud-environments.md`.
 - Runbooks: deploy, rollback, reconciliation, webhook failures, entitlement incidents, account deletion, metrics, launch checklist.
 
 ### Cloud-connected companions — MOB-01 (landed)

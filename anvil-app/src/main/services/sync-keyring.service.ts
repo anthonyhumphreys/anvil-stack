@@ -29,12 +29,15 @@ import {
   CRYPTO_ENTITY_KEYRING_PAIRING,
   CRYPTO_ENTITY_KEYRING_WRAP,
   SEALED_ENTITY_ALG,
+  credentialGrantAssociatedData,
   encodePairingPayload,
   entitySealAssociatedData,
   isSealedEntityPayload,
   keyringWrapAssociatedData,
   pairingSealAssociatedData,
   sealedEnvelopeIssue,
+  type CredentialGrantInner,
+  type CredentialGrantPayload,
   type DeviceIdentityPayload,
   type KeyringWrapPayload,
   type PairingKeyringInner,
@@ -599,7 +602,7 @@ function wrapKeyMaterial(
 function unwrapKeyMaterial(
   scope: SyncScope,
   enrollmentId: string,
-  wrap: KeyringWrapPayload,
+  wrap: { ephPub: string; nonce: string; ct: string },
   aad: string,
 ): Buffer | null {
   const privRaw = ownDevicePrivateKey(scope, enrollmentId);
@@ -683,6 +686,84 @@ export function wrapAccountKeyFor(
     schemaVersion: 1,
   });
   markDelivery(scope, targetEnrollmentId, keyVersion);
+}
+
+// ---- Per-attempt credential grants (ENV-06) --------------------------------------
+//
+// Grants seal provider credentials to one environment's X25519 device
+// identity, bound to exactly one (job, attempt, fence, expiry). The source
+// device seals; the executing worker unseals with its own private key.
+// The backend stores the envelope but can never open it.
+
+/**
+ * Seals grant material for `credential.deliver`. The binding fields ride
+ * plaintext on the envelope so the backend can fence; `env` is the only
+ * secret and lives exclusively in `ct`.
+ */
+export function sealCredentialGrant(input: {
+  recipientPubB64: string;
+  jobId: string;
+  attemptId: string;
+  fence: number;
+  targetEnrollmentId: string;
+  expiresAt: string;
+  kind: string;
+  env: Record<string, string>;
+}): CredentialGrantPayload {
+  const aad = credentialGrantAssociatedData({
+    jobId: input.jobId,
+    attemptId: input.attemptId,
+    fence: input.fence,
+    targetEnrollmentId: input.targetEnrollmentId,
+    expiresAt: input.expiresAt,
+  });
+  const inner: CredentialGrantInner = { v: 1, kind: input.kind, env: input.env };
+  const sealed = wrapKeyMaterial(
+    Buffer.from(input.recipientPubB64, 'base64'),
+    Buffer.from(JSON.stringify(inner), 'utf8'),
+    aad,
+  );
+  return {
+    v: 1,
+    enc: 'x25519-aes-256-gcm',
+    jobId: input.jobId,
+    attemptId: input.attemptId,
+    fence: input.fence,
+    targetEnrollmentId: input.targetEnrollmentId,
+    expiresAt: input.expiresAt,
+    ephPub: sealed.ephPub,
+    nonce: sealed.nonce,
+    ct: sealed.ct,
+  };
+}
+
+/**
+ * Opens a pulled grant for `credential.pull`. Returns null when the device
+ * key is missing or the seal fails — a grant that cannot authenticate is
+ * skipped, never fed to the attempt.
+ */
+export function unsealCredentialGrant(
+  scope: SyncScope,
+  enrollmentId: string,
+  grant: CredentialGrantPayload,
+): CredentialGrantInner | null {
+  if (grant.v !== 1 || grant.enc !== 'x25519-aes-256-gcm') return null;
+  const aad = credentialGrantAssociatedData({
+    jobId: grant.jobId,
+    attemptId: grant.attemptId,
+    fence: grant.fence,
+    targetEnrollmentId: grant.targetEnrollmentId,
+    expiresAt: grant.expiresAt,
+  });
+  const plaintext = unwrapKeyMaterial(scope, enrollmentId, grant, aad);
+  if (plaintext === null) return null;
+  try {
+    const inner = JSON.parse(plaintext.toString('utf8')) as CredentialGrantInner;
+    if (inner.v !== 1 || typeof inner.env !== 'object' || inner.env === null) return null;
+    return inner;
+  } catch {
+    return null;
+  }
 }
 
 // ---- Pairing -------------------------------------------------------------------

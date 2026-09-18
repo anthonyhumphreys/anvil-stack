@@ -290,6 +290,16 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
       ...(runtimeUserDataDir === null ? {} : { userDataDir: runtimeUserDataDir }),
       sendFrame: (frame) => liveSocket?.send(JSON.stringify(frame)),
       isLive: () => liveState === 'live' && liveSocket !== null,
+      mintEnvironmentPairing: async (options) => {
+        const issued = await issueEnrollmentCode({
+          enrollmentClass: 'ephemeral',
+          provider: options.provider,
+          sessionTtlSeconds: options.ttlSeconds,
+          displayName: options.displayName,
+          environmentId: options.environmentId,
+        });
+        return issued.pairingPayload;
+      },
     };
   });
   // MESH-03: the observer shares the same session context and live socket.
@@ -433,6 +443,14 @@ function isSyncEnabled(): boolean {
     auth?.getPublicSnapshot().state === 'signed-in' &&
     currentScope() !== null
   );
+}
+
+/**
+ * The active sync scope for callers outside the runtime (daemon provider
+ * commands, IPC). Null when no valid session/backend pair exists.
+ */
+export function activeSyncScope(): SyncScope | null {
+  return currentScope();
 }
 
 function payloadLabel(json: string | null): string | null {
@@ -694,9 +712,17 @@ export async function enrollWithEnrollmentCode(code: string): Promise<SyncAuthPu
  * new device types or scans: it embeds the enrollment code plus the
  * out-of-band keyring secret and is shown once.
  */
-export async function issueEnrollmentCode(): Promise<
-  EnrollmentCodeIssueResult & { pairingPayload: string | null }
-> {
+export async function issueEnrollmentCode(options?: {
+  /** ENV-01: 'ephemeral' mints a class-bound code for a cloud environment. */
+  enrollmentClass?: 'device' | 'ephemeral';
+  /** Provider id recorded on the enrollment (e.g. 'aws-lambda-microvm'). */
+  provider?: string;
+  /** Ephemeral session lifetime; the backend clamps to its bounds. */
+  sessionTtlSeconds?: number;
+  displayName?: string;
+  /** ENV-01: environment record the redeemed enrollment is bound to. */
+  environmentId?: string;
+}): Promise<EnrollmentCodeIssueResult & { pairingPayload: string | null }> {
   const backend = getActiveBackend() ?? pinnedBackend();
   if (!backend) {
     throw new Error('Pin a backend first.');
@@ -708,7 +734,19 @@ export async function issueEnrollmentCode(): Promise<
   const result = await postAuthRoute<EnrollmentCodeIssueResult>(
     { apiUrl: apiUrlFor(backend) },
     'enrollment-codes',
-    { displayName: hostname() || 'Anvil device' },
+    {
+      displayName: (options?.displayName ?? hostname()) || 'Anvil device',
+      ...(options?.enrollmentClass === undefined
+        ? {}
+        : { enrollmentClass: options.enrollmentClass }),
+      ...(options?.provider === undefined ? {} : { provider: options.provider }),
+      ...(options?.sessionTtlSeconds === undefined
+        ? {}
+        : { sessionTtlSeconds: options.sessionTtlSeconds }),
+      ...(options?.environmentId === undefined
+        ? {}
+        : { environmentId: options.environmentId }),
+    },
     { accessToken: token, fetchFn: fetchOverride },
   );
   // Seal the current ADK under a fresh pairing secret and queue it for the

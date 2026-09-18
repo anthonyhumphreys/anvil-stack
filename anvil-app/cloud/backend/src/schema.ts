@@ -10,7 +10,11 @@ CREATE TABLE IF NOT EXISTS enrollments (
   account_id TEXT NOT NULL,
   generation INTEGER NOT NULL DEFAULT 1,
   high_water INTEGER NOT NULL DEFAULT 0,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  -- ENV-01: 'device' | 'ephemeral', pinned on first sight (worker-verified).
+  enrollment_class TEXT NOT NULL DEFAULT 'device',
+  -- ENV-01: environment record this enrollment is bound to, when any.
+  environment_id TEXT
 );
 CREATE TABLE IF NOT EXISTS entities (
   entity_type TEXT NOT NULL,
@@ -299,6 +303,49 @@ CREATE TABLE IF NOT EXISTS presence_advertisements (
   protocol INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
+-- ENV-01 cloud environment records (contract environment.ts). Descriptive
+-- lifecycle + cleanup intent: handle is an opaque provider reference
+-- (never a credential), enrollment_id links the ephemeral worker once
+-- bootstrapped, and reap_requested_at is the durable intent any
+-- provisioner-capable device may complete when the creator is offline.
+CREATE TABLE IF NOT EXISTS environments (
+  environment_id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  state TEXT NOT NULL,
+  handle TEXT,
+  enrollment_id TEXT,
+  job_id TEXT,
+  created_by TEXT NOT NULL,
+  expires_at INTEGER,
+  reap_requested_at INTEGER,
+  reaped_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_environments_account ON environments (account_id, state);
+CREATE INDEX IF NOT EXISTS idx_environments_enrollment ON environments (enrollment_id);
+-- ENV-06 per-attempt credential grants: sealed envelopes bound to
+-- (job, attempt, fence, target). The backend stores but cannot open them —
+-- they are never journaled and never sync entities. Rows drop at expiry or
+-- attempt-terminal; envelope_sha dedupes identical re-deliveries.
+CREATE TABLE IF NOT EXISTS credential_grants (
+  grant_id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  attempt_id TEXT NOT NULL,
+  fence INTEGER NOT NULL,
+  target_enrollment_id TEXT NOT NULL,
+  envelope TEXT NOT NULL,
+  envelope_sha TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  delivered_at INTEGER,
+  created_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_credential_grants_dedupe
+  ON credential_grants (job_id, attempt_id, envelope_sha);
+CREATE INDEX IF NOT EXISTS idx_credential_grants_attempt
+  ON credential_grants (attempt_id, fence, expires_at);
 `;
 
 /** First-dataset epoch for a fresh account object. Fixed for determinism. */
@@ -325,10 +372,20 @@ CREATE TABLE IF NOT EXISTS device_sessions (
   prev_refresh_grace_until INTEGER,
   pending_rotated_session TEXT,
   revoked_at INTEGER,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  -- ENV-01: 'device' | 'ephemeral'. Ephemeral rows are cloud environments:
+  -- restricted ops, own quota, and bounded by enrollment_expires_at.
+  enrollment_class TEXT NOT NULL DEFAULT 'device',
+  provider TEXT,
+  created_by TEXT,
+  enrollment_expires_at INTEGER,
+  -- ENV-01: environment record this enrollment was minted for (ephemeral
+  -- codes only). Lets the env authorize its own enrolled report.
+  environment_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_access ON device_sessions (access_token_hash);
 CREATE INDEX IF NOT EXISTS idx_sessions_refresh ON device_sessions (refresh_token_hash);
+CREATE INDEX IF NOT EXISTS idx_sessions_class ON device_sessions (account_id, enrollment_class);
 CREATE TABLE IF NOT EXISTS enrollment_codes (
   code_hash TEXT PRIMARY KEY,
   account_id TEXT NOT NULL,
@@ -336,7 +393,14 @@ CREATE TABLE IF NOT EXISTS enrollment_codes (
   display_name TEXT,
   expires_at INTEGER NOT NULL,
   consumed_at INTEGER,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  -- ENV-01: class-bound codes. An 'ephemeral' code can only mint an
+  -- ephemeral session; session_ttl_ms bounds that session's lifetime.
+  enrollment_class TEXT NOT NULL DEFAULT 'device',
+  provider TEXT,
+  session_ttl_ms INTEGER,
+  -- ENV-01: environment record binding for ephemeral codes.
+  environment_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_codes_account ON enrollment_codes (account_id, consumed_at);
 -- Account deletion tombstones (spec §140/§560): the identity directory's

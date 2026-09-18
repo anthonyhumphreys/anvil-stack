@@ -12,6 +12,7 @@ import { initDatabase } from '../main/db/database.js';
 import { discover } from '../main/services/sync-backend-client.service.js';
 import { pinBackend } from '../main/services/sync-backend.service.js';
 import {
+  activeSyncScope,
   enrollWithEnrollmentCode,
   enableSync,
   getRuntimeStatus,
@@ -19,6 +20,12 @@ import {
   setMeshWorkerOptIn,
   signOutSync,
 } from '../main/services/sync-runtime.service.js';
+import {
+  addProviderConnection,
+  listProviderConnections,
+  removeProviderConnection,
+} from '../main/services/cloud-environment.service.js';
+import { isEnvironmentProviderId } from '../../cloud/contract/environment.js';
 import {
   listCompanionEnrollmentPolicies,
   removeCompanionEnrollmentPolicy,
@@ -63,16 +70,24 @@ function arg(flag: string): string | undefined {
 function usage(): never {
   console.log(`anvil-daemon — headless Anvil host
 
-  anvil-daemon enroll --api-url <url> --code <code> [--worker]
+  anvil-daemon enroll --api-url <url> (--code <code> | --pair <payload>) [--worker]
   anvil-daemon run
   anvil-daemon status
   anvil-daemon sign-out
   anvil-daemon worker on|off
   anvil-daemon companion on|off
+  anvil-daemon provider list
+  anvil-daemon provider add <provider> [--name <name>] [--config <json>] [--secret <json>]
+  anvil-daemon provider remove <connectionId>
   anvil-daemon policy list
   anvil-daemon policy set <enrollmentId> <observe|approve|steer|denied>
   anvil-daemon policy forget <enrollmentId>
   anvil-daemon policy default-tier <observe|approve|steer|denied|pending>
+
+--pair accepts an anvil-pair-… payload (incl. ephemeral environment pairing).
+Provider connections hold cloud environment credentials (AWS region/keys,
+imageIdentifier in --config; keys in --secret, encrypted at rest) so this
+host can claim provision-environment jobs.
 
 State dir: ANVIL_DATA_DIR (current: ${DATA_DIR})`);
   process.exit(1);
@@ -91,9 +106,12 @@ function boot(): void {
 
 async function cmdEnroll(): Promise<void> {
   const apiUrl = arg('--api-url');
-  const code = arg('--code');
+  // ENV-03: --pair redeems an anvil-pair-… payload (ephemeral environment
+  // pairing included); --code stays the plain enrollment-code path. Both
+  // flow through enrollWithEnrollmentCode, which detects the payload form.
+  const code = arg('--pair') ?? arg('--code');
   if (!apiUrl || !code) {
-    console.error('enroll requires --api-url <url> and --code <code>');
+    console.error('enroll requires --api-url <url> and (--code <code> | --pair <payload>)');
     process.exit(1);
   }
   boot();
@@ -138,6 +156,85 @@ function cmdStatus(): void {
   boot();
   const status = getRuntimeStatus();
   console.log(JSON.stringify(status, null, 2));
+}
+
+/**
+ * ENV-03: provider connections let this host claim `provision-environment`
+ * jobs. Secret material is encrypted at rest via safeStorage-equivalent
+ * storage and never leaves the device.
+ */
+function cmdProvider(sub: string | undefined): void {
+  boot();
+  const scope = activeSyncScope();
+  if (scope === null) {
+    console.error('[anvil-daemon] not enrolled — run `anvil-daemon enroll` first');
+    process.exit(1);
+  }
+  switch (sub) {
+    case 'list': {
+      console.log(JSON.stringify(listProviderConnections(scope), null, 2));
+      return;
+    }
+    case 'add': {
+      const provider = process.argv[4];
+      if (!isEnvironmentProviderId(provider)) {
+        console.error(
+          'usage: provider add <aws-lambda-microvm|cloudflare-sandbox|vercel-sandbox|anvil-managed> [--name <name>] [--config <json>] [--secret <json>]',
+        );
+        process.exit(1);
+      }
+      const configText = arg('--config');
+      const secretText = arg('--secret');
+      let config: Record<string, unknown> = {};
+      if (configText !== undefined) {
+        try {
+          const parsed: unknown = JSON.parse(configText);
+          if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+            throw new Error('not an object');
+          }
+          config = parsed as Record<string, unknown>;
+        } catch {
+          console.error('[anvil-daemon] --config must be a JSON object');
+          process.exit(1);
+        }
+      }
+      if (secretText !== undefined) {
+        try {
+          const parsed: unknown = JSON.parse(secretText);
+          if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+            throw new Error('not an object');
+          }
+        } catch {
+          console.error('[anvil-daemon] --secret must be a JSON object');
+          process.exit(1);
+        }
+      }
+      const created = addProviderConnection(scope, {
+        provider,
+        ...(arg('--name') === undefined ? {} : { displayName: arg('--name') }),
+        config,
+        ...(secretText === undefined ? {} : { secret: secretText }),
+      });
+      console.log(JSON.stringify(created, null, 2));
+      return;
+    }
+    case 'remove': {
+      const connectionId = process.argv[4];
+      if (!connectionId) {
+        console.error('usage: provider remove <connectionId>');
+        process.exit(1);
+      }
+      const removed = removeProviderConnection(scope, connectionId);
+      if (!removed) {
+        console.error(`[anvil-daemon] no provider connection ${connectionId}`);
+        process.exit(1);
+      }
+      console.log(`[anvil-daemon] removed ${connectionId}`);
+      return;
+    }
+    default:
+      usage();
+  }
 }
 
 async function cmdPolicy(sub: string | undefined): Promise<void> {
@@ -222,6 +319,9 @@ async function main(): Promise<void> {
       console.log(`[anvil-daemon] companion server ${on ? 'enabled' : 'disabled'}`);
       break;
     }
+    case 'provider':
+      cmdProvider(process.argv[3]);
+      break;
     case 'policy':
       await cmdPolicy(process.argv[3]);
       break;

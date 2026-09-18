@@ -60,6 +60,18 @@ export interface EnrollmentCodeProof {
 /** The only two proofs the built client can present at enrollment. */
 export type EnrollProof = OidcPkceProof | EnrollmentCodeProof;
 
+/**
+ * Enrollment class (ENV-01). `device` is a durable account device subject
+ * to the ordinary device quota. `ephemeral` is a short-lived cloud
+ * environment enrollment: it carries its own quota, expiry, and a
+ * restricted operation allowlist, and routine teardown does not rotate
+ * the ADK (explicit `device.revoke` still does — that is the incident
+ * path). A pairing payload minted for an environment can only produce an
+ * ephemeral session — the class is bound into the enrollment code, never
+ * claimed by the enrolling caller.
+ */
+export type EnrollmentClass = 'device' | 'ephemeral';
+
 export interface EnrollParams {
   proof: EnrollProof;
   installationId: string;
@@ -80,6 +92,20 @@ export interface DeviceSession {
   accountId: string;
   datasetEpoch: string;
   displayName?: string;
+  /**
+   * `ephemeral` marks a cloud-environment session: restricted ops, its own
+   * quota, and a bounded enrollment lifetime (`enrollmentExpiresAt`).
+   * Absent on backends that predate enrollment classes — treat as `device`.
+   */
+  enrollmentClass?: EnrollmentClass;
+  /** ISO-8601 instant an ephemeral enrollment stops being valid. */
+  enrollmentExpiresAt?: string;
+  /**
+   * ENV-01: the environment record this enrollment was minted for. Bound at
+   * code issuance so the environment can self-report its lifecycle; absent
+   * on ordinary device sessions.
+   */
+  environmentId?: string;
 }
 
 export type EnrollResult = DeviceSession;
@@ -114,6 +140,25 @@ export interface SessionRevokeResult {
 export interface EnrollmentCodeIssueParams {
   /** Optional human label shown to the operator when issuing for a device. */
   displayName?: string;
+  /**
+   * `ephemeral` mints a class-bound code whose redemption can only produce
+   * an ephemeral environment session (ENV-01). Default `device`.
+   */
+  enrollmentClass?: EnrollmentClass;
+  /** Cloud provider the environment will boot on; metadata for listings. */
+  provider?: string;
+  /**
+   * Ephemeral enrollment lifetime in seconds (the code itself still
+   * expires on the usual short TTL; this bounds the resulting session).
+   * Ignored for `device` codes.
+   */
+  sessionTtlSeconds?: number;
+  /**
+   * ENV-01: binds the redeemed enrollment to one environment record — the
+   * only path that lets an environment authorize its own `enrolled`
+   * report. Only meaningful on `ephemeral` codes.
+   */
+  environmentId?: string;
 }
 
 /** The issued code is returned once and never stored in sync data. */
@@ -151,6 +196,11 @@ export interface SessionDescribeResult {
   credentialGeneration: number;
   accessExpiresAt: string;
   displayName?: string;
+  enrollmentClass?: EnrollmentClass;
+  /** ISO-8601 expiry for ephemeral enrollments. */
+  enrollmentExpiresAt?: string;
+  /** ENV-01: environment record this enrollment is bound to, when any. */
+  environmentId?: string;
   accountStats?: SyncAccountStats;
   entitlement?: HostedEntitlement;
 }
@@ -169,6 +219,17 @@ export interface DeviceSummary {
   createdAt: string;
   /** True when this row is the caller's own session. */
   self: boolean;
+  /**
+   * `ephemeral` marks a cloud-environment enrollment (ENV-01); absent on
+   * older backends — treat as `device`.
+   */
+  enrollmentClass?: EnrollmentClass;
+  /** Provider metadata recorded when an ephemeral code was issued. */
+  provider?: string;
+  /** ISO-8601 expiry for ephemeral enrollments. */
+  enrollmentExpiresAt?: string;
+  /** ENV-01: environment record this enrollment is bound to, when any. */
+  environmentId?: string;
 }
 
 export interface DeviceListResult {

@@ -23,6 +23,7 @@ import {
   type DeviceRevokeResult,
   type DeviceSession,
   type DeviceSummary,
+  type EnrollmentClass,
   type EnrollmentCodeIssueResult,
   type EnrollParams,
   type SessionDescribeResult,
@@ -58,6 +59,14 @@ const ACCESS_TTL_MS = 15 * 60 * 1000;
 const REFRESH_GRACE_MS = 30 * 1000;
 const CODE_TTL_MS = 10 * 60 * 1000;
 const MAX_ACTIVE_CODES_PER_ACCOUNT = 20;
+// ENV-01 ephemeral enrollment bounds: cloud environments get their own
+// active-session quota (device quota untouched) and a hard session TTL —
+// an env that outlives its window stops authenticating even unreaped.
+const MAX_EPHEMERAL_SESSIONS_PER_ACCOUNT = 20;
+const EPHEMERAL_DEFAULT_SESSION_TTL_MS = 4 * 60 * 60 * 1000;
+const EPHEMERAL_MAX_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+const EPHEMERAL_MIN_SESSION_TTL_MS = 60 * 1000;
+const MAX_PROVIDER_ID_CHARS = 128;
 const MAX_DEVICE_NAME_CHARS = 128;
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 /** Revoked sessions are retained this long for audit, then swept (OPS-01). */
@@ -164,6 +173,57 @@ async function readJson(request: Request): Promise<unknown | null> {
   }
 }
 
+/**
+ * ENV-01: an ephemeral session dies at its enrollment expiry — treated
+ * exactly like a revoked row everywhere a liveness check runs. Returns
+ * false for device-class rows (their expiry column stays NULL).
+ */
+function enrollmentExpired(row: SessionRow, now: number): boolean {
+  const expires = row.enrollment_expires_at;
+  return typeof expires === 'number' && expires <= now;
+}
+
+/**
+ * Parses optional ENV-01 issuance fields from an enrollment-code request
+ * body. Returns null on malformed input.
+ */
+function parseIssueOptions(body: Record<string, unknown>): {
+  enrollmentClass: EnrollmentClass;
+  provider: string | null;
+  sessionTtlSeconds: number | null;
+  environmentId: string | null;
+} | null {
+  const rawClass = body['enrollmentClass'];
+  if (rawClass !== undefined && rawClass !== 'device' && rawClass !== 'ephemeral') {
+    return null;
+  }
+  const enrollmentClass: EnrollmentClass = rawClass === 'ephemeral' ? 'ephemeral' : 'device';
+  const provider = body['provider'];
+  if (
+    provider !== undefined &&
+    (typeof provider !== 'string' || provider.length > MAX_PROVIDER_ID_CHARS)
+  ) {
+    return null;
+  }
+  const ttl = body['sessionTtlSeconds'];
+  if (ttl !== undefined && (typeof ttl !== 'number' || !Number.isFinite(ttl) || ttl <= 0)) {
+    return null;
+  }
+  const environmentId = body['environmentId'];
+  if (
+    environmentId !== undefined &&
+    (typeof environmentId !== 'string' || environmentId.length > MAX_PROVIDER_ID_CHARS)
+  ) {
+    return null;
+  }
+  return {
+    enrollmentClass,
+    provider: typeof provider === 'string' ? provider : null,
+    sessionTtlSeconds: typeof ttl === 'number' ? ttl : null,
+    environmentId: typeof environmentId === 'string' ? environmentId : null,
+  };
+}
+
 export class SessionCoordinator extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -181,6 +241,53 @@ export class SessionCoordinator extends DurableObject<Env> {
       'shared_artifacts',
       'plaintext_bytes',
       'ALTER TABLE shared_artifacts ADD COLUMN plaintext_bytes INTEGER',
+    );
+    // ENV-01: additive columns for objects created before enrollment
+    // classes existed — existing rows read as 'device' via the defaults.
+    this.ensureColumn(
+      'device_sessions',
+      'enrollment_class',
+      "ALTER TABLE device_sessions ADD COLUMN enrollment_class TEXT NOT NULL DEFAULT 'device'",
+    );
+    this.ensureColumn(
+      'device_sessions',
+      'provider',
+      'ALTER TABLE device_sessions ADD COLUMN provider TEXT',
+    );
+    this.ensureColumn(
+      'device_sessions',
+      'created_by',
+      'ALTER TABLE device_sessions ADD COLUMN created_by TEXT',
+    );
+    this.ensureColumn(
+      'device_sessions',
+      'enrollment_expires_at',
+      'ALTER TABLE device_sessions ADD COLUMN enrollment_expires_at INTEGER',
+    );
+    this.ensureColumn(
+      'device_sessions',
+      'environment_id',
+      'ALTER TABLE device_sessions ADD COLUMN environment_id TEXT',
+    );
+    this.ensureColumn(
+      'enrollment_codes',
+      'enrollment_class',
+      "ALTER TABLE enrollment_codes ADD COLUMN enrollment_class TEXT NOT NULL DEFAULT 'device'",
+    );
+    this.ensureColumn(
+      'enrollment_codes',
+      'provider',
+      'ALTER TABLE enrollment_codes ADD COLUMN provider TEXT',
+    );
+    this.ensureColumn(
+      'enrollment_codes',
+      'session_ttl_ms',
+      'ALTER TABLE enrollment_codes ADD COLUMN session_ttl_ms INTEGER',
+    );
+    this.ensureColumn(
+      'enrollment_codes',
+      'environment_id',
+      'ALTER TABLE enrollment_codes ADD COLUMN environment_id TEXT',
     );
   }
 
@@ -381,6 +488,16 @@ export class SessionCoordinator extends DurableObject<Env> {
     if (row.display_name !== null) {
       session.displayName = row.display_name;
     }
+    const enrollmentClass = row.enrollment_class as EnrollmentClass | null;
+    if (enrollmentClass !== null && enrollmentClass !== 'device') {
+      session.enrollmentClass = enrollmentClass;
+      if (row.enrollment_expires_at !== null) {
+        session.enrollmentExpiresAt = new Date(row.enrollment_expires_at).toISOString();
+      }
+    }
+    if (typeof row.environment_id === 'string') {
+      session.environmentId = row.environment_id;
+    }
     return session;
   }
 
@@ -389,6 +506,13 @@ export class SessionCoordinator extends DurableObject<Env> {
     accountId: string,
     installationId: string,
     displayName: string | null,
+    options?: {
+      enrollmentClass?: EnrollmentClass;
+      provider?: string | null;
+      createdBy?: string | null;
+      enrollmentExpiresAt?: number | null;
+      environmentId?: string | null;
+    },
   ): Promise<DeviceSession> {
     const accessToken = generateDeviceToken('at');
     const refreshToken = generateDeviceToken('rt');
@@ -403,8 +527,10 @@ export class SessionCoordinator extends DurableObject<Env> {
         enrollment_id, account_id, installation_id, display_name,
         credential_generation, access_token_hash, access_expires_at,
         refresh_token_hash, prev_refresh_token_hash, prev_refresh_grace_until,
-        pending_rotated_session, revoked_at, created_at
-      ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, NULL, NULL, NULL, NULL, ?)`,
+        pending_rotated_session, revoked_at, created_at,
+        enrollment_class, provider, created_by, enrollment_expires_at,
+        environment_id
+      ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?)`,
       enrollmentId,
       accountId,
       installationId,
@@ -413,6 +539,11 @@ export class SessionCoordinator extends DurableObject<Env> {
       accessExpiresAt,
       refreshHash,
       now,
+      options?.enrollmentClass ?? 'device',
+      options?.provider ?? null,
+      options?.createdBy ?? null,
+      options?.enrollmentExpiresAt ?? null,
+      options?.environmentId ?? null,
     );
     const row = this.sessionByEnrollment(enrollmentId);
     if (row === null) {
@@ -433,6 +564,12 @@ export class SessionCoordinator extends DurableObject<Env> {
     const now = Date.now();
 
     let accountId: string;
+    // ENV-01: fields carried by a class-bound enrollment code.
+    let codeClass: EnrollmentClass = 'device';
+    let codeProvider: string | null = null;
+    let codeSessionTtlMs: number | null = null;
+    let codeIssuedBy: string | null = null;
+    let codeEnvironmentId: string | null = null;
     if (proof.method === 'enrollment-code') {
       if (typeof proof.code !== 'string' || proof.code.length === 0) {
         return authError('invalid-proof');
@@ -451,12 +588,20 @@ export class SessionCoordinator extends DurableObject<Env> {
           now,
           codeHash,
         );
-        return row.account_id;
+        return row;
       });
       if (consumed === null) {
         return authError('enrollment-code-used');
       }
-      accountId = consumed;
+      accountId = consumed.account_id;
+      // ENV-01: the code binds the session class — an 'ephemeral' code can
+      // only mint an ephemeral environment session; the caller cannot
+      // upgrade itself to a durable device by presenting it differently.
+      codeClass = (consumed.enrollment_class as EnrollmentClass | null) ?? 'device';
+      codeProvider = consumed.provider as string | null;
+      codeSessionTtlMs = consumed.session_ttl_ms as number | null;
+      codeIssuedBy = consumed.issued_by as string | null;
+      codeEnvironmentId = consumed.environment_id as string | null;
     } else if (proof.method === 'oidc-pkce') {
       const issuer = this.env.OIDC_ISSUER;
       const clientId = this.env.OIDC_CLIENT_ID;
@@ -502,11 +647,28 @@ export class SessionCoordinator extends DurableObject<Env> {
     }
 
     const enrollmentId = `enr_${crypto.randomUUID()}`;
+    // Ephemeral environments get a hard enrollment lifetime — the session
+    // stops authenticating past it even if the env itself is never reaped.
+    const enrollmentExpiresAt =
+      codeClass === 'ephemeral'
+        ? now +
+          Math.min(
+            Math.max(codeSessionTtlMs ?? EPHEMERAL_DEFAULT_SESSION_TTL_MS, 0),
+            EPHEMERAL_MAX_SESSION_TTL_MS,
+          )
+        : null;
     const session = await this.issueTokens(
       enrollmentId,
       accountId,
       params.installationId,
       displayName,
+      {
+        enrollmentClass: codeClass,
+        provider: codeProvider,
+        createdBy: codeIssuedBy,
+        enrollmentExpiresAt,
+        environmentId: codeEnvironmentId,
+      },
     );
     return Response.json(session, { status: 200 });
   }
@@ -529,7 +691,7 @@ export class SessionCoordinator extends DurableObject<Env> {
     }
     const params = body as unknown as SessionRefreshParams;
     const row = this.sessionByEnrollment(params.enrollmentId);
-    if (row === null || row.revoked_at !== null) {
+    if (row === null || row.revoked_at !== null || enrollmentExpired(row, Date.now())) {
       return authError('invalid-proof');
     }
     const now = Date.now();
@@ -625,7 +787,10 @@ export class SessionCoordinator extends DurableObject<Env> {
       const bearer = parseDeviceBearer(request.headers.get('Authorization'));
       if (bearer !== null) {
         const bearerHash = await sha256Hex(bearer);
-        authorized = bearerHash === row.access_token_hash && row.revoked_at === null;
+        authorized =
+          bearerHash === row.access_token_hash &&
+          row.revoked_at === null &&
+          !enrollmentExpired(row, Date.now());
       }
     }
     if (!authorized) {
@@ -686,15 +851,28 @@ export class SessionCoordinator extends DurableObject<Env> {
       if (
         session === null ||
         session.revoked_at !== null ||
-        session.access_expires_at <= Date.now()
+        session.access_expires_at <= Date.now() ||
+        enrollmentExpired(session, Date.now())
       ) {
         return authError('unauthenticated');
+      }
+      // ENV-01: an ephemeral environment cannot mint trust — code issuance
+      // is a device-class ability only.
+      if (session.enrollment_class === 'ephemeral') {
+        return Response.json(
+          { error: { code: 'forbidden', retryable: false } },
+          { status: 403 },
+        );
       }
       accountId = session.account_id;
       issuedBy = session.enrollment_id;
     }
+    const options = parseIssueOptions(body);
+    if (options === null) {
+      return authError('malformed-request');
+    }
     const displayName = typeof body['displayName'] === 'string' ? body['displayName'] : null;
-    return this.issueCodeForAccount(accountId, displayName, issuedBy);
+    return this.issueCodeForAccount(accountId, displayName, issuedBy, options);
   }
 
   /**
@@ -706,6 +884,12 @@ export class SessionCoordinator extends DurableObject<Env> {
     accountId: string,
     displayName: string | null,
     issuedBy: string,
+    options?: {
+      enrollmentClass: EnrollmentClass;
+      provider: string | null;
+      sessionTtlSeconds: number | null;
+      environmentId: string | null;
+    },
   ): Promise<Response> {
     // A tombstoned accountId is permanently dead — deleted cloud state
     // cannot be recreated by issuing new enrollments for it.
@@ -734,18 +918,52 @@ export class SessionCoordinator extends DurableObject<Env> {
       return authError('throttled');
     }
 
+    // ENV-01: ephemeral environments carry their own live-session quota —
+    // separate from the device count so sandbox churn can't exhaust or
+    // hide behind ordinary enrollments.
+    if (options?.enrollmentClass === 'ephemeral') {
+      const liveEnvs = this.ctx.storage.sql
+        .exec(
+          `SELECT COUNT(*) AS n FROM device_sessions
+           WHERE account_id = ? AND enrollment_class = 'ephemeral'
+             AND revoked_at IS NULL
+             AND (enrollment_expires_at IS NULL OR enrollment_expires_at > ?)`,
+          accountId,
+          now,
+        )
+        .toArray()[0] as { n: number } | undefined;
+      if ((liveEnvs?.n ?? 0) >= MAX_EPHEMERAL_SESSIONS_PER_ACCOUNT) {
+        return authError('throttled');
+      }
+    }
+
     const { code, normalized } = generateEnrollmentCode();
     const codeHash = await sha256Hex(normalized);
+    const sessionTtlMs =
+      options?.enrollmentClass === 'ephemeral' && options.sessionTtlSeconds !== null
+        ? Math.min(
+            Math.max(options.sessionTtlSeconds * 1000, EPHEMERAL_MIN_SESSION_TTL_MS),
+            EPHEMERAL_MAX_SESSION_TTL_MS,
+          )
+        : options?.enrollmentClass === 'ephemeral'
+          ? EPHEMERAL_DEFAULT_SESSION_TTL_MS
+          : null;
     this.ctx.storage.sql.exec(
       `INSERT INTO enrollment_codes
-        (code_hash, account_id, issued_by, display_name, expires_at, consumed_at, created_at)
-       VALUES (?, ?, ?, ?, ?, NULL, ?)`,
+        (code_hash, account_id, issued_by, display_name, expires_at, consumed_at, created_at,
+         enrollment_class, provider, session_ttl_ms, environment_id)
+       VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
       codeHash,
       accountId,
       issuedBy,
       displayName,
       now + CODE_TTL_MS,
       now,
+      options?.enrollmentClass ?? 'device',
+      options?.provider ?? null,
+      sessionTtlMs,
+      // ENV-01: the binding only means anything on ephemeral codes.
+      options?.enrollmentClass === 'ephemeral' ? (options?.environmentId ?? null) : null,
     );
     const result: EnrollmentCodeIssueResult = {
       code,
@@ -775,7 +993,11 @@ export class SessionCoordinator extends DurableObject<Env> {
       typeof body['issuedBy'] === 'string' && body['issuedBy'].length > 0
         ? body['issuedBy']
         : 'internal';
-    return this.issueCodeForAccount(body['accountId'], displayName, issuedBy);
+    const options = parseIssueOptions(body);
+    if (options === null) {
+      return authError('malformed-request');
+    }
+    return this.issueCodeForAccount(body['accountId'], displayName, issuedBy, options);
   }
 
   /** Worker-internal: is this accountId under a deletion tombstone? */
@@ -798,11 +1020,23 @@ export class SessionCoordinator extends DurableObject<Env> {
       return authError('unauthenticated');
     }
     const row = this.sessionByAccessHash(await sha256Hex(bearer));
-    if (row === null || row.revoked_at !== null || row.access_expires_at <= Date.now()) {
+    if (
+      row === null ||
+      row.revoked_at !== null ||
+      row.access_expires_at <= Date.now() ||
+      enrollmentExpired(row, Date.now())
+    ) {
       return authError('unauthenticated');
     }
     return Response.json(
-      { accountId: row.account_id, enrollmentId: row.enrollment_id },
+      {
+        accountId: row.account_id,
+        enrollmentId: row.enrollment_id,
+        enrollmentClass: row.enrollment_class ?? 'device',
+        ...(typeof row.environment_id === 'string'
+          ? { environmentId: row.environment_id }
+          : {}),
+      },
       { status: 200 },
     );
   }
@@ -815,11 +1049,26 @@ export class SessionCoordinator extends DurableObject<Env> {
     }
     const hash = await sha256Hex(body['accessToken']);
     const row = this.sessionByAccessHash(hash);
-    if (row === null || row.revoked_at !== null || row.access_expires_at <= Date.now()) {
+    if (
+      row === null ||
+      row.revoked_at !== null ||
+      row.access_expires_at <= Date.now() ||
+      enrollmentExpired(row, Date.now())
+    ) {
       return authError('unauthenticated');
     }
+    // enrollmentClass + environmentId ride along so the worker can forward
+    // them to the account object — ephemeral environments carry a
+    // restricted op set and a bound environment record.
     return Response.json(
-      { accountId: row.account_id, enrollmentId: row.enrollment_id },
+      {
+        accountId: row.account_id,
+        enrollmentId: row.enrollment_id,
+        enrollmentClass: row.enrollment_class ?? 'device',
+        ...(typeof row.environment_id === 'string'
+          ? { environmentId: row.environment_id }
+          : {}),
+      },
       { status: 200 },
     );
   }
@@ -837,7 +1086,12 @@ export class SessionCoordinator extends DurableObject<Env> {
     } else if (bearer !== null) {
       row = this.sessionByAccessHash(await sha256Hex(bearer));
     }
-    if (row === null || row.revoked_at !== null || row.access_expires_at <= Date.now()) {
+    if (
+      row === null ||
+      row.revoked_at !== null ||
+      row.access_expires_at <= Date.now() ||
+      enrollmentExpired(row, Date.now())
+    ) {
       return authError('unauthenticated');
     }
     const meta = await this.accountMeta(row.account_id);
@@ -855,6 +1109,13 @@ export class SessionCoordinator extends DurableObject<Env> {
       credentialGeneration: row.credential_generation,
       accessExpiresAt: new Date(row.access_expires_at).toISOString(),
       ...(row.display_name === null ? {} : { displayName: row.display_name }),
+      ...(row.enrollment_class === null || row.enrollment_class === 'device'
+        ? {}
+        : { enrollmentClass: row.enrollment_class as EnrollmentClass }),
+      ...(row.enrollment_expires_at === null
+        ? {}
+        : { enrollmentExpiresAt: new Date(row.enrollment_expires_at).toISOString() }),
+      ...(typeof row.environment_id === 'string' ? { environmentId: row.environment_id } : {}),
       ...(meta.stats === undefined ? {} : { accountStats: meta.stats }),
       ...(entitlement === null ? {} : { entitlement }),
     };
@@ -865,13 +1126,21 @@ export class SessionCoordinator extends DurableObject<Env> {
    * Verified-identity gate for `/internal/device-*` routes: the worker
    * already validated the bearer; this re-checks that the enrollment's
    * session row is live on the claimed account (fail-closed across a
-   * revocation race).
+   * revocation race). ENV-01: ephemeral environments may not manage
+   * devices, shares, or the account — class is read from the authoritative
+   * session row, never the forwarded header.
    */
   private verifiedCaller(request: Request): VerifiedAuth | null {
     const verified = parseVerifiedAuth(request);
     if (verified === null) return null;
     const row = this.sessionByEnrollment(verified.enrollmentId);
-    if (row === null || row.account_id !== verified.accountId || row.revoked_at !== null) {
+    if (
+      row === null ||
+      row.account_id !== verified.accountId ||
+      row.revoked_at !== null ||
+      row.enrollment_class === 'ephemeral' ||
+      enrollmentExpired(row, Date.now())
+    ) {
       return null;
     }
     return verified;
@@ -886,7 +1155,8 @@ export class SessionCoordinator extends DurableObject<Env> {
     const rows = this.ctx.storage.sql
       .exec(
         `SELECT enrollment_id, installation_id, display_name,
-                credential_generation, revoked_at, created_at
+                credential_generation, revoked_at, created_at,
+                enrollment_class, provider, enrollment_expires_at, environment_id
          FROM device_sessions WHERE account_id = ? ORDER BY created_at ASC`,
         accountId,
       )
@@ -899,6 +1169,14 @@ export class SessionCoordinator extends DurableObject<Env> {
       revoked: row.revoked_at !== null,
       createdAt: new Date(Number(row.created_at)).toISOString(),
       self: row.enrollment_id === selfEnrollmentId,
+      ...(row.enrollment_class === null || row.enrollment_class === 'device'
+        ? {}
+        : { enrollmentClass: row.enrollment_class as EnrollmentClass }),
+      ...(typeof row.provider === 'string' ? { provider: row.provider } : {}),
+      ...(row.enrollment_expires_at === null
+        ? {}
+        : { enrollmentExpiresAt: new Date(row.enrollment_expires_at).toISOString() }),
+      ...(typeof row.environment_id === 'string' ? { environmentId: row.environment_id } : {}),
     }));
     return { devices };
   }
@@ -1738,6 +2016,15 @@ export class SessionCoordinator extends DurableObject<Env> {
           n: number;
         }>('DELETE FROM device_sessions WHERE revoked_at IS NOT NULL AND revoked_at < ? RETURNING 1 AS n', now - REVOKED_SESSION_RETENTION_MS)
         .toArray().length;
+      // ENV-01: ephemeral sessions past their enrollment expiry are dead —
+      // mark them revoked so they join the normal audit-retention path.
+      // Read-time checks already reject them; this is the durable record.
+      this.ctx.storage.sql.exec(
+        `UPDATE device_sessions SET revoked_at = COALESCE(revoked_at, ?)
+         WHERE enrollment_expires_at IS NOT NULL AND enrollment_expires_at <= ?`,
+        now,
+        now,
+      );
     });
     // Share maintenance: lapse orphaned reservations (upload window
     // missed) and expire published/uploaded shares past their deadline,

@@ -14,6 +14,7 @@ export * from './socket';
 export * from './artifacts';
 export * from './shares';
 export * from './sealed';
+export * from './environment';
 export * from './data';
 export * from './bootstrap';
 export * from './entitlements';

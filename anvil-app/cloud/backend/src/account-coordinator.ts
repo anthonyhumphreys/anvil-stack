@@ -132,6 +132,23 @@ import {
   type WorkerReplicaSummary,
 } from '../../contract/workers';
 import {
+  ENVIRONMENT_STATES,
+  isEnvironmentProviderId,
+  type CloudEnvironment,
+  type EnvironmentGetResult,
+  type EnvironmentListResult,
+  type EnvironmentProviderId,
+  type EnvironmentReapResult,
+  type EnvironmentReportResult,
+  type EnvironmentState,
+} from '../../contract/environment';
+import type {
+  CredentialDeliverResult,
+  CredentialGrantPayload,
+  CredentialPullResult,
+} from '../../contract/sealed';
+import { ephemeralOperationAllowed } from '../../contract/operations';
+import {
   SOCKET_SUBPROTOCOL,
   DEFAULT_LIMITS,
   LEASE_DURATION_MS,
@@ -401,6 +418,40 @@ interface HandoffRow {
   [key: string]: string | number | null;
 }
 
+/** ENV-01 cloud environment record (contract environment.ts). */
+interface EnvironmentRow {
+  environment_id: string;
+  account_id: string;
+  provider: string;
+  state: string;
+  handle: string | null;
+  enrollment_id: string | null;
+  job_id: string | null;
+  created_by: string;
+  expires_at: number | null;
+  reap_requested_at: number | null;
+  reaped_at: number | null;
+  created_at: number;
+  updated_at: number;
+  [key: string]: string | number | null;
+}
+
+/** ENV-06 sealed credential grant bound to (job, attempt, fence, target). */
+interface CredentialGrantRow {
+  grant_id: string;
+  account_id: string;
+  job_id: string;
+  attempt_id: string;
+  fence: number;
+  target_enrollment_id: string;
+  envelope: string;
+  envelope_sha: string;
+  expires_at: number;
+  delivered_at: number | null;
+  created_at: number;
+  [key: string]: string | number | null;
+}
+
 /**
  * A socket frame derived from a journaled event row, queued inside the
  * running transaction and delivered to subscribers only after commit.
@@ -457,6 +508,10 @@ const ACCOUNT_PURGE_TABLES = [
   'mesh_sessions',
   'handoffs',
   'data_operations',
+  // ENV-01/ENV-06: environment lifecycle + credential grants are account
+  // data — purged with everything else on account deletion.
+  'environments',
+  'credential_grants',
 ] as const;
 /** Per-account retained-history budget enforced before accepting changes. */
 const HISTORY_QUOTA_BYTES = 64 * 1024 * 1024;
@@ -484,6 +539,14 @@ const DEFAULT_JOB_LIST_LIMIT = 50;
 const MAX_QUEUE_DEADLINE_HORIZON_MS = 24 * 60 * 60 * 1000;
 /** Grace beyond attempt-lease expiry before the sweep marks unknown-outcome. */
 const ATTEMPT_UNKNOWN_GRACE_MS = LEASE_DURATION_MS;
+/** ENV-01: bounded environment records; terminal rows audit-retained. */
+const MAX_ENVIRONMENTS_PER_ACCOUNT = 64;
+const MAX_ENVIRONMENT_HANDLE_BYTES = 16 * 1024;
+const ENVIRONMENT_AUDIT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+/** ENV-06: sealed grants are small, few, and short-lived. */
+const MAX_GRANT_ENVELOPE_BYTES = 16 * 1024;
+const MAX_GRANTS_PER_ATTEMPT = 16;
+const GRANT_MAX_TTL_MS = 60 * 60 * 1000;
 
 // ---- MESH-03 constants ----------------------------------------------------
 /** Raw inbound socket frame cap; payload text is separately bounded below. */
@@ -655,6 +718,21 @@ export class AccountCoordinator extends DurableObject<Env> {
       'artifacts',
       'plaintext_bytes',
       'ALTER TABLE artifacts ADD COLUMN plaintext_bytes INTEGER',
+    );
+    // ENV-01: the first-seen enrollment class is pinned on the account
+    // object so a later request missing the class header cannot widen an
+    // ephemeral environment's privileges back to device scope.
+    this.ensureColumn(
+      'enrollments',
+      'enrollment_class',
+      "ALTER TABLE enrollments ADD COLUMN enrollment_class TEXT NOT NULL DEFAULT 'device'",
+    );
+    // ENV-01: the environment binding pins on first sight exactly like the
+    // class — a bound env can then authorize its own enrolled report.
+    this.ensureColumn(
+      'enrollments',
+      'environment_id',
+      'ALTER TABLE enrollments ADD COLUMN environment_id TEXT',
     );
     this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
   }
@@ -1234,6 +1312,27 @@ export class AccountCoordinator extends DurableObject<Env> {
       return rpcErrorResponse(envelope.requestId, envelope.code);
     }
     const { request: rpc } = envelope;
+    // ENV-01: pin a non-default enrollment's row on first sight — class
+    // and environment binding are recorded before the gate evaluates, so
+    // a dropped or forged class header on a later request can never widen
+    // an ephemeral enrollment back to device scope. Ordinary device
+    // enrollments keep their lazy first-mutation provisioning.
+    if (auth.enrollmentClass === 'ephemeral' || auth.environmentId !== undefined) {
+      this.provisionEnrollment(auth);
+    }
+    // ENV-01: ephemeral environments carry a restricted operation set —
+    // they execute jobs, never source them or administer trust. The
+    // effective class pins on the enrollment row, so a dropped class
+    // header cannot widen privileges back to device scope.
+    if (
+      this.effectiveEnrollmentClass(auth) === 'ephemeral' &&
+      !ephemeralOperationAllowed(rpc.operation as OperationName)
+    ) {
+      return rpcErrorResponse(rpc.requestId, 'forbidden', {
+        reason: 'enrollment-class',
+        operation: rpc.operation,
+      });
+    }
     // BILL-03: the hosted entitlement gate runs after authentication and
     // envelope validation but before any dispatch — a denied mutating op
     // consumes no receipts, sequences, or durable state.
@@ -1306,6 +1405,21 @@ export class AccountCoordinator extends DurableObject<Env> {
           return this.handleArtifactList(auth, rpc.requestId, rpc.params);
         case 'artifact.delete':
           return await this.handleArtifactDelete(auth, rpc.requestId, rpc.params);
+        // ENV-01 cloud environment lifecycle: descriptive records +
+        // durable reap intent; provider credentials never live here.
+        case 'environment.report':
+          return this.handleEnvironmentReport(auth, rpc.requestId, rpc.params);
+        case 'environment.get':
+          return this.handleEnvironmentGet(auth, rpc.requestId, rpc.params);
+        case 'environment.list':
+          return this.handleEnvironmentList(auth, rpc.requestId, rpc.params);
+        case 'environment.reap':
+          return this.handleEnvironmentReap(auth, rpc.requestId, rpc.params);
+        // ENV-06 per-attempt sealed credential grants.
+        case 'credential.deliver':
+          return await this.handleCredentialDeliver(auth, rpc.requestId, rpc.params);
+        case 'credential.pull':
+          return this.handleCredentialPull(auth, rpc.requestId, rpc.params);
         // SESSION-03: generation-fenced session ownership transfer. The
         // handoff row is the state authority; the mesh_sessions row is the
         // generation authority — ownership moves once, by CAS.
@@ -2153,13 +2267,55 @@ export class AccountCoordinator extends DurableObject<Env> {
 
   private provisionEnrollment(auth: SpikeAuth): void {
     this.ctx.storage.sql.exec(
-      `INSERT INTO enrollments (enrollment_id, account_id, generation, high_water, created_at)
-       VALUES (?, ?, 1, 0, ?)
+      `INSERT INTO enrollments (
+         enrollment_id, account_id, generation, high_water, created_at,
+         enrollment_class, environment_id
+       )
+       VALUES (?, ?, 1, 0, ?, ?, ?)
        ON CONFLICT(enrollment_id) DO NOTHING`,
       auth.enrollmentId,
       auth.accountId,
       Date.now(),
+      auth.enrollmentClass ?? 'device',
+      auth.environmentId ?? null,
     );
+  }
+
+  /**
+   * ENV-01: the effective class for authorization. `ephemeral` wins when
+   * either the current request's verified class or the pinned enrollment
+   * row says so — an env can never talk its way back to device privileges
+   * by dropping the class header after first use.
+   */
+  private effectiveEnrollmentClass(auth: SpikeAuth): 'device' | 'ephemeral' {
+    if (auth.enrollmentClass === 'ephemeral') {
+      return 'ephemeral';
+    }
+    const row = this.ctx.storage.sql
+      .exec<{ enrollment_class: string }>(
+        'SELECT enrollment_class FROM enrollments WHERE enrollment_id = ?',
+        auth.enrollmentId,
+      )
+      .toArray()[0];
+    return row?.enrollment_class === 'ephemeral' ? 'ephemeral' : 'device';
+  }
+
+  /**
+   * ENV-01: the environment record this enrollment is bound to — the
+   * current request's verified binding or the value pinned on first sight.
+   * Null for ordinary device enrollments.
+   */
+  private effectiveEnvironmentId(auth: SpikeAuth): string | null {
+    if (auth.environmentId !== undefined) {
+      return auth.environmentId;
+    }
+    const row = this.ctx.storage.sql
+      .exec<{ environment_id: string | null }>(
+        'SELECT environment_id FROM enrollments WHERE enrollment_id = ?',
+        auth.enrollmentId,
+      )
+      .toArray()[0];
+    return row?.environment_id ?? null;
   }
 
   private readEnrollment(enrollmentId: string): EnrollmentRow {
@@ -2770,6 +2926,33 @@ export class AccountCoordinator extends DurableObject<Env> {
         explanation: `device: explicit target; live worker with allowing policy`,
       };
     }
+    // ENV-01: an environment target resolves onto the env's linked
+    // enrollment if it has already enrolled; otherwise the job queues
+    // unresolved until `environment.report{state:'enrolled'}` binds it (or
+    // the queue deadline fails it).
+    if (requested.kind === 'environment') {
+      const targetEnvironmentId = requested.environmentId;
+      if (targetEnvironmentId === undefined) {
+        throw new RpcFailure('malformed-request', { reason: 'requestedTarget.environmentId' });
+      }
+      const environment = this.readEnvironment(targetEnvironmentId);
+      if (environment === null) {
+        throw new RpcFailure('not-found', { reason: 'environment' });
+      }
+      if (environment.reaped_at !== null) {
+        throw new RpcFailure('conflict', { reason: 'environment-terminal' });
+      }
+      if (environment.enrollment_id !== null) {
+        return {
+          targetEnrollmentId: environment.enrollment_id,
+          explanation: `environment: ${targetEnvironmentId} already enrolled`,
+        };
+      }
+      return {
+        targetEnrollmentId: null,
+        explanation: `environment: ${targetEnvironmentId} awaiting enrollment`,
+      };
+    }
     const candidates = this.ctx.storage.sql
       .exec<WorkerRow & { active_attempts: number }>(
         `SELECT w.*, (
@@ -2786,7 +2969,13 @@ export class AccountCoordinator extends DurableObject<Env> {
     // require a 'ready' replica at the manifest's pinned definition
     // revision (the digest that also proves Git inputs materialised).
     // prepare-workspace produces readiness and diagnostic needs none.
-    const needsWorkspace = create.kind !== 'diagnostic' && create.kind !== 'prepare-workspace';
+    // provision-environment jobs bring capacity into being — like
+    // diagnostic/prepare-workspace they can't wait on a materialised
+    // workspace replica that doesn't exist yet.
+    const needsWorkspace =
+      create.kind !== 'diagnostic' &&
+      create.kind !== 'prepare-workspace' &&
+      create.kind !== 'provision-environment';
     const manifestWorkspaceId =
       needsWorkspace && typeof create.inputManifest.inputs['workspaceId'] === 'string'
         ? (create.inputManifest.inputs['workspaceId'] as string)
@@ -5255,6 +5444,461 @@ export class AccountCoordinator extends DurableObject<Env> {
     return new Response(obj.body, { headers });
   }
 
+  // ---- ENV-01 cloud environment lifecycle -----------------------------------
+  //
+  // Environment records are descriptive: the authoritative state lives with
+  // the provider. The backend records provisioning intent, the enrolled
+  // enrollment link, and durable reap intent so any provisioner-capable
+  // device can finish cleanup even if the original provisioner is offline.
+
+  private environmentView(row: EnvironmentRow): CloudEnvironment {
+    return {
+      environmentId: row.environment_id,
+      provider: row.provider as EnvironmentProviderId,
+      state: row.state as EnvironmentState,
+      ...(row.handle === null
+        ? {}
+        : { handle: JSON.parse(row.handle) as Record<string, unknown> }),
+      ...(row.enrollment_id === null ? {} : { enrollmentId: row.enrollment_id }),
+      ...(row.job_id === null ? {} : { jobId: row.job_id }),
+      createdBy: row.created_by,
+      ...(row.expires_at === null ? {} : { expiresAt: new Date(row.expires_at).toISOString() }),
+      ...(row.reap_requested_at === null
+        ? {}
+        : { reapRequestedAt: new Date(row.reap_requested_at).toISOString() }),
+      ...(row.reaped_at === null ? {} : { reapedAt: new Date(row.reaped_at).toISOString() }),
+      createdAt: new Date(row.created_at).toISOString(),
+      updatedAt: new Date(row.updated_at).toISOString(),
+    };
+  }
+
+  private readEnvironment(environmentId: string): EnvironmentRow | null {
+    return (
+      this.ctx.storage.sql
+        .exec<EnvironmentRow>(
+          'SELECT * FROM environments WHERE environment_id = ?',
+          environmentId,
+        )
+        .toArray()[0] ?? null
+    );
+  }
+
+  /**
+   * `environment.report`: worker-role upsert of provider-observed state. The
+   * creator (or the environment's own enrollment, once linked) may report.
+   * Reporting `enrolled` links the env's enrollment and resolves queued
+   * environment-targeted jobs onto it; terminal states close the record and
+   * satisfy reap intent.
+   */
+  private handleEnvironmentReport(auth: SpikeAuth, requestId: string, params: unknown): Response {
+    this.requireWorker(auth);
+    const report = parseEnvironmentReportParams(params);
+    const result = this.commit((): EnvironmentReportResult => {
+      this.assertNotRevoked(auth);
+      this.provisionEnrollment(auth);
+      const now = Date.now();
+      const existing = this.readEnvironment(report.environmentId);
+      let row: EnvironmentRow;
+      if (existing === null) {
+        // A bound ephemeral enrollment may only report its own environment
+        // — it cannot mint records other envs' jobs could target.
+        const boundEnvironment = this.effectiveEnvironmentId(auth);
+        if (boundEnvironment !== null && boundEnvironment !== report.environmentId) {
+          throw new RpcFailure('forbidden', { reason: 'environment-not-bound' });
+        }
+        const count = this.ctx.storage.sql
+          .exec<{ n: number }>(
+            'SELECT COUNT(*) AS n FROM environments WHERE account_id = ?',
+            auth.accountId,
+          )
+          .one().n;
+        if (count >= MAX_ENVIRONMENTS_PER_ACCOUNT) {
+          throw new RpcFailure('quota-exceeded', { reason: 'environment-cap' });
+        }
+        row = {
+          environment_id: report.environmentId,
+          account_id: auth.accountId,
+          provider: report.provider,
+          state: 'provisioning',
+          handle: null,
+          enrollment_id: null,
+          job_id: report.jobId ?? null,
+          created_by: auth.enrollmentId,
+          expires_at: report.expiresAt ?? null,
+          reap_requested_at: null,
+          reaped_at: null,
+          created_at: now,
+          updated_at: now,
+        };
+        this.ctx.storage.sql.exec(
+          `INSERT INTO environments (
+             environment_id, account_id, provider, state, handle, enrollment_id,
+             job_id, created_by, expires_at, reap_requested_at, reaped_at,
+             created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          row.environment_id,
+          row.account_id,
+          row.provider,
+          row.state,
+          row.handle,
+          row.enrollment_id,
+          row.job_id,
+          row.created_by,
+          row.expires_at,
+          row.reap_requested_at,
+          row.reaped_at,
+          row.created_at,
+          row.updated_at,
+        );
+      } else {
+        // The record's creator and the environment's linked enrollment may
+        // report — and so may an ephemeral enrollment bound to this
+        // environment at code issuance (that's how the env makes its first
+        // `enrolled` report before the link exists).
+        const boundEnvironment = this.effectiveEnvironmentId(auth);
+        if (
+          existing.created_by !== auth.enrollmentId &&
+          existing.enrollment_id !== auth.enrollmentId &&
+          boundEnvironment !== existing.environment_id
+        ) {
+          throw new RpcFailure('forbidden', { reason: 'environment-not-owned' });
+        }
+        if (existing.reaped_at !== null && report.state !== 'terminated') {
+          throw new RpcFailure('conflict', { reason: 'environment-reaped' });
+        }
+        row = existing;
+      }
+      // An environment links its own enrollment exactly once — the link is
+      // self-referential (reporter == linked enrollment) and must point at
+      // an ephemeral enrollment in this account.
+      if (report.state === 'enrolled' && row.enrollment_id === null) {
+        if (report.enrollmentId === undefined) {
+          throw new RpcFailure('malformed-request', { reason: 'enrollmentId-required' });
+        }
+        if (report.enrollmentId !== auth.enrollmentId) {
+          throw new RpcFailure('forbidden', { reason: 'enrollment-link-not-self' });
+        }
+        const enrollment = this.ctx.storage.sql
+          .exec<{ enrollment_class: string | null }>(
+            'SELECT enrollment_class FROM enrollments WHERE enrollment_id = ?',
+            report.enrollmentId,
+          )
+          .toArray()[0];
+        if (enrollment === undefined || enrollment.enrollment_class !== 'ephemeral') {
+          throw new RpcFailure('forbidden', { reason: 'enrollment-not-ephemeral' });
+        }
+        row.enrollment_id = report.enrollmentId;
+      }
+      const stateChanged = row.state !== report.state;
+      row.state = report.state;
+      if (report.handle !== undefined) {
+        row.handle = JSON.stringify(report.handle);
+      }
+      if (report.jobId !== undefined) {
+        row.job_id = report.jobId;
+      }
+      if (report.expiresAt !== undefined) {
+        row.expires_at = report.expiresAt;
+      }
+      if (report.state === 'reap-requested' && row.reap_requested_at === null) {
+        row.reap_requested_at = now;
+      }
+      // Terminal or verified-receipt reports close the record.
+      if (
+        report.state === 'terminated' ||
+        report.state === 'failed' ||
+        report.reaped === true
+      ) {
+        if (row.reaped_at === null) {
+          row.reaped_at = now;
+        }
+      }
+      row.updated_at = now;
+      this.ctx.storage.sql.exec(
+        `UPDATE environments
+         SET state = ?, handle = ?, enrollment_id = ?, job_id = ?, expires_at = ?,
+             reap_requested_at = ?, reaped_at = ?, updated_at = ?
+         WHERE environment_id = ?`,
+        row.state,
+        row.handle,
+        row.enrollment_id,
+        row.job_id,
+        row.expires_at,
+        row.reap_requested_at,
+        row.reaped_at,
+        row.updated_at,
+        row.environment_id,
+      );
+      if (stateChanged && row.job_id !== null) {
+        const kind: DurableEventKind =
+          report.state === 'enrolled'
+            ? 'environment.enrolled'
+            : report.state === 'terminated'
+              ? 'environment.terminated'
+              : report.state === 'reap-requested'
+                ? 'environment.reap-requested'
+                : 'environment.provisioning';
+        this.journalDurableEvent({
+          jobId: row.job_id,
+          attemptId: '',
+          generation: 0,
+          kind,
+          payload: {
+            environmentId: row.environment_id,
+            provider: row.provider,
+            state: report.state,
+            ...(report.error === undefined ? {} : { error: report.error }),
+            ...(row.enrollment_id === null ? {} : { enrollmentId: row.enrollment_id }),
+          },
+        });
+      }
+      if (report.state === 'enrolled' && row.enrollment_id !== null) {
+        this.resolveEnvironmentTargets(row.environment_id, row.enrollment_id);
+      }
+      return { environment: this.environmentView(row) };
+    });
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  private handleEnvironmentGet(auth: SpikeAuth, requestId: string, params: unknown): Response {
+    const query = parseEnvironmentIdParams(params);
+    const result = this.commit((): EnvironmentGetResult => {
+      this.assertNotRevoked(auth);
+      this.provisionEnrollment(auth);
+      const row = this.readEnvironment(query.environmentId);
+      if (row === null) {
+        throw new RpcFailure('not-found', { reason: 'environment' });
+      }
+      return { environment: this.environmentView(row) };
+    });
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  private handleEnvironmentList(auth: SpikeAuth, requestId: string, params: unknown): Response {
+    const query = parseEnvironmentListParams(params);
+    const result = this.commit((): EnvironmentListResult => {
+      this.assertNotRevoked(auth);
+      this.provisionEnrollment(auth);
+      const rows = this.ctx.storage.sql
+        .exec<EnvironmentRow>(
+          `SELECT * FROM environments
+           WHERE account_id = ? AND (? OR state NOT IN ('terminated', 'failed'))
+           ORDER BY created_at DESC LIMIT ?`,
+          auth.accountId,
+          query.includeTerminal === true ? 1 : 0,
+          MAX_ENVIRONMENTS_PER_ACCOUNT,
+        )
+        .toArray();
+      return { environments: rows.map((row) => this.environmentView(row)) };
+    });
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  /**
+   * `environment.reap`: records durable reap intent. Either the creator, the
+   * env itself, or any account device may request it — cleanup is enacted by
+   * whichever provisioner observes the intent. Reporting `terminated` (or the
+   * sweep's expiry pass) closes the record.
+   */
+  private handleEnvironmentReap(auth: SpikeAuth, requestId: string, params: unknown): Response {
+    const query = parseEnvironmentIdParams(params);
+    const result = this.commit((): EnvironmentReapResult => {
+      this.assertNotRevoked(auth);
+      this.provisionEnrollment(auth);
+      const now = Date.now();
+      const row = this.readEnvironment(query.environmentId);
+      if (row === null) {
+        throw new RpcFailure('not-found', { reason: 'environment' });
+      }
+      if (row.reaped_at !== null) {
+        return { environment: this.environmentView(row) };
+      }
+      if (row.reap_requested_at === null) {
+        row.reap_requested_at = now;
+        row.state = 'reap-requested';
+        row.updated_at = now;
+        this.ctx.storage.sql.exec(
+          `UPDATE environments SET reap_requested_at = ?, state = 'reap-requested', updated_at = ?
+           WHERE environment_id = ?`,
+          row.reap_requested_at,
+          row.updated_at,
+          row.environment_id,
+        );
+        if (row.job_id !== null) {
+          this.journalDurableEvent({
+            jobId: row.job_id,
+            attemptId: '',
+            generation: 0,
+            kind: 'environment.reap-requested',
+            payload: {
+              environmentId: row.environment_id,
+              provider: row.provider,
+              requestedBy: auth.enrollmentId,
+            },
+          });
+        }
+      }
+      return { environment: this.environmentView(row) };
+    });
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  /**
+   * When an environment enrolls, queued jobs targeting it resolve onto its
+   * enrollment id — from that point the claim path treats them exactly like
+   * device-targeted jobs.
+   */
+  private resolveEnvironmentTargets(environmentId: string, enrollmentId: string): void {
+    const pending = this.ctx.storage.sql
+      .exec<{ job_id: string }>(
+        `SELECT job_id FROM jobs
+         WHERE state = 'queued' AND target_enrollment_id IS NULL
+           AND json_extract(requested_target, '$.kind') = 'environment'
+           AND json_extract(requested_target, '$.environmentId') = ?`,
+        environmentId,
+      )
+      .toArray();
+    for (const job of pending) {
+      this.ctx.storage.sql.exec(
+        'UPDATE jobs SET target_enrollment_id = ? WHERE job_id = ?',
+        enrollmentId,
+        job.job_id,
+      );
+      this.emitJobAvailable(job.job_id, enrollmentId);
+    }
+  }
+
+  // ---- ENV-06 credential grants ----------------------------------------------
+  //
+  // Grants are sealed envelopes bound to (job, attempt, fence, target
+  // enrollment). The backend stores and brokers them but never sees plaintext
+  // — the envelope's `ct` is sealed to the target's device key; the binding
+  // fields are plaintext so fencing is enforceable without opening the seal.
+  // Delivery is recorded once; stale-fence or terminal-attempt delivery is
+  // rejected, never silently rebound.
+
+  private async handleCredentialDeliver(
+    auth: SpikeAuth,
+    requestId: string,
+    params: unknown,
+  ): Promise<Response> {
+    const deliver = parseCredentialDeliverParams(params);
+    // Grant id + dedupe hash derive from the envelope bytes — computed
+    // outside the storage transaction (commit callbacks are sync).
+    const envelopeJson = JSON.stringify(deliver.grant);
+    const envelopeSha = await sha256Hex(envelopeJson);
+    const result = this.commit((): CredentialDeliverResult => {
+      this.assertNotRevoked(auth);
+      this.provisionEnrollment(auth);
+      const now = Date.now();
+      const job = this.readJob(deliver.grant.jobId);
+      if (job === null) {
+        throw new RpcFailure('not-found', { reason: 'job' });
+      }
+      const attempt = this.readAttempt(deliver.grant.attemptId);
+      if (attempt === null || attempt.job_id !== deliver.grant.jobId) {
+        throw new RpcFailure('not-found', { reason: 'attempt' });
+      }
+      if (!isActiveAttemptState(attempt.state)) {
+        throw new RpcFailure('conflict', { reason: 'attempt-terminal' });
+      }
+      if (attempt.fence !== deliver.grant.fence) {
+        throw new RpcFailure('conflict', { reason: 'fence-mismatch' });
+      }
+      if (attempt.worker_enrollment_id !== deliver.grant.targetEnrollmentId) {
+        throw new RpcFailure('conflict', { reason: 'target-mismatch' });
+      }
+      const expiresAtMs = Date.parse(deliver.grant.expiresAt);
+      if (expiresAtMs <= now || expiresAtMs > now + GRANT_MAX_TTL_MS) {
+        throw new RpcFailure('malformed-request', { reason: 'expiresAt-window' });
+      }
+      const existing = this.ctx.storage.sql
+        .exec<{ grant_id: string }>(
+          'SELECT grant_id FROM credential_grants WHERE grant_id = ?',
+          envelopeSha,
+        )
+        .toArray()[0];
+      if (existing !== undefined) {
+        return { delivered: false };
+      }
+      const count = this.ctx.storage.sql
+        .exec<{ n: number }>(
+          'SELECT COUNT(*) AS n FROM credential_grants WHERE attempt_id = ?',
+          deliver.grant.attemptId,
+        )
+        .one().n;
+      if (count >= MAX_GRANTS_PER_ATTEMPT) {
+        throw new RpcFailure('quota-exceeded', { reason: 'grant-cap' });
+      }
+      this.ctx.storage.sql.exec(
+        `INSERT INTO credential_grants (
+           grant_id, account_id, job_id, attempt_id, fence, target_enrollment_id,
+           envelope, envelope_sha, expires_at, delivered_at, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+        envelopeSha,
+        auth.accountId,
+        deliver.grant.jobId,
+        deliver.grant.attemptId,
+        deliver.grant.fence,
+        deliver.grant.targetEnrollmentId,
+        envelopeJson,
+        envelopeSha,
+        expiresAtMs,
+        now,
+      );
+      return { delivered: true };
+    });
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  /**
+   * `credential.pull`: the claiming environment fetches its sealed grants.
+   * Only the attempt's current claimant may pull, and only while its fence is
+   * live — a stale incarnation cannot collect credentials addressed to it.
+   */
+  private handleCredentialPull(auth: SpikeAuth, requestId: string, params: unknown): Response {
+    this.requireWorker(auth);
+    const query = parseCredentialPullParams(params);
+    const result = this.commit((): CredentialPullResult => {
+      this.assertNotRevoked(auth);
+      this.provisionEnrollment(auth);
+      const now = Date.now();
+      const attempt = this.readAttempt(query.attemptId);
+      if (attempt === null) {
+        throw new RpcFailure('not-found', { reason: 'attempt' });
+      }
+      if (attempt.worker_enrollment_id !== auth.enrollmentId || attempt.fence !== query.fence) {
+        throw new RpcFailure('forbidden', { reason: 'not-claimant' });
+      }
+      if (!isActiveAttemptState(attempt.state)) {
+        throw new RpcFailure('conflict', { reason: 'attempt-terminal' });
+      }
+      const rows = this.ctx.storage.sql
+        .exec<CredentialGrantRow>(
+          `SELECT * FROM credential_grants
+           WHERE attempt_id = ? AND target_enrollment_id = ? AND expires_at > ?
+           ORDER BY created_at ASC`,
+          query.attemptId,
+          auth.enrollmentId,
+          now,
+        )
+        .toArray();
+      const grants: CredentialGrantPayload[] = [];
+      for (const row of rows) {
+        grants.push(JSON.parse(row.envelope) as CredentialGrantPayload);
+        if (row.delivered_at === null) {
+          this.ctx.storage.sql.exec(
+            'UPDATE credential_grants SET delivered_at = ? WHERE grant_id = ?',
+            now,
+            row.grant_id,
+          );
+        }
+      }
+      return { grants };
+    });
+    return rpcSuccessResponse(requestId, result);
+  }
+
   // ---- SESSION-03 handoff ---------------------------------------------------
 
   /**
@@ -5806,6 +6450,35 @@ export class AccountCoordinator extends DurableObject<Env> {
       for (const row of staleArtifacts) {
         this.ctx.storage.sql.exec('DELETE FROM artifacts WHERE artifact_id = ?', row.artifact_id);
       }
+      // ENV-01: environments past TTL that nobody reaped get durable reap
+      // intent — any provisioner-capable device observing it enacts the
+      // actual provider-side terminate. Terminal rows past the audit
+      // window purge.
+      this.ctx.storage.sql.exec(
+        `UPDATE environments SET state = 'expired', reap_requested_at = COALESCE(reap_requested_at, ?), updated_at = ?
+         WHERE expires_at IS NOT NULL AND expires_at <= ? AND reaped_at IS NULL AND state != 'expired'`,
+        now,
+        now,
+        now,
+      );
+      const staleEnvironments = this.ctx.storage.sql
+        .exec<{ environment_id: string }>(
+          `SELECT environment_id FROM environments
+           WHERE reaped_at IS NOT NULL AND reaped_at < ? LIMIT ?`,
+          now - ENVIRONMENT_AUDIT_RETENTION_MS,
+          SWEEP_BATCH_ROWS,
+        )
+        .toArray();
+      for (const row of staleEnvironments) {
+        this.ctx.storage.sql.exec(
+          'DELETE FROM environments WHERE environment_id = ?',
+          row.environment_id,
+        );
+      }
+      // ENV-06: expired grants are useless — pull only returns unexpired
+      // rows, so purge them on the sweep cadence. Undelivered grants die
+      // with their expiry too; the plaintext was never visible here anyway.
+      this.ctx.storage.sql.exec('DELETE FROM credential_grants WHERE expires_at <= ?', now);
       // MESH-03: the durable journal keeps the same 90-day horizon as the
       // change log; job_event_meta rows persist so cursors never rewind.
       const staleEvents = this.ctx.storage.sql
@@ -6637,6 +7310,7 @@ const JOB_KINDS: readonly string[] = [
   'start-session',
   'code-task',
   'workflow-node',
+  'provision-environment',
 ];
 const JOB_STATES: readonly string[] = [
   'queued',
@@ -6854,6 +7528,17 @@ function parseRequestedTarget(value: unknown): RequestedTarget {
   }
   if (kind === 'auto') {
     return { kind: 'auto', ...(requirements === undefined ? {} : { requirements }) };
+  }
+  if (kind === 'environment') {
+    const environmentId = value['environmentId'];
+    if (!isBoundedId(environmentId)) {
+      throw new RpcFailure('malformed-request', { reason: 'requestedTarget.environmentId' });
+    }
+    return {
+      kind: 'environment',
+      environmentId,
+      ...(requirements === undefined ? {} : { requirements }),
+    };
   }
   throw new RpcFailure('malformed-request', { reason: 'requestedTarget.kind' });
 }
@@ -7665,4 +8350,157 @@ function parseHandoffCancelParams(params: unknown): {
     handoffId: params['handoffId'],
     ...(reason === undefined ? {} : { reason }),
   };
+}
+
+// ---- ENV-01/ENV-06 param parsing --------------------------------------------
+
+function parseEnvironmentReportParams(params: unknown): {
+  environmentId: string;
+  provider: EnvironmentProviderId;
+  state: EnvironmentState;
+  handle?: Record<string, unknown>;
+  enrollmentId?: string;
+  jobId?: string;
+  expiresAt?: number;
+  reaped?: boolean;
+  error?: string;
+} {
+  if (!isRecord(params)) {
+    throw new RpcFailure('malformed-request', { reason: 'report-params' });
+  }
+  const environmentId = params['environmentId'];
+  const provider = params['provider'];
+  const state = params['state'];
+  if (!isBoundedId(environmentId)) {
+    throw new RpcFailure('malformed-request', { reason: 'environmentId' });
+  }
+  if (!isEnvironmentProviderId(provider)) {
+    throw new RpcFailure('malformed-request', { reason: 'provider' });
+  }
+  if (typeof state !== 'string' || !ENVIRONMENT_STATES.includes(state as EnvironmentState)) {
+    throw new RpcFailure('malformed-request', { reason: 'state' });
+  }
+  const handle = params['handle'];
+  if (handle !== undefined && !isRecord(handle)) {
+    throw new RpcFailure('malformed-request', { reason: 'handle' });
+  }
+  if (handle !== undefined && JSON.stringify(handle).length > MAX_ENVIRONMENT_HANDLE_BYTES) {
+    throw new RpcFailure('payload-too-large', { reason: 'handle' });
+  }
+  const enrollmentId = params['enrollmentId'];
+  if (enrollmentId !== undefined && !isBoundedId(enrollmentId)) {
+    throw new RpcFailure('malformed-request', { reason: 'enrollmentId' });
+  }
+  const jobId = params['jobId'];
+  if (jobId !== undefined && !isBoundedId(jobId)) {
+    throw new RpcFailure('malformed-request', { reason: 'jobId' });
+  }
+  const expiresAtRaw = params['expiresAt'];
+  let expiresAt: number | undefined;
+  if (expiresAtRaw !== undefined) {
+    if (typeof expiresAtRaw !== 'string' || !Number.isFinite(Date.parse(expiresAtRaw))) {
+      throw new RpcFailure('malformed-request', { reason: 'expiresAt' });
+    }
+    expiresAt = Date.parse(expiresAtRaw);
+  }
+  const reaped = params['reaped'];
+  if (reaped !== undefined && typeof reaped !== 'boolean') {
+    throw new RpcFailure('malformed-request', { reason: 'reaped' });
+  }
+  const error = params['error'];
+  if (error !== undefined && (typeof error !== 'string' || error.length > MAX_REPORT_ERROR_LENGTH)) {
+    throw new RpcFailure('malformed-request', { reason: 'error' });
+  }
+  return {
+    environmentId,
+    provider,
+    state: state as EnvironmentState,
+    ...(handle === undefined ? {} : { handle }),
+    ...(enrollmentId === undefined ? {} : { enrollmentId }),
+    ...(jobId === undefined ? {} : { jobId }),
+    ...(expiresAt === undefined ? {} : { expiresAt }),
+    ...(reaped === undefined ? {} : { reaped }),
+    ...(error === undefined ? {} : { error }),
+  };
+}
+
+function parseEnvironmentIdParams(params: unknown): { environmentId: string } {
+  if (!isRecord(params) || !isBoundedId(params['environmentId'])) {
+    throw new RpcFailure('malformed-request', { reason: 'environmentId' });
+  }
+  return { environmentId: params['environmentId'] };
+}
+
+function parseEnvironmentListParams(params: unknown): { includeTerminal?: boolean } {
+  if (params === undefined || params === null) {
+    return {};
+  }
+  if (!isRecord(params)) {
+    throw new RpcFailure('malformed-request', { reason: 'list-params' });
+  }
+  const includeTerminal = params['includeTerminal'];
+  if (includeTerminal !== undefined && typeof includeTerminal !== 'boolean') {
+    throw new RpcFailure('malformed-request', { reason: 'includeTerminal' });
+  }
+  return { ...(includeTerminal === undefined ? {} : { includeTerminal }) };
+}
+
+/**
+ * `credential.deliver` params carry the whole sealed grant — the fence-
+ * binding fields are plaintext inside the payload so the backend can
+ * enforce them without opening `ct`.
+ */
+function parseCredentialDeliverParams(params: unknown): { grant: CredentialGrantPayload } {
+  if (!isRecord(params) || !isRecord(params['grant'])) {
+    throw new RpcFailure('malformed-request', { reason: 'grant' });
+  }
+  const grant = params['grant'];
+  if (grant['v'] !== 1 || grant['enc'] !== 'x25519-aes-256-gcm') {
+    throw new RpcFailure('malformed-request', { reason: 'grant-version' });
+  }
+  if (!isBoundedId(grant['jobId'])) {
+    throw new RpcFailure('malformed-request', { reason: 'jobId' });
+  }
+  if (!isBoundedId(grant['attemptId'])) {
+    throw new RpcFailure('malformed-request', { reason: 'attemptId' });
+  }
+  const fence = grant['fence'];
+  if (typeof fence !== 'number' || !Number.isInteger(fence) || fence < 1) {
+    throw new RpcFailure('malformed-request', { reason: 'fence' });
+  }
+  if (!isBoundedId(grant['targetEnrollmentId'])) {
+    throw new RpcFailure('malformed-request', { reason: 'targetEnrollmentId' });
+  }
+  const expiresAt = grant['expiresAt'];
+  if (typeof expiresAt !== 'string' || !Number.isFinite(Date.parse(expiresAt))) {
+    throw new RpcFailure('malformed-request', { reason: 'expiresAt' });
+  }
+  for (const field of ['ephPub', 'nonce', 'ct'] as const) {
+    const value = grant[field];
+    if (typeof value !== 'string' || value.length === 0 || value.length > MAX_GRANT_ENVELOPE_BYTES) {
+      throw new RpcFailure('malformed-request', { reason: `grant-${field}` });
+    }
+  }
+  if (JSON.stringify(grant).length > MAX_GRANT_ENVELOPE_BYTES) {
+    throw new RpcFailure('payload-too-large', { reason: 'grant' });
+  }
+  return { grant: grant as unknown as CredentialGrantPayload };
+}
+
+function parseCredentialPullParams(params: unknown): {
+  attemptId: string;
+  fence: number;
+} {
+  if (!isRecord(params)) {
+    throw new RpcFailure('malformed-request', { reason: 'pull-params' });
+  }
+  const attemptId = params['attemptId'];
+  const fence = params['fence'];
+  if (!isBoundedId(attemptId)) {
+    throw new RpcFailure('malformed-request', { reason: 'attemptId' });
+  }
+  if (typeof fence !== 'number' || !Number.isInteger(fence) || fence < 1) {
+    throw new RpcFailure('malformed-request', { reason: 'fence' });
+  }
+  return { attemptId, fence };
 }

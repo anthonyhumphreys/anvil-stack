@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 83;
+export const SCHEMA_VERSION = 84;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -1379,6 +1379,37 @@ CREATE TABLE IF NOT EXISTS sync_keyring_deliveries (
   delivered_at TEXT NOT NULL,
   PRIMARY KEY (backend_id, account_id, enrollment_id, key_version)
 );
+-- ENV-01 cloud environments. Keep in sync with the migration 84 copies.
+CREATE TABLE IF NOT EXISTS cloud_provider_connections (
+  id TEXT PRIMARY KEY,
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  display_name TEXT,
+  config_json TEXT NOT NULL DEFAULT '{}',
+  secret_blob BLOB,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cloud_provider_connections_scope
+  ON cloud_provider_connections (backend_id, account_id, provider);
+CREATE TABLE IF NOT EXISTS cloud_environments (
+  environment_id TEXT PRIMARY KEY,
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  state TEXT NOT NULL,
+  handle_json TEXT,
+  enrollment_id TEXT,
+  job_id TEXT,
+  connection_id TEXT,
+  created_by TEXT,
+  expires_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cloud_environments_scope
+  ON cloud_environments (backend_id, account_id, state);
 `;
 
 /**
@@ -2980,5 +3011,41 @@ INSERT INTO sync_pairing_scoped (nonce, backend_id, account_id, secret_wrapped, 
   SELECT nonce, backend_id, account_id, secret_wrapped, role, created_at FROM sync_pairing;
 DROP TABLE sync_pairing;
 ALTER TABLE sync_pairing_scoped RENAME TO sync_pairing;
+`,
+  84: `
+-- ENV-01 cloud environments: provider connections hold non-secret config
+-- plus a secret_ref indirection into OS credential storage (credentials
+-- never land in SQLite); cloud_environments is the local registry mirror
+-- of backend environment records.
+CREATE TABLE IF NOT EXISTS cloud_provider_connections (
+  id TEXT PRIMARY KEY,
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  display_name TEXT,
+  config_json TEXT NOT NULL DEFAULT '{}',
+  secret_blob BLOB,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cloud_provider_connections_scope
+  ON cloud_provider_connections (backend_id, account_id, provider);
+CREATE TABLE IF NOT EXISTS cloud_environments (
+  environment_id TEXT PRIMARY KEY,
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  state TEXT NOT NULL,
+  handle_json TEXT,
+  enrollment_id TEXT,
+  job_id TEXT,
+  connection_id TEXT,
+  created_by TEXT,
+  expires_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cloud_environments_scope
+  ON cloud_environments (backend_id, account_id, state);
 `,
 };

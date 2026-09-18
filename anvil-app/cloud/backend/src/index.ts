@@ -67,11 +67,27 @@ async function authenticate(request: Request, env: Env): Promise<VerifiedAuth | 
     if (!response.ok) {
       return null;
     }
-    const identity = (await response.json()) as { accountId?: unknown; enrollmentId?: unknown };
+    const identity = (await response.json()) as {
+      accountId?: unknown;
+      enrollmentId?: unknown;
+      enrollmentClass?: unknown;
+      environmentId?: unknown;
+    };
     if (typeof identity.accountId !== 'string' || typeof identity.enrollmentId !== 'string') {
       return null;
     }
-    return { accountId: identity.accountId, enrollmentId: identity.enrollmentId };
+    return {
+      accountId: identity.accountId,
+      enrollmentId: identity.enrollmentId,
+      // ENV-01: the session object is authoritative for class; a missing
+      // field (older session object) defaults to 'device' — the account
+      // object still pins 'ephemeral' on first sight, so a dropped class
+      // can never widen an env back to device privileges.
+      enrollmentClass: identity.enrollmentClass === 'ephemeral' ? 'ephemeral' : 'device',
+      ...(typeof identity.environmentId === 'string'
+        ? { environmentId: identity.environmentId }
+        : {}),
+    };
   }
   if (env.ANVIL_DEV_SPIKE === 'true') {
     return parseSpikeAuth(request.headers.get('Authorization'));
@@ -88,6 +104,12 @@ function forwardToAccount(
   const headers = new Headers(init.headers);
   headers.set('x-anvil-account', auth.accountId);
   headers.set('x-anvil-enrollment', auth.enrollmentId);
+  // ENV-01: always forward the verified class — omitting it would let a
+  // stale client hint downgrade an ephemeral env's effective privileges.
+  headers.set('x-anvil-enrollment-class', auth.enrollmentClass ?? 'device');
+  if (auth.environmentId !== undefined) {
+    headers.set('x-anvil-environment-id', auth.environmentId);
+  }
   const id = env.ACCOUNT.idFromName(auth.accountId);
   const stub = env.ACCOUNT.get(id);
   return stub.fetch(
@@ -220,6 +242,10 @@ async function handleArtifactBytes(
   const headers = new Headers();
   headers.set('x-anvil-account', auth.accountId);
   headers.set('x-anvil-enrollment', auth.enrollmentId);
+  headers.set('x-anvil-enrollment-class', auth.enrollmentClass ?? 'device');
+  if (auth.environmentId !== undefined) {
+    headers.set('x-anvil-environment-id', auth.environmentId);
+  }
   const contentType = request.headers.get('content-type');
   if (contentType !== null) {
     headers.set('content-type', contentType);
@@ -493,6 +519,13 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
     case 'artifact.get':
     case 'artifact.list':
     case 'artifact.delete':
+    // ENV-01 cloud environment lifecycle + ENV-06 credential grants.
+    case 'environment.report':
+    case 'environment.get':
+    case 'environment.list':
+    case 'environment.reap':
+    case 'credential.deliver':
+    case 'credential.pull':
     // SESSION-03 session ownership handoff.
     case 'handoff.create':
     case 'handoff.get':

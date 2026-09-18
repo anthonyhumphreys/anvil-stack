@@ -59,6 +59,13 @@ export const OPERATIONS = [
   'artifact.get',
   'artifact.list',
   'artifact.delete',
+  // ENV-01 cloud environment lifecycle + ENV-06 credential grants
+  'environment.report',
+  'environment.get',
+  'environment.list',
+  'environment.reap',
+  'credential.deliver',
+  'credential.pull',
   // Hosted sharing (user-published artifacts behind revocable share ids)
   'share.create',
   'share.finalize',
@@ -116,6 +123,12 @@ export const OPERATION_PROFILE: Record<OperationName, OperationProfile> = {
   'artifact.get': 'mesh/1',
   'artifact.list': 'mesh/1',
   'artifact.delete': 'mesh/1',
+  'environment.report': 'mesh/1',
+  'environment.get': 'mesh/1',
+  'environment.list': 'mesh/1',
+  'environment.reap': 'mesh/1',
+  'credential.deliver': 'mesh/1',
+  'credential.pull': 'mesh/1',
   'share.create': 'sync/1',
   'share.finalize': 'sync/1',
   'share.list': 'sync/1',
@@ -171,6 +184,12 @@ export const OPERATION_ROLE: Record<OperationName, ActorRole> = {
   'artifact.get': 'either',
   'artifact.list': 'either',
   'artifact.delete': 'user',
+  'environment.report': 'worker',
+  'environment.get': 'either',
+  'environment.list': 'either',
+  'environment.reap': 'either',
+  'credential.deliver': 'user',
+  'credential.pull': 'worker',
   'share.create': 'user',
   'share.finalize': 'user',
   'share.list': 'user',
@@ -183,6 +202,53 @@ export function profileForOperation(operation: OperationName): OperationProfile 
 
 export function requiredActorRole(operation: OperationName): ActorRole {
   return OPERATION_ROLE[operation];
+}
+
+/**
+ * ENV-01: the operation allowlist for `ephemeral` (cloud environment)
+ * enrollments. An environment is a job *executor*, never a job *source* or
+ * trust administrator: it may sync (to receive keyring wraps and sealed
+ * artifacts), publish its policy/capabilities, claim and report attempts,
+ * observe its own jobs, manage its own environment record, and pull the
+ * credential grants addressed to it. Everything else — creating jobs,
+ * minting codes, deciding approvals, managing devices, account ops,
+ * sharing — is denied at both the Worker route and the account object.
+ */
+export const EPHEMERAL_ALLOWED_OPERATIONS: ReadonlySet<OperationName> = new Set([
+  'session.describe',
+  'device.policy.publish',
+  'sync.push',
+  'sync.pull',
+  'sync.scan.begin',
+  'sync.scan.page',
+  'sync.scan.finish',
+  'worker.connect',
+  'worker.describe',
+  'worker.capabilities.publish',
+  'worker.replica.publish',
+  'job.get',
+  'job.list',
+  'job.claim',
+  'attempt.renew',
+  'attempt.report',
+  'event.pull',
+  'approval.get',
+  'handoff.get',
+  'handoff.advance',
+  'handoff.cancel',
+  'artifact.reserve',
+  'artifact.finalize',
+  'artifact.get',
+  'artifact.list',
+  'environment.report',
+  'environment.get',
+  'environment.list',
+  'environment.reap',
+  'credential.pull',
+]);
+
+export function ephemeralOperationAllowed(operation: OperationName): boolean {
+  return EPHEMERAL_ALLOWED_OPERATIONS.has(operation);
 }
 
 /**
@@ -246,6 +312,17 @@ export const HOSTED_OPERATION_CLASS: Record<OperationName, HostedOperationClass>
   'artifact.get': 'control',
   'artifact.list': 'control',
   'artifact.delete': 'control',
+  // environment.* rides on already-created provision jobs: reporting and
+  // reaping finish bounded in-flight work, so they stay `control` like
+  // attempt.report/job.cancel — stopping must never require payment.
+  'environment.report': 'control',
+  'environment.get': 'control',
+  'environment.list': 'control',
+  'environment.reap': 'control',
+  // Grants are scoped to a claimed attempt's existing fence — delivery and
+  // pull finish work that mutating job.claim already authorized.
+  'credential.deliver': 'control',
+  'credential.pull': 'control',
   'share.create': 'mutating',
   'share.finalize': 'control',
   'share.list': 'control',

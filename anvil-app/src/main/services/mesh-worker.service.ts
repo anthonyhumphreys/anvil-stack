@@ -44,7 +44,8 @@ import type {
   SessionCheckpoint,
 } from '../../../cloud/contract/handoff.js';
 import { isSealedCheckpoint } from '../../../cloud/contract/handoff.js';
-import { unsealScopedJson } from './sync-keyring.service.js';
+import { unsealCredentialGrant, unsealScopedJson } from './sync-keyring.service.js';
+import type { CredentialPullResult } from '../../../cloud/contract/sealed.js';
 import type { SyncScope } from '../../shared/sync-mesh.js';
 import { workspaceDefinitionRevision } from './sync-entity-domain.js';
 import type { AgentProvider, ReasoningEffort } from '../../shared/types.js';
@@ -80,6 +81,16 @@ import type {
   MeshJob,
   ResultManifestVerification,
 } from '../../../cloud/contract/jobs.js';
+import {
+  isEnvironmentProviderId,
+  type ProvisionEnvironmentInputs,
+} from '../../../cloud/contract/environment.js';
+import {
+  provisionCapabilities,
+  provisionEnvironment,
+  reapExpiredEnvironments,
+  type ProvisionerScope,
+} from './cloud-environment.service.js';
 
 export type { MeshWorkerStatus } from '../../shared/sync-runtime.js';
 import type { MeshWorkerStatus } from '../../shared/sync-runtime.js';
@@ -103,6 +114,17 @@ interface MeshWorkerContext {
    * requests) must NOT silently drop — callers check this and fail closed.
    */
   isLive?: () => boolean;
+  /**
+   * ENV-03: mints an ephemeral-class `anvil-pair-…` payload for a cloud
+   * environment (enrollment code + sealed ADK). Injected by the runtime
+   * because pairing mint needs the account key — null when no key exists.
+   */
+  mintEnvironmentPairing?: (options: {
+    provider: string;
+    ttlSeconds: number;
+    environmentId: string;
+    displayName?: string;
+  }) => Promise<string | null>;
 }
 
 interface AttemptRow {
@@ -148,6 +170,19 @@ export function configureMeshWorkerContext(provider: () => MeshWorkerContext | n
 
 function workerContext(): MeshWorkerContext | null {
   return contextProvider?.() ?? null;
+}
+
+/** ENV-01: the worker's sync scope as a provisioner scope, when present. */
+function provisionerScope(): ProvisionerScope | null {
+  const ctx = workerContext();
+  if (ctx?.scope === undefined) return null;
+  return {
+    backendId: ctx.scope.backendId,
+    accountId: ctx.scope.accountId,
+    enrollmentId: ctx.enrollmentId,
+    apiUrl: ctx.apiUrl,
+    accessToken: ctx.accessToken,
+  };
 }
 
 async function meshRpc<T>(operation: string, params: unknown): Promise<T> {
@@ -339,11 +374,15 @@ async function publishWorkerPolicy(): Promise<void> {
 }
 
 function buildCapabilities(): WorkerCapabilities {
+  // ENV-03: `provision:<provider>` per stored provider connection so
+  // provision-environment jobs route here via kind:'auto' placement.
+  const scope = provisionerScope();
+  const provisionCaps = scope === null ? [] : provisionCapabilities(scope);
   return {
     os: platform(),
     arch: process.arch,
     memoryMb: Math.round(totalmem() / (1024 * 1024)),
-    capabilities: [...WORKER_CAPABILITIES],
+    capabilities: [...WORKER_CAPABILITIES, ...provisionCaps],
     maxConcurrentJobs: DEFAULT_MAX_CONCURRENT_JOBS,
   };
 }
@@ -398,6 +437,12 @@ export function meshWorkerOnSyncReady(): void {
   void connectWorker()
     .then(() => publishReplicas())
     .then(() => sweepClaimableJobs())
+    // ENV-03: reclaim environments whose TTL lapsed while this provisioner
+    // was offline; the backend marks `reap-requested`, the worker terminates.
+    .then(() => {
+      const scope = provisionerScope();
+      return scope === null ? undefined : reapExpiredEnvironments(scope);
+    })
     .catch(() => undefined);
   armHeartbeat();
 }
@@ -568,6 +613,59 @@ async function renewActiveAttempts(): Promise<void> {
   }
 }
 
+/**
+ * ENV-06: unsealed per-attempt grant env vars, held in memory only for the
+ * attempt's lifetime — pulled after claim (fence known), injected into the
+ * provider spawn env, and dropped when the attempt goes terminal. Grants
+ * are never journaled; only counts and rejections are.
+ */
+const attemptGrantEnv = new Map<string, Record<string, string>>();
+
+async function pullCredentialGrants(attempt: ExecutionAttempt): Promise<void> {
+  const ctx = workerContext();
+  if (ctx === null || ctx.scope === undefined) return;
+  try {
+    const { grants } = await meshRpc<CredentialPullResult>('credential.pull', {
+      attemptId: attempt.id,
+      fence: attempt.fence,
+    });
+    if (grants.length === 0) return;
+    const merged: Record<string, string> = {};
+    let applied = 0;
+    for (const grant of grants) {
+      // Binding fields must match the live attempt before we even try the
+      // seal — a grant for a different fence/target is not ours to open.
+      if (
+        grant.jobId !== attempt.jobId ||
+        grant.fence !== attempt.fence ||
+        grant.targetEnrollmentId !== ctx.enrollmentId
+      ) {
+        appendJournal(attempt.id, 'credential-grant-rejected', { reason: 'binding-mismatch' });
+        continue;
+      }
+      const inner = unsealCredentialGrant(ctx.scope, ctx.enrollmentId, grant);
+      if (inner === null) {
+        appendJournal(attempt.id, 'credential-grant-rejected', { reason: 'unseal-failed' });
+        continue;
+      }
+      for (const [name, value] of Object.entries(inner.env)) {
+        merged[name] = value;
+      }
+      applied += 1;
+    }
+    if (applied > 0) {
+      attemptGrantEnv.set(attempt.id, merged);
+      appendJournal(attempt.id, 'credential-grants-applied', { count: applied });
+    }
+  } catch (error) {
+    // A pull failure leaves the attempt running without grants — provider
+    // ambient credentials may still carry it. Not fatal, but journal it.
+    appendJournal(attempt.id, 'credential-grant-pull-failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 async function runAttempt(attempt: ExecutionAttempt, job: MeshJob): Promise<void> {
   const attemptId = attempt.id;
   appendJournal(attemptId, 'preparing');
@@ -584,6 +682,9 @@ async function runAttempt(attempt: ExecutionAttempt, job: MeshJob): Promise<void
     }
     updateAttemptState(attemptId, 'running');
     appendJournal(attemptId, 'running');
+    // ENV-06: sealed grants addressed to this claim are pulled now that the
+    // fence is known; the executor injects them into provider spawns.
+    await pullCredentialGrants(attempt);
     const result = await executor(job, attempt);
     const cancelled = isCancelRequested(attemptId);
     // MESH-03: persist attempt evidence as a private R2 artifact while the
@@ -621,6 +722,9 @@ async function runAttempt(attempt: ExecutionAttempt, job: MeshJob): Promise<void
   } finally {
     activitySequences.delete(`attempt:${attemptId}`);
     controlSequences.delete(attemptId);
+    // ENV-06: grant material dies with the attempt — a re-fenced attempt
+    // must pull fresh grants rather than reuse an old incarnation's.
+    attemptGrantEnv.delete(attemptId);
   }
 }
 
@@ -715,7 +819,83 @@ const EXECUTORS: Record<
   // FLOW-02: a workflow node IS a code-task unit plus result transfer —
   // the manifest declares `resultTransfer: bundle-artifacts`.
   'workflow-node': executeCodeTask,
+  // ENV-03: provider-side environment create + pairing bootstrap.
+  'provision-environment': executeProvisionEnvironment,
 };
+
+/**
+ * ENV-03: claims a `provision-environment` job, mints the ephemeral pairing
+ * payload, and drives the matching provider's create. Enrollment completes
+ * asynchronously inside the environment — it self-reports `enrolled` and
+ * the backend resolves environment-targeted jobs onto it.
+ */
+async function executeProvisionEnvironment(
+  job: MeshJob,
+  attempt: ExecutionAttempt,
+): Promise<Record<string, unknown>> {
+  const inputs = parseProvisionEnvironmentInputs(job.inputManifest);
+  const scope = provisionerScope();
+  if (scope === null) {
+    throw new Error('provision-environment requires an active sync scope.');
+  }
+  const mint = workerContext()?.mintEnvironmentPairing;
+  if (mint === undefined) {
+    throw new Error('Environment pairing mint is unavailable on this runtime.');
+  }
+  emitActivity(attempt, `provisioning ${inputs.provider} environment ${inputs.environmentId}`);
+  const pairingPayload = await mint({
+    provider: inputs.provider,
+    ttlSeconds: inputs.ttlSeconds,
+    environmentId: inputs.environmentId,
+    displayName: inputs.displayName ?? `env:${inputs.environmentId}`,
+  });
+  if (pairingPayload === null) {
+    throw new Error('Could not mint an environment pairing payload (account key unavailable).');
+  }
+  const result = await provisionEnvironment(scope, inputs, pairingPayload, job.id);
+  appendJournal(attempt.id, 'environment-provisioned', {
+    environmentId: inputs.environmentId,
+    provider: inputs.provider,
+    providerRef: result['providerRef'],
+  });
+  emitActivity(attempt, `environment ${inputs.environmentId} accepted by ${inputs.provider}`);
+  return result;
+}
+
+function parseProvisionEnvironmentInputs(manifest: ExecutionManifest): ProvisionEnvironmentInputs {
+  const inputs = manifest.inputs;
+  const provider = inputs['provider'];
+  const environmentId = inputs['environmentId'];
+  const ttlSeconds = inputs['ttlSeconds'];
+  if (!isEnvironmentProviderId(provider)) {
+    throw new Error('provision-environment manifest has no valid provider');
+  }
+  if (typeof environmentId !== 'string' || environmentId.length === 0) {
+    throw new Error('provision-environment manifest has no environmentId');
+  }
+  if (typeof ttlSeconds !== 'number' || !Number.isFinite(ttlSeconds) || ttlSeconds < 60) {
+    throw new Error('provision-environment manifest ttlSeconds must be >= 60');
+  }
+  const imageRef = inputs['imageRef'];
+  const connectionId = inputs['connectionId'];
+  const displayName = inputs['displayName'];
+  const networkPolicy = inputs['networkPolicy'];
+  const resources = inputs['resources'];
+  return {
+    environmentId,
+    provider,
+    ttlSeconds,
+    ...(typeof imageRef === 'string' ? { imageRef } : {}),
+    ...(typeof connectionId === 'string' ? { connectionId } : {}),
+    ...(typeof displayName === 'string' ? { displayName } : {}),
+    ...(Array.isArray(networkPolicy) && networkPolicy.every((v) => typeof v === 'string')
+      ? { networkPolicy: networkPolicy as string[] }
+      : {}),
+    ...(typeof resources === 'object' && resources !== null
+      ? { resources: resources as { vcpus?: number; memoryMb?: number } }
+      : {}),
+  };
+}
 
 /** Worker→backend control stream (`streamId: 'control'`) sequence space. */
 const controlSequences = new Map<string, number>();
@@ -1259,6 +1439,11 @@ async function executeStartSession(
       ...(typeof rawEffort === 'string' ? { reasoningEffort: rawEffort as ReasoningEffort } : {}),
       sandbox,
       ...(prior.resumeThreadId !== null ? { resumeThreadId: prior.resumeThreadId } : {}),
+      // ENV-06: grants for this claim are in-memory only and win over
+      // ambient provider credentials for the duration of the turn.
+      ...(attemptGrantEnv.get(attempt.id) === undefined
+        ? {}
+        : { extraEnv: attemptGrantEnv.get(attempt.id) }),
       turnTimeoutMs,
     },
     {
@@ -1527,6 +1712,11 @@ async function executeCodeTask(
       ...(typeof rawEffort === 'string' ? { reasoningEffort: rawEffort as ReasoningEffort } : {}),
       sandbox,
       ...(prior.resumeThreadId !== null ? { resumeThreadId: prior.resumeThreadId } : {}),
+      // ENV-06: grants for this claim are in-memory only and win over
+      // ambient provider credentials for the duration of the turn.
+      ...(attemptGrantEnv.get(attempt.id) === undefined
+        ? {}
+        : { extraEnv: attemptGrantEnv.get(attempt.id) }),
       turnTimeoutMs,
     },
     {

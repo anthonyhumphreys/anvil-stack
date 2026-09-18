@@ -11,7 +11,15 @@ export type JobKind =
   | 'prepare-workspace'
   | 'start-session'
   | 'code-task'
-  | 'workflow-node';
+  | 'workflow-node'
+  /**
+   * ENV-01: provisions a cloud agent environment. Claimed by any worker
+   * advertising `provision:<provider>` (target `kind:'auto'` with that
+   * capability requirement); the executor creates the provider
+   * environment, injects an ephemeral-class pairing payload, and reports
+   * progress via `environment.report`.
+   */
+  | 'provision-environment';
 
 export type JobState =
   | 'queued'
@@ -43,8 +51,18 @@ export interface CapabilityRequirements {
 }
 
 export interface RequestedTarget {
-  kind: 'device' | 'auto';
+  /**
+   * `device` pins a worker enrollment; `auto` lets placement pick among
+   * live workers satisfying `requirements`; `environment` resolves to the
+   * ephemeral enrollment of the named environment record (ENV-01) — a job
+   * may be created while the environment is still provisioning, and the
+   * backend resolves the target when `environment.report` links the
+   * enrollment.
+   */
+  kind: 'device' | 'auto' | 'environment';
   enrollmentId?: string;
+  /** `kind:'environment'`: the CloudEnvironment.environmentId to target. */
+  environmentId?: string;
   requirements?: CapabilityRequirements;
 }
 
@@ -332,6 +350,16 @@ export type DurableEventKind =
   | 'artifact.published'
   | 'artifact.deleted'
   | 'artifact.expired'
+  /**
+   * ENV-01 environment lifecycle rows, journaled on the job that carries
+   * them (`environmentId` in payload): provisioning → enrolled →
+   * terminated, plus reap intent. Always durable — environment state is
+   * evidence, never activity metadata.
+   */
+  | 'environment.provisioning'
+  | 'environment.enrolled'
+  | 'environment.terminated'
+  | 'environment.reap-requested'
   | 'activity'
   | 'gap';
 

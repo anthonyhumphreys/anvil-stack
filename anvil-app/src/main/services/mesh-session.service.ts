@@ -36,6 +36,12 @@ export interface RemoteSessionSpec {
   sandbox: 'read-only' | 'workspace-write' | 'danger-full-access';
   /** Same-home `thread/resume` handle from a prior attempt's journal. */
   resumeThreadId?: string;
+  /**
+   * ENV-06: per-attempt credential-grant env vars, unsealed by the worker
+   * after claim. Merged last so granted bindings win over ambient ones.
+   * Never journaled.
+   */
+  extraEnv?: Record<string, string>;
   /** Bounds `turn/start` → `turn/completed`; the child dies on expiry. */
   turnTimeoutMs: number;
   /** Bounds spawn → thread/started; defaults to THREAD_READY_TIMEOUT_MS. */
@@ -217,9 +223,12 @@ export async function runRemoteSessionTurn(
 ): Promise<RemoteSessionResult> {
   const cliVersion = await cliProbeImpl();
   const settings = getSettings();
-  const env = providerSpawnEnv(
-    spec.provider === 'openai' ? { OPENAI_API_KEY: settings.openaiApiKey } : undefined,
-  );
+  const env = providerSpawnEnv({
+    ...(spec.provider === 'openai' ? { OPENAI_API_KEY: settings.openaiApiKey } : {}),
+    // ENV-06: grant bindings merge last — a granted credential supersedes
+    // the ambient provider key for this attempt only.
+    ...(spec.extraEnv ?? {}),
+  });
   const proc = spawnImpl('codex', argsForProvider(spec.provider), {
     cwd: spec.cwd,
     env,

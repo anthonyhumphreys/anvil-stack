@@ -138,6 +138,79 @@ export interface PairingKeyringInner {
   issuerPub: string;
 }
 
+// ---- Per-attempt credential grants (ENV-06) --------------------------------
+// Model/provider credentials delivered to a cloud environment AFTER it
+// claims a job: sealed to the environment's X25519 device identity, bound
+// to exactly one (job, attempt, fence), and TTL'd. Grants are stored on the
+// account object until the target pulls them or they expire — they are
+// never journaled, never sync entities, and never readable by the backend.
+
+/** Plaintext sealed inside a credential-grant envelope. */
+export interface CredentialGrantInner {
+  v: 1;
+  /**
+   * Grant kind from the `grant:` capability vocabulary — v1 is
+   * `credential-name` (env-var injection); `provider-subscription`
+   * device-login flows ride the same envelope later.
+   */
+  kind: string;
+  /** Environment variables to inject for the attempt (name → value). */
+  env: Record<string, string>;
+}
+
+/**
+ * credential-grant envelope: the fence-binding fields are plaintext so the
+ * backend can enforce stale-fence rejection without opening the seal; the
+ * secrets live exclusively in `ct`.
+ */
+export interface CredentialGrantPayload {
+  v: 1;
+  enc: 'x25519-aes-256-gcm';
+  jobId: string;
+  attemptId: string;
+  /** Attempt fence at claim time — a re-fenced attempt rejects the grant. */
+  fence: number;
+  targetEnrollmentId: string;
+  /** ISO-8601; the backend drops undelivered grants past this instant. */
+  expiresAt: string;
+  /** base64 ephemeral X25519 public key. */
+  ephPub: string;
+  /** base64 12-byte GCM nonce. */
+  nonce: string;
+  /** base64 sealed CredentialGrantInner JSON. */
+  ct: string;
+}
+
+/**
+ * `credential.deliver` (user role): the source device deposits a grant
+ * bound to a claimed attempt. The backend verifies the attempt is live,
+ * owned by `targetEnrollmentId`, and still on `fence` — a stale fence is a
+ * `conflict`, never a silent rebind.
+ */
+export interface CredentialDeliverParams {
+  grant: CredentialGrantPayload;
+}
+
+export interface CredentialDeliverResult {
+  delivered: boolean;
+}
+
+/**
+ * `credential.pull` (worker role): the executing worker fetches grants
+ * addressed to it for an attempt it owns (attempt + fence must match the
+ * caller's live claim). Returned grants are marked delivered; re-pulls of
+ * the same attempt return them again until expiry (a worker crash may
+ * need them twice), but never after the attempt goes terminal.
+ */
+export interface CredentialPullParams {
+  attemptId: string;
+  fence: number;
+}
+
+export interface CredentialPullResult {
+  grants: CredentialGrantPayload[];
+}
+
 // ---- Pairing payload format -------------------------------------------------
 // `anvil-pair-XXXXX-…`: a single typed/scanned string carrying everything
 // the new device needs WITHOUT the server ever seeing the secret.
@@ -244,6 +317,28 @@ export function keyringWrapAssociatedData(input: {
 
 export function pairingSealAssociatedData(input: { pairingNonce: string }): string {
   return `anvil/pairing-seal/v1|${input.pairingNonce}`;
+}
+
+/**
+ * AD bound into per-attempt credential-grant seals (ENV-06). The grant is
+ * unusable outside exactly one fenced attempt on one target enrollment —
+ * job, attempt, fence, target, and expiry are all authenticated.
+ */
+export function credentialGrantAssociatedData(input: {
+  jobId: string;
+  attemptId: string;
+  fence: number;
+  targetEnrollmentId: string;
+  expiresAt: string;
+}): string {
+  return [
+    'anvil/credential-grant/v1',
+    input.jobId,
+    input.attemptId,
+    String(input.fence),
+    input.targetEnrollmentId,
+    input.expiresAt,
+  ].join('|');
 }
 
 /**
