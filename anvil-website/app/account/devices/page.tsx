@@ -22,7 +22,7 @@ async function DevicesData({ identity }: { identity: HostedIdentity }) {
   return (
     <div className="grid gap-6">
       <header className="grid gap-1">
-        <h1 className="text-3xl font-semibold tracking-normal">Devices</h1>
+        <h1 className="text-3xl font-semibold tracking-[-0.02em]">Devices</h1>
         <p className="text-sm text-muted-foreground">
           Machines paired to your hosted sync account. Revoking signs a device out of hosted sync;
           it keeps working local-only.

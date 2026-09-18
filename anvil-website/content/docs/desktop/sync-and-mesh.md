@@ -1,186 +1,120 @@
 ---
 title: Sync and Mesh
 navTitle: Sync and Mesh
-description: Account sync across devices, remote execution on enrolled machines, session handoff, data portability, and self-hosted backends.
+description: The Settings → Sync & Mesh panel in Anvil Desktop — connection modes, sign-in and device enrollment, remote executions, the mesh worker, session handoff, and your data.
 product: Anvil Desktop
-section: Specialist tools
+section: Guides
 journey: build
-order: 121
-kind: feature
+order: 200
 ---
 
 # Sync and Mesh
 
-Sync & Mesh is the account layer for Anvil Desktop. Sync replicates
-account-owned entities — workspace definitions, workflow templates, editable
-agents, and approved settings — across your devices. Mesh runs jobs on enrolled
-devices: workspace preparation, provider sessions, and delegated workflow nodes.
+Sync & Mesh is the account layer of Anvil Desktop: end-to-end encrypted sync
+of account-owned entities, remote job execution on your own machines, and
+checkpointed session handoff between devices. **Settings → Sync & Mesh** is
+where you connect, enroll, and supervise all of it. This page describes the
+panel; the contract, encryption, and backend mechanics live in the
+[Sync & Mesh docs](/docs/sync/overview).
 
-Both are optional. Anvil works local-only by default, and the backend is
-yours to choose: the contract is frozen and provider-neutral, so the same
-desktop build talks to an Anvil-hosted deployment, your own Cloudflare account,
-or any third-party implementation that passes the conformance suite.
-
-This is alpha infrastructure. The architecture, contract, and lifecycle are
-implemented and tested; the multi-device story has been rehearsed on real
-Cloudflare deployments but not yet demoed end-to-end on physical hardware.
+Everything here is optional — Anvil works local-only by default. It is also
+alpha: the lifecycle is implemented and tested and has been rehearsed against
+real Cloudflare deployments, but a physical multi-device demo is still
+pending.
 
 ## Connection modes
 
-Settings → Sync & Mesh offers four modes:
+The panel offers four modes:
 
 | Mode | Behavior |
 | --- | --- |
 | Local only | Nothing leaves the device. Any remembered backend is paused, not forgotten. |
-| Anvil-hosted | Sign in to the operated backend. Currently unavailable in this build — the option is visible but disabled. |
-| Your Cloudflare | Point Anvil at a Cloudflare Workers deployment you own (see [Self-deploy](#self-deploy)). |
-| Compatible backend | Any URL implementing the Sync v1 contract — see [Conformance](#conformance). |
+| Anvil-hosted | The operated backend. Renders **disabled** in this build — hosted sync is not shipping in this packet. |
+| Your Cloudflare | A backend you deploy to your own Cloudflare account with `anvil-cloud mesh`. |
+| Compatible backend | Any URL implementing the Sync v1 contract. |
 
-Pinning a backend stores the association and stops there — no data uploads
-until you sign in and enable sync. Changing a backend's identity (endpoint or
-issuer) requires re-review before credentials are sent again.
+Pinning a backend stores the association only — no data uploads until you
+sign in and enable sync. See [Self-deploy](/docs/sync/self-deploy) for the
+deploy path, [Conformance](/docs/sync/conformance) for proving a third-party
+backend, and [Hosted](/docs/sync/hosted) for the state of the operated
+service.
 
-## Signing in and enrolling devices
+## Signing in and enrollment
 
-Each device enrolls independently. The first device signs in directly;
-additional devices enroll with a short-lived enrollment code issued from a
-signed-in device. Enrollment produces a device-scoped credential — it is not
-your account password and can be revoked per device.
-
-Sync runs a push/pull loop accelerated by a live socket. When the socket is
-down, fallback polling keeps converging; edits made offline queue in a local
-outbox and sync when the backend is reachable. Conflicts never auto-overwrite:
-divergent entities surface as conflicts you resolve explicitly.
+Sign in from the panel, then enroll this device. The first device on an
+account signs in directly; additional devices enroll with a short-lived
+enrollment code issued from an already-signed-in device. Enrollment produces
+a device-scoped credential — not your account password — that can be revoked
+per device. Enrollment mechanics: [Devices](/docs/sync/devices).
 
 ## Devices
 
-The Devices section lists every enrollment on the account: name, enrollment id,
-age, and status. You can rename a device (submitting an empty name clears it)
-or revoke one. Revocation is account-scoped, ends that device's session
-immediately, and is idempotent — revoking an already-revoked device is a no-op.
-The current device cannot be revoked from its own UI to avoid stranding the
-session; revoke it from another enrolled device.
+The Devices section lists every enrollment on the account: name, enrollment
+id, age, and status. Rename a device (submitting an empty name clears it) or
+revoke one. Revocation is account-scoped, ends that device's session
+immediately, and is idempotent. The current device cannot be revoked from its
+own UI — revoke it from another enrolled device to avoid stranding the
+session.
 
-## Encryption
-
-Synced content is end-to-end encrypted. Entity payloads, artifact bytes,
-handoff checkpoints, and shared-artifact bytes are sealed on your device with
-AES-256-GCM under a versioned account data key (ADK). The backend stores and
-replicates ciphertext; it validates envelope structure but cannot open it.
-
-Each device generates an X25519 identity keypair at enrollment. The ADK moves
-between devices wrapped to a recipient's public key, or inside a pairing blob
-sealed under a one-time secret that travels in the out-of-band pairing payload
-(scanned or typed) — never through the server. Key material rests in local
-SQLite wrapped by the OS credential store (`safeStorage`).
-
-Revoking a device rotates the ADK: a trusted online device mints the next key
-version and wraps it to every surviving device. The revoked device cannot read
-anything written after rotation. It keeps what it already decrypted — rotation
-limits future access, it does not reach back and erase a device.
-
-Shared-artifact links work differently by design: each share is sealed under a
-fresh random key carried in the URL fragment (`#k=…`). Fragments never reach
-the server, so the share page fetches ciphertext and decrypts it in your
-browser. Anyone holding the full link can decrypt; revoking the share removes
-the ciphertext.
-
-What the server still sees — the metadata needed to replicate and coordinate:
-entity ids and types, revisions, sequences, payload sizes, timestamps, session
-and job records, and the device roster. Treat those fields as readable.
+Where you revoke matters. A revoke initiated in the app rotates the account
+data key, so the revoked device cannot read anything written after rotation.
+A revoke from the web account area severs the session only. Key rotation:
+[Encryption](/docs/sync/encryption); roster mechanics:
+[Devices](/docs/sync/devices).
 
 ## Remote executions
 
-The Remote executions section lists jobs this account dispatched: source and
-target devices, placement explanation, and state. Job states are labeled
-honestly — `Stopping…` while cancellation propagates, and `Lost contact` when
-the outcome is genuinely unknown. Lost contact is never presented as cancelled.
+The Remote executions section lists jobs this account dispatched to enrolled
+devices: source and target devices, placement explanation, and state. States
+are labelled honestly — `Stopping…` while cancellation propagates, and
+`Lost contact` when the outcome is genuinely unknown. Lost contact is never
+presented as cancelled.
 
 Expanding a job shows its attempts, each with a lease and worker incarnation.
 On a live attempt, **Watch** streams activity: durable replay fills history,
 live frames append, and gaps in the stream are marked rather than hidden.
-
-Pending approvals show the action digest and expiry. Approve/Deny controls
-only appear where this device is actually permitted to decide — an approval
-pinned to another device, or raised by this device's own worker, shows what it
-is waiting on instead.
-
-## Moving a session between devices
-
-In the run view, the ownership strip under the agent map shows which device
-owns the session. **Move** lists eligible devices and starts a handoff:
-
-1. Readiness is evaluated first — a dirty tree or unpushed commits block with
-   concrete remediation rather than failing mid-transfer.
-2. The source durably rejects new messages, quiesces, and captures an
-   exact-commit checkpoint.
-3. Ownership transfers at a fenced generation; the target prepares the
-   workspace and continues the provider session from the checkpoint.
-
-No live process migrates. The target resumes via checkpoint import or summary
-continuation depending on the provider — the handoff record says which.
+Pending approvals show the action digest and expiry, and Approve/Deny only
+appears where this device is actually permitted to decide. Job lifecycle and
+placement rules: [Mesh jobs](/docs/sync/mesh-jobs).
 
 ## Running jobs on this device
 
-The mesh worker is opt-in and device-local — the flag never syncs. Enabling it
-lets this machine claim account jobs it is capable of running (capability and
-workspace-readiness constraints are checked before placement). Each attempt
-executes in an isolated per-attempt worktree at the pinned commit; results
-transfer back as artifacts and integrate in dependency order with conflicts
-surfaced visibly.
+The mesh worker is opt-in and device-local — the flag never syncs, so there is
+no account-level "run jobs everywhere" switch. Enabled, this machine claims
+account jobs it is capable of running; each attempt executes in an isolated
+per-attempt worktree at the pinned commit and returns results as artifacts.
+A headless daemon host mode exists for always-on mesh workers. Job execution
+and sealed artifact storage: [Mesh jobs](/docs/sync/mesh-jobs) and
+[Artifacts and shares](/docs/sync/artifacts-and-shares).
+
+## Moving a session between devices
+
+Session handoff starts in the run view, not in Settings. The ownership strip
+under the agent map shows which device owns the session; **Move** lists
+eligible devices and starts a handoff. Readiness is evaluated first — a dirty
+tree or unpushed commits block with concrete remediation rather than failing
+mid-transfer — then the source quiesces, captures an exact-commit checkpoint,
+and ownership transfers at a fenced generation. No live process migrates; the
+target resumes from the checkpoint. The protocol:
+[Session handoff](/docs/sync/session-handoff).
 
 ## Your data
 
 The Your data section exports every synced entity to a portable JSON document
-(`formatVersion`, `epoch`, `entities`) via a save dialog, and imports through a
-staged preview: creates, unchanged, conflicts, and invalid entities are counted
-and listed before anything applies. Apply is always explicit — an import never
-silently overwrites divergent data.
+and imports through a staged preview — creates, unchanged, conflicts, and
+invalid entities are counted and listed before anything applies. Account
+deletion is a durable operation with a visible status: it purges server-side
+state and signs every enrolled device out. Formats and lifecycle:
+[Data portability](/docs/sync/data-portability).
 
-Account deletion is a durable operation with a visible status; it purges
-server-side state and signs every enrolled device out.
+## What the backend can see
 
-## Self-deploy
+Synced payloads are sealed on your device before they leave; the backend
+stores and replicates ciphertext and sees only the metadata replication
+needs — entity ids and types, revisions, sizes, timestamps, session and job
+records, and the device roster. The full envelope, key-wrapping, and
+share-link story: [Encryption](/docs/sync/encryption).
 
-The `anvil-cloud` CLI deploys the official backend to your own Cloudflare
-account:
-
-```sh
-anvil-cloud mesh plan --backend <path> --name <worker> --subdomain <sub>
-anvil-cloud mesh apply --backend <path> --name <worker>
-anvil-cloud mesh connection --name <worker> --base-url <url>
-anvil-cloud mesh remove --backend <path> --name <worker>
-```
-
-`plan` generates a Wrangler config (Durable Object bindings, cumulative
-migrations, R2 artifact bucket). `apply` deploys and waits for readiness;
-secrets are provisioned after the first deploy. `connection` writes the
-discovery file the desktop app consumes. `remove` regenerates its own config
-before deleting so it never targets a stale worker name. All commands accept
-`--json` for automation.
-
-See the [CLI reference](/docs/cloud/cli-reference) for the full flag surface.
-
-## Conformance
-
-Third-party backends implement the frozen Sync v1 contract and prove it with
-the shipped conformance suite:
-
-```sh
-pnpm conformance -- --url <backend> --admin-token <token>
-```
-
-The suite covers enrollment, sessions, push/pull, devices, data portability,
-mesh jobs, and handoff — the same checks the desktop app relies on. A backend
-that passes is a drop-in target for the Compatible backend mode.
-
-## Current limits
-
-- The Anvil-hosted mode is not yet offered; the option renders disabled.
-- The two-device fan-out and handoff journey is automated end-to-end in tests
-  and rehearsed against real deployments, but a physical multi-machine demo is
-  still pending — treat cross-device UX as unproven until the recorded
-  acceptance run lands.
-- Remote execution job history lists the most recent 100 jobs.
-- The mesh worker opt-in is per-device by design; there is no account-level
-  "run jobs everywhere" switch.
+For the architecture, contract, and threat model behind the panel, start with
+the [Sync & Mesh overview](/docs/sync/overview). Current rollout state:
+[Status and limits](/docs/sync/status-and-limits).

@@ -3,9 +3,9 @@ title: Cloud and mobile workbenches
 navTitle: Cloud and mobile tools
 description: Operate Anvil Cloud from Desktop and inspect the Expo companion app with Argent and simulator tooling.
 product: Anvil Desktop
-section: Specialist tools
+section: Guides
 journey: build
-order: 121
+order: 190
 ---
 
 # Cloud and mobile workbenches
@@ -32,6 +32,8 @@ Desktop can store an encrypted connection to an authenticated Anvil Cloud execut
 During a run, Desktop can read event batches, resolve approval requests, steer the execution with another message, collect the result, or terminate the lease. The selected authentication mode may use Codex or Cursor subscription-backed login inside the worker, or a cloud-managed provider.
 
 Remote execution is separate from normal Chat and disabled by default. Review the uploaded commit, endpoint, authentication mode, requested approval, and returned evidence before acting on the result.
+
+This is the Cloud workbench's own execution path against an Anvil Cloud endpoint. It is separate from Sync & Mesh remote executions, which dispatch account jobs to your enrolled devices — see [Mesh jobs](/docs/sync/mesh-jobs).
 
 ## Argent Workbench
 

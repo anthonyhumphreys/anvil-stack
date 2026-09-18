@@ -25,7 +25,7 @@ export default async function AccountOverviewPage() {
   return (
     <div className="grid gap-6">
       <header className="grid gap-1">
-        <h1 className="text-3xl font-semibold tracking-normal">Account</h1>
+        <h1 className="text-3xl font-semibold tracking-[-0.02em]">Account</h1>
         <p className="text-sm text-muted-foreground">
           Your hosted sync identity, entitlement, and paired devices.
         </p>

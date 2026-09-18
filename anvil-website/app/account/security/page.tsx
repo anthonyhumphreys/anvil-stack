@@ -16,7 +16,7 @@ export default async function SecurityPage() {
   return (
     <div className="grid gap-6">
       <header className="grid gap-1">
-        <h1 className="text-3xl font-semibold tracking-normal">Security</h1>
+        <h1 className="text-3xl font-semibold tracking-[-0.02em]">Security</h1>
         <p className="text-sm text-muted-foreground">
           Your WorkOS session and sign-in details.
         </p>

@@ -21,7 +21,7 @@ async function DataSection({ identity }: { identity: HostedIdentity }) {
   return (
     <div className="grid gap-6">
       <header className="grid gap-1">
-        <h1 className="text-3xl font-semibold tracking-normal">Data</h1>
+        <h1 className="text-3xl font-semibold tracking-[-0.02em]">Data</h1>
         <p className="text-sm text-muted-foreground">
           What the hosted backend stores for this account, and how to remove it.
         </p>

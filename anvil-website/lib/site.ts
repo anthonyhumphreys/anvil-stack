@@ -7,7 +7,6 @@ import {
   Code2,
   Command,
   Cpu,
-  FileSearch,
   GitBranch,
   GitPullRequestArrow,
   Hammer,
@@ -43,12 +42,100 @@ export const navItems = [
   { label: "Products", href: "/#products" },
   { label: "Docs", href: "/docs" },
   { label: "Sync", href: "/sync" },
-  { label: "Pricing", href: "/pricing" },
-  { label: "Cloud", href: "/docs/cloud/overview" },
-  { label: "Registry", href: "/docs/registry/quickstart" },
-  { label: "Desktop", href: "/docs/desktop/overview" },
-  { label: "OSS", href: "/docs/project/open-source" }
+  { label: "Pricing", href: "/pricing" }
 ];
+
+// Sync & Mesh is a capability layer, not a fifth product: it is how the
+// Anvil tools you already run stay in step across every machine you own.
+export const syncLayer = {
+  title: "Sync & Mesh",
+  tagline: "The account layer that keeps your machines in step.",
+  description:
+    "Workspace definitions, templates, agents, and settings replicate between your devices as sealed envelopes — encrypted on your device, relayed as ciphertext, opened only where you paired it. Enrolled machines can also pick up jobs and hand running sessions to each other. The backend is a relay you choose, not a computer you rent.",
+  docsHref: "/docs/sync/overview",
+  detailHref: "/sync"
+};
+
+export const syncMoves = [
+  {
+    title: "Sealed on your device",
+    body: "Every synced entity is encrypted with AES-256-GCM under a versioned account key before it leaves the outbox. The key lives on your devices — the backend never sees it.",
+    proof: "sealed · aes-256-gcm"
+  },
+  {
+    title: "Relayed, never read",
+    body: "The backend journals ciphertext and coordinates delivery. It sees ids, types, revisions, sizes, and timing — the shape of your sync, never the content.",
+    proof: "shape, not content"
+  },
+  {
+    title: "Resumed anywhere",
+    body: "Paired machines claim mesh jobs and accept session handoffs. A run that starts on your laptop can resume on your workstation from a sealed checkpoint.",
+    proof: "checkpoint · handoff"
+  }
+];
+
+export const syncModes = [
+  {
+    mode: "Local only",
+    body: "Nothing leaves the device. Any remembered backend stays paused, not forgotten.",
+    cost: "Free — the default"
+  },
+  {
+    mode: "Anvil-hosted",
+    body: "The operated backend: sign in once, pair devices, done. Preview is free through 31 October 2026.",
+    cost: "Free in preview"
+  },
+  {
+    mode: "Your Cloudflare",
+    body: "Deploy the open-source backend to your own Workers account with anvil-cloud mesh apply.",
+    cost: "Your infra bill"
+  },
+  {
+    mode: "Compatible backend",
+    body: "Point at any URL implementing the frozen Sync v1 contract — proven with the shipped conformance suite.",
+    cost: "Free — it is yours"
+  }
+];
+
+export const hostedUpsell = {
+  title: "Anvil-hosted, if you would rather not run it",
+  body: "The same Sync v1 backend, operated for you: WorkOS sign-in, device management and billing on the web, artifact storage in R2, and someone else paged at 3am. Free through the preview ending 31 October 2026; paid enforcement starts 1 November 2026. Self-host stays free forever — that is the point of the contract being open.",
+  cta: "See hosted sync",
+  href: "/sync"
+};
+
+// The docs landing for /docs/sync — Sync & Mesh is a capability layer, so it
+// stays out of productLines (the product grids) but needs the same model.
+export const syncDocsProduct = {
+  id: "sync",
+  title: "Anvil Sync & Mesh",
+  repoName: "anvil-app/ + anvil-cloud/",
+  eyebrow: "Account layer",
+  description:
+    "The account layer that keeps the Anvil tools you already run in step across every machine you own. Entities replicate as sealed envelopes, enrolled devices claim mesh jobs, and running sessions hand off between machines — through a backend you choose.",
+  boundary:
+    "Owns account identity, device enrollment, sealed entity replication, mesh job coordination, artifact shares, and session handoff.",
+  status:
+    "Alpha: implemented end to end and rehearsed on real deployments; hosted provisioning is still finishing, so Anvil-hosted renders disabled in this desktop build.",
+  icon: Network,
+  href: "/docs/sync/overview",
+  repoHref: githubRepositoryUrl,
+  command: "anvil-cloud mesh apply",
+  points: [
+    "End-to-end encrypted sync of workspaces, templates, agents, and approved settings",
+    "X25519 device identities enrolled through single-use pair codes",
+    "Mesh jobs claimed by your own machines — compute and credentials never leave them",
+    "Session handoff moves a run between devices through sealed checkpoints",
+    "Artifact share links decrypt in the browser; the key lives in the URL fragment",
+    "Four backends: local-only, Anvil-hosted, your Cloudflare, or any conformant server"
+  ],
+  links: [
+    { label: "Encryption and keys", href: "/docs/sync/encryption" },
+    { label: "Mesh jobs", href: "/docs/sync/mesh-jobs" },
+    { label: "Self-deploy", href: "/docs/sync/self-deploy" },
+    { label: "Status and limits", href: "/docs/sync/status-and-limits" }
+  ]
+};
 
 export const accountNavItems = [
   { label: "Overview", href: "/account" },
@@ -348,7 +435,19 @@ export const docsHighlights = [
     label: "Start here",
     href: "/docs/overview",
     icon: Hammer,
-    description: "Choose Desktop, Registry, Node Base, or Cloud from the project and workflow you actually need."
+    description: "Choose Desktop, Sync & Mesh, Registry, Node Base, or Cloud from the project and workflow you actually need."
+  },
+  {
+    label: "Sync & Mesh overview",
+    href: "/docs/sync/overview",
+    icon: Network,
+    description: "Sealed sync across devices, mesh jobs on your own machines, and a backend you choose."
+  },
+  {
+    label: "Encryption and keys",
+    href: "/docs/sync/encryption",
+    icon: LockKeyhole,
+    description: "How entities seal under a versioned account key, how devices share it, and what the server sees."
   },
   {
     label: "Monorepo map",
@@ -369,6 +468,12 @@ export const docsHighlights = [
     description: "Run planning, implementation, review, security, documentation, BA, and handover sessions with evidence."
   },
   {
+    label: "Mesh jobs",
+    href: "/docs/sync/mesh-jobs",
+    icon: Cpu,
+    description: "Dispatch work to your own enrolled machines with pinned manifests and streamed attempts."
+  },
+  {
     label: "Registry quickstart",
     href: "/docs/registry/quickstart",
     icon: Command,
@@ -377,7 +482,7 @@ export const docsHighlights = [
   {
     label: "Registry policy",
     href: "/docs/registry/policy",
-    icon: Network,
+    icon: ClipboardCheck,
     description: "Read how metadata, provenance, static findings, popularity, analysis, and overrides shape decisions."
   },
   {
@@ -387,40 +492,16 @@ export const docsHighlights = [
     description: "Understand app, schema, query, mutation, endpoint, job, capability, and generated manifest shapes."
   },
   {
-    label: "Cloud Agents",
-    href: "/docs/cloud/agents",
-    icon: MessageSquareText,
-    description: "Define capability-bound agents, mount them in Cells, compile manifests, and run local stub or provider mode."
-  },
-  {
-    label: "Agent Sandboxes",
-    href: "/docs/cloud/agent-sandboxes",
-    icon: Cpu,
-    description: "Read the contract and AWS Lambda MicroVM provider path for sandbox-required agent workspaces."
-  },
-  {
-    label: "Cloud CLI",
-    href: "/docs/cloud/cli-reference",
+    label: "Self-deploy the backend",
+    href: "/docs/sync/self-deploy",
     icon: Route,
-    description: "Use anvil-cloud new, dev, check, build, inspect, logs, db, and deploy preview with stable JSON output."
-  },
-  {
-    label: "Node Base reports",
-    href: "/docs/node-base/reports",
-    icon: FileSearch,
-    description: "Inspect safe and observed install reports, submit them to the registry, and wire them into CI gates."
+    description: "Run the Sync v1 backend on your own Cloudflare account with anvil-cloud mesh plan and apply."
   },
   {
     label: "Open source posture",
     href: "/docs/project/open-source",
     icon: GitPullRequestArrow,
     description: "The scope boundaries, alpha notes, and anti-vendor-sludge position behind the project."
-  },
-  {
-    label: "Contributing",
-    href: "/docs/project/contributing",
-    icon: GitPullRequestArrow,
-    description: "Development setup, commit style, and review expectations across the Anvil monorepo."
   }
 ];
 

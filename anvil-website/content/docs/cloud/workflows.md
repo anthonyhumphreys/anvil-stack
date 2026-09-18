@@ -3,9 +3,9 @@ title: Workflows
 navTitle: Workflows
 description: Durable multi-step background workflows in Anvil Cells, with per-step retries, timeouts, and resumable run state.
 product: Anvil Cloud
-section: Architecture
+section: Concepts
 journey: build
-order: 119
+order: 100
 ---
 
 # Workflows

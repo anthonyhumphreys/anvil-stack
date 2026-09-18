@@ -2,7 +2,6 @@ import Link from "next/link";
 import type { Metadata } from "next";
 import { ArrowRight, Check } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { SiteFooter } from "@/components/site/footer";
 import { SiteHeader } from "@/components/site/header";
@@ -38,6 +37,25 @@ const hostedPoints = [
   "Device pairing, rename, and revoke from the web account"
 ];
 
+const faqs = [
+  {
+    q: "What happens on 1 November 2026?",
+    a: "Paid enforcement switches on at 2026-11-01T00:00:00Z. Hosted writes then require an active subscription; failed renewals get a bounded grace window. Reads keep working, local-only mode is never gated, and you can export everything before you decide."
+  },
+  {
+    q: "Can the Anvil-hosted backend read my workspaces?",
+    a: "No. Entities seal on your device under a versioned account key; the backend validates the envelope shape and journals ciphertext. It sees ids, types, revisions, sizes, and timestamps — not content. Keys live on your enrolled devices."
+  },
+  {
+    q: "Why would I pay instead of self-hosting?",
+    a: "You would not, if running a Cloudflare worker, R2 bucket, D1 database, and WorkOS/Stripe wiring sounds fun. Hosted buys you the operated version: sign-in, web device management, billing, artifact storage, and someone else on the pager. The protocol is the same either way."
+  },
+  {
+    q: "What are the account limits?",
+    a: "Devices, artifact bytes, and history bytes are enforced by the backend's configured values, not by marketing copy — your account page shows the actual numbers it holds you to."
+  }
+];
+
 export default function PricingPage() {
   const monthly = formatPrice(monthlyPrice);
   const annual = formatPrice(annualPrice);
@@ -47,12 +65,9 @@ export default function PricingPage() {
       <SiteHeader active="pricing" />
       <main id="main-content">
         <section className="border-b">
-          <div className="mx-auto max-w-7xl px-4 py-14 sm:px-6 lg:px-8 lg:py-20">
+          <div className="mx-auto max-w-7xl px-4 py-14 sm:px-6 lg:px-8 lg:py-24">
             <div className="max-w-3xl">
-              <Badge variant="secondary" className="border bg-muted/70">
-                Pricing — current and planned
-              </Badge>
-              <h1 className="mt-6 text-4xl font-semibold leading-[1.05] tracking-normal sm:text-5xl">
+              <h1 className="text-4xl font-semibold leading-[1.02] tracking-[-0.03em] sm:text-5xl lg:text-6xl">
                 Free during preview. One paid plan after. Self-host always.
               </h1>
               <p className="mt-5 max-w-2xl text-lg leading-8 text-muted-foreground">
@@ -64,17 +79,18 @@ export default function PricingPage() {
           </div>
         </section>
 
-        <section className="py-14">
+        <section className="py-14 lg:py-16">
           <div className="mx-auto grid max-w-7xl gap-5 px-4 sm:px-6 lg:grid-cols-3 lg:px-8">
-            <article className="rounded-lg border bg-card p-6 shadow-sm">
-              <h2 className="text-xl font-semibold">Preview</h2>
-              <p className="mt-1 text-sm text-muted-foreground">Every signed-in account, now.</p>
+            <article className="flex flex-col rounded-lg border border-accent/50 bg-card p-6">
+              <p className="font-mono text-[0.6875rem] uppercase tracking-[0.08em] text-accent">Now</p>
+              <h2 className="mt-2 text-xl font-semibold">Preview</h2>
+              <p className="mt-1 text-sm text-muted-foreground">Every signed-in account.</p>
               <p className="mt-5 text-3xl font-semibold">Free</p>
               <p className="mt-1 text-sm text-muted-foreground">through 31 October 2026</p>
-              <ul className="mt-5 grid gap-2 text-sm text-muted-foreground">
+              <ul className="mt-5 grid flex-1 gap-2 text-sm text-muted-foreground">
                 {hostedPoints.map((point) => (
                   <li key={point} className="flex items-start gap-2">
-                    <Check className="mt-0.5 size-4 shrink-0 text-accent" aria-hidden="true" />
+                    <Check className="proof-check" aria-hidden="true" />
                     <span>{point}</span>
                   </li>
                 ))}
@@ -89,13 +105,11 @@ export default function PricingPage() {
               </div>
             </article>
 
-            <article className="rounded-lg border bg-card p-6 shadow-sm">
-              <div className="flex flex-wrap items-center gap-2">
-                <h2 className="text-xl font-semibold">Sync</h2>
-                <Badge variant="outline" className="border-accent/60">
-                  Available 1 Nov 2026
-                </Badge>
-              </div>
+            <article className="flex flex-col rounded-lg border bg-card p-6">
+              <p className="font-mono text-[0.6875rem] uppercase tracking-[0.08em] text-muted-foreground">
+                From 1 Nov 2026
+              </p>
+              <h2 className="mt-2 text-xl font-semibold">Sync</h2>
               <p className="mt-1 text-sm text-muted-foreground">
                 The single paid plan — personal hosted sync.
               </p>
@@ -121,10 +135,10 @@ export default function PricingPage() {
                 Checkout opens when paid enforcement begins. Until then the backend answers
                 checkout-disabled — there is nothing to buy early.
               </p>
-              <ul className="mt-5 grid gap-2 text-sm text-muted-foreground">
+              <ul className="mt-5 grid flex-1 gap-2 text-sm text-muted-foreground">
                 {hostedPoints.map((point) => (
                   <li key={point} className="flex items-start gap-2">
-                    <Check className="mt-0.5 size-4 shrink-0 text-accent" aria-hidden="true" />
+                    <Check className="proof-check" aria-hidden="true" />
                     <span>{point}</span>
                   </li>
                 ))}
@@ -136,22 +150,25 @@ export default function PricingPage() {
               </div>
             </article>
 
-            <article className="rounded-lg border bg-card p-6 shadow-sm">
-              <h2 className="text-xl font-semibold">Self-host</h2>
+            <article className="flex flex-col rounded-lg border bg-card p-6">
+              <p className="font-mono text-[0.6875rem] uppercase tracking-[0.08em] text-muted-foreground">
+                Always
+              </p>
+              <h2 className="mt-2 text-xl font-semibold">Self-host</h2>
               <p className="mt-1 text-sm text-muted-foreground">Your backend, your rules.</p>
               <p className="mt-5 text-3xl font-semibold">Free</p>
               <p className="mt-1 text-sm text-muted-foreground">always — it is your infrastructure</p>
-              <ul className="mt-5 grid gap-2 text-sm text-muted-foreground">
+              <ul className="mt-5 grid flex-1 gap-2 text-sm text-muted-foreground">
                 {selfHostPoints.map((point) => (
                   <li key={point} className="flex items-start gap-2">
-                    <Check className="mt-0.5 size-4 shrink-0 text-accent" aria-hidden="true" />
+                    <Check className="proof-check" aria-hidden="true" />
                     <span>{point}</span>
                   </li>
                 ))}
               </ul>
               <div className="mt-6">
                 <Button asChild variant="outline">
-                  <Link href="/docs/desktop/sync-and-mesh">
+                  <Link href="/docs/sync/self-deploy">
                     Self-deploy guide
                     <ArrowRight data-icon="inline-end" aria-hidden="true" />
                   </Link>
@@ -173,11 +190,36 @@ export default function PricingPage() {
                   configured values — your account page shows the numbers it actually enforces.
                 </li>
                 <li>
-                  Anvil is alpha infrastructure. If that caveat matters to you, the docs carry the
-                  current status rather than a promise.
+                  Anvil is alpha infrastructure. The{" "}
+                  <Link href="/docs/sync/status-and-limits" className="font-medium text-foreground underline underline-offset-4">
+                    status and limits doc
+                  </Link>{" "}
+                  carries what is proven today rather than a promise.
                 </li>
               </ul>
             </div>
+          </div>
+        </section>
+
+        <section className="border-t bg-muted/20 py-14 lg:py-16" aria-labelledby="pricing-faq">
+          <div className="mx-auto grid max-w-7xl gap-10 px-4 sm:px-6 lg:grid-cols-[0.7fr_1.3fr] lg:px-8">
+            <div>
+              <h2 id="pricing-faq" className="text-3xl font-semibold tracking-[-0.02em] sm:text-4xl">
+                Asked, answered
+              </h2>
+              <p className="mt-3 text-base leading-7 text-muted-foreground">
+                The short version of everything above, plus the questions people actually ask
+                before trusting an account layer.
+              </p>
+            </div>
+            <dl className="grid gap-0">
+              {faqs.map((item) => (
+                <div key={item.q} className="border-t py-5">
+                  <dt className="font-semibold">{item.q}</dt>
+                  <dd className="mt-2 text-sm leading-6 text-muted-foreground">{item.a}</dd>
+                </div>
+              ))}
+            </dl>
           </div>
         </section>
       </main>

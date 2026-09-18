@@ -3,9 +3,9 @@ title: Open source posture
 navTitle: OSS posture
 description: How to read Anvil's scope, claims, and security posture.
 product: Project
-section: Notes
+section: Concepts
 journey: reference
-order: 900
+order: 10
 ---
 
 # Open source posture

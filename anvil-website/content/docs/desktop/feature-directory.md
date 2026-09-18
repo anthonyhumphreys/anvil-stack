@@ -3,9 +3,9 @@ title: Desktop feature directory
 navTitle: Feature directory
 description: A route-by-route map of every user-facing Anvil Desktop feature and the guide that explains it.
 product: Anvil Desktop
-section: Basics
+section: Start here
 journey: learn
-order: 101
+order: 30
 ---
 
 # Desktop feature directory
@@ -72,7 +72,7 @@ Role selection controls which tools appear. Cloud is also hidden until you enabl
 | Governance boards | Groups local governance documents into workspace boards. | [Governance and lifecycle](/docs/desktop/governance-and-lifecycle) |
 | Data and Compliance | Generates repository-grounded DPIA, privacy policy, and terms drafts with explicit human-review markers. | [Assurance tools](/docs/desktop/assurance-tools) |
 | Settings | Controls roles, themes, chat layout, model providers, connectors, companion access, feature flags, review rubrics, and opt-in crash reports. | [Settings and diagnostics](/docs/desktop/settings-and-diagnostics) |
-| Sync & Mesh | Syncs workspaces, workflow templates, agents, and settings across enrolled devices; runs and supervises jobs on remote machines; moves sessions between devices with checkpointed handoff; exports and imports account data. | [Sync and Mesh](/docs/desktop/sync-and-mesh) |
+| Sync & Mesh | Syncs workspaces, workflow templates, agents, and settings across enrolled devices; runs and supervises mesh jobs on remote machines; moves sessions between devices with checkpointed handoff; shares artifacts through sealed links; exports and imports account data. | [Sync and Mesh](/docs/desktop/sync-and-mesh) · [Sync & Mesh overview](/docs/sync/overview) |
 | Codex Skills and MCPs | Inspects installed skills and MCP servers, searches `skills.sh`, installs skills, and registers local or HTTP MCP servers. | [Settings and diagnostics](/docs/desktop/settings-and-diagnostics) |
 | Runtime Diagnostics | Reports Electron process memory, feature counters, active work, and local runtime state. | [Settings and diagnostics](/docs/desktop/settings-and-diagnostics) |
 

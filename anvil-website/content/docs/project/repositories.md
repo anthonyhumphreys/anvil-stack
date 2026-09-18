@@ -3,9 +3,9 @@ title: Monorepo map
 navTitle: Monorepo map
 description: How the anvil-stack monorepo is laid out and where each product surface lives.
 product: Project
-section: Notes
+section: Reference
 journey: reference
-order: 890
+order: 30
 ---
 
 # Monorepo map

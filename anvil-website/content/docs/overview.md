@@ -3,7 +3,7 @@ title: Anvil docs
 navTitle: Overview
 description: Start here for Anvil Desktop, Anvil Registry, Anvil Node Base, and Anvil Cloud.
 product: Start here
-section: Welcome
+section: Start here
 journey: learn
 order: 10
 ---
@@ -14,7 +14,7 @@ Anvil is an open source family of developer tools for work that needs evidence b
 
 The public site covers three main repositories:
 
-- **anvil-app**: Anvil Desktop, a local Electron workspace for repo-aware agent delivery, work items, review, security checks, terminals, documentation, diagrams, companion controls, and handover evidence.
+- **anvil-app**: Anvil Desktop, a local Electron workspace for repo-aware agent delivery, work items, review, security checks, terminals, documentation, diagrams, companion controls, Sync & Mesh account connectivity, and handover evidence.
 - **anvil-registry**: Anvil Registry plus Anvil Node Base, a TypeScript npm gateway and hardened Node devcontainer image for policy, package analysis, cache identity, safer installs, reports, and explicit overrides.
 - **anvil-cloud**: Anvil Cloud, a local-first TypeScript platform for Anvil Cells, shared runtime contracts, builder output, local inspection, generated clients, and adapter-driven deployment.
 
@@ -55,6 +55,7 @@ anvil registry doctor
 | Manage Git branches and commits | [Git workflows](/docs/desktop/git-workflows) |
 | Review security and code changes | [Security and review](/docs/desktop/security-and-review) |
 | Use phone, watch, Raycast, widgets, or menu bar controls | [Companion surfaces](/docs/desktop/companion-surfaces) |
+| Sync devices and run jobs on your own machines | [Sync & Mesh](/docs/sync/overview) |
 | Try the registry gateway locally | [Registry quickstart](/docs/registry/quickstart) |
 | Understand dependency decisions | [Package decisions](/docs/registry/package-decisions) |
 | Understand what analysis detects | [Worker analysis](/docs/registry/worker-analysis) |
@@ -96,6 +97,14 @@ Read these when you want to understand the desktop app as a local delivery works
 - [Database guide](/docs/desktop/database-guide)
 - [Extending Anvil Desktop](/docs/desktop/extending-anvil)
 - [Build and release](/docs/desktop/build-and-release)
+- [Sync and Mesh](/docs/desktop/sync-and-mesh)
+
+### Sync & Mesh
+
+The account and connectivity layer for Anvil Desktop — end-to-end encrypted sync, mesh jobs on your own hardware, session handoff, and a self-hostable provider-neutral backend:
+
+- [Sync & Mesh overview](/docs/sync/overview)
+- [Self-deploy the backend](/docs/sync/self-deploy)
 
 ### Anvil Registry
 

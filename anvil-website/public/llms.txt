@@ -1,13 +1,13 @@
 # Anvil
 
-> Anvil is an open source family of developer tools for inspectable delivery work, npm dependency policy, safer Node installs, and capability-scoped runtime contracts.
+> Anvil is an open source family of developer tools for inspectable delivery work, npm dependency policy, safer Node installs, and capability-scoped runtime contracts — plus an account layer (Sync & Mesh) that keeps a user's own machines in step with end-to-end encrypted replication.
 
 The public documentation is organized by product and by task: Learn, Build, and Reference. Product status and limits are part of the documentation; do not infer production readiness from alpha surfaces.
 
 ## Start here
 
 - [Documentation index](/docs): Search or choose a product and task path.
-- [Anvil overview](/docs/overview): Understand the four product boundaries.
+- [Anvil overview](/docs/overview): Understand the product boundaries.
 - [Repository map](/docs/project/repositories): See which workspace owns each surface.
 - [Open source project](/docs/project/open-source): Read the project and contribution model.
 
@@ -17,6 +17,17 @@ The public documentation is organized by product and by task: Learn, Build, and 
 - [Anvil Registry](/docs/registry): npm dependency ingress and deterministic policy.
 - [Anvil Node Base](/docs/node-base): Safer and observed Node dependency installs.
 - [Anvil Cloud](/docs/cloud): Anvil Cells, Agents, runtime contracts, and deployment adapters.
+
+## Sync & Mesh (account layer)
+
+- [Sync & Mesh overview](/docs/sync/overview): Sealed sync across a user's own devices, mesh jobs on their machines, backend of their choice.
+- [Encryption and keys](/docs/sync/encryption): AES-256-GCM envelopes under a versioned account key; the backend sees shape, not content.
+- [Devices and pairing](/docs/sync/devices): X25519 device identities enrolled through single-use pair codes.
+- [Mesh jobs](/docs/sync/mesh-jobs): Dispatch work to enrolled machines; compute and credentials stay on the user's hardware.
+- [Session handoff](/docs/sync/session-handoff): Move a running session between devices through sealed checkpoints.
+- [Self-deploy the backend](/docs/sync/self-deploy): Run the same Sync v1 worker on your own Cloudflare account.
+- [Hosted sync](/docs/sync/hosted): The Anvil-operated backend — free through 31 October 2026, paid plan from 1 November 2026.
+- [Status and limits](/docs/sync/status-and-limits): What is proven, what is still pending.
 
 ## More detail
 

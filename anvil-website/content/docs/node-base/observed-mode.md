@@ -5,7 +5,7 @@ description: Run install scripts explicitly while capturing process, network, fi
 product: Anvil Node Base
 section: Guides
 journey: build
-order: 8
+order: 30
 ---
 
 # Node Base observed mode

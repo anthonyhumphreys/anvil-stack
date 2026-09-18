@@ -3,9 +3,9 @@ title: Anvil Lens
 navTitle: Anvil Lens
 description: The local-first management plane for Anvil Cells - a browser UI over the local runtime plus the ControlPlaneApi contract a hosted plane would implement.
 product: Anvil Cloud
-section: Runtime
+section: Concepts
 journey: build
-order: 127
+order: 170
 ---
 
 # Anvil Lens

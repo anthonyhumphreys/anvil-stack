@@ -26,7 +26,7 @@ async function BillingData({ identity }: { identity: HostedIdentity }) {
   return (
     <div className="grid gap-6">
       <header className="grid gap-1">
-        <h1 className="text-3xl font-semibold tracking-normal">Billing</h1>
+        <h1 className="text-3xl font-semibold tracking-[-0.02em]">Billing</h1>
         <p className="text-sm text-muted-foreground">
           Entitlement, subscription, and payment state reported by the sync backend.
         </p>
