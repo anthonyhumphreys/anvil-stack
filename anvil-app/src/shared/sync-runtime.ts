@@ -89,6 +89,26 @@ export interface SyncDeviceVerification {
   code: string;
 }
 
+/**
+ * DASH-01: a browser dashboard authorization request/grant as seen by a
+ * trusted device. `pending` rows await a user decision; `approved` rows
+ * have a live sealed-snapshot stream at `seq`. Carries only the metadata
+ * the approval UI needs — never key material.
+ */
+export interface SyncDashboardRequest {
+  requestId: string;
+  browserPub: string;
+  scopes: string[];
+  expiresAt: string;
+  /** Latest published snapshot sequence (0 before first publish). */
+  seq: number;
+  state: 'pending' | 'approved' | 'denied' | 'expired' | 'revoked';
+  /** Claimed page origin — a binding hint, not proof of identity. */
+  origin?: string;
+  /** User-agent hint — contextual only. */
+  userAgent?: string;
+}
+
 /** Result of exporting the account's synced entities to a chosen file. */
 export interface SyncDataExportFileResult {
   saved: boolean;
@@ -133,6 +153,7 @@ export interface SyncDataImportCommitResult {
 // `sync-mesh.ts` precedent) so desktop and backend share one schema.
 
 export type { HandoffRecord, HandoffState } from '../../cloud/contract/handoff.js';
+export { isSealedCheckpoint } from '../../cloud/contract/handoff.js';
 export type {
   ApprovalDecision,
   ApprovalRecord,

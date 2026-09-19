@@ -63,6 +63,7 @@ import type {
   SessionMeshState,
   SyncAttemptActivity,
   SyncConflictResolutionChoice,
+  SyncDashboardRequest,
   SyncDataExportFileResult,
   SyncDataImportCommitResult,
   SyncDataImportFilePreview,
@@ -777,6 +778,20 @@ const api: AnvilAPI = {
       ipcRenderer.invoke('sync-runtime:device-revoke', { enrollmentId }),
     verifyDevice: (enrollmentId: string): Promise<SyncDeviceVerification> =>
       ipcRenderer.invoke('sync-runtime:device-verify', { enrollmentId }),
+    listDashboardRequests: (): Promise<SyncDashboardRequest[]> =>
+      ipcRenderer.invoke('sync-runtime:dashboard-requests'),
+    decideDashboardRequest: (
+      requestId: string,
+      decision: 'approved' | 'denied',
+      scopes?: string[],
+    ): Promise<void> =>
+      ipcRenderer.invoke('sync-runtime:dashboard-decide', {
+        requestId,
+        decision,
+        ...(scopes === undefined ? {} : { scopes }),
+      }),
+    revokeDashboardAccess: (requestId: string): Promise<void> =>
+      ipcRenderer.invoke('sync-runtime:dashboard-revoke', { requestId }),
     exportDataToFile: (): Promise<SyncDataExportFileResult> =>
       ipcRenderer.invoke('sync-runtime:data-export-file'),
     previewDataImportFromFile: (): Promise<SyncDataImportFilePreview> =>

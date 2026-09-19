@@ -5,7 +5,7 @@
 // An environment is NOT a new execution model: it is a cloud-hosted
 // machine (AWS microVM, Cloudflare sandbox, Vercel sandbox, or an
 // Anvil-managed Cloudflare environment) that boots the anvil-worker
-// image, redeems an ephemeral-class pairing payload, and then claims
+// image, redeems an ephemeral-class enrollment code, and then claims
 // jobs through the exact same worker/claim/fence/artifact path as a
 // desktop or daemon worker. The rows these ops manage are descriptive
 // lifecycle records — provisioning intent, the provider handle, the
@@ -220,18 +220,20 @@ export interface EnvironmentReapResult {
 
 /**
  * `environment.bootstrap` (user role): stage the environment's bootstrap
- * payload for a backend-side provisioner — currently only `anvil-managed`,
- * where no user device ever claims the provision job. The payload is the
- * full `anvil-pair-…` string the source minted (enrollment code + pairing
- * secret; the sealed keyring-pairing entity travels the normal sync path).
- * Rows are consume-once: the managed claimer deletes what it reads, they
- * are never journaled, and unconsumed payloads expire within the hour.
- * BYO provisioners never use this channel — they mint pairings on the
- * claiming device, so the payload never transits backend storage.
+ * material for a backend-side provisioner — currently only
+ * `anvil-managed`, where no user device ever claims the provision job.
+ * The payload is an **ephemeral-class enrollment code** only
+ * (`anvil-ec-…` / bare code body): enrollment authenticates the worker,
+ * it never conveys account key material — environments receive
+ * task-scoped keys via `taskkey.*` wraps, never ADKs. `anvil-pair-…`
+ * payloads are rejected outright: a pairing secret would hand the
+ * coordinator equivalent account keying material. Rows are consume-once:
+ * the managed claimer deletes what it reads, they are never journaled,
+ * and unconsumed payloads expire within the hour.
  */
 export interface EnvironmentBootstrapParams {
   environmentId: string;
-  /** The `anvil-pair-…` payload. Bounded; see BOOTSTRAP_PAYLOAD_MAX_BYTES. */
+  /** Ephemeral-class enrollment code. Bounded; never `anvil-pair-…`. */
   payload: string;
 }
 
@@ -246,7 +248,11 @@ export interface EnvironmentBootstrapResult {
 export interface CloudEnvironmentCreateInput {
   /** The environment record id — the env needs it to self-report. */
   environmentId: string;
-  /** The `anvil-pair-…` payload the environment redeems at boot. */
+  /**
+   * Ephemeral-class enrollment code the environment redeems at boot via
+   * `anvil-daemon enroll --code`. Carries authentication only — never
+   * account key material.
+   */
   bootstrapPayload: string;
   /** Sync backend URL the environment connects to. */
   backendUrl: string;

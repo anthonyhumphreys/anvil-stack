@@ -139,6 +139,7 @@ export const syncDocsProduct = {
 
 export const accountNavItems = [
   { label: "Overview", href: "/account" },
+  { label: "Dashboard", href: "/account/dashboard" },
   { label: "Billing", href: "/account/billing" },
   { label: "Devices", href: "/account/devices" },
   { label: "Security", href: "/account/security" },

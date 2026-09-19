@@ -39,7 +39,7 @@ export function isSealedEntityPayload(value: unknown): value is SealedEntityPayl
 }
 
 /** Decoded byte length of a base64 string, or null when malformed. */
-function base64ByteLength(value: string): number | null {
+export function base64ByteLength(value: string): number | null {
   if (!/^[A-Za-z0-9+/]*={0,2}$/.test(value) || value.length % 4 !== 0) return null;
   const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0;
   return (value.length / 4) * 3 - padding;
@@ -81,12 +81,16 @@ export function sealedEnvelopeIssue(value: unknown): string | null {
 export const CRYPTO_ENTITY_DEVICE_IDENTITY = 'device-identity';
 export const CRYPTO_ENTITY_KEYRING_WRAP = 'keyring-wrap';
 export const CRYPTO_ENTITY_KEYRING_PAIRING = 'keyring-pairing';
+export const CRYPTO_ENTITY_KEYRING_ROTATION = 'keyring-rotation';
+export const CRYPTO_ENTITY_KEYRING_PAIRED = 'keyring-paired';
 
 export function isCryptoBoundaryEntityType(entityType: string): boolean {
   return (
     entityType === CRYPTO_ENTITY_DEVICE_IDENTITY ||
     entityType === CRYPTO_ENTITY_KEYRING_WRAP ||
-    entityType === CRYPTO_ENTITY_KEYRING_PAIRING
+    entityType === CRYPTO_ENTITY_KEYRING_PAIRING ||
+    entityType === CRYPTO_ENTITY_KEYRING_ROTATION ||
+    entityType === CRYPTO_ENTITY_KEYRING_PAIRED
   );
 }
 
@@ -100,19 +104,33 @@ export interface DeviceIdentityPayload {
 
 /**
  * keyring-wrap payload: entityId is the *recipient* enrollment id. The ADK
- * is sealed to the recipient's X25519 identity via an ephemeral sender key.
+ * bundle is sealed to the recipient's X25519 identity via an ephemeral
+ * sender key.
  */
 export interface KeyringWrapPayload {
   v: 1;
   enc: 'x25519-aes-256-gcm';
-  /** ADK version contained inside. */
+  /** Highest ADK version contained inside (bundle ceiling). */
   keyVersion: number;
   /** base64 ephemeral X25519 public key. */
   ephPub: string;
   /** base64 12-byte GCM nonce. */
   nonce: string;
-  /** base64 sealed ADK bytes. */
+  /** base64 sealed KeyringWrapInner JSON (or a bare 32-byte ADK on v1 writers). */
   ct: string;
+}
+
+/**
+ * Plaintext sealed inside a keyring-wrap: the full ADK version bundle the
+ * sender holds. Delivering every held version makes missed-rotation
+ * recovery the same path as first delivery. v1 writers sealed the bare
+ * 32-byte ADK instead of JSON — readers accept both.
+ */
+export interface KeyringWrapInner {
+  v: 1;
+  keys: Array<{ keyVersion: number; /** base64 ADK bytes. */ adk: string }>;
+  /** Issuing device's X25519 public key, for SAS verification. */
+  issuerPub?: string;
 }
 
 /**
@@ -128,14 +146,55 @@ export interface PairingKeyringPayload {
   ct: string;
 }
 
-/** Plaintext carried inside a pairing keyring blob. */
+/**
+ * Plaintext carried inside a pairing keyring blob. v1 carries a single
+ * `{keyVersion, adk}`; v2 writers also carry `keys` (the full bundle) and
+ * `proofNonce` — a fresh random value the redeemer echoes in its
+ * keyring-paired entity so the issuer can promote the new enrollment to
+ * trusted membership. Readers accept either shape.
+ */
 export interface PairingKeyringInner {
   v: 1;
-  keyVersion: number;
-  /** base64 ADK bytes. */
-  adk: string;
+  keyVersion?: number;
+  /** base64 ADK bytes (v1 single-key form). */
+  adk?: string;
+  /** Full ADK version bundle (v2). */
+  keys?: Array<{ keyVersion: number; /** base64 ADK bytes. */ adk: string }>;
   /** Issuing device's X25519 public key, for SAS verification. */
   issuerPub: string;
+  /** Random redemption proof the new device echoes in `keyring-paired`. */
+  proofNonce?: string;
+}
+
+/**
+ * keyring-paired payload: entityId is the new device's enrollment id.
+ * Plaintext attestation a freshly paired device publishes after
+ * installing its keyring bundle — the issuer compares `proofNonce`
+ * against the secret it minted and promotes the enrollment to trusted.
+ */
+export interface KeyringPairedPayload {
+  v: 1;
+  enrollmentId: string;
+  /** base64 raw X25519 public key of the new device. */
+  pub: string;
+  /** Echo of `PairingKeyringInner.proofNonce`. */
+  proofNonce: string;
+}
+
+/**
+ * keyring-rotation payload: entityId is the rotation id. Published by the
+ * device that minted `toVersion`; concurrent rotations on the same
+ * version resolve deterministically (lowest rotationId wins, loser
+ * supersedes) and the revoked set is durable evidence of intent.
+ */
+export interface KeyringRotationPayload {
+  v: 1;
+  rotationId: string;
+  rotorEnrollmentId: string;
+  fromVersion: number;
+  toVersion: number;
+  revokedEnrollmentIds: string[];
+  rotatedAt: string;
 }
 
 // ---- Per-attempt credential grants (ENV-06) --------------------------------
@@ -209,6 +268,155 @@ export interface CredentialPullParams {
 
 export interface CredentialPullResult {
   grants: CredentialGrantPayload[];
+}
+
+// ---- Per-task content keys ---------------------------------------------------
+// A job's sensitive inputs travel as `sealedInputs`: an AES-256-GCM
+// envelope under a random 256-bit task content key (TCK) minted by the
+// source (a trusted device or an approved dashboard client). The TCK is
+// delivered to the resolved target — and to designated result recipients —
+// as a job-scoped wrap sealed to the recipient's X25519 identity. Unlike
+// credential grants, task wraps are NOT fence-bound: retries of the same
+// immutable job reuse the same key, and result recipients never hold a
+// claim fence. Ephemeral workers receive TCKs; they never receive ADKs.
+
+/** Plaintext sealed inside a task-key wrap. */
+export interface TaskKeyInner {
+  v: 1;
+  kind: 'task-key';
+  /** base64 32-byte task content key. */
+  key: string;
+}
+
+/**
+ * task-key wrap: `{jobId, targetEnrollmentId}` is plaintext so the backend
+ * can index deliveries and compute `keyDelivery` state; the key itself
+ * lives exclusively in `ct`.
+ */
+export interface TaskKeyWrapPayload {
+  v: 1;
+  enc: 'x25519-aes-256-gcm';
+  jobId: string;
+  targetEnrollmentId: string;
+  /** base64 ephemeral X25519 public key. */
+  ephPub: string;
+  /** base64 12-byte GCM nonce. */
+  nonce: string;
+  /** base64 sealed TaskKeyInner JSON. */
+  ct: string;
+}
+
+/**
+ * `taskkey.deliver` (user role): the job source deposits wraps addressed
+ * to the resolved target and each declared result recipient. Idempotent
+ * per (job, target); a wrap for a target that is not the job's resolved
+ * target and not a declared result recipient is rejected.
+ */
+export interface TaskKeyDeliverParams {
+  jobId: string;
+  wraps: TaskKeyWrapPayload[];
+}
+
+export interface TaskKeyDeliverResult {
+  delivered: number;
+}
+
+/**
+ * `taskkey.pull` (either role): the calling enrollment fetches wraps
+ * addressed to it for one job. Workers pull after claim; result
+ * recipients pull any time. Pulls are repeatable (crash recovery may need
+ * the key twice) and never deleted by pulling.
+ */
+export interface TaskKeyPullParams {
+  jobId: string;
+}
+
+export interface TaskKeyPullResult {
+  wraps: TaskKeyWrapPayload[];
+}
+
+/**
+ * A sealed task payload — AES-256-GCM under a TCK. Distinct from
+ * SealedEntityPayload: there is no ADK `keyVersion` because the key is
+ * job-scoped and delivered by wrap, not versioned on the account.
+ */
+export interface SealedTaskPayload {
+  enc: typeof SEALED_ENTITY_ALG;
+  /** base64, exactly SEALED_NONCE_BYTES when decoded. */
+  nonce: string;
+  /** base64 ciphertext || GCM tag. */
+  ct: string;
+}
+
+export function isSealedTaskPayload(value: unknown): value is SealedTaskPayload {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return record.enc === SEALED_ENTITY_ALG;
+}
+
+/**
+ * Structural validation for a sealed task payload (no keyVersion field).
+ * Returns null when valid, else a machine-readable rejection reason.
+ */
+export function sealedTaskEnvelopeIssue(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return 'envelope-not-object';
+  }
+  const record = value as Record<string, unknown>;
+  if (record.enc !== SEALED_ENTITY_ALG) return 'envelope-unknown-alg';
+  if (typeof record.nonce !== 'string') return 'envelope-bad-nonce';
+  if (base64ByteLength(record.nonce) !== SEALED_NONCE_BYTES) return 'envelope-bad-nonce';
+  if (typeof record.ct !== 'string' || record.ct.length === 0) return 'envelope-bad-ct';
+  const ctLength = base64ByteLength(record.ct);
+  if (ctLength === null || ctLength < 16) return 'envelope-bad-ct';
+  return null;
+}
+
+// ---- Dashboard grant/snapshot envelopes --------------------------------------
+// The browser's dashboard session key (DSK) is minted by the approving
+// trusted device and sealed to the browser's ephemeral X25519 public key
+// exactly like a task key — but the wrap rides the dashboard grant
+// channel, not sync entities. Snapshots are sealed under the DSK.
+
+/** Plaintext sealed inside a dashboard grant wrap. */
+export interface DashboardGrantInner {
+  v: 1;
+  /** base64 32-byte dashboard session key. */
+  dsk: string;
+  /** Scopes the approving device granted (subset of requested). */
+  scopes: string[];
+  /** ISO-8601 grant expiry — the snapshot stream dies with it. */
+  expiresAt: string;
+}
+
+/**
+ * Dashboard grant envelope: binds the sealed DSK to the exact browser
+ * identity (pub), request id, and expiry. The coordinator stores and
+ * relays it but cannot open it.
+ */
+export interface DashboardGrantPayload {
+  v: 1;
+  enc: 'x25519-aes-256-gcm';
+  requestId: string;
+  browserPub: string;
+  expiresAt: string;
+  /** base64 ephemeral X25519 public key. */
+  ephPub: string;
+  /** base64 12-byte GCM nonce. */
+  nonce: string;
+  /** base64 sealed DashboardGrantInner JSON. */
+  ct: string;
+}
+
+/** A sealed dashboard snapshot — AES-256-GCM under the DSK. */
+export interface SealedDashboardSnapshot {
+  enc: typeof SEALED_ENTITY_ALG;
+  /** Monotonic per-request sequence; stale snapshots are rejected. */
+  seq: number;
+  /** base64 12-byte GCM nonce. */
+  nonce: string;
+  /** base64 ciphertext || GCM tag. */
+  ct: string;
 }
 
 // ---- Pairing payload format -------------------------------------------------
@@ -360,4 +568,102 @@ export function artifactSealAssociatedData(input: { mediaType: string }): string
  */
 export function shareSealAssociatedData(input: { mediaType: string }): string {
   return `anvil/share-seal/v1|${input.mediaType}`;
+}
+
+/**
+ * AD bound into task-key wraps. Job, target, and account are all
+ * authenticated — a wrap transplanted to a different job or recipient
+ * fails to open.
+ */
+export function taskKeyWrapAssociatedData(input: {
+  backendId: string;
+  accountId: string;
+  jobId: string;
+  targetEnrollmentId: string;
+}): string {
+  return [
+    'anvil/task-key/v1',
+    input.backendId,
+    input.accountId,
+    input.jobId,
+    input.targetEnrollmentId,
+  ].join('|');
+}
+
+/**
+ * AD bound into `sealedInputs`. The job id does not exist at seal time —
+ * `requestId` is the stable pre-allocation identity — so the seal is
+ * bound to backend, account, and request id.
+ */
+export function taskInputsAssociatedData(input: {
+  backendId: string;
+  accountId: string;
+  requestId: string;
+}): string {
+  return [
+    'anvil/task-inputs/v1',
+    input.backendId,
+    input.accountId,
+    input.requestId,
+  ].join('|');
+}
+
+/**
+ * AD bound into sealed attempt results (the rich result manifest sealed
+ * under the TCK into the evidence artifact / `attempt.report.sealedResult`).
+ */
+export function taskResultAssociatedData(input: {
+  backendId: string;
+  accountId: string;
+  jobId: string;
+  attemptId: string;
+}): string {
+  return [
+    'anvil/task-result/v1',
+    input.backendId,
+    input.accountId,
+    input.jobId,
+    input.attemptId,
+  ].join('|');
+}
+
+/**
+ * AD bound into dashboard grant wraps — the sealed DSK authenticates to
+ * exactly one (account, request, browser pubkey, expiry).
+ */
+export function dashboardGrantAssociatedData(input: {
+  backendId: string;
+  accountId: string;
+  requestId: string;
+  browserPub: string;
+  expiresAt: string;
+}): string {
+  return [
+    'anvil/dashboard-grant/v1',
+    input.backendId,
+    input.accountId,
+    input.requestId,
+    input.browserPub,
+    input.expiresAt,
+  ].join('|');
+}
+
+/**
+ * AD bound into dashboard snapshots — the sequence number is
+ * authenticated, so a stale or reordered snapshot fails to open rather
+ * than silently reverting state.
+ */
+export function dashboardSnapshotAssociatedData(input: {
+  backendId: string;
+  accountId: string;
+  requestId: string;
+  seq: number;
+}): string {
+  return [
+    'anvil/dashboard/v1',
+    input.backendId,
+    input.accountId,
+    input.requestId,
+    String(input.seq),
+  ].join('|');
 }

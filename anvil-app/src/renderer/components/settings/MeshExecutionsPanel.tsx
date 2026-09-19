@@ -11,6 +11,7 @@ import {
   Square,
   XCircle,
 } from 'lucide-react';
+import { isSealedCheckpoint } from '../../../shared/sync-runtime';
 import type {
   ApprovalRecord,
   ExecutionAttempt,
@@ -485,11 +486,13 @@ export function MeshExecutionsPanel({
                   session {handoff.sessionId.slice(0, 8)}… · generation{' '}
                   {handoff.targetGeneration ?? handoff.sourceGeneration}
                   {handoff.checkpoint !== null &&
-                    ` · resumes via ${handoff.checkpoint.provider} ${
-                      (handoff.checkpoint.messages?.length ?? 0) > 0
-                        ? 'checkpoint import'
-                        : 'summary continuation'
-                    } — no live process migrates`}
+                    (isSealedCheckpoint(handoff.checkpoint)
+                      ? ' · resumes via sealed checkpoint — no live process migrates'
+                      : ` · resumes via ${handoff.checkpoint.provider} ${
+                          (handoff.checkpoint.messages?.length ?? 0) > 0
+                            ? 'checkpoint import'
+                            : 'summary continuation'
+                        } — no live process migrates`)}
                 </p>
                 {handoff.cancelReason !== null && (
                   <p className="mt-0.5 text-xs text-warning">

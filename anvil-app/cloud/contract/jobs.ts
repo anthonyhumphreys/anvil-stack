@@ -1,4 +1,5 @@
 // Durable jobs, execution attempts, and their cancellation-safe transitions.
+import type { SealedTaskPayload } from './sealed.js';
 //
 // Terminal completion and cancellation race through conditional transitions:
 // an already accepted completion stays completed, while a prior
@@ -88,6 +89,14 @@ export interface MeshJob {
   /** Resolved before claim; the source's choice is preserved. */
   targetEnrollmentId?: string;
   inputManifest: ExecutionManifest;
+  /**
+   * Sensitive inputs sealed under the job's task content key (TCK). The
+   * coordinator stores and relays this envelope but cannot open it; the
+   * target worker unseals after `taskkey.pull`.
+   */
+  sealedInputs?: SealedTaskPayload;
+  /** Enrollments (beyond the target) authorised to receive the TCK. */
+  resultRecipients?: string[];
   state: JobState;
   queueDeadline: string;
   retryPolicy: RetryPolicy;
@@ -106,6 +115,12 @@ export interface ExecutionAttempt {
    * Absent while the attempt is non-terminal.
    */
   result?: unknown;
+  /**
+   * Rich result detail sealed under the job's TCK — verification
+   * commands, free-text output, diagnostics. The public `result` carries
+   * only bounded, coordinator-safe metadata.
+   */
+  sealedResult?: SealedTaskPayload;
 }
 
 /**
@@ -169,17 +184,53 @@ export function canTransitionAttempt(from: AttemptState, to: AttemptState): bool
 // identity always come from the authenticated session, never from params.
 
 /**
+ * `inputManifest.inputs` keys that are safe for the coordinator to read:
+ * placement/provisioning routing fields only. Everything else — prompts,
+ * verification, personas, sandbox config, handoff/dispatch ids — travels
+ * in `sealedInputs` under the task content key. Clients MUST NOT place
+ * other keys in `inputs`; the backend does not need them and treats any
+ * extra key as coordinator-visible metadata.
+ */
+export const PUBLIC_MANIFEST_INPUT_KEYS: ReadonlySet<string> = new Set([
+  'workspaceId',
+  'environmentId',
+  'provider',
+  'ttlSeconds',
+  'imageRef',
+  'networkPolicy',
+  'resources',
+  'connectionId',
+  'displayName',
+]);
+
+/**
  * `job.create` parameters. Creation is idempotent on `requestId` +
  * `payloadHash` within the (account, source enrollment) pair; a replay with
  * a different hash is a `conflict`.
  */
 export interface JobCreateParams {
   requestId: string;
-  /** SHA-256 hex over the client-canonical job payload. */
+  /**
+   * SHA-256 hex over the client-canonical job payload — covers kind,
+   * requestedTarget, inputManifest, sealedInputs, and resultRecipients —
+   * so a retry replays the byte-identical job, never a recomputed one.
+   */
   payloadHash: string;
   kind: JobKind;
   requestedTarget: RequestedTarget;
   inputManifest: ExecutionManifest;
+  /**
+   * Sensitive inputs sealed under a per-job task content key. The
+   * `requestId` is bound into the envelope's associated data, so the
+   * ciphertext cannot be transplanted to a different job request.
+   */
+  sealedInputs?: SealedTaskPayload;
+  /**
+   * Additional enrollments that receive the TCK — durable result
+   * recipients that must read results after the source goes away (e.g.
+   * a submitting browser's trusted device).
+   */
+  resultRecipients?: string[];
   /** ISO-8601; defaults to USER_JOB_DEADLINE_MS from creation. */
   queueDeadline?: string;
   retryPolicy?: RetryPolicy;
@@ -193,6 +244,12 @@ export interface JobCreateParams {
 export interface JobSummary extends MeshJob {
   placementExplanation: string | null;
   stateReason?: string;
+  /**
+   * Task-key delivery state: `none` (no sealedInputs), `delivered` (wrap
+   * exists for the resolved target), or `pending` — the job is honestly
+   * awaiting key delivery, never silently unlocked.
+   */
+  keyDelivery?: 'none' | 'pending' | 'delivered';
 }
 
 export interface JobCreateResult {
@@ -228,6 +285,11 @@ export interface JobClaimResult {
   /** Ownership fence the worker echoes back on renew/report. */
   fence: number;
   manifest: ExecutionManifest;
+  /**
+   * The job's sealed inputs, echoed so the worker can unseal after
+   * `taskkey.pull` without a second fetch.
+   */
+  sealedInputs?: SealedTaskPayload;
 }
 
 /** One attempt-lease renewal inside an `attempt.renew` batch. */
@@ -259,8 +321,19 @@ export interface AttemptReportParams {
   incarnation: string;
   fence: number;
   outcome: 'completed' | 'failed';
-  /** Provider-neutral final outcome record; bounded metadata. */
+  /**
+   * Provider-neutral final outcome record — bounded, coordinator-safe
+   * metadata only (commits, branches, artifact ids, exit codes).
+   * Free-text detail (verification commands, logs, diagnostics) belongs
+   * in `sealedResult`.
+   */
   result?: unknown;
+  /**
+   * Rich result detail sealed under the job's TCK — readable by the
+   * target and declared result recipients, opaque to the coordinator.
+   */
+  sealedResult?: SealedTaskPayload;
+  /** Coarse reason string; free text is bounded and sanitized by the worker. */
   error?: string;
 }
 

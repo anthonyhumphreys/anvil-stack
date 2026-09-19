@@ -22,6 +22,11 @@ import {
   handleStripeWebhook,
 } from './billing-routes';
 import {
+  handleDashboardRequest,
+  handleDashboardSnapshot,
+  handleDashboardStatus,
+} from './dashboard-routes';
+import {
   handleHostedDataStatus,
   handleHostedDeleteAccount,
   handleHostedDeviceRename,
@@ -395,6 +400,14 @@ export async function handleHostedRequest(request: Request, env: Env): Promise<R
           return await handleHostedDataStatus(json, env, db);
         case '/internal/hosted/delete-account':
           return await handleHostedDeleteAccount(json, env, db);
+        // Browser dashboard channel: the website's only mesh access — a
+        // scoped authorization request + sealed grant/snapshot relay.
+        case '/internal/hosted/dashboard-request':
+          return await handleDashboardRequest(json, env, db);
+        case '/internal/hosted/dashboard-status':
+          return await handleDashboardStatus(json, env, db);
+        case '/internal/hosted/dashboard-snapshot':
+          return await handleDashboardSnapshot(json, env, db);
         // Hosted artifact sharing: the website's /artifacts/{shareId}
         // page resolves published shares through this signed channel.
         // The session object streams R2 bytes with metadata headers, so

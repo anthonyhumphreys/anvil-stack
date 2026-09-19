@@ -34,6 +34,7 @@ import type {
   JobSummary,
 } from '../../../cloud/contract/jobs.js';
 import type { HandoffGetResult, HandoffRecord } from '../../../cloud/contract/handoff.js';
+import type { KeyringReportResult } from '../../../cloud/contract/dashboard.js';
 import type { HostedEntitlement } from '../../../cloud/contract/entitlements.js';
 import type {
   EnvironmentListResult,
@@ -59,6 +60,7 @@ import {
   type SyncConflictResolutionChoice,
   type SyncConflictView,
   type SessionMeshState,
+  type SyncDashboardRequest,
   type SyncDiagnostics,
   type MeshWorkerStatus,
   type SyncHostedStatus,
@@ -139,12 +141,19 @@ import { configureArtifactShareContext } from './artifact-share.service.js';
 import { decodePairingPayload, isPairingPayloadString } from '../../../cloud/contract/sealed.js';
 import {
   deriveSas,
+  deviceTrustState,
   ensureDeviceIdentity,
   listDeviceIdentities,
+  listDeviceTrust,
+  markRotationReported,
   mintPairingPayload,
+  pendingRotationReports,
   publishDeviceIdentity,
   registerPairingRedemption,
   rotateAccountKey,
+  setDeviceTrust,
+  wrapAccountKeyFor,
+  type DeviceTrustState,
 } from './sync-keyring.service.js';
 import {
   configureMeshHandoffContext,
@@ -159,6 +168,15 @@ import {
   reconcileDispatchesOnBoot,
   resetMeshDispatchForTests,
 } from './mesh-dispatch.service.js';
+import {
+  approveDashboardRequest,
+  configureDashboardGrantContext,
+  denyDashboardRequest,
+  listDashboardGrants,
+  revokeDashboardGrant,
+  serviceDashboardGrants,
+} from './dashboard-grant.service.js';
+import type { DashboardScope } from '../../../cloud/contract/dashboard.js';
 import {
   configureMeshIntegrationContext,
   resetMeshIntegrationForTests,
@@ -300,7 +318,7 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
       ...(runtimeUserDataDir === null ? {} : { userDataDir: runtimeUserDataDir }),
       sendFrame: (frame) => liveSocket?.send(JSON.stringify(frame)),
       isLive: () => liveState === 'live' && liveSocket !== null,
-      mintEnvironmentPairing: async (options) => {
+      mintEnvironmentCode: async (options) => {
         const issued = await issueEnrollmentCode({
           enrollmentClass: 'ephemeral',
           provider: options.provider,
@@ -308,7 +326,8 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
           displayName: options.displayName,
           environmentId: options.environmentId,
         });
-        return issued.pairingPayload;
+        // Authentication-only: the code is the whole bootstrap secret.
+        return issued.code;
       },
     };
   });
@@ -362,6 +381,15 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
   // FLOW-02: node dispatches are source-side; same session context, and
   // boot reconciliation re-adopts persisted jobs (never recreates them).
   configureMeshDispatchContext(() => {
+    const backend = getActiveBackend();
+    const fields = auth?.getSessionScopeFields() ?? null;
+    const token = auth?.getAccessToken() ?? null;
+    if (backend === null || fields === null || token === null) return null;
+    return { apiUrl: apiUrlFor(backend), accessToken: token, enrollmentId: fields.enrollmentId };
+  });
+  // DASH-01: the dashboard grant service shares the session context — it
+  // is the trusted-device side of browser authorization.
+  configureDashboardGrantContext(() => {
     const backend = getActiveBackend();
     const fields = auth?.getSessionScopeFields() ?? null;
     const token = auth?.getAccessToken() ?? null;
@@ -759,13 +787,15 @@ export async function issueEnrollmentCode(options?: {
     },
     { accessToken: token, fetchFn: fetchOverride },
   );
-  // Seal the current ADK under a fresh pairing secret and queue it for the
-  // redeeming device. No key yet (fresh account, or this device is itself
-  // awaiting a wrap) → the caller still gets a usable enrollment code.
+  // Seal the current ADK bundle under a fresh pairing secret and queue it
+  // for the redeeming device. No key yet (fresh account, or this device is
+  // itself awaiting a wrap) → the caller still gets a usable enrollment
+  // code. Ephemeral-class codes never mint a pairing: environments get
+  // task-scoped keys via wraps, never account key material.
   const scope = currentScope();
   const fields = requireAuth().getSessionScopeFields();
   let pairingPayload: string | null = null;
-  if (scope !== null && fields !== null) {
+  if (scope !== null && fields !== null && options?.enrollmentClass !== 'ephemeral') {
     try {
       pairingPayload = mintPairingPayload(scope, fields.enrollmentId, result.code).pairingPayload;
     } catch {
@@ -801,7 +831,7 @@ export async function requestCloudEnvironment(
     accessToken: token,
   };
   return requestEnvironment(provisionerScope, input, {
-    mintEnvironmentPairing: async (options) => {
+    mintEnvironmentCode: async (options) => {
       const issued = await issueEnrollmentCode({
         enrollmentClass: 'ephemeral',
         provider: options.provider,
@@ -809,7 +839,10 @@ export async function requestCloudEnvironment(
         displayName: options.displayName,
         environmentId: options.environmentId,
       });
-      return issued.pairingPayload;
+      // Ephemeral codes carry authentication only — never a pairing
+      // payload: the coordinator must not hold equivalent account keying
+      // material for a worker it merely coordinates.
+      return issued.code;
     },
   });
 }
@@ -887,6 +920,98 @@ export async function revokeDevice(enrollmentId: string): Promise<DeviceRevokeRe
     }
   }
   return result;
+}
+
+/**
+ * Trust states for every enrollment known to this device — joined with
+ * the account roster by the caller when it wants display names.
+ */
+export function deviceTrustStates(): Array<{
+  enrollmentId: string;
+  state: DeviceTrustState;
+  decidedAt: string | null;
+}> {
+  const scope = currentScope();
+  if (scope === null) return [];
+  return listDeviceTrust(scope);
+}
+
+/**
+ * Promotes a 'pending' enrollment to 'trusted' — the user has compared
+ * the SAS (or otherwise confirmed the device out of band). Delivers the
+ * full ADK bundle immediately. Explicit user decisions may re-open a
+ * revoked enrollment (`force`), which is a fresh approval, not a sticky
+ * bypass.
+ */
+export function approveDeviceTrust(enrollmentId: string): void {
+  const scope = currentScope();
+  if (scope === null) throw new Error('Sign in before approving a device.');
+  setDeviceTrust(scope, enrollmentId, 'trusted', { force: true });
+  const peer = listDeviceIdentities(scope).find(
+    (device) => device.enrollmentId === enrollmentId,
+  );
+  if (peer !== undefined) {
+    wrapAccountKeyFor(scope, enrollmentId, peer.pub);
+  }
+}
+
+/**
+ * Reconciles local trust with the authoritative roster after
+ * `device.list`: remote revocations become sticky local 'revoked' rows,
+ * unseen enrollments arrive 'pending', and a newly-revoked set triggers
+ * exactly one rotation. Called from the sync loop — a device that was
+ * offline when the web revoked a sibling learns it here and rotates so
+ * post-revocation writes are unreadable to the revoked device.
+ */
+async function reconcileDeviceTrust(scope: SyncScope): Promise<void> {
+  let roster: DeviceListResult;
+  try {
+    roster = await accountRpc<DeviceListResult>('device.list', {});
+  } catch {
+    return; // roster unreadable — next cycle retries
+  }
+  const remoteRevoked = new Set(
+    roster.devices.filter((device) => device.revoked).map((device) => device.enrollmentId),
+  );
+  const remoteKnown = new Set(roster.devices.map((device) => device.enrollmentId));
+  const newlyRevoked: string[] = [];
+  for (const enrollmentId of remoteRevoked) {
+    const state = deviceTrustState(scope, enrollmentId);
+    if (state !== 'revoked') {
+      setDeviceTrust(scope, enrollmentId, 'revoked');
+      newlyRevoked.push(enrollmentId);
+    }
+  }
+  // Enrollments known to the account but never seen via identity entities
+  // arrive pending — metadata only, no deliveries.
+  for (const enrollmentId of remoteKnown) {
+    if (deviceTrustState(scope, enrollmentId) === null) {
+      setDeviceTrust(scope, enrollmentId, 'pending');
+    }
+  }
+  if (newlyRevoked.length > 0) {
+    try {
+      rotateAccountKey(scope, newlyRevoked);
+    } catch {
+      // No ADK held yet (fresh device awaiting keys) — nothing to rotate.
+    }
+  }
+}
+
+/** Reports this device's completed rotations to the account object. */
+async function flushRotationReports(scope: SyncScope): Promise<void> {
+  for (const rotation of pendingRotationReports(scope)) {
+    try {
+      await accountRpc<KeyringReportResult>('keyring.report', {
+        rotationId: rotation.rotationId,
+        revokedEnrollmentIds: rotation.revokedEnrollmentIds,
+        toVersion: rotation.toVersion,
+      });
+      markRotationReported(scope, rotation.rotationId);
+    } catch {
+      // Offline or pre-upgrade backend — retried on the next cycle.
+    }
+  }
 }
 
 /**
@@ -1085,6 +1210,47 @@ export async function decideMeshApproval(
     decision,
     ...(reason === undefined ? {} : { reason }),
   });
+}
+
+// ---- Browser dashboard grants (DASH-01) ------------------------------------
+// Approval surface for browser authorization requests. The local mirror in
+// mesh_dashboard_grants is refreshed by the sync loop; decisions go through
+// dashboard-grant.service which seals the DSK grant + snapshot.
+
+function requireDashboardScope(): SyncScope {
+  const scope = currentScope();
+  if (scope === null) {
+    throw new Error('Sign in before managing dashboard access.');
+  }
+  return scope;
+}
+
+export function listDashboardRequests(): SyncDashboardRequest[] {
+  return listDashboardGrants(requireDashboardScope()).map((row) => ({
+    requestId: row.requestId,
+    browserPub: row.browserPub,
+    scopes: row.scopes,
+    expiresAt: row.expiresAt,
+    seq: row.seq,
+    state: row.state,
+    ...(row.request?.origin === undefined ? {} : { origin: row.request.origin }),
+    ...(row.request?.userAgent === undefined ? {} : { userAgent: row.request.userAgent }),
+  }));
+}
+
+export async function approveDashboardGrant(
+  requestId: string,
+  scopes?: DashboardScope[],
+): Promise<void> {
+  await approveDashboardRequest(requireDashboardScope(), requestId, scopes);
+}
+
+export async function denyDashboardGrant(requestId: string): Promise<void> {
+  await denyDashboardRequest(requireDashboardScope(), requestId);
+}
+
+export async function revokeDashboardAccess(requestId: string): Promise<void> {
+  await revokeDashboardGrant(requireDashboardScope(), requestId);
 }
 
 /**
@@ -1648,6 +1814,14 @@ export async function requestSync(): Promise<void> {
       guard,
     });
     lastError = null;
+    if (guard()) {
+      // Trust reconcile + rotation reports ride the same cadence — a
+      // remote revoke or a finished rotation is never left to a manual
+      // refresh. Both are best-effort and retry each cycle.
+      await reconcileDeviceTrust(scope).catch(() => undefined);
+      await flushRotationReports(scope).catch(() => undefined);
+      await serviceDashboardGrants(scope, guard).catch(() => undefined);
+    }
   } catch (error) {
     const hostedReason =
       error instanceof SyncEngineError && error.code === 'forbidden'

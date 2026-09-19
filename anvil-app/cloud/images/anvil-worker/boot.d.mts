@@ -1,10 +1,10 @@
 export interface MeshEnvironmentBootstrap {
   kind: 'anvil.mesh-environment';
-  schemaVersion: '0.1';
+  schemaVersion: '0.2';
   environmentId: string;
   provider?: string;
   backendUrl: string;
-  pairing: string;
+  enrollmentCode: string;
   ttlSeconds: number;
   networkPolicy?: unknown;
 }

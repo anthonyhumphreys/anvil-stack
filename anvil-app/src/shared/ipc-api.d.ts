@@ -202,6 +202,7 @@ import type {
   SyncAuthPublicSnapshot,
   SyncConflictResolutionChoice,
   SyncConflictView,
+  SyncDashboardRequest,
   SyncDataExportFileResult,
   SyncDataImportCommitResult,
   SyncDataImportFilePreview,
@@ -758,6 +759,22 @@ export interface AnvilAPI {
     revokeDevice: (enrollmentId: string) => Promise<SyncDeviceRevokeResult>;
     /** Short authentication string for out-of-band device verification. */
     verifyDevice: (enrollmentId: string) => Promise<SyncDeviceVerification>;
+    /**
+     * DASH-01: browser dashboard authorization requests and live grants —
+     * pending rows await a trusted-device decision.
+     */
+    listDashboardRequests: () => Promise<SyncDashboardRequest[]>;
+    /**
+     * Approve or deny a pending request. Approval mints a scoped DSK, seals
+     * it to the browser's public key, and starts the snapshot stream.
+     */
+    decideDashboardRequest: (
+      requestId: string,
+      decision: 'approved' | 'denied',
+      scopes?: string[],
+    ) => Promise<void>;
+    /** Revoke a live grant — the sealed snapshot stream ends immediately. */
+    revokeDashboardAccess: (requestId: string) => Promise<void>;
     /** Export the account's synced entities to a user-chosen JSON file. */
     exportDataToFile: () => Promise<SyncDataExportFileResult>;
     /** Pick an export file and stage an import plan; nothing applies yet. */

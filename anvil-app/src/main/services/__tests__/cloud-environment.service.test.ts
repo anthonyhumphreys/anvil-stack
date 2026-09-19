@@ -161,7 +161,7 @@ describe('provisionEnvironment', () => {
       startedAt: new Date('2026-01-01T00:00:00Z'),
     });
 
-    const out = await provisionEnvironment(SCOPE, inputs, 'anvil-pair-AAAAA');
+    const out = await provisionEnvironment(SCOPE, inputs, 'anvil-ec-AAAAA');
     expect(out['providerRef']).toBe('mvm-123');
 
     const run = sdkCommands.find((c) => c.kind === 'run');
@@ -171,7 +171,7 @@ describe('provisionEnvironment', () => {
     expect(input['maximumDurationInSeconds']).toBe(1800);
     expect(input['clientToken']).toBe('anvil-env-env_test1');
     const hook = JSON.parse(input['runHookPayload'] as string) as Record<string, unknown>;
-    expect(hook['pairing']).toBe('anvil-pair-AAAAA');
+    expect(hook['enrollmentCode']).toBe('anvil-ec-AAAAA');
     expect(hook['backendUrl']).toBe('https://api.test');
     expect(hook['environmentId']).toBe('env_test1');
 
@@ -187,7 +187,7 @@ describe('provisionEnvironment', () => {
     addAwsConnection();
     backendRpc.mockResolvedValue({ result: { environment: {} }, serverTime: '' });
     sdkSend.mockResolvedValue({ microvmId: 'mvm-9', state: 'PENDING' });
-    await provisionEnvironment(SCOPE, { ...inputs, imageRef: 'img-override' }, 'anvil-pair-BBBBB');
+    await provisionEnvironment(SCOPE, { ...inputs, imageRef: 'img-override' }, 'anvil-ec-BBBBB');
     const run = sdkCommands.find((c) => c.kind === 'run');
     expect((run?.input as Record<string, unknown>)['imageIdentifier']).toBe('img-override');
   });
@@ -196,7 +196,7 @@ describe('provisionEnvironment', () => {
     addAwsConnection();
     backendRpc.mockResolvedValue({ result: { environment: {} }, serverTime: '' });
     sdkSend.mockRejectedValue(new Error('access denied'));
-    await expect(provisionEnvironment(SCOPE, inputs, 'anvil-pair-CCCCC')).rejects.toThrow(
+    await expect(provisionEnvironment(SCOPE, inputs, 'anvil-ec-CCCCC')).rejects.toThrow(
       'access denied',
     );
     expect(listLocalEnvironments(SCOPE)[0]?.state).toBe('failed');
@@ -209,7 +209,7 @@ describe('provisionEnvironment', () => {
       provisionEnvironment(
         SCOPE,
         { environmentId: 'env_m', provider: 'anvil-managed', ttlSeconds: 60 },
-        'anvil-pair-DDDDD',
+        'anvil-ec-DDDDD',
       ),
     ).rejects.toThrow('anvil-managed');
     expect(backendRpc).not.toHaveBeenCalled();
@@ -238,7 +238,7 @@ describe('cloudflare-sandbox provider (ENV-04)', () => {
       new Response(JSON.stringify({ providerRef: 'env_cf1' }), { status: 201 }),
     );
 
-    const out = await provisionEnvironment(SCOPE, inputs, 'anvil-pair-FFFFF');
+    const out = await provisionEnvironment(SCOPE, inputs, 'anvil-ec-FFFFF');
     expect(out['providerRef']).toBe('env_cf1');
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -252,7 +252,7 @@ describe('cloudflare-sandbox provider (ENV-04)', () => {
     const bootstrap = body['bootstrap'] as Record<string, unknown>;
     expect(bootstrap['kind']).toBe('anvil.mesh-environment');
     expect(bootstrap['provider']).toBe('cloudflare-sandbox');
-    expect(bootstrap['pairing']).toBe('anvil-pair-FFFFF');
+    expect(bootstrap['enrollmentCode']).toBe('anvil-ec-FFFFF');
     expect(bootstrap['backendUrl']).toBe('https://api.test');
   });
 
@@ -262,7 +262,7 @@ describe('cloudflare-sandbox provider (ENV-04)', () => {
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ error: 'quota' }), { status: 429 }),
     );
-    await expect(provisionEnvironment(SCOPE, inputs, 'anvil-pair-GGGGG')).rejects.toThrow(
+    await expect(provisionEnvironment(SCOPE, inputs, 'anvil-ec-GGGGG')).rejects.toThrow(
       '429',
     );
     expect(listLocalEnvironments(SCOPE)[0]?.state).toBe('failed');
@@ -274,7 +274,7 @@ describe('cloudflare-sandbox provider (ENV-04)', () => {
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ providerRef: 'env_cf1' }), { status: 201 }),
     );
-    await provisionEnvironment(SCOPE, inputs, 'anvil-pair-HHHHH');
+    await provisionEnvironment(SCOPE, inputs, 'anvil-ec-HHHHH');
     fetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: true })));
 
     const outcome = await terminateEnvironment(SCOPE, 'env_cf1');
@@ -310,7 +310,7 @@ describe('vercel-sandbox provider (ENV-05)', () => {
     const runCommand = vi.fn().mockResolvedValue({});
     vercelCreate.mockResolvedValue({ name: 'anvil-env-vc1', runCommand });
 
-    const out = await provisionEnvironment(SCOPE, inputs, 'anvil-pair-IIIII');
+    const out = await provisionEnvironment(SCOPE, inputs, 'anvil-ec-IIIII');
     expect(out['providerRef']).toBe('anvil-env-vc1');
 
     const params = vercelCreate.mock.calls[0]?.[0] as Record<string, unknown>;
@@ -322,7 +322,7 @@ describe('vercel-sandbox provider (ENV-05)', () => {
     const env = (params['env'] as Record<string, string>)['ANVIL_BOOTSTRAP_JSON'];
     const bootstrap = JSON.parse(env) as Record<string, unknown>;
     expect(bootstrap['provider']).toBe('vercel-sandbox');
-    expect(bootstrap['pairing']).toBe('anvil-pair-IIIII');
+    expect(bootstrap['enrollmentCode']).toBe('anvil-ec-IIIII');
     expect(runCommand).toHaveBeenCalledWith({
       cmd: '/opt/anvil/bin/anvil-worker-boot',
       detached: true,
@@ -333,7 +333,7 @@ describe('vercel-sandbox provider (ENV-05)', () => {
     addVercelConnection();
     backendRpc.mockResolvedValue({ result: { environment: {} }, serverTime: '' });
     vercelCreate.mockRejectedValue(new Error('image not found'));
-    await expect(provisionEnvironment(SCOPE, inputs, 'anvil-pair-JJJJJ')).rejects.toThrow(
+    await expect(provisionEnvironment(SCOPE, inputs, 'anvil-ec-JJJJJ')).rejects.toThrow(
       'image not found',
     );
     expect(listLocalEnvironments(SCOPE)[0]?.state).toBe('failed');
@@ -343,7 +343,7 @@ describe('vercel-sandbox provider (ENV-05)', () => {
     addVercelConnection();
     backendRpc.mockResolvedValue({ result: { environment: {} }, serverTime: '' });
     vercelCreate.mockResolvedValue({ name: 'anvil-env-vc1', runCommand: vi.fn() });
-    await provisionEnvironment(SCOPE, inputs, 'anvil-pair-KKKKK');
+    await provisionEnvironment(SCOPE, inputs, 'anvil-ec-KKKKK');
 
     const stop = vi.fn().mockResolvedValue({});
     vercelGet.mockResolvedValue({ status: 'running', stop });
@@ -369,7 +369,7 @@ describe('terminate + reap', () => {
     await provisionEnvironment(
       SCOPE,
       { environmentId, provider: 'aws-lambda-microvm', ttlSeconds: 3600 },
-      'anvil-pair-EEEEE',
+      'anvil-ec-EEEEE',
     );
   }
 

@@ -44,8 +44,26 @@ import type {
   SessionCheckpoint,
 } from '../../../cloud/contract/handoff.js';
 import { isSealedCheckpoint } from '../../../cloud/contract/handoff.js';
-import { unsealCredentialGrant, unsealScopedJson } from './sync-keyring.service.js';
-import type { CredentialPullResult } from '../../../cloud/contract/sealed.js';
+import {
+  listDeviceIdentities,
+  mintTaskKey,
+  sealTaskInputs,
+  sealTaskKeyWrap,
+  sealTaskResult,
+  storeTaskKey,
+  taskKeyFor,
+  unsealCredentialGrant,
+  unsealScopedJson,
+  unsealTaskInputs,
+  unsealTaskKeyWrap,
+} from './sync-keyring.service.js';
+import type {
+  CredentialPullResult,
+  SealedTaskPayload,
+  TaskKeyDeliverResult,
+  TaskKeyPullResult,
+  TaskKeyWrapPayload,
+} from '../../../cloud/contract/sealed.js';
 import type { SyncScope } from '../../shared/sync-mesh.js';
 import { workspaceDefinitionRevision } from './sync-entity-domain.js';
 import type { AgentProvider, ReasoningEffort } from '../../shared/types.js';
@@ -75,10 +93,12 @@ import type {
   ExecutionAttempt,
   ExecutionManifest,
   JobClaimResult,
+  JobCreateParams,
   JobGetResult,
   JobListResult,
   JobSummary,
   MeshJob,
+  RequestedTarget,
   ResultManifestVerification,
 } from '../../../cloud/contract/jobs.js';
 import {
@@ -117,11 +137,11 @@ interface MeshWorkerContext {
    */
   isLive?: () => boolean;
   /**
-   * ENV-03: mints an ephemeral-class `anvil-pair-…` payload for a cloud
-   * environment (enrollment code + sealed ADK). Injected by the runtime
-   * because pairing mint needs the account key — null when no key exists.
+   * ENV-03: mints an ephemeral-class enrollment code for a cloud
+   * environment. The code is authentication-only — environments receive
+   * task-scoped keys via `taskkey.*` wraps, never account key material.
    */
-  mintEnvironmentPairing?: (options: {
+  mintEnvironmentCode?: (options: {
     provider: string;
     ttlSeconds: number;
     environmentId: string;
@@ -598,13 +618,15 @@ export async function handleJobAvailable(jobId: string): Promise<void> {
   const attempt = claimed.attempt;
 
   // Local attempt journal BEFORE any work starts (spec §9): a crash between
-  // claim and execution is reconstructable from this row.
+  // claim and execution is reconstructable from this row. The job's sealed
+  // input envelope rides along so a restarted attempt can still unseal
+  // without re-claiming.
   const db = getDb();
   db.prepare(
     `INSERT INTO mesh_attempts (
        id, job_id, enrollment_id, incarnation, fence, kind, state,
-       manifest_json, journal_json, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, 'claimed', ?, ?, ?, ?)`,
+       manifest_json, journal_json, sealed_inputs_json, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, 'claimed', ?, ?, ?, ?, ?)`,
   ).run(
     attempt.id,
     job.id,
@@ -614,6 +636,7 @@ export async function handleJobAvailable(jobId: string): Promise<void> {
     job.kind,
     JSON.stringify(claimed.manifest),
     JSON.stringify([{ at: nowIso(), event: 'claimed', detail: { fence: attempt.fence } }]),
+    claimed.sealedInputs === undefined ? null : JSON.stringify(claimed.sealedInputs),
     nowIso(),
     nowIso(),
   );
@@ -706,6 +729,81 @@ async function pullCredentialGrants(attempt: ExecutionAttempt): Promise<void> {
   }
 }
 
+/**
+ * Pulls this device's task-key wrap for a job and returns the TCK. The
+ * source seals one wrap per recipient; the backend only stores opaque
+ * envelopes. Returns null when no wrap exists for us yet — the caller
+ * fails closed rather than executing without the sealed inputs.
+ */
+async function pullTaskKey(attempt: ExecutionAttempt): Promise<Buffer | null> {
+  const ctx = workerContext();
+  if (ctx === null || ctx.scope === undefined) return null;
+  const cached = taskKeyFor(ctx.scope, attempt.jobId);
+  if (cached !== null) return cached;
+  let wraps: TaskKeyWrapPayload[];
+  try {
+    const result = await meshRpc<TaskKeyPullResult>('taskkey.pull', { jobId: attempt.jobId });
+    wraps = result.wraps;
+  } catch {
+    return null;
+  }
+  for (const wrap of wraps) {
+    if (wrap.targetEnrollmentId !== ctx.enrollmentId) continue;
+    const key = unsealTaskKeyWrap(ctx.scope, ctx.enrollmentId, wrap);
+    if (key === null) {
+      appendJournal(attempt.id, 'task-key-wrap-rejected', { reason: 'unseal-failed' });
+      continue;
+    }
+    storeTaskKey(ctx.scope, attempt.jobId, key);
+    return key;
+  }
+  return null;
+}
+
+/**
+ * Resolves the job's effective inputs: coordinator-visible manifest keys
+ * plus the sealed envelope's contents, unsealed under the job's TCK.
+ * Returns null when the job carries sealed inputs we cannot open — the
+ * attempt must not run on partial context.
+ */
+async function resolveJobInputs(
+  job: MeshJob,
+  attempt: ExecutionAttempt,
+  sealedInputs: SealedTaskPayload | undefined,
+): Promise<Record<string, unknown> | null> {
+  const envelope =
+    sealedInputs ?? persistedSealedInputs(attempt.id) ?? job.sealedInputs ?? undefined;
+  if (envelope === undefined) return job.inputManifest.inputs;
+  const ctx = workerContext();
+  if (ctx === null || ctx.scope === undefined) return null;
+  const taskKey = await pullTaskKey(attempt);
+  if (taskKey === null) {
+    appendJournal(attempt.id, 'awaiting-key-delivery', { jobId: job.id });
+    return null;
+  }
+  try {
+    const sealed = unsealTaskInputs(ctx.scope, job.requestId, taskKey, envelope);
+    return { ...job.inputManifest.inputs, ...sealed };
+  } catch (error) {
+    appendJournal(attempt.id, 'sealed-inputs-rejected', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+function persistedSealedInputs(attemptId: string): SealedTaskPayload | undefined {
+  const row = getDb()
+    .prepare('SELECT sealed_inputs_json FROM mesh_attempts WHERE id = ?')
+    .get(attemptId) as { sealed_inputs_json: string | null } | undefined;
+  if (row?.sealed_inputs_json == null) return undefined;
+  try {
+    return JSON.parse(row.sealed_inputs_json) as SealedTaskPayload;
+  } catch {
+    return undefined;
+  }
+}
+
 async function runAttempt(attempt: ExecutionAttempt, job: MeshJob): Promise<void> {
   const attemptId = attempt.id;
   appendJournal(attemptId, 'preparing');
@@ -725,7 +823,22 @@ async function runAttempt(attempt: ExecutionAttempt, job: MeshJob): Promise<void
     // ENV-06: sealed grants addressed to this claim are pulled now that the
     // fence is known; the executor injects them into provider spawns.
     await pullCredentialGrants(attempt);
-    const result = await executor(job, attempt);
+    // Task-scoped inputs: the coordinator's manifest only carries public
+    // routing keys; prompts/execution context arrive in `sealedInputs`
+    // under a per-job key wrapped to this enrollment.
+    const inputs = await resolveJobInputs(job, attempt, undefined);
+    if (inputs === null) {
+      // No report — a failed outcome would end the job. The attempt's
+      // backend lease expires and the job is re-offered once key delivery
+      // lands; locally the row stops renewing so the lease can die.
+      updateAttemptState(attemptId, 'unknown-outcome');
+      return;
+    }
+    const effectiveJob: MeshJob = {
+      ...job,
+      inputManifest: { ...job.inputManifest, inputs },
+    };
+    const result = await executor(effectiveJob, attempt);
     const cancelled = isCancelRequested(attemptId);
     // MESH-03: persist attempt evidence as a private R2 artifact while the
     // attempt is still active — reserve rejects terminal attempts, so this
@@ -751,14 +864,14 @@ async function runAttempt(attempt: ExecutionAttempt, job: MeshJob): Promise<void
     // A clean stop reports 'completed': when the job is cancel-requested the
     // backend masks it to 'cancelled' (verified stop). Reporting 'failed'
     // would wrongly end the job as failed.
-    await reportAttempt(attemptId, 'completed', result);
+    await reportAttempt(attemptId, 'completed', result, job);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     appendJournal(attemptId, 'failed', { error: message });
     updateAttemptState(attemptId, 'failed', {
       resultJson: JSON.stringify({ error: message }),
     });
-    await reportAttempt(attemptId, 'failed', { error: message });
+    await reportAttempt(attemptId, 'failed', { error: message }, job);
   } finally {
     activitySequences.delete(`attempt:${attemptId}`);
     controlSequences.delete(attemptId);
@@ -864,8 +977,9 @@ const EXECUTORS: Record<
 };
 
 /**
- * ENV-03: claims a `provision-environment` job, mints the ephemeral pairing
- * payload, and drives the matching provider's create. Enrollment completes
+ * ENV-03: claims a `provision-environment` job, mints the ephemeral
+ * enrollment code (authentication-only — no account key material), and
+ * drives the matching provider's create. Enrollment completes
  * asynchronously inside the environment — it self-reports `enrolled` and
  * the backend resolves environment-targeted jobs onto it.
  */
@@ -878,21 +992,21 @@ async function executeProvisionEnvironment(
   if (scope === null) {
     throw new Error('provision-environment requires an active sync scope.');
   }
-  const mint = workerContext()?.mintEnvironmentPairing;
+  const mint = workerContext()?.mintEnvironmentCode;
   if (mint === undefined) {
-    throw new Error('Environment pairing mint is unavailable on this runtime.');
+    throw new Error('Environment code mint is unavailable on this runtime.');
   }
   emitActivity(attempt, `provisioning ${inputs.provider} environment ${inputs.environmentId}`);
-  const pairingPayload = await mint({
+  const enrollmentCode = await mint({
     provider: inputs.provider,
     ttlSeconds: inputs.ttlSeconds,
     environmentId: inputs.environmentId,
     displayName: inputs.displayName ?? `env:${inputs.environmentId}`,
   });
-  if (pairingPayload === null) {
-    throw new Error('Could not mint an environment pairing payload (account key unavailable).');
+  if (enrollmentCode === null) {
+    throw new Error('Could not mint an ephemeral enrollment code.');
   }
-  const result = await provisionEnvironment(scope, inputs, pairingPayload, job.id);
+  const result = await provisionEnvironment(scope, inputs, enrollmentCode, job.id);
   appendJournal(attempt.id, 'environment-provisioned', {
     environmentId: inputs.environmentId,
     provider: inputs.provider,
@@ -1938,23 +2052,61 @@ async function gitHead(cwd: string): Promise<string | null> {
   }
 }
 
+/**
+ * Coordinator-visible copy of an attempt result: verification commands and
+ * other free-text detail ride the sealed result envelope, so the public
+ * copy carries only bounded metadata.
+ */
+function publicResultSummary(result: Record<string, unknown>): Record<string, unknown> {
+  const redactVerification = (
+    value: unknown,
+  ): unknown => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return value;
+    const record = value as Record<string, unknown>;
+    const out: Record<string, unknown> = { ...record };
+    if (Array.isArray(record['verification'])) {
+      out['verification'] = (record['verification'] as ResultManifestVerification[]).map((v) => ({
+        ...v,
+        command: '[task-sealed]',
+      }));
+    }
+    for (const [key, nested] of Object.entries(record)) {
+      if (typeof nested === 'object' && nested !== null && !Array.isArray(nested)) {
+        out[key] = redactVerification(nested);
+      }
+    }
+    return out;
+  };
+  return redactVerification(result) as Record<string, unknown>;
+}
+
 async function reportAttempt(
   attemptId: string,
   outcome: 'completed' | 'failed',
   result: Record<string, unknown>,
+  job?: MeshJob,
 ): Promise<void> {
   const db = getDb();
   const row = db
     .prepare('SELECT incarnation, fence FROM mesh_attempts WHERE id = ?')
     .get(attemptId) as { incarnation: string; fence: number } | undefined;
   if (!row) return;
+  const ctx = workerContext();
+  const taskKey =
+    job !== undefined && ctx?.scope !== undefined ? taskKeyFor(ctx.scope, job.id) : null;
+  const sealedResult =
+    taskKey !== null && job !== undefined && ctx?.scope !== undefined
+      ? sealTaskResult(ctx.scope, job.id, attemptId, taskKey, result)
+      : undefined;
+  const publicResult = sealedResult === undefined ? result : publicResultSummary(result);
   try {
     const report = await meshRpc<{ status: string }>('attempt.report', {
       attemptId,
       incarnation: row.incarnation,
       fence: row.fence,
       outcome,
-      result,
+      result: publicResult,
+      ...(sealedResult === undefined ? {} : { sealedResult }),
       ...(outcome === 'failed' && typeof result['error'] === 'string'
         ? { error: result['error'] }
         : {}),
@@ -2029,6 +2181,152 @@ export function requestApprovalForTests(
 // may request work. The diagnostic kind is the MESH-02 pipeline proof; richer
 // kinds (prepare-workspace, start-session, workflow-node) land with SESSION-02+.
 
+/**
+ * Local TCK store key used before the backend job id exists. The dispatch
+ * path persists its job.create request before submitting; keying the TCK
+ * by request id means a crash between seal and create can still deliver
+ * (and re-derive) the key.
+ */
+function taskKeyStoreId(requestId: string): string {
+  return `req:${requestId}`;
+}
+
+interface SealedJobRequest {
+  requestId: string;
+  kind: JobCreateParams['kind'];
+  requestedTarget: RequestedTarget;
+  manifest: ExecutionManifest;
+  /**
+   * Sensitive inputs sealed under a fresh task content key (TCK). With a
+   * sync scope these travel in `sealedInputs`; without one (self-hosted /
+   * account-less backend) they fall back to plaintext manifest inputs —
+   * the coordinator is the user's own in that mode.
+   */
+  privateInputs?: Record<string, unknown>;
+  /** Additional enrollments authorised to receive the TCK. */
+  resultRecipients?: string[];
+  retryPolicy?: JobCreateParams['retryPolicy'];
+}
+
+/**
+ * Delivers the job's TCK to the resolved target plus declared result
+ * recipients. Idempotent — the backend dedupes wraps per (job, target);
+ * recipients whose device identity is not yet replicated are retried on
+ * the next observation (`job.get`, dispatch refresh).
+ */
+async function deliverTaskKeys(scope: SyncScope, job: JobSummary): Promise<void> {
+  const ctx = workerContext();
+  const taskKey = taskKeyFor(scope, job.id) ?? taskKeyFor(scope, taskKeyStoreId(job.requestId));
+  if (taskKey === null) return;
+  storeTaskKey(scope, job.id, taskKey);
+  const pubs = new Map(listDeviceIdentities(scope).map((d) => [d.enrollmentId, d.pub]));
+  const recipients = new Set<string>(job.resultRecipients ?? []);
+  if (job.targetEnrollmentId !== undefined) recipients.add(job.targetEnrollmentId);
+  if (ctx !== null) recipients.delete(ctx.enrollmentId);
+  const wraps: TaskKeyWrapPayload[] = [];
+  for (const enrollmentId of recipients) {
+    const pub = pubs.get(enrollmentId);
+    if (pub === undefined) continue;
+    wraps.push(
+      sealTaskKeyWrap({
+        scope,
+        jobId: job.id,
+        targetEnrollmentId: enrollmentId,
+        recipientPubB64: pub,
+        taskKey,
+      }),
+    );
+  }
+  if (wraps.length === 0) return;
+  await meshRpc<TaskKeyDeliverResult>('taskkey.deliver', { jobId: job.id, wraps });
+}
+
+/**
+ * Source-side key delivery is lazily retried whenever the job is observed:
+ * `kind:'auto'`/`kind:'environment'` jobs resolve their target after
+ * creation, and peers' identities replicate asynchronously.
+ */
+export async function ensureTaskKeyDelivery(job: JobSummary): Promise<void> {
+  const ctx = workerContext();
+  if (ctx?.scope === undefined || job.keyDelivery !== 'pending') return;
+  await deliverTaskKeys(ctx.scope, job).catch(() => undefined);
+}
+
+/**
+ * Builds the byte-exact `job.create` params for a request — sealing
+ * private inputs under a fresh TCK when a sync scope exists and persisting
+ * that key under the request id BEFORE any submission. The dispatch path
+ * stores the returned params so a crash before/after `job.create` replays
+ * deterministically (same requestId + payloadHash → same job).
+ */
+export function prepareSealedJob(request: SealedJobRequest): JobCreateParams {
+  const scope = workerContext()?.scope;
+  const privateInputs = request.privateInputs ?? {};
+  const manifest = request.manifest;
+  let sealedInputs: SealedTaskPayload | undefined;
+  if (Object.keys(privateInputs).length > 0) {
+    if (scope === undefined) {
+      // Fail closed: private inputs never ride the coordinator-visible
+      // manifest — without a sync scope there is no TCK to seal under.
+      throw new Error(
+        'job has private inputs but no sync scope is available to seal them',
+      );
+    }
+    const taskKey = mintTaskKey();
+    sealedInputs = sealTaskInputs(scope, request.requestId, taskKey, privateInputs);
+    storeTaskKey(scope, taskKeyStoreId(request.requestId), taskKey);
+  }
+  // The backend verifies the hash covers the canonical job payload — a
+  // replay of the same requestId with a different payload is a conflict.
+  const payloadHash = createHash('sha256')
+    .update(
+      canonicalJson({
+        kind: request.kind,
+        requestedTarget: request.requestedTarget,
+        inputManifest: manifest,
+        ...(sealedInputs === undefined ? {} : { sealedInputs }),
+        ...(request.resultRecipients === undefined
+          ? {}
+          : { resultRecipients: request.resultRecipients }),
+      }),
+      'utf8',
+    )
+    .digest('hex');
+  return {
+    requestId: request.requestId,
+    payloadHash,
+    kind: request.kind,
+    requestedTarget: request.requestedTarget,
+    inputManifest: manifest,
+    ...(sealedInputs === undefined ? {} : { sealedInputs }),
+    ...(request.resultRecipients === undefined
+      ? {}
+      : { resultRecipients: request.resultRecipients }),
+    retryPolicy: request.retryPolicy,
+  };
+}
+
+/** Sends a prepared `job.create` and delivers TCK wraps. */
+export async function submitPreparedJob(params: JobCreateParams): Promise<JobSummary> {
+  const result = await meshRpc<{ job: JobSummary }>('job.create', params);
+  const scope = workerContext()?.scope;
+  if (scope !== undefined) {
+    await deliverTaskKeys(scope, result.job).catch(() => undefined);
+  }
+  return result.job;
+}
+
+/**
+ * `job.create` with E2E input sealing. The coordinator's manifest carries
+ * only allowlisted routing keys; sensitive inputs are sealed under a fresh
+ * TCK bound to the request id, the TCK is persisted before submission, and
+ * key wraps are delivered to the target/result recipients after the job
+ * id exists.
+ */
+export async function submitSealedJob(request: SealedJobRequest): Promise<JobSummary> {
+  return submitPreparedJob(prepareSealedJob(request));
+}
+
 export interface DiagnosticJobInput {
   requestId: string;
   targetEnrollmentId?: string;
@@ -2060,20 +2358,13 @@ export async function createDiagnosticJob(input: DiagnosticJobInput): Promise<Jo
           kind: 'auto' as const,
           ...(input.requirements === undefined ? {} : { requirements: input.requirements }),
         };
-  // The backend verifies the hash covers the canonical job payload; a replay
-  // of the same requestId with a different payload is a conflict.
-  const payloadHash = createHash('sha256')
-    .update(canonicalJson({ kind: 'diagnostic', requestedTarget, inputManifest: manifest }), 'utf8')
-    .digest('hex');
-  const result = await meshRpc<{ job: JobSummary }>('job.create', {
+  return submitSealedJob({
     requestId: input.requestId,
-    payloadHash,
     kind: 'diagnostic',
     requestedTarget,
-    inputManifest: manifest,
+    manifest,
     retryPolicy: 'never',
   });
-  return result.job;
 }
 
 export interface PrepareWorkspaceJobInput {
@@ -2139,21 +2430,13 @@ export async function createPrepareWorkspaceJob(
           kind: 'auto' as const,
           ...(input.requirements === undefined ? {} : { requirements: input.requirements }),
         };
-  const payloadHash = createHash('sha256')
-    .update(
-      canonicalJson({ kind: 'prepare-workspace', requestedTarget, inputManifest: manifest }),
-      'utf8',
-    )
-    .digest('hex');
-  const result = await meshRpc<{ job: JobSummary }>('job.create', {
+  return submitSealedJob({
     requestId: input.requestId,
-    payloadHash,
     kind: 'prepare-workspace',
     requestedTarget,
-    inputManifest: manifest,
+    manifest,
     retryPolicy: 'inspect-before-retry',
   });
-  return result.job;
 }
 
 export interface StartSessionJobInput {
@@ -2214,6 +2497,8 @@ export async function createStartSessionJob(input: StartSessionJobInput): Promis
         });
   const model =
     input.model ?? resolveSessionModel(provider as AgentProvider, getSettings().openaiModel);
+  // The coordinator's manifest carries routing keys only; the prompt and
+  // execution context seal under the job's task content key.
   const manifest: ExecutionManifest = {
     workspaceDefinitionRevision: revision,
     repositories,
@@ -2221,16 +2506,16 @@ export async function createStartSessionJob(input: StartSessionJobInput): Promis
     provider,
     model,
     configVersions: {},
-    inputs: {
-      workspaceId: input.workspaceId,
-      prompt: input.prompt,
-      ...(input.personaId === undefined ? {} : { personaId: input.personaId }),
-      ...(input.reasoningEffort === undefined ? {} : { reasoningEffort: input.reasoningEffort }),
-      ...(input.sandbox === undefined ? {} : { sandbox: input.sandbox }),
-      ...(input.cliMinVersion === undefined ? {} : { cliMinVersion: input.cliMinVersion }),
-      ...(input.turnTimeoutMs === undefined ? {} : { turnTimeoutMs: input.turnTimeoutMs }),
-      ...(input.handoffId === undefined ? {} : { handoffId: input.handoffId }),
-    },
+    inputs: { workspaceId: input.workspaceId },
+  };
+  const privateInputs: Record<string, unknown> = {
+    prompt: input.prompt,
+    ...(input.personaId === undefined ? {} : { personaId: input.personaId }),
+    ...(input.reasoningEffort === undefined ? {} : { reasoningEffort: input.reasoningEffort }),
+    ...(input.sandbox === undefined ? {} : { sandbox: input.sandbox }),
+    ...(input.cliMinVersion === undefined ? {} : { cliMinVersion: input.cliMinVersion }),
+    ...(input.turnTimeoutMs === undefined ? {} : { turnTimeoutMs: input.turnTimeoutMs }),
+    ...(input.handoffId === undefined ? {} : { handoffId: input.handoffId }),
   };
   const requestedTarget =
     input.targetEnrollmentId !== undefined
@@ -2239,21 +2524,14 @@ export async function createStartSessionJob(input: StartSessionJobInput): Promis
           kind: 'auto' as const,
           ...(input.requirements === undefined ? {} : { requirements: input.requirements }),
         };
-  const payloadHash = createHash('sha256')
-    .update(
-      canonicalJson({ kind: 'start-session', requestedTarget, inputManifest: manifest }),
-      'utf8',
-    )
-    .digest('hex');
-  const result = await meshRpc<{ job: JobSummary }>('job.create', {
+  return submitSealedJob({
     requestId: input.requestId,
-    payloadHash,
     kind: 'start-session',
     requestedTarget,
-    inputManifest: manifest,
+    manifest,
+    privateInputs,
     retryPolicy: 'inspect-before-retry',
   });
-  return result.job;
 }
 
 export interface CodeTaskJobInput {
@@ -2324,17 +2602,17 @@ export async function createCodeTaskJob(input: CodeTaskJobInput): Promise<JobSum
     provider,
     model,
     configVersions: {},
-    inputs: {
-      workspaceId: input.workspaceId,
-      prompt: input.prompt,
-      refPolicy: 'local-branches',
-      ...(input.personaId === undefined ? {} : { personaId: input.personaId }),
-      ...(input.reasoningEffort === undefined ? {} : { reasoningEffort: input.reasoningEffort }),
-      ...(input.sandbox === undefined ? {} : { sandbox: input.sandbox }),
-      ...(input.cliMinVersion === undefined ? {} : { cliMinVersion: input.cliMinVersion }),
-      ...(input.turnTimeoutMs === undefined ? {} : { turnTimeoutMs: input.turnTimeoutMs }),
-      ...(input.verification === undefined ? {} : { verification: input.verification }),
-    },
+    inputs: { workspaceId: input.workspaceId },
+  };
+  const privateInputs: Record<string, unknown> = {
+    prompt: input.prompt,
+    refPolicy: 'local-branches',
+    ...(input.personaId === undefined ? {} : { personaId: input.personaId }),
+    ...(input.reasoningEffort === undefined ? {} : { reasoningEffort: input.reasoningEffort }),
+    ...(input.sandbox === undefined ? {} : { sandbox: input.sandbox }),
+    ...(input.cliMinVersion === undefined ? {} : { cliMinVersion: input.cliMinVersion }),
+    ...(input.turnTimeoutMs === undefined ? {} : { turnTimeoutMs: input.turnTimeoutMs }),
+    ...(input.verification === undefined ? {} : { verification: input.verification }),
   };
   const requestedTarget =
     input.targetEnrollmentId !== undefined
@@ -2343,18 +2621,14 @@ export async function createCodeTaskJob(input: CodeTaskJobInput): Promise<JobSum
           kind: 'auto' as const,
           ...(input.requirements === undefined ? {} : { requirements: input.requirements }),
         };
-  const payloadHash = createHash('sha256')
-    .update(canonicalJson({ kind: 'code-task', requestedTarget, inputManifest: manifest }), 'utf8')
-    .digest('hex');
-  const result = await meshRpc<{ job: JobSummary }>('job.create', {
+  return submitSealedJob({
     requestId: input.requestId,
-    payloadHash,
     kind: 'code-task',
     requestedTarget,
-    inputManifest: manifest,
+    manifest,
+    privateInputs,
     retryPolicy: 'inspect-before-retry',
   });
-  return result.job;
 }
 
 export interface WorkflowNodeJobInput extends Omit<CodeTaskJobInput, 'requestId'> {
@@ -2374,85 +2648,102 @@ export interface WorkflowNodeJobInput extends Omit<CodeTaskJobInput, 'requestId'
  * attempt branch as a fetchable bundle artifact so the parent can adopt
  * the result refs. requestId is `node-dispatch/<dispatchId>`: the
  * backend's (source, requestId) idempotency makes re-dispatch safe.
+ *
+ * The request is built in two steps so the dispatch can persist the
+ * byte-exact params BEFORE submitting: a crash between persist and create
+ * replays deterministically instead of recomputing.
  */
-export async function createWorkflowNodeJob(input: WorkflowNodeJobInput): Promise<JobSummary> {
+export function workflowNodeJobRequest(input: WorkflowNodeJobInput): {
+  requestId: string;
+  build: () => Promise<SealedJobRequest>;
+} {
   const requestId = `node-dispatch/${input.dispatchId}`;
-  const provider: RemoteSessionProvider = input.provider ?? 'codex';
-  const revision = workspaceDefinitionRevision(input.workspaceId);
-  if (revision === null) {
-    throw new Error(`workspace not found: ${input.workspaceId}`);
-  }
-  const commits = await resolveWorkspaceCommits(input.workspaceId);
-  const defs = getDb()
-    .prepare(
-      `SELECT portable_id, mapped_repo_id FROM workspace_repo_definitions WHERE workspace_id = ?`,
-    )
-    .all(input.workspaceId) as Array<{ portable_id: string; mapped_repo_id: string | null }>;
-  const repositories = defs.map((def) => {
-    const commit = commits[def.portable_id];
-    if (def.mapped_repo_id === null || commit === undefined) {
-      throw new Error(
-        `repository ${def.portable_id} has no resolved commit on this device — map a checkout first`,
-      );
-    }
-    return { repositoryId: def.portable_id, commit };
-  });
-  const recipe = getWorkspaceBootstrap(input.workspaceId);
-  const bootstrapDigest =
-    recipe === null
-      ? 'none'
-      : computeBootstrapDigest({
-          recipe,
-          repositoryCommits: commits,
-          executionPolicy: buildDevicePolicy(),
-        });
-  const model =
-    input.model ?? resolveSessionModel(provider as AgentProvider, getSettings().openaiModel);
-  const manifest: ExecutionManifest = {
-    workspaceDefinitionRevision: revision,
-    repositories,
-    bootstrapDigest,
-    provider,
-    model,
-    configVersions: {},
-    inputs: {
-      workspaceId: input.workspaceId,
-      prompt: input.prompt,
-      refPolicy: 'local-branches',
-      resultTransfer: 'bundle-artifacts',
-      dispatchId: input.dispatchId,
-      runId: input.runId,
-      nodeId: input.nodeId,
-      ...(input.personaId === undefined ? {} : { personaId: input.personaId }),
-      ...(input.reasoningEffort === undefined ? {} : { reasoningEffort: input.reasoningEffort }),
-      ...(input.sandbox === undefined ? {} : { sandbox: input.sandbox }),
-      ...(input.cliMinVersion === undefined ? {} : { cliMinVersion: input.cliMinVersion }),
-      ...(input.turnTimeoutMs === undefined ? {} : { turnTimeoutMs: input.turnTimeoutMs }),
-      ...(input.verification === undefined ? {} : { verification: input.verification }),
+  return {
+    requestId,
+    build: async () => {
+      const provider: RemoteSessionProvider = input.provider ?? 'codex';
+      const revision = workspaceDefinitionRevision(input.workspaceId);
+      if (revision === null) {
+        throw new Error(`workspace not found: ${input.workspaceId}`);
+      }
+      const commits = await resolveWorkspaceCommits(input.workspaceId);
+      const defs = getDb()
+        .prepare(
+          `SELECT portable_id, mapped_repo_id FROM workspace_repo_definitions WHERE workspace_id = ?`,
+        )
+        .all(input.workspaceId) as Array<{
+          portable_id: string;
+          mapped_repo_id: string | null;
+        }>;
+      const repositories = defs.map((def) => {
+        const commit = commits[def.portable_id];
+        if (def.mapped_repo_id === null || commit === undefined) {
+          throw new Error(
+            `repository ${def.portable_id} has no resolved commit on this device — map a checkout first`,
+          );
+        }
+        return { repositoryId: def.portable_id, commit };
+      });
+      const recipe = getWorkspaceBootstrap(input.workspaceId);
+      const bootstrapDigest =
+        recipe === null
+          ? 'none'
+          : computeBootstrapDigest({
+              recipe,
+              repositoryCommits: commits,
+              executionPolicy: buildDevicePolicy(),
+            });
+      const model =
+        input.model ?? resolveSessionModel(provider as AgentProvider, getSettings().openaiModel);
+      const manifest: ExecutionManifest = {
+        workspaceDefinitionRevision: revision,
+        repositories,
+        bootstrapDigest,
+        provider,
+        model,
+        configVersions: {},
+        inputs: { workspaceId: input.workspaceId },
+      };
+      const privateInputs: Record<string, unknown> = {
+        prompt: input.prompt,
+        refPolicy: 'local-branches',
+        resultTransfer: 'bundle-artifacts',
+        dispatchId: input.dispatchId,
+        runId: input.runId,
+        nodeId: input.nodeId,
+        ...(input.personaId === undefined ? {} : { personaId: input.personaId }),
+        ...(input.reasoningEffort === undefined
+          ? {}
+          : { reasoningEffort: input.reasoningEffort }),
+        ...(input.sandbox === undefined ? {} : { sandbox: input.sandbox }),
+        ...(input.cliMinVersion === undefined ? {} : { cliMinVersion: input.cliMinVersion }),
+        ...(input.turnTimeoutMs === undefined ? {} : { turnTimeoutMs: input.turnTimeoutMs }),
+        ...(input.verification === undefined ? {} : { verification: input.verification }),
+      };
+      const requestedTarget: RequestedTarget =
+        input.targetEnrollmentId !== undefined
+          ? { kind: 'device', enrollmentId: input.targetEnrollmentId }
+          : {
+              kind: 'auto',
+              ...(input.requirements === undefined
+                ? {}
+                : { requirements: input.requirements }),
+            };
+      return {
+        requestId,
+        kind: 'workflow-node',
+        requestedTarget,
+        manifest,
+        privateInputs,
+        retryPolicy: 'inspect-before-retry',
+      };
     },
   };
-  const requestedTarget =
-    input.targetEnrollmentId !== undefined
-      ? { kind: 'device' as const, enrollmentId: input.targetEnrollmentId }
-      : {
-          kind: 'auto' as const,
-          ...(input.requirements === undefined ? {} : { requirements: input.requirements }),
-        };
-  const payloadHash = createHash('sha256')
-    .update(
-      canonicalJson({ kind: 'workflow-node', requestedTarget, inputManifest: manifest }),
-      'utf8',
-    )
-    .digest('hex');
-  const result = await meshRpc<{ job: JobSummary }>('job.create', {
-    requestId,
-    payloadHash,
-    kind: 'workflow-node',
-    requestedTarget,
-    inputManifest: manifest,
-    retryPolicy: 'inspect-before-retry',
-  });
-  return result.job;
+}
+
+export async function createWorkflowNodeJob(input: WorkflowNodeJobInput): Promise<JobSummary> {
+  const prepared = workflowNodeJobRequest(input);
+  return submitSealedJob(await prepared.build());
 }
 
 /** `approval.get` — by approvalId, or list pending for a job/attempt. */
@@ -2483,6 +2774,11 @@ export async function decideMeshApproval(
 
 export async function getMeshJob(jobId: string): Promise<JobSummary | null> {
   const result = await meshRpc<JobGetResult>('job.get', { jobId });
+  if (result.job !== null) {
+    // Late-bound targets and newly replicated identities retry delivery on
+    // every source-side observation.
+    void ensureTaskKeyDelivery(result.job).catch(() => undefined);
+  }
   return result.job ?? null;
 }
 

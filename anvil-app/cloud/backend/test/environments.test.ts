@@ -117,7 +117,7 @@ function manifest(): ExecutionManifest {
     provider: 'codex',
     model: 'gpt-5',
     configVersions: { 'agent-settings': 'v3' },
-    inputs: { prompt: 'diagnose the workspace' },
+    inputs: { workspaceId: 'ws-1' },
   };
 }
 

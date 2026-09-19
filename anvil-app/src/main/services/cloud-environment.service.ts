@@ -3,7 +3,7 @@
  *
  * A provisioner-capable device (desktop or daemon) claims
  * `provision-environment` jobs and drives a `CloudEnvironmentProvider`:
- * mint an ephemeral pairing payload → provider.create → report progress
+ * mint an ephemeral enrollment code → provider.create → report progress
  * via `environment.report` → terminate on reap intent or TTL. Provider
  * credentials live in OS credential storage (`encryptSecret`); the
  * connection row keeps only non-secret config — credentials never sync.
@@ -284,8 +284,8 @@ function numberConfig(config: Record<string, unknown>, key: string): number | un
 /**
  * AWS Lambda MicroVMs — mirrors the lifecycle calls of anvil-cloud's
  * AwsLambdaMicroVmSandboxProvider (PATCH.md C2) against the same SDK. The
- * pairing payload rides `runHookPayload`; the anvil-worker image's /run
- * hook redeems it (`anvil-daemon enroll --pair`).
+ * enrollment code rides `runHookPayload`; the anvil-worker image's /run
+ * hook redeems it (`anvil-daemon enroll --code`).
  */
 function awsLambdaMicrovmProvider(connection: ResolvedConnection): CloudEnvironmentProvider {
   const secret = connection.secret;
@@ -329,8 +329,8 @@ function awsLambdaMicrovmProvider(connection: ResolvedConnection): CloudEnvironm
             numberConfig(config, 'suspendedDurationSeconds') ?? Math.max(input.ttlSeconds, 60),
           autoResumeEnabled: true,
         },
-        // The worker image's /run hook reads this and redeems the pairing
-        // payload — the only secret channel into the environment.
+        // The worker image's /run hook reads this and redeems the
+        // enrollment code — the only secret channel into the environment.
         runHookPayload: JSON.stringify(meshEnvironmentBootstrap(input, 'aws-lambda-microvm')),
       };
       const imageVersion = stringConfig(config, 'imageVersion');
@@ -398,21 +398,21 @@ export function meshEnvironmentBootstrap(
   provider: EnvironmentProviderId,
 ): {
   kind: 'anvil.mesh-environment';
-  schemaVersion: '0.1';
+  schemaVersion: '0.2';
   environmentId: string;
   provider: EnvironmentProviderId;
   backendUrl: string;
-  pairing: string;
+  enrollmentCode: string;
   ttlSeconds: number;
   networkPolicy?: string[];
 } {
   return {
     kind: 'anvil.mesh-environment',
-    schemaVersion: '0.1',
+    schemaVersion: '0.2',
     environmentId: input.environmentId,
     provider,
     backendUrl: input.backendUrl,
-    pairing: input.bootstrapPayload,
+    enrollmentCode: input.bootstrapPayload,
     ttlSeconds: input.ttlSeconds,
     ...(input.networkPolicy === undefined ? {} : { networkPolicy: input.networkPolicy }),
   };
@@ -553,7 +553,7 @@ function vercelSandboxProvider(connection: ResolvedConnection): CloudEnvironment
         ...credentials,
       });
       // No auto-run entrypoint on Vercel: launch the image's boot script
-      // detached. It redeems the pairing payload and `exec`s the daemon.
+      // detached. It redeems the enrollment code and `exec`s the daemon.
       await sandbox.runCommand({
         cmd: '/opt/anvil/bin/anvil-worker-boot',
         detached: true,
@@ -727,17 +727,16 @@ export interface RequestEnvironmentResult {
  * `kind:'auto'` placement + the `provision:<provider>` capability
  * requirement route BYO jobs to whichever device holds the provider
  * connection; `anvil-managed` jobs are claimed by the backend's own
- * managed provisioner instead, so the source must first stage the
- * `anvil-pair-…` bootstrap payload via `environment.bootstrap` — the
- * backend can mint the enrollment code only through the payload the
- * source built (it also seals the account data key the env needs).
+ * managed provisioner instead, so the source must first stage an
+ * ephemeral-class enrollment code via `environment.bootstrap` — the code
+ * authenticates the worker; it carries no account key material.
  */
 export async function requestEnvironment(
   scope: ProvisionerScope,
   input: RequestEnvironmentInput,
   deps: {
     /** Required for `anvil-managed`; supplied by the sync runtime. */
-    mintEnvironmentPairing?: (options: {
+    mintEnvironmentCode?: (options: {
       provider: string;
       ttlSeconds: number;
       environmentId: string;
@@ -747,9 +746,9 @@ export async function requestEnvironment(
 ): Promise<RequestEnvironmentResult> {
   const environmentId = input.environmentId ?? `env_${randomUUID()}`;
   if (input.provider === 'anvil-managed') {
-    const mint = deps.mintEnvironmentPairing;
+    const mint = deps.mintEnvironmentCode;
     if (mint === undefined) {
-      throw new Error('anvil-managed requests need an account key (mintEnvironmentPairing).');
+      throw new Error('anvil-managed requests need an enrollment code issuer (mintEnvironmentCode).');
     }
     const payload = await mint({
       provider: input.provider,
@@ -758,10 +757,10 @@ export async function requestEnvironment(
       ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
     });
     if (payload === null) {
-      throw new Error('Failed to mint an ephemeral pairing for the managed environment.');
+      throw new Error('Failed to mint an ephemeral enrollment code for the managed environment.');
     }
-    // Stage before job.create: the managed claimer consumes the payload
-    // when it accepts the provision job. Unconsumed payloads expire.
+    // Stage before job.create: the managed claimer consumes the code
+    // when it accepts the provision job. Unconsumed rows expire.
     await backendRpc(
       { apiUrl: scope.apiUrl },
       'environment.bootstrap',
@@ -840,7 +839,7 @@ async function reportEnvironment(
 
 /**
  * ENV-03 provision-environment executor path: create the provider
- * environment with the pairing payload as its only secret channel, record
+ * environment with the ephemeral enrollment code as its only secret channel, record
  * the handle locally, and report lifecycle progress. Enrollment completes
  * asynchronously inside the env — it self-reports `enrolled` once its
  * worker is up.

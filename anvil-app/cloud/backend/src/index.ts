@@ -527,6 +527,15 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
     case 'environment.bootstrap':
     case 'credential.deliver':
     case 'credential.pull':
+    // E2EE task-key delivery + rotation reports + dashboard grants —
+    // opaque envelopes the account object indexes but never opens.
+    case 'taskkey.deliver':
+    case 'taskkey.pull':
+    case 'keyring.report':
+    case 'dashboard.requests':
+    case 'dashboard.decide':
+    case 'dashboard.publish':
+    case 'dashboard.revoke':
     // SESSION-03 session ownership handoff.
     case 'handoff.create':
     case 'handoff.get':

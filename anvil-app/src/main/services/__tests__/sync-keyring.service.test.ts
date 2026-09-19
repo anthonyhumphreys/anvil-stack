@@ -53,6 +53,7 @@ import {
   sealCredentialGrant,
   sealEntityPayload,
   sealScopedJson,
+  setDeviceTrust,
   UnsealError,
   unsealAccountBytes,
   unsealBytesWithKey,
@@ -100,7 +101,9 @@ beforeEach(() => {
     `DELETE FROM sync_keyring; DELETE FROM sync_device_keys; DELETE FROM sync_pairing;
      DELETE FROM sync_keyring_deliveries; DELETE FROM sync_outbox; DELETE FROM sync_bindings;
      DELETE FROM sync_conflicts; DELETE FROM sync_state; DELETE FROM device_enrollments;
-     DELETE FROM sync_scan_runs; DELETE FROM sync_scan_staging;`,
+     DELETE FROM sync_scan_runs; DELETE FROM sync_scan_staging;
+     DELETE FROM sync_device_trust; DELETE FROM sync_keyring_rotations;
+     DELETE FROM mesh_task_keys; DELETE FROM mesh_dashboard_grants;`,
   );
   applyRemoteEntityPayload.mockClear();
 });
@@ -264,11 +267,14 @@ describe('device identity + key wrap', () => {
     // landing for this device's own enrollment — the local private key
     // opens it.
     const recipient = ensureDeviceIdentity(SCOPE, 'enr-recipient');
-    wrapAccountKeyFor(SCOPE, 'enr-recipient', recipient.pub, adk!.version);
+    // Key delivery is trust-gated: pending devices receive nothing.
+    setDeviceTrust(SCOPE, 'enr-recipient', 'trusted');
+    wrapAccountKeyFor(SCOPE, 'enr-recipient', recipient.pub);
     const wrap = outboxPayloads(CRYPTO_ENTITY_KEYRING_WRAP)[0] as KeyringWrapPayload;
     expect(wrap.enc).toBe('x25519-aes-256-gcm');
     // This device is itself the recipient (own enrollment) → unwraps.
-    wrapAccountKeyFor(SCOPE, ENROLLMENT, ensureDeviceIdentity(SCOPE, ENROLLMENT).pub, adk!.version);
+    setDeviceTrust(SCOPE, ENROLLMENT, 'trusted');
+    wrapAccountKeyFor(SCOPE, ENROLLMENT, ensureDeviceIdentity(SCOPE, ENROLLMENT).pub);
     const ownWrap = outboxPayloads(CRYPTO_ENTITY_KEYRING_WRAP)[1] as KeyringWrapPayload;
     // Remove the key, then recover it via the wrap entity.
     db.prepare('DELETE FROM sync_keyring').run();
@@ -287,8 +293,8 @@ describe('device identity + key wrap', () => {
   it('ignores a wrap addressed to a different enrollment', () => {
     activateEnrollment();
     provisionAccountKey(SCOPE);
-    const adk = currentAccountKey(SCOPE)!;
-    wrapAccountKeyFor(SCOPE, ENROLLMENT, ensureDeviceIdentity(SCOPE, ENROLLMENT).pub, adk.version);
+    setDeviceTrust(SCOPE, ENROLLMENT, 'trusted');
+    wrapAccountKeyFor(SCOPE, ENROLLMENT, ensureDeviceIdentity(SCOPE, ENROLLMENT).pub);
     const wrap = outboxPayloads(CRYPTO_ENTITY_KEYRING_WRAP)[0] as KeyringWrapPayload;
     db.prepare('DELETE FROM sync_keyring').run();
     handleCryptoBoundaryEntity(SCOPE, ENROLLMENT, CRYPTO_ENTITY_KEYRING_WRAP, 'enr-other', wrap);
@@ -368,6 +374,8 @@ describe('rotation on revoke', () => {
     provisionAccountKey(SCOPE);
     ensureDeviceIdentity(SCOPE, 'enr-peer-1');
     ensureDeviceIdentity(SCOPE, 'enr-peer-revoked');
+    setDeviceTrust(SCOPE, 'enr-peer-1', 'trusted');
+    setDeviceTrust(SCOPE, 'enr-peer-revoked', 'trusted');
     const next = rotateAccountKey(SCOPE, ['enr-peer-revoked']);
     expect(next).toBe(2);
     expect(accountKeyFor(SCOPE, 2)).not.toBeNull();
@@ -525,7 +533,8 @@ describe('ADK provenance + wrap floor', () => {
   function wrapPayloadFor(version: number, key: Buffer): KeyringWrapPayload {
     db.prepare('DELETE FROM sync_keyring').run();
     installAccountKey(SCOPE, version, key, 'wrap');
-    wrapAccountKeyFor(SCOPE, ENROLLMENT, ensureDeviceIdentity(SCOPE, ENROLLMENT).pub, version);
+    setDeviceTrust(SCOPE, ENROLLMENT, 'trusted');
+    wrapAccountKeyFor(SCOPE, ENROLLMENT, ensureDeviceIdentity(SCOPE, ENROLLMENT).pub);
     const wrap = outboxPayloads(CRYPTO_ENTITY_KEYRING_WRAP).at(-1) as KeyringWrapPayload;
     db.prepare('DELETE FROM sync_keyring').run();
     return wrap;
@@ -554,21 +563,31 @@ describe('ADK provenance + wrap floor', () => {
     expect(accountKeyFor(SCOPE, 1)).toEqual(KEY_A);
   });
 
-  it('accepts the expected next-version wrap but rejects version jumps', () => {
+  it('installs every version a delivered bundle carries', () => {
     activateEnrollment();
+    // Bundles deliver history: the issuer includes every version it holds,
+    // so a recipient behind several rotations catches up in one wrap.
     const wrapV2 = wrapPayloadFor(2, KEY_B);
     const wrapV3 = wrapPayloadFor(3, KEY_C);
     installAccountKey(SCOPE, 1, KEY_A, 'wrap');
-    // Holding v1, a v3 wrap is a jump — refused even though it unwraps fine.
-    handleCryptoBoundaryEntity(SCOPE, ENROLLMENT, CRYPTO_ENTITY_KEYRING_WRAP, ENROLLMENT, wrapV3);
-    expect(accountKeyFor(SCOPE, 3)).toBeNull();
-    expect(currentAccountKey(SCOPE)?.version).toBe(1);
-    // The in-order v2 wrap is the expected next version and installs.
     handleCryptoBoundaryEntity(SCOPE, ENROLLMENT, CRYPTO_ENTITY_KEYRING_WRAP, ENROLLMENT, wrapV2);
     expect(accountKeyFor(SCOPE, 2)).toEqual(KEY_B);
-    // Now holding v2, the previously rejected v3 wrap is acceptable.
     handleCryptoBoundaryEntity(SCOPE, ENROLLMENT, CRYPTO_ENTITY_KEYRING_WRAP, ENROLLMENT, wrapV3);
     expect(accountKeyFor(SCOPE, 3)).toEqual(KEY_C);
+  });
+
+  it('delivers the full bundle inside a single wrap', () => {
+    activateEnrollment();
+    installAccountKey(SCOPE, 1, KEY_A, 'wrap');
+    installAccountKey(SCOPE, 2, KEY_B, 'rotation');
+    setDeviceTrust(SCOPE, ENROLLMENT, 'trusted');
+    wrapAccountKeyFor(SCOPE, ENROLLMENT, ensureDeviceIdentity(SCOPE, ENROLLMENT).pub);
+    const wrap = outboxPayloads(CRYPTO_ENTITY_KEYRING_WRAP).at(-1) as KeyringWrapPayload;
+    db.prepare('DELETE FROM sync_keyring').run();
+    handleCryptoBoundaryEntity(SCOPE, ENROLLMENT, CRYPTO_ENTITY_KEYRING_WRAP, ENROLLMENT, wrap);
+    // Both historical and current keys arrive in one delivery.
+    expect(accountKeyFor(SCOPE, 1)).toEqual(KEY_A);
+    expect(accountKeyFor(SCOPE, 2)).toEqual(KEY_B);
   });
 
   it('accepts any first-version wrap on a keyless device', () => {

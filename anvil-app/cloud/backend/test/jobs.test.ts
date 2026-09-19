@@ -24,7 +24,15 @@ import type {
   WorkerConnectResult,
 } from '../../contract/workers';
 import type { AccountCoordinator } from '../src/account-coordinator';
+import type { SealedTaskPayload } from '../../contract/sealed';
 import { expectSuccess, nextFrameOfType, postRpc, spikeBearer, uniqueIds } from './helpers';
+
+/** Valid-shaped sealed envelope — opaque to the backend, no real keying. */
+const SEALED_INPUTS: SealedTaskPayload = {
+  enc: 'aes-256-gcm',
+  nonce: btoa('0123456789ab'),
+  ct: btoa('sealed-task-inputs-payload'),
+};
 
 function accountStub(accountId: string) {
   return env.ACCOUNT.get(env.ACCOUNT.idFromName(accountId));
@@ -88,7 +96,7 @@ function manifest(): ExecutionManifest {
     provider: 'codex',
     model: 'gpt-5',
     configVersions: { 'agent-settings': 'v3' },
-    inputs: { prompt: 'diagnose the workspace' },
+    inputs: { workspaceId: 'ws-1' },
   };
 }
 
@@ -99,6 +107,7 @@ function createParams(overrides: Partial<JobCreateParams> = {}): JobCreateParams
     kind: 'diagnostic',
     requestedTarget: { kind: 'auto' },
     inputManifest: manifest(),
+    sealedInputs: SEALED_INPUTS,
     ...overrides,
   };
 }
@@ -797,7 +806,7 @@ describe('auto placement workspace readiness (PLACE-01)', () => {
   function workspaceManifest(): ExecutionManifest {
     return {
       ...manifest(),
-      inputs: { workspaceId: 'ws-1', prompt: 'do work' },
+      inputs: { workspaceId: 'ws-1' },
     };
   }
 

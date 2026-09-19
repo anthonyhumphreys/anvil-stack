@@ -1,8 +1,10 @@
 import { ipcMain } from 'electron';
 import {
+  approveDashboardGrant,
   cancelMeshJob,
   commitDataImport,
   decideMeshApproval,
+  denyDashboardGrant,
   deviceVerificationCode,
   enableSync,
   enrollWithEnrollmentCode,
@@ -17,6 +19,7 @@ import {
   listConflictViews,
   openHostedAccountPage,
   refreshHostedEntitlement,
+  listDashboardRequests,
   listDevices,
   listMeshHandoffs,
   listMeshJobs,
@@ -25,6 +28,7 @@ import {
   previewDataImportFromFile,
   renameDevice,
   resolveRuntimeConflict,
+  revokeDashboardAccess,
   revokeDevice,
   setMeshWorkerOptIn,
   signInWithOidc,
@@ -32,6 +36,7 @@ import {
   spikeEnroll,
 } from '../services/sync-runtime.service.js';
 import type { ApprovalDecision } from '../../../cloud/contract/jobs.js';
+import { DASHBOARD_SCOPES, type DashboardScope } from '../../../cloud/contract/dashboard.js';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -128,6 +133,43 @@ export function registerSyncRuntimeHandlers(): void {
       throw new Error('device-verify requires an enrollmentId string');
     }
     return deviceVerificationCode(payload['enrollmentId']);
+  });
+
+  // DASH-01: browser dashboard authorization — the trusted-device approval
+  // surface. Grants carry scoped, sealed projections; the browser never
+  // sees account key material.
+  ipcMain.handle('sync-runtime:dashboard-requests', () => listDashboardRequests());
+
+  ipcMain.handle('sync-runtime:dashboard-decide', (_event, payload: unknown) => {
+    if (
+      !isRecord(payload) ||
+      typeof payload['requestId'] !== 'string' ||
+      (payload['decision'] !== 'approved' && payload['decision'] !== 'denied')
+    ) {
+      throw new Error('dashboard-decide requires requestId and an approved|denied decision');
+    }
+    const scopes = payload['scopes'];
+    if (
+      scopes !== undefined &&
+      (!Array.isArray(scopes) ||
+        !scopes.every((s) => typeof s === 'string' && DASHBOARD_SCOPES.includes(s as DashboardScope)))
+    ) {
+      throw new Error('dashboard-decide scopes must be known dashboard scopes');
+    }
+    if (payload['decision'] === 'approved') {
+      return approveDashboardGrant(
+        payload['requestId'],
+        scopes === undefined ? undefined : (scopes as DashboardScope[]),
+      );
+    }
+    return denyDashboardGrant(payload['requestId']);
+  });
+
+  ipcMain.handle('sync-runtime:dashboard-revoke', (_event, payload: unknown) => {
+    if (!isRecord(payload) || typeof payload['requestId'] !== 'string') {
+      throw new Error('dashboard-revoke requires a requestId string');
+    }
+    return revokeDashboardAccess(payload['requestId']);
   });
 
   ipcMain.handle('sync-runtime:data-export-file', () => exportAccountDataToFile());

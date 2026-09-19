@@ -146,3 +146,78 @@ export interface HostedDeleteAccountResult {
   deletionGeneration: number;
   startedAt: string;
 }
+
+// ---- Dashboard authorization -------------------------------------------------
+// These mirror anvil-app/cloud/contract/dashboard.ts and sealed.ts. The
+// browser posts an ephemeral X25519 request, polls status for the sealed
+// DSK grant, then pulls sealed snapshots — every envelope is opaque to the
+// coordinator and this channel.
+
+export type DashboardScope =
+  | "read-dashboard"
+  | "submit-task"
+  | "approve-action"
+  | "request-handoff";
+
+export type DashboardRequestState =
+  | "pending"
+  | "approved"
+  | "denied"
+  | "expired"
+  | "revoked";
+
+/** Browser → POST /internal/hosted/dashboard-request */
+export interface HostedDashboardRequestInput {
+  requestId: string;
+  browserPub: string;
+  challenge: string;
+  scopes: DashboardScope[];
+  expiresAt: string;
+  origin?: string;
+  userAgent?: string;
+}
+
+export interface HostedDashboardRequestResult {
+  request: {
+    requestId: string;
+    state: DashboardRequestState;
+    expiresAt: string;
+  };
+}
+
+/** Sealed DSK wrap minted by the approving device (contract DashboardGrantPayload). */
+export interface DashboardGrantPayload {
+  v: 1;
+  enc: "x25519-aes-256-gcm";
+  requestId: string;
+  browserPub: string;
+  expiresAt: string;
+  ephPub: string;
+  nonce: string;
+  ct: string;
+}
+
+/** AES-256-GCM snapshot under the DSK (contract SealedDashboardSnapshot). */
+export interface SealedDashboardSnapshot {
+  enc: "aes-256-gcm";
+  seq: number;
+  nonce: string;
+  ct: string;
+}
+
+/** POST /internal/hosted/dashboard-status */
+export interface HostedDashboardStatus {
+  requestId: string;
+  state: DashboardRequestState;
+  accountId?: string;
+  backendId?: string;
+  grant?: DashboardGrantPayload;
+  snapshotSeq?: number;
+  expiresAt?: string;
+}
+
+/** POST /internal/hosted/dashboard-snapshot */
+export interface HostedDashboardSnapshotResult {
+  requestId: string;
+  snapshot?: SealedDashboardSnapshot;
+}

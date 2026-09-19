@@ -7,6 +7,8 @@ export {
   deleteAccount,
   getAccount,
   getBilling,
+  getDashboardSnapshot,
+  getDashboardStatus,
   getDataStatus,
   getEntitlement,
   HOSTED_PAID_ENFORCEMENT_AT,
@@ -17,6 +19,7 @@ export {
   reconcile,
   renameDevice,
   revokeDevice,
+  submitDashboardRequest,
   HostedApiError
 } from "./client";
 

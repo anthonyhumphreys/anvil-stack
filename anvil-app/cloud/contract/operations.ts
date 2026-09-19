@@ -67,6 +67,15 @@ export const OPERATIONS = [
   'environment.bootstrap',
   'credential.deliver',
   'credential.pull',
+  // Task-scoped keys + rotation reporting
+  'taskkey.deliver',
+  'taskkey.pull',
+  'keyring.report',
+  // Dashboard authorization (browser E2EE projection)
+  'dashboard.requests',
+  'dashboard.decide',
+  'dashboard.publish',
+  'dashboard.revoke',
   // Hosted sharing (user-published artifacts behind revocable share ids)
   'share.create',
   'share.finalize',
@@ -131,6 +140,13 @@ export const OPERATION_PROFILE: Record<OperationName, OperationProfile> = {
   'environment.bootstrap': 'mesh/1',
   'credential.deliver': 'mesh/1',
   'credential.pull': 'mesh/1',
+  'taskkey.deliver': 'mesh/1',
+  'taskkey.pull': 'mesh/1',
+  'keyring.report': 'mesh/1',
+  'dashboard.requests': 'mesh/1',
+  'dashboard.decide': 'mesh/1',
+  'dashboard.publish': 'mesh/1',
+  'dashboard.revoke': 'mesh/1',
   'share.create': 'sync/1',
   'share.finalize': 'sync/1',
   'share.list': 'sync/1',
@@ -193,6 +209,13 @@ export const OPERATION_ROLE: Record<OperationName, ActorRole> = {
   'environment.bootstrap': 'user',
   'credential.deliver': 'user',
   'credential.pull': 'worker',
+  'taskkey.deliver': 'user',
+  'taskkey.pull': 'either',
+  'keyring.report': 'user',
+  'dashboard.requests': 'user',
+  'dashboard.decide': 'user',
+  'dashboard.publish': 'user',
+  'dashboard.revoke': 'user',
   'share.create': 'user',
   'share.finalize': 'user',
   'share.list': 'user',
@@ -248,6 +271,7 @@ export const EPHEMERAL_ALLOWED_OPERATIONS: ReadonlySet<OperationName> = new Set(
   'environment.list',
   'environment.reap',
   'credential.pull',
+  'taskkey.pull',
 ]);
 
 export function ephemeralOperationAllowed(operation: OperationName): boolean {
@@ -330,6 +354,16 @@ export const HOSTED_OPERATION_CLASS: Record<OperationName, HostedOperationClass>
   // pull finish work that mutating job.claim already authorized.
   'credential.deliver': 'control',
   'credential.pull': 'control',
+  // Task-key delivery finishes work job.create already authorized; pulls
+  // are reads. Rotation reports and dashboard management are control-plane
+  // rows — a restricted account must still revoke dashboard access.
+  'taskkey.deliver': 'control',
+  'taskkey.pull': 'control',
+  'keyring.report': 'control',
+  'dashboard.requests': 'control',
+  'dashboard.decide': 'control',
+  'dashboard.publish': 'control',
+  'dashboard.revoke': 'control',
   'share.create': 'mutating',
   'share.finalize': 'control',
   'share.list': 'control',

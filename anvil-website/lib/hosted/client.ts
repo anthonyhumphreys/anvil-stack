@@ -6,6 +6,10 @@ import type {
   HostedBillingInterval,
   HostedBillingOverview,
   HostedCheckoutResult,
+  HostedDashboardRequestInput,
+  HostedDashboardRequestResult,
+  HostedDashboardSnapshotResult,
+  HostedDashboardStatus,
   HostedDataStatusResult,
   HostedDeleteAccountResult,
   HostedDeviceListResult,
@@ -241,4 +245,44 @@ export function deleteAccount(identity: HostedIdentity): Promise<HostedDeleteAcc
 /** POST /internal/hosted/reconcile — re-pull subscription truth from Stripe. */
 export function reconcile(identity: HostedIdentity): Promise<HostedReconcileResult> {
   return hostedCall<HostedReconcileResult>("/internal/hosted/reconcile", identity);
+}
+
+/**
+ * POST /internal/hosted/dashboard-request — upsert the browser's
+ * authorization request. Identity fields ride the same body; the backend
+ * stamps the resolved sync account so a request can never name another.
+ */
+export function submitDashboardRequest(
+  identity: HostedIdentity,
+  request: HostedDashboardRequestInput
+): Promise<HostedDashboardRequestResult> {
+  return hostedCall<HostedDashboardRequestResult>("/internal/hosted/dashboard-request", {
+    ...identity,
+    request
+  });
+}
+
+/**
+ * POST /internal/hosted/dashboard-status — lifecycle state, the sealed
+ * DSK grant once approved, and the latest snapshot seq.
+ */
+export function getDashboardStatus(
+  identity: HostedIdentity,
+  requestId: string
+): Promise<HostedDashboardStatus> {
+  return hostedCall<HostedDashboardStatus>("/internal/hosted/dashboard-status", {
+    ...identity,
+    requestId
+  });
+}
+
+/** POST /internal/hosted/dashboard-snapshot — the latest sealed snapshot. */
+export function getDashboardSnapshot(
+  identity: HostedIdentity,
+  requestId: string
+): Promise<HostedDashboardSnapshotResult> {
+  return hostedCall<HostedDashboardSnapshotResult>("/internal/hosted/dashboard-snapshot", {
+    ...identity,
+    requestId
+  });
 }

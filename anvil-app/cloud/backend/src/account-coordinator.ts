@@ -3,6 +3,7 @@ import { DurableObject } from 'cloudflare:workers';
 import type { SpikeAuth } from './auth';
 import { parseSpikeAuth, parseVerifiedAuth } from './auth';
 import { sha256Hex, utf8ByteLength } from './hash';
+import { SPIKE_DEPLOYMENT_ID } from './descriptor';
 import { ACCOUNT_SCHEMA, SPIKE_INITIAL_EPOCH } from './schema';
 import {
   failureResponse,
@@ -68,6 +69,7 @@ import {
 import {
   ATTEMPT_TRANSITIONS,
   canTransitionJob,
+  PUBLIC_MANIFEST_INPUT_KEYS,
   type ApprovalDecideResult,
   type ApprovalGetResult,
   type ApprovalRecord,
@@ -142,11 +144,38 @@ import {
   type EnvironmentReportResult,
   type EnvironmentState,
 } from '../../contract/environment';
-import type {
-  CredentialDeliverResult,
-  CredentialGrantPayload,
-  CredentialPullResult,
+import {
+  base64ByteLength,
+  SEALED_ENTITY_ALG,
+  SEALED_NONCE_BYTES,
+  sealedTaskEnvelopeIssue,
+  type CredentialDeliverResult,
+  type CredentialGrantPayload,
+  type CredentialPullResult,
+  type DashboardGrantPayload,
+  type SealedDashboardSnapshot,
+  type SealedTaskPayload,
+  type TaskKeyDeliverParams,
+  type TaskKeyDeliverResult,
+  type TaskKeyPullParams,
+  type TaskKeyPullResult,
+  type TaskKeyWrapPayload,
 } from '../../contract/sealed';
+import {
+  isDashboardScope,
+  type DashboardDecideParams,
+  type DashboardDecideResult,
+  type DashboardPublishParams,
+  type DashboardPublishResult,
+  type DashboardRequest,
+  type DashboardRequestsResult,
+  type DashboardRevokeResult,
+  type HostedDashboardRequestInput,
+  type HostedDashboardSnapshotResult,
+  type HostedDashboardStatus,
+  type KeyringReportParams,
+  type KeyringReportResult,
+} from '../../contract/dashboard';
 import type { HostedEntitlement } from '../../contract/entitlements';
 import { ephemeralOperationAllowed } from '../../contract/operations';
 import {
@@ -277,6 +306,8 @@ interface JobRow {
   target_enrollment_id: string | null;
   placement_explanation: string | null;
   input_manifest: string;
+  sealed_inputs: string | null;
+  result_recipients: string | null;
   state: string;
   state_reason: string | null;
   queue_deadline: number;
@@ -299,6 +330,7 @@ interface AttemptRow {
   lease_expires_at: number;
   outcome: string | null;
   result: string | null;
+  sealed_result: string | null;
   error: string | null;
   late_result: string | null;
   created_at: number;
@@ -453,6 +485,37 @@ interface CredentialGrantRow {
   [key: string]: string | number | null;
 }
 
+interface TaskKeyWrapRow {
+  job_id: string;
+  account_id: string;
+  target_enrollment_id: string;
+  envelope: string;
+  envelope_sha: string;
+  delivered_at: number | null;
+  created_at: number;
+  [key: string]: string | number | null;
+}
+
+interface DashboardRequestRow {
+  request_id: string;
+  account_id: string;
+  browser_pub: string;
+  challenge: string;
+  scopes: string;
+  origin: string | null;
+  user_agent: string | null;
+  expires_at: number;
+  state: string;
+  grant: string | null;
+  snapshot: string | null;
+  snapshot_seq: number;
+  decided_by: string | null;
+  decided_at: number | null;
+  created_at: number;
+  updated_at: number;
+  [key: string]: string | number | null;
+}
+
 /**
  * A socket frame derived from a journaled event row, queued inside the
  * running transaction and delivered to subscribers only after commit.
@@ -532,6 +595,15 @@ const MAX_MANIFEST_REPOSITORIES = 64;
 const MAX_MANIFEST_CONFIG_ENTRIES = 64;
 const MAX_JOB_INPUTS_BYTES = 32 * 1024;
 const MAX_MANIFEST_BYTES = 64 * 1024;
+/** E2EE: declared result recipients per job — small, one entry per device. */
+const MAX_RESULT_RECIPIENTS = 32;
+/** E2EE: wraps per taskkey.deliver call — target + result recipients. */
+const MAX_TASK_KEY_WRAPS = MAX_RESULT_RECIPIENTS + 1;
+/** Browser dashboard: pending-list page size and snapshot byte cap. */
+const MAX_DASHBOARD_PENDING_LIST = 50;
+const MAX_DASHBOARD_SNAPSHOT_BYTES = 256 * 1024;
+/** keyring.report: bounded revoked-id list per rotation. */
+const MAX_ROTATION_REVOKED_IDS = 128;
 const MAX_REPORT_RESULT_BYTES = 64 * 1024;
 const MAX_REPORT_ERROR_LENGTH = 4096;
 const MAX_ATTEMPT_RENEWALS = 64;
@@ -752,6 +824,22 @@ export class AccountCoordinator extends DurableObject<Env> {
       'environment_id',
       'ALTER TABLE enrollments ADD COLUMN environment_id TEXT',
     );
+    // E2EE task envelopes on objects created before sealed inputs existed.
+    this.ensureColumn(
+      'jobs',
+      'sealed_inputs',
+      'ALTER TABLE jobs ADD COLUMN sealed_inputs TEXT',
+    );
+    this.ensureColumn(
+      'jobs',
+      'result_recipients',
+      'ALTER TABLE jobs ADD COLUMN result_recipients TEXT',
+    );
+    this.ensureColumn(
+      'attempts',
+      'sealed_result',
+      'ALTER TABLE attempts ADD COLUMN sealed_result TEXT',
+    );
     this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
   }
 
@@ -815,6 +903,38 @@ export class AccountCoordinator extends DurableObject<Env> {
     }
     if (url.pathname === '/internal/deletion-status' && request.method === 'POST') {
       return Response.json(this.deletionStatus());
+    }
+    // Hosted dashboard channel: reachable only through the HMAC-signed
+    // /internal/hosted/* routes, which resolve the account id and forward.
+    // Handlers throw RpcFailure like the RPC path, so the same typed-error
+    // translation applies here.
+    const hostedDashboard = (handler: (body: unknown) => Response, body: unknown): Response => {
+      try {
+        return handler(body);
+      } catch (error) {
+        if (isRpcFailure(error)) {
+          return failureResponse(undefined, error);
+        }
+        return rpcErrorResponse(undefined, 'unavailable');
+      }
+    };
+    if (url.pathname === '/internal/dashboard-request' && request.method === 'POST') {
+      return hostedDashboard(
+        (body) => this.handleHostedDashboardRequest(body),
+        await request.json().catch(() => null),
+      );
+    }
+    if (url.pathname === '/internal/dashboard-status' && request.method === 'POST') {
+      return hostedDashboard(
+        (body) => this.handleHostedDashboardStatus(body),
+        await request.json().catch(() => null),
+      );
+    }
+    if (url.pathname === '/internal/dashboard-snapshot' && request.method === 'POST') {
+      return hostedDashboard(
+        (body) => this.handleHostedDashboardSnapshot(body),
+        await request.json().catch(() => null),
+      );
     }
     // MESH-03 artifact byte routes: PUT uploads into a reservation, GET
     // downloads a published artifact. Bytes stream to/from R2 — never
@@ -1440,6 +1560,27 @@ export class AccountCoordinator extends DurableObject<Env> {
           return await this.handleCredentialDeliver(auth, rpc.requestId, rpc.params);
         case 'credential.pull':
           return this.handleCredentialPull(auth, rpc.requestId, rpc.params);
+        // E2EE task-key delivery: opaque wraps the coordinator indexes but
+        // can never open. keyring.report records a trusted device's
+        // completed rotation for dashboard visibility.
+        case 'taskkey.deliver':
+          return await this.handleTaskKeyDeliver(auth, rpc.requestId, rpc.params);
+        case 'taskkey.pull':
+          return this.handleTaskKeyPull(auth, rpc.requestId, rpc.params);
+        case 'keyring.report':
+          return this.handleKeyringReport(auth, rpc.requestId, rpc.params);
+        // Browser dashboard authorization: a trusted device polls pending
+        // requests, decides, publishes sealed snapshots, or revokes. The
+        // request row is the lifecycle authority; grant/snapshot envelopes
+        // are opaque to the coordinator.
+        case 'dashboard.requests':
+          return this.handleDashboardRequests(auth, rpc.requestId);
+        case 'dashboard.decide':
+          return this.handleDashboardDecide(auth, rpc.requestId, rpc.params);
+        case 'dashboard.publish':
+          return this.handleDashboardPublish(auth, rpc.requestId, rpc.params);
+        case 'dashboard.revoke':
+          return this.handleDashboardRevoke(auth, rpc.requestId, rpc.params);
         // SESSION-03: generation-fenced session ownership transfer. The
         // handoff row is the state authority; the mesh_sessions row is the
         // generation authority — ownership moves once, by CAS.
@@ -2865,9 +3006,10 @@ export class AccountCoordinator extends DurableObject<Env> {
         `INSERT INTO jobs (
            job_id, account_id, source_enrollment_id, request_id, payload_hash, kind,
            requested_target, target_enrollment_id, placement_explanation, input_manifest,
+           sealed_inputs, result_recipients,
            state, state_reason, queue_deadline, retry_policy, retried, next_fence,
            active_attempt_id, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, ?, ?, 0, 1, NULL, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, ?, ?, 0, 1, NULL, ?, ?)`,
         jobId,
         auth.accountId,
         auth.enrollmentId,
@@ -2878,6 +3020,8 @@ export class AccountCoordinator extends DurableObject<Env> {
         placement.targetEnrollmentId,
         placement.explanation,
         JSON.stringify(create.inputManifest),
+        create.sealedInputs === undefined ? null : JSON.stringify(create.sealedInputs),
+        create.resultRecipients === undefined ? null : JSON.stringify(create.resultRecipients),
         queueDeadline,
         create.retryPolicy,
         now,
@@ -3241,6 +3385,11 @@ export class AccountCoordinator extends DurableObject<Env> {
         attempt: this.attemptView(this.readAttemptRequired(attemptId)),
         fence,
         manifest: JSON.parse(job.input_manifest) as ExecutionManifest,
+        // Echoed so the claimant can unseal after taskkey.pull without a
+        // second job.get. The envelope is opaque to the coordinator.
+        ...(job.sealed_inputs === null
+          ? {}
+          : { sealedInputs: JSON.parse(job.sealed_inputs) as SealedTaskPayload }),
       };
       return out;
     });
@@ -3382,9 +3531,11 @@ export class AccountCoordinator extends DurableObject<Env> {
         return { result: out, requeueTarget: null as string | null };
       }
       this.ctx.storage.sql.exec(
-        'UPDATE attempts SET outcome = ?, result = ?, error = ?, updated_at = ? WHERE attempt_id = ?',
+        `UPDATE attempts SET outcome = ?, result = ?, sealed_result = ?, error = ?, updated_at = ?
+         WHERE attempt_id = ?`,
         report.outcome,
         report.resultJson,
+        report.sealedResultJson,
         report.error ?? null,
         now,
         attempt.attempt_id,
@@ -3706,7 +3857,44 @@ export class AccountCoordinator extends DurableObject<Env> {
       retryPolicy: row.retry_policy,
       placementExplanation: row.placement_explanation,
       ...(row.state_reason === null ? {} : { stateReason: row.state_reason }),
+      ...(row.sealed_inputs === null
+        ? {}
+        : { sealedInputs: JSON.parse(row.sealed_inputs) as SealedTaskPayload }),
+      ...(row.result_recipients === null
+        ? {}
+        : { resultRecipients: JSON.parse(row.result_recipients) as string[] }),
+      keyDelivery: this.jobKeyDelivery(row),
     };
+  }
+
+  /**
+   * 'none' — no sealed payload, nothing to deliver; 'delivered' — a wrap
+   * exists for every needed recipient; 'pending' — sealed but at least one
+   * wrap is missing. The coordinator reports delivery state only; it never
+   * sees the TCK.
+   */
+  private jobKeyDelivery(row: JobRow): 'none' | 'pending' | 'delivered' {
+    if (row.sealed_inputs === null) {
+      return 'none';
+    }
+    const targets: string[] = [];
+    if (row.target_enrollment_id !== null) {
+      targets.push(row.target_enrollment_id);
+    }
+    // An unresolved target means nothing can be delivered yet — the
+    // executor's wrap doesn't even have a destination.
+    if (targets.length === 0) {
+      return 'pending';
+    }
+    const wraps = this.ctx.storage.sql
+      .exec<{ target_enrollment_id: string }>(
+        'SELECT target_enrollment_id FROM task_key_wraps WHERE job_id = ?',
+        row.job_id,
+      )
+      .toArray()
+      .map((wrap) => wrap.target_enrollment_id);
+    const covered = new Set(wraps);
+    return targets.every((target) => covered.has(target)) ? 'delivered' : 'pending';
   }
 
   private attemptView(row: AttemptRow): ExecutionAttempt {
@@ -3721,6 +3909,9 @@ export class AccountCoordinator extends DurableObject<Env> {
       leaseExpiresAt: new Date(row.lease_expires_at).toISOString(),
       state: row.state,
       ...(row.result === null ? {} : { result: JSON.parse(row.result) as unknown }),
+      ...(row.sealed_result === null
+        ? {}
+        : { sealedResult: JSON.parse(row.sealed_result) as SealedTaskPayload }),
     };
   }
 
@@ -6368,6 +6559,496 @@ export class AccountCoordinator extends DurableObject<Env> {
     return rpcSuccessResponse(requestId, result);
   }
 
+  // ---- E2EE task-key wraps + dashboard grants --------------------------------
+  // Both channels relay opaque sealed envelopes the coordinator indexes by
+  // plaintext routing fields (job/target/request ids) but can never open —
+  // the TCK/DSK live exclusively inside `ct`.
+
+  /**
+   * `taskkey.deliver` (user role): the job's source deposits TCK wraps
+   * addressed to the resolved target and each declared result recipient.
+   * Idempotent per (job, target): a re-delivered wrap (e.g. after a peer's
+   * identity rotated and re-wrapped) replaces the stored envelope and
+   * clears delivered_at. A wrap addressed anywhere else is rejected —
+   * the source cannot widen a job's recipient set after create.
+   */
+  private async handleTaskKeyDeliver(
+    auth: SpikeAuth,
+    requestId: string,
+    params: unknown,
+  ): Promise<Response> {
+    const deliver = parseTaskKeyDeliverParams(params);
+    // Envelope shas derive from the wrap bytes — computed outside the
+    // storage transaction (commit callbacks are synchronous).
+    const shas = await Promise.all(
+      deliver.wraps.map((wrap) => sha256Hex(JSON.stringify(wrap))),
+    );
+    const result = this.commit((): TaskKeyDeliverResult => {
+      this.assertNotRevoked(auth);
+      this.provisionEnrollment(auth);
+      const job = this.readJob(deliver.jobId);
+      if (job === null || job.account_id !== auth.accountId) {
+        throw new RpcFailure('not-found', { reason: 'job' });
+      }
+      if (job.source_enrollment_id !== auth.enrollmentId) {
+        throw new RpcFailure('forbidden', { reason: 'not-job-source' });
+      }
+      const allowedTargets = new Set<string>();
+      if (job.target_enrollment_id !== null) {
+        allowedTargets.add(job.target_enrollment_id);
+      }
+      if (job.result_recipients !== null) {
+        for (const recipient of JSON.parse(job.result_recipients) as string[]) {
+          allowedTargets.add(recipient);
+        }
+      }
+      const now = Date.now();
+      let delivered = 0;
+      for (const [index, wrap] of deliver.wraps.entries()) {
+        if (wrap.jobId !== deliver.jobId) {
+          throw new RpcFailure('malformed-request', { reason: 'wrap.jobId' });
+        }
+        if (!allowedTargets.has(wrap.targetEnrollmentId)) {
+          throw new RpcFailure('forbidden', {
+            reason: 'wrap-target-not-eligible',
+            targetEnrollmentId: wrap.targetEnrollmentId,
+          });
+        }
+        this.ctx.storage.sql.exec(
+          `INSERT INTO task_key_wraps (
+             job_id, account_id, target_enrollment_id, envelope, envelope_sha,
+             delivered_at, created_at
+           ) VALUES (?, ?, ?, ?, ?, NULL, ?)
+           ON CONFLICT (job_id, target_enrollment_id) DO UPDATE SET
+             envelope = excluded.envelope,
+             envelope_sha = excluded.envelope_sha,
+             delivered_at = NULL,
+             created_at = excluded.created_at`,
+          deliver.jobId,
+          auth.accountId,
+          wrap.targetEnrollmentId,
+          JSON.stringify(wrap),
+          shas[index],
+          now,
+        );
+        delivered += 1;
+      }
+      return { delivered };
+    });
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  /**
+   * `taskkey.pull` (either role): the calling enrollment fetches wraps
+   * addressed to it for one job. Repeatable — crash recovery may need the
+   * key twice — and pulling never deletes. A revoked or cross-account
+   * enrollment learns nothing (not-found/forbidden, never the envelope).
+   */
+  private handleTaskKeyPull(auth: SpikeAuth, requestId: string, params: unknown): Response {
+    const query = parseTaskKeyPullParams(params);
+    const result = this.commit((): TaskKeyPullResult => {
+      this.assertNotRevoked(auth);
+      this.provisionEnrollment(auth);
+      const job = this.readJob(query.jobId);
+      if (job === null || job.account_id !== auth.accountId) {
+        throw new RpcFailure('not-found', { reason: 'job' });
+      }
+      const now = Date.now();
+      const rows = this.ctx.storage.sql
+        .exec<TaskKeyWrapRow>(
+          `SELECT * FROM task_key_wraps
+           WHERE job_id = ? AND target_enrollment_id = ?
+           ORDER BY created_at ASC`,
+          query.jobId,
+          auth.enrollmentId,
+        )
+        .toArray();
+      const wraps: TaskKeyWrapPayload[] = [];
+      for (const row of rows) {
+        wraps.push(JSON.parse(row.envelope) as TaskKeyWrapPayload);
+        if (row.delivered_at === null) {
+          this.ctx.storage.sql.exec(
+            `UPDATE task_key_wraps SET delivered_at = ?
+             WHERE job_id = ? AND target_enrollment_id = ?`,
+            now,
+            row.job_id,
+            row.target_enrollment_id,
+          );
+        }
+      }
+      return { wraps };
+    });
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  /**
+   * `keyring.report` (user role): a trusted device records a completed
+   * post-revocation rotation so dashboards can distinguish "access
+   * revoked" from "rotation pending". Idempotent on rotation_id — the
+   * first report wins, later replays are no-ops.
+   */
+  private handleKeyringReport(auth: SpikeAuth, requestId: string, params: unknown): Response {
+    const report = parseKeyringReportParams(params);
+    const result = this.commit((): KeyringReportResult => {
+      this.assertNotRevoked(auth);
+      this.provisionEnrollment(auth);
+      this.ctx.storage.sql.exec(
+        `INSERT INTO keyring_rotation_reports (
+           rotation_id, account_id, reporter_enrollment_id, revoked_json,
+           to_version, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT (rotation_id) DO NOTHING`,
+        report.rotationId,
+        auth.accountId,
+        auth.enrollmentId,
+        JSON.stringify(report.revokedEnrollmentIds),
+        report.toVersion,
+        Date.now(),
+      );
+      return { recorded: true };
+    });
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  private readDashboardRequest(requestId: string): DashboardRequestRow | null {
+    return (
+      this.ctx.storage.sql
+        .exec<DashboardRequestRow>(
+          'SELECT * FROM dashboard_requests WHERE request_id = ?',
+          requestId,
+        )
+        .toArray()[0] ?? null
+    );
+  }
+
+  private readDashboardRequestRequired(requestId: string): DashboardRequestRow {
+    const row = this.readDashboardRequest(requestId);
+    if (row === null) {
+      throw new RpcFailure('not-found', { reason: 'dashboard-request' });
+    }
+    return row;
+  }
+
+  /** Lazily expires pending requests past their expiry (bounded per pass). */
+  private expireDashboardRequests(now: number): number {
+    return this.ctx.storage.sql.exec(
+      `UPDATE dashboard_requests SET state = 'expired', updated_at = ?
+       WHERE state = 'pending' AND expires_at <= ?`,
+      now,
+      now,
+    ).rowsWritten;
+  }
+
+  private dashboardRequestRecord(row: DashboardRequestRow): DashboardRequest {
+    return {
+      requestId: row.request_id,
+      browserPub: row.browser_pub,
+      challenge: row.challenge,
+      scopes: JSON.parse(row.scopes) as DashboardRequest['scopes'],
+      ...(row.origin === null ? {} : { origin: row.origin }),
+      ...(row.user_agent === null ? {} : { userAgent: row.user_agent }),
+      expiresAt: new Date(row.expires_at).toISOString(),
+      state: row.state as DashboardRequest['state'],
+      createdAt: new Date(row.created_at).toISOString(),
+      ...(row.decided_by === null ? {} : { decidedBy: row.decided_by }),
+      ...(row.decided_at === null
+        ? {}
+        : { decidedAt: new Date(row.decided_at).toISOString() }),
+    };
+  }
+
+  /**
+   * `dashboard.requests` (user role): a trusted device polls the pending
+   * browser authorization queue for its account. Pending rows past expiry
+   * are lazily expired first; the list is bounded, newest first.
+   */
+  private handleDashboardRequests(auth: SpikeAuth, requestId: string): Response {
+    const result = this.commit((): DashboardRequestsResult => {
+      this.assertNotRevoked(auth);
+      this.provisionEnrollment(auth);
+      const now = Date.now();
+      this.expireDashboardRequests(now);
+      const rows = this.ctx.storage.sql
+        .exec<DashboardRequestRow>(
+          `SELECT * FROM dashboard_requests
+           WHERE account_id = ? AND state = 'pending'
+           ORDER BY created_at DESC LIMIT ?`,
+          auth.accountId,
+          MAX_DASHBOARD_PENDING_LIST,
+        )
+        .toArray();
+      return { requests: rows.map((row) => this.dashboardRequestRecord(row)) };
+    });
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  /**
+   * `dashboard.decide` (user role): records a trusted device's decision on
+   * a pending request. Approval requires the sealed grant (bound to the
+   * request's exact browser pub + request id) and the first sealed
+   * snapshot; denial needs neither. Terminal states are conflicts — a
+   * decided request never reopens.
+   */
+  private handleDashboardDecide(auth: SpikeAuth, requestId: string, params: unknown): Response {
+    const decide = parseDashboardDecideParams(params);
+    const result = this.commit((): DashboardDecideResult => {
+      this.assertNotRevoked(auth);
+      this.provisionEnrollment(auth);
+      const now = Date.now();
+      const row = this.readDashboardRequest(decide.requestId);
+      if (row === null || row.account_id !== auth.accountId) {
+        throw new RpcFailure('not-found', { reason: 'dashboard-request' });
+      }
+      if (row.state !== 'pending') {
+        throw new RpcFailure('conflict', { reason: 'request-terminal', state: row.state });
+      }
+      if (row.expires_at <= now) {
+        this.ctx.storage.sql.exec(
+          `UPDATE dashboard_requests SET state = 'expired', updated_at = ?
+           WHERE request_id = ?`,
+          now,
+          row.request_id,
+        );
+        throw new RpcFailure('conflict', { reason: 'request-expired' });
+      }
+      if (decide.decision === 'approved') {
+        // The parser guarantees grant+snapshot; the grant must bind this
+        // request's exact browser pub so a device cannot redirect the
+        // DSK wrap to a different key than the requester's.
+        const grant = decide.grant as DashboardGrantPayload;
+        if (grant.browserPub !== row.browser_pub) {
+          throw new RpcFailure('malformed-request', { reason: 'grant.browserPub' });
+        }
+        const snapshot = decide.snapshot as SealedDashboardSnapshot;
+        this.ctx.storage.sql.exec(
+          `UPDATE dashboard_requests SET
+             state = 'approved', grant = ?, snapshot = ?, snapshot_seq = ?,
+             decided_by = ?, decided_at = ?, updated_at = ?
+           WHERE request_id = ?`,
+          JSON.stringify(grant),
+          JSON.stringify(snapshot),
+          snapshot.seq,
+          auth.enrollmentId,
+          now,
+          now,
+          row.request_id,
+        );
+      } else {
+        this.ctx.storage.sql.exec(
+          `UPDATE dashboard_requests SET
+             state = 'denied', decided_by = ?, decided_at = ?, updated_at = ?
+           WHERE request_id = ?`,
+          auth.enrollmentId,
+          now,
+          now,
+          row.request_id,
+        );
+      }
+      return {
+        request: this.dashboardRequestRecord(
+          this.readDashboardRequestRequired(decide.requestId),
+        ),
+      };
+    });
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  /**
+   * `dashboard.publish` (user role): replaces the sealed snapshot at a
+   * strictly increasing seq. Only the approving enrollment may publish —
+   * the snapshot stream is bound to the device the user authorized.
+   */
+  private handleDashboardPublish(
+    auth: SpikeAuth,
+    requestId: string,
+    params: unknown,
+  ): Response {
+    const publish = parseDashboardPublishParams(params);
+    const result = this.commit((): DashboardPublishResult => {
+      this.assertNotRevoked(auth);
+      this.provisionEnrollment(auth);
+      const now = Date.now();
+      const row = this.readDashboardRequest(publish.requestId);
+      if (row === null || row.account_id !== auth.accountId) {
+        throw new RpcFailure('not-found', { reason: 'dashboard-request' });
+      }
+      if (row.state !== 'approved') {
+        throw new RpcFailure('conflict', { reason: 'grant-not-approved', state: row.state });
+      }
+      if (row.decided_by !== auth.enrollmentId) {
+        throw new RpcFailure('forbidden', { reason: 'not-grant-issuer' });
+      }
+      if (publish.snapshot.seq <= row.snapshot_seq) {
+        throw new RpcFailure('conflict', { reason: 'snapshot-seq-stale' });
+      }
+      this.ctx.storage.sql.exec(
+        `UPDATE dashboard_requests SET snapshot = ?, snapshot_seq = ?, updated_at = ?
+         WHERE request_id = ?`,
+        JSON.stringify(publish.snapshot),
+        publish.snapshot.seq,
+        now,
+        row.request_id,
+      );
+      return { published: true, seq: publish.snapshot.seq };
+    });
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  /**
+   * `dashboard.revoke` (user role): kills a grant (or dismisses a pending
+   * request). Grant and snapshot envelopes are dropped so the hosted
+   * status/snapshot routes stop serving them; the row remains as an
+   * audit-tombstone in 'revoked'.
+   */
+  private handleDashboardRevoke(auth: SpikeAuth, requestId: string, params: unknown): Response {
+    const revoke = parseDashboardRequestIdParams(params);
+    const result = this.commit((): DashboardRevokeResult => {
+      this.assertNotRevoked(auth);
+      this.provisionEnrollment(auth);
+      const now = Date.now();
+      const row = this.readDashboardRequest(revoke.requestId);
+      if (row === null || row.account_id !== auth.accountId) {
+        throw new RpcFailure('not-found', { reason: 'dashboard-request' });
+      }
+      if (row.state === 'denied' || row.state === 'expired' || row.state === 'revoked') {
+        // Terminal already — idempotent no-op.
+        return { request: this.dashboardRequestRecord(row) };
+      }
+      this.ctx.storage.sql.exec(
+        `UPDATE dashboard_requests SET
+           state = 'revoked', grant = NULL, snapshot = NULL,
+           decided_by = ?, decided_at = ?, updated_at = ?
+         WHERE request_id = ?`,
+        auth.enrollmentId,
+        now,
+        now,
+        row.request_id,
+      );
+      return {
+        request: this.dashboardRequestRecord(
+          this.readDashboardRequestRequired(revoke.requestId),
+        ),
+      };
+    });
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  // ---- Hosted dashboard channel (worker-internal) --------------------------
+  // The website reaches these only through the HMAC-signed
+  // /internal/hosted/* routes in hosted/routes.ts, which resolve the
+  // account id and forward. No device auth — the DO is inherently scoped
+  // to its account by routing.
+
+  /**
+   * `/internal/dashboard-request`: upsert a browser's authorization
+   * request. A replayed requestId with identical metadata is a no-op
+   * (the browser re-posts on refresh); a requestId reuse with different
+   * metadata conflicts. Non-pending rows are immutable — the browser
+   * cannot resurrect a decided request by re-posting.
+   */
+  private handleHostedDashboardRequest(body: unknown): Response {
+    const input = parseHostedDashboardRequestInput(body);
+    const result = this.commit((): { request: DashboardRequest } => {
+      const now = Date.now();
+      this.expireDashboardRequests(now);
+      const existing = this.readDashboardRequest(input.requestId);
+      if (existing !== null) {
+        const unchanged =
+          existing.browser_pub === input.browserPub &&
+          existing.challenge === input.challenge &&
+          existing.scopes === JSON.stringify(input.scopes) &&
+          existing.expires_at === input.expiresAtMs;
+        if (!unchanged) {
+          throw new RpcFailure('conflict', { reason: 'request-id-reuse' });
+        }
+        return { request: this.dashboardRequestRecord(existing) };
+      }
+      if (input.expiresAtMs <= now) {
+        throw new RpcFailure('malformed-request', { reason: 'expiresAt' });
+      }
+      this.ctx.storage.sql.exec(
+        `INSERT INTO dashboard_requests (
+           request_id, account_id, browser_pub, challenge, scopes, origin,
+           user_agent, expires_at, state, grant, snapshot, snapshot_seq,
+           decided_by, decided_at, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, 0, NULL, NULL, ?, ?)`,
+        input.requestId,
+        input.accountId,
+        input.browserPub,
+        input.challenge,
+        JSON.stringify(input.scopes),
+        input.origin ?? null,
+        input.userAgent ?? null,
+        input.expiresAtMs,
+        now,
+        now,
+      );
+      return {
+        request: this.dashboardRequestRecord(
+          this.readDashboardRequestRequired(input.requestId),
+        ),
+      };
+    });
+    return rpcSuccessResponse(input.requestId, result);
+  }
+
+  /**
+   * `/internal/dashboard-status`: the browser polls its request's state.
+   * The sealed grant rides this response once — present only while
+   * 'approved' — plus the latest snapshot seq so the browser can tell a
+   * fresh snapshot is waiting.
+   */
+  private handleHostedDashboardStatus(body: unknown): Response {
+    const { requestId } = parseDashboardRequestIdParams(body);
+    const result = this.commit((): HostedDashboardStatus => {
+      this.expireDashboardRequests(Date.now());
+      const row = this.readDashboardRequest(requestId);
+      if (row === null) {
+        throw new RpcFailure('not-found', { reason: 'dashboard-request' });
+      }
+      const status: HostedDashboardStatus = {
+        requestId: row.request_id,
+        state: row.state as HostedDashboardStatus['state'],
+        // Public routing metadata the browser needs to rebuild the
+        // grant/snapshot AAD exactly as the approving device sealed it.
+        accountId: row.account_id,
+        backendId: SPIKE_DEPLOYMENT_ID,
+        expiresAt: new Date(row.expires_at).toISOString(),
+      };
+      if (row.state === 'approved' && row.grant !== null) {
+        status.grant = JSON.parse(row.grant) as DashboardGrantPayload;
+      }
+      if (row.snapshot !== null) {
+        status.snapshotSeq = row.snapshot_seq;
+      }
+      return status;
+    });
+    return rpcSuccessResponse(requestId, result);
+  }
+
+  /**
+   * `/internal/dashboard-snapshot`: the browser fetches the latest sealed
+   * snapshot for an approved request. Opaque bytes — the coordinator
+   * never opens them.
+   */
+  private handleHostedDashboardSnapshot(body: unknown): Response {
+    const { requestId } = parseDashboardRequestIdParams(body);
+    const result = this.commit((): HostedDashboardSnapshotResult => {
+      const row = this.readDashboardRequest(requestId);
+      if (row === null) {
+        throw new RpcFailure('not-found', { reason: 'dashboard-request' });
+      }
+      if (row.state !== 'approved' || row.snapshot === null) {
+        throw new RpcFailure('conflict', { reason: 'snapshot-unavailable' });
+      }
+      return {
+        requestId: row.request_id,
+        snapshot: JSON.parse(row.snapshot) as SealedDashboardSnapshot,
+      };
+    });
+    return rpcSuccessResponse(requestId, result);
+  }
+
   // ---- SESSION-03 handoff ---------------------------------------------------
 
   /**
@@ -7962,6 +8643,8 @@ function parseJobCreateParams(params: unknown): JobCreateParams {
   }
   const requestedTarget = parseRequestedTarget(params['requestedTarget']);
   const inputManifest = parseExecutionManifest(params['inputManifest']);
+  const sealedInputs = parseSealedTaskPayload(params['sealedInputs'], 'sealedInputs');
+  const resultRecipients = parseResultRecipients(params['resultRecipients']);
   const queueDeadline = params['queueDeadline'];
   if (
     queueDeadline !== undefined &&
@@ -7979,10 +8662,48 @@ function parseJobCreateParams(params: unknown): JobCreateParams {
     kind,
     requestedTarget,
     inputManifest,
+    ...(sealedInputs === undefined ? {} : { sealedInputs }),
+    ...(resultRecipients === undefined ? {} : { resultRecipients }),
     ...(queueDeadline === undefined ? {} : { queueDeadline }),
     // Spec §9: remote coding/bootstrap default to inspect-before-retry.
     retryPolicy: retryPolicy ?? 'inspect-before-retry',
   };
+}
+
+function parseSealedTaskPayload(value: unknown, field: string): SealedTaskPayload | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const issue = sealedTaskEnvelopeIssue(value);
+  if (issue !== null) {
+    throw new RpcFailure('malformed-request', { reason: field, issue });
+  }
+  const bytes = utf8ByteLength(JSON.stringify(value));
+  if (bytes > MAX_JOB_INPUTS_BYTES) {
+    throw new RpcFailure('payload-too-large', {
+      limitBytes: MAX_JOB_INPUTS_BYTES,
+      actualBytes: bytes,
+      field,
+    });
+  }
+  return value as SealedTaskPayload;
+}
+
+function parseResultRecipients(value: unknown): string[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value) || value.length > MAX_RESULT_RECIPIENTS) {
+    throw new RpcFailure('malformed-request', { reason: 'resultRecipients' });
+  }
+  const recipients: string[] = [];
+  for (const entry of value) {
+    if (!isBoundedId(entry)) {
+      throw new RpcFailure('malformed-request', { reason: 'resultRecipients' });
+    }
+    recipients.push(entry);
+  }
+  return recipients;
 }
 
 function parseRequestedTarget(value: unknown): RequestedTarget {
@@ -8115,6 +8836,20 @@ function parseExecutionManifest(value: unknown): ExecutionManifest {
   if (!isRecord(inputs)) {
     throw new RpcFailure('malformed-request', { reason: 'manifest.inputs' });
   }
+  // E2EE: the coordinator reads `inputs`, so only the contract's public
+  // routing/provisioning keys are permitted here. Sensitive context
+  // (prompts, verification, personas, handoff/dispatch ids) must ride
+  // `sealedInputs` — a non-allowlisted key is rejected rather than
+  // silently stripped so a misconfigured client fails closed.
+  for (const key of Object.keys(inputs)) {
+    if (!PUBLIC_MANIFEST_INPUT_KEYS.has(key)) {
+      throw new RpcFailure('malformed-request', {
+        reason: 'manifest.inputs',
+        key,
+        issue: 'non-public-input-key',
+      });
+    }
+  }
   const inputsBytes = utf8ByteLength(JSON.stringify(inputs));
   if (inputsBytes > MAX_JOB_INPUTS_BYTES) {
     throw new RpcFailure('payload-too-large', {
@@ -8203,6 +8938,8 @@ interface ParsedAttemptReport {
   outcome: 'completed' | 'failed';
   /** Pre-serialized result JSON; null when absent. */
   resultJson: string | null;
+  /** Pre-serialized sealed-result envelope JSON; null when absent. */
+  sealedResultJson: string | null;
   error: string | undefined;
 }
 
@@ -8238,6 +8975,22 @@ function parseAttemptReportParams(params: unknown): ParsedAttemptReport {
       });
     }
   }
+  let sealedResultJson: string | null = null;
+  if (params['sealedResult'] !== undefined) {
+    const issue = sealedTaskEnvelopeIssue(params['sealedResult']);
+    if (issue !== null) {
+      throw new RpcFailure('malformed-request', { reason: 'sealedResult', issue });
+    }
+    sealedResultJson = JSON.stringify(params['sealedResult']);
+    const sealedBytes = utf8ByteLength(sealedResultJson);
+    if (sealedBytes > MAX_REPORT_RESULT_BYTES) {
+      throw new RpcFailure('payload-too-large', {
+        limitBytes: MAX_REPORT_RESULT_BYTES,
+        actualBytes: sealedBytes,
+        field: 'sealedResult',
+      });
+    }
+  }
   const error = params['error'];
   if (
     error !== undefined &&
@@ -8245,7 +8998,7 @@ function parseAttemptReportParams(params: unknown): ParsedAttemptReport {
   ) {
     throw new RpcFailure('malformed-request', { reason: 'error' });
   }
-  return { attemptId, incarnation, fence, outcome, resultJson, error };
+  return { attemptId, incarnation, fence, outcome, resultJson, sealedResultJson, error };
 }
 
 // ---- MESH-03 param/storage parsing + socket helpers ---------------------------
@@ -9002,4 +9755,276 @@ function parseCredentialPullParams(params: unknown): {
     throw new RpcFailure('malformed-request', { reason: 'fence' });
   }
   return { attemptId, fence };
+}
+
+// ---- E2EE task-key / keyring / dashboard param parsing -----------------------
+
+const X25519_PUBLIC_KEY_BYTES = 32;
+const DASHBOARD_GRANT_ENC = 'x25519-aes-256-gcm';
+const MAX_TASK_WRAP_BYTES = 8 * 1024;
+const MAX_DASHBOARD_GRANT_BYTES = 8 * 1024;
+const MAX_DASHBOARD_FIELD_CHARS = 512;
+const MAX_DASHBOARD_SCOPES = 8;
+
+/** Validates one opaque task-key wrap's plaintext routing + crypto fields. */
+function parseTaskKeyWrap(value: unknown): TaskKeyWrapPayload {
+  if (!isRecord(value)) {
+    throw new RpcFailure('malformed-request', { reason: 'wrap' });
+  }
+  if (value['v'] !== 1 || value['enc'] !== DASHBOARD_GRANT_ENC) {
+    throw new RpcFailure('malformed-request', { reason: 'wrap-version' });
+  }
+  if (!isBoundedId(value['jobId'])) {
+    throw new RpcFailure('malformed-request', { reason: 'wrap-jobId' });
+  }
+  if (!isBoundedId(value['targetEnrollmentId'])) {
+    throw new RpcFailure('malformed-request', { reason: 'wrap-targetEnrollmentId' });
+  }
+  const ephPub = value['ephPub'];
+  if (typeof ephPub !== 'string' || base64ByteLength(ephPub) !== X25519_PUBLIC_KEY_BYTES) {
+    throw new RpcFailure('malformed-request', { reason: 'wrap-ephPub' });
+  }
+  const nonce = value['nonce'];
+  if (typeof nonce !== 'string' || base64ByteLength(nonce) !== SEALED_NONCE_BYTES) {
+    throw new RpcFailure('malformed-request', { reason: 'wrap-nonce' });
+  }
+  const ct = value['ct'];
+  if (typeof ct !== 'string' || ct.length === 0 || base64ByteLength(ct) === null) {
+    throw new RpcFailure('malformed-request', { reason: 'wrap-ct' });
+  }
+  if (utf8ByteLength(JSON.stringify(value)) > MAX_TASK_WRAP_BYTES) {
+    throw new RpcFailure('payload-too-large', { reason: 'wrap' });
+  }
+  return value as unknown as TaskKeyWrapPayload;
+}
+
+function parseTaskKeyDeliverParams(params: unknown): TaskKeyDeliverParams {
+  if (!isRecord(params)) {
+    throw new RpcFailure('malformed-request', { reason: 'deliver-params' });
+  }
+  if (!isBoundedId(params['jobId'])) {
+    throw new RpcFailure('malformed-request', { reason: 'jobId' });
+  }
+  const raw = params['wraps'];
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_TASK_KEY_WRAPS) {
+    throw new RpcFailure('malformed-request', { reason: 'wraps' });
+  }
+  const seen = new Set<string>();
+  const wraps: TaskKeyWrapPayload[] = [];
+  for (const entry of raw) {
+    const wrap = parseTaskKeyWrap(entry);
+    if (seen.has(wrap.targetEnrollmentId)) {
+      throw new RpcFailure('malformed-request', { reason: 'wrap-duplicate-target' });
+    }
+    seen.add(wrap.targetEnrollmentId);
+    wraps.push(wrap);
+  }
+  return { jobId: params['jobId'], wraps };
+}
+
+function parseTaskKeyPullParams(params: unknown): TaskKeyPullParams {
+  if (!isRecord(params) || !isBoundedId(params['jobId'])) {
+    throw new RpcFailure('malformed-request', { reason: 'jobId' });
+  }
+  return { jobId: params['jobId'] };
+}
+
+function parseKeyringReportParams(params: unknown): KeyringReportParams {
+  if (!isRecord(params)) {
+    throw new RpcFailure('malformed-request', { reason: 'report-params' });
+  }
+  if (!isBoundedId(params['rotationId'])) {
+    throw new RpcFailure('malformed-request', { reason: 'rotationId' });
+  }
+  const raw = params['revokedEnrollmentIds'];
+  if (!Array.isArray(raw) || raw.length > MAX_ROTATION_REVOKED_IDS) {
+    throw new RpcFailure('malformed-request', { reason: 'revokedEnrollmentIds' });
+  }
+  const revokedEnrollmentIds: string[] = [];
+  for (const entry of raw) {
+    if (!isBoundedId(entry)) {
+      throw new RpcFailure('malformed-request', { reason: 'revokedEnrollmentIds' });
+    }
+    revokedEnrollmentIds.push(entry);
+  }
+  const toVersion = params['toVersion'];
+  if (typeof toVersion !== 'number' || !Number.isSafeInteger(toVersion) || toVersion < 1) {
+    throw new RpcFailure('malformed-request', { reason: 'toVersion' });
+  }
+  return { rotationId: params['rotationId'], revokedEnrollmentIds, toVersion };
+}
+
+function parseDashboardRequestIdParams(params: unknown): { requestId: string } {
+  if (!isRecord(params) || !isBoundedId(params['requestId'])) {
+    throw new RpcFailure('malformed-request', { reason: 'requestId' });
+  }
+  return { requestId: params['requestId'] };
+}
+
+/** Validates the sealed DSK wrap's plaintext binding + crypto fields. */
+function parseDashboardGrant(value: unknown): DashboardGrantPayload {
+  if (!isRecord(value)) {
+    throw new RpcFailure('malformed-request', { reason: 'grant' });
+  }
+  if (value['v'] !== 1 || value['enc'] !== DASHBOARD_GRANT_ENC) {
+    throw new RpcFailure('malformed-request', { reason: 'grant-version' });
+  }
+  if (!isBoundedId(value['requestId'])) {
+    throw new RpcFailure('malformed-request', { reason: 'grant-requestId' });
+  }
+  const browserPub = value['browserPub'];
+  if (typeof browserPub !== 'string' || base64ByteLength(browserPub) !== X25519_PUBLIC_KEY_BYTES) {
+    throw new RpcFailure('malformed-request', { reason: 'grant-browserPub' });
+  }
+  const expiresAt = value['expiresAt'];
+  if (typeof expiresAt !== 'string' || !Number.isFinite(Date.parse(expiresAt))) {
+    throw new RpcFailure('malformed-request', { reason: 'grant-expiresAt' });
+  }
+  const ephPub = value['ephPub'];
+  if (typeof ephPub !== 'string' || base64ByteLength(ephPub) !== X25519_PUBLIC_KEY_BYTES) {
+    throw new RpcFailure('malformed-request', { reason: 'grant-ephPub' });
+  }
+  const nonce = value['nonce'];
+  if (typeof nonce !== 'string' || base64ByteLength(nonce) !== SEALED_NONCE_BYTES) {
+    throw new RpcFailure('malformed-request', { reason: 'grant-nonce' });
+  }
+  const ct = value['ct'];
+  if (typeof ct !== 'string' || ct.length === 0 || base64ByteLength(ct) === null) {
+    throw new RpcFailure('malformed-request', { reason: 'grant-ct' });
+  }
+  if (utf8ByteLength(JSON.stringify(value)) > MAX_DASHBOARD_GRANT_BYTES) {
+    throw new RpcFailure('payload-too-large', { reason: 'grant' });
+  }
+  return value as unknown as DashboardGrantPayload;
+}
+
+/** Validates a sealed dashboard snapshot (opaque; seq is coordinator-visible). */
+function parseDashboardSnapshot(value: unknown): SealedDashboardSnapshot {
+  if (!isRecord(value)) {
+    throw new RpcFailure('malformed-request', { reason: 'snapshot' });
+  }
+  if (value['enc'] !== SEALED_ENTITY_ALG) {
+    throw new RpcFailure('malformed-request', { reason: 'snapshot-enc' });
+  }
+  const seq = value['seq'];
+  if (typeof seq !== 'number' || !Number.isSafeInteger(seq) || seq < 1) {
+    throw new RpcFailure('malformed-request', { reason: 'snapshot-seq' });
+  }
+  const nonce = value['nonce'];
+  if (typeof nonce !== 'string' || base64ByteLength(nonce) !== SEALED_NONCE_BYTES) {
+    throw new RpcFailure('malformed-request', { reason: 'snapshot-nonce' });
+  }
+  const ct = value['ct'];
+  if (typeof ct !== 'string' || ct.length === 0 || base64ByteLength(ct) === null) {
+    throw new RpcFailure('malformed-request', { reason: 'snapshot-ct' });
+  }
+  const bytes = utf8ByteLength(JSON.stringify(value));
+  if (bytes > MAX_DASHBOARD_SNAPSHOT_BYTES) {
+    throw new RpcFailure('payload-too-large', {
+      limitBytes: MAX_DASHBOARD_SNAPSHOT_BYTES,
+      actualBytes: bytes,
+      field: 'snapshot',
+    });
+  }
+  return value as unknown as SealedDashboardSnapshot;
+}
+
+function parseDashboardDecideParams(params: unknown): DashboardDecideParams {
+  if (!isRecord(params)) {
+    throw new RpcFailure('malformed-request', { reason: 'decide-params' });
+  }
+  if (!isBoundedId(params['requestId'])) {
+    throw new RpcFailure('malformed-request', { reason: 'requestId' });
+  }
+  const decision = params['decision'];
+  if (decision !== 'approved' && decision !== 'denied') {
+    throw new RpcFailure('malformed-request', { reason: 'decision' });
+  }
+  if (decision === 'denied') {
+    return { requestId: params['requestId'], decision };
+  }
+  const grant = parseDashboardGrant(params['grant']);
+  if (grant.requestId !== params['requestId']) {
+    throw new RpcFailure('malformed-request', { reason: 'grant-requestId' });
+  }
+  const snapshot = parseDashboardSnapshot(params['snapshot']);
+  return { requestId: params['requestId'], decision, grant, snapshot };
+}
+
+function parseDashboardPublishParams(params: unknown): DashboardPublishParams {
+  if (!isRecord(params) || !isBoundedId(params['requestId'])) {
+    throw new RpcFailure('malformed-request', { reason: 'requestId' });
+  }
+  return { requestId: params['requestId'], snapshot: parseDashboardSnapshot(params['snapshot']) };
+}
+
+interface ParsedHostedDashboardRequest {
+  requestId: string;
+  accountId: string;
+  browserPub: string;
+  challenge: string;
+  scopes: DashboardRequest['scopes'];
+  origin: string | undefined;
+  userAgent: string | undefined;
+  expiresAtMs: number;
+}
+
+/** Validates the website's dashboard-request upsert (hosted channel). */
+function parseHostedDashboardRequestInput(body: unknown): ParsedHostedDashboardRequest {
+  if (!isRecord(body)) {
+    throw new RpcFailure('malformed-request', { reason: 'request-body' });
+  }
+  if (!isBoundedId(body['requestId'])) {
+    throw new RpcFailure('malformed-request', { reason: 'requestId' });
+  }
+  if (!isBoundedId(body['accountId'])) {
+    throw new RpcFailure('malformed-request', { reason: 'accountId' });
+  }
+  const browserPub = body['browserPub'];
+  if (typeof browserPub !== 'string' || base64ByteLength(browserPub) !== X25519_PUBLIC_KEY_BYTES) {
+    throw new RpcFailure('malformed-request', { reason: 'browserPub' });
+  }
+  const challenge = body['challenge'];
+  if (
+    typeof challenge !== 'string' ||
+    challenge.length === 0 ||
+    challenge.length > MAX_ID_FIELD_LENGTH
+  ) {
+    throw new RpcFailure('malformed-request', { reason: 'challenge' });
+  }
+  const rawScopes = body['scopes'];
+  if (!Array.isArray(rawScopes) || rawScopes.length === 0 || rawScopes.length > MAX_DASHBOARD_SCOPES) {
+    throw new RpcFailure('malformed-request', { reason: 'scopes' });
+  }
+  const scopes: DashboardRequest['scopes'] = [];
+  for (const entry of rawScopes) {
+    if (!isDashboardScope(entry)) {
+      throw new RpcFailure('malformed-request', { reason: 'scopes' });
+    }
+    scopes.push(entry);
+  }
+  const expiresAtMs = Date.parse(body['expiresAt'] as string);
+  if (typeof body['expiresAt'] !== 'string' || !Number.isFinite(expiresAtMs)) {
+    throw new RpcFailure('malformed-request', { reason: 'expiresAt' });
+  }
+  const bounded = (field: string): string | undefined => {
+    const value = body[field];
+    if (value === undefined) {
+      return undefined;
+    }
+    if (typeof value !== 'string' || value.length > MAX_DASHBOARD_FIELD_CHARS) {
+      throw new RpcFailure('malformed-request', { reason: field });
+    }
+    return value;
+  };
+  return {
+    requestId: body['requestId'],
+    accountId: body['accountId'],
+    browserPub,
+    challenge,
+    scopes,
+    origin: bounded('origin'),
+    userAgent: bounded('userAgent'),
+    expiresAtMs,
+  };
 }

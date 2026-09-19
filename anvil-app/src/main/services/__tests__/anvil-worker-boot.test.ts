@@ -6,11 +6,11 @@ import {
 
 const VALID = {
   kind: 'anvil.mesh-environment',
-  schemaVersion: '0.1',
+  schemaVersion: '0.2',
   environmentId: 'env_1',
   provider: 'vercel-sandbox',
   backendUrl: 'https://api.test',
-  pairing: 'anvil-pair-AAAAA-BBBBB-CCCCC-DDDDD-EEEEE-FFFFF',
+  enrollmentCode: 'anvil-ec-AAAAA-BBBBB-CCCCC-DDDDD',
   ttlSeconds: 1800,
 };
 
@@ -19,7 +19,7 @@ describe('anvil-worker boot payload', () => {
     const doc = parseBootstrapPayload(JSON.stringify(VALID));
     expect(doc.environmentId).toBe('env_1');
     expect(doc.provider).toBe('vercel-sandbox');
-    expect(doc.pairing).toBe('anvil-pair-AAAAA-BBBBB-CCCCC-DDDDD-EEEEE-FFFFF');
+    expect(doc.enrollmentCode).toBe('anvil-ec-AAAAA-BBBBB-CCCCC-DDDDD');
     expect(doc.ttlSeconds).toBe(1800);
   });
 
@@ -31,18 +31,36 @@ describe('anvil-worker boot payload', () => {
   });
 
   it('rejects documents missing required fields', () => {
-    for (const field of ['environmentId', 'backendUrl', 'pairing'] as const) {
+    for (const field of ['environmentId', 'backendUrl', 'enrollmentCode'] as const) {
       const doc = { ...VALID, [field]: '' };
       expect(() => parseBootstrapPayload(JSON.stringify(doc))).toThrow(
         `missing ${field}`,
       );
     }
     expect(() =>
-      parseBootstrapPayload(JSON.stringify({ ...VALID, pairing: 'raw-code' })),
-    ).toThrow('anvil-pair');
-    expect(() =>
       parseBootstrapPayload(JSON.stringify({ ...VALID, ttlSeconds: 0 })),
     ).toThrow('ttlSeconds');
+  });
+
+  it('fails closed on keying material — pairing payloads are never bootstrap', () => {
+    // Legacy 0.1 shape with a `pairing` field.
+    expect(() =>
+      parseBootstrapPayload(
+        JSON.stringify({
+          ...VALID,
+          pairing: 'anvil-pair-AAAAA-BBBBB-CCCCC-DDDDD-EEEEE-FFFFF',
+        }),
+      ),
+    ).toThrow('keying material');
+    // A pairing payload smuggled through the code field.
+    expect(() =>
+      parseBootstrapPayload(
+        JSON.stringify({
+          ...VALID,
+          enrollmentCode: 'anvil-pair-AAAAA-BBBBB-CCCCC-DDDDD-EEEEE-FFFFF',
+        }),
+      ),
+    ).toThrow('keying material');
   });
 
   it('reads the payload from argv first, then env, then file', () => {

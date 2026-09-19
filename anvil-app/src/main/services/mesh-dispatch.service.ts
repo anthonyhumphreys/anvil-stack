@@ -18,11 +18,17 @@ import { join } from 'node:path';
 import { getDb } from '../db/database.js';
 import { rpc as backendRpc } from './sync-backend-client.service.js';
 import { downloadMeshArtifact } from './mesh-artifact.service.js';
-import { createWorkflowNodeJob } from './mesh-worker.service.js';
+import {
+  ensureTaskKeyDelivery,
+  prepareSealedJob,
+  submitPreparedJob,
+  workflowNodeJobRequest,
+} from './mesh-worker.service.js';
 import { runGit, withRepoRefLock } from './mesh-worktree.service.js';
 import type {
   AttemptResultManifest,
   CapabilityRequirements,
+  JobCreateParams,
   JobGetResult,
   JobSummary,
 } from '../../../cloud/contract/jobs.js';
@@ -57,11 +63,14 @@ export interface NodeDispatchRecord {
   dispatchId: string;
   runId: string;
   nodeId: string;
-  jobId: string;
+  /** Null while the persisted job.create request is still unsubmitted. */
+  jobId: string | null;
   workspaceId: string;
   state: string;
   cancelRequested: boolean;
   output: NodeDispatchOutput | null;
+  /** Byte-exact job.create params persisted before submission (replay). */
+  requestJson: string | null;
 }
 
 export interface NodeDispatchOutput {
@@ -74,14 +83,21 @@ interface DispatchRow {
   dispatch_id: string;
   run_id: string;
   node_id: string;
-  job_id: string;
+  job_id: string | null;
   workspace_id: string;
   state: string;
   cancel_requested: number;
   output_json: string | null;
+  request_json: string | null;
 }
 
-const NONTERMINAL_STATES = new Set(['queued', 'running', 'awaiting-approval', 'cancel-requested']);
+const NONTERMINAL_STATES = new Set([
+  'submitting',
+  'queued',
+  'running',
+  'awaiting-approval',
+  'cancel-requested',
+]);
 
 function rowToRecord(row: DispatchRow): NodeDispatchRecord {
   return {
@@ -93,6 +109,7 @@ function rowToRecord(row: DispatchRow): NodeDispatchRecord {
     state: row.state,
     cancelRequested: row.cancel_requested === 1,
     output: row.output_json === null ? null : (JSON.parse(row.output_json) as NodeDispatchOutput),
+    requestJson: row.request_json,
   };
 }
 
@@ -113,11 +130,29 @@ function writeDispatchState(dispatchId: string, state: string): void {
 }
 
 /**
- * Dispatches a workflow node to a remote worker. Idempotent on
- * dispatchId: an existing row (however it got there — earlier call,
- * restart, lost response) is returned as-is; the backend job is only
- * created on first dispatch and its requestId re-derives from the
- * dispatch id.
+ * Submits (or re-submits) the persisted `job.create` request for a
+ * dispatch. `job.create` is idempotent on (source, requestId) +
+ * payloadHash, so replaying a stored request after a crash re-binds to the
+ * same backend job rather than minting a second one.
+ */
+async function submitDispatch(dispatchId: string, params: JobCreateParams): Promise<JobSummary> {
+  const job = await submitPreparedJob(params);
+  getDb()
+    .prepare(
+      `UPDATE mesh_node_dispatches
+       SET job_id = ?, state = ?, manifest_json = ?, updated_at = datetime('now')
+       WHERE dispatch_id = ?`,
+    )
+    .run(job.id, job.state, JSON.stringify(job.inputManifest), dispatchId);
+  return job;
+}
+
+/**
+ * Dispatches a workflow node to a remote worker. The dispatch row —
+ * including the byte-exact `job.create` request — is persisted BEFORE the
+ * backend call: a crash between persist and create replays the stored
+ * request, and a lost response re-binds via the dispatch-derived
+ * requestId. Idempotent on dispatchId: an existing row is returned as-is.
  */
 export async function dispatchWorkflowNode(input: {
   dispatchId: string;
@@ -138,7 +173,7 @@ export async function dispatchWorkflowNode(input: {
   if (existing !== null) {
     return existing;
   }
-  const job = await createWorkflowNodeJob({
+  const prepared = workflowNodeJobRequest({
     dispatchId: input.dispatchId,
     runId: input.runId,
     nodeId: input.nodeId,
@@ -154,46 +189,80 @@ export async function dispatchWorkflowNode(input: {
     ...(input.sandbox === undefined ? {} : { sandbox: input.sandbox }),
     ...(input.turnTimeoutMs === undefined ? {} : { turnTimeoutMs: input.turnTimeoutMs }),
   });
+  // Seals the sensitive inputs and persists the TCK under the request id;
+  // the returned params are byte-stable for replay.
+  const params = prepareSealedJob(await prepared.build());
   const now = new Date().toISOString();
   getDb()
     .prepare(
       `INSERT INTO mesh_node_dispatches
        (dispatch_id, run_id, node_id, job_id, request_id, workspace_id,
-        manifest_json, state, cancel_requested, output_json, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)`,
+        manifest_json, request_json, state, cancel_requested, output_json,
+        created_at, updated_at)
+       VALUES (?, ?, ?, NULL, ?, ?, ?, ?, 'submitting', 0, NULL, ?, ?)`,
     )
     .run(
       input.dispatchId,
       input.runId,
       input.nodeId,
-      job.id,
-      `node-dispatch/${input.dispatchId}`,
+      prepared.requestId,
       input.workspaceId,
-      JSON.stringify(job.inputManifest),
-      job.state,
+      JSON.stringify(params.inputManifest),
+      JSON.stringify(params),
       now,
       now,
     );
+  await submitDispatch(input.dispatchId, params);
   return readDispatch(input.dispatchId)!;
 }
 
 /**
- * Refreshes one dispatch against the backend job. On a terminal
- * `completed` job with a result manifest, adopts the worker's bundle
- * refs into the local checkouts and records the output.
+ * Refreshes one dispatch against the backend job. Unsubmitted requests are
+ * replayed first (the stored params re-bind via requestId); persisted
+ * cancellation intent is replayed until the job lands terminal; late-bound
+ * targets retry task-key delivery. On a terminal `completed` job with a
+ * result manifest, adopts the worker's bundle refs into the local
+ * checkouts and records the output.
  */
 export async function refreshDispatch(dispatchId: string): Promise<NodeDispatchRecord> {
   const row = readDispatch(dispatchId);
   if (row === null) throw new Error(`dispatch not found: ${dispatchId}`);
   if (!NONTERMINAL_STATES.has(row.state) && row.output !== null) return row;
-  const { job, attempts } = await dispatchRpc<JobGetResult>('job.get', { jobId: row.jobId });
+
+  // Crash between persist and create: replay the byte-exact request.
+  if (row.jobId === null) {
+    if (row.requestJson === null) {
+      throw new Error(`dispatch ${dispatchId} has no persisted job.create request`);
+    }
+    const job = await submitDispatch(dispatchId, JSON.parse(row.requestJson) as JobCreateParams);
+    // A cancel persisted while the job was unsubmitted still applies.
+    if (!row.cancelRequested) {
+      writeDispatchState(dispatchId, job.state);
+      return readDispatch(dispatchId)!;
+    }
+  }
+
+  const bound = readDispatch(dispatchId)!;
+  if (bound.jobId === null) return bound;
+  if (bound.cancelRequested && NONTERMINAL_STATES.has(bound.state)) {
+    // Replay until job.get confirms a terminal state — a missing ack is
+    // never treated as cancelled.
+    const { job } = await dispatchRpc<{ job: JobSummary }>('job.cancel', {
+      jobId: bound.jobId,
+    });
+    writeDispatchState(dispatchId, job.state);
+    return readDispatch(dispatchId)!;
+  }
+
+  const { job, attempts } = await dispatchRpc<JobGetResult>('job.get', { jobId: bound.jobId });
+  void ensureTaskKeyDelivery(job).catch(() => undefined);
   writeDispatchState(dispatchId, job.state);
-  if (job.state === 'completed' && row.output === null) {
+  if (job.state === 'completed' && bound.output === null) {
     const completed = attempts.find((a) => a.state === 'completed');
     const manifest = (completed?.result as { resultManifest?: AttemptResultManifest } | undefined)
       ?.resultManifest;
     if (manifest !== undefined) {
-      await importNodeResults(dispatchId, row.workspaceId, manifest);
+      await importNodeResults(dispatchId, bound.workspaceId, manifest);
     }
   }
   return readDispatch(dispatchId)!;
@@ -232,7 +301,7 @@ export async function cancelNodeDispatch(dispatchId: string): Promise<NodeDispat
        WHERE dispatch_id = ?`,
     )
     .run(dispatchId);
-  if (NONTERMINAL_STATES.has(row.state)) {
+  if (NONTERMINAL_STATES.has(row.state) && row.jobId !== null) {
     const { job } = await dispatchRpc<{ job: JobSummary }>('job.cancel', { jobId: row.jobId });
     writeDispatchState(dispatchId, job.state);
   }

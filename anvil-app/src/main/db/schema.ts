@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 84;
+export const SCHEMA_VERSION = 85;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -751,6 +751,7 @@ CREATE TABLE IF NOT EXISTS mesh_attempts (
   state TEXT NOT NULL,
   manifest_json TEXT NOT NULL,
   journal_json TEXT NOT NULL DEFAULT '[]',
+  sealed_inputs_json TEXT,
   result_json TEXT,
   cancel_requested INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
@@ -790,10 +791,11 @@ CREATE TABLE IF NOT EXISTS mesh_node_dispatches (
   dispatch_id TEXT PRIMARY KEY,
   run_id TEXT NOT NULL,
   node_id TEXT NOT NULL,
-  job_id TEXT NOT NULL,
+  job_id TEXT,
   request_id TEXT NOT NULL,
   workspace_id TEXT NOT NULL,
   manifest_json TEXT NOT NULL,
+  request_json TEXT,
   state TEXT NOT NULL,
   cancel_requested INTEGER NOT NULL DEFAULT 0,
   output_json TEXT,
@@ -1360,14 +1362,74 @@ CREATE TABLE IF NOT EXISTS sync_device_keys (
 -- role 'issuer' minted the pairing payload, 'redeemer' typed it in and is
 -- awaiting the matching keyring-pairing entity. Scoped by
 -- (backend, account) so a nonce can never resolve across accounts.
+-- proof_nonce (migration 85) is the redemption proof the new device
+-- echoes in its keyring-paired entity so the issuer promotes it to
+-- trusted membership.
 CREATE TABLE IF NOT EXISTS sync_pairing (
   nonce TEXT NOT NULL,
   backend_id TEXT NOT NULL,
   account_id TEXT NOT NULL,
   secret_wrapped BLOB NOT NULL,
   role TEXT NOT NULL CHECK (role IN ('issuer', 'redeemer')),
+  proof_nonce TEXT,
   created_at TEXT NOT NULL,
   PRIMARY KEY (backend_id, account_id, nonce)
+);
+-- Per-enrollment decrypt membership (migration 85). Enrollment is
+-- authentication only — 'trusted' marks permission to receive ADK
+-- deliveries; 'pending' devices sync metadata but get no wraps; 'revoked'
+-- is sticky and survives identity re-announcement.
+CREATE TABLE IF NOT EXISTS sync_device_trust (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  enrollment_id TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'trusted', 'revoked')),
+  decided_at TEXT,
+  PRIMARY KEY (backend_id, account_id, enrollment_id)
+);
+-- Local rotation ledger (migration 85): records rotations this device
+-- minted so keyring.report can mark them completed account-side.
+CREATE TABLE IF NOT EXISTS sync_keyring_rotations (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  rotation_id TEXT NOT NULL,
+  rotor_enrollment_id TEXT NOT NULL DEFAULT '',
+  from_version INTEGER NOT NULL,
+  to_version INTEGER NOT NULL,
+  revoked_json TEXT NOT NULL DEFAULT '[]',
+  reported_at TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, rotation_id)
+);
+-- Task content keys this device holds — as job source or designated
+-- result recipient. key_wrapped is safeStorage-encrypted.
+CREATE TABLE IF NOT EXISTS mesh_task_keys (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  key_wrapped BLOB NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, job_id)
+);
+-- Dashboard grants this device issued (or pending requests it observed):
+-- the wrapped DSK it must reuse to publish follow-up snapshots, plus the
+-- granted scopes and latest seq. state 'pending' rows are observed
+-- requests awaiting a local decision — they have no DSK yet.
+CREATE TABLE IF NOT EXISTS mesh_dashboard_grants (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  browser_pub TEXT NOT NULL,
+  dsk_wrapped BLOB,
+  scopes_json TEXT NOT NULL DEFAULT '[]',
+  expires_at TEXT NOT NULL,
+  seq INTEGER NOT NULL DEFAULT 0,
+  state TEXT NOT NULL DEFAULT 'pending',
+  request_json TEXT,
+  last_published_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, request_id)
 );
 -- Delivery ledger: which ADK versions this device has wrapped to which
 -- enrollment, so re-wraps on rotation are idempotent.
@@ -3047,5 +3109,92 @@ CREATE TABLE IF NOT EXISTS cloud_environments (
 );
 CREATE INDEX IF NOT EXISTS idx_cloud_environments_scope
   ON cloud_environments (backend_id, account_id, state);
+`,
+  85: `
+-- E2EE trust model: per-enrollment decrypt membership, rotation ledger,
+-- task-scoped keys, dashboard grants, and the pairing redemption proof.
+-- Keep in sync with the base-schema copies of these tables.
+CREATE TABLE IF NOT EXISTS sync_device_trust (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  enrollment_id TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'trusted', 'revoked')),
+  decided_at TEXT,
+  PRIMARY KEY (backend_id, account_id, enrollment_id)
+);
+-- Seed trust for existing enrollments: a device's own active enrollment is
+-- trusted; every other known device starts pending (fail closed — peers
+-- re-earn decrypt membership via pairing or explicit approval).
+INSERT OR IGNORE INTO sync_device_trust (backend_id, account_id, enrollment_id, state, decided_at)
+  SELECT backend_id, account_id, enrollment_id, 'pending', NULL FROM sync_device_keys;
+CREATE TABLE IF NOT EXISTS sync_keyring_rotations (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  rotation_id TEXT NOT NULL,
+  rotor_enrollment_id TEXT NOT NULL DEFAULT '',
+  from_version INTEGER NOT NULL,
+  to_version INTEGER NOT NULL,
+  revoked_json TEXT NOT NULL DEFAULT '[]',
+  reported_at TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, rotation_id)
+);
+ALTER TABLE sync_pairing ADD COLUMN proof_nonce TEXT;
+-- Persisted task envelopes: the attempt keeps the job's sealedInputs so a
+-- restarted worker can unseal without re-claiming; the dispatch keeps the
+-- byte-exact job.create request so a crash between persist and submit
+-- replays identically.
+ALTER TABLE mesh_attempts ADD COLUMN sealed_inputs_json TEXT;
+-- Dispatches persist BEFORE job.create, so job_id must admit NULL and the
+-- byte-exact job.create request is stored for deterministic replay.
+ALTER TABLE mesh_node_dispatches RENAME TO mesh_node_dispatches_old;
+CREATE TABLE mesh_node_dispatches (
+  dispatch_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  node_id TEXT NOT NULL,
+  job_id TEXT,
+  request_id TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  manifest_json TEXT NOT NULL,
+  request_json TEXT,
+  state TEXT NOT NULL,
+  cancel_requested INTEGER NOT NULL DEFAULT 0,
+  output_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+INSERT INTO mesh_node_dispatches (
+  dispatch_id, run_id, node_id, job_id, request_id, workspace_id,
+  manifest_json, state, cancel_requested, output_json, created_at, updated_at
+) SELECT
+  dispatch_id, run_id, node_id, job_id, request_id, workspace_id,
+  manifest_json, state, cancel_requested, output_json, created_at, updated_at
+FROM mesh_node_dispatches_old;
+DROP TABLE mesh_node_dispatches_old;
+CREATE INDEX idx_mesh_node_dispatches_state ON mesh_node_dispatches(state);
+CREATE TABLE IF NOT EXISTS mesh_task_keys (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  key_wrapped BLOB NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, job_id)
+);
+CREATE TABLE IF NOT EXISTS mesh_dashboard_grants (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  browser_pub TEXT NOT NULL,
+  dsk_wrapped BLOB,
+  scopes_json TEXT NOT NULL DEFAULT '[]',
+  expires_at TEXT NOT NULL,
+  seq INTEGER NOT NULL DEFAULT 0,
+  state TEXT NOT NULL DEFAULT 'pending',
+  request_json TEXT,
+  last_published_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, request_id)
+);
 `,
 };

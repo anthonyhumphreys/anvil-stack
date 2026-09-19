@@ -12,6 +12,15 @@ db.exec(SCHEMA_SQL);
 vi.mock('../../db/database.js', () => ({ getDb: () => db }));
 vi.mock('electron', () => ({
   app: { getPath: () => '/tmp', getVersion: () => 'test' },
+  safeStorage: {
+    isEncryptionAvailable: () => true,
+    encryptString: (value: string) => Buffer.from(`enc:${value}`, 'utf-8'),
+    decryptString: (encrypted: Buffer) => {
+      const text = encrypted.toString('utf-8');
+      if (!text.startsWith('enc:')) throw new Error('Error while decrypting the ciphertext.');
+      return text.slice('enc:'.length);
+    },
+  },
 }));
 vi.mock('../settings.service.js', () => ({
   getSettings: () => ({ openaiApiKey: undefined, openaiModel: 'gpt-5' }),
@@ -54,8 +63,13 @@ import {
   resetMeshDispatchForTests,
 } from '../mesh-dispatch.service';
 import { configureMeshWorkerContext, resetMeshWorkerForTests } from '../mesh-worker.service';
+import type { SyncScope } from '../../../shared/sync-mesh';
 
+const SCOPE: SyncScope = { backendId: 'backend-1', accountId: 'account-1', datasetEpoch: '1' };
 const CTX = { apiUrl: 'https://backend.test/v1', accessToken: 'tok', enrollmentId: 'enr-1' };
+// The worker context carries the sync scope — sealed job inputs mint a
+// TCK under it and the dispatch stores the sealed request for replay.
+const WORKER_CTX = { ...CTX, scope: SCOPE };
 
 function git(dir: string, ...args: string[]): string {
   return execFileSync('git', args, { cwd: dir }).toString().trim();
@@ -108,12 +122,13 @@ beforeEach(() => {
   rpcCalls.length = 0;
   rpcHandler = () => ({});
   downloadMock.mockReset();
+  db.exec('DELETE FROM mesh_task_keys;');
   resetMeshDispatchForTests();
   resetMeshWorkerForTests();
   configureMeshDispatchContext(() => CTX);
   // The job creators live in the worker module and use its context — in
   // production both resolve to the same session.
-  configureMeshWorkerContext(() => CTX);
+  configureMeshWorkerContext(() => WORKER_CTX);
 });
 
 describe('dispatchWorkflowNode', () => {
@@ -149,10 +164,16 @@ describe('dispatchWorkflowNode', () => {
         (create!.params as { inputManifest: { repositories: unknown[] } }).inputManifest
           .repositories,
       ).toEqual([{ repositoryId: portableId, commit: base }]);
+      // Disclosure: the coordinator-visible manifest carries only
+      // allowlisted routing keys — prompt/dispatch context rides the
+      // opaque sealedInputs envelope instead.
+      const inputs = (
+        create!.params as { inputManifest: { inputs: Record<string, unknown> } }
+      ).inputManifest.inputs;
+      expect(Object.keys(inputs)).toEqual(['workspaceId']);
       expect(
-        (create!.params as { inputManifest: { inputs: Record<string, unknown> } })
-          .inputManifest.inputs['resultTransfer'],
-      ).toBe('bundle-artifacts');
+        (create!.params as { sealedInputs?: { enc: string } }).sealedInputs?.enc,
+      ).toBe('aes-256-gcm');
     } finally {
       cleanup(parentRepo, sourceRepo);
     }
@@ -326,6 +347,159 @@ describe('cancelNodeDispatch', () => {
       expect(record.cancelRequested).toBe(true);
       expect(record.state).toBe('cancel-requested');
       expect(rpcCalls.some((c) => c.operation === 'job.cancel')).toBe(true);
+    } finally {
+      cleanup(parentRepo, sourceRepo);
+    }
+  });
+});
+
+describe('dispatch durability', () => {
+  it('replays the persisted job.create after a crash between persist and submit', async () => {
+    const { workspaceId, parentRepo, sourceRepo } = seedDispatchFixture('replay');
+    try {
+      // First submit dies mid-flight — the dispatch row (with the
+      // byte-exact request) is already durable.
+      rpcHandler = () => {
+        throw new Error('connection lost');
+      };
+      await expect(
+        dispatchWorkflowNode({
+          dispatchId: 'disp-1',
+          runId: 'run-1',
+          nodeId: 'node-1',
+          workspaceId,
+          prompt: 'do node work',
+          targetEnrollmentId: 'enr-2',
+        }),
+      ).rejects.toThrow('connection lost');
+      const crashed = db
+        .prepare(
+          'SELECT job_id, state, request_json FROM mesh_node_dispatches WHERE dispatch_id = ?',
+        )
+        .get('disp-1') as { job_id: string | null; state: string; request_json: string };
+      expect(crashed.job_id).toBeNull();
+      expect(crashed.state).toBe('submitting');
+      expect(JSON.parse(crashed.request_json)).toMatchObject({
+        requestId: 'node-dispatch/disp-1',
+      });
+
+      // Recovery replays the stored request — same requestId re-binds to
+      // the same backend job rather than minting a second one.
+      rpcHandler = (op, params) =>
+        op === 'job.create'
+          ? {
+              job: {
+                id: 'job-1',
+                state: 'queued',
+                requestId: (params as { requestId: string }).requestId,
+                inputManifest: (params as { inputManifest: unknown }).inputManifest,
+              },
+            }
+          : {};
+      const record = await refreshDispatch('disp-1');
+      expect(record.jobId).toBe('job-1');
+      expect(record.state).toBe('queued');
+      const creates = rpcCalls.filter((c) => c.operation === 'job.create');
+      // The crashed attempt and the replay both carry the dispatch-derived
+      // requestId — the backend re-binds rather than duplicating the job.
+      expect(creates).toHaveLength(2);
+      for (const create of creates) {
+        expect((create.params as { requestId: string }).requestId).toBe(
+          'node-dispatch/disp-1',
+        );
+      }
+    } finally {
+      cleanup(parentRepo, sourceRepo);
+    }
+  });
+
+  it('replays persisted cancel intent until the job lands terminal', async () => {
+    const { workspaceId, parentRepo, sourceRepo } = seedDispatchFixture('cancel-replay');
+    try {
+      db.prepare(
+        `INSERT INTO mesh_node_dispatches
+         (dispatch_id, run_id, node_id, job_id, request_id, workspace_id,
+          manifest_json, state, cancel_requested, output_json, created_at, updated_at)
+         VALUES ('disp-1', 'run-1', 'node-1', 'job-1', 'r', ?, '{}', 'running', 1, NULL, datetime('now'), datetime('now'))`,
+      ).run(workspaceId);
+      rpcHandler = (op) =>
+        op === 'job.cancel' ? { job: { id: 'job-1', state: 'cancel-requested' } } : {};
+      await reconcileDispatchesOnBoot();
+      expect(rpcCalls.some((c) => c.operation === 'job.cancel')).toBe(true);
+      expect(rpcCalls.some((c) => c.operation === 'job.get')).toBe(false);
+      const row = db
+        .prepare('SELECT state FROM mesh_node_dispatches WHERE dispatch_id = ?')
+        .get('disp-1') as { state: string };
+      expect(row.state).toBe('cancel-requested');
+    } finally {
+      cleanup(parentRepo, sourceRepo);
+    }
+  });
+
+  it('applies a cancel persisted while the job was still unsubmitted', async () => {
+    const { workspaceId, parentRepo, sourceRepo } = seedDispatchFixture('cancel-pending');
+    try {
+      const request = {
+        requestId: 'node-dispatch/disp-1',
+        payloadHash: 'hash',
+        kind: 'workflow-node',
+        requestedTarget: { kind: 'auto' },
+        inputManifest: {
+          workspaceDefinitionRevision: 'r1',
+          repositories: [],
+          bootstrapDigest: 'none',
+          provider: 'codex',
+          model: 'm',
+          configVersions: {},
+          inputs: { workspaceId },
+        },
+        retryPolicy: 'inspect-before-retry',
+      };
+      db.prepare(
+        `INSERT INTO mesh_node_dispatches
+         (dispatch_id, run_id, node_id, job_id, request_id, workspace_id,
+          manifest_json, request_json, state, cancel_requested, output_json,
+          created_at, updated_at)
+         VALUES ('disp-1', 'run-1', 'node-1', NULL, 'r', ?, '{}', ?, 'submitting', 1, NULL, datetime('now'), datetime('now'))`,
+      ).run(workspaceId, JSON.stringify(request));
+      rpcHandler = (op, params) =>
+        op === 'job.create'
+          ? {
+              job: {
+                id: 'job-1',
+                state: 'queued',
+                requestId: (params as { requestId: string }).requestId,
+                inputManifest: (params as { inputManifest: unknown }).inputManifest,
+              },
+            }
+          : op === 'job.cancel'
+            ? { job: { id: 'job-1', state: 'cancel-requested' } }
+            : {};
+      const record = await refreshDispatch('disp-1');
+      // The stored request submits first, then the persisted cancel
+      // intent replays against the newly bound job.
+      expect(record.jobId).toBe('job-1');
+      expect(record.state).toBe('cancel-requested');
+      const ops = rpcCalls.map((c) => c.operation);
+      expect(ops.indexOf('job.create')).toBeLessThan(ops.indexOf('job.cancel'));
+    } finally {
+      cleanup(parentRepo, sourceRepo);
+    }
+  });
+
+  it('cancelNodeDispatch on an unsubmitted dispatch persists intent without a job.cancel', async () => {
+    const { workspaceId, parentRepo, sourceRepo } = seedDispatchFixture('cancel-null');
+    try {
+      db.prepare(
+        `INSERT INTO mesh_node_dispatches
+         (dispatch_id, run_id, node_id, job_id, request_id, workspace_id,
+          manifest_json, request_json, state, cancel_requested, output_json,
+          created_at, updated_at)
+         VALUES ('disp-1', 'run-1', 'node-1', NULL, 'r', ?, '{}', '{}', 'submitting', 0, NULL, datetime('now'), datetime('now'))`,
+      ).run(workspaceId);
+      const record = await cancelNodeDispatch('disp-1');
+      expect(record.cancelRequested).toBe(true);
+      expect(rpcCalls.some((c) => c.operation === 'job.cancel')).toBe(false);
     } finally {
       cleanup(parentRepo, sourceRepo);
     }

@@ -29,6 +29,7 @@ import type {
   SyncRuntimeStatus,
 } from '../../../shared/sync-runtime';
 import { copyTextToClipboard } from '../../utils/clipboard';
+import { DashboardAccessPanel } from './DashboardAccessPanel';
 import { MeshExecutionsPanel } from './MeshExecutionsPanel';
 
 function toErrorMessage(error: unknown): string {
@@ -1075,6 +1076,15 @@ export function SyncMeshSettingsPanel(): ReactNode {
               ))}
             </ul>
           )}
+        </Panel>
+      )}
+
+      {runtime?.auth.state === 'signed-in' && status?.state === 'active' && (
+        <Panel
+          title="Browser dashboard access"
+          description="Browsers never join the mesh or hold an account key. A web session asks for specific capabilities, you approve a subset here, and it receives only encrypted projections."
+        >
+          <DashboardAccessPanel />
         </Panel>
       )}
 

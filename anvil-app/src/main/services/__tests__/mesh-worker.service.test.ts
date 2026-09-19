@@ -13,6 +13,15 @@ db.exec(SCHEMA_SQL);
 vi.mock('../../db/database.js', () => ({ getDb: () => db }));
 vi.mock('electron', () => ({
   app: { getPath: () => '/tmp', getVersion: () => 'test' },
+  safeStorage: {
+    isEncryptionAvailable: () => true,
+    encryptString: (value: string) => Buffer.from(`enc:${value}`, 'utf-8'),
+    decryptString: (encrypted: Buffer) => {
+      const text = encrypted.toString('utf-8');
+      if (!text.startsWith('enc:')) throw new Error('Error while decrypting the ciphertext.');
+      return text.slice('enc:'.length);
+    },
+  },
 }));
 
 interface RpcCall {
@@ -34,7 +43,18 @@ vi.mock('../sync-backend-client.service.js', async (importOriginal) => {
       params: unknown,
     ): Promise<{ result: unknown; serverTime: string }> => {
       rpcCalls.push({ operation, params });
-      return { result: rpcHandler(operation, params), serverTime: '' };
+      const result = rpcHandler(operation, params);
+      // Scoped claims pull credential grants and task-key wraps — default
+      // to empty collections unless the test's handler supplies its own.
+      const normalized =
+        result !== null && typeof result === 'object'
+          ? {
+              ...(operation === 'credential.pull' ? { grants: [] } : {}),
+              ...(operation === 'taskkey.pull' ? { wraps: [] } : {}),
+              ...result,
+            }
+          : result;
+      return { result: normalized, serverTime: '' };
     },
   };
 });
@@ -69,11 +89,18 @@ import {
   setMeshWorkerEnabled,
 } from '../mesh-worker.service';
 import { BackendRpcError } from '../sync-backend-client.service';
+import { taskKeyFor, unsealTaskInputs } from '../sync-keyring.service';
 import { workspaceDefinitionRevision } from '../sync-entity-domain';
 import { probeSessionCli, runRemoteSessionTurn } from '../mesh-session.service';
 import type { RemoteSessionHooks, RemoteSessionSpec } from '../mesh-session.service';
 
-const CTX = { apiUrl: 'https://backend.test/v1', accessToken: 'tok', enrollmentId: 'enr-1' };
+const SCOPE = { backendId: 'backend-1', accountId: 'account-1', datasetEpoch: '1' } as const;
+const CTX = {
+  apiUrl: 'https://backend.test/v1',
+  accessToken: 'tok',
+  enrollmentId: 'enr-1',
+  scope: SCOPE,
+};
 
 function makeJob(id: string, kind = 'diagnostic'): MeshJob {
   return {
@@ -111,7 +138,7 @@ function makeAttempt(jobId: string): ExecutionAttempt {
 }
 
 beforeEach(() => {
-  db.exec('DELETE FROM mesh_worker_state; DELETE FROM mesh_attempts;');
+  db.exec('DELETE FROM mesh_worker_state; DELETE FROM mesh_attempts; DELETE FROM mesh_task_keys;');
   rpcCalls.length = 0;
   rpcHandler = () => ({});
   resetMeshWorkerForTests();
@@ -1179,8 +1206,18 @@ describe('start-session executor (SESSION-02)', () => {
       ]);
       expect(params.inputManifest.provider).toBe('codex');
       expect(params.inputManifest.model).toBe('gpt-5');
-      expect(params.inputManifest.inputs['cliMinVersion']).toBe('0.40.0');
-      expect(params.inputManifest.inputs['turnTimeoutMs']).toBe(120_000);
+      // Disclosure: the public manifest carries only allowlisted routing
+      // keys — the prompt and execution context seal under the job TCK.
+      expect(Object.keys(params.inputManifest.inputs)).toEqual(['workspaceId']);
+      const sealed = (params as { sealedInputs?: { enc: string; nonce: string; ct: string } })
+        .sealedInputs;
+      expect(sealed?.enc).toBe('aes-256-gcm');
+      const taskKey = taskKeyFor(SCOPE, 'req:req-s');
+      expect(taskKey).not.toBeNull();
+      const opened = unsealTaskInputs(SCOPE, 'req-s', taskKey!, sealed);
+      expect(opened['cliMinVersion']).toBe('0.40.0');
+      expect(opened['turnTimeoutMs']).toBe(120_000);
+      expect(opened['prompt']).toBe('review the diff');
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }
@@ -1508,8 +1545,18 @@ describe('code-task executor (FLOW-01)', () => {
       expect(params.inputManifest.repositories).toEqual([
         { repositoryId: portableId, commit: head },
       ]);
-      expect(params.inputManifest.inputs['verification']).toEqual(['pnpm test']);
-      expect(params.inputManifest.inputs['refPolicy']).toBe('local-branches');
+      // Verification commands and ref policy are sensitive execution
+      // context — they ride the sealed envelope, not the public manifest.
+      expect(Object.keys(params.inputManifest.inputs)).toEqual(['workspaceId']);
+      const sealed = (params as { sealedInputs?: { enc: string; nonce: string; ct: string } })
+        .sealedInputs;
+      expect(sealed?.enc).toBe('aes-256-gcm');
+      const taskKey = taskKeyFor(SCOPE, 'req:req-c');
+      expect(taskKey).not.toBeNull();
+      const opened = unsealTaskInputs(SCOPE, 'req-c', taskKey!, sealed);
+      expect(opened['verification']).toEqual(['pnpm test']);
+      expect(opened['refPolicy']).toBe('local-branches');
+      expect(opened['prompt']).toBe('implement the thing');
       expect(params.retryPolicy).toBe('inspect-before-retry');
     } finally {
       rmSync(repoDir, { recursive: true, force: true });

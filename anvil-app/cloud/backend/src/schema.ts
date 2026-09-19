@@ -106,6 +106,10 @@ CREATE TABLE IF NOT EXISTS jobs (
   target_enrollment_id TEXT,
   placement_explanation TEXT,
   input_manifest TEXT NOT NULL,
+  -- E2EE: sensitive inputs sealed under the job's TCK (opaque envelope),
+  -- and the declared result-recipient enrollment ids.
+  sealed_inputs TEXT,
+  result_recipients TEXT,
   state TEXT NOT NULL,
   state_reason TEXT,
   queue_deadline INTEGER NOT NULL,
@@ -136,6 +140,8 @@ CREATE TABLE IF NOT EXISTS attempts (
   lease_expires_at INTEGER NOT NULL,
   outcome TEXT,
   result TEXT,
+  -- E2EE: rich result detail sealed under the job's TCK (opaque envelope).
+  sealed_result TEXT,
   error TEXT,
   late_result TEXT,
   created_at INTEGER NOT NULL,
@@ -346,6 +352,57 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_credential_grants_dedupe
   ON credential_grants (job_id, attempt_id, envelope_sha);
 CREATE INDEX IF NOT EXISTS idx_credential_grants_attempt
   ON credential_grants (attempt_id, fence, expires_at);
+-- E2EE task content keys (contract sealed.ts): one wrap per (job, target)
+-- — the job's TCK sealed to that enrollment's X25519 identity. The backend
+-- stores and relays opaque envelopes; it can never open them. Wraps are
+-- upserted idempotently; delivered_at marks first pull.
+CREATE TABLE IF NOT EXISTS task_key_wraps (
+  job_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  target_enrollment_id TEXT NOT NULL,
+  envelope TEXT NOT NULL,
+  envelope_sha TEXT NOT NULL,
+  delivered_at INTEGER,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (job_id, target_enrollment_id)
+);
+CREATE INDEX IF NOT EXISTS idx_task_key_wraps_target
+  ON task_key_wraps (target_enrollment_id, delivered_at);
+-- keyring.report: a trusted device's record that a post-revocation
+-- rotation completed — lets dashboards distinguish 'access revoked' from
+-- 'rotation pending'. Idempotent on rotation_id.
+CREATE TABLE IF NOT EXISTS keyring_rotation_reports (
+  rotation_id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  reporter_enrollment_id TEXT NOT NULL,
+  revoked_json TEXT NOT NULL,
+  to_version INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+-- Browser dashboard authorization (contract dashboard.ts): the request
+-- row is the lifecycle authority. grant/snapshot are sealed envelopes the
+-- coordinator relays but cannot open — the DSK lives only inside grant.ct.
+-- snapshot_seq enforces strictly increasing publication.
+CREATE TABLE IF NOT EXISTS dashboard_requests (
+  request_id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  browser_pub TEXT NOT NULL,
+  challenge TEXT NOT NULL,
+  scopes TEXT NOT NULL,
+  origin TEXT,
+  user_agent TEXT,
+  expires_at INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  grant TEXT,
+  snapshot TEXT,
+  snapshot_seq INTEGER NOT NULL DEFAULT 0,
+  decided_by TEXT,
+  decided_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_dashboard_requests_account
+  ON dashboard_requests (account_id, state);
 -- ENV-09 managed-environment bootstrap staging: the anvil-pair payload
 -- a source minted for a backend-provisioned environment. These rows ARE
 -- plaintext pairing material held inside the hosted trust boundary —
