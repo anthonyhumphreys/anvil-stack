@@ -119,6 +119,35 @@ describe('chat thread persistence', () => {
     expect(updated?.activeRepoId).toBeUndefined();
   });
 
+  it('persists generated summaries and locks titles on manual rename', () => {
+    const thread = createChatThread({
+      workspaceId: 'ws-1',
+      personaId: 'coder',
+      title: 'how do I rotate certs',
+      repoIds: ['repo-1'],
+    });
+
+    expect(thread.titleLocked).toBeFalsy();
+    expect(thread.summary).toBeUndefined();
+
+    const assisted = updateChatThread(thread.id, {
+      title: 'Rotate TLS certificates',
+      summary: 'Investigating how to rotate TLS certs for the orders service.',
+    });
+    expect(assisted?.title).toBe('Rotate TLS certificates');
+    expect(assisted?.summary).toBe('Investigating how to rotate TLS certs for the orders service.');
+    expect(assisted?.titleLocked).toBeFalsy();
+
+    const renamed = updateChatThread(thread.id, {
+      title: 'Cert rotation runbook',
+      titleLocked: true,
+    });
+    expect(renamed?.titleLocked).toBe(true);
+    expect(getChatThread(thread.id)?.summary).toBe(
+      'Investigating how to rotate TLS certs for the orders service.',
+    );
+  });
+
   it('lists every classic thread when no persona filter is supplied', () => {
     const coderThread = createChatThread({ workspaceId: 'ws-1', personaId: 'coder' });
     const architectThread = createChatThread({ workspaceId: 'ws-1', personaId: 'architect' });

@@ -62,6 +62,7 @@ import {
 import { useBrand } from '../../contexts/BrandContext';
 import { dispatchCodexSelectionChanged } from '../../utils/codex-selection';
 import { selectPrimaryAgentProvider } from '../../utils/agent-provider-settings';
+import { buildProviderModelOptions } from '../../utils/chat-model-options';
 import { InlineNotice } from '../layout/ViewScaffold';
 import { SyncMeshSettingsPanel } from './SyncMeshSettingsPanel';
 import { EditableAgentsPanel } from './EditableAgentsPanel';
@@ -757,6 +758,11 @@ export function SettingsView({
     const result = await window.anvil.settings.testLocalLlm();
     setLocalLlmStatus(result.ok ? 'ok' : 'error');
     if (result.error) setTestError(result.error);
+    // Re-probe capabilities so backend/license state stays current after a test.
+    window.anvil.settings
+      .getLocalLlmCapabilities()
+      .then(setLocalLlmCapabilities)
+      .catch(console.warn);
   };
 
   const testWi = async () => {
@@ -923,6 +929,20 @@ export function SettingsView({
     ? persistedTheme
     : brand.defaultTheme;
   const selectedChatLayout = settings.chatLayout ?? 'classic';
+  const assistProvider = settings.threadAssistProvider ?? 'off';
+  const assistAgentProvider = AGENT_PROVIDER_OPTIONS.some((option) => option.id === assistProvider)
+    ? (assistProvider as AgentProvider)
+    : null;
+  const assistModelOptions = assistAgentProvider
+    ? buildProviderModelOptions(
+        assistAgentProvider,
+        settings.threadAssistModel || null,
+        codexStatus,
+        cursorStatus,
+        llmGatewayStatus,
+        devinStatus,
+      )
+    : [];
   const codexModelOptions = buildCodexModelOptions(codexStatus);
   const selectedModelId =
     settings.openaiModel ?? (provider === 'llmgateway' ? '' : DEFAULT_CODEX_MODEL);
@@ -1762,18 +1782,7 @@ export function SettingsView({
                             }
                             active={settings.localLlmProvider === providerId}
                             onClick={() => {
-                              const providerChanged = settings.localLlmProvider !== providerId;
                               update('localLlmProvider', providerId as LocalLlmProvider);
-                              if (providerChanged) {
-                                update(
-                                  'localLlmEndpoint',
-                                  providerId === 'ollama'
-                                    ? 'http://127.0.0.1:11434/v1'
-                                    : providerId === 'lm-studio'
-                                      ? 'http://127.0.0.1:1234/v1'
-                                      : '',
-                                );
-                              }
                               setLocalLlmStatus('idle');
                             }}
                           />
@@ -1782,26 +1791,112 @@ export function SettingsView({
                     </ButtonGrid>
                   </div>
 
-                  {settings.localLlmProvider !== 'apple' && (
+                  {settings.localLlmProvider === 'apple' && localLlmCapabilities?.apple && (
+                    <div className="rounded-md border border-border bg-bg-secondary p-3 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-sm font-medium text-text-primary">
+                          {localLlmCapabilities.apple.available
+                            ? 'Apple Intelligence is ready'
+                            : 'Apple Intelligence is not available'}
+                        </span>
+                        {localLlmCapabilities.apple.backend && (
+                          <span className="rounded bg-bg-tertiary px-1.5 py-0.5 text-xs font-mono text-text-tertiary">
+                            {localLlmCapabilities.apple.backend === 'fm-cli'
+                              ? 'fm CLI'
+                              : localLlmCapabilities.apple.backend === 'swift-helper-27'
+                                ? 'Swift helper (macOS 27)'
+                                : 'Swift helper'}
+                          </span>
+                        )}
+                      </div>
+                      {!localLlmCapabilities.apple.available &&
+                        localLlmCapabilities.apple.reason && (
+                          <p className="text-xs text-text-secondary">
+                            {localLlmCapabilities.apple.reason === 'deviceNotEligible'
+                              ? 'This Mac is not eligible for Apple Intelligence.'
+                              : localLlmCapabilities.apple.reason === 'appleIntelligenceNotEnabled'
+                                ? 'Apple Intelligence is disabled. Enable it in System Settings → Apple Intelligence.'
+                                : localLlmCapabilities.apple.reason === 'modelNotReady'
+                                  ? 'The on-device model is still downloading or preparing. Try again shortly.'
+                                  : localLlmCapabilities.apple.reason === 'licenseRequired'
+                                    ? 'fm CLI is installed but its legal notice has not been accepted.'
+                                    : `Reason: ${localLlmCapabilities.apple.reason}`}
+                          </p>
+                        )}
+                      {localLlmCapabilities.apple.fmCli?.installed &&
+                        !localLlmCapabilities.apple.fmCli.licenseAccepted && (
+                          <p className="text-xs text-text-secondary">
+                            macOS 27 ships the <code className="font-mono">fm</code> CLI, a faster
+                            backend that also supports image prompts. Run{' '}
+                            <code className="rounded bg-bg-tertiary px-1 py-0.5 font-mono">
+                              sudo fm license
+                            </code>{' '}
+                            once to enable it.
+                          </p>
+                        )}
+                      <div className="flex flex-wrap gap-1.5">
+                        {localLlmCapabilities.apple.features.streaming && (
+                          <span className="rounded bg-bg-tertiary px-1.5 py-0.5 text-xs text-text-secondary">
+                            streaming
+                          </span>
+                        )}
+                        {localLlmCapabilities.apple.features.images && (
+                          <span className="rounded bg-bg-tertiary px-1.5 py-0.5 text-xs text-text-secondary">
+                            image prompts
+                          </span>
+                        )}
+                        {localLlmCapabilities.apple.features.tokenCounting && (
+                          <span className="rounded bg-bg-tertiary px-1.5 py-0.5 text-xs text-text-secondary">
+                            token counting
+                          </span>
+                        )}
+                        {localLlmCapabilities.apple.contextSize && (
+                          <span className="rounded bg-bg-tertiary px-1.5 py-0.5 text-xs text-text-secondary">
+                            {localLlmCapabilities.apple.contextSize.toLocaleString()}-token context
+                          </span>
+                        )}
+                        {localLlmCapabilities.apple.osVersion && (
+                          <span className="rounded bg-bg-tertiary px-1.5 py-0.5 text-xs text-text-tertiary">
+                            macOS {localLlmCapabilities.apple.osVersion}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  <div className="space-y-3">
+                    <label className="block text-sm text-text-secondary">Local model servers</label>
+                    <p className="text-xs text-text-tertiary">
+                      Endpoint and model are stored per server, so you can point Ollama at a remote
+                      host (a DGX Spark cluster, a LAN box) while keeping LM Studio local — or vice
+                      versa. Leave an endpoint empty to use the provider&apos;s localhost default.
+                    </p>
                     <div className="grid gap-3 md:grid-cols-2">
                       <Field
-                        label="OpenAI-compatible endpoint"
-                        value={settings.localLlmEndpoint ?? ''}
-                        onChange={(value) => update('localLlmEndpoint', value)}
-                        placeholder={
-                          settings.localLlmProvider === 'lm-studio'
-                            ? 'http://127.0.0.1:1234/v1'
-                            : 'http://127.0.0.1:11434/v1'
-                        }
+                        label="Ollama endpoint"
+                        value={settings.ollamaEndpoint ?? ''}
+                        onChange={(value) => update('ollamaEndpoint', value)}
+                        placeholder="http://127.0.0.1:11434/v1"
                       />
                       <Field
-                        label="Model ID (optional)"
-                        value={settings.localLlmModel ?? ''}
-                        onChange={(value) => update('localLlmModel', value)}
+                        label="Ollama model (optional)"
+                        value={settings.ollamaModel ?? ''}
+                        onChange={(value) => update('ollamaModel', value)}
+                        placeholder="Use the first loaded model"
+                      />
+                      <Field
+                        label="LM Studio endpoint"
+                        value={settings.lmStudioEndpoint ?? ''}
+                        onChange={(value) => update('lmStudioEndpoint', value)}
+                        placeholder="http://127.0.0.1:1234/v1"
+                      />
+                      <Field
+                        label="LM Studio model (optional)"
+                        value={settings.lmStudioModel ?? ''}
+                        onChange={(value) => update('lmStudioModel', value)}
                         placeholder="Use the first loaded model"
                       />
                     </div>
-                  )}
+                  </div>
                   <p className="text-xs text-text-tertiary">
                     Apple Intelligence is offered only on macOS. Ollama and LM Studio work on any
                     supported desktop platform. Repository work, tools, code edits, and long-context
@@ -1812,6 +1907,84 @@ export function SettingsView({
                     onClick={testLocalLlm}
                     label="Test Local Model"
                   />
+                </div>
+
+                <div className="rounded-md border border-border bg-bg-primary p-4 space-y-4">
+                  <div className="space-y-1">
+                    <label className="block text-sm text-text-secondary">Thread assistance</label>
+                    <p className="text-sm text-text-secondary">
+                      Generate a short title and a rolling one-line summary for each thread after a
+                      turn completes. Summaries appear under the thread title in the sidebar.
+                    </p>
+                  </div>
+                  <ButtonGrid>
+                    <ProviderButton
+                      label="Off"
+                      description="Keep first-message titles"
+                      active={assistProvider === 'off'}
+                      onClick={() => update('threadAssistProvider', 'off')}
+                    />
+                    <ProviderButton
+                      label="Primary provider"
+                      description="Use the configured agent model"
+                      active={assistProvider === 'configured'}
+                      onClick={() => update('threadAssistProvider', 'configured')}
+                    />
+                    {localLlmCapabilities?.providers.includes('apple') && (
+                      <ProviderButton
+                        label="Apple Intelligence"
+                        description="On-device, free and private"
+                        active={assistProvider === 'apple'}
+                        onClick={() => update('threadAssistProvider', 'apple')}
+                      />
+                    )}
+                    {AGENT_PROVIDER_OPTIONS.filter((option) =>
+                      enabledProviders.includes(option.id),
+                    ).map((option) => (
+                      <ProviderButton
+                        key={option.id}
+                        label={option.label}
+                        description={option.description}
+                        active={assistProvider === option.id}
+                        onClick={() => update('threadAssistProvider', option.id)}
+                      />
+                    ))}
+                  </ButtonGrid>
+                  {assistAgentProvider && (
+                    <div className="space-y-1">
+                      <label className="block text-sm text-text-secondary">
+                        Thread assistance model
+                      </label>
+                      <select
+                        value={settings.threadAssistModel ?? ''}
+                        onChange={(event) => update('threadAssistModel', event.target.value)}
+                        className="w-full rounded-md border border-border bg-bg-secondary px-3 py-2 text-sm text-text-primary outline-none focus:border-accent"
+                      >
+                        <option value="">Provider default</option>
+                        {assistModelOptions.map((model) => (
+                          <option key={model.id} value={model.id}>
+                            {model.label} - {model.id}
+                          </option>
+                        ))}
+                      </select>
+                      <p className="text-xs text-text-tertiary">
+                        {assistModelOptions.length
+                          ? `${assistModelOptions.length} models detected for ${assistAgentProvider}.`
+                          : 'No model catalog detected — the provider default will be used.'}
+                      </p>
+                    </div>
+                  )}
+                  {(assistProvider === 'ollama' || assistProvider === 'lm-studio') && (
+                    <p className="text-xs text-text-tertiary">
+                      Currently using the legacy{' '}
+                      {assistProvider === 'ollama' ? 'Ollama' : 'LM Studio'} server selection. Pick
+                      a provider above to switch.
+                    </p>
+                  )}
+                  <p className="text-xs text-text-tertiary">
+                    Threads are refreshed periodically as turns complete. Renaming a thread manually
+                    locks its title so assistance never overwrites it.
+                  </p>
                 </div>
 
                 {provider !== 'azure' && <TestButton status={llmStatus} onClick={testLlm} />}

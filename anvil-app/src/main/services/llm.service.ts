@@ -5,6 +5,7 @@ import { homedir, tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
 import { getSettings } from './settings.service.js';
 import { providerSpawnEnv } from './agent-spawn-env.js';
+import type { AgentProvider } from '../../shared/types.js';
 import { PRIMARY_CODEX_TEMP_PREFIX } from '../../shared/app-identity.js';
 import { DEFAULT_CODEX_MODEL } from '../../shared/codex-models.js';
 import {
@@ -30,6 +31,10 @@ export interface LlmCallOptions {
     | 'compliance'
     | 'long-context';
   onProgress?: (message: string) => void;
+  /** Route this call through a specific connected provider instead of the primary. */
+  provider?: AgentProvider;
+  /** Model override for this call. Falls back to the provider's configured model. */
+  model?: string;
 }
 
 class EmptyLlmResponseError extends Error {}
@@ -157,9 +162,11 @@ function readCodexConfig(): { baseUrl: string; model: string; envKey: string } |
  * Get or create the LLM client based on the configured provider.
  * Only used for API-backed providers. Codex and Cursor route through their CLIs.
  */
-function getClient(): { client: AzureOpenAI | OpenAI; model: string } {
+function getClient(provider: AgentProvider = getSettings().llmProvider ?? 'openai'): {
+  client: AzureOpenAI | OpenAI;
+  model: string;
+} {
   const settings = getSettings();
-  const provider = settings.llmProvider ?? 'openai';
   console.log(`[LLM] getClient: provider=${provider}`);
 
   // Reset if provider changed
@@ -283,8 +290,8 @@ export function buildDevinPrintArgs(prompt: string, model?: string): string[] {
   return args;
 }
 
-export function buildCodexExecArgs(outputPath: string): string[] {
-  return [
+export function buildCodexExecArgs(outputPath: string, model?: string): string[] {
+  const args = [
     'exec',
     '--skip-git-repo-check',
     '--sandbox',
@@ -293,8 +300,11 @@ export function buildCodexExecArgs(outputPath: string): string[] {
     'never',
     '--output-last-message',
     outputPath,
-    '-',
   ];
+  const trimmed = model?.trim();
+  if (trimmed) args.push('--model', trimmed);
+  args.push('-');
+  return args;
 }
 
 async function callCursor(
@@ -419,7 +429,11 @@ async function callDevin(
   );
 }
 
-async function callCodex(prompt: string, options?: LlmCallOptions): Promise<string> {
+async function callCodex(
+  prompt: string,
+  options?: LlmCallOptions,
+  model?: string,
+): Promise<string> {
   // Strip null bytes that can appear in file content
   const cleanPrompt = prompt.replace(/\0/g, '');
   const cwd = options?.cwd;
@@ -446,7 +460,7 @@ async function callCodex(prompt: string, options?: LlmCallOptions): Promise<stri
         }
       };
 
-      const child = spawn('codex', buildCodexExecArgs(outputPath), {
+      const child = spawn('codex', buildCodexExecArgs(outputPath, model), {
         ...(cwd && { cwd }),
         env: providerSpawnEnv({ OTEL_SDK_DISABLED: 'true' }),
         detached: process.platform !== 'win32',
@@ -548,26 +562,32 @@ export async function callLlm(
   options?: LlmCallOptions,
 ): Promise<string> {
   const settings = getSettings();
+  const provider = options?.provider ?? settings.llmProvider;
+  const modelOverride = options?.model?.trim() || undefined;
   let lastEmptyResponseMessage: string | null = null;
 
-  const localResult = await tryLocalLlm(userMessage, maxTokens, options);
-  if (localResult) return localResult;
+  // An explicit provider override is a deliberate routing choice — bypass the
+  // prefer-simple local classifier so the call reaches the requested provider.
+  if (!options?.provider) {
+    const localResult = await tryLocalLlm(userMessage, maxTokens, options);
+    if (localResult) return localResult;
+  }
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     let result: string;
 
-    if (
-      settings.llmProvider === 'codex' ||
-      settings.llmProvider === 'cursor' ||
-      settings.llmProvider === 'devin'
-    ) {
+    if (provider === 'codex' || provider === 'cursor' || provider === 'devin') {
       try {
         result =
-          settings.llmProvider === 'cursor'
-            ? await callCursor(userMessage, options, settings.openaiModel || 'auto')
-            : settings.llmProvider === 'devin'
-              ? await callDevin(userMessage, options, settings.openaiModel)
-              : await callCodex(userMessage, options);
+          provider === 'cursor'
+            ? await callCursor(
+                userMessage,
+                options,
+                modelOverride || settings.openaiModel || 'auto',
+              )
+            : provider === 'devin'
+              ? await callDevin(userMessage, options, modelOverride || settings.openaiModel)
+              : await callCodex(userMessage, options, modelOverride);
       } catch (err) {
         if (err instanceof EmptyLlmResponseError) {
           lastEmptyResponseMessage = err.message;
@@ -585,11 +605,11 @@ export async function callLlm(
         throw err;
       }
     } else {
-      const { client, model } = getClient();
-      const settings = getSettings();
+      const { client, model } = getClient(provider);
+      const effectiveModel = modelOverride ?? model;
       try {
         const body: Record<string, unknown> = {
-          model,
+          model: effectiveModel,
           messages: [{ role: 'user', content: userMessage }],
           max_completion_tokens: maxTokens,
           temperature,
@@ -597,7 +617,7 @@ export async function callLlm(
         // Direct OpenAI API calls use the standard reasoning efforts. Codex-only max/ultra
         // travel through the Codex app-server path instead.
         if (
-          model.startsWith('gpt-5') &&
+          effectiveModel.startsWith('gpt-5') &&
           settings.reasoningLevel &&
           settings.reasoningLevel !== 'max' &&
           settings.reasoningLevel !== 'ultra'

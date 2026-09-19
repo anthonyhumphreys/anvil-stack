@@ -51,6 +51,7 @@ import { applyLlmGatewayEnvironment } from './llm-gateway.service.js';
 import { resolveLlmGatewayModelConfig } from './llm-gateway.service.js';
 import { resolveCodexRuntime } from './codex-runtime.service.js';
 import { updateChatThreadAttention } from './chat-persistence.service.js';
+import { scheduleThreadMetadataRefresh } from './thread-assist.service.js';
 import {
   dismissAgentUIIntent,
   expireAgentUIIntentsForSession,
@@ -522,7 +523,7 @@ export async function sendMessage(
     }
     sendCodexJsonRpc(session.process, 'session/prompt', {
       sessionId: session.threadId,
-      prompt: buildAcpPrompt(session.provider, session, message, attachments),
+      prompt: buildAcpPrompt(session, message, attachments),
     });
     session.acpSystemPromptDelivered = true;
     return;
@@ -581,21 +582,27 @@ export async function steerTurn(
 }
 
 function buildAcpPrompt(
-  provider: AcpAgentProvider,
   session: ManagedSession,
   message: string,
   attachments: ChatAttachment[],
 ): Array<Record<string, unknown>> {
-  return buildUserInput(
-    message,
-    attachments,
-    provider,
-    session.acpSystemPromptDelivered ? undefined : session.systemPrompt,
-  ).map((item) => {
-    if (item.type === 'text') return { type: 'text', text: item.text };
-    if (item.type === 'localImage') return { type: 'resource_link', uri: `file://${item.path}` };
-    return { type: 'resource_link', uri: `file://${item.path}`, name: item.name };
-  });
+  const text =
+    session.acpSystemPromptDelivered || !session.systemPrompt?.trim()
+      ? message
+      : `[System instructions]\n${session.systemPrompt.trim()}\n\n${message}`;
+  const prompt: Array<Record<string, unknown>> = [{ type: 'text', text }];
+  // ACP resource_link blocks require `name`; omitting it (or other fields the
+  // agent validates) gets the whole prompt rejected with invalid params.
+  for (const attachment of attachments) {
+    prompt.push({
+      type: 'resource_link',
+      uri: `file://${attachment.path}`,
+      name: attachment.name,
+      ...(attachment.mimeType ? { mimeType: attachment.mimeType } : {}),
+      ...(attachment.size ? { size: attachment.size } : {}),
+    });
+  }
+  return prompt;
 }
 
 function buildUserInput(
@@ -640,15 +647,36 @@ export function buildTurnSteerParams(
  * renderer displays and persists it without a Codex round-trip.
  */
 export function emitLocalAssistantTurn(sessionId: string, text: string): void {
+  emitLocalAssistantTurnStart(sessionId);
+  emitLocalAssistantText(sessionId, text);
+  emitLocalAssistantTurnEnd(sessionId);
+}
+
+/** Begin a locally-produced assistant turn: marks the session thinking. */
+export function emitLocalAssistantTurnStart(sessionId: string): void {
   const session = sessions.get(sessionId);
   if (!session) throw new Error(`Session not found: ${sessionId}`);
-
   broadcastEvent(sessionId, { type: 'status', status: 'thinking' });
   setSessionThreadAttention(session, 'working');
+}
+
+/** Append text to an in-progress local assistant turn (streaming deltas). */
+export function emitLocalAssistantText(sessionId: string, text: string): void {
+  const session = sessions.get(sessionId);
+  if (!session) return;
   broadcastEvent(sessionId, { type: 'text', text });
+}
+
+/** Close a local assistant turn; use 'interrupted' when it aborted mid-stream. */
+export function emitLocalAssistantTurnEnd(
+  sessionId: string,
+  outcome: 'completed' | 'interrupted' = 'completed',
+): void {
+  const session = sessions.get(sessionId);
+  if (!session) return;
   session.status = 'ready';
-  setSessionThreadAttention(session, 'complete');
-  broadcastEvent(sessionId, { type: 'turn_outcome', turnOutcome: 'completed', model: 'on-device' });
+  setSessionThreadAttention(session, outcome === 'completed' ? 'complete' : 'idle');
+  broadcastEvent(sessionId, { type: 'turn_outcome', turnOutcome: outcome, model: 'on-device' });
   broadcastEvent(sessionId, { type: 'status', status: 'complete' });
   emitCompanionEvent('sessions');
 }
@@ -1264,6 +1292,13 @@ function broadcastEvent(sessionId: string, event: CodexEvent): void {
     } catch (error) {
       console.error('[Dojo] Could not persist execution telemetry:', error);
     }
+  }
+  if (
+    session?.appThreadId &&
+    ((event.type === 'turn_outcome' && event.turnOutcome === 'completed') ||
+      (event.type === 'status' && event.status === 'complete'))
+  ) {
+    scheduleThreadMetadataRefresh(session.appThreadId);
   }
   if (['usage', 'usage_context', 'turn_outcome', 'context_compaction'].includes(event.type)) return;
   for (const win of BrowserWindow.getAllWindows()) {

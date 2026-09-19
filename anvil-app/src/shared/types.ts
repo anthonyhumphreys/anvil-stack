@@ -918,6 +918,10 @@ export interface ChatThread {
   activeTurnStartedAt?: string;
   lastViewedAt?: string;
   settledAt?: string;
+  /** Generated rolling summary of the conversation so far. */
+  summary?: string;
+  /** True once the user has renamed the thread; generated titles stop applying. */
+  titleLocked?: boolean;
 }
 
 export type ChatThreadAttentionState =
@@ -1181,7 +1185,8 @@ export interface CodexEvent {
     | 'usage'
     | 'turn_outcome'
     | 'context_compaction'
-    | 'usage_context';
+    | 'usage_context'
+    | 'thread_metadata';
   /** App routing metadata attached to live provider events. */
   sessionId?: string;
   appThreadId?: string;
@@ -1221,6 +1226,10 @@ export interface CodexEvent {
   agentUIIntent?: AgentUIIntent;
   agentUIIntentId?: string;
   goal?: ChatGoalSnapshot;
+  /** Generated title/summary pushed after a thread-metadata refresh. */
+  threadTitle?: string;
+  threadSummary?: string;
+  threadSettledAt?: string | null;
   status?: 'thinking' | 'executing' | 'complete' | 'error';
   errorMessage?: string;
   /** Stable app-server item identity for composing streamed assistant messages. */
@@ -2160,6 +2169,28 @@ export interface WorkspaceSummary extends Workspace {
   repoCount: number;
 }
 
+export type WorkspaceActivityStatus = 'running' | 'queued' | 'ready' | 'warning' | 'error';
+
+export interface WorkspaceActivityItem {
+  id: string;
+  workspaceId: string;
+  feature: Feature;
+  route: string;
+  title: string;
+  detail: string;
+  status: WorkspaceActivityStatus;
+  startedAt?: string;
+}
+
+export interface WorkspaceActivitySummary {
+  workspaceId: string;
+  workspaceName: string;
+  /** Worst status across the workspace's current items, for badge colouring. */
+  status: WorkspaceActivityStatus;
+  count: number;
+  items: WorkspaceActivityItem[];
+}
+
 export interface WorkspaceScaffoldStartResult {
   workspaceId: string;
   scaffoldSession: WorkspaceScaffoldSession;
@@ -2484,10 +2515,50 @@ export type AppTheme =
 
 export type LocalLlmProvider = 'apple' | 'ollama' | 'lm-studio';
 export type LocalLlmMode = 'off' | 'prefer-simple';
+/**
+ * Which backend generates thread titles and periodic summaries.
+ * 'configured' follows the primary agent provider via the shared LLM call path.
+ * Any connected AgentProvider can be picked directly with a specific model.
+ * Legacy 'ollama'/'lm-studio' values remain valid for existing installs.
+ */
+export type ThreadAssistProvider = 'off' | 'configured' | LocalLlmProvider | AgentProvider;
+
+export interface AppleModelFeatureFlags {
+  streaming: boolean;
+  instructions: boolean;
+  images: boolean;
+  tokenCounting: boolean;
+  contextSize: boolean;
+  useCases: boolean;
+  structuredOutput: boolean;
+}
+
+/**
+ * Probed state of the on-device Apple Foundation Model stack on this machine.
+ * `reason` is a machine-readable availability reason reported by the active
+ * backend ('available', 'deviceNotEligible', 'appleIntelligenceNotEnabled',
+ * 'modelNotReady', 'licenseRequired', 'requiresMacOS', 'noBackend', ...).
+ */
+export interface AppleLocalModelStatus {
+  platform: NodeJS.Platform;
+  osVersion?: string;
+  available: boolean;
+  reason?: string;
+  backend?: 'fm-cli' | 'swift-helper-27' | 'swift-helper-vision' | 'swift-helper';
+  contextSize?: number;
+  fmCli?: {
+    installed: boolean;
+    licenseAccepted: boolean;
+    detail?: string;
+  };
+  features: AppleModelFeatureFlags;
+}
 
 export interface LocalLlmCapabilities {
   platform: NodeJS.Platform;
   providers: LocalLlmProvider[];
+  /** Present only on macOS; probed state of the Apple Foundation Models stack. */
+  apple?: AppleLocalModelStatus;
 }
 
 export interface AppSettings {
@@ -2499,6 +2570,15 @@ export interface AppSettings {
   localLlmProvider: LocalLlmProvider;
   localLlmEndpoint: string;
   localLlmModel: string;
+  /** Per-provider OpenAI-compatible endpoints; can point at remote hosts. */
+  ollamaEndpoint: string;
+  ollamaModel: string;
+  lmStudioEndpoint: string;
+  lmStudioModel: string;
+  /** Backend for generated thread titles and rolling summaries. */
+  threadAssistProvider: ThreadAssistProvider;
+  /** Model used when threadAssistProvider is a connected agent provider. Empty = provider default. */
+  threadAssistModel?: string;
 
   // Azure AI Foundry
   foundryEndpoint: string;

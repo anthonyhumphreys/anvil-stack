@@ -35,8 +35,10 @@ import {
 } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
+import { useBrand } from '../../contexts/BrandContext';
 import { RunButton } from './RunButton';
-import { WorkspaceMenu } from '../workspace/WorkspaceMenu';
+import { AnvilLogo } from '../brand/AnvilLogo';
+import { WorkspaceRail } from '../workspace/WorkspaceRail';
 import type { UserRole, WorkspaceFeatureAvailability } from '../../../shared/types';
 import { useStoredPanelState } from '../../hooks/useStoredPanelState';
 import {
@@ -94,6 +96,7 @@ export function Sidebar({
 }: SidebarProps) {
   const location = useLocation();
   const navigate = useNavigate();
+  const brand = useBrand();
   const { activeWorkspace, featureAvailability } = useWorkspace();
   const { items: activityItems, indicators: activityIndicators } = useSidebarActivity();
   const { width, setWidth, collapsed, toggleCollapsed } = useStoredPanelState({
@@ -214,15 +217,23 @@ export function Sidebar({
 
       {/* Border starts below the traffic lights */}
       <div className="flex min-h-0 flex-1 flex-col border-r border-border">
-        {/* Branding */}
+        {/* Branding + workspace rail */}
         <div className="shrink-0 px-3 pb-3 pt-2.5">
-          <div className="flex items-center">
-            <WorkspaceMenu
-              compact={compact}
-              statusLabel={statusLabel}
-              onCreateNew={onCreateWorkspace}
-            />
+          <div
+            className={`flex items-center pb-2 ${compact ? 'justify-center' : 'gap-2.5 px-1'}`}
+          >
+            <AnvilLogo size={compact ? 34 : 26} showGlow />
+            {!compact && (
+              <span className="truncate text-sm font-semibold text-text-primary">
+                {brand.appName}
+              </span>
+            )}
           </div>
+          <WorkspaceRail
+            compact={compact}
+            statusLabel={statusLabel}
+            onCreateNew={onCreateWorkspace}
+          />
         </div>
 
         {/* Run Button */}

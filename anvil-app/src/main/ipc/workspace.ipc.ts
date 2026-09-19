@@ -42,6 +42,7 @@ import type {
 } from '../../shared/types.js';
 import { scanForReposAsync, cancelScan } from '../services/repo-scan.service.js';
 import { ensureGateTemplates } from '../services/lifecycle.service.js';
+import { getWorkspaceActivityFeed } from '../services/workspace-activity.service.js';
 
 interface WorkspaceHandlersOptions {
   openWorkspaceWindow?: (workspaceId: string) => void;
@@ -53,6 +54,15 @@ export function registerWorkspaceHandlers(options: WorkspaceHandlersOptions = {}
       return listWorkspaces();
     } catch (err) {
       console.error('[Workspace IPC] Error listing workspaces:', err);
+      throw err;
+    }
+  });
+
+  ipcMain.handle('workspace:activity-feed', () => {
+    try {
+      return getWorkspaceActivityFeed();
+    } catch (err) {
+      console.error('[Workspace IPC] Error building activity feed:', err);
       throw err;
     }
   });

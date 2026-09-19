@@ -36,6 +36,12 @@ interface SettingsRow {
   local_llm_provider: string | null;
   local_llm_endpoint: string | null;
   local_llm_model: string | null;
+  ollama_endpoint: string | null;
+  ollama_model: string | null;
+  lm_studio_endpoint: string | null;
+  lm_studio_model: string | null;
+  thread_assist_provider: string | null;
+  thread_assist_model: string | null;
   foundry_endpoint: string | null;
   foundry_deployment: string | null;
   foundry_api_version: string | null;
@@ -126,6 +132,17 @@ function normaliseLocalLlmProvider(provider: string | null | undefined): LocalLl
       ? 'apple'
       : 'ollama';
   return normalised === 'apple' && process.platform !== 'darwin' ? 'ollama' : normalised;
+}
+
+function normaliseThreadAssistProvider(
+  provider: string | null | undefined,
+): AppSettings['threadAssistProvider'] {
+  if (provider === 'configured') return 'configured';
+  if (provider === 'apple' || provider === 'ollama' || provider === 'lm-studio') {
+    return provider === 'apple' && process.platform !== 'darwin' ? 'ollama' : provider;
+  }
+  if (AGENT_PROVIDERS.includes(provider as AgentProvider)) return provider as AgentProvider;
+  return 'off';
 }
 
 function normaliseAgentProvider(value: string | null | undefined): AgentProvider {
@@ -335,6 +352,30 @@ export function getSettings(): AppSettings {
     localLlmProvider: normaliseLocalLlmProvider(row.local_llm_provider),
     localLlmEndpoint: row.local_llm_endpoint ?? '',
     localLlmModel: row.local_llm_model ?? '',
+    // Per-provider endpoints fall back to the legacy shared fields when the
+    // legacy provider matches, so existing configs keep working.
+    ollamaEndpoint:
+      row.ollama_endpoint ??
+      (normaliseLocalLlmProvider(row.local_llm_provider) === 'ollama'
+        ? (row.local_llm_endpoint ?? '')
+        : ''),
+    ollamaModel:
+      row.ollama_model ??
+      (normaliseLocalLlmProvider(row.local_llm_provider) === 'ollama'
+        ? (row.local_llm_model ?? '')
+        : ''),
+    lmStudioEndpoint:
+      row.lm_studio_endpoint ??
+      (normaliseLocalLlmProvider(row.local_llm_provider) === 'lm-studio'
+        ? (row.local_llm_endpoint ?? '')
+        : ''),
+    lmStudioModel:
+      row.lm_studio_model ??
+      (normaliseLocalLlmProvider(row.local_llm_provider) === 'lm-studio'
+        ? (row.local_llm_model ?? '')
+        : ''),
+    threadAssistProvider: normaliseThreadAssistProvider(row.thread_assist_provider),
+    threadAssistModel: row.thread_assist_model ?? '',
     foundryEndpoint: row.foundry_endpoint ?? '',
     foundryDeploymentName: row.foundry_deployment ?? '',
     foundryApiVersion: row.foundry_api_version ?? '2024-10-21',
@@ -423,6 +464,30 @@ export function updateSettings(partial: Partial<AppSettings>): void {
   if (partial.localLlmModel !== undefined) {
     setClauses.push('local_llm_model = ?');
     values.push(partial.localLlmModel.trim());
+  }
+  if (partial.ollamaEndpoint !== undefined) {
+    setClauses.push('ollama_endpoint = ?');
+    values.push(partial.ollamaEndpoint.trim());
+  }
+  if (partial.ollamaModel !== undefined) {
+    setClauses.push('ollama_model = ?');
+    values.push(partial.ollamaModel.trim());
+  }
+  if (partial.lmStudioEndpoint !== undefined) {
+    setClauses.push('lm_studio_endpoint = ?');
+    values.push(partial.lmStudioEndpoint.trim());
+  }
+  if (partial.lmStudioModel !== undefined) {
+    setClauses.push('lm_studio_model = ?');
+    values.push(partial.lmStudioModel.trim());
+  }
+  if (partial.threadAssistProvider !== undefined) {
+    setClauses.push('thread_assist_provider = ?');
+    values.push(normaliseThreadAssistProvider(partial.threadAssistProvider));
+  }
+  if (partial.threadAssistModel !== undefined) {
+    setClauses.push('thread_assist_model = ?');
+    values.push(partial.threadAssistModel.trim());
   }
   if (partial.foundryEndpoint !== undefined) {
     setClauses.push('foundry_endpoint = ?');
@@ -694,6 +759,12 @@ function defaultSettings(): AppSettings {
     localLlmProvider: process.platform === 'darwin' ? 'apple' : 'ollama',
     localLlmEndpoint: '',
     localLlmModel: '',
+    ollamaEndpoint: '',
+    ollamaModel: '',
+    lmStudioEndpoint: '',
+    lmStudioModel: '',
+    threadAssistProvider: 'off',
+    threadAssistModel: '',
     foundryEndpoint: '',
     foundryDeploymentName: '',
     foundryApiVersion: '2024-10-21',

@@ -1,13 +1,15 @@
 import Foundation
 
-// Apple Foundation Models helper — protocol v2.
-// macOS 26 SDK-safe: only uses FoundationModels APIs available since macOS 26.0.
-// Newer capabilities (image attachments, token counting, context size) live in
-// apple-foundation-models-helper-27.swift, which requires the macOS 27 SDK.
+// Apple Foundation Models vision helper — protocol v2, macOS 27 SDK only.
+// Handles respond calls that carry image attachments via Attachment(imageURL:).
+// This file intentionally stays separate: builds of macOS 27 whose
+// FoundationModels dylib predates the vision API crash at launch when these
+// symbols are referenced, so the service probes this helper independently and
+// only reports image support when it launches cleanly.
 //
 // Input:  one JSON object on stdin.
 //   { "command": "respond", "prompt": "...", "instructions": "...",
-//     "useCase": "general|contentTagging",
+//     "images": ["/abs/path.png"],
 //     "options": { "temperature": 0.2, "maximumResponseTokens": 512, "sampling": "greedy" },
 //     "stream": true }
 //   { "command": "capabilities" }
@@ -21,7 +23,7 @@ struct HelperInput: Decodable {
   let command: String?
   let prompt: String?
   let instructions: String?
-  let useCase: String?
+  let images: [String]?
   let options: GenerationOptionsInput?
   let stream: Bool?
 }
@@ -67,7 +69,9 @@ struct FeatureFlags: Encodable {
 func emit<T: Encodable>(_ value: T) {
   let encoder = JSONEncoder()
   guard let data = try? encoder.encode(value), let text = String(data: data, encoding: .utf8) else {
-    print("{\"type\":\"final\",\"ok\":false,\"unavailable\":false,\"error\":\"Failed to encode helper output\"}")
+    print(
+      "{\"type\":\"final\",\"ok\":false,\"unavailable\":false,\"error\":\"Failed to encode helper output\"}"
+    )
     return
   }
   print(text)
@@ -85,16 +89,6 @@ func readInput() throws -> HelperInput {
 
 #if canImport(FoundationModels)
 import FoundationModels
-
-@available(macOS 26.0, *)
-func resolveUseCase(_ useCase: String?) -> SystemLanguageModel {
-  switch useCase {
-  case "contentTagging", "content-tagging":
-    return SystemLanguageModel(useCase: .contentTagging)
-  default:
-    return SystemLanguageModel.default
-  }
-}
 
 @available(macOS 26.0, *)
 func availabilityReason(_ model: SystemLanguageModel) -> String {
@@ -115,7 +109,7 @@ func availabilityReason(_ model: SystemLanguageModel) -> String {
   }
 }
 
-@available(macOS 26.0, *)
+@available(macOS 27.0, *)
 func emitCapabilities() {
   let model = SystemLanguageModel.default
   let reason = availabilityReason(model)
@@ -127,13 +121,13 @@ func emitCapabilities() {
       features: FeatureFlags(
         streaming: true,
         instructions: true,
-        images: false,
+        images: true,
         tokenCounting: false,
         contextSize: false,
-        useCases: true,
+        useCases: false,
         structuredOutput: false
       ),
-      implementation: "swift-helper-v2"
+      implementation: "swift-helper-vision"
     )
   )
 }
@@ -150,21 +144,22 @@ func resolveGenerationOptions(_ input: GenerationOptionsInput?) -> GenerationOpt
   )
 }
 
-@available(macOS 26.0, *)
+@available(macOS 27.0, *)
 func runFoundationModel(input: HelperInput) async {
-  let model = resolveUseCase(input.useCase)
+  let model = SystemLanguageModel.default
   let reason = availabilityReason(model)
   guard reason == "available" else {
     emitFinal(
       ok: false,
       unavailable: true,
-      error:
-        "Apple Foundation Models are not available on this Mac (\(reason))."
+      error: "Apple Foundation Models are not available on this Mac (\(reason))."
     )
     return
   }
 
-  guard let prompt = input.prompt, !prompt.isEmpty else {
+  let imagePaths = (input.images ?? []).filter { !$0.isEmpty }
+  let promptText = input.prompt ?? ""
+  guard !promptText.isEmpty || !imagePaths.isEmpty else {
     emitFinal(ok: false, error: "Missing prompt")
     return
   }
@@ -175,6 +170,15 @@ func runFoundationModel(input: HelperInput) async {
       instructions: input.instructions ?? ""
     )
     let options = resolveGenerationOptions(input.options)
+    let prompt = Prompt {
+      if !promptText.isEmpty {
+        promptText
+      }
+      for (index, path) in imagePaths.enumerated() {
+        Attachment(imageURL: URL(fileURLWithPath: path))
+          .label("image-\(index)")
+      }
+    }
 
     if input.stream == true {
       var emitted = ""
@@ -202,7 +206,7 @@ do {
   let input = try readInput()
 
   #if canImport(FoundationModels)
-  if #available(macOS 26.0, *) {
+  if #available(macOS 27.0, *) {
     if input.command == "capabilities" {
       emitCapabilities()
     } else {
@@ -217,7 +221,7 @@ do {
     emitFinal(
       ok: false,
       unavailable: true,
-      error: "Apple Foundation Models require macOS 26 or later."
+      error: "Image attachments require macOS 27 or later."
     )
   }
   #else

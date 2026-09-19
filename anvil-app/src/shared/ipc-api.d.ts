@@ -125,6 +125,7 @@ import type {
   WorkspacePreferences,
   WorkspaceWithRepos,
   WorkspaceSummary,
+  WorkspaceActivitySummary,
   Persona,
   RepoInfo,
   RepoMapRefreshMode,
@@ -383,6 +384,7 @@ export interface AnvilAPI {
         activeRepoId?: string | null;
         settled?: boolean;
         viewed?: boolean;
+        titleLocked?: boolean;
       },
     ) => Promise<ChatThread | null>;
     deleteThread: (threadId: string) => Promise<void>;
@@ -878,6 +880,7 @@ export interface AnvilAPI {
 
   workspace: {
     list: () => Promise<WorkspaceSummary[]>;
+    activityFeed: () => Promise<WorkspaceActivitySummary[]>;
     get: (id: string) => Promise<WorkspaceWithRepos>;
     getPreferences: (id: string) => Promise<WorkspacePreferences | null>;
     create: (opts: WorkspaceCreateOptions) => Promise<Workspace>;

@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 86;
+export const SCHEMA_VERSION = 87;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -98,7 +98,9 @@ CREATE TABLE IF NOT EXISTS chat_threads (
   attention_updated_at TEXT,
   active_turn_started_at TEXT,
   last_viewed_at TEXT,
-  settled_at TEXT
+  settled_at TEXT,
+  summary TEXT,
+  title_locked INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS chat_sessions (
@@ -338,6 +340,12 @@ CREATE TABLE IF NOT EXISTS settings (
   local_llm_provider TEXT DEFAULT 'apple',
   local_llm_endpoint TEXT,
   local_llm_model TEXT,
+  thread_assist_provider TEXT DEFAULT 'off',
+  thread_assist_model TEXT,
+  ollama_endpoint TEXT,
+  ollama_model TEXT,
+  lm_studio_endpoint TEXT,
+  lm_studio_model TEXT,
   ado_org_url TEXT,
   ado_project TEXT,
   ado_team TEXT,
@@ -3205,5 +3213,15 @@ CREATE TABLE IF NOT EXISTS mesh_dashboard_grants (
 -- placement without querying a terminal job again.
 ALTER TABLE mesh_node_dispatches ADD COLUMN placement_explanation TEXT;
 ALTER TABLE mesh_node_dispatches ADD COLUMN resolved_enrollment_id TEXT;
+`,
+  87: `
+ALTER TABLE settings ADD COLUMN thread_assist_provider TEXT DEFAULT 'off';
+ALTER TABLE settings ADD COLUMN ollama_endpoint TEXT;
+ALTER TABLE settings ADD COLUMN ollama_model TEXT;
+ALTER TABLE settings ADD COLUMN lm_studio_endpoint TEXT;
+ALTER TABLE settings ADD COLUMN lm_studio_model TEXT;
+ALTER TABLE chat_threads ADD COLUMN summary TEXT;
+ALTER TABLE chat_threads ADD COLUMN title_locked INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE settings ADD COLUMN thread_assist_model TEXT;
 `,
 };

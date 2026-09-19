@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { BrowserWindow } from 'electron';
 import type { AnvilAPI } from '../../shared/ipc-api.js';
 import type {
   ChatThread,
@@ -131,6 +132,35 @@ function persistLink(
       .get(threadId, input.repoId, input.provider, input.pullRequestId) as LinkRow,
   );
 }
+/**
+ * A merged or closed pull request means the thread's work shipped — settle the
+ * thread and let the renderer move it out of the active list.
+ */
+async function settleThreadForFinishedPullRequest(
+  threadId: string,
+  pullRequest: CodeReviewPullRequest,
+): Promise<void> {
+  if (pullRequest.state === 'open') return;
+  try {
+    const { getChatThread, updateChatThread } = await import('./chat-persistence.service.js');
+    const thread = getChatThread(threadId);
+    if (!thread || thread.settledAt) return;
+    const updated = updateChatThread(threadId, { settled: true });
+    if (!updated) return;
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send('chat:event', {
+        type: 'thread_metadata',
+        appThreadId: threadId,
+        threadTitle: updated.title,
+        threadSummary: updated.summary,
+        threadSettledAt: updated.settledAt,
+      });
+    }
+  } catch (error) {
+    console.warn('[ThreadPullRequest] Could not settle thread for finished PR:', error);
+  }
+}
+
 export async function linkThreadPullRequest(
   threadId: string,
   input: ChatThreadPullRequestInput,
@@ -142,7 +172,9 @@ export async function linkThreadPullRequest(
   const latestThread = threadContext(threadId);
   if (latestThread.workspaceId !== thread.workspaceId)
     throw new Error('Thread workspace changed while linking. Try again.');
-  return persistLink(threadId, input, remote_url, pullRequest);
+  const link = persistLink(threadId, input, remote_url, pullRequest);
+  void settleThreadForFinishedPullRequest(threadId, pullRequest);
+  return link;
 }
 export function listThreadPullRequestLinks(threadId: string): ChatThreadPullRequestLink[] {
   return (
@@ -200,7 +232,9 @@ export async function refreshThreadPullRequest(
     throw new Error('The pull request was unlinked while refreshing.');
   if (threadContext(threadId).workspaceId !== thread.workspaceId)
     throw new Error('Thread workspace changed while refreshing. Try again.');
-  return persistLink(threadId, input, link.remote_url, pullRequest);
+  const refreshed = persistLink(threadId, input, link.remote_url, pullRequest);
+  void settleThreadForFinishedPullRequest(threadId, pullRequest);
+  return refreshed;
 }
 export async function createThreadWithPullRequest(
   input: Parameters<AnvilAPI['chat']['createThread']>[0],
@@ -214,7 +248,7 @@ export async function createThreadWithPullRequest(
     input.pullRequest.repoId,
   );
   const pullRequest = await observe(remote_url, input.pullRequest);
-  return getDb().transaction(() => {
+  const created = getDb().transaction(() => {
     // Revalidate membership and remote after the asynchronous provider lookup.
     if (
       repoForThread(input.workspaceId, input.repoIds ?? [], input.pullRequest!.repoId)
@@ -225,4 +259,39 @@ export async function createThreadWithPullRequest(
     const link = persistLink(thread.id, input.pullRequest!, remote_url, pullRequest);
     return { ...thread, pullRequestLinks: [link] };
   })();
+  if (created.pullRequestLinks?.[0])
+    void settleThreadForFinishedPullRequest(created.id, created.pullRequestLinks[0].pullRequest);
+  return created;
+}
+
+const PR_WATCH_INTERVAL_MS = 5 * 60_000;
+
+/**
+ * Periodically refresh linked pull requests on unsettled threads so merges and
+ * closes settle the thread without waiting for a manual refresh. Only links
+ * whose last observed state is still open are re-queried.
+ */
+export function startThreadPullRequestWatcher(
+  intervalMs = PR_WATCH_INTERVAL_MS,
+): () => void {
+  const tick = async () => {
+    const rows = getDb()
+      .prepare(
+        `SELECT l.id, l.thread_id FROM chat_thread_pull_requests l
+         JOIN chat_threads t ON t.id = l.thread_id
+         WHERE t.settled_at IS NULL AND l.pull_request_json LIKE '%"state":"open"%'`,
+      )
+      .all() as Array<{ id: string; thread_id: string }>;
+    for (const row of rows) {
+      try {
+        await refreshThreadPullRequest(row.thread_id, row.id);
+      } catch (error) {
+        console.warn('[ThreadPullRequest] Watcher refresh failed:', error);
+      }
+    }
+  };
+  const timer = setInterval(() => void tick(), intervalMs);
+  timer.unref?.();
+  void tick();
+  return () => clearInterval(timer);
 }
