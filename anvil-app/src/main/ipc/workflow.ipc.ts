@@ -6,6 +6,7 @@ import {
   resumeWorkflowRun,
   decideWorkflowNode,
   inspectWorkflowNode,
+  convergeWorkflowRun,
   retryWorkflowNode,
   recoverInterruptedWorkflowRuns,
   cancelWorkflowRun,
@@ -32,6 +33,9 @@ export function registerWorkflowHandlers(): void {
   );
   ipcMain.handle('workflow:inspect-node', (_event, id: string, nodeId: string) =>
     inspectWorkflowNode(id, nodeId),
+  );
+  ipcMain.handle('workflow:converge-run', (_event, id: string, verification?: string[]) =>
+    convergeWorkflowRun(id, verification),
   );
   ipcMain.handle('workflow:list-templates', () => listWorkflowTemplates());
   ipcMain.handle('workflow:draft-template', (_event, request: string) =>

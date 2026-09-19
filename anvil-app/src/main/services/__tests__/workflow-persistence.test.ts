@@ -10,8 +10,10 @@ db.exec(SCHEMA_SQL);
 vi.mock('../../db/database.js', () => ({ getDb: () => db }));
 vi.mock('../notification.service.js', () => ({ notifyWorkflowDecision: vi.fn() }));
 import { notifyWorkflowDecision } from '../notification.service.js';
+import { integrateResults } from '../mesh-integration.service.js';
 
 vi.mock('../automation.service.js', () => ({ triggerWatchtowerEvent: vi.fn() }));
+vi.mock('../mesh-integration.service.js', () => ({ integrateResults: vi.fn() }));
 vi.mock('../persona.service.js', () => ({
   getPersonaById: (id: string) => (id === 'coder' ? { id } : null),
   buildSystemPrompt: () => '',
@@ -30,6 +32,7 @@ vi.mock('../chat-persistence.service.js', () => ({
 }));
 import {
   cancelWorkflowRun,
+  convergeWorkflowRun,
   decideWorkflowNode,
   getWorkflowRun,
   getWorkflowTemplate,
@@ -300,6 +303,27 @@ describe('workflow persistence and commands', () => {
     expect(getWorkflowRun(current.id)?.nodeRuns[0].status).toBe('failed');
     retryWorkflowNode(current.id, 'gate');
     expect(getWorkflowRun(current.id)?.nodeRuns[0].remote).toBeUndefined();
+  });
+  it('converges completed remote dispatches in stable graph order', async () => {
+    const current = await pausedRun();
+    current.status = 'paused';
+    current.nodes[0].kind = 'agent';
+    current.nodeRuns[0].status = 'completed';
+    current.nodeRuns[0].remote = { dispatchId: 'dispatch-converge', state: 'completed' };
+    store(current);
+    vi.mocked(integrateResults).mockResolvedValueOnce({
+      state: 'integrated',
+      repositories: [],
+      verification: [],
+    });
+    const converged = await convergeWorkflowRun(current.id);
+    expect(converged.convergence).toMatchObject({
+      integrationId: `workflow-convergence:${current.id}`,
+      state: 'integrated',
+    });
+    expect(integrateResults).toHaveBeenCalledWith(
+      expect.objectContaining({ dispatchIds: ['dispatch-converge'] }),
+    );
   });
   it('does not reclaim a run from a live owner', async () => {
     const current = await pausedRun();

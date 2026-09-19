@@ -22,6 +22,7 @@ import type {
   WorkflowTemplate,
   WorkflowTemplateInput,
   WorkflowRunInputManifest,
+  WorkflowConvergence,
 } from '../../shared/types.js';
 import { resolveCodexReasoningEffort } from '../../shared/codex-models.js';
 import { SYNC_ENTITY_WORKFLOW_TEMPLATE } from '../../shared/sync-mesh.js';
@@ -59,6 +60,7 @@ import {
   requestWorkflowEnvironment,
 } from './mesh-dispatch.service.js';
 import type { ExecutionManifest, RequestedTarget } from '../../../cloud/contract/jobs.js';
+import { integrateResults } from './mesh-integration.service.js';
 
 interface WorkflowTemplateRow {
   id: string;
@@ -213,6 +215,7 @@ function mapRun(row: WorkflowRunRow): WorkflowRun {
     runtimeOwnerPid: graph.runtimeOwnerPid,
     executionPaths: graph.executionPaths,
     inputManifest: graph.inputManifest,
+    convergence: graph.convergence,
     templateId: row.template_id,
     templateName: row.template_name,
     workspaceId: row.workspace_id,
@@ -459,6 +462,7 @@ function persistRun(run: WorkflowRun): void {
         runtimeOwnerPid: run.runtimeOwnerPid,
         executionPaths: run.executionPaths,
         inputManifest: run.inputManifest,
+        convergence: run.convergence,
       }),
       run.status,
       JSON.stringify(run.nodeRuns),
@@ -1524,6 +1528,81 @@ export function inspectWorkflowNode(runId: string, nodeId: string): WorkflowRun 
     'Unknown remote outcome inspected. Queue a retry only after reviewing the dispatch.';
   state.completedAt = new Date().toISOString();
   recordWorkflowEvent(run, 'decision', state.error, nodeId);
+  persistRun(run);
+  return run;
+}
+
+function remoteDispatchOrder(run: WorkflowRun): string[] {
+  const byId = new Map(run.nodes.map((node) => [node.id, node]));
+  const remaining = new Set(run.nodes.map((node) => node.id));
+  const ordered: string[] = [];
+  while (remaining.size > 0) {
+    const next = run.nodes.find(
+      (node) =>
+        remaining.has(node.id) &&
+        run.edges
+          .filter((edge) => edge.target === node.id)
+          .every((edge) => !remaining.has(edge.source)),
+    );
+    if (next === undefined) throw new Error('Workflow graph contains a cycle.');
+    remaining.delete(next.id);
+    const state = run.nodeRuns.find((candidate) => candidate.nodeId === next.id);
+    if (state?.remote?.dispatchId !== undefined) ordered.push(state.remote.dispatchId);
+  }
+  // Keep the map in this helper so malformed persisted graphs fail closed
+  // rather than silently accepting an unknown edge endpoint.
+  for (const edge of run.edges)
+    if (!byId.has(edge.source) || !byId.has(edge.target))
+      throw new Error('Workflow graph contains an unknown edge endpoint.');
+  return [...new Set(ordered)];
+}
+
+export async function convergeWorkflowRun(
+  runId: string,
+  verification: string[] = [],
+): Promise<WorkflowRun> {
+  const run = mutableRun(runId);
+  if (activeRuns.has(runId)) throw new Error('Wait for workflow execution to finish first.');
+  if (run.convergence !== undefined) return run;
+  const dispatchIds = remoteDispatchOrder(run);
+  if (dispatchIds.length === 0)
+    throw new Error('This workflow has no remote dispatches to converge.');
+  if (run.nodeRuns.some((state) => state.status !== 'completed'))
+    throw new Error('All workflow steps must complete before convergence.');
+  const integrationId = `workflow-convergence:${run.id}`;
+  const result = await integrateResults({
+    integrationId,
+    runId: run.id,
+    workspaceId: run.workspaceId,
+    dispatchIds,
+    verification,
+  });
+  const convergence: WorkflowConvergence = {
+    integrationId,
+    state: result.state,
+    repositories: result.repositories.map((repository) => ({
+      repositoryId: repository.repositoryId,
+      baseCommit: repository.baseCommit,
+      integratedCommit: repository.integratedCommit,
+      conflicts: repository.conflicts.map((conflict) => ({
+        dispatchId: conflict.dispatchId,
+        ref: conflict.ref,
+        conflictedFiles: conflict.conflictedFiles,
+      })),
+    })),
+    verification: result.verification,
+  };
+  run.convergence = convergence;
+  if (result.state === 'integrated') {
+    recordWorkflowEvent(run, 'completed', 'Mesh results converged in an integration worktree.');
+  } else {
+    run.status = 'paused';
+    run.error =
+      result.state === 'conflicted'
+        ? 'Mesh convergence found conflicts. Inspect the integration worktree before applying it.'
+        : 'Mesh convergence verification needs attention. Inspect the retained integration worktree.';
+    recordWorkflowEvent(run, 'decision', run.error);
+  }
   persistRun(run);
   return run;
 }

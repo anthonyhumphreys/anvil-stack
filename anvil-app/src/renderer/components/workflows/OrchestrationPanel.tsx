@@ -591,6 +591,17 @@ export function RunInspector({
           <p className="mt-2 text-xs text-text-secondary">
             {state.status} · depth {node.depth ?? 0} · {state.attempts?.length ?? 0} attempts
           </p>
+          {!run.convergence &&
+            run.nodeRuns.some((candidate) => candidate.remote?.dispatchId !== undefined) &&
+            run.nodeRuns.every((candidate) => candidate.status === 'completed') && (
+              <button
+                disabled={busy}
+                className="mt-3 rounded-lg bg-accent px-3 py-2 text-xs text-bg-primary disabled:opacity-40"
+                onClick={() => onCommand(() => window.anvil.workflow.convergeRun(run.id))}
+              >
+                Converge Mesh results
+              </button>
+            )}
           {state.remote && (
             <p className="mt-1 break-words text-xs text-text-tertiary">
               Dispatch {state.remote.dispatchId}
@@ -720,6 +731,29 @@ export function RunInspector({
         <p className="text-xs text-text-secondary">
           Select a graph node to inspect its attempts, handoff, or human decision.
         </p>
+      )}
+      {run.convergence && (
+        <details
+          className="mt-4 text-xs text-text-secondary"
+          open={run.convergence.state !== 'integrated'}
+        >
+          <summary className="cursor-pointer">Mesh convergence · {run.convergence.state}</summary>
+          <p className="mt-2 break-words text-text-tertiary">
+            Integration {run.convergence.integrationId} retained its worktrees for inspection.
+          </p>
+          {run.convergence.repositories.flatMap((repository) => repository.conflicts).length >
+            0 && (
+            <ul className="mt-2 list-disc space-y-1 pl-4 text-error">
+              {run.convergence.repositories
+                .flatMap((repository) => repository.conflicts)
+                .map((conflict) => (
+                  <li key={`${conflict.dispatchId}:${conflict.ref}`}>
+                    {conflict.dispatchId}: {conflict.conflictedFiles.join(', ') || 'conflict'}
+                  </li>
+                ))}
+            </ul>
+          )}
+        </details>
       )}
       <details className="mt-4 text-xs text-text-secondary">
         <summary className="cursor-pointer">

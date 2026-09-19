@@ -427,6 +427,7 @@ export interface AnvilAPI {
     resumeRun: (runId: string) => Promise<WorkflowRun>;
     retryNode: (runId: string, nodeId: string) => Promise<WorkflowRun>;
     inspectNode: (runId: string, nodeId: string) => Promise<WorkflowRun>;
+    convergeRun: (runId: string, verification?: string[]) => Promise<WorkflowRun>;
     decideNode: (
       runId: string,
       nodeId: string,

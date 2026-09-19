@@ -809,6 +809,24 @@ export interface WorkflowRunInputManifest {
   trigger?: { kind: string; headSha?: string };
 }
 
+export interface WorkflowConvergence {
+  integrationId: string;
+  state: 'integrated' | 'conflicted' | 'failed';
+  repositories: Array<{
+    repositoryId: string;
+    baseCommit: string;
+    integratedCommit: string | null;
+    conflicts: Array<{ dispatchId: string; ref: string; conflictedFiles: string[] }>;
+  }>;
+  verification: Array<{
+    repositoryId: string;
+    command: string;
+    exitCode: number | null;
+    timedOut: boolean;
+    durationMs: number;
+  }>;
+}
+
 export interface WorkflowRun {
   workItemRef?: WorkItemReference;
   runtimeOwnerPid?: number;
@@ -833,6 +851,7 @@ export interface WorkflowRun {
   completedAt?: string;
   error?: string;
   inputManifest?: WorkflowRunInputManifest;
+  convergence?: WorkflowConvergence;
 }
 
 export interface ChatSendOptions {
