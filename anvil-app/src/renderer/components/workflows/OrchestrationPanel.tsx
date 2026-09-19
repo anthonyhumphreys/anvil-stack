@@ -11,6 +11,7 @@ import type {
   WorkflowNode,
   WorkflowOrchestration,
   WorkflowRun,
+  WorkflowTargetPolicy,
 } from '../../../shared/types';
 import { DEFAULT_CODEX_MODEL, getCodexModelReasoningOptions } from '../../../shared/codex-models';
 import { isAcpAgentProvider } from '../../../shared/agent-providers';
@@ -434,6 +435,129 @@ export function TeamSettings({
               )}
             </div>
           )}
+          <div className="space-y-2 border-t border-border pt-4">
+            <label className="block text-xs font-semibold text-text-secondary">
+              Execution target
+              <select
+                className={`${fieldClass} mt-2`}
+                value={node.target?.kind ?? 'local'}
+                onChange={(event) => {
+                  const kind = event.target.value as WorkflowTargetPolicy['kind'];
+                  onChange(
+                    kind === 'local'
+                      ? { target: undefined }
+                      : kind === 'device'
+                        ? { target: { kind, enrollmentId: '' } }
+                        : kind === 'auto'
+                          ? { target: { kind, requirements: { capabilities: [] } } }
+                          : kind === 'existing-environment'
+                            ? { target: { kind, environmentId: '' } }
+                            : {
+                                target: {
+                                  kind,
+                                  provider: 'anvil-managed',
+                                  ttlSeconds: 1800,
+                                },
+                              },
+                  );
+                }}
+              >
+                <option value="local">This device</option>
+                <option value="device">Enrolled device</option>
+                <option value="auto">Automatic placement</option>
+                <option value="existing-environment">Existing cloud environment</option>
+                <option value="provisioned-environment">Provision a cloud environment</option>
+              </select>
+            </label>
+            {node.target?.kind === 'device' && (
+              <input
+                className={fieldClass}
+                placeholder="Enrollment id"
+                aria-label="Device enrollment id"
+                value={node.target.enrollmentId}
+                onChange={(event) =>
+                  onChange({ target: { ...node.target!, enrollmentId: event.target.value } })
+                }
+              />
+            )}
+            {node.target?.kind === 'auto' && (
+              <input
+                className={fieldClass}
+                placeholder="Capabilities, comma separated"
+                aria-label="Automatic placement capabilities"
+                value={node.target.requirements.capabilities.join(', ')}
+                onChange={(event) =>
+                  onChange({
+                    target: {
+                      ...node.target!,
+                      requirements: {
+                        ...node.target!.requirements,
+                        capabilities: event.target.value
+                          .split(',')
+                          .map((value) => value.trim())
+                          .filter(Boolean),
+                      },
+                    },
+                  })
+                }
+              />
+            )}
+            {node.target?.kind === 'existing-environment' && (
+              <input
+                className={fieldClass}
+                placeholder="Environment id"
+                aria-label="Existing environment id"
+                value={node.target.environmentId}
+                onChange={(event) =>
+                  onChange({ target: { ...node.target!, environmentId: event.target.value } })
+                }
+              />
+            )}
+            {node.target?.kind === 'provisioned-environment' && (
+              <div className="grid grid-cols-2 gap-2">
+                <select
+                  className={fieldClass}
+                  aria-label="Environment provider"
+                  value={node.target.provider}
+                  onChange={(event) =>
+                    onChange({
+                      target: {
+                        ...node.target!,
+                        provider: event.target.value as Extract<
+                          WorkflowTargetPolicy,
+                          { kind: 'provisioned-environment' }
+                        >['provider'],
+                      },
+                    })
+                  }
+                >
+                  <option value="anvil-managed">Anvil managed</option>
+                  <option value="aws-lambda-microvm">AWS microVM</option>
+                  <option value="cloudflare-sandbox">Cloudflare Sandbox</option>
+                  <option value="vercel-sandbox">Vercel Sandbox</option>
+                </select>
+                <input
+                  className={fieldClass}
+                  type="number"
+                  min={60}
+                  step={60}
+                  aria-label="Environment lifetime in seconds"
+                  value={node.target.ttlSeconds}
+                  onChange={(event) =>
+                    onChange({
+                      target: {
+                        ...node.target!,
+                        ttlSeconds: Number(event.target.value),
+                      },
+                    })
+                  }
+                />
+              </div>
+            )}
+            <p className="text-xs leading-relaxed text-text-tertiary">
+              Remote steps use the run&apos;s frozen repository pins.
+            </p>
+          </div>
         </>
       )}
     </div>
@@ -467,7 +591,16 @@ export function RunInspector({
           <p className="mt-2 text-xs text-text-secondary">
             {state.status} · depth {node.depth ?? 0} · {state.attempts?.length ?? 0} attempts
           </p>
-          {state.status === 'waiting' && (
+          {state.remote && (
+            <p className="mt-1 break-words text-xs text-text-tertiary">
+              Dispatch {state.remote.dispatchId}
+              {state.remote.jobId ? ` · job ${state.remote.jobId}` : ''}
+              {state.remote.resolvedEnrollmentId
+                ? ` · worker ${state.remote.resolvedEnrollmentId}`
+                : ''}
+            </p>
+          )}
+          {state.status === 'waiting' && node.kind === 'human' && (
             <div className="mt-3 space-y-2">
               <p className="text-xs leading-relaxed text-text-secondary">{node.prompt}</p>
               <textarea
@@ -501,6 +634,35 @@ export function RunInspector({
               <p className="text-xs text-text-tertiary">
                 Resume the run after resolving its decisions.
               </p>
+            </div>
+          )}
+          {state.status === 'waiting' && node.kind !== 'human' && state.remote && (
+            <div className="mt-3 space-y-2 rounded-lg border border-warning/30 bg-warning/5 p-3">
+              <p className="text-xs text-text-secondary">
+                Remote execution is waiting on {state.remote.state.replaceAll('-', ' ')}.
+              </p>
+              {state.remote.placementExplanation && (
+                <p className="text-xs text-text-tertiary">{state.remote.placementExplanation}</p>
+              )}
+              {state.remote.state === 'unknown-outcome' ? (
+                <button
+                  disabled={busy}
+                  className="rounded-lg bg-accent px-3 py-2 text-xs text-bg-primary disabled:opacity-40"
+                  onClick={() =>
+                    onCommand(() => window.anvil.workflow.inspectNode(run.id, node.id))
+                  }
+                >
+                  Mark inspected
+                </button>
+              ) : (
+                <button
+                  disabled={busy}
+                  className="rounded-lg bg-accent px-3 py-2 text-xs text-bg-primary disabled:opacity-40"
+                  onClick={() => onCommand(() => window.anvil.workflow.resumeRun(run.id))}
+                >
+                  Check again
+                </button>
+              )}
             </div>
           )}
           {['failed', 'interrupted'].includes(state.status) && node.kind !== 'human' && (

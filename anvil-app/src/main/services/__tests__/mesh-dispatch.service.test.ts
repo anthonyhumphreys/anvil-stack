@@ -34,8 +34,7 @@ const rpcCalls: RpcCall[] = [];
 let rpcHandler: (operation: string, params: unknown) => unknown = () => ({});
 
 vi.mock('../sync-backend-client.service.js', async (importOriginal) => {
-  const original =
-    await importOriginal<typeof import('../sync-backend-client.service.js')>();
+  const original = await importOriginal<typeof import('../sync-backend-client.service.js')>();
   return {
     ...original,
     rpc: async (
@@ -64,6 +63,7 @@ import {
 } from '../mesh-dispatch.service';
 import { configureMeshWorkerContext, resetMeshWorkerForTests } from '../mesh-worker.service';
 import type { SyncScope } from '../../../shared/sync-mesh';
+import { mintTaskKey, sealTaskResult, storeTaskKey } from '../sync-keyring.service';
 
 const SCOPE: SyncScope = { backendId: 'backend-1', accountId: 'account-1', datasetEpoch: '1' };
 const CTX = { apiUrl: 'https://backend.test/v1', accessToken: 'tok', enrollmentId: 'enr-1' };
@@ -89,7 +89,17 @@ function seedDispatchFixture(suffix: string): {
 } {
   const sourceRepo = mkdtempSync(join(tmpdir(), `anvil-disp-src-${suffix}-`));
   git(sourceRepo, 'init');
-  git(sourceRepo, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '--allow-empty', '-m', 'base');
+  git(
+    sourceRepo,
+    '-c',
+    'user.email=t@t',
+    '-c',
+    'user.name=t',
+    'commit',
+    '--allow-empty',
+    '-m',
+    'base',
+  );
   const base = git(sourceRepo, 'rev-parse', 'HEAD');
   const parentRepo = mkdtempSync(join(tmpdir(), `anvil-disp-par-${suffix}-`));
   execFileSync('git', ['clone', sourceRepo, parentRepo]);
@@ -133,8 +143,7 @@ beforeEach(() => {
 
 describe('dispatchWorkflowNode', () => {
   it('persists the dispatch and creates the job with a stable requestId', async () => {
-    const { workspaceId, portableId, parentRepo, sourceRepo, base } =
-      seedDispatchFixture('create');
+    const { workspaceId, portableId, parentRepo, sourceRepo, base } = seedDispatchFixture('create');
     try {
       rpcHandler = (op, params) =>
         op === 'job.create'
@@ -157,9 +166,7 @@ describe('dispatchWorkflowNode', () => {
       expect(dispatch.jobId).toBe('job-1');
       expect(dispatch.state).toBe('queued');
       const create = rpcCalls.find((c) => c.operation === 'job.create');
-      expect((create!.params as { requestId: string }).requestId).toBe(
-        'node-dispatch/disp-1',
-      );
+      expect((create!.params as { requestId: string }).requestId).toBe('node-dispatch/disp-1');
       expect(
         (create!.params as { inputManifest: { repositories: unknown[] } }).inputManifest
           .repositories,
@@ -167,13 +174,12 @@ describe('dispatchWorkflowNode', () => {
       // Disclosure: the coordinator-visible manifest carries only
       // allowlisted routing keys — prompt/dispatch context rides the
       // opaque sealedInputs envelope instead.
-      const inputs = (
-        create!.params as { inputManifest: { inputs: Record<string, unknown> } }
-      ).inputManifest.inputs;
+      const inputs = (create!.params as { inputManifest: { inputs: Record<string, unknown> } })
+        .inputManifest.inputs;
       expect(Object.keys(inputs)).toEqual(['workspaceId']);
-      expect(
-        (create!.params as { sealedInputs?: { enc: string } }).sealedInputs?.enc,
-      ).toBe('aes-256-gcm');
+      expect((create!.params as { sealedInputs?: { enc: string } }).sealedInputs?.enc).toBe(
+        'aes-256-gcm',
+      );
     } finally {
       cleanup(parentRepo, sourceRepo);
     }
@@ -201,12 +207,84 @@ describe('dispatchWorkflowNode', () => {
         requirements: { capabilities: ['gpu'], memoryMb: 65536 },
       });
       const create = rpcCalls.find((c) => c.operation === 'job.create');
-      expect(
-        (create!.params as { requestedTarget: unknown }).requestedTarget,
-      ).toEqual({
+      expect((create!.params as { requestedTarget: unknown }).requestedTarget).toEqual({
         kind: 'auto',
         requirements: { capabilities: ['gpu'], memoryMb: 65536 },
       });
+    } finally {
+      cleanup(parentRepo, sourceRepo);
+    }
+  });
+
+  it('decrypts sealed attempt results before persisting the workflow handoff', async () => {
+    const { workspaceId, parentRepo, sourceRepo } = seedDispatchFixture('sealed-result');
+    try {
+      rpcHandler = (op, params) => {
+        if (op === 'job.create') {
+          return {
+            job: {
+              id: 'job-1',
+              state: 'queued',
+              keyDelivery: 'delivered',
+              inputManifest: (params as { inputManifest: unknown }).inputManifest,
+            },
+          };
+        }
+        if (op === 'job.get') {
+          const key = taskKeyForTest;
+          return {
+            job: { id: 'job-1', state: 'completed', keyDelivery: 'delivered' },
+            attempts: [
+              {
+                id: 'attempt-1',
+                state: 'completed',
+                sealedResult: sealTaskResult(SCOPE, 'job-1', 'attempt-1', key, {
+                  providerThreadId: 'thread-1',
+                  resultManifest: {
+                    schemaVersion: 1,
+                    jobId: 'job-1',
+                    attemptId: 'attempt-1',
+                    repositories: [],
+                    verification: [
+                      {
+                        repositoryId: 'p-sealed-result',
+                        command: 'pnpm test',
+                        exitCode: 0,
+                        timedOut: false,
+                        durationMs: 12,
+                      },
+                    ],
+                    artifacts: [],
+                    provenance: {
+                      workerEnrollmentId: 'enr-2',
+                      workerIncarnation: 'inc-1',
+                      cliVersion: null,
+                      startedAt: '2026-09-19T00:00:00.000Z',
+                      completedAt: '2026-09-19T00:00:01.000Z',
+                    },
+                  },
+                }),
+              },
+            ],
+          };
+        }
+        return {};
+      };
+      configureMeshDispatchContext(() => ({ ...CTX, scope: SCOPE }));
+      const taskKeyForTest = mintTaskKey();
+      storeTaskKey(SCOPE, 'job-1', taskKeyForTest);
+      const created = await dispatchWorkflowNode({
+        dispatchId: 'disp-sealed-result',
+        runId: 'run-1',
+        nodeId: 'node-1',
+        workspaceId,
+        prompt: 'do node work',
+      });
+      expect(created.state).toBe('queued');
+      const refreshed = await refreshDispatch('disp-sealed-result');
+      expect(refreshed.state).toBe('completed');
+      expect(refreshed.output?.result?.providerThreadId).toBe('thread-1');
+      expect(refreshed.output?.resultManifest.verification[0]?.exitCode).toBe(0);
     } finally {
       cleanup(parentRepo, sourceRepo);
     }
@@ -241,9 +319,7 @@ describe('dispatchWorkflowNode', () => {
         prompt: 'do node work',
       });
       expect(second.jobId).toBe(first.jobId);
-      expect(rpcCalls.filter((c) => c.operation === 'job.create').length).toBe(
-        createsAfterFirst,
-      );
+      expect(rpcCalls.filter((c) => c.operation === 'job.create').length).toBe(createsAfterFirst);
     } finally {
       cleanup(parentRepo, sourceRepo);
     }
@@ -252,8 +328,7 @@ describe('dispatchWorkflowNode', () => {
 
 describe('refreshDispatch result import', () => {
   it('fetches the worker bundle into the local repo as a result ref', async () => {
-    const { workspaceId, portableId, parentRepo, sourceRepo, base } =
-      seedDispatchFixture('import');
+    const { workspaceId, portableId, parentRepo, sourceRepo, base } = seedDispatchFixture('import');
     try {
       // Worker side: a result commit on its attempt branch, thin-bundled
       // against the base the parent provably holds.
@@ -404,9 +479,7 @@ describe('dispatch durability', () => {
       // requestId — the backend re-binds rather than duplicating the job.
       expect(creates).toHaveLength(2);
       for (const create of creates) {
-        expect((create.params as { requestId: string }).requestId).toBe(
-          'node-dispatch/disp-1',
-        );
+        expect((create.params as { requestId: string }).requestId).toBe('node-dispatch/disp-1');
       }
     } finally {
       cleanup(parentRepo, sourceRepo);

@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { resolveCodexReasoningEffort } from '../../shared/codex-models';
-import type { WorkflowNode, WorkflowRun, WorkflowRuntimeEvent } from '../../shared/types';
+import type {
+  WorkflowNode,
+  WorkflowRun,
+  WorkflowRuntimeEvent,
+  WorkflowRemoteExecution,
+} from '../../shared/types';
 import {
   orchestrationConfig,
   parseDelegation,
@@ -15,7 +20,14 @@ export interface WorkflowRuntimeHooks {
     run: WorkflowRun,
     node: WorkflowNode,
     signal: AbortSignal,
-  ) => Promise<{ output: string; sessionId?: string; threadId?: string }>;
+  ) => Promise<{
+    output: string;
+    sessionId?: string;
+    threadId?: string;
+    outcome?: 'completed' | 'waiting' | 'attention';
+    error?: string;
+    remote?: WorkflowRemoteExecution;
+  }>;
   signal: AbortSignal;
 }
 
@@ -165,18 +177,26 @@ export async function runWorkflowRuntime(
       }
       if ((state.attempts?.length ?? 0) >= config.maxAttempts)
         throw new Error('Maximum attempts reached for this step.');
-      const attempt = {
-        id: randomUUID(),
-        startedAt: new Date().toISOString(),
-        status: 'running' as const,
-        provider: node.provider ?? 'codex',
-        model: node.model,
-        reasoningEffort:
-          node.provider === 'cursor'
-            ? node.reasoningEffort
-            : resolveCodexReasoningEffort(node.model, node.reasoningEffort),
-      };
-      (state.attempts ??= []).push(attempt);
+      const priorAttempt = state.attempts?.at(-1);
+      const attempt =
+        (priorAttempt?.status === 'running' || priorAttempt?.status === 'waiting') &&
+        priorAttempt.remote !== undefined &&
+        ['awaiting-key-delivery', 'awaiting-approval', 'queued', 'running'].includes(
+          priorAttempt.remote.state,
+        )
+          ? priorAttempt
+          : {
+              id: randomUUID(),
+              startedAt: new Date().toISOString(),
+              status: 'running' as const,
+              provider: node.provider ?? 'codex',
+              model: node.model,
+              reasoningEffort:
+                node.provider === 'cursor'
+                  ? node.reasoningEffort
+                  : resolveCodexReasoningEffort(node.model, node.reasoningEffort),
+            };
+      if (attempt !== priorAttempt) (state.attempts ??= []).push(attempt);
       state.status = 'running';
       state.startedAt = attempt.startedAt;
       state.completedAt = undefined;
@@ -197,11 +217,28 @@ export async function runWorkflowRuntime(
           state.status = 'cancelled';
           return;
         }
+        if (result.outcome === 'waiting' || result.outcome === 'attention') {
+          Object.assign(current, result, {
+            status: result.outcome,
+            completedAt: undefined,
+          });
+          state.status = 'waiting';
+          state.error = result.error;
+          state.remote = result.remote;
+          recordWorkflowEvent(
+            run,
+            'decision',
+            `${node.name}: ${result.error ?? 'Attention required.'}`,
+            node.id,
+          );
+          return;
+        }
         Object.assign(current, result, {
           status: 'completed',
           completedAt: new Date().toISOString(),
         });
         state.output = result.output;
+        state.remote = result.remote;
         state.sessionId = result.sessionId;
         state.threadId = result.threadId ?? state.threadId;
         const tasks = node.teamStrategy === 'autonomous' ? parseDelegation(result.output) : null;
@@ -272,7 +309,19 @@ export async function runWorkflowRuntime(
       }
       if (run.nodeRuns.some((state) => state.status === 'waiting')) {
         run.status = 'paused';
-        recordWorkflowEvent(run, 'run', 'Waiting for a human decision.');
+        const hasRemoteWait = run.nodeRuns.some(
+          (state) =>
+            state.status === 'waiting' &&
+            state.remote !== undefined &&
+            state.remote.state !== 'unknown-outcome',
+        );
+        recordWorkflowEvent(
+          run,
+          'run',
+          hasRemoteWait
+            ? 'Waiting for remote execution attention.'
+            : 'Waiting for a human decision.',
+        );
       } else if (run.nodeRuns.some((state) => state.status !== 'completed')) {
         run.status = 'failed';
         run.error = 'Some steps failed or remain blocked. Inspect the run before retrying.';

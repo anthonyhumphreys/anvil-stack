@@ -33,6 +33,7 @@ import {
   decideWorkflowNode,
   getWorkflowRun,
   getWorkflowTemplate,
+  inspectWorkflowNode,
   recoverInterruptedWorkflowRuns,
   resumeWorkflowRun,
   retryWorkflowNode,
@@ -85,6 +86,66 @@ function store(run: WorkflowRun) {
 }
 
 describe('workflow persistence and commands', () => {
+  it('persists a frozen input manifest and target policy with the run', async () => {
+    const saved = saveWorkflowTemplate({
+      name: 'Remote package',
+      orchestration: { ...DEFAULT_ORCHESTRATION },
+      nodes: [
+        {
+          id: 'remote',
+          name: 'Remote package',
+          prompt: 'Run the package and report its verification.',
+          personaId: 'coder',
+          provider: 'codex',
+          model: 'gpt-5.6-terra',
+          reasoningEffort: 'high',
+          executionStrategy: 'focused',
+          target: { kind: 'auto', requirements: { capabilities: ['workflow-node'] } },
+          position: { x: 0, y: 0 },
+        },
+      ],
+      edges: [],
+    });
+    const started = startWorkflowRun({
+      templateId: saved.id,
+      workspaceId: 'ws',
+      repoIds: [],
+      kickoff: 'Run the package',
+      trigger: { kind: 'watchtower.pull-request', headSha: 'head-a' },
+    });
+    expect(started.inputManifest).toMatchObject({
+      repositories: [],
+      bootstrapDigest: 'none',
+      configVersions: {},
+      trigger: { kind: 'watchtower.pull-request', headSha: 'head-a' },
+    });
+    expect(getWorkflowRun(started.id)?.inputManifest).toEqual(started.inputManifest);
+    await waitForWorkflowRun(started.id);
+  });
+
+  it('rejects automatic placement without a capability requirement', () => {
+    expect(() =>
+      saveWorkflowTemplate({
+        name: 'Invalid remote',
+        nodes: [
+          {
+            id: 'remote',
+            name: 'Remote package',
+            prompt: 'Run remotely',
+            personaId: 'coder',
+            provider: 'codex',
+            model: 'gpt-5.6-terra',
+            reasoningEffort: 'high',
+            executionStrategy: 'focused',
+            target: { kind: 'auto', requirements: { capabilities: [] } },
+            position: { x: 0, y: 0 },
+          },
+        ],
+        edges: [],
+      }),
+    ).toThrow('at least one automatic placement capability');
+  });
+
   it('retains the paused run when native notifications fail', async () => {
     vi.mocked(notifyWorkflowDecision).mockImplementationOnce(() => {
       throw new Error('Native notification unavailable');
@@ -212,6 +273,33 @@ describe('workflow persistence and commands', () => {
     retryWorkflowNode(current.id, 'gate');
     expect(getWorkflowRun(current.id)?.nodeRuns[0].status).toBe('queued');
     expect(getWorkflowRun(current.id)?.nodeRuns[0].attempts).toHaveLength(1);
+  });
+  it('requires inspection before retrying an unknown remote outcome', async () => {
+    const current = await pausedRun();
+    current.status = 'paused';
+    current.nodes[0].kind = 'agent';
+    current.nodeRuns[0].status = 'waiting';
+    current.nodeRuns[0].remote = {
+      dispatchId: 'dispatch-unknown',
+      state: 'unknown-outcome',
+    };
+    current.nodeRuns[0].attempts = [
+      {
+        id: 'attempt-unknown',
+        status: 'attention',
+        startedAt: current.createdAt,
+        provider: 'codex',
+        model: 'model',
+        reasoningEffort: 'high',
+        remote: current.nodeRuns[0].remote,
+      },
+    ];
+    store(current);
+    expect(() => resumeWorkflowRun(current.id)).toThrow('Resolve pending human decisions');
+    inspectWorkflowNode(current.id, 'gate');
+    expect(getWorkflowRun(current.id)?.nodeRuns[0].status).toBe('failed');
+    retryWorkflowNode(current.id, 'gate');
+    expect(getWorkflowRun(current.id)?.nodeRuns[0].remote).toBeUndefined();
   });
   it('does not reclaim a run from a live owner', async () => {
     const current = await pausedRun();

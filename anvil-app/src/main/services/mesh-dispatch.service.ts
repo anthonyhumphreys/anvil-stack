@@ -24,6 +24,9 @@ import {
   submitPreparedJob,
   workflowNodeJobRequest,
 } from './mesh-worker.service.js';
+import { taskKeyFor, unsealTaskResult, UnsealError } from './sync-keyring.service.js';
+import type { SyncScope } from '../../shared/sync-mesh.js';
+import { requestEnvironment, type RequestEnvironmentInput } from './cloud-environment.service.js';
 import { runGit, withRepoRefLock } from './mesh-worktree.service.js';
 import type {
   AttemptResultManifest,
@@ -37,12 +40,39 @@ interface DispatchContext {
   apiUrl: string;
   accessToken: string;
   enrollmentId: string;
+  scope?: SyncScope;
+  mintEnvironmentCode?: (options: {
+    provider: string;
+    ttlSeconds: number;
+    environmentId: string;
+    displayName?: string;
+  }) => Promise<string | null>;
 }
 
 let contextProvider: (() => DispatchContext | null) | null = null;
 
 export function configureMeshDispatchContext(provider: () => DispatchContext | null): void {
   contextProvider = provider;
+}
+
+export async function requestWorkflowEnvironment(
+  input: RequestEnvironmentInput & { environmentId: string },
+): Promise<string> {
+  const ctx = contextProvider?.() ?? null;
+  if (ctx?.scope === undefined)
+    throw new Error('Environment provisioning needs an active sync scope.');
+  const result = await requestEnvironment(
+    {
+      backendId: ctx.scope.backendId,
+      accountId: ctx.scope.accountId,
+      enrollmentId: ctx.enrollmentId,
+      apiUrl: ctx.apiUrl,
+      accessToken: ctx.accessToken,
+    },
+    input,
+    { mintEnvironmentCode: ctx.mintEnvironmentCode },
+  );
+  return result.environmentId;
 }
 
 async function dispatchRpc<T>(operation: string, params: unknown): Promise<T> {
@@ -71,12 +101,16 @@ export interface NodeDispatchRecord {
   output: NodeDispatchOutput | null;
   /** Byte-exact job.create params persisted before submission (replay). */
   requestJson: string | null;
+  placementExplanation?: string;
+  resolvedEnrollmentId?: string;
 }
 
 export interface NodeDispatchOutput {
   resultManifest: AttemptResultManifest;
   /** Refs fetched into the local checkouts from the worker's bundles. */
   adoptedRefs: Array<{ repositoryId: string; ref: string; commit: string }>;
+  /** Decrypted rich attempt result used to build the workflow handoff. */
+  result?: Record<string, unknown>;
 }
 
 interface DispatchRow {
@@ -89,11 +123,14 @@ interface DispatchRow {
   cancel_requested: number;
   output_json: string | null;
   request_json: string | null;
+  placement_explanation?: string | null;
+  resolved_enrollment_id?: string | null;
 }
 
 const NONTERMINAL_STATES = new Set([
   'submitting',
   'queued',
+  'awaiting-key-delivery',
   'running',
   'awaiting-approval',
   'cancel-requested',
@@ -110,6 +147,12 @@ function rowToRecord(row: DispatchRow): NodeDispatchRecord {
     cancelRequested: row.cancel_requested === 1,
     output: row.output_json === null ? null : (JSON.parse(row.output_json) as NodeDispatchOutput),
     requestJson: row.request_json,
+    ...(row.placement_explanation === null || row.placement_explanation === undefined
+      ? {}
+      : { placementExplanation: row.placement_explanation }),
+    ...(row.resolved_enrollment_id === null || row.resolved_enrollment_id === undefined
+      ? {}
+      : { resolvedEnrollmentId: row.resolved_enrollment_id }),
   };
 }
 
@@ -118,6 +161,15 @@ function readDispatch(dispatchId: string): NodeDispatchRecord | null {
     .prepare('SELECT * FROM mesh_node_dispatches WHERE dispatch_id = ?')
     .get(dispatchId) as DispatchRow | undefined;
   return row === undefined ? null : rowToRecord(row);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** Read-only lookup used by workflow recovery to reattach a durable attempt. */
+export function getWorkflowDispatch(dispatchId: string): NodeDispatchRecord | null {
+  return readDispatch(dispatchId);
 }
 
 function writeDispatchState(dispatchId: string, state: string): void {
@@ -140,10 +192,18 @@ async function submitDispatch(dispatchId: string, params: JobCreateParams): Prom
   getDb()
     .prepare(
       `UPDATE mesh_node_dispatches
-       SET job_id = ?, state = ?, manifest_json = ?, updated_at = datetime('now')
+       SET job_id = ?, state = ?, manifest_json = ?, placement_explanation = ?,
+           resolved_enrollment_id = ?, updated_at = datetime('now')
        WHERE dispatch_id = ?`,
     )
-    .run(job.id, job.state, JSON.stringify(job.inputManifest), dispatchId);
+    .run(
+      job.id,
+      job.keyDelivery === 'pending' ? 'awaiting-key-delivery' : job.state,
+      JSON.stringify(job.inputManifest),
+      job.placementExplanation,
+      job.targetEnrollmentId,
+      dispatchId,
+    );
   return job;
 }
 
@@ -168,6 +228,9 @@ export async function dispatchWorkflowNode(input: {
   model?: string;
   sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
   turnTimeoutMs?: number;
+  requestedTarget?: JobCreateParams['requestedTarget'];
+  pinnedManifest?: JobCreateParams['inputManifest'];
+  resultRecipients?: string[];
 }): Promise<NodeDispatchRecord> {
   const existing = readDispatch(input.dispatchId);
   if (existing !== null) {
@@ -188,6 +251,9 @@ export async function dispatchWorkflowNode(input: {
     ...(input.model === undefined ? {} : { model: input.model }),
     ...(input.sandbox === undefined ? {} : { sandbox: input.sandbox }),
     ...(input.turnTimeoutMs === undefined ? {} : { turnTimeoutMs: input.turnTimeoutMs }),
+    ...(input.requestedTarget === undefined ? {} : { requestedTarget: input.requestedTarget }),
+    ...(input.pinnedManifest === undefined ? {} : { pinnedManifest: input.pinnedManifest }),
+    ...(input.resultRecipients === undefined ? {} : { resultRecipients: input.resultRecipients }),
   });
   // Seals the sensitive inputs and persists the TCK under the request id;
   // the returned params are byte-stable for replay.
@@ -256,13 +322,40 @@ export async function refreshDispatch(dispatchId: string): Promise<NodeDispatchR
 
   const { job, attempts } = await dispatchRpc<JobGetResult>('job.get', { jobId: bound.jobId });
   void ensureTaskKeyDelivery(job).catch(() => undefined);
-  writeDispatchState(dispatchId, job.state);
+  const effectiveState = job.keyDelivery === 'pending' ? 'awaiting-key-delivery' : job.state;
+  writeDispatchState(dispatchId, effectiveState);
   if (job.state === 'completed' && bound.output === null) {
     const completed = attempts.find((a) => a.state === 'completed');
-    const manifest = (completed?.result as { resultManifest?: AttemptResultManifest } | undefined)
+    const ctx = contextProvider?.() ?? null;
+    let completedResult: unknown = completed?.result;
+    if (completed?.sealedResult !== undefined) {
+      if (ctx?.scope === undefined) {
+        throw new Error('Completed dispatch requires a local task-key scope.');
+      }
+      const taskKey = taskKeyFor(ctx.scope, bound.jobId);
+      if (taskKey === null) throw new Error('Completed dispatch task key is unavailable.');
+      try {
+        completedResult = unsealTaskResult(
+          ctx.scope,
+          bound.jobId,
+          completed.id,
+          taskKey,
+          completed.sealedResult,
+        );
+      } catch (error) {
+        const reason = error instanceof UnsealError ? error.reason : 'unknown';
+        throw new Error(`Unable to decrypt dispatch result (${reason}).`);
+      }
+    }
+    const manifest = (completedResult as { resultManifest?: AttemptResultManifest } | undefined)
       ?.resultManifest;
     if (manifest !== undefined) {
-      await importNodeResults(dispatchId, bound.workspaceId, manifest);
+      await importNodeResults(
+        dispatchId,
+        bound.workspaceId,
+        manifest,
+        isRecord(completedResult) ? completedResult : undefined,
+      );
     }
   }
   return readDispatch(dispatchId)!;
@@ -318,6 +411,7 @@ async function importNodeResults(
   dispatchId: string,
   workspaceId: string,
   manifest: AttemptResultManifest,
+  result?: Record<string, unknown>,
 ): Promise<void> {
   const defs = getDb()
     .prepare(
@@ -350,12 +444,20 @@ async function importNodeResults(
       await withRepoRefLock(repoPath, async () => {
         await runGit(repoPath, ['fetch', bundlePath, `${repo.branch}:${localRef}`]);
       });
-      adoptedRefs.push({ repositoryId: repo.repositoryId, ref: localRef, commit: repo.resultCommit });
+      adoptedRefs.push({
+        repositoryId: repo.repositoryId,
+        ref: localRef,
+        commit: repo.resultCommit,
+      });
     } finally {
       rmSync(scratch, { recursive: true, force: true });
     }
   }
-  const output: NodeDispatchOutput = { resultManifest: manifest, adoptedRefs };
+  const output: NodeDispatchOutput = {
+    resultManifest: manifest,
+    adoptedRefs,
+    ...(result === undefined ? {} : { result }),
+  };
   getDb()
     .prepare(
       `UPDATE mesh_node_dispatches SET output_json = ?, updated_at = datetime('now')

@@ -2640,6 +2640,12 @@ export interface WorkflowNodeJobInput extends Omit<CodeTaskJobInput, 'requestId'
   dispatchId: string;
   runId: string;
   nodeId: string;
+  /** Run-start manifest. When supplied, never resolve the checkout again. */
+  pinnedManifest?: ExecutionManifest;
+  /** Full target policy resolved for this dispatch. */
+  requestedTarget?: RequestedTarget;
+  /** Durable trusted recipients for the sealed result. */
+  resultRecipients?: string[];
 }
 
 /**
@@ -2662,48 +2668,50 @@ export function workflowNodeJobRequest(input: WorkflowNodeJobInput): {
     requestId,
     build: async () => {
       const provider: RemoteSessionProvider = input.provider ?? 'codex';
-      const revision = workspaceDefinitionRevision(input.workspaceId);
-      if (revision === null) {
-        throw new Error(`workspace not found: ${input.workspaceId}`);
-      }
-      const commits = await resolveWorkspaceCommits(input.workspaceId);
-      const defs = getDb()
-        .prepare(
-          `SELECT portable_id, mapped_repo_id FROM workspace_repo_definitions WHERE workspace_id = ?`,
-        )
-        .all(input.workspaceId) as Array<{
-          portable_id: string;
-          mapped_repo_id: string | null;
-        }>;
-      const repositories = defs.map((def) => {
-        const commit = commits[def.portable_id];
-        if (def.mapped_repo_id === null || commit === undefined) {
-          throw new Error(
-            `repository ${def.portable_id} has no resolved commit on this device — map a checkout first`,
-          );
-        }
-        return { repositoryId: def.portable_id, commit };
-      });
-      const recipe = getWorkspaceBootstrap(input.workspaceId);
-      const bootstrapDigest =
-        recipe === null
-          ? 'none'
-          : computeBootstrapDigest({
-              recipe,
-              repositoryCommits: commits,
-              executionPolicy: buildDevicePolicy(),
-            });
       const model =
         input.model ?? resolveSessionModel(provider as AgentProvider, getSettings().openaiModel);
-      const manifest: ExecutionManifest = {
-        workspaceDefinitionRevision: revision,
-        repositories,
-        bootstrapDigest,
-        provider,
-        model,
-        configVersions: {},
-        inputs: { workspaceId: input.workspaceId },
-      };
+      const manifest: ExecutionManifest =
+        input.pinnedManifest ??
+        (await (async () => {
+          const revision = workspaceDefinitionRevision(input.workspaceId);
+          if (revision === null) throw new Error(`workspace not found: ${input.workspaceId}`);
+          const commits = await resolveWorkspaceCommits(input.workspaceId);
+          const defs = getDb()
+            .prepare(
+              `SELECT portable_id, mapped_repo_id FROM workspace_repo_definitions WHERE workspace_id = ?`,
+            )
+            .all(input.workspaceId) as Array<{
+            portable_id: string;
+            mapped_repo_id: string | null;
+          }>;
+          const repositories = defs.map((def) => {
+            const commit = commits[def.portable_id];
+            if (def.mapped_repo_id === null || commit === undefined) {
+              throw new Error(
+                `repository ${def.portable_id} has no resolved commit on this device — map a checkout first`,
+              );
+            }
+            return { repositoryId: def.portable_id, commit };
+          });
+          const recipe = getWorkspaceBootstrap(input.workspaceId);
+          const bootstrapDigest =
+            recipe === null
+              ? 'none'
+              : computeBootstrapDigest({
+                  recipe,
+                  repositoryCommits: commits,
+                  executionPolicy: buildDevicePolicy(),
+                });
+          return {
+            workspaceDefinitionRevision: revision,
+            repositories,
+            bootstrapDigest,
+            provider,
+            model,
+            configVersions: {},
+            inputs: { workspaceId: input.workspaceId },
+          };
+        })());
       const privateInputs: Record<string, unknown> = {
         prompt: input.prompt,
         refPolicy: 'local-branches',
@@ -2721,20 +2729,24 @@ export function workflowNodeJobRequest(input: WorkflowNodeJobInput): {
         ...(input.verification === undefined ? {} : { verification: input.verification }),
       };
       const requestedTarget: RequestedTarget =
-        input.targetEnrollmentId !== undefined
+        input.requestedTarget ??
+        (input.targetEnrollmentId !== undefined
           ? { kind: 'device', enrollmentId: input.targetEnrollmentId }
           : {
               kind: 'auto',
               ...(input.requirements === undefined
                 ? {}
                 : { requirements: input.requirements }),
-            };
+            });
       return {
         requestId,
         kind: 'workflow-node',
         requestedTarget,
         manifest,
         privateInputs,
+        ...(input.resultRecipients === undefined
+          ? {}
+          : { resultRecipients: input.resultRecipients }),
         retryPolicy: 'inspect-before-retry',
       };
     },

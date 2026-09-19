@@ -780,6 +780,12 @@ async function executeAutomationRun(run: AutomationRun): Promise<void> {
         repoIds: automation.repoIds,
         kickoff: automation.prompt,
         sourceAutomationRunId: run.id,
+        trigger: {
+          kind: run.triggerContext?.type ?? automation.watchEvent,
+          ...(typeof run.triggerContext?.metadata?.headSha === 'string'
+            ? { headSha: run.triggerContext.metadata.headSha }
+            : {}),
+        },
         executionPaths: preparedWorktrees.map((tree) => ({ id: tree.repoId, path: tree.path })),
       });
       appendAutomationRunEvent(run.id, 'system', `Workflow launched: ${workflow.templateName}`, {

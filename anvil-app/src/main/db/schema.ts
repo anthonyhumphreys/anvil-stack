@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 85;
+export const SCHEMA_VERSION = 86;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -799,6 +799,8 @@ CREATE TABLE IF NOT EXISTS mesh_node_dispatches (
   state TEXT NOT NULL,
   cancel_requested INTEGER NOT NULL DEFAULT 0,
   output_json TEXT,
+  placement_explanation TEXT,
+  resolved_enrollment_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -3196,5 +3198,12 @@ CREATE TABLE IF NOT EXISTS mesh_dashboard_grants (
   updated_at TEXT NOT NULL,
   PRIMARY KEY (backend_id, account_id, request_id)
 );
+`,
+  86: `
+-- FLOW-02: retain the backend placement decision on the durable dispatch so
+-- workflow recovery and the run view can explain automatic/environment
+-- placement without querying a terminal job again.
+ALTER TABLE mesh_node_dispatches ADD COLUMN placement_explanation TEXT;
+ALTER TABLE mesh_node_dispatches ADD COLUMN resolved_enrollment_id TEXT;
 `,
 };

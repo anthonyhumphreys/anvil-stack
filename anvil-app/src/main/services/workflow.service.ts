@@ -6,7 +6,7 @@ import {
   TEAM_STRATEGIES,
 } from '../../shared/workflow-orchestration.js';
 import { recordWorkflowEvent, runWorkflowRuntime, workflowHandoff } from './workflow-runtime.js';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { app } from 'electron';
 import { notifyWorkflowDecision } from './notification.service.js';
 import type {
@@ -17,9 +17,11 @@ import type {
   WorkflowNode,
   WorkflowOrchestration,
   WorkflowNodeRun,
+  WorkflowAttempt,
   WorkflowRun,
   WorkflowTemplate,
   WorkflowTemplateInput,
+  WorkflowRunInputManifest,
 } from '../../shared/types.js';
 import { resolveCodexReasoningEffort } from '../../shared/codex-models.js';
 import { SYNC_ENTITY_WORKFLOW_TEMPLATE } from '../../shared/sync-mesh.js';
@@ -46,6 +48,17 @@ import { getLlmGatewayCodexConfigArgs } from '../../shared/llm-gateway.js';
 import { resolveLlmGatewayModelConfig } from './llm-gateway.service.js';
 import { triggerWatchtowerEvent } from './automation.service.js';
 import { isAcpAgentProvider, type AcpAgentProvider } from '../../shared/agent-providers.js';
+import { buildDevicePolicy } from './mesh-worker.service.js';
+import { computeBootstrapDigest, getWorkspaceBootstrap } from './bootstrap-policy.service.js';
+import { workspaceDefinitionRevision } from './sync-entity-domain.js';
+import {
+  dispatchWorkflowNode,
+  getWorkflowDispatch,
+  refreshDispatch,
+  cancelNodeDispatch,
+  requestWorkflowEnvironment,
+} from './mesh-dispatch.service.js';
+import type { ExecutionManifest, RequestedTarget } from '../../../cloud/contract/jobs.js';
 
 interface WorkflowTemplateRow {
   id: string;
@@ -124,6 +137,26 @@ export function validateWorkflowGraph(nodes: WorkflowNode[], edges: WorkflowEdge
     if (node.provider && !AGENT_PROVIDERS.includes(node.provider))
       throw new Error('Unknown workflow provider.');
     if (!getPersonaById(node.personaId)) throw new Error(`Unknown persona: ${node.personaId}`);
+    if (node.target !== undefined) {
+      if (node.target.kind === 'device' && !node.target.enrollmentId.trim())
+        throw new Error(`${node.name} needs a device enrollment id.`);
+      if (node.target.kind === 'auto' && node.target.requirements.capabilities.length === 0)
+        throw new Error(`${node.name} needs at least one automatic placement capability.`);
+      if (node.target.kind === 'existing-environment' && !node.target.environmentId.trim())
+        throw new Error(`${node.name} needs an environment id.`);
+      if (
+        node.target.kind === 'provisioned-environment' &&
+        (!Number.isFinite(node.target.ttlSeconds) || node.target.ttlSeconds <= 0)
+      )
+        throw new Error(`${node.name} needs a positive environment lifetime.`);
+      if (
+        node.target.kind !== 'local' &&
+        !['codex', 'azure', 'openai'].includes(node.provider ?? 'codex')
+      )
+        throw new Error(`${node.name} uses a provider that cannot run remotely.`);
+      if (node.target.kind !== 'local' && node.teamStrategy === 'autonomous')
+        throw new Error(`${node.name} cannot use autonomous delegation on a remote target.`);
+    }
   }
 
   const outgoing = new Map(nodes.map((node) => [node.id, [] as string[]]));
@@ -179,6 +212,7 @@ function mapRun(row: WorkflowRunRow): WorkflowRun {
     workItemRef: graph.workItemRef,
     runtimeOwnerPid: graph.runtimeOwnerPid,
     executionPaths: graph.executionPaths,
+    inputManifest: graph.inputManifest,
     templateId: row.template_id,
     templateName: row.template_name,
     workspaceId: row.workspace_id,
@@ -259,9 +293,16 @@ export function saveWorkflowTemplate(
 
 export function deleteWorkflowTemplate(id: string): void {
   getDb().transaction(() => {
-    withSyncedEntityWrite(SYNC_ENTITY_WORKFLOW_TEMPLATE, id, 1, 'delete', () => null, () => {
-      getDb().prepare('DELETE FROM workflow_templates WHERE id = ?').run(id);
-    });
+    withSyncedEntityWrite(
+      SYNC_ENTITY_WORKFLOW_TEMPLATE,
+      id,
+      1,
+      'delete',
+      () => null,
+      () => {
+        getDb().prepare('DELETE FROM workflow_templates WHERE id = ?').run(id);
+      },
+    );
   })();
 }
 
@@ -417,6 +458,7 @@ function persistRun(run: WorkflowRun): void {
         workItemRef: run.workItemRef,
         runtimeOwnerPid: run.runtimeOwnerPid,
         executionPaths: run.executionPaths,
+        inputManifest: run.inputManifest,
       }),
       run.status,
       JSON.stringify(run.nodeRuns),
@@ -432,6 +474,94 @@ function getRepoRows(repoIds: string[]): RepoRow[] {
   return repoIds
     .map((id) => query.get(id) as RepoRow | undefined)
     .filter((row): row is RepoRow => Boolean(row));
+}
+
+function captureRunInputManifest(
+  workspaceId: string,
+  repoIds: string[],
+  executionPaths?: RepoRow[],
+  trigger?: WorkflowRunInputManifest['trigger'],
+): WorkflowRunInputManifest {
+  const revision = workspaceDefinitionRevision(workspaceId) ?? 'unresolved';
+  const pathByRepoId = new Map((executionPaths ?? []).map((row) => [row.id, row.path]));
+  const rows = getDb()
+    .prepare(
+      `SELECT d.portable_id, d.mapped_repo_id, r.path
+       FROM workspace_repo_definitions d
+       LEFT JOIN repos r ON r.id = d.mapped_repo_id
+       WHERE d.workspace_id = ?`,
+    )
+    .all(workspaceId) as Array<{
+    portable_id: string;
+    mapped_repo_id: string | null;
+    path: string | null;
+  }>;
+  const wanted = repoIds.length > 0 ? new Set(repoIds) : null;
+  const repositories: WorkflowRunInputManifest['repositories'] = [];
+  const commits: Record<string, string> = {};
+  for (const row of rows) {
+    if (wanted !== null && row.mapped_repo_id !== null && !wanted.has(row.mapped_repo_id)) continue;
+    const path =
+      row.mapped_repo_id === null ? null : (pathByRepoId.get(row.mapped_repo_id) ?? row.path);
+    if (path === null) continue;
+    try {
+      const commit = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: path,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      }).trim();
+      if (!commit) continue;
+      repositories.push({ repositoryId: row.portable_id, commit });
+      commits[row.portable_id] = commit;
+    } catch {
+      // Local-only nodes may run without a mapped checkout. Remote nodes
+      // fail closed when they require a missing pin at dispatch time.
+    }
+  }
+  const recipe = getWorkspaceBootstrap(workspaceId);
+  return {
+    workspaceDefinitionRevision: revision,
+    repositories,
+    bootstrapDigest:
+      recipe === null
+        ? 'none'
+        : computeBootstrapDigest({
+            recipe,
+            repositoryCommits: commits,
+            executionPolicy: buildDevicePolicy(),
+          }),
+    configVersions: {},
+    ...(trigger === undefined ? {} : { trigger }),
+  };
+}
+
+async function requestedTargetFor(
+  run: WorkflowRun,
+  node: WorkflowNode,
+): Promise<RequestedTarget | null> {
+  const target = node.target;
+  if (target === undefined || target.kind === 'local') return null;
+  if (target.kind === 'device') return { kind: 'device', enrollmentId: target.enrollmentId };
+  if (target.kind === 'auto') {
+    const capabilities = new Set(target.requirements.capabilities);
+    capabilities.add(`provider:${node.provider ?? 'codex'}`);
+    return {
+      kind: 'auto',
+      requirements: { ...target.requirements, capabilities: [...capabilities] },
+    };
+  }
+  if (target.kind === 'existing-environment') {
+    return { kind: 'environment', environmentId: target.environmentId };
+  }
+  const environmentId = `env_${run.id}_${node.id}`;
+  await requestWorkflowEnvironment({
+    environmentId,
+    provider: target.provider,
+    ttlSeconds: target.ttlSeconds,
+    ...(target.resources === undefined ? {} : { resources: target.resources }),
+  });
+  return { kind: 'environment', environmentId };
 }
 
 function strategyInstruction(strategy: WorkflowNode['executionStrategy']): string {
@@ -861,6 +991,184 @@ function delegationInstruction(run: WorkflowRun, node: WorkflowNode): string {
   ].join('\n');
 }
 
+function waitForRemoteRefresh(signal: AbortSignal, ms: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    const abort = () => {
+      clearTimeout(timer);
+      reject(new Error('Remote dispatch cancellation requested.'));
+    };
+    signal.addEventListener('abort', abort, { once: true });
+  });
+}
+
+async function executeRemoteWorkflowNode(
+  run: WorkflowRun,
+  node: WorkflowNode,
+  state: WorkflowNodeRun,
+  attemptId: string,
+  signal: AbortSignal,
+): Promise<{
+  output: string;
+  outcome?: 'completed' | 'waiting' | 'attention';
+  error?: string;
+  remote?: WorkflowAttempt['remote'];
+}> {
+  const dispatchId = state.remote?.dispatchId ?? `${run.id}:${node.id}:${attemptId}`;
+  const persistedDispatch = getWorkflowDispatch(dispatchId);
+  const persistedTarget =
+    persistedDispatch?.requestJson === null || persistedDispatch?.requestJson === undefined
+      ? undefined
+      : (JSON.parse(persistedDispatch.requestJson) as { requestedTarget?: RequestedTarget })
+          .requestedTarget;
+  const requestedTarget = persistedTarget ?? (await requestedTargetFor(run, node));
+  if (requestedTarget === null) throw new Error('Remote executor received a local node.');
+  const baseManifest = run.inputManifest;
+  if (baseManifest === undefined) throw new Error('Workflow run has no frozen input manifest.');
+  // `run.repoIds` are local workspace checkout IDs, while the frozen
+  // manifest uses portable repository IDs. A node-specific selection is
+  // already expressed in portable IDs; an unspecified selection means all
+  // repositories captured for the run.
+  const wanted = node.repositoryIds === undefined ? null : new Set(node.repositoryIds);
+  const expectedRows = getDb()
+    .prepare(
+      `SELECT portable_id, mapped_repo_id
+       FROM workspace_repo_definitions
+       WHERE workspace_id = ?`,
+    )
+    .all(run.workspaceId) as Array<{ portable_id: string; mapped_repo_id: string | null }>;
+  const expectedRepositoryIds =
+    node.repositoryIds ??
+    expectedRows
+      .filter(
+        (row) =>
+          run.repoIds.length === 0 ||
+          (row.mapped_repo_id !== null && run.repoIds.includes(row.mapped_repo_id)),
+      )
+      .map((row) => row.portable_id);
+  const pinnedRepositoryIds = new Set(baseManifest.repositories.map((repo) => repo.repositoryId));
+  const missingPins = expectedRepositoryIds.filter((repositoryId) => {
+    if (wanted !== null && !wanted.has(repositoryId)) return false;
+    return !pinnedRepositoryIds.has(repositoryId);
+  });
+  if (expectedRepositoryIds.length === 0 || missingPins.length > 0) {
+    throw new Error(
+      `Remote node cannot run without frozen repository pins${
+        missingPins.length > 0 ? `: ${missingPins.join(', ')}` : '.'
+      }`,
+    );
+  }
+  const manifest: ExecutionManifest = {
+    ...baseManifest,
+    provider: node.provider ?? 'codex',
+    model: node.model,
+    repositories:
+      wanted === null
+        ? baseManifest.repositories
+        : baseManifest.repositories.filter(
+            (repository) => wanted.size === 0 || wanted.has(repository.repositoryId),
+          ),
+    inputs: { workspaceId: run.workspaceId },
+  };
+  const updateRemote = (dispatch: Awaited<ReturnType<typeof dispatchWorkflowNode>>) => {
+    const remote: WorkflowAttempt['remote'] = {
+      dispatchId,
+      ...(dispatch.jobId === null ? {} : { jobId: dispatch.jobId }),
+      target: node.target,
+      ...(dispatch.resolvedEnrollmentId === undefined
+        ? {}
+        : { resolvedEnrollmentId: dispatch.resolvedEnrollmentId }),
+      ...(dispatch.placementExplanation === undefined
+        ? {}
+        : { placementExplanation: dispatch.placementExplanation }),
+      state: dispatch.state as NonNullable<WorkflowAttempt['remote']>['state'],
+    };
+    state.remote = remote;
+    const attempt = state.attempts?.find((candidate) => candidate.id === attemptId);
+    if (attempt) attempt.remote = remote;
+    return remote;
+  };
+
+  let dispatch: Awaited<ReturnType<typeof dispatchWorkflowNode>>;
+  try {
+    dispatch = await dispatchWorkflowNode({
+      dispatchId,
+      runId: run.id,
+      nodeId: node.id,
+      workspaceId: run.workspaceId,
+      prompt: node.prompt,
+      provider: node.provider as 'codex' | 'azure' | 'openai' | undefined,
+      model: node.model,
+      verification: node.verification,
+      requestedTarget,
+      pinnedManifest: manifest,
+    });
+  } catch (error) {
+    return {
+      output: 'Remote dispatch could not be submitted.',
+      outcome: 'attention',
+      error: error instanceof Error ? error.message : String(error),
+      remote: { dispatchId, target: node.target, state: 'unknown-outcome' },
+    };
+  }
+  const cancelRemote = () => {
+    void cancelNodeDispatch(dispatchId).catch(() => undefined);
+  };
+  signal.addEventListener('abort', cancelRemote, { once: true });
+  let remote = updateRemote(dispatch);
+  runWorkflowPersistForRemote(run);
+  try {
+    while (true) {
+      signal.throwIfAborted();
+      if (dispatch.state === 'awaiting-key-delivery' || dispatch.state === 'awaiting-approval') {
+        return {
+          output: dispatch.state,
+          outcome: 'waiting',
+          error: `Remote dispatch is ${dispatch.state}.`,
+          remote,
+        };
+      }
+      if (['completed', 'failed', 'cancelled', 'unknown-outcome'].includes(dispatch.state)) break;
+      await waitForRemoteRefresh(signal, 750);
+      try {
+        dispatch = await refreshDispatch(dispatchId);
+      } catch (error) {
+        return {
+          output: 'Remote dispatch result requires inspection.',
+          outcome: 'attention',
+          error: error instanceof Error ? error.message : String(error),
+          remote: { ...remote, state: 'unknown-outcome' },
+        };
+      }
+      remote = updateRemote(dispatch);
+      runWorkflowPersistForRemote(run);
+    }
+    if (dispatch.state === 'completed' && dispatch.output !== null) {
+      return {
+        output: JSON.stringify(dispatch.output),
+        remote,
+      };
+    }
+    if (dispatch.state === 'failed' || dispatch.state === 'cancelled') {
+      throw new Error(`Remote dispatch ${dispatch.state}.`);
+    }
+    return {
+      output: dispatch.state,
+      outcome: 'attention',
+      error: 'Remote dispatch outcome is unknown and requires inspection.',
+      remote: { ...remote, state: 'unknown-outcome' },
+    };
+  } finally {
+    signal.removeEventListener('abort', cancelRemote);
+  }
+}
+
+function runWorkflowPersistForRemote(run: WorkflowRun): void {
+  // The runtime persists after the executor returns. Persisting here also
+  // makes dispatch and placement visible if the parent exits mid-poll.
+  persistRun(run);
+}
+
 function launchWorkflow(run: WorkflowRun): Promise<void> {
   const existing = activeRuns.get(run.id);
   if (existing) return existing.completion;
@@ -874,6 +1182,16 @@ function launchWorkflow(run: WorkflowRun): Promise<void> {
         signal: controller.signal,
         execute: async (current, node, signal) => {
           const state = current.nodeRuns.find((item) => item.nodeId === node.id)!;
+          const attempt = state.attempts?.at(-1);
+          if (node.target !== undefined && node.target.kind !== 'local') {
+            return executeRemoteWorkflowNode(
+              current,
+              node,
+              state,
+              attempt?.id ?? randomUUID(),
+              signal,
+            );
+          }
           const thread = createChatThread({
             workspaceId: current.workspaceId,
             personaId: node.personaId,
@@ -881,7 +1199,6 @@ function launchWorkflow(run: WorkflowRun): Promise<void> {
             repoIds: current.repoIds,
           });
           state.threadId = thread.id;
-          const attempt = state.attempts?.at(-1);
           if (attempt) attempt.threadId = thread.id;
           persistRun(current);
           const result = await runAgentThread({
@@ -969,6 +1286,7 @@ export function startWorkflowRun(input: {
   repoIds: string[];
   kickoff: string;
   sourceAutomationRunId?: string;
+  trigger?: WorkflowRunInputManifest['trigger'];
   workItemRef?: WorkflowRun['workItemRef'];
   executionPaths?: RepoRow[];
 }): WorkflowRun {
@@ -989,6 +1307,12 @@ export function startWorkflowRun(input: {
 
   const id = randomUUID();
   const createdAt = new Date().toISOString();
+  const inputManifest = captureRunInputManifest(
+    input.workspaceId,
+    input.repoIds,
+    input.executionPaths,
+    input.trigger,
+  );
   const supervisor = createChatThread({
     workspaceId: input.workspaceId,
     personaId: 'coder',
@@ -1021,6 +1345,7 @@ export function startWorkflowRun(input: {
         sourceAutomationRunId: input.sourceAutomationRunId,
         workItemRef: input.workItemRef,
         executionPaths: input.executionPaths,
+        inputManifest,
       }),
       input.kickoff.trim(),
       supervisor.id,
@@ -1138,8 +1463,16 @@ export function resumeWorkflowRun(runId: string): WorkflowRun {
   if (activeRuns.has(runId)) throw new Error('Wait for active agents to finish before resuming.');
   if (run.nodeRuns.some((state) => state.status === 'interrupted'))
     throw new Error('Inspect interrupted attempts and retry them explicitly.');
-  if (run.nodeRuns.some((state) => state.status === 'waiting'))
-    throw new Error('Resolve pending human decisions before resuming.');
+  const remoteWaitingStates = new Set(['awaiting-key-delivery', 'awaiting-approval']);
+  const humanWaiting = run.nodeRuns.some(
+    (state) => state.status === 'waiting' && !remoteWaitingStates.has(state.remote?.state ?? ''),
+  );
+  if (humanWaiting) throw new Error('Resolve pending human decisions before resuming.');
+  for (const state of run.nodeRuns)
+    if (state.status === 'waiting' && remoteWaitingStates.has(state.remote?.state ?? '')) {
+      state.status = 'queued';
+      state.error = undefined;
+    }
   if (run.deadlineAt && Date.parse(run.deadlineAt) <= Date.now())
     throw new Error('This run has exhausted its wall-clock budget. Start a new run.');
   run.status = 'queued';
@@ -1169,6 +1502,32 @@ export function decideWorkflowNode(
   return run;
 }
 
+/**
+ * Records the explicit inspection required before an unknown remote outcome
+ * can be retried. The dispatch identity remains attached to the failed node
+ * until retryWorkflowNode clears it and creates a fresh attempt identity.
+ */
+export function inspectWorkflowNode(runId: string, nodeId: string): WorkflowRun {
+  const run = mutableRun(runId);
+  const state = run.nodeRuns.find((item) => item.nodeId === nodeId);
+  const attempt = state?.attempts?.at(-1);
+  if (
+    !['paused', 'running'].includes(run.status) ||
+    state?.status !== 'waiting' ||
+    state.remote?.state !== 'unknown-outcome' ||
+    attempt?.status !== 'attention'
+  ) {
+    throw new Error('This step has no unknown remote outcome to inspect.');
+  }
+  state.status = 'failed';
+  state.error =
+    'Unknown remote outcome inspected. Queue a retry only after reviewing the dispatch.';
+  state.completedAt = new Date().toISOString();
+  recordWorkflowEvent(run, 'decision', state.error, nodeId);
+  persistRun(run);
+  return run;
+}
+
 export function retryWorkflowNode(runId: string, nodeId: string): WorkflowRun {
   const run = mutableRun(runId);
   if (activeRuns.has(runId) || !['failed', 'paused'].includes(run.status))
@@ -1179,6 +1538,7 @@ export function retryWorkflowNode(runId: string, nodeId: string): WorkflowRun {
     throw new Error('Choose a failed or interrupted agent step.');
   if ((state.attempts?.length ?? 0) >= orchestrationConfig(run.orchestration).maxAttempts)
     throw new Error('Attempt budget exhausted. Start a new run.');
+  if (state.remote?.state === 'unknown-outcome') state.remote = undefined;
   state.status = 'queued';
   state.error = undefined;
   state.completedAt = undefined;
@@ -1228,10 +1588,31 @@ export function recoverInterruptedWorkflowRuns(): void {
     }
     if (run.status === 'paused' && !run.nodeRuns.some((state) => state.status === 'running'))
       continue;
+    let reattachRemote = false;
     run.status = 'paused';
     run.runtimeOwnerPid = undefined;
     for (const state of run.nodeRuns)
       if (state.status === 'running') {
+        const dispatchId = state.remote?.dispatchId;
+        const dispatch = dispatchId === undefined ? null : getWorkflowDispatch(dispatchId);
+        if (
+          dispatch !== null &&
+          [
+            'submitting',
+            'queued',
+            'awaiting-key-delivery',
+            'awaiting-approval',
+            'running',
+            'cancel-requested',
+          ].includes(dispatch.state)
+        ) {
+          // The remote job is still durable. Queue the scheduler so its
+          // existing attempt is observed again instead of being replaced.
+          state.status = 'queued';
+          state.error = undefined;
+          reattachRemote = true;
+          continue;
+        }
         state.status = 'interrupted';
         state.error = 'The owning process exited. Inspect the workspace before retrying.';
         const attempt = state.attempts?.at(-1);
@@ -1243,9 +1624,12 @@ export function recoverInterruptedWorkflowRuns(): void {
     recordWorkflowEvent(
       run,
       'run',
-      'Recovered after process exit. No agent work was automatically repeated.',
+      reattachRemote
+        ? 'Recovered after process exit. Reattached to durable remote dispatches.'
+        : 'Recovered after process exit. No agent work was automatically repeated.',
     );
     persistRun(run);
+    if (reattachRemote) void launchWorkflow(run);
   }
 }
 

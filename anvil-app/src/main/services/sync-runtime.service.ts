@@ -384,8 +384,24 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
     const backend = getActiveBackend();
     const fields = auth?.getSessionScopeFields() ?? null;
     const token = auth?.getAccessToken() ?? null;
+    const scope = currentScope();
     if (backend === null || fields === null || token === null) return null;
-    return { apiUrl: apiUrlFor(backend), accessToken: token, enrollmentId: fields.enrollmentId };
+    return {
+      apiUrl: apiUrlFor(backend),
+      accessToken: token,
+      enrollmentId: fields.enrollmentId,
+      ...(scope === null ? {} : { scope }),
+      mintEnvironmentCode: async (options) => {
+        const issued = await issueEnrollmentCode({
+          enrollmentClass: 'ephemeral',
+          provider: options.provider,
+          sessionTtlSeconds: options.ttlSeconds,
+          displayName: options.displayName,
+          environmentId: options.environmentId,
+        });
+        return issued.code;
+      },
+    };
   });
   // DASH-01: the dashboard grant service shares the session context — it
   // is the trusted-device side of browser authorization.

@@ -347,6 +347,8 @@ const api: AnvilAPI = {
       ipcRenderer.invoke('workflow:retry-node', id, nodeId),
     decideNode: (id: string, nodeId: string, approved: boolean, note: string) =>
       ipcRenderer.invoke('workflow:decide-node', id, nodeId, approved, note),
+    inspectNode: (id: string, nodeId: string) =>
+      ipcRenderer.invoke('workflow:inspect-node', id, nodeId),
     listTemplates: () => ipcRenderer.invoke('workflow:list-templates'),
     draftTemplate: (request: string) => ipcRenderer.invoke('workflow:draft-template', request),
     saveTemplate: (input: import('../shared/types.js').WorkflowTemplateInput, id?: string) =>

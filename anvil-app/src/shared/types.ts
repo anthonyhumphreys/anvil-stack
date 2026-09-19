@@ -2,6 +2,7 @@ import type { DojoCraftedSkill, DojoTokenUsage, DojoPrice } from './dojo-types.j
 import type { WorkItemReference } from './change-review-types.js';
 import type { AgentUIIntent } from './agent-ui-intents.js';
 import type { BootstrapRecipe } from '../../cloud/contract/bootstrap.js';
+import type { EnvironmentProviderId } from '../../cloud/contract/environment.js';
 
 export interface RepoInfo {
   id: string; // SHA256 of repo path
@@ -656,7 +657,14 @@ export interface WorkflowAttempt {
   id: string;
   startedAt: string;
   completedAt?: string;
-  status: 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+  status:
+    | 'running'
+    | 'waiting'
+    | 'attention'
+    | 'completed'
+    | 'failed'
+    | 'cancelled'
+    | 'interrupted';
   provider: AgentProvider;
   model: string;
   reasoningEffort: ReasoningEffort;
@@ -664,6 +672,47 @@ export interface WorkflowAttempt {
   sessionId?: string;
   output?: string;
   error?: string;
+  remote?: WorkflowRemoteExecution;
+}
+
+export interface WorkflowCapabilityRequirements {
+  capabilities: string[];
+  os?: string;
+  cpu?: string;
+  memoryMb?: number;
+}
+
+export type WorkflowTargetPolicy =
+  | { kind: 'local' }
+  | { kind: 'device'; enrollmentId: string }
+  | { kind: 'auto'; requirements: WorkflowCapabilityRequirements }
+  | { kind: 'existing-environment'; environmentId: string }
+  | {
+      kind: 'provisioned-environment';
+      provider: EnvironmentProviderId;
+      ttlSeconds: number;
+      resources?: { vcpus?: number; memoryMb?: number };
+      requirements?: WorkflowCapabilityRequirements;
+    };
+
+export interface WorkflowRemoteExecution {
+  dispatchId: string;
+  jobId?: string;
+  target?: WorkflowTargetPolicy;
+  resolvedEnrollmentId?: string;
+  placementExplanation?: string;
+  state:
+    | 'submitting'
+    | 'queued'
+    | 'awaiting-key-delivery'
+    | 'awaiting-approval'
+    | 'claimed'
+    | 'running'
+    | 'cancel-requested'
+    | 'completed'
+    | 'failed'
+    | 'cancelled'
+    | 'unknown-outcome';
 }
 
 export interface WorkflowNode {
@@ -682,6 +731,10 @@ export interface WorkflowNode {
   teamProfileIds?: string[];
   parentNodeId?: string;
   depth?: number;
+  /** Optional remote target. Omitted nodes continue to run locally. */
+  target?: WorkflowTargetPolicy;
+  repositoryIds?: string[];
+  verification?: string[];
 }
 
 export interface WorkflowEdge {
@@ -740,6 +793,20 @@ export interface WorkflowNodeRun {
   error?: string;
   startedAt?: string;
   completedAt?: string;
+  remote?: WorkflowRemoteExecution;
+}
+
+export interface WorkflowRepositoryPin {
+  repositoryId: string;
+  commit: string;
+}
+
+export interface WorkflowRunInputManifest {
+  workspaceDefinitionRevision: string;
+  repositories: WorkflowRepositoryPin[];
+  bootstrapDigest: string;
+  configVersions: Record<string, string>;
+  trigger?: { kind: string; headSha?: string };
 }
 
 export interface WorkflowRun {
@@ -765,6 +832,7 @@ export interface WorkflowRun {
   startedAt?: string;
   completedAt?: string;
   error?: string;
+  inputManifest?: WorkflowRunInputManifest;
 }
 
 export interface ChatSendOptions {
