@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFile, spawn, type StdioOptions } from "node:child_process";
-import { timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { realpathSync } from "node:fs";
 import {
   mkdir,
@@ -98,6 +98,9 @@ import {
   createMeshConnectionRecord,
   createMeshDeploymentPlan,
   removeMeshDeployment,
+  provisionMeshResources,
+  migrateMeshDatabases,
+  provisionMeshSecrets,
   writeMeshConnectionRecord,
   writeMeshWranglerConfig,
   MESH_PROVIDER_EVIDENCE_GATE_ID,
@@ -109,6 +112,7 @@ import {
   resolveDeploymentAdapter,
   supportedDeploymentAdapters,
 } from "./deployment-adapters.js";
+import { commandMeshProvisioner } from "./mesh-provisioner-command.js";
 
 type CliContext = {
   cwd: string;
@@ -275,7 +279,7 @@ export async function main(argv: string[]): Promise<void> {
       await commandServices(context, subcommand);
       return;
     case "mesh":
-      await commandMesh(context, subcommand);
+      await commandMesh(context, subcommand, maybeArg);
       return;
     default:
       writeJsonOrHuman(
@@ -3377,13 +3381,29 @@ async function commandRemove(context: CliContext): Promise<void> {
 async function commandMesh(
   context: CliContext,
   subcommand: string | undefined,
+  action?: string,
 ): Promise<void> {
   switch (subcommand) {
+    case "account":
+      await commandMeshAccount(context, action);
+      return;
+    case "provisioner":
+      await commandMeshProvisioner(context, action);
+      return;
     case "plan":
       await commandMeshPlan(context);
       return;
     case "apply":
       await commandMeshLifecycle(context, "apply");
+      return;
+    case "provision":
+      await commandMeshProvision(context);
+      return;
+    case "migrate":
+      await commandMeshMigrate(context);
+      return;
+    case "secrets":
+      await commandMeshSecrets(context);
       return;
     case "remove":
       await commandMeshLifecycle(context, "remove");
@@ -3410,12 +3430,152 @@ async function commandMesh(
   }
 }
 
-const MESH_USAGE =
-  "Usage: anvil-cloud mesh <plan|apply|remove> --backend <path> --name <worker> [--stage production] [--env <name>] [--account-id <id>] [--base-url <url>|--subdomain <sub>] [--bucket <name>] [--oidc-issuer <url> --oidc-client-id <id>] [--first-deploy] [--dev] [--temporary] [--json]";
+const MESH_ACCOUNT_USAGE =
+  "Usage: anvil-cloud mesh account <bootstrap|devices|rename|revoke> --url <backend-url> [options]";
 
-function readMeshRecipeOptions(
+type MeshAccountDevice = {
+  enrollmentId: string;
+  displayName?: string;
+  installationId?: string;
+  revoked?: boolean;
+  createdAt?: string;
+  self?: boolean;
+  enrollmentClass?: string;
+  provider?: string;
+};
+
+function meshAccountUrl(context: CliContext): string | undefined {
+  const value = context.values.get("url") ?? context.values.get("base-url");
+  if (!value) {
+    writeInvalidUsage(context, `${MESH_ACCOUNT_USAGE}; --url is required.`);
+    return undefined;
+  }
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" && url.hostname !== "localhost" && url.hostname !== "127.0.0.1") {
+      throw new Error("backend URL must use https (or localhost for development)");
+    }
+    return url.href.replace(/\/$/, "");
+  } catch (error) {
+    writeInvalidUsage(context, error instanceof Error ? error.message : "Invalid backend URL.");
+    return undefined;
+  }
+}
+
+function meshAccountSecret(context: CliContext, option: string, fallback: string): string | undefined {
+  const envName = context.values.get(option) ?? fallback;
+  const value = process.env[envName];
+  if (!value) {
+    writeInvalidUsage(context, `Set ${envName} or pass --${option} <environment-variable>.`);
+    return undefined;
+  }
+  return value;
+}
+
+async function meshAccountRequest(
   context: CliContext,
-): CreateMeshDeploymentPlanOptions | undefined {
+  url: string,
+  token: string,
+  pathName: string,
+  body: unknown,
+): Promise<{ ok: true; body: any } | { ok: false; message: string }> {
+  let response: Response;
+  try {
+    response = await fetch(`${url}${pathName}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+      redirect: "error",
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : "Backend request failed." };
+  }
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    const code = payload && typeof payload === "object" && payload.error && typeof payload.error.code === "string"
+      ? payload.error.code
+      : `HTTP ${response.status}`;
+    return { ok: false, message: `Backend rejected the request (${code}).` };
+  }
+  return { ok: true, body: payload };
+}
+
+async function commandMeshAccount(context: CliContext, action: string | undefined): Promise<void> {
+  const url = meshAccountUrl(context);
+  if (!url) return;
+  if (action === "bootstrap") {
+    const accountId = context.values.get("account") ?? context.args[3];
+    if (!accountId) {
+      writeInvalidUsage(context, "mesh account bootstrap requires --account <account-id>.");
+      return;
+    }
+    const token = meshAccountSecret(context, "admin-token-env", "ANVIL_MESH_ADMIN_TOKEN");
+    if (!token) return;
+    const result = await meshAccountRequest(context, url, token, "/v1/enrollment-codes", { accountId });
+    if (!result.ok) {
+      writeJsonOrHuman(context, { ok: false, errors: [{ code: "BACKEND_ERROR", message: result.message }] }, result.message);
+      process.exitCode = 1;
+      return;
+    }
+    const code = result.body && typeof result.body.code === "string" ? result.body.code : undefined;
+    if (!code) {
+      writeJsonOrHuman(context, { ok: false, errors: [{ code: "INVALID_RESPONSE", message: "Backend did not return an enrollment code." }] }, "Backend did not return an enrollment code.");
+      process.exitCode = 1;
+      return;
+    }
+    writeJsonOrHuman(context, { ok: true, accountId, code }, `Enrollment code for ${accountId}: ${code}`);
+    return;
+  }
+
+  if (action !== "devices" && action !== "rename" && action !== "revoke") {
+    writeInvalidUsage(context, MESH_ACCOUNT_USAGE);
+    return;
+  }
+  const token = meshAccountSecret(context, "access-token-env", "ANVIL_MESH_ACCESS_TOKEN");
+  if (!token) return;
+  const operation = action === "devices" ? "device.list" : action === "rename" ? "device.rename" : "device.revoke";
+  const enrollmentId = context.values.get("enrollment") ?? context.args[3];
+  if (action !== "devices" && !enrollmentId) {
+    writeInvalidUsage(context, `mesh account ${action} requires <enrollment-id> (or --enrollment).`);
+    return;
+  }
+  const params = action === "devices"
+    ? {}
+    : action === "rename"
+      ? { enrollmentId, displayName: context.values.get("name") ?? context.args[4] ?? "" }
+      : { enrollmentId };
+  const result = await meshAccountRequest(context, url, token, "/v1/rpc", {
+    protocol: "anvil-backend/1",
+    requestId: randomUUID(),
+    operation,
+    params,
+  });
+  if (!result.ok) {
+    writeJsonOrHuman(context, { ok: false, errors: [{ code: "BACKEND_ERROR", message: result.message }] }, result.message);
+    process.exitCode = 1;
+    return;
+  }
+  const payload = result.body;
+  if (payload?.error) {
+    const message = `Backend rejected the request (${payload.error.code ?? "unknown"}).`;
+    writeJsonOrHuman(context, { ok: false, errors: [{ code: payload.error.code ?? "BACKEND_ERROR", message }] }, message);
+    process.exitCode = 1;
+    return;
+  }
+  const value = payload?.result;
+  const human = action === "devices"
+    ? ((value?.devices as MeshAccountDevice[] | undefined) ?? []).map((device) => `${device.revoked ? "revoked" : "active"}\t${device.enrollmentId}\t${device.displayName ?? "(unnamed)"}`).join("\n") || "No devices enrolled."
+    : `${action === "rename" ? "Renamed" : "Revoked"} enrollment ${enrollmentId}.`;
+  writeJsonOrHuman(context, { ok: true, result: value }, human);
+}
+
+const MESH_USAGE =
+  "Usage: anvil-cloud mesh <plan|apply|remove> --backend <path> --name <worker> [--mode hosted|self-hosted] [--stage production] [--env <name>] [--account-id <id>] [--base-url <url>|--subdomain <sub>] [--bucket <name>] [--oidc-issuer <url> --oidc-client-id <id>] [--first-deploy] [--dev] [--temporary] [--json]";
+
+async function readMeshRecipeOptions(
+  context: CliContext,
+): Promise<CreateMeshDeploymentPlanOptions | undefined> {
   const backendDir = context.values.get("backend");
   const workerName = context.values.get("name");
 
@@ -3446,6 +3606,49 @@ function readMeshRecipeOptions(
   const artifactsBucketName = context.values.get("bucket");
   const configPath = context.values.get("config-out");
   const connectionPath = context.values.get("connection-out");
+  const managedProvisionerService = context.values.get("managed-provisioner");
+  const varsFile = context.values.get("vars-file");
+  if (varsFile) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(
+        await readFile(path.resolve(varsFile), "utf8"),
+      ) as unknown;
+    } catch {
+      writeInvalidUsage(context, "--vars-file must contain valid JSON.");
+      return undefined;
+    }
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      Array.isArray(parsed)
+    ) {
+      writeInvalidUsage(context, "--vars-file must contain a JSON object.");
+      return undefined;
+    }
+    const entries = Object.entries(parsed as Record<string, unknown>);
+    if (
+      entries.some(
+        ([name, value]) =>
+          !/^[A-Z][A-Z0-9_]{0,127}$/.test(name) ||
+          typeof value !== "string" ||
+          value.length > 16_384,
+      )
+    ) {
+      writeInvalidUsage(
+        context,
+        "--vars-file contains invalid variable names or values.",
+      );
+      return undefined;
+    }
+    Object.assign(vars, Object.fromEntries(entries));
+  }
+  const databaseOverride = context.values.get("database");
+  const mode = context.values.get("mode") ?? "self-hosted";
+  if (mode !== "hosted" && mode !== "self-hosted") {
+    writeInvalidUsage(context, "--mode must be hosted or self-hosted.");
+    return undefined;
+  }
 
   return {
     backendDir,
@@ -3464,11 +3667,14 @@ function readMeshRecipeOptions(
     dev: context.flags.has("dev"),
     authentication: context.flags.has("temporary") ? "temporary" : "permanent",
     allowInsecureBaseUrl: context.flags.has("allow-insecure"),
+    deploymentMode: mode,
+    ...(managedProvisionerService ? { managedProvisionerService } : {}),
+    ...(databaseOverride ? { databaseName: databaseOverride } : {}),
   };
 }
 
 async function commandMeshPlan(context: CliContext): Promise<void> {
-  const options = readMeshRecipeOptions(context);
+  const options = await readMeshRecipeOptions(context);
   if (!options) return;
 
   const plan = await createMeshDeploymentPlan(options);
@@ -3501,7 +3707,7 @@ async function commandMeshLifecycle(
   context: CliContext,
   operation: "apply" | "remove",
 ): Promise<void> {
-  const options = readMeshRecipeOptions(context);
+  const options = await readMeshRecipeOptions(context);
   if (!options) return;
 
   const plan = await createMeshDeploymentPlan(options);
@@ -3512,6 +3718,7 @@ async function commandMeshLifecycle(
       ? { evidence: { reference: evidenceReference } }
       : {}),
     ...(context.flags.has("dry-run") ? { dryRun: true } : {}),
+    ...(context.flags.has("test-deployment") ? { testDeployment: true } : {}),
   };
   const result =
     operation === "apply"
@@ -3532,6 +3739,112 @@ async function commandMeshLifecycle(
   if (!result.ok) {
     process.exitCode = result.gated ? 2 : 5;
   }
+}
+
+async function commandMeshProvision(context: CliContext): Promise<void> {
+  const options = await readMeshRecipeOptions(context);
+  if (!options) return;
+  const plan = await createMeshDeploymentPlan(options);
+  if (plan.diagnostics.some((diagnostic) => diagnostic.severity === "block")) {
+    writeJsonOrHuman(
+      context,
+      { ok: false, plan },
+      formatMeshPlan(plan, undefined),
+    );
+    process.exitCode = 4;
+    return;
+  }
+  const result = await provisionMeshResources({ plan });
+  await writeMeshWranglerConfig(result.plan);
+  writeJsonOrHuman(
+    context,
+    result,
+    `Mesh resources: ${result.ok ? "ready" : "failed"}`,
+  );
+  if (!result.ok) process.exitCode = 5;
+}
+
+async function commandMeshMigrate(context: CliContext): Promise<void> {
+  const options = await readMeshRecipeOptions(context);
+  if (!options) return;
+  const plan = await createMeshDeploymentPlan(options);
+  const result = await migrateMeshDatabases({ plan });
+  writeJsonOrHuman(
+    context,
+    result,
+    `Mesh migrations: ${result.ok ? "applied" : "failed"}`,
+  );
+  if (!result.ok) process.exitCode = 5;
+}
+
+async function commandMeshSecrets(context: CliContext): Promise<void> {
+  const options = await readMeshRecipeOptions(context);
+  const source = context.values.get("from-file");
+  const fromStdin = context.flags.has("from-stdin");
+  if (!options || (!source && !fromStdin) || (source && fromStdin)) {
+    writeInvalidUsage(
+      context,
+      `${MESH_USAGE} --from-file <json> | --from-stdin`,
+    );
+    return;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(
+      fromStdin
+        ? await readStandardInput()
+        : await readFile(path.resolve(source!), "utf8"),
+    ) as unknown;
+  } catch {
+    writeInvalidUsage(context, "Secret input must be valid JSON.");
+    return;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    writeInvalidUsage(
+      context,
+      "--from-file must contain a JSON object of secret names to values.",
+    );
+    return;
+  }
+  const entries = Object.entries(parsed as Record<string, unknown>);
+  if (
+    entries.some(
+      ([name, value]) =>
+        !/^[A-Z][A-Z0-9_]{0,127}$/.test(name) ||
+        typeof value !== "string" ||
+        value.length === 0 ||
+        value.length > 16_384,
+    )
+  ) {
+    writeInvalidUsage(
+      context,
+      "Secret input contains invalid names or values.",
+    );
+    return;
+  }
+  const secrets = Object.fromEntries(entries) as Record<string, string>;
+  const result = await provisionMeshSecrets({
+    plan: await createMeshDeploymentPlan(options),
+    secrets,
+  });
+  writeJsonOrHuman(
+    context,
+    { ...result, secrets: Object.keys(secrets) },
+    `Mesh secrets: ${result.ok ? "provisioned" : "failed"}`,
+  );
+  if (!result.ok) process.exitCode = 5;
+}
+
+async function readStandardInput(): Promise<string> {
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  for await (const chunk of process.stdin) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+    bytes += buffer.byteLength;
+    if (bytes > 65_536) throw new Error("Secret input exceeds 64 KiB.");
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 async function commandMeshConnection(context: CliContext): Promise<void> {
@@ -5497,9 +5810,12 @@ function writeHelp(): void {
       "  anvil-cloud plan --stage dev --adapter aws|cloudflare [--temporary] [--verbose] [--json]",
       "  anvil-cloud deploy --stage dev --adapter aws [--verbose] [--json]",
       "  anvil-cloud remove --stage dev --adapter aws [--verbose] [--json]",
-      "  anvil-cloud mesh plan --backend <path> --name <worker> [--stage production] [--env <name>] [--base-url <url>|--subdomain <sub>] [--oidc-issuer <url> --oidc-client-id <id>] [--first-deploy] [--write] [--json]",
-      "  anvil-cloud mesh apply --backend <path> --name <worker> [--evidence <ref>] [--dry-run] [--json]",
-      "  anvil-cloud mesh remove --backend <path> --name <worker> [--evidence <ref>] [--json]",
+      "  anvil-cloud mesh account bootstrap --url <backend-url> --account <id> [--admin-token-env ENV] [--json]",
+      "  anvil-cloud mesh account devices|rename|revoke --url <backend-url> [--access-token-env ENV] [--enrollment <id>] [--name <name>] [--json]",
+      "  anvil-cloud mesh plan|provision|migrate|secrets --backend <path> --name <worker> [--mode hosted|self-hosted] [--database <name>] [--vars-file <json>] [--from-file <json>|--from-stdin] [--json]",
+      "  anvil-cloud mesh provisioner <plan|apply|remove|secrets> --provisioner <path> --name <worker> [--from-file <path>|--from-stdin] [--json]",
+      "  anvil-cloud mesh apply --backend <path> --name <worker> [--stage <name>] [--evidence <ref>] [--test-deployment] [--dry-run] [--json]",
+      "  anvil-cloud mesh remove --backend <path> --name <worker> [--stage <name>] [--evidence <ref>] [--test-deployment] [--json]",
       "  anvil-cloud mesh connection --name <worker> --base-url <url> [--stage production] [--out <path>] [--json]",
       "  anvil-cloud deploy --preview [--name branch] [--wait] [--wait-timeout 60] [--json]",
       "  anvil-cloud rollback --preview --app <name> --to-deployment <id> --dry-run [--json]",

@@ -30,33 +30,32 @@ anvil-cloud review --adapter cloudflare --temporary --env preview --json
 Temporary mode records provider requirements and compatibility diagnostics. It
 does not create an account or expose temporary API tokens or claim URLs.
 
-## Mesh backend recipe
+## Sync/Mesh backend deployment
 
-The package also carries a bounded deployment recipe for the Anvil Mesh
-backend: an existing Cloudflare Worker project consumed in place rather than
-re-bundled. `createMeshDeploymentPlan` reads the project's own
-`wrangler.jsonc` for Durable Object bindings, migration tags, R2 buckets, and
-compatibility date, then renders a generated overlay config
-(`wrangler.mesh.jsonc`) that Wrangler builds and deploys.
+The package also deploys the existing Anvil Sync/Mesh Worker directly from its
+source project. `anvil-cloud mesh` supports `--mode self-hosted` and
+`--mode hosted`, resource provisioning, hosted D1 migrations, secret installation,
+and an optional Sandbox provisioner deployment. Hosted mode retains billing
+vars, D1, cron triggers and service bindings from `wrangler.hosted.jsonc`.
 
 ```sh
-anvil-cloud mesh plan --backend <path> --name <worker> --first-deploy \
-  --base-url https://mesh.example.com --write --json
-anvil-cloud mesh connection --name <worker> --base-url <url> --out <path> --json
+anvil-cloud mesh plan --backend <path> --name <worker> --mode hosted --json
+anvil-cloud mesh provision <target-options> --json
+anvil-cloud mesh migrate <target-options> --json
+anvil-cloud mesh apply <target-options> --dry-run --json
+anvil-cloud mesh apply <target-options> --stage staging --test-deployment --json
+anvil-cloud mesh secrets <target-options> --from-file <secret-json> --json
+anvil-cloud mesh provisioner plan --provisioner <path> --name <worker> --json
 ```
 
-Apply and remove are gated behind recorded provider lifecycle evidence, the
-same convention as the Cell plan-only gate: without an evidence reference,
-`mesh apply`/`mesh remove` report `MESH_PROVIDER_EVIDENCE_REQUIRED` and never
-invoke Wrangler. `mesh apply --dry-run` compiles locally without evidence.
-Development-only backend keys (`ANVIL_DEV_SPIKE`, `ENROLLMENT_ADMIN_TOKEN`)
-fail closed in every non-dev plan.
+Use the [deployment runbook](../../../anvil-app/docs/runbooks/hosted-sync/deploy.md)
+from the monorepo for complete target options and the branch-testing sequence.
+The [recipe architecture](../../docs/architecture/cloudflare-mesh-recipe.md)
+documents config generation, target isolation and lifecycle behavior.
 
-After apply — or directly from `--base-url`/`--subdomain` plan inputs — the
-recipe exports a pinnable connection record
-`{ baseUrl, descriptorUrl: "<base>/.well-known/anvil-backend" }` for the
-desktop. See `docs/architecture/cloudflare-mesh-recipe.md` for the full
-lifecycle contract.
+Production apply/remove requires a provider evidence reference. Explicit
+`--test-deployment` is available only for a non-production stage; dry-runs need
+no evidence. The generic Cell adapter's plan-only gate remains unchanged.
 
 From the workspace root, compile the generated Worker through Wrangler without
 making provider calls:

@@ -66,6 +66,7 @@ interface BrowserSession {
   priv: string; // base64 raw X25519 private scalar — tab-scoped only
   pub: string; // base64 raw X25519 public key
   challenge: string;
+  expiresAt?: string;
 }
 
 const SESSION_KEY = "anvil.dashboard.session";
@@ -169,46 +170,63 @@ export function DashboardAccess() {
     const current = phase;
     if (current.kind !== "pending") return;
     let cancelled = false;
+    let polling = false;
     const session = current.session;
     const poll = async () => {
-      const result = await dashboardStatusAction(session.requestId);
-      if (cancelled) return;
-      if (!result.ok) {
-        if (result.code === "not-found") endSession("expired");
-        else setError(result.message);
-        return;
-      }
-      setError(null);
-      const status = result.data;
-      if (status.state === "pending") return;
-      if (status.state === "approved" && status.grant !== undefined) {
-        if (status.accountId === undefined || status.backendId === undefined) {
-          setError("The backend omitted routing metadata — cannot verify the grant.");
+      if (polling) return;
+      polling = true;
+      try {
+        if (session.expiresAt !== undefined && Date.parse(session.expiresAt) <= Date.now()) {
+          endSession("expired");
           return;
         }
-        const inner = await unwrapDashboardGrant(
-          b64decode(session.priv),
-          b64decode(session.pub),
-          status.grant as DashboardGrantEnvelope,
-          { backendId: status.backendId, accountId: status.accountId }
-        );
-        if (inner === null) {
-          setError("Could not open the sealed grant — request access again.");
+        const result = await dashboardStatusAction(session.requestId);
+        if (cancelled) return;
+        if (!result.ok) {
+          if (result.code === "not-found") endSession("expired");
+          else setError(result.message);
           return;
         }
-        setPhase({
-          kind: "unlocked",
-          session,
-          backendId: status.backendId,
-          accountId: status.accountId,
-          dsk: decodeDsk(inner),
-          scopes: inner.scopes,
-          expiresAt: inner.expiresAt
-        });
-        return;
-      }
-      if (status.state === "denied" || status.state === "expired" || status.state === "revoked") {
-        endSession(status.state);
+        setError(null);
+        const status = result.data;
+        if (status.state === "pending") return;
+        if (status.state === "approved" && status.grant !== undefined) {
+          if (status.accountId === undefined || status.backendId === undefined) {
+            setError("The backend omitted routing metadata — cannot verify the grant.");
+            return;
+          }
+          const inner = await unwrapDashboardGrant(
+            b64decode(session.priv),
+            b64decode(session.pub),
+            status.grant as DashboardGrantEnvelope,
+            { backendId: status.backendId, accountId: status.accountId }
+          );
+          if (inner === null) {
+            setError("Could not open the sealed grant — request access again.");
+            return;
+          }
+          setPhase({
+            kind: "unlocked",
+            session,
+            backendId: status.backendId,
+            accountId: status.accountId,
+            dsk: decodeDsk(inner),
+            scopes: inner.scopes,
+            expiresAt: inner.expiresAt
+          });
+          return;
+        }
+        if (status.state === "denied" || status.state === "expired" || status.state === "revoked") {
+          endSession(status.state);
+          return;
+        }
+        clearSession();
+        setPhase({ kind: "locked" });
+        setError("The dashboard service returned an invalid session state. Request access again.");
+      } catch {
+        if (!cancelled) setError("The dashboard service is unavailable. Retrying…");
+      } finally {
+        polling = false;
       }
     };
     void poll();
@@ -225,33 +243,55 @@ export function DashboardAccess() {
     const current = phase;
     if (current.kind !== "unlocked") return;
     let cancelled = false;
+    let polling = false;
     const ctx = current;
     const poll = async () => {
-      const status = await dashboardStatusAction(ctx.session.requestId);
-      if (cancelled) return;
-      if (!status.ok) return;
-      if (status.data.state === "revoked" || status.data.state === "expired") {
-        endSession(status.data.state);
-        return;
+      if (polling) return;
+      polling = true;
+      try {
+        if (Date.parse(ctx.expiresAt) <= Date.now()) {
+          endSession("expired");
+          return;
+        }
+        const status = await dashboardStatusAction(ctx.session.requestId);
+        if (cancelled) return;
+        if (!status.ok) {
+          if (status.code === "not-found") endSession("expired");
+          else setError(status.message);
+          return;
+        }
+        if (status.data.state === "revoked" || status.data.state === "expired") {
+          endSession(status.data.state);
+          return;
+        }
+        if (status.data.state !== "approved" || status.data.snapshotSeq === undefined) return;
+        if (status.data.snapshotSeq <= snapshotSeq) return;
+        const result = await dashboardSnapshotAction(ctx.session.requestId);
+        if (cancelled) return;
+        if (!result.ok) {
+          if (result.code === "not-found") endSession("expired");
+          else setError(result.message);
+          return;
+        }
+        const snapshot = result.data.snapshot as SealedSnapshot | undefined;
+        if (snapshot === undefined || snapshot.seq <= snapshotSeq) return;
+        const inner = await openDashboardSnapshot(ctx.dsk, snapshot, {
+          backendId: ctx.backendId,
+          accountId: ctx.accountId,
+          requestId: ctx.session.requestId
+        });
+        if (inner === null) {
+          setError("Received a snapshot that failed authentication — keeping the last good view.");
+          return;
+        }
+        setError(null);
+        setSnapshotSeq(snapshot.seq);
+        setProjection(inner as unknown as DashboardProjection);
+      } catch {
+        if (!cancelled) setError("The dashboard service is unavailable. Retrying…");
+      } finally {
+        polling = false;
       }
-      if (status.data.state !== "approved" || status.data.snapshotSeq === undefined) return;
-      if (status.data.snapshotSeq <= snapshotSeq) return;
-      const result = await dashboardSnapshotAction(ctx.session.requestId);
-      if (cancelled || !result.ok) return;
-      const snapshot = result.data.snapshot as SealedSnapshot | undefined;
-      if (snapshot === undefined || snapshot.seq <= snapshotSeq) return;
-      const inner = await openDashboardSnapshot(ctx.dsk, snapshot, {
-        backendId: ctx.backendId,
-        accountId: ctx.accountId,
-        requestId: ctx.session.requestId
-      });
-      if (inner === null) {
-        setError("Received a snapshot that failed authentication — keeping the last good view.");
-        return;
-      }
-      setError(null);
-      setSnapshotSeq(snapshot.seq);
-      setProjection(inner as unknown as DashboardProjection);
     };
     void poll();
     const timer = window.setInterval(() => void poll(), SNAPSHOT_POLL_MS);
@@ -276,18 +316,20 @@ export function DashboardAccess() {
     setError(null);
     try {
       const keypair = generateBrowserKeypair();
+      const expiresAt = new Date(Date.now() + REQUEST_TTL_MS).toISOString();
       const session: BrowserSession = {
         requestId: randomRequestId(),
         priv: b64encode(keypair.priv),
         pub: encodeBrowserPub(keypair.pub),
-        challenge: randomChallenge()
+        challenge: randomChallenge(),
+        expiresAt
       };
       const result = await requestDashboardAccessAction({
         requestId: session.requestId,
         browserPub: session.pub,
         challenge: session.challenge,
         scopes: ["read-dashboard", "submit-task", "approve-action", "request-handoff"],
-        expiresAt: new Date(Date.now() + REQUEST_TTL_MS).toISOString(),
+        expiresAt,
         origin: window.location.origin,
         userAgent: navigator.userAgent
       });
@@ -297,6 +339,8 @@ export function DashboardAccess() {
       }
       saveSession(session);
       setPhase({ kind: "pending", session });
+    } catch {
+      setError("Could not request dashboard access. Try again.");
     } finally {
       setBusy(false);
     }

@@ -27,7 +27,9 @@ export type MeshProvisionerDiagnostic = {
     | "PROVISIONER_OUTPUT_OVERWRITES_INPUT"
     | "PROVISIONER_AUTH_MISSING"
     | "PROVISIONER_TOKEN_REQUIRED"
-    | "PROVISIONER_PROVIDER_EVIDENCE_REQUIRED";
+    | "PROVISIONER_PROVIDER_EVIDENCE_REQUIRED"
+    | "PROVISIONER_TOKEN_READ_FAILED"
+    | "PROVISIONER_TEST_DEPLOYMENT_INVALID";
   severity: "info" | "review" | "block";
   message: string;
   hint?: string;
@@ -54,6 +56,8 @@ export type CreateMeshProvisionerDeploymentPlanOptions = {
   authentication?: CloudflareAuthenticationMode;
   /** `managed` is informational; both modes deploy the same fail-closed Worker. */
   mode?: "managed" | "byo";
+  stage?: string;
+  testDeployment?: boolean;
 };
 
 export type MeshProvisionerDeploymentPlan = {
@@ -61,6 +65,8 @@ export type MeshProvisionerDeploymentPlan = {
   recipe: typeof MESH_PROVISIONER_RECIPE_ID;
   adapter: "cloudflare";
   mode: "managed" | "byo";
+  stage: string;
+  testDeployment: boolean;
   authentication: CloudflareAuthenticationMode;
   workerName: string;
   accountId?: string;
@@ -129,6 +135,16 @@ export async function createMeshProvisionerDeploymentPlan(
   );
   const diagnostics: MeshProvisionerDiagnostic[] = [];
   const mode = options.mode ?? "byo";
+  const stage = options.stage ?? "production";
+  const testDeployment = options.testDeployment === true;
+  if (testDeployment && stage === "production") {
+    diagnostics.push({
+      code: "PROVISIONER_TEST_DEPLOYMENT_INVALID",
+      severity: "block",
+      message: "testDeployment requires a non-production provisioner stage.",
+      hint: "Use an explicit staging or preview stage for test deployments.",
+    });
+  }
   let source: JsonObject = {};
 
   if (!existsSync(sourceConfigPath)) {
@@ -221,6 +237,17 @@ export async function createMeshProvisionerDeploymentPlan(
           hint: "Run the image prepare step before deploy.",
         });
       }
+      if (
+        path.basename(resolved) === "Dockerfile.cloudflare" &&
+        !existsSync(path.join(path.dirname(resolved), "anvil-daemon.mjs"))
+      ) {
+        diagnostics.push({
+          code: "PROVISIONER_IMAGE_MISSING",
+          severity: "block",
+          message: `The staged daemon bundle is missing beside ${resolved}.`,
+          hint: "Run pnpm build:daemon in anvil-app, then cloud/images/anvil-worker/prepare.sh.",
+        });
+      }
     }
     return container;
   });
@@ -286,6 +313,8 @@ export async function createMeshProvisionerDeploymentPlan(
     mode,
     authentication: options.authentication ?? "permanent",
     workerName,
+    stage,
+    testDeployment,
     ...(options.accountId ? { accountId: options.accountId } : {}),
     provisionerDir,
     sourceConfigPath,
@@ -409,7 +438,24 @@ export async function provisionMeshProvisionerToken(
 ): Promise<MeshProvisionerLifecycleResult> {
   const gate = lifecycleGate(options, "provision-token");
   if (gate) return gate;
-  const token = await readProvisionerToken(options);
+  let token: string;
+  try {
+    token = await readProvisionerToken(options);
+  } catch {
+    return {
+      ok: false,
+      operation: "provision-token",
+      gated: true,
+      workerName: options.plan.workerName,
+      diagnostics: [
+        {
+          code: "PROVISIONER_TOKEN_READ_FAILED",
+          severity: "block",
+          message: "Could not read PROVISIONER_TOKEN from the selected input.",
+        },
+      ],
+    };
+  }
   if (!token)
     return {
       ok: false,
@@ -477,8 +523,12 @@ function lifecycleGate(
       workerName: options.plan.workerName,
       diagnostics: blocking,
     };
-  if (operation === "apply" && options.dryRun === true) return undefined;
-  if (!options.evidence?.reference)
+  if (
+    (operation === "apply" && options.dryRun === true) ||
+    (options.plan.testDeployment && options.plan.stage !== "production")
+  )
+    return undefined;
+  if (!options.evidence?.reference.trim())
     return {
       ok: false,
       operation,
@@ -499,12 +549,21 @@ function lifecycleGate(
 async function readProvisionerToken(
   options: ProvisionMeshProvisionerTokenOptions,
 ): Promise<string> {
-  if (options.token !== undefined) return options.token.trim();
-  if (options.tokenFile !== undefined)
-    return (await readFile(options.tokenFile, "utf8")).trim();
-  if (!options.stdin) return "";
-  let value = "";
-  for await (const chunk of options.stdin) value += String(chunk);
+  let value: string;
+  if (options.token !== undefined) value = options.token;
+  else if (options.tokenFile !== undefined)
+    value = await readFile(options.tokenFile, "utf8");
+  else if (!options.stdin) return "";
+  else {
+    value = "";
+    for await (const chunk of options.stdin) {
+      value += String(chunk);
+      if (Buffer.byteLength(value) > 65536)
+        throw new Error("token input exceeds 64KiB");
+    }
+  }
+  if (Buffer.byteLength(value) > 65536)
+    throw new Error("token input exceeds 64KiB");
   return value.trim();
 }
 
@@ -532,7 +591,11 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 function redactToken(value: string, token: string): string {
-  return value.split(token).join("[REDACTED_PROVISIONER_TOKEN]");
+  return value
+    .split(token)
+    .join("[REDACTED_PROVISIONER_TOKEN]")
+    .split(JSON.stringify(token))
+    .join('"[REDACTED_PROVISIONER_TOKEN]"');
 }
 
 function parseJsonc(source: string): unknown {

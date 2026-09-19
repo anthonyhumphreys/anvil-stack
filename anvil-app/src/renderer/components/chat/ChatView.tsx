@@ -107,6 +107,7 @@ import {
 import { groupPersonasForRole } from '../../utils/persona-groups';
 import { ItsmWorkbench } from './ItsmWorkbench';
 import { ExecutionTopologyPanel } from './ExecutionTopologyPanel';
+import { SessionOwnershipChip } from './SessionOwnershipChip';
 import {
   applyExecutionLifecycle,
   buildExecutionTopology,
@@ -711,6 +712,9 @@ export function ChatView({ userRole }: ChatViewProps) {
       }),
     [activeSessions, session, executionSessionStates, activeThread?.title, activeThreadId, entries],
   );
+  const visibleSessionId = executionTopology.nodes.find(
+    (node) => node.kind === 'session',
+  )?.sessionId;
   const showItsmWorkbench = userRole === 'itsm' && isItsmPersona && itsmWorkbenchOpen;
   const showActivitySidebar =
     activityOpen &&
@@ -1047,6 +1051,10 @@ export function ChatView({ userRole }: ChatViewProps) {
           )}
         </div>
       </div>
+
+      {!scaffoldModeActive && visibleSessionId && (
+        <SessionOwnershipChip key={visibleSessionId} sessionId={visibleSessionId} />
+      )}
 
       <div className="flex flex-1 overflow-hidden">
         {!scaffoldModeActive &&

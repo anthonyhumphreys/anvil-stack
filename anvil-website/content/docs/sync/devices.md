@@ -32,8 +32,11 @@ and each can be revoked without touching the others.
 ## First device: sign in
 
 1. Settings → Sync & Mesh → pick a backend mode (anything but Local only).
-2. Sign in with the account identity — WorkOS on the hosted backend, whatever
-   issuer a compatible backend declares.
+2. Sign in with the account identity — hosted desktop OIDC uses the WorkOS
+   issuer and public client advertised by the backend; a compatible backend
+   uses whatever issuer it declares. For a self-hosted enrollment-code
+   bootstrap, issue the first code from that backend's operator `/account`
+   page, then use normal in-app device management afterward.
 3. The backend creates the enrollment; the device generates and publishes its
    X25519 identity.
 4. The first sealed write mints ADK v1 locally. From that point, everything

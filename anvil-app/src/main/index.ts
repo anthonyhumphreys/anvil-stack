@@ -82,11 +82,7 @@ import { isTelemetryEnabled } from './services/settings.service.js';
 import { initializeTelemetry } from './services/telemetry.service.js';
 import { initializeAppUpdater } from './services/app-updater.service.js';
 import { registerExternalLinkHandling } from './services/external-link.service.js';
-import {
-  initSyncRuntime,
-  onAppFocus,
-  onSystemResume,
-} from './services/sync-runtime.service.js';
+import { initSyncRuntime, onAppFocus, onSystemResume } from './services/sync-runtime.service.js';
 
 const brandId = parseBrandFromArgs(process.argv);
 const brand = getBrand(brandId);
@@ -132,7 +128,9 @@ app.setName(
 );
 configureUserDataPath();
 initDatabase(brand.defaultTheme);
-initSyncRuntime(app.getPath('userData'), { devSpikeEnabled: !app.isPackaged });
+// The spike enrollment fixture is deliberately opt-in. Development builds
+// may enable it for a focused local fixture run, but unpackaged status alone
+// must never expose the enrollment path in the normal desktop UI.
 // Sleep/wake: the sync socket may have died silently while suspended.
 powerMonitor.on('resume', () => {
   onSystemResume();
@@ -350,6 +348,10 @@ if (!gotSingleInstanceLock) {
 }
 
 app.whenReady().then(() => {
+  // Startup reads the saved session. macOS safeStorage needs Electron ready first.
+  initSyncRuntime(app.getPath('userData'), {
+    devSpikeEnabled: !app.isPackaged && process.env.ANVIL_ENABLE_SYNC_SPIKE === '1',
+  });
   app.setAppUserModelId(brand.appId);
   if (process.platform === 'darwin' && app.dock) {
     app.dock.setIcon(getAppIconPath());

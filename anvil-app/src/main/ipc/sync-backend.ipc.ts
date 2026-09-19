@@ -26,7 +26,20 @@ export function registerSyncBackendHandlers(): void {
     if (!isRecord(payload) || typeof payload['baseUrl'] !== 'string') {
       throw new Error('pin payload must include a baseUrl string and a descriptor');
     }
-    pinBackend({ baseUrl: payload['baseUrl'], descriptor: payload['descriptor'] });
+    const connectionMode = payload['connectionMode'];
+    if (
+      connectionMode !== undefined &&
+      connectionMode !== 'hosted' &&
+      connectionMode !== 'cloudflare' &&
+      connectionMode !== 'compatible'
+    ) {
+      throw new Error('pin payload has an invalid connection mode');
+    }
+    pinBackend({
+      baseUrl: payload['baseUrl'],
+      descriptor: payload['descriptor'],
+      ...(connectionMode === undefined ? {} : { connectionMode }),
+    });
     return getBackendStatus();
   });
 

@@ -50,6 +50,7 @@ export interface SyncBackendDiscovery {
 export interface SyncBackendPinInput {
   baseUrl: string;
   descriptor: SyncBackendDescriptor;
+  connectionMode?: SyncBackendConnectionMode;
 }
 
 export interface SyncBackendStatus {
@@ -63,6 +64,8 @@ export interface SyncBackendStatus {
   state: SyncBackendState | null;
   /** Endpoint or issuer changed under the same deployment ID; re-review needed. */
   identityReviewRequired: boolean;
+  /** Public operator-provided hosted endpoint, when configured in main. */
+  hostedBackendUrl: string | null;
 }
 
 /** Exhaustive label helper so new connection modes fail closed at compile time. */

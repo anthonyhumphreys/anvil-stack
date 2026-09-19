@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  hostedIdentityFromOidcSubject,
   initialHostedSyncAccountId,
   requireHostedIdentityBinding,
   validateHostedIdentity,
@@ -25,6 +26,13 @@ function binding(overrides: Partial<HostedIdentityBinding> = {}): HostedIdentity
 }
 
 describe('validateHostedIdentity', () => {
+  it('maps a verified OIDC subject to the website identity tuple', () => {
+    expect(hostedIdentityFromOidcSubject(identity.workosClientId, identity.workosUserId)).toEqual(
+      identity,
+    );
+    expect(hostedIdentityFromOidcSubject(identity.workosClientId, 'sub_not_workos_user')).toBeNull();
+  });
+
   it('accepts well-formed identities', () => {
     expect(validateHostedIdentity(identity)).toBe(true);
   });

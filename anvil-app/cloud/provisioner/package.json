@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "test": "vitest run --config vitest.config.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -15,6 +16,7 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260911.1",
     "typescript": "^5.9.2",
-    "wrangler": "^4.131.0"
+    "vitest": "4.1.0",
+    "wrangler": "4.135.0"
   }
 }

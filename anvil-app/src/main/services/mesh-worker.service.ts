@@ -394,8 +394,13 @@ export async function setMeshWorkerEnabled(enabled: boolean): Promise<MeshWorker
   // Arm before connect: if the first connect fails (offline, policy lag),
   // the 30s tick retries instead of leaving the worker enabled-but-dead.
   armHeartbeat();
-  await publishWorkerPolicy();
-  await connectWorker();
+  try {
+    await publishWorkerPolicy();
+    await connectWorker();
+  } catch (error) {
+    writeWorkerState({ last_error: error instanceof Error ? error.message : String(error) });
+    if (!(error instanceof BackendRpcError) || !error.retryable) throw error;
+  }
   return getMeshWorkerStatus();
 }
 
@@ -494,7 +499,8 @@ async function doConnectWorker(): Promise<void> {
 /** Called by the runtime when sync becomes enabled / the channel goes live. */
 export function meshWorkerOnSyncReady(): void {
   if (!isMeshWorkerEnabled()) return;
-  void connectWorker()
+  void publishWorkerPolicy()
+    .then(() => connectWorker())
     .then(() => publishReplicas())
     .then(() => sweepClaimableJobs())
     // ENV-03: reclaim environments whose TTL lapsed while this provisioner
@@ -557,6 +563,7 @@ async function heartbeat(): Promise<void> {
   const state = readWorkerState();
   const leaseExpiry = state.lease_expires_at !== null ? Date.parse(state.lease_expires_at) : 0;
   if (state.incarnation === null || leaseExpiry - Date.now() < LEASE_RENEW_INTERVAL_MS) {
+    if (state.incarnation === null) await publishWorkerPolicy();
     await connectWorker();
   }
   await renewActiveAttempts();
@@ -2058,9 +2065,7 @@ async function gitHead(cwd: string): Promise<string | null> {
  * copy carries only bounded metadata.
  */
 function publicResultSummary(result: Record<string, unknown>): Record<string, unknown> {
-  const redactVerification = (
-    value: unknown,
-  ): unknown => {
+  const redactVerification = (value: unknown): unknown => {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) return value;
     const record = value as Record<string, unknown>;
     const out: Record<string, unknown> = { ...record };
@@ -2268,9 +2273,7 @@ export function prepareSealedJob(request: SealedJobRequest): JobCreateParams {
     if (scope === undefined) {
       // Fail closed: private inputs never ride the coordinator-visible
       // manifest — without a sync scope there is no TCK to seal under.
-      throw new Error(
-        'job has private inputs but no sync scope is available to seal them',
-      );
+      throw new Error('job has private inputs but no sync scope is available to seal them');
     }
     const taskKey = mintTaskKey();
     sealedInputs = sealTaskInputs(scope, request.requestId, taskKey, privateInputs);
@@ -2720,9 +2723,7 @@ export function workflowNodeJobRequest(input: WorkflowNodeJobInput): {
         runId: input.runId,
         nodeId: input.nodeId,
         ...(input.personaId === undefined ? {} : { personaId: input.personaId }),
-        ...(input.reasoningEffort === undefined
-          ? {}
-          : { reasoningEffort: input.reasoningEffort }),
+        ...(input.reasoningEffort === undefined ? {} : { reasoningEffort: input.reasoningEffort }),
         ...(input.sandbox === undefined ? {} : { sandbox: input.sandbox }),
         ...(input.cliMinVersion === undefined ? {} : { cliMinVersion: input.cliMinVersion }),
         ...(input.turnTimeoutMs === undefined ? {} : { turnTimeoutMs: input.turnTimeoutMs }),
@@ -2734,9 +2735,7 @@ export function workflowNodeJobRequest(input: WorkflowNodeJobInput): {
           ? { kind: 'device', enrollmentId: input.targetEnrollmentId }
           : {
               kind: 'auto',
-              ...(input.requirements === undefined
-                ? {}
-                : { requirements: input.requirements }),
+              ...(input.requirements === undefined ? {} : { requirements: input.requirements }),
             });
       return {
         requestId,

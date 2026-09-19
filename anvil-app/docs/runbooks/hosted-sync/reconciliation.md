@@ -1,6 +1,6 @@
 # Billing reconciliation — `/internal/hosted/reconcile`
 
-Packet: **BILL-06** operations. Reconcile pulls canonical subscription state
+Historical packet reference: **BILL-06** operations. Reconcile pulls canonical subscription state
 from Stripe (`GET /v1/subscriptions?customer=…&status=all&limit=25`), upserts
 each row into `stripe_subscriptions`, stamps `billing_meta.last_reconcile_at`
 and writes a `billing_audit` entry. It is the repair path for lost,

@@ -63,7 +63,9 @@ export function SessionOwnershipChip({ sessionId }: { sessionId: string }): Reac
     };
   }, [refresh]);
 
-  if (meshState === null) return null;
+  // The device roster is available only after sign-in. A local-only chat has
+  // no destination to show and should not display a misleading Move control.
+  if (meshState === null || devices === null) return null;
 
   const selfEnrollmentId = devices?.find((d) => d.self === true)?.enrollmentId;
   const latestHandoff: HandoffRecord | undefined = meshState.handoffs[0];
@@ -153,10 +155,16 @@ export function SessionOwnershipChip({ sessionId }: { sessionId: string }): Reac
             className="flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-0.5 text-[11px] text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
           >
             <ArrowRightLeft size={10} />
-            Move
+            Move session
           </button>
         )}
       </div>
+
+      {ownedHere && !inFlight && targets.length === 0 && (
+        <p className="mt-1 text-xs text-text-tertiary">
+          Connect another device to move this session.
+        </p>
+      )}
 
       {moveOpen && canMove && (
         <ul className="mt-1.5 space-y-1">

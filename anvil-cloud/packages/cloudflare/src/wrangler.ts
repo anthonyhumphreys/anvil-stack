@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import path from "node:path";
 
 import type { CloudflareAuthenticationMode } from "./support.js";
 
@@ -15,6 +17,8 @@ export type WranglerCommandRunner = (options: {
   args: string[];
   cwd: string;
   env: NodeJS.ProcessEnv;
+  input?: string;
+  stdin?: string;
 }) => Promise<WranglerCommandResult>;
 
 /**
@@ -29,6 +33,7 @@ export type WranglerDeployTarget = {
   config: string;
   /** Worker script name used for result reporting. */
   workerName: string;
+  environmentName?: string;
 };
 
 export type RunCloudflareWranglerDeployOptions = {
@@ -76,7 +81,10 @@ export async function runCloudflareWranglerDeploy(
   options: RunCloudflareWranglerDeployOptions,
 ): Promise<CloudflareWranglerDeployResult> {
   const run = options.run ?? runWranglerCommand;
-  const invocation = prepareWranglerInvocation(options);
+  const invocation = prepareWranglerInvocation({
+    ...options,
+    cwd: options.artifacts.directory,
+  });
   await assertWranglerVersion(
     invocation,
     run,
@@ -89,6 +97,9 @@ export async function runCloudflareWranglerDeploy(
     "deploy",
     "--config",
     options.artifacts.config,
+    ...(options.artifacts.environmentName
+      ? ["--env", options.artifacts.environmentName]
+      : []),
     ...(options.dryRun ? ["--dry-run"] : []),
     ...(options.authentication === "temporary" && !options.dryRun
       ? ["--temporary"]
@@ -130,7 +141,10 @@ export async function runCloudflareWranglerDelete(
   options: RunCloudflareWranglerDeleteOptions,
 ): Promise<CloudflareWranglerDeleteResult> {
   const run = options.run ?? runWranglerCommand;
-  const invocation = prepareWranglerInvocation(options);
+  const invocation = prepareWranglerInvocation({
+    ...options,
+    cwd: options.artifacts.directory,
+  });
   await assertWranglerVersion(
     invocation,
     run,
@@ -145,6 +159,9 @@ export async function runCloudflareWranglerDelete(
       "delete",
       "--config",
       options.artifacts.config,
+      ...(options.artifacts.environmentName
+        ? ["--env", options.artifacts.environmentName]
+        : []),
     ],
     cwd: options.artifacts.directory,
     env: invocation.env,
@@ -185,7 +202,7 @@ export const runWranglerCommand: WranglerCommandRunner = async (options) =>
     const child = spawn(options.command, options.args, {
       cwd: options.cwd,
       env: options.env,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
     });
     let stdout = "";
     let stderr = "";
@@ -198,6 +215,11 @@ export const runWranglerCommand: WranglerCommandRunner = async (options) =>
     child.stderr.on("data", (chunk: string) => {
       stderr += chunk;
     });
+    const input = options.input ?? options.stdin;
+    child.stdin.on("error", (error: NodeJS.ErrnoException) => {
+      if (error.code !== "EPIPE") reject(error);
+    });
+    child.stdin.end(input);
     child.once("error", reject);
     child.once("close", (code) => {
       resolve({ exitCode: code ?? 1, stdout, stderr });
@@ -215,6 +237,7 @@ function prepareWranglerInvocation(options: {
   command?: string;
   commandPrefixArgs?: string[];
   env?: NodeJS.ProcessEnv;
+  cwd: string;
 }): PreparedWranglerInvocation {
   const inheritedEnv =
     options.authentication === "temporary"
@@ -222,7 +245,11 @@ function prepareWranglerInvocation(options: {
       : { ...(options.env ?? process.env) };
 
   return {
-    command: options.command ?? "wrangler",
+    command:
+      options.command ??
+      (existsSync(path.join(options.cwd, "node_modules", ".bin", "wrangler"))
+        ? path.join(options.cwd, "node_modules", ".bin", "wrangler")
+        : "wrangler"),
     prefix: options.commandPrefixArgs ?? [],
     env: {
       ...inheritedEnv,

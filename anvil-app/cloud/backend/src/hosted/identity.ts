@@ -23,6 +23,15 @@ export function validateHostedIdentity(value: unknown): value is HostedIdentity 
   );
 }
 
+/** Maps a verified OIDC subject to the identity tuple used by the website. */
+export function hostedIdentityFromOidcSubject(
+  workosClientId: string,
+  subject: string,
+): HostedIdentity | null {
+  const identity = { workosClientId, workosUserId: subject };
+  return validateHostedIdentity(identity) ? identity : null;
+}
+
 export async function initialHostedSyncAccountId(identity: HostedIdentity): Promise<string> {
   if (!validateHostedIdentity(identity)) throw new Error('Invalid hosted identity');
   return `workos_${await sha256Hex(JSON.stringify([identity.workosClientId, identity.workosUserId]))}`;

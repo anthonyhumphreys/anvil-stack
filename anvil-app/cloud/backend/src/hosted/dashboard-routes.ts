@@ -32,15 +32,35 @@ async function resolveSyncAccount(
   return { syncAccountId: account.sync_account_id };
 }
 
-function forwardToAccount(env: Env, accountId: string, path: string, body: unknown): Promise<Response> {
+/**
+ * The account coordinator speaks the versioned RPC envelope, while the
+ * signed hosted service channel exposes the plain hosted contract used by
+ * the website. Unwrap successful coordinator responses at this boundary;
+ * forwarding the envelope makes the browser see an object with no `state`
+ * (and consequently poll forever).
+ */
+async function forwardToAccount(
+  env: Env,
+  accountId: string,
+  path: string,
+  body: unknown,
+): Promise<Response> {
   const stub = env.ACCOUNT.get(env.ACCOUNT.idFromName(accountId));
-  return stub.fetch(
+  const response = await stub.fetch(
     new Request(`https://internal.anvil${path}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     }),
   );
+  const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+  if (!response.ok || payload === null) {
+    return Response.json(payload ?? { error: { code: 'unavailable' } }, {
+      status: response.status,
+    });
+  }
+  const result = payload['result'];
+  return Response.json(result === undefined ? payload : result, { status: response.status });
 }
 
 /**

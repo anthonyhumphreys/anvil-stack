@@ -51,9 +51,20 @@ import type {
   SharedArtifactDescriptor,
   SharedArtifactState,
 } from '../../contract/shares';
-import { verifyOidcPkceProof } from './oidc';
+import { isWorkosAuthKitIssuer, verifyOidcPkceProof } from './oidc';
 import { isRecord, rpcErrorResponse } from './rpc';
 import { SESSION_SCHEMA } from './schema';
+import {
+  hostedIdentityFromOidcSubject,
+  initialHostedSyncAccountId,
+} from './hosted/identity';
+import {
+  HostedConflictError,
+  bumpGeneration,
+  getBillingAccountByIdentity,
+  getOrCreateBillingAccount,
+  setSyncAccountLink,
+} from './hosted/store';
 
 const ACCESS_TTL_MS = 15 * 60 * 1000;
 const REFRESH_GRACE_MS = 30 * 1000;
@@ -81,6 +92,11 @@ const SHARE_MAX_MEDIA_TYPE_CHARS = 128;
 const SHARE_DEFAULT_EXPIRES_DAYS = 30;
 const SHARE_MAX_EXPIRES_DAYS = 365;
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Stable account namespace retained for generic OIDC/self-host deployments. */
+export async function legacyOidcAccountId(issuer: string, sub: string): Promise<string> {
+  return `oidc_${await sha256Hex(`${issuer.replace(/\/+$/, '')}:${sub}`)}`;
+}
 
 interface SessionRow {
   enrollment_id: string;
@@ -457,6 +473,72 @@ export class SessionCoordinator extends DurableObject<Env> {
     return (await this.accountMeta(accountId)).epoch;
   }
 
+  /**
+   * Resolves an OIDC subject through the hosted identity directory when this
+   * worker is the hosted deployment. The website and desktop may use separate
+   * WorkOS application clients, so HOSTED_WORKOS_CLIENT_ID selects the client
+   * id used by the website's billing_accounts identity key. This keeps direct
+   * desktop sign-in on the same account as the website and therefore preserves
+   * preview/billing state and the existing E2EE account boundary.
+   *
+   * Self-host deployments retain their issuer-and-subject account namespace
+   * without creating any billing record.
+   */
+  private async resolveOidcAccountId(
+    issuer: string,
+    clientId: string,
+    sub: string,
+  ): Promise<string | null> {
+    // Preserve the generic OIDC namespace and generation walk. Hosted
+    // WorkOS linking is deliberately opt-in to the fixed AuthKit authority
+    // below, so another provider cannot impersonate a WorkOS user id.
+    if (!isWorkosAuthKitIssuer(issuer) || this.env.HOSTED_DB === undefined) {
+      let accountId = await legacyOidcAccountId(issuer, sub);
+      if (this.deletionRow(accountId) !== null) {
+        const base = accountId;
+        for (let generation = 2; ; generation += 1) {
+          const candidate = `${base}~${generation}`;
+          if (this.deletionRow(candidate) === null) {
+            accountId = candidate;
+            break;
+          }
+        }
+      }
+      return accountId;
+    }
+    const identity = hostedIdentityFromOidcSubject(
+      this.env.HOSTED_WORKOS_CLIENT_ID ?? clientId,
+      sub,
+    );
+    if (identity === null) return null;
+    const base = await initialHostedSyncAccountId(identity).catch(() => null);
+    if (base === null) return null;
+    const db = this.env.HOSTED_DB;
+    const billing = await getOrCreateBillingAccount(db, identity);
+    if (billing.lifecycle !== 'active') return null;
+
+    let accountId = billing.sync_account_id ?? base;
+    if (this.deletionRow(accountId) !== null) {
+      // The billing row's generation is the authoritative hosted mapping.
+      // Advance it until the matching SessionCoordinator tombstone is clear.
+      for (;;) {
+        const bumped = await bumpGeneration(db, billing.id);
+        accountId = bumped.syncAccountId;
+        if (this.deletionRow(accountId) === null) break;
+      }
+    } else if (billing.sync_account_id === null) {
+      try {
+        await setSyncAccountLink(db, billing.id, accountId);
+      } catch (error) {
+        if (!(error instanceof HostedConflictError)) throw error;
+        const current = await getBillingAccountByIdentity(db, identity);
+        if (current?.lifecycle !== 'active' || current.sync_account_id === null) return null;
+        accountId = current.sync_account_id;
+      }
+    }
+    return accountId;
+  }
+
   private sessionByEnrollment(enrollmentId: string): SessionRow | null {
     const rows = this.ctx.storage.sql
       .exec('SELECT * FROM device_sessions WHERE enrollment_id = ?', enrollmentId)
@@ -612,22 +694,11 @@ export class SessionCoordinator extends DurableObject<Env> {
       if (sub === null) {
         return authError('invalid-proof');
       }
-      accountId = `oidc_${await sha256Hex(`${issuer.replace(/\/+$/, '')}:${sub}`)}`;
-      // Recreated accounts get a new internal identity (spec §140): when
-      // the derived accountId is tombstoned, walk to the next generation
-      // (`oidc_X~2`, `oidc_X~3`, …). Each dead generation's tombstone keeps
-      // its stale clients locked out; the new generation is a fresh
-      // account object with its own epoch.
-      if (this.deletionRow(accountId) !== null) {
-        const base = accountId;
-        for (let generation = 2; ; generation += 1) {
-          const candidate = `${base}~${generation}`;
-          if (this.deletionRow(candidate) === null) {
-            accountId = candidate;
-            break;
-          }
-        }
+      const resolved = await this.resolveOidcAccountId(issuer, clientId, sub);
+      if (resolved === null) {
+        return authError('invalid-proof');
       }
+      accountId = resolved;
     } else {
       return authError('invalid-proof');
     }

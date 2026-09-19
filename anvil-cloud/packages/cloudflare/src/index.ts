@@ -39,6 +39,9 @@ export {
 export { createCloudflareWorkerName } from "./naming.js";
 export {
   applyMeshDeployment,
+  provisionMeshResources,
+  migrateMeshDatabases,
+  provisionMeshSecrets,
   createMeshConnectionRecord,
   createMeshDeploymentPlan,
   MESH_BACKEND_DESCRIPTOR_PATH,
@@ -60,11 +63,27 @@ export {
   type MeshLifecycleResult,
   type MeshProviderEvidence,
   type MeshR2BucketBinding,
+  type MeshD1DatabaseBinding,
+  type MeshResourceProvisionOptions,
+  type MeshResourceProvisionResult,
+  type MeshMigrateOptions,
+  type MeshSecretProvisionOptions,
+  type MeshServiceBinding,
   type MeshRecipeDiagnostic,
   type MeshRecipeGate,
   type MeshRecipeOperations,
   type MeshSecretInput,
 } from "./mesh-recipe.js";
+export {
+  applyMeshProvisionerDeployment,
+  createMeshProvisionerDeploymentPlan,
+  provisionMeshProvisionerToken,
+  removeMeshProvisionerDeployment,
+  writeMeshProvisionerWranglerConfig,
+  type MeshProvisionerDeploymentPlan,
+  type MeshProvisionerLifecycleOptions,
+  type MeshProvisionerLifecycleResult,
+} from "./mesh-provisioner.js";
 export {
   checkCloudflarePreviewSupport,
   type CloudflareAuthenticationMode,

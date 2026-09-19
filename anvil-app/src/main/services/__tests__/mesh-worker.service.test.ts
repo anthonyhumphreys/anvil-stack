@@ -33,8 +33,7 @@ const rpcCalls: RpcCall[] = [];
 let rpcHandler: (operation: string, params: unknown) => unknown = () => ({});
 
 vi.mock('../sync-backend-client.service.js', async (importOriginal) => {
-  const original =
-    await importOriginal<typeof import('../sync-backend-client.service.js')>();
+  const original = await importOriginal<typeof import('../sync-backend-client.service.js')>();
   return {
     ...original,
     rpc: async (
@@ -161,13 +160,42 @@ describe('mesh worker opt-in', () => {
     expect(status.connected).toBe(true);
     expect(status.workerIncarnation).toBe('inc-1');
     const ops = rpcCalls.map((c) => c.operation);
-    expect(ops).toEqual([
+    expect(ops).toEqual(['device.policy.publish', 'worker.connect', 'worker.capabilities.publish']);
+    const policy = rpcCalls[0].params as { worker: { allowJobs: boolean } };
+    expect(policy.worker.allowJobs).toBe(true);
+  });
+
+  it('keeps a retryable failed opt-in enabled and reconnects on heartbeat', async () => {
+    let unavailable = true;
+    rpcHandler = (operation) => {
+      if (operation === 'worker.connect') {
+        if (unavailable) throw new BackendRpcError({ code: 'unavailable', retryable: true });
+        return {
+          workerIncarnation: 'inc-recovered',
+          leaseExpiresAt: new Date(Date.now() + 90_000).toISOString(),
+        };
+      }
+      return {};
+    };
+
+    const first = await setMeshWorkerEnabled(true);
+    expect(first.enabled).toBe(true);
+    expect(first.connected).toBe(false);
+    expect(first.lastError).toContain('unavailable');
+
+    unavailable = false;
+    rpcCalls.length = 0;
+    await meshWorkerHeartbeatForTests();
+    expect(rpcCalls.map((call) => call.operation)).toEqual([
       'device.policy.publish',
       'worker.connect',
       'worker.capabilities.publish',
     ]);
-    const policy = rpcCalls[0].params as { worker: { allowJobs: boolean } };
-    expect(policy.worker.allowJobs).toBe(true);
+    expect(getMeshWorkerStatus()).toMatchObject({
+      enabled: true,
+      connected: true,
+      lastError: null,
+    });
   });
 
   it('publishes a denying policy and drops the incarnation on disable', async () => {
@@ -220,9 +248,11 @@ describe('job claim + diagnostic execution', () => {
     };
     await handleJobAvailable('job-1');
 
-    const row = db
-      .prepare('SELECT * FROM mesh_attempts WHERE id = ?')
-      .get('att-job-1') as { state: string; journal_json: string; result_json: string };
+    const row = db.prepare('SELECT * FROM mesh_attempts WHERE id = ?').get('att-job-1') as {
+      state: string;
+      journal_json: string;
+      result_json: string;
+    };
     expect(row.state).toBe('completed');
     const journal = JSON.parse(row.journal_json) as Array<{ event: string }>;
     // Journal shows claim → preparing → running → artifact → completed ordering.
@@ -271,9 +301,9 @@ describe('job claim + diagnostic execution', () => {
       return {};
     };
     await handleJobAvailable('job-2');
-    const row = db
-      .prepare('SELECT state FROM mesh_attempts WHERE id = ?')
-      .get('att-job-2') as { state: string };
+    const row = db.prepare('SELECT state FROM mesh_attempts WHERE id = ?').get('att-job-2') as {
+      state: string;
+    };
     expect(row.state).toBe('failed');
     const report = rpcCalls.find((c) => c.operation === 'attempt.report');
     expect((report!.params as { outcome: string }).outcome).toBe('failed');
@@ -304,9 +334,9 @@ describe('job claim + diagnostic execution', () => {
     const deadline = Date.now() + 5_000;
     let state: string | null = null;
     while (Date.now() < deadline) {
-      const row = db
-        .prepare('SELECT state FROM mesh_attempts WHERE job_id = ?')
-        .get('job-rec') as { state: string } | undefined;
+      const row = db.prepare('SELECT state FROM mesh_attempts WHERE job_id = ?').get('job-rec') as
+        | { state: string }
+        | undefined;
       state = row?.state ?? null;
       if (state === 'completed') break;
       await new Promise((resolve) => setTimeout(resolve, 25));
@@ -480,10 +510,12 @@ describe('createPrepareWorkspaceJob (SESSION-02)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'anvil-mesh-prepare-'));
     try {
       execFileSync('git', ['init'], { cwd: dir });
-      execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '--allow-empty', '-m', 'init'], { cwd: dir });
-      const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir })
-        .toString()
-        .trim();
+      execFileSync(
+        'git',
+        ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '--allow-empty', '-m', 'init'],
+        { cwd: dir },
+      );
+      const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir }).toString().trim();
       db.prepare(
         `INSERT INTO repos (id, name, path, status, created_at, updated_at)
          VALUES ('repo-1', 'repo', ?, 'connected', datetime('now'), datetime('now'))`,
@@ -524,9 +556,7 @@ describe('createPrepareWorkspaceJob (SESSION-02)', () => {
       expect(params.inputManifest.workspaceDefinitionRevision).toBe(
         workspaceDefinitionRevision('w2'),
       );
-      expect(params.inputManifest.repositories).toEqual([
-        { repositoryId: 'p1', commit: head },
-      ]);
+      expect(params.inputManifest.repositories).toEqual([{ repositoryId: 'p1', commit: head }]);
       expect(params.inputManifest.bootstrapDigest).toBe('none');
       expect(params.inputManifest.inputs['workspaceId']).toBe('w2');
     } finally {
@@ -588,9 +618,11 @@ describe('remote approval wait (SESSION-02)', () => {
       500,
     );
     expect(decision).toBe('approved');
-    const control = sentFrames.find(
-      (f) => (f as { streamId: string }).streamId === 'control',
-    ) as { type: string; streamId: string; payload: { kind: string; text: string } };
+    const control = sentFrames.find((f) => (f as { streamId: string }).streamId === 'control') as {
+      type: string;
+      streamId: string;
+      payload: { kind: string; text: string };
+    };
     expect(control).toBeDefined();
     expect(control.type).toBe('activity');
     expect(JSON.parse(control.payload.text)).toEqual({
@@ -758,7 +790,10 @@ const runTurnMock = vi.mocked(runRemoteSessionTurn);
 const probeMock = vi.mocked(probeSessionCli);
 
 describe('start-session executor (SESSION-02)', () => {
-  function seedSessionWorkspace(suffix: string, mapped = true): {
+  function seedSessionWorkspace(
+    suffix: string,
+    mapped = true,
+  ): {
     workspaceId: string;
     portableId: string;
     repoDir: string;
@@ -771,9 +806,7 @@ describe('start-session executor (SESSION-02)', () => {
       ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '--allow-empty', '-m', 'init'],
       { cwd: repoDir },
     );
-    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoDir })
-      .toString()
-      .trim();
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoDir }).toString().trim();
     const workspaceId = `w-sess-${suffix}`;
     const portableId = `p-${suffix}`;
     db.prepare(
@@ -847,18 +880,16 @@ describe('start-session executor (SESSION-02)', () => {
     db.exec('DELETE FROM mesh_session_ownership; DELETE FROM mesh_handoff_journal;');
     probeMock.mockReset().mockResolvedValue('0.44.0');
     runTurnMock.mockReset();
-    runTurnMock.mockImplementation(
-      async (_spec: RemoteSessionSpec, hooks: RemoteSessionHooks) => {
-        hooks.onThreadStarted('thr-mock');
-        return {
-          providerThreadId: 'thr-mock',
-          turnId: 'turn-1',
-          turnStatus: 'completed' as const,
-          cliVersion: '0.44.0',
-          cancelled: false,
-        };
-      },
-    );
+    runTurnMock.mockImplementation(async (_spec: RemoteSessionSpec, hooks: RemoteSessionHooks) => {
+      hooks.onThreadStarted('thr-mock');
+      return {
+        providerThreadId: 'thr-mock',
+        turnId: 'turn-1',
+        turnStatus: 'completed' as const,
+        cliVersion: '0.44.0',
+        cancelled: false,
+      };
+    });
     rpcHandler = (op) =>
       op === 'worker.connect'
         ? {
@@ -886,9 +917,7 @@ describe('start-session executor (SESSION-02)', () => {
       // Spawn intent precedes the thread record; turn markers bracket the run.
       expect(events).toContain('provider-spawn');
       expect(events).toContain('provider-thread');
-      expect(events.indexOf('provider-spawn')).toBeLessThan(
-        events.indexOf('provider-thread'),
-      );
+      expect(events.indexOf('provider-spawn')).toBeLessThan(events.indexOf('provider-thread'));
       const result = JSON.parse(row.result_json) as Record<string, unknown>;
       expect(result).toMatchObject({
         ok: true,
@@ -1328,19 +1357,17 @@ describe('code-task executor (FLOW-01)', () => {
     try {
       const job = makeCodeTaskJob('job-task', workspaceId, portableId, head);
       // The "provider" edits the attempt worktree — executor must commit it.
-      runTurnMock.mockImplementation(
-        async (spec: RemoteSessionSpec, hooks: RemoteSessionHooks) => {
-          hooks.onThreadStarted('thr-mock');
-          writeFileSync(join(spec.cwd, 'feature.ts'), 'export const task = 1;');
-          return {
-            providerThreadId: 'thr-mock',
-            turnId: 'turn-1',
-            turnStatus: 'completed' as const,
-            cliVersion: '0.44.0',
-            cancelled: false,
-          };
-        },
-      );
+      runTurnMock.mockImplementation(async (spec: RemoteSessionSpec, hooks: RemoteSessionHooks) => {
+        hooks.onThreadStarted('thr-mock');
+        writeFileSync(join(spec.cwd, 'feature.ts'), 'export const task = 1;');
+        return {
+          providerThreadId: 'thr-mock',
+          turnId: 'turn-1',
+          turnStatus: 'completed' as const,
+          cliVersion: '0.44.0',
+          cancelled: false,
+        };
+      });
       claimWith(job);
       await handleJobAvailable('job-task');
 
@@ -1379,15 +1406,18 @@ describe('code-task executor (FLOW-01)', () => {
       // The turn ran inside the attempt worktree, NOT the source checkout —
       // and the residue commit is inspectable on the source repo's refs.
       const spec = runTurnMock.mock.calls[0]?.[0];
-      expect(spec?.cwd).toBe(join(userDataDir, 'mesh-worktrees', 'att-job-task', `0-${portableId}`));
+      expect(spec?.cwd).toBe(
+        join(userDataDir, 'mesh-worktrees', 'att-job-task', `0-${portableId}`),
+      );
       expect(
-        execFileSync('git', ['show', `${repoResult.resultCommit}:feature.ts`], { cwd: repoDir })
-          .toString(),
+        execFileSync('git', ['show', `${repoResult.resultCommit}:feature.ts`], {
+          cwd: repoDir,
+        }).toString(),
       ).toContain('export const task = 1');
       // Source checkout HEAD + tree untouched.
-      expect(
-        execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoDir }).toString().trim(),
-      ).toBe(head);
+      expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoDir }).toString().trim()).toBe(
+        head,
+      );
       expect(execFileSync('git', ['status', '--porcelain'], { cwd: repoDir }).toString()).toBe('');
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
@@ -1463,19 +1493,17 @@ describe('code-task executor (FLOW-01)', () => {
       });
       job.kind = 'workflow-node';
       // A node that produced output has commits to transfer.
-      runTurnMock.mockImplementation(
-        async (spec: RemoteSessionSpec, hooks: RemoteSessionHooks) => {
-          hooks.onThreadStarted('thr-mock');
-          writeFileSync(join(spec.cwd, 'node-out.ts'), 'export const n = 1;');
-          return {
-            providerThreadId: 'thr-mock',
-            turnId: 'turn-1',
-            turnStatus: 'completed' as const,
-            cliVersion: '0.44.0',
-            cancelled: false,
-          };
-        },
-      );
+      runTurnMock.mockImplementation(async (spec: RemoteSessionSpec, hooks: RemoteSessionHooks) => {
+        hooks.onThreadStarted('thr-mock');
+        writeFileSync(join(spec.cwd, 'node-out.ts'), 'export const n = 1;');
+        return {
+          providerThreadId: 'thr-mock',
+          turnId: 'turn-1',
+          turnStatus: 'completed' as const,
+          cliVersion: '0.44.0',
+          cancelled: false,
+        };
+      });
       claimWith(job);
       await handleJobAvailable('job-node');
 

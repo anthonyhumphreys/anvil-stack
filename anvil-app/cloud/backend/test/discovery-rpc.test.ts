@@ -4,10 +4,33 @@ import { describe, expect, it } from 'vitest';
 import { validateDescriptor } from '../../contract/discovery';
 import { httpStatusForErrorCode, isRpcError, type RpcResponse } from '../../contract/envelope';
 import { PROTOCOL } from '../../contract/version';
-import { buildDescriptor } from '../src/descriptor';
+import {
+  buildDescriptor,
+  SPIKE_DEPLOYMENT_ID,
+  SPIKE_DEPLOYMENT_NAME,
+} from '../src/descriptor';
 import { postRpc, spikeBearer, uniqueIds } from './helpers';
 
 describe('discovery', () => {
+  it('uses explicit deployment identity when configured', () => {
+    expect(
+      buildDescriptor({
+        ANVIL_DEPLOYMENT_ID: 'anvil-backend-production',
+        ANVIL_DEPLOYMENT_NAME: 'Anvil Backend (backend-production)',
+      }),
+    ).toMatchObject({
+      deploymentId: 'anvil-backend-production',
+      displayName: 'Anvil Backend (backend-production)',
+    });
+  });
+
+  it('retains the legacy identity when deployment vars are absent', () => {
+    expect(buildDescriptor()).toMatchObject({
+      deploymentId: SPIKE_DEPLOYMENT_ID,
+      displayName: SPIKE_DEPLOYMENT_NAME,
+    });
+  });
+
   it('serves a descriptor that validates against the contract', async () => {
     const response = await SELF.fetch('https://spike.test/.well-known/anvil-backend');
     expect(response.status).toBe(200);

@@ -154,6 +154,12 @@ export default defineConfig({
   ],
   test: {
     globals: false,
+    // The Stripe and managed-provisioner test services are module-scoped FIFO
+    // queues. Running files concurrently lets another file consume a queued
+    // response, making provider tests order-dependent and leaving stale rules
+    // behind for the next test. Keep the Worker files serial while retaining
+    // normal intra-file test execution.
+    fileParallelism: false,
     // D1 is fresh per test file; hosted migrations must exist before any
     // module-level fixtures run, so they land in a setup file rather than
     // per-suite beforeEach.

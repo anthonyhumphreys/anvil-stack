@@ -13,6 +13,7 @@ import { httpStatusForErrorCode, isRpcError } from '../../contract/envelope';
 import type { SyncPullResult } from '../../contract/sync';
 import { sha256Hex } from '../src/hash';
 import { verifyOidcPkceProof } from '../src/oidc';
+import { legacyOidcAccountId } from '../src/session-coordinator';
 import { expectSuccess, postRpc } from './helpers';
 
 const ADMIN_TOKEN = 'test-admin-credential';
@@ -351,6 +352,12 @@ describe('OIDC-PKCE proof verification', () => {
   const issuer = 'https://issuer.test';
   const clientId = 'anvil-test-client';
 
+  it('retains the legacy generic OIDC account namespace', async () => {
+    await expect(legacyOidcAccountId('https://issuer.test/', 'user-42')).resolves.toBe(
+      `oidc_${await sha256Hex('https://issuer.test:user-42')}`,
+    );
+  });
+
   async function makeIssuer() {
     const keyPair = (await crypto.subtle.generateKey(
       { name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
@@ -568,6 +575,35 @@ describe('OIDC-PKCE proof verification', () => {
       fetchFn,
     );
     expect(sub).toBeNull();
+  });
+
+  it('accepts the WorkOS AuthKit public-client response and returns its user id', async () => {
+    const workosIssuer = 'https://api.workos.com/user_management';
+    const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      expect(String(input)).toBe(`${workosIssuer}/authenticate`);
+      const params = new URLSearchParams(init?.body as string);
+      expect(params.get('grant_type')).toBe('authorization_code');
+      expect(params.get('code_verifier')).toBe('workos-verifier');
+      expect(params.get('client_id')).toBe(clientId);
+      return Response.json({
+        user: { id: 'user_workos_42', email: 'test@example.com' },
+        access_token: 'opaque',
+        refresh_token: 'opaque-refresh',
+      });
+    }) as typeof fetch;
+    const sub = await verifyOidcPkceProof(
+      {
+        method: 'oidc-pkce',
+        issuer: workosIssuer,
+        authorizationCode: 'workos-code',
+        codeVerifier: 'workos-verifier',
+        redirectUri: 'http://127.0.0.1:50000/callback',
+        nonce: 'unused-by-authkit',
+      },
+      { issuer: workosIssuer, clientId },
+      fetchFn,
+    );
+    expect(sub).toBe('user_workos_42');
   });
 });
 

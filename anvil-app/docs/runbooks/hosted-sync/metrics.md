@@ -1,6 +1,6 @@
 # Hosted sync metrics and alerts — what to watch
 
-Packet: **BILL-06**. Emission is implemented in the worker as structured
+Historical packet reference: **BILL-06**. Emission is implemented in the worker as structured
 JSON log lines (`src/hosted/metrics.ts`) — one `{metric, ts, ...fields}`
 object per line, picked up by Workers Logs/observability and Logpush.
 Alert routing, dashboards, and named on-call ownership remain deployment

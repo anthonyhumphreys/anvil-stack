@@ -4,9 +4,16 @@ import { NextResponse } from "next/server";
 import { workosConfigured } from "@/lib/workos-env";
 
 // Public paths — everything else matched below requires an AuthKit session.
-// `/callback` must stay public: it is the AuthKit redirect target, and
+// Both callback paths must stay public: they are AuthKit redirect targets, and
 // guarding it would loop sign-in before the session cookie is written.
-const unauthenticatedPaths = ["/", "/docs/:path*", "/sync", "/pricing", "/callback"];
+const unauthenticatedPaths = [
+  "/",
+  "/docs/:path*",
+  "/sync",
+  "/pricing",
+  "/callback",
+  "/auth/callback"
+];
 
 // Next 16 file convention is proxy.ts (the WorkOS SDK's authkitProxy is the
 // same function as its deprecated authkitMiddleware alias). When WorkOS env

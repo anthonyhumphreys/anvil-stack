@@ -156,7 +156,7 @@ async function OverviewData({ identity }: { identity: HostedIdentity }) {
           ) : (
             <p className="text-sm text-muted-foreground">
               {devices.code === "not-found"
-                ? "The hosted API does not expose device listing yet — manage paired devices in Anvil → Settings → Sync & Mesh."
+                ? "No paired devices are available for this hosted account yet — use the pairing card below to connect one."
                 : hostedFailureMessage(devices.code, devices.status)}
             </p>
           )}

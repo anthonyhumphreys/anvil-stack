@@ -116,7 +116,7 @@ export const syncDocsProduct = {
   boundary:
     "Owns account identity, device enrollment, sealed entity replication, mesh job coordination, artifact shares, and session handoff.",
   status:
-    "Alpha: implemented end to end and rehearsed on real deployments; hosted provisioning is still finishing, so Anvil-hosted renders disabled in this desktop build.",
+    "Alpha: implemented end to end and rehearsed on real deployments; hosted staging/QA is available when configured, while production provisioning is still finishing.",
   icon: Network,
   href: "/docs/sync/overview",
   repoHref: githubRepositoryUrl,

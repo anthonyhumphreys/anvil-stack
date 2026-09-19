@@ -54,6 +54,7 @@ import {
   issueEnrollmentCode,
   onAppFocus,
   openHostedAccountPage,
+  resolveHostedAccountUrl,
   previewAdoption,
   refreshHostedEntitlement,
   resetSyncRuntimeForTests,
@@ -74,7 +75,7 @@ import {
   upsertEnrollment,
   upsertSyncEntitlement,
 } from '../sync-persistence.service';
-import { pinBackend } from '../sync-backend.service';
+import { activateBackend, pinBackend } from '../sync-backend.service';
 import { resetSyncEngineForTests } from '../sync-engine.service';
 import type { BackendWebSocketLike } from '../sync-backend-client.service';
 import { saveWorkflowTemplate } from '../workflow.service';
@@ -474,13 +475,13 @@ function fakeBackend(
               counters: { push_total: 3, pull_total: 5 },
             },
             // Self-host shape: the field is simply absent.
-            ...((() => {
+            ...(() => {
               const entitlement =
                 typeof options.entitlement === 'function'
                   ? options.entitlement()
                   : options.entitlement;
               return entitlement === undefined ? {} : { entitlement };
-            })()),
+            })(),
           },
         });
       }
@@ -505,7 +506,11 @@ function fakeBackend(
             { status: 403 },
           );
         }
-        return Response.json({ requestId, serverTime: new Date().toISOString(), result: { results: [] } });
+        return Response.json({
+          requestId,
+          serverTime: new Date().toISOString(),
+          result: { results: [] },
+        });
       }
       return Response.json(
         { requestId, error: { code: 'unsupported-operation', retryable: false } },
@@ -524,6 +529,45 @@ function oidcDescriptorFixture(): SyncBackendDescriptor {
 }
 
 describe('real auth transport (contract routes over injected fetch)', () => {
+  it('registers a replacement enrollment before resuming pending changes', async () => {
+    const backend = fakeBackend();
+    const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
+    initSyncRuntime(dir, { fetchFn: backend.fetchFn });
+    pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: oidcDescriptorFixture() });
+    activateBackend('backend-1');
+    upsertEnrollment({
+      id: 'old-enrollment',
+      scope: SCOPE,
+      installationId: 'installation-1',
+      displayName: 'Old device session',
+      state: 'active',
+    });
+    saveWorkflowTemplate({
+      name: 'Pending template',
+      description: '',
+      orchestration: { ...DEFAULT_ORCHESTRATION },
+      nodes: [node('step-1')],
+      edges: [],
+    });
+    bindLocalEntities(SCOPE);
+
+    const minted = (await (
+      await backend.fetchFn('https://backend.example.test/v1/enrollment-codes', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', Authorization: 'Bearer admin-token' },
+        body: JSON.stringify({ accountId: 'account-1' }),
+      })
+    ).json()) as { code: string };
+    const snapshot = await enrollWithEnrollmentCode(minted.code);
+
+    expect(snapshot.enrollmentId).not.toBe('old-enrollment');
+    expect(
+      db.prepare('SELECT state FROM device_enrollments WHERE id = ?').get(snapshot.enrollmentId),
+    ).toEqual({ state: 'active' });
+    await expect(requestSync()).resolves.toBeUndefined();
+    expect(getRuntimeStatus().lastError).toBeNull();
+  });
+
   it('redeems an enrollment code through POST /v1/enroll', async () => {
     const backend = fakeBackend();
     const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
@@ -531,11 +575,13 @@ describe('real auth transport (contract routes over injected fetch)', () => {
     pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: oidcDescriptorFixture() });
     const { fetchFn } = backend;
     // Mint a code through the admin path of the same fake.
-    const minted = await (await fetchFn('https://backend.example.test/v1/enrollment-codes', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', Authorization: 'Bearer admin-token' },
-      body: JSON.stringify({ accountId: 'account-1' }),
-    })).json() as { code: string };
+    const minted = (await (
+      await fetchFn('https://backend.example.test/v1/enrollment-codes', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', Authorization: 'Bearer admin-token' },
+        body: JSON.stringify({ accountId: 'account-1' }),
+      })
+    ).json()) as { code: string };
 
     const snapshot = await enrollWithEnrollmentCode(minted.code);
     expect(snapshot.state).toBe('signed-in');
@@ -549,14 +595,13 @@ describe('real auth transport (contract routes over injected fetch)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
     initSyncRuntime(dir, { fetchFn: backend.fetchFn });
     pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: oidcDescriptorFixture() });
-    const minted = await (await backend.fetchFn(
-      'https://backend.example.test/v1/enrollment-codes',
-      {
+    const minted = (await (
+      await backend.fetchFn('https://backend.example.test/v1/enrollment-codes', {
         method: 'POST',
         headers: { 'content-type': 'application/json', Authorization: 'Bearer admin-token' },
         body: JSON.stringify({ accountId: 'account-1' }),
-      },
-    )).json() as { code: string };
+      })
+    ).json()) as { code: string };
     const snapshot = await enrollWithEnrollmentCode(minted.code);
     const enrollmentId = snapshot.enrollmentId;
     expect(enrollmentId).toBeTruthy();
@@ -573,14 +618,13 @@ describe('real auth transport (contract routes over injected fetch)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
     initSyncRuntime(dir, { fetchFn: backend.fetchFn });
     pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: oidcDescriptorFixture() });
-    const minted = await (await backend.fetchFn(
-      'https://backend.example.test/v1/enrollment-codes',
-      {
+    const minted = (await (
+      await backend.fetchFn('https://backend.example.test/v1/enrollment-codes', {
         method: 'POST',
         headers: { 'content-type': 'application/json', Authorization: 'Bearer admin-token' },
         body: JSON.stringify({ accountId: 'account-1' }),
-      },
-    )).json() as { code: string };
+      })
+    ).json()) as { code: string };
     await enrollWithEnrollmentCode(minted.code);
 
     const issued = await issueEnrollmentCode();
@@ -630,14 +674,13 @@ describe('real auth transport (contract routes over injected fetch)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
     initSyncRuntime(dir, { fetchFn: backend.fetchFn });
     pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: oidcDescriptorFixture() });
-    const minted = await (await backend.fetchFn(
-      'https://backend.example.test/v1/enrollment-codes',
-      {
+    const minted = (await (
+      await backend.fetchFn('https://backend.example.test/v1/enrollment-codes', {
         method: 'POST',
         headers: { 'content-type': 'application/json', Authorization: 'Bearer admin-token' },
         body: JSON.stringify({ accountId: 'account-1' }),
-      },
-    )).json() as { code: string };
+      })
+    ).json()) as { code: string };
     await enrollWithEnrollmentCode(minted.code);
     const status = await signOutSync();
     expect(status.auth.state).toBe('signed-out');
@@ -650,14 +693,13 @@ describe('real auth transport (contract routes over injected fetch)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
     initSyncRuntime(dir, { fetchFn: backend.fetchFn });
     pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: oidcDescriptorFixture() });
-    const minted = await (await backend.fetchFn(
-      'https://backend.example.test/v1/enrollment-codes',
-      {
+    const minted = (await (
+      await backend.fetchFn('https://backend.example.test/v1/enrollment-codes', {
         method: 'POST',
         headers: { 'content-type': 'application/json', Authorization: 'Bearer admin-token' },
         body: JSON.stringify({ accountId: 'account-1' }),
-      },
-    )).json() as { code: string };
+      })
+    ).json()) as { code: string };
     const snapshot = await enrollWithEnrollmentCode(minted.code);
     enableSync();
     // Another device revoked this session server-side.
@@ -672,14 +714,13 @@ describe('real auth transport (contract routes over injected fetch)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
     initSyncRuntime(dir, { fetchFn: backend.fetchFn });
     pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: oidcDescriptorFixture() });
-    const minted = await (await backend.fetchFn(
-      'https://backend.example.test/v1/enrollment-codes',
-      {
+    const minted = (await (
+      await backend.fetchFn('https://backend.example.test/v1/enrollment-codes', {
         method: 'POST',
         headers: { 'content-type': 'application/json', Authorization: 'Bearer admin-token' },
         body: JSON.stringify({ accountId: 'account-1' }),
-      },
-    )).json() as { code: string };
+      })
+    ).json()) as { code: string };
     await enrollWithEnrollmentCode(minted.code);
     const template = saveWorkflowTemplate({
       name: 'Diagnostic flow',
@@ -744,7 +785,11 @@ function fakeSocketFactory() {
   return {
     sockets,
     connections,
-    createSocket: (url: string, _protocols: string[], options: { headers: Record<string, string> }) => {
+    createSocket: (
+      url: string,
+      _protocols: string[],
+      options: { headers: Record<string, string> },
+    ) => {
       const socket = new FakeSocket();
       sockets.push(socket);
       connections.push({ url, headers: options.headers });
@@ -918,9 +963,7 @@ describe('hosted entitlement (BILL-05)', () => {
   }
 
   function rpcOps(backend: ReturnType<typeof fakeBackend>): string[] {
-    return backend.calls
-      .map((c) => c.operation)
-      .filter((op): op is string => op !== null);
+    return backend.calls.map((c) => c.operation).filter((op): op is string => op !== null);
   }
 
   it('persists the session.describe entitlement and exposes it on runtime status', async () => {
@@ -1091,5 +1134,30 @@ describe('hosted entitlement (BILL-05)', () => {
     initSyncRuntime(dir, {});
     await openHostedAccountPage();
     expect(openExternalCalls).toEqual(['https://anvil.dev/account']);
+  });
+
+  it('accepts an HTTPS hosted account override in packaged and development builds', () => {
+    expect(resolveHostedAccountUrl('https://localhost:3000/account', true)).toBe(
+      'https://localhost:3000/account',
+    );
+    expect(resolveHostedAccountUrl('https://account.example.test/settings', false)).toBe(
+      'https://account.example.test/settings',
+    );
+  });
+
+  it('accepts loopback HTTP only for unpackaged development', () => {
+    expect(resolveHostedAccountUrl('http://localhost:3000/account', false)).toBe(
+      'http://localhost:3000/account',
+    );
+    expect(resolveHostedAccountUrl('http://127.0.0.1:3000/account', true)).toBe(
+      'https://anvil.dev/account',
+    );
+  });
+
+  it('falls back for unsafe hosted account overrides', () => {
+    expect(resolveHostedAccountUrl('http://evil.example/account', false)).toBe(
+      'https://anvil.dev/account',
+    );
+    expect(resolveHostedAccountUrl('javascript:alert(1)', false)).toBe('https://anvil.dev/account');
   });
 });

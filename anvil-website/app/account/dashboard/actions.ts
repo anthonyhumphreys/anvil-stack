@@ -38,7 +38,7 @@ function fail(error: unknown): DashboardActionResult<never> {
       return {
         ok: false,
         code: error.code,
-        message: "No sync account is linked yet — pair a device first."
+        message: "No sync account is linked yet — use the pairing card below to connect a device."
       };
     }
     return {

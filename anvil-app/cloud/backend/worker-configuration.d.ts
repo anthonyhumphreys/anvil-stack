@@ -4,12 +4,20 @@ declare namespace Cloudflare {
     ACCOUNT: DurableObjectNamespace;
     SESSIONS: DurableObjectNamespace;
     ARTIFACTS: R2Bucket;
+    /** Stable identity emitted by the Mesh deployment recipe. */
+    ANVIL_DEPLOYMENT_ID?: string;
+    /** Human-readable name emitted by the Mesh deployment recipe. */
+    ANVIL_DEPLOYMENT_NAME?: string;
     /** Dev-only: accept `spike:` bearers. Must be unset in real deploys. */
     ANVIL_DEV_SPIKE?: string;
     /** OIDC authority for the `oidc-pkce` enrollment proof. */
     OIDC_ISSUER?: string;
     OIDC_CLIENT_ID?: string;
     OIDC_SCOPES?: string;
+    /** WorkOS application client id used by the hosted website identity store.
+     * Set this to the website's WORKOS_CLIENT_ID when the desktop application
+     * uses a separate public WorkOS application client id. */
+    HOSTED_WORKOS_CLIENT_ID?: string;
     /** Deployment-admin credential for `POST /v1/enrollment-codes`. */
     ENROLLMENT_ADMIN_TOKEN?: string;
     /**

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ArrowRight, Bot, GitFork, Plus, Trash2, UserCheck } from 'lucide-react';
 import type {
   AgentProvider,
@@ -13,6 +13,7 @@ import type {
   WorkflowRun,
   WorkflowTargetPolicy,
 } from '../../../shared/types';
+import type { SyncDevice } from '../../../shared/sync-runtime';
 import { DEFAULT_CODEX_MODEL, getCodexModelReasoningOptions } from '../../../shared/codex-models';
 import { isAcpAgentProvider } from '../../../shared/agent-providers';
 import { orchestrationConfig, TEAM_STRATEGIES } from '../../../shared/workflow-orchestration';
@@ -352,6 +353,34 @@ export function TeamSettings({
   profiles: WorkflowAgentProfile[];
   onChange: (patch: Partial<WorkflowNode>) => void;
 }) {
+  const [devices, setDevices] = useState<SyncDevice[] | null>(null);
+  const [deviceError, setDeviceError] = useState(false);
+
+  useEffect(() => {
+    if (node.target?.kind !== 'device') return;
+    let active = true;
+    void window.anvil.syncRuntime.listDevices().then(
+      (list) => {
+        if (active) {
+          setDevices(list.filter((device) => !device.revoked && !device.self));
+          setDeviceError(false);
+        }
+      },
+      () => {
+        if (active) setDeviceError(true);
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [node.target?.kind]);
+  const selectedEnrollmentId = node.target?.kind === 'device' ? node.target.enrollmentId : '';
+  const automaticTarget = node.target?.kind === 'auto' ? node.target : null;
+  const existingEnvironmentTarget =
+    node.target?.kind === 'existing-environment' ? node.target : null;
+  const provisionedEnvironmentTarget =
+    node.target?.kind === 'provisioned-environment' ? node.target : null;
+
   return (
     <div className="space-y-3 border-t border-border pt-4">
       <label className="block text-xs font-semibold text-text-secondary">
@@ -437,7 +466,7 @@ export function TeamSettings({
           )}
           <div className="space-y-2 border-t border-border pt-4">
             <label className="block text-xs font-semibold text-text-secondary">
-              Execution target
+              Where should this step run?
               <select
                 className={`${fieldClass} mt-2`}
                 value={node.target?.kind ?? 'local'}
@@ -462,36 +491,70 @@ export function TeamSettings({
                   );
                 }}
               >
-                <option value="local">This device</option>
-                <option value="device">Enrolled device</option>
-                <option value="auto">Automatic placement</option>
-                <option value="existing-environment">Existing cloud environment</option>
-                <option value="provisioned-environment">Provision a cloud environment</option>
+                <option value="local">On this device</option>
+                <option value="device">On another device</option>
+                <option value="auto">On any available device</option>
+                <option value="existing-environment">In an existing cloud environment</option>
+                <option value="provisioned-environment">In a new cloud environment</option>
               </select>
             </label>
+            <p className="text-xs leading-relaxed text-text-tertiary">
+              {node.target?.kind === 'device'
+                ? 'Choose a device signed in to this account. It must allow jobs before the step can run.'
+                : node.target?.kind === 'auto'
+                  ? 'Anvil chooses an available device that allows jobs and meets the requirements below.'
+                  : node.target?.kind === 'existing-environment'
+                    ? 'Use a cloud environment already connected to this account.'
+                    : node.target?.kind === 'provisioned-environment'
+                      ? 'Create a temporary cloud environment for this step.'
+                      : 'Run this step here, without sending it to another device.'}
+            </p>
             {node.target?.kind === 'device' && (
-              <input
-                className={fieldClass}
-                placeholder="Enrollment id"
-                aria-label="Device enrollment id"
-                value={node.target.enrollmentId}
-                onChange={(event) =>
-                  onChange({ target: { ...node.target!, enrollmentId: event.target.value } })
-                }
-              />
+              <label className="block text-xs font-semibold text-text-secondary">
+                Device
+                <select
+                  className={`${fieldClass} mt-2`}
+                  value={selectedEnrollmentId}
+                  onChange={(event) =>
+                    onChange({ target: { kind: 'device', enrollmentId: event.target.value } })
+                  }
+                  disabled={devices === null}
+                >
+                  <option value="">Choose a device</option>
+                  {selectedEnrollmentId &&
+                    !devices?.some((device) => device.enrollmentId === selectedEnrollmentId) && (
+                      <option value={selectedEnrollmentId}>Saved device (unavailable)</option>
+                    )}
+                  {devices?.map((device) => (
+                    <option key={device.enrollmentId} value={device.enrollmentId}>
+                      {device.displayName || `Device ${device.enrollmentId.slice(0, 8)}`}
+                    </option>
+                  ))}
+                </select>
+                {devices?.length === 0 && (
+                  <span className="mt-2 block font-normal text-text-tertiary">
+                    No other devices are connected to this account yet.
+                  </span>
+                )}
+                {deviceError && (
+                  <span className="mt-2 block font-normal text-warning">
+                    Could not load devices. Check your connection and reopen this step.
+                  </span>
+                )}
+              </label>
             )}
-            {node.target?.kind === 'auto' && (
+            {automaticTarget && (
               <input
                 className={fieldClass}
                 placeholder="Capabilities, comma separated"
                 aria-label="Automatic placement capabilities"
-                value={node.target.requirements.capabilities.join(', ')}
+                value={automaticTarget.requirements.capabilities.join(', ')}
                 onChange={(event) =>
                   onChange({
                     target: {
-                      ...node.target!,
+                      ...automaticTarget,
                       requirements: {
-                        ...node.target!.requirements,
+                        ...automaticTarget.requirements,
                         capabilities: event.target.value
                           .split(',')
                           .map((value) => value.trim())
@@ -502,27 +565,29 @@ export function TeamSettings({
                 }
               />
             )}
-            {node.target?.kind === 'existing-environment' && (
+            {existingEnvironmentTarget && (
               <input
                 className={fieldClass}
                 placeholder="Environment id"
                 aria-label="Existing environment id"
-                value={node.target.environmentId}
+                value={existingEnvironmentTarget.environmentId}
                 onChange={(event) =>
-                  onChange({ target: { ...node.target!, environmentId: event.target.value } })
+                  onChange({
+                    target: { ...existingEnvironmentTarget, environmentId: event.target.value },
+                  })
                 }
               />
             )}
-            {node.target?.kind === 'provisioned-environment' && (
+            {provisionedEnvironmentTarget && (
               <div className="grid grid-cols-2 gap-2">
                 <select
                   className={fieldClass}
                   aria-label="Environment provider"
-                  value={node.target.provider}
+                  value={provisionedEnvironmentTarget.provider}
                   onChange={(event) =>
                     onChange({
                       target: {
-                        ...node.target!,
+                        ...provisionedEnvironmentTarget,
                         provider: event.target.value as Extract<
                           WorkflowTargetPolicy,
                           { kind: 'provisioned-environment' }
@@ -542,11 +607,11 @@ export function TeamSettings({
                   min={60}
                   step={60}
                   aria-label="Environment lifetime in seconds"
-                  value={node.target.ttlSeconds}
+                  value={provisionedEnvironmentTarget.ttlSeconds}
                   onChange={(event) =>
                     onChange({
                       target: {
-                        ...node.target!,
+                        ...provisionedEnvironmentTarget,
                         ttlSeconds: Number(event.target.value),
                       },
                     })

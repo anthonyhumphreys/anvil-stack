@@ -108,6 +108,21 @@ async function enroll(code: string): Promise<DeviceSession> {
 }
 
 describe('worker policy gate', () => {
+  it('issues a bootstrap code through the supported admin HTTP route', async () => {
+    env.ENROLLMENT_ADMIN_TOKEN = ADMIN_TOKEN;
+    const response = await SELF.fetch('https://spike.test/v1/enrollment-codes', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Authorization: `Bearer ${ADMIN_TOKEN}` },
+      body: JSON.stringify({ accountId: uniqueIds('page-bootstrap').accountId }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(expect.objectContaining({
+      code: expect.any(String),
+      accountId: expect.stringContaining('page-bootstrap'),
+      expiresAt: expect.any(String),
+    }));
+  });
+
   it('fails closed until the enrollment publishes an allowing policy', async () => {
     const ids = uniqueIds('gate');
     const auth = spikeBearer(ids.accountId, ids.enrollmentId);

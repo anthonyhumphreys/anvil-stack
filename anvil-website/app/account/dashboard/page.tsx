@@ -1,5 +1,6 @@
 import { AuthNotConfigured, BackendNotConfigured } from "@/components/account/not-configured";
 import { DashboardAccess } from "@/components/account/dashboard-access";
+import { PairDeviceCard } from "@/components/account/pair-device-card";
 import { loadAccountContext } from "@/lib/account";
 
 export const metadata = { title: "Dashboard | Anvil" };
@@ -23,7 +24,14 @@ export default async function AccountDashboardPage() {
         </p>
       </header>
 
-      {ctx.status === "backend-unconfigured" ? <BackendNotConfigured /> : <DashboardAccess />}
+      {ctx.status === "backend-unconfigured" ? (
+        <BackendNotConfigured />
+      ) : (
+        <>
+          <DashboardAccess />
+          <PairDeviceCard />
+        </>
+      )}
     </div>
   );
 }

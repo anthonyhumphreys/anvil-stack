@@ -29,7 +29,7 @@ The panel offers four modes:
 | Mode | Behavior |
 | --- | --- |
 | Local only | Nothing leaves the device. Any remembered backend is paused, not forgotten. |
-| Anvil-hosted | The operated backend. Renders **disabled** in this build — hosted sync is not shipping in this packet. |
+| Anvil-hosted | The operated backend, enabled when `ANVIL_HOSTED_BACKEND_URL` names a tested HTTPS origin. Production availability is still pending. |
 | Your Cloudflare | A backend you deploy to your own Cloudflare account with `anvil-cloud mesh`. |
 | Compatible backend | Any URL implementing the Sync v1 contract. |
 
@@ -41,11 +41,14 @@ service.
 
 ## Signing in and enrollment
 
-Sign in from the panel, then enroll this device. The first device on an
-account signs in directly; additional devices enroll with a short-lived
-enrollment code issued from an already-signed-in device. Enrollment produces
-a device-scoped credential — not your account password — that can be revoked
-per device. Enrollment mechanics: [Devices](/docs/sync/devices).
+Set `ANVIL_HOSTED_BACKEND_URL` for the hosted tile, then sign in from the
+panel and enroll this device. Hosted website sign-in uses a WorkOS session;
+desktop sign-in uses the backend's advertised OIDC/PKCE flow with the public
+desktop client id and callback `http://127.0.0.1:<ephemeral-port>/callback`,
+then redeems a short-lived enrollment code. These are separate credentials and
+channels. The result is a device-scoped credential — not your account
+password — that can be revoked per device. Enrollment mechanics:
+[Devices](/docs/sync/devices).
 
 ## Devices
 

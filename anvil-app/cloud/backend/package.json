@@ -2,7 +2,7 @@
   "name": "anvil-backend-spike",
   "version": "0.1.0",
   "private": true,
-  "description": "BACKEND-01 spike: Cloudflare Worker + SQLite AccountCoordinator proving sync push/pull, hibernating WebSockets, and eviction recovery.",
+  "description": "Anvil Cloud backend Worker with SQLite Durable Objects, sync, hosted identity, and Mesh lifecycle support.",
   "type": "module",
   "scripts": {
     "dev": "wrangler dev --env dev",
@@ -14,9 +14,9 @@
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.1.7",
-    "@cloudflare/workers-types": "^5.20260911.1",
+    "@cloudflare/workers-types": "^5.20260918.1",
     "typescript": "^5.9.2",
     "vitest": "4.1.0",
-    "wrangler": "^4.131.0"
+    "wrangler": "^4.135.0"
   }
 }

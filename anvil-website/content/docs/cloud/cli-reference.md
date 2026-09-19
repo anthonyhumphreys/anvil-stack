@@ -475,43 +475,60 @@ returns `AWS_DESTROY_OPERATION_FAILED`.
 
 ## `anvil-cloud mesh`
 
-The `mesh` family deploys and manages the Sync & Mesh backend — the
-provider-neutral sync/remote-execution service Anvil Desktop connects to —
-on your own Cloudflare account. It is unrelated to Cell deployments; the
-target is the account sync worker, not an app.
+The `mesh` commands deploy the existing Sync/Mesh backend Worker to a
+Cloudflare account. Select `--mode self-hosted` for enrollment/OIDC without
+hosted billing, or `--mode hosted` for D1 billing, the website service channel
+and reconciliation. The generic Cell Cloudflare adapter remains plan-only.
 
 ```bash
 anvil-cloud mesh plan --backend <path> --name <worker> \
-  [--stage production] [--env <name>] [--account-id <id>] \
-  [--base-url <url> | --subdomain <sub>] [--bucket <name>] \
-  [--oidc-issuer <url> --oidc-client-id <id>] [--first-deploy] [--json]
+  --mode hosted --stage staging --account-id <id> \
+  --base-url <https-origin> --bucket <bucket> --database <billing-db> \
+  --vars-file <json> --config-out <generated-config> --write --json
 
-anvil-cloud mesh apply --backend <path> --name <worker> \
-  [--evidence <ref>] [--dry-run] [--json]
+# Repeat the same target options on each command:
+anvil-cloud mesh provision <target-options> --json
+anvil-cloud mesh migrate <target-options> --json
+anvil-cloud mesh apply <target-options> --dry-run --json
+anvil-cloud mesh apply <target-options> --test-deployment --json
+anvil-cloud mesh secrets <target-options> --from-file <secret-json> --json
+anvil-cloud mesh remove <target-options> --test-deployment --json
 
-anvil-cloud mesh remove --backend <path> --name <worker> \
-  [--evidence <ref>] [--json]
-
-anvil-cloud mesh connection --name <worker> --base-url <url> \
-  [--stage production] [--out <path>] [--allow-insecure] [--json]
+anvil-cloud mesh provisioner plan --provisioner <path> --name <worker> \
+  --mode managed --stage staging --account-id <id> --write --json
+anvil-cloud mesh provisioner apply <provisioner-options> --dry-run --json
+anvil-cloud mesh provisioner apply <provisioner-options> --test-deployment --json
+anvil-cloud mesh provisioner secrets <provisioner-options> \
+  --from-file <token-text-file> --test-deployment --json
 ```
 
-- `plan` computes the deployment and writes a generated `wrangler.mesh.jsonc`:
-  Durable Object bindings, cumulative SQLite migrations, and the R2 artifact
-  bucket. `--first-deploy` records intent only; migrations are always emitted
-  because a deployable config carries its full migration history.
-- `apply` deploys through Wrangler, then provisions secrets and waits for the
-  admin route to report ready before succeeding.
-- `remove` regenerates the config for its own plan before calling
-  `wrangler delete`, so teardown always targets the worker it was asked to
-  remove rather than whatever config was last generated.
-- `connection` writes the backend discovery file the desktop app's Sync & Mesh
-  settings consume.
+`plan` writes config only with `--write`. It preserves the selected backend's
+bindings and complete Durable Object migration history. Hosted mode reads
+`wrangler.hosted.jsonc` and retains D1, cron, billing vars and service bindings.
+`--first-deploy` records intent; migration tags are always emitted.
 
-Backend source is `--backend <path>` (the `anvil-app/cloud/backend` worker).
-`--evidence <ref>` attaches a rehearsal or review record to lifecycle output.
-The full rehearsal driver — deploy, conformance, upgrade, restore, remove —
-lives in `anvil-cloud/scripts/verify-mesh-rehearsal.mjs`.
+`provision` creates or reuses resources and records D1 ids. `migrate` applies
+D1 migrations remotely. `apply` deploys the Worker; install secrets separately
+after the first apply. Backend secrets input is JSON; provisioner secrets
+input is one raw token. Both support `--from-stdin` instead of a file and keep
+values off process arguments and command output.
+
+`--test-deployment` allows initial deployment testing only on an explicit
+non-production stage. The default production stage still requires
+`--evidence <recorded-reference>` for apply/remove. Resource isolation comes
+from the account, Worker, bucket and database names you select.
+
+The provisioner commands build and deploy the Sandbox Worker/container for
+managed or BYO environments. `--managed-provisioner <worker>` on the backend
+adds the service binding; install matching backend/provisioner tokens.
+
+`mesh connection --name <worker> --base-url <https-origin> --out <path> --json`
+exports a discovery record for the desktop. Removal deletes the selected
+Worker and is not a complete D1/R2 cleanup workflow.
+
+The branch testing sequence is in
+`anvil-app/docs/runbooks/hosted-sync/deploy.md`; architecture and API details
+are in `anvil-cloud/docs/architecture/cloudflare-mesh-recipe.md`.
 
 ## Exit codes
 

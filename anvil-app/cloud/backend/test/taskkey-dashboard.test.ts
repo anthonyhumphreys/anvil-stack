@@ -14,10 +14,11 @@ import type {
   DashboardDecideResult,
   DashboardRequestsResult,
   DashboardRevokeResult,
+  HostedDashboardStatus,
+  KeyringReportResult,
 } from '../../contract/dashboard';
 import type {
   DashboardGrantPayload,
-  KeyringReportResult,
   SealedDashboardSnapshot,
   SealedTaskPayload,
   TaskKeyDeliverResult,
@@ -357,7 +358,7 @@ describe('dashboard grants', () => {
         body: JSON.stringify({ requestId }),
       }),
     );
-    return (await response.json()) as RpcResponse;
+    return { status: response.status, body: (await response.json()) as RpcResponse };
   }
 
   it('lists a pending browser request for a trusted device', async () => {
@@ -393,12 +394,9 @@ describe('dashboard grants', () => {
     );
     expect(decided.request.state).toBe('approved');
     expect(decided.request.decidedBy).toBe(fx.sourceEnrollmentId);
-    const status = await postHostedStatus(fx.accountId, requestId);
-    const result = status.result as {
-      state: string;
-      grant?: DashboardGrantPayload;
-      snapshotSeq?: number;
-    };
+    const result = expectSuccess<HostedDashboardStatus>(
+      await postHostedStatus(fx.accountId, requestId),
+    );
     expect(result.state).toBe('approved');
     expect(result.grant?.requestId).toBe(requestId);
     expect(result.snapshotSeq).toBe(1);
@@ -461,8 +459,9 @@ describe('dashboard grants', () => {
       await postRpc('dashboard.revoke', { requestId }, fx.sourceAuth),
     );
     expect(revoked.request.state).toBe('revoked');
-    const status = await postHostedStatus(fx.accountId, requestId);
-    const result = status.result as { state: string; grant?: unknown; snapshotSeq?: number };
+    const result = expectSuccess<HostedDashboardStatus>(
+      await postHostedStatus(fx.accountId, requestId),
+    );
     expect(result.state).toBe('revoked');
     expect(result.grant).toBeUndefined();
     expect(result.snapshotSeq).toBeUndefined();

@@ -40,19 +40,31 @@ anvil-cloud mesh plan --backend <path> --name <worker> \
 the deployment advertises. Point `--backend` at the worker source —
 `anvil-app/cloud/backend` in the monorepo.
 
-## `mesh apply`
+## Provision, migrate, apply, and secrets
+
+`plan` only computes configuration. For a real non-production deployment, run
+the lifecycle commands with the same target options on every invocation:
 
 ```sh
-anvil-cloud mesh apply --backend <path> --name <worker> \
-  [--evidence <ref>] [--dry-run] [--json]
+anvil-cloud mesh provision --backend <path> --mode self-hosted --name <worker> \
+  --account-id <id> --base-url <url> --bucket <name> --json
+anvil-cloud mesh migrate --backend <path> --mode self-hosted --name <worker> \
+  --account-id <id> --base-url <url> --bucket <name> --json
+anvil-cloud mesh apply --backend <path> --mode self-hosted --name <worker> \
+  --account-id <id> --base-url <url> --bucket <name> \
+  --stage staging --test-deployment --json
+anvil-cloud mesh secrets --backend <path> --mode self-hosted --name <worker> \
+  --account-id <id> --base-url <url> --bucket <name> \
+  --from-file <secret-json> --json
 ```
 
-`apply` deploys through Wrangler, then **provisions secrets and waits for the
-admin route to report ready** before succeeding. The ordering matters:
-secrets go in after the first deploy because the worker must exist before
-Wrangler can attach them. `--evidence <ref>` attaches a rehearsal or review
-record to the lifecycle output; `--dry-run` runs the checks without
-deploying.
+`provision` creates or reuses the selected R2 bucket. `migrate` applies any
+declared database migrations (self-hosted mode has no hosted billing D1).
+`apply` deploys through Wrangler; it does not install secrets or claim that a
+live backend is healthy. Install secrets after the Worker exists because the
+Worker must exist before Wrangler can attach them. `--dry-run` performs local
+checks without deploying. Production apply/remove requires `--evidence
+<ref>`; initial staging checks use `--test-deployment`.
 
 ## `mesh connection`
 
@@ -102,6 +114,17 @@ pnpm conformance -- --url <backend> --admin-token <token>
 
 Nothing uploads until you sign in and enable — pinning stores the association
 only. See [Connection modes](/docs/sync/overview) for the full model.
+
+## Self-host account page
+
+A self-hosted Worker serves an operator page at `/account`. It is deliberately
+not the hosted WorkOS account area: hosted deployments return no account page
+there and keep account management on the website. On a self-hosted Worker,
+enter the deployment admin token and an account id at `/account` to issue the
+first device enrollment code. The token is entered and used in the browser tab
+only. After the first device is enrolled, use Anvil Desktop's normal device
+management and in-app pairing for additional devices. The page's inspection
+control is an operator convenience, not a replacement for device auth.
 
 ## Current limits
 

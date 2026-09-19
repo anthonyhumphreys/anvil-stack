@@ -10,30 +10,48 @@ order: 110
 
 # Anvil-hosted sync
 
-Anvil-hosted is the operated deployment of the same backend you can run
-yourself — the official worker at `anvil-app/cloud/backend`, run by the
-project on Cloudflare, with managed identity and billing on top. Everything
-on this page is hosted-only; a self-deployed backend has none of the billing
-plumbing because there is nothing to bill.
+Anvil-hosted is the operated deployment of the same backend source you can run
+yourself — the worker in `anvil-app/cloud/backend`, with managed identity and
+billing wiring on top. Everything on this page is hosted-only; a self-deployed
+backend does not use the hosted billing database or website service channel.
 
-**In this desktop build the Anvil-hosted option renders disabled** — "not
-shipping in this packet." The option is visible in Settings → Sync & Mesh so
-the mode picker shows the real shape, but you cannot select it yet.
+The desktop has a hosted mode when `ANVIL_HOSTED_BACKEND_URL` is configured
+with an HTTPS backend origin. The development spike is a separate fixture and
+is enabled only for an unpackaged build with `ANVIL_ENABLE_SYNC_SPIKE=1`.
+Neither setting is evidence that a production hosted service is available;
+production provisioning and its operational credentials remain pending.
 
 ## Identity
 
-Sign-in is a **WorkOS identity** — the same account unlocks the desktop
-enrollment and the `/account` area on the website. Self-hosted backends
-declare their own issuer (`--oidc-issuer` at plan time) and do not use the
-hosted identity.
+The website `/account` area uses a WorkOS browser session. It calls the
+backend through the separately configured, signed hosted service channel.
+Desktop enrollment is a backend protocol: the desktop follows the issuer and
+auth mode advertised by the backend, then redeems a device code from the
+account page. Hosted OIDC uses issuer
+`https://api.workos.com/user_management`, the desktop public `OIDC_CLIENT_ID`,
+and scopes `openid profile`. The website's `WORKOS_CLIENT_ID` is also supplied
+to the hosted Worker as `HOSTED_WORKOS_CLIENT_ID` when those clients differ.
+The WorkOS website cookie is not a desktop credential, and the desktop's
+device key is not sent to the website. Self-hosted backends declare their own
+issuer (`--oidc-issuer` at plan time) or use enrollment-code bootstrap; they
+do not use the hosted WorkOS service channel.
 
 To sign in:
 
-- **Desktop:** Settings → Sync & Mesh → Anvil-hosted → sign in. Enrollment
-  follows the normal device flow — see [Devices and
-  pairing](/docs/sync/devices).
-- **Web:** `/account` on the website. Requires the WorkOS env configured on
-  the website deployment; without it the account area does not render.
+- **Desktop:** Set `ANVIL_HOSTED_BACKEND_URL`, open Settings → Sync & Mesh →
+  Anvil-hosted, review the discovered endpoint and issuer, then complete the
+  advertised sign-in flow. The callback is
+  `http://127.0.0.1:<ephemeral-port>/callback`; the desktop chooses an
+  ephemeral port in the documented loopback range. Enrollment follows the
+  normal device flow — see [Devices and pairing](/docs/sync/devices).
+- **Web:** `/account` on the website. It requires the WorkOS environment and
+  the signed backend service-channel environment; when either is absent the
+  page shows a not-configured state rather than proving hosted connectivity.
+
+For local website testing, an unpackaged desktop may override the account link
+with `ANVIL_HOSTED_ACCOUNT_URL=http://localhost:3000/account`. This override
+is accepted only for an unpackaged loopback target; deployed builds use the
+configured hosted account origin.
 
 ## Preview window and enforcement dates
 
@@ -115,12 +133,12 @@ the app does. See [Devices and pairing](/docs/sync/devices) for the table.
 
 ## Provisioning status
 
-Honest status: the hosted backend is implemented, tested, and rehearsed on
-real Cloudflare deployments, but **production provisioning is pending** — the
-WorkOS app, Stripe live keys, the production D1 id, and the secrets bundle
-are not yet stood up. Until they are, "Anvil-hosted" is a mode you can see
-but not select, which is exactly what the disabled option in the app is
-telling you.
+Honest status: the hosted backend and website integration are implemented and
+covered by local tests and deployment rehearsal tooling. A production hosted
+service is not claimed here: the production WorkOS app, Stripe live keys,
+production D1 id, secrets bundle, and live-account verification still need to
+be provisioned and recorded. A staging deployment or successful Worker upload
+does not establish that production status.
 
 ## Related
 

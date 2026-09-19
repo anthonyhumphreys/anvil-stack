@@ -7,6 +7,7 @@ import { runHostedReconcile } from './hosted/reconciler';
 import { parseRpcRequest, rpcErrorResponse, rpcSuccessResponse } from './rpc';
 import type { ErrorCode } from '../../contract/envelope';
 import { validateSessionAttestParams } from '../../contract/companion';
+import { selfHostAccountPage } from './account-page';
 
 export { AccountCoordinator, SessionCoordinator };
 
@@ -145,6 +146,18 @@ async function forwardAuthRoute(
 async function handleRequest(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname.replace(/\/+$/, '') || '/';
+
+  // Self-host operator page. Hosted deployments keep account management on
+  // the WorkOS website and must not expose this token-entry surface.
+  if (request.method === 'GET' && (path === '/account' || path === '/account/index.html')) {
+    if (env.HOSTED_DB !== undefined) {
+      return new Response('Account management is provided by the hosted website.', {
+        status: 404,
+        headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' },
+      });
+    }
+    return selfHostAccountPage();
+  }
 
   if (request.method === 'GET' && path === '/.well-known/anvil-backend') {
     return Response.json(buildDescriptor(env));

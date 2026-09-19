@@ -6,6 +6,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   applyMeshDeployment,
+  migrateMeshDatabases,
+  provisionMeshResources,
+  provisionMeshSecrets,
   createMeshConnectionRecord,
   createMeshDeploymentPlan,
   MESH_PROVIDER_EVIDENCE_GATE_ID,
@@ -121,6 +124,88 @@ describe("Mesh backend recipe planning", () => {
     expect(plan.operations.apply.gated).toBe(true);
     expect(plan.operations.remove.gated).toBe(true);
     expect(plan.diagnostics).toEqual([]);
+    expect(plan.vars).toMatchObject({
+      ANVIL_DEPLOYMENT_ID: "anvil-mesh-backend-production-acct-1",
+      ANVIL_DEPLOYMENT_NAME: "Anvil Backend (mesh-backend-production-acct-1)",
+    });
+  });
+
+  it("derives distinct identities for staging targets and permits explicit values", async () => {
+    const backendDir = await createBackendProject();
+
+    const first = await createMeshDeploymentPlan({
+      ...baseOptions(backendDir),
+      stage: "staging",
+      workerName: "mesh-backend-a",
+      accountId: "account-a",
+    });
+    const second = await createMeshDeploymentPlan({
+      ...baseOptions(backendDir),
+      stage: "staging",
+      workerName: "mesh-backend-b",
+      accountId: "account-b",
+    });
+    expect(first.vars).toMatchObject({
+      ANVIL_DEPLOYMENT_ID: "anvil-mesh-backend-a-staging-account-a",
+      ANVIL_DEPLOYMENT_NAME: "Anvil Backend (mesh-backend-a-staging-account-a)",
+    });
+    expect(second.vars.ANVIL_DEPLOYMENT_ID).not.toBe(first.vars.ANVIL_DEPLOYMENT_ID);
+
+    const migrated = await createMeshDeploymentPlan({
+      ...baseOptions(backendDir),
+      stage: "staging",
+      accountId: "account-a",
+      vars: {
+        ANVIL_DEPLOYMENT_ID: "anvil-mesh-backend-staging-v2",
+        ANVIL_DEPLOYMENT_NAME: "Anvil Backend (mesh-backend-staging-v2)",
+      },
+    });
+    expect(migrated.vars).toMatchObject({
+      ANVIL_DEPLOYMENT_ID: "anvil-mesh-backend-staging-v2",
+      ANVIL_DEPLOYMENT_NAME: "Anvil Backend (mesh-backend-staging-v2)",
+    });
+  });
+
+  it("selects the hosted config and preserves D1, cron, and service bindings", async () => {
+    const backendDir = await createBackendProject();
+    await writeFile(
+      path.join(backendDir, "wrangler.hosted.jsonc"),
+      `{
+        "name": "anvil-backend-hosted",
+        "main": "src/index.ts",
+        "compatibility_date": "2026-09-01",
+        "durable_objects": { "bindings": [
+          { "name": "ACCOUNT", "class_name": "AccountCoordinator" },
+          { "name": "SESSIONS", "class_name": "SessionCoordinator" }
+        ] },
+        "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AccountCoordinator"] }],
+        "r2_buckets": [{ "binding": "ARTIFACTS", "bucket_name": "hosted-artifacts" }],
+        "triggers": { "crons": ["17 * * * *"] },
+        "services": [{ "binding": "MANAGED_PROVISIONER", "service": "anvil-mesh-provisioner" }],
+        "d1_databases": [{ "binding": "HOSTED_DB", "database_name": "anvil-hosted-billing", "database_id": "db-1", "migrations_dir": "migrations/hosted-billing" }]
+      }`,
+      "utf8",
+    );
+
+    const plan = await createMeshDeploymentPlan({
+      ...baseOptions(backendDir),
+      deploymentMode: "hosted",
+    });
+    const config = JSON.parse(plan.config.contents);
+
+    expect(plan.d1Databases).toEqual([
+      expect.objectContaining({ binding: "HOSTED_DB", databaseId: "db-1" }),
+    ]);
+    expect(config.triggers).toEqual({ crons: ["17 * * * *"] });
+    expect(config.services).toEqual([
+      { binding: "MANAGED_PROVISIONER", service: "anvil-mesh-provisioner" },
+    ]);
+    expect(config.d1_databases[0]).toMatchObject({
+      binding: "HOSTED_DB",
+      database_name: "anvil-hosted-billing",
+      database_id: "db-1",
+      migrations_dir: "./migrations/hosted-billing",
+    });
   });
 
   it("renders a Wrangler config with DO bindings and first-deploy migrations", async () => {
@@ -221,6 +306,8 @@ describe("Mesh backend recipe planning", () => {
       }),
     );
     expect(plan.vars).toEqual({
+      ANVIL_DEPLOYMENT_ID: "anvil-mesh-backend-production",
+      ANVIL_DEPLOYMENT_NAME: "Anvil Backend (mesh-backend-production)",
       OIDC_ISSUER: "https://issuer.example.com",
     });
     expect(JSON.stringify(plan)).not.toContain("ANVIL_DEV_SPIKE");
@@ -260,7 +347,11 @@ describe("Mesh backend recipe planning", () => {
     });
 
     expect(plan.dev).toBe(true);
-    expect(plan.vars).toEqual({ ANVIL_DEV_SPIKE: "true" });
+    expect(plan.vars).toEqual({
+      ANVIL_DEPLOYMENT_ID: "anvil-mesh-backend-production",
+      ANVIL_DEPLOYMENT_NAME: "Anvil Backend (mesh-backend-production)",
+      ANVIL_DEV_SPIKE: "true",
+    });
     expect(plan.secrets).toEqual([
       expect.objectContaining({
         name: "ENROLLMENT_ADMIN_TOKEN",
@@ -564,5 +655,66 @@ describe("Mesh lifecycle gating", () => {
       "--config",
       plan.config.path,
     ]);
+  });
+
+  it("writes the generated config before provisioning resources and keeps secret values off argv", async () => {
+    const backendDir = await createBackendProject();
+    await writeFile(
+      path.join(backendDir, "wrangler.hosted.jsonc"),
+      `{"name":"hosted","main":"src/index.ts","compatibility_date":"2026-09-01","durable_objects":{"bindings":[{"name":"ACCOUNT","class_name":"AccountCoordinator"},{"name":"SESSIONS","class_name":"SessionCoordinator"}]},"migrations":[{"tag":"v1","new_sqlite_classes":["AccountCoordinator"]}],"r2_buckets":[{"binding":"ARTIFACTS","bucket_name":"artifacts"}],"d1_databases":[{"binding":"HOSTED_DB","database_name":"billing","database_id":"<placeholder>"}],"vars":{"HOSTED_BILLING_ENFORCEMENT":"true"}}`,
+      "utf8",
+    );
+    const plan = await createMeshDeploymentPlan({
+      ...baseOptions(backendDir),
+      deploymentMode: "hosted",
+      secrets: ["ENROLLMENT_ADMIN_TOKEN"],
+    });
+    const run = vi.fn<WranglerCommandRunner>(async ({ args }) => {
+      expect(
+        JSON.parse(await readFile(plan.config.path, "utf8")),
+      ).toMatchObject({
+        name: "mesh-backend",
+      });
+      if (args[0] === "d1" && args[1] === "list")
+        return { exitCode: 0, stdout: "[]", stderr: "" };
+      if (args[0] === "d1")
+        return {
+          exitCode: 0,
+          stdout: '{"database_id":"db-resolved"}',
+          stderr: "",
+        };
+      return { exitCode: 0, stdout: "ok", stderr: "" };
+    });
+    const provisioned = await provisionMeshResources({ plan, run });
+    expect(provisioned.ok).toBe(true);
+    expect(provisioned.plan.d1Databases[0]?.databaseId).toBe("db-resolved");
+    const secretResult = await provisionMeshSecrets({
+      plan: provisioned.plan,
+      secrets: { ENROLLMENT_ADMIN_TOKEN: "secret-value" },
+      run,
+    });
+    expect(secretResult.ok).toBe(true);
+    const secretCall = run.mock.calls.find(
+      (call) => call[0].args[0] === "secret",
+    );
+    expect(secretCall?.[0].args.join(" ")).not.toContain("secret-value");
+    expect(secretCall?.[0].input).toContain("secret-value");
+  });
+
+  it("stops migration before invoking Wrangler for an unresolved D1", async () => {
+    const backendDir = await createBackendProject();
+    await writeFile(
+      path.join(backendDir, "wrangler.hosted.jsonc"),
+      `${BACKEND_WRANGLER_CONFIG.slice(0, -2)}, "d1_databases":[{"binding":"HOSTED_DB","database_name":"billing","database_id":"<placeholder>","migrations_dir":"migrations"}], "vars":{"HOSTED_BILLING_ENFORCEMENT":"true"}}`,
+      "utf8",
+    );
+    const plan = await createMeshDeploymentPlan({
+      ...baseOptions(backendDir),
+      deploymentMode: "hosted",
+    });
+    const run = vi.fn<WranglerCommandRunner>();
+    const result = await migrateMeshDatabases({ plan, run });
+    expect(result.ok).toBe(false);
+    expect(run).not.toHaveBeenCalled();
   });
 });

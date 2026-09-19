@@ -267,6 +267,21 @@ function buildAuthorizationUrl(input: {
     ['code_challenge', input.challenge],
     ['code_challenge_method', OIDC_CODE_CHALLENGE_METHOD],
   ];
+  // WorkOS AuthKit uses the User Management authorization endpoint rather
+  // than OIDC discovery; explicitly select AuthKit when this fixed public
+  // authority is advertised by a hosted backend.
+  try {
+    const issuerUrl = new URL(input.issuer);
+    if (
+      issuerUrl.protocol === 'https:' &&
+      issuerUrl.hostname === 'api.workos.com' &&
+      issuerUrl.pathname === '/user_management'
+    ) {
+      params.push(['provider', 'authkit']);
+    }
+  } catch {
+    // The backend descriptor validation owns malformed issuer handling.
+  }
   const query = params
     .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
     .join('&');

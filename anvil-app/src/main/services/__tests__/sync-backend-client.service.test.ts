@@ -352,6 +352,7 @@ describe('openSocket', () => {
 describe('sync-backend.service association', () => {
   beforeEach(() => {
     db.exec('DELETE FROM sync_backends');
+    vi.unstubAllEnvs();
   });
 
   it('pins a paused association and keeps one active row', () => {
@@ -387,6 +388,21 @@ describe('sync-backend.service association', () => {
     });
   });
 
+  it('reports a known Anvil-hosted association as hosted after activation', () => {
+    const pinned = pinBackend({
+      baseUrl: 'https://hosted.example.test/',
+      descriptor: validDescriptor,
+      connectionMode: 'hosted',
+    });
+    activateBackend(pinned.id);
+    expect(getBackendStatus()).toMatchObject({
+      backendId: pinned.id,
+      connectionMode: 'hosted',
+      state: 'active',
+      baseUrl: 'https://hosted.example.test/',
+    });
+  });
+
   it('reports a local empty status with no token-like keys', () => {
     const status = getBackendStatus();
     expect(status).toEqual({
@@ -399,6 +415,7 @@ describe('sync-backend.service association', () => {
       authModes: [],
       state: null,
       identityReviewRequired: false,
+      hostedBackendUrl: null,
     });
     const keys: string[] = [];
     const collect = (value: unknown): void => {
@@ -420,6 +437,14 @@ describe('sync-backend.service association', () => {
       expect(key).not.toMatch(/token|secret|refresh|password|bearer|credential/i);
     }
     expect(JSON.stringify(status)).not.toMatch(/"token"|"secret"|"refresh"|"password"/i);
+  });
+
+  it('exposes only the configured public hosted URL', () => {
+    vi.stubEnv('ANVIL_HOSTED_BACKEND_URL', 'https://hosted.example.test/base');
+    expect(getBackendStatus().hostedBackendUrl).toBe('https://hosted.example.test/base/');
+
+    vi.stubEnv('ANVIL_HOSTED_BACKEND_URL', 'http://localhost:3000');
+    expect(getBackendStatus().hostedBackendUrl).toBeNull();
   });
 
   it('fills the integration prompt with build metadata and a stand-in digest', () => {

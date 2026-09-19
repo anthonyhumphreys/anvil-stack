@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
-import { MIGRATIONS, SCHEMA_SQL, SCHEMA_VERSION } from '../schema';
+import { LEGACY_SCHEMA_REPAIR_SQL, MIGRATIONS, SCHEMA_SQL, SCHEMA_VERSION } from '../schema';
 import {
   MAIN_V67_SCHEMA_SQL,
   MERGE_BASE_V66_SCHEMA_SQL,
@@ -168,7 +168,7 @@ describe('fresh database schema', () => {
         ).map((column) => column.name),
       );
 
-      expect(SCHEMA_VERSION).toBe(87);
+      expect(SCHEMA_VERSION).toBe(88);
       for (const column of [
         'local_llm_mode',
         'local_llm_provider',
@@ -303,6 +303,36 @@ describe('fresh database schema', () => {
           )
         `),
       ).toThrow(/unique/i);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('repairs a v68 database missing device enrollments before v70 alters it', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec(`
+        CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT);
+        INSERT INTO schema_meta (key, value) VALUES ('schema_version', '68');
+      `);
+
+      // This is the historical collision: v68 is stamped, but the table from
+      // the pre-merge v67 migration was never created.
+      db.exec(LEGACY_SCHEMA_REPAIR_SQL);
+      applyMigration(db, MIGRATIONS[69]);
+      applyMigration(db, MIGRATIONS[70]);
+
+      const columns = new Set(
+        (db.prepare('PRAGMA table_info(device_enrollments)').all() as Array<{ name: string }>).map(
+          (column) => column.name,
+        ),
+      );
+      expect(columns.has('next_sequence')).toBe(true);
+      expect(
+        db
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sync_backends'")
+          .get(),
+      ).toEqual({ name: 'sync_backends' });
     } finally {
       db.close();
     }

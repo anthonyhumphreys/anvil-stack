@@ -62,13 +62,14 @@ async function signedHostedPost(
     Date.now(),
     options.requestId,
   );
-  const response = await SELF.fetch(
-    new Request(url, { method: 'POST', headers, body: payload }),
-  );
+  const response = await SELF.fetch(new Request(url, { method: 'POST', headers, body: payload }));
   return { status: response.status, body: (await response.json()) as Record<string, unknown> };
 }
 
-async function enrollWithCode(code: string, installationId = 'install-hosted'): Promise<DeviceSession> {
+async function enrollWithCode(
+  code: string,
+  installationId = 'install-hosted',
+): Promise<DeviceSession> {
   const response = await SELF.fetch('https://spike.test/v1/enroll', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -123,7 +124,9 @@ describe('hosted service auth gate', () => {
       body: JSON.stringify(identity),
     });
     expect(unsigned.status).toBe(401);
-    expect((await unsigned.json() as { error: { code: string } }).error.code).toBe('unauthenticated');
+    expect(((await unsigned.json()) as { error: { code: string } }).error.code).toBe(
+      'unauthenticated',
+    );
 
     const wrongKey = await signedHostedPost('/internal/hosted/pair-device', identity, {
       secret: 'b'.repeat(32),
@@ -248,14 +251,20 @@ describe('hosted device link flow', () => {
     const identityC = makeIdentity(`c-${crypto.randomUUID()}`);
     await getOrCreateBillingAccount(hostedDb(), identityC);
     const codeC = await signedHostedPost('/internal/hosted/link-code', identityC);
-    expect((await postHostedLink(codeC.body['linkCode'] as string, device.accessToken)).status).toBe(200);
+    expect(
+      (await postHostedLink(codeC.body['linkCode'] as string, device.accessToken)).status,
+    ).toBe(200);
 
     const identityD = makeIdentity(`d-${crypto.randomUUID()}`);
     await getOrCreateBillingAccount(hostedDb(), identityD);
     const codeD = await signedHostedPost('/internal/hosted/link-code', identityD);
     const denied = await postHostedLink(codeD.body['linkCode'] as string, device.accessToken);
     expect(denied.status).toBe(409);
-    const error = denied.body['error'] as { code: string; retryable: boolean; details: { reason: string } };
+    const error = denied.body['error'] as {
+      code: string;
+      retryable: boolean;
+      details: { reason: string };
+    };
     expect(error.code).toBe('conflict');
     expect(error.retryable).toBe(false);
     expect(error.details.reason).toBe('sync-account-claimed');
@@ -268,14 +277,16 @@ describe('hosted device link flow', () => {
     await getOrCreateBillingAccount(hostedDb(), identity);
 
     const first = await signedHostedPost('/internal/hosted/link-code', identity);
-    expect((await postHostedLink(first.body['linkCode'] as string, deviceX.accessToken)).status).toBe(200);
+    expect(
+      (await postHostedLink(first.body['linkCode'] as string, deviceX.accessToken)).status,
+    ).toBe(200);
 
     const second = await signedHostedPost('/internal/hosted/link-code', identity);
     const denied = await postHostedLink(second.body['linkCode'] as string, deviceY.accessToken);
     expect(denied.status).toBe(409);
-    expect(
-      (denied.body['error'] as { details: { reason: string } }).details.reason,
-    ).toBe('already-linked');
+    expect((denied.body['error'] as { details: { reason: string } }).details.reason).toBe(
+      'already-linked',
+    );
   });
 
   it('rejects consumed, wrong, and expired link codes with 401', async () => {
@@ -331,6 +342,80 @@ describe('hosted device link flow', () => {
     const unknown = makeIdentity(`ghost-${crypto.randomUUID()}`);
     expect((await signedHostedPost('/internal/hosted/link-code', unknown)).status).toBe(404);
     expect((await signedHostedPost('/internal/hosted/account', unknown)).status).toBe(404);
+  });
+});
+
+describe('hosted dashboard contract relay', () => {
+  it('unwraps request, status, and snapshot results from the account coordinator', async () => {
+    const identity = makeIdentity(`dashboard-${crypto.randomUUID()}`);
+    const pair = await signedHostedPost('/internal/hosted/pair-device', identity);
+    const device = await enrollWithCode(pair.body['code'] as string, 'dashboard-device');
+    const requestId = crypto.randomUUID();
+    const browserPub = btoa('b'.repeat(32));
+    const request = await signedHostedPost('/internal/hosted/dashboard-request', {
+      ...identity,
+      request: {
+        requestId,
+        browserPub,
+        challenge: 'dashboard-challenge',
+        scopes: ['read-dashboard'],
+        expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      },
+    });
+    expect(request.status).toBe(200);
+    expect(request.body['request']).toMatchObject({ requestId, state: 'pending' });
+    expect(request.body['result']).toBeUndefined();
+
+    const rpc = await SELF.fetch('https://spike.test/v1/rpc', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${device.accessToken}`,
+      },
+      body: JSON.stringify({
+        protocol: 'anvil-backend/1',
+        requestId: crypto.randomUUID(),
+        operation: 'dashboard.decide',
+        params: {
+          requestId,
+          decision: 'approved',
+          grant: {
+            v: 1,
+            enc: 'x25519-aes-256-gcm',
+            requestId,
+            browserPub,
+            expiresAt: new Date(Date.now() + 600_000).toISOString(),
+            ephPub: btoa('e'.repeat(32)),
+            nonce: btoa('n'.repeat(12)),
+            ct: btoa('sealed-grant'),
+          },
+          snapshot: {
+            enc: 'aes-256-gcm',
+            seq: 1,
+            nonce: btoa('s'.repeat(12)),
+            ct: btoa('sealed-snapshot'),
+          },
+        },
+      }),
+    });
+    expect(rpc.status).toBe(200);
+
+    const status = await signedHostedPost('/internal/hosted/dashboard-status', {
+      ...identity,
+      requestId,
+    });
+    expect(status.status).toBe(200);
+    expect(status.body).toMatchObject({ requestId, state: 'approved', snapshotSeq: 1 });
+    expect(status.body['grant']).toBeDefined();
+    expect(status.body['result']).toBeUndefined();
+
+    const snapshot = await signedHostedPost('/internal/hosted/dashboard-snapshot', {
+      ...identity,
+      requestId,
+    });
+    expect(snapshot.status).toBe(200);
+    expect(snapshot.body).toMatchObject({ requestId, snapshot: { seq: 1 } });
+    expect(snapshot.body['result']).toBeUndefined();
   });
 });
 

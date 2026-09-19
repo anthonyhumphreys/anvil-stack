@@ -1,179 +1,165 @@
-# Cloudflare Mesh backend recipe
+# Cloudflare Sync/Mesh deployment recipe
 
-## Purpose
+The recipe deploys the existing Anvil backend Worker from its source project.
+It does not compile the backend as an Anvil Cell. The generic Cell Cloudflare
+adapter remains plan-only; these commands operate on the Sync/Mesh backend
+and its optional Sandbox provisioner.
 
-The Mesh backend recipe is a bounded deployment recipe for the Anvil Mesh
-backend: a self-contained Cloudflare Worker project that serves the sync
-discovery descriptor, JSON-RPC operations, and the WebSocket connect route. The
-recipe lives in `@anvil-cloud/cloudflare` and is exposed through
-`anvil-cloud mesh …` commands.
+For a complete branch-testing sequence, including website, Stripe, device
+pairing and cloud environment checks, use the
+[deployment runbook](../../../anvil-app/docs/runbooks/hosted-sync/deploy.md).
 
-Unlike the Cell preview adapter, the recipe does not rebuild or re-bundle
-application source. It consumes an existing Worker project directory as the
-deployable artifact: it reads the project's own `wrangler.jsonc` for Durable
-Object bindings, migration tags, R2 buckets, entrypoint, and compatibility
-date, then renders a generated overlay configuration (default
-`wrangler.mesh.jsonc`) that Wrangler builds and deploys in place.
-
-This keeps the backend project as the single source of truth for bindings and
-migrations while giving operators a reviewable plan, a generated config, a
-gated lifecycle, and a pinnable connection export.
-
-## Planning
+## Backend modes and inputs
 
 ```sh
 anvil-cloud mesh plan --backend <path> --name <worker> \
-  [--stage production] [--env <name>] [--account-id <id>] \
-  [--base-url <url> | --subdomain <workers.dev-subdomain>] \
-  [--bucket <r2-bucket>] \
-  [--oidc-issuer <url> --oidc-client-id <id>] [--oidc-scopes "openid profile"] \
-  [--first-deploy] [--dev] [--temporary] [--write] [--json]
+  --mode hosted --stage staging --account-id <id> \
+  --base-url <https-origin> --bucket <dedicated-bucket> \
+  --database <dedicated-billing-db> --vars-file <json> \
+  --config-out <generated-config> --write --json
 ```
 
-`createMeshDeploymentPlan(options)` performs no provider calls. It reads the
-backend project's Wrangler configuration and produces a stable plan shape:
+`--mode self-hosted` is the default and reads `wrangler.jsonc` or
+`wrangler.json`. `--mode hosted` strictly reads `wrangler.hosted.jsonc` or
+`wrangler.hosted.json`; it never falls back to the self-host configuration.
 
-- `workerName`, `stage`, `authentication`, `backendDir`;
-- `durableObjects` — the `ACCOUNT` (`AccountCoordinator`) and `SESSIONS`
-  (`SessionCoordinator`) bindings detected in the project config;
-- `migrations` + `migrationMode` — `create` emits the project's
-  `new_classes`/`new_sqlite_classes` migration tags for a first deploy;
-  `existing` omits them because the classes already exist;
-- `r2Buckets` — the `ARTIFACTS` binding with an optional name override;
-- `vars` — non-secret Worker variables, sorted and filtered;
-- `secrets` — secret _names_ the operator provisions with `wrangler secret`;
-  values are never accepted or emitted;
-- `advertisedAuthModes` — `enrollment-code` always, plus `oidc-pkce` when both
-  `OIDC_ISSUER` and `OIDC_CLIENT_ID` vars are set;
-- `diagnostics` — blocking/review/info findings about missing prerequisites;
-- `gates` — the evidence gate described below;
-- `connection` — the connection export preview;
-- `operations` — apply/upgrade/retain/remove commands and notes;
-- `config` — the generated config path and its rendered contents.
+Both modes retain the backend's Durable Object bindings and complete
+migration history, entrypoint, compatibility date and R2 bindings. Hosted
+mode also retains D1 bindings, cron triggers, source vars and service
+bindings. It requires `HOSTED_DB` and `HOSTED_BILLING_ENFORCEMENT="true"`.
+The self-host template has no hosted billing or WorkOS dependency.
 
-`--write` on `mesh plan` also writes the generated config. Without it, the
-plan command renders the config into `plan.config.contents` without touching
-the filesystem.
+Additional inputs:
 
-### Fail-closed environment rules
+- `--vars-file` merges a JSON map of string values into the source vars.
+  Secrets are rejected in vars; install them with `mesh secrets`.
+- `--oidc-issuer`, `--oidc-client-id`, `--oidc-scopes` configure direct OIDC
+  enrollment. Both issuer and client id are needed to advertise `oidc-pkce`.
+- `--managed-provisioner <worker>` adds the `MANAGED_PROVISIONER` binding.
+  `ANVIL_PUBLIC_API_URL` defaults to the supplied backend origin. Install
+  `MANAGED_PROVISIONER_TOKEN` separately.
+- `--database` overrides the hosted database name; `--bucket` overrides the
+  artifact bucket. Use dedicated names for staging.
+- `--env` emits and selects a named Wrangler environment. All deployment,
+  migration, resource and secret commands pass that same environment.
+- `--subdomain` can derive a workers.dev origin in place of `--base-url`.
+- `--connection-out` writes a pinnable connection record after apply.
+- `--first-deploy` records first-deploy intent. All migration tags are always
+  emitted, including on upgrades; the provider skips already-applied tags.
 
-The backend intentionally ships no development flags in its deployed
-configuration. The recipe preserves that split:
+The default generated file is `wrangler.mesh.jsonc` for self-hosted mode and
+`wrangler.mesh.hosted.jsonc` for hosted mode. Prefer an explicit output path
+per target. Entrypoint and D1 migration paths are resolved against the source
+project and rewritten relative to that output path. Generated output cannot
+overwrite the source Wrangler configuration.
 
-- `ANVIL_DEV_SPIKE` and `ENROLLMENT_ADMIN_TOKEN` are development-only keys. A
-  non-dev recipe removes them from `vars`/`secrets` and emits a blocking
-  `MESH_DEV_ONLY_VALUE` diagnostic that does not name the rejected keys.
-- Passing `--dev` selects the development recipe, which may list
-  `ENROLLMENT_ADMIN_TOKEN` as an optional secret and `ANVIL_DEV_SPIKE` as a
-  var for local fixtures only.
-- `OIDC_ISSUER` without `OIDC_CLIENT_ID` (or vice versa) produces a
-  `MESH_OIDC_INCOMPLETE` review diagnostic, because the descriptor only
-  advertises `oidc-pkce` when both are configured.
-- `--temporary` produces a `MESH_TEMPORARY_UNSUPPORTED` blocking diagnostic:
-  Temporary Accounts do not list R2 as a supported resource, and the backend
-  requires the `ARTIFACTS` bucket.
+Planning makes no provider calls. `--write` writes the generated config.
+Plans include the mode, bindings, vars, diagnostics, lifecycle gates, required
+secret metadata and connection preview. They never accept secret values.
 
-## Generated configuration
+## Resource and deployment lifecycle
 
-`writeMeshWranglerConfig(plan)` writes `plan.config.contents` to
-`plan.config.path` (default `<backend>/wrangler.mesh.jsonc`). The generated
-file:
+Repeat the same target options on each command. The runbook provides a shell
+helper to keep them consistent.
 
-- sets `name` to the operator-supplied Worker name;
-- points `main` at the backend entrypoint, resolved relative to the config
-  location so the config may live outside the project;
-- reuses the project's `compatibility_date`, Durable Object bindings, new-class
-  migrations (first deploy only), and R2 bucket bindings;
-- emits `workers_dev: true`, an optional `account_id`, and the filtered `vars`;
-- when `--env <name>` is given, adds a named environment that repeats the
-  bindings under `env.<name>` (named environments do not inherit bindings) and
-  derives the environment Worker name as `<worker>-<env>`.
-
-Because Wrangler builds the project source directly, upgrades redeploy the same
-generated config; migration tags already applied are skipped by the provider.
-
-## Lifecycle and the evidence gate
-
-Apply and remove are thin wrappers over `wrangler deploy` and
-`wrangler delete` against the generated config, using the package's existing
-subprocess conventions: credential sanitisation for Temporary Accounts, claim
-URL redaction, and a Wrangler version check.
-
-Both operations are gated behind recorded provider evidence, matching the
-Cell-level `cloudflare-plan-only-gate` convention:
-
-- `applyMeshDeployment` / `anvil-cloud mesh apply` without an evidence
-  reference returns `MESH_PROVIDER_EVIDENCE_REQUIRED`, marks the result
-  `gated: true`, and never spawns Wrangler. The same gate applies to
-  `removeMeshDeployment` / `anvil-cloud mesh remove`, which has no un-gated
-  path.
-- Blocking plan diagnostics (invalid worker name, dev-only keys, missing
-  bindings, invalid base URL, Temporary Account mode) fail closed for both
-  operations even when evidence is supplied.
-- `applyMeshDeployment` with `dryRun: true` runs `wrangler deploy --dry-run`
-  without evidence. This is a local compile check equivalent to the package's
-  existing non-live verification path and performs no provider mutation.
-- When evidence is supplied, `apply` first writes the generated config, then
-  deploys; on a workers.dev response it derives and — when the plan carries a
-  `connectionPath` — writes the connection record. `remove` runs
-  `wrangler delete --config <generated>`.
-
-The CLI accepts an evidence reference via `--evidence <ref>`; the reference is
-echoed back in the lifecycle result so review tooling can correlate the run
-with the recorded smoke evidence. Until provider lifecycle smoke evidence for
-this recipe is actually recorded, every apply/remove invocation reports the
-gate.
-
-### Upgrade and retain semantics
-
-- **Upgrade** is re-apply: redeploy the same generated config. New Durable
-  Object classes must arrive as new migration tags; never reuse an applied
-  tag.
-- **Retain** is the default on remove: `wrangler delete` deletes the Worker
-  script only. Durable Object storage and R2 objects persist under the account
-  and continue to bill until deleted explicitly. A full teardown deletes those
-  resources separately after the operator confirms no unrecovered data
-  remains.
-
-## Connection export
-
-The recipe exports a pinnable connection record for the desktop:
-
-```json
-{
-  "schemaVersion": "0.1",
-  "kind": "anvil-mesh-backend",
-  "workerName": "mesh-backend",
-  "stage": "production",
-  "baseUrl": "https://mesh.example.com",
-  "descriptorUrl": "https://mesh.example.com/.well-known/anvil-backend"
-}
+```sh
+anvil-cloud mesh provision <target-options> --json
+anvil-cloud mesh migrate <target-options> --json
+anvil-cloud mesh apply <target-options> --dry-run --json
+anvil-cloud mesh apply <target-options> --test-deployment --json
+anvil-cloud mesh secrets <target-options> --from-file <secret-json> --json
 ```
 
-`createMeshConnectionRecord` requires an `https` base URL with no embedded
-credentials; plain `http` is accepted only for loopback hosts behind the
-explicit `--allow-insecure` opt-in. `descriptorUrl` is always
-`<base>/.well-known/anvil-backend`, matching the backend's discovery route.
+`provision` writes the selected config before contacting Cloudflare. It lists
+D1 databases to recover an existing database by name, creates missing
+resources and persists each resolved D1 id before moving on. Re-planning
+recovers a cached id only for the same explicit account, Worker, environment
+and database name. An explicit source id takes precedence. A D1 failure stops
+before provisioning R2.
 
-The record is produced three ways:
+`migrate` rejects unresolved D1 ids and applies declared migrations remotely.
+It has no database work for the self-host template. `apply` also rejects
+unresolved D1 ids for a real deployment; a local dry-run can compile the
+unprovisioned template.
 
-- at plan time when `--base-url` or `--subdomain` is supplied;
-- after apply, from the workers.dev URL Wrangler reports;
-- directly via `anvil-cloud mesh connection --name <worker> --base-url <url>
-[--out <path>]`, which prints and optionally writes the record.
+`secrets` accepts exactly one of `--from-file <json>` and `--from-stdin`.
+It validates the input, sends it to Wrangler over stdin and reports names
+only. Secret operation failures suppress provider output because a provider
+or wrapper may echo rejected values. Deploy the Worker before installing
+secrets. Reapply preserves the Worker's existing secrets.
 
-## API surface
+Commands resolve the backend-local Wrangler installation first. Install the
+standalone backend with `pnpm install --ignore-workspace --frozen-lockfile`.
+All provider subprocesses receive explicit config paths; stdin closes even
+when no payload is supplied so noninteractive commands cannot wait forever.
 
-```ts
-import {
-  createMeshDeploymentPlan,
-  writeMeshWranglerConfig,
-  applyMeshDeployment,
-  removeMeshDeployment,
-  createMeshConnectionRecord,
-  writeMeshConnectionRecord,
-} from "@anvil-cloud/cloudflare";
+## Production evidence and initial test deployments
+
+The normal apply/remove path requires `--evidence <reference>` identifying
+recorded provider lifecycle evidence. Missing evidence fails closed before
+Wrangler runs. A local `apply --dry-run` needs no evidence and makes no
+provider mutation.
+
+An initial staging test can use an explicit `--test-deployment` with a
+non-production `--stage`. This option applies the selected target without
+pretending a provider smoke test has already passed. It is rejected for the
+default `production` stage, even when an evidence reference is also supplied.
+It does not select safe resource names; the caller must supply the intended
+test account, Worker, bucket and database.
+
+`ANVIL_DEV_SPIKE` is blocked in non-dev plans. The Desktop's local spike
+fixture is separately gated by an unpackaged build and
+`ANVIL_ENABLE_SYNC_SPIKE=1`; neither gate enables a hosted deployment. The
+`ENROLLMENT_ADMIN_TOKEN` is a valid production secret for self-hosted
+enrollment-code bootstrap, never a var. Temporary Accounts remain unsupported
+because the Mesh backend needs R2.
+
+## Sandbox provisioner
+
+```sh
+anvil-cloud mesh provisioner plan --provisioner <path> --name <worker> \
+  --mode managed --stage staging --account-id <id> --write --json
+anvil-cloud mesh provisioner apply <provisioner-options> --dry-run --json
+anvil-cloud mesh provisioner apply <provisioner-options> --test-deployment --json
+anvil-cloud mesh provisioner secrets <provisioner-options> \
+  --from-file <token-text-file> --test-deployment --json
 ```
 
-All functions are Promise-based and take an injectable
-`WranglerCommandRunner` for tests; no provider SDKs are exposed.
+`managed` and `byo` deploy the same bearer-authenticated provisioner. Managed
+mode uses a backend service binding; BYO clients use its public URL. The
+provisioner config preserves Sandbox Durable Objects, migration history and
+container settings, and rewrites its source paths for the generated output.
+Missing image/daemon staging, invalid bindings, Temporary Accounts and
+`ALLOW_UNAUTHENTICATED` values other than `"false"` block deployment.
+
+Build the app daemon and run `cloud/images/anvil-worker/prepare.sh` before
+planning. The provisioner dry-run compiles the Worker and builds the container
+image through Docker. The image includes the native build dependencies for
+`better-sqlite3` and `node-pty`.
+
+Provisioner secrets input is a single raw token, unlike backend secrets JSON.
+It is sent on stdin, bounded to 64 KiB and redacted from captured output.
+Use the same token as the backend's `MANAGED_PROVISIONER_TOKEN`.
+
+Apply, token installation and remove use the same production evidence gate
+and explicit non-production test option as the backend.
+
+## Connection and removal
+
+Connection records contain `schemaVersion`, `kind`, `workerName`, `stage`,
+`baseUrl` and `descriptorUrl`. The descriptor URL is always
+`<base>/.well-known/anvil-backend`. HTTPS is required except for explicit
+loopback development with `--allow-insecure`.
+
+```sh
+anvil-cloud mesh connection --name <worker> --base-url <https-origin> --out <path> --json
+anvil-cloud mesh remove <target-options> --test-deployment --json
+anvil-cloud mesh provisioner remove <provisioner-options> --test-deployment --json
+```
+
+Removal deletes the selected Worker. It is not a complete D1/R2 cleanup
+workflow; review dedicated storage separately after recovering any needed
+data. Terminate cloud environments before deleting their provisioner.
+
+All recipe APIs remain Promise-based with injectable Wrangler runners for
+verification. Provider SDKs are not exposed to Cell code.

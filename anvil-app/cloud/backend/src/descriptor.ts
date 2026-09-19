@@ -1,8 +1,17 @@
 import type { BackendDescriptor } from '../../contract/discovery';
 import { DEFAULT_LIMITS, DESCRIPTOR_VERSION, PROTOCOL } from '../../contract/version';
 
-/** Spike deployment identity. Stable so pinning tests stay deterministic. */
+/** Legacy staging identity. Keep until the staging deployment is intentionally migrated. */
 export const SPIKE_DEPLOYMENT_ID = 'spike-0000-0000-0000-backend01demo';
+export const SPIKE_DEPLOYMENT_NAME = 'Anvil Backend Spike (BACKEND-01)';
+
+type DescriptorEnvironment = {
+  ANVIL_DEPLOYMENT_ID?: string;
+  ANVIL_DEPLOYMENT_NAME?: string;
+  OIDC_ISSUER?: string;
+  OIDC_CLIENT_ID?: string;
+  OIDC_SCOPES?: string;
+};
 
 /**
  * Public discovery descriptor. Must satisfy `validateDescriptor` in
@@ -13,11 +22,7 @@ export const SPIKE_DEPLOYMENT_ID = 'spike-0000-0000-0000-backend01demo';
  * `enrollment-code` always works (admin- or device-issued), and `oidc-pkce`
  * is advertised only when OIDC_ISSUER/OIDC_CLIENT_ID are configured.
  */
-export function buildDescriptor(env?: {
-  OIDC_ISSUER?: string;
-  OIDC_CLIENT_ID?: string;
-  OIDC_SCOPES?: string;
-}): BackendDescriptor {
+export function buildDescriptor(env?: DescriptorEnvironment): BackendDescriptor {
   const oidcConfigured =
     typeof env?.OIDC_ISSUER === 'string' &&
     env.OIDC_ISSUER.length > 0 &&
@@ -28,8 +33,8 @@ export function buildDescriptor(env?: {
     .filter((scope) => scope.length > 0);
   return {
     descriptorVersion: DESCRIPTOR_VERSION,
-    deploymentId: SPIKE_DEPLOYMENT_ID,
-    displayName: 'Anvil Backend Spike (BACKEND-01)',
+    deploymentId: env?.ANVIL_DEPLOYMENT_ID?.trim() || SPIKE_DEPLOYMENT_ID,
+    displayName: env?.ANVIL_DEPLOYMENT_NAME?.trim() || SPIKE_DEPLOYMENT_NAME,
     protocols: [PROTOCOL],
     profiles: ['sync/1', 'mesh/1'],
     apiPath: 'v1',

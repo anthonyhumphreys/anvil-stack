@@ -38,7 +38,7 @@ Settings → Sync & Mesh offers four modes:
 | Mode | Behavior |
 | --- | --- |
 | Local only | Nothing leaves the device. A remembered backend is paused, not forgotten. The default. |
-| Anvil-hosted | The operated backend run by the Anvil project. In this build the option renders disabled — "not shipping in this packet." See [Anvil-hosted sync](/docs/sync/hosted). |
+| Anvil-hosted | The operated backend path, enabled by `ANVIL_HOSTED_BACKEND_URL` for a tested HTTPS origin. Production availability is still pending. See [Anvil-hosted sync](/docs/sync/hosted). |
 | Your Cloudflare | Point Anvil at a Cloudflare Workers deployment you own (labeled *My Cloudflare deployment* in the picker). Deploy it with [`anvil-cloud mesh`](/docs/sync/self-deploy). |
 | Compatible backend | Any URL implementing the frozen Sync v1 contract — see [Backend conformance](/docs/sync/conformance). |
 

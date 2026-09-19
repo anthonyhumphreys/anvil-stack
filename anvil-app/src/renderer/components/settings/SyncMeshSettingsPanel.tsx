@@ -72,9 +72,9 @@ function modeDescription(mode: SyncBackendConnectionMode): string {
     case 'hosted':
       return 'Sign in with an Anvil-hosted account.';
     case 'cloudflare':
-      return 'Point Anvil at your own Cloudflare deployment of the official backend.';
+      return 'Sync through a service you run on Cloudflare.';
     case 'compatible':
-      return 'Point Anvil at any backend implementing the frozen v1 contract.';
+      return 'Sync through another Anvil-compatible service.';
     default: {
       const exhaustive: never = mode;
       return exhaustive;
@@ -254,9 +254,10 @@ export function SyncMeshSettingsPanel(): ReactNode {
       const next = await window.anvil.syncBackend.pin({
         baseUrl: discovery.baseUrl,
         descriptor: discovery.descriptor,
+        connectionMode: mode === 'local' ? 'compatible' : mode,
       });
       setStatus(next);
-      setMode('compatible');
+      setDiscovery(null);
     } catch (err) {
       setError(toErrorMessage(err));
     } finally {
@@ -527,35 +528,39 @@ export function SyncMeshSettingsPanel(): ReactNode {
     }
   };
 
-  const showEndpointFlow = mode === 'compatible' || mode === 'cloudflare';
+  const showEndpointFlow = mode === 'hosted' || mode === 'compatible' || mode === 'cloudflare';
   const hosted = runtime?.hosted ?? null;
 
   return (
     <div className="space-y-3">
       <Panel
-        title="Connection mode"
-        description="The same built app connects to any compatible backend. Switching pauses the old connection; cursors are never moved between backends."
+        title="Where to connect"
+        description="Choose a service for syncing your data. You can review its details before turning sync on."
       >
         {statusLoading ? (
           <p className="flex items-center gap-2 text-sm text-text-tertiary">
-            <Loader2 size={14} className="animate-spin motion-reduce:animate-none" /> Loading connection status…
+            <Loader2 size={14} className="animate-spin motion-reduce:animate-none" /> Loading
+            connection status…
           </p>
         ) : (
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             {MODE_ORDER.map((option) => {
-              const disabled = option === 'hosted';
               const selected = mode === option;
               return (
                 <button
                   key={option}
                   type="button"
-                  disabled={disabled}
-                  onClick={() => setMode(option)}
+                  onClick={() => {
+                    setMode(option);
+                    if (option === 'hosted' && url.trim().length === 0) {
+                      setUrl(status?.hostedBackendUrl ?? '');
+                    }
+                  }}
                   className={`rounded-md border p-3 text-left transition-colors ${
                     selected
                       ? 'border-accent/60 bg-accent/5'
                       : 'border-border bg-bg-primary hover:bg-bg-tertiary'
-                  } ${disabled ? 'cursor-not-allowed opacity-50' : ''}`}
+                  }`}
                 >
                   <span className="flex items-center gap-2 text-sm font-medium text-text-primary">
                     {option === 'local' ? (
@@ -568,7 +573,7 @@ export function SyncMeshSettingsPanel(): ReactNode {
                     {syncBackendModeLabel(option)}
                   </span>
                   <span className="mt-1 block text-xs leading-relaxed text-text-secondary">
-                    {disabled ? 'Not shipping in this packet.' : modeDescription(option)}
+                    {modeDescription(option)}
                   </span>
                 </button>
               );
@@ -592,18 +597,30 @@ export function SyncMeshSettingsPanel(): ReactNode {
 
       {showEndpointFlow && (
         <Panel
-          title={mode === 'cloudflare' ? 'My Cloudflare deployment' : 'Compatible backend'}
+          title={
+            mode === 'hosted'
+              ? 'Anvil-hosted backend'
+              : mode === 'cloudflare'
+                ? 'My Cloudflare deployment'
+                : 'Compatible backend'
+          }
           description={
-            mode === 'cloudflare'
-              ? 'Deploy the official backend to your own Cloudflare account, then paste its base URL below.'
-              : 'Paste the base URL of a backend implementing the frozen v1 contract.'
+            mode === 'hosted'
+              ? 'Use the Anvil-hosted account service. The staging endpoint is available for explicit development and QA testing.'
+              : mode === 'cloudflare'
+                ? 'Deploy the official backend to your own Cloudflare account, then paste its base URL below.'
+                : 'Paste the base URL of a backend implementing the frozen v1 contract.'
           }
         >
           <div className="flex flex-col gap-2 sm:flex-row">
             <input
               value={url}
               onChange={(event) => setUrl(event.target.value)}
-              placeholder="https://anvil.example.com/"
+              placeholder={
+                mode === 'hosted'
+                  ? (status?.hostedBackendUrl ?? 'https://hosted.example.com/')
+                  : 'https://anvil.example.com/'
+              }
               spellCheck={false}
               className="min-w-0 flex-1 rounded-md border border-border bg-bg-primary px-3 py-1.5 font-mono text-sm text-text-primary placeholder:text-text-tertiary"
             />
@@ -613,15 +630,17 @@ export function SyncMeshSettingsPanel(): ReactNode {
               disabled={discovering || url.trim().length === 0}
               className="flex shrink-0 items-center justify-center gap-2 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
             >
-              {discovering && <Loader2 size={14} className="animate-spin motion-reduce:animate-none" />}
-              Discover
+              {discovering && (
+                <Loader2 size={14} className="animate-spin motion-reduce:animate-none" />
+              )}
+              Check connection
             </button>
           </div>
 
           {discovery && (
             <div className="space-y-2 rounded-md border border-border bg-bg-primary p-3">
               <p className="text-xs font-medium uppercase tracking-wide text-text-tertiary">
-                Review before pinning
+                Check this service
               </p>
               <dl className="space-y-1 text-sm">
                 <div className="flex justify-between gap-3">
@@ -665,7 +684,7 @@ export function SyncMeshSettingsPanel(): ReactNode {
                 </div>
               </dl>
               <p className="text-xs leading-relaxed text-text-tertiary">
-                Pinning stores a paused association for review. It does not enable upload.
+                Save this service, then sign in and choose when to sync.
               </p>
               <button
                 type="button"
@@ -673,14 +692,14 @@ export function SyncMeshSettingsPanel(): ReactNode {
                 disabled={pinning}
                 className="rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
               >
-                {pinning ? 'Pinning…' : 'Pin association'}
+                {pinning ? 'Saving…' : 'Use this service'}
               </button>
             </div>
           )}
         </Panel>
       )}
 
-      <Panel title="Backend status" description="Public connection metadata. Never shows tokens.">
+      <Panel title="Connection status" description="The service this device is using.">
         {!status || status.backendId === null ? (
           <p className="text-sm text-text-tertiary">No backend associated yet.</p>
         ) : (
@@ -807,7 +826,9 @@ export function SyncMeshSettingsPanel(): ReactNode {
                 disabled={signingIn}
                 className="flex items-center justify-center gap-2 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
               >
-                {signingIn && <Loader2 size={14} className="animate-spin motion-reduce:animate-none" />}
+                {signingIn && (
+                  <Loader2 size={14} className="animate-spin motion-reduce:animate-none" />
+                )}
                 {signingIn ? 'Waiting for browser sign-in…' : 'Sign in with browser'}
               </button>
             )}
@@ -826,7 +847,9 @@ export function SyncMeshSettingsPanel(): ReactNode {
                   disabled={enrolling || enrollmentCode.trim().length === 0}
                   className="flex shrink-0 items-center justify-center gap-2 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
                 >
-                  {enrolling && <Loader2 size={14} className="animate-spin motion-reduce:animate-none" />}
+                  {enrolling && (
+                    <Loader2 size={14} className="animate-spin motion-reduce:animate-none" />
+                  )}
                   Redeem code
                 </button>
               </div>
@@ -1100,7 +1123,9 @@ export function SyncMeshSettingsPanel(): ReactNode {
               disabled={exporting}
               className="flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
             >
-              {exporting && <Loader2 size={14} className="animate-spin motion-reduce:animate-none" />}
+              {exporting && (
+                <Loader2 size={14} className="animate-spin motion-reduce:animate-none" />
+              )}
               {exporting ? 'Exporting…' : 'Export account data'}
             </button>
             <button
@@ -1109,7 +1134,9 @@ export function SyncMeshSettingsPanel(): ReactNode {
               disabled={importing}
               className="flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
             >
-              {importing && <Loader2 size={14} className="animate-spin motion-reduce:animate-none" />}
+              {importing && (
+                <Loader2 size={14} className="animate-spin motion-reduce:animate-none" />
+              )}
               {importing ? 'Reading file…' : 'Import from file'}
             </button>
           </div>
@@ -1127,8 +1154,8 @@ export function SyncMeshSettingsPanel(): ReactNode {
             <div className="space-y-2 rounded-md border border-border bg-bg-primary p-3">
               <p className="text-sm text-text-secondary">
                 <span className="font-medium text-text-primary">{importPreview.fileName}</span>:{' '}
-                {importPreview.summary.creates} new · {importPreview.summary.identical} unchanged
-                · {importPreview.summary.conflicts} conflict
+                {importPreview.summary.creates} new · {importPreview.summary.identical} unchanged ·{' '}
+                {importPreview.summary.conflicts} conflict
                 {importPreview.summary.conflicts === 1 ? '' : 's'} · {importPreview.summary.invalid}{' '}
                 invalid
                 {importPreview.truncated ? ' (details truncated)' : ''}
@@ -1173,9 +1200,7 @@ export function SyncMeshSettingsPanel(): ReactNode {
           title="Remote executions"
           description="Jobs this account dispatched to enrolled devices. 'Lost contact' means the outcome is unknown — it is never shown as cancelled."
         >
-          <MeshExecutionsPanel
-            localWorkerIncarnation={runtime.meshWorker.workerIncarnation}
-          />
+          <MeshExecutionsPanel localWorkerIncarnation={runtime.meshWorker.workerIncarnation} />
         </Panel>
       )}
 
@@ -1247,9 +1272,8 @@ export function SyncMeshSettingsPanel(): ReactNode {
               <div>
                 <p className="text-sm font-medium text-text-primary">Run jobs on this device</p>
                 <p className="mt-0.5 text-xs leading-relaxed text-text-secondary">
-                  Opts this device in as a mesh worker. It publishes a local consent policy,
-                  keeps a leased worker incarnation, and runs account jobs (diagnostic kind
-                  for now). Off by default — sync alone never authorizes execution.
+                  Allow this device to run jobs from your account. You can turn this off at any
+                  time.
                 </p>
               </div>
               <button
@@ -1269,9 +1293,9 @@ export function SyncMeshSettingsPanel(): ReactNode {
             {runtime.meshWorker.enabled && (
               <p className="mt-2 text-xs text-text-tertiary">
                 {runtime.meshWorker.connected
-                  ? `Worker connected (incarnation ${runtime.meshWorker.workerIncarnation?.slice(0, 8) ?? ''}…, ${runtime.meshWorker.activeAttempts} active attempt${runtime.meshWorker.activeAttempts === 1 ? '' : 's'})`
-                  : 'Worker enabled; connecting on the next heartbeat.'}
-                {runtime.meshWorker.lastError ? ` · ${runtime.meshWorker.lastError}` : ''}
+                  ? `Ready to run jobs. ${runtime.meshWorker.activeAttempts} job${runtime.meshWorker.activeAttempts === 1 ? '' : 's'} running.`
+                  : 'Connecting to the service. Anvil will retry automatically.'}
+                {runtime.meshWorker.lastError ? ' The last connection attempt failed.' : ''}
               </p>
             )}
           </div>

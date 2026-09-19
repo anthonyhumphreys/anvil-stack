@@ -1,4 +1,4 @@
 declare module 'mammoth/mammoth.browser' {
-  import mammoth = require('mammoth');
+  import * as mammoth from 'mammoth';
   export = mammoth;
 }

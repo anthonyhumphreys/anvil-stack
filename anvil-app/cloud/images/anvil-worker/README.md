@@ -27,8 +27,11 @@ docker build -f Dockerfile -t anvil-worker .
 ```
 
 For Cloudflare, the wrangler `containers[].image` in `cloud/provisioner`
-points at `Dockerfile.cloudflare`; run `./prepare.sh` before
-`wrangler deploy` / `wrangler containers build`.
+points at `Dockerfile.cloudflare`. Run `./prepare.sh` before
+`anvil-cloud mesh provisioner apply`; its `--dry-run` also builds the image.
+The image installs Python and C++ build tools for native daemon dependencies.
+See the [deployment runbook](../../../docs/runbooks/hosted-sync/deploy.md)
+for the hosted and self-hosted branch-testing commands.
 
 ## Bootstrap contract
 

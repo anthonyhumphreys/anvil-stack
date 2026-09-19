@@ -1,6 +1,6 @@
 # Stripe webhook failures — diagnosis and replay
 
-Packet: **BILL-06** operations. Pipeline:
+Historical packet reference: **BILL-06** operations. Pipeline:
 `POST /v1/hosted/stripe-webhook` → raw-body signature verify against
 `STRIPE_WEBHOOK_SECRET` → dedupe insert into `webhook_events` → inline
 `processStripeEvent` → mark `processed`/`failed`.

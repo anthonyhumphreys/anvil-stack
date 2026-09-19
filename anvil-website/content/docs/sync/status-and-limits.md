@@ -30,16 +30,18 @@ the docs point at when they say "alpha." If a claim anywhere else in
 
 ## Hosted mode status
 
-- **The Anvil-hosted option renders disabled in this build** — visible in
-  Settings → Sync & Mesh, labeled "not shipping in this packet," not
-  selectable.
-- **Production provisioning is pending**: the WorkOS app, Stripe live keys,
-  the production D1 database id, and the secrets bundle are not yet stood up.
-  The backend code is done; the production deployment it would run on is not.
-- **Preview terms are pinned even though hosted isn't live**: free through
-  31 October 2026, paid enforcement from `2026-11-01T00:00:00Z`. Pricing is
-  not approved — no price exists to quote. See [Anvil-hosted
-  sync](/docs/sync/hosted).
+- **Hosted staging/QA is an explicit path in the desktop and runbook.** Set
+  `ANVIL_HOSTED_BACKEND_URL` to the tested HTTPS origin and configure the
+  website service channel and WorkOS clients. The development spike requires
+  an unpackaged build plus `ANVIL_ENABLE_SYNC_SPIKE=1`; the source tree alone
+  does not make hosted connectivity live.
+- **Production provisioning is pending**: the production WorkOS app, Stripe
+  live keys, D1 database id, secrets bundle, and live-account verification are
+  not recorded here.
+- **Preview terms are policy values, not deployment evidence**: the current
+  policy date is free through 31 October 2026, with paid enforcement from
+  `2026-11-01T00:00:00Z`. Pricing is not approved — no price exists to quote.
+  See [Anvil-hosted sync](/docs/sync/hosted).
 
 ## Known gaps
 

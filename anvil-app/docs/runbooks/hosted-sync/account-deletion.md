@@ -1,6 +1,6 @@
 # Account deletion — hosted sync
 
-Packet: **BILL-06** operations. Deleting sync data, deleting the whole Anvil
+Historical packet reference: **BILL-06** operations. Deleting sync data, deleting the whole Anvil
 account and canceling a subscription are separate, explicitly named actions.
 This runbook covers full account deletion.
 

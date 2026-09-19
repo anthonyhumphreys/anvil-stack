@@ -1,8 +1,9 @@
 # Hosted sync launch checklist — pre-launch gate
 
-Packet: **BILL-06**. Every item must be checked and initialled before paid
+Historical packet reference: **BILL-06**. Every item must be checked and initialled before paid
 checkout is published. Drawn from the launch plan's operations/rollout gates;
-the plan file is authoritative where wording differs.
+the plan file is authoritative where wording differs. For current branch
+deployment commands, use [deploy.md](deploy.md).
 
 ## Identity (WorkOS)
 

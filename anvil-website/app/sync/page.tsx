@@ -311,9 +311,10 @@ export default function SyncPage() {
               </ul>
             </div>
             <p className="mt-6 max-w-3xl text-sm leading-6 text-muted-foreground">
-              In this desktop build the Anvil-hosted option renders disabled while hosted
-              provisioning finishes — the account area on this site is live, and
-              self-hosted backends work today. The{" "}
+              Hosted staging/QA is available when
+              <code className="font-mono text-xs">ANVIL_HOSTED_BACKEND_URL</code> names a
+              tested HTTPS origin; production provisioning is still finishing.
+              The account area on this site is live, and self-hosted backends work today. The{" "}
               <Link href="/docs/sync/status-and-limits" className="font-medium text-foreground underline underline-offset-4">
                 status page
               </Link>{" "}

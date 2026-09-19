@@ -218,6 +218,42 @@ const REFRESH_MIN_DELAY_MS = 5_000;
  */
 const HOSTED_SITE_ORIGIN = 'https://anvil.dev';
 const HOSTED_ACCOUNT_URL = `${HOSTED_SITE_ORIGIN}/account`;
+
+/**
+ * Resolves the hosted account destination without allowing an environment
+ * variable to turn the system-browser action into an arbitrary URL opener.
+ * HTTPS destinations are valid in all builds; plain HTTP is limited to
+ * loopback during unpackaged development.
+ */
+export function resolveHostedAccountUrl(
+  configured: string | undefined,
+  isPackaged: boolean,
+): string {
+  const value = configured?.trim();
+  if (!value) return HOSTED_ACCOUNT_URL;
+  try {
+    const url = new URL(value);
+    if (
+      url.username ||
+      url.password ||
+      url.protocol === 'file:' ||
+      url.protocol === 'javascript:'
+    ) {
+      return HOSTED_ACCOUNT_URL;
+    }
+    if (url.protocol === 'https:') return url.href;
+    if (
+      !isPackaged &&
+      url.protocol === 'http:' &&
+      (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]')
+    ) {
+      return url.href;
+    }
+  } catch {
+    // Fall through to the production default.
+  }
+  return HOSTED_ACCOUNT_URL;
+}
 /** Focus/reconnect refreshes are throttled so focus cycling can't spam it. */
 const HOSTED_REFRESH_MIN_INTERVAL_MS = 60_000;
 /**
@@ -424,6 +460,7 @@ export function initSyncRuntime(userDataDir: string, options: SyncRuntimeInitOpt
     scheduleSessionRefresh();
   }
   if (isSyncEnabled()) {
+    ensureCurrentEnrollment();
     connectLiveChannel();
     armFallbackPoll();
     meshWorkerOnSyncReady();
@@ -487,6 +524,29 @@ function currentScope(): SyncScope | null {
     accountId: fields.accountId,
     datasetEpoch: fields.datasetEpoch,
   };
+}
+
+/** A new sign-in may replace the enrollment while keeping the same sync scope. */
+function ensureCurrentEnrollment(): void {
+  const scope = currentScope();
+  const fields = auth?.getSessionScopeFields() ?? null;
+  if (scope === null || fields === null) return;
+  upsertEnrollment({
+    id: fields.enrollmentId,
+    scope,
+    installationId: getOrCreateInstallationId(),
+    displayName: hostname() || 'Anvil device',
+    state: 'active',
+  });
+}
+
+function resumeSyncAfterEnrollment(): void {
+  if (!isSyncEnabled()) return;
+  ensureCurrentEnrollment();
+  connectLiveChannel();
+  armFallbackPoll();
+  meshWorkerOnSyncReady();
+  void requestSync().catch(() => undefined);
 }
 
 function isSyncEnabled(): boolean {
@@ -694,6 +754,7 @@ export async function signInWithOidc(): Promise<SyncAuthPublicSnapshot> {
     );
     sessionExpired = false;
     scheduleSessionRefresh();
+    ensureCurrentEnrollment();
     // OIDC enrollment has no pairing channel; this device publishes its
     // identity and receives the ADK via a keyring wrap from a device that
     // already holds it (or provisions v1 itself on a fresh account).
@@ -701,6 +762,7 @@ export async function signInWithOidc(): Promise<SyncAuthPublicSnapshot> {
     // BILL-05: pull hosted access now so a restricted account never gets one
     // free mutating cycle before the first describe lands.
     void refreshHostedEntitlement().catch(() => undefined);
+    resumeSyncAfterEnrollment();
     return snapshot;
   } catch (error) {
     service.cancelPendingLogin();
@@ -751,12 +813,14 @@ export async function enrollWithEnrollmentCode(code: string): Promise<SyncAuthPu
   );
   sessionExpired = false;
   scheduleSessionRefresh();
+  ensureCurrentEnrollment();
   initializeSyncCrypto(
     pairing === null
       ? undefined
       : { pairingNonce: pairing.pairingNonce, pairingSecret: pairing.pairingSecret },
   );
   void refreshHostedEntitlement().catch(() => undefined);
+  resumeSyncAfterEnrollment();
   return snapshot;
 }
 
@@ -797,9 +861,7 @@ export async function issueEnrollmentCode(options?: {
       ...(options?.sessionTtlSeconds === undefined
         ? {}
         : { sessionTtlSeconds: options.sessionTtlSeconds }),
-      ...(options?.environmentId === undefined
-        ? {}
-        : { environmentId: options.environmentId }),
+      ...(options?.environmentId === undefined ? {} : { environmentId: options.environmentId }),
     },
     { accessToken: token, fetchFn: fetchOverride },
   );
@@ -875,9 +937,7 @@ export async function listCloudEnvironments(
  * envs are deleted by the backend's provisioner, BYO envs by the claiming
  * device's reap sweep. Provider-neutral by design.
  */
-export async function reapCloudEnvironment(
-  environmentId: string,
-): Promise<EnvironmentReapResult> {
+export async function reapCloudEnvironment(environmentId: string): Promise<EnvironmentReapResult> {
   return accountRpc<EnvironmentReapResult>('environment.reap', { environmentId });
 }
 
@@ -963,9 +1023,7 @@ export function approveDeviceTrust(enrollmentId: string): void {
   const scope = currentScope();
   if (scope === null) throw new Error('Sign in before approving a device.');
   setDeviceTrust(scope, enrollmentId, 'trusted', { force: true });
-  const peer = listDeviceIdentities(scope).find(
-    (device) => device.enrollmentId === enrollmentId,
-  );
+  const peer = listDeviceIdentities(scope).find((device) => device.enrollmentId === enrollmentId);
   if (peer !== undefined) {
     wrapAccountKeyFor(scope, enrollmentId, peer.pub);
   }
@@ -1428,13 +1486,7 @@ export function enableSync(): SyncRuntimeStatus {
     accountId: fields.accountId,
     datasetEpoch: fields.datasetEpoch,
   };
-  upsertEnrollment({
-    id: fields.enrollmentId,
-    scope,
-    installationId: getOrCreateInstallationId(),
-    displayName: hostname() || 'Anvil device',
-    state: 'active',
-  });
+  ensureCurrentEnrollment();
   bindLocalEntities(scope);
   connectLiveChannel();
   armFallbackPoll();
@@ -1675,8 +1727,10 @@ export function onAppFocus(): void {
 
 /** Opens the fixed hosted account page in the system browser. */
 export async function openHostedAccountPage(): Promise<void> {
-  const { shell } = await import('electron');
-  await shell.openExternal(HOSTED_ACCOUNT_URL);
+  const { app, shell } = await import('electron');
+  await shell.openExternal(
+    resolveHostedAccountUrl(process.env.ANVIL_HOSTED_ACCOUNT_URL, app.isPackaged),
+  );
 }
 
 /**

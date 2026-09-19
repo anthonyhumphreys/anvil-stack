@@ -11,11 +11,10 @@
   // HOSTED_SERVICE_KEYS is a `wrangler secret put` value — a JSON map of
   // {"keyId":"secret"} for the website -> backend HMAC channel. Never a var.
   //
-  // Provision once, then deploy with `wrangler deploy --config
-  // wrangler.hosted.jsonc`:
-  //   wrangler d1 create anvil-hosted-billing --config wrangler.hosted.jsonc
-  //   wrangler d1 migrations apply anvil-hosted-billing --config wrangler.hosted.jsonc
-  //   wrangler secret put HOSTED_SERVICE_KEYS --config wrangler.hosted.jsonc
+  // Deploy this template through `anvil-cloud mesh --mode hosted`.
+  // The CLI provisions D1/R2, applies migrations and installs secrets.
+  // See docs/runbooks/hosted-sync/deploy.md in anvil-app for the complete
+  // branch-testing sequence and per-target generated configuration.
   //
   // BILL-02 hosted billing config — every value is optional and absence
   // fails closed (no hosted surface on self-host, unavailable/not-found

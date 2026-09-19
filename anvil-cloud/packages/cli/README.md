@@ -92,3 +92,16 @@ OIDC discovery/JWKS verification, issuer/audience/expiry rejection, claim
 mapping, and common provider fixture configs.
 
 See `docs/specs/cli.md` for the command contract.
+
+## Deploy Sync/Mesh from a checkout
+
+The branch CLI supports both `mesh --mode hosted` and `mesh --mode self-hosted`.
+Use `mesh plan`, `provision`, `migrate`, `apply` and `secrets` for the backend,
+and `mesh provisioner` for optional Sandbox capacity. Wrangler is an internal
+deployment dependency, resolved from the selected Worker project.
+
+Follow the [branch deployment runbook](../../../anvil-app/docs/runbooks/hosted-sync/deploy.md)
+for complete commands, isolated staging configuration and end-to-end checks.
+Use the built CLI when testing unreleased branch changes. Production
+apply/remove requires evidence; initial non-production testing uses explicit
+`--stage staging --test-deployment`.

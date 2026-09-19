@@ -1,6 +1,6 @@
 # Entitlement incidents — access states, cache and levers
 
-Packet: **BILL-06** operations. The entitlement decision lives in
+Historical packet reference: **BILL-06** operations. The entitlement decision lives in
 `src/hosted/policy.ts` (shape in `cloud/contract/entitlements.ts`);
 enforcement is `checkHostedAccess` in `src/hosted/enforcement.ts`, invoked by
 AccountCoordinator for every `mutating`-class operation and for artifact

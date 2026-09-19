@@ -73,6 +73,22 @@ function trimTrailingSlashes(value: string): string {
   return value.slice(0, end);
 }
 
+/** WorkOS AuthKit's public-client API is not an OIDC discovery issuer: its
+ * authorization and code exchange live at /user_management/{authorize,authenticate}
+ * and the exchange returns a verified user object rather than an id_token. */
+export function isWorkosAuthKitIssuer(issuer: string): boolean {
+  try {
+    const url = new URL(issuer);
+    return (
+      url.protocol === 'https:' &&
+      url.hostname === 'api.workos.com' &&
+      url.pathname === '/user_management'
+    );
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Discovers the issuer's token and JWKS endpoints via RFC 8414 metadata.
  * The metadata document must declare the same issuer string it was fetched
@@ -140,10 +156,10 @@ export async function verifyOidcPkceProof(
   if (trimTrailingSlashes(proof.issuer) !== issuer) {
     return null;
   }
-  const metadata = await fetchOidcMetadata(issuer, fetchFn);
-  if (metadata === null) {
-    return null;
-  }
+  const workosAuthKit = isWorkosAuthKitIssuer(issuer);
+  const metadata = workosAuthKit ? null : await fetchOidcMetadata(issuer, fetchFn);
+  const tokenEndpoint = workosAuthKit ? `${issuer}/authenticate` : metadata?.tokenEndpoint;
+  if (tokenEndpoint === undefined) return null;
 
   const body = new URLSearchParams({
     grant_type: 'authorization_code',
@@ -152,12 +168,17 @@ export async function verifyOidcPkceProof(
     client_id: config.clientId,
     code_verifier: proof.codeVerifier,
   });
-  const tokenResponse = await fetchJson(metadata.tokenEndpoint, fetchFn, {
+  const tokenResponse = await fetchJson(tokenEndpoint, fetchFn, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: body.toString(),
   });
   const idToken = tokenResponse?.['id_token'];
+  if (idToken === undefined && workosAuthKit) {
+    const user = tokenResponse?.['user'];
+    const sub = isRecord(user) ? user['id'] : undefined;
+    return typeof sub === 'string' && /^user_[A-Za-z0-9_-]{1,240}$/.test(sub) ? sub : null;
+  }
   if (typeof idToken !== 'string') {
     return null;
   }
@@ -176,6 +197,7 @@ export async function verifyOidcPkceProof(
     return null;
   }
 
+  if (metadata === null) return null;
   const jwks = await fetchJson(metadata.jwksUri, fetchFn);
   const keys = jwks?.['keys'];
   if (!Array.isArray(keys)) {

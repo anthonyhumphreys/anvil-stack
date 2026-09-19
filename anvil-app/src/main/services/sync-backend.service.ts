@@ -33,6 +33,7 @@ export interface SyncBackendRecord {
   authModes: string[];
   descriptor: BackendDescriptor;
   state: SyncBackendState;
+  connectionMode: Exclude<SyncBackendConnectionMode, 'local'>;
   /**
    * The endpoint or auth issuer changed under an existing deployment ID.
    * Sync stays paused until `resolveBackendIdentityReview` records re-review;
@@ -46,6 +47,7 @@ export interface SyncBackendRecord {
 export interface PinBackendInput {
   baseUrl: string;
   descriptor: unknown;
+  connectionMode?: Exclude<SyncBackendConnectionMode, 'local'>;
 }
 
 interface BackendRow {
@@ -57,6 +59,7 @@ interface BackendRow {
   auth_modes_json: string;
   pinned_descriptor_json: string;
   state: SyncBackendState;
+  connection_mode: Exclude<SyncBackendConnectionMode, 'local'>;
   identity_review_required: number;
   created_at: string | null;
   updated_at: string | null;
@@ -64,6 +67,17 @@ interface BackendRow {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function configuredHostedBackendUrl(): string | null {
+  const configured = process.env.ANVIL_HOSTED_BACKEND_URL?.trim();
+  if (!configured) return null;
+  try {
+    const parsed = new URL(normalizeBaseUrl(configured));
+    return parsed.protocol === 'https:' ? parsed.href : null;
+  } catch {
+    return null;
+  }
 }
 
 function isLoopbackHost(baseUrl: string): boolean {
@@ -91,6 +105,7 @@ function mapRecord(row: BackendRow): SyncBackendRecord {
     authModes: JSON.parse(row.auth_modes_json) as string[],
     descriptor: JSON.parse(row.pinned_descriptor_json) as BackendDescriptor,
     state: row.state,
+    connectionMode: row.connection_mode,
     identityReviewRequired: row.identity_review_required === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -134,6 +149,7 @@ export function pinBackend(input: PinBackendInput): SyncBackendRecord {
     throw new Error(`invalid backend descriptor: ${validated.errors.join('; ')}`);
   }
   const descriptor = toPublicDescriptor(validated.descriptor);
+  const connectionMode = input.connectionMode ?? 'compatible';
   const allowLoopbackHttp = isLoopbackHost(input.baseUrl);
   const normalized = normalizeBaseUrl(input.baseUrl, { allowLoopbackHttp });
   // Re-validates that the descriptor paths stay inside the selected origin.
@@ -144,13 +160,13 @@ export function pinBackend(input: PinBackendInput): SyncBackendRecord {
   if (existing) {
     const existingDescriptor = JSON.parse(existing.pinned_descriptor_json) as BackendDescriptor;
     const identityChanged =
-      existing.base_url !== normalized ||
-      existingDescriptor.auth.issuer !== descriptor.auth.issuer;
+      existing.base_url !== normalized || existingDescriptor.auth.issuer !== descriptor.auth.issuer;
     getDb()
       .prepare(
         `UPDATE sync_backends
          SET base_url = ?, deployment_id = ?, display_name = ?,
              profiles_json = ?, auth_modes_json = ?, pinned_descriptor_json = ?,
+             connection_mode = ?,
              identity_review_required = ?,
              state = CASE WHEN ? THEN 'paused' ELSE state END,
              updated_at = ?
@@ -163,6 +179,7 @@ export function pinBackend(input: PinBackendInput): SyncBackendRecord {
         JSON.stringify(descriptor.profiles),
         JSON.stringify(descriptor.authModes),
         JSON.stringify(descriptor),
+        connectionMode,
         identityChanged ? 1 : existing.identity_review_required,
         identityChanged ? 1 : 0,
         now,
@@ -173,8 +190,8 @@ export function pinBackend(input: PinBackendInput): SyncBackendRecord {
       .prepare(
         `INSERT INTO sync_backends
            (id, base_url, deployment_id, display_name, profiles_json, auth_modes_json,
-            pinned_descriptor_json, state, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'paused', ?, ?)`,
+            pinned_descriptor_json, state, connection_mode, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'paused', ?, ?, ?)`,
       )
       .run(
         descriptor.deploymentId,
@@ -184,6 +201,7 @@ export function pinBackend(input: PinBackendInput): SyncBackendRecord {
         JSON.stringify(descriptor.profiles),
         JSON.stringify(descriptor.authModes),
         JSON.stringify(descriptor),
+        connectionMode,
         now,
         now,
       );
@@ -242,9 +260,7 @@ export function resolveBackendIdentityReview(id: string): SyncBackendRecord {
     throw new Error(`unknown backend ${id}`);
   }
   getDb()
-    .prepare(
-      'UPDATE sync_backends SET identity_review_required = 0, updated_at = ? WHERE id = ?',
-    )
+    .prepare('UPDATE sync_backends SET identity_review_required = 0, updated_at = ? WHERE id = ?')
     .run(nowIso(), id);
   const row = getRowById(id);
   if (!row) {
@@ -267,6 +283,7 @@ function recordToStatus(
     authModes: record.authModes,
     state: record.state,
     identityReviewRequired: record.identityReviewRequired,
+    hostedBackendUrl: configuredHostedBackendUrl(),
   };
 }
 
@@ -278,7 +295,7 @@ function recordToStatus(
 export function getBackendStatus(): SyncBackendStatus {
   const active = getActiveBackend();
   if (active) {
-    return recordToStatus(active, 'compatible');
+    return recordToStatus(active, active.connectionMode);
   }
   const backends = listBackends();
   if (backends.length > 0 && backends[0]) {
@@ -294,6 +311,7 @@ export function getBackendStatus(): SyncBackendStatus {
     authModes: [],
     state: null,
     identityReviewRequired: false,
+    hostedBackendUrl: configuredHostedBackendUrl(),
   };
 }
 

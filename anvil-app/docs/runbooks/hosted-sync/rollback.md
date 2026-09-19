@@ -1,6 +1,6 @@
 # Hosted sync rollback — incident response order
 
-Packet: **BILL-06** operations. Goal: stop the bleeding without breaking
+Historical packet reference: **BILL-06** operations. Goal: stop the bleeding without breaking
 subscription truth. The order below is deliberate — billing state must keep
 converging even while product behavior rolls back.
 

@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 87;
+export const SCHEMA_VERSION = 88;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -1294,6 +1294,8 @@ CREATE TABLE IF NOT EXISTS sync_backends (
   auth_modes_json TEXT NOT NULL,
   pinned_descriptor_json TEXT NOT NULL,
   state TEXT NOT NULL CHECK (state IN ('active','paused','disconnected')),
+  connection_mode TEXT NOT NULL DEFAULT 'compatible'
+    CHECK (connection_mode IN ('hosted','cloudflare','compatible')),
   identity_review_required INTEGER NOT NULL DEFAULT 0,
   created_at TEXT,
   updated_at TEXT
@@ -3224,4 +3226,12 @@ ALTER TABLE chat_threads ADD COLUMN summary TEXT;
 ALTER TABLE chat_threads ADD COLUMN title_locked INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE settings ADD COLUMN thread_assist_model TEXT;
 `,
+  88: `
+ALTER TABLE sync_backends ADD COLUMN connection_mode TEXT NOT NULL DEFAULT 'compatible';
+`,
 };
+
+// Development builds could stamp v68 or v69 without the sync table migration.
+// Replay its idempotent table/index creation before later migrations alter them.
+export const LEGACY_SCHEMA_REPAIR_SQL = `${MIGRATIONS[68]}
+${MIGRATIONS[69]}`;
