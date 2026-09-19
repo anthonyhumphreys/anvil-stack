@@ -1,12 +1,12 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { spawn } from "node:child_process";
 import path from "node:path";
 
 import type { CloudflareAuthenticationMode } from "./support.js";
 import {
   runCloudflareWranglerDelete,
   runCloudflareWranglerDeploy,
+  runWranglerCommand,
   type WranglerCommandRunner,
 } from "./wrangler.js";
 
@@ -103,20 +103,14 @@ export type MeshProvisionerLifecycleResult = {
   evidence?: MeshProvisionerEvidence;
 };
 
-export type MeshProvisionerSecretCommandRunner = (options: {
-  command: string;
-  args: string[];
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-  stdin: string;
-}) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
+export type MeshProvisionerSecretCommandRunner = WranglerCommandRunner;
 
 export type ProvisionMeshProvisionerTokenOptions =
   MeshProvisionerLifecycleOptions & {
     token?: string;
     tokenFile?: string;
     stdin?: NodeJS.ReadableStream;
-    runSecret?: MeshProvisionerSecretCommandRunner;
+    runSecret?: WranglerCommandRunner;
   };
 
 /**
@@ -175,6 +169,22 @@ export async function createMeshProvisionerDeploymentPlan(
     options.workerName ??
     stringValue(source.name) ??
     MESH_PROVISIONER_DEFAULT_WORKER_NAME;
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(workerName)) {
+    diagnostics.push({
+      code: "PROVISIONER_CONFIG_INVALID",
+      severity: "block",
+      message: `Invalid provisioner Worker name: ${workerName}.`,
+    });
+  }
+  if (options.authentication === "temporary") {
+    diagnostics.push({
+      code: "PROVISIONER_CONFIG_INVALID",
+      severity: "block",
+      message:
+        "Cloudflare Temporary Accounts do not support the Sandbox container deployment.",
+      hint: "Use a permanent Cloudflare account for the provisioner Worker.",
+    });
+  }
   const sourceMain = stringValue(source.main) ?? "src/index.ts";
   const generatedMain = relativeSourcePath(
     configPath,
@@ -214,6 +224,31 @@ export async function createMeshProvisionerDeploymentPlan(
     }
     return container;
   });
+  const hasSandboxBinding =
+    typeof config.durable_objects === "object" &&
+    config.durable_objects !== null &&
+    Array.isArray((config.durable_objects as JsonObject).bindings) &&
+    ((config.durable_objects as JsonObject).bindings as unknown[]).some(
+      (item) =>
+        typeof item === "object" &&
+        item !== null &&
+        (item as JsonObject).name === "Sandbox" &&
+        (item as JsonObject).class_name === "Sandbox",
+    );
+  const hasSandboxContainer = containers.some(
+    (item) =>
+      typeof item === "object" &&
+      item !== null &&
+      (item as JsonObject).class_name === "Sandbox",
+  );
+  if (!hasSandboxBinding || !hasSandboxContainer) {
+    diagnostics.push({
+      code: "PROVISIONER_CONFIG_INVALID",
+      severity: "block",
+      message:
+        "Provisioner config must declare the Sandbox Durable Object and Sandbox container.",
+    });
+  }
   if (
     typeof config.vars !== "object" ||
     config.vars === null ||
@@ -309,7 +344,10 @@ export async function applyMeshProvisionerDeployment(
     },
     authentication: options.plan.authentication,
     ...(options.dryRun !== undefined ? { dryRun: options.dryRun } : {}),
-    command: resolveWranglerCommand(options.command),
+    command: resolveWranglerCommand(
+      options.command,
+      options.plan.provisionerDir,
+    ),
     ...(options.commandPrefixArgs
       ? { commandPrefixArgs: options.commandPrefixArgs }
       : {}),
@@ -342,7 +380,10 @@ export async function removeMeshProvisionerDeployment(
       workerName: options.plan.workerName,
     },
     authentication: options.plan.authentication,
-    command: resolveWranglerCommand(options.command),
+    command: resolveWranglerCommand(
+      options.command,
+      options.plan.provisionerDir,
+    ),
     ...(options.commandPrefixArgs
       ? { commandPrefixArgs: options.commandPrefixArgs }
       : {}),
@@ -385,9 +426,12 @@ export async function provisionMeshProvisionerToken(
       ],
     };
   await writeMeshProvisionerWranglerConfig(options.plan);
-  const run = options.runSecret ?? runSecretCommand;
+  const run = options.runSecret ?? runWranglerCommand;
   const result = await run({
-    command: resolveWranglerCommand(options.command),
+    command: resolveWranglerCommand(
+      options.command,
+      options.plan.provisionerDir,
+    ),
     args: [
       ...(options.commandPrefixArgs ?? []),
       "secret",
@@ -464,36 +508,12 @@ async function readProvisionerToken(
   return value.trim();
 }
 
-async function runSecretCommand(
-  options: Parameters<MeshProvisionerSecretCommandRunner>[0],
-): ReturnType<MeshProvisionerSecretCommandRunner> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(options.command, options.args, {
-      cwd: options.cwd,
-      env: options.env,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      stdout += chunk;
-    });
-    child.stderr.on("data", (chunk: string) => {
-      stderr += chunk;
-    });
-    child.once("error", reject);
-    child.once("close", (code) =>
-      resolve({ exitCode: code ?? 1, stdout, stderr }),
-    );
-    child.stdin.end(options.stdin);
-  });
-}
-
-function resolveWranglerCommand(command?: string): string {
+function resolveWranglerCommand(command?: string, directory?: string): string {
   if (command) return command;
   const candidates = [
+    ...(directory
+      ? [path.resolve(directory, "node_modules/.bin/wrangler")]
+      : []),
     path.resolve(process.cwd(), "node_modules/.bin/wrangler"),
     path.resolve(process.cwd(), "../node_modules/.bin/wrangler"),
   ];
@@ -516,10 +536,45 @@ function redactToken(value: string, token: string): string {
 }
 
 function parseJsonc(source: string): unknown {
-  return JSON.parse(
-    source
-      .replace(/\/\/.*$/gm, "")
-      .replace(/\/\*[\s\S]*?\*\//g, "")
-      .replace(/,\s*([}\]])/g, "$1"),
-  );
+  let output = "";
+  let quote = false;
+  let escaped = false;
+  let lineComment = false;
+  let blockComment = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const current = source[index] ?? "";
+    const next = source[index + 1] ?? "";
+    if (lineComment) {
+      if (current === "\n") {
+        lineComment = false;
+        output += current;
+      }
+      continue;
+    }
+    if (blockComment) {
+      if (current === "*" && next === "/") {
+        blockComment = false;
+        index += 1;
+      } else if (current === "\n") output += current;
+      continue;
+    }
+    if (quote) {
+      output += current;
+      if (escaped) escaped = false;
+      else if (current === "\\") escaped = true;
+      else if (current === '"') quote = false;
+      continue;
+    }
+    if (current === '"') {
+      quote = true;
+      output += current;
+    } else if (current === "/" && next === "/") {
+      lineComment = true;
+      index += 1;
+    } else if (current === "/" && next === "*") {
+      blockComment = true;
+      index += 1;
+    } else output += current;
+  }
+  return JSON.parse(output.replace(/,\s*([}\]])/g, "$1"));
 }

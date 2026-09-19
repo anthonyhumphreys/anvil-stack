@@ -35,6 +35,7 @@ async function fixture(): Promise<string> {
     "name": "anvil-mesh-provisioner",
     "main": "src/index.ts",
     "compatibility_date": "2026-09-01",
+    "durable_objects": { "bindings": [{ "name": "Sandbox", "class_name": "Sandbox" }] },
     "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Sandbox"] }],
     "containers": [{ "class_name": "Sandbox", "image": "images/Dockerfile.cloudflare" }],
     "vars": { "ALLOW_UNAUTHENTICATED": "false" },
@@ -99,13 +100,11 @@ describe("Mesh provisioner deployment lifecycle", () => {
     const plan = await createMeshProvisionerDeploymentPlan({
       provisionerDir: root,
     });
-    const run = vi
-      .fn<MeshProvisionerSecretCommandRunner>()
-      .mockResolvedValue({
-        exitCode: 0,
-        stdout: "stored token-123",
-        stderr: "",
-      });
+    const run = vi.fn<MeshProvisionerSecretCommandRunner>().mockResolvedValue({
+      exitCode: 0,
+      stdout: "stored token-123",
+      stderr: "",
+    });
     const result = await provisionMeshProvisionerToken({
       plan,
       evidence: { reference: "smoke-1" },
