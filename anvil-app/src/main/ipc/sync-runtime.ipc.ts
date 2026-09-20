@@ -6,6 +6,7 @@ import {
   decideMeshApproval,
   denyDashboardGrant,
   deviceVerificationCode,
+  approveDeviceTrust,
   enableSync,
   enrollWithEnrollmentCode,
   exportAccountDataToFile,
@@ -13,6 +14,7 @@ import {
   getMeshApprovals,
   getMeshJob,
   getRuntimeStatus,
+  getDeviceSecurityStatus,
   getSessionMeshState,
   initiateSessionHandoff,
   issueEnrollmentCode,
@@ -30,16 +32,29 @@ import {
   resolveRuntimeConflict,
   revokeDashboardAccess,
   revokeDevice,
+  replaceDeviceRecovery,
+  resetEncryptedSyncAccount,
+  setNewDeviceTrustPolicy,
   setMeshWorkerOptIn,
+  setupDeviceRecovery,
   signInWithOidc,
   signOutSync,
   spikeEnroll,
+  unlockDeviceRecovery,
 } from '../services/sync-runtime.service.js';
+import type {
+  SyncDeviceTrustPolicy,
+  SyncEncryptedSyncAccountResetConfirmation,
+} from '../../shared/sync-device-security.js';
 import type { ApprovalDecision } from '../../../cloud/contract/jobs.js';
 import { DASHBOARD_SCOPES, type DashboardScope } from '../../../cloud/contract/dashboard.js';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isDeviceTrustPolicy(value: unknown): value is SyncDeviceTrustPolicy {
+  return value === 'require-approval' || value === 'auto-trust-authenticated';
 }
 
 export function registerSyncRuntimeHandlers(): void {
@@ -98,11 +113,7 @@ export function registerSyncRuntimeHandlers(): void {
       throw new Error('resolve-conflict requires a conflictId');
     }
     const resolution = payload['resolution'];
-    if (
-      resolution !== 'keep-local' &&
-      resolution !== 'use-remote' &&
-      resolution !== 'save-copy'
-    ) {
+    if (resolution !== 'keep-local' && resolution !== 'use-remote' && resolution !== 'save-copy') {
       throw new Error('resolution must be keep-local, use-remote, or save-copy');
     }
     return resolveRuntimeConflict(payload['conflictId'], resolution);
@@ -135,6 +146,63 @@ export function registerSyncRuntimeHandlers(): void {
     return deviceVerificationCode(payload['enrollmentId']);
   });
 
+  ipcMain.handle('sync-runtime:device-security-status', () => getDeviceSecurityStatus());
+
+  ipcMain.handle('sync-runtime:device-recovery-setup', (_event, payload: unknown) => {
+    if (!isRecord(payload) || !isDeviceTrustPolicy(payload['policy'])) {
+      throw new Error(
+        'device-recovery-setup requires a require-approval or auto-trust-authenticated policy',
+      );
+    }
+    return setupDeviceRecovery(payload['policy']);
+  });
+
+  ipcMain.handle('sync-runtime:device-recovery-unlock', (_event, payload: unknown) => {
+    if (
+      !isRecord(payload) ||
+      typeof payload['code'] !== 'string' ||
+      payload['code'].trim() === ''
+    ) {
+      throw new Error('device-recovery-unlock requires a recovery code');
+    }
+    return unlockDeviceRecovery(payload['code'].trim());
+  });
+
+  ipcMain.handle('sync-runtime:device-trust-policy-set', (_event, payload: unknown) => {
+    if (!isRecord(payload) || !isDeviceTrustPolicy(payload['policy'])) {
+      throw new Error(
+        'device-trust-policy-set requires a require-approval or auto-trust-authenticated policy',
+      );
+    }
+    return setNewDeviceTrustPolicy(payload['policy']);
+  });
+
+  ipcMain.handle('sync-runtime:device-recovery-replace', () => replaceDeviceRecovery());
+
+  ipcMain.handle('sync-runtime:encrypted-account-reset', (_event, payload: unknown) => {
+    if (!isRecord(payload) || payload['confirmation'] !== 'RESET ENCRYPTED DATA') {
+      throw new Error(
+        'encrypted-account-reset requires the exact RESET ENCRYPTED DATA confirmation',
+      );
+    }
+    return resetEncryptedSyncAccount(
+      payload['confirmation'] as SyncEncryptedSyncAccountResetConfirmation,
+    );
+  });
+
+  ipcMain.handle('sync-runtime:device-approve', (_event, payload: unknown) => {
+    if (
+      !isRecord(payload) ||
+      typeof payload['enrollmentId'] !== 'string' ||
+      payload['enrollmentId'].trim() === '' ||
+      typeof payload['verificationCode'] !== 'string' ||
+      payload['verificationCode'].trim() === ''
+    ) {
+      throw new Error('device-approve requires an enrollmentId and matching verificationCode');
+    }
+    return approveDeviceTrust(payload['enrollmentId'], payload['verificationCode'].trim());
+  });
+
   // DASH-01: browser dashboard authorization — the trusted-device approval
   // surface. Grants carry scoped, sealed projections; the browser never
   // sees account key material.
@@ -152,7 +220,9 @@ export function registerSyncRuntimeHandlers(): void {
     if (
       scopes !== undefined &&
       (!Array.isArray(scopes) ||
-        !scopes.every((s) => typeof s === 'string' && DASHBOARD_SCOPES.includes(s as DashboardScope)))
+        !scopes.every(
+          (s) => typeof s === 'string' && DASHBOARD_SCOPES.includes(s as DashboardScope),
+        ))
     ) {
       throw new Error('dashboard-decide scopes must be known dashboard scopes');
     }

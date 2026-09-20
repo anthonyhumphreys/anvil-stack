@@ -78,6 +78,12 @@ import type {
   SyncSpikeEnrollInput,
 } from '../shared/sync-runtime.js';
 import type {
+  SyncDeviceRecoveryResult,
+  SyncDeviceSecurityStatus,
+  SyncDeviceTrustPolicy,
+  SyncEncryptedSyncAccountResetConfirmation,
+} from '../shared/sync-device-security.js';
+import type {
   AgentUIIntentPresentationPatch,
   AgentUIPlanPatch,
   AgentUIQuestionResolution,
@@ -121,8 +127,7 @@ const api: AnvilAPI = {
     listDevices: () => ipcRenderer.invoke('mobile-companion:list-devices'),
     revokeDevice: (deviceId: string) =>
       ipcRenderer.invoke('mobile-companion:revoke-device', deviceId),
-    listEnrollmentPolicies: () =>
-      ipcRenderer.invoke('mobile-companion:list-enrollment-policies'),
+    listEnrollmentPolicies: () => ipcRenderer.invoke('mobile-companion:list-enrollment-policies'),
     setEnrollmentPolicy: (enrollmentId: string, tier: CompanionPolicyState) =>
       ipcRenderer.invoke('mobile-companion:set-enrollment-policy', enrollmentId, tier),
     removeEnrollmentPolicy: (enrollmentId: string) =>
@@ -756,8 +761,7 @@ const api: AnvilAPI = {
     status: () => ipcRenderer.invoke('sync-runtime:status'),
     preview: () => ipcRenderer.invoke('sync-runtime:preview'),
     signIn: () => ipcRenderer.invoke('sync-runtime:sign-in'),
-    enrollWithCode: (code: string) =>
-      ipcRenderer.invoke('sync-runtime:enroll-with-code', { code }),
+    enrollWithCode: (code: string) => ipcRenderer.invoke('sync-runtime:enroll-with-code', { code }),
     issueEnrollmentCode: (): Promise<SyncIssuedEnrollmentCode> =>
       ipcRenderer.invoke('sync-runtime:issue-enrollment-code'),
     spikeEnroll: (input: SyncSpikeEnrollInput) =>
@@ -767,22 +771,35 @@ const api: AnvilAPI = {
     conflicts: () => ipcRenderer.invoke('sync-runtime:conflicts'),
     resolveConflict: (conflictId: string, resolution: SyncConflictResolutionChoice) =>
       ipcRenderer.invoke('sync-runtime:resolve-conflict', { conflictId, resolution }),
-    diagnostics: (): Promise<SyncDiagnostics> =>
-      ipcRenderer.invoke('sync-runtime:diagnostics'),
+    diagnostics: (): Promise<SyncDiagnostics> => ipcRenderer.invoke('sync-runtime:diagnostics'),
     refreshHostedEntitlement: (): Promise<SyncHostedStatus | null> =>
       ipcRenderer.invoke('sync-runtime:hosted-refresh'),
-    openHostedAccount: (): Promise<void> =>
-      ipcRenderer.invoke('sync-runtime:open-hosted-account'),
+    openHostedAccount: (): Promise<void> => ipcRenderer.invoke('sync-runtime:open-hosted-account'),
     setMeshWorker: (enabled: boolean): Promise<MeshWorkerStatus> =>
       ipcRenderer.invoke('sync-runtime:mesh-worker-set', { enabled }),
-    listDevices: (): Promise<SyncDevice[]> =>
-      ipcRenderer.invoke('sync-runtime:devices-list'),
+    listDevices: (): Promise<SyncDevice[]> => ipcRenderer.invoke('sync-runtime:devices-list'),
     renameDevice: (enrollmentId: string, displayName: string): Promise<SyncDeviceRenameResult> =>
       ipcRenderer.invoke('sync-runtime:device-rename', { enrollmentId, displayName }),
     revokeDevice: (enrollmentId: string): Promise<SyncDeviceRevokeResult> =>
       ipcRenderer.invoke('sync-runtime:device-revoke', { enrollmentId }),
     verifyDevice: (enrollmentId: string): Promise<SyncDeviceVerification> =>
       ipcRenderer.invoke('sync-runtime:device-verify', { enrollmentId }),
+    getDeviceSecurityStatus: (): Promise<SyncDeviceSecurityStatus> =>
+      ipcRenderer.invoke('sync-runtime:device-security-status'),
+    setupDeviceRecovery: (policy: SyncDeviceTrustPolicy): Promise<SyncDeviceRecoveryResult> =>
+      ipcRenderer.invoke('sync-runtime:device-recovery-setup', { policy }),
+    unlockDeviceRecovery: (code: string): Promise<SyncDeviceSecurityStatus> =>
+      ipcRenderer.invoke('sync-runtime:device-recovery-unlock', { code }),
+    setNewDeviceTrustPolicy: (policy: SyncDeviceTrustPolicy): Promise<SyncDeviceSecurityStatus> =>
+      ipcRenderer.invoke('sync-runtime:device-trust-policy-set', { policy }),
+    replaceDeviceRecovery: (): Promise<SyncDeviceRecoveryResult> =>
+      ipcRenderer.invoke('sync-runtime:device-recovery-replace'),
+    resetEncryptedSyncAccount: (
+      confirmation: SyncEncryptedSyncAccountResetConfirmation,
+    ): Promise<void> =>
+      ipcRenderer.invoke('sync-runtime:encrypted-account-reset', { confirmation }),
+    approveDeviceTrust: (enrollmentId: string, verificationCode: string): Promise<void> =>
+      ipcRenderer.invoke('sync-runtime:device-approve', { enrollmentId, verificationCode }),
     listDashboardRequests: (): Promise<SyncDashboardRequest[]> =>
       ipcRenderer.invoke('sync-runtime:dashboard-requests'),
     decideDashboardRequest: (
@@ -803,11 +820,8 @@ const api: AnvilAPI = {
       ipcRenderer.invoke('sync-runtime:data-import-preview-file'),
     commitDataImport: (operationId: string): Promise<SyncDataImportCommitResult> =>
       ipcRenderer.invoke('sync-runtime:data-import-commit', { operationId }),
-    listMeshJobs: (): Promise<JobSummary[]> =>
-      ipcRenderer.invoke('sync-runtime:mesh-jobs-list'),
-    getMeshJob: (
-      jobId: string,
-    ): Promise<{ job: JobSummary; attempts: ExecutionAttempt[] }> =>
+    listMeshJobs: (): Promise<JobSummary[]> => ipcRenderer.invoke('sync-runtime:mesh-jobs-list'),
+    getMeshJob: (jobId: string): Promise<{ job: JobSummary; attempts: ExecutionAttempt[] }> =>
       ipcRenderer.invoke('sync-runtime:mesh-job-get', { jobId }),
     cancelMeshJob: (jobId: string): Promise<JobSummary> =>
       ipcRenderer.invoke('sync-runtime:mesh-job-cancel', { jobId }),

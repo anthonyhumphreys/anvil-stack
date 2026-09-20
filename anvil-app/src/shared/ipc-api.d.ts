@@ -218,6 +218,12 @@ import type {
   SyncRuntimeStatus,
   SyncSpikeEnrollInput,
 } from './sync-runtime';
+import type {
+  SyncDeviceRecoveryResult,
+  SyncDeviceSecurityStatus,
+  SyncDeviceTrustPolicy,
+  SyncEncryptedSyncAccountResetConfirmation,
+} from './sync-device-security';
 
 export interface AnvilAPI {
   appWindow: {
@@ -755,14 +761,27 @@ export interface AnvilAPI {
     /** All enrollments on the account, including revoked rows and self. */
     listDevices: () => Promise<SyncDevice[]>;
     /** Rename any same-account enrollment; empty string clears the name. */
-    renameDevice: (
-      enrollmentId: string,
-      displayName: string,
-    ) => Promise<SyncDeviceRenameResult>;
+    renameDevice: (enrollmentId: string, displayName: string) => Promise<SyncDeviceRenameResult>;
     /** Revoke an enrollment; idempotent and severs its live sessions. */
     revokeDevice: (enrollmentId: string) => Promise<SyncDeviceRevokeResult>;
     /** Short authentication string for out-of-band device verification. */
     verifyDevice: (enrollmentId: string) => Promise<SyncDeviceVerification>;
+    /** Read the current enrollment's trust and recovery state. */
+    getDeviceSecurityStatus: () => Promise<SyncDeviceSecurityStatus>;
+    /** Configure recovery and the new-device trust policy for a new account. */
+    setupDeviceRecovery: (policy: SyncDeviceTrustPolicy) => Promise<SyncDeviceRecoveryResult>;
+    /** Unlock this enrollment's local account key with the saved recovery code. */
+    unlockDeviceRecovery: (code: string) => Promise<SyncDeviceSecurityStatus>;
+    /** Change how future authenticated enrollments are trusted. */
+    setNewDeviceTrustPolicy: (policy: SyncDeviceTrustPolicy) => Promise<SyncDeviceSecurityStatus>;
+    /** Replace the recovery secret; the new code is returned exactly once. */
+    replaceDeviceRecovery: () => Promise<SyncDeviceRecoveryResult>;
+    /** Permanently discard encrypted account data after an explicit acknowledgement. */
+    resetEncryptedSyncAccount: (
+      confirmation: SyncEncryptedSyncAccountResetConfirmation,
+    ) => Promise<void>;
+    /** Approve a pending enrollment after the user compares its verification code. */
+    approveDeviceTrust: (enrollmentId: string, verificationCode: string) => Promise<void>;
     /**
      * DASH-01: browser dashboard authorization requests and live grants —
      * pending rows await a trusted-device decision.
@@ -788,9 +807,7 @@ export interface AnvilAPI {
     /** Account-wide mesh jobs (most recent 100). */
     listMeshJobs: () => Promise<JobSummary[]>;
     /** One job plus its execution attempts. */
-    getMeshJob: (
-      jobId: string,
-    ) => Promise<{ job: JobSummary; attempts: ExecutionAttempt[] }>;
+    getMeshJob: (jobId: string) => Promise<{ job: JobSummary; attempts: ExecutionAttempt[] }>;
     /**
      * Request cancellation — the job sits in `cancel-requested` until
      * stopping is verified; it never masks as `cancelled` early.

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   AlertTriangle,
@@ -30,6 +30,7 @@ import type {
 } from '../../../shared/sync-runtime';
 import { copyTextToClipboard } from '../../utils/clipboard';
 import { DashboardAccessPanel } from './DashboardAccessPanel';
+import { DeviceSecurityPanel } from './DeviceSecurityPanel';
 import { MeshExecutionsPanel } from './MeshExecutionsPanel';
 
 function toErrorMessage(error: unknown): string {
@@ -157,6 +158,7 @@ export function SyncMeshSettingsPanel(): ReactNode {
   const [verification, setVerification] = useState<{
     enrollmentId: string;
     code: string;
+    confirmationCode: string;
   } | null>(null);
   const [deviceBusy, setDeviceBusy] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -168,6 +170,10 @@ export function SyncMeshSettingsPanel(): ReactNode {
   > | null>(null);
   const [committing, setCommitting] = useState(false);
   const [importResult, setImportResult] = useState<string | null>(null);
+
+  const handleSecurityError = useCallback((error: unknown): void => {
+    setError(error === null ? null : toErrorMessage(error));
+  }, []);
 
   const refreshStatus = async (): Promise<void> => {
     setStatusLoading(true);
@@ -457,7 +463,7 @@ export function SyncMeshSettingsPanel(): ReactNode {
     }
   };
 
-  const handleVerifyDevice = async (enrollmentId: string): Promise<void> => {
+  const handlePrepareDeviceApproval = async (enrollmentId: string): Promise<void> => {
     if (verification?.enrollmentId === enrollmentId) {
       setVerification(null);
       return;
@@ -466,11 +472,31 @@ export function SyncMeshSettingsPanel(): ReactNode {
     setError(null);
     try {
       const result = await window.anvil.syncRuntime.verifyDevice(enrollmentId);
-      setVerification({ enrollmentId, code: result.code });
+      setVerification({ enrollmentId, code: result.code, confirmationCode: '' });
       setRenamingId(null);
       setConfirmingRevokeId(null);
     } catch (err) {
       setVerification(null);
+      setError(toErrorMessage(err));
+    } finally {
+      setDeviceBusy(null);
+    }
+  };
+
+  const handleApproveDevice = async (enrollmentId: string): Promise<void> => {
+    if (verification?.enrollmentId !== enrollmentId) return;
+    const confirmationCode = verification.confirmationCode.trim();
+    if (confirmationCode !== verification.code) {
+      setError('The verification codes do not match. Compare both devices, then try again.');
+      return;
+    }
+    setDeviceBusy(enrollmentId);
+    setError(null);
+    try {
+      await window.anvil.syncRuntime.approveDeviceTrust(enrollmentId, confirmationCode);
+      setVerification(null);
+      await refreshStatus();
+    } catch (err) {
       setError(toErrorMessage(err));
     } finally {
       setDeviceBusy(null);
@@ -887,6 +913,10 @@ export function SyncMeshSettingsPanel(): ReactNode {
         )}
       </Panel>
 
+      {runtime?.auth.state === 'signed-in' && (
+        <DeviceSecurityPanel onRefresh={refreshStatus} onError={handleSecurityError} />
+      )}
+
       {hosted !== null && (
         <Panel
           title="Hosted access"
@@ -996,12 +1026,14 @@ export function SyncMeshSettingsPanel(): ReactNode {
                           <>
                             <button
                               type="button"
-                              onClick={() => void handleVerifyDevice(device.enrollmentId)}
+                              onClick={() => void handlePrepareDeviceApproval(device.enrollmentId)}
                               aria-expanded={verification?.enrollmentId === device.enrollmentId}
                               disabled={deviceBusy === device.enrollmentId}
                               className="rounded-md border border-border px-2.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
                             >
-                              {deviceBusy === device.enrollmentId ? 'Verifying…' : 'Verify'}
+                              {deviceBusy === device.enrollmentId
+                                ? 'Preparing…'
+                                : 'Compare & approve'}
                             </button>
                             <button
                               type="button"
@@ -1058,13 +1090,41 @@ export function SyncMeshSettingsPanel(): ReactNode {
                         {verification.code}
                       </p>
                       <p className="mt-1 text-xs text-text-tertiary">
-                        Open Sync settings on{' '}
+                        Compare this code with Sync settings on{' '}
                         <span className="font-medium text-text-secondary">
                           {device.displayName || `device ${device.enrollmentId.slice(0, 8)}`}
                         </span>{' '}
-                        and compare — both devices must show this code. A mismatch means the
-                        enrollment was tampered with.
+                        . Approve only when both devices show the same code. Revoked devices cannot
+                        be approved here.
                       </p>
+                      <div className="mt-2 flex flex-col gap-2 sm:flex-row">
+                        <input
+                          value={verification.confirmationCode}
+                          onChange={(event) =>
+                            setVerification((current) =>
+                              current === null
+                                ? current
+                                : { ...current, confirmationCode: event.target.value },
+                            )
+                          }
+                          inputMode="numeric"
+                          placeholder="Code shown on the other device"
+                          aria-label="Verification code shown on the other device"
+                          spellCheck={false}
+                          className="min-w-0 flex-1 rounded-md border border-border bg-bg-secondary px-3 py-1.5 font-mono text-sm text-text-primary placeholder:text-text-tertiary"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => void handleApproveDevice(device.enrollmentId)}
+                          disabled={
+                            deviceBusy === device.enrollmentId ||
+                            verification.confirmationCode.trim() === ''
+                          }
+                          className="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+                        >
+                          {deviceBusy === device.enrollmentId ? 'Approving…' : 'Approve device'}
+                        </button>
+                      </div>
                     </div>
                   )}
                   {confirmingRevokeId === device.enrollmentId && (
