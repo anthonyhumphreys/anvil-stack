@@ -63,6 +63,7 @@ export interface BackendConnection {
 export interface RpcOptions {
   fetchFn?: typeof fetch;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }
 
 export interface RpcResult<R = unknown> {
@@ -299,7 +300,7 @@ export async function rpc<R = unknown>(
   accessToken: string,
   options: RpcOptions = {},
 ): Promise<RpcResult<R>> {
-  const { fetchFn = fetch, timeoutMs = DEFAULT_DISCOVERY_TIMEOUT_MS } = options;
+  const { fetchFn = fetch, timeoutMs = DEFAULT_DISCOVERY_TIMEOUT_MS, signal } = options;
   const requestId = randomUUID();
   let response: Response;
   try {
@@ -311,7 +312,10 @@ export async function rpc<R = unknown>(
         Authorization: `Bearer ${accessToken}`,
       },
       redirect: 'error',
-      signal: AbortSignal.timeout(timeoutMs),
+      signal:
+        signal === undefined
+          ? AbortSignal.timeout(timeoutMs)
+          : AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
       body: JSON.stringify({ protocol: PROTOCOL, requestId, operation, params }),
     });
   } catch (error) {
@@ -526,7 +530,12 @@ export async function postAuthRoute<R = unknown>(
   params: unknown,
   options: RpcOptions & { accessToken?: string } = {},
 ): Promise<R> {
-  const { fetchFn = fetch, timeoutMs = DEFAULT_DISCOVERY_TIMEOUT_MS, accessToken } = options;
+  const {
+    fetchFn = fetch,
+    timeoutMs = DEFAULT_DISCOVERY_TIMEOUT_MS,
+    accessToken,
+    signal,
+  } = options;
   const base = connection.apiUrl.endsWith('/') ? connection.apiUrl : `${connection.apiUrl}/`;
   let response: Response;
   try {
@@ -538,7 +547,10 @@ export async function postAuthRoute<R = unknown>(
         ...(accessToken === undefined ? {} : { Authorization: `Bearer ${accessToken}` }),
       },
       redirect: 'error',
-      signal: AbortSignal.timeout(timeoutMs),
+      signal:
+        signal === undefined
+          ? AbortSignal.timeout(timeoutMs)
+          : AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
       body: JSON.stringify(params),
     });
   } catch (error) {

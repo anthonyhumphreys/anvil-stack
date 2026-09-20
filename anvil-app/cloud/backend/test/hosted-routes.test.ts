@@ -8,10 +8,12 @@ import { handleHostedRequest } from '../src/hosted/routes';
 import { signHostedServiceRequest } from '../src/hosted/service-auth';
 import {
   consumeServiceNonce,
+  getBillingAccountByIdentity,
   getOrCreateBillingAccount,
   markBillingLifecycle,
 } from '../src/hosted/store';
 import migrationSql from '../migrations/hosted-billing/0001_init.sql?raw';
+import { postRpc } from './helpers';
 
 const ADMIN_TOKEN = 'dev-admin-token';
 const SERVICE_KEY_ID = 'test';
@@ -112,6 +114,28 @@ async function postHostedLink(
     body: JSON.stringify({ linkCode }),
   });
   return { status: response.status, body: (await response.json()) as Record<string, unknown> };
+}
+
+async function addActiveSubscription(billingAccountId: string): Promise<void> {
+  const now = Date.now();
+  await hostedDb()
+    .prepare(
+      `INSERT INTO stripe_subscriptions
+         (stripe_subscription_id, stripe_customer_id, billing_account_id, status,
+          plan_key, interval, current_period_end, cancel_at_period_end,
+          has_paid_invoice, first_failed_renewal_at, verified_at, created_at, updated_at)
+       VALUES (?, ?, ?, 'active', 'sync_personal', 'month', ?, 0, 1, NULL, ?, ?, ?)`,
+    )
+    .bind(
+      `sub_${crypto.randomUUID().replaceAll('-', '')}`,
+      `cus_${crypto.randomUUID().replaceAll('-', '')}`,
+      billingAccountId,
+      now + 30 * 86_400_000,
+      now,
+      now,
+      now,
+    )
+    .run();
 }
 
 describe('hosted service auth gate', () => {
@@ -222,6 +246,69 @@ describe('hosted pair-device', () => {
     expect(account.status).toBe(200);
     expect(account.body['syncAccountId']).toBe(nextAccount);
     expect(account.body['generation']).toBe(2);
+  });
+
+  it('resets through security, preserves hosted billing, and pairs on a fresh generation', async () => {
+    const identity = makeIdentity(`reset-${crypto.randomUUID()}`);
+    const firstPair = await signedHostedPost('/internal/hosted/pair-device', identity);
+    expect(firstPair.status).toBe(200);
+    const oldAccountId = firstPair.body['accountId'] as string;
+    const first = await enrollWithCode(firstPair.body['code'] as string, 'inst-reset-old');
+
+    // Keep an unconsumed code from the old generation to prove the tombstone
+    // fences both existing sessions and outstanding enrollment proofs.
+    const oldPending = await signedHostedPost('/internal/hosted/pair-device', identity);
+    expect(oldPending.status).toBe(200);
+
+    const billingBefore = await getBillingAccountByIdentity(hostedDb(), identity);
+    expect(billingBefore).not.toBeNull();
+    await addActiveSubscription(billingBefore!.id);
+    const entitlementBefore = await signedHostedPost('/internal/hosted/entitlement', identity);
+    expect(entitlementBefore.status).toBe(200);
+    expect(entitlementBefore.body['state']).toBe('active');
+    expect(entitlementBefore.body['source']).toBe('subscription');
+
+    const reset = await postRpc(
+      'security.reset',
+      {
+        confirmAccountId: oldAccountId,
+        confirmation: 'RESET ENCRYPTED DATA',
+      },
+      `Bearer ${first.accessToken}`,
+    );
+    expect(reset.status).toBe(200);
+    expect((reset.body as { result?: { reauthRequired?: boolean } }).result?.reauthRequired).toBe(
+      true,
+    );
+
+    const oldToken = await postRpc('device.list', {}, `Bearer ${first.accessToken}`);
+    expect(oldToken.status).toBe(401);
+    const oldCode = await SELF.fetch('https://spike.test/v1/enroll', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        proof: { method: 'enrollment-code', code: oldPending.body['code'] },
+        installationId: 'inst-reset-stale',
+      }),
+    });
+    expect(oldCode.status).toBe(403);
+
+    const secondPair = await signedHostedPost('/internal/hosted/pair-device', identity);
+    expect(secondPair.status).toBe(200);
+    const newAccountId = `${oldAccountId}~2`;
+    expect(secondPair.body['accountId']).toBe(newAccountId);
+    const second = await enrollWithCode(secondPair.body['code'] as string, 'inst-reset-new');
+    expect(second.accountId).toBe(newAccountId);
+
+    const billingAfter = await getBillingAccountByIdentity(hostedDb(), identity);
+    expect(billingAfter?.id).toBe(billingBefore!.id);
+    expect(billingAfter?.lifecycle).toBe('active');
+    expect(billingAfter?.generation).toBe(2);
+    expect(billingAfter?.sync_account_id).toBe(newAccountId);
+    const entitlementAfter = await signedHostedPost('/internal/hosted/entitlement', identity);
+    expect(entitlementAfter.status).toBe(200);
+    expect(entitlementAfter.body['state']).toBe('active');
+    expect(entitlementAfter.body['source']).toBe(entitlementBefore.body['source']);
   });
 });
 

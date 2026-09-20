@@ -8,7 +8,7 @@
 // `fetch` is injectable so tests can serve a real issuer shape (metadata,
 // token endpoint, JWKS with a generated key) without live network access.
 
-import type { OidcPkceProof } from '../../contract/auth';
+import type { OidcPkceProof, WorkosDeviceProof } from '../../contract/auth';
 import { isRecord } from './rpc';
 
 export interface OidcAuthorityConfig {
@@ -82,7 +82,11 @@ export function isWorkosAuthKitIssuer(issuer: string): boolean {
     return (
       url.protocol === 'https:' &&
       url.hostname === 'api.workos.com' &&
-      url.pathname === '/user_management'
+      url.pathname === '/user_management' &&
+      url.username === '' &&
+      url.password === '' &&
+      url.search === '' &&
+      url.hash === ''
     );
   } catch {
     return false;
@@ -252,4 +256,165 @@ export async function verifyOidcPkceProof(
     return null;
   }
   return sub;
+}
+
+/**
+ * Result of one WorkOS Device Authorization token exchange. The caller owns
+ * polling cadence; the backend intentionally performs one bounded provider
+ * request per `/enroll` call so provider tokens never cross the Anvil client
+ * boundary. The client carries only the opaque device code proof.
+ */
+export type WorkosDeviceProofResult =
+  | { status: 'success'; subject: string }
+  | { status: 'pending' }
+  | { status: 'slow-down' }
+  | { status: 'denied' }
+  | { status: 'expired' }
+  | { status: 'invalid' };
+
+/** WorkOS device codes are opaque printable ASCII values; cap input before hashing or forwarding. */
+export const WORKOS_DEVICE_CODE_MAX_LENGTH = 4096;
+
+export function isValidWorkosDeviceCode(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > WORKOS_DEVICE_CODE_MAX_LENGTH) {
+    return false;
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 0x20 || code > 0x7e) return false;
+  }
+  return true;
+}
+
+const WORKOS_DEVICE_REQUEST_TIMEOUT_MS = 10_000;
+
+/** Reads a provider response without allowing an unbounded body. */
+async function readBoundedJson(
+  response: Response,
+  maxBytes: number,
+): Promise<Record<string, unknown> | null> {
+  const declared = Number(response.headers.get('content-length') ?? '0');
+  if (Number.isFinite(declared) && declared > maxBytes) return null;
+  if (response.body === null) return null;
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const chunks: string[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        return null;
+      }
+      chunks.push(decoder.decode(value, { stream: true }));
+    }
+    chunks.push(decoder.decode());
+    const parsed: unknown = JSON.parse(chunks.join(''));
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Makes a provider request with a bounded wall-clock timeout, including body parsing. */
+async function fetchWorkosJson(
+  url: string,
+  fetchFn: typeof fetch,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<{ response: Response; payload: Record<string, unknown> | null } | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetchFn(url, { ...init, signal: controller.signal });
+    return { response, payload: await readBoundedJson(response, 64 * 1024) };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/**
+ * Exchanges a WorkOS AuthKit device code. AuthKit's User Management API
+ * returns a trusted `user` object instead of an OIDC ID token; only its
+ * provider-returned `user.id` is accepted, and access/refresh/ID tokens are
+ * deliberately ignored. Upstream OAuth error names are normalized into a
+ * stable Anvil result for the headless client.
+ */
+export async function verifyWorkosDeviceProof(
+  proof: WorkosDeviceProof,
+  config: OidcAuthorityConfig,
+  fetchFn: typeof fetch = fetch,
+): Promise<WorkosDeviceProofResult> {
+  if (
+    !isRecord(proof) ||
+    !isRecord(config) ||
+    typeof config.issuer !== 'string' ||
+    typeof config.clientId !== 'string' ||
+    typeof proof.issuer !== 'string' ||
+    !isValidWorkosDeviceCode(proof.deviceCode)
+  ) {
+    return { status: 'invalid' };
+  }
+  const issuer = trimTrailingSlashes(config.issuer);
+  if (
+    !isWorkosAuthKitIssuer(issuer) ||
+    trimTrailingSlashes(proof.issuer) !== issuer ||
+    config.clientId.length === 0
+  ) {
+    return { status: 'invalid' };
+  }
+
+  const body = new URLSearchParams({
+    grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+    device_code: proof.deviceCode,
+    client_id: config.clientId,
+  });
+  const exchanged = await fetchWorkosJson(
+    `${issuer}/authenticate`,
+    fetchFn,
+    {
+      method: 'POST',
+      // Workerd accepts only follow/manual here; manual prevents a provider
+      // redirect from being followed across the authentication boundary.
+      redirect: 'manual',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    },
+    WORKOS_DEVICE_REQUEST_TIMEOUT_MS,
+  );
+  if (
+    exchanged === null ||
+    (exchanged.response.status >= 300 && exchanged.response.status < 400) ||
+    exchanged.payload === null
+  ) {
+    return { status: 'invalid' };
+  }
+  const { response, payload } = exchanged;
+
+  if (!response.ok) {
+    const code = payload?.['error'];
+    switch (code) {
+      case 'authorization_pending':
+        return { status: 'pending' };
+      case 'slow_down':
+        return { status: 'slow-down' };
+      case 'access_denied':
+        return { status: 'denied' };
+      case 'expired_token':
+        return { status: 'expired' };
+      default:
+        return { status: 'invalid' };
+    }
+  }
+
+  const user = payload?.['user'];
+  const subject = isRecord(user) ? user['id'] : undefined;
+  return typeof subject === 'string' && /^user_[A-Za-z0-9_-]{1,240}$/.test(subject)
+    ? { status: 'success', subject }
+    : { status: 'invalid' };
 }

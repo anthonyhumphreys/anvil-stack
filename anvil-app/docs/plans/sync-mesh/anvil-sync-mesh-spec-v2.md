@@ -94,7 +94,14 @@ Cloudflare provides account-scoped coordination and hibernating sockets. Anvil o
 | Existing IDs and service patterns | Reduce migration regressions | Portable repo IDs still need local mappings |
 | One provider implementation | Reduce ongoing test and support burden | Provider migration is a real engineering project |
 
-The server is trusted with plaintext synced metadata, approved artifacts, and coordination decisions. The launch does not claim end-to-end confidentiality or protection against a malicious coordination server. Local execution restrictions still apply. Secret sync and a stronger server threat model require separate cryptographic design.
+The server is trusted with readable sync metadata, approved coordination
+records, and the routing decisions needed by the launch. The current sync
+implementation seals entity payloads, artifact bytes, and other protected
+content on the client, but the launch does not claim protection against a
+malicious coordination server or a compromised authorised endpoint. Local
+execution restrictions still apply. Key-substitution and related active-server
+questions remain part of the crypto audit; this specification does not grant
+stronger guarantees than that review establishes.
 
 ### Built-app backend portability
 
@@ -239,7 +246,12 @@ An acknowledgement advances the base. It replaces visible local content only if 
 
 Domain `payload` travels as a sealed envelope `{enc, keyVersion, nonce, ct}` — AES-256-GCM under a versioned 256-bit account data key (ADK) with a random 96-bit nonce. Associated data binds the envelope to backend id, account id, entity type, entity id, and key version; operation and schemaVersion are covered by the backend-verified `payloadHash` instead, so quarantined envelopes re-open without reconstructing the mutation. `payloadHash` covers the canonical sealed envelope, preserving dedupe and receipt semantics. Deletes carry no payload and are not sealed.
 
-The backend validates envelope structure (`enc`, positive integer `keyVersion`, 12-byte nonce, ciphertext carrying at least the GCM tag) and stores ciphertext it cannot open. It never sees plaintext and never sees key material.
+The reference backend validates envelope structure (`enc`, positive integer
+`keyVersion`, 12-byte nonce, ciphertext carrying at least the GCM tag) and
+stores ciphertext; it has no normal unseal path. This is an implementation
+boundary, not a claim that an active or malicious backend cannot substitute,
+replay, or suppress protocol material; those active-server properties remain
+under crypto review.
 
 Sealing happens at dispatch, not at edit time: `sealed_json` on the outbox row persists the exact wire envelope so replays reuse identical ciphertext and payload hash. Local domain state stays plaintext. A missing ADK defers the change — plaintext is never sent for a domain entity on a scoped session.
 
@@ -293,11 +305,18 @@ Sync enrollment does not authorize Mesh. On each target, enable remote sessions/
 
 ### Account data key distribution
 
-Each enrolled device generates an X25519 identity keypair at enrollment and publishes the public half as a `device-identity` entity. The ADK moves between devices only in forms the backend cannot open: a `keyring-wrap` entity seals the ADK to a recipient's X25519 public key, and a `keyring-pairing` entity seals it under a one-time secret carried in the out-of-band pairing payload (`anvil-pair-…`, scanned or typed) alongside the enrollment code. The server sees the enrollment code; it never sees the pairing secret or any key material. Key material rests in local SQLite wrapped by OS credential storage (`safeStorage`, or the daemon's `0600` AES-256-GCM file).
+Each enrolled device generates an X25519 identity keypair at enrollment and publishes the public half as a `device-identity` entity. In the normal client path, the ADK moves between devices only in forms the backend cannot open: a `keyring-wrap` entity seals the ADK to a recipient's X25519 public key, and a `keyring-pairing` entity seals it under a one-time secret carried in the out-of-band pairing payload (`anvil-pair-…`, scanned or typed) alongside the enrollment code. The server sees the enrollment code but not the pairing secret or account key. Upgraded clients bind wraps to the pinned/local issuer and recipient identities and require mutual SAS confirmation before installation. Key material rests in local SQLite wrapped by OS credential storage (`safeStorage`, or the daemon's `0600` AES-256-GCM file); active substitution remains a crypto-audit concern rather than an implied server trust guarantee.
+
+Configured recovery adds an offline path: a trusted device seals the full ADK
+version bundle under a separately saved high-entropy recovery code, and the
+backend stores only the opaque recovery envelope and verifier metadata. A new
+device authenticates, obtains the current envelope, and decrypts it locally
+with the saved code. WorkOS authentication and an automatic trust decision do
+not derive or replace that code.
 
 The first device on an account mints ADK v1 at first seal. A device that knows it has peers but holds no ADK defers sealing until a wrap or pairing blob arrives — it never falls back to plaintext or mints a divergent key.
 
-Revoking a device rotates the ADK: a trusted device mints the next version and queues wraps for every surviving enrolled device, excluding the revoked set and itself. The revoked device keeps content it already decrypted; rotation limits future reads only. A short authentication string derived from both device public keys and the account id is available for manual verification of a pairing.
+Revoking a device rotates the ADK: a trusted device mints the next version and queues wraps for every surviving enrolled device, excluding the revoked set and itself. The revoked device keeps content it already decrypted; rotation limits future reads only. A short authentication string derived from both device public keys and the account id is surfaced in Devices for manual verification. Upgraded clients require both devices to confirm the matching SAS before accepting a key delivery; unsigned legacy wraps are rejected and must be resent after pairing or manual verification.
 
 Before claim and each new remote action, the worker validates local policy, source authorization, enrollment, job kind, workspace scope, and resource limits. Diagnostic handlers are built-in operations, not arbitrary shell strings. The renderer sees safe state only; IPC validates callers and payloads through existing patterns.
 

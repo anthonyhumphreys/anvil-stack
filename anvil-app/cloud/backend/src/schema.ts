@@ -451,11 +451,30 @@ CREATE TABLE IF NOT EXISTS device_sessions (
   enrollment_expires_at INTEGER,
   -- ENV-01: environment record this enrollment was minted for (ephemeral
   -- codes only). Lets the env authorize its own enrolled report.
-  environment_id TEXT
+  environment_id TEXT,
+  -- Account security: proof provenance is immutable for the enrollment;
+  -- revoked is a sticky trust floor and cannot be re-announced.
+  proof_method TEXT NOT NULL DEFAULT 'enrollment-code',
+  trust_state TEXT NOT NULL DEFAULT 'pending',
+  trusted_at INTEGER,
+  signing_public_key TEXT,
+  trust_source TEXT,
+  trust_generation INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_access ON device_sessions (access_token_hash);
 CREATE INDEX IF NOT EXISTS idx_sessions_refresh ON device_sessions (refresh_token_hash);
 CREATE INDEX IF NOT EXISTS idx_sessions_class ON device_sessions (account_id, enrollment_class);
+-- WorkOS device codes are provider-owned one-use proofs. Keep only a hash so
+-- an Anvil retry or race cannot mint a second enrollment after success.
+CREATE TABLE IF NOT EXISTS workos_device_proofs (
+  device_code_hash TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  consumed_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workos_device_rate (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  last_attempt_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS enrollment_codes (
   code_hash TEXT PRIMARY KEY,
   account_id TEXT NOT NULL,
@@ -470,9 +489,73 @@ CREATE TABLE IF NOT EXISTS enrollment_codes (
   provider TEXT,
   session_ttl_ms INTEGER,
   -- ENV-01: environment record binding for ephemeral codes.
-  environment_id TEXT
+  environment_id TEXT,
+  -- Explicit pairing is opt-in; ordinary codes stay pending on existing
+  -- accounts even when account policy is automatic-auth.
+  trust_mode TEXT NOT NULL DEFAULT 'pending'
 );
 CREATE INDEX IF NOT EXISTS idx_codes_account ON enrollment_codes (account_id, consumed_at);
+
+-- Account-scoped durable security policy. A missing row is migrated to
+-- require-approval by SessionCoordinator without changing existing session
+-- membership. Revisions are CAS inputs for every security mutation.
+CREATE TABLE IF NOT EXISTS account_security (
+  account_id TEXT PRIMARY KEY,
+  policy TEXT NOT NULL DEFAULT 'require-approval',
+  revision INTEGER NOT NULL DEFAULT 1,
+  generation INTEGER NOT NULL DEFAULT 1,
+  recovery_revision INTEGER NOT NULL DEFAULT 0,
+  recovery_id TEXT,
+  backend_id TEXT,
+  recovery_ciphertext TEXT,
+  recovery_verifier_public_key TEXT,
+  recovery_owner_enrollment_id TEXT,
+  recovery_invalidated_at INTEGER,
+  bootstrap_enrollment_id TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_account_security_generation
+  ON account_security (account_id, generation);
+
+-- One-use short-lived challenge records. expected_public_key is metadata,
+-- never private key material; challenge values and signatures are not audit
+-- content and are deleted after expiry.
+CREATE TABLE IF NOT EXISTS security_challenges (
+  challenge_id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  enrollment_id TEXT NOT NULL,
+  action TEXT NOT NULL,
+  account_revision INTEGER NOT NULL,
+  recovery_revision INTEGER NOT NULL,
+  challenge TEXT NOT NULL,
+  expected_public_key TEXT,
+  recovery_id TEXT,
+  backend_id TEXT,
+  identity_pub TEXT,
+  payload_hash TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  used_at INTEGER,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_security_challenges_account
+  ON security_challenges (account_id, expires_at, used_at);
+
+-- Bounded metadata-only security audit. Ciphertexts, signatures and public
+-- keys never enter this table.
+CREATE TABLE IF NOT EXISTS security_audit (
+  audit_id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  enrollment_id TEXT,
+  action TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  proof_method TEXT,
+  enrollment_class TEXT,
+  metadata TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_security_audit_account
+  ON security_audit (account_id, created_at);
 -- Account deletion tombstones (spec §140/§560): the identity directory's
 -- durable record that an accountId was deleted. It survives the account
 -- object's purge, blocks enrollment-code issuance for the dead id, and

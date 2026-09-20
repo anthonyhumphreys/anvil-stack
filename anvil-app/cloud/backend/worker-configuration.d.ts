@@ -10,7 +10,7 @@ declare namespace Cloudflare {
     ANVIL_DEPLOYMENT_NAME?: string;
     /** Dev-only: accept `spike:` bearers. Must be unset in real deploys. */
     ANVIL_DEV_SPIKE?: string;
-    /** OIDC authority for the `oidc-pkce` enrollment proof. */
+    /** OIDC authority for the `oidc-pkce` and optional `workos-device` proofs. */
     OIDC_ISSUER?: string;
     OIDC_CLIENT_ID?: string;
     OIDC_SCOPES?: string;

@@ -4,6 +4,11 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from '
 import { join } from 'node:path';
 import { decryptSecret, encryptSecret } from './auth.service.js';
 import {
+  runWorkOSDeviceFlow,
+  type RunWorkOSDeviceFlowOptions,
+  type WorkOSDeviceEnrollFn,
+} from './workos-device-auth.service.js';
+import {
   base64UrlEncode,
   buildLoopbackRedirectUri,
   createPkceS256Pair,
@@ -133,6 +138,10 @@ function errorCodeOf(error: unknown): AuthErrorCode | null {
     case 'refresh-reuse-detected':
     case 'enrollment-code-used':
     case 'invalid-proof':
+    case 'device-authorization-pending':
+    case 'device-authorization-slow-down':
+    case 'device-authorization-denied':
+    case 'device-authorization-expired':
       return code;
     default:
       return null;
@@ -148,6 +157,14 @@ export function describeAuthError(code: AuthErrorCode): string {
       return 'The enrollment code was already used or has expired.';
     case 'invalid-proof':
       return 'The sign-in proof was rejected. Please try again.';
+    case 'device-authorization-pending':
+      return 'The device authorization is still waiting for approval.';
+    case 'device-authorization-slow-down':
+      return 'The device authorization requested slower polling.';
+    case 'device-authorization-denied':
+      return 'The device authorization was denied.';
+    case 'device-authorization-expired':
+      return 'The device authorization expired. Please start again.';
     default: {
       const exhaustive: never = code;
       return exhaustive;
@@ -302,6 +319,7 @@ export class SyncAuthService {
   private readonly openExternal: OpenExternalFn;
   private readonly listenLoopback: ListenLoopbackFn;
   private pending: PendingPkceLogin | null = null;
+  private pendingDeviceAbortController: AbortController | null = null;
   private cached: PersistedSyncSession | null = null;
   private cacheLoaded = false;
   /**
@@ -460,7 +478,10 @@ export class SyncAuthService {
     return Promise.race([
       pending.waitForCallback(),
       new Promise<LoopbackCallback>((_resolve, reject) => {
-        setTimeout(() => reject(new Error('Timed out waiting for the sign-in callback.')), timeoutMs);
+        setTimeout(
+          () => reject(new Error('Timed out waiting for the sign-in callback.')),
+          timeoutMs,
+        );
       }),
     ]);
   }
@@ -519,6 +540,59 @@ export class SyncAuthService {
     }
     this.persistSession(session, backendId);
     return this.getPublicSnapshot();
+  }
+
+  /**
+   * Runs WorkOS Device Authorization and persists only the Anvil session
+   * returned by the backend. The device code remains inside the flow and the
+   * commit guard fences backend switches as well as local sign-out races.
+   */
+  async enrollWithWorkOSDevice(
+    options: Omit<RunWorkOSDeviceFlowOptions, 'enrollFn' | 'installationId'>,
+    enrollFn: WorkOSDeviceEnrollFn,
+    backendId: string | null,
+    canCommit: () => boolean = () => true,
+  ): Promise<SyncAuthSnapshot> {
+    if (this.pendingDeviceAbortController !== null) {
+      this.pendingDeviceAbortController.abort();
+    }
+    const controller = new AbortController();
+    const onCallerAbort = () => controller.abort();
+    options.signal?.addEventListener('abort', onCallerAbort, { once: true });
+    // Adding an abort listener after the caller has already cancelled does not
+    // dispatch an event. Propagate that state explicitly before any network
+    // request or challenge callback can run.
+    if (options.signal?.aborted === true) controller.abort();
+    this.pendingDeviceAbortController = controller;
+    const epoch = this.sessionEpoch;
+    try {
+      const session = await runWorkOSDeviceFlow({
+        ...options,
+        installationId: this.installationId,
+        enrollFn,
+        signal: controller.signal,
+      });
+      if (this.sessionEpoch !== epoch || controller.signal.aborted || !canCommit()) {
+        if (this.pendingDeviceAbortController === controller) {
+          this.pendingDeviceAbortController = null;
+        }
+        return this.getPublicSnapshot();
+      }
+      this.persistSession(session, backendId);
+      return this.getPublicSnapshot();
+    } catch (error) {
+      // Local sign-out aborts the flow and invalidates its epoch. Suppress the
+      // stale completion; a caller-owned AbortSignal still receives cancel.
+      if (this.sessionEpoch !== epoch && options.signal?.aborted !== true) {
+        return this.getPublicSnapshot();
+      }
+      throw error;
+    } finally {
+      options.signal?.removeEventListener('abort', onCallerAbort);
+      if (this.pendingDeviceAbortController === controller) {
+        this.pendingDeviceAbortController = null;
+      }
+    }
   }
 
   /**
@@ -609,14 +683,14 @@ export class SyncAuthService {
     if (this.pending !== null) {
       return { state: 'enrolling', accountId: null, enrollmentId: null, expiresAt: null };
     }
+    if (this.pendingDeviceAbortController !== null) {
+      return { state: 'enrolling', accountId: null, enrollmentId: null, expiresAt: null };
+    }
     return { state: 'signed-out', accountId: null, enrollmentId: null, expiresAt: null };
   }
 
   /** Writes a device session without going through enroll RPC. Used by the G1 spike injector. */
-  installDeviceSession(
-    session: DeviceSession,
-    backendId: string | null,
-  ): SyncAuthSnapshot {
+  installDeviceSession(session: DeviceSession, backendId: string | null): SyncAuthSnapshot {
     this.persistSession(session, backendId);
     return this.getPublicSnapshot();
   }
@@ -657,6 +731,8 @@ export class SyncAuthService {
       this.pending.closeListener();
       this.pending = null;
     }
+    this.pendingDeviceAbortController?.abort();
+    this.pendingDeviceAbortController = null;
   }
 }
 

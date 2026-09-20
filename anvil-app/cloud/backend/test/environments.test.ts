@@ -463,7 +463,7 @@ describe('credential grants', () => {
 });
 
 describe('managed environments (ENV-09)', () => {
-  const MANAGED_PAIRING = 'anvil-pair-AAAAA-BBBBB-CCCCC-DDDDD-EEEEE-FFFFF';
+  const MANAGED_ENROLLMENT_CODE = 'anvil-ec-AAAAA-BBBBB-CCCCC-DDDDD';
 
   function managedManifest(environmentId: string, ttlSeconds: number): ExecutionManifest {
     return {
@@ -554,10 +554,16 @@ describe('managed environments (ENV-09)', () => {
 
   it('stages a bootstrap payload and rejects malformed ones', async () => {
     const fx = fixture('bootstrap');
+    const pairing = await postRpc(
+      'environment.bootstrap',
+      { environmentId: fx.environmentId, payload: 'anvil-pair-AAAAA-BBBBB-CCCCC-DDDDD-EEEEE-FFFFF' },
+      fx.provisionerAuth,
+    );
+    expect(isRpcError(pairing.body)).toBe(true);
     const staged = expectSuccess<{ ok: true }>(
       await postRpc(
         'environment.bootstrap',
-        { environmentId: fx.environmentId, payload: MANAGED_PAIRING },
+        { environmentId: fx.environmentId, payload: MANAGED_ENROLLMENT_CODE },
         fx.provisionerAuth,
       ),
     );
@@ -569,6 +575,12 @@ describe('managed environments (ENV-09)', () => {
       fx.provisionerAuth,
     );
     expect(isRpcError(missing.body)).toBe(true);
+    const malformedCode = await postRpc(
+      'environment.bootstrap',
+      { environmentId: fx.environmentId, payload: 'anvil-ec-AAAAA-BBBBB' },
+      fx.provisionerAuth,
+    );
+    expect(isRpcError(malformedCode.body)).toBe(true);
     const oversized = await postRpc(
       'environment.bootstrap',
       { environmentId: fx.environmentId, payload: 'x'.repeat(5000) },
@@ -589,7 +601,7 @@ describe('managed environments (ENV-09)', () => {
     // live, so the next managed create trips the concurrency cap.
     await postRpc(
       'environment.bootstrap',
-      { environmentId: 'env_c3', payload: MANAGED_PAIRING },
+      { environmentId: 'env_c3', payload: MANAGED_ENROLLMENT_CODE },
       fx.provisionerAuth,
     );
     const firstRequestId = crypto.randomUUID();
@@ -641,7 +653,7 @@ describe('managed environments (ENV-09)', () => {
     await provisionerReset();
     await postRpc(
       'environment.bootstrap',
-      { environmentId: fx.environmentId, payload: MANAGED_PAIRING },
+      { environmentId: fx.environmentId, payload: MANAGED_ENROLLMENT_CODE },
       fx.provisionerAuth,
     );
     const created = expectSuccess<JobCreateResult>(
@@ -651,13 +663,15 @@ describe('managed environments (ENV-09)', () => {
     const terminal = await waitJobTerminal(fx.provisionerAuth, created.job.id);
     expect(terminal.job.state).toBe('completed');
 
-    // The provisioner received the staged pairing inside the bootstrap doc —
-    // never journaled, never returned to a client.
+    // The provisioner received only the staged enrollment code inside the
+    // schema 0.2 bootstrap doc — never journaled, never returned to a client.
     const last = await provisionerLast();
     expect(last?.method).toBe('POST');
     expect(last?.path).toBe('/v1/environments');
     expect(last?.body?.environmentId).toBe(fx.environmentId);
-    expect(last?.body?.bootstrap?.['pairing']).toBe(MANAGED_PAIRING);
+    expect(last?.body?.bootstrap?.['enrollmentCode']).toBe(MANAGED_ENROLLMENT_CODE);
+    expect(last?.body?.bootstrap?.['pairing']).toBeUndefined();
+    expect(last?.body?.bootstrap?.['schemaVersion']).toBe('0.2');
     expect(last?.body?.bootstrap?.['provider']).toBe('anvil-managed');
     expect(last?.body?.bootstrap?.['backendUrl']).toBe('https://api.anvil.test');
 
@@ -694,7 +708,7 @@ describe('managed environments (ENV-09)', () => {
     });
     await postRpc(
       'environment.bootstrap',
-      { environmentId: fx.environmentId, payload: MANAGED_PAIRING },
+      { environmentId: fx.environmentId, payload: MANAGED_ENROLLMENT_CODE },
       fx.provisionerAuth,
     );
     const created = expectSuccess<JobCreateResult>(
@@ -710,7 +724,7 @@ describe('managed environments (ENV-09)', () => {
     await provisionerReset();
     await postRpc(
       'environment.bootstrap',
-      { environmentId: fx.environmentId, payload: MANAGED_PAIRING },
+      { environmentId: fx.environmentId, payload: MANAGED_ENROLLMENT_CODE },
       fx.provisionerAuth,
     );
     const created = expectSuccess<JobCreateResult>(

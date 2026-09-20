@@ -18,6 +18,11 @@ export type SyncDeviceTrustSource =
   | 'local-device';
 
 export type SyncDeviceSecurityEventKind =
+  | 'configure'
+  | 'recover'
+  | 'setPolicy'
+  | 'updateRecovery'
+  | 'reset'
   | 'policy-configured'
   | 'policy-changed'
   | 'recovery-configured'
@@ -34,23 +39,29 @@ export interface SyncDeviceSecurityEvent {
   occurredAt: string;
   source: SyncDeviceTrustSource;
   enrollmentId: string | null;
+  outcome?: string;
 }
 
 /** Account-scoped security state for the currently signed-in enrollment. */
 export interface SyncDeviceSecurityStatus {
-  /** Stable account identifier used for destructive reset confirmation. */
+  /** Stable account identifier shown alongside the exact reset phrase. */
   accountId: string | null;
   configured: boolean;
   policy: SyncDeviceTrustPolicy;
   revision: number;
+  recoveryRevision?: number;
   trustState: SyncDeviceTrustState;
   trustSource: SyncDeviceTrustSource;
   hasAccountKey: boolean;
   hasRecoverySecret: boolean;
-  /** True only while this account is eligible for first-device setup. */
+  /** True while this enrollment is eligible to configure recovery for the account. */
   canConfigure: boolean;
   /** True when the enrollment is authenticated/trusted but still lacks its key. */
   requiresRecovery: boolean;
+  /** Backend audit hint that the retained recovery bundle is no longer current. */
+  recoveryInvalidated?: boolean;
+  /** True when a device revocation/key rotation made the retained recovery bundle stale. */
+  requiresRecoveryReplacement?: boolean;
   recentEvents: SyncDeviceSecurityEvent[];
 }
 

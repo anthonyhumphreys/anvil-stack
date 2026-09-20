@@ -48,19 +48,21 @@ the docs point at when they say "alpha." If a claim anywhere else in
 These are the sharp edges. Each is a real behavior difference, not a wording
 choice:
 
-- **Website revocation does not rotate the ADK.** Revoking a device from
-  `/account` severs its session but leaves its key version alive — the
-  revoked device can still decrypt anything sealed under that version if it
-  obtains the ciphertext. Revoking from the app mints ADK v(N+1) and wraps it
-  to survivors. **For the full guarantee, revoke from an enrolled device in
-  the app.** Details: [Devices and pairing](/docs/sync/devices).
+- **Website revocation rotates on survivor reconciliation.** Revoking a
+  device from `/account` severs its session immediately. A surviving trusted
+  device learns the revocation and rotates the ADK before accepting its next
+  new write; an offline survivor waits until it reconnects. Revoking from an
+  online enrolled device can rotate immediately. Details: [Devices and
+  pairing](/docs/sync/devices).
 - **Exports are ciphertext.** The portable export document carries sealed
   envelopes — it round-trips correctly into an account holding the ADK but is
   not human-readable. Unsealing at export is a tracked follow-up. Details:
   [Data portability](/docs/sync/data-portability).
-- **SAS has no UI.** The 9-digit MITM verification code is derivable in the
-  keyring but nothing surfaces it — pairing today relies on the out-of-band
-  secret path. Details: [Encryption and keys](/docs/sync/encryption).
+- **Pairing requires mutual SAS confirmation in upgraded clients.** The
+  9-digit MITM verification code is available through Compare & approve in
+  the Devices list. Unsigned legacy wraps are rejected; resend the pairing or
+  complete manual verification after upgrading. Details: [Encryption and
+  keys](/docs/sync/encryption).
 
 ## Functional limits
 
@@ -106,7 +108,8 @@ edges described above to show through them.
 Work that is known, named, and not yet done:
 
 - Unseal-at-export for human-readable portability documents.
-- SAS verification UI for manual pairing checks.
+- Active key-substitution and pairing-receipt audit, plus rollout of the
+  upgraded wrap bindings and mutual SAS confirmation.
 - Physical multi-device acceptance demo — the market-readiness gate.
 - Production provisioning for hosted mode (WorkOS, Stripe live keys, D1,
   secrets).

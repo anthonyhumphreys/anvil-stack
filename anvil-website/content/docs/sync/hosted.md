@@ -36,6 +36,20 @@ device key is not sent to the website. Self-hosted backends declare their own
 issuer (`--oidc-issuer` at plan time) or use enrollment-code bootstrap; they
 do not use the hosted WorkOS service channel.
 
+Headless daemons use WorkOS Device Authorization when the backend advertises
+`workos-device`:
+
+```sh
+anvil-daemon sign-in --api-url https://<backend>
+```
+
+The command prints WorkOS's public verification URI and user code, then polls
+until the user approves the code or the bounded authorization lifetime ends.
+It does not open a browser and does not use a loopback redirect. Configure the
+descriptor's `auth.publicClientId` as a WorkOS public client with Device
+Authorization enabled. A client secret and WorkOS API key stay on the backend;
+the daemon receives neither. See the [WorkOS CLI Auth documentation](https://workos.com/docs/authkit/cli-auth).
+
 To sign in:
 
 - **Desktop:** Set `ANVIL_HOSTED_BACKEND_URL`, open Settings → Sync & Mesh →
@@ -44,6 +58,9 @@ To sign in:
   `http://127.0.0.1:<ephemeral-port>/callback`; the desktop chooses an
   ephemeral port in the documented loopback range. Enrollment follows the
   normal device flow — see [Devices and pairing](/docs/sync/devices).
+- **Headless daemon:** Run `anvil-daemon sign-in --api-url https://<backend>`
+  on the host. Add `--worker` only for an explicit Mesh worker opt-in. After
+  sign-in, run `anvil-daemon run` to start the long-running host services.
 - **Web:** `/account` on the website. It requires the WorkOS environment and
   the signed backend service-channel environment; when either is absent the
   page shows a not-configured state rather than proving hosted connectivity.

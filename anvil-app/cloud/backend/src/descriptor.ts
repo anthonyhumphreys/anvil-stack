@@ -1,4 +1,5 @@
 import type { BackendDescriptor } from '../../contract/discovery';
+import { WORKOS_AUTHKIT_ISSUER } from '../../contract/auth';
 import { DEFAULT_LIMITS, DESCRIPTOR_VERSION, PROTOCOL } from '../../contract/version';
 
 /** Legacy staging identity. Keep until the staging deployment is intentionally migrated. */
@@ -21,13 +22,18 @@ type DescriptorEnvironment = {
  * authModes advertise only what the deployment actually supports:
  * `enrollment-code` always works (admin- or device-issued), and `oidc-pkce`
  * is advertised only when OIDC_ISSUER/OIDC_CLIENT_ID are configured.
+ * `workos-device` is advertised only for the fixed public WorkOS AuthKit
+ * authority; the daemon starts that flow against WorkOS directly.
  */
 export function buildDescriptor(env?: DescriptorEnvironment): BackendDescriptor {
+  const issuer = env?.OIDC_ISSUER?.trim();
+  const clientId = env?.OIDC_CLIENT_ID?.trim();
   const oidcConfigured =
-    typeof env?.OIDC_ISSUER === 'string' &&
-    env.OIDC_ISSUER.length > 0 &&
-    typeof env?.OIDC_CLIENT_ID === 'string' &&
-    env.OIDC_CLIENT_ID.length > 0;
+    typeof issuer === 'string' &&
+    issuer.length > 0 &&
+    typeof clientId === 'string' &&
+    clientId.length > 0;
+  const workosConfigured = oidcConfigured && issuer === WORKOS_AUTHKIT_ISSUER;
   const scopes = (env?.OIDC_SCOPES ?? 'openid profile')
     .split(/\s+/)
     .filter((scope) => scope.length > 0);
@@ -39,10 +45,14 @@ export function buildDescriptor(env?: DescriptorEnvironment): BackendDescriptor 
     profiles: ['sync/1', 'mesh/1'],
     apiPath: 'v1',
     socketPath: 'v1/connect',
-    authModes: oidcConfigured ? ['enrollment-code', 'oidc-pkce'] : ['enrollment-code'],
+    authModes: workosConfigured
+      ? ['enrollment-code', 'oidc-pkce', 'workos-device']
+      : oidcConfigured
+        ? ['enrollment-code', 'oidc-pkce']
+        : ['enrollment-code'],
     auth: {
-      issuer: oidcConfigured ? (env?.OIDC_ISSUER as string) : 'https://enrollment.invalid',
-      publicClientId: oidcConfigured ? (env?.OIDC_CLIENT_ID as string) : 'anvil-desktop',
+      issuer: oidcConfigured ? (issuer as string) : 'https://enrollment.invalid',
+      publicClientId: oidcConfigured ? (clientId as string) : 'anvil-desktop',
       scopes: scopes.length > 0 ? scopes : ['openid'],
     },
     limits: {

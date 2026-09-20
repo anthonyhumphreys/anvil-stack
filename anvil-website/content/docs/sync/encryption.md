@@ -50,7 +50,7 @@ an envelope.
 ## Key distribution: how a new device gets the ADK
 
 The first device mints ADK v1 locally at the moment of the first sealed write.
-New devices receive it through one of two paths:
+New devices receive it through one of these paths:
 
 1. **Pairing payload (in-app code).** A signed-in device seals the ADK inside
    a pairing blob under a fresh one-time secret. The secret travels in the
@@ -58,13 +58,18 @@ New devices receive it through one of two paths:
    `anvil-pair-{code}.{nonce}.{secret}` — carried out-of-band (typed or
    scanned), never through the server. The server sees the enrollment code
    redemption; the secret that protects the ADK is in the string you carried.
-2. **Automatic keyring wrap (website bare code).** A bare code minted on
-   `/account` carries no key material. The new device enrolls and publishes
-   its device-identity entity; the next time any trusted device pulls and
-   observes that identity, it wraps the ADK to the new public key and the
-   wrap syncs as an ordinary sealed entity. The new device unwraps on its next
-   pull. Consequence: at least one trusted device must be online for the wrap
-   to happen.
+2. **Recovery-code unlock.** A trusted first device configures recovery and
+   saves the separately generated code. The client seals the complete ADK
+   version bundle locally, while the backend stores only the opaque envelope
+   and public verifier metadata. A new device signs in, receives the current
+   envelope, and unlocks it locally with the saved code; no existing device
+   needs to be online. WorkOS authentication establishes identity and
+   enrollment but is not an encryption key.
+
+   Recovery replacement advances the account security revision and publishes
+   a new envelope and code. The old code is not a substitute for the current
+   recovery flow; a retained old bundle can open only the historical key
+   versions it contains. Passkey-backed encryption unlock is not implemented.
 
 Walkthroughs for both flows are in [Devices and pairing](/docs/sync/devices).
 
@@ -77,20 +82,22 @@ Revoking a device does two different things depending on where you do it:
   the revoked device, even if it still holds ciphertext. Rotation limits
   future access — it does not reach back and erase plaintext the device
   already decrypted.
-- **From the website:** the session is severed, immediately and account-wide —
-  but **no ADK rotation fires**. The revoked device keeps the key version it
-  had and can still read anything sealed under it if it later obtains the
-  ciphertext. This is a documented gap, not an implementation detail: for the
-  full guarantee, revoke from an enrolled device in the app.
+- **From the website:** the session is severed immediately and account-wide.
+  A surviving trusted device learns the revocation during reconciliation and
+  rotates before accepting its next new write. If all survivors are offline,
+  rotation waits until one reconnects; the revoked device keeps key material
+  and plaintext it already received.
 
 ## SAS verification
 
 Both devices in a pairing can derive the same **9-digit SAS** (short
 authentication string) from the two device public keys — the standard MITM
-eyeball check for pairing ceremonies. The derivation exists in the keyring
-today; **no UI surfaces it yet**. Until it does, the practical check is the
-pairing secret's out-of-band path: the server never sees it, so a passive
-server cannot mint a wrap to a device it controls.
+eyeball check for pairing ceremonies. Sync & Mesh exposes this in the Devices
+list through **Compare & approve**. Both devices must show and confirm the
+same code before either upgraded client accepts an authenticated key wrap; the
+code is a human verification step and is not an encryption key. Legacy
+unsigned wraps are rejected by upgraded clients, so resend the pairing or
+complete manual verification after upgrading.
 
 ## What the server can read
 
@@ -108,7 +115,9 @@ all of the following as readable by whoever operates the backend:
 What it cannot read: entity payload content, artifact bytes, checkpoint
 bodies, shared-artifact bytes, and any plaintext form of the ADK. If a claim
 on this page drifts from that line, the line wins — the server has no unseal
-path.
+path in the normal reference flow. This describes the current storage and
+client boundary; active key-substitution and replay resistance remain part of
+the crypto review.
 
 ## Share-link keys
 
@@ -123,6 +132,13 @@ Anyone holding the full link can decrypt — that is the design, so treat a
 share URL like a credential. Details and revocation semantics are in
 [Artifacts and share links](/docs/sync/artifacts-and-shares).
 
+## Trust, unlock, and workers are separate
+
+An enrollment can be authenticated and trusted while it still lacks the ADK;
+the recovery-code unlock installs the key locally. Trust policy does not grant
+mesh permissions, companion observe/approve/steer permissions, or enable a
+worker. The worker remains an explicit device-local opt-in.
+
 ## Where keys rest locally
 
 On each device, key material — the ADK versions and the device identity's
@@ -133,9 +149,14 @@ enrolled device's public key.
 
 ## Current limits
 
-- Website revocation severs the session but does not rotate the ADK — use the
-  app for the full guarantee.
-- SAS verification is implemented but has no UI surface.
+- Website revocation severs the session immediately. A surviving trusted
+  device reconciles the revocation and rotates the ADK before it accepts new
+  writes; an offline survivor cannot perform that rotation until it reconnects.
+- Recovery-code setup and unlock are separate from WorkOS authentication; an
+  authenticated session alone cannot decrypt existing content.
+- SAS verification is available from the Devices list for manual approval.
 - Rotation cannot erase what a revoked device already decrypted.
+- A revocation invalidates the local recovery refresh root; replace recovery
+  and save the newly issued code before refreshing the envelope.
 - Everything under "What the server can read" is readable. E2E protects
   content, not metadata.

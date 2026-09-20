@@ -15,6 +15,7 @@
 import {
   createCipheriv,
   createDecipheriv,
+  createHmac,
   createHash,
   createPrivateKey,
   createPublicKey,
@@ -23,6 +24,7 @@ import {
   hkdfSync,
   randomBytes,
   randomUUID,
+  timingSafeEqual,
   type KeyObject,
 } from 'node:crypto';
 import {
@@ -37,7 +39,9 @@ import {
   entitySealAssociatedData,
   isSealedEntityPayload,
   isSealedTaskPayload,
+  keyringWrapAuthenticationData,
   keyringWrapAssociatedData,
+  pairingReceiptAuthenticationData,
   pairingSealAssociatedData,
   sealedEnvelopeIssue,
   sealedTaskEnvelopeIssue,
@@ -58,7 +62,14 @@ import {
   type TaskKeyInner,
   type TaskKeyWrapPayload,
 } from '../../../cloud/contract/sealed.js';
+import {
+  isRecoveryKeyBundle,
+  RECOVERY_BUNDLE_MAX_KEY_VERSION,
+  RECOVERY_BUNDLE_MAX_KEYS,
+  type RecoveryKeyBundle,
+} from '../../../cloud/contract/device-security.js';
 import type { SyncOperation, SyncScope } from '../../shared/sync-mesh.js';
+import { safeStorage } from 'electron';
 import { getDb } from '../db/database.js';
 import { canonicalJson, recordLocalChange } from './sync-persistence.service.js';
 import { applyRemoteEntityPayload } from './sync-entity-domain.js';
@@ -66,6 +77,9 @@ import { encryptSecret, decryptSecret } from './auth.service.js';
 
 const X25519_SPKI_PREFIX = Buffer.from('302a300506032b656e032100', 'hex');
 const X25519_PKCS8_PREFIX = Buffer.from('302e020100300506032b656e04220420', 'hex');
+const KEYRING_WRAP_MAC_INFO = Buffer.from('anvil/keyring-wrap-auth/v1', 'utf8');
+const MAX_PENDING_KEYRING_WRAP_BYTES = 512 * 1024;
+const MAX_PENDING_KEYRING_WRAPS = 64;
 
 export type UnsealFailure =
   | 'malformed-envelope'
@@ -90,8 +104,40 @@ export class AccountKeyUnavailableError extends Error {
   }
 }
 
+/** Raised when a recovery secret cannot be kept in authenticated OS storage. */
+export class RecoverySecretUnavailableError extends Error {
+  constructor() {
+    super('Recovery secret storage is unavailable on this device');
+    this.name = 'RecoverySecretUnavailableError';
+  }
+}
+
+/** Raised before import when an established ADK version disagrees. */
+export class AccountKeyBundleConflictError extends Error {
+  constructor(version: number) {
+    super(`Recovery bundle conflicts with the established account key at version ${version}`);
+    this.name = 'AccountKeyBundleConflictError';
+  }
+}
+
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function strictBase64Bytes(value: string, byteLength: number): Buffer | null {
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
+    return null;
+  }
+  const decoded = Buffer.from(value, 'base64');
+  return decoded.byteLength === byteLength && decoded.toString('base64') === value ? decoded : null;
+}
+
+function strictBase64UrlBytes(value: string, byteLength: number): Buffer | null {
+  if (!/^[A-Za-z0-9_-]+$/.test(value)) return null;
+  const decoded = Buffer.from(value, 'base64url');
+  return decoded.byteLength === byteLength && decoded.toString('base64url') === value
+    ? decoded
+    : null;
 }
 
 export function wrapSecretBytes(plain: Buffer): Buffer {
@@ -109,11 +155,11 @@ export function unwrapSecretBytes(stored: Buffer): Buffer | null {
 /**
  * Where an ADK version came from. 'minted' is a provisional self-mint —
  * v1 created before this device could rule out other enrolled devices;
- * it is the only source a peer-delivered key may displace. 'wrap' and
- * 'pairing' are account-authoritative deliveries, 'rotation' is this
- * device's own authoritative mint on revoke.
+ * it is the only source a peer-delivered key may displace. 'wrap',
+ * 'pairing', and 'recovery' are account-authoritative deliveries;
+ * 'rotation' is this device's own authoritative mint on revoke.
  */
-export type AccountKeySource = 'minted' | 'wrap' | 'pairing' | 'rotation';
+export type AccountKeySource = 'minted' | 'wrap' | 'pairing' | 'recovery' | 'rotation';
 
 interface KeyringRow {
   key_version: number;
@@ -152,6 +198,361 @@ export function accountKeyFor(scope: SyncScope, version: number): Buffer | null 
 
 export function hasAccountKey(scope: SyncScope): boolean {
   return currentAccountKey(scope) !== null;
+}
+
+export type AccountKeyBundle = RecoveryKeyBundle;
+
+function safeStorageAvailable(): boolean {
+  try {
+    return safeStorage.isEncryptionAvailable();
+  } catch {
+    return false;
+  }
+}
+
+function decodeBundleEntries(
+  bundle: RecoveryKeyBundle,
+): Array<{ keyVersion: number; key: Buffer }> {
+  if (!isRecoveryKeyBundle(bundle) || bundle.keys.length > RECOVERY_BUNDLE_MAX_KEYS) {
+    throw new Error('Malformed account key bundle');
+  }
+  const entries: Array<{ keyVersion: number; key: Buffer }> = [];
+  for (const entry of bundle.keys) {
+    const key = Buffer.from(entry.adk, 'base64');
+    if (
+      key.byteLength !== 32 ||
+      !Number.isSafeInteger(entry.keyVersion) ||
+      entry.keyVersion < 1 ||
+      entry.keyVersion > RECOVERY_BUNDLE_MAX_KEY_VERSION
+    ) {
+      throw new Error('Malformed account key bundle');
+    }
+    entries.push({ keyVersion: entry.keyVersion, key });
+  }
+  return entries;
+}
+
+/** Exports every locally held ADK version, failing closed on a corrupt row. */
+export function exportAccountKeyBundle(scope: SyncScope): AccountKeyBundle | null {
+  const rows = keyringRows(scope);
+  if (rows.length === 0) return null;
+  const keys: AccountKeyBundle['keys'] = [];
+  let previousVersion = 0;
+  for (const row of rows) {
+    if (row.key_version <= previousVersion || row.key_version > RECOVERY_BUNDLE_MAX_KEY_VERSION) {
+      throw new Error('Malformed local account key versions');
+    }
+    const key = unwrapSecretBytes(row.key_wrapped);
+    if (key === null || key.byteLength !== 32) {
+      throw new AccountKeyUnavailableError();
+    }
+    keys.push({ keyVersion: row.key_version, adk: key.toString('base64') });
+    previousVersion = row.key_version;
+  }
+  return { v: 1, keys };
+}
+
+/** True only when the local bundle has exactly the supplied versions and bytes. */
+export function currentAccountKeyBundleMatches(
+  scope: SyncScope,
+  bundle: RecoveryKeyBundle,
+): boolean {
+  if (!isRecoveryKeyBundle(bundle)) return false;
+  const current = exportAccountKeyBundle(scope);
+  if (current === null || current.keys.length !== bundle.keys.length) return false;
+  return current.keys.every(
+    (entry, index) =>
+      entry.keyVersion === bundle.keys[index].keyVersion && entry.adk === bundle.keys[index].adk,
+  );
+}
+
+function assertBundleHasNoConflicts(
+  scope: SyncScope,
+  entries: Array<{ keyVersion: number; key: Buffer }>,
+): void {
+  const db = getDb();
+  for (const entry of entries) {
+    const existing = db
+      .prepare(
+        `SELECT key_wrapped FROM sync_keyring
+         WHERE backend_id = ? AND account_id = ? AND key_version = ?`,
+      )
+      .get(scope.backendId, scope.accountId, entry.keyVersion) as
+      | { key_wrapped: Buffer }
+      | undefined;
+    if (existing === undefined) continue;
+    const existingKey = unwrapSecretBytes(existing.key_wrapped);
+    if (existingKey === null || !existingKey.equals(entry.key)) {
+      throw new AccountKeyBundleConflictError(entry.keyVersion);
+    }
+  }
+}
+
+function insertMissingBundleEntries(
+  scope: SyncScope,
+  entries: Array<{ keyVersion: number; key: Buffer }>,
+  source: AccountKeySource,
+): void {
+  const db = getDb();
+  const insert = db.prepare(
+    `INSERT INTO sync_keyring
+       (backend_id, account_id, key_version, key_wrapped, source, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  );
+  for (const entry of entries) {
+    const existing = db
+      .prepare(
+        `SELECT 1 AS present FROM sync_keyring
+         WHERE backend_id = ? AND account_id = ? AND key_version = ?`,
+      )
+      .get(scope.backendId, scope.accountId, entry.keyVersion);
+    if (existing !== undefined) continue;
+    insert.run(
+      scope.backendId,
+      scope.accountId,
+      entry.keyVersion,
+      wrapSecretBytes(entry.key),
+      source,
+      nowIso(),
+    );
+  }
+}
+
+/**
+ * Imports a complete, validated bundle without replacing any established
+ * contradictory version. The preflight means a conflict leaves every row
+ * untouched, including rows earlier in the bundle.
+ */
+export function importAccountKeyBundle(
+  scope: SyncScope,
+  bundle: RecoveryKeyBundle,
+  source: 'recovery' | 'pairing' | 'wrap' = 'recovery',
+): void {
+  const entries = decodeBundleEntries(bundle);
+  const db = getDb();
+  db.transaction(() => {
+    assertBundleHasNoConflicts(scope, entries);
+    insertMissingBundleEntries(scope, entries, source);
+  })();
+}
+
+function recoverySecretWrapped(secret: Buffer): Buffer {
+  if (secret.byteLength !== 32 || !safeStorageAvailable()) {
+    throw new RecoverySecretUnavailableError();
+  }
+  const encoded = secret.toString('base64');
+  // Use the shared auth custody wrapper, but perform the availability check
+  // above so its legacy plaintext fallback can never be selected here.
+  const wrapped = encryptSecret(encoded);
+  // Guard against a misconfigured test/runtime provider silently returning
+  // the plaintext bytes instead of an OS-wrapped value.
+  if (wrapped.equals(Buffer.from(encoded, 'utf8'))) {
+    throw new RecoverySecretUnavailableError();
+  }
+  return wrapped;
+}
+
+/** Probes authenticated custody before a staged recovery setup is sent away. */
+export function canStoreRecoverySecret(secret: Buffer): boolean {
+  try {
+    const wrapped = recoverySecretWrapped(secret);
+    return safeStorage.decryptString(wrapped) === secret.toString('base64');
+  } catch {
+    return false;
+  }
+}
+
+/** Persists a recovery secret only under authenticated OS storage. */
+export function storeRecoverySecret(scope: SyncScope, recoveryId: string, secret: Buffer): void {
+  if (
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(recoveryId)
+  ) {
+    throw new Error('Recovery id must be a UUID');
+  }
+  const wrapped = recoverySecretWrapped(secret);
+  const now = nowIso();
+  getDb()
+    .prepare(
+      `INSERT INTO sync_recovery_secrets
+       (backend_id, account_id, recovery_id, secret_wrapped, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT (backend_id, account_id)
+       DO UPDATE SET recovery_id = excluded.recovery_id,
+                     secret_wrapped = excluded.secret_wrapped,
+                     invalidated_at = NULL,
+                     updated_at = excluded.updated_at`,
+    )
+    .run(scope.backendId, scope.accountId, recoveryId, wrapped, now, now);
+}
+
+/**
+ * Atomically installs a recovered bundle and replaces retained custody. A
+ * contradictory established version aborts before the secret row changes.
+ */
+export function commitRecoveryBundle(
+  scope: SyncScope,
+  bundle: RecoveryKeyBundle,
+  recoveryId: string,
+  secret: Buffer,
+): void {
+  if (
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(recoveryId)
+  ) {
+    throw new Error('Recovery id must be a UUID');
+  }
+  const entries = decodeBundleEntries(bundle);
+  const wrapped = recoverySecretWrapped(secret);
+  const now = nowIso();
+  const db = getDb();
+  db.transaction(() => {
+    assertBundleHasNoConflicts(scope, entries);
+    insertMissingBundleEntries(scope, entries, 'recovery');
+    db.prepare(
+      `INSERT INTO sync_recovery_secrets
+         (backend_id, account_id, recovery_id, secret_wrapped, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT (backend_id, account_id)
+       DO UPDATE SET recovery_id = excluded.recovery_id,
+                     secret_wrapped = excluded.secret_wrapped,
+                     invalidated_at = NULL,
+                     updated_at = excluded.updated_at`,
+    ).run(scope.backendId, scope.accountId, recoveryId, wrapped, now, now);
+  })();
+}
+
+/** Returns the retained secret for this scope, or null on any custody failure. */
+export function recoverySecretFor(scope: SyncScope, recoveryId?: string): Buffer | null {
+  return retainedRecoverySecret(scope, recoveryId, false);
+}
+
+/** Returns the retained secret only when it is still valid for refresh. */
+export function recoverySecretForRefresh(scope: SyncScope, recoveryId?: string): Buffer | null {
+  return retainedRecoverySecret(scope, recoveryId, true);
+}
+
+function retainedRecoverySecret(
+  scope: SyncScope,
+  recoveryId: string | undefined,
+  forRefresh: boolean,
+): Buffer | null {
+  if (!safeStorageAvailable()) return null;
+  const row = getDb()
+    .prepare(
+      `SELECT recovery_id, secret_wrapped, invalidated_at FROM sync_recovery_secrets
+       WHERE backend_id = ? AND account_id = ?`,
+    )
+    .get(scope.backendId, scope.accountId) as
+    | { recovery_id: string; secret_wrapped: Buffer; invalidated_at: string | null }
+    | undefined;
+  if (row === undefined || (recoveryId !== undefined && row.recovery_id !== recoveryId))
+    return null;
+  if (forRefresh && row.invalidated_at !== null) return null;
+  try {
+    // `decryptSecret` is the shared auth boundary. Compare it with a direct
+    // safeStorage decrypt so its legacy plaintext fallback remains disabled
+    // for this high-value secret.
+    const directDecoded = safeStorage.decryptString(row.secret_wrapped);
+    const decoded = decryptSecret(row.secret_wrapped, 'recovery secret');
+    if (decoded === undefined || decoded !== directDecoded) return null;
+    const secret = Buffer.from(decoded, 'base64');
+    return secret.byteLength === 32 && secret.toString('base64') === decoded ? secret : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Fences the retained code from refreshing envelopes after a revocation. */
+export function invalidateRecoverySecret(scope: SyncScope): void {
+  getDb()
+    .prepare(
+      `UPDATE sync_recovery_secrets
+       SET invalidated_at = COALESCE(invalidated_at, ?), updated_at = ?
+       WHERE backend_id = ? AND account_id = ?`,
+    )
+    .run(nowIso(), nowIso(), scope.backendId, scope.accountId);
+}
+
+/**
+ * Records the backend's durable first-device decision for a keyless account.
+ * The decision is refreshed by security.get; it is never inferred from a
+ * local pull or the absence of cached peer identities.
+ */
+export function setAccountKeyBootstrapEligibility(
+  scope: SyncScope,
+  enrollmentId: string,
+  eligible: boolean,
+): void {
+  if (enrollmentId.length === 0) throw new Error('Enrollment id is required');
+  getDb()
+    .prepare(
+      `INSERT INTO sync_key_bootstrap_eligibility
+         (backend_id, account_id, enrollment_id, eligible, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT (backend_id, account_id, enrollment_id)
+       DO UPDATE SET eligible = excluded.eligible, updated_at = excluded.updated_at`,
+    )
+    .run(scope.backendId, scope.accountId, enrollmentId, eligible ? 1 : 0, nowIso());
+}
+
+/** Returns the last server-authorized bootstrap decision for this enrollment. */
+export function isAccountKeyBootstrapEligible(scope: SyncScope, enrollmentId: string): boolean {
+  const row = getDb()
+    .prepare(
+      `SELECT eligible FROM sync_key_bootstrap_eligibility
+       WHERE backend_id = ? AND account_id = ? AND enrollment_id = ?`,
+    )
+    .get(scope.backendId, scope.accountId, enrollmentId) as { eligible: number } | undefined;
+  return row?.eligible === 1;
+}
+
+export function currentRecoveryId(scope: SyncScope): string | null {
+  const row = getDb()
+    .prepare(
+      `SELECT recovery_id FROM sync_recovery_secrets
+       WHERE backend_id = ? AND account_id = ?`,
+    )
+    .get(scope.backendId, scope.accountId) as { recovery_id: string } | undefined;
+  return row?.recovery_id ?? null;
+}
+
+/** Removes retained recovery material when an account reset explicitly fences it. */
+export function clearRecoverySecret(scope: SyncScope): void {
+  getDb()
+    .prepare(
+      `DELETE FROM sync_recovery_secrets
+       WHERE backend_id = ? AND account_id = ?`,
+    )
+    .run(scope.backendId, scope.accountId);
+}
+
+/**
+ * Removes every local account-scoped crypto artifact during an explicit
+ * account reset. This is one transaction so a reset cannot leave a usable
+ * recovery secret beside an identity, pairing, or ADK row.
+ */
+export function clearAccountCrypto(scope: SyncScope): void {
+  const db = getDb();
+  db.transaction(() => {
+    for (const table of [
+      'sync_keyring',
+      'sync_recovery_secrets',
+      'sync_device_keys',
+      'sync_pairing',
+      'sync_device_trust',
+      'sync_keyring_rotations',
+      'sync_revocation_rotations',
+      'sync_keyring_deliveries',
+      'sync_keyring_pending_wraps',
+      'sync_key_bootstrap_eligibility',
+      'mesh_task_keys',
+      'mesh_dashboard_grants',
+    ]) {
+      db.prepare(`DELETE FROM ${table} WHERE backend_id = ? AND account_id = ?`).run(
+        scope.backendId,
+        scope.accountId,
+      );
+    }
+  })();
 }
 
 /**
@@ -233,6 +634,7 @@ export function canProvisionAccountKey(scope: SyncScope, ownEnrollmentId: string
     | { last_pull_at: string | null }
     | undefined;
   if (pulled?.last_pull_at == null) return false;
+  if (!isAccountKeyBootstrapEligible(scope, ownEnrollmentId)) return false;
   const otherIdentities = listDeviceIdentities(scope).some(
     (device) => device.enrollmentId !== ownEnrollmentId,
   );
@@ -375,10 +777,7 @@ export function publishDeviceIdentity(scope: SyncScope, enrollmentId: string): v
 
 export type DeviceTrustState = 'pending' | 'trusted' | 'revoked';
 
-export function deviceTrustState(
-  scope: SyncScope,
-  enrollmentId: string,
-): DeviceTrustState | null {
+export function deviceTrustState(scope: SyncScope, enrollmentId: string): DeviceTrustState | null {
   const row = getDb()
     .prepare(
       `SELECT state FROM sync_device_trust
@@ -390,19 +789,17 @@ export function deviceTrustState(
 
 /**
  * Sets the trust state for an enrollment. 'revoked' is a floor — it can
- * never transition back to pending/trusted by anything but an explicit
- * new approval decision (callers pass `force` only from user-confirmed
- * approval paths).
+ * never transition back to pending/trusted. A new cryptographic enrollment
+ * gets a new enrollment ID and starts with its own trust decision.
  */
 export function setDeviceTrust(
   scope: SyncScope,
   enrollmentId: string,
   state: DeviceTrustState,
-  opts?: { force?: boolean },
 ): void {
   const db = getDb();
   const existing = deviceTrustState(scope, enrollmentId);
-  if (existing === 'revoked' && state !== 'revoked' && opts?.force !== true) {
+  if (existing === 'revoked' && state !== 'revoked') {
     return; // sticky revocation — re-announcement never reopens delivery
   }
   if (existing === state) return;
@@ -669,6 +1066,185 @@ export function unsealScopedJson(scope: SyncScope, aadContext: string, envelope:
 
 // ---- Per-device ADK wrap --------------------------------------------------------
 
+function staticWrapMacKey(
+  privateRaw: Buffer,
+  peerPubRaw: Buffer,
+  senderPubRaw: Buffer,
+  recipientPubRaw: Buffer,
+): Buffer {
+  const shared = diffieHellman({
+    privateKey: x25519PrivateFromRaw(privateRaw),
+    publicKey: x25519PublicFromRaw(peerPubRaw),
+  });
+  return Buffer.from(
+    hkdfSync(
+      'sha256',
+      shared,
+      Buffer.concat([senderPubRaw, recipientPubRaw]),
+      KEYRING_WRAP_MAC_INFO,
+      32,
+    ),
+  );
+}
+
+function keyringWrapMac(
+  scope: SyncScope,
+  recipientEnrollmentId: string,
+  wrap: KeyringWrapPayload,
+  key: Buffer,
+): string {
+  const message = keyringWrapAuthenticationData({
+    backendId: scope.backendId,
+    accountId: scope.accountId,
+    recipientEnrollmentId,
+    keyVersion: wrap.keyVersion,
+    ephPub: wrap.ephPub,
+    nonce: wrap.nonce,
+    ct: wrap.ct,
+    senderEnrollmentId: wrap.senderEnrollmentId,
+    senderPub: wrap.senderPub,
+  });
+  return createHmac('sha256', key).update(message, 'utf8').digest('base64url');
+}
+
+function pairingReceiptMac(
+  scope: SyncScope,
+  pairingNonce: string,
+  enrollmentId: string,
+  pub: string,
+  proofNonce: string,
+  secret: Buffer,
+): string {
+  const message = pairingReceiptAuthenticationData({
+    backendId: scope.backendId,
+    accountId: scope.accountId,
+    pairingNonce,
+    enrollmentId,
+    pub,
+    proofNonce,
+  });
+  return createHmac('sha256', secret).update(message, 'utf8').digest('base64url');
+}
+
+function macMatches(expected: string, actual: string): boolean {
+  const expectedBytes = strictBase64UrlBytes(expected, 32);
+  const actualBytes = strictBase64UrlBytes(actual, 32);
+  return (
+    expectedBytes !== null &&
+    actualBytes !== null &&
+    expectedBytes.byteLength === actualBytes.byteLength &&
+    timingSafeEqual(expectedBytes, actualBytes)
+  );
+}
+
+function keyringWrapPayloadHash(wrap: KeyringWrapPayload): string {
+  return createHash('sha256').update(canonicalJson(wrap), 'utf8').digest('hex');
+}
+
+/**
+ * Keep authenticated wraps whose sender still needs local SAS approval. The
+ * cache contains only the sealed wire payload; plaintext key material is
+ * never written here. Bounds are deliberate because a server can replay or
+ * fan out crypto-boundary entities indefinitely.
+ */
+function cachePendingKeyringWrap(
+  scope: SyncScope,
+  recipientEnrollmentId: string,
+  wrap: KeyringWrapPayload,
+): void {
+  const payloadJson = canonicalJson(wrap);
+  if (Buffer.byteLength(payloadJson, 'utf8') > MAX_PENDING_KEYRING_WRAP_BYTES) return;
+  const db = getDb();
+  const count = db
+    .prepare(
+      `SELECT COUNT(*) AS count FROM sync_keyring_pending_wraps
+       WHERE backend_id = ? AND account_id = ? AND recipient_enrollment_id = ?`,
+    )
+    .get(scope.backendId, scope.accountId, recipientEnrollmentId) as { count: number };
+  if (count.count >= MAX_PENDING_KEYRING_WRAPS) return;
+  db.prepare(
+    `INSERT OR IGNORE INTO sync_keyring_pending_wraps
+       (backend_id, account_id, recipient_enrollment_id, sender_enrollment_id,
+        payload_hash, payload_json, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    scope.backendId,
+    scope.accountId,
+    recipientEnrollmentId,
+    wrap.senderEnrollmentId,
+    keyringWrapPayloadHash(wrap),
+    payloadJson,
+    nowIso(),
+  );
+}
+
+function deletePendingKeyringWrap(
+  scope: SyncScope,
+  recipientEnrollmentId: string,
+  wrap: KeyringWrapPayload,
+): void {
+  getDb()
+    .prepare(
+      `DELETE FROM sync_keyring_pending_wraps
+       WHERE backend_id = ? AND account_id = ? AND recipient_enrollment_id = ?
+         AND payload_hash = ?`,
+    )
+    .run(scope.backendId, scope.accountId, recipientEnrollmentId, keyringWrapPayloadHash(wrap));
+}
+
+function authenticatedWrapMac(
+  scope: SyncScope,
+  recipientEnrollmentId: string,
+  wrap: KeyringWrapPayload,
+): boolean {
+  const senderPubRaw = strictBase64Bytes(wrap.senderPub, 32);
+  const recipientPubRaw = ownPubRaw(scope, recipientEnrollmentId);
+  const recipientPrivateRaw = ownDevicePrivateKey(scope, recipientEnrollmentId);
+  if (senderPubRaw === null || recipientPubRaw === null || recipientPrivateRaw === null) {
+    return false;
+  }
+  let expected: string;
+  try {
+    const key = staticWrapMacKey(recipientPrivateRaw, senderPubRaw, senderPubRaw, recipientPubRaw);
+    expected = keyringWrapMac(scope, recipientEnrollmentId, wrap, key);
+  } catch {
+    return false;
+  }
+  return macMatches(expected, wrap.senderMac);
+}
+
+/**
+ * An authenticated pairing blob is the one exception to the normal
+ * pending->trusted path: the out-of-band secret proves the issuer identity.
+ * Pin that identity before any later wrap can be accepted from it.
+ */
+function pinAuthenticatedIssuer(scope: SyncScope, enrollmentId: string, pub: string): boolean {
+  if (enrollmentId.length === 0 || strictBase64Bytes(pub, 32) === null) return false;
+  const db = getDb();
+  const existing = db
+    .prepare(
+      `SELECT identity_pub FROM sync_device_keys
+       WHERE backend_id = ? AND account_id = ? AND enrollment_id = ?`,
+    )
+    .get(scope.backendId, scope.accountId, enrollmentId) as { identity_pub: string } | undefined;
+  if (existing !== undefined && existing.identity_pub !== pub) return false;
+  if (deviceTrustState(scope, enrollmentId) === 'revoked') return false;
+  if (existing === undefined) {
+    db.prepare(
+      `INSERT INTO sync_device_keys
+         (backend_id, account_id, enrollment_id, identity_pub, identity_priv_wrapped, seen_at)
+       VALUES (?, ?, ?, ?, NULL, ?)`,
+    ).run(scope.backendId, scope.accountId, enrollmentId, pub, nowIso());
+  } else {
+    db.prepare(
+      `UPDATE sync_device_keys SET seen_at = ?
+       WHERE backend_id = ? AND account_id = ? AND enrollment_id = ?`,
+    ).run(nowIso(), scope.backendId, scope.accountId, enrollmentId);
+  }
+  setDeviceTrust(scope, enrollmentId, 'trusted');
+  return deviceTrustState(scope, enrollmentId) === 'trusted';
+}
+
 function wrapKeyMaterial(
   recipientPubRaw: Buffer,
   adk: Buffer,
@@ -725,24 +1301,24 @@ function unwrapKeyMaterial(
   wrap: { ephPub: string; nonce: string; ct: string },
   aad: string,
 ): Buffer | null {
-  const privRaw = ownDevicePrivateKey(scope, enrollmentId);
-  const pubRaw = ownPubRaw(scope, enrollmentId);
-  if (privRaw === null || pubRaw === null) return null;
-  const ephPubRaw = Buffer.from(wrap.ephPub, 'base64');
-  const shared = diffieHellman({
-    privateKey: x25519PrivateFromRaw(privRaw),
-    publicKey: x25519PublicFromRaw(ephPubRaw),
-  });
-  const wrapKey = Buffer.from(
-    hkdfSync(
-      'sha256',
-      shared,
-      Buffer.concat([ephPubRaw, pubRaw]),
-      Buffer.from('anvil/keyring-wrap/v1', 'utf8'),
-      32,
-    ),
-  );
   try {
+    const privRaw = ownDevicePrivateKey(scope, enrollmentId);
+    const pubRaw = ownPubRaw(scope, enrollmentId);
+    const ephPubRaw = strictBase64Bytes(wrap.ephPub, 32);
+    if (privRaw === null || pubRaw === null || ephPubRaw === null) return null;
+    const shared = diffieHellman({
+      privateKey: x25519PrivateFromRaw(privRaw),
+      publicKey: x25519PublicFromRaw(ephPubRaw),
+    });
+    const wrapKey = Buffer.from(
+      hkdfSync(
+        'sha256',
+        shared,
+        Buffer.concat([ephPubRaw, pubRaw]),
+        Buffer.from('anvil/keyring-wrap/v1', 'utf8'),
+        32,
+      ),
+    );
     return gcmOpen(wrapKey, aad, wrap.nonce, wrap.ct);
   } catch {
     return null;
@@ -775,9 +1351,7 @@ function markDelivery(scope: SyncScope, enrollmentId: string, keyVersion: number
  * full history so a device that was offline through rotations recovers on
  * the same path as first delivery.
  */
-function accountKeyBundle(
-  scope: SyncScope,
-): Array<{ keyVersion: number; adk: string }> | null {
+function accountKeyBundle(scope: SyncScope): Array<{ keyVersion: number; adk: string }> | null {
   const rows = keyringRows(scope);
   if (rows.length === 0) return null;
   const bundle: Array<{ keyVersion: number; adk: string }> = [];
@@ -807,12 +1381,21 @@ export function wrapAccountKeyFor(
   if (bundle === null) throw new AccountKeyUnavailableError();
   const maxVersion = bundle[bundle.length - 1].keyVersion;
   const issuerEnrollmentId = getActiveEnrollmentId(scope);
+  if (issuerEnrollmentId === null || deviceTrustState(scope, issuerEnrollmentId) === 'revoked') {
+    return;
+  }
+  const issuerPub = ensureDeviceIdentity(scope, issuerEnrollmentId).pub;
+  const issuerPubRaw = strictBase64Bytes(issuerPub, 32);
+  const recipientPubRaw = strictBase64Bytes(recipientPubB64, 32);
+  const issuerPrivateRaw = ownDevicePrivateKey(scope, issuerEnrollmentId);
+  if (issuerPubRaw === null || recipientPubRaw === null || issuerPrivateRaw === null) {
+    throw new AccountKeyUnavailableError();
+  }
   const inner: KeyringWrapInner = {
     v: 1,
     keys: bundle,
-    ...(issuerEnrollmentId !== null
-      ? { issuerPub: ensureDeviceIdentity(scope, issuerEnrollmentId).pub }
-      : {}),
+    issuerEnrollmentId,
+    issuerPub,
   };
   const aad = keyringWrapAssociatedData({
     backendId: scope.backendId,
@@ -832,7 +1415,12 @@ export function wrapAccountKeyFor(
     ephPub: sealed.ephPub,
     nonce: sealed.nonce,
     ct: sealed.ct,
+    senderEnrollmentId: issuerEnrollmentId,
+    senderPub: issuerPub,
+    senderMac: '',
   };
+  const macKey = staticWrapMacKey(issuerPrivateRaw, recipientPubRaw, issuerPubRaw, recipientPubRaw);
+  payload.senderMac = keyringWrapMac(scope, targetEnrollmentId, payload, macKey);
   recordLocalChange(scope, {
     entityType: CRYPTO_ENTITY_KEYRING_WRAP,
     entityId: targetEnrollmentId,
@@ -962,6 +1550,7 @@ export function mintPairingPayload(
   const inner: PairingKeyringInner = {
     v: 1,
     keys: bundle,
+    issuerEnrollmentId,
     issuerPub,
     proofNonce,
   };
@@ -1046,7 +1635,8 @@ function pairingSecretFor(scope: SyncScope, nonce: string): Buffer | null {
  * Records a keyring-rotation entity into the local rotation ledger.
  * Rotations minted locally carry `reported_at` NULL until `keyring.report`
  * confirms; remote rotations are evidence for concurrent-rotation
- * resolution and revocation bookkeeping.
+ * resolution and revocation bookkeeping. Any revocation fences the retained
+ * recovery root from refreshing until an explicit replacement is accepted.
  */
 function recordRotation(
   scope: SyncScope,
@@ -1056,8 +1646,8 @@ function recordRotation(
   getDb()
     .prepare(
       `INSERT OR IGNORE INTO sync_keyring_rotations
-         (backend_id, account_id, rotation_id, rotor_enrollment_id, from_version, to_version, revoked_json, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+         (backend_id, account_id, rotation_id, rotor_enrollment_id, from_version, to_version, revoked_json, local_origin, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       scope.backendId,
@@ -1067,12 +1657,14 @@ function recordRotation(
       record.fromVersion,
       record.toVersion,
       JSON.stringify(record.revokedEnrollmentIds),
+      opts?.local === true ? 1 : 0,
       nowIso(),
     );
   if (opts?.local === true) return;
   for (const enrollmentId of record.revokedEnrollmentIds) {
     setDeviceTrust(scope, enrollmentId, 'revoked');
   }
+  if (record.revokedEnrollmentIds.length > 0) invalidateRecoverySecret(scope);
 }
 
 /**
@@ -1245,7 +1837,9 @@ function installDeliveredKey(scope: SyncScope, version: number, key: Buffer): vo
   if (existing.source !== 'rotation') return; // delivered keys never displace
   const rotations = rotationsForVersion(scope, version);
   if (rotations.length < 2) return; // no concurrent rotation — refuse to displace
-  const ownRotation = rotations.find((r) => r.rotor_enrollment_id !== '' && isOwnRotation(scope, r));
+  const ownRotation = rotations.find(
+    (r) => r.rotor_enrollment_id !== '' && isOwnRotation(scope, r),
+  );
   const winner = rotations[0];
   if (ownRotation === undefined || winner.rotation_id === ownRotation.rotation_id) {
     return; // ours won or we can't attribute — keep the local key
@@ -1261,10 +1855,7 @@ function installDeliveredKey(scope: SyncScope, version: number, key: Buffer): vo
   ).run(wrapSecretBytes(key), scope.backendId, scope.accountId, version);
 }
 
-function isOwnRotation(
-  scope: SyncScope,
-  rotation: { rotor_enrollment_id: string },
-): boolean {
+function isOwnRotation(scope: SyncScope, rotation: { rotor_enrollment_id: string }): boolean {
   const own = getActiveEnrollmentId(scope);
   return own !== null && rotation.rotor_enrollment_id === own;
 }
@@ -1287,18 +1878,36 @@ export function handleCryptoBoundaryEntity(
       if (
         record.v !== 1 ||
         typeof record.pub !== 'string' ||
-        typeof record.enrollmentId !== 'string'
+        typeof record.enrollmentId !== 'string' ||
+        record.enrollmentId !== entityId ||
+        strictBase64Bytes(record.pub, 32) === null
       ) {
         return true;
       }
       const db = getDb();
-      db.prepare(
-        `INSERT INTO sync_device_keys
-           (backend_id, account_id, enrollment_id, identity_pub, identity_priv_wrapped, seen_at)
-         VALUES (?, ?, ?, ?, NULL, ?)
-         ON CONFLICT (backend_id, account_id, enrollment_id)
-         DO UPDATE SET identity_pub = excluded.identity_pub, seen_at = excluded.seen_at`,
-      ).run(scope.backendId, scope.accountId, record.enrollmentId, record.pub, nowIso());
+      const existing = db
+        .prepare(
+          `SELECT identity_pub FROM sync_device_keys
+           WHERE backend_id = ? AND account_id = ? AND enrollment_id = ?`,
+        )
+        .get(scope.backendId, scope.accountId, record.enrollmentId) as
+        | { identity_pub: string }
+        | undefined;
+      // An enrollment identity is pinned on first observation. A changed key
+      // is a new enrollment, even if the old enrollment is pending or revoked.
+      if (existing !== undefined && existing.identity_pub !== record.pub) return true;
+      if (existing === undefined) {
+        db.prepare(
+          `INSERT INTO sync_device_keys
+             (backend_id, account_id, enrollment_id, identity_pub, identity_priv_wrapped, seen_at)
+           VALUES (?, ?, ?, ?, NULL, ?)`,
+        ).run(scope.backendId, scope.accountId, record.enrollmentId, record.pub, nowIso());
+      } else {
+        db.prepare(
+          `UPDATE sync_device_keys SET seen_at = ?
+           WHERE backend_id = ? AND account_id = ? AND enrollment_id = ?`,
+        ).run(nowIso(), scope.backendId, scope.accountId, record.enrollmentId);
+      }
       // Enrollment is authentication only — the new device arrives
       // 'pending' (or keeps its existing state; revoked is sticky).
       db.prepare(
@@ -1318,14 +1927,49 @@ export function handleCryptoBoundaryEntity(
     }
     case CRYPTO_ENTITY_KEYRING_WRAP: {
       if (entityId !== ownEnrollmentId) return true;
+      if (deviceTrustState(scope, ownEnrollmentId) === 'revoked') return true;
       if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return true;
       const wrap = payload as KeyringWrapPayload;
       if (
         wrap.v !== 1 ||
         wrap.enc !== 'x25519-aes-256-gcm' ||
         !Number.isInteger(wrap.keyVersion) ||
-        wrap.keyVersion < 1
+        wrap.keyVersion < 1 ||
+        wrap.keyVersion > RECOVERY_BUNDLE_MAX_KEY_VERSION ||
+        typeof wrap.ephPub !== 'string' ||
+        strictBase64Bytes(wrap.ephPub, 32) === null ||
+        typeof wrap.nonce !== 'string' ||
+        strictBase64Bytes(wrap.nonce, 12) === null ||
+        typeof wrap.ct !== 'string' ||
+        typeof wrap.senderEnrollmentId !== 'string' ||
+        wrap.senderEnrollmentId.length === 0 ||
+        typeof wrap.senderPub !== 'string' ||
+        strictBase64Bytes(wrap.senderPub, 32) === null ||
+        typeof wrap.senderMac !== 'string' ||
+        strictBase64UrlBytes(wrap.senderMac, 32) === null
       ) {
+        return true;
+      }
+      // The static sender MAC authenticates the complete public envelope and
+      // proves possession of the sender's pinned X25519 private key. A
+      // malformed or unsigned legacy wrap is never opened or cached.
+      if (!authenticatedWrapMac(scope, ownEnrollmentId, wrap)) return true;
+      const sender = getDb()
+        .prepare(
+          `SELECT identity_pub FROM sync_device_keys
+           WHERE backend_id = ? AND account_id = ? AND enrollment_id = ?`,
+        )
+        .get(scope.backendId, scope.accountId, wrap.senderEnrollmentId) as
+        | { identity_pub: string }
+        | undefined;
+      if (sender !== undefined && sender.identity_pub !== wrap.senderPub) return true;
+      const senderTrust = deviceTrustState(scope, wrap.senderEnrollmentId);
+      // Backend enrollment/status is not an authorization signal. Until the
+      // local SAS flow pins and trusts this exact identity, retain only the
+      // authenticated ciphertext for retry.
+      if (sender === undefined || senderTrust !== 'trusted') {
+        if (senderTrust === 'revoked') deletePendingKeyringWrap(scope, ownEnrollmentId, wrap);
+        else cachePendingKeyringWrap(scope, ownEnrollmentId, wrap);
         return true;
       }
       const aad = keyringWrapAssociatedData({
@@ -1336,29 +1980,46 @@ export function handleCryptoBoundaryEntity(
       });
       const plaintext = unwrapKeyMaterial(scope, ownEnrollmentId, wrap, aad);
       if (plaintext === null) return true;
-      // Bundle form (KeyringWrapInner JSON) or legacy single-key bytes.
+      // Only the authenticated, bounded bundle form is accepted. The old
+      // bare 32-byte form had no issuer identity or replay binding and is
+      // intentionally rejected.
       let installed = false;
       let inner: KeyringWrapInner | null = null;
       try {
         const parsed = JSON.parse(plaintext.toString('utf8')) as KeyringWrapInner;
-        if (parsed.v === 1 && Array.isArray(parsed.keys)) inner = parsed;
+        if (
+          parsed.v === 1 &&
+          Array.isArray(parsed.keys) &&
+          parsed.keys.length > 0 &&
+          parsed.keys.length <= RECOVERY_BUNDLE_MAX_KEYS &&
+          parsed.issuerEnrollmentId === wrap.senderEnrollmentId &&
+          parsed.issuerPub === wrap.senderPub
+        ) {
+          inner = parsed;
+        }
       } catch {
         inner = null;
       }
       if (inner !== null) {
         for (const entry of inner.keys) {
-          if (!Number.isInteger(entry.keyVersion) || entry.keyVersion < 1) continue;
-          if (typeof entry.adk !== 'string') continue;
-          const key = Buffer.from(entry.adk, 'base64');
-          if (key.byteLength !== 32) continue;
+          if (
+            entry === null ||
+            typeof entry !== 'object' ||
+            !Number.isInteger(entry.keyVersion) ||
+            entry.keyVersion < 1 ||
+            entry.keyVersion > RECOVERY_BUNDLE_MAX_KEY_VERSION ||
+            typeof entry.adk !== 'string'
+          ) {
+            continue;
+          }
+          const key = strictBase64Bytes(entry.adk, 32);
+          if (key === null) continue;
           installDeliveredKey(scope, entry.keyVersion, key);
           installed = true;
         }
-      } else if (plaintext.byteLength === 32) {
-        installDeliveredKey(scope, wrap.keyVersion, plaintext);
-        installed = true;
       }
       if (installed) {
+        deletePendingKeyringWrap(scope, ownEnrollmentId, wrap);
         retryQuarantinedEntities(scope);
         // The wrap has done its job; queue its removal from the account.
         recordLocalChange(scope, {
@@ -1371,6 +2032,7 @@ export function handleCryptoBoundaryEntity(
       return true;
     }
     case CRYPTO_ENTITY_KEYRING_PAIRING: {
+      if (deviceTrustState(scope, ownEnrollmentId) === 'revoked') return true;
       if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return true;
       const secret = pairingSecretFor(scope, entityId);
       if (secret === null) return true;
@@ -1389,7 +2051,22 @@ export function handleCryptoBoundaryEntity(
         // Tampered blob or wrong secret: leave the entity, do not retry.
         return true;
       }
-      if (inner.v !== 1) return true;
+      if (
+        inner.v !== 1 ||
+        typeof inner.issuerEnrollmentId !== 'string' ||
+        inner.issuerEnrollmentId.length === 0 ||
+        typeof inner.issuerPub !== 'string' ||
+        strictBase64Bytes(inner.issuerPub, 32) === null ||
+        typeof inner.proofNonce !== 'string' ||
+        inner.proofNonce.length === 0
+      ) {
+        return true;
+      }
+      // Pairing-secret authentication is what establishes the issuer's
+      // identity. Pin it before installing or trusting any future wrap.
+      if (!pinAuthenticatedIssuer(scope, inner.issuerEnrollmentId, inner.issuerPub)) {
+        return true;
+      }
       // v2 bundle or v1 single key.
       const entries: Array<{ keyVersion: number; adk: string }> =
         Array.isArray(inner.keys) && inner.keys.length > 0
@@ -1399,8 +2076,18 @@ export function handleCryptoBoundaryEntity(
             : [];
       let installed = false;
       for (const entry of entries) {
-        const key = Buffer.from(entry.adk, 'base64');
-        if (key.byteLength !== 32) continue;
+        if (
+          entry === null ||
+          typeof entry !== 'object' ||
+          !Number.isInteger(entry.keyVersion) ||
+          entry.keyVersion < 1 ||
+          entry.keyVersion > RECOVERY_BUNDLE_MAX_KEY_VERSION ||
+          typeof entry.adk !== 'string'
+        ) {
+          continue;
+        }
+        const key = strictBase64Bytes(entry.adk, 32);
+        if (key === null) continue;
         installDeliveredKey(scope, entry.keyVersion, key);
         installed = true;
       }
@@ -1416,6 +2103,14 @@ export function handleCryptoBoundaryEntity(
             enrollmentId: ownEnrollmentId,
             pub: ownPub.toString('base64'),
             proofNonce: inner.proofNonce,
+            mac: pairingReceiptMac(
+              scope,
+              entityId,
+              ownEnrollmentId,
+              ownPub.toString('base64'),
+              inner.proofNonce,
+              secret,
+            ),
           };
           recordLocalChange(scope, {
             entityType: CRYPTO_ENTITY_KEYRING_PAIRED,
@@ -1445,7 +2140,11 @@ export function handleCryptoBoundaryEntity(
         typeof record.enrollmentId !== 'string' ||
         typeof record.pub !== 'string' ||
         typeof record.proofNonce !== 'string' ||
-        record.enrollmentId !== entityId
+        typeof record.mac !== 'string' ||
+        record.enrollmentId !== entityId ||
+        strictBase64Bytes(record.pub, 32) === null ||
+        strictBase64UrlBytes(record.mac, 32) === null ||
+        record.proofNonce.length === 0
       ) {
         return true;
       }
@@ -1453,24 +2152,51 @@ export function handleCryptoBoundaryEntity(
       // pairing blob — the redeemer proves receipt of the secret.
       const pending = getDb()
         .prepare(
-          `SELECT nonce FROM sync_pairing
+          `SELECT nonce, secret_wrapped FROM sync_pairing
            WHERE backend_id = ? AND account_id = ? AND role = 'issuer' AND proof_nonce = ?`,
         )
         .get(scope.backendId, scope.accountId, record.proofNonce) as
-        | { nonce: string }
+        | { nonce: string; secret_wrapped: Buffer }
         | undefined;
       if (pending === undefined) return true;
+      const secret = unwrapSecretBytes(pending.secret_wrapped);
+      if (secret === null || secret.byteLength !== 32) return true;
+      const expectedMac = pairingReceiptMac(
+        scope,
+        pending.nonce,
+        record.enrollmentId,
+        record.pub,
+        record.proofNonce,
+        secret,
+      );
+      if (!macMatches(expectedMac, record.mac)) return true;
+      const existing = getDb()
+        .prepare(
+          `SELECT identity_pub FROM sync_device_keys
+           WHERE backend_id = ? AND account_id = ? AND enrollment_id = ?`,
+        )
+        .get(scope.backendId, scope.accountId, record.enrollmentId) as
+        | { identity_pub: string }
+        | undefined;
+      if (existing !== undefined && existing.identity_pub !== record.pub) return true;
       // Register the announced identity and promote to trusted — the
       // pairing blob already delivered the key bundle.
-      getDb()
-        .prepare(
-          `INSERT INTO sync_device_keys
-             (backend_id, account_id, enrollment_id, identity_pub, identity_priv_wrapped, seen_at)
-           VALUES (?, ?, ?, ?, NULL, ?)
-           ON CONFLICT (backend_id, account_id, enrollment_id)
-           DO UPDATE SET identity_pub = excluded.identity_pub, seen_at = excluded.seen_at`,
-        )
-        .run(scope.backendId, scope.accountId, record.enrollmentId, record.pub, nowIso());
+      if (existing === undefined) {
+        getDb()
+          .prepare(
+            `INSERT INTO sync_device_keys
+               (backend_id, account_id, enrollment_id, identity_pub, identity_priv_wrapped, seen_at)
+             VALUES (?, ?, ?, ?, NULL, ?)`,
+          )
+          .run(scope.backendId, scope.accountId, record.enrollmentId, record.pub, nowIso());
+      } else {
+        getDb()
+          .prepare(
+            `UPDATE sync_device_keys SET seen_at = ?
+             WHERE backend_id = ? AND account_id = ? AND enrollment_id = ?`,
+          )
+          .run(nowIso(), scope.backendId, scope.accountId, record.enrollmentId);
+      }
       setDeviceTrust(scope, record.enrollmentId, 'trusted');
       getDb()
         .prepare(`DELETE FROM sync_pairing WHERE backend_id = ? AND account_id = ? AND nonce = ?`)
@@ -1495,6 +2221,59 @@ export function handleCryptoBoundaryEntity(
     }
     default:
       return false;
+  }
+}
+
+/**
+ * Re-processes authenticated wraps retained while the local SAS flow was
+ * pending. Runtime calls this only after it has pinned and trusted the sender
+ * identity locally; the handler still repeats every cryptographic check.
+ */
+export function retryPendingKeyringWraps(scope: SyncScope): void {
+  const recipientEnrollmentId = getActiveEnrollmentId(scope);
+  if (recipientEnrollmentId === null) return;
+  const rows = getDb()
+    .prepare(
+      `SELECT payload_hash, payload_json FROM sync_keyring_pending_wraps
+       WHERE backend_id = ? AND account_id = ? AND recipient_enrollment_id = ?
+       ORDER BY created_at ASC`,
+    )
+    .all(scope.backendId, scope.accountId, recipientEnrollmentId) as Array<{
+    payload_hash: string;
+    payload_json: string;
+  }>;
+  for (const row of rows) {
+    let payload: unknown;
+    try {
+      payload = JSON.parse(row.payload_json) as unknown;
+    } catch {
+      getDb()
+        .prepare(
+          `DELETE FROM sync_keyring_pending_wraps
+           WHERE backend_id = ? AND account_id = ? AND recipient_enrollment_id = ?
+             AND payload_hash = ?`,
+        )
+        .run(scope.backendId, scope.accountId, recipientEnrollmentId, row.payload_hash);
+      continue;
+    }
+    if (
+      handleCryptoBoundaryEntity(
+        scope,
+        recipientEnrollmentId,
+        CRYPTO_ENTITY_KEYRING_WRAP,
+        recipientEnrollmentId,
+        payload,
+      ) &&
+      (payload === null || typeof payload !== 'object' || Array.isArray(payload))
+    ) {
+      getDb()
+        .prepare(
+          `DELETE FROM sync_keyring_pending_wraps
+           WHERE backend_id = ? AND account_id = ? AND recipient_enrollment_id = ?
+             AND payload_hash = ?`,
+        )
+        .run(scope.backendId, scope.accountId, recipientEnrollmentId, row.payload_hash);
+    }
   }
 }
 
@@ -1555,6 +2334,22 @@ export function retryQuarantinedEntities(scope: SyncScope): void {
 // ---- Rotation on revoke ---------------------------------------------------------
 
 /**
+ * Returns revoked enrollments that this device has not durably rotated yet.
+ * This consults only the local completion fence; pulled rotation entities are
+ * deliberately not treated as proof that this device minted its new ADK.
+ */
+export function revocationsNeedingRotation(scope: SyncScope, enrollmentIds: string[]): string[] {
+  const unique = [...new Set(enrollmentIds.filter((id) => id.length > 0))];
+  const query = getDb().prepare(
+    `SELECT 1 AS present FROM sync_revocation_rotations
+     WHERE backend_id = ? AND account_id = ? AND enrollment_id = ?`,
+  );
+  return unique.filter(
+    (enrollmentId) => query.get(scope.backendId, scope.accountId, enrollmentId) === undefined,
+  );
+}
+
+/**
  * Mints ADK v(N+1), publishes a `keyring-rotation` entity (durable
  * evidence of the revoked set and the concurrent-rotation tiebreak), and
  * queues a full-bundle wrap to every TRUSTED device except the revoked
@@ -1572,10 +2367,10 @@ export function rotateAccountKey(scope: SyncScope, revokedEnrollmentIds: string[
   const fromVersion = current?.version ?? 0;
   const nextVersion = fromVersion + 1;
   const own = getActiveEnrollmentId(scope);
-  for (const enrollmentId of revokedEnrollmentIds) {
-    setDeviceTrust(scope, enrollmentId, 'revoked');
-  }
-  installAccountKey(scope, nextVersion, randomBytes(32), 'rotation');
+  // A revoked device can retain its old recovery signer only for an explicit
+  // replacement request. Fence refresh before minting the post-revocation ADK
+  // so no concurrent refresh can publish those new keys under the old code.
+  if (revokedEnrollmentIds.length > 0) invalidateRecoverySecret(scope);
   const rotation: KeyringRotationPayload = {
     v: 1,
     rotationId: randomUUID(),
@@ -1586,6 +2381,19 @@ export function rotateAccountKey(scope: SyncScope, revokedEnrollmentIds: string[
     rotatedAt: nowIso(),
   };
   const run = db.transaction(() => {
+    for (const enrollmentId of revokedEnrollmentIds) {
+      setDeviceTrust(scope, enrollmentId, 'revoked');
+    }
+    installAccountKey(scope, nextVersion, randomBytes(32), 'rotation');
+    const completedAt = nowIso();
+    for (const enrollmentId of revokedEnrollmentIds) {
+      if (enrollmentId.length === 0) continue;
+      db.prepare(
+        `INSERT OR IGNORE INTO sync_revocation_rotations
+           (backend_id, account_id, enrollment_id, rotated_at)
+         VALUES (?, ?, ?, ?)`,
+      ).run(scope.backendId, scope.accountId, enrollmentId, completedAt);
+    }
     recordLocalChange(scope, {
       entityType: CRYPTO_ENTITY_KEYRING_ROTATION,
       entityId: rotation.rotationId,
@@ -1749,11 +2557,7 @@ export function sealTaskInputs(
     accountId: scope.accountId,
     requestId,
   });
-  const { nonce, ct } = gcmSeal(
-    taskKey,
-    aad,
-    Buffer.from(canonicalJson(inputs), 'utf8'),
-  );
+  const { nonce, ct } = gcmSeal(taskKey, aad, Buffer.from(canonicalJson(inputs), 'utf8'));
   return { enc: SEALED_ENTITY_ALG, nonce, ct };
 }
 

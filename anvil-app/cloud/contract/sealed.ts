@@ -17,6 +17,8 @@
 //   share links: AES-256-GCM under a per-share random key carried in the
 //     URL fragment (never sent to the server).
 
+import { canonicalizeJson } from './sync';
+
 export const SEALED_ENTITY_ALG = 'aes-256-gcm';
 export const SEALED_NONCE_BYTES = 12;
 export const SEALED_KEY_BYTES = 32;
@@ -116,21 +118,28 @@ export interface KeyringWrapPayload {
   ephPub: string;
   /** base64 12-byte GCM nonce. */
   nonce: string;
-  /** base64 sealed KeyringWrapInner JSON (or a bare 32-byte ADK on v1 writers). */
+  /** base64 sealed KeyringWrapInner JSON. */
   ct: string;
+  /** Sender enrollment and pinned X25519 identity. */
+  senderEnrollmentId: string;
+  senderPub: string;
+  /** base64url HMAC-SHA256 over the exact envelope and account scope. */
+  senderMac: string;
 }
 
 /**
  * Plaintext sealed inside a keyring-wrap: the full ADK version bundle the
  * sender holds. Delivering every held version makes missed-rotation
- * recovery the same path as first delivery. v1 writers sealed the bare
- * 32-byte ADK instead of JSON — readers accept both.
+ * recovery the same path as first delivery. The issuer identity is repeated
+ * inside the seal so the recipient can compare it with the authenticated
+ * public envelope after decryption.
  */
 export interface KeyringWrapInner {
   v: 1;
   keys: Array<{ keyVersion: number; /** base64 ADK bytes. */ adk: string }>;
-  /** Issuing device's X25519 public key, for SAS verification. */
-  issuerPub?: string;
+  /** Issuing device's enrollment and X25519 public key, for SAS verification. */
+  issuerEnrollmentId: string;
+  issuerPub: string;
 }
 
 /**
@@ -150,8 +159,9 @@ export interface PairingKeyringPayload {
  * Plaintext carried inside a pairing keyring blob. v1 carries a single
  * `{keyVersion, adk}`; v2 writers also carry `keys` (the full bundle) and
  * `proofNonce` — a fresh random value the redeemer echoes in its
- * keyring-paired entity so the issuer can promote the new enrollment to
- * trusted membership. Readers accept either shape.
+ * authenticated keyring-paired entity so the issuer can promote the new
+ * enrollment to trusted membership. The issuer identity is authenticated by
+ * the pairing secret and pinned by the recipient.
  */
 export interface PairingKeyringInner {
   v: 1;
@@ -160,10 +170,11 @@ export interface PairingKeyringInner {
   adk?: string;
   /** Full ADK version bundle (v2). */
   keys?: Array<{ keyVersion: number; /** base64 ADK bytes. */ adk: string }>;
-  /** Issuing device's X25519 public key, for SAS verification. */
+  /** Issuing device's enrollment and X25519 public key, for SAS verification. */
+  issuerEnrollmentId: string;
   issuerPub: string;
   /** Random redemption proof the new device echoes in `keyring-paired`. */
-  proofNonce?: string;
+  proofNonce: string;
 }
 
 /**
@@ -179,6 +190,8 @@ export interface KeyringPairedPayload {
   pub: string;
   /** Echo of `PairingKeyringInner.proofNonce`. */
   proofNonce: string;
+  /** base64url HMAC-SHA256 under the out-of-band pairing secret. */
+  mac: string;
 }
 
 /**
@@ -523,6 +536,58 @@ export function keyringWrapAssociatedData(input: {
   ].join('|');
 }
 
+/** Canonical input authenticated by a sender's static X25519 MAC key. */
+export function keyringWrapAuthenticationData(input: {
+  backendId: string;
+  accountId: string;
+  recipientEnrollmentId: string;
+  keyVersion: number;
+  ephPub: string;
+  nonce: string;
+  ct: string;
+  senderEnrollmentId: string;
+  senderPub: string;
+}): string {
+  return [
+    'anvil/keyring-wrap-auth/v1',
+    canonicalizeJson({
+      v: 1,
+      enc: 'x25519-aes-256-gcm',
+      backendId: input.backendId,
+      accountId: input.accountId,
+      recipientEnrollmentId: input.recipientEnrollmentId,
+      keyVersion: input.keyVersion,
+      ephPub: input.ephPub,
+      nonce: input.nonce,
+      ct: input.ct,
+      senderEnrollmentId: input.senderEnrollmentId,
+      senderPub: input.senderPub,
+    }),
+  ].join('|');
+}
+
+/** Canonical input authenticated by the out-of-band pairing secret. */
+export function pairingReceiptAuthenticationData(input: {
+  backendId: string;
+  accountId: string;
+  pairingNonce: string;
+  enrollmentId: string;
+  pub: string;
+  proofNonce: string;
+}): string {
+  return [
+    'anvil/keyring-paired-auth/v1',
+    canonicalizeJson({
+      backendId: input.backendId,
+      accountId: input.accountId,
+      pairingNonce: input.pairingNonce,
+      enrollmentId: input.enrollmentId,
+      pub: input.pub,
+      proofNonce: input.proofNonce,
+    }),
+  ].join('|');
+}
+
 export function pairingSealAssociatedData(input: { pairingNonce: string }): string {
   return `anvil/pairing-seal/v1|${input.pairingNonce}`;
 }
@@ -600,12 +665,7 @@ export function taskInputsAssociatedData(input: {
   accountId: string;
   requestId: string;
 }): string {
-  return [
-    'anvil/task-inputs/v1',
-    input.backendId,
-    input.accountId,
-    input.requestId,
-  ].join('|');
+  return ['anvil/task-inputs/v1', input.backendId, input.accountId, input.requestId].join('|');
 }
 
 /**

@@ -8,53 +8,30 @@ import type {
   SyncEncryptedSyncAccountResetConfirmation,
 } from '../../../shared/sync-device-security';
 import { copyTextToClipboard } from '../../utils/clipboard';
+import {
+  deviceTrustSourceLabel,
+  deviceTrustStateLabel,
+  securityEventLabel,
+} from './device-security-labels';
 
 const RESET_CONFIRMATION: SyncEncryptedSyncAccountResetConfirmation = 'RESET ENCRYPTED DATA';
 
 const AUTO_TRUST_CONFIRMATION =
-  'Encryption remains enabled; Anvil cannot read your data. New signed-in devices can unlock using your recovery code without another device approving them. Protect both account and recovery code.';
+  'Encryption remains enabled; Anvil cannot read your data. New signed-in devices can unlock using your recovery code without another device approving them. An account compromise alone does not decrypt your data; if both the account and recovery code are exposed, a new device can unlock it. Protect them separately.';
 
 interface DeviceSecurityPanelProps {
   onRefresh: () => Promise<void>;
   onError: (error: unknown) => void;
 }
 
+function toErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function policyLabel(policy: SyncDeviceTrustPolicy): string {
   return policy === 'auto-trust-authenticated'
     ? 'Trust authenticated devices automatically'
     : 'Require approval from an existing trusted device';
-}
-
-function trustSourceLabel(source: SyncDeviceSecurityStatus['trustSource']): string {
-  switch (source) {
-    case 'automatic-auth':
-      return 'Trusted automatically';
-    case 'manual-approval':
-      return 'Approved by another trusted device';
-    case 'recovery-code':
-    case 'recovery':
-      return 'Unlocked with recovery code';
-    case 'first-device':
-    case 'local-device':
-      return 'This device';
-    case 'pairing':
-      return 'Paired with another trusted device';
-    default:
-      return 'Trust source unavailable';
-  }
-}
-
-function trustStateLabel(state: SyncDeviceSecurityStatus['trustState']): string {
-  switch (state) {
-    case 'trusted':
-      return 'Trusted';
-    case 'pending':
-      return 'Waiting for approval';
-    case 'revoked':
-      return 'Revoked';
-    default:
-      return 'Unknown';
-  }
 }
 
 function dateLabel(value: string): string {
@@ -66,11 +43,15 @@ function dateLabel(value: string): string {
 export function DeviceSecurityPanel({ onRefresh, onError }: DeviceSecurityPanelProps): ReactNode {
   const [security, setSecurity] = useState<SyncDeviceSecurityStatus | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [resetComplete, setResetComplete] = useState(false);
+  const [manualSetupSkipped, setManualSetupSkipped] = useState(false);
   const [policyChoice, setPolicyChoice] = useState<SyncDeviceTrustPolicy>('require-approval');
   const [autoTrustAcknowledged, setAutoTrustAcknowledged] = useState(false);
   const [recoveryCode, setRecoveryCode] = useState<string | null>(null);
   const [recoverySaved, setRecoverySaved] = useState(false);
+  const [recoveryCopied, setRecoveryCopied] = useState(false);
   const [unlockCode, setUnlockCode] = useState('');
   const [resetConfirmation, setResetConfirmation] = useState('');
 
@@ -80,8 +61,10 @@ export function DeviceSecurityPanel({ onRefresh, onError }: DeviceSecurityPanelP
       const next = await window.anvil.syncRuntime.getDeviceSecurityStatus();
       setSecurity(next);
       setPolicyChoice(next.policy);
+      setLoadError(null);
       onError(null);
     } catch (error) {
+      setLoadError(toErrorMessage(error));
       onError(error);
     } finally {
       setLoading(false);
@@ -109,6 +92,7 @@ export function DeviceSecurityPanel({ onRefresh, onError }: DeviceSecurityPanelP
   const showRecoveryCode = (result: SyncDeviceRecoveryResult): void => {
     setRecoveryCode(result.recoveryCode);
     setRecoverySaved(false);
+    setRecoveryCopied(false);
   };
 
   const handleSetupRecovery = async (): Promise<void> => {
@@ -129,6 +113,14 @@ export function DeviceSecurityPanel({ onRefresh, onError }: DeviceSecurityPanelP
     await runAction(async () => {
       await window.anvil.syncRuntime.setNewDeviceTrustPolicy('require-approval');
     });
+  };
+
+  const handleSkipInitialRecovery = (): void => {
+    // No recovery proof exists yet, so this optional local skip has no backend
+    // policy mutation to make here.
+    setManualSetupSkipped(true);
+    setPolicyChoice('require-approval');
+    onError(null);
   };
 
   const handleConfigureAutoPolicy = async (): Promise<void> => {
@@ -161,12 +153,32 @@ export function DeviceSecurityPanel({ onRefresh, onError }: DeviceSecurityPanelP
 
   const handleReset = async (): Promise<void> => {
     if (resetConfirmation !== RESET_CONFIRMATION) return;
-    await runAction(async () => {
+    setBusy(true);
+    onError(null);
+    try {
       await window.anvil.syncRuntime.resetEncryptedSyncAccount(RESET_CONFIRMATION);
       setResetConfirmation('');
       setSecurity(null);
-    });
+      setLoadError(null);
+      setResetComplete(true);
+      await onRefresh();
+    } catch (error) {
+      onError(error);
+    } finally {
+      setBusy(false);
+    }
   };
+
+  if (resetComplete) {
+    return (
+      <Panel title="Device security" description="Encryption access and new-device policy.">
+        <p className="text-sm text-text-secondary">
+          Encrypted account data and its recovery state were reset. Sign in again to configure a new
+          encrypted account.
+        </p>
+      </Panel>
+    );
+  }
 
   if (loading && security === null) {
     return (
@@ -178,10 +190,45 @@ export function DeviceSecurityPanel({ onRefresh, onError }: DeviceSecurityPanelP
     );
   }
 
-  if (security === null) return null;
+  if (security === null) {
+    return (
+      <Panel title="Device security" description="Encryption access and new-device policy.">
+        <p className="text-sm text-error">
+          {loadError ?? 'Device security status is unavailable.'}
+        </p>
+        <button
+          type="button"
+          onClick={() => void refresh()}
+          disabled={loading}
+          className="rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary hover:bg-bg-tertiary disabled:opacity-50"
+        >
+          {loading ? 'Retrying…' : 'Retry'}
+        </button>
+      </Panel>
+    );
+  }
 
-  const isUnconfigured = !security.configured && security.canConfigure;
-  const needsUnlock = security.requiresRecovery && !security.hasAccountKey;
+  // Older backends used `configured` for recovery-envelope setup; keep the
+  // first setup card limited to an untouched bootstrap response.
+  const isUnconfigured =
+    !manualSetupSkipped && !security.configured && security.canConfigure && security.revision <= 1;
+  const trusted = security.trustState === 'trusted';
+  const recoveryNeedsReplacement =
+    security.requiresRecoveryReplacement === true || security.recoveryInvalidated === true;
+  const canUseRecovery =
+    security.configured &&
+    !recoveryNeedsReplacement &&
+    (security.trustState === 'pending' || security.trustState === 'trusted');
+  const needsUnlock =
+    canUseRecovery && trusted && security.requiresRecovery && !security.hasAccountKey;
+  const needsRecoverySecret =
+    canUseRecovery &&
+    trusted &&
+    security.hasAccountKey &&
+    !isUnconfigured &&
+    !manualSetupSkipped &&
+    !security.hasRecoverySecret;
+  const needsPendingRecovery = canUseRecovery && security.trustState === 'pending';
 
   return (
     <Panel
@@ -231,7 +278,7 @@ export function DeviceSecurityPanel({ onRefresh, onError }: DeviceSecurityPanelP
               {policyChoice === 'require-approval' && (
                 <button
                   type="button"
-                  onClick={() => void handleConfigureManualPolicy()}
+                  onClick={handleSkipInitialRecovery}
                   disabled={busy}
                   className="rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary hover:bg-bg-tertiary disabled:opacity-50"
                 >
@@ -248,29 +295,47 @@ export function DeviceSecurityPanel({ onRefresh, onError }: DeviceSecurityPanelP
           <>
             <div className="flex flex-wrap items-center gap-2">
               <span className="rounded bg-bg-tertiary px-2 py-1 text-xs font-medium text-text-primary">
-                {trustStateLabel(security.trustState)}
+                {deviceTrustStateLabel(security.trustState)}
               </span>
               <span className="rounded bg-bg-tertiary px-2 py-1 text-xs text-text-secondary">
-                {trustSourceLabel(security.trustSource)}
+                {deviceTrustSourceLabel(security.trustSource)}
               </span>
               <span className="text-xs text-text-tertiary">
                 Policy: {policyLabel(security.policy)}
               </span>
             </div>
 
-            {needsUnlock && (
+            {security.trustState === 'pending' && (
+              <div className="rounded-md border border-warning/40 bg-warning/5 p-3 text-sm text-text-secondary">
+                This signed-in device is waiting for trust approval. Authentication alone does not
+                unlock encrypted data; compare the verification code with an existing trusted device
+                and confirm the matching code from the Devices list.
+              </div>
+            )}
+
+            {security.trustState === 'revoked' && (
+              <div className="rounded-md border border-error/30 bg-error/5 p-3 text-sm text-text-secondary">
+                This device enrollment has been revoked. Re-enroll it before requesting trust;
+                revoked enrollments cannot be approved again from this screen.
+              </div>
+            )}
+
+            {(needsUnlock || needsRecoverySecret || needsPendingRecovery) && (
               <div className="space-y-2 rounded-md border border-warning/40 bg-warning/5 p-3">
                 <p className="flex items-start gap-2 text-sm text-text-secondary">
                   <LockKeyhole size={15} className="mt-0.5 shrink-0 text-warning" />
-                  This device is trusted, but its encrypted data is locked. Enter the recovery code
-                  saved during setup to unlock it.
+                  {needsPendingRecovery
+                    ? 'If no trusted device is available, enter the recovery code saved during setup to unlock this device and complete trust without another device approving it.'
+                    : needsUnlock
+                      ? 'This device is trusted, but its encrypted data is locked. Enter the recovery code saved during setup to unlock it.'
+                      : 'This device has a local account key but no retained recovery secret. Enter the recovery code you saved to restore recovery access before changing security settings.'}
                 </p>
                 <div className="flex flex-col gap-2 sm:flex-row">
                   <input
                     type="password"
                     value={unlockCode}
                     onChange={(event) => setUnlockCode(event.target.value)}
-                    placeholder="Recovery code"
+                    placeholder="Saved recovery code"
                     autoComplete="off"
                     spellCheck={false}
                     className="min-w-0 flex-1 rounded-md border border-border bg-bg-primary px-3 py-1.5 font-mono text-sm text-text-primary placeholder:text-text-tertiary"
@@ -281,13 +346,43 @@ export function DeviceSecurityPanel({ onRefresh, onError }: DeviceSecurityPanelP
                     disabled={busy || unlockCode.trim() === ''}
                     className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
                   >
-                    {busy ? 'Unlocking…' : 'Unlock encrypted data'}
+                    {busy
+                      ? 'Unlocking…'
+                      : needsPendingRecovery
+                        ? 'Use recovery code'
+                        : needsUnlock
+                          ? 'Unlock encrypted data'
+                          : 'Restore recovery access'}
                   </button>
                 </div>
                 <p className="text-xs text-text-tertiary">
-                  Signing in alone does not decrypt your data. The recovery code stays on this
-                  device and is never sent to Anvil.
+                  Signing in alone does not decrypt your data. The recovery code is used locally and
+                  never sent to the sync backend.
                 </p>
+              </div>
+            )}
+
+            {recoveryNeedsReplacement && (
+              <div className="space-y-2 rounded-md border border-warning/40 bg-warning/5 p-3">
+                <p className="flex items-start gap-2 text-sm text-text-secondary">
+                  <LockKeyhole size={15} className="mt-0.5 shrink-0 text-warning" />
+                  Your recovery bundle is stale after a device revocation or key rotation. Replace
+                  the recovery code before relying on it for a new device.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => void handleReplaceRecovery()}
+                  disabled={busy || !security.hasAccountKey}
+                  className="flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary hover:bg-bg-tertiary disabled:opacity-50"
+                >
+                  <KeyRound size={14} /> Replace recovery code
+                </button>
+                {!security.hasAccountKey && (
+                  <p className="text-xs text-text-tertiary">
+                    Unlock this device first; Anvil cannot create a replacement without its local
+                    account key.
+                  </p>
+                )}
               </div>
             )}
 
@@ -322,7 +417,7 @@ export function DeviceSecurityPanel({ onRefresh, onError }: DeviceSecurityPanelP
                 >
                   Save policy
                 </button>
-                {security.hasRecoverySecret ? (
+                {security.hasRecoverySecret || recoveryNeedsReplacement ? (
                   <button
                     type="button"
                     onClick={() => void handleReplaceRecovery()}
@@ -365,10 +460,15 @@ export function DeviceSecurityPanel({ onRefresh, onError }: DeviceSecurityPanelP
                 type="button"
                 title="Copy recovery code"
                 aria-label="Copy recovery code"
-                onClick={() => void copyTextToClipboard(recoveryCode)}
+                onClick={() =>
+                  void copyTextToClipboard(recoveryCode).then(() => {
+                    setRecoveryCopied(true);
+                    window.setTimeout(() => setRecoveryCopied(false), 2000);
+                  })
+                }
                 className="shrink-0 rounded p-1.5 text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary"
               >
-                <Copy size={14} />
+                {recoveryCopied ? <Check size={14} /> : <Copy size={14} />}
               </button>
             </div>
             <label className="flex items-start gap-2 text-xs text-text-secondary">
@@ -385,6 +485,7 @@ export function DeviceSecurityPanel({ onRefresh, onError }: DeviceSecurityPanelP
               onClick={() => {
                 setRecoveryCode(null);
                 setRecoverySaved(false);
+                setRecoveryCopied(false);
                 void refresh();
               }}
               disabled={!recoverySaved}
@@ -404,7 +505,7 @@ export function DeviceSecurityPanel({ onRefresh, onError }: DeviceSecurityPanelP
             <ul className="mt-2 space-y-1 text-xs text-text-tertiary">
               {security.recentEvents.map((event) => (
                 <li key={`${event.occurredAt}:${event.kind}`}>
-                  {event.kind.replaceAll('-', ' ')} · {dateLabel(event.occurredAt)}
+                  {securityEventLabel(event.kind, event.outcome)} · {dateLabel(event.occurredAt)}
                 </li>
               ))}
             </ul>

@@ -637,6 +637,20 @@ const MANAGED_PROVISION_BATCH = 4;
 const MANAGED_REAP_BATCH = 8;
 const MANAGED_FREE_CAPS = { maxTtlSeconds: 30 * 60, maxConcurrent: 1 } as const;
 const MANAGED_PAID_CAPS = { maxTtlSeconds: 8 * 60 * 60, maxConcurrent: 4 } as const;
+/**
+ * ENV-09: managed bootstrap carries the short-lived enrollment code only.
+ * Keep the generated code alphabet and four five-character groups here so a
+ * key-bearing `anvil-pair-…` payload cannot be staged by this route.
+ */
+const EPHEMERAL_ENROLLMENT_CODE_PATTERN =
+  /^(?:anvil-ec-)?[A-HJKMNP-Z2-9]{5}(?:-[A-HJKMNP-Z2-9]{5}){3}$/i;
+
+function isEphemeralEnrollmentCode(value: string): boolean {
+  // The session coordinator binds the actual enrollment class in its code
+  // row; this boundary validates the wire shape and excludes key-bearing
+  // pairing payloads before they enter managed provisioning.
+  return EPHEMERAL_ENROLLMENT_CODE_PATTERN.test(value.trim());
+}
 
 // ---- MESH-03 constants ----------------------------------------------------
 /** Raw inbound socket frame cap; payload text is separately bounded below. */
@@ -6001,11 +6015,11 @@ export class AccountCoordinator extends DurableObject<Env> {
   }
 
   /**
-   * `environment.bootstrap` (user role): stage the `anvil-pair-…` payload a
-   * backend-side provisioner will inject into the environment. Currently
-   * only `anvil-managed` consumes these — BYO claimers mint pairings on
-   * their own device and never read this table. The payload is
-   * consume-once, never journaled, and swept at expiry.
+   * `environment.bootstrap` (user role): stage the ephemeral enrollment code
+   * a backend-side provisioner will inject into the environment. The code is
+   * authentication only; task-key delivery remains the worker's scoped
+   * `taskkey.*` path. The value is consume-once, never journaled, and swept at
+   * expiry.
    */
   private handleEnvironmentBootstrap(
     auth: SpikeAuth,
@@ -6256,6 +6270,13 @@ export class AccountCoordinator extends DurableObject<Env> {
         finish(false, null, 'bootstrap-payload-missing');
         continue;
       }
+      // Rows written by an older backend may still contain a key-bearing
+      // pairing payload. Reject them at the sink as well as at the staging
+      // route so a pre-migration row can never reach the provisioner.
+      if (!isEphemeralEnrollmentCode(item.payload)) {
+        finish(false, null, 'bootstrap-payload-invalid');
+        continue;
+      }
       try {
         const response = await provisioner.fetch('https://provisioner.internal/v1/environments', {
           method: 'POST',
@@ -6270,11 +6291,11 @@ export class AccountCoordinator extends DurableObject<Env> {
             ttlSeconds: item.ttlSeconds,
             bootstrap: {
               kind: 'anvil.mesh-environment',
-              schemaVersion: '0.1',
+              schemaVersion: '0.2',
               environmentId: item.environmentId,
               provider: 'anvil-managed',
               backendUrl: this.env.ANVIL_PUBLIC_API_URL ?? '',
-              pairing: item.payload,
+              enrollmentCode: item.payload,
               ttlSeconds: item.ttlSeconds,
             },
           }),
@@ -7629,8 +7650,8 @@ export class AccountCoordinator extends DurableObject<Env> {
       // rows, so purge them on the sweep cadence. Undelivered grants die
       // with their expiry too; the plaintext was never visible here anyway.
       this.ctx.storage.sql.exec('DELETE FROM credential_grants WHERE expires_at <= ?', now);
-      // ENV-09: staged bootstrap payloads the managed claimer never
-      // consumed expire — the pairing inside is already dead by TTL.
+      // ENV-09: staged enrollment codes the managed claimer never consumed
+      // expire; the single-use code is already dead by TTL.
       this.ctx.storage.sql.exec(
         'DELETE FROM environment_bootstrap WHERE expires_at <= ?',
         now,
@@ -9679,6 +9700,9 @@ function parseEnvironmentBootstrapParams(params: unknown): {
       limitBytes: BOOTSTRAP_PAYLOAD_MAX_BYTES,
       field: 'payload',
     });
+  }
+  if (!isEphemeralEnrollmentCode(payload)) {
+    throw new RpcFailure('malformed-request', { reason: 'payload-enrollment-code' });
   }
   return { environmentId: params['environmentId'], payload };
 }

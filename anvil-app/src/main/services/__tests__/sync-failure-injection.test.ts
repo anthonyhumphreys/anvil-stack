@@ -53,6 +53,7 @@ import {
   upsertEnrollment,
 } from '../sync-persistence.service';
 import { getWorkflowTemplate, saveWorkflowTemplate } from '../workflow.service';
+import { setAccountKeyBootstrapEligibility } from '../sync-keyring.service';
 
 const SCOPE: SyncScope = {
   backendId: 'backend-1',
@@ -107,6 +108,8 @@ function spikeToken(enrollmentId: string, scope: SyncScope = SCOPE): string {
 }
 
 function activateEnrollment(enrollmentId: string, scope: SyncScope = SCOPE): void {
+  // These fixtures represent the account's original authorized enrollment.
+  setAccountKeyBootstrapEligibility(scope, enrollmentId, true);
   upsertEnrollment({
     displayName: `Device ${enrollmentId}`,
     id: enrollmentId,

@@ -32,6 +32,7 @@ import { copyTextToClipboard } from '../../utils/clipboard';
 import { DashboardAccessPanel } from './DashboardAccessPanel';
 import { DeviceSecurityPanel } from './DeviceSecurityPanel';
 import { MeshExecutionsPanel } from './MeshExecutionsPanel';
+import { deviceTrustSourceLabel, deviceTrustStateLabel } from './device-security-labels';
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -1000,6 +1001,14 @@ export function SyncMeshSettingsPanel(): ReactNode {
                           {device.enrollmentId.slice(0, 12)}… · added{' '}
                           {new Date(device.createdAt).toLocaleDateString()}
                         </p>
+                        {device.trustState !== undefined && (
+                          <p className="mt-1 text-xs text-text-tertiary">
+                            {deviceTrustStateLabel(device.trustState)}
+                            {device.trustSource === undefined
+                              ? ''
+                              : ` · ${deviceTrustSourceLabel(device.trustSource)}`}
+                          </p>
+                        )}
                       </div>
                     </div>
                     {!device.revoked && (
@@ -1033,7 +1042,7 @@ export function SyncMeshSettingsPanel(): ReactNode {
                             >
                               {deviceBusy === device.enrollmentId
                                 ? 'Preparing…'
-                                : 'Compare & approve'}
+                                : 'Compare & verify'}
                             </button>
                             <button
                               type="button"
@@ -1090,12 +1099,12 @@ export function SyncMeshSettingsPanel(): ReactNode {
                         {verification.code}
                       </p>
                       <p className="mt-1 text-xs text-text-tertiary">
-                        Compare this code with Sync settings on{' '}
+                        Compare this code on both devices and confirm it matches on each device. You
+                        are verifying{' '}
                         <span className="font-medium text-text-secondary">
                           {device.displayName || `device ${device.enrollmentId.slice(0, 8)}`}
-                        </span>{' '}
-                        . Approve only when both devices show the same code. Revoked devices cannot
-                        be approved here.
+                        </span>
+                        . Revoked devices cannot be verified here.
                       </p>
                       <div className="mt-2 flex flex-col gap-2 sm:flex-row">
                         <input
@@ -1122,7 +1131,9 @@ export function SyncMeshSettingsPanel(): ReactNode {
                           }
                           className="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
                         >
-                          {deviceBusy === device.enrollmentId ? 'Approving…' : 'Approve device'}
+                          {deviceBusy === device.enrollmentId
+                            ? 'Confirming…'
+                            : 'Confirm matching code'}
                         </button>
                       </div>
                     </div>

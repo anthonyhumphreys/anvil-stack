@@ -17,8 +17,12 @@ and each can be revoked without touching the others.
 
 ## The enrollment model
 
-- An **enrollment code** starts every enrollment. Codes are single-use and
-  stored hashed at rest — the server never keeps the code itself.
+- A hosted daemon can start with WorkOS Device Authorization. WorkOS returns a
+  public user code and verification URI; the daemon keeps the private device
+  code for polling and never prints it. There is no loopback redirect in this
+  flow.
+- An **enrollment code** is the compatible-backend bootstrap path. Codes are
+  single-use and stored hashed at rest — the server never keeps the code itself.
 - Codes come from two places: **in-app** (minted by a signed-in device,
   carrying a pairing payload) or **the website** (a bare code minted on
   `/account`, no key material inside).
@@ -32,14 +36,22 @@ and each can be revoked without touching the others.
 ## First device: sign in
 
 1. Settings → Sync & Mesh → pick a backend mode (anything but Local only).
-2. Sign in with the account identity — hosted desktop OIDC uses the WorkOS
-   issuer and public client advertised by the backend; a compatible backend
-   uses whatever issuer it declares. For a self-hosted enrollment-code
-   bootstrap, issue the first code from that backend's operator `/account`
-   page, then use normal in-app device management afterward.
-3. The backend creates the enrollment; the device generates and publishes its
+2. For a hosted headless machine, run:
+
+   ```sh
+   anvil-daemon sign-in --api-url https://<backend>
+   ```
+
+   The command prints the WorkOS verification URI and public user code, then
+   waits for approval. Add `--worker` only for a machine that should execute
+   Mesh jobs. For a self-hosted enrollment-code bootstrap, issue the first code
+   from that backend's operator `/account` page, then use normal device
+   management afterward.
+3. Desktop sign-in uses the WorkOS issuer and public client advertised by the
+   backend; a compatible backend uses whatever issuer it declares.
+4. The backend creates the enrollment; the device generates and publishes its
    X25519 identity.
-4. The first sealed write mints ADK v1 locally. From that point, everything
+5. The first sealed write mints ADK v1 locally. From that point, everything
    the device syncs is sealed.
 
 ## Pair a second device
@@ -61,29 +73,47 @@ device exists.
 3. On the new device: enter the payload. It redeems the code (the server sees
    only the code), registers the pairing secret locally, pulls the sealed
    pairing blob, and unwraps the ADK.
-4. Done — the new device can unseal everything the account has written.
+4. In Sync & Mesh on both devices, open **Compare & verify** and confirm the
+   same SAS. Both ends must authenticate and confirm the matching value before
+   either client accepts the key delivery. Upgraded clients reject an
+   unsigned legacy wrap; after upgrading, resend the pairing payload or use
+   the manual verification flow.
+5. Done — the new device can unseal everything the account has written.
 
 Both devices can derive the same 9-digit SAS from their public keys for a
-manual MITM check; the derivation exists but no UI exposes it yet.
+manual MITM check. The Devices list exposes this through **Compare & verify**;
+both devices must show and confirm the same code before an authenticated wrap
+is accepted.
 
-### Website bare code
+### Recovery-code unlock
 
-The website cannot see your ADK, so a web-minted code delivers nothing by
-itself — key delivery falls to the automatic keyring wrap.
+A website code starts enrollment but carries no key material. Configure
+recovery on the first trusted device, then save the generated recovery code
+separately. The new device can recover without an online peer:
 
-1. On `/account` → devices: mint a pair/link code. It is a bare code — no
-   secret, no key material.
-2. On the new device: enter the bare code. The device enrolls and publishes
-   its device-identity entity.
-3. Wait for a trusted device. The next time any already-enrolled device pulls
-   and observes the new device identity, it wraps the ADK to the new public
-   key; the wrap syncs as a normal sealed entity.
-4. The new device unwraps on its next pull. Any outbox rows that deferred for
-   want of the ADK seal and go.
+1. On `/account` → devices, mint a pair/link code. It is a bare enrollment
+   code; the website never sees the recovery code or ADK.
+2. On the new device, sign in (or run the daemon's `sign-in` command) and
+   redeem the enrollment code.
+3. Use the device security recovery flow with the saved recovery code. The
+   device decrypts the opaque recovery envelope locally and installs the ADK
+   version bundle.
 
-Requirement: **at least one trusted device must be online** between steps 2
-and 4. If your only enrolled device is off, the new device waits — enrolled
-but unable to unseal — until a trusted device next pulls.
+WorkOS authentication proves identity and creates the enrollment; it does not
+decrypt account content. Recovery replacement issues a new code and replaces
+the current backend envelope, so save the new code before discarding the old
+one. A retained old bundle can open only the historical key versions it
+contains. Future authenticated enrollments require manual approval by default;
+`auto-trust-authenticated` is an explicit account policy and does not promote
+existing pending devices. Manual approval compares the same 9-digit SAS on both
+devices. Desktop exposes this as **Compare & verify** on both ends. A headless
+daemon uses `anvil-daemon security verify <enrollmentId>` on each device, then
+both devices run `anvil-daemon security approve`: the existing trusted device
+approves the new enrollment and sends the authenticated key wrap, while the
+new device approves the old enrollment locally to accept that wrap. The
+website roster can show and revoke devices, but it cannot perform this
+key-delivery approval by itself. Passkey-backed encryption unlock is not
+implemented.
 
 ## Manage the roster
 
@@ -107,25 +137,32 @@ differ on keys:
 | | Session severed | ADK rotated |
 | --- | --- | --- |
 | Revoke from the app | Yes | Yes — ADK v(N+1) wraps to all surviving devices |
-| Revoke from the website | Yes | No — the revoked device keeps its key version |
+| Revoke from the website | Yes | Reconciled by a surviving trusted device before its next new write |
 
 After an **app-initiated** revoke, anything sealed under the new key version
 is unreadable to the revoked device even if it still holds the ciphertext.
-After a **web-initiated** revoke, the device cannot pull new ciphertext — but
-if it somehow obtains it (a copied file, a forwarded blob), its old key still
-opens it.
+After a **web-initiated** revoke, a surviving trusted device learns the
+revocation during reconciliation and rotates before accepting new writes. If
+all surviving devices are offline, that rotation waits until one reconnects;
+the revoked device keeps any key material and plaintext it already received.
 
 Neither path erases what the device already decrypted. Rotation limits
-future access; it is not a remote wipe. If the device is lost and you want
-the full guarantee, revoke from another enrolled device in the app — the web
-gap is documented in [Status and limits](/docs/sync/status-and-limits).
+future access; it is not a remote wipe. Revoke from an enrolled device in the
+app when you need the rotation to happen immediately; website revocation
+rotates when a surviving trusted device next reconciles, as described in
+[Status and limits](/docs/sync/status-and-limits).
 
 ## Current limits
 
-- The web-revoke / no-rotation gap above is the sharpest edge in this
-  surface.
-- The auto-wrap path needs a trusted device online; there is no server-side
-  key escrow to fall back on (by design — the server cannot hold what it
-  cannot read).
+- Web revocation depends on a surviving trusted device reconnecting to perform
+  the client-side rotation; app revocation from an online trusted device can
+  rotate immediately.
+- Recovery-code unlock needs the separately saved client secret; there is no
+  server-side key escrow to fall back on, so the code must remain separately
+  saved by the user.
+- Upgraded clients reject unsigned legacy key wraps. Re-pair or complete the
+  two-device SAS confirmation after upgrading.
+- A device revocation invalidates the local recovery refresh root; replace
+  recovery and save the newly issued code before refreshing that envelope.
 - Pairing-payload redemption is covered by lifecycle tests; the full
   two-device acceptance run on hardware is still pending.

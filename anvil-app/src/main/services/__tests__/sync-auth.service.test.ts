@@ -30,6 +30,7 @@ import {
   type LoopbackCallback,
   type SyncAuthService,
 } from '../sync-auth.service.js';
+import type { WorkOSDeviceEnrollParams } from '../workos-device-auth.service.js';
 
 const EXPIRES_AT = '2026-09-12T10:00:00.000Z';
 
@@ -165,6 +166,102 @@ describe('enrollWithCode', () => {
   });
 });
 
+describe('WorkOS Device Authorization enrollment', () => {
+  function workosChallengeResponse(): Response {
+    return new Response(
+      JSON.stringify({
+        device_code: 'private-workos-device-code',
+        user_code: 'RRGQ-BJVS',
+        verification_uri: 'https://authkit.example/device',
+        expires_in: 300,
+        interval: 5,
+      }),
+      { status: 200 },
+    );
+  }
+
+  it('does not resurrect a session when sign-out wins the enrollment race', async () => {
+    let resolveEnroll: (session: DeviceSession) => void = () => undefined;
+    let enrollCalled: (() => void) | null = null;
+    const started = new Promise<void>((resolve) => {
+      enrollCalled = resolve;
+    });
+    const login = service.enrollWithWorkOSDevice(
+      {
+        clientId: 'client_test',
+        fetchFn: async () => workosChallengeResponse(),
+        sleep: async () => undefined,
+      },
+      async (_params: WorkOSDeviceEnrollParams) => {
+        enrollCalled?.();
+        return new Promise<DeviceSession>((resolve) => {
+          resolveEnroll = resolve;
+        });
+      },
+      'backend-1',
+    );
+    await started;
+    service.signOutLocal();
+    resolveEnroll(fakeSession('race'));
+
+    await expect(login).resolves.toMatchObject({
+      state: 'signed-out',
+    });
+    expect(existsSync(sessionFilePath(userDataDir))).toBe(false);
+  });
+
+  it('skips persistence when a backend generation guard fails', async () => {
+    const login = service.enrollWithWorkOSDevice(
+      {
+        clientId: 'client_test',
+        fetchFn: async () => workosChallengeResponse(),
+        sleep: async () => undefined,
+      },
+      async () => fakeSession('backend-race'),
+      'backend-1',
+      () => false,
+    );
+
+    await expect(login).resolves.toMatchObject({
+      state: 'signed-out',
+    });
+    expect(existsSync(sessionFilePath(userDataDir))).toBe(false);
+  });
+
+  it('propagates an already-aborted caller before contacting WorkOS', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const fetchFn = vi.fn(async () => workosChallengeResponse());
+
+    await expect(
+      service.enrollWithWorkOSDevice(
+        {
+          clientId: 'client_test',
+          fetchFn,
+          signal: controller.signal,
+          sleep: async () => undefined,
+        },
+        async () => fakeSession('pre-aborted'),
+        'backend-1',
+      ),
+    ).rejects.toMatchObject({ code: 'cancelled' });
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(existsSync(sessionFilePath(userDataDir))).toBe(false);
+  });
+});
+
+function fakeSession(suffix: string): DeviceSession {
+  return {
+    accessToken: `access-${suffix}`,
+    accessExpiresAt: EXPIRES_AT,
+    refreshToken: `refresh-${suffix}`,
+    credentialGeneration: 1,
+    enrollmentId: `enr-${suffix}`,
+    accountId: 'acct-1',
+    datasetEpoch: '1',
+  };
+}
+
 describe('PKCE login', () => {
   function serviceWithStubLoopback(): {
     svc: SyncAuthService;
@@ -218,7 +315,11 @@ describe('PKCE login', () => {
     const created = await svc.createPkceLogin();
 
     await expect(
-      svc.completePkceLogin({ state: 'wrong-state', authorizationCode: 'code-123' }, fake.enroll, 'backend-1'),
+      svc.completePkceLogin(
+        { state: 'wrong-state', authorizationCode: 'code-123' },
+        fake.enroll,
+        'backend-1',
+      ),
     ).rejects.toThrow(/state mismatch/);
     expect(existsSync(sessionFilePath(userDataDir))).toBe(false);
     expect(svc.getPublicSnapshot().state).toBe('enrolling');
@@ -341,15 +442,18 @@ describe('getPublicSnapshot', () => {
 
 describe('installDeviceSession', () => {
   it('stores a spike session whose public snapshot still has no tokens', () => {
-    const snapshot = service.installDeviceSession({
-      accessToken: 'spike:acct:enr',
-      accessExpiresAt: EXPIRES_AT,
-      refreshToken: 'spike-refresh:enr',
-      credentialGeneration: 1,
-      enrollmentId: 'enr',
-      accountId: 'acct',
-      datasetEpoch: 'spike-epoch-1',
-    }, 'backend-1');
+    const snapshot = service.installDeviceSession(
+      {
+        accessToken: 'spike:acct:enr',
+        accessExpiresAt: EXPIRES_AT,
+        refreshToken: 'spike-refresh:enr',
+        credentialGeneration: 1,
+        enrollmentId: 'enr',
+        accountId: 'acct',
+        datasetEpoch: 'spike-epoch-1',
+      },
+      'backend-1',
+    );
     expect(snapshot).toEqual({
       state: 'signed-in',
       accountId: 'acct',

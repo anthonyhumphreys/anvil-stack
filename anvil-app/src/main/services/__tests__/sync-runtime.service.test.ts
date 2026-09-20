@@ -49,6 +49,8 @@ import {
   enableSync,
   enrollWithEnrollmentCode,
   exportSyncDiagnostics,
+  approveDeviceTrust,
+  getDeviceSecurityStatus,
   getRuntimeStatus,
   initSyncRuntime,
   issueEnrollmentCode,
@@ -57,14 +59,25 @@ import {
   resolveHostedAccountUrl,
   previewAdoption,
   refreshHostedEntitlement,
+  refreshDeviceIdentitiesForOneShot,
   resetSyncRuntimeForTests,
   requestSync,
+  resetEncryptedSyncAccount,
   setSyncRuntimeRpcForTests,
+  signInWithWorkOSDevice,
   signInWithOidc,
   signOutSync,
+  stopSyncRuntimeForOneShot,
   spikeEnroll,
+  listDevices,
 } from '../sync-runtime.service';
-import { deriveSas, ensureDeviceIdentity } from '../sync-keyring.service';
+import {
+  deriveSas,
+  ensureDeviceIdentity,
+  hasAccountKey,
+  provisionAccountKey,
+  setDeviceTrust,
+} from '../sync-keyring.service';
 import {
   clearSyncEntitlement,
   getSyncEntitlement,
@@ -80,6 +93,7 @@ import { resetSyncEngineForTests } from '../sync-engine.service';
 import type { BackendWebSocketLike } from '../sync-backend-client.service';
 import { saveWorkflowTemplate } from '../workflow.service';
 import { DESCRIPTOR_VERSION, PROTOCOL } from '../../../../cloud/contract/version';
+import { WORKOS_DEVICE_AUTHORIZATION_URL } from '../workos-device-auth.service';
 
 const SCOPE: SyncScope = {
   backendId: 'backend-1',
@@ -137,7 +151,10 @@ beforeEach(() => {
      DELETE FROM sync_scan_runs; DELETE FROM sync_scan_staging; DELETE FROM sync_installation;
      DELETE FROM sync_backends; DELETE FROM sync_entitlement;
      DELETE FROM sync_keyring; DELETE FROM sync_device_keys; DELETE FROM sync_pairing;
-     DELETE FROM sync_keyring_deliveries;`,
+     DELETE FROM sync_keyring_deliveries; DELETE FROM sync_recovery_secrets;
+     DELETE FROM sync_device_trust;
+     DELETE FROM sync_key_bootstrap_eligibility; DELETE FROM sync_keyring_rotations;
+     DELETE FROM sync_revocation_rotations; DELETE FROM sync_keyring_pending_wraps;`,
   );
   openExternalCalls.length = 0;
 });
@@ -268,6 +285,148 @@ describe('deviceVerificationCode', () => {
   });
 });
 
+describe('device security runtime integration', () => {
+  async function enrollEstablishedDevice(
+    options: { createSocket?: ReturnType<typeof fakeSocketFactory>['createSocket'] } = {},
+  ) {
+    const backend = fakeBackend();
+    const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
+    initSyncRuntime(dir, { fetchFn: backend.fetchFn, createSocket: options.createSocket });
+    pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: oidcDescriptorFixture() });
+    const minted = (await (
+      await backend.fetchFn('https://backend.example.test/v1/enrollment-codes', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', Authorization: 'Bearer admin-token' },
+        body: JSON.stringify({ accountId: 'account-1' }),
+      })
+    ).json()) as { code: string };
+    const snapshot = await enrollWithEnrollmentCode(minted.code);
+    updateSyncState(SCOPE, { lastPullAt: new Date().toISOString() });
+    enableSync();
+    await requestSync();
+    return { backend, enrollmentId: snapshot.enrollmentId! };
+  }
+
+  it('provisions the first account key without requiring recovery setup', async () => {
+    const { enrollmentId } = await enrollEstablishedDevice();
+
+    expect(hasAccountKey(SCOPE)).toBe(true);
+    const status = await getDeviceSecurityStatus();
+    expect(status.policy).toBe('require-approval');
+    expect(status.configured).toBe(false);
+    expect(status.hasAccountKey).toBe(true);
+    expect(status.hasRecoverySecret).toBe(false);
+    expect(deviceTrustStateForTest(enrollmentId)).toBe('trusted');
+    const devices = await listDevices();
+    expect(devices.devices.find((device) => device.self)?.trustState).toBe('trusted');
+  });
+
+  it('rejects manual approval for a mismatched SAS and for a revoked identity', async () => {
+    const { backend } = await enrollEstablishedDevice();
+    const peerEnrollmentId = 'enr-peer';
+    backend.sessions.set(peerEnrollmentId, {
+      accountId: 'account-1',
+      enrollmentId: peerEnrollmentId,
+      refreshToken: 'peer-refresh',
+      accessToken: 'peer-access',
+      generation: 1,
+      accessExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    ensureDeviceIdentity(SCOPE, peerEnrollmentId);
+    setDeviceTrust(SCOPE, peerEnrollmentId, 'pending');
+    const expected = deviceVerificationCode(peerEnrollmentId).code;
+    const wrong = expected === '000000000' ? '000000001' : '000000000';
+
+    await expect(approveDeviceTrust(peerEnrollmentId, wrong)).rejects.toThrow(/does not match/);
+    expect(deviceTrustStateForTest(peerEnrollmentId)).toBe('pending');
+    setDeviceTrust(SCOPE, peerEnrollmentId, 'revoked');
+    await expect(approveDeviceTrust(peerEnrollmentId, expected)).rejects.toThrow(/revoked/);
+    expect(deviceTrustStateForTest(peerEnrollmentId)).toBe('revoked');
+  });
+
+  it('does not repeat approval when a fresh security row is already trusted', async () => {
+    const backend = fakeBackend({ trustedEnrollmentIds: ['enr-peer'] });
+    const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
+    initSyncRuntime(dir, { fetchFn: backend.fetchFn });
+    pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: oidcDescriptorFixture() });
+    const minted = (await (
+      await backend.fetchFn('https://backend.example.test/v1/enrollment-codes', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', Authorization: 'Bearer admin-token' },
+        body: JSON.stringify({ accountId: 'account-1' }),
+      })
+    ).json()) as { code: string };
+    await enrollWithEnrollmentCode(minted.code);
+    enableSync();
+    await requestSync();
+
+    backend.sessions.set('enr-peer', {
+      accountId: 'account-1',
+      enrollmentId: 'enr-peer',
+      refreshToken: 'peer-refresh',
+      accessToken: 'peer-access',
+      generation: 1,
+      accessExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    ensureDeviceIdentity(SCOPE, 'enr-peer');
+    setDeviceTrust(SCOPE, 'enr-peer', 'pending');
+    await approveDeviceTrust('enr-peer', deviceVerificationCode('enr-peer').code);
+
+    expect(deviceTrustStateForTest('enr-peer')).toBe('trusted');
+    expect(backend.calls.filter((call) => call.operation === 'security.approve')).toHaveLength(0);
+  });
+
+  it('resets only the captured encrypted account scope', async () => {
+    await enrollEstablishedDevice();
+    expect(hasAccountKey(SCOPE)).toBe(true);
+    provisionAccountKey(OTHER_SCOPE);
+
+    await resetEncryptedSyncAccount('RESET ENCRYPTED DATA');
+
+    expect(hasAccountKey(SCOPE)).toBe(false);
+    expect(hasAccountKey(OTHER_SCOPE)).toBe(true);
+    expect(getRuntimeStatus().auth.state).toBe('signed-out');
+  });
+
+  it('restores polling/live sync after a definitive reset rejection', async () => {
+    const factory = fakeSocketFactory();
+    // A rejected reset leaves the server/session intact, so the runtime may
+    // safely resume the channel it fenced around the attempted mutation.
+    const backend = fakeBackend({ denyReset: 'conflict' });
+    const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
+    initSyncRuntime(dir, {
+      fetchFn: backend.fetchFn,
+      createSocket: factory.createSocket,
+    });
+    pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: oidcDescriptorFixture() });
+    const minted = (await (
+      await backend.fetchFn('https://backend.example.test/v1/enrollment-codes', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', Authorization: 'Bearer admin-token' },
+        body: JSON.stringify({ accountId: 'account-1' }),
+      })
+    ).json()) as { code: string };
+    await enrollWithEnrollmentCode(minted.code);
+    enableSync();
+    const before = factory.sockets.length;
+    await expect(resetEncryptedSyncAccount('RESET ENCRYPTED DATA')).rejects.toMatchObject({
+      code: 'conflict',
+    });
+    expect(factory.sockets.length).toBeGreaterThan(before);
+    expect(getRuntimeStatus().auth.state).toBe('signed-in');
+  });
+});
+
+function deviceTrustStateForTest(enrollmentId: string): string | null {
+  const row = db
+    .prepare(
+      `SELECT state FROM sync_device_trust
+       WHERE backend_id = ? AND account_id = ? AND enrollment_id = ?`,
+    )
+    .get(SCOPE.backendId, SCOPE.accountId, enrollmentId) as { state: string } | undefined;
+  return row?.state ?? null;
+}
+
 describe('sign-out fencing and session/backend binding', () => {
   it('stays signed-out for sync after signOutSync even with stale in-flight state', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
@@ -318,6 +477,12 @@ function fakeBackend(
     entitlement?: Record<string, unknown> | (() => Record<string, unknown> | undefined);
     /** When set, `sync.push` is refused 403 with this `details.reason`. */
     denyPush?: string;
+    /** When set, encrypted-account reset is rejected definitively. */
+    denyReset?: string;
+    /** Security rows that another device has already trusted. */
+    trustedEnrollmentIds?: string[];
+    /** WorkOS device code accepted by the fake backend enrollment exchange. */
+    workosDeviceCode?: string;
   } = {},
 ) {
   const accessTtlMs = options.accessTtlMs ?? 15 * 60 * 1000;
@@ -411,6 +576,34 @@ function fakeBackend(
           datasetEpoch: SPIKE_DATASET_EPOCH,
         } satisfies Record<string, unknown>);
       }
+      if (proof?.['method'] === 'workos-device') {
+        if (
+          proof['deviceCode'] !== (options.workosDeviceCode ?? 'workos-device-code') ||
+          proof['issuer'] !== 'https://api.workos.com/user_management'
+        ) {
+          return err('device-authorization-pending', 202);
+        }
+        const session: FakeSession = {
+          accountId: 'workos-account-1',
+          enrollmentId: `enr-${crypto.randomUUID()}`,
+          refreshToken: `rt-${crypto.randomUUID()}`,
+          accessToken: `at-${crypto.randomUUID()}`,
+          generation: 1,
+          accessExpiresAt: new Date(Date.now() + accessTtlMs).toISOString(),
+        };
+        sessions.set(session.enrollmentId, session);
+        refreshIndex.set(session.refreshToken, session.enrollmentId);
+        accessIndex.set(session.accessToken, session.enrollmentId);
+        return Response.json({
+          accessToken: session.accessToken,
+          accessExpiresAt: session.accessExpiresAt,
+          refreshToken: session.refreshToken,
+          credentialGeneration: session.generation,
+          enrollmentId: session.enrollmentId,
+          accountId: session.accountId,
+          datasetEpoch: SPIKE_DATASET_EPOCH,
+        } satisfies Record<string, unknown>);
+      }
       return err('invalid-proof');
     }
 
@@ -485,6 +678,78 @@ function fakeBackend(
           },
         });
       }
+      if (operation === 'device.list') {
+        return Response.json({
+          requestId,
+          serverTime: new Date().toISOString(),
+          result: {
+            devices: [...sessions.values()]
+              .filter((candidate) => candidate.accountId === session.accountId)
+              .map((candidate) => ({
+                enrollmentId: candidate.enrollmentId,
+                installationId: `installation-${candidate.enrollmentId}`,
+                credentialGeneration: candidate.generation,
+                revoked: false,
+                createdAt: new Date().toISOString(),
+                self: candidate.enrollmentId === session.enrollmentId,
+              })),
+          },
+        });
+      }
+      if (operation === 'security.get') {
+        return Response.json({
+          requestId,
+          serverTime: new Date().toISOString(),
+          result: {
+            accountId: session.accountId,
+            policy: 'require-approval',
+            revision: 1,
+            configured: false,
+            recovery: null,
+            trustState: 'trusted',
+            trustSource: 'first-device',
+            canConfigure: true,
+            bootstrapEnrollmentId: session.enrollmentId,
+            requiresRecovery: false,
+            recentEvents: [],
+            enrollments: (options.trustedEnrollmentIds ?? []).map((enrollmentId) => ({
+              enrollmentId,
+              trustState: 'trusted',
+              trustSource: 'manual-approval',
+            })),
+          },
+        });
+      }
+      if (operation === 'security.approve') {
+        return Response.json({
+          requestId,
+          serverTime: new Date().toISOString(),
+          result: {
+            accountId: session.accountId,
+            policy: 'require-approval',
+            revision: 1,
+            configured: false,
+            trustState: 'trusted',
+            trustSource: 'manual-approval',
+            canConfigure: true,
+            requiresRecovery: false,
+            recentEvents: [],
+          },
+        });
+      }
+      if (operation === 'security.reset') {
+        if (options.denyReset !== undefined) {
+          return Response.json(
+            { requestId, error: { code: options.denyReset, retryable: false } },
+            { status: 409 },
+          );
+        }
+        return Response.json({
+          requestId,
+          serverTime: new Date().toISOString(),
+          result: { reset: true, accountId: session.accountId },
+        });
+      }
       if (operation === 'sync.pull') {
         return Response.json({
           requestId,
@@ -528,7 +793,61 @@ function oidcDescriptorFixture(): SyncBackendDescriptor {
   return { ...descriptor, authModes: ['enrollment-code', 'oidc-pkce'] };
 }
 
+function workosDescriptorFixture(): SyncBackendDescriptor {
+  const descriptor = descriptorFixture();
+  return {
+    ...descriptor,
+    authModes: ['workos-device'],
+    auth: {
+      issuer: 'https://api.workos.com/user_management',
+      publicClientId: 'client_test',
+      scopes: ['openid'],
+    },
+  };
+}
+
 describe('real auth transport (contract routes over injected fetch)', () => {
+  it('runs one-shot WorkOS bootstrap without starting runtime timers or sockets', async () => {
+    const backend = fakeBackend({ workosDeviceCode: 'private-device-code' });
+    const factory = fakeSocketFactory();
+    const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
+    const fetchFn: typeof fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (url === WORKOS_DEVICE_AUTHORIZATION_URL) {
+        return Response.json({
+          device_code: 'private-device-code',
+          user_code: 'RRGQ-BJVS',
+          verification_uri: 'https://authkit.example/device',
+          expires_in: 300,
+          interval: 1,
+        });
+      }
+      return backend.fetchFn(input, init);
+    };
+    initSyncRuntime(dir, { fetchFn, createSocket: factory.createSocket });
+    pinBackend({ baseUrl: 'https://backend.example.test/', descriptor: workosDescriptorFixture() });
+    let challenge: { userCode: string; verificationUri: string } | null = null;
+
+    const snapshot = await signInWithWorkOSDevice({
+      startRuntime: false,
+      timeoutMs: 10_000,
+      onChallenge: (next) => {
+        challenge = next;
+      },
+    });
+
+    expect(snapshot.state).toBe('signed-in');
+    expect(challenge).toMatchObject({
+      userCode: 'RRGQ-BJVS',
+      verificationUri: 'https://authkit.example/device',
+    });
+    expect(getRuntimeStatus().syncEnabled).toBe(true);
+    expect(factory.sockets).toHaveLength(0);
+    expect(backend.calls.some((call) => call.operation === 'sync.pull')).toBe(true);
+    expect(backend.calls.some((call) => call.operation === 'sync.push')).toBe(true);
+    expect(JSON.stringify(challenge)).not.toContain('private-device-code');
+  });
+
   it('registers a replacement enrollment before resuming pending changes', async () => {
     const backend = fakeBackend();
     const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
@@ -829,6 +1148,42 @@ function cannedSyncRpc(onCall: () => void) {
   }) as never;
 }
 
+/** Control-plane answers for live-channel tests; sync operations use the RPC seam above. */
+const liveControlFetch = (async (
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response> => {
+  const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+  if (new URL(url).pathname !== '/v1/rpc') return new Response('not found', { status: 404 });
+  const body = JSON.parse((init?.body as string) ?? '{}') as {
+    operation?: string;
+    requestId?: string;
+  };
+  const result =
+    body.operation === 'device.list'
+      ? { devices: [] }
+      : body.operation === 'security.get'
+        ? {
+            accountId: 'account-1',
+            policy: 'require-approval',
+            revision: 1,
+            configured: false,
+            recovery: null,
+            trustState: 'trusted',
+            trustSource: 'first-device',
+            canConfigure: true,
+            bootstrapEnrollmentId: 'spike-enrollment',
+            requiresRecovery: false,
+            recentEvents: [],
+          }
+        : {};
+  return Response.json({
+    requestId: body.requestId ?? 'test-request',
+    serverTime: new Date().toISOString(),
+    result,
+  });
+}) as typeof fetch;
+
 describe('live channel', () => {
   beforeEach(() => {
     // Fire-and-forget cycles kicked by enableSync must not hit real DNS.
@@ -841,7 +1196,11 @@ describe('live channel', () => {
   it('opens the socket with the session bearer and flips to live on hello', async () => {
     const factory = fakeSocketFactory();
     const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
-    initSyncRuntime(dir, { devSpikeEnabled: true, createSocket: factory.createSocket });
+    initSyncRuntime(dir, {
+      devSpikeEnabled: true,
+      createSocket: factory.createSocket,
+      fetchFn: liveControlFetch,
+    });
     pinTestBackend();
     spikeEnroll({ accountId: 'account-1' });
     enableSync();
@@ -861,7 +1220,11 @@ describe('live channel', () => {
   it('drives a sync cycle on sync.invalidate frames', async () => {
     const factory = fakeSocketFactory();
     const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
-    initSyncRuntime(dir, { devSpikeEnabled: true, createSocket: factory.createSocket });
+    initSyncRuntime(dir, {
+      devSpikeEnabled: true,
+      createSocket: factory.createSocket,
+      fetchFn: liveControlFetch,
+    });
     pinTestBackend();
     spikeEnroll({ accountId: 'account-1' });
     let calls = 0;
@@ -884,7 +1247,11 @@ describe('live channel', () => {
     try {
       const factory = fakeSocketFactory();
       const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
-      initSyncRuntime(dir, { devSpikeEnabled: true, createSocket: factory.createSocket });
+      initSyncRuntime(dir, {
+        devSpikeEnabled: true,
+        createSocket: factory.createSocket,
+        fetchFn: liveControlFetch,
+      });
       pinTestBackend();
       spikeEnroll({ accountId: 'account-1' });
       enableSync();
@@ -904,7 +1271,11 @@ describe('live channel', () => {
     try {
       const factory = fakeSocketFactory();
       const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
-      initSyncRuntime(dir, { devSpikeEnabled: true, createSocket: factory.createSocket });
+      initSyncRuntime(dir, {
+        devSpikeEnabled: true,
+        createSocket: factory.createSocket,
+        fetchFn: liveControlFetch,
+      });
       pinTestBackend();
       spikeEnroll({ accountId: 'account-1' });
       enableSync();
@@ -916,6 +1287,26 @@ describe('live channel', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('runs a bounded one-shot identity refresh and leaves the session for run', async () => {
+    const factory = fakeSocketFactory();
+    const dir = mkdtempSync(join(tmpdir(), 'sync-runtime-'));
+    initSyncRuntime(dir, {
+      devSpikeEnabled: true,
+      createSocket: factory.createSocket,
+      fetchFn: liveControlFetch,
+    });
+    pinTestBackend();
+    spikeEnroll({ accountId: 'account-1' });
+    enableSync();
+
+    await refreshDeviceIdentitiesForOneShot();
+
+    expect(getRuntimeStatus().auth.state).toBe('signed-in');
+    expect(getRuntimeStatus().syncEnabled).toBe(true);
+    expect(factory.sockets[0]?.closedWith).not.toBeNull();
+    stopSyncRuntimeForOneShot();
   });
 });
 

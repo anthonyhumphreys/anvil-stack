@@ -19,3 +19,4 @@ export * from './data';
 export * from './bootstrap';
 export * from './entitlements';
 export * from './companion';
+export * from './device-security';

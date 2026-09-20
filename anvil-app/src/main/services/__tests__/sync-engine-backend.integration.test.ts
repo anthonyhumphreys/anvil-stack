@@ -38,6 +38,7 @@ import {
   upsertEnrollment,
 } from '../sync-persistence.service';
 import { getWorkflowTemplate, saveWorkflowTemplate } from '../workflow.service';
+import { setAccountKeyBootstrapEligibility } from '../sync-keyring.service';
 
 const SCOPE: SyncScope = {
   backendId: 'backend-1',
@@ -134,6 +135,8 @@ describe('SYNC-03 engine through BACKEND-01 apply rules', () => {
   it('pushes a bound workflow-template and pulls it onto a second in-memory db', async () => {
     active.db = deviceA;
     activateEnrollment(ENROLLMENT_A, 'installation-a');
+    // Only A owns the backend's first-device bootstrap claim.
+    setAccountKeyBootstrapEligibility(SCOPE, ENROLLMENT_A, true);
     const saved = saveWorkflowTemplate(templateInput('Shared template'));
     upsertBinding(SCOPE, ET, saved.id);
     // First upload is a create with null baseRevision (BACKEND-01). A second

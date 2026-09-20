@@ -351,6 +351,50 @@ async function handleDeletionStatusRpc(
   return rpcSuccessResponse(requestId, payload);
 }
 
+/**
+ * Reset is the one security operation that may be authorized by a fresh OIDC
+ * proof after the existing bearer has been fenced. It therefore reaches the
+ * session object before the normal Worker authentication gate.
+ */
+async function handleSecurityResetRpc(
+  request: Request,
+  env: Env,
+  requestId: string,
+  params: unknown,
+): Promise<Response> {
+  const auth = await authenticate(request, env);
+  const headers = new Headers({ 'content-type': 'application/json' });
+  if (auth !== null) {
+    headers.set('x-anvil-account', auth.accountId);
+    headers.set('x-anvil-enrollment', auth.enrollmentId);
+    headers.set('x-anvil-enrollment-class', auth.enrollmentClass ?? 'device');
+    if (auth.environmentId !== undefined) headers.set('x-anvil-environment-id', auth.environmentId);
+  }
+  const response = await sessionStub(env).fetch(
+    new Request('https://internal.anvil/internal/security-reset', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(params ?? {}),
+    }),
+  );
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    const code =
+      typeof payload === 'object' && payload !== null && 'error' in payload
+        ? (payload as { error?: { code?: unknown } }).error?.code
+        : undefined;
+    const mapped =
+      code === 'malformed-request' ||
+      code === 'forbidden' ||
+      code === 'conflict' ||
+      code === 'not-found'
+        ? (code as ErrorCode)
+        : 'unauthenticated';
+    return rpcErrorResponse(requestId, mapped);
+  }
+  return rpcSuccessResponse(requestId, payload);
+}
+
 async function handleRpc(request: Request, env: Env): Promise<Response> {
   if (request.method !== 'POST') {
     return rpcErrorResponse(undefined, 'malformed-request');
@@ -374,6 +418,14 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
   // forward the raw Authorization for the session object's admin check.
   if (envelope.request.operation === 'account.deletionStatus') {
     return handleDeletionStatusRpc(
+      request,
+      env,
+      envelope.request.requestId,
+      envelope.request.params,
+    );
+  }
+  if (envelope.request.operation === 'security.reset') {
+    return handleSecurityResetRpc(
       request,
       env,
       envelope.request.requestId,
@@ -439,6 +491,63 @@ async function handleRpc(request: Request, env: Env): Promise<Response> {
         return rpcErrorResponse(envelope.request.requestId, 'unauthenticated');
       }
       return rpcSuccessResponse(envelope.request.requestId, await response.json());
+    }
+    case 'security.get':
+    case 'security.challenge':
+    case 'security.configure':
+    case 'security.recover':
+    case 'security.approve':
+    case 'security.setPolicy':
+    case 'security.updateRecovery': {
+      const internal =
+        envelope.request.operation === 'security.get'
+          ? '/internal/security-get'
+          : envelope.request.operation === 'security.challenge'
+            ? '/internal/security-challenge'
+            : envelope.request.operation === 'security.configure'
+              ? '/internal/security-configure'
+              : envelope.request.operation === 'security.recover'
+                ? '/internal/security-recover'
+                : envelope.request.operation === 'security.approve'
+                  ? '/internal/security-approve'
+                : envelope.request.operation === 'security.setPolicy'
+                  ? '/internal/security-set-policy'
+                  : '/internal/security-update-recovery';
+      const response = await sessionStub(env).fetch(
+        new Request(`https://internal.anvil${internal}`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-anvil-account': auth.accountId,
+            'x-anvil-enrollment': auth.enrollmentId,
+            'x-anvil-enrollment-class': auth.enrollmentClass ?? 'device',
+            ...(auth.environmentId === undefined
+              ? {}
+              : { 'x-anvil-environment-id': auth.environmentId }),
+          },
+          body: JSON.stringify(envelope.request.params ?? {}),
+        }),
+      );
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        const code =
+          typeof payload === 'object' && payload !== null && 'error' in payload
+            ? (payload as {
+                error?: {
+                  code?: unknown;
+                  details?: Record<string, unknown>;
+                  retryable?: boolean;
+                };
+              }).error
+            : undefined;
+        return rpcErrorResponse(
+          envelope.request.requestId,
+          typeof code?.code === 'string' ? (code.code as ErrorCode) : 'unavailable',
+          code?.details,
+          code?.retryable,
+        );
+      }
+      return rpcSuccessResponse(envelope.request.requestId, payload);
     }
     // MOB-01: a host presents a companion's device access token; the
     // session object's validate lookup returns its verified claims. The

@@ -89,6 +89,10 @@ import {
   type SyncAuthService,
 } from './sync-auth.service.js';
 import {
+  type WorkOSDeviceChallenge,
+  type WorkOSDeviceEnrollParams,
+} from './workos-device-auth.service.js';
+import {
   activateBackend,
   disconnectBackend,
   getActiveBackend,
@@ -149,12 +153,36 @@ import {
   mintPairingPayload,
   pendingRotationReports,
   publishDeviceIdentity,
+  revocationsNeedingRotation,
   registerPairingRedemption,
+  retryPendingKeyringWraps,
   rotateAccountKey,
+  canProvisionAccountKey,
+  clearAccountCrypto,
+  hasAccountKey,
+  invalidateRecoverySecret,
+  provisionAccountKey,
+  setAccountKeyBootstrapEligibility,
   setDeviceTrust,
   wrapAccountKeyFor,
   type DeviceTrustState,
 } from './sync-keyring.service.js';
+import {
+  getDeviceSecurityStatus as orchestrateDeviceSecurityStatus,
+  replaceDeviceRecovery as orchestrateReplaceDeviceRecovery,
+  refreshDeviceRecovery as orchestrateRefreshDeviceRecovery,
+  setNewDeviceTrustPolicy as orchestrateSetNewDeviceTrustPolicy,
+  setupDeviceRecovery as orchestrateSetupDeviceRecovery,
+  unlockDeviceRecovery as orchestrateUnlockDeviceRecovery,
+  type SyncDeviceSecurityContext,
+} from './sync-device-security.service.js';
+import type {
+  SyncDeviceRecoveryResult,
+  SyncDeviceSecurityStatus,
+  SyncDeviceTrustSource,
+  SyncDeviceTrustPolicy,
+  SyncEncryptedSyncAccountResetConfirmation,
+} from '../../shared/sync-device-security.js';
 import {
   configureMeshHandoffContext,
   initiateHandoff,
@@ -309,6 +337,8 @@ let runtimeUserDataDir: string | null = null;
  * callback from an old account/backend can never mutate new-scope state.
  */
 let runtimeGeneration = 0;
+/** Scope stays read-only until its post-revocation key rotation succeeds. */
+let keyRotationBlockedScopeKey: string | null = null;
 /** Timestamp of the last attempted session.describe entitlement refresh. */
 let lastHostedRefreshAt = 0;
 
@@ -491,6 +521,7 @@ export function resetSyncRuntimeForTests(): void {
   fetchOverride = undefined;
   createSocketOverride = undefined;
   lastHostedRefreshAt = 0;
+  keyRotationBlockedScopeKey = null;
 }
 
 export function setSyncRuntimeRpcForTests(rpc: SyncEngineRpc | undefined): void {
@@ -524,6 +555,10 @@ function currentScope(): SyncScope | null {
     accountId: fields.accountId,
     datasetEpoch: fields.datasetEpoch,
   };
+}
+
+function runtimeScopeKey(scope: SyncScope): string {
+  return `${scope.backendId}\u0000${scope.accountId}\u0000${scope.datasetEpoch}`;
 }
 
 /** A new sign-in may replace the enrollment while keeping the same sync scope. */
@@ -565,6 +600,23 @@ function isSyncEnabled(): boolean {
  */
 export function activeSyncScope(): SyncScope | null {
   return currentScope();
+}
+
+/**
+ * Complete the first one-shot sync cycle within a bounded headless budget.
+ * The regular runtime has its own transport timeout, while this extra bound
+ * also covers injected RPC seams used by daemon integrations and tests.
+ */
+async function requestSyncWithin(timeoutMs: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error('Initial sync timed out.')), timeoutMs);
+  });
+  try {
+    await Promise.race([requestSync(), timeout]);
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
 }
 
 function payloadLabel(json: string | null): string | null {
@@ -770,6 +822,195 @@ export async function signInWithOidc(): Promise<SyncAuthPublicSnapshot> {
   }
 }
 
+export interface SignInWithWorkOSDeviceOptions {
+  /** Receives only the public code and safe verification URI. */
+  onChallenge?: (challenge: WorkOSDeviceChallenge) => void | Promise<void>;
+  /** Cancels the flow without ever writing a local session. */
+  signal?: AbortSignal;
+  /** Optional bounded override used by headless callers and tests. */
+  timeoutMs?: number;
+  /**
+   * Daemon sign-in is a one-shot authentication command. When false, persist
+   * the session but leave sync timers, sockets, and worker activity to `run`.
+   */
+  startRuntime?: boolean;
+}
+
+/**
+ * Headless production sign-in. WorkOS is contacted directly for its public
+ * device authorization response; each poll submits the private code through
+ * the reviewed backend's `/enroll` route, which returns only an Anvil session.
+ */
+export async function signInWithWorkOSDevice(
+  options: SignInWithWorkOSDeviceOptions = {},
+): Promise<SyncAuthPublicSnapshot> {
+  const backend = requireReviewedBackend();
+  if (!backend.descriptor.authModes.includes('workos-device')) {
+    throw new Error('This backend does not advertise workos-device sign-in.');
+  }
+  const service = requireAuth();
+  const generation = runtimeGeneration;
+  runtimeGeneration += 1;
+  const snapshot = await service.enrollWithWorkOSDevice(
+    {
+      clientId: backend.descriptor.auth.publicClientId,
+      ...(options.onChallenge === undefined ? {} : { onChallenge: options.onChallenge }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+      ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+      ...(fetchOverride === undefined ? {} : { fetchFn: fetchOverride }),
+    },
+    async (params: WorkOSDeviceEnrollParams, signal: AbortSignal) => {
+      return postAuthRoute<EnrollResult>({ apiUrl: apiUrlFor(backend) }, 'enroll', params, {
+        fetchFn: fetchOverride,
+        signal,
+      });
+    },
+    backend.id,
+    () => {
+      const current = pinnedBackend();
+      return (
+        runtimeGeneration === generation + 1 &&
+        current?.id === backend.id &&
+        current.identityReviewRequired === false
+      );
+    },
+  );
+  if (
+    runtimeGeneration !== generation + 1 ||
+    snapshot.state !== 'signed-in' ||
+    pinnedBackend()?.id !== backend.id
+  ) {
+    return snapshot;
+  }
+  sessionExpired = false;
+  if (options.startRuntime !== false) {
+    scheduleSessionRefresh();
+    ensureCurrentEnrollment();
+    initializeSyncCrypto();
+    void refreshHostedEntitlement().catch(() => undefined);
+    resumeSyncAfterEnrollment();
+  } else {
+    // The daemon's one-shot sign-in still performs the trust bootstrap needed
+    // for manual SAS approval. It deliberately leaves timers, sockets, and
+    // worker leases stopped; `anvil-daemon run` owns those long-lived pieces.
+    if (getActiveBackend()?.id !== backend.id) {
+      activateBackend(backend.id);
+    }
+    // Activation must precede the local crypto bootstrap: currentScope() is
+    // backend-bound, so publishing the identity while the reviewed backend
+    // is still paused would silently do nothing.
+    ensureCurrentEnrollment();
+    initializeSyncCrypto();
+    // The one-shot command must publish/pull the initial identity before it
+    // reports success, while keeping the long-lived timer/socket machinery in
+    // `run`. The transport already has a bounded RPC timeout; retain that
+    // bound if a custom RPC seam hangs in a headless caller.
+    try {
+      await requestSyncWithin(15_000);
+    } catch (error) {
+      // Enrollment is already committed at this point. Keep sign-in success
+      // truthful and leave the retryable failure in runtime status for `run`.
+      lastError = error instanceof Error ? error.message : 'Initial sync failed.';
+    }
+  }
+  return snapshot;
+}
+
+export interface DeviceAuthorizationSignInFlow {
+  verificationUri: string;
+  userCode: string;
+  expiresIn: number;
+  waitForCompletion: (signal: AbortSignal) => Promise<void>;
+  cancel: () => void;
+  dispose: () => void;
+  /** Exposes commit state without exposing the session or provider tokens. */
+  isSessionPersisted: () => boolean;
+}
+
+/**
+ * Starts the headless flow and resolves as soon as the public challenge is
+ * ready to display. The returned handle lets the daemon own SIGINT without
+ * exposing the private device code or a WorkOS token.
+ */
+export async function beginDeviceAuthorizationSignIn(
+  signal?: AbortSignal,
+  options: { startRuntime?: boolean } = {},
+): Promise<DeviceAuthorizationSignInFlow> {
+  const controller = new AbortController();
+  const onCallerAbort = () => controller.abort();
+  signal?.addEventListener('abort', onCallerAbort, { once: true });
+  if (signal?.aborted) controller.abort();
+
+  let challenge: WorkOSDeviceChallenge | null = null;
+  let resolveChallenge: ((value: WorkOSDeviceChallenge) => void) | null = null;
+  let rejectChallenge: ((error: unknown) => void) | null = null;
+  const challengeReady = new Promise<WorkOSDeviceChallenge>((resolve, reject) => {
+    resolveChallenge = resolve;
+    rejectChallenge = reject;
+  });
+  const completion = signInWithWorkOSDevice({
+    signal: controller.signal,
+    ...(options.startRuntime === undefined ? {} : { startRuntime: options.startRuntime }),
+    onChallenge: (next) => {
+      challenge = next;
+      resolveChallenge?.(next);
+    },
+  });
+  // If the provider/backend rejects before emitting a challenge, wake the
+  // start caller and keep the completion promise available to waiters.
+  void completion.catch((error: unknown) => {
+    rejectChallenge?.(error);
+  });
+  try {
+    await Promise.race([
+      challengeReady,
+      completion.then(() => {
+        if (challenge === null) throw new Error('WorkOS did not return a device challenge.');
+        return challenge;
+      }),
+    ]);
+  } catch (error) {
+    controller.abort();
+    signal?.removeEventListener('abort', onCallerAbort);
+    throw error;
+  }
+  if (challenge === null) {
+    controller.abort();
+    signal?.removeEventListener('abort', onCallerAbort);
+    throw new Error('WorkOS did not return a device challenge.');
+  }
+  const publicChallenge: WorkOSDeviceChallenge = challenge;
+  let disposed = false;
+  const cancel = () => {
+    controller.abort();
+    auth?.cancelPendingLogin();
+  };
+  return {
+    verificationUri: publicChallenge.verificationUri,
+    userCode: publicChallenge.userCode,
+    expiresIn: Math.max(0, (Date.parse(publicChallenge.expiresAt) - Date.now()) / 1000),
+    waitForCompletion: async (waitSignal: AbortSignal): Promise<void> => {
+      if (waitSignal.aborted) {
+        cancel();
+      } else {
+        waitSignal.addEventListener('abort', cancel, { once: true });
+      }
+      try {
+        await completion;
+      } finally {
+        waitSignal.removeEventListener('abort', cancel);
+      }
+    },
+    cancel,
+    isSessionPersisted: () => getRuntimeStatus().auth.state === 'signed-in',
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      signal?.removeEventListener('abort', onCallerAbort);
+    },
+  };
+}
+
 /**
  * E2E bootstrap after any successful enrollment: publishes this device's
  * X25519 identity and, when the enrollment carried a pairing payload,
@@ -961,9 +1202,353 @@ async function accountRpc<R>(operation: string, params: unknown): Promise<R> {
   return result;
 }
 
+interface SecurityView {
+  canConfigure?: unknown;
+  bootstrapEnrollmentId?: unknown;
+  enrollments?: unknown;
+}
+
+interface SecurityEnrollmentView {
+  enrollmentId?: unknown;
+  trustState?: unknown;
+  trustSource?: unknown;
+  trustedAt?: unknown;
+}
+
+function securityEnrollment(
+  view: SecurityView,
+  enrollmentId: string,
+): SecurityEnrollmentView | null {
+  if (!Array.isArray(view.enrollments)) return null;
+  const entry = view.enrollments.find(
+    (candidate) =>
+      typeof candidate === 'object' &&
+      candidate !== null &&
+      (candidate as SecurityEnrollmentView).enrollmentId === enrollmentId,
+  );
+  return entry === undefined ? null : (entry as SecurityEnrollmentView);
+}
+
+function securityContext(fence: {
+  scope: SyncScope;
+  enrollmentId: string;
+  generation: number;
+}): SyncDeviceSecurityContext {
+  return {
+    scope: fence.scope,
+    enrollmentId: fence.enrollmentId,
+    rpc: (operation, params) => accountRpc(operation, params),
+    assertCurrent: () => assertSecurityScope(fence),
+  };
+}
+
+async function recordBootstrapEligibility(fence: {
+  scope: SyncScope;
+  enrollmentId: string;
+  generation: number;
+}): Promise<SecurityView> {
+  assertSecurityScope(fence);
+  const view = await accountRpc<SecurityView>('security.get', {});
+  assertSecurityScope(fence);
+  // `canConfigure` is intentionally broader than first-key minting: an
+  // already keyed trusted device may configure/replace recovery. Only the
+  // server-selected bootstrap enrollment may create the account's first ADK.
+  const eligible = view.canConfigure === true && view.bootstrapEnrollmentId === fence.enrollmentId;
+  setAccountKeyBootstrapEligibility(fence.scope, fence.enrollmentId, eligible);
+  return view;
+}
+
+function emptyDeviceSecurityStatus(): SyncDeviceSecurityStatus {
+  return {
+    accountId: null,
+    configured: false,
+    policy: 'require-approval',
+    revision: 1,
+    trustState: 'unknown',
+    trustSource: 'unknown',
+    hasAccountKey: false,
+    hasRecoverySecret: false,
+    canConfigure: false,
+    requiresRecovery: false,
+    recentEvents: [],
+  };
+}
+
+/**
+ * Pull account state while keeping all writes (including scan and push)
+ * disabled. This is used before first-device key provisioning so an OIDC
+ * enrolment cannot mint a divergent key for an already populated account.
+ */
+async function readOnlySyncPull(fence: {
+  scope: SyncScope;
+  enrollmentId: string;
+  generation: number;
+}): Promise<void> {
+  const backend = getActiveBackend() ?? pinnedBackend();
+  const token = requireAuth().getAccessToken();
+  if (backend === null || token === null) throw new Error('Sign in before reading account state.');
+  const paths = resolveBackendPaths(backend.baseUrl, backend.descriptor, {
+    allowLoopbackHttp: shouldAllowLoopbackHttp(backend.baseUrl),
+  });
+  await runSyncCycle({
+    scope: fence.scope,
+    enrollmentId: fence.enrollmentId,
+    connection: { apiUrl: paths.apiUrl, limits: backend.descriptor.limits },
+    accessToken: token,
+    writeGate: () => ({ allowed: false }),
+    rpc:
+      rpcOverride ??
+      (fetchOverride === undefined
+        ? undefined
+        : (connection, operation, params, accessToken) =>
+            backendRpc(connection, operation, params, accessToken, { fetchFn: fetchOverride })),
+    guard: () => {
+      try {
+        assertSecurityScope(fence);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+  });
+  assertSecurityScope(fence);
+}
+
+/** Returns security metadata only; recovery envelopes remain in the main process. */
+export async function getDeviceSecurityStatus(): Promise<SyncDeviceSecurityStatus> {
+  const scope = currentScope();
+  const fields = auth?.getSessionScopeFields() ?? null;
+  if (scope === null || fields === null) return emptyDeviceSecurityStatus();
+  const fence = {
+    scope,
+    enrollmentId: fields.enrollmentId,
+    generation: runtimeGeneration,
+  };
+  if (!hasAccountKey(scope)) await recordBootstrapEligibility(fence);
+  return orchestrateDeviceSecurityStatus(securityContext(fence));
+}
+
+/**
+ * First-device setup. The server authorizes the bootstrap enrollment and the
+ * pull-only pass establishes enough local state to safely mint the first ADK.
+ */
+export async function setupDeviceRecovery(
+  policy: SyncDeviceTrustPolicy,
+): Promise<SyncDeviceRecoveryResult> {
+  const fence = securityScope();
+  const view = await recordBootstrapEligibility(fence);
+  if (view.canConfigure !== true) {
+    throw new Error('This account is not eligible for initial recovery setup.');
+  }
+  if (!hasAccountKey(fence.scope)) {
+    await readOnlySyncPull(fence);
+    if (!canProvisionAccountKey(fence.scope, fence.enrollmentId)) {
+      throw new Error('This enrollment is not authorized to create the first account key.');
+    }
+    provisionAccountKey(fence.scope);
+  }
+  return orchestrateSetupDeviceRecovery(securityContext(fence), policy);
+}
+
+function securityScope(): {
+  scope: SyncScope;
+  enrollmentId: string;
+  generation: number;
+} {
+  const scope = currentScope();
+  const fields = requireAuth().getSessionScopeFields();
+  if (scope === null || fields === null) {
+    throw new Error('Sign in before changing device security.');
+  }
+  return { scope, enrollmentId: fields.enrollmentId, generation: runtimeGeneration };
+}
+
+function assertSecurityScope(fence: {
+  scope: SyncScope;
+  enrollmentId: string;
+  generation: number;
+}): void {
+  if (fence.generation !== runtimeGeneration) {
+    throw new Error('The sign-in session changed while device security was updating.');
+  }
+  const scope = currentScope();
+  const fields = requireAuth().getSessionScopeFields();
+  if (
+    scope === null ||
+    fields === null ||
+    fields.enrollmentId !== fence.enrollmentId ||
+    scope.backendId !== fence.scope.backendId ||
+    scope.accountId !== fence.scope.accountId ||
+    scope.datasetEpoch !== fence.scope.datasetEpoch
+  ) {
+    throw new Error('The sign-in session changed while device security was updating.');
+  }
+}
+
+export async function unlockDeviceRecovery(code: string): Promise<SyncDeviceSecurityStatus> {
+  const fence = securityScope();
+  return orchestrateUnlockDeviceRecovery(securityContext(fence), code);
+}
+
+export async function setNewDeviceTrustPolicy(
+  policy: SyncDeviceTrustPolicy,
+): Promise<SyncDeviceSecurityStatus> {
+  const fence = securityScope();
+  return orchestrateSetNewDeviceTrustPolicy(securityContext(fence), policy);
+}
+
+export async function replaceDeviceRecovery(): Promise<SyncDeviceRecoveryResult> {
+  const fence = securityScope();
+  return orchestrateReplaceDeviceRecovery(securityContext(fence));
+}
+
+export async function refreshDeviceRecovery(): Promise<SyncDeviceSecurityStatus> {
+  const fence = securityScope();
+  return orchestrateRefreshDeviceRecovery(securityContext(fence));
+}
+
+export async function resetEncryptedSyncAccount(
+  confirmation: SyncEncryptedSyncAccountResetConfirmation,
+): Promise<void> {
+  if (confirmation !== 'RESET ENCRYPTED DATA') {
+    throw new Error('Explicit reset confirmation required.');
+  }
+  const fence = securityScope();
+  const resumeSyncAfterRejectedReset = isSyncEnabled();
+  runtimeGeneration += 1;
+  stopPolling();
+  clearSessionRefresh();
+  teardownLiveChannel();
+  meshWorkerOnSyncGone();
+  meshObserverOnGone();
+  try {
+    await accountRpc('security.reset', { confirmation });
+  } catch (error) {
+    // A non-retryable RPC response is a definitive rejection. Restore the
+    // prior runtime only while the captured sign-in is still current. Network
+    // and retryable failures remain fenced because the server may have
+    // accepted the reset before the response was lost.
+    const active = currentScope();
+    const fields = requireAuth().getSessionScopeFields();
+    const sameSession =
+      active !== null &&
+      fields !== null &&
+      active.backendId === fence.scope.backendId &&
+      active.accountId === fence.scope.accountId &&
+      active.datasetEpoch === fence.scope.datasetEpoch &&
+      fields.enrollmentId === fence.enrollmentId;
+    if (
+      sameSession &&
+      resumeSyncAfterRejectedReset &&
+      error instanceof BackendRpcError &&
+      !error.retryable &&
+      error.code !== 'unauthenticated'
+    ) {
+      resumeSyncAfterEnrollment();
+    }
+    if (error instanceof BackendRpcError && !error.retryable && error.code === 'unauthenticated') {
+      sessionExpired = true;
+    }
+    scheduleSessionRefresh();
+    throw error;
+  }
+  const active = currentScope();
+  const fields = requireAuth().getSessionScopeFields();
+  if (
+    active === null ||
+    fields === null ||
+    active.backendId !== fence.scope.backendId ||
+    active.accountId !== fence.scope.accountId ||
+    active.datasetEpoch !== fence.scope.datasetEpoch ||
+    fields.enrollmentId !== fence.enrollmentId
+  ) {
+    scheduleSessionRefresh();
+    throw new Error('The sign-in session changed before encrypted data reset completed.');
+  }
+  clearAccountCrypto(fence.scope);
+  keyRotationBlockedScopeKey = null;
+  requireAuth().signOutLocal();
+  disconnectBackend();
+  sessionExpired = false;
+  lastError = null;
+}
+
 /** All device enrollments on the account, including revoked rows and self. */
 export async function listDevices(): Promise<DeviceListResult> {
-  return accountRpc<DeviceListResult>('device.list', {});
+  const result = await accountRpc<DeviceListResult>('device.list', {});
+  const scope = currentScope();
+  if (scope === null) return result;
+
+  // `device.list` is an enrollment roster, while `security.get` carries the
+  // server's audit metadata. Join that metadata with the local keyring trust
+  // state before exposing it to the renderer. A server-side trusted row alone
+  // never grants local E2EE access: a device remains pending here until its
+  // local identity has been verified and the keyring has accepted a wrap.
+  let security: SecurityView = {};
+  try {
+    security = await accountRpc<SecurityView>('security.get', {});
+  } catch (error) {
+    // Older self-hosted backends may not expose device-security metadata yet;
+    // keep the enrollment list useful while preserving all auth failures.
+    if (
+      !(error instanceof BackendRpcError) ||
+      (error.code !== 'unsupported-operation' && error.code !== 'not-found')
+    ) {
+      throw error;
+    }
+  }
+  const remote = new Map<string, SecurityEnrollmentView>();
+  if (Array.isArray(security.enrollments)) {
+    for (const entry of security.enrollments) {
+      if (
+        typeof entry === 'object' &&
+        entry !== null &&
+        typeof (entry as SecurityEnrollmentView).enrollmentId === 'string'
+      ) {
+        const enrollment = entry as SecurityEnrollmentView;
+        remote.set(enrollment.enrollmentId as string, enrollment);
+      }
+    }
+  }
+  const local = new Map(listDeviceTrust(scope).map((entry) => [entry.enrollmentId, entry]));
+  const trustSources = new Set<SyncDeviceTrustSource>([
+    'first-device',
+    'manual-approval',
+    'pairing',
+    'recovery',
+    'automatic-auth',
+    'recovery-code',
+    'local-device',
+  ]);
+  const asSource = (value: unknown): SyncDeviceTrustSource | undefined =>
+    typeof value === 'string' && trustSources.has(value as SyncDeviceTrustSource)
+      ? (value as SyncDeviceTrustSource)
+      : undefined;
+  return {
+    ...result,
+    devices: result.devices.map((device) => {
+      const localTrust = local.get(device.enrollmentId);
+      const remoteTrust = remote.get(device.enrollmentId);
+      // Remote revocation is authoritative for the display, even before the
+      // next sync reconciliation writes the sticky local state.
+      const trustState = device.revoked ? ('revoked' as const) : localTrust?.state;
+      if (trustState === undefined) return device;
+      const source =
+        trustState === 'pending'
+          ? undefined
+          : (asSource(remoteTrust?.trustSource) ??
+            (device.self ? ('local-device' as const) : ('manual-approval' as const)));
+      return {
+        ...device,
+        trustState,
+        ...(source === undefined ? {} : { trustSource: source }),
+        trustedAt:
+          (typeof remoteTrust?.trustedAt === 'string' ? remoteTrust.trustedAt : null) ??
+          localTrust?.decidedAt ??
+          null,
+      };
+    }),
+  };
 }
 
 /** Rename another enrollment on the same account; empty string clears. */
@@ -982,18 +1567,32 @@ export async function renameDevice(
  * what it already decrypted — that bound is inherent.
  */
 export async function revokeDevice(enrollmentId: string): Promise<DeviceRevokeResult> {
-  const result = await accountRpc<DeviceRevokeResult>('device.revoke', { enrollmentId });
   const scope = currentScope();
-  if (scope !== null) {
+  const generation = runtimeGeneration;
+  const result = await accountRpc<DeviceRevokeResult>('device.revoke', { enrollmentId });
+  if (
+    scope !== null &&
+    generation === runtimeGeneration &&
+    currentScope()?.accountId === scope.accountId
+  ) {
     try {
       rotateAccountKey(scope, [enrollmentId]);
     } catch (error) {
-      console.warn(
-        `[sync] ADK rotation after revoke failed; new writes keep the current key: ${
+      // A revoked device must not remain able to decrypt new writes. Pause
+      // this runtime until key rotation succeeds on the next explicit cycle.
+      keyRotationBlockedScopeKey = runtimeScopeKey(scope);
+      stopPolling();
+      teardownLiveChannel();
+      throw new Error(
+        `Device revoked, but account-key rotation failed; Sync is paused: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
     }
+    keyRotationBlockedScopeKey = null;
+    // The previous recovery root is deliberately invalidated by revocation;
+    // require an explicit replacement before refreshing future key versions.
+    invalidateRecoverySecret(scope);
   }
   return result;
 }
@@ -1013,20 +1612,79 @@ export function deviceTrustStates(): Array<{
 }
 
 /**
- * Promotes a 'pending' enrollment to 'trusted' — the user has compared
- * the SAS (or otherwise confirmed the device out of band). Delivers the
- * full ADK bundle immediately. Explicit user decisions may re-open a
- * revoked enrollment (`force`), which is a fresh approval, not a sticky
- * bypass.
+ * Promotes a pending enrollment after the user has compared the SAS. This is
+ * intentionally local: the server's authenticated roster is not a crypto
+ * approval. A revoked enrollment can never be reopened by this path.
  */
-export function approveDeviceTrust(enrollmentId: string): void {
-  const scope = currentScope();
-  if (scope === null) throw new Error('Sign in before approving a device.');
-  setDeviceTrust(scope, enrollmentId, 'trusted', { force: true });
-  const peer = listDeviceIdentities(scope).find((device) => device.enrollmentId === enrollmentId);
-  if (peer !== undefined) {
-    wrapAccountKeyFor(scope, enrollmentId, peer.pub);
+export async function approveDeviceTrust(
+  enrollmentId: string,
+  verificationCode: string,
+): Promise<void> {
+  const fence = securityScope();
+  const localTrust = deviceTrustState(fence.scope, enrollmentId);
+  if (localTrust === 'revoked') {
+    throw new Error('A revoked device requires a fresh enrollment before it can be trusted.');
   }
+  const holdsAccountKey = hasAccountKey(fence.scope);
+  if (localTrust !== 'pending' && (holdsAccountKey || localTrust !== 'trusted')) {
+    throw new Error('Only a device waiting for approval can be approved.');
+  }
+  const ownPub = ensureDeviceIdentity(fence.scope, fence.enrollmentId).pub;
+  const peer = listDeviceIdentities(fence.scope).find(
+    (device) => device.enrollmentId === enrollmentId,
+  );
+  if (peer === undefined) throw new Error('Device identity not seen yet — sync, then try again.');
+  const peerPub = peer.pub;
+  const expected = deriveSas(fence.scope.accountId, ownPub, peerPub);
+  if (verificationCode !== expected)
+    throw new Error('The device verification code does not match.');
+  const roster = await accountRpc<DeviceListResult>('device.list', {});
+  assertSecurityScope(fence);
+  if (
+    ensureDeviceIdentity(fence.scope, fence.enrollmentId).pub !== ownPub ||
+    listDeviceIdentities(fence.scope).find((device) => device.enrollmentId === enrollmentId)
+      ?.pub !== peerPub
+  ) {
+    throw new Error('The device identity changed while approval was in progress.');
+  }
+  const remote = roster.devices.find((device) => device.enrollmentId === enrollmentId);
+  if (remote === undefined || remote.revoked)
+    throw new Error('That device is revoked or no longer enrolled.');
+
+  if (!holdsAccountKey) {
+    // A newly enrolled/keyless device can verify the identity of an already
+    // trusted source. This changes only the local membership used to accept
+    // that source's authenticated wrap; it never creates or grants an ADK.
+    const security = await accountRpc<SecurityView>('security.get', {});
+    assertSecurityScope(fence);
+    const source = securityEnrollment(security, enrollmentId);
+    if (source?.trustState !== 'trusted') {
+      throw new Error('That device is not trusted by the account yet.');
+    }
+    setDeviceTrust(fence.scope, enrollmentId, 'trusted');
+    retryPendingKeyringWraps(fence.scope);
+    await requestSync();
+    return;
+  }
+
+  // This is an audit/roster acknowledgement only. The server response never
+  // authorizes key delivery; local SAS verification above remains the crypto
+  // gate. Read the authoritative security row after the fresh roster check:
+  // another already-trusted device may have completed approval concurrently,
+  // in which case repeating security.approve is a conflict. A server roster
+  // row alone is deliberately insufficient for this decision.
+  const security = await accountRpc<SecurityView>('security.get', {});
+  assertSecurityScope(fence);
+  if (securityEnrollment(security, enrollmentId)?.trustState !== 'trusted') {
+    await accountRpc('security.approve', {
+      enrollmentId,
+      source: 'manual-approval',
+    });
+    assertSecurityScope(fence);
+  }
+  setDeviceTrust(fence.scope, enrollmentId, 'trusted');
+  wrapAccountKeyFor(fence.scope, enrollmentId, peer.pub);
+  await requestSync();
 }
 
 /**
@@ -1037,13 +1695,12 @@ export function approveDeviceTrust(enrollmentId: string): void {
  * offline when the web revoked a sibling learns it here and rotates so
  * post-revocation writes are unreadable to the revoked device.
  */
-async function reconcileDeviceTrust(scope: SyncScope): Promise<void> {
-  let roster: DeviceListResult;
-  try {
-    roster = await accountRpc<DeviceListResult>('device.list', {});
-  } catch {
-    return; // roster unreadable — next cycle retries
-  }
+async function reconcileDeviceTrust(
+  scope: SyncScope,
+  guard: () => boolean = () => true,
+): Promise<void> {
+  const roster = await accountRpc<DeviceListResult>('device.list', {});
+  if (!guard()) return;
   const remoteRevoked = new Set(
     roster.devices.filter((device) => device.revoked).map((device) => device.enrollmentId),
   );
@@ -1063,12 +1720,23 @@ async function reconcileDeviceTrust(scope: SyncScope): Promise<void> {
       setDeviceTrust(scope, enrollmentId, 'pending');
     }
   }
-  if (newlyRevoked.length > 0) {
-    try {
-      rotateAccountKey(scope, newlyRevoked);
-    } catch {
-      // No ADK held yet (fresh device awaiting keys) — nothing to rotate.
+  // Only the local completion fence written atomically by rotateAccountKey is
+  // evidence this device handled a revoke. Pulled rotation metadata is
+  // backend-controlled and may arrive without a usable key wrap.
+  const rotationTargets = revocationsNeedingRotation(scope, [...remoteRevoked]);
+  const rotationNeeded =
+    rotationTargets.length > 0 || keyRotationBlockedScopeKey === runtimeScopeKey(scope);
+  if (rotationNeeded && remoteRevoked.size > 0) {
+    if (hasAccountKey(scope)) {
+      try {
+        rotateAccountKey(scope, rotationTargets.length > 0 ? rotationTargets : [...remoteRevoked]);
+        keyRotationBlockedScopeKey = null;
+      } catch (error) {
+        keyRotationBlockedScopeKey = runtimeScopeKey(scope);
+        throw error;
+      }
     }
+    invalidateRecoverySecret(scope);
   }
 }
 
@@ -1488,6 +2156,11 @@ export function enableSync(): SyncRuntimeStatus {
   };
   ensureCurrentEnrollment();
   bindLocalEntities(scope);
+  // Enrollment can complete while the backend is still paused. In that case
+  // the post-enrollment bootstrap ran before `currentScope()` existed, so
+  // publish the device identity again when Sync is actually enabled. This
+  // also marks the first device trusted locally before key provisioning.
+  initializeSyncCrypto();
   connectLiveChannel();
   armFallbackPoll();
   meshWorkerOnSyncReady();
@@ -1515,6 +2188,7 @@ export async function signOutSync(): Promise<SyncRuntimeStatus> {
   }
   service.signOutLocal();
   disconnectBackend();
+  keyRotationBlockedScopeKey = null;
   meshWorkerOnSyncGone();
   meshObserverOnGone();
   lastError = null;
@@ -1586,6 +2260,48 @@ export function getRuntimeStatus(): SyncRuntimeStatus {
     lastPushAt: snapshot?.lastPushAt ?? null,
     lastPullAt: snapshot?.lastPullAt ?? null,
   };
+}
+
+/**
+ * Stop long-lived runtime activity for a one-shot daemon command while
+ * keeping the reviewed backend and signed-in session available for the
+ * command's final RPC. This is deliberately different from sign-out: the
+ * persisted session and account binding remain intact for the next `run`.
+ */
+export function stopSyncRuntimeForOneShot(): void {
+  runtimeGeneration += 1;
+  stopPolling();
+  clearSessionRefresh();
+  teardownLiveChannel();
+  meshWorkerOnSyncGone();
+  meshObserverOnGone();
+}
+
+/**
+ * Refresh the authoritative device roster before a one-shot security
+ * command. Device verification and approval must use the current published
+ * identities, rather than whatever roster a previous sync happened to cache.
+ * The sync cycle is bounded and all timers/sockets are stopped before and
+ * after it so the daemon process can return to its shell prompt.
+ */
+export async function refreshDeviceIdentitiesForOneShot(): Promise<void> {
+  if (!isSyncEnabled()) {
+    const backend = requireReviewedBackend();
+    const fields = requireAuth().getSessionScopeFields();
+    if (fields === null) throw new Error('Enroll this device before refreshing identities.');
+    if (fields.backendId !== null && fields.backendId !== backend.id) {
+      throw new Error('This device session belongs to a different backend. Sign out first.');
+    }
+    // `enableSync()` starts the socket, fallback poll, worker lease, and a
+    // fire-and-forget cycle. Security commands need the same local bootstrap
+    // without any of those long-lived activities.
+    runtimeGeneration += 1;
+    activateBackend(backend.id);
+    ensureCurrentEnrollment();
+    initializeSyncCrypto();
+  }
+  stopSyncRuntimeForOneShot();
+  await requestSyncWithin(15_000);
 }
 
 // ---- BILL-05 hosted entitlement ------------------------------------------
@@ -1831,6 +2547,9 @@ export async function requestSync(): Promise<void> {
     const expiresAt = Date.parse(snapshot.expiresAt);
     if (Number.isFinite(expiresAt) && expiresAt - Date.now() <= REFRESH_AHEAD_MS) {
       await runSessionRefresh();
+      if (sessionExpired) {
+        throw new Error('Sync session expired; sign in again.');
+      }
       if (!isSyncEnabled()) return;
     }
   }
@@ -1862,6 +2581,23 @@ export async function requestSync(): Promise<void> {
     );
   };
   try {
+    // Reconcile the authoritative device roster before pushing anything. A
+    // remote revoke must rotate the local account key first; a roster failure
+    // therefore fails closed instead of allowing another encrypted write.
+    await reconcileDeviceTrust(scope, guard);
+    if (!guard()) return;
+    // A first device may choose to continue without setting up recovery yet.
+    // Refresh the server-authorized bootstrap decision before the engine can
+    // mint its first local account key; local absence of peers is insufficient.
+    if (!hasAccountKey(scope)) {
+      const security = await accountRpc<SecurityView>('security.get', {});
+      if (!guard()) return;
+      setAccountKeyBootstrapEligibility(
+        scope,
+        fields.enrollmentId,
+        security.canConfigure === true && security.bootstrapEnrollmentId === fields.enrollmentId,
+      );
+    }
     await runSyncCycle({
       scope,
       enrollmentId: fields.enrollmentId,
@@ -1871,7 +2607,9 @@ export async function requestSync(): Promise<void> {
       // pull and control ops keep running. No row (self-host) means writes
       // are unrestricted.
       writeGate: () => ({
-        allowed: getSyncEntitlement(scope.backendId, scope.accountId)?.restricted !== true,
+        allowed:
+          getSyncEntitlement(scope.backendId, scope.accountId)?.restricted !== true &&
+          keyRotationBlockedScopeKey !== runtimeScopeKey(scope),
       }),
       rpc:
         rpcOverride ??
@@ -1885,11 +2623,13 @@ export async function requestSync(): Promise<void> {
     });
     lastError = null;
     if (guard()) {
-      // Trust reconcile + rotation reports ride the same cadence — a
-      // remote revoke or a finished rotation is never left to a manual
-      // refresh. Both are best-effort and retry each cycle.
-      await reconcileDeviceTrust(scope).catch(() => undefined);
+      // Rotation reports ride the same cadence — a finished rotation is
+      // never left to a manual refresh.
       await flushRotationReports(scope).catch(() => undefined);
+      // Pairing/recovery may have delivered a newer key version. Refreshing
+      // the opaque bundle is harmless when unchanged and remains blocked by
+      // the local invalidation fence after a revocation.
+      await refreshDeviceRecovery().catch(() => undefined);
       await serviceDashboardGrants(scope, guard).catch(() => undefined);
     }
   } catch (error) {
@@ -1914,6 +2654,9 @@ export async function requestSync(): Promise<void> {
     }
     lastError = error instanceof Error ? error.message : String(error);
     if (error instanceof SyncEngineError && !error.retryable && error.code === 'unauthenticated') {
+      sessionExpired = true;
+    }
+    if (error instanceof BackendRpcError && !error.retryable && error.code === 'unauthenticated') {
       sessionExpired = true;
     }
     throw error;

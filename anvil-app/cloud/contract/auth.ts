@@ -6,9 +6,9 @@
 // testable in any runtime.
 //
 // HTTP mapping (documented here because envelope.ts is owned elsewhere):
-// every AuthErrorCode maps to HTTP 401 — an invalid proof, a used
-// single-use enrollment code, and a reused (already-rotated) refresh token
-// are all authentication failures, never 403/409.
+// terminal proof failures, used single-use enrollment codes, and reused
+// refresh tokens map to HTTP 401. Device authorization pending and slow-down
+// values are polling signals and use retryable statuses.
 
 import type { HostedEntitlement } from './entitlements';
 
@@ -36,6 +36,9 @@ export const OIDC_PLACEHOLDER_ISSUER = 'https://auth.anvil.example' as const;
 /** Placeholder public client id for the desktop app. */
 export const OIDC_PLACEHOLDER_CLIENT_ID = 'anvil-desktop' as const;
 
+/** WorkOS AuthKit's public User Management authority used by device flow. */
+export const WORKOS_AUTHKIT_ISSUER = 'https://api.workos.com/user_management' as const;
+
 /** Frozen auth route families (see integration-contract section 5). */
 export const AUTH_OPERATIONS = ['enroll', 'session.refresh', 'session.revoke', 'session.describe'] as const;
 
@@ -51,14 +54,25 @@ export interface OidcPkceProof {
   nonce: string;
 }
 
+/**
+ * WorkOS AuthKit Device Authorization proof. The device code is exchanged
+ * exactly once by the backend; clients never present WorkOS access, refresh,
+ * or ID tokens to Anvil.
+ */
+export interface WorkosDeviceProof {
+  method: 'workos-device';
+  issuer: string;
+  deviceCode: string;
+}
+
 /** Administrator-issued short-lived single-use enrollment proof. */
 export interface EnrollmentCodeProof {
   method: 'enrollment-code';
   code: string;
 }
 
-/** The only two proofs the built client can present at enrollment. */
-export type EnrollProof = OidcPkceProof | EnrollmentCodeProof;
+/** The proofs the built client can present at enrollment. */
+export type EnrollProof = OidcPkceProof | WorkosDeviceProof | EnrollmentCodeProof;
 
 /**
  * Enrollment class (ENV-01). `device` is a durable account device subject
@@ -219,6 +233,19 @@ export interface DeviceSummary {
   createdAt: string;
   /** True when this row is the caller's own session. */
   self: boolean;
+  /** Server audit state; the desktop keyring remains the E2EE authority. */
+  trustState?: 'pending' | 'trusted' | 'revoked';
+  /** How the server recorded the enrollment's trust transition. */
+  trustSource?:
+    | 'unknown'
+    | 'first-device'
+    | 'manual-approval'
+    | 'pairing'
+    | 'recovery'
+    | 'automatic-auth'
+    | 'recovery-code'
+    | 'local-device';
+  trustedAt?: string | null;
   /**
    * `ephemeral` marks a cloud-environment enrollment (ENV-01); absent on
    * older backends — treat as `device`.
@@ -286,15 +313,24 @@ export interface AccountDeletionStatusResult {
 }
 
 /**
- * Auth failure codes owned by this contract (envelope.ts is owned by
- * another packet, so they live here). All three map to HTTP 401.
+ * Auth codes owned by this contract (envelope.ts is owned by another packet,
+ * so they live here). Terminal failures map to HTTP 401; pending and
+ * slow-down values are polling signals.
  */
-export type AuthErrorCode = 'refresh-reuse-detected' | 'enrollment-code-used' | 'invalid-proof';
+export type AuthErrorCode =
+  | 'refresh-reuse-detected'
+  | 'enrollment-code-used'
+  | 'invalid-proof'
+  | 'device-authorization-pending'
+  | 'device-authorization-slow-down'
+  | 'device-authorization-denied'
+  | 'device-authorization-expired';
 
 /**
  * HTTP status agreement for auth failures: reuse of an already-rotated
- * refresh token, a consumed enrollment code, and any other invalid proof
- * are all 401 authentication failures.
+ * Refresh reuse, consumed enrollment codes, and terminal device-authorization
+ * failures are 401 authentication failures. Pending and slow-down responses
+ * are polling signals, with status codes that let headless clients retry.
  */
 export function authErrorHttpStatus(code: AuthErrorCode): number {
   switch (code) {
@@ -303,6 +339,13 @@ export function authErrorHttpStatus(code: AuthErrorCode): number {
     case 'enrollment-code-used':
       return 401;
     case 'invalid-proof':
+      return 401;
+    case 'device-authorization-pending':
+      return 202;
+    case 'device-authorization-slow-down':
+      return 429;
+    case 'device-authorization-denied':
+    case 'device-authorization-expired':
       return 401;
     default: {
       const exhaustive: never = code;

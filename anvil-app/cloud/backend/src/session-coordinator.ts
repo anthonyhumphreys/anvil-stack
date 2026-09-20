@@ -51,9 +51,32 @@ import type {
   SharedArtifactDescriptor,
   SharedArtifactState,
 } from '../../contract/shares';
-import { isWorkosAuthKitIssuer, verifyOidcPkceProof } from './oidc';
+import {
+  isWorkosAuthKitIssuer,
+  isValidWorkosDeviceCode,
+  verifyOidcPkceProof,
+  verifyWorkosDeviceProof,
+} from './oidc';
 import { isRecord, rpcErrorResponse } from './rpc';
 import { SESSION_SCHEMA } from './schema';
+import { canonicalizeJson } from '../../contract/sync';
+import {
+  SECURITY_AUDIT_RETENTION,
+  SECURITY_CHALLENGE_TTL_MS,
+  type SecurityAction,
+  type SecurityChallengeEnvelope,
+  type SecurityChallengeProof,
+  type SecurityChallengeRow,
+  decodeBase64Url,
+  parseSecurityProof,
+  randomChallenge,
+  verifySecurityProof,
+} from './device-security';
+import {
+  isRecoveryEnvelope,
+  parseRecoveryEnvelope,
+  serializeRecoveryEnvelope,
+} from '../../contract/device-security';
 import {
   hostedIdentityFromOidcSubject,
   initialHostedSyncAccountId,
@@ -83,6 +106,12 @@ const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 /** Revoked sessions are retained this long for audit, then swept (OPS-01). */
 const REVOKED_SESSION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const SESSION_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
+const SECURITY_POLICY_DEFAULT = 'require-approval' as const;
+const SECURITY_POLICIES = ['require-approval', 'auto-trust-authenticated'] as const;
+const SECURITY_ENCRYPTED_DATA_CONFIRMATION = 'RESET ENCRYPTED DATA' as const;
+// WorkOS polling normally waits five seconds. A one-second DO-wide floor
+// blocks random-code floods while leaving legitimate device polling intact.
+const WORKOS_DEVICE_MIN_ATTEMPT_INTERVAL_MS = 1_000;
 // Hosted artifact sharing bounds (contract shares.ts).
 const SHARE_UPLOAD_TTL_MS = 15 * 60 * 1000;
 const SHARE_MAX_BYTES = 16 * 1024 * 1024;
@@ -111,6 +140,12 @@ interface SessionRow {
   prev_refresh_grace_until: number | null;
   pending_rotated_session: string | null;
   revoked_at: number | null;
+  proof_method: 'oidc-pkce' | 'workos-device' | 'enrollment-code' | null;
+  trust_state: 'pending' | 'trusted' | 'revoked' | null;
+  trusted_at: number | null;
+  signing_public_key: string | null;
+  trust_source: 'first-device' | 'manual-approval' | 'pairing' | 'recovery' | 'automatic-auth' | null;
+  trust_generation: number | null;
   [key: string]: string | number | null;
 }
 
@@ -119,7 +154,25 @@ interface CodeRow {
   account_id: string;
   expires_at: number;
   consumed_at: number | null;
+  trust_mode: 'pending' | 'pairing' | null;
   [key: string]: string | number | null;
+}
+
+interface AccountSecurityRow {
+  account_id: string;
+  policy: (typeof SECURITY_POLICIES)[number];
+  revision: number;
+  generation: number;
+  recovery_revision: number;
+  recovery_id: string | null;
+  backend_id: string | null;
+  recovery_ciphertext: string | null;
+  recovery_verifier_public_key: string | null;
+  recovery_owner_enrollment_id: string | null;
+  recovery_invalidated_at: number | null;
+  bootstrap_enrollment_id: string | null;
+  created_at: number;
+  updated_at: number;
 }
 
 interface SharedArtifactRow {
@@ -150,9 +203,17 @@ function authError(code: AuthErrorCode | 'unauthenticated' | 'throttled' | 'malf
       : code === 'throttled'
         ? 429
         : authErrorHttpStatus(code);
+  const retryable =
+    code === 'throttled' ||
+    code === 'device-authorization-pending' ||
+    code === 'device-authorization-slow-down';
+  const headers = new Headers({ 'content-type': 'application/json' });
+  if (code === 'device-authorization-pending' || code === 'device-authorization-slow-down') {
+    headers.set('retry-after', '5');
+  }
   return Response.json(
-    { error: { code, retryable: code === 'throttled' } },
-    { status: code === 'malformed-request' ? 400 : status },
+    { error: { code, retryable } },
+    { status: code === 'malformed-request' ? 400 : status, headers },
   );
 }
 
@@ -208,6 +269,7 @@ function parseIssueOptions(body: Record<string, unknown>): {
   provider: string | null;
   sessionTtlSeconds: number | null;
   environmentId: string | null;
+  trustMode: 'pending' | 'pairing';
 } | null {
   const rawClass = body['enrollmentClass'];
   if (rawClass !== undefined && rawClass !== 'device' && rawClass !== 'ephemeral') {
@@ -232,11 +294,16 @@ function parseIssueOptions(body: Record<string, unknown>): {
   ) {
     return null;
   }
+  const trustMode = body['trustMode'];
+  if (trustMode !== undefined && trustMode !== 'pending' && trustMode !== 'pairing') {
+    return null;
+  }
   return {
     enrollmentClass,
     provider: typeof provider === 'string' ? provider : null,
     sessionTtlSeconds: typeof ttl === 'number' ? ttl : null,
     environmentId: typeof environmentId === 'string' ? environmentId : null,
+    trustMode: trustMode === 'pairing' ? 'pairing' : 'pending',
   };
 }
 
@@ -286,6 +353,39 @@ export class SessionCoordinator extends DurableObject<Env> {
       'ALTER TABLE device_sessions ADD COLUMN environment_id TEXT',
     );
     this.ensureColumn(
+      'device_sessions',
+      'proof_method',
+      "ALTER TABLE device_sessions ADD COLUMN proof_method TEXT NOT NULL DEFAULT 'enrollment-code'",
+    );
+    this.ensureColumn(
+      'device_sessions',
+      'trust_state',
+      "ALTER TABLE device_sessions ADD COLUMN trust_state TEXT NOT NULL DEFAULT 'pending'",
+    );
+    this.ensureColumn(
+      'device_sessions',
+      'trusted_at',
+      'ALTER TABLE device_sessions ADD COLUMN trusted_at INTEGER',
+    );
+    this.ensureColumn(
+      'device_sessions',
+      'signing_public_key',
+      'ALTER TABLE device_sessions ADD COLUMN signing_public_key TEXT',
+    );
+    this.ensureColumn(
+      'device_sessions',
+      'trust_source',
+      'ALTER TABLE device_sessions ADD COLUMN trust_source TEXT',
+    );
+    this.ensureColumn(
+      'device_sessions',
+      'trust_generation',
+      'ALTER TABLE device_sessions ADD COLUMN trust_generation INTEGER',
+    );
+    this.ctx.storage.sql.exec(
+      'CREATE INDEX IF NOT EXISTS idx_sessions_trust ON device_sessions (account_id, trust_state)',
+    );
+    this.ensureColumn(
       'enrollment_codes',
       'enrollment_class',
       "ALTER TABLE enrollment_codes ADD COLUMN enrollment_class TEXT NOT NULL DEFAULT 'device'",
@@ -305,6 +405,51 @@ export class SessionCoordinator extends DurableObject<Env> {
       'environment_id',
       'ALTER TABLE enrollment_codes ADD COLUMN environment_id TEXT',
     );
+    this.ensureColumn(
+      'enrollment_codes',
+      'trust_mode',
+      "ALTER TABLE enrollment_codes ADD COLUMN trust_mode TEXT NOT NULL DEFAULT 'pending'",
+    );
+    this.ensureColumn(
+      'account_security',
+      'recovery_id',
+      'ALTER TABLE account_security ADD COLUMN recovery_id TEXT',
+    );
+    this.ensureColumn(
+      'account_security',
+      'backend_id',
+      'ALTER TABLE account_security ADD COLUMN backend_id TEXT',
+    );
+    this.ensureColumn(
+      'account_security',
+      'recovery_owner_enrollment_id',
+      'ALTER TABLE account_security ADD COLUMN recovery_owner_enrollment_id TEXT',
+    );
+    this.ensureColumn(
+      'account_security',
+      'recovery_invalidated_at',
+      'ALTER TABLE account_security ADD COLUMN recovery_invalidated_at INTEGER',
+    );
+    this.ensureColumn(
+      'security_challenges',
+      'recovery_id',
+      'ALTER TABLE security_challenges ADD COLUMN recovery_id TEXT',
+    );
+    this.ensureColumn(
+      'security_challenges',
+      'backend_id',
+      'ALTER TABLE security_challenges ADD COLUMN backend_id TEXT',
+    );
+    this.ensureColumn(
+      'security_challenges',
+      'identity_pub',
+      'ALTER TABLE security_challenges ADD COLUMN identity_pub TEXT',
+    );
+    this.ensureColumn(
+      'security_challenges',
+      'payload_hash',
+      'ALTER TABLE security_challenges ADD COLUMN payload_hash TEXT',
+    );
   }
 
   /** Adds a column to an existing DO SQLite table when it is missing. */
@@ -315,6 +460,175 @@ export class SessionCoordinator extends DurableObject<Env> {
       .map((row) => row.name);
     if (!columns.includes(name)) {
       this.ctx.storage.sql.exec(ddl);
+    }
+  }
+
+  private accountSecurity(accountId: string): AccountSecurityRow | null {
+    const row = this.ctx.storage.sql
+      .exec('SELECT * FROM account_security WHERE account_id = ?', accountId)
+      .toArray()[0] as unknown as AccountSecurityRow | undefined;
+    return row ?? null;
+  }
+
+  /**
+   * Creates the durable policy lazily. This is the compatibility migration
+   * for accounts created before security policy existed: it chooses the
+   * earliest enrollment as the only legacy bootstrap authority, never an
+   * arbitrary pending session, and leaves policy at require-approval.
+   */
+  private ensureAccountSecurity(accountId: string, now = Date.now()): AccountSecurityRow {
+    this.ctx.storage.sql.exec(
+      `INSERT OR IGNORE INTO account_security
+       (account_id, policy, revision, generation, recovery_revision,
+        recovery_id, backend_id, recovery_ciphertext, recovery_verifier_public_key,
+        recovery_owner_enrollment_id, recovery_invalidated_at, bootstrap_enrollment_id,
+        created_at, updated_at)
+       VALUES (?, ?, 1, 1, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
+      accountId,
+      SECURITY_POLICY_DEFAULT,
+      now,
+      now,
+    );
+    let row = this.accountSecurity(accountId);
+    if (row === null) throw new Error('security policy insert failed');
+    if (row.bootstrap_enrollment_id === null) {
+      const earliest = this.ctx.storage.sql
+        .exec(
+          `SELECT enrollment_id FROM device_sessions
+           WHERE account_id = ? AND enrollment_class = 'device'
+           ORDER BY created_at ASC, enrollment_id ASC LIMIT 1`,
+          accountId,
+        )
+        .toArray()[0] as { enrollment_id?: unknown } | undefined;
+      if (typeof earliest?.enrollment_id === 'string') {
+        this.ctx.storage.sql.exec(
+          `UPDATE account_security SET bootstrap_enrollment_id = ?, updated_at = ?
+           WHERE account_id = ? AND bootstrap_enrollment_id IS NULL`,
+          earliest.enrollment_id,
+          now,
+          accountId,
+        );
+        row = this.accountSecurity(accountId) ?? row;
+      }
+    }
+    return row;
+  }
+
+  private securityCaller(request: Request): { auth: VerifiedAuth; row: SessionRow } | null {
+    const auth = parseVerifiedAuth(request);
+    if (auth === null) return null;
+    const row = this.sessionByEnrollment(auth.enrollmentId);
+    if (
+      row === null ||
+      row.account_id !== auth.accountId ||
+      row.revoked_at !== null ||
+      enrollmentExpired(row, Date.now()) ||
+      row.enrollment_class === 'ephemeral'
+    ) {
+      return null;
+    }
+    return { auth, row };
+  }
+
+  private trustState(row: SessionRow): 'pending' | 'trusted' | 'revoked' {
+    if (row.revoked_at !== null || row.trust_state === 'revoked') return 'revoked';
+    return row.trust_state === 'trusted' ? 'trusted' : 'pending';
+  }
+
+  private securityPolicy(value: unknown): (typeof SECURITY_POLICIES)[number] | null {
+    return value === 'require-approval' || value === 'auto-trust-authenticated' ? value : null;
+  }
+
+  private securityAction(value: unknown): SecurityAction | null {
+    switch (value) {
+      case 'configure':
+        return 'configure';
+      case 'recover':
+        return 'recover';
+      case 'setPolicy':
+        return 'setPolicy';
+      case 'updateRecovery':
+        return 'updateRecovery';
+      case 'reset':
+        return 'reset';
+      default:
+        return null;
+    }
+  }
+
+  private securityAudit(
+    accountId: string,
+    action: string,
+    outcome: string,
+    enrollment: SessionRow | null,
+    metadata: Record<string, unknown> = {},
+  ): void {
+    const bounded: Record<string, string | number | boolean | null> = {};
+    for (const [key, value] of Object.entries(metadata)) {
+      if (Object.keys(bounded).length >= 12) break;
+      if (
+        typeof value === 'string' ||
+        typeof value === 'number' ||
+        typeof value === 'boolean' ||
+        value === null
+      ) {
+        bounded[key.slice(0, 64)] = value;
+      }
+    }
+    let encoded = JSON.stringify(bounded);
+    if (encoded.length > 2048) encoded = '{}';
+    this.ctx.storage.sql.exec(
+      `INSERT INTO security_audit
+       (audit_id, account_id, enrollment_id, action, outcome, proof_method,
+        enrollment_class, metadata, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      crypto.randomUUID(),
+      accountId,
+      enrollment?.enrollment_id ?? null,
+      action,
+      outcome,
+      enrollment?.proof_method ?? null,
+      enrollment?.enrollment_class ?? null,
+      encoded,
+      Date.now(),
+    );
+    this.ctx.storage.sql.exec(
+      `DELETE FROM security_audit
+       WHERE account_id = ? AND audit_id NOT IN
+         (SELECT audit_id FROM security_audit WHERE account_id = ? ORDER BY created_at DESC LIMIT ?)`,
+      accountId,
+      accountId,
+      SECURITY_AUDIT_RETENTION,
+    );
+  }
+
+  /** Any trusted device revocation invalidates the shared recovery root. A
+   * holder can retain the code locally, so the old verifier and ciphertext
+   * must stop authorizing future unlocks until a surviving trusted holder
+   * explicitly configures a fresh envelope. */
+  private invalidateRecoveryOnTrustedRevoke(accountId: string, row: SessionRow): void {
+    if (this.trustState(row) !== 'trusted') return;
+    const invalidated = this.ctx.storage.sql
+      .exec<{ account_id: string }>(
+        `UPDATE account_security
+         SET revision = revision + 1,
+             generation = generation + 1,
+             recovery_revision = recovery_revision + 1,
+             recovery_invalidated_at = ?,
+             updated_at = ?
+         WHERE account_id = ?
+           AND recovery_verifier_public_key IS NOT NULL
+           AND recovery_invalidated_at IS NULL
+         RETURNING account_id`,
+        Date.now(),
+        Date.now(),
+        accountId,
+      )
+      .toArray();
+    if (invalidated.length > 0) {
+      this.securityAudit(accountId, 'recovery-invalidated', 'accepted', row, {
+        reason: 'trusted-device-revoked',
+      });
     }
   }
 
@@ -363,6 +677,57 @@ export class SessionCoordinator extends DurableObject<Env> {
           return this.handleDeletionState(url);
         case 'POST /internal/describe':
           return await this.handleDescribe(request);
+        case 'POST /internal/security-get':
+          return await this.handleSecurityGet(request);
+        case 'POST /internal/security-challenge': {
+          const response = await this.ctx.blockConcurrencyWhile(() =>
+            this.handleSecurityChallenge(request),
+          );
+          await this.ensureSweepAlarm();
+          return response;
+        }
+        case 'POST /internal/security-configure': {
+          const response = await this.ctx.blockConcurrencyWhile(() =>
+            this.handleSecurityConfigure(request),
+          );
+          await this.ensureSweepAlarm();
+          return response;
+        }
+        case 'POST /internal/security-recover': {
+          const response = await this.ctx.blockConcurrencyWhile(() =>
+            this.handleSecurityRecover(request),
+          );
+          await this.ensureSweepAlarm();
+          return response;
+        }
+        case 'POST /internal/security-approve': {
+          const response = await this.ctx.blockConcurrencyWhile(() =>
+            this.handleSecurityApprove(request),
+          );
+          await this.ensureSweepAlarm();
+          return response;
+        }
+        case 'POST /internal/security-set-policy': {
+          const response = await this.ctx.blockConcurrencyWhile(() =>
+            this.handleSecuritySetPolicy(request),
+          );
+          await this.ensureSweepAlarm();
+          return response;
+        }
+        case 'POST /internal/security-update-recovery': {
+          const response = await this.ctx.blockConcurrencyWhile(() =>
+            this.handleSecurityUpdateRecovery(request),
+          );
+          await this.ensureSweepAlarm();
+          return response;
+        }
+        case 'POST /internal/security-reset': {
+          const response = await this.ctx.blockConcurrencyWhile(() =>
+            this.handleSecurityReset(request),
+          );
+          await this.ensureSweepAlarm();
+          return response;
+        }
         case 'POST /internal/device-list':
           return await this.handleDeviceList(request);
         case 'POST /internal/device-rename':
@@ -539,6 +904,76 @@ export class SessionCoordinator extends DurableObject<Env> {
     return accountId;
   }
 
+  /** Resolves the pre-reset hosted mapping without advancing its generation. */
+  private async resolveExistingOidcAccountId(
+    issuer: string,
+    clientId: string,
+    sub: string,
+  ): Promise<string | null> {
+    if (!isWorkosAuthKitIssuer(issuer) || this.env.HOSTED_DB === undefined) {
+      return legacyOidcAccountId(issuer, sub);
+    }
+    const identity = hostedIdentityFromOidcSubject(
+      this.env.HOSTED_WORKOS_CLIENT_ID ?? clientId,
+      sub,
+    );
+    if (identity === null) return null;
+    const billing = await getBillingAccountByIdentity(this.env.HOSTED_DB, identity);
+    if (billing?.lifecycle !== 'active') return null;
+    return billing.sync_account_id ?? (await initialHostedSyncAccountId(identity).catch(() => null));
+  }
+
+  /** Reserves a WorkOS proof exactly once after provider identity succeeds. */
+  private consumeWorkosDeviceProof(
+    deviceCodeHash: string,
+    accountId: string,
+    consumedAt: number,
+  ): boolean {
+    return this.ctx.storage.transactionSync(() => {
+      const existing = this.ctx.storage.sql
+        .exec(
+          'SELECT device_code_hash FROM workos_device_proofs WHERE device_code_hash = ?',
+          deviceCodeHash,
+        )
+        .toArray();
+      if (existing.length > 0) return false;
+      this.ctx.storage.sql.exec(
+        `INSERT INTO workos_device_proofs
+         (device_code_hash, account_id, consumed_at) VALUES (?, ?, ?)`,
+        deviceCodeHash,
+        accountId,
+        consumedAt,
+      );
+      return true;
+    });
+  }
+
+  /** Applies a small DO-wide floor before a WorkOS provider request. */
+  private allowWorkosDeviceAttempt(now: number): boolean {
+    return this.ctx.storage.transactionSync(() => {
+      const row = this.ctx.storage.sql
+        .exec<{ last_attempt_at: number }>(
+          'SELECT last_attempt_at FROM workos_device_rate WHERE singleton = 1',
+        )
+        .toArray()[0];
+      if (row !== undefined && now - row.last_attempt_at < WORKOS_DEVICE_MIN_ATTEMPT_INTERVAL_MS) {
+        return false;
+      }
+      this.ctx.storage.sql.exec(
+        'INSERT OR REPLACE INTO workos_device_rate (singleton, last_attempt_at) VALUES (1, ?)',
+        now,
+      );
+      return true;
+    });
+  }
+
+  private recordWorkosDeviceAttemptCompletion(completedAt: number): void {
+    this.ctx.storage.sql.exec(
+      'UPDATE workos_device_rate SET last_attempt_at = ? WHERE singleton = 1',
+      completedAt,
+    );
+  }
+
   private sessionByEnrollment(enrollmentId: string): SessionRow | null {
     const rows = this.ctx.storage.sql
       .exec('SELECT * FROM device_sessions WHERE enrollment_id = ?', enrollmentId)
@@ -594,6 +1029,11 @@ export class SessionCoordinator extends DurableObject<Env> {
       createdBy?: string | null;
       enrollmentExpiresAt?: number | null;
       environmentId?: string | null;
+      proofMethod?: 'oidc-pkce' | 'workos-device' | 'enrollment-code';
+      trustState?: 'pending' | 'trusted';
+      trustedAt?: number | null;
+      trustSource?: 'first-device' | 'pairing' | 'automatic-auth' | null;
+      trustGeneration?: number | null;
     },
   ): Promise<DeviceSession> {
     const accessToken = generateDeviceToken('at');
@@ -611,8 +1051,8 @@ export class SessionCoordinator extends DurableObject<Env> {
         refresh_token_hash, prev_refresh_token_hash, prev_refresh_grace_until,
         pending_rotated_session, revoked_at, created_at,
         enrollment_class, provider, created_by, enrollment_expires_at,
-        environment_id
-      ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?)`,
+        environment_id, proof_method, trust_state, trusted_at, trust_source, trust_generation
+      ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       enrollmentId,
       accountId,
       installationId,
@@ -626,13 +1066,29 @@ export class SessionCoordinator extends DurableObject<Env> {
       options?.createdBy ?? null,
       options?.enrollmentExpiresAt ?? null,
       options?.environmentId ?? null,
+      options?.proofMethod ?? 'enrollment-code',
+      options?.trustState ?? 'pending',
+      options?.trustedAt ?? null,
+      options?.trustSource ?? null,
+      options?.trustGeneration ?? null,
     );
     const row = this.sessionByEnrollment(enrollmentId);
     if (row === null) {
       throw new Error('session insert failed');
     }
-    const epoch = await this.datasetEpoch(accountId);
-    return this.toDeviceSession(row, { accessToken, refreshToken, accessExpiresAt }, epoch);
+    try {
+      const epoch = await this.datasetEpoch(accountId);
+      return this.toDeviceSession(row, { accessToken, refreshToken, accessExpiresAt }, epoch);
+    } catch (error) {
+      // Token issuance is intentionally not replayable. If the account epoch
+      // lookup fails after the row insert, remove the orphaned session; a
+      // subsequent login must obtain a fresh provider proof.
+      this.ctx.storage.sql.exec(
+        'DELETE FROM device_sessions WHERE enrollment_id = ?',
+        enrollmentId,
+      );
+      throw error;
+    }
   }
 
   private async handleEnroll(request: Request): Promise<Response> {
@@ -652,6 +1108,8 @@ export class SessionCoordinator extends DurableObject<Env> {
     let codeSessionTtlMs: number | null = null;
     let codeIssuedBy: string | null = null;
     let codeEnvironmentId: string | null = null;
+    let codeTrustMode: 'pending' | 'pairing' = 'pending';
+    let workosDeviceCodeHash: string | null = null;
     if (proof.method === 'enrollment-code') {
       if (typeof proof.code !== 'string' || proof.code.length === 0) {
         return authError('invalid-proof');
@@ -684,6 +1142,7 @@ export class SessionCoordinator extends DurableObject<Env> {
       codeSessionTtlMs = consumed.session_ttl_ms as number | null;
       codeIssuedBy = consumed.issued_by as string | null;
       codeEnvironmentId = consumed.environment_id as string | null;
+      codeTrustMode = consumed.trust_mode === 'pairing' ? 'pairing' : 'pending';
     } else if (proof.method === 'oidc-pkce') {
       const issuer = this.env.OIDC_ISSUER;
       const clientId = this.env.OIDC_CLIENT_ID;
@@ -699,8 +1158,65 @@ export class SessionCoordinator extends DurableObject<Env> {
         return authError('invalid-proof');
       }
       accountId = resolved;
+    } else if (proof.method === 'workos-device') {
+      const issuer = this.env.OIDC_ISSUER;
+      const clientId = this.env.OIDC_CLIENT_ID;
+      if (
+        typeof issuer !== 'string' ||
+        typeof clientId !== 'string' ||
+        !isWorkosAuthKitIssuer(issuer) ||
+        typeof proof.issuer !== 'string' ||
+        !isValidWorkosDeviceCode(proof.deviceCode)
+      ) {
+        return authError('invalid-proof');
+      }
+      workosDeviceCodeHash = await sha256Hex(proof.deviceCode);
+      const consumed = this.ctx.storage.sql
+        .exec(
+          'SELECT device_code_hash FROM workos_device_proofs WHERE device_code_hash = ?',
+          workosDeviceCodeHash,
+        )
+        .toArray();
+      if (consumed.length > 0) {
+        return authError('invalid-proof');
+      }
+      if (!this.allowWorkosDeviceAttempt(now)) {
+        return authError('device-authorization-slow-down');
+      }
+      let result;
+      try {
+        result = await verifyWorkosDeviceProof(proof, { issuer, clientId });
+      } finally {
+        // A slow provider response must still cool down the next queued
+        // attempt; otherwise a flood can serialize another 10-second call.
+        this.recordWorkosDeviceAttemptCompletion(Date.now());
+      }
+      switch (result.status) {
+        case 'pending':
+          return authError('device-authorization-pending');
+        case 'slow-down':
+          return authError('device-authorization-slow-down');
+        case 'denied':
+          return authError('device-authorization-denied');
+        case 'expired':
+          return authError('device-authorization-expired');
+        case 'invalid':
+          return authError('invalid-proof');
+        case 'success': {
+          const resolved = await this.resolveOidcAccountId(issuer, clientId, result.subject);
+          if (resolved === null) {
+            return authError('invalid-proof');
+          }
+          accountId = resolved;
+          break;
+        }
+      }
     } else {
       return authError('invalid-proof');
+    }
+    if (workosDeviceCodeHash !== null) {
+      const recorded = this.consumeWorkosDeviceProof(workosDeviceCodeHash, accountId, now);
+      if (!recorded) return authError('invalid-proof');
     }
     // Codes bound to a tombstoned account die with it — a code issued
     // before deletion cannot enroll a session on dead state.
@@ -717,6 +1233,40 @@ export class SessionCoordinator extends DurableObject<Env> {
       );
     }
 
+    const security = this.ensureAccountSecurity(accountId, now);
+    const existing = this.ctx.storage.sql
+      .exec(
+        `SELECT COUNT(*) AS n FROM device_sessions
+         WHERE account_id = ? AND enrollment_class = 'device'`,
+        accountId,
+      )
+      .toArray()[0] as { n?: number } | undefined;
+    const isFirstDevice = (existing?.n ?? 0) === 0 && security.bootstrap_enrollment_id === null;
+    let initialTrust: 'pending' | 'trusted' = 'pending';
+    let trustSource: 'first-device' | 'pairing' | 'automatic-auth' | null = null;
+    if (codeClass === 'device' && isFirstDevice) {
+      // The first durable enrollment is the only automatic bootstrap path.
+      initialTrust = 'trusted';
+      trustSource = 'first-device';
+    } else if (
+      codeClass === 'device' &&
+      (proof.method === 'oidc-pkce' || proof.method === 'workos-device') &&
+      security.policy === 'auto-trust-authenticated'
+    ) {
+      initialTrust = 'trusted';
+      trustSource = 'automatic-auth';
+    } else if (codeClass === 'device' && codeTrustMode === 'pairing') {
+      const issuer = codeIssuedBy === null ? null : this.sessionByEnrollment(codeIssuedBy);
+      if (
+        issuer !== null &&
+        issuer.account_id === accountId &&
+        issuer.revoked_at === null &&
+        this.trustState(issuer) === 'trusted'
+      ) {
+        initialTrust = 'trusted';
+        trustSource = 'pairing';
+      }
+    }
     const enrollmentId = `enr_${crypto.randomUUID()}`;
     // Ephemeral environments get a hard enrollment lifetime — the session
     // stops authenticating past it even if the env itself is never reaped.
@@ -739,6 +1289,11 @@ export class SessionCoordinator extends DurableObject<Env> {
         createdBy: codeIssuedBy,
         enrollmentExpiresAt,
         environmentId: codeEnvironmentId,
+        proofMethod: proof.method,
+        trustState: initialTrust,
+        trustedAt: initialTrust === 'trusted' ? now : null,
+        trustSource,
+        trustGeneration: initialTrust === 'trusted' ? security.generation : null,
       },
     );
     return Response.json(session, { status: 200 });
@@ -787,10 +1342,11 @@ export class SessionCoordinator extends DurableObject<Env> {
         (row.prev_refresh_grace_until === null || row.prev_refresh_grace_until <= now)
       ) {
         this.ctx.storage.sql.exec(
-          'UPDATE device_sessions SET revoked_at = ? WHERE enrollment_id = ?',
+          "UPDATE device_sessions SET revoked_at = ?, trust_state = 'revoked' WHERE enrollment_id = ?",
           now,
           row.enrollment_id,
         );
+        this.invalidateRecoveryOnTrustedRevoke(row.account_id, row);
         return authError('refresh-reuse-detected');
       }
       return authError('invalid-proof');
@@ -814,6 +1370,15 @@ export class SessionCoordinator extends DurableObject<Env> {
       accountId: row.account_id,
       datasetEpoch: epoch,
       ...(row.display_name === null ? {} : { displayName: row.display_name }),
+      ...(row.enrollment_class === null || row.enrollment_class === 'device'
+        ? {}
+        : {
+            enrollmentClass: row.enrollment_class as EnrollmentClass,
+            ...(row.enrollment_expires_at === null
+              ? {}
+              : { enrollmentExpiresAt: new Date(row.enrollment_expires_at).toISOString() }),
+          }),
+      ...(typeof row.environment_id === 'string' ? { environmentId: row.environment_id } : {}),
     };
     this.ctx.storage.sql.exec(
       `UPDATE device_sessions SET
@@ -868,10 +1433,11 @@ export class SessionCoordinator extends DurableObject<Env> {
       return authError('unauthenticated');
     }
     this.ctx.storage.sql.exec(
-      'UPDATE device_sessions SET revoked_at = COALESCE(revoked_at, ?) WHERE enrollment_id = ?',
+      "UPDATE device_sessions SET revoked_at = COALESCE(revoked_at, ?), trust_state = 'revoked' WHERE enrollment_id = ?",
       Date.now(),
       row.enrollment_id,
     );
+    this.invalidateRecoveryOnTrustedRevoke(row.account_id, row);
     // Close live sockets on this enrollment (best effort — the account object
     // may be hibernating; validation still rejects its next request).
     try {
@@ -960,6 +1526,7 @@ export class SessionCoordinator extends DurableObject<Env> {
       provider: string | null;
       sessionTtlSeconds: number | null;
       environmentId: string | null;
+      trustMode: 'pending' | 'pairing';
     },
   ): Promise<Response> {
     // A tombstoned accountId is permanently dead — deleted cloud state
@@ -1022,8 +1589,8 @@ export class SessionCoordinator extends DurableObject<Env> {
     this.ctx.storage.sql.exec(
       `INSERT INTO enrollment_codes
         (code_hash, account_id, issued_by, display_name, expires_at, consumed_at, created_at,
-         enrollment_class, provider, session_ttl_ms, environment_id)
-       VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
+         enrollment_class, provider, session_ttl_ms, environment_id, trust_mode)
+       VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
       codeHash,
       accountId,
       issuedBy,
@@ -1035,6 +1602,7 @@ export class SessionCoordinator extends DurableObject<Env> {
       sessionTtlMs,
       // ENV-01: the binding only means anything on ephemeral codes.
       options?.enrollmentClass === 'ephemeral' ? (options?.environmentId ?? null) : null,
+      options?.enrollmentClass === 'device' ? (options?.trustMode ?? 'pending') : 'pending',
     );
     const result: EnrollmentCodeIssueResult = {
       code,
@@ -1104,6 +1672,8 @@ export class SessionCoordinator extends DurableObject<Env> {
         accountId: row.account_id,
         enrollmentId: row.enrollment_id,
         enrollmentClass: row.enrollment_class ?? 'device',
+        proofMethod: row.proof_method ?? 'enrollment-code',
+        trustState: this.trustState(row),
         ...(typeof row.environment_id === 'string'
           ? { environmentId: row.environment_id }
           : {}),
@@ -1136,6 +1706,8 @@ export class SessionCoordinator extends DurableObject<Env> {
         accountId: row.account_id,
         enrollmentId: row.enrollment_id,
         enrollmentClass: row.enrollment_class ?? 'device',
+        proofMethod: row.proof_method ?? 'enrollment-code',
+        trustState: this.trustState(row),
         ...(typeof row.environment_id === 'string'
           ? { environmentId: row.environment_id }
           : {}),
@@ -1191,6 +1763,725 @@ export class SessionCoordinator extends DurableObject<Env> {
       ...(entitlement === null ? {} : { entitlement }),
     };
     return Response.json(result, { status: 200 });
+  }
+
+  private securityView(accountId: string, callerEnrollmentId: string): Record<string, unknown> {
+    const security = this.ensureAccountSecurity(accountId);
+    const rows = this.ctx.storage.sql
+      .exec(
+        `SELECT enrollment_id, display_name, installation_id, credential_generation,
+                revoked_at, created_at, enrollment_class, provider,
+                enrollment_expires_at, environment_id, proof_method, trust_state,
+                trusted_at, trust_source
+         FROM device_sessions WHERE account_id = ? ORDER BY created_at ASC`,
+        accountId,
+      )
+      .toArray() as unknown as SessionRow[];
+    const sourceFor = (row: SessionRow): string => {
+      const state = this.trustState(row);
+      if (state === 'pending') return 'unknown';
+      if (
+        row.trust_source === 'first-device' ||
+        row.trust_source === 'manual-approval' ||
+        row.trust_source === 'pairing' ||
+        row.trust_source === 'recovery' ||
+        row.trust_source === 'automatic-auth'
+      ) {
+        return row.trust_source;
+      }
+      return row.enrollment_id === security.bootstrap_enrollment_id ? 'first-device' : 'manual-approval';
+    };
+    const enrollments = rows.map((row) => ({
+      enrollmentId: row.enrollment_id,
+      ...(row.display_name === null ? {} : { displayName: row.display_name }),
+      installationId: row.installation_id,
+      proofMethod:
+        row.proof_method === 'oidc-pkce'
+          ? ('oidc-pkce' as const)
+          : row.proof_method === 'workos-device'
+            ? ('workos-device' as const)
+            : ('enrollment-code' as const),
+      enrollmentClass: row.enrollment_class === 'ephemeral' ? ('ephemeral' as const) : ('device' as const),
+      trustState: this.trustState(row),
+      trustSource: sourceFor(row),
+      trustedAt: row.trusted_at === null ? null : new Date(row.trusted_at).toISOString(),
+      revoked: row.revoked_at !== null,
+      self: row.enrollment_id === callerEnrollmentId,
+      createdAt: new Date(Number(row.created_at)).toISOString(),
+      ...(typeof row.provider === 'string' ? { provider: row.provider } : {}),
+      ...(row.enrollment_expires_at === null
+        ? {}
+        : { enrollmentExpiresAt: new Date(row.enrollment_expires_at).toISOString() }),
+      ...(typeof row.environment_id === 'string' ? { environmentId: row.environment_id } : {}),
+    }));
+    const parsedRecovery =
+      security.recovery_ciphertext === null
+        ? null
+        : parseRecoveryEnvelope(security.recovery_ciphertext);
+    const recovery =
+      parsedRecovery === null ||
+      security.recovery_verifier_public_key === null ||
+      security.recovery_id === null
+        ? null
+        : {
+            envelope: parsedRecovery,
+            verifierPublicKey: security.recovery_verifier_public_key,
+            revision: security.recovery_revision,
+            recoveryId: security.recovery_id,
+          };
+    const current = rows.find((row) => row.enrollment_id === callerEnrollmentId) ?? null;
+    const recentEvents = this.ctx.storage.sql
+      .exec(
+        `SELECT action, outcome, enrollment_id, proof_method, metadata, created_at
+         FROM security_audit WHERE account_id = ? ORDER BY created_at DESC LIMIT 50`,
+        accountId,
+      )
+      .toArray()
+      .flatMap((row) => {
+        const event = row as {
+          action: string;
+          outcome: string;
+          enrollment_id: string | null;
+          proof_method: string | null;
+          metadata: string;
+          created_at: number;
+        };
+        if (event.action === 'challenge') return [];
+        let metadata: Record<string, unknown> = {};
+        try {
+          const parsed = JSON.parse(event.metadata) as unknown;
+          if (isRecord(parsed)) metadata = parsed;
+        } catch {
+          // Audit metadata is best-effort display context; the event remains
+          // useful when an older row has malformed or absent JSON.
+        }
+        let kind: string;
+        let source: string;
+        switch (event.action) {
+          case 'configure':
+            kind = 'policy-configured';
+            source =
+              event.outcome !== 'accepted'
+                ? 'unknown'
+                : metadata['recoveryRevision'] === 1
+                  ? 'first-device'
+                  : 'recovery';
+            break;
+          case 'setPolicy':
+            kind = 'policy-changed';
+            source = event.outcome === 'accepted' ? 'recovery' : 'unknown';
+            break;
+          case 'recover':
+            kind = 'recovery-unlocked';
+            source = event.outcome === 'accepted' ? 'recovery' : 'unknown';
+            break;
+          case 'updateRecovery':
+            kind = 'recovery-replaced';
+            source = event.outcome === 'accepted' ? 'recovery' : 'unknown';
+            break;
+          case 'approve':
+            kind = 'device-approved';
+            source =
+              metadata['source'] === 'pairing' || metadata['source'] === 'manual-approval'
+                ? (metadata['source'] as string)
+                : 'unknown';
+            break;
+          case 'reset':
+            kind = 'encrypted-data-reset';
+            source = metadata['mode'] === 'oidc' ? 'automatic-auth' : 'local-device';
+            break;
+          case 'recovery-invalidated':
+            kind = 'device-revoked';
+            source = 'unknown';
+            break;
+          default:
+            kind = event.action;
+            source = 'unknown';
+            break;
+        }
+        const outcome =
+          event.action === 'setPolicy' &&
+          event.outcome === 'accepted' &&
+          (metadata['policy'] === 'auto-trust-authenticated' ||
+            metadata['policy'] === 'require-approval')
+            ? `accepted:${metadata['policy']}`
+            : event.outcome;
+        return [
+          {
+            kind,
+            outcome,
+            source,
+            enrollmentId: event.enrollment_id,
+            occurredAt: new Date(event.created_at).toISOString(),
+          },
+        ];
+      });
+    return {
+      accountId,
+      policy: security.policy,
+      revision: security.revision,
+      generation: security.generation,
+      recoveryRevision: security.recovery_revision,
+      recovery,
+      recoveryEnvelope: recovery?.envelope ?? null,
+      recoveryConfigured: recovery !== null,
+      recoveryInvalidated: security.recovery_invalidated_at !== null,
+      requiresRecoveryReplacement: security.recovery_invalidated_at !== null,
+      trustState: current === null ? 'unknown' : this.trustState(current),
+      trustSource: current === null ? 'unknown' : sourceFor(current),
+      canConfigure:
+        security.recovery_invalidated_at === null &&
+        recovery === null &&
+        current !== null &&
+        this.trustState(current) !== 'revoked' &&
+        (this.trustState(current) === 'trusted' ||
+          (security.recovery_revision === 0 &&
+            security.bootstrap_enrollment_id === callerEnrollmentId)),
+      requiresRecovery: current !== null && this.trustState(current) === 'trusted' && recovery !== null,
+      recentEvents,
+      bootstrapEnrollmentId: security.bootstrap_enrollment_id,
+      enrollments,
+    };
+  }
+
+  private async handleSecurityGet(request: Request): Promise<Response> {
+    const caller = this.securityCaller(request);
+    if (caller === null) return authError('unauthenticated');
+    return Response.json(this.securityView(caller.auth.accountId, caller.auth.enrollmentId), {
+      status: 200,
+    });
+  }
+
+  private securityExpectedRevision(body: Record<string, unknown>): number | null {
+    const raw = body['revision'];
+    return raw === undefined
+      ? null
+      : typeof raw === 'number' && Number.isSafeInteger(raw) && raw >= 1
+        ? raw
+        : -1;
+  }
+
+  /** Hash the exact mutable RPC payload. Proof and its digest are excluded. */
+  private async securityPayloadHash(body: Record<string, unknown>): Promise<string> {
+    const payload = Object.fromEntries(
+      Object.entries(body).filter(([key]) => key !== 'proof' && key !== 'payloadHash'),
+    );
+    return sha256Hex(canonicalizeJson(payload));
+  }
+
+  private validSecurityPayloadHash(value: unknown): value is string {
+    return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+  }
+
+  private validIdentityPub(value: unknown): value is string {
+    if (typeof value !== 'string' || value.length > 128) return false;
+    const decoded = decodeBase64Url(value);
+    return decoded !== null && decoded.byteLength === 32;
+  }
+
+  private canMaintainInvalidatedRecovery(
+    row: SessionRow,
+    security: AccountSecurityRow,
+  ): boolean {
+    if (this.trustState(row) !== 'trusted') return false;
+    if (security.recovery_invalidated_at === null) return true;
+    // Legacy trusted rows predate trust_generation; they are treated as
+    // pre-invalidation survivors. Newly trusted enrollments carry the
+    // current generation and cannot use the old root.
+    return row.trust_generation === null || row.trust_generation < security.generation;
+  }
+
+  private async handleSecurityChallenge(request: Request): Promise<Response> {
+    const caller = this.securityCaller(request);
+    if (caller === null) return authError('unauthenticated');
+    const body = await readJson(request);
+    if (!isRecord(body)) return authError('malformed-request');
+    const action = this.securityAction(body['action']);
+    const payloadHash = body['payloadHash'];
+    if (
+      action === null ||
+      action === 'reset' ||
+      body['publicKey'] !== undefined ||
+      !this.validSecurityPayloadHash(payloadHash)
+    ) {
+      return authError('malformed-request');
+    }
+    const security = this.ensureAccountSecurity(caller.auth.accountId);
+    const state = this.trustState(caller.row);
+    if (action !== 'recover' && state !== 'trusted') {
+      return rpcErrorResponse(undefined, 'forbidden', { reason: 'trusted-device-required' });
+    }
+    if (security.recovery_verifier_public_key === null || security.recovery_id === null) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'recovery-not-configured' });
+    }
+    if (security.recovery_invalidated_at !== null && action === 'recover') {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'recovery-invalidated' });
+    }
+    if (
+      security.recovery_invalidated_at !== null &&
+      (action === 'configure' || action === 'updateRecovery' || action === 'setPolicy') &&
+      !this.canMaintainInvalidatedRecovery(caller.row, security)
+    ) {
+      return rpcErrorResponse(undefined, 'forbidden', { reason: 'fresh-trusted-holder-required' });
+    }
+    const backendId =
+      typeof body['backendId'] === 'string' && body['backendId'].length > 0 && body['backendId'].length <= 256
+        ? body['backendId']
+        : null;
+    if (backendId === null || security.backend_id === null || backendId !== security.backend_id) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'backend-scope-mismatch' });
+    }
+    const identityPub = body['identityPub'];
+    if (!this.validIdentityPub(identityPub)) return authError('malformed-request');
+    const challengeId = `sch_${crypto.randomUUID()}`;
+    const challenge = randomChallenge();
+    const now = Date.now();
+    this.ctx.storage.sql.exec(
+      `INSERT INTO security_challenges
+       (challenge_id, account_id, enrollment_id, action, account_revision,
+       recovery_revision, challenge, expected_public_key, recovery_id, backend_id,
+       identity_pub, payload_hash, expires_at, used_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+      challengeId,
+      caller.auth.accountId,
+      caller.auth.enrollmentId,
+      action,
+      security.revision,
+      security.recovery_revision,
+      challenge,
+      security.recovery_verifier_public_key,
+      security.recovery_id,
+      backendId,
+      identityPub,
+      payloadHash,
+      now + SECURITY_CHALLENGE_TTL_MS,
+      now,
+    );
+    const result: SecurityChallengeEnvelope = {
+      challengeId,
+      challenge,
+      accountId: caller.auth.accountId,
+      enrollmentId: caller.auth.enrollmentId,
+      action,
+      accountRevision: security.revision,
+      recoveryRevision: security.recovery_revision,
+      recoveryId: security.recovery_id,
+      backendId,
+      identityPub,
+      payloadHash,
+      expiresAt: new Date(now + SECURITY_CHALLENGE_TTL_MS).toISOString(),
+    };
+    this.securityAudit(caller.auth.accountId, 'challenge', 'issued', caller.row, {
+      action,
+      accountRevision: security.revision,
+      recoveryRevision: security.recovery_revision,
+    });
+    return Response.json(result, { status: 200 });
+  }
+
+  private challengeRow(challengeId: string): SecurityChallengeRow | null {
+    return (
+      (this.ctx.storage.sql
+        .exec('SELECT * FROM security_challenges WHERE challenge_id = ?', challengeId)
+        .toArray()[0] as unknown as SecurityChallengeRow | undefined) ?? null
+    );
+  }
+
+  private async consumeSecurityProof(
+    caller: { auth: VerifiedAuth; row: SessionRow },
+    action: SecurityAction,
+    proofValue: unknown,
+    security: AccountSecurityRow,
+    payloadHash: string,
+  ): Promise<boolean> {
+    const proof: SecurityChallengeProof | null = parseSecurityProof(proofValue);
+    if (proof === null) return false;
+    const challenge = this.challengeRow(proof.challengeId);
+    if (
+      challenge === null ||
+      challenge.account_id !== caller.auth.accountId ||
+      challenge.enrollment_id !== caller.auth.enrollmentId ||
+      challenge.action !== action ||
+      challenge.account_revision !== security.revision ||
+      challenge.recovery_revision !== security.recovery_revision ||
+      challenge.payload_hash !== payloadHash
+    ) {
+      return false;
+    }
+    if (!(await verifySecurityProof(challenge, proof))) return false;
+    const used = this.ctx.storage.sql
+      .exec<{ challenge_id: string }>(
+        'UPDATE security_challenges SET used_at = ? WHERE challenge_id = ? AND used_at IS NULL RETURNING challenge_id',
+        Date.now(),
+        challenge.challenge_id,
+      )
+      .toArray();
+    return used.length === 1;
+  }
+
+  private recoveryFields(body: Record<string, unknown>): {
+    ciphertext: string | null;
+    verifierPublicKey: string | null;
+    recoveryId: string | null;
+  } | null {
+    const recovery = isRecord(body['recovery']) ? body['recovery'] : body;
+    const envelope = recovery['envelope'];
+    if (!isRecoveryEnvelope(envelope)) return null;
+    return {
+      ciphertext: serializeRecoveryEnvelope(envelope),
+      verifierPublicKey: envelope.publicKey,
+      recoveryId: envelope.recoveryId,
+    };
+  }
+
+  private async handleSecurityConfigure(request: Request): Promise<Response> {
+    const caller = this.securityCaller(request);
+    if (caller === null) return authError('unauthenticated');
+    const body = await readJson(request);
+    if (!isRecord(body)) return authError('malformed-request');
+    const security = this.ensureAccountSecurity(caller.auth.accountId);
+    const policy = body['policy'] === undefined ? security.policy : this.securityPolicy(body['policy']);
+    if (policy === null) return authError('malformed-request');
+    const fields = this.recoveryFields(body);
+    const backendId = body['backendId'];
+    if (
+      fields === null ||
+      typeof backendId !== 'string' ||
+      backendId.length === 0 ||
+      backendId.length > 256
+    ) {
+      return authError('malformed-request');
+    }
+    const hasRecovery = security.recovery_ciphertext !== null;
+    const firstSetup = !hasRecovery;
+    if (security.recovery_invalidated_at !== null) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'use-recovery-replacement' });
+    }
+    if (firstSetup) {
+      const bootstrap = security.bootstrap_enrollment_id;
+      if (
+        caller.row.enrollment_class === 'ephemeral' ||
+        caller.row.revoked_at !== null ||
+        (security.recovery_revision === 0 && bootstrap !== caller.auth.enrollmentId) ||
+        (security.recovery_revision > 0 && this.trustState(caller.row) !== 'trusted')
+      ) {
+        this.securityAudit(caller.auth.accountId, 'configure', 'denied', caller.row, {
+          reason: 'bootstrap-required',
+        });
+        return rpcErrorResponse(undefined, 'forbidden', { reason: 'bootstrap-required' });
+      }
+    } else {
+      const expected = this.securityExpectedRevision(body);
+      if (expected === null || expected < 1 || expected !== security.revision) {
+        return rpcErrorResponse(undefined, expected === null ? 'malformed-request' : 'conflict', {
+          reason: 'stale-security-revision',
+          revision: security.revision,
+        });
+      }
+      const payloadHash = body['payloadHash'];
+      if (!this.validSecurityPayloadHash(payloadHash)) return authError('malformed-request');
+      if (payloadHash !== (await this.securityPayloadHash(body))) {
+        return rpcErrorResponse(undefined, 'unauthenticated', { reason: 'payload-hash-mismatch' });
+      }
+      if (!(await this.consumeSecurityProof(caller, 'configure', body['proof'], security, payloadHash))) {
+        return rpcErrorResponse(undefined, 'unauthenticated', { reason: 'invalid-security-proof' });
+      }
+    }
+    const nextRecoveryRevision = security.recovery_revision + 1;
+    const now = Date.now();
+    this.ctx.storage.sql.exec(
+      `UPDATE account_security SET policy = ?, revision = revision + 1,
+       recovery_revision = ?, recovery_id = ?, backend_id = ?, recovery_ciphertext = ?, recovery_verifier_public_key = ?,
+       recovery_owner_enrollment_id = ?,
+       recovery_invalidated_at = NULL,
+       bootstrap_enrollment_id = COALESCE(bootstrap_enrollment_id, ?), updated_at = ?
+       WHERE account_id = ?`,
+      policy,
+      nextRecoveryRevision,
+      fields.recoveryId,
+      backendId,
+      fields.ciphertext,
+      fields.verifierPublicKey,
+      caller.auth.enrollmentId,
+      caller.auth.enrollmentId,
+      now,
+      caller.auth.accountId,
+    );
+    if (security.recovery_revision === 0) {
+      // Legacy sessions remain pending during migration. The explicit first
+      // recovery setup is the one user action that establishes bootstrap
+      // trust for the durable bootstrap enrollment.
+      this.ctx.storage.sql.exec(
+        `UPDATE device_sessions
+         SET trust_state = 'trusted', trust_source = 'first-device', trusted_at = ?, trust_generation = ?
+         WHERE account_id = ? AND enrollment_id = ? AND revoked_at IS NULL
+           AND enrollment_class = 'device' AND trust_state = 'pending'`,
+        now,
+        security.generation,
+        caller.auth.accountId,
+        caller.auth.enrollmentId,
+      );
+    }
+    this.securityAudit(caller.auth.accountId, 'configure', 'accepted', caller.row, {
+      policy,
+      recoveryRevision: nextRecoveryRevision,
+    });
+    return Response.json(this.securityView(caller.auth.accountId, caller.auth.enrollmentId), {
+      status: 200,
+    });
+  }
+
+  private async handleSecurityRecover(request: Request): Promise<Response> {
+    const caller = this.securityCaller(request);
+    if (caller === null) return authError('unauthenticated');
+    const body = await readJson(request);
+    if (!isRecord(body)) return authError('malformed-request');
+    const security = this.ensureAccountSecurity(caller.auth.accountId);
+    if (security.recovery_verifier_public_key === null) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'recovery-not-configured' });
+    }
+    if (security.recovery_invalidated_at !== null) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'recovery-invalidated' });
+    }
+    const payloadHash = body['payloadHash'];
+    if (!this.validSecurityPayloadHash(payloadHash)) return authError('malformed-request');
+    if (payloadHash !== (await this.securityPayloadHash(body))) {
+      return rpcErrorResponse(undefined, 'unauthenticated', { reason: 'payload-hash-mismatch' });
+    }
+    if (!(await this.consumeSecurityProof(caller, 'recover', body['proof'], security, payloadHash))) {
+      return rpcErrorResponse(undefined, 'unauthenticated', { reason: 'invalid-recovery-proof' });
+    }
+    const now = Date.now();
+    const updated = this.ctx.storage.sql
+      .exec(
+        `UPDATE device_sessions
+         SET trust_source = CASE WHEN trust_state = 'pending' THEN 'recovery' ELSE trust_source END,
+             trusted_at = CASE WHEN trust_state = 'pending' THEN ? ELSE trusted_at END,
+             trust_generation = CASE WHEN trust_state = 'pending' THEN ? ELSE trust_generation END,
+             trust_state = 'trusted'
+         WHERE enrollment_id = ? AND account_id = ? AND revoked_at IS NULL
+           AND enrollment_class != 'ephemeral'
+         RETURNING enrollment_id`,
+        now,
+        security.generation,
+        caller.auth.enrollmentId,
+        caller.auth.accountId,
+      )
+      .toArray();
+    if (updated.length === 0) {
+      return rpcErrorResponse(undefined, 'forbidden', { reason: 'revoked-enrollment' });
+    }
+    this.securityAudit(caller.auth.accountId, 'recover', 'accepted', caller.row, {
+      recoveryRevision: security.recovery_revision,
+    });
+    return Response.json({
+      recovered: true,
+      trustState: 'trusted',
+      accountId: caller.auth.accountId,
+      enrollmentId: caller.auth.enrollmentId,
+      generation: security.generation,
+      recoveryRevision: security.recovery_revision,
+    });
+  }
+
+  /**
+   * Metadata-only approval acknowledgement for the existing client-side SAS
+   * flow. The caller's server trust never authorizes key wrapping; the client
+   * still verifies the SAS before installing local key material.
+   */
+  private async handleSecurityApprove(request: Request): Promise<Response> {
+    const caller = this.securityCaller(request);
+    if (caller === null || this.trustState(caller.row) !== 'trusted') {
+      return caller === null ? authError('unauthenticated') : rpcErrorResponse(undefined, 'forbidden');
+    }
+    const body = await readJson(request);
+    if (
+      !isRecord(body) ||
+      typeof body['enrollmentId'] !== 'string' ||
+      (body['source'] !== 'manual-approval' && body['source'] !== 'pairing')
+    ) {
+      return authError('malformed-request');
+    }
+    const target = this.sessionByEnrollment(body['enrollmentId']);
+    if (
+      target === null ||
+      target.account_id !== caller.auth.accountId ||
+      target.revoked_at !== null ||
+      target.enrollment_class === 'ephemeral' ||
+      this.trustState(target) !== 'pending'
+    ) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'pending-durable-enrollment-required' });
+    }
+    const security = this.ensureAccountSecurity(caller.auth.accountId);
+    const now = Date.now();
+    const changed = this.ctx.storage.sql
+      .exec<{ enrollment_id: string }>(
+        `UPDATE device_sessions
+         SET trust_state = 'trusted', trust_source = ?, trusted_at = ?, trust_generation = ?
+         WHERE account_id = ? AND enrollment_id = ? AND revoked_at IS NULL
+           AND enrollment_class = 'device' AND trust_state = 'pending'
+         RETURNING enrollment_id`,
+        body['source'],
+        now,
+        security.generation,
+        caller.auth.accountId,
+        target.enrollment_id,
+      )
+      .toArray();
+    if (changed.length !== 1) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'enrollment-state-changed' });
+    }
+    this.securityAudit(caller.auth.accountId, 'approve', 'accepted', caller.row, {
+      targetEnrollmentId: target.enrollment_id,
+      source: body['source'],
+    });
+    return Response.json(this.securityView(caller.auth.accountId, caller.auth.enrollmentId));
+  }
+
+  private async handleSecuritySetPolicy(request: Request): Promise<Response> {
+    const caller = this.securityCaller(request);
+    if (caller === null || this.trustState(caller.row) !== 'trusted') {
+      return caller === null ? authError('unauthenticated') : rpcErrorResponse(undefined, 'forbidden');
+    }
+    const body = await readJson(request);
+    if (!isRecord(body)) return authError('malformed-request');
+    const policy = this.securityPolicy(body['policy']);
+    const expected = this.securityExpectedRevision(body);
+    if (policy === null || expected === null || expected < 1) return authError('malformed-request');
+    const security = this.ensureAccountSecurity(caller.auth.accountId);
+    if (expected !== security.revision) {
+      return rpcErrorResponse(undefined, 'conflict', {
+        reason: 'stale-security-revision',
+        revision: security.revision,
+      });
+    }
+    const payloadHash = body['payloadHash'];
+    if (!this.validSecurityPayloadHash(payloadHash)) return authError('malformed-request');
+    if (payloadHash !== (await this.securityPayloadHash(body))) {
+      return rpcErrorResponse(undefined, 'unauthenticated', { reason: 'payload-hash-mismatch' });
+    }
+    if (!(await this.consumeSecurityProof(caller, 'setPolicy', body['proof'], security, payloadHash))) {
+      return rpcErrorResponse(undefined, 'unauthenticated', { reason: 'invalid-security-proof' });
+    }
+    this.ctx.storage.sql.exec(
+      'UPDATE account_security SET policy = ?, revision = revision + 1, updated_at = ? WHERE account_id = ?',
+      policy,
+      Date.now(),
+      caller.auth.accountId,
+    );
+    this.securityAudit(caller.auth.accountId, 'setPolicy', 'accepted', caller.row, { policy });
+    return Response.json(this.securityView(caller.auth.accountId, caller.auth.enrollmentId));
+  }
+
+  private async handleSecurityUpdateRecovery(request: Request): Promise<Response> {
+    const caller = this.securityCaller(request);
+    if (caller === null || this.trustState(caller.row) !== 'trusted') {
+      return caller === null ? authError('unauthenticated') : rpcErrorResponse(undefined, 'forbidden');
+    }
+    const body = await readJson(request);
+    if (!isRecord(body)) return authError('malformed-request');
+    const expected = this.securityExpectedRevision(body);
+    const fields = this.recoveryFields(body);
+    const backendId = body['backendId'];
+    if (
+      expected === null ||
+      expected < 1 ||
+      fields === null ||
+      typeof backendId !== 'string' ||
+      backendId.length === 0 ||
+      backendId.length > 256
+    ) return authError('malformed-request');
+    const security = this.ensureAccountSecurity(caller.auth.accountId);
+    if (expected !== security.revision) {
+      return rpcErrorResponse(undefined, 'conflict', {
+        reason: 'stale-security-revision',
+        revision: security.revision,
+      });
+    }
+    if (security.recovery_verifier_public_key === null || security.recovery_id === null || backendId !== security.backend_id) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'recovery-not-configured' });
+    }
+    if (!this.canMaintainInvalidatedRecovery(caller.row, security)) {
+      return rpcErrorResponse(undefined, 'forbidden', { reason: 'fresh-trusted-holder-required' });
+    }
+    if (
+      security.recovery_invalidated_at !== null &&
+      (fields.recoveryId === security.recovery_id ||
+        fields.verifierPublicKey === security.recovery_verifier_public_key)
+    ) {
+      return rpcErrorResponse(undefined, 'conflict', { reason: 'fresh-recovery-root-required' });
+    }
+    const payloadHash = body['payloadHash'];
+    if (!this.validSecurityPayloadHash(payloadHash)) return authError('malformed-request');
+    if (payloadHash !== (await this.securityPayloadHash(body))) {
+      return rpcErrorResponse(undefined, 'unauthenticated', { reason: 'payload-hash-mismatch' });
+    }
+    if (!(await this.consumeSecurityProof(caller, 'updateRecovery', body['proof'], security, payloadHash))) {
+      return rpcErrorResponse(undefined, 'unauthenticated', { reason: 'invalid-security-proof' });
+    }
+    const nextRecoveryRevision = security.recovery_revision + 1;
+    this.ctx.storage.sql.exec(
+      `UPDATE account_security SET revision = revision + 1, recovery_revision = ?,
+       recovery_id = ?, recovery_ciphertext = ?, recovery_verifier_public_key = ?,
+       backend_id = ?, recovery_owner_enrollment_id = ?, recovery_invalidated_at = NULL, updated_at = ?
+       WHERE account_id = ?`,
+      nextRecoveryRevision,
+      fields.recoveryId ?? security.recovery_id,
+      fields.ciphertext,
+      fields.verifierPublicKey,
+      backendId,
+      caller.auth.enrollmentId,
+      Date.now(),
+      caller.auth.accountId,
+    );
+    this.securityAudit(caller.auth.accountId, 'updateRecovery', 'accepted', caller.row, {
+      recoveryRevision: nextRecoveryRevision,
+    });
+    return Response.json(this.securityView(caller.auth.accountId, caller.auth.enrollmentId));
+  }
+
+  private async handleSecurityReset(request: Request): Promise<Response> {
+    const body = await readJson(request);
+    if (!isRecord(body)) return authError('malformed-request');
+    const current = this.securityCaller(request);
+    let accountId: string | null = current?.auth.accountId ?? null;
+    let auditEnrollment: SessionRow | null = current?.row ?? null;
+    if (accountId === null) {
+      const proof = body['proof'];
+      if (!isRecord(proof) || proof['method'] !== 'oidc-pkce') {
+        return authError('unauthenticated');
+      }
+      const issuer = this.env.OIDC_ISSUER;
+      const clientId = this.env.OIDC_CLIENT_ID;
+      if (typeof issuer !== 'string' || typeof clientId !== 'string') return authError('invalid-proof');
+      const sub = await verifyOidcPkceProof(proof as never, { issuer, clientId });
+      if (sub === null) return authError('invalid-proof');
+      accountId = await this.resolveExistingOidcAccountId(issuer, clientId, sub);
+      if (accountId === null) return authError('invalid-proof');
+    }
+    const claimedAccountId = body['accountId'];
+    if (claimedAccountId !== undefined && claimedAccountId !== accountId) {
+      return rpcErrorResponse(undefined, 'forbidden', { reason: 'account-scope-mismatch' });
+    }
+    const confirmed = body['confirmation'] === SECURITY_ENCRYPTED_DATA_CONFIRMATION;
+    if (!confirmed) {
+      return rpcErrorResponse(undefined, 'malformed-request', {
+        reason: 'explicit-reset-confirmation-required',
+        accountId,
+      });
+    }
+    this.securityAudit(accountId, 'reset', 'accepted', auditEnrollment, { mode: current ? 'session' : 'oidc' });
+    const deleted = await this.deleteAccountById(accountId);
+    const result = (await deleted.json()) as AccountDeleteResult;
+    return Response.json(
+      {
+        ...result,
+        accountId,
+        reauthRequired: true,
+        oldDataDiscarded: result.state === 'deleted',
+      },
+      { status: 200 },
+    );
   }
 
   /**
@@ -1347,10 +2638,11 @@ export class SessionCoordinator extends DurableObject<Env> {
       return rpcErrorResponse(undefined, 'not-found');
     }
     this.ctx.storage.sql.exec(
-      'UPDATE device_sessions SET revoked_at = COALESCE(revoked_at, ?) WHERE enrollment_id = ?',
+      "UPDATE device_sessions SET revoked_at = COALESCE(revoked_at, ?), trust_state = 'revoked' WHERE enrollment_id = ?",
       Date.now(),
       row.enrollment_id,
     );
+    this.invalidateRecoveryOnTrustedRevoke(row.account_id, row);
     try {
       const id = this.env.ACCOUNT.idFromName(row.account_id);
       await this.env.ACCOUNT.get(id).fetch('https://internal.anvil/internal/revoke-enrollment', {
@@ -1950,10 +3242,16 @@ export class SessionCoordinator extends DurableObject<Env> {
     // Enrollments disable first: every session on the account is revoked
     // before the data purge begins.
     this.ctx.storage.sql.exec(
-      'UPDATE device_sessions SET revoked_at = COALESCE(revoked_at, ?) WHERE account_id = ?',
+      "UPDATE device_sessions SET revoked_at = COALESCE(revoked_at, ?), trust_state = 'revoked' WHERE account_id = ?",
       now,
       accountId,
     );
+    // Reset/deletion removes the server-side policy, verifier and ciphertext
+    // before the account purge is reported. The tombstone prevents any stale
+    // challenge or enrollment from reviving that generation.
+    this.ctx.storage.sql.exec('DELETE FROM security_challenges WHERE account_id = ?', accountId);
+    this.ctx.storage.sql.exec('DELETE FROM account_security WHERE account_id = ?', accountId);
+    this.ctx.storage.sql.exec('DELETE FROM security_audit WHERE account_id = ?', accountId);
     // Shared artifacts die with the account: rows plus their R2 objects.
     await this.purgeAccountShares(accountId);
     const purge = await this.driveAccountPurge(accountId);
@@ -2060,10 +3358,12 @@ export class SessionCoordinator extends DurableObject<Env> {
     deletedCodes: number;
     clearedGrace: number;
     deletedSessions: number;
+    deletedChallenges: number;
   }> {
     let deletedCodes = 0;
     let clearedGrace = 0;
     let deletedSessions = 0;
+    let deletedChallenges = 0;
     this.ctx.storage.transactionSync(() => {
       deletedCodes = this.ctx.storage.sql
         .exec<{ n: number }>(
@@ -2087,11 +3387,20 @@ export class SessionCoordinator extends DurableObject<Env> {
           n: number;
         }>('DELETE FROM device_sessions WHERE revoked_at IS NOT NULL AND revoked_at < ? RETURNING 1 AS n', now - REVOKED_SESSION_RETENTION_MS)
         .toArray().length;
+      deletedChallenges = this.ctx.storage.sql
+        .exec<{ n: number }>(
+          `DELETE FROM security_challenges
+           WHERE expires_at < ? OR (used_at IS NOT NULL AND used_at < ?)
+           RETURNING 1 AS n`,
+          now,
+          now - REVOKED_SESSION_RETENTION_MS,
+        )
+        .toArray().length;
       // ENV-01: ephemeral sessions past their enrollment expiry are dead —
       // mark them revoked so they join the normal audit-retention path.
       // Read-time checks already reject them; this is the durable record.
       this.ctx.storage.sql.exec(
-        `UPDATE device_sessions SET revoked_at = COALESCE(revoked_at, ?)
+        `UPDATE device_sessions SET revoked_at = COALESCE(revoked_at, ?), trust_state = 'revoked'
          WHERE enrollment_expires_at IS NOT NULL AND enrollment_expires_at <= ?`,
         now,
         now,
@@ -2136,6 +3445,6 @@ export class SessionCoordinator extends DurableObject<Env> {
       await this.driveAccountPurge(row.account_id);
     }
     await this.ctx.storage.setAlarm(Date.now() + SESSION_SWEEP_INTERVAL_MS);
-    return { deletedCodes, clearedGrace, deletedSessions };
+    return { deletedCodes, clearedGrace, deletedSessions, deletedChallenges };
   }
 }

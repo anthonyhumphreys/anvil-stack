@@ -58,6 +58,7 @@ import {
   upsertEnrollment,
 } from '../sync-persistence.service';
 import { getWorkflowTemplate, saveWorkflowTemplate } from '../workflow.service';
+import { setAccountKeyBootstrapEligibility } from '../sync-keyring.service';
 import { getEditableAgent, saveEditableAgent } from '../editable-agent.service';
 import { getSettings } from '../settings.service';
 
@@ -110,7 +111,8 @@ function activateEnrollment(id = ENROLLMENT): void {
     scope: SCOPE,
     state: 'active',
   });
-  // Established-device fixture: lazy ADK minting is gated on a completed pull.
+  // Simulate the durable first-device claim as well as the completed pull.
+  setAccountKeyBootstrapEligibility(SCOPE, id, true);
   updateSyncState(SCOPE, { lastPullAt: '2026-01-01T00:00:00.000Z' });
 }
 

@@ -10,9 +10,13 @@ export type KnownProtocol = typeof PROTOCOL;
 
 export type KnownProfile = (typeof PROFILES)[number];
 
-export type AuthMode = 'oidc-pkce' | 'enrollment-code';
+export type AuthMode = 'oidc-pkce' | 'workos-device' | 'enrollment-code';
 
-const KNOWN_AUTH_MODES: readonly AuthMode[] = ['oidc-pkce', 'enrollment-code'];
+const KNOWN_AUTH_MODES: readonly AuthMode[] = [
+  'oidc-pkce',
+  'workos-device',
+  'enrollment-code',
+];
 
 export interface DescriptorAuth {
   issuer: string;

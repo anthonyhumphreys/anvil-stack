@@ -19,9 +19,11 @@ import {
   initSyncRuntime,
   listCloudEnvironments,
   reapCloudEnvironment,
+  refreshDeviceIdentitiesForOneShot,
   requestCloudEnvironment,
   setMeshWorkerOptIn,
   signOutSync,
+  stopSyncRuntimeForOneShot,
 } from '../main/services/sync-runtime.service.js';
 import {
   addProviderConnection,
@@ -37,6 +39,24 @@ import {
   setMobileCompanionEnabled,
   startMobileCompanionServer,
 } from '../main/services/mobile-companion.service.js';
+import {
+  approveDeviceTrust,
+  deviceVerificationCode,
+  beginDeviceAuthorizationSignIn,
+  getDeviceSecurityStatus,
+  listDevices,
+  replaceDeviceRecovery,
+  setNewDeviceTrustPolicy,
+  setupDeviceRecovery,
+  unlockDeviceRecovery,
+} from '../main/services/sync-runtime.service.js';
+import {
+  formatVerificationCode,
+  parseSecurityCommand,
+  readRecoveryCode,
+  type SecurityCommand,
+} from './security-cli.js';
+import { parseSignInCommand, runSignIn } from './signin-cli.js';
 
 const DATA_DIR = process.env.ANVIL_DATA_DIR ?? join(process.env.HOME ?? '.', '.anvil-daemon');
 const CONFIG_PATH = join(DATA_DIR, 'daemon.json');
@@ -67,15 +87,30 @@ function writeConfig(patch: Partial<DaemonConfig>): DaemonConfig {
 
 function arg(flag: string): string | undefined {
   const i = process.argv.indexOf(flag);
-  return i >= 0 ? process.argv[i + 1] : undefined;
+  if (i < 0) return undefined;
+  const value = process.argv[i + 1];
+  return value !== undefined && !value.startsWith('--') ? value : undefined;
+}
+
+function hasFlag(flag: string): boolean {
+  return process.argv.includes(flag);
 }
 
 function usage(): never {
   console.log(`anvil-daemon — headless Anvil host
 
   anvil-daemon enroll --api-url <url> (--code <code> | --pair <payload>) [--worker]
+  anvil-daemon sign-in --api-url <url> [--worker]
   anvil-daemon run
   anvil-daemon status
+  anvil-daemon security status
+  anvil-daemon security devices
+  anvil-daemon security verify <enrollmentId>
+  anvil-daemon security approve <enrollmentId> --verification-code <NNN-NNN-NNN>
+  anvil-daemon security setup [--policy <require-approval|auto-trust-authenticated>]
+  anvil-daemon security unlock (--stdin | --file <protected-file>)
+  anvil-daemon security policy <require-approval|auto-trust-authenticated>
+  anvil-daemon security recovery-replace
   anvil-daemon sign-out
   anvil-daemon worker on|off
   anvil-daemon companion on|off
@@ -90,7 +125,8 @@ function usage(): never {
   anvil-daemon policy forget <enrollmentId>
   anvil-daemon policy default-tier <observe|approve|steer|denied|pending>
 
---pair accepts an anvil-pair-… payload (incl. ephemeral environment pairing).
+--pair accepts an anvil-pair-… payload for user-device pairing. Environment
+enrollments use a plain code and remain task-key-only.
 Provider connections hold cloud environment credentials (AWS region/keys,
 imageIdentifier in --config; keys in --secret, encrypted at rest) so this
 host can claim provision-environment jobs.
@@ -112,32 +148,68 @@ function boot(): void {
 
 async function cmdEnroll(): Promise<void> {
   const apiUrl = arg('--api-url');
-  // ENV-03: --pair redeems an anvil-pair-… payload (ephemeral environment
-  // pairing included); --code stays the plain enrollment-code path. Both
-  // flow through enrollWithEnrollmentCode, which detects the payload form.
+  // --pair redeems an anvil-pair-… payload for a user-device pairing;
+  // --code stays the plain enrollment-code path used by ordinary and
+  // environment enrollments. Environment enrollments remain task-key-only
+  // and never receive account ADKs through this command.
   const code = arg('--pair') ?? arg('--code');
   if (!apiUrl || !code) {
     console.error('enroll requires --api-url <url> and (--code <code> | --pair <payload>)');
     process.exit(1);
   }
   boot();
-  const conn = await discover(apiUrl, { allowLoopbackHttp: apiUrl.includes('127.0.0.1') || apiUrl.includes('localhost') });
+  const conn = await discover(apiUrl, {
+    allowLoopbackHttp: apiUrl.includes('127.0.0.1') || apiUrl.includes('localhost'),
+  });
   pinBackend({ baseUrl: conn.baseUrl, descriptor: conn.descriptor });
   const snapshot = await enrollWithEnrollmentCode(code);
   enableSync();
   await setMobileCompanionEnabled(true);
-  if (arg('--worker') !== undefined || readConfig().worker === true) {
+  if (hasFlag('--worker') || readConfig().worker === true) {
     await setMeshWorkerOptIn(true);
   }
   console.log(`[anvil-daemon] enrolled: ${JSON.stringify(snapshot)}`);
 }
 
+/**
+ * WorkOS Device Authorization is deliberately a one-shot command. It pins
+ * the reviewed backend before starting the flow, persists the session in the
+ * runtime's encrypted store, and leaves long-running sync/worker activity to
+ * `run`. The worker flag only records an explicit device-local opt-in.
+ */
+async function cmdSignIn(args: readonly string[]): Promise<void> {
+  const command = parseSignInCommand(args);
+  boot();
+  const existingAuth = getRuntimeStatus().auth;
+  if (existingAuth.state !== 'signed-out') {
+    throw new Error(
+      'this daemon already has a sign-in in progress or an active session; run sign-out first',
+    );
+  }
+
+  const conn = await discover(command.apiUrl, {
+    allowLoopbackHttp: command.apiUrl.includes('127.0.0.1') || command.apiUrl.includes('localhost'),
+  });
+  pinBackend({ baseUrl: conn.baseUrl, descriptor: conn.descriptor });
+
+  const result = await runSignIn({
+    start: (signal) => beginDeviceAuthorizationSignIn(signal, { startRuntime: false }),
+    onSuccess: () => {
+      if (command.worker) writeConfig({ worker: true });
+    },
+  });
+  process.exitCode = result.exitCode;
+}
+
 async function cmdRun(): Promise<void> {
   boot();
-  const status = getRuntimeStatus();
+  let status = getRuntimeStatus();
   if (!status.auth || status.auth.state !== 'signed-in') {
-    console.error('[anvil-daemon] not enrolled — run `anvil-daemon enroll` first');
+    console.error('[anvil-daemon] not signed in — run `anvil-daemon sign-in` or `enroll` first');
     process.exit(1);
+  }
+  if (!status.syncEnabled) {
+    enableSync();
   }
   const config = readConfig();
   if (config.companion !== false) {
@@ -162,6 +234,62 @@ function cmdStatus(): void {
   boot();
   const status = getRuntimeStatus();
   console.log(JSON.stringify(status, null, 2));
+}
+
+/**
+ * Headless device security controls. Recovery codes are intentionally read
+ * only from stdin or an owner-only file; they are never accepted in argv or
+ * environment variables. Setup and replacement print the newly generated
+ * code exactly once so a caller can save it before the process exits.
+ */
+async function cmdSecurity(args: readonly string[]): Promise<void> {
+  const command: SecurityCommand = parseSecurityCommand(args);
+  boot();
+  try {
+    if (command.kind === 'devices' || command.kind === 'verify' || command.kind === 'approve') {
+      await refreshDeviceIdentitiesForOneShot();
+    }
+    switch (command.kind) {
+      case 'status':
+        console.log(JSON.stringify(await getDeviceSecurityStatus(), null, 2));
+        return;
+      case 'devices':
+        console.log(JSON.stringify(await listDevices(), null, 2));
+        return;
+      case 'verify': {
+        const result = deviceVerificationCode(command.enrollmentId);
+        console.log(formatVerificationCode(result.code));
+        return;
+      }
+      case 'approve':
+        await approveDeviceTrust(command.enrollmentId, command.verificationCode);
+        console.log(`[anvil-daemon] device ${command.enrollmentId} approved`);
+        return;
+      case 'setup': {
+        const result = await setupDeviceRecovery(command.policy);
+        console.log(result.recoveryCode);
+        return;
+      }
+      case 'unlock': {
+        const code = readRecoveryCode(command.source);
+        console.log(JSON.stringify(await unlockDeviceRecovery(code), null, 2));
+        return;
+      }
+      case 'policy':
+        console.log(JSON.stringify(await setNewDeviceTrustPolicy(command.policy), null, 2));
+        return;
+      case 'recovery-replace': {
+        const result = await replaceDeviceRecovery();
+        console.log(result.recoveryCode);
+        return;
+      }
+    }
+  } finally {
+    // `boot()` may have restored a signed-in runtime with refresh/poll/live
+    // timers. Security commands are one-shot and must leave only the saved
+    // session behind for a later explicit `run`.
+    stopSyncRuntimeForOneShot();
+  }
 }
 
 /**
@@ -245,7 +373,7 @@ function cmdProvider(sub: string | undefined): void {
 
 /**
  * ENV-01/ENV-09: `env request` creates a `provision-environment` job —
- * `anvil-managed` provisions on Anvil capacity (pairing staged via
+ * `anvil-managed` provisions on Anvil capacity (an enrollment code staged via
  * environment.bootstrap), BYO providers wait for a provisioner-capable
  * device holding the connection. `env terminate` records durable reap
  * intent; teardown lands wherever the provider lives.
@@ -309,7 +437,9 @@ async function cmdPolicy(sub: string | undefined): Promise<void> {
       }
       const updated = setCompanionEnrollmentPolicy(enrollmentId, tier);
       if (updated === null) {
-        console.error(`[anvil-daemon] no policy row for ${enrollmentId} — device must contact this host first`);
+        console.error(
+          `[anvil-daemon] no policy row for ${enrollmentId} — device must contact this host first`,
+        );
         process.exit(1);
       }
       console.log(JSON.stringify(updated, null, 2));
@@ -350,8 +480,14 @@ async function main(): Promise<void> {
     case 'run':
       await cmdRun();
       break;
+    case 'sign-in':
+      await cmdSignIn(process.argv.slice(3));
+      break;
     case 'status':
       cmdStatus();
+      break;
+    case 'security':
+      await cmdSecurity(process.argv.slice(3));
       break;
     case 'sign-out':
       boot();

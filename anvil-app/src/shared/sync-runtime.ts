@@ -3,6 +3,7 @@
  */
 
 import type { HandoffRecord } from '../../cloud/contract/handoff.js';
+import type { SyncDeviceTrustSource, SyncDeviceTrustState } from './sync-device-security.js';
 
 export const SPIKE_DATASET_EPOCH = 'spike-epoch-1';
 
@@ -67,6 +68,11 @@ export interface SyncDevice {
   revoked: boolean;
   createdAt: string;
   self: boolean;
+  /** Audit metadata only; trust state never grants decryption access in the renderer. */
+  trustState?: SyncDeviceTrustState;
+  /** Audit metadata only; the keyring remains the authority for encryption access. */
+  trustSource?: SyncDeviceTrustSource;
+  trustedAt?: string | null;
 }
 
 export interface SyncDeviceRenameResult {

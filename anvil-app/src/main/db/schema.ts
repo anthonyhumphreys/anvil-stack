@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 88;
+export const SCHEMA_VERSION = 93;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -1354,9 +1354,32 @@ CREATE TABLE IF NOT EXISTS sync_keyring (
   account_id TEXT NOT NULL,
   key_version INTEGER NOT NULL,
   key_wrapped BLOB NOT NULL,
-  source TEXT NOT NULL DEFAULT 'minted' CHECK (source IN ('minted', 'wrap', 'pairing', 'rotation')),
+  source TEXT NOT NULL DEFAULT 'minted' CHECK (source IN ('minted', 'wrap', 'pairing', 'rotation', 'recovery')),
   created_at TEXT NOT NULL,
   PRIMARY KEY (backend_id, account_id, key_version)
+);
+-- Client-only recovery secret custody. secret_wrapped is safeStorage
+-- encrypted and is never serialized into sync entities or sent to a backend.
+CREATE TABLE IF NOT EXISTS sync_recovery_secrets (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  recovery_id TEXT NOT NULL,
+  secret_wrapped BLOB NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  invalidated_at TEXT,
+  PRIMARY KEY (backend_id, account_id)
+);
+-- Server-authorized first-device bootstrap eligibility. A keyless device may
+-- mint ADK v1 only after security.get confirms this enrollment is the durable
+-- first-device authority; the row is local and scoped to backend/account.
+CREATE TABLE IF NOT EXISTS sync_key_bootstrap_eligibility (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  enrollment_id TEXT NOT NULL,
+  eligible INTEGER NOT NULL DEFAULT 0 CHECK (eligible IN (0, 1)),
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, enrollment_id)
 );
 -- Per-enrollment X25519 device identities. identity_priv_wrapped is set
 -- only on this device's own enrollment row; other rows are pubkey-only
@@ -1409,9 +1432,20 @@ CREATE TABLE IF NOT EXISTS sync_keyring_rotations (
   from_version INTEGER NOT NULL,
   to_version INTEGER NOT NULL,
   revoked_json TEXT NOT NULL DEFAULT '[]',
+  local_origin INTEGER NOT NULL DEFAULT 0 CHECK (local_origin IN (0, 1)),
   reported_at TEXT,
   created_at TEXT NOT NULL,
   PRIMARY KEY (backend_id, account_id, rotation_id)
+);
+-- Local-only completion fence for account revocations. Backend rotation
+-- entities are evidence, not proof that this device completed its own
+-- post-revocation ADK rotation.
+CREATE TABLE IF NOT EXISTS sync_revocation_rotations (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  enrollment_id TEXT NOT NULL,
+  rotated_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, enrollment_id)
 );
 -- Task content keys this device holds — as job source or designated
 -- result recipient. key_wrapped is safeStorage-encrypted.
@@ -1452,6 +1486,19 @@ CREATE TABLE IF NOT EXISTS sync_keyring_deliveries (
   key_version INTEGER NOT NULL,
   delivered_at TEXT NOT NULL,
   PRIMARY KEY (backend_id, account_id, enrollment_id, key_version)
+);
+-- Authenticated keyring wraps that arrived before the sender was locally
+-- verified. The ciphertext remains local-only until SAS approval permits
+-- retry; no plaintext ADK is stored here.
+CREATE TABLE IF NOT EXISTS sync_keyring_pending_wraps (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  recipient_enrollment_id TEXT NOT NULL,
+  sender_enrollment_id TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, recipient_enrollment_id, payload_hash)
 );
 -- ENV-01 cloud environments. Keep in sync with the migration 84 copies.
 CREATE TABLE IF NOT EXISTS cloud_provider_connections (
@@ -3147,6 +3194,7 @@ CREATE TABLE IF NOT EXISTS sync_keyring_rotations (
   from_version INTEGER NOT NULL,
   to_version INTEGER NOT NULL,
   revoked_json TEXT NOT NULL DEFAULT '[]',
+  local_origin INTEGER NOT NULL DEFAULT 0 CHECK (local_origin IN (0, 1)),
   reported_at TEXT,
   created_at TEXT NOT NULL,
   PRIMARY KEY (backend_id, account_id, rotation_id)
@@ -3228,6 +3276,80 @@ ALTER TABLE settings ADD COLUMN thread_assist_model TEXT;
 `,
   88: `
 ALTER TABLE sync_backends ADD COLUMN connection_mode TEXT NOT NULL DEFAULT 'compatible';
+`,
+  89: `
+-- Device recovery-code secret custody. Existing recovery material is local
+-- only and safeStorage-wrapped; no recovery code or plaintext secret is part
+-- of a sync payload.
+ALTER TABLE sync_keyring RENAME TO sync_keyring_recovery_old;
+CREATE TABLE sync_keyring (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  key_version INTEGER NOT NULL,
+  key_wrapped BLOB NOT NULL,
+  source TEXT NOT NULL DEFAULT 'minted' CHECK (source IN ('minted', 'wrap', 'pairing', 'rotation', 'recovery')),
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, key_version)
+);
+INSERT INTO sync_keyring (backend_id, account_id, key_version, key_wrapped, source, created_at)
+  SELECT backend_id, account_id, key_version, key_wrapped, source, created_at
+  FROM sync_keyring_recovery_old;
+DROP TABLE sync_keyring_recovery_old;
+CREATE TABLE IF NOT EXISTS sync_recovery_secrets (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  recovery_id TEXT NOT NULL,
+  secret_wrapped BLOB NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id)
+);
+`,
+  90: `
+-- Persist the server-authorized first-device bootstrap gate locally. A
+-- keyless device remains unable to mint an ADK until security.get reports
+-- canConfigure and names this enrollment as bootstrapEnrollmentId.
+CREATE TABLE IF NOT EXISTS sync_key_bootstrap_eligibility (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  enrollment_id TEXT NOT NULL,
+  eligible INTEGER NOT NULL DEFAULT 0 CHECK (eligible IN (0, 1)),
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, enrollment_id)
+);
+`,
+  91: `
+-- A revoked device may retain its old recovery signer for an explicitly
+-- authorized replacement flow, but its old code may not refresh ciphertext
+-- containing post-revocation keys.
+ALTER TABLE sync_recovery_secrets ADD COLUMN invalidated_at TEXT;
+`,
+  92: `
+-- Mark locally minted rotations separately from opaque rotation entities pulled
+-- from the backend. Remote metadata cannot prove this device completed a key
+-- rotation after a revoke.
+ALTER TABLE sync_keyring_rotations ADD COLUMN local_origin INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS sync_revocation_rotations (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  enrollment_id TEXT NOT NULL,
+  rotated_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, enrollment_id)
+);
+`,
+  93: `
+-- Cache authenticated sender wraps until this device verifies the sender
+-- identity locally; the cache contains ciphertext only.
+CREATE TABLE IF NOT EXISTS sync_keyring_pending_wraps (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  recipient_enrollment_id TEXT NOT NULL,
+  sender_enrollment_id TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (backend_id, account_id, recipient_enrollment_id, payload_hash)
+);
 `,
 };
 
