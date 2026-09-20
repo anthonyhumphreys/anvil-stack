@@ -497,9 +497,14 @@ async function main(): Promise<void> {
     case 'worker': {
       boot();
       const on = process.argv[3] === 'on';
-      await setMeshWorkerOptIn(on);
-      writeConfig({ worker: on });
-      console.log(`[anvil-daemon] mesh worker ${on ? 'enabled' : 'disabled'}`);
+      try {
+        await setMeshWorkerOptIn(on);
+        writeConfig({ worker: on });
+        console.log(`[anvil-daemon] mesh worker ${on ? 'enabled' : 'disabled'}`);
+      } finally {
+        // The worker command saves an opt-in; `run` owns its long-lived lease.
+        stopSyncRuntimeForOneShot();
+      }
       break;
     }
     case 'companion': {
