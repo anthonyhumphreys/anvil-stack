@@ -61,6 +61,7 @@ import {
 } from './mesh-dispatch.service.js';
 import type { ExecutionManifest, RequestedTarget } from '../../../cloud/contract/jobs.js';
 import { integrateResults } from './mesh-integration.service.js';
+import { describeMeshDispatchError } from './mesh-dispatch-error.js';
 
 interface WorkflowTemplateRow {
   id: string;
@@ -1111,7 +1112,7 @@ async function executeRemoteWorkflowNode(
     return {
       output: 'Remote dispatch could not be submitted.',
       outcome: 'attention',
-      error: error instanceof Error ? error.message : String(error),
+      error: describeMeshDispatchError(error),
       remote: { dispatchId, target: node.target, state: 'unknown-outcome' },
     };
   }
@@ -1140,7 +1141,7 @@ async function executeRemoteWorkflowNode(
         return {
           output: 'Remote dispatch result requires inspection.',
           outcome: 'attention',
-          error: error instanceof Error ? error.message : String(error),
+          error: describeMeshDispatchError(error),
           remote: { ...remote, state: 'unknown-outcome' },
         };
       }

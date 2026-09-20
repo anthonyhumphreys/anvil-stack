@@ -500,7 +500,7 @@ export function TeamSettings({
             </label>
             <p className="text-xs leading-relaxed text-text-tertiary">
               {node.target?.kind === 'device'
-                ? 'Choose a device signed in to this account. It must allow jobs before the step can run.'
+                ? 'Choose an enrolled device. On that device, enable its Mesh worker and keep the daemon running; signing in alone does not allow jobs.'
                 : node.target?.kind === 'auto'
                   ? 'Anvil chooses an available device that allows jobs and meets the requirements below.'
                   : node.target?.kind === 'existing-environment'
