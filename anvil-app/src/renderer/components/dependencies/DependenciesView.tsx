@@ -9,6 +9,7 @@ import type {
   SbomFormat,
 } from '../../../shared/types';
 import { RepoSelector } from '../shared/RepoSelector';
+import { RepoFeatureEmptyState } from '../shared/RepoFeatureEmptyState';
 import { EmptyState, InlineNotice, ViewHeader } from '../layout/ViewScaffold';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 
@@ -22,7 +23,7 @@ const sbomFormats: Array<{ value: SbomFormat; label: string; extension: string }
 export function DependenciesView() {
   const { repoId } = useParams<{ repoId: string }>();
   const navigate = useNavigate();
-  const { activeWorkspace } = useWorkspace();
+  const { activeWorkspace, featureAvailability } = useWorkspace();
   const selectedRepo = activeWorkspace?.repos.find((repo) => repo.id === repoId);
   const [items, setItems] = useState<DependencyRecord[]>([]);
   const [query, setQuery] = useState('');
@@ -98,6 +99,16 @@ export function DependenciesView() {
     }
   };
 
+  if (!featureAvailability.repoFeaturesEnabled) {
+    return (
+      <RepoFeatureEmptyState
+        icon={Boxes}
+        featureLabel="Dependency insights"
+        description="Inspect packages, licensing, vulnerabilities, and software bills of materials for a repository."
+      />
+    );
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <ViewHeader
@@ -124,7 +135,7 @@ export function DependenciesView() {
                 onChange={(event) => setQuery(event.target.value)}
               />
               <button
-                className="rounded bg-accent px-3 py-2 text-white disabled:opacity-50"
+                className="rounded bg-accent px-3 py-2 text-accent-foreground disabled:opacity-50"
                 disabled={loading}
                 onClick={() => void refresh()}
               >
@@ -153,7 +164,7 @@ export function DependenciesView() {
                     </span>
                   </div>
                   {dependency.deprecated && (
-                    <div className="mt-1 text-amber-400">
+                    <div className="mt-1 text-warning">
                       Deprecated. Suggested replacement:{' '}
                       {dependency.alternative ?? 'Consider maintained alternatives.'}
                     </div>
@@ -187,7 +198,7 @@ export function DependenciesView() {
                 ))}
               </select>
               <button
-                className="rounded bg-accent px-3 py-2 text-white disabled:opacity-50"
+                className="rounded bg-accent px-3 py-2 text-accent-foreground disabled:opacity-50"
                 disabled={auditLoading}
                 onClick={() => void runAudit()}
               >

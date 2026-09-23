@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Check,
   Download,
@@ -8,12 +8,12 @@ import {
   Pencil,
   Plus,
   Rocket,
-  Trash2,
 } from 'lucide-react';
-import type { WorkspaceActivityStatus } from '../../../shared/types';
+import type { WorkspaceActivityStatus, WorkspaceSummary } from '../../../shared/types';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { WorkspaceBootstrapPanel } from './WorkspaceBootstrapPanel';
 import { WorkspaceSetupPanel } from './WorkspaceSetupPanel';
+import { ConfirmDialog, IconButton, Menu, MenuItem, MenuSeparator, PromptDialog, cx } from '../ui';
 
 interface WorkspaceRailProps {
   compact: boolean;
@@ -43,6 +43,12 @@ function workspaceBadgeLabel(status: WorkspaceActivityStatus, count: number): st
   return `${count} item${count === 1 ? '' : 's'} ${kind}`;
 }
 
+/**
+ * Workspace rail rows. WS6/4.6/J7: every row (not just the active one) gets a
+ * keyboard-reachable `…` menu built on the shared Menu primitive; right-click
+ * opens the same menu. Rename goes through PromptDialog and delete through a
+ * type-to-confirm ConfirmDialog — no native prompts.
+ */
 export function WorkspaceRail({ compact, statusLabel, onCreateNew }: WorkspaceRailProps) {
   const {
     workspaces,
@@ -53,45 +59,47 @@ export function WorkspaceRail({ compact, statusLabel, onCreateNew }: WorkspaceRa
     deleteWorkspace,
     refreshWorkspaces,
   } = useWorkspace();
-  const [actionsOpen, setActionsOpen] = useState(false);
-  const [showBootstrap, setShowBootstrap] = useState(false);
-  const [showSetup, setShowSetup] = useState(false);
-  const actionsRef = useRef<HTMLDivElement>(null);
+  const [renaming, setRenaming] = useState<WorkspaceSummary | null>(null);
+  const [deleting, setDeleting] = useState<WorkspaceSummary | null>(null);
+  const [panelWorkspace, setPanelWorkspace] = useState<WorkspaceSummary | null>(null);
+  const [panelKind, setPanelKind] = useState<'bootstrap' | 'setup' | null>(null);
+  // WS5: workspaces with a synced bootstrap recipe that still needs local
+  // approval. The rail only surfaces "Review setup recipe" for these.
+  const [pendingBootstrapIds, setPendingBootstrapIds] = useState<ReadonlySet<string>>(new Set());
   const activityByWorkspace = new Map(
     workspaceActivity.map((summary) => [summary.workspaceId, summary]),
   );
 
   useEffect(() => {
-    if (!actionsOpen) return;
-    const closeOnOutsideClick = (event: MouseEvent) => {
-      if (!actionsRef.current?.contains(event.target as Node)) setActionsOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setActionsOpen(false);
-    };
-    document.addEventListener('mousedown', closeOnOutsideClick);
-    window.addEventListener('keydown', closeOnEscape);
+    let cancelled = false;
+    void Promise.all(
+      workspaces.map(async (workspace) => {
+        try {
+          const status = await window.anvil.workspace.bootstrapStatus(workspace.id);
+          return status.recipe !== null && !status.approved ? workspace.id : null;
+        } catch {
+          return null;
+        }
+      }),
+    ).then((ids) => {
+      if (cancelled) return;
+      setPendingBootstrapIds(new Set(ids.filter((id): id is string => id !== null)));
+    });
     return () => {
-      document.removeEventListener('mousedown', closeOnOutsideClick);
-      window.removeEventListener('keydown', closeOnEscape);
+      cancelled = true;
     };
-  }, [actionsOpen]);
+  }, [workspaces]);
 
-  const renameActiveWorkspace = async () => {
-    if (!activeWorkspace) return;
-    const newName = window.prompt('Rename workspace:', activeWorkspace.name)?.trim();
-    if (newName && newName !== activeWorkspace.name) {
-      await updateWorkspace(activeWorkspace.id, { name: newName });
-    }
-    setActionsOpen(false);
+  const openRowMenu = (container: HTMLElement) => {
+    container.querySelector<HTMLButtonElement>('[data-ws-menu-trigger]')?.click();
   };
 
-  const deleteActiveWorkspace = async () => {
-    if (!activeWorkspace) return;
-    if (window.confirm('Delete this workspace? Repositories will not be removed.')) {
-      await deleteWorkspace(activeWorkspace.id);
+  const openPanel = (workspace: WorkspaceSummary, kind: 'bootstrap' | 'setup') => {
+    if (workspace.id !== activeWorkspace?.id) {
+      void switchWorkspace(workspace.id);
     }
-    setActionsOpen(false);
+    setPanelWorkspace(workspace);
+    setPanelKind(kind);
   };
 
   if (compact) {
@@ -107,11 +115,19 @@ export function WorkspaceRail({ compact, statusLabel, onCreateNew }: WorkspaceRa
               onClick={() => {
                 if (!active) void switchWorkspace(workspace.id);
               }}
-              className={`titlebar-no-drag relative grid h-9 w-9 place-items-center rounded-lg text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 ${
+              onContextMenu={(event) => {
+                // Compact rail has no room for a per-row menu — right-click
+                // switches to the workspace so its actions stay reachable.
+                event.preventDefault();
+                if (!active) void switchWorkspace(workspace.id);
+              }}
+              className={cx(
+                'titlebar-no-drag relative grid h-9 w-9 place-items-center rounded-lg text-xs font-semibold transition-colors',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
                 active
                   ? 'bg-accent text-bg-primary'
-                  : 'bg-bg-tertiary text-text-secondary hover:text-text-primary'
-              }`}
+                  : 'bg-bg-tertiary text-text-secondary hover:text-text-primary',
+              )}
               title={
                 activity
                   ? `${workspace.name} — ${workspaceBadgeLabel(activity.status, activity.count)}`
@@ -127,7 +143,10 @@ export function WorkspaceRail({ compact, statusLabel, onCreateNew }: WorkspaceRa
               {workspace.name.slice(0, 2).toUpperCase()}
               {activity && (
                 <span
-                  className={`absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-bg-secondary ${STATUS_DOT[activity.status]}`}
+                  className={cx(
+                    'absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-bg-secondary',
+                    STATUS_DOT[activity.status],
+                  )}
                   aria-hidden="true"
                 />
               )}
@@ -150,7 +169,7 @@ export function WorkspaceRail({ compact, statusLabel, onCreateNew }: WorkspaceRa
   return (
     <div className="titlebar-no-drag min-w-0 flex-1">
       <div className="flex items-center justify-between px-1 pb-1.5">
-        <span className="text-[11px] font-semibold uppercase tracking-wider text-text-tertiary">
+        <span className="text-eyebrow font-semibold uppercase tracking-wider text-text-tertiary">
           Workspaces
         </span>
         <button
@@ -169,34 +188,42 @@ export function WorkspaceRail({ compact, statusLabel, onCreateNew }: WorkspaceRa
           const active = workspace.id === activeWorkspace?.id;
           const activity = activityByWorkspace.get(workspace.id);
           return (
-            <div key={workspace.id} className="group/ws relative">
+            <div
+              key={workspace.id}
+              className="group/ws relative"
+              onContextMenu={(event) => {
+                event.preventDefault();
+                openRowMenu(event.currentTarget);
+              }}
+            >
               <button
                 type="button"
                 onClick={() => {
                   if (!active) void switchWorkspace(workspace.id);
                 }}
-                className={`flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 ${
+                className={cx(
+                  'flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
                   active
                     ? 'bg-accent/12 text-text-primary'
-                    : 'text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
-                }`}
+                    : 'text-text-secondary hover:bg-bg-tertiary hover:text-text-primary',
+                )}
                 aria-current={active ? 'true' : undefined}
                 title={
-                  activity
-                    ? workspaceBadgeLabel(activity.status, activity.count)
-                    : workspace.name
+                  activity ? workspaceBadgeLabel(activity.status, activity.count) : workspace.name
                 }
               >
                 <span
-                  className={`grid h-6 w-6 shrink-0 place-items-center rounded-md text-[10px] font-semibold ${
-                    active ? 'bg-accent text-bg-primary' : 'bg-bg-tertiary text-text-secondary'
-                  }`}
+                  className={cx(
+                    'grid h-6 w-6 shrink-0 place-items-center rounded-md text-eyebrow font-semibold',
+                    active ? 'bg-accent text-bg-primary' : 'bg-bg-tertiary text-text-secondary',
+                  )}
                 >
                   {workspace.name.slice(0, 2).toUpperCase()}
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-xs font-medium">{workspace.name}</span>
-                  <span className="block truncate text-[11px] text-text-tertiary">
+                  <span className="block truncate text-xs text-text-tertiary">
                     {active && statusLabel !== 'Ready'
                       ? statusLabel
                       : workspace.definitionState === 'needs-setup'
@@ -206,7 +233,8 @@ export function WorkspaceRail({ compact, statusLabel, onCreateNew }: WorkspaceRa
                 </span>
                 {activity ? (
                   <span
-                    className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${
+                    className={cx(
+                      'inline-flex shrink-0 items-center gap-1.5 rounded-full px-1.5 py-0.5 text-eyebrow font-semibold',
                       activity.status === 'error'
                         ? 'bg-error/15 text-error'
                         : activity.status === 'warning'
@@ -215,100 +243,126 @@ export function WorkspaceRail({ compact, statusLabel, onCreateNew }: WorkspaceRa
                             ? 'bg-success/15 text-success'
                             : activity.status === 'running'
                               ? 'bg-info/15 text-info'
-                              : 'bg-bg-tertiary text-text-tertiary'
-                    }`}
+                              : 'bg-bg-tertiary text-text-tertiary',
+                    )}
                     aria-label={workspaceBadgeLabel(activity.status, activity.count)}
                   >
-                    <span className={`h-1.5 w-1.5 rounded-full ${STATUS_DOT[activity.status]}`} />
+                    <span className={cx('h-1.5 w-1.5 rounded-full', STATUS_DOT[activity.status])} />
                     {activity.count > 9 ? '9+' : activity.count}
                   </span>
                 ) : (
                   active && <Check size={13} className="shrink-0 text-accent" />
                 )}
               </button>
-              {active && (
-                <div ref={actionsRef} className="absolute right-1.5 top-1/2 -translate-y-1/2">
-                  <button
-                    type="button"
-                    onClick={() => setActionsOpen((open) => !open)}
-                    className="rounded-md p-1 text-text-tertiary opacity-0 transition-opacity hover:bg-bg-elevated hover:text-text-primary focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 group-hover/ws:opacity-100"
-                    aria-label="Workspace actions"
-                    aria-haspopup="menu"
-                    aria-expanded={actionsOpen}
-                  >
-                    <MoreHorizontal size={13} />
-                  </button>
-                  {actionsOpen && (
-                    <div
-                      role="menu"
-                      aria-label="Workspace actions"
-                      className="absolute right-0 top-[calc(100%+4px)] z-50 w-56 overflow-hidden rounded-xl border border-border bg-bg-elevated p-1.5 shadow-[0_16px_40px_rgba(0,0,0,0.32)]"
-                    >
-                      <MenuAction
-                        icon={<Pencil size={14} />}
-                        label="Rename"
-                        onClick={() => void renameActiveWorkspace()}
-                      />
-                      <MenuAction
-                        icon={<ExternalLink size={14} />}
-                        label="Open in new window"
-                        onClick={() => {
-                          setActionsOpen(false);
-                          void window.anvil.workspace.openInNewWindow(workspace.id);
-                        }}
-                      />
-                      {workspace.definitionState === 'needs-setup' && (
-                        <MenuAction
-                          icon={<FolderGit2 size={14} />}
-                          label="Set up checkouts…"
-                          onClick={() => {
-                            setActionsOpen(false);
-                            setShowSetup(true);
-                          }}
-                        />
-                      )}
-                      <MenuAction
-                        icon={<Rocket size={14} />}
-                        label="Bootstrap…"
-                        onClick={() => {
-                          setActionsOpen(false);
-                          setShowBootstrap(true);
-                        }}
-                      />
-                      <MenuAction
-                        icon={<Download size={14} />}
-                        label="Export VS Code workspace"
-                        onClick={() => {
-                          setActionsOpen(false);
-                          void window.anvil.workspace.exportVSCodeWorkspace(workspace.id);
-                        }}
-                      />
-                      <MenuAction
-                        icon={<Trash2 size={14} />}
-                        label="Delete workspace"
-                        onClick={() => void deleteActiveWorkspace()}
-                        destructive
-                      />
-                    </div>
+
+              {/* J7/4.6: actions on every row — visible on hover/focus-within,
+                  reachable by keyboard, and opened by right-click. */}
+              <span className="absolute right-1.5 top-1/2 -translate-y-1/2">
+                <Menu
+                  label={`${workspace.name} actions`}
+                  trigger={(props) => (
+                    <IconButton
+                      {...props}
+                      data-ws-menu-trigger
+                      icon={MoreHorizontal}
+                      label={`${workspace.name} actions`}
+                      className="opacity-0 transition-opacity focus-visible:opacity-100 group-focus-within/ws:opacity-100 group-hover/ws:opacity-100"
+                    />
                   )}
-                </div>
-              )}
+                >
+                  {!active && (
+                    <MenuItem
+                      icon={<Check size={14} />}
+                      onSelect={() => void switchWorkspace(workspace.id)}
+                    >
+                      Switch to workspace
+                    </MenuItem>
+                  )}
+                  <MenuItem icon={<Pencil size={14} />} onSelect={() => setRenaming(workspace)}>
+                    Rename…
+                  </MenuItem>
+                  <MenuItem
+                    icon={<ExternalLink size={14} />}
+                    onSelect={() => void window.anvil.workspace.openInNewWindow(workspace.id)}
+                  >
+                    Open in new window
+                  </MenuItem>
+                  {workspace.definitionState === 'needs-setup' && (
+                    <MenuItem
+                      icon={<FolderGit2 size={14} />}
+                      onSelect={() => openPanel(workspace, 'setup')}
+                    >
+                      Set up checkouts…
+                    </MenuItem>
+                  )}
+                  {pendingBootstrapIds.has(workspace.id) && (
+                    <MenuItem
+                      icon={<Rocket size={14} />}
+                      onSelect={() => openPanel(workspace, 'bootstrap')}
+                    >
+                      Review setup recipe…
+                    </MenuItem>
+                  )}
+                  <MenuItem
+                    icon={<Download size={14} />}
+                    onSelect={() => void window.anvil.workspace.exportVSCodeWorkspace(workspace.id)}
+                  >
+                    Export VS Code workspace
+                  </MenuItem>
+                  <MenuSeparator />
+                  <MenuItem destructive onSelect={() => setDeleting(workspace)}>
+                    Delete workspace…
+                  </MenuItem>
+                </Menu>
+              </span>
             </div>
           );
         })}
       </div>
-      {showBootstrap && activeWorkspace && (
+
+      {/* WS6/J6: themed rename prompt replaces window.prompt. */}
+      <PromptDialog
+        open={renaming !== null}
+        title="Rename workspace"
+        label="Workspace name"
+        defaultValue={renaming?.name ?? ''}
+        confirmLabel="Rename"
+        onSubmit={(name) => {
+          if (renaming && name !== renaming.name) {
+            void updateWorkspace(renaming.id, { name });
+          }
+          setRenaming(null);
+        }}
+        onCancel={() => setRenaming(null)}
+      />
+
+      <DeleteWorkspaceDialog
+        workspace={deleting}
+        onClose={() => setDeleting(null)}
+        onDeleted={async (id) => {
+          setDeleting(null);
+          await deleteWorkspace(id);
+        }}
+      />
+
+      {panelKind === 'bootstrap' && panelWorkspace && (
         <WorkspaceBootstrapPanel
-          workspaceId={activeWorkspace.id}
-          workspaceName={activeWorkspace.name}
-          onClose={() => setShowBootstrap(false)}
+          workspaceId={panelWorkspace.id}
+          workspaceName={panelWorkspace.name}
+          onClose={() => {
+            setPanelKind(null);
+            setPanelWorkspace(null);
+          }}
         />
       )}
-      {showSetup && activeWorkspace && (
+      {panelKind === 'setup' && panelWorkspace && (
         <WorkspaceSetupPanel
-          workspaceId={activeWorkspace.id}
-          workspaceName={activeWorkspace.name}
-          onClose={() => setShowSetup(false)}
+          workspaceId={panelWorkspace.id}
+          workspaceName={panelWorkspace.name}
+          onClose={() => {
+            setPanelKind(null);
+            setPanelWorkspace(null);
+          }}
           onChanged={() => void refreshWorkspaces()}
         />
       )}
@@ -316,30 +370,91 @@ export function WorkspaceRail({ compact, statusLabel, onCreateNew }: WorkspaceRa
   );
 }
 
-function MenuAction({
-  icon,
-  label,
-  onClick,
-  destructive = false,
+/**
+ * WS1: honest hard-delete confirmation. Lists what is deleted, notes that the
+ * deletion syncs to other devices and that repositories on disk are
+ * untouched, and requires typing the workspace name when it has chat
+ * history.
+ */
+function DeleteWorkspaceDialog({
+  workspace,
+  onClose,
+  onDeleted,
 }: {
-  icon: ReactNode;
-  label: string;
-  onClick: () => void;
-  destructive?: boolean;
+  workspace: WorkspaceSummary | null;
+  onClose: () => void;
+  onDeleted: (id: string) => Promise<void>;
 }) {
+  const [threadCount, setThreadCount] = useState<number | null>(null);
+  const [working, setWorking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!workspace) return;
+    let cancelled = false;
+    setThreadCount(null);
+    setError(null);
+    window.anvil.chat
+      .listThreads(workspace.id)
+      .then((threads) => {
+        if (!cancelled) setThreadCount(threads.length);
+      })
+      .catch(() => {
+        if (!cancelled) setThreadCount(0);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [workspace]);
+
+  if (!workspace) return null;
+  const hasHistory = (threadCount ?? 0) > 0;
+
   return (
-    <button
-      type="button"
-      role="menuitem"
-      onClick={onClick}
-      className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors ${
-        destructive
-          ? 'text-error hover:bg-error/10'
-          : 'text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
-      }`}
-    >
-      {icon}
-      {label}
-    </button>
+    <ConfirmDialog
+      open
+      tone="danger"
+      title={`Delete "${workspace.name}"?`}
+      requireText={hasHistory ? workspace.name : undefined}
+      confirmLabel="Delete workspace"
+      loading={working}
+      onCancel={onClose}
+      onConfirm={() => {
+        setWorking(true);
+        void onDeleted(workspace.id).catch((err) => {
+          if (mountedRef.current) {
+            setError(err instanceof Error ? err.message : 'Failed to delete the workspace.');
+            setWorking(false);
+          }
+        });
+      }}
+      description={
+        <div className="space-y-2">
+          <p>
+            This permanently deletes the workspace
+            {hasHistory
+              ? `, its ${threadCount} chat ${threadCount === 1 ? 'thread' : 'threads'} and messages,`
+              : ','}{' '}
+            its preferences, and its repo links — on this device and, via sync, on your other
+            devices.
+          </p>
+          <p>
+            Repositories on disk and their indexes are not touched; reviews and audit history are
+            kept.
+          </p>
+          {threadCount === null && (
+            <p className="text-text-tertiary">Checking workspace history…</p>
+          )}
+          {error && <p className="text-error">{error}</p>}
+        </div>
+      }
+    />
   );
 }

@@ -22,9 +22,21 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import type { ChatThread, CodexSession, WorkItem, WorkItemProvider } from '../../../shared/types';
+import type {
+  ChatLayout,
+  ChatThread,
+  CodexMode,
+  CodexSession,
+  WorkItem,
+  WorkItemProvider,
+} from '../../../shared/types';
 import { useWorkspace } from '../../contexts/WorkspaceContext';
 import { ResizableSidebarPanel } from '../layout/ResizableSidebarPanel';
+import { ConfirmDialog } from '../ui';
+import { SettingsLink } from '../shared/SettingsLink';
+import type { ReactNode } from 'react';
+import { ChatAccessLevelBadge } from './ChatAccessLevelChip';
+import { ChatLayoutToggle } from './ChatLayoutToggle';
 import {
   canSettleThread,
   getThreadActionVisibilityClass,
@@ -43,6 +55,12 @@ interface WorkItemThreadRailProps {
   onRenameThread: (threadId: string, title: string) => void;
   onSettleThread: (threadId: string, settled: boolean) => void;
   onDeleteThread: (threadId: string) => void;
+  /** CH4/CH9 — Chat/Tickets layout toggle lives in the rail header. */
+  chatLayout?: ChatLayout;
+  onChatLayoutChange?: (layout: ChatLayout) => void;
+  /** CH1 — per-thread access level display. */
+  accessLevels?: Record<string, CodexMode>;
+  defaultAccessLevel?: CodexMode;
 }
 
 export function WorkItemThreadRail({
@@ -55,6 +73,10 @@ export function WorkItemThreadRail({
   onRenameThread,
   onSettleThread,
   onDeleteThread,
+  chatLayout,
+  onChatLayoutChange,
+  accessLevels,
+  defaultAccessLevel = 'on-request',
 }: WorkItemThreadRailProps) {
   const { activeWorkspace } = useWorkspace();
   const [items, setItems] = useState<WorkItem[]>([]);
@@ -66,6 +88,7 @@ export function WorkItemThreadRail({
   const [expandedItems, setExpandedItems] = useState<Set<string>>(() => new Set());
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState<ChatThread | null>(null);
 
   const workItemThreads = useMemo(() => groupWorkItemThreads(threads), [threads]);
 
@@ -213,6 +236,9 @@ export function WorkItemThreadRail({
                   <span className={threadStateTextClass(displayState)}>
                     {threadStateLabel(displayState)}
                   </span>
+                  {accessLevels && (
+                    <ChatAccessLevelBadge level={accessLevels[thread.id] ?? defaultAccessLevel} />
+                  )}
                   {(thread.summary ?? thread.preview) && (
                     <>
                       <span className="text-text-tertiary/60">·</span>
@@ -255,9 +281,7 @@ export function WorkItemThreadRail({
                   <ThreadAction
                     label="Delete thread"
                     className="hover:bg-error/10 hover:text-error"
-                    onClick={() => {
-                      if (window.confirm(`Delete "${thread.title}"?`)) onDeleteThread(thread.id);
-                    }}
+                    onClick={() => setDeleteTarget(thread)}
                   >
                     <Trash2 size={13} />
                   </ThreadAction>
@@ -293,7 +317,7 @@ export function WorkItemThreadRail({
             >
               <ChevronRight size={14} />
             </button>
-            <span className="mt-1 [writing-mode:vertical-rl] rotate-180 text-[10px] font-medium uppercase tracking-[0.2em] text-text-tertiary">
+            <span className="mt-1 [writing-mode:vertical-rl] rotate-180 text-eyebrow font-medium uppercase tracking-[0.2em] text-text-tertiary">
               Work items
             </span>
           </div>
@@ -321,6 +345,12 @@ export function WorkItemThreadRail({
               <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
             </button>
           </div>
+
+          {chatLayout && onChatLayoutChange && (
+            <div className="mt-3">
+              <ChatLayoutToggle layout={chatLayout} onChange={onChatLayoutChange} />
+            </div>
+          )}
 
           <div className="relative mt-3">
             <Search
@@ -352,7 +382,14 @@ export function WorkItemThreadRail({
           ) : provider === 'none' && visibleItems.length === 0 ? (
             <EmptyRailState
               title="No provider"
-              body="Choose a work-item provider in Settings to use ticket threads."
+              body={
+                <>
+                  <SettingsLink to="delivery#work-items">
+                    Choose a work-item provider in Settings
+                  </SettingsLink>{' '}
+                  to use ticket threads.
+                </>
+              }
             />
           ) : visibleItems.length === 0 ? (
             <EmptyRailState
@@ -496,6 +533,19 @@ export function WorkItemThreadRail({
       </ResizableSidebarPanel>
 
       {detailItem && <WorkItemDetailsModal item={detailItem} onClose={() => setDetailItem(null)} />}
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title={`Delete "${deleteTarget?.title ?? 'thread'}"?`}
+        description="This permanently removes the thread and its history."
+        confirmLabel="Delete thread"
+        tone="danger"
+        onConfirm={() => {
+          if (deleteTarget) onDeleteThread(deleteTarget.id);
+          setDeleteTarget(null);
+        }}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </>
   );
 }
@@ -599,7 +649,7 @@ function formatThreadCount(count: number, label: 'active' | 'archived'): string 
   return `${count} ${label}`;
 }
 
-function EmptyRailState({ title, body }: { title: string; body: string }) {
+function EmptyRailState({ title, body }: { title: string; body: ReactNode }) {
   return (
     <div className="rounded-2xl border border-dashed border-border px-4 py-5 text-center">
       <p className="text-sm font-medium text-text-primary">{title}</p>

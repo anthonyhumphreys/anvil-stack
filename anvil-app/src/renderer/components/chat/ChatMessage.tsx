@@ -35,7 +35,9 @@ import { buildEditorUrl } from '../../utils/editor-link';
 import { copyTextToClipboard } from '../../utils/clipboard';
 import { isAbsoluteEditorPath } from '../../../shared/editor-file-link';
 import type { ChatTurnWorkItem } from './chat-turns';
+import { agentEventLabel } from '../../utils/agent-display';
 import { AgentUIIntentSurface } from './AgentUIIntentSurface';
+import { FileEditReviewGrid } from './TurnChangesFooter';
 
 interface ChatEventProps {
   event: CodexEvent & { sessionId?: string };
@@ -45,10 +47,14 @@ export function ChatEventRenderer({ event }: ChatEventProps) {
   switch (event.type) {
     case 'text':
       return <TextEvent text={event.text ?? ''} />;
-    case 'file_read':
-      return <FileReadEvent filePath={event.filePath ?? ''} lineRange={event.lineRange} />;
     case 'file_edit':
-      return <FileEditEvent filePath={event.filePath ?? ''} diff={event.diff ?? ''} />;
+      return (
+        <FileEditEvent
+          filePath={event.filePath ?? ''}
+          diff={event.diff ?? ''}
+          agentLabel={agentEventLabel(event)}
+        />
+      );
     case 'command_exec':
       return (
         <CommandExecEvent
@@ -93,7 +99,6 @@ export function ActivityGroupMessage({
 }) {
   const [expanded, setExpanded] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
-  const [selectedEditIndex, setSelectedEditIndex] = useState(0);
   const summary = summarizeActivityEvents(events);
   const fileEdits = events.filter((event) => event.type === 'file_edit' && event.filePath);
   const failedCommands = events.filter(
@@ -104,7 +109,6 @@ export function ActivityGroupMessage({
       (event.type === 'tool_call' && event.toolStatus === 'failed') ||
       event.type === 'error',
   );
-  const selectedEdit = fileEdits[Math.min(selectedEditIndex, Math.max(fileEdits.length - 1, 0))];
   const preview = events
     .slice(-3)
     .map(formatActivityPreview)
@@ -128,7 +132,7 @@ export function ActivityGroupMessage({
               <span className="text-xs font-medium text-text-secondary">Activity</span>
               <span className="text-xs text-text-tertiary">{summary}</span>
               {failedCommands.length > 0 && (
-                <span className="rounded-full bg-error/10 px-2 py-0.5 text-[11px] font-medium text-error">
+                <span className="rounded-full bg-error/10 px-2 py-0.5 text-eyebrow font-medium text-error">
                   {failedCommands.length} failed
                 </span>
               )}
@@ -153,36 +157,14 @@ export function ActivityGroupMessage({
             </span>
           </div>
         )}
-        {reviewOpen && selectedEdit && (
-          <div className="grid min-h-0 grid-cols-[220px_minmax(0,1fr)] border-t border-border-subtle">
-            <div className="max-h-96 overflow-auto border-r border-border-subtle bg-bg-secondary/40 p-2">
-              {fileEdits.map((event, index) => (
-                <button
-                  key={`${event.filePath}-${index}`}
-                  type="button"
-                  onClick={() => setSelectedEditIndex(index)}
-                  className={`mb-1 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors ${
-                    index === selectedEditIndex
-                      ? 'bg-info/10 text-info'
-                      : 'text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
-                  }`}
-                  title={event.filePath}
-                >
-                  <FileDiff size={12} className="shrink-0" />
-                  <span className="min-w-0 truncate">{event.filePath}</span>
-                </button>
-              ))}
-            </div>
-            <div className="max-h-96 overflow-auto">
-              {selectedEdit.diff?.trim() ? (
-                <DiffViewer filePath={selectedEdit.filePath ?? ''} diff={selectedEdit.diff} />
-              ) : (
-                <p className="px-4 py-3 text-xs text-text-tertiary">
-                  Change applied, but Codex did not provide a renderable patch for this file.
-                </p>
-              )}
-            </div>
-          </div>
+        {reviewOpen && (
+          <FileEditReviewGrid
+            edits={fileEdits.map((event) => ({
+              filePath: event.filePath ?? '',
+              diff: event.diff ?? '',
+            }))}
+            agentLabel={fileEdits[0]?.agentLabel ?? events[0]?.agentLabel}
+          />
         )}
         {expanded && (
           <div className="max-h-96 space-y-2 overflow-auto border-t border-border-subtle p-3">
@@ -204,7 +186,6 @@ export function TurnWorkMessage({
   active?: boolean;
 }) {
   const [expandedOverride, setExpandedOverride] = useState<boolean | null>(null);
-  const wasActiveRef = useRef(active);
   const showDetails = shouldShowTurnWorkDetails(active, expandedOverride);
   const progressCount = items.filter((item) => item.kind === 'progress').length;
   const activityEvents = items
@@ -235,13 +216,9 @@ export function TurnWorkMessage({
   ].filter((part): part is string => Boolean(part));
   const latestActivity = describeWorkItem(items[items.length - 1]);
 
-  useEffect(() => {
-    if (wasActiveRef.current && !active && expandedOverride === null) {
-      setExpandedOverride(true);
-    }
-    wasActiveRef.current = active;
-  }, [active, expandedOverride]);
-
+  // CH3: the work block stays collapsed when a turn finishes — the one-line
+  // summary (counts + latest activity) plus surfaced approvals/inputs carry
+  // the signal; expanding is the user's choice.
   if (items.length === 0) return null;
 
   return (
@@ -292,7 +269,7 @@ export function TurnWorkMessage({
               if (item.kind === 'progress') {
                 return (
                   <div key={`progress-${item.sourceIndex}`} className="pr-2">
-                    <p className="mb-1 text-[11px] font-medium text-text-muted">Progress update</p>
+                    <p className="mb-1 text-xs font-medium text-text-muted">Progress update</p>
                     <div className="text-text-secondary">
                       <MarkdownRenderer content={item.content} />
                     </div>
@@ -306,9 +283,7 @@ export function TurnWorkMessage({
                     key={`thinking-${item.sourceIndex}`}
                     className="border-l-2 border-border-subtle py-0.5 pl-3 pr-2 text-xs italic leading-relaxed text-text-tertiary"
                   >
-                    <p className="mb-1 text-[11px] font-medium not-italic text-text-muted">
-                      Reasoning
-                    </p>
+                    <p className="mb-1 text-xs font-medium not-italic text-text-muted">Reasoning</p>
                     <p className="whitespace-pre-wrap">{item.content}</p>
                   </div>
                 );
@@ -372,7 +347,7 @@ export function TurnActivityStatus({
         </div>
         <span
           ref={timerRef}
-          className="shrink-0 font-mono text-[11px] tabular-nums text-text-muted"
+          className="shrink-0 font-mono text-xs tabular-nums text-text-muted"
           aria-hidden="true"
         >
           0s
@@ -407,8 +382,6 @@ function describeWorkItem(item: ChatTurnWorkItem | undefined): string {
   switch (item.event.type) {
     case 'command_exec':
       return item.event.command ? 'Running a command' : 'Reading command output';
-    case 'file_read':
-      return 'Reading files';
     case 'file_edit':
       return 'Applying changes';
     case 'tool_call':
@@ -456,70 +429,6 @@ function TextEvent({ text }: { text: string }) {
   return <MarkdownRenderer content={text} />;
 }
 
-function FileReadEvent({
-  filePath,
-  lineRange,
-}: {
-  filePath: string;
-  lineRange?: [number, number];
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const [copiedReference, setCopiedReference] = useState(false);
-  const rangeStr = lineRange ? `:${lineRange[0]}-${lineRange[1]}` : '';
-  const openInEditor = useOpenEventFileInEditor(filePath, lineRange?.[0]);
-  const fileReference = buildChatFileReference(filePath, lineRange);
-
-  const copyReference = useCallback(() => {
-    if (!fileReference) return;
-    void copyTextToClipboard(fileReference).then(() => {
-      setCopiedReference(true);
-      window.setTimeout(() => setCopiedReference(false), 1600);
-    });
-  }, [fileReference]);
-
-  return (
-    <div className="rounded-xl border border-border-subtle bg-bg-tertiary/60 shadow-sm overflow-hidden">
-      <div className="flex items-center gap-1 px-2 py-1">
-        <button
-          onClick={() => setExpanded(!expanded)}
-          className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-sm text-text-secondary transition-colors hover:bg-bg-tertiary/80"
-          aria-label={expanded ? 'Collapse file read details' : 'Expand file read details'}
-        >
-          {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-          <FileText size={12} className="text-info" />
-          <span className="min-w-0 truncate">
-            Read{' '}
-            <span className="font-mono text-text-primary">
-              {filePath}
-              {rangeStr}
-            </span>
-          </span>
-        </button>
-        {filePath && (
-          <button
-            onClick={openInEditor}
-            className="rounded-lg p-2 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-            title="Open in editor"
-            aria-label={`Open ${filePath} in editor`}
-          >
-            <ExternalLink size={12} />
-          </button>
-        )}
-        {fileReference && (
-          <button
-            onClick={copyReference}
-            className="rounded-lg p-2 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-            title={copiedReference ? 'Copied reference' : 'Copy file reference'}
-            aria-label={copiedReference ? 'Copied file reference' : 'Copy file reference'}
-          >
-            {copiedReference ? <Check size={12} className="text-success" /> : <Copy size={12} />}
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
 export function buildChatFileReference(
   filePath: string,
   lineRange?: [number, number],
@@ -529,7 +438,15 @@ export function buildChatFileReference(
   return `${filePath}:${lineRange[0]}-${lineRange[1]}`;
 }
 
-function FileEditEvent({ filePath, diff }: { filePath: string; diff: string }) {
+function FileEditEvent({
+  filePath,
+  diff,
+  agentLabel = 'The agent',
+}: {
+  filePath: string;
+  diff: string;
+  agentLabel?: string;
+}) {
   const [expanded, setExpanded] = useState(false);
   const [copiedDiff, setCopiedDiff] = useState(false);
   const openInEditor = useOpenEventFileInEditor(filePath);
@@ -584,7 +501,7 @@ function FileEditEvent({ filePath, diff }: { filePath: string; diff: string }) {
             <DiffViewer filePath={filePath} diff={diff} />
           ) : (
             <p className="px-4 py-3 text-xs text-text-tertiary">
-              Change applied. Codex did not provide a renderable patch for this event.
+              Change applied. {agentLabel} did not provide a renderable patch for this event.
             </p>
           )}
         </div>
@@ -619,22 +536,28 @@ function ApprovalRequestEvent({ event }: { event: CodexEvent & { sessionId?: str
   const isCommand = event.approvalKind === 'command';
   const isPermissions = event.approvalKind === 'permissions';
   const cursorOptions = isPermissions ? getCursorPermissionOptions(event.approvalPermissions) : [];
+  const label = agentEventLabel(event);
   const title = isCommand
     ? 'Approve command'
     : isPermissions
       ? event.toolName
         ? 'Approve ' + event.toolName
         : 'Approve additional permissions'
-      : 'Approve file change';
-  const detail = isCommand
-    ? event.approvalCommand
-    : isPermissions
-      ? event.toolInput
-        ? formatApprovalInput(event.toolInput)
-        : formatRequestedPermissions(event.approvalPermissions)
+      : event.approvalKind === 'file_change'
+        ? 'Approve file change'
+        : `${label} requests approval`;
+  // H8 — prefer the normalized fields the protocol layer extracted (command,
+  // structured tool input like {command|path|url}, grant root) and only fall
+  // back to a JSON blob when nothing readable exists.
+  const toolInputSummary = event.toolInput ? formatApprovalToolInput(event.toolInput) : null;
+  const detail =
+    event.approvalCommand ??
+    toolInputSummary ??
+    (isPermissions
+      ? formatRequestedPermissions(event.approvalPermissions, label)
       : event.approvalGrantRoot
         ? `Allow writes under ${event.approvalGrantRoot}`
-        : 'Codex wants permission to apply a file change.';
+        : `${label} wants permission to apply a change.`);
 
   const decide = async (decision: 'accept' | 'acceptForSession' | 'decline', optionId?: string) => {
     if (!event.sessionId || event.approvalRequestId === undefined) return;
@@ -661,8 +584,8 @@ function ApprovalRequestEvent({ event }: { event: CodexEvent & { sessionId?: str
           {detail && (
             <p className="mt-1 truncate font-mono text-xs text-text-secondary">{detail}</p>
           )}
-          {isPermissions && event.toolInput && (
-            <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg border border-border-subtle bg-bg-primary/60 p-2 font-mono text-[11px] text-text-secondary">
+          {isPermissions && event.toolInput && !toolInputSummary && (
+            <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg border border-border-subtle bg-bg-primary/60 p-2 font-mono text-xs text-text-secondary">
               {JSON.stringify(event.toolInput, null, 2)}
             </pre>
           )}
@@ -804,7 +727,9 @@ function UserInputRequestEvent({ event }: { event: CodexEvent & { sessionId?: st
           <MessageSquare size={14} />
         </div>
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-semibold text-text-primary">Codex needs your input</p>
+          <p className="text-sm font-semibold text-text-primary">
+            {agentEventLabel(event)} needs your input
+          </p>
           <p className="mt-0.5 text-xs text-text-tertiary">
             {questions.length > 0
               ? `Question ${activeIndex + 1} of ${questions.length}`
@@ -861,7 +786,7 @@ function UserInputRequestEvent({ event }: { event: CodexEvent & { sessionId?: st
                   <span
                     className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md border font-mono text-xs ${
                       selected
-                        ? 'border-accent bg-accent text-white'
+                        ? 'border-accent bg-accent text-accent-foreground'
                         : 'border-border text-text-tertiary group-hover:text-text-primary'
                     }`}
                   >
@@ -917,7 +842,9 @@ function UserInputRequestEvent({ event }: { event: CodexEvent & { sessionId?: st
           {error && <p className="mt-3 text-xs text-error">{error}</p>}
         </fieldset>
       ) : (
-        <p className="p-4 text-sm text-error">Codex sent an empty input request.</p>
+        <p className="p-4 text-sm text-error">
+          {agentEventLabel(event)} sent an empty input request.
+        </p>
       )}
 
       {activeQuestion && (
@@ -938,7 +865,7 @@ function UserInputRequestEvent({ event }: { event: CodexEvent & { sessionId?: st
               submitting ||
               (activeIndex === questions.length - 1 && !complete)
             }
-            className="ml-auto inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-accent/85 disabled:cursor-not-allowed disabled:opacity-40"
+            className="ml-auto inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-accent-foreground transition-colors hover:bg-accent/85 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {submitting && <Loader2 size={13} className="animate-spin" />}
             {activeIndex < questions.length - 1 ? 'Next question' : 'Send answers'}
@@ -1031,7 +958,7 @@ function CursorQuestionRequestEvent({ event }: { event: CodexEvent & { sessionId
             type="button"
             onClick={() => void submit('submit')}
             disabled={questions.some((question) => (answers[question.id] ?? []).length === 0)}
-            className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
+            className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-accent-foreground disabled:cursor-not-allowed disabled:opacity-40"
           >
             Send answer
           </button>
@@ -1167,7 +1094,7 @@ function McpElicitationRequestEvent({ event }: { event: CodexEvent & { sessionId
           )}
           {request?.mode === 'url' && request.url ? (
             <div className="mt-2 flex items-center gap-2 rounded-lg border border-border-subtle bg-bg-primary/50 p-2">
-              <code className="min-w-0 flex-1 truncate text-[11px] text-text-secondary">
+              <code className="min-w-0 flex-1 truncate text-xs text-text-secondary">
                 {request.url}
               </code>
               <button
@@ -1192,7 +1119,7 @@ function McpElicitationRequestEvent({ event }: { event: CodexEvent & { sessionId
               {request?.requestedSchema !== undefined && (
                 <details className="mt-2 text-xs text-text-tertiary">
                   <summary className="cursor-pointer">Requested schema</summary>
-                  <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-bg-primary/60 p-2 text-[11px]">
+                  <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-bg-primary/60 p-2 text-xs">
                     {JSON.stringify(request.requestedSchema, null, 2)}
                   </pre>
                 </details>
@@ -1255,10 +1182,10 @@ function SubagentUpdateEvent({ event }: { event: CodexEvent }) {
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <p className="text-xs font-medium text-text-primary">{label}</p>
-            <span className="rounded-full bg-bg-tertiary px-2 py-0.5 text-[10px] text-text-tertiary">
+            <span className="rounded-full bg-bg-tertiary px-2 py-0.5 text-eyebrow text-text-tertiary">
               {formatSubagentStatus(update.status, update.agents)}
             </span>
-            {update.model && <span className="text-[10px] text-text-muted">{update.model}</span>}
+            {update.model && <span className="text-xs text-text-muted">{update.model}</span>}
           </div>
           {update.prompt && (
             <details className="mt-1 text-xs text-text-tertiary">
@@ -1311,8 +1238,11 @@ function ThreadStatusEvent({ event }: { event: CodexEvent }) {
   );
 }
 
-function formatRequestedPermissions(permissions: Record<string, unknown> | undefined): string {
-  if (!permissions) return 'Codex requested additional runtime permissions.';
+function formatRequestedPermissions(
+  permissions: Record<string, unknown> | undefined,
+  agentLabel: string,
+): string {
+  if (!permissions) return `${agentLabel} requested additional runtime permissions.`;
   const scopes = [
     permissions.fileSystem ? 'filesystem' : null,
     permissions.network ? 'network' : null,
@@ -1322,11 +1252,18 @@ function formatRequestedPermissions(permissions: Record<string, unknown> | undef
   return scopes ? `Additional ${scopes} access requested.` : 'Additional permissions requested.';
 }
 
-function formatApprovalInput(input: Record<string, unknown>): string {
-  const serialised = JSON.stringify(input);
-  return serialised && serialised.length <= 1_000
-    ? serialised
-    : 'Cursor requested a tool operation.';
+/**
+ * H8 — pull a human-readable summary out of an ACP tool call's input before
+ * anyone reaches for JSON.stringify. ACP permission requests carry the raw
+ * tool input ({command}, {path}, {url}, …); the common scalar fields describe
+ * the action far better than a blob.
+ */
+function formatApprovalToolInput(input: Record<string, unknown>): string | null {
+  for (const key of ['command', 'cmd', 'path', 'file_path', 'filePath', 'url', 'query']) {
+    const value = input[key];
+    if (typeof value === 'string' && value.trim()) return value;
+  }
+  return null;
 }
 
 type CursorPermissionOption = {
@@ -1520,7 +1457,7 @@ function ToolCallEvent({ event }: { event: CodexEvent }) {
           </span>
         </span>
         {status === 'failed' && (
-          <span className="ml-auto rounded-full bg-error/10 px-2 py-0.5 text-[11px] font-medium text-error">
+          <span className="ml-auto rounded-full bg-error/10 px-2 py-0.5 text-eyebrow font-medium text-error">
             failed
           </span>
         )}
@@ -1804,11 +1741,14 @@ export function AssistantMessage({
 export function UserMessage({
   content,
   attachments,
+  delivery,
   onEdit,
   onBranch,
 }: {
   content: string;
   attachments?: ChatAttachment[];
+  /** H2 — 'queued': provider accepted but holds the send behind the active turn; 'failed': provider never accepted it. */
+  delivery?: 'queued' | 'failed';
   onEdit?: () => void;
   onBranch?: () => void;
 }) {
@@ -1828,7 +1768,25 @@ export function UserMessage({
       <div
         className={`relative ${collapsible ? 'w-full max-w-[50%]' : 'w-fit max-w-[50%] min-w-0'}`}
       >
-        <p className="mb-1.5 text-right text-xs font-medium text-text-tertiary">You</p>
+        <p className="mb-1.5 flex items-center justify-end gap-1.5 text-right text-xs font-medium text-text-tertiary">
+          You
+          {delivery === 'queued' && (
+            <span
+              className="inline-flex items-center gap-1 rounded-full bg-info/10 px-1.5 py-0.5 text-eyebrow font-medium text-info"
+              title="The agent is mid-turn; this message will be sent next"
+            >
+              Queued
+            </span>
+          )}
+          {delivery === 'failed' && (
+            <span
+              className="inline-flex items-center gap-1 rounded-full bg-error/10 px-1.5 py-0.5 text-eyebrow font-medium text-error"
+              title="The agent did not accept this message — edit or retry"
+            >
+              Not sent
+            </span>
+          )}
+        </p>
         <div
           className={`overflow-hidden rounded-xl border px-4 py-3 text-sm text-text-primary transition-colors ${
             collapsible
@@ -1899,7 +1857,7 @@ function MessageAttachmentChip({ attachment }: { attachment: ChatAttachment }) {
       )}
       <div className="min-w-0">
         <p className="max-w-56 truncate text-xs font-medium text-text-primary">{attachment.name}</p>
-        <p className="text-[11px] text-text-tertiary">{formatAttachmentBytes(attachment.size)}</p>
+        <p className="text-xs text-text-tertiary">{formatAttachmentBytes(attachment.size)}</p>
       </div>
       <button
         type="button"
@@ -1925,7 +1883,6 @@ function summarizeActivityEvents(events: Array<CodexEvent & { sessionId?: string
   const labels = [
     summarizeActivityCount(events, 'tool_call', 'tool'),
     summarizeActivityCount(events, 'command_exec', 'command'),
-    summarizeActivityCount(events, 'file_read', 'file read'),
     summarizeActivityCount(events, 'file_edit', 'file edit'),
     summarizeActivityCount(events, 'approval_request', 'approval'),
     summarizeActivityCount(events, 'input_request', 'input request'),
@@ -1958,8 +1915,6 @@ function formatActivityPreview(event: CodexEvent & { sessionId?: string }): stri
       return event.toolName ? `Tool: ${event.toolName}` : 'Tool call';
     case 'command_exec':
       return event.command?.trim() || 'Command output';
-    case 'file_read':
-      return event.filePath ? `Read ${event.filePath}` : 'File read';
     case 'file_edit':
       return event.filePath ? `Edit ${event.filePath}` : 'File edit';
     case 'approval_request':

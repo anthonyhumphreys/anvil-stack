@@ -419,5 +419,4 @@ describe('buildExecutionTopology', () => {
       detail: 'Completed',
     });
   });
-
 });

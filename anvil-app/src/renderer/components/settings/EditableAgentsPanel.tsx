@@ -139,8 +139,8 @@ export function EditableAgentsPanel(): ReactNode {
 
       {!loading && agents.length === 0 && form === null && (
         <p className="text-sm text-text-tertiary">
-          No custom agents yet. Agents you create appear anywhere personas can be selected and
-          sync to your other devices when Sync is enabled.
+          No custom agents yet. Agents you create appear anywhere personas can be selected and sync
+          to your other devices when Sync is enabled.
         </p>
       )}
 
@@ -266,7 +266,7 @@ export function EditableAgentsPanel(): ReactNode {
               type="button"
               onClick={() => void handleSave()}
               disabled={saving || form.name.trim() === '' || form.promptBody.trim() === ''}
-              className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
+              className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-foreground transition-colors hover:bg-accent/90 disabled:opacity-50"
             >
               {saving ? 'Saving…' : editingId ? 'Save agent' : 'Create agent'}
             </button>

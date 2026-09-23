@@ -139,7 +139,9 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({ content }: Mark
 export function linkifyBareFileReferences(content: string): string {
   const segments = splitMarkdownCodeSegments(content);
   return segments
-    .map((segment) => (segment.code ? segment.value : linkifyBareFileReferencesInText(segment.value)))
+    .map((segment) =>
+      segment.code ? segment.value : linkifyBareFileReferencesInText(segment.value),
+    )
     .join('');
 }
 

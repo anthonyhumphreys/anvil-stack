@@ -109,7 +109,8 @@ describe('buildChatModelOptions', () => {
     expect(options[0]).toMatchObject({
       id: 'deployment-review',
       label: 'deployment-review',
-      description: 'Custom model or deployment selected in Settings.',
+      description:
+        'Custom model or deployment selected under Settings → Providers & models.',
     });
     expect(options.some((option) => option.id === 'gpt-5.6-sol')).toBe(true);
   });

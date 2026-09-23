@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Compass, ChevronRight, Check, AlertTriangle, Loader2, RefreshCw } from 'lucide-react';
 import type { OnboardDetection, RepoInfo } from '../../../shared/types';
 import { EnvironmentStep } from './EnvironmentStep';
 import { AgentsMdStep } from './AgentsMdStep';
 import { DevcontainerStep } from './DevcontainerStep';
 import { ConnectorsStep } from './ConnectorsStep';
-import { useWorkspace } from '../../contexts/WorkspaceContext';
+import { useWorkspace, repoIsMapped } from '../../contexts/WorkspaceContext';
 import { RepoSelector } from '../shared/RepoSelector';
+import { RepoFeatureEmptyState } from '../shared/RepoFeatureEmptyState';
+import { Button } from '../ui';
 import { ViewHeader } from '../layout/ViewScaffold';
 
 type WizardStep =
@@ -28,52 +30,96 @@ const STEP_LABELS: Record<WizardStep, string> = {
   done: 'Complete',
 };
 
-function loadSessionState() {
+// OB3: wizard progress is persisted per repo (localStorage keyed by repo id)
+// so a relaunch resumes where the user left off. Detection itself is
+// persisted server-side by `onboard:detect` (onboard_state table) and is
+// re-run on resume — it's cheap and refreshes staleness.
+const STEP_STORAGE_PREFIX = 'anvil:onboard-step:';
+const REPO_STORAGE_KEY = 'anvil:onboard-repo';
+
+function loadPersistedRepoId(): string | null {
   try {
-    const raw = sessionStorage.getItem('onboard-state');
-    if (raw)
-      return JSON.parse(raw) as { step: WizardStep; repoId: string; detection: OnboardDetection };
+    return window.localStorage.getItem(REPO_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function loadPersistedStep(repoId: string): WizardStep | null {
+  try {
+    const raw = window.localStorage.getItem(`${STEP_STORAGE_PREFIX}${repoId}`);
+    return (raw as WizardStep | null) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function clearPersisted(repoId: string) {
+  try {
+    window.localStorage.removeItem(`${STEP_STORAGE_PREFIX}${repoId}`);
+    window.localStorage.removeItem(REPO_STORAGE_KEY);
   } catch {
     /* ignore */
   }
-  return null;
 }
 
 export function OnboardView() {
-  const saved = loadSessionState();
-  const { repos: workspaceRepos } = useWorkspace();
+  const { repos: workspaceRepos, featureAvailability } = useWorkspace();
+  const [restoredRepoId] = useState(() => loadPersistedRepoId());
 
   const [selectedRepo, setSelectedRepo] = useState<RepoInfo | null>(null);
-  const [detection, setDetection] = useState<OnboardDetection | null>(saved?.detection ?? null);
-  const [currentStep, setCurrentStep] = useState<WizardStep>(saved?.step ?? 'select');
+  const [detection, setDetection] = useState<OnboardDetection | null>(null);
+  const [currentStep, setCurrentStep] = useState<WizardStep>('select');
   const [detecting, setDetecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const resumeAttemptedRef = useRef<string | null>(null);
 
-  // Persist wizard state to sessionStorage
+  // Restore the previously worked-on repo, or auto-select the first repo that
+  // has reached the `mapped` tier (OB4) — not merely 'connected'.
   useEffect(() => {
-    if (selectedRepo && currentStep !== 'select') {
-      sessionStorage.setItem(
-        'onboard-state',
-        JSON.stringify({
-          step: currentStep,
-          repoId: selectedRepo.id,
-          detection,
-        }),
-      );
-    }
-  }, [currentStep, selectedRepo, detection]);
+    if (selectedRepo) return;
+    const match = restoredRepoId ? workspaceRepos.find((repo) => repo.id === restoredRepoId) : null;
+    const target = match ?? workspaceRepos.find(repoIsMapped) ?? null;
+    if (target) setSelectedRepo(target);
+  }, [workspaceRepos, restoredRepoId, selectedRepo]);
 
-  // Restore selected repo from session or auto-select first indexed
+  // Persist the selected repo and the per-repo step across relaunch.
   useEffect(() => {
-    const restoredId = saved?.repoId;
-    const match = restoredId ? workspaceRepos.find((repo) => repo.id === restoredId) : null;
-    if (match) {
-      setSelectedRepo(match);
-    } else {
-      const indexed = workspaceRepos.find((repo) => repo.status === 'indexed');
-      if (indexed) setSelectedRepo(indexed);
+    if (!selectedRepo) return;
+    try {
+      window.localStorage.setItem(REPO_STORAGE_KEY, selectedRepo.id);
+    } catch {
+      /* ignore */
     }
-  }, [workspaceRepos]);
+  }, [selectedRepo]);
+
+  useEffect(() => {
+    if (!selectedRepo || currentStep === 'select') return;
+    try {
+      window.localStorage.setItem(`${STEP_STORAGE_PREFIX}${selectedRepo.id}`, currentStep);
+    } catch {
+      /* ignore */
+    }
+  }, [currentStep, selectedRepo]);
+
+  // Resume: if the restored repo has a persisted step past detection, re-run
+  // detection (refreshes onboard_state) and jump back to that step.
+  useEffect(() => {
+    if (!selectedRepo) return;
+    const step = loadPersistedStep(selectedRepo.id);
+    if (!step || step === 'select' || step === 'detect') return;
+    if (resumeAttemptedRef.current === selectedRepo.id) return;
+    resumeAttemptedRef.current = selectedRepo.id;
+    (async () => {
+      try {
+        const result = await window.anvil.onboard.detect(selectedRepo.id);
+        setDetection(result);
+        setCurrentStep(step);
+      } catch {
+        /* leave at select — detection errors surface on explicit Start */
+      }
+    })();
+  }, [selectedRepo]);
 
   const handleDetect = useCallback(async () => {
     if (!selectedRepo) return;
@@ -91,11 +137,11 @@ export function OnboardView() {
   }, [selectedRepo]);
 
   const handleRestart = useCallback(() => {
-    sessionStorage.removeItem('onboard-state');
+    if (selectedRepo) clearPersisted(selectedRepo.id);
     setDetection(null);
     setCurrentStep('select');
     setError(null);
-  }, []);
+  }, [selectedRepo]);
 
   // Determine which steps are relevant based on detection
   const visibleSteps: WizardStep[] = ['select', 'detect'];
@@ -119,11 +165,21 @@ export function OnboardView() {
     visibleSteps.push('done');
   }
 
+  if (!featureAvailability.repoFeaturesEnabled) {
+    return (
+      <RepoFeatureEmptyState
+        icon={Compass}
+        featureLabel="Repo setup"
+        description="Prepare a repository for reliable agent work and connected delivery tools."
+      />
+    );
+  }
+
   return (
     <div className="flex h-full flex-col">
       <ViewHeader
         icon={Compass}
-        title="Repository Setup"
+        title="Repo setup"
         description="Prepare a repository for reliable agent work and connected delivery tools."
         meta={
           selectedRepo ? (
@@ -159,7 +215,7 @@ export function OnboardView() {
               <div
                 className={`flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs ${
                   isCurrent
-                    ? 'bg-accent text-white font-medium'
+                    ? 'bg-accent text-accent-foreground font-medium'
                     : isDone
                       ? 'text-success'
                       : 'text-text-secondary'
@@ -192,25 +248,27 @@ export function OnboardView() {
         {currentStep === 'select' && (
           <div className="mx-auto max-w-lg space-y-4">
             <p className="text-sm text-text-secondary">
-              Select an indexed repository to run the onboarding wizard.
+              Select a repository to check its agent-readiness — AGENTS.md, dev container, and
+              environment. The structural index must have finished (mapped tier).
             </p>
 
             <RepoSelector
               selectedRepoId={selectedRepo?.id ?? null}
               onSelect={setSelectedRepo}
-              emptyMessage="No indexed repositories found. Connect and index a repo first."
+              emptyMessage="No mapped repositories yet — indexing runs automatically after a repo is connected."
             />
 
-            <button
+            <Button
+              variant="primary"
               onClick={() => {
                 setCurrentStep('detect');
-                handleDetect();
+                void handleDetect();
               }}
               disabled={!selectedRepo}
-              className="w-full rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-40"
+              className="w-full"
             >
-              Start Detection
-            </button>
+              Start detection
+            </Button>
           </div>
         )}
 

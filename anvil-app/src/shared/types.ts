@@ -1,6 +1,7 @@
 import type { DojoCraftedSkill, DojoTokenUsage, DojoPrice } from './dojo-types.js';
 import type { WorkItemReference } from './change-review-types.js';
 import type { AgentUIIntent } from './agent-ui-intents.js';
+import type { RepoIndexJobState, RepoIndexJobTier, RepoIndexTier } from './index-jobs.js';
 import type { BootstrapRecipe } from '../../cloud/contract/bootstrap.js';
 import type { EnvironmentProviderId } from '../../cloud/contract/environment.js';
 
@@ -12,6 +13,8 @@ export interface RepoInfo {
   defaultBranch: string;
   languages: LanguageBreakdown[];
   status: 'connected' | 'indexing' | 'indexed' | 'error';
+  /** Tiered readiness: connected → mapped → enriched. `status` is derived from this. */
+  indexTier?: RepoIndexTier;
   lastIndexed?: string; // ISO timestamp
   fileCount: number;
   branchCount: number;
@@ -207,6 +210,10 @@ export interface RepoIndexProgress {
   percent: number;
   stage: RepoIndexStage;
   detail?: string;
+  /** Queue job driving this progress, when one exists. */
+  jobId?: string;
+  jobTier?: RepoIndexJobTier;
+  jobState?: RepoIndexJobState;
 }
 
 export interface ModuleSummary {
@@ -691,6 +698,8 @@ export type WorkflowTargetPolicy =
       kind: 'provisioned-environment';
       provider: EnvironmentProviderId;
       ttlSeconds: number;
+      /** Optional device-local connection; omitted uses the first matching provisioner. */
+      connectionId?: string;
       resources?: { vcpus?: number; memoryMb?: number };
       requirements?: WorkflowCapabilityRequirements;
     };
@@ -789,6 +798,12 @@ export interface WorkflowNodeRun {
   status: WorkflowNodeRunStatus;
   threadId?: string;
   sessionId?: string;
+  /**
+   * Honesty marker: 'acp-print' means the step ran through a one-shot print
+   * CLI (Cursor `cursor-agent -p` / Devin `devin --print`) and no tool-call,
+   * diff, or reasoning events were captured — only the final text output.
+   */
+  executionMode?: 'app-server' | 'acp-print';
   output?: string;
   error?: string;
   startedAt?: string;
@@ -994,22 +1009,6 @@ export interface TurnEvidenceItem {
   timestamp: string;
 }
 
-export interface ChatTurnSummary {
-  id: string;
-  threadId: string;
-  userMessageId: string;
-  userPrompt: string;
-  startedAt: string;
-  completedAt?: string;
-  assistantMessageId?: string;
-  assistantPreview?: string;
-  changedFiles: string[];
-  commands: TurnEvidenceItem[];
-  tests: TurnEvidenceItem[];
-  errors: TurnEvidenceItem[];
-  evidence: TurnEvidenceItem[];
-}
-
 export type AgentRunSource = 'chat' | 'automation' | 'code_review';
 export type AgentRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 
@@ -1180,6 +1179,7 @@ export interface CodexEvent {
     | 'agent_ui_intent_resolved'
     | 'goal_update'
     | 'goal_cleared'
+    | 'queue_update'
     | 'error'
     | 'status'
     | 'usage'
@@ -1187,9 +1187,19 @@ export interface CodexEvent {
     | 'context_compaction'
     | 'usage_context'
     | 'thread_metadata';
+  /** Browser-owned sessions are persisted by the main process before broadcast. */
+  persistedBy?: 'main';
   /** App routing metadata attached to live provider events. */
   sessionId?: string;
   appThreadId?: string;
+  /** Display name of the agent that produced the event (e.g. 'Cursor', 'Devin'). */
+  agentLabel?: string;
+  /**
+   * `queue_update` events: number of user sends still queued behind the active
+   * turn (ACP providers have no mid-turn steer; sends flush via session/prompt
+   * when the turn completes). 0 means the queue drained.
+   */
+  queuedSendCount?: number;
   contextUsage?: { used: number; size: number };
   observedCostUsd?: number;
   usage?: DojoTokenUsage;
@@ -1256,6 +1266,34 @@ export interface Persona {
   };
 }
 
+/** Provider-truthful capability surface for a live chat session. */
+export interface CodexSessionCapabilities {
+  /** True when a later session can continue this provider thread (native resume). */
+  resumable: boolean;
+  /**
+   * How a mid-turn composer send is delivered: 'steer' = in-band turn/steer
+   * (Codex app-server), 'queue' = held and sent as a new prompt when the turn
+   * finishes (ACP providers have no steer).
+   */
+  midTurnSend: 'steer' | 'queue';
+  /** Provider emits thread/goal lifecycle events (Codex-only today). */
+  goals: boolean;
+  /**
+   * Distinct provider-side access modes when the provider collapses Anvil's
+   * four CodexMode levels — e.g. Cursor exposes ask/agent/plan only. Undefined
+   * for Codex-family providers where all four CodexModes are distinct.
+   */
+  accessModes?: string[];
+}
+
+/** How this session's provider thread came to be — honest lifecycle reporting. */
+export type CodexSessionContinuity =
+  | 'new'
+  | 'resumed'
+  | 'forked'
+  /** ACP providers cannot fork; a "fork" starts a fresh provider thread. */
+  | 'transcript-seeded';
+
 export interface CodexSession {
   id: string;
   repoId?: string;
@@ -1267,9 +1305,37 @@ export interface CodexSession {
   status: 'starting' | 'ready' | 'busy' | 'error';
   startedAt: string;
   mode?: CodexMode;
+  /**
+   * Provider-side mode actually applied for the current turn — ACP
+   * session/set_mode id ('ask' | 'agent' | 'plan' | 'accept-edits' | 'smart' |
+   * 'bypass') for Cursor/Devin, the Codex sandbox id for Codex-family. Lets the
+   * renderer label the effective access level honestly when it differs from
+   * `mode` (persona clamps, provider mode collapse).
+   */
+  appliedMode?: string;
   providerThreadId?: string;
   currentTurnId?: string;
+  /** True only when the provider can natively continue `providerThreadId`. */
   resumable?: boolean;
+  /** Number of composer sends queued behind the active turn (ACP providers). */
+  queuedSendCount?: number;
+  continuity?: CodexSessionContinuity;
+  capabilities?: CodexSessionCapabilities;
+  origin?: 'desktop' | 'browser';
+}
+
+/** Result of a mid-turn composer send (`chat:steer`). */
+export interface ChatSteerResult {
+  /**
+   * 'steered' — delivered in-band via Codex turn/steer.
+   * 'sent' — session was idle; delivered immediately as a new prompt.
+   * 'queued' — provider cannot accept mid-turn input; held and sent via
+   * session/prompt when the active turn finishes. The renderer should render
+   * the message as queued, not delivered.
+   */
+  disposition: 'steered' | 'sent' | 'queued';
+  /** Sends still waiting behind the active turn after this call. */
+  queueDepth: number;
 }
 
 export type CodexMode = 'read-only' | 'on-request' | 'workspace-auto' | 'full-access';
@@ -1361,7 +1427,8 @@ export interface MobileApprovalRequest {
   sessionId: string;
   requestKey: string;
   requestId: JsonRpcRequestId;
-  kind: 'command' | 'file_change';
+  /** 'permissions' covers ACP session/request_permission (Cursor/Devin). */
+  kind: 'command' | 'file_change' | 'permissions';
   reason?: string;
   command?: string;
   cwd?: string;
@@ -2129,11 +2196,24 @@ export interface WorkspaceLaunchPreferences {
   requestedAt?: string;
 }
 
+/**
+ * J10: per-workspace defaults. `defaultAccessLevel` is the CodexMode new
+ * threads in this workspace start with; the Settings → Workspace panel (a
+ * later wave) edits it. Storage seam: `WorkspaceContext` exposes
+ * `workspaceAccessDefault` / `setWorkspaceAccessDefault` today; the durable
+ * home is a future `workspace_preferences.access` section.
+ */
+export interface WorkspaceAccessPreferences {
+  defaultAccessLevel?: CodexMode;
+}
+
 export interface WorkspacePreferences {
   workspaceId: string;
   workitems: WorkspaceWorkItemsPreferences;
   docs: WorkspaceDocsPreferences;
   launch: WorkspaceLaunchPreferences;
+  /** J10 seam — populated once the `access` preferences section lands. */
+  access?: WorkspaceAccessPreferences;
   updatedAt: string;
 }
 
@@ -2153,7 +2233,17 @@ export interface WorkspaceScaffoldSession {
 }
 
 export interface WorkspaceFeatureAvailability {
-  statusLabel: 'empty' | 'scaffolding' | 'indexing' | 'ready';
+  /**
+   * Truthful workspace status (first-run remediation §4.1):
+   * - `empty` — no repos
+   * - `scaffolding` — a scaffold session is active/syncing/failed
+   * - `preparing` — an index job is queued or running (replaces the old
+   *   catch-all `indexing`, which is retained in the union for consumers that
+   *   haven't been updated yet)
+   * - `needs-attention` — indexing failed or never ran for any repo
+   * - `ready` — at least one repo is `mapped` or better
+   */
+  statusLabel: 'empty' | 'scaffolding' | 'indexing' | 'preparing' | 'ready' | 'needs-attention';
   chatEnabled: boolean;
   repoFeaturesEnabled: boolean;
   repoFeatureReason?: string;
@@ -2639,6 +2729,15 @@ export interface AppSettings {
   telemetryEnabled: boolean;
   theme: AppTheme;
   userRole?: UserRole;
+  /** ST8: keep every tool visible/openable regardless of the chosen role. */
+  showAllTools?: boolean;
+  /**
+   * J9/3.3: first-run step persistence so a relaunch resumes where onboarding
+   * left off (`welcome` → `workspace` → `done`). The renderer persists this in
+   * localStorage today because `updateSettings` whitelists known columns —
+   * wire to a real column when the settings service grows a generic field.
+   */
+  onboardingStep?: 'welcome' | 'workspace' | 'done';
 }
 
 // ---------------------------------------------------------------------------
@@ -2835,6 +2934,19 @@ export interface AnvilCloudExecutionConnectionInput {
   token?: string;
 }
 
+export interface AnvilCloudExecutionProviderDescriptor {
+  id: string;
+  capabilities: {
+    modes: string[];
+    modelAuth: string[];
+    subscriptionProviders?: string[];
+  };
+  availability: {
+    configured: boolean;
+    reasons: string[];
+  };
+}
+
 export type AnvilCloudExecutionStatus =
   | 'queued'
   | 'starting'
@@ -2922,6 +3034,7 @@ export interface AnvilCloudExecutionConnectionTest {
   ok: boolean;
   endpoint: string;
   executionCount?: number;
+  providers?: AnvilCloudExecutionProviderDescriptor[];
   error?: string;
 }
 

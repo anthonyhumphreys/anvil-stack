@@ -146,7 +146,7 @@ export function CodexRuntimeSetup({ compact = false, disabled = false }: CodexRu
           type="button"
           onClick={() => void install()}
           disabled={busy}
-          className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-medium text-accent-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {action === 'installing' && <Loader2 size={13} className="animate-spin" />}
           {action === 'installing'

@@ -1,171 +1,107 @@
-import { pollWhileVisible } from '../../utils/visible-polling';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
-import {
-  ArrowDown,
-  MessageSquare,
-  MessageSquarePlus,
-  Code,
-  Building2,
-  Shield,
-  Eye,
-  BookOpen,
-  ChevronDown,
-  ChevronRight,
-  AlertTriangle,
-  X,
-  Palette,
-  ClipboardList,
-  Presentation,
-  GraduationCap,
-  Database,
-  ListChecks,
-  Target,
-  Circle,
-  CheckCircle2,
-  Loader2,
-  Bot,
-  FileText,
-  Braces,
-  PanelRightOpen,
-  PanelRightClose,
-  Copy,
-  Check,
-  ExternalLink,
-  Maximize2,
-  Minimize2,
-  PictureInPicture2,
-  Headphones,
-  Wrench,
-  Radio,
-  SearchCheck,
-  GitPullRequest,
-  Gauge,
-  LifeBuoy,
-  Trash2,
-  Globe,
-  Link2,
-  Link2Off,
-  MonitorSmartphone,
-  Minus,
-  Plus,
-} from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import type { AgentUIPlanIntent, AgentUIQuestionIntent } from '../../../shared/agent-ui-intents';
 import type {
-  AgentRunSummary,
   AgentProvider,
   ChatAttachment,
-  ChatArtifact,
-  ChatGoalSnapshot,
-  ChatPlanSnapshot,
-  ChatPlanStep,
-  CodexMode,
-  CodexSession,
+  ChatLayout,
   Persona,
   ReasoningEffort,
   UserRole,
 } from '../../../shared/types';
 import { ROLE_FEATURES, ROLE_RECOMMENDED_PERSONAS } from '../../../shared/types';
 import { ChatInput, type ChatSlashCommand } from './ChatInput';
-import { ThreadPullRequests } from './ThreadPullRequests';
 import { ChatThreadRail } from './ChatThreadRail';
 import { WorkItemThreadRail } from './WorkItemThreadRail';
-import {
-  AssistantMessage,
-  TurnActivityStatus,
-  TurnWorkMessage,
-  UserMessage,
-  type TurnActivityState,
-} from './ChatMessage';
+import { ChatHeader } from './ChatHeader';
+import { ChatTranscript } from './ChatTranscript';
+import { deriveChatPaneState, type ChatPaneKind } from './ChatPaneState';
+import { ChatPersonaPicker } from './ChatPersonaPicker';
+import { ChatSidePanels } from './ChatSidePanels';
+import { buildFindingFollowUpPrompt } from './ChatFindingCard';
+import { PendingQuestionPrompt, WorkflowActionConfirmation } from './ChatPromptOverlays';
+import { useChatErrorRecovery } from './useChatErrorRecovery';
 import { composeChatTurns } from './chat-turns';
-import { ChatEmptyState } from './ChatEmptyState';
-import { ArtifactPreview } from './ArtifactPreview';
-import { ArtifactAnnotationsPanel } from './ArtifactAnnotationsPanel';
-import { DetachedCanvasWindow } from './DetachedCanvasWindow';
 import { useChatContext } from '../../contexts/ChatContext';
-import { useWorkspace } from '../../contexts/WorkspaceContext';
+import { useWorkspace, repoIsMapped } from '../../contexts/WorkspaceContext';
+import { WorkspaceReadinessStrip } from '../workspace/WorkspaceReadinessStrip';
+import { getStarterPrompts } from '../../utils/starter-prompts';
 import { DesignProvider } from '../../contexts/DesignContext';
 import { RepoSelector } from '../shared/RepoSelector';
 import { GovernanceSelector } from '../shared/GovernanceSelector';
-import {
-  extractFindings,
-  stripFindingMarkers,
-  type ExtractedFinding,
-} from '../../utils/finding-parser';
-import { DesignSidebar } from '../design/DesignSidebar';
-import { ResizableSidebarPanel } from '../layout/ResizableSidebarPanel';
-import { isEditableShortcutTarget } from '../../utils/keyboard';
-import {
-  buildExecutionStrategyPrompt,
-  type ExecutionStrategy,
-} from '../../utils/execution-strategy';
-import {
-  hasExplicitWorkflowCommand,
-  parseWorkflowChatIntent,
-  type WorkflowChatIntent,
-} from '../../utils/workflow-chat-intent';
-import { groupPersonasForRole } from '../../utils/persona-groups';
-import { ItsmWorkbench } from './ItsmWorkbench';
-import { ExecutionTopologyPanel } from './ExecutionTopologyPanel';
+import { extractFindings, type ExtractedFinding } from '../../utils/finding-parser';
+import type { ExecutionStrategy } from '../../utils/execution-strategy';
 import { SessionOwnershipChip } from './SessionOwnershipChip';
-import {
-  applyExecutionLifecycle,
-  buildExecutionTopology,
-  type ExecutionTopology,
-} from '../../utils/execution-topology';
-import {
-  CHAT_PREFILL_EVENT,
-  PlanIntentSurface,
-  QuestionIntentSurface,
-} from './AgentUIIntentSurface';
+import { buildExecutionTopology } from '../../utils/execution-topology';
+import { CHAT_PREFILL_EVENT } from './AgentUIIntentSurface';
 import { resolveChatFastModeTarget } from '../../utils/chat-fast-mode';
-import { BrowserPanel, type PreviewMode } from '../browser/BrowserPanel';
+import { useChatPanels, type ChatPanelId } from './useChatPanels';
+import { useChatViewData } from './useChatViewData';
+import { useChatRouteIntents } from './useChatRouteIntents';
+import { useChatWorkflowAction } from './useChatWorkflowAction';
+import { useThreadAccess } from './useThreadAccess';
+import {
+  chatAccessOptionsForProvider,
+  expectedAcpAppliedMode,
+  type ChatAccessOption,
+} from './thread-access';
+import { isAcpAgentProvider } from '../../../shared/agent-providers';
+import { agentProviderLabel } from '../../utils/agent-display';
+import {
+  buildMessageReusePrefill,
+  isNearChatBottom,
+  shouldFocusChatComposerFromKey,
+} from './chat-view-utils';
 
-const PERSONA_ICONS: Record<string, React.ReactNode> = {
-  Code: <Code size={14} />,
-  Building2: <Building2 size={14} />,
-  Shield: <Shield size={14} />,
-  Eye: <Eye size={14} />,
-  BookOpen: <BookOpen size={14} />,
-  ClipboardList: <ClipboardList size={14} />,
-  Presentation: <Presentation size={14} />,
-  Palette: <Palette size={14} />,
-  GraduationCap: <GraduationCap size={14} />,
-  Database: <Database size={14} />,
-  Headphones: <Headphones size={14} />,
-  Wrench: <Wrench size={14} />,
-  Radio: <Radio size={14} />,
-  SearchCheck: <SearchCheck size={14} />,
-  GitPullRequest: <GitPullRequest size={14} />,
-  Gauge: <Gauge size={14} />,
-};
+// Re-exported for the existing `../ChatView` import path used by tests.
+export {
+  buildMessageReusePrefill,
+  clampCanvasZoom,
+  getChatTurnLiveState,
+  getNewChatThreadActionLabel,
+  isNearChatBottom,
+  shouldFocusChatComposerFromKey,
+  shouldShowTurnActivityStatus,
+} from './chat-view-utils';
 
-interface ScrollMetrics {
-  scrollHeight: number;
-  scrollTop: number;
-  clientHeight: number;
-}
-
-const CHAT_BOTTOM_THRESHOLD_PX = 96;
-const NEW_CHAT_THREAD_LABEL = 'New thread';
 const ITSM_PERSONA_IDS = new Set(ROLE_RECOMMENDED_PERSONAS.itsm ?? []);
 
-export function clampCanvasZoom(zoom: number): number {
-  return Math.min(200, Math.max(50, Math.round(zoom / 10) * 10));
+/** H13 — slash-command copy names the agent the thread actually runs on. */
+function buildSlashCommands(agentLabel: string): ChatSlashCommand[] {
+  return [
+    {
+      id: 'new',
+      command: '/new',
+      label: 'New thread',
+      description: 'Start a fresh chat thread.',
+      insertText: '/new',
+    },
+    {
+      id: 'plan',
+      command: '/plan',
+      label: 'Plan work item',
+      description: `Ask ${agentLabel} to plan an ADO work item.`,
+      insertText: '/plan ADO-',
+    },
+    {
+      id: 'fix',
+      command: '/fix',
+      label: 'Fix work item',
+      description: `Ask ${agentLabel} to implement an ADO work item.`,
+      insertText: '/fix ADO-',
+    },
+    {
+      id: 'review',
+      command: '/review',
+      label: 'Review work item',
+      description: `Ask ${agentLabel} to review an ADO work item.`,
+      insertText: '/review ADO-',
+    },
+  ];
 }
 
 interface ChatViewProps {
   userRole: UserRole;
-}
-
-interface PendingWorkflowAction {
-  message: string;
-  intent: WorkflowChatIntent;
-  workspaceId: string;
-  workspaceName: string;
-  repoIds: string[];
-  executionStrategyPrompt?: string;
-  fastMode: boolean;
 }
 
 export function ChatView({ userRole }: ChatViewProps) {
@@ -218,54 +154,41 @@ export function ChatView({ userRole }: ChatViewProps) {
     selectWorkItemThread,
     startWorkItemThread,
   } = useChatContext();
-  const { repos, featureAvailability, activeScaffoldSession, activeWorkspace } = useWorkspace();
+  const {
+    repos,
+    featureAvailability,
+    activeScaffoldSession,
+    activeWorkspace,
+    workspaceAccessDefault,
+    setWorkspaceAccessDefault,
+  } = useWorkspace();
   const navigate = useNavigate();
-  const [searchParams, setSearchParams] = useSearchParams();
 
-  const [showPersonaDropdown, setShowPersonaDropdown] = useState(false);
   const [showFindings, setShowFindings] = useState(true);
   const [dismissedFindings, setDismissedFindings] = useState<Set<number>>(new Set());
   const [composerPrefill, setComposerPrefill] = useState<{ id: string; text: string } | null>(null);
-  const [codexMode, setCodexMode] = useState<CodexMode>('on-request');
-  const [goalPopoverOpen, setGoalPopoverOpen] = useState(false);
-  const [activityOpen, setActivityOpen] = useState(false);
   const [executionStrategy, setExecutionStrategy] = useState<ExecutionStrategy>('auto');
   const [fastMode, setFastMode] = useState(false);
-  const [canvasOpen, setCanvasOpen] = useState(true);
-  const [canvasExpanded, setCanvasExpanded] = useState(false);
-  const [canvasDetached, setCanvasDetached] = useState(false);
-  const [canvasZoom, setCanvasZoom] = useState(100);
-  const [previewMode, setPreviewMode] = useState<PreviewMode | null>(null);
-  const [previewInitialUrl, setPreviewInitialUrl] = useState('');
-  const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
-  const [canvasPlanSelected, setCanvasPlanSelected] = useState(false);
-  const [showPlanHistory, setShowPlanHistory] = useState(false);
-  const [recentRuns, setRecentRuns] = useState<AgentRunSummary[]>([]);
-  const [activeSessions, setActiveSessions] = useState<CodexSession[]>([]);
-  const [executionSessionStates, setExecutionSessionStates] = useState<
-    Parameters<typeof applyExecutionLifecycle>[0]
-  >({});
-  useEffect(
-    () =>
-      window.anvil.chat.onEvent((event) => {
-        setExecutionSessionStates((states) => applyExecutionLifecycle(states, event));
-      }),
-    [],
-  );
-  const [pendingWorkflowAction, setPendingWorkflowAction] = useState<PendingWorkflowAction | null>(
-    null,
-  );
-  const [confirmingWorkflowAction, setConfirmingWorkflowAction] = useState(false);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [composerFocusRequest, setComposerFocusRequest] = useState(0);
-  const [itsmWorkbenchOpen, setItsmWorkbenchOpen] = useState(true);
+  // H2 — transient composer notice (queued-send ack / rejected send).
+  const [sendNotice, setSendNotice] = useState<string | null>(null);
+  const [designSidebarCollapsed, setDesignSidebarCollapsed] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
-  const personaMenuRef = useRef<HTMLDivElement>(null);
-  const activityButtonRef = useRef<HTMLButtonElement>(null);
-  const activityOpenRef = useRef(activityOpen);
+  const panelsGroupRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
   const appliedItsmDefaultRef = useRef(false);
+
+  const focusPanelsControl = useCallback(() => {
+    window.requestAnimationFrame(() => {
+      panelsGroupRef.current
+        ?.querySelector<HTMLElement>('[role="radio"][aria-checked="true"], [role="radio"]')
+        ?.focus();
+    });
+  }, []);
+
+  // --- Extracted hooks -------------------------------------------------------
 
   const isBaPersona = activePersona?.id === 'ba';
   const isDesignPersona = activePersona?.id === 'design';
@@ -273,49 +196,78 @@ export function ChatView({ userRole }: ChatViewProps) {
   const isItsmPersona = activePersona ? ITSM_PERSONA_IDS.has(activePersona.id) : false;
   const isWorkItemLayout = chatLayout === 'workitems';
   const browserAvailable = ROLE_FEATURES[userRole].includes('browser');
+
+  const planIntents = useMemo(
+    () => agentUIIntents.filter((intent): intent is AgentUIPlanIntent => intent.kind === 'plan'),
+    [agentUIIntents],
+  );
+  const visiblePlanIntent = planIntents.find(
+    (intent) =>
+      intent.lifecycle !== 'dismissed' &&
+      intent.lifecycle !== 'expired' &&
+      intent.payload.lifecycle !== 'archived' &&
+      !intent.presentation.hidden,
+  );
+
+  const panels = useChatPanels({
+    artifacts: activeArtifacts,
+    hasVisiblePlanIntent: Boolean(visiblePlanIntent),
+    planIntentCount: planIntents.length,
+    hasGoal: Boolean(activeGoal),
+  });
+
+  const { recentRuns, activeSessions, executionSessionStates, setExecutionSessionStates } =
+    useChatViewData(activeWorkspace?.id);
+
+  const {
+    pendingWorkflowAction,
+    confirmingWorkflowAction,
+    handleComposerSend,
+    confirmWorkflowAction,
+    keepWorkflowPromptInChat,
+  } = useChatWorkflowAction({
+    activeWorkspace,
+    executionStrategy,
+    fastMode,
+    send,
+    startNewSession,
+  });
+
+  // CH1 — per-thread access level, persisted per workspace. ST9: the
+  // Settings → Workspace default applies to threads without an override.
+  const threadAccess = useThreadAccess(activeWorkspace?.id, activeThreadId, {
+    workspaceDefault: workspaceAccessDefault,
+    onWorkspaceDefaultChange: setWorkspaceAccessDefault,
+  });
+
+  const handleSuggestionClick = useCallback((prompt: string) => {
+    setComposerPrefill({ id: `suggestion-${Date.now()}`, text: prompt });
+    setComposerFocusRequest((request) => request + 1);
+  }, []);
+
+  useChatRouteIntents({
+    personas,
+    activePersona,
+    switchPersona,
+    selectThread,
+    onPrefill: (text) => setComposerPrefill({ id: `route-${Date.now()}`, text }),
+    openPreview: panels.openPreview,
+    threadCount: threads.length,
+  });
+
+  // --- Persona / layout derivations ------------------------------------------
+
   const fastModeTarget = useMemo(
     () => resolveChatFastModeTarget(modelProvider, model, modelOptions),
     [model, modelOptions, modelProvider],
   );
   const mentionRepoIds = useMemo(() => activeRepos.map((repo) => repo.id), [activeRepos]);
-  const slashCommands = useMemo<ChatSlashCommand[]>(
-    () => [
-      {
-        id: 'new',
-        command: '/new',
-        label: 'New thread',
-        description: 'Start a fresh chat thread.',
-        insertText: '/new',
-      },
-      {
-        id: 'plan',
-        command: '/plan',
-        label: 'Plan work item',
-        description: 'Ask Codex to plan an ADO work item.',
-        insertText: '/plan ADO-',
-      },
-      {
-        id: 'fix',
-        command: '/fix',
-        label: 'Fix work item',
-        description: 'Ask Codex to implement an ADO work item.',
-        insertText: '/fix ADO-',
-      },
-      {
-        id: 'review',
-        command: '/review',
-        label: 'Review work item',
-        description: 'Ask Codex to review an ADO work item.',
-        insertText: '/review ADO-',
-      },
-    ],
-    [],
-  );
 
   useEffect(() => {
     if (!fastModeTarget.available && fastMode) setFastMode(false);
   }, [fastMode, fastModeTarget.available]);
 
+  // ITSM role defaults to the service-desk persona once.
   useEffect(() => {
     if (userRole !== 'itsm') {
       appliedItsmDefaultRef.current = false;
@@ -327,104 +279,8 @@ export function ChatView({ userRole }: ChatViewProps) {
     const serviceDesk = personas.find((persona) => persona.id === 'service-desk');
     if (serviceDesk) void switchPersona(serviceDesk);
   }, [activePersona, personas, switchPersona, userRole]);
-  const [designSidebarCollapsed, setDesignSidebarCollapsed] = useState(false);
 
-  useEffect(() => {
-    window.anvil.settings
-      .get()
-      .then((settings) => setCodexMode(settings.codexMode ?? 'on-request'))
-      .catch(console.error);
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    const refresh = () => {
-      return window.anvil.chat
-        .listActiveSessions()
-        .then((sessions) => {
-          if (!cancelled) setActiveSessions(sessions.filter((item) => item.status !== 'error'));
-        })
-        .catch(() => {
-          if (!cancelled) setActiveSessions([]);
-        });
-    };
-    const stop = pollWhileVisible(refresh, 5000);
-    return () => {
-      cancelled = true;
-      stop();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!activeWorkspace?.id) {
-      setRecentRuns([]);
-      return;
-    }
-
-    let cancelled = false;
-    const refresh = () => {
-      return window.anvil.agentRuns
-        .list(activeWorkspace.id, 20)
-        .then((runs) => {
-          if (!cancelled) setRecentRuns(runs);
-        })
-        .catch(() => {
-          if (!cancelled) setRecentRuns([]);
-        });
-    };
-    const stop = pollWhileVisible(refresh, 10_000);
-    return () => {
-      cancelled = true;
-      stop();
-    };
-  }, [activeWorkspace?.id]);
-
-  useEffect(() => {
-    const prompt = searchParams.get('prompt');
-    const persona = searchParams.get('persona');
-    if (!prompt && !persona) return;
-
-    if (prompt) {
-      setComposerPrefill({ id: `route-${Date.now()}`, text: prompt });
-    }
-
-    if (persona) {
-      const target = personas.find((item) => item.id === persona);
-      if (target && target.id !== activePersona?.id) {
-        switchPersona(target);
-      }
-    }
-
-    const next = new URLSearchParams(searchParams);
-    next.delete('prompt');
-    next.delete('persona');
-    setSearchParams(next, { replace: true });
-  }, [searchParams, setSearchParams, personas, activePersona, switchPersona]);
-
-  useEffect(() => {
-    const requestedPreview = searchParams.get('preview');
-    if (requestedPreview !== 'browser' && requestedPreview !== 'simulator') return;
-    setPreviewMode(requestedPreview);
-    setPreviewInitialUrl(searchParams.get('previewUrl') ?? '');
-    setCanvasOpen(false);
-    setCanvasExpanded(false);
-    setItsmWorkbenchOpen(false);
-    setActivityOpen(false);
-
-    const next = new URLSearchParams(searchParams);
-    next.delete('preview');
-    next.delete('previewUrl');
-    setSearchParams(next, { replace: true });
-  }, [searchParams, setSearchParams]);
-
-  useEffect(() => {
-    const threadId = searchParams.get('thread');
-    if (!threadId) return;
-    void selectThread(threadId);
-    const next = new URLSearchParams(searchParams);
-    next.delete('thread');
-    setSearchParams(next, { replace: true });
-  }, [searchParams, selectThread, setSearchParams, threads]);
+  // --- Findings (BA persona) --------------------------------------------------
 
   const findings = useMemo(() => {
     if (!isBaPersona) return [];
@@ -442,6 +298,8 @@ export function ChatView({ userRole }: ChatViewProps) {
 
   const openFindings = findings.filter((f) => !dismissedFindings.has(f.idx));
   const composedTurns = useMemo(() => composeChatTurns(entries, { active: busy }), [busy, entries]);
+
+  // --- Scroll stickiness -------------------------------------------------------
 
   useEffect(() => {
     const container = messagesContainerRef.current;
@@ -489,121 +347,80 @@ export function ChatView({ userRole }: ChatViewProps) {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
+  // Agent-UI surfaces can prefill the composer via a window event.
+  useEffect(() => {
+    const handlePrefill = (event: Event) => {
+      const detail = (event as CustomEvent<{ text?: string }>).detail;
+      if (!detail?.text) return;
+      setComposerPrefill({ id: `agent-ui-${Date.now()}`, text: detail.text });
+      setComposerFocusRequest((current) => current + 1);
+    };
+    window.addEventListener(CHAT_PREFILL_EVENT, handlePrefill);
+    return () => window.removeEventListener(CHAT_PREFILL_EVENT, handlePrefill);
+  }, []);
+
+  // --- Handlers ---------------------------------------------------------------
+
   const handleSwitchPersona = (persona: Persona) => {
-    setShowPersonaDropdown(false);
-    setActivityOpen(false);
+    panels.closeActivity();
     switchPersona(persona);
   };
 
-  const handleComposerSend = useCallback(
-    (message: string, attachments: ChatAttachment[] = []) => {
-      if (attachments.length === 0 && message.trim().toLowerCase() === '/new') {
-        void startNewSession();
-        return;
-      }
-
-      const mayBeWorkflowIntent = hasExplicitWorkflowCommand(message);
-      if (attachments.length === 0 && activeWorkspace && mayBeWorkflowIntent) {
-        void window.anvil.workflow
-          .listTemplates()
-          .then((templates) => {
-            const intent = parseWorkflowChatIntent(message, templates);
-            if (!intent) {
-              void send(
-                message,
-                attachments,
-                buildExecutionStrategyPrompt(executionStrategy) ?? undefined,
-                fastMode,
-              );
-              return;
-            }
-            setPendingWorkflowAction({
-              message,
-              intent,
-              workspaceId: activeWorkspace.id,
-              workspaceName: activeWorkspace.name,
-              repoIds: activeWorkspace.repos.map((repo) => repo.id),
-              executionStrategyPrompt: buildExecutionStrategyPrompt(executionStrategy) ?? undefined,
-              fastMode,
-            });
-          })
-          .catch(() => {
-            void send(
-              message,
-              attachments,
-              buildExecutionStrategyPrompt(executionStrategy) ?? undefined,
-              fastMode,
-            );
-          });
-        return;
-      }
-
-      void send(
-        message,
-        attachments,
-        buildExecutionStrategyPrompt(executionStrategy) ?? undefined,
-        fastMode,
-      );
-    },
-    [activeWorkspace, executionStrategy, fastMode, send, startNewSession],
+  // H13 — label strings name the provider the session actually runs on.
+  const agentProvider = session?.provider ?? modelProvider;
+  const agentLabel = agentProviderLabel(agentProvider) ?? 'The agent';
+  // H12 — goals are a Codex capability; when no session is live yet, fall back
+  // to provider truth (ACP providers never support them).
+  const goalsSupported = session?.capabilities?.goals ?? !isAcpAgentProvider(agentProvider);
+  // H9 — provider-truthful access options and the applied provider-side mode.
+  const accessOptions = useMemo(
+    () => chatAccessOptionsForProvider(agentProvider, session?.capabilities?.accessModes),
+    [agentProvider, session?.capabilities?.accessModes],
   );
-
-  const handleConfirmWorkflowAction = useCallback(async () => {
-    if (!pendingWorkflowAction || confirmingWorkflowAction) return;
-    setConfirmingWorkflowAction(true);
-    try {
-      const { intent } = pendingWorkflowAction;
-      if (intent.kind === 'run') {
-        const run = await window.anvil.workflow.startRun({
-          templateId: intent.template.id,
-          workspaceId: pendingWorkflowAction.workspaceId,
-          repoIds: pendingWorkflowAction.repoIds,
-          kickoff: intent.kickoff,
-        });
-        setPendingWorkflowAction(null);
-        navigate(`/workflows?run=${encodeURIComponent(run.id)}`);
-        return;
-      }
-
-      const params = new URLSearchParams({ kickoff: intent.kickoff });
-      if (intent.kind === 'draft') params.set('draft', intent.request);
-      setPendingWorkflowAction(null);
-      navigate(`/workflows?${params.toString()}`);
-    } catch {
-      const pending = pendingWorkflowAction;
-      setPendingWorkflowAction(null);
-      await send(pending.message, [], pending.executionStrategyPrompt, pending.fastMode);
-    } finally {
-      setConfirmingWorkflowAction(false);
-    }
-  }, [confirmingWorkflowAction, navigate, pendingWorkflowAction, send]);
-
-  const handleKeepWorkflowPromptInChat = useCallback(() => {
-    if (!pendingWorkflowAction || confirmingWorkflowAction) return;
-    const pending = pendingWorkflowAction;
-    setPendingWorkflowAction(null);
-    void send(pending.message, [], pending.executionStrategyPrompt, pending.fastMode);
-  }, [confirmingWorkflowAction, pendingWorkflowAction, send]);
+  const appliedAccessMode =
+    session?.appliedMode ??
+    expectedAcpAppliedMode(agentProvider, threadAccess.level, collaborationMode);
+  const slashCommands = useMemo(() => buildSlashCommands(agentLabel), [agentLabel]);
 
   const handleChatInputSend = useCallback(
-    (message: string, attachments: ChatAttachment[] = []) => {
+    (message: string, attachments: ChatAttachment[] = []): Promise<boolean> => {
       if (busy) {
-        void steer(message, attachments);
-        return;
+        // H2 — the mid-turn path awaits the provider's disposition: 'steered'
+        // (Codex), 'sent' (ACP idle race), 'queued' (ACP busy), or null when
+        // the session could not accept the message at all. Queue depth itself
+        // renders from session.queuedSendCount below, so the notice only
+        // carries rejections.
+        return steer(message, attachments).then((result) => {
+          if (!result) {
+            setSendNotice(
+              `${agentLabel} could not accept that message — the session may have finished or stopped. Try again.`,
+            );
+            return false;
+          }
+          setSendNotice(null);
+          return true;
+        });
       }
       handleComposerSend(message, attachments);
+      setSendNotice(null);
+      return Promise.resolve(true);
     },
-    [busy, handleComposerSend, steer],
+    [busy, handleComposerSend, steer, agentLabel],
   );
 
-  const handleCodexModeChange = useCallback(async (mode: CodexMode) => {
-    setCodexMode(mode);
-    try {
-      await window.anvil.settings.update({ codexMode: mode });
-    } catch (err) {
-      console.error('[Chat] Failed to update Codex mode:', err);
-    }
-  }, []);
+  const handleAccessOptionSelect = useCallback(
+    (option: ChatAccessOption) => {
+      if (option.collaborationMode === 'plan') {
+        if (collaborationMode !== 'plan') setCollaborationMode('plan');
+        return;
+      }
+      // Leaving plan via the access chip must reset the collaboration mode —
+      // otherwise the provider keeps applying 'plan' regardless of level.
+      if (collaborationMode === 'plan') setCollaborationMode('default');
+      if (option.level) threadAccess.setLevel(option.level);
+    },
+    [collaborationMode, setCollaborationMode, threadAccess],
+  );
 
   const handleModelChange = useCallback(
     (nextModel: string, nextProvider: AgentProvider) => {
@@ -621,16 +438,11 @@ export function ChatView({ userRole }: ChatViewProps) {
   );
 
   const handleChatLayoutChange = useCallback(
-    (layout: typeof chatLayout) => {
+    (layout: ChatLayout) => {
       void setChatLayout(layout);
     },
     [setChatLayout],
   );
-
-  const handleSuggestionClick = useCallback((prompt: string) => {
-    setComposerPrefill({ id: `suggestion-${Date.now()}`, text: prompt });
-    setComposerFocusRequest((request) => request + 1);
-  }, []);
 
   const handleFindingFollowUp = useCallback((finding: ExtractedFinding & { idx: number }) => {
     setComposerPrefill({
@@ -641,6 +453,7 @@ export function ChatView({ userRole }: ChatViewProps) {
 
   const handleSetGoal = useCallback(
     (objective: string, tokenBudget: string) => {
+      if (!goalsSupported) return;
       const trimmedObjective = objective.trim();
       if (!trimmedObjective) return;
 
@@ -650,18 +463,52 @@ export function ChatView({ userRole }: ChatViewProps) {
           ? ` with a ${parsedBudget.toLocaleString()} token budget`
           : '';
 
-      setGoalPopoverOpen(false);
+      panels.setGoalPopoverOpen(false);
       void send(`Set a goal${budgetText}: ${trimmedObjective}`);
     },
-    [send],
+    [panels, send, goalsSupported],
   );
 
   const handleCompleteGoal = useCallback(() => {
-    setGoalPopoverOpen(false);
+    if (!goalsSupported) return;
+    panels.setGoalPopoverOpen(false);
     void send('Mark the active goal complete.');
-  }, [send]);
+  }, [panels, send, goalsSupported]);
 
-  const personaColour = activePersona?.colour ?? '#b5121b';
+  const handleBranch = useCallback(
+    (messageIndex: number) => {
+      void forkThread(messageIndex);
+    },
+    [forkThread],
+  );
+
+  const handleReuseMessage = useCallback((messageIndex: number, content: string) => {
+    setComposerPrefill({
+      id: `reuse-${messageIndex}-${Date.now()}`,
+      text: buildMessageReusePrefill(content),
+    });
+    setComposerFocusRequest((prev) => prev + 1);
+  }, []);
+
+  // CH5 — classified error notice with retry / provider-switch recovery.
+  const errorRecovery = useChatErrorRecovery({
+    entries,
+    modelOptions,
+    modelProvider,
+    onSend: handleChatInputSend,
+    onModelChange: handleModelChange,
+  });
+
+  // --- Derived view state ------------------------------------------------------
+
+  // C5 — fall back to the accent token, not a hard-coded red.
+  const personaColour = activePersona?.colour ?? 'var(--color-accent)';
+  // C2/3.5 — repo-grounded starter prompts once a repo is mapped; persona
+  // suggestions stay as the fallback in ChatEmptyState.
+  const starterPrompts = useMemo(
+    () => (repos.some(repoIsMapped) ? getStarterPrompts({ repos, userRole }) : undefined),
+    [repos, userRole],
+  );
   const scaffoldBusy = scaffoldStatus === 'syncing' || scaffoldStatus === 'indexing';
   const workspaceChatReady = scaffoldModeActive || featureAvailability.chatEnabled;
   const chatInputDisabled =
@@ -673,18 +520,6 @@ export function ChatView({ userRole }: ChatViewProps) {
   ].join(':');
 
   const isEmpty = entries.length === 0 && !error;
-  const showCenteredEmptyPane = isEmpty || (scaffoldModeActive && entries.length === 0 && !error);
-  const planIntents = useMemo(
-    () => agentUIIntents.filter((intent): intent is AgentUIPlanIntent => intent.kind === 'plan'),
-    [agentUIIntents],
-  );
-  const visiblePlanIntent = planIntents.find(
-    (intent) =>
-      intent.lifecycle !== 'dismissed' &&
-      intent.lifecycle !== 'expired' &&
-      intent.payload.lifecycle !== 'archived' &&
-      !intent.presentation.hidden,
-  );
   const pendingQuestions = useMemo(
     () =>
       agentUIIntents.filter(
@@ -694,9 +529,9 @@ export function ChatView({ userRole }: ChatViewProps) {
       ),
     [agentUIIntents],
   );
-  const selectedArtifact = canvasPlanSelected
+  const selectedArtifact = panels.canvasPlanSelected
     ? null
-    : (activeArtifacts.find((artifact) => artifact.id === selectedArtifactId) ??
+    : (activeArtifacts.find((artifact) => artifact.id === panels.selectedArtifactId) ??
       activeArtifacts[0] ??
       null);
   const executionTopology = useMemo(
@@ -715,342 +550,122 @@ export function ChatView({ userRole }: ChatViewProps) {
   const visibleSessionId = executionTopology.nodes.find(
     (node) => node.kind === 'session',
   )?.sessionId;
-  const showItsmWorkbench = userRole === 'itsm' && isItsmPersona && itsmWorkbenchOpen;
-  const showActivitySidebar =
-    activityOpen &&
-    !scaffoldModeActive &&
-    !isDesignPersona &&
-    !isBaPersona &&
-    !showItsmWorkbench &&
-    !previewMode;
-  const showCanvasSidebar =
-    !isDesignPersona &&
-    !isBaPersona &&
-    !showItsmWorkbench &&
-    !previewMode &&
-    !activityOpen &&
-    canvasOpen &&
-    !canvasExpanded &&
-    !canvasDetached &&
-    (activeArtifacts.length > 0 ||
-      visiblePlanIntent ||
-      activeGoal ||
-      (showPlanHistory && planIntents.length > 0));
 
-  useEffect(() => {
-    activityOpenRef.current = activityOpen;
-  }, [activityOpen]);
+  // C4 — one enum drives every non-transcript pane state.
+  const paneKind: ChatPaneKind = deriveChatPaneState({
+    scaffoldModeActive,
+    chatEnabled: featureAvailability.chatEnabled,
+    isEmpty,
+    hasError: Boolean(error),
+    isWorkItemLayout,
+    activeThreadHasWorkItem: Boolean(activeThread?.workItemId),
+  });
 
+  // §7 funnel — local-only activation events; never transmitted.
+  const composerEnabledWorkspacesRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (activeArtifacts.length === 0) {
-      setSelectedArtifactId(null);
-      return;
+    if (chatInputDisabled) return;
+    const key = activeWorkspace?.id ?? 'no-workspace';
+    if (composerEnabledWorkspacesRef.current.has(key)) return;
+    composerEnabledWorkspacesRef.current.add(key);
+    void window.anvil.metrics
+      .track('chat_composer_enabled', { workspaceId: activeWorkspace?.id ?? null })
+      .catch(() => {});
+  }, [chatInputDisabled, activeWorkspace?.id]);
+
+  const prevPaneKindRef = useRef<ChatPaneKind | null>(null);
+  useEffect(() => {
+    if (paneKind === 'blocked' && prevPaneKindRef.current !== 'blocked') {
+      void window.anvil.metrics
+        .track('chat_blocked_shown', {
+          workspaceId: activeWorkspace?.id ?? null,
+          reason: featureAvailability.repoFeatureReason ?? null,
+        })
+        .catch(() => {});
     }
-    if (!activityOpenRef.current) setCanvasOpen(true);
-    setSelectedArtifactId((current) =>
-      current && activeArtifacts.some((artifact) => artifact.id === current)
-        ? current
-        : activeArtifacts[0].id,
-    );
-  }, [activeArtifacts]);
+    prevPaneKindRef.current = paneKind;
+  }, [paneKind, activeWorkspace?.id, featureAvailability.repoFeatureReason]);
 
-  useEffect(() => {
-    if (!visiblePlanIntent || activeArtifacts.length > 0) return;
-    setCanvasPlanSelected(true);
-    if (!activityOpenRef.current) setCanvasOpen(true);
-  }, [activeArtifacts.length, visiblePlanIntent?.id]);
+  const showItsmWorkbench =
+    userRole === 'itsm' && isItsmPersona && panels.itsmWorkbenchOpen && !panels.previewMode;
+  const showPanelsCluster = !isDesignPersona && !isBaPersona;
+  const showActivitySidebar =
+    panels.activityOpen &&
+    !scaffoldModeActive &&
+    showPanelsCluster &&
+    !showItsmWorkbench &&
+    !panels.previewMode;
+  const canvasHasContent =
+    activeArtifacts.length > 0 ||
+    Boolean(visiblePlanIntent) ||
+    Boolean(activeGoal) ||
+    (panels.showPlanHistory && planIntents.length > 0);
+  const showCanvasSidebar =
+    showPanelsCluster &&
+    !showItsmWorkbench &&
+    !panels.previewMode &&
+    !panels.activityOpen &&
+    panels.canvasOpen &&
+    !panels.canvasExpanded &&
+    !panels.canvasDetached &&
+    canvasHasContent;
 
-  useEffect(() => {
-    if (activeArtifacts.length > 0 || visiblePlanIntent || activeGoal) return;
-    setCanvasExpanded(false);
-    setCanvasDetached(false);
-    setCanvasOpen(false);
-  }, [activeArtifacts.length, activeGoal, visiblePlanIntent]);
-
-  useEffect(() => {
-    const handlePrefill = (event: Event) => {
-      const detail = (event as CustomEvent<{ text?: string }>).detail;
-      if (!detail?.text) return;
-      setComposerPrefill({ id: `agent-ui-${Date.now()}`, text: detail.text });
-      setComposerFocusRequest((current) => current + 1);
-    };
-    window.addEventListener(CHAT_PREFILL_EVENT, handlePrefill);
-    return () => window.removeEventListener(CHAT_PREFILL_EVENT, handlePrefill);
-  }, []);
-
-  useEffect(() => {
-    if (!canvasExpanded) return;
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setCanvasExpanded(false);
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [canvasExpanded]);
-
-  useEffect(() => {
-    if (!showPersonaDropdown) return;
-    const handlePointerDown = (event: MouseEvent) => {
-      if (!personaMenuRef.current?.contains(event.target as Node)) {
-        setShowPersonaDropdown(false);
-      }
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      setShowPersonaDropdown(false);
-    };
-    document.addEventListener('mousedown', handlePointerDown);
-    window.addEventListener('keydown', handleKeyDown);
-    return () => {
-      document.removeEventListener('mousedown', handlePointerDown);
-      window.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [showPersonaDropdown]);
-
-  const handleDetachedCanvasClose = useCallback(() => {
-    setCanvasDetached(false);
-    setCanvasOpen(true);
-  }, []);
-
-  const handleBranch = useCallback(
-    (messageIndex: number) => {
-      void forkThread(messageIndex);
-    },
-    [forkThread],
-  );
-
-  const handleReuseMessage = useCallback((messageIndex: number, content: string) => {
-    setComposerPrefill({
-      id: `reuse-${messageIndex}-${Date.now()}`,
-      text: buildMessageReusePrefill(content),
-    });
-    setComposerFocusRequest((prev) => prev + 1);
-  }, []);
+  const canvasSidebarProps = {
+    artifacts: activeArtifacts,
+    selectedArtifact,
+    activePlan,
+    planIntents,
+    activeGoal,
+    planSelected: panels.canvasPlanSelected,
+    onSelectPlan: panels.selectPlan,
+    onSelectArtifact: panels.selectArtifact,
+    onDiscardArtifact: discardArtifact,
+    onShareArtifact: shareArtifact,
+    onUnshareArtifact: unshareArtifact,
+    zoom: panels.canvasZoom,
+    onZoomChange: panels.setCanvasZoom,
+  } as const;
 
   const content = (
     <div className="flex h-full flex-col">
-      {/* Header */}
-      <div className="relative z-40 flex min-h-14 items-center gap-2 border-b border-border/60 bg-bg-secondary px-3 py-2 lg:px-4">
-        <div className="flex min-w-0 flex-1 items-center gap-2">
-          <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 items-center gap-2">
-              <h2 className="truncate text-sm font-semibold tracking-tight text-text-primary">
-                {activeThread && !scaffoldModeActive ? activeThread.title : 'New thread'}
-              </h2>
-            </div>
-            <p className="truncate text-xs text-text-tertiary">
-              {activeWorkspace?.name ?? 'No workspace'}
-            </p>
-          </div>
-
-          {activeThread && !scaffoldModeActive ? (
-            <ThreadPullRequests
-              key={activeThread.id}
-              threadId={activeThread.id}
-              preferredRepoId={activeThread.activeRepoId ?? undefined}
-              repoIds={activeThread.repoIds ?? []}
-            />
-          ) : null}
-
-          {/* Session status */}
-          {scaffoldModeActive && (
-            <span className="rounded-full bg-accent/10 px-2.5 py-1 text-xs font-medium text-accent">
-              {scaffoldStatus === 'indexing'
-                ? 'Indexing repos'
-                : scaffoldStatus === 'syncing'
-                  ? 'Syncing repos'
-                  : scaffoldStatus === 'failed'
-                    ? 'Scaffold needs attention'
-                    : 'Scaffolding'}
-            </span>
-          )}
-        </div>
-
-        <div className="ml-auto flex shrink-0 items-center justify-end gap-2">
-          {!scaffoldModeActive && (
-            <div
-              className="flex shrink-0 items-center rounded-lg bg-bg-primary/55 p-0.5"
-              role="group"
-              aria-label="Thread source"
-            >
-              <button
-                type="button"
-                onClick={() => handleChatLayoutChange('classic')}
-                className={`flex h-8 items-center gap-1.5 rounded-md px-2 text-xs font-medium transition-colors ${
-                  chatLayout === 'classic'
-                    ? 'bg-bg-elevated text-text-primary shadow-sm'
-                    : 'text-text-tertiary hover:text-text-primary'
-                }`}
-                aria-pressed={chatLayout === 'classic'}
-                title="Chat threads"
-              >
-                <MessageSquare size={12} />
-                <span className="hidden xl:inline">Chat</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => handleChatLayoutChange('workitems')}
-                className={`flex h-8 items-center gap-1.5 rounded-md px-2 text-xs font-medium transition-colors ${
-                  chatLayout === 'workitems'
-                    ? 'bg-bg-elevated text-info shadow-sm'
-                    : 'text-text-tertiary hover:text-text-primary'
-                }`}
-                aria-pressed={chatLayout === 'workitems'}
-                title="Work-item threads"
-              >
-                <ClipboardList size={12} />
-                <span className="hidden xl:inline">Tickets</span>
-              </button>
-            </div>
-          )}
-
-          {!isDesignPersona && !isBaPersona && (
-            <>
-              {browserAvailable && (
-                <div className="flex items-center rounded-lg border border-border bg-bg-primary/60 p-0.5">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPreviewMode((current) => (current === 'browser' ? null : 'browser'));
-                      setCanvasOpen(false);
-                      setCanvasExpanded(false);
-                      setItsmWorkbenchOpen(false);
-                      setActivityOpen(false);
-                    }}
-                    className={`rounded-md p-1.5 transition-colors ${
-                      previewMode === 'browser'
-                        ? 'bg-accent/15 text-accent'
-                        : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary'
-                    }`}
-                    title="Show browser alongside chat"
-                    aria-label="Show browser alongside chat"
-                    aria-pressed={previewMode === 'browser'}
-                  >
-                    <Globe size={13} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPreviewMode((current) => (current === 'simulator' ? null : 'simulator'));
-                      setCanvasOpen(false);
-                      setCanvasExpanded(false);
-                      setItsmWorkbenchOpen(false);
-                      setActivityOpen(false);
-                    }}
-                    className={`rounded-md p-1.5 transition-colors ${
-                      previewMode === 'simulator'
-                        ? 'bg-info/15 text-info'
-                        : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary'
-                    }`}
-                    title="Show simulator alongside chat"
-                    aria-label="Show simulator alongside chat"
-                    aria-pressed={previewMode === 'simulator'}
-                  >
-                    <MonitorSmartphone size={13} />
-                  </button>
-                </div>
-              )}
-              {userRole === 'itsm' && isItsmPersona && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (!itsmWorkbenchOpen) setCanvasOpen(false);
-                    setActivityOpen(false);
-                    setItsmWorkbenchOpen((open) => !open);
-                  }}
-                  className="flex items-center gap-1.5 rounded-xl border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-                  title={itsmWorkbenchOpen ? 'Hide ITSM workbench' : 'Show ITSM workbench'}
-                  aria-pressed={showItsmWorkbench}
-                >
-                  <LifeBuoy size={13} />
-                  <span className="hidden xl:inline">ITSM workbench</span>
-                </button>
-              )}
-              <button
-                ref={activityButtonRef}
-                type="button"
-                onClick={() => {
-                  if (!activityOpen) {
-                    setCanvasOpen(false);
-                    setCanvasExpanded(false);
-                    setPreviewMode(null);
-                    setItsmWorkbenchOpen(false);
-                  }
-                  setActivityOpen((open) => !open);
-                  setGoalPopoverOpen(false);
-                }}
-                className={`flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
-                  showActivitySidebar
-                    ? 'border-accent/35 bg-accent/10 text-accent'
-                    : 'border-border text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
-                }`}
-                title={showActivitySidebar ? 'Hide activity' : 'Show activity'}
-                aria-label={showActivitySidebar ? 'Hide activity' : 'Show activity'}
-                aria-pressed={showActivitySidebar}
-              >
-                <Bot size={13} />
-                <span className="hidden xl:inline">Activity</span>
-                {executionTopology.runningCount > 0 && (
-                  <span className="rounded-full bg-bg-primary px-1.5 py-0.5 text-[10px] font-semibold text-text-primary">
-                    {executionTopology.runningCount}
-                  </span>
-                )}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (canvasDetached) {
-                    setCanvasDetached(false);
-                    setCanvasOpen(true);
-                    setItsmWorkbenchOpen(false);
-                    setActivityOpen(false);
-                    return;
-                  }
-                  if (!showCanvasSidebar) {
-                    setItsmWorkbenchOpen(false);
-                    setActivityOpen(false);
-                    setPreviewMode(null);
-                    setShowPlanHistory(!visiblePlanIntent && planIntents.length > 0);
-                    setCanvasOpen(true);
-                    return;
-                  }
-                  setCanvasOpen(false);
-                }}
-                disabled={activeArtifacts.length === 0 && planIntents.length === 0 && !activeGoal}
-                className="flex items-center gap-1.5 rounded-xl border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-45"
-                title={
-                  canvasDetached
-                    ? 'Reattach canvas'
-                    : showCanvasSidebar
-                      ? 'Hide canvas'
-                      : 'Show canvas'
-                }
-                aria-label={
-                  canvasDetached
-                    ? 'Reattach canvas'
-                    : showCanvasSidebar
-                      ? 'Hide canvas'
-                      : 'Show canvas'
-                }
-                aria-pressed={Boolean(showCanvasSidebar)}
-              >
-                {canvasDetached ? (
-                  <PictureInPicture2 size={13} />
-                ) : showCanvasSidebar ? (
-                  <PanelRightClose size={13} />
-                ) : (
-                  <PanelRightOpen size={13} />
-                )}
-                <span className="hidden xl:inline">Canvas</span>
-                {activeArtifacts.length > 0 && (
-                  <span className="rounded-full bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold text-accent">
-                    {activeArtifacts.length}
-                  </span>
-                )}
-              </button>
-            </>
-          )}
-        </div>
-      </div>
+      {/* CH4 — title + PR chip + one segmented Panels control. */}
+      <ChatHeader
+        title={activeThread && !scaffoldModeActive ? activeThread.title : 'New thread'}
+        workspaceName={activeWorkspace?.name ?? 'No workspace'}
+        scaffoldModeActive={scaffoldModeActive}
+        scaffoldStatus={scaffoldStatus}
+        pullRequestThread={
+          activeThread && !scaffoldModeActive
+            ? {
+                threadId: activeThread.id,
+                preferredRepoId: activeThread.activeRepoId ?? undefined,
+                repoIds: activeThread.repoIds ?? [],
+              }
+            : null
+        }
+        showPanels={showPanelsCluster}
+        activePanel={
+          showActivitySidebar
+            ? 'activity'
+            : panels.previewMode
+              ? 'preview'
+              : showCanvasSidebar || panels.canvasDetached || panels.canvasExpanded
+                ? 'canvas'
+                : null
+        }
+        onSelectPanel={(panel: ChatPanelId | null) => panels.setActivePanel(panel)}
+        canvasAvailable={
+          activeArtifacts.length > 0 || planIntents.length > 0 || Boolean(activeGoal)
+        }
+        canvasCount={activeArtifacts.length}
+        canvasDetached={panels.canvasDetached}
+        previewAvailable={browserAvailable}
+        activityRunningCount={executionTopology.runningCount}
+        showItsmToggle={userRole === 'itsm' && isItsmPersona}
+        itsmWorkbenchActive={showItsmWorkbench}
+        onToggleItsmWorkbench={panels.toggleItsmWorkbench}
+        panelsGroupRef={panelsGroupRef}
+      />
 
       {!scaffoldModeActive && visibleSessionId && (
         <SessionOwnershipChip key={visibleSessionId} sessionId={visibleSessionId} />
@@ -1069,6 +684,10 @@ export function ChatView({ userRole }: ChatViewProps) {
               onRenameThread={(threadId, title) => void renameThread(threadId, title)}
               onSettleThread={(threadId, settled) => void settleThread(threadId, settled)}
               onDeleteThread={(threadId) => void deleteThread(threadId)}
+              chatLayout={chatLayout}
+              onChatLayoutChange={handleChatLayoutChange}
+              accessLevels={threadAccess.threadLevels}
+              defaultAccessLevel={threadAccess.defaultLevel}
             />
           ) : (
             <ChatThreadRail
@@ -1082,203 +701,62 @@ export function ChatView({ userRole }: ChatViewProps) {
               onRenameThread={(threadId, title) => void renameThread(threadId, title)}
               onSettleThread={(threadId, settled) => void settleThread(threadId, settled)}
               onDeleteThread={(threadId) => void deleteThread(threadId)}
+              chatLayout={chatLayout}
+              onChatLayoutChange={handleChatLayoutChange}
+              accessLevels={threadAccess.threadLevels}
+              defaultAccessLevel={threadAccess.defaultLevel}
             />
           ))}
 
         {/* Chat column */}
         <div className="flex min-w-0 flex-1 flex-col">
-          {/* Messages area */}
-          <div className="relative min-h-0 flex-1">
-            <div
-              ref={messagesContainerRef}
-              className={`h-full overflow-y-auto ${showCenteredEmptyPane ? 'flex' : ''}`}
-            >
-              <div
-                className={`mx-auto w-full max-w-[1120px] px-4 xl:px-6 ${
-                  showCenteredEmptyPane
-                    ? 'flex min-h-full flex-1 items-center justify-center py-6'
-                    : 'flex flex-col pb-8 pt-6'
-                }`}
-              >
-                {!scaffoldModeActive && !featureAvailability.chatEnabled && (
-                  <div className="flex items-center justify-center py-8">
-                    <div className="text-center">
-                      <AlertTriangle size={24} className="mx-auto mb-2 text-warning" />
-                      <p className="text-base text-text-secondary">
-                        {featureAvailability.repoFeatureReason ?? 'Connect and index a repo first.'}
-                      </p>
-                    </div>
-                  </div>
-                )}
-
-                {scaffoldModeActive && isEmpty && !error && (
-                  <div className="flex items-center justify-center py-8">
-                    <div className="max-w-xl text-center">
-                      <MessageSquare size={32} className="mx-auto mb-3 text-text-tertiary" />
-                      <p className="text-base text-text-secondary">
-                        Anvil is setting up your workspace in scaffold mode.
-                      </p>
-                      <p className="mt-2 text-sm text-text-tertiary">
-                        The coder persona will ask you to name the repositories it should create
-                        under{' '}
-                        <span className="font-mono text-text-secondary">
-                          {activeScaffoldSession?.rootPath ?? 'the selected root folder'}
-                        </span>
-                        .
-                      </p>
-                    </div>
-                  </div>
-                )}
-
-                {!scaffoldModeActive &&
-                  isWorkItemLayout &&
-                  !activeThread?.workItemId &&
-                  isEmpty &&
-                  !error && (
-                    <div className="flex items-center justify-center py-8">
-                      <div className="max-w-md text-center">
-                        <ClipboardList size={32} className="mx-auto mb-3 text-text-tertiary" />
-                        <p className="text-base font-medium text-text-primary">
-                          Select a work item
-                        </p>
-                        <p className="mt-2 text-sm text-text-tertiary">
-                          Pick a ticket from the left. Its live and archived threads stay together.
-                        </p>
-                      </div>
-                    </div>
-                  )}
-
-                {!scaffoldModeActive &&
-                  !isWorkItemLayout &&
-                  activeRepos.length > 0 &&
-                  isEmpty &&
-                  !error && (
-                    <ChatEmptyState
-                      personaId={activePersona?.id ?? 'coder'}
-                      hasRepos={true}
-                      hasGovernanceDocs={selectedGovernanceDocs.length > 0}
-                      isDbExpertPersona={isDbExpertPersona}
-                      onSuggestionClick={handleSuggestionClick}
-                    />
-                  )}
-
-                {!scaffoldModeActive &&
-                  !isWorkItemLayout &&
-                  activeRepos.length === 0 &&
-                  isEmpty &&
-                  !error &&
-                  featureAvailability.chatEnabled && (
-                    <ChatEmptyState
-                      personaId={activePersona?.id ?? 'coder'}
-                      hasRepos={false}
-                      hasGovernanceDocs={selectedGovernanceDocs.length > 0}
-                      isDbExpertPersona={isDbExpertPersona}
-                      onSuggestionClick={handleSuggestionClick}
-                    />
-                  )}
-
-                {scaffoldBusy && (
-                  <div className="mb-4 flex items-start gap-2.5 rounded-xl border border-info/20 bg-info/5 px-4 py-3">
-                    <AlertTriangle size={14} className="mt-0.5 shrink-0 text-info" />
-                    <p className="text-sm text-text-primary leading-relaxed">
-                      {scaffoldStatus === 'syncing'
-                        ? 'Scaffold completion was detected. Anvil is connecting the new repositories to this workspace.'
-                        : 'Repositories are being indexed now. Other views stay locked until indexing finishes, then the rest of the workspace will unlock.'}
-                    </p>
-                  </div>
-                )}
-
-                {composedTurns.length > 0 && (
-                  <div className="w-full space-y-6">
-                    {composedTurns.map((turn, turnIndex) => {
-                      const liveState = getChatTurnLiveState({
-                        busy,
-                        isLatest: turnIndex === composedTurns.length - 1,
-                        hasWork: turn.work.length > 0,
-                        hasAnswer: Boolean(turn.answer),
-                        hasTrailingWork: turn.trailingWork.length > 0,
-                      });
-
-                      return (
-                        <section
-                          key={`${activeThreadId ?? 'new'}:${turn.key}`}
-                          className="w-full space-y-4"
-                          aria-label={`Turn ${turnIndex + 1}`}
-                        >
-                          {turn.user && (
-                            <UserMessage
-                              content={turn.user.content}
-                              attachments={turn.user.attachments}
-                              onEdit={() =>
-                                handleReuseMessage(turn.user!.sourceIndex, turn.user!.content)
-                              }
-                              onBranch={
-                                isWorkItemLayout
-                                  ? undefined
-                                  : () => handleBranch(turn.user!.sourceIndex)
-                              }
-                            />
-                          )}
-                          {turn.work.length > 0 && (
-                            <TurnWorkMessage items={turn.work} active={liveState === 'working'} />
-                          )}
-                          {turn.answer && (
-                            <AssistantMessage
-                              content={turn.answer.content}
-                              transformContent={isBaPersona ? stripFindingMarkers : undefined}
-                              label={activePersona?.name ?? 'Assistant'}
-                              colour={personaColour}
-                              active={liveState === 'responding'}
-                              onBranch={
-                                isWorkItemLayout
-                                  ? undefined
-                                  : () => handleBranch(turn.answer!.sourceIndex)
-                              }
-                            />
-                          )}
-                          {turn.trailingWork.length > 0 && (
-                            <TurnWorkMessage
-                              items={turn.trailingWork}
-                              active={liveState === 'working'}
-                            />
-                          )}
-                          {liveState && shouldShowTurnActivityStatus(liveState) && (
-                            <TurnActivityStatus
-                              state={liveState}
-                              latestItem={
-                                turn.trailingWork[turn.trailingWork.length - 1] ??
-                                turn.work[turn.work.length - 1]
-                              }
-                            />
-                          )}
-                        </section>
-                      );
-                    })}
-                  </div>
-                )}
-
-                {error && (
-                  <div className="mt-4 flex items-start gap-2.5 rounded-xl border border-error/20 bg-error/5 px-4 py-3">
-                    <AlertTriangle size={14} className="mt-0.5 shrink-0 text-error" />
-                    <p className="text-sm text-error whitespace-pre-wrap leading-relaxed">
-                      {error}
-                    </p>
-                  </div>
-                )}
-              </div>
-              <div ref={messagesEndRef} />
-            </div>
-            {showJumpToLatest && composedTurns.length > 0 && (
-              <button
-                type="button"
-                onClick={handleJumpToLatest}
-                className="absolute bottom-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-bg-elevated/95 px-3 py-1.5 text-xs font-medium text-text-secondary shadow-lg backdrop-blur transition-colors hover:border-accent/40 hover:bg-bg-tertiary hover:text-text-primary"
-              >
-                <ArrowDown size={13} />
-                {busy ? 'Jump to live work' : 'Latest'}
-              </button>
-            )}
-          </div>
+          {/* Readiness where the user is (§3) — compact strip above the
+            transcript while repos are being prepared. */}
+          {!scaffoldModeActive && repos.length > 0 && (
+            <WorkspaceReadinessStrip
+              className="mx-4 mt-3 shrink-0 xl:mx-6"
+              onOpenWorkspace={() => navigate('/workspace')}
+            />
+          )}
+          <ChatTranscript
+            paneKind={paneKind}
+            scaffoldRootPath={activeScaffoldSession?.rootPath}
+            blockedReason={
+              featureAvailability.repoFeatureReason ?? 'Connect and index a repo first.'
+            }
+            onOpenWorkspace={() => navigate('/workspace')}
+            personaId={activePersona?.id ?? 'coder'}
+            hasRepos={activeRepos.length > 0}
+            hasGovernanceDocs={selectedGovernanceDocs.length > 0}
+            isDbExpertPersona={isDbExpertPersona}
+            starterPrompts={starterPrompts}
+            onSuggestionClick={handleSuggestionClick}
+            scaffoldBusyMessage={
+              scaffoldBusy
+                ? scaffoldStatus === 'syncing'
+                  ? 'Scaffold completion was detected. Anvil is connecting the new repositories to this workspace.'
+                  : 'Repositories are being indexed now. Other views stay locked until indexing finishes, then the rest of the workspace will unlock.'
+                : undefined
+            }
+            turns={composedTurns}
+            activeThreadId={activeThreadId}
+            busy={busy}
+            isBaPersona={isBaPersona}
+            personaName={activePersona?.name ?? 'Assistant'}
+            personaColour={personaColour}
+            onBranch={isWorkItemLayout ? undefined : handleBranch}
+            onReuseMessage={handleReuseMessage}
+            changesRepos={repos}
+            changesPreferredRepoId={activeThread?.activeRepoId}
+            error={error}
+            errorProviders={errorRecovery.providers}
+            onErrorRetry={errorRecovery.onRetry}
+            onSwitchProvider={errorRecovery.onSwitchProvider}
+            messagesContainerRef={messagesContainerRef}
+            messagesEndRef={messagesEndRef}
+            showJumpToLatest={showJumpToLatest}
+            onJumpToLatest={handleJumpToLatest}
+          />
 
           {/* Input */}
           {pendingQuestions[0] && (
@@ -1292,10 +770,37 @@ export function ChatView({ userRole }: ChatViewProps) {
             <WorkflowActionConfirmation
               pending={pendingWorkflowAction}
               confirming={confirmingWorkflowAction}
-              onConfirm={() => void handleConfirmWorkflowAction()}
-              onKeepInChat={handleKeepWorkflowPromptInChat}
+              onConfirm={() => void confirmWorkflowAction()}
+              onKeepInChat={keepWorkflowPromptInChat}
             />
           )}
+          {/* H2 — live queue depth or a transient notice for rejected sends. */}
+          {(() => {
+            const queuedCount = session?.queuedSendCount ?? 0;
+            const composerNotice =
+              sendNotice ??
+              (queuedCount > 0
+                ? `Queued — ${agentLabel} will pick ${
+                    queuedCount === 1 ? 'it' : `all ${queuedCount} messages`
+                  } up when the current turn finishes.`
+                : null);
+            if (!composerNotice) return null;
+            return (
+              <div className="mx-auto w-full max-w-[1120px] px-4 pb-2 xl:px-6">
+                <div className="flex items-center justify-between gap-3 rounded-lg border border-info/25 bg-info/5 px-3 py-2 text-xs text-text-secondary">
+                  <span className="min-w-0">{composerNotice}</span>
+                  <button
+                    type="button"
+                    onClick={() => setSendNotice(null)}
+                    className="shrink-0 rounded-md px-1.5 py-0.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+                    aria-label="Dismiss notice"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
           <ChatInput
             onSend={handleChatInputSend}
             onStop={interrupt}
@@ -1311,93 +816,28 @@ export function ChatView({ userRole }: ChatViewProps) {
             onReasoningChange={handleReasoningChange}
             executionStrategy={executionStrategy}
             onExecutionStrategyChange={setExecutionStrategy}
-            codexMode={isItsmPersona ? 'read-only' : codexMode}
-            onCodexModeChange={
-              scaffoldModeActive ? undefined : (mode) => void handleCodexModeChange(mode)
-            }
+            codexMode={isItsmPersona ? 'read-only' : threadAccess.level}
+            onCodexModeChange={scaffoldModeActive ? undefined : threadAccess.setLevel}
             codexModeDisabled={isItsmPersona}
+            accessOptions={accessOptions}
+            accessAppliedMode={appliedAccessMode}
+            onAccessOptionSelect={scaffoldModeActive ? undefined : handleAccessOptionSelect}
             collaborationMode={collaborationMode}
             onCollaborationModeChange={scaffoldModeActive ? undefined : setCollaborationMode}
             fastMode={fastMode}
             fastModeAvailable={fastModeTarget.available}
             onFastModeChange={scaffoldModeActive ? undefined : setFastMode}
+            showSyntaxHint={isEmpty}
             leadingControls={
-              <>
-                {!scaffoldModeActive && (
-                  <div ref={personaMenuRef} className="relative">
-                    <button
-                      type="button"
-                      onClick={() => setShowPersonaDropdown((open) => !open)}
-                      className="flex h-8 max-w-44 items-center gap-1.5 rounded-lg px-2 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
-                      aria-label="Select persona"
-                      aria-expanded={showPersonaDropdown}
-                    >
-                      <span
-                        className="inline-block h-2 w-2 shrink-0 rounded-full"
-                        style={{ backgroundColor: personaColour }}
-                      />
-                      {activePersona ? PERSONA_ICONS[activePersona.icon] : null}
-                      <span className="truncate">{activePersona?.name ?? 'Select persona'}</span>
-                      <ChevronDown size={11} className="shrink-0" />
-                    </button>
-
-                    {showPersonaDropdown && (
-                      <div className="absolute bottom-full left-0 z-50 mb-2 max-h-[min(32rem,calc(100vh-8rem))] w-72 overflow-y-auto rounded-xl border border-border bg-bg-elevated shadow-2xl ring-1 ring-overlay">
-                        <div className="p-1.5">
-                          {groupPersonasForRole(personas, userRole).map((group, groupIndex) => (
-                            <div
-                              key={group.id}
-                              className={groupIndex > 0 ? 'mt-1 border-t border-border/60 pt-1' : ''}
-                            >
-                              {group.label && (
-                                <p className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-text-muted">
-                                  {group.label}
-                                </p>
-                              )}
-                              {group.personas.map((persona) => (
-                                <button
-                                  key={persona.id}
-                                  onClick={() => handleSwitchPersona(persona)}
-                                  className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm transition-colors hover:bg-bg-tertiary ${
-                                    activePersona?.id === persona.id ? 'bg-bg-tertiary' : ''
-                                  }`}
-                                >
-                                  <span
-                                    className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
-                                    style={{ backgroundColor: persona.colour }}
-                                  />
-                                  <span className="shrink-0 text-text-secondary">
-                                    {PERSONA_ICONS[persona.icon]}
-                                  </span>
-                                  <div className="min-w-0">
-                                    <div className="font-medium text-text-primary">
-                                      {persona.name}
-                                    </div>
-                                    <div className="truncate text-xs text-text-tertiary">
-                                      {persona.description}
-                                    </div>
-                                  </div>
-                                </button>
-                              ))}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-                {!scaffoldModeActive && !isWorkItemLayout && (
-                  <button
-                    type="button"
-                    onClick={() => void startNewSession()}
-                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
-                    title={getNewChatThreadActionLabel()}
-                    aria-label={getNewChatThreadActionLabel()}
-                  >
-                    <MessageSquarePlus size={15} />
-                  </button>
-                )}
-              </>
+              !scaffoldModeActive ? (
+                <ChatPersonaPicker
+                  personas={personas}
+                  activePersona={activePersona}
+                  userRole={userRole}
+                  personaColour={personaColour}
+                  onSelect={handleSwitchPersona}
+                />
+              ) : undefined
             }
             contextControls={
               scaffoldModeActive ? null : (
@@ -1425,235 +865,64 @@ export function ChatView({ userRole }: ChatViewProps) {
           />
         </div>
 
-        {/* Findings sidebar - BA persona only */}
-        {!previewMode && isBaPersona && findings.length > 0 && (
-          <ResizableSidebarPanel
-            storageKey="chat:findings"
-            side="right"
-            title="Findings"
-            defaultWidth={380}
-            minWidth={300}
-            maxWidth={560}
-            className="border-l border-border/60 bg-bg-secondary/50"
-          >
-            <div className="flex items-center justify-between border-b border-border/60 px-3 py-2.5">
-              <div className="min-w-0">
-                <button
-                  onClick={() => setShowFindings(!showFindings)}
-                  className="flex items-center gap-1.5 text-sm font-medium text-text-primary"
-                >
-                  {showFindings ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                  Findings
-                  <span className="rounded-full bg-warning/20 px-2 py-0.5 text-xs font-medium text-warning">
-                    {openFindings.length}
-                  </span>
-                </button>
-                <p className="mt-1 text-xs text-text-tertiary">
-                  Scrollable. Use follow-up to drop a targeted prompt into the composer.
-                </p>
-              </div>
-            </div>
-
-            {showFindings && (
-              <div className="min-h-0 flex-1 overflow-y-auto p-2.5">
-                <div className="space-y-2">
-                  {openFindings.map((f) => (
-                    <ChatFindingCard
-                      key={f.idx}
-                      finding={f}
-                      onFollowUp={() => handleFindingFollowUp(f)}
-                      onDismiss={() => setDismissedFindings((prev) => new Set(prev).add(f.idx))}
-                    />
-                  ))}
-                  {openFindings.length === 0 && (
-                    <p className="p-2 text-center text-sm text-text-tertiary">
-                      All findings dismissed.
-                    </p>
-                  )}
-                </div>
-              </div>
-            )}
-          </ResizableSidebarPanel>
-        )}
-
-        {/* Design sidebar */}
-        {!previewMode && isDesignPersona && (
-          <DesignSidebar
-            collapsed={designSidebarCollapsed}
-            onToggleCollapse={() => setDesignSidebarCollapsed((c) => !c)}
-          />
-        )}
-
-        {!previewMode && showItsmWorkbench && (
-          <ResizableSidebarPanel
-            storageKey="chat:itsm-workbench"
-            side="right"
-            title="ITSM workbench"
-            defaultWidth={380}
-            minWidth={320}
-            maxWidth={560}
-            collapsedWidth={0}
-            className="border-l border-border/60 bg-bg-secondary/50"
-          >
-            <ItsmWorkbench
-              workspaceId={activeWorkspace?.id ?? null}
-              onPrompt={(prompt) => {
-                setComposerPrefill({ id: `itsm-${Date.now()}`, text: prompt });
-                setComposerFocusRequest((current) => current + 1);
-              }}
-            />
-          </ResizableSidebarPanel>
-        )}
-
-        {previewMode && (
-          <ResizableSidebarPanel
-            storageKey="chat:preview"
-            side="right"
-            title={previewMode === 'simulator' ? 'Simulator preview' : 'Browser preview'}
-            defaultWidth={620}
-            minWidth={420}
-            maxWidth={1100}
-            collapsedWidth={0}
-            className="border-l border-border/60 bg-bg-secondary/50"
-          >
-            <BrowserPanel
-              key={previewMode}
-              initialMode={previewMode}
-              initialUrl={previewInitialUrl}
-              presentation="pane"
-              onClose={() => setPreviewMode(null)}
-            />
-          </ResizableSidebarPanel>
-        )}
-
-        {showActivitySidebar && (
-          <ResizableSidebarPanel
-            storageKey="chat:activity"
-            side="right"
-            title="Activity"
-            defaultWidth={420}
-            minWidth={340}
-            maxWidth={620}
-            collapsedWidth={0}
-            collapsible={false}
-            className="border-l border-border/60 bg-bg-secondary/50"
-          >
-            <AgentActivitySidebar
-              workspaceName={activeWorkspace?.name ?? 'workspace'}
-              runs={recentRuns}
-              topology={executionTopology}
-              activeGoal={activeGoal}
-              busy={busy}
-              goalOpen={goalPopoverOpen}
-              onGoalOpenChange={setGoalPopoverOpen}
-              onSetGoal={handleSetGoal}
-              onCompleteGoal={handleCompleteGoal}
-              onClose={() => {
-                setActivityOpen(false);
-                setGoalPopoverOpen(false);
-                window.requestAnimationFrame(() => activityButtonRef.current?.focus());
-              }}
-              onOpenThread={(threadId) => void selectThread(threadId)}
-              onStop={(sessionId) => {
-                setExecutionSessionStates((states) => ({ ...states, [sessionId]: 'stopped' }));
-                void stopSession(sessionId);
-              }}
-            />
-          </ResizableSidebarPanel>
-        )}
-
-        {showCanvasSidebar && (
-          <ResizableSidebarPanel
-            storageKey="chat:canvas"
-            side="right"
-            title="Canvas"
-            defaultWidth={460}
-            minWidth={360}
-            maxWidth={960}
-            collapsedWidth={0}
-            collapsible={false}
-            className="border-l border-border/60 bg-bg-secondary/50"
-          >
-            <ChatCanvasSidebar
-              artifacts={activeArtifacts}
-              selectedArtifact={selectedArtifact}
-              activePlan={activePlan}
-              planIntents={planIntents}
-              activeGoal={activeGoal}
-              planSelected={canvasPlanSelected}
-              onSelectPlan={() => setCanvasPlanSelected(true)}
-              onSelectArtifact={(artifactId) => {
-                setCanvasPlanSelected(false);
-                setSelectedArtifactId(artifactId);
-              }}
-              onDiscardArtifact={discardArtifact}
-              onShareArtifact={shareArtifact}
-              onUnshareArtifact={unshareArtifact}
-              zoom={canvasZoom}
-              onZoomChange={setCanvasZoom}
-              presentation="sidebar"
-              onExpand={() => setCanvasExpanded(true)}
-              onDetach={() => setCanvasDetached(true)}
-            />
-          </ResizableSidebarPanel>
-        )}
-
-        {canvasExpanded &&
-          !canvasDetached &&
-          (selectedArtifact || planIntents.length > 0 || activeGoal) && (
-            <div className="fixed inset-y-3 left-20 right-3 z-50 flex min-h-0 overflow-hidden rounded-xl border border-border bg-bg-primary shadow-2xl">
-              <ChatCanvasSidebar
-                artifacts={activeArtifacts}
-                selectedArtifact={selectedArtifact}
-                activePlan={activePlan}
-                planIntents={planIntents}
-                activeGoal={activeGoal}
-                planSelected={canvasPlanSelected}
-                onSelectPlan={() => setCanvasPlanSelected(true)}
-                onSelectArtifact={(artifactId) => {
-                  setCanvasPlanSelected(false);
-                  setSelectedArtifactId(artifactId);
-                }}
-                onDiscardArtifact={discardArtifact}
-                onShareArtifact={shareArtifact}
-                onUnshareArtifact={unshareArtifact}
-                zoom={canvasZoom}
-                onZoomChange={setCanvasZoom}
-                presentation="expanded"
-                onExpand={() => setCanvasExpanded(false)}
-                onDetach={() => {
-                  setCanvasExpanded(false);
-                  setCanvasDetached(true);
-                }}
-              />
-            </div>
-          )}
-
-        {canvasDetached && (selectedArtifact || planIntents.length > 0 || activeGoal) && (
-          <DetachedCanvasWindow title="Anvil Canvas" onClose={handleDetachedCanvasClose}>
-            <ChatCanvasSidebar
-              artifacts={activeArtifacts}
-              selectedArtifact={selectedArtifact}
-              activePlan={activePlan}
-              planIntents={planIntents}
-              activeGoal={activeGoal}
-              planSelected={canvasPlanSelected}
-              onSelectPlan={() => setCanvasPlanSelected(true)}
-              onSelectArtifact={(artifactId) => {
-                setCanvasPlanSelected(false);
-                setSelectedArtifactId(artifactId);
-              }}
-              onDiscardArtifact={discardArtifact}
-              onShareArtifact={shareArtifact}
-              onUnshareArtifact={unshareArtifact}
-              zoom={canvasZoom}
-              onZoomChange={setCanvasZoom}
-              presentation="detached"
-              onExpand={handleDetachedCanvasClose}
-              onDetach={handleDetachedCanvasClose}
-            />
-          </DetachedCanvasWindow>
-        )}
+        <ChatSidePanels
+          previewMode={panels.previewMode}
+          previewInitialUrl={panels.previewInitialUrl}
+          onClosePreview={() => panels.setActivePanel(null)}
+          isBaPersona={isBaPersona}
+          hasFindings={findings.length > 0}
+          openFindings={openFindings}
+          showFindings={showFindings}
+          onToggleFindings={() => setShowFindings((open) => !open)}
+          onFindingFollowUp={handleFindingFollowUp}
+          onDismissFinding={(idx) => setDismissedFindings((prev) => new Set(prev).add(idx))}
+          isDesignPersona={isDesignPersona}
+          designSidebarCollapsed={designSidebarCollapsed}
+          onToggleDesignSidebar={() => setDesignSidebarCollapsed((c) => !c)}
+          showItsmWorkbench={showItsmWorkbench}
+          workspaceId={activeWorkspace?.id ?? null}
+          onItsmPrompt={(prompt) => {
+            setComposerPrefill({ id: `itsm-${Date.now()}`, text: prompt });
+            setComposerFocusRequest((current) => current + 1);
+          }}
+          showActivitySidebar={showActivitySidebar}
+          activity={{
+            workspaceName: activeWorkspace?.name ?? 'workspace',
+            runs: recentRuns,
+            topology: executionTopology,
+            activeGoal,
+            busy,
+            goalOpen: panels.goalPopoverOpen,
+            onGoalOpenChange: panels.setGoalPopoverOpen,
+            onSetGoal: handleSetGoal,
+            onCompleteGoal: handleCompleteGoal,
+            onClose: () => {
+              panels.closeActivity();
+              focusPanelsControl();
+            },
+            onOpenThread: (threadId) => void selectThread(threadId),
+            onStop: (sessionId) => {
+              setExecutionSessionStates((states) => ({ ...states, [sessionId]: 'stopped' }));
+              void stopSession(sessionId);
+            },
+            goalsSupported,
+            agentLabel,
+          }}
+          showCanvasSidebar={showCanvasSidebar}
+          canvas={canvasSidebarProps}
+          canvasExpanded={panels.canvasExpanded}
+          canvasDetached={panels.canvasDetached}
+          onExpandCanvas={() => panels.setCanvasExpanded(true)}
+          onCollapseCanvas={() => panels.setCanvasExpanded(false)}
+          onDetachCanvas={() => {
+            panels.setCanvasExpanded(false);
+            panels.setCanvasDetached(true);
+          }}
+          onDetachedCanvasClose={panels.handleDetachedCanvasClose}
+          canvasOverlayAvailable={
+            Boolean(selectedArtifact) || planIntents.length > 0 || Boolean(activeGoal)
+          }
+        />
       </div>
     </div>
   );
@@ -1663,1132 +932,4 @@ export function ChatView({ userRole }: ChatViewProps) {
   }
 
   return content;
-}
-
-function PendingQuestionPrompt({
-  intent,
-  additionalCount,
-}: {
-  intent: AgentUIQuestionIntent;
-  additionalCount: number;
-}) {
-  const [expanded, setExpanded] = useState(true);
-
-  return (
-    <div className="border-t border-warning/25 bg-warning/[0.035]">
-      <button
-        type="button"
-        onClick={() => setExpanded((current) => !current)}
-        className="flex w-full items-center gap-2.5 px-4 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/50"
-        aria-expanded={expanded}
-      >
-        <MessageSquare size={14} className="shrink-0 text-warning" />
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-xs font-semibold text-text-primary">
-            {intent.payload.title ?? 'Agent needs your input'}
-          </span>
-          <span className="block truncate text-xs text-text-tertiary">
-            {intent.payload.questions[0]?.question}
-            {additionalCount > 0
-              ? ` · ${additionalCount} more request${additionalCount === 1 ? '' : 's'}`
-              : ''}
-          </span>
-        </span>
-        <span className="rounded-md bg-warning/10 px-2 py-1 text-xs font-semibold text-warning">
-          {expanded ? 'Hide' : 'Answer'}
-        </span>
-        {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-      </button>
-      <div
-        hidden={!expanded}
-        className="max-h-[min(60vh,560px)] overflow-y-auto border-t border-warning/20 p-2"
-      >
-        <QuestionIntentSurface intent={intent} />
-      </div>
-    </div>
-  );
-}
-
-function WorkflowActionConfirmation({
-  pending,
-  confirming,
-  onConfirm,
-  onKeepInChat,
-}: {
-  pending: PendingWorkflowAction;
-  confirming: boolean;
-  onConfirm: () => void;
-  onKeepInChat: () => void;
-}) {
-  const { intent } = pending;
-  const title =
-    intent.kind === 'run'
-      ? `Run "${intent.template.name}"?`
-      : intent.kind === 'draft'
-        ? 'Open the workflow builder?'
-        : 'Choose a workflow to run?';
-  const detail =
-    intent.kind === 'run'
-      ? `This starts the saved workflow in ${pending.workspaceName}.`
-      : intent.kind === 'draft'
-        ? 'Anvil detected a request to create a workflow.'
-        : 'Anvil detected a request to start a workflow.';
-  const confirmLabel =
-    intent.kind === 'run'
-      ? 'Run workflow'
-      : intent.kind === 'draft'
-        ? 'Open builder'
-        : 'Choose workflow';
-
-  return (
-    <div
-      className="flex items-center gap-3 border-t border-accent/25 bg-accent/[0.045] px-4 py-3"
-      role="region"
-      aria-live="polite"
-      aria-label="Confirm workflow action"
-    >
-      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent/10 text-accent">
-        <ListChecks size={15} />
-      </div>
-      <div className="min-w-0 flex-1">
-        <p className="text-xs font-semibold text-text-primary">{title}</p>
-        <p className="mt-0.5 truncate text-xs text-text-tertiary">{detail}</p>
-      </div>
-      <button
-        type="button"
-        onClick={onKeepInChat}
-        disabled={confirming}
-        className="rounded-md px-3 py-2 text-xs font-medium text-text-secondary hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        Keep in chat
-      </button>
-      <button
-        type="button"
-        onClick={onConfirm}
-        disabled={confirming}
-        className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-white hover:bg-accent/85 disabled:cursor-not-allowed disabled:opacity-60"
-      >
-        {confirming && <Loader2 size={13} className="animate-spin" />}
-        {confirmLabel}
-      </button>
-    </div>
-  );
-}
-
-function AgentActivitySidebar({
-  workspaceName,
-  runs,
-  topology,
-  activeGoal,
-  busy,
-  goalOpen,
-  onGoalOpenChange,
-  onSetGoal,
-  onCompleteGoal,
-  onClose,
-  onOpenThread,
-  onStop,
-}: {
-  workspaceName: string;
-  runs: AgentRunSummary[];
-  topology: ExecutionTopology;
-  activeGoal: ChatGoalSnapshot | null;
-  busy: boolean;
-  goalOpen: boolean;
-  onGoalOpenChange: (open: boolean) => void;
-  onSetGoal: (objective: string, tokenBudget: string) => void;
-  onCompleteGoal: () => void;
-  onClose: () => void;
-  onOpenThread: (threadId: string) => void;
-  onStop: (sessionId: string) => void;
-}) {
-  const [section, setSection] = useState<'current' | 'history'>('current');
-  const panelRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    panelRef.current?.focus();
-  }, []);
-
-  return (
-    <div
-      ref={panelRef}
-      className="flex min-h-0 flex-1 flex-col focus:outline-none"
-      role="region"
-      aria-label="Agent activity"
-      tabIndex={-1}
-    >
-      <div className="shrink-0 border-b border-border/60 px-4 py-3">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <Bot
-                size={14}
-                className={topology.runningCount > 0 ? 'text-accent' : 'text-text-tertiary'}
-              />
-              <h3 className="text-sm font-semibold text-text-primary">Activity</h3>
-              {topology.runningCount > 0 && (
-                <span className="rounded-full bg-accent/10 px-2 py-0.5 text-[10px] font-medium text-accent">
-                  {topology.runningCount} working
-                </span>
-              )}
-            </div>
-            <p className="mt-1 truncate text-xs text-text-tertiary">
-              Current thread · {workspaceName}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-            aria-label="Close activity"
-          >
-            <X size={14} />
-          </button>
-        </div>
-        <div className="mt-3 flex items-center justify-between gap-2">
-          <div className="flex gap-1 rounded-lg bg-bg-primary/60 p-0.5" role="tablist">
-            {(['current', 'history'] as const).map((item) => (
-              <button
-                key={item}
-                type="button"
-                role="tab"
-                aria-selected={section === item}
-                onClick={() => setSection(item)}
-                className={`rounded-md px-2.5 py-1 text-xs font-medium capitalize transition-colors ${
-                  section === item
-                    ? 'bg-bg-tertiary text-text-primary'
-                    : 'text-text-tertiary hover:text-text-primary'
-                }`}
-              >
-                {item}
-              </button>
-            ))}
-          </div>
-          <GoalControl
-            activeGoal={activeGoal}
-            busy={busy}
-            open={goalOpen}
-            onOpenChange={onGoalOpenChange}
-            onSetGoal={onSetGoal}
-            onCompleteGoal={onCompleteGoal}
-          />
-        </div>
-      </div>
-      {section === 'current' ? (
-        <ExecutionTopologyPanel topology={topology} onOpenThread={onOpenThread} onStop={onStop} />
-      ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto py-2">
-          <p className="px-3 pb-2 text-xs text-text-tertiary">Recent in {workspaceName}</p>
-          {runs.length === 0 ? (
-            <p className="px-2 py-4 text-center text-sm text-text-tertiary">
-              No run history captured yet.
-            </p>
-          ) : (
-            runs.map((run) => (
-              <div
-                key={run.id}
-                className="mb-1 border-b border-border-subtle px-3 py-2.5 last:border-b-0"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-medium text-text-primary">
-                      {run.title}
-                    </div>
-                    <div className="mt-0.5 text-xs text-text-tertiary">
-                      {formatAgentRunSource(run.source)} · {formatTimestamp(run.startedAt)}
-                    </div>
-                  </div>
-                  <span className={`shrink-0 text-xs ${statusTone(run.status)}`}>{run.status}</span>
-                </div>
-                {run.summary && (
-                  <p className="mt-2 line-clamp-2 text-xs leading-relaxed text-text-secondary">
-                    {run.summary}
-                  </p>
-                )}
-                <div className="mt-2 flex items-center gap-2 text-[11px] text-text-tertiary">
-                  <span>{run.changedFileCount} files</span>
-                  <span>{run.evidenceCount} evidence</span>
-                  {run.threadId && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onOpenThread(run.threadId!);
-                        onClose();
-                      }}
-                      className="ml-auto font-medium text-accent hover:underline"
-                    >
-                      Open thread
-                    </button>
-                  )}
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function formatAgentRunSource(source: AgentRunSummary['source']): string {
-  switch (source) {
-    case 'automation':
-      return 'Automation';
-    case 'code_review':
-      return 'Code review';
-    case 'chat':
-    default:
-      return 'Chat';
-  }
-}
-
-function statusTone(status: AgentRunSummary['status']): string {
-  switch (status) {
-    case 'completed':
-      return 'text-success';
-    case 'failed':
-      return 'text-error';
-    case 'running':
-    case 'queued':
-      return 'text-accent';
-    default:
-      return 'text-text-tertiary';
-  }
-}
-
-function formatTimestamp(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString([], {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
-
-function GoalControl({
-  activeGoal,
-  busy,
-  open,
-  onOpenChange,
-  onSetGoal,
-  onCompleteGoal,
-}: {
-  activeGoal: ChatGoalSnapshot | null;
-  busy: boolean;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  onSetGoal: (objective: string, tokenBudget: string) => void;
-  onCompleteGoal: () => void;
-}) {
-  const [objective, setObjective] = useState('');
-  const [tokenBudget, setTokenBudget] = useState('');
-  const hasActiveGoal = !!activeGoal && activeGoal.status !== 'complete';
-
-  useEffect(() => {
-    if (!open) return;
-    setObjective(activeGoal?.status === 'complete' ? '' : (activeGoal?.objective ?? ''));
-    setTokenBudget(activeGoal?.tokenBudget ? String(activeGoal.tokenBudget) : '');
-  }, [activeGoal, open]);
-
-  const canSubmit = objective.trim().length > 0 && !busy;
-
-  return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={() => onOpenChange(!open)}
-        className={`flex max-w-[260px] items-center gap-1.5 rounded-xl border px-3 py-1.5 text-sm transition-colors hover:bg-bg-tertiary ${
-          hasActiveGoal
-            ? 'border-success/30 bg-success/10 text-success'
-            : 'border-border text-text-secondary hover:text-text-primary'
-        }`}
-        title={activeGoal ? activeGoal.objective : 'Set goal'}
-        aria-expanded={open}
-        aria-label={activeGoal ? `Active goal: ${activeGoal.objective}` : 'Set goal'}
-      >
-        <Target size={13} className="shrink-0" />
-        <span className="min-w-0 truncate">{activeGoal ? activeGoal.objective : 'Set goal'}</span>
-        {activeGoal && (
-          <span className="shrink-0 rounded-full bg-bg-primary/70 px-1.5 py-0.5 text-[10px] uppercase tracking-normal text-text-tertiary">
-            {formatGoalStatus(activeGoal.status)}
-          </span>
-        )}
-      </button>
-
-      {open && (
-        <div className="absolute right-0 top-full z-50 mt-1.5 w-80 max-w-[calc(100vw-2rem)] rounded-xl border border-border bg-bg-elevated p-3 shadow-2xl ring-1 ring-overlay">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <p className="text-sm font-medium text-text-primary">
-                {activeGoal ? 'Update goal' : 'Set goal'}
-              </p>
-              <p className="mt-0.5 text-xs text-text-tertiary">
-                Stored on this thread when Codex confirms the goal update.
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => onOpenChange(false)}
-              className="rounded-lg p-1 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-              aria-label="Close goal popover"
-            >
-              <X size={14} />
-            </button>
-          </div>
-
-          <label className="mt-3 block text-xs font-medium text-text-secondary" htmlFor="goal-text">
-            Goal
-          </label>
-          <textarea
-            id="goal-text"
-            value={objective}
-            onChange={(event) => setObjective(event.target.value)}
-            className="mt-1 min-h-24 w-full resize-y rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm leading-relaxed text-text-primary outline-none transition-colors placeholder:text-text-tertiary focus:border-accent"
-            placeholder="Finish the refactor and verify the tests pass"
-            disabled={busy}
-          />
-
-          <label
-            className="mt-3 block text-xs font-medium text-text-secondary"
-            htmlFor="goal-token-budget"
-          >
-            Token budget
-          </label>
-          <input
-            id="goal-token-budget"
-            value={tokenBudget}
-            onChange={(event) => setTokenBudget(event.target.value)}
-            className="mt-1 w-full rounded-xl border border-border bg-bg-primary px-3 py-2 text-sm text-text-primary outline-none transition-colors placeholder:text-text-tertiary focus:border-accent"
-            inputMode="numeric"
-            pattern="[0-9]*"
-            placeholder="Optional"
-            disabled={busy}
-          />
-
-          {activeGoal && (
-            <div className="mt-3 rounded-xl border border-border/70 bg-bg-secondary/70 px-3 py-2 text-xs text-text-tertiary">
-              {activeGoal.tokensUsed.toLocaleString()} tokens
-              {activeGoal.tokenBudget ? ` / ${activeGoal.tokenBudget.toLocaleString()}` : ''} used
-            </div>
-          )}
-
-          <div className="mt-3 flex items-center justify-between gap-2">
-            <button
-              type="button"
-              onClick={onCompleteGoal}
-              disabled={!hasActiveGoal || busy}
-              className="flex items-center gap-1.5 rounded-xl border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <CheckCircle2 size={13} />
-              Complete
-            </button>
-            <button
-              type="button"
-              onClick={() => onSetGoal(objective, tokenBudget)}
-              disabled={!canSubmit}
-              className="flex items-center gap-1.5 rounded-xl bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Target size={13} />
-              {activeGoal ? 'Update' : 'Set'}
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ChatCanvasSidebar({
-  artifacts,
-  selectedArtifact,
-  activePlan,
-  planIntents,
-  activeGoal,
-  planSelected,
-  onSelectPlan,
-  onSelectArtifact,
-  onDiscardArtifact,
-  onShareArtifact,
-  onUnshareArtifact,
-  zoom,
-  onZoomChange,
-  presentation,
-  onExpand,
-  onDetach,
-}: {
-  artifacts: ChatArtifact[];
-  selectedArtifact: ChatArtifact | null;
-  activePlan: ChatPlanSnapshot | null;
-  planIntents: AgentUIPlanIntent[];
-  activeGoal: ChatGoalSnapshot | null;
-  planSelected: boolean;
-  onSelectPlan: () => void;
-  onSelectArtifact: (artifactId: string) => void;
-  onDiscardArtifact: (artifactId: string) => Promise<void>;
-  onShareArtifact: (artifactId: string) => Promise<ChatArtifact>;
-  onUnshareArtifact: (artifactId: string) => Promise<ChatArtifact>;
-  zoom: number;
-  onZoomChange: (zoom: number) => void;
-  presentation: 'sidebar' | 'expanded' | 'detached';
-  onExpand: () => void;
-  onDetach: () => void;
-}) {
-  const [mode, setMode] = useState<'preview' | 'source'>('preview');
-  const [copied, setCopied] = useState(false);
-  const [planOpen, setPlanOpen] = useState(!selectedArtifact && Boolean(activePlan));
-
-  useEffect(() => {
-    if (!selectedArtifact && activePlan) setPlanOpen(true);
-  }, [activePlan, selectedArtifact]);
-
-  const handleCopy = useCallback(() => {
-    if (!selectedArtifact) return;
-    void navigator.clipboard.writeText(selectedArtifact.content).then(() => {
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1400);
-    });
-  }, [selectedArtifact]);
-
-  const handleDiscard = useCallback(() => {
-    if (!selectedArtifact || selectedArtifact.storage !== 'session') return;
-    if (!window.confirm(`Discard the session-only artifact “${selectedArtifact.title}”?`)) return;
-    void onDiscardArtifact(selectedArtifact.id);
-  }, [onDiscardArtifact, selectedArtifact]);
-
-  const [sharingAvailable, setSharingAvailable] = useState(false);
-  const [shareBusy, setShareBusy] = useState(false);
-  const [shareLinkCopied, setShareLinkCopied] = useState(false);
-  const [shareError, setShareError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    void window.anvil.chat
-      .artifactSharingAvailable()
-      .then((available) => {
-        if (!cancelled) setSharingAvailable(available);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const handleShare = useCallback(() => {
-    if (!selectedArtifact || shareBusy) return;
-    setShareBusy(true);
-    setShareError(null);
-    void onShareArtifact(selectedArtifact.id)
-      .then((updated) => {
-        if (updated.sharedUrl) {
-          void navigator.clipboard.writeText(updated.sharedUrl).then(() => {
-            setShareLinkCopied(true);
-            window.setTimeout(() => setShareLinkCopied(false), 1400);
-          });
-        }
-      })
-      .catch((err: unknown) => {
-        setShareError(err instanceof Error ? err.message : 'Share failed');
-      })
-      .finally(() => setShareBusy(false));
-  }, [onShareArtifact, selectedArtifact, shareBusy]);
-
-  const handleUnshare = useCallback(() => {
-    if (!selectedArtifact || shareBusy) return;
-    if (!window.confirm(`Stop sharing “${selectedArtifact.title}”? The public link will break.`))
-      return;
-    setShareBusy(true);
-    setShareError(null);
-    void onUnshareArtifact(selectedArtifact.id)
-      .catch((err: unknown) => {
-        setShareError(err instanceof Error ? err.message : 'Unshare failed');
-      })
-      .finally(() => setShareBusy(false));
-  }, [onUnshareArtifact, selectedArtifact, shareBusy]);
-
-  return (
-    <div
-      className={`flex min-h-0 flex-1 flex-col ${
-        presentation === 'expanded' ? 'bg-bg-primary' : ''
-      }`}
-    >
-      <div
-        className={`border-b border-border/60 ${
-          presentation === 'expanded' ? 'px-5 py-3.5' : 'px-3 py-2.5'
-        }`}
-      >
-        <div className="flex items-center gap-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-accent/20 bg-accent/10 text-accent">
-            <Braces size={15} />
-          </div>
-          <div className="min-w-0 flex-1">
-            <h3 className="truncate text-sm font-semibold text-text-primary">
-              {presentation === 'expanded' ? 'Canvas workspace' : 'Canvas'}
-            </h3>
-            <p className="truncate text-xs text-text-tertiary">
-              {artifacts.length > 0
-                ? `${artifacts.length} artifact${artifacts.length === 1 ? '' : 's'}`
-                : planIntents.length > 0
-                  ? `${planIntents.length} plan${planIntents.length === 1 ? '' : 's'}`
-                  : 'Goal context'}
-            </p>
-          </div>
-          <div className="flex shrink-0 items-center gap-1">
-            {planIntents.length === 0 && activePlan && (
-              <button
-                type="button"
-                onClick={() => setPlanOpen((open) => !open)}
-                className={`flex h-8 items-center gap-1.5 rounded-md px-2 text-xs font-medium transition-colors ${
-                  planOpen
-                    ? 'bg-info/10 text-info'
-                    : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary'
-                }`}
-                aria-pressed={planOpen}
-                title={planOpen ? 'Hide implementation plan' : 'Show implementation plan'}
-              >
-                <ListChecks size={13} />
-                <span>
-                  Plan {activePlan.steps.filter((step) => step.status === 'completed').length}/
-                  {activePlan.steps.length}
-                </span>
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={onExpand}
-              className="rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-              title={presentation === 'sidebar' ? 'Expand canvas' : 'Reattach canvas'}
-              aria-label={presentation === 'sidebar' ? 'Expand canvas' : 'Reattach canvas'}
-            >
-              {presentation === 'sidebar' ? <Maximize2 size={14} /> : <Minimize2 size={14} />}
-            </button>
-            {presentation !== 'detached' && (
-              <button
-                type="button"
-                onClick={onDetach}
-                className="rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-                title="Detach canvas"
-                aria-label="Detach canvas"
-              >
-                <PictureInPicture2 size={14} />
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {(artifacts.length > 0 || planIntents.length > 0) && (
-        <div className="border-b border-border/60 p-2">
-          <div className="flex gap-1 overflow-x-auto pb-1">
-            {planIntents.length > 0 && (
-              <button
-                type="button"
-                onClick={onSelectPlan}
-                className={`flex max-w-48 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-left text-xs transition-colors ${
-                  planSelected
-                    ? 'border-info/35 bg-info/10 text-info'
-                    : 'border-border bg-bg-primary/60 text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
-                }`}
-              >
-                <ListChecks size={13} />
-                <span className="truncate">Plans</span>
-                <span className="shrink-0 text-[10px] opacity-70">{planIntents.length}</span>
-              </button>
-            )}
-            {artifacts.map((artifact) => (
-              <button
-                key={artifact.id}
-                type="button"
-                onClick={() => onSelectArtifact(artifact.id)}
-                className={`flex max-w-48 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-left text-xs transition-colors ${
-                  !planSelected && selectedArtifact?.id === artifact.id
-                    ? 'border-accent/35 bg-accent/10 text-accent'
-                    : 'border-border bg-bg-primary/60 text-text-secondary hover:bg-bg-tertiary hover:text-text-primary'
-                }`}
-                title={artifact.title}
-              >
-                <ArtifactIcon kind={artifact.kind} />
-                <span className="truncate">{artifact.title}</span>
-                <span className="shrink-0 text-[10px] opacity-70">v{artifact.version}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {!planSelected && selectedArtifact ? (
-        <div className="flex min-h-0 flex-1 flex-col">
-          <div className="border-b border-border/60 px-3 py-2">
-            <div className="flex items-start gap-2">
-              <ArtifactIcon kind={selectedArtifact.kind} />
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-sm font-medium text-text-primary">
-                  {selectedArtifact.title}
-                </div>
-                <div className="mt-0.5 truncate font-mono text-[11px] text-text-tertiary">
-                  {selectedArtifact.storage === 'session'
-                    ? `Session only · ${selectedArtifact.relativePath}`
-                    : (selectedArtifact.filePath ??
-                      `.anvil/artifacts/${selectedArtifact.relativePath}`)}
-                </div>
-                <div className="mt-1 flex flex-wrap gap-1.5">
-                  <ArtifactMetaChip
-                    label={selectedArtifact.storage === 'session' ? 'throwaway' : 'repository'}
-                  />
-                  <ArtifactMetaChip label={selectedArtifact.status} />
-                  <ArtifactMetaChip label={selectedArtifact.visibility} />
-                  <ArtifactMetaChip label={selectedArtifact.source} />
-                  {selectedArtifact.model && <ArtifactMetaChip label={selectedArtifact.model} />}
-                  {selectedArtifact.reasoningEffort && (
-                    <ArtifactMetaChip label={selectedArtifact.reasoningEffort} />
-                  )}
-                  {selectedArtifact.sharedUrl && <ArtifactMetaChip label="shared" />}
-                  {shareError && (
-                    <span className="text-[11px] text-error">{shareError}</span>
-                  )}
-                </div>
-              </div>
-              <div className="flex shrink-0 items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => onZoomChange(clampCanvasZoom(zoom - 10))}
-                  disabled={zoom <= 50}
-                  className="rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-35"
-                  title="Zoom out"
-                  aria-label="Zoom canvas out"
-                >
-                  <Minus size={13} />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onZoomChange(100)}
-                  className="min-w-11 rounded-md px-1.5 py-1 text-[11px] font-medium tabular-nums text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-                  title="Reset canvas zoom"
-                  aria-label={`Reset canvas zoom, currently ${zoom}%`}
-                >
-                  {zoom}%
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onZoomChange(clampCanvasZoom(zoom + 10))}
-                  disabled={zoom >= 200}
-                  className="rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-35"
-                  title="Zoom in"
-                  aria-label="Zoom canvas in"
-                >
-                  <Plus size={13} />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMode('preview')}
-                  className={`rounded-md p-1.5 transition-colors ${
-                    mode === 'preview'
-                      ? 'bg-accent/10 text-accent'
-                      : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary'
-                  }`}
-                  title="Preview"
-                  aria-label="Preview artifact"
-                  aria-pressed={mode === 'preview'}
-                >
-                  <Eye size={13} />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMode('source')}
-                  className={`rounded-md p-1.5 transition-colors ${
-                    mode === 'source'
-                      ? 'bg-accent/10 text-accent'
-                      : 'text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary'
-                  }`}
-                  title="Source"
-                  aria-label="View artifact source"
-                  aria-pressed={mode === 'source'}
-                >
-                  <Code size={13} />
-                </button>
-                <button
-                  type="button"
-                  onClick={handleCopy}
-                  className="rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-                  title={copied ? 'Copied' : 'Copy artifact'}
-                  aria-label={copied ? 'Copied artifact' : 'Copy artifact'}
-                >
-                  {copied ? <Check size={13} className="text-success" /> : <Copy size={13} />}
-                </button>
-                {sharingAvailable && !selectedArtifact.sharedUrl && (
-                  <button
-                    type="button"
-                    onClick={handleShare}
-                    disabled={shareBusy}
-                    className="rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-35"
-                    title="Share artifact — creates a public link and copies it"
-                    aria-label="Share artifact"
-                  >
-                    <Link2 size={13} />
-                  </button>
-                )}
-                {selectedArtifact.sharedUrl && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        void navigator.clipboard
-                          .writeText(selectedArtifact.sharedUrl as string)
-                          .then(() => {
-                            setShareLinkCopied(true);
-                            window.setTimeout(() => setShareLinkCopied(false), 1400);
-                          })
-                      }
-                      className="rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-                      title={shareLinkCopied ? 'Copied' : `Copy share link: ${selectedArtifact.sharedUrl}`}
-                      aria-label={shareLinkCopied ? 'Copied share link' : 'Copy share link'}
-                    >
-                      {shareLinkCopied ? (
-                        <Check size={13} className="text-success" />
-                      ) : (
-                        <Link2 size={13} />
-                      )}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleUnshare}
-                      disabled={shareBusy}
-                      className="rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-error/10 hover:text-error disabled:opacity-35"
-                      title="Stop sharing — revokes the public link"
-                      aria-label="Stop sharing artifact"
-                    >
-                      <Link2Off size={13} />
-                    </button>
-                  </>
-                )}
-                {selectedArtifact.filePath && (
-                  <button
-                    type="button"
-                    onClick={() => window.open(`file://${selectedArtifact.filePath}`, '_blank')}
-                    className="rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-                    title="Open artifact file"
-                    aria-label="Open artifact file"
-                  >
-                    <ExternalLink size={13} />
-                  </button>
-                )}
-                {selectedArtifact.storage === 'session' && (
-                  <button
-                    type="button"
-                    onClick={handleDiscard}
-                    className="rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-error/10 hover:text-error"
-                    title="Discard session-only artifact"
-                    aria-label="Discard session-only artifact"
-                  >
-                    <Trash2 size={13} />
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-
-          <div
-            className="min-h-0 flex-1 overflow-auto bg-bg-primary/40"
-            onWheel={(event) => {
-              if (!event.metaKey && !event.ctrlKey) return;
-              event.preventDefault();
-              onZoomChange(clampCanvasZoom(zoom + (event.deltaY > 0 ? -10 : 10)));
-            }}
-          >
-            <div
-              className="min-h-full origin-top-left"
-              style={{ zoom: zoom / 100, width: `${10_000 / zoom}%` }}
-            >
-              <ArtifactBody artifact={selectedArtifact} mode={mode} />
-            </div>
-          </div>
-          <ArtifactAnnotationsPanel artifact={selectedArtifact} />
-        </div>
-      ) : (
-        <PlanGoalSidebar
-          activePlan={activePlan}
-          planIntents={planIntents}
-          activeGoal={activeGoal}
-          planOpen={planOpen}
-          onPlanOpenChange={setPlanOpen}
-        />
-      )}
-
-      {selectedArtifact && (activeGoal || planIntents.length > 0 || (activePlan && planOpen)) && (
-        <div className="max-h-60 overflow-auto border-t border-border/60">
-          <PlanGoalSidebar
-            activePlan={activePlan}
-            planIntents={planIntents}
-            activeGoal={activeGoal}
-            planOpen={planOpen}
-            onPlanOpenChange={setPlanOpen}
-          />
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ArtifactIcon({ kind }: { kind: ChatArtifact['kind'] }) {
-  if (kind === 'markdown' || kind === 'text' || kind === 'docx' || kind === 'pdf') {
-    return <FileText size={13} className="shrink-0" />;
-  }
-  if (kind === 'html' || kind === 'pptx') return <Eye size={13} className="shrink-0" />;
-  if (kind === 'csv' || kind === 'xlsx') return <Database size={13} className="shrink-0" />;
-  return <Braces size={13} className="shrink-0" />;
-}
-
-function ArtifactMetaChip({ label }: { label: string }) {
-  return (
-    <span className="rounded-full border border-border-subtle bg-bg-primary px-1.5 py-0.5 text-[10px] font-medium text-text-tertiary">
-      {label}
-    </span>
-  );
-}
-
-function ArtifactBody({ artifact, mode }: { artifact: ChatArtifact; mode: 'preview' | 'source' }) {
-  return <ArtifactPreview artifact={artifact} mode={mode} />;
-}
-
-function PlanGoalSidebar({
-  activePlan,
-  planIntents,
-  activeGoal,
-  planOpen = true,
-  onPlanOpenChange,
-}: {
-  activePlan: ChatPlanSnapshot | null;
-  planIntents: AgentUIPlanIntent[];
-  activeGoal: ChatGoalSnapshot | null;
-  planOpen?: boolean;
-  onPlanOpenChange?: (open: boolean) => void;
-}) {
-  return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-3">
-      {activeGoal && (
-        <section className="mb-3 rounded-xl border border-success/20 bg-success/5 p-3">
-          <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
-            <Target size={14} className="text-success" />
-            Goal
-            <span className="ml-auto rounded-full bg-success/10 px-2 py-0.5 text-xs text-success">
-              {formatGoalStatus(activeGoal.status)}
-            </span>
-          </div>
-          <p className="mt-2 text-sm leading-relaxed text-text-secondary">{activeGoal.objective}</p>
-          <p className="mt-2 text-xs text-text-tertiary">
-            {activeGoal.tokensUsed.toLocaleString()} tokens
-            {activeGoal.tokenBudget ? ` / ${activeGoal.tokenBudget.toLocaleString()}` : ''} used
-          </p>
-        </section>
-      )}
-
-      {planIntents.map((intent) => (
-        <PlanIntentSurface key={intent.id} intent={intent} mode="canvas" />
-      ))}
-
-      {planIntents.length === 0 && activePlan && (
-        <section className="rounded-xl border border-info/20 bg-info/5">
-          <button
-            type="button"
-            onClick={() => onPlanOpenChange?.(!planOpen)}
-            className={`w-full p-3 text-left transition-colors hover:bg-info/5 ${
-              planOpen ? 'border-b border-info/15' : ''
-            }`}
-            aria-expanded={planOpen}
-          >
-            <span className="flex items-center gap-2 text-sm font-medium text-text-primary">
-              <ListChecks size={14} className="text-info" />
-              Implementation Plan
-              <span className="ml-auto text-xs text-text-tertiary">
-                {activePlan.steps.filter((step) => step.status === 'completed').length}/
-                {activePlan.steps.length}
-              </span>
-              {planOpen ? (
-                <ChevronDown size={13} className="text-text-tertiary" />
-              ) : (
-                <ChevronRight size={13} className="text-text-tertiary" />
-              )}
-            </span>
-          </button>
-          {planOpen && activePlan.explanation && (
-            <p className="border-b border-info/15 px-3 pb-3 text-xs leading-relaxed text-text-secondary">
-              {activePlan.explanation}
-            </p>
-          )}
-          {planOpen && (
-            <ol className="space-y-2 p-3">
-              {activePlan.steps.map((step, index) => (
-                <li key={`${index}-${step.step}`} className="flex items-start gap-2 text-sm">
-                  <SidebarPlanStepIcon status={step.status} />
-                  <span
-                    className={
-                      step.status === 'completed'
-                        ? 'text-text-tertiary line-through'
-                        : 'text-text-secondary'
-                    }
-                  >
-                    {step.step}
-                  </span>
-                </li>
-              ))}
-            </ol>
-          )}
-        </section>
-      )}
-    </div>
-  );
-}
-
-function SidebarPlanStepIcon({ status }: { status: ChatPlanStep['status'] }) {
-  if (status === 'completed') {
-    return <CheckCircle2 size={14} className="mt-0.5 shrink-0 text-success" />;
-  }
-  if (status === 'in_progress') {
-    return <Loader2 size={14} className="mt-0.5 shrink-0 animate-spin text-info" />;
-  }
-  return <Circle size={14} className="mt-0.5 shrink-0 text-text-tertiary" />;
-}
-
-export function isNearChatBottom(
-  metrics: ScrollMetrics,
-  thresholdPx = CHAT_BOTTOM_THRESHOLD_PX,
-): boolean {
-  return metrics.scrollHeight - metrics.scrollTop - metrics.clientHeight < thresholdPx;
-}
-
-export function shouldFocusChatComposerFromKey(event: Pick<KeyboardEvent, 'key' | 'target'>) {
-  if (event.key !== '/') return false;
-  return !isEditableShortcutTarget(event.target);
-}
-
-export function getNewChatThreadActionLabel(): string {
-  return NEW_CHAT_THREAD_LABEL;
-}
-
-export function buildMessageReusePrefill(content: string): string {
-  return content.trimEnd();
-}
-
-export function getChatTurnLiveState({
-  busy,
-  isLatest,
-  hasWork,
-  hasAnswer,
-  hasTrailingWork = false,
-}: {
-  busy: boolean;
-  isLatest: boolean;
-  hasWork: boolean;
-  hasAnswer: boolean;
-  hasTrailingWork?: boolean;
-}): TurnActivityState | null {
-  if (!busy || !isLatest) return null;
-  if (hasTrailingWork) return 'working';
-  if (hasAnswer) return 'responding';
-  if (hasWork) return 'working';
-  return 'thinking';
-}
-
-export function shouldShowTurnActivityStatus(state: TurnActivityState | null): boolean {
-  return state === 'thinking';
-}
-
-function formatGoalStatus(status: ChatGoalSnapshot['status']): string {
-  switch (status) {
-    case 'budgetLimited':
-      return 'budget limited';
-    case 'complete':
-      return 'complete';
-    default:
-      return status;
-  }
-}
-
-const FINDING_TYPE_STYLES: Record<
-  string,
-  { bg: string; border: string; text: string; label: string }
-> = {
-  compliance: {
-    bg: 'bg-warning/5',
-    border: 'border-warning/20',
-    text: 'text-warning',
-    label: 'Compliance',
-  },
-  feasibility: {
-    bg: 'bg-info/5',
-    border: 'border-info/20',
-    text: 'text-info',
-    label: 'Feasibility',
-  },
-  dependency: {
-    bg: 'bg-warning/10',
-    border: 'border-warning/25',
-    text: 'text-warning',
-    label: 'Dependency',
-  },
-  question: {
-    bg: 'bg-text-tertiary/5',
-    border: 'border-text-tertiary/20',
-    text: 'text-text-tertiary',
-    label: 'Question',
-  },
-  risk: { bg: 'bg-error/5', border: 'border-error/20', text: 'text-error', label: 'Risk' },
-  security: { bg: 'bg-error/5', border: 'border-error/20', text: 'text-error', label: 'Security' },
-};
-
-function ChatFindingCard({
-  finding,
-  onFollowUp,
-  onDismiss,
-}: {
-  finding: ExtractedFinding;
-  onFollowUp: () => void;
-  onDismiss: () => void;
-}) {
-  const style = FINDING_TYPE_STYLES[finding.type] ?? FINDING_TYPE_STYLES.question;
-  return (
-    <div className={`rounded-xl border ${style.border} ${style.bg} px-3 py-2.5`}>
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex-1 min-w-0">
-          <span
-            className={`inline-block rounded-full px-1.5 py-0.5 text-xs font-medium uppercase tracking-wide ${style.text}`}
-          >
-            {style.label}
-          </span>
-          <p className="mt-1.5 text-sm leading-relaxed text-text-secondary">{finding.content}</p>
-        </div>
-        <button
-          onClick={onDismiss}
-          className="shrink-0 rounded-lg p-1 text-text-tertiary hover:bg-bg-tertiary hover:text-text-primary"
-          title="Dismiss finding"
-        >
-          <X size={13} />
-        </button>
-      </div>
-      <div className="mt-2 flex items-center gap-2">
-        <button
-          onClick={onFollowUp}
-          className="rounded-lg border border-border/70 px-2 py-1 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-        >
-          Follow up
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function buildFindingFollowUpPrompt(finding: ExtractedFinding): string {
-  const label = FINDING_TYPE_STYLES[finding.type]?.label ?? 'Finding';
-
-  return [
-    `Let's follow up on this BA ${label.toLowerCase()} finding:`,
-    finding.content,
-    '',
-    'Please expand on:',
-    '- the evidence in the current repos or requirements that led to this finding',
-    '- the concrete implementation or delivery impact',
-    '- what has likely been overlooked or needs clarification',
-    '- the recommended next action or decision',
-  ].join('\n');
 }

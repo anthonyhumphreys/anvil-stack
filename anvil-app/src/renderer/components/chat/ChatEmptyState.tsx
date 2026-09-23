@@ -1,3 +1,5 @@
+import type { StarterPrompt } from '../../utils/starter-prompts';
+
 interface Suggestion {
   label: string;
   prompt: string;
@@ -294,6 +296,12 @@ interface ChatEmptyStateProps {
   hasRepos: boolean;
   hasGovernanceDocs: boolean;
   isDbExpertPersona: boolean;
+  /**
+   * C2/3.5 — repo-grounded suggestions generated from the structural index
+   * (`getStarterPrompts`). When present these replace the static persona set;
+   * when absent (no mapped repo yet) the persona fallback below applies.
+   */
+  starterPrompts?: StarterPrompt[];
   onSuggestionClick: (prompt: string) => void;
 }
 
@@ -302,9 +310,13 @@ export function ChatEmptyState({
   hasRepos,
   hasGovernanceDocs,
   isDbExpertPersona,
+  starterPrompts,
   onSuggestionClick,
 }: ChatEmptyStateProps) {
-  const suggestions = PERSONA_SUGGESTIONS[personaId] ?? PERSONA_SUGGESTIONS.coder;
+  const suggestions: Suggestion[] =
+    starterPrompts && starterPrompts.length > 0
+      ? starterPrompts
+      : (PERSONA_SUGGESTIONS[personaId] ?? PERSONA_SUGGESTIONS.coder);
   const isItsmPersona = [
     'service-desk',
     'technical-support',

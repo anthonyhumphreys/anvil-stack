@@ -13,11 +13,16 @@ import type {
   WorkflowRun,
   WorkflowTargetPolicy,
 } from '../../../shared/types';
-import type { SyncDevice } from '../../../shared/sync-runtime';
+import type {
+  CloudEnvironmentProviderConnection,
+  CloudEnvironmentRecord,
+  SyncDevice,
+} from '../../../shared/sync-runtime';
 import { DEFAULT_CODEX_MODEL, getCodexModelReasoningOptions } from '../../../shared/codex-models';
 import { isAcpAgentProvider } from '../../../shared/agent-providers';
 import { orchestrationConfig, TEAM_STRATEGIES } from '../../../shared/workflow-orchestration';
 import { buildProviderModelOptions } from '../../utils/chat-model-options';
+import { SettingsLink } from '../shared/SettingsLink';
 
 const fieldClass = 'workflow-input';
 
@@ -226,21 +231,35 @@ export function OrchestrationPanel({
                       ))}
                     </select>
                     <p className="mt-1 text-xs text-text-tertiary">
-                      {profile.provider === 'cursor'
-                        ? cursorStatus?.models.length
-                          ? `${cursorStatus.models.length} models detected from Cursor CLI.`
-                          : "Cursor's model catalog is unavailable. Auto uses Cursor's default."
-                        : profile.provider === 'devin'
-                          ? devinStatus?.models.length
-                            ? `${devinStatus.models.length} models detected from Devin CLI.`
-                            : "Devin's model catalog is unavailable. Auto uses Devin's default."
-                          : profile.provider === 'llmgateway'
-                            ? llmGatewayStatus?.models.length
-                              ? `${llmGatewayStatus.models.filter((model) => !model.hidden).length} models available from LLMGateway.`
-                              : 'LLMGateway model catalog is unavailable. Connect or refresh it in Settings.'
-                            : codexStatus?.models?.length
-                              ? `${codexStatus.models.filter((model) => !model.hidden).length} models detected from Codex CLI.`
-                              : 'Using the built-in model catalog.'}
+                      {profile.provider === 'cursor' ? (
+                        cursorStatus?.models.length ? (
+                          `${cursorStatus.models.length} models detected from Cursor CLI.`
+                        ) : (
+                          "Cursor's model catalog is unavailable. Auto uses Cursor's default."
+                        )
+                      ) : profile.provider === 'devin' ? (
+                        devinStatus?.models.length ? (
+                          `${devinStatus.models.length} models detected from Devin CLI.`
+                        ) : (
+                          "Devin's model catalog is unavailable. Auto uses Devin's default."
+                        )
+                      ) : profile.provider === 'llmgateway' ? (
+                        llmGatewayStatus?.models.length ? (
+                          `${llmGatewayStatus.models.filter((model) => !model.hidden).length} models available from LLMGateway.`
+                        ) : (
+                          <>
+                            LLMGateway model catalog is unavailable.{' '}
+                            <SettingsLink to="providers#agent-providers">
+                              Connect or refresh it in Settings
+                            </SettingsLink>
+                            .
+                          </>
+                        )
+                      ) : codexStatus?.models?.length ? (
+                        `${codexStatus.models.filter((model) => !model.hidden).length} models detected from Codex CLI.`
+                      ) : (
+                        'Using the built-in model catalog.'
+                      )}
                     </p>
                   </label>
                   {profile.provider === 'llmgateway' &&
@@ -355,6 +374,11 @@ export function TeamSettings({
 }) {
   const [devices, setDevices] = useState<SyncDevice[] | null>(null);
   const [deviceError, setDeviceError] = useState(false);
+  const [environments, setEnvironments] = useState<CloudEnvironmentRecord[] | null>(null);
+  const [providerConnections, setProviderConnections] = useState<
+    CloudEnvironmentProviderConnection[] | null
+  >(null);
+  const [environmentError, setEnvironmentError] = useState(false);
 
   useEffect(() => {
     if (node.target?.kind !== 'device') return;
@@ -374,12 +398,42 @@ export function TeamSettings({
       active = false;
     };
   }, [node.target?.kind]);
+
+  useEffect(() => {
+    if (
+      node.target?.kind !== 'existing-environment' &&
+      node.target?.kind !== 'provisioned-environment'
+    ) {
+      return;
+    }
+    let active = true;
+    void Promise.all([
+      window.anvil.syncRuntime.listCloudEnvironments(false),
+      window.anvil.syncRuntime.listCloudProviderConnections(),
+    ]).then(
+      ([environmentResult, connectionResult]) => {
+        if (!active) return;
+        setEnvironments(environmentResult.environments);
+        setProviderConnections(connectionResult);
+        setEnvironmentError(false);
+      },
+      () => {
+        if (active) setEnvironmentError(true);
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [node.target?.kind]);
   const selectedEnrollmentId = node.target?.kind === 'device' ? node.target.enrollmentId : '';
   const automaticTarget = node.target?.kind === 'auto' ? node.target : null;
   const existingEnvironmentTarget =
     node.target?.kind === 'existing-environment' ? node.target : null;
   const provisionedEnvironmentTarget =
     node.target?.kind === 'provisioned-environment' ? node.target : null;
+  const activeEnvironments = environments?.filter((environment) =>
+    ['provisioning', 'enrolled', 'running', 'suspended'].includes(environment.state),
+  );
 
   return (
     <div className="space-y-3 border-t border-border pt-4">
@@ -566,57 +620,150 @@ export function TeamSettings({
               />
             )}
             {existingEnvironmentTarget && (
-              <input
-                className={fieldClass}
-                placeholder="Environment id"
-                aria-label="Existing environment id"
-                value={existingEnvironmentTarget.environmentId}
-                onChange={(event) =>
-                  onChange({
-                    target: { ...existingEnvironmentTarget, environmentId: event.target.value },
-                  })
-                }
-              />
-            )}
-            {provisionedEnvironmentTarget && (
-              <div className="grid grid-cols-2 gap-2">
+              <div>
                 <select
                   className={fieldClass}
-                  aria-label="Environment provider"
-                  value={provisionedEnvironmentTarget.provider}
+                  aria-label="Existing environment"
+                  value={existingEnvironmentTarget.environmentId}
+                  required
                   onChange={(event) =>
                     onChange({
-                      target: {
-                        ...provisionedEnvironmentTarget,
-                        provider: event.target.value as Extract<
-                          WorkflowTargetPolicy,
-                          { kind: 'provisioned-environment' }
-                        >['provider'],
-                      },
+                      target: { ...existingEnvironmentTarget, environmentId: event.target.value },
                     })
                   }
+                  disabled={environments === null && !environmentError}
                 >
-                  <option value="anvil-managed">Anvil managed</option>
-                  <option value="aws-lambda-microvm">AWS microVM</option>
-                  <option value="cloudflare-sandbox">Cloudflare Sandbox</option>
-                  <option value="vercel-sandbox">Vercel Sandbox</option>
+                  <option value="">Choose an active environment</option>
+                  {existingEnvironmentTarget.environmentId &&
+                    !activeEnvironments?.some(
+                      (environment) =>
+                        environment.environmentId === existingEnvironmentTarget.environmentId,
+                    ) && (
+                      <option value={existingEnvironmentTarget.environmentId}>
+                        Saved environment (unavailable)
+                      </option>
+                    )}
+                  {activeEnvironments?.map((environment) => (
+                    <option key={environment.environmentId} value={environment.environmentId}>
+                      {environment.environmentId} · {environment.provider} · {environment.state}
+                    </option>
+                  ))}
                 </select>
-                <input
-                  className={fieldClass}
-                  type="number"
-                  min={60}
-                  step={60}
-                  aria-label="Environment lifetime in seconds"
-                  value={provisionedEnvironmentTarget.ttlSeconds}
-                  onChange={(event) =>
-                    onChange({
-                      target: {
-                        ...provisionedEnvironmentTarget,
-                        ttlSeconds: Number(event.target.value),
-                      },
-                    })
-                  }
-                />
+                {activeEnvironments?.length === 0 && (
+                  <span className="mt-2 block text-xs font-normal text-text-tertiary">
+                    No active environments yet.{' '}
+                    <SettingsLink to="sync#sync-mesh">
+                      Start one in Settings → Sync &amp; Mesh
+                    </SettingsLink>
+                    .
+                  </span>
+                )}
+                {environmentError && (
+                  <>
+                    <span className="mt-2 block text-xs font-normal text-warning">
+                      Could not load environments. Paste an environment id below instead.
+                    </span>
+                    <input
+                      className={`${fieldClass} mt-2`}
+                      placeholder="Environment id"
+                      aria-label="Existing environment id"
+                      value={existingEnvironmentTarget.environmentId}
+                      onChange={(event) =>
+                        onChange({
+                          target: {
+                            ...existingEnvironmentTarget,
+                            environmentId: event.target.value,
+                          },
+                        })
+                      }
+                    />
+                  </>
+                )}
+              </div>
+            )}
+            {provisionedEnvironmentTarget && (
+              <div className="space-y-2">
+                <div className="grid grid-cols-2 gap-2">
+                  <select
+                    className={fieldClass}
+                    aria-label="Environment provider"
+                    value={provisionedEnvironmentTarget.provider}
+                    required
+                    onChange={(event) =>
+                      onChange({
+                        target: {
+                          ...provisionedEnvironmentTarget,
+                          provider: event.target.value as Extract<
+                            WorkflowTargetPolicy,
+                            { kind: 'provisioned-environment' }
+                          >['provider'],
+                          connectionId: undefined,
+                        },
+                      })
+                    }
+                  >
+                    <option value="anvil-managed">Anvil managed</option>
+                    <option value="aws-lambda-microvm">AWS microVM</option>
+                    <option value="cloudflare-sandbox">Cloudflare Sandbox</option>
+                    <option value="vercel-sandbox">Vercel Sandbox</option>
+                  </select>
+                  <input
+                    className={fieldClass}
+                    type="number"
+                    min={60}
+                    max={604800}
+                    step={60}
+                    aria-label="Environment lifetime in seconds"
+                    value={provisionedEnvironmentTarget.ttlSeconds}
+                    required
+                    onChange={(event) =>
+                      onChange({
+                        target: {
+                          ...provisionedEnvironmentTarget,
+                          ttlSeconds: Number(event.target.value),
+                        },
+                      })
+                    }
+                  />
+                </div>
+                {provisionedEnvironmentTarget.provider !== 'anvil-managed' && (
+                  <>
+                    <select
+                      className={fieldClass}
+                      aria-label="Provider connection"
+                      value={provisionedEnvironmentTarget.connectionId ?? ''}
+                      onChange={(event) =>
+                        onChange({
+                          target: {
+                            ...provisionedEnvironmentTarget,
+                            connectionId: event.target.value || undefined,
+                          },
+                        })
+                      }
+                      disabled={providerConnections === null && !environmentError}
+                    >
+                      <option value="">Use first matching connection</option>
+                      {providerConnections
+                        ?.filter(
+                          (connection) =>
+                            connection.provider === provisionedEnvironmentTarget.provider,
+                        )
+                        .map((connection) => (
+                          <option key={connection.id} value={connection.id}>
+                            {connection.displayName ?? connection.provider}
+                          </option>
+                        ))}
+                    </select>
+                    {providerConnections?.filter(
+                      (connection) => connection.provider === provisionedEnvironmentTarget.provider,
+                    ).length === 0 && (
+                      <span className="block text-xs font-normal text-warning">
+                        No matching provider connection is saved on this device. Add one in
+                        Settings.
+                      </span>
+                    )}
+                  </>
+                )}
               </div>
             )}
             <p className="text-xs leading-relaxed text-text-tertiary">

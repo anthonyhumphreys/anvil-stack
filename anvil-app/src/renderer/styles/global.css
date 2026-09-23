@@ -14,6 +14,13 @@
   --color-text-muted: #8492a8;
   --color-accent: #ff8a3d;
   --color-accent-glow: rgba(255, 138, 61, 0.22);
+  /* Text and icons rendered on top of --color-accent (primary buttons,
+     selected states). Always mirrors the theme's canvas colour; every
+     theme's accent/accent-foreground pair is asserted >= 4.5:1 (WCAG AA
+     normal text) in utils/__tests__/contrast.test.ts (DS1). */
+  --color-accent-foreground: #0b1020;
+  /* Scrim behind dialogs and floating surfaces (Dialog, Menu). */
+  --color-scrim: rgba(0, 0, 0, 0.55);
   --color-success: #48d597;
   --color-warning: #ffd166;
   --color-info: #5ec8ff;
@@ -31,8 +38,14 @@
   --radius-lg: 8px;
   --radius-xl: 12px;
   --radius-2xl: 16px;
+  /* DS4 type floor: readable text stays >= 12px. 11px is reserved for
+     uppercase eyebrows and counters; `text-eyebrow` bakes in line-height,
+     tracking, and weight — pair it with the `uppercase` utility. */
+  --text-eyebrow: 0.6875rem;
+  --text-eyebrow--line-height: 1.45;
+  --text-eyebrow--letter-spacing: 0.08em;
+  --text-eyebrow--font-weight: 600;
 }
-
 
 @theme inline {
   --color-overlay-ring: var(--overlay-ring);
@@ -55,6 +68,8 @@ html[data-theme='light'] {
   --color-text-muted: #9aa1ad;
   --color-accent: #4f46e5;
   --color-accent-glow: rgba(79, 70, 229, 0.14);
+  --color-accent-foreground: #fbfbfc;
+  --color-scrim: rgba(15, 23, 42, 0.32);
   --color-success: #15803d;
   --color-warning: #b45309;
   --color-info: #0369a1;
@@ -81,6 +96,7 @@ html[data-theme='prompt-whisperer'] {
   --color-text-muted: #76aaa5;
   --color-accent: #3ddbd9;
   --color-accent-glow: rgba(61, 219, 217, 0.22);
+  --color-accent-foreground: #071b1f;
   --color-success: #75e6a7;
   --color-warning: #ffe08a;
   --color-info: #8bd3ff;
@@ -102,6 +118,7 @@ html[data-theme='merge-conflict'] {
   --color-text-muted: #a67e99;
   --color-accent: #ff5c8a;
   --color-accent-glow: rgba(255, 92, 138, 0.24);
+  --color-accent-foreground: #120d18;
   --color-success: #61e2a1;
   --color-warning: #ffd166;
   --color-info: #64d8ff;
@@ -124,6 +141,7 @@ html[data-theme='token-bender'] {
   --color-text-muted: #968ec4;
   --color-accent: #9f7aea;
   --color-accent-glow: rgba(159, 122, 234, 0.24);
+  --color-accent-foreground: #100f2a;
   --color-success: #64e3a0;
   --color-warning: #ffe066;
   --color-info: #7dd3fc;
@@ -145,6 +163,7 @@ html[data-theme='agent-after-hours'] {
   --color-text-muted: #86aa93;
   --color-accent: #6ee7b7;
   --color-accent-glow: rgba(110, 231, 183, 0.22);
+  --color-accent-foreground: #07110d;
   --color-success: #8cf2bd;
   --color-warning: #facc15;
   --color-info: #93c5fd;

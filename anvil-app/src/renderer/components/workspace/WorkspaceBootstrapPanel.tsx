@@ -117,14 +117,14 @@ export function WorkspaceBootstrapPanel({
                       key={step.id}
                       className="flex items-center gap-2 rounded-lg border border-border-subtle bg-bg-tertiary/50 px-3 py-2 text-sm"
                     >
-                      <span className="shrink-0 rounded bg-bg-tertiary px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-text-tertiary">
+                      <span className="shrink-0 rounded bg-bg-tertiary px-1.5 py-0.5 text-eyebrow font-semibold uppercase tracking-wide text-text-tertiary">
                         {step.kind}
                       </span>
                       <span className="min-w-0 flex-1 truncate font-mono text-xs text-text-secondary">
                         {step.summary}
                       </span>
                       {step.shell && (
-                        <span className="shrink-0 text-[10px] font-semibold uppercase text-warning">
+                        <span className="shrink-0 text-eyebrow font-semibold uppercase text-warning">
                           shell
                         </span>
                       )}
@@ -232,7 +232,7 @@ export function WorkspaceBootstrapPanel({
                           <span
                             key={step.stepId}
                             title={`${step.stepId}: ${step.state}`}
-                            className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                            className={`rounded px-1.5 py-0.5 text-eyebrow font-medium ${
                               step.state === 'verified'
                                 ? 'bg-success/15 text-success'
                                 : step.state === 'running'

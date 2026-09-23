@@ -10,12 +10,24 @@ import {
   LoaderCircle,
   MessageSquarePlus,
   Pencil,
+  Search,
   Trash2,
   X,
 } from 'lucide-react';
-import type { ChatThread, CodexSession, Persona, RepoInfo } from '../../../shared/types';
+import type {
+  ChatLayout,
+  ChatThread,
+  CodexMode,
+  CodexSession,
+  Persona,
+  RepoInfo,
+} from '../../../shared/types';
 import { ResizableSidebarPanel } from '../layout/ResizableSidebarPanel';
+import { ConfirmDialog } from '../ui';
 import { isEditableShortcutTarget } from '../../utils/keyboard';
+import { ChatAccessLevelBadge } from './ChatAccessLevelChip';
+import { ChatLayoutToggle } from './ChatLayoutToggle';
+import { filterChatThreads, type ChatThreadSearchContext } from './chat-thread-search';
 
 interface ChatThreadRailProps {
   personas: Persona[];
@@ -28,6 +40,12 @@ interface ChatThreadRailProps {
   onRenameThread: (threadId: string, title: string) => void;
   onSettleThread: (threadId: string, settled: boolean) => void;
   onDeleteThread: (threadId: string) => void;
+  /** CH4/CH9 — Chat/Tickets layout toggle lives in the rail header. */
+  chatLayout?: ChatLayout;
+  onChatLayoutChange?: (layout: ChatLayout) => void;
+  /** CH1 — per-thread access level display. */
+  accessLevels?: Record<string, CodexMode>;
+  defaultAccessLevel?: CodexMode;
 }
 
 type ThreadDisplayState = 'approval' | 'input' | 'failed' | 'complete' | 'working' | 'idle';
@@ -43,15 +61,31 @@ export function ChatThreadRail({
   onRenameThread,
   onSettleThread,
   onDeleteThread,
+  chatLayout,
+  onChatLayoutChange,
+  accessLevels,
+  defaultAccessLevel = 'on-request',
 }: ChatThreadRailProps) {
   const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState('');
-  const { activeThreads, settledThreads } = useMemo(() => partitionThreads(threads), [threads]);
-  const repoNames = useMemo(() => new Map(repos.map((repo) => [repo.id, repo.name])), [repos]);
-  const personaNames = useMemo(
-    () => new Map(personas.map((persona) => [persona.id, persona.name])),
-    [personas],
+  const [filter, setFilter] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState<ChatThread | null>(null);
+  const searchContext = useMemo<ChatThreadSearchContext>(
+    () => ({
+      repoNames: new Map(repos.map((repo) => [repo.id, repo.name])),
+      personaNames: new Map(personas.map((persona) => [persona.id, persona.name])),
+    }),
+    [personas, repos],
   );
+  const visibleThreads = useMemo(
+    () => filterChatThreads(threads, filter, searchContext),
+    [threads, filter, searchContext],
+  );
+  const { activeThreads, settledThreads } = useMemo(
+    () => partitionThreads(visibleThreads),
+    [visibleThreads],
+  );
+  const filtering = filter.trim().length > 0;
 
   useEffect(() => {
     if (!editingThreadId) setDraftTitle('');
@@ -69,17 +103,18 @@ export function ChatThreadRail({
     const liveStatus = liveThreadStatuses[thread.id];
     const displayState = getThreadDisplayState(thread, liveStatus, active);
     const settleAllowed = canSettleThread(thread, liveStatus);
+    const accessLevel = accessLevels?.[thread.id] ?? defaultAccessLevel;
     const context =
       thread.workItemTitle ??
-      (thread.activeRepoId ? repoNames.get(thread.activeRepoId) : undefined) ??
-      personaNames.get(thread.personaId);
+      (thread.activeRepoId ? searchContext.repoNames.get(thread.activeRepoId) : undefined) ??
+      searchContext.personaNames.get(thread.personaId);
 
     return (
       <div
         key={thread.id}
         className={`group relative rounded-lg transition-colors ${
           active ? 'bg-accent/10' : 'hover:bg-bg-tertiary/55'
-        } ${displayState === 'working' && !active ? 'opacity-70' : ''}`}
+        }`}
       >
         <div
           role="button"
@@ -141,6 +176,7 @@ export function ChatThreadRail({
                       <span className="truncate text-text-tertiary">{context}</span>
                     </>
                   )}
+                  {accessLevels && <ChatAccessLevelBadge level={accessLevel} />}
                 </div>
               )}
             </div>
@@ -179,9 +215,7 @@ export function ChatThreadRail({
                   <ThreadAction
                     label="Delete thread"
                     className="hover:bg-error/10 hover:text-error"
-                    onClick={() => {
-                      if (window.confirm(`Delete "${thread.title}"?`)) onDeleteThread(thread.id);
-                    }}
+                    onClick={() => setDeleteTarget(thread)}
                   >
                     <Trash2 size={13} />
                   </ThreadAction>
@@ -216,7 +250,7 @@ export function ChatThreadRail({
           >
             <ChevronRight size={14} />
           </button>
-          <span className="mt-1 [writing-mode:vertical-rl] rotate-180 text-[10px] font-medium uppercase tracking-[0.2em] text-text-tertiary">
+          <span className="mt-1 [writing-mode:vertical-rl] rotate-180 text-eyebrow font-medium uppercase tracking-[0.2em] text-text-tertiary">
             Threads
           </span>
         </div>
@@ -239,13 +273,39 @@ export function ChatThreadRail({
             <MessageSquarePlus size={15} />
           </button>
         </div>
+
+        {chatLayout && onChatLayoutChange && (
+          <div className="mt-2.5">
+            <ChatLayoutToggle layout={chatLayout} onChange={onChatLayoutChange} />
+          </div>
+        )}
+
+        <div className="relative mt-2.5">
+          <Search
+            size={13}
+            className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-text-tertiary"
+          />
+          <input
+            value={filter}
+            onChange={(event) => setFilter(event.target.value)}
+            className="w-full rounded-lg border border-border bg-bg-primary py-1.5 pl-8 pr-3 text-xs text-text-primary outline-none placeholder:text-text-tertiary focus:border-accent/50"
+            placeholder="Filter threads…"
+            aria-label="Filter threads"
+          />
+        </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-2.5">
         {activeThreads.length === 0 ? (
           <div className="px-3 py-6 text-center">
-            <p className="text-sm font-medium text-text-primary">No active threads</p>
-            <p className="mt-1 text-xs text-text-tertiary">Start a thread or restore one below.</p>
+            <p className="text-sm font-medium text-text-primary">
+              {filtering ? 'No matching threads' : 'No active threads'}
+            </p>
+            <p className="mt-1 text-xs text-text-tertiary">
+              {filtering
+                ? 'Try a different title, repo, or persona.'
+                : 'Start a thread or restore one below.'}
+            </p>
           </div>
         ) : (
           <div className="space-y-0.5">
@@ -269,6 +329,19 @@ export function ChatThreadRail({
           </section>
         )}
       </div>
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title={`Delete "${deleteTarget?.title ?? 'thread'}"?`}
+        description="This permanently removes the thread and its history."
+        confirmLabel="Delete thread"
+        tone="danger"
+        onConfirm={() => {
+          if (deleteTarget) onDeleteThread(deleteTarget.id);
+          setDeleteTarget(null);
+        }}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </ResizableSidebarPanel>
   );
 }

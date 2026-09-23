@@ -233,7 +233,7 @@ function ReadinessBanner({
             <button
               onClick={onInstallFigma}
               disabled={installingFigma || loading}
-              className="rounded-md bg-accent px-2 py-1 text-sm text-white hover:bg-accent/80 disabled:opacity-40"
+              className="rounded-md bg-accent px-2 py-1 text-sm text-accent-foreground hover:bg-accent/80 disabled:opacity-40"
             >
               {installingFigma ? <Loader2 size={12} className="animate-spin" /> : 'Set up'}
             </button>
@@ -245,7 +245,7 @@ function ReadinessBanner({
             <button
               onClick={onInstallSkill}
               disabled={installingSkill || loading}
-              className="rounded-md bg-accent px-2 py-1 text-sm text-white hover:bg-accent/80 disabled:opacity-40"
+              className="rounded-md bg-accent px-2 py-1 text-sm text-accent-foreground hover:bg-accent/80 disabled:opacity-40"
             >
               {installingSkill ? <Loader2 size={12} className="animate-spin" /> : 'Install'}
             </button>

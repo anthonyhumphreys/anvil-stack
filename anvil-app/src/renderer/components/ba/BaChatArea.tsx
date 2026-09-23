@@ -180,7 +180,7 @@ export function BaChatArea() {
               disabled={isBusy || !isReady || !input.trim()}
               className="flex h-9 w-9 items-center justify-center rounded-md bg-accent transition-colors hover:bg-accent/90 disabled:opacity-30"
             >
-              <Send size={16} className="text-white" />
+              <Send size={16} className="text-accent-foreground" />
             </button>
           )}
         </div>

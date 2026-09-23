@@ -54,7 +54,7 @@ export function ExecutionTopologyPanel({
         <div className="flex items-center justify-between gap-3 px-3 py-2.5">
           <div>
             <p className="text-xs font-medium text-text-secondary">Agent fan-out</p>
-            <p className="mt-0.5 text-[11px] text-text-tertiary">
+            <p className="mt-0.5 text-xs text-text-tertiary">
               {topology.runningCount > 0
                 ? `${topology.runningCount} agent${topology.runningCount === 1 ? '' : 's'} working`
                 : failedCount > 0
@@ -65,17 +65,17 @@ export function ExecutionTopologyPanel({
             </p>
           </div>
           {delegates.length > 0 ? (
-            <span className="shrink-0 rounded-full bg-bg-primary px-2 py-0.5 text-[10px] text-text-tertiary">
+            <span className="shrink-0 rounded-full bg-bg-primary px-2 py-0.5 text-eyebrow text-text-tertiary">
               {completedCount}/{delegates.length} complete
             </span>
           ) : (
-            <span className="shrink-0 rounded-full bg-bg-primary px-2 py-0.5 text-[10px] text-text-tertiary">
+            <span className="shrink-0 rounded-full bg-bg-primary px-2 py-0.5 text-eyebrow text-text-tertiary">
               Solo run
             </span>
           )}
         </div>
         <div className="flex items-start gap-2 border-t border-border-subtle/70 px-3 py-2.5">
-          <span className="shrink-0 pt-0.5 text-[11px] font-medium text-text-muted">Task</span>
+          <span className="shrink-0 pt-0.5 text-xs font-medium text-text-muted">Task</span>
           <p className="line-clamp-2 text-xs leading-relaxed text-text-primary">
             {root.prompt ?? root.label}
           </p>
@@ -184,7 +184,7 @@ function FanoutMap({
           <div className="flex h-9 w-9 items-center justify-center rounded-full border border-border bg-bg-primary text-text-secondary">
             <StatusIcon status={coordinator.status} kind={coordinator.kind} />
           </div>
-          <span className="mt-1 max-w-24 truncate text-[10px] font-medium text-text-secondary">
+          <span className="mt-1 max-w-24 truncate text-xs font-medium text-text-secondary">
             {coordinator.label}
           </span>
         </div>
@@ -212,7 +212,7 @@ function FanoutMap({
                 <StatusIcon status={node.status} kind={node.kind} />
               </span>
               <span
-                className={`mt-1 w-full truncate text-[10px] ${
+                className={`mt-1 w-full truncate text-xs ${
                   selected ? 'font-medium text-text-primary' : 'text-text-tertiary'
                 }`}
               >
@@ -260,7 +260,7 @@ function AgentRow({
             {node.latestMessage ? `Latest: ${node.latestMessage}` : 'No agent update received yet.'}
           </span>
         </span>
-        <span className={`shrink-0 text-[10px] ${statusTone(node.status)}`}>
+        <span className={`shrink-0 text-xs ${statusTone(node.status)}`}>
           {statusLabel(node.status)}
         </span>
       </button>
@@ -269,20 +269,20 @@ function AgentRow({
         <div className="bg-bg-primary/35 px-8 pb-3 pt-1">
           {node.prompt && (
             <div>
-              <p className="text-[10px] font-medium text-text-muted">Task</p>
+              <p className="text-xs font-medium text-text-muted">Task</p>
               <p className="mt-1 text-xs leading-relaxed text-text-secondary">{node.prompt}</p>
             </div>
           )}
           {node.latestMessage && (
             <div className={node.prompt ? 'mt-2.5' : ''}>
-              <p className="text-[10px] font-medium text-text-muted">Latest update</p>
+              <p className="text-xs font-medium text-text-muted">Latest update</p>
               <p className="mt-1 text-xs leading-relaxed text-text-secondary">
                 {node.latestMessage}
               </p>
             </div>
           )}
           {(node.model || node.reasoningEffort) && (
-            <p className="mt-2.5 font-mono text-[10px] text-text-muted">
+            <p className="mt-2.5 font-mono text-xs text-text-muted">
               {[node.model, node.reasoningEffort].filter(Boolean).join(' · ')}
             </p>
           )}
@@ -344,7 +344,7 @@ function RunFooter({
 
   return (
     <div className="flex shrink-0 items-center justify-between gap-3 border-t border-border-subtle bg-bg-primary/35 px-3 py-2.5">
-      <p className="min-w-0 truncate text-[11px] text-text-tertiary" aria-live="polite">
+      <p className="min-w-0 truncate text-xs text-text-tertiary" aria-live="polite">
         <span>{summary}</span>
         {elapsed && <span className="ml-2 font-mono text-text-muted">{elapsed}</span>}
       </p>

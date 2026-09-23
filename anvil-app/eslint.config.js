@@ -64,4 +64,27 @@ export default [
       'react-hooks/exhaustive-deps': 'off',
     },
   },
+  {
+    // DS3: semantic colour tokens. Raw amber/emerald/red/green palette classes
+    // bypass the theme tokens; use warning/success/error instead. Categorical
+    // multi-hue palettes (severity scales, chart colours) are out of scope.
+    files: ['src/renderer/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-syntax': [
+        'warn',
+        {
+          selector:
+            'Literal[raw=/\\b(?:bg|text|border|ring|from|to|via|fill|stroke|outline|divide|placeholder|caret|accent|decoration|shadow)-(?:amber|emerald|red|green)-[0-9]/]',
+          message:
+            'Use semantic colour tokens (warning/success/error) instead of raw amber/emerald/red/green palette classes.',
+        },
+        {
+          selector:
+            'TemplateElement[value.raw=/\\b(?:bg|text|border|ring|from|to|via|fill|stroke|outline|divide|placeholder|caret|accent|decoration|shadow)-(?:amber|emerald|red|green)-[0-9]/]',
+          message:
+            'Use semantic colour tokens (warning/success/error) instead of raw amber/emerald/red/green palette classes.',
+        },
+      ],
+    },
+  },
 ];

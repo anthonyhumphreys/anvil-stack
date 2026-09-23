@@ -15,8 +15,9 @@ import {
   Tag,
 } from 'lucide-react';
 import type { DocPage, AppSettings } from '../../../shared/types';
-import { useWorkspace } from '../../contexts/WorkspaceContext';
+import { repoIsMapped, useWorkspace } from '../../contexts/WorkspaceContext';
 import { ViewHeader } from '../layout/ViewScaffold';
+import { SettingsLink } from '../shared/SettingsLink';
 
 export function DocsView() {
   const { repos, activeWorkspace, updatePreferences } = useWorkspace();
@@ -49,7 +50,7 @@ export function DocsView() {
   }, []);
 
   useEffect(() => {
-    const indexed = repos.find((repo) => repo.status === 'indexed');
+    const indexed = repos.find((repo) => repoIsMapped(repo));
     if (indexed && !createRepoId) setCreateRepoId(indexed.id);
   }, [repos]);
 
@@ -147,7 +148,7 @@ export function DocsView() {
 
   const handleCheckStaleness = useCallback(
     async (pageId: string) => {
-      const indexed = repos.find((r) => r.status === 'indexed');
+      const indexed = repos.find((r) => repoIsMapped(r));
       if (!indexed) return;
 
       try {
@@ -162,7 +163,7 @@ export function DocsView() {
 
   const handleGenerateUpdate = useCallback(
     async (pageId: string) => {
-      const indexed = repos.find((r) => r.status === 'indexed');
+      const indexed = repos.find((r) => repoIsMapped(r));
       if (!indexed) return;
 
       setUpdatingPageId(pageId);
@@ -214,7 +215,7 @@ export function DocsView() {
       : settings?.docsProvider === 'notion'
         ? 'Notion'
         : null;
-  const indexedRepos = repos.filter((r) => r.status === 'indexed');
+  const indexedRepos = repos.filter((r) => repoIsMapped(r));
 
   return (
     <div className="flex h-full flex-col">
@@ -316,7 +317,8 @@ export function DocsView() {
               <div className="text-center">
                 <Wifi size={32} className="mx-auto mb-3 text-text-tertiary" />
                 <p className="text-sm text-text-secondary">
-                  Documentation not configured. Set up a provider in Settings.
+                  Documentation not configured.{' '}
+                  <SettingsLink to="delivery#docs">Set up a provider in Settings</SettingsLink>.
                 </p>
               </div>
             </div>
@@ -496,7 +498,7 @@ export function DocsView() {
               <button
                 onClick={handleCreatePage}
                 disabled={!createTitle || creating}
-                className="flex items-center gap-1 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent/90 disabled:opacity-40"
+                className="flex items-center gap-1 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-foreground hover:bg-accent/90 disabled:opacity-40"
               >
                 {creating && <Loader2 size={12} className="animate-spin" />}
                 Create

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { CheckCircle2, MessageSquarePlus, RotateCcw, Send, Trash2, X } from 'lucide-react';
 import type { ChatArtifact, ChatArtifactAnnotation } from '../../../shared/types';
 import { CHAT_PREFILL_EVENT } from './AgentUIIntentSurface';
+import { ConfirmDialog } from '../ui';
 
 export function buildArtifactAnnotationPrompt(
   artifact: Pick<ChatArtifact, 'title' | 'relativePath'>,
@@ -88,8 +89,9 @@ export function ArtifactAnnotationsPanel({ artifact }: { artifact: ChatArtifact 
     }
   };
 
+  const [deleteTarget, setDeleteTarget] = useState<ChatArtifactAnnotation | null>(null);
+
   const remove = async (annotation: ChatArtifactAnnotation) => {
-    if (!window.confirm('Delete this artifact annotation?')) return;
     try {
       await window.anvil.chat.deleteArtifactAnnotation(annotation.id);
       setAnnotations((current) => current.filter((candidate) => candidate.id !== annotation.id));
@@ -120,7 +122,7 @@ export function ArtifactAnnotationsPanel({ artifact }: { artifact: ChatArtifact 
           <MessageSquarePlus size={14} className="shrink-0 text-accent" />
           <span className="text-xs font-medium text-text-primary">Annotations</span>
           {annotations.length > 0 && (
-            <span className="rounded-full bg-bg-tertiary px-1.5 py-0.5 text-[10px] text-text-tertiary">
+            <span className="rounded-full bg-bg-tertiary px-1.5 py-0.5 text-eyebrow text-text-tertiary">
               {openCount} open · {annotations.length} total
             </span>
           )}
@@ -128,7 +130,7 @@ export function ArtifactAnnotationsPanel({ artifact }: { artifact: ChatArtifact 
         <button
           type="button"
           onClick={beginAnnotation}
-          className="rounded-md border border-border px-2 py-1 text-[11px] font-medium text-text-secondary transition-colors hover:border-accent/40 hover:text-accent"
+          className="rounded-md border border-border px-2 py-1 text-xs font-medium text-text-secondary transition-colors hover:border-accent/40 hover:text-accent"
           title="Add a note; selected artifact text will be quoted"
         >
           Add note
@@ -140,7 +142,7 @@ export function ArtifactAnnotationsPanel({ artifact }: { artifact: ChatArtifact 
           {composing && (
             <div className="space-y-2 rounded-lg border border-accent/25 bg-bg-primary/70 p-2">
               {quote && (
-                <div className="relative rounded-md border-l-2 border-accent/50 bg-bg-tertiary/50 px-2 py-1.5 pr-7 font-mono text-[10px] text-text-tertiary">
+                <div className="relative rounded-md border-l-2 border-accent/50 bg-bg-tertiary/50 px-2 py-1.5 pr-7 font-mono text-xs text-text-tertiary">
                   <span className="line-clamp-3 whitespace-pre-wrap">{quote}</span>
                   <button
                     type="button"
@@ -168,7 +170,7 @@ export function ArtifactAnnotationsPanel({ artifact }: { artifact: ChatArtifact 
                     setBody('');
                     setQuote(undefined);
                   }}
-                  className="rounded-md px-2 py-1 text-[11px] text-text-tertiary hover:bg-bg-tertiary"
+                  className="rounded-md px-2 py-1 text-xs text-text-tertiary hover:bg-bg-tertiary"
                 >
                   Cancel
                 </button>
@@ -176,7 +178,7 @@ export function ArtifactAnnotationsPanel({ artifact }: { artifact: ChatArtifact 
                   type="button"
                   onClick={() => void createAnnotation()}
                   disabled={!body.trim()}
-                  className="rounded-md bg-accent px-2 py-1 text-[11px] font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  className="rounded-md bg-accent px-2 py-1 text-xs font-medium text-accent-foreground disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   Save note
                 </button>
@@ -184,9 +186,9 @@ export function ArtifactAnnotationsPanel({ artifact }: { artifact: ChatArtifact 
             </div>
           )}
 
-          {error && <p className="text-[11px] text-error">{error}</p>}
+          {error && <p className="text-xs text-error">{error}</p>}
           {!composing && annotations.length === 0 && (
-            <p className="py-2 text-center text-[11px] text-text-tertiary">
+            <p className="py-2 text-center text-xs text-text-tertiary">
               Select text in the artifact, then add a note to capture it as context.
             </p>
           )}
@@ -200,7 +202,7 @@ export function ArtifactAnnotationsPanel({ artifact }: { artifact: ChatArtifact 
               }`}
             >
               {annotation.quote && (
-                <blockquote className="mb-1.5 line-clamp-3 border-l-2 border-accent/40 pl-2 font-mono text-[10px] text-text-tertiary">
+                <blockquote className="mb-1.5 line-clamp-3 border-l-2 border-accent/40 pl-2 font-mono text-xs text-text-tertiary">
                   {annotation.quote}
                 </blockquote>
               )}
@@ -208,7 +210,7 @@ export function ArtifactAnnotationsPanel({ artifact }: { artifact: ChatArtifact 
                 {annotation.body}
               </p>
               <div className="mt-2 flex items-center justify-between gap-2">
-                <span className="text-[10px] text-text-tertiary">
+                <span className="text-xs text-text-tertiary">
                   {annotation.status === 'resolved' ? 'Resolved' : 'Open'}
                 </span>
                 <div className="flex items-center gap-0.5">
@@ -240,7 +242,7 @@ export function ArtifactAnnotationsPanel({ artifact }: { artifact: ChatArtifact 
                   </button>
                   <button
                     type="button"
-                    onClick={() => void remove(annotation)}
+                    onClick={() => setDeleteTarget(annotation)}
                     className="rounded p-1 text-text-tertiary hover:bg-error/10 hover:text-error"
                     title="Delete annotation"
                     aria-label="Delete annotation"
@@ -253,6 +255,19 @@ export function ArtifactAnnotationsPanel({ artifact }: { artifact: ChatArtifact 
           ))}
         </div>
       )}
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title="Delete this annotation?"
+        description="The note is removed from the artifact. Quoted text in the artifact itself is not changed."
+        confirmLabel="Delete note"
+        tone="danger"
+        onConfirm={() => {
+          if (deleteTarget) void remove(deleteTarget);
+          setDeleteTarget(null);
+        }}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </section>
   );
 }

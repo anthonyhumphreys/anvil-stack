@@ -179,7 +179,11 @@ export function MeshExecutionsPanel({
     }
   };
 
-  const handleDecide = async (jobId: string, approvalId: string, decision: 'approved' | 'denied') => {
+  const handleDecide = async (
+    jobId: string,
+    approvalId: string,
+    decision: 'approved' | 'denied',
+  ) => {
     setBusyKey(`approval:${approvalId}`);
     setError(null);
     try {
@@ -252,9 +256,7 @@ export function MeshExecutionsPanel({
     }
     // A worker cannot approve its own request — hide the controls when the
     // pending attempt is running on this device's worker incarnation.
-    const attempt = (attemptsByJob[approval.jobId] ?? []).find(
-      (a) => a.id === approval.attemptId,
-    );
+    const attempt = (attemptsByJob[approval.jobId] ?? []).find((a) => a.id === approval.attemptId);
     return attempt?.workerIncarnation !== localWorkerIncarnation;
   };
 
@@ -400,7 +402,9 @@ export function MeshExecutionsPanel({
                           >
                             <p className="min-w-0 text-xs text-text-secondary">
                               <span className="font-medium text-text-primary">
-                                {approval.state === 'pending' ? 'Approval requested' : approval.state}
+                                {approval.state === 'pending'
+                                  ? 'Approval requested'
+                                  : approval.state}
                               </span>{' '}
                               · {approval.actionDigest.slice(0, 12)}… · expires{' '}
                               {new Date(approval.expiresAt).toLocaleTimeString()}
@@ -443,7 +447,9 @@ export function MeshExecutionsPanel({
                       <button
                         type="button"
                         onClick={() => void handleCancel(job.id)}
-                        disabled={busyKey === `cancel:${job.id}` || job.state === 'cancel-requested'}
+                        disabled={
+                          busyKey === `cancel:${job.id}` || job.state === 'cancel-requested'
+                        }
                         className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-error disabled:opacity-50"
                       >
                         <Square size={10} className="fill-current" />

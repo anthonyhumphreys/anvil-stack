@@ -17,15 +17,15 @@ const SCOPE_LABELS: Record<ScopeType, string> = {
 };
 
 const RISK_BADGE: Record<'high' | 'medium' | 'low', string> = {
-  high: 'bg-red-500/10 text-red-400',
-  medium: 'bg-amber-500/10 text-amber-400',
-  low: 'bg-emerald-500/10 text-emerald-400',
+  high: 'bg-error/10 text-error',
+  medium: 'bg-warning/10 text-warning',
+  low: 'bg-success/10 text-success',
 };
 
 const IMPACT_BADGE: Record<'high' | 'medium' | 'low', string> = {
-  high: 'bg-red-500/10 text-red-400',
-  medium: 'bg-amber-500/10 text-amber-400',
-  low: 'bg-emerald-500/10 text-emerald-400',
+  high: 'bg-error/10 text-error',
+  medium: 'bg-warning/10 text-warning',
+  low: 'bg-success/10 text-success',
 };
 
 function formatDate(iso: string) {
@@ -175,7 +175,7 @@ function AnalysisDetail({ analysis }: { analysis: ImpactAnalysis }) {
           <ul className="space-y-1">
             {analysis.crossCuttingConcerns.map((c, i) => (
               <li key={i} className="flex items-start gap-2 text-sm text-text-primary">
-                <AlertTriangle size={12} className="mt-1 shrink-0 text-amber-400" />
+                <AlertTriangle size={12} className="mt-1 shrink-0 text-warning" />
                 {c}
               </li>
             ))}
@@ -525,7 +525,7 @@ export function ImpactAnalysisPanel({ lifecycleItemId, linkedRepoIds }: Props) {
         <button
           onClick={handleRunAnalysis}
           disabled={running}
-          className="flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent/90 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-foreground hover:bg-accent/90 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {running ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
           {running ? 'Running…' : 'Run Analysis'}
@@ -547,7 +547,7 @@ export function ImpactAnalysisPanel({ lifecycleItemId, linkedRepoIds }: Props) {
               <Loader2 size={14} className="animate-spin" /> Analysis in progress…
             </div>
           ) : selectedAnalysis.status === 'failed' ? (
-            <div className="flex items-center gap-2 text-sm text-red-400">
+            <div className="flex items-center gap-2 text-sm text-error">
               <AlertTriangle size={14} /> Analysis failed
             </div>
           ) : (

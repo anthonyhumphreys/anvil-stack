@@ -22,7 +22,7 @@ export function TagFilter({ allTags, selected, onChange }: TagFilterProps) {
             onClick={() => toggle(tag)}
             className={`shrink-0 rounded-full border px-2 py-0.5 text-sm transition-colors ${
               active
-                ? 'border-accent bg-accent text-white'
+                ? 'border-accent bg-accent text-accent-foreground'
                 : 'border-border text-text-secondary hover:border-text-secondary hover:text-text-primary'
             }`}
           >

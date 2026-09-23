@@ -314,7 +314,7 @@ export function CodeReviewReport({ review, onVisualisePullRequest }: Props) {
               <button
                 type="button"
                 onClick={() => onVisualisePullRequest(review.scopeRef!.pullRequest!.id)}
-                className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-accent/85"
+                className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-semibold text-accent-foreground transition-colors hover:bg-accent/85"
               >
                 <Sparkles size={14} /> Visualise PR
               </button>
@@ -358,7 +358,7 @@ export function CodeReviewReport({ review, onVisualisePullRequest }: Props) {
                 </p>
                 <button
                   type="button"
-                  onClick={() => navigate('/repos')}
+                  onClick={() => navigate('/workspace')}
                   className="mt-3 rounded-md border border-warning/40 px-2.5 py-1.5 text-xs font-medium text-warning hover:bg-warning/10"
                 >
                   Open Repositories
@@ -455,7 +455,7 @@ export function CodeReviewReport({ review, onVisualisePullRequest }: Props) {
                 onClick={() => setSeverityFilter(severityFilter === sev ? null : sev)}
                 className={`rounded-md px-2 py-0.5 text-xs font-medium capitalize transition-colors ${
                   severityFilter === sev
-                    ? 'bg-accent text-white'
+                    ? 'bg-accent text-accent-foreground'
                     : 'bg-bg-elevated text-text-secondary hover:bg-bg-tertiary'
                 }`}
               >
@@ -479,7 +479,7 @@ export function CodeReviewReport({ review, onVisualisePullRequest }: Props) {
           <div className="mb-4 flex items-center gap-3 rounded-lg border border-accent/30 bg-accent/15 px-4 py-2">
             <button
               onClick={toggleSelectAll}
-              className="flex items-center gap-1 text-sm font-medium text-white"
+              className="flex items-center gap-1 text-sm font-medium text-accent"
             >
               <CheckSquare size={14} />
               {selectedIds.size === visibleFindings.length ? 'Deselect all' : 'Select all'}
@@ -494,7 +494,7 @@ export function CodeReviewReport({ review, onVisualisePullRequest }: Props) {
             <button
               onClick={handleGenerateBulkFixPrompt}
               disabled={generatingFixFindingId === 'bulk'}
-              className="rounded-md bg-accent px-3 py-1 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40"
+              className="rounded-md bg-accent px-3 py-1 text-sm font-medium text-accent-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
             >
               {generatingFixFindingId === 'bulk' ? 'Generating...' : 'Fix selected'}
             </button>

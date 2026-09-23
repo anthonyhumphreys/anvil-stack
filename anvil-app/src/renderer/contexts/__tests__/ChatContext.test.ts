@@ -130,6 +130,37 @@ describe('chatMessagesToEntries', () => {
     ).toEqual([]);
   });
 
+  it('restores persisted thinking events as coalescing reasoning entries', () => {
+    expect(
+      chatMessagesToEntries([
+        {
+          id: 'think-1',
+          role: 'system',
+          content: 'thinking',
+          timestamp: '2026-07-14T10:00:00.000Z',
+          event: { type: 'thinking', text: 'First, check the config.' },
+        },
+        {
+          id: 'think-2',
+          role: 'system',
+          content: 'thinking',
+          timestamp: '2026-07-14T10:00:01.000Z',
+          event: { type: 'thinking', text: ' It points at staging.' },
+        },
+        {
+          id: 'command-1',
+          role: 'system',
+          content: 'Ran pnpm test',
+          timestamp: '2026-07-14T10:00:02.000Z',
+          event: { type: 'command_exec', command: 'pnpm test', exitCode: 0 },
+        },
+      ]),
+    ).toEqual([
+      { kind: 'thinking', content: 'First, check the config. It points at staging.' },
+      { kind: 'event', event: { type: 'command_exec', command: 'pnpm test', exitCode: 0 } },
+    ]);
+  });
+
   it('keeps legacy flattened assistant history readable', () => {
     expect(
       chatMessagesToEntries([
@@ -231,7 +262,7 @@ describe('chatMessagesToEntries', () => {
         role: 'system',
         content: 'Read the file',
         timestamp: '2026-08-07T10:00:02.000Z',
-        event: { type: 'file_read', filePath: 'src/App.tsx' },
+        event: { type: 'command_exec', command: 'cat src/App.tsx', exitCode: 0 },
       },
       {
         id: 'agent-completed',
@@ -262,7 +293,59 @@ describe('chatMessagesToEntries', () => {
         subagent: { id: 'subagent-1', status: 'completed' },
       },
     });
-    expect(entries[2]).toMatchObject({ kind: 'event', event: { type: 'file_read' } });
+    expect(entries[2]).toMatchObject({ kind: 'event', event: { type: 'command_exec' } });
+  });
+
+  it('drops persisted file_read rows — a dead renderer surface (H14)', () => {
+    const entries = chatMessagesToEntries([
+      {
+        id: 'user-1',
+        role: 'user',
+        content: 'Check the config',
+        timestamp: '2026-08-07T10:00:00.000Z',
+      },
+      {
+        id: 'read-1',
+        role: 'system',
+        content: 'Read config',
+        timestamp: '2026-08-07T10:00:01.000Z',
+        event: { type: 'file_read', filePath: 'config.ts' },
+      },
+    ]);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: 'user' });
+  });
+
+  it('reconstructs persisted thinking rows as coalescing thinking entries (H11)', () => {
+    const entries = chatMessagesToEntries([
+      {
+        id: 'user-1',
+        role: 'user',
+        content: 'Think out loud',
+        timestamp: '2026-08-07T10:00:00.000Z',
+      },
+      {
+        id: 'think-1',
+        role: 'system',
+        content: 'First, check the config.',
+        timestamp: '2026-08-07T10:00:01.000Z',
+        event: { type: 'thinking', text: 'First, check the config.' },
+      },
+      {
+        id: 'think-2',
+        role: 'system',
+        content: ' It points at staging.',
+        timestamp: '2026-08-07T10:00:02.000Z',
+        event: { type: 'thinking', text: ' It points at staging.' },
+      },
+    ]);
+
+    expect(entries).toHaveLength(2);
+    expect(entries[1]).toMatchObject({
+      kind: 'thinking',
+      content: 'First, check the config. It points at staging.',
+    });
   });
 });
 

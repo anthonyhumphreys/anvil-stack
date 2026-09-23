@@ -270,7 +270,7 @@ export function DeviceSecurityPanel({ onRefresh, onError }: DeviceSecurityPanelP
                 disabled={
                   busy || (policyChoice === 'auto-trust-authenticated' && !autoTrustAcknowledged)
                 }
-                className="flex items-center gap-2 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+                className="flex items-center gap-2 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-foreground disabled:opacity-50"
               >
                 <KeyRound size={14} />
                 {busy ? 'Setting up…' : 'Set up recovery code'}
@@ -344,7 +344,7 @@ export function DeviceSecurityPanel({ onRefresh, onError }: DeviceSecurityPanelP
                     type="button"
                     onClick={() => void handleUnlock()}
                     disabled={busy || unlockCode.trim() === ''}
-                    className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+                    className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-foreground disabled:opacity-50"
                   >
                     {busy
                       ? 'Unlocking…'
@@ -489,7 +489,7 @@ export function DeviceSecurityPanel({ onRefresh, onError }: DeviceSecurityPanelP
                 void refresh();
               }}
               disabled={!recoverySaved}
-              className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+              className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-foreground disabled:opacity-50"
             >
               <Check size={14} className="mr-1.5 inline" />
               Done

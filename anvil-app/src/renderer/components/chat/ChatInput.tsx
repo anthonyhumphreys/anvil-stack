@@ -3,6 +3,7 @@ import {
   AlertCircle,
   ChevronDown,
   ChevronRight,
+  CircleHelp,
   File as FileIcon,
   Image as ImageIcon,
   Hammer,
@@ -10,7 +11,6 @@ import {
   Loader2,
   Paperclip,
   Send,
-  Shield,
   SlidersHorizontal,
   Sparkles,
   Square,
@@ -27,6 +27,8 @@ import type {
   ReasoningEffort,
 } from '../../../shared/types';
 import { VoiceInputButton } from './VoiceInputButton';
+import { ChatAccessLevelChip } from './ChatAccessLevelChip';
+import type { ChatAccessOption } from './thread-access';
 import { isAcpAgentProvider } from '../../../shared/agent-providers';
 import { slugForDomId } from '../../utils/dom-id';
 import { getNextListboxIndex } from '../../utils/list-navigation';
@@ -73,7 +75,15 @@ interface ChatComposerKeyEvent {
 }
 
 interface ChatInputProps {
-  onSend: (message: string, attachments?: ChatAttachment[]) => void;
+  /**
+   * May return a promise resolving to `false` (or `false` synchronously) when
+   * the provider could not accept the message — the draft is then preserved
+   * (H2). Any other result clears the composer.
+   */
+  onSend: (
+    message: string,
+    attachments?: ChatAttachment[],
+  ) => void | boolean | Promise<void | boolean>;
   onStop?: () => void;
   disabled: boolean;
   busy?: boolean;
@@ -90,6 +100,12 @@ interface ChatInputProps {
   codexMode?: CodexMode;
   onCodexModeChange?: (mode: CodexMode) => void;
   codexModeDisabled?: boolean;
+  /** H9 — provider-truthful access options for the chip (ACP mode lists). */
+  accessOptions?: ChatAccessOption[];
+  /** H9 — provider-side mode actually applied by the session, when known. */
+  accessAppliedMode?: string;
+  /** H9 — full-option selector so 'plan' can route via collaboration mode. */
+  onAccessOptionSelect?: (option: ChatAccessOption) => void;
   collaborationMode?: 'default' | 'plan';
   onCollaborationModeChange?: (mode: 'default' | 'plan') => void;
   fastMode?: boolean;
@@ -104,6 +120,11 @@ interface ChatInputProps {
   quickPrompts?: ChatQuickPrompt[];
   slashCommands?: ChatSlashCommand[];
   focusRequest?: number;
+  /**
+   * CH8 — shows the "/ commands · @ files · $ skills" hint + help popover
+   * under the composer. Intended for empty threads.
+   */
+  showSyntaxHint?: boolean;
 }
 
 interface ChatInputModelOption {
@@ -131,6 +152,9 @@ export function ChatInput({
   codexMode = 'on-request',
   onCodexModeChange,
   codexModeDisabled = false,
+  accessOptions,
+  accessAppliedMode,
+  onAccessOptionSelect,
   collaborationMode = 'default',
   onCollaborationModeChange,
   fastMode = false,
@@ -144,6 +168,7 @@ export function ChatInput({
   quickPrompts = [],
   slashCommands = [],
   focusRequest = 0,
+  showSyntaxHint = false,
 }: ChatInputProps) {
   const [value, setValue] = useState(() => loadDraft(draftKey));
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
@@ -166,8 +191,13 @@ export function ChatInput({
   const [selectedSkillMentionIndex, setSelectedSkillMentionIndex] = useState(0);
   const [dragDepth, setDragDepth] = useState(0);
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
+  const [syntaxHelpOpen, setSyntaxHelpOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Mirrors `value` for the async send path — lets the deferred clear bail out
+  // when the user kept typing while the provider was deciding (H2).
+  const valueRef = useRef(value);
   const contextMenuRef = useRef<HTMLDivElement>(null);
+  const syntaxHelpRef = useRef<HTMLDivElement>(null);
   const skipNextDraftSaveRef = useRef(false);
   const mentionRepoKey = mentionRepoIds.join('\0');
   const draggingFiles = dragDepth > 0;
@@ -190,6 +220,28 @@ export function ChatInput({
     };
   }, [contextMenuOpen]);
 
+  useEffect(() => {
+    if (!syntaxHelpOpen) return;
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!syntaxHelpRef.current?.contains(event.target as Node)) setSyntaxHelpOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setSyntaxHelpOpen(false);
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [syntaxHelpOpen]);
+
+  useEffect(() => {
+    valueRef.current = value;
+  }, [value]);
+
   const resizeTextarea = useCallback(() => {
     const el = textareaRef.current;
     if (!el) return;
@@ -197,10 +249,7 @@ export function ChatInput({
     el.style.height = Math.min(el.scrollHeight, 200) + 'px';
   }, []);
 
-  const handleSend = useCallback(() => {
-    const trimmed = value.trim();
-    if ((!trimmed && attachments.length === 0) || disabled || preparingAttachments) return;
-    onSend(trimmed, attachments);
+  const clearComposer = useCallback(() => {
     setValue('');
     setAttachments([]);
     setAttachmentPreviews({});
@@ -213,7 +262,27 @@ export function ChatInput({
     setSkillMentionError(null);
     clearDraft(draftKey);
     window.requestAnimationFrame(resizeTextarea);
-  }, [value, attachments, disabled, preparingAttachments, onSend, draftKey, resizeTextarea]);
+  }, [draftKey, resizeTextarea]);
+
+  const handleSend = useCallback(() => {
+    const trimmed = value.trim();
+    if ((!trimmed && attachments.length === 0) || disabled || preparingAttachments) return;
+    const result = onSend(trimmed, attachments);
+    if (result && typeof (result as Promise<unknown>).then === 'function') {
+      // H2 — keep the draft until the provider accepts (or queues) the send;
+      // a `false` resolution means the message was rejected.
+      void Promise.resolve(result)
+        .then((accepted) => {
+          if (accepted === false) return;
+          if (valueRef.current.trim() !== trimmed) return;
+          clearComposer();
+        })
+        .catch(() => undefined);
+      return;
+    }
+    if (result === false) return;
+    clearComposer();
+  }, [value, attachments, disabled, preparingAttachments, onSend, clearComposer]);
 
   const refreshComposerTriggers = useCallback(
     (nextValue: string, selectionStart: number | null) => {
@@ -814,7 +883,7 @@ export function ChatInput({
                   key={quickPrompt.id}
                   type="button"
                   onClick={() => handleQuickPrompt(quickPrompt.prompt)}
-                  className="shrink-0 rounded-md px-2 py-1 text-[11px] font-medium text-text-muted transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
+                  className="shrink-0 rounded-md px-2 py-1 text-xs font-medium text-text-muted transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
                 >
                   {quickPrompt.label}
                 </button>
@@ -942,10 +1011,21 @@ export function ChatInput({
             </div>
 
             <div className="ml-auto flex min-w-0 items-center justify-end gap-1.5">
+              {/* CH1 — the thread's access level is always visible here. */}
+              {(onCodexModeChange || onAccessOptionSelect) && (
+                <ChatAccessLevelChip
+                  value={codexMode}
+                  options={accessOptions}
+                  appliedMode={accessAppliedMode}
+                  onChange={onCodexModeChange}
+                  onSelectOption={onAccessOptionSelect}
+                  disabled={codexModeDisabled}
+                />
+              )}
+
               {(onModelChange ||
                 onExecutionStrategyChange ||
                 onReasoningChange ||
-                onCodexModeChange ||
                 onCollaborationModeChange ||
                 onFastModeChange) &&
                 !busy && (
@@ -959,9 +1039,6 @@ export function ChatInput({
                     reasoningLevel={reasoningLevel}
                     reasoningOptions={reasoningOptions}
                     onReasoningChange={onReasoningChange}
-                    codexMode={codexMode}
-                    onCodexModeChange={onCodexModeChange}
-                    codexModeDisabled={codexModeDisabled}
                     collaborationMode={collaborationMode}
                     onCollaborationModeChange={onCollaborationModeChange}
                     fastMode={fastMode}
@@ -998,7 +1075,9 @@ export function ChatInput({
                   disabled={disabled || !hasContent || preparingAttachments}
                   className="composer-send flex h-8 w-8 items-center justify-center rounded-lg transition-[transform,filter,opacity] duration-200 disabled:opacity-30"
                   style={{
-                    backgroundColor: hasContent ? personaColour : `${personaColour}40`,
+                    backgroundColor: hasContent
+                      ? personaColour
+                      : `color-mix(in srgb, ${personaColour} 25%, transparent)`,
                   }}
                   aria-label="Send message"
                 >
@@ -1027,6 +1106,64 @@ export function ChatInput({
             : ' Type slash for commands or dollar for skills.'}
         </p>
       </div>
+
+      {/* CH8 — syntax hint under the composer on empty threads. */}
+      {showSyntaxHint && (
+        <div className="mt-1.5 flex items-center justify-between gap-2 px-1">
+          <p className="text-xs text-text-tertiary">
+            <span className="font-mono">/</span> commands
+            {mentionRepoIds.length > 0 && (
+              <>
+                {' · '}
+                <span className="font-mono">@</span> files
+              </>
+            )}
+            {' · '}
+            <span className="font-mono">$</span> skills
+          </p>
+          <div ref={syntaxHelpRef} className="relative">
+            <button
+              type="button"
+              onClick={() => setSyntaxHelpOpen((open) => !open)}
+              className="flex h-6 w-6 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
+              aria-label="Composer syntax help"
+              aria-expanded={syntaxHelpOpen}
+            >
+              <CircleHelp size={13} />
+            </button>
+            {syntaxHelpOpen && (
+              <div
+                role="dialog"
+                aria-label="Composer syntax"
+                className="absolute bottom-full right-0 z-50 mb-2 w-72 rounded-xl border border-border bg-bg-elevated p-3 shadow-2xl ring-1 ring-overlay"
+              >
+                <p className="text-xs font-semibold text-text-primary">Composer shortcuts</p>
+                <ul className="mt-2 space-y-2 text-xs leading-5 text-text-secondary">
+                  <li>
+                    <span className="font-mono text-text-primary">/</span> — quick commands like{' '}
+                    <span className="font-mono">/new</span> or{' '}
+                    <span className="font-mono">/plan</span>
+                  </li>
+                  {mentionRepoIds.length > 0 && (
+                    <li>
+                      <span className="font-mono text-text-primary">@</span> — mention files in the
+                      selected repositories
+                    </li>
+                  )}
+                  <li>
+                    <span className="font-mono text-text-primary">$</span> — invoke a registered
+                    skill
+                  </li>
+                  <li>
+                    <span className="font-mono text-text-primary">Enter</span> sends,{' '}
+                    <span className="font-mono text-text-primary">Shift+Enter</span> adds a line
+                  </li>
+                </ul>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1084,7 +1221,7 @@ function ComposerAttachmentChip({
       </div>
       <div className="min-w-0">
         <p className="max-w-48 truncate text-xs font-medium text-text-primary">{attachment.name}</p>
-        <p className="text-[11px] text-text-tertiary">{formatAttachmentBytes(attachment.size)}</p>
+        <p className="text-xs text-text-tertiary">{formatAttachmentBytes(attachment.size)}</p>
       </div>
       <button
         onClick={onRemove}
@@ -1161,7 +1298,7 @@ function FileMentionMenu({
                   <p className="truncate font-mono text-xs text-text-primary">
                     {result.relativePath}
                   </p>
-                  <p className="truncate text-[11px] text-text-tertiary">
+                  <p className="truncate text-xs text-text-tertiary">
                     {result.repoName} - {formatAttachmentBytes(result.size)}
                   </p>
                 </div>
@@ -1171,7 +1308,7 @@ function FileMentionMenu({
         )}
       </div>
       {loading && results.length > 0 && (
-        <div className="border-t border-border-subtle px-3 py-1.5 text-[11px] text-text-tertiary">
+        <div className="border-t border-border-subtle px-3 py-1.5 text-xs text-text-tertiary">
           Refreshing results
         </div>
       )}
@@ -1226,7 +1363,7 @@ function SlashCommandMenu({
                 <ListChecks size={15} className={selected ? 'text-accent' : 'text-text-tertiary'} />
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-mono text-xs text-text-primary">{command.command}</p>
-                  <p className="truncate text-[11px] text-text-tertiary">
+                  <p className="truncate text-xs text-text-tertiary">
                     {command.label} - {command.description}
                   </p>
                 </div>
@@ -1301,7 +1438,7 @@ function SkillMentionMenu({
                 <Sparkles size={15} className={selected ? 'text-accent' : 'text-text-tertiary'} />
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-mono text-xs text-text-primary">${skill.name}</p>
-                  <p className="truncate text-[11px] text-text-tertiary">
+                  <p className="truncate text-xs text-text-tertiary">
                     {scopeLabel(skill.scope)}
                     {skill.description ? ` - ${skill.description}` : ''}
                   </p>
@@ -1312,7 +1449,7 @@ function SkillMentionMenu({
         )}
       </div>
       {loading && results.length > 0 && (
-        <div className="border-t border-border-subtle px-3 py-1.5 text-[11px] text-text-tertiary">
+        <div className="border-t border-border-subtle px-3 py-1.5 text-xs text-text-tertiary">
           Refreshing skills
         </div>
       )}
@@ -1629,9 +1766,6 @@ function RunSettingsDropdown({
   reasoningLevel,
   reasoningOptions = REASONING_EFFORT_OPTIONS.map((option) => option.level),
   onReasoningChange,
-  codexMode,
-  onCodexModeChange,
-  codexModeDisabled,
   collaborationMode,
   onCollaborationModeChange,
   fastMode,
@@ -1647,9 +1781,6 @@ function RunSettingsDropdown({
   reasoningLevel: ReasoningEffort;
   reasoningOptions?: ReasoningEffort[];
   onReasoningChange?: (level: ReasoningEffort) => void;
-  codexMode: CodexMode;
-  onCodexModeChange?: (mode: CodexMode) => void;
-  codexModeDisabled: boolean;
   collaborationMode: 'default' | 'plan';
   onCollaborationModeChange?: (mode: 'default' | 'plan') => void;
   fastMode: boolean;
@@ -1765,34 +1896,9 @@ function RunSettingsDropdown({
               </div>
             )}
 
-            {onCodexModeChange && (
-              <label className="block">
-                <span className="mb-1 flex items-center gap-1.5 text-xs font-medium text-text-muted">
-                  <Shield size={11} />
-                  Access
-                </span>
-                <select
-                  value={codexMode}
-                  onChange={(event) => onCodexModeChange(event.target.value as CodexMode)}
-                  disabled={codexModeDisabled}
-                  className="h-9 w-full rounded-lg border border-border bg-bg-secondary px-2.5 text-xs text-text-primary outline-none focus:border-accent focus:ring-2 focus:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-60"
-                  title={
-                    codexModeDisabled
-                      ? 'This access mode is enforced for the current persona'
-                      : 'Choose when Codex should ask for approval'
-                  }
-                >
-                  <option value="read-only">Read only</option>
-                  <option value="on-request">Approve for me</option>
-                  <option value="workspace-auto">Auto approve</option>
-                  <option value="full-access">Full access</option>
-                </select>
-              </label>
-            )}
-
             {onModelChange && modelOptions.length > 0 && (
               <label className="block">
-                <span className="mb-1 block text-[11px] font-medium text-text-muted">Model</span>
+                <span className="mb-1 block text-xs font-medium text-text-muted">Model</span>
                 <select
                   value={encodeModelSelection(modelProvider, model)}
                   onChange={(event) => {
@@ -1814,7 +1920,7 @@ function RunSettingsDropdown({
                     </optgroup>
                   ))}
                 </select>
-                <span className="mt-1 block text-[11px] leading-4 text-text-tertiary">
+                <span className="mt-1 block text-xs leading-4 text-text-tertiary">
                   {selectedModel?.description ??
                     `Selected for new turns through the ${modelProvider} provider.`}
                 </span>
@@ -1823,13 +1929,11 @@ function RunSettingsDropdown({
 
             {isAcpAgentProvider(modelProvider) ? (
               <div>
-                <span className="mb-1 block text-[11px] font-medium text-text-muted">
-                  Reasoning
-                </span>
+                <span className="mb-1 block text-xs font-medium text-text-muted">Reasoning</span>
                 <div className="rounded-lg border border-border-subtle bg-bg-secondary px-2.5 py-2 text-xs text-text-secondary">
                   Set by the {modelProvider === 'devin' ? 'Devin' : 'Cursor'} model
                 </div>
-                <span className="mt-1 block text-[11px] leading-4 text-text-tertiary">
+                <span className="mt-1 block text-xs leading-4 text-text-tertiary">
                   {modelProvider === 'devin' ? 'Devin' : 'Cursor'} model IDs include their reasoning
                   level where supported.
                 </span>
@@ -1838,9 +1942,7 @@ function RunSettingsDropdown({
               onReasoningChange &&
               availableOptions.length > 0 && (
                 <label className="block">
-                  <span className="mb-1 block text-[11px] font-medium text-text-muted">
-                    Reasoning
-                  </span>
+                  <span className="mb-1 block text-xs font-medium text-text-muted">Reasoning</span>
                   <select
                     value={reasoningLevel}
                     onChange={(event) => onReasoningChange(event.target.value as ReasoningEffort)}
@@ -1864,9 +1966,7 @@ function RunSettingsDropdown({
 
             {onExecutionStrategyChange && (
               <label className="block">
-                <span className="mb-1 block text-[11px] font-medium text-text-muted">
-                  Subagents
-                </span>
+                <span className="mb-1 block text-xs font-medium text-text-muted">Subagents</span>
                 <select
                   value={executionStrategy}
                   onChange={(event) =>
@@ -1880,7 +1980,7 @@ function RunSettingsDropdown({
                     </option>
                   ))}
                 </select>
-                <span className="mt-1 block text-[11px] leading-4 text-text-tertiary">
+                <span className="mt-1 block text-xs leading-4 text-text-tertiary">
                   {
                     EXECUTION_STRATEGIES.find((strategy) => strategy.id === executionStrategy)
                       ?.description

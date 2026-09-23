@@ -413,7 +413,7 @@ export function CodeReviewScopeSelector({
                           </div>
                         </div>
                         <span
-                          className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                          className={`shrink-0 rounded-full px-2 py-0.5 text-eyebrow font-semibold uppercase tracking-wide ${
                             pullRequest.state === 'open'
                               ? 'bg-success/15 text-success'
                               : pullRequest.state === 'merged'
@@ -442,7 +442,7 @@ export function CodeReviewScopeSelector({
       <button
         onClick={handleConfirm}
         disabled={!isReady()}
-        className="w-full rounded-md bg-accent px-3 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+        className="w-full rounded-md bg-accent px-3 py-2.5 text-sm font-semibold text-accent-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
       >
         Use this scope
       </button>

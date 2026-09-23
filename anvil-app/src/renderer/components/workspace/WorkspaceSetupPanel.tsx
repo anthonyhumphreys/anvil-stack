@@ -141,9 +141,8 @@ export function WorkspaceSetupPanel({
         ) : (
           <>
             <p className="mb-3 text-sm text-text-secondary">
-              {unmapped.length}{' '}
-              {unmapped.length === 1 ? 'repository needs' : 'repositories need'} a local checkout.
-              Clone fresh into a folder, or link an existing checkout.
+              {unmapped.length} {unmapped.length === 1 ? 'repository needs' : 'repositories need'} a
+              local checkout. Clone fresh into a folder, or link an existing checkout.
             </p>
             <ul className="mb-4 space-y-2">
               {unmapped.map((def) => (

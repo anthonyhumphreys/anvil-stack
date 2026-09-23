@@ -1,4 +1,5 @@
 import type { ChatThreadPullRequestInput, ChatThreadPullRequestLink } from './types.js';
+import type { RepoIndexJob } from './index-jobs';
 import type { ChangeReviewApi } from './change-review-types.js';
 import type {
   DojoAnalytics,
@@ -59,13 +60,13 @@ import type {
   ChatFileMentionSearchInput,
   ChatFileMentionSearchResult,
   ChatGoalSnapshot,
-  ChatTurnSummary,
   BrowserBridgeStatus,
   ChatMessage,
   ChatPlanSnapshot,
   ChatSendOptions,
   ChatThread,
   ChatStartOptions,
+  ChatSteerResult,
   CicdCreatePipelineInput,
   CicdCreatePipelineResult,
   CicdPipelineAnalysis,
@@ -193,6 +194,9 @@ import type { SyncBackendDiscovery, SyncBackendPinInput, SyncBackendStatus } fro
 import type {
   ApprovalDecision,
   ApprovalRecord,
+  CloudEnvironmentProviderConnection,
+  CloudEnvironmentRecord,
+  EnvironmentProviderId,
   ExecutionAttempt,
   HandoffRecord,
   JobSummary,
@@ -203,6 +207,8 @@ import type {
   SyncAuthPublicSnapshot,
   SyncConflictResolutionChoice,
   SyncConflictView,
+  SyncDashboardGrantApproval,
+  SyncDashboardGrantWorkspace,
   SyncDashboardRequest,
   SyncDataExportFileResult,
   SyncDataImportCommitResult,
@@ -215,6 +221,7 @@ import type {
   SyncHostedStatus,
   SyncInitiateHandoffResult,
   SyncIssuedEnrollmentCode,
+  LocalCloudEnvironment,
   SyncRuntimeStatus,
   SyncSpikeEnrollInput,
 } from './sync-runtime';
@@ -237,6 +244,11 @@ export interface AnvilAPI {
 
   diagnostics: {
     getSnapshot: () => Promise<DiagnosticsSnapshot>;
+  };
+
+  metrics: {
+    /** Local-only activation funnel event — recorded in SQLite, never sent. */
+    track: (event: string, payload?: Record<string, unknown>) => Promise<{ ok: boolean }>;
   };
 
   mobileCompanion: {
@@ -265,7 +277,16 @@ export interface AnvilAPI {
   repo: {
     list: () => Promise<RepoInfo[]>;
     connect: (repoPath: string) => Promise<RepoInfo>;
-    index: (repoId: string) => Promise<void>;
+    index: (repoId: string) => Promise<RepoIndexJob[]>;
+    /** Hydrate index job state; live updates arrive via onIndexProgress (jobId/jobTier/jobState). */
+    listIndexJobs: (repoId?: string) => Promise<RepoIndexJob[]>;
+    cancelIndex: (repoId: string) => Promise<void>;
+    /**
+     * Delete the repos row and its index data (summaries, map graph, jobs).
+     * Refuses while any workspace still references the repo; never touches
+     * files on disk. Reviews/audits are kept orphaned.
+     */
+    forget: (repoId: string) => Promise<void>;
     getStatus: (repoId: string) => Promise<RepoInfo['status']>;
     resetStatus: (repoId: string) => Promise<void>;
     getSummary: (repoId: string) => Promise<RepoSummary | null>;
@@ -321,7 +342,11 @@ export interface AnvilAPI {
     onEvent: (callback: (event: CodexEvent) => void) => () => void;
     stopSession: (sessionId: string) => Promise<void>;
     interrupt: (sessionId: string) => Promise<void>;
-    steer: (sessionId: string, message: string, attachments?: ChatAttachment[]) => Promise<void>;
+    steer: (
+      sessionId: string,
+      message: string,
+      attachments?: ChatAttachment[],
+    ) => Promise<ChatSteerResult>;
     forkProviderThread: (
       sourceThreadId: string,
       targetThreadId: string,
@@ -341,7 +366,7 @@ export interface AnvilAPI {
     getPersonas: () => Promise<Persona[]>;
     getSessionStatus: (sessionId: string) => Promise<CodexSession['status']>;
     listActiveSessions: () => Promise<CodexSession[]>;
-    listTurnSummaries: (threadId: string) => Promise<ChatTurnSummary[]>;
+
     listArtifacts: (threadId: string) => Promise<ChatArtifact[]>;
     upsertArtifact: (input: ChatArtifactInput) => Promise<ChatArtifact>;
     discardArtifact: (id: string) => Promise<boolean>;
@@ -726,6 +751,29 @@ export interface AnvilAPI {
 
   syncRuntime: {
     status: () => Promise<SyncRuntimeStatus>;
+    listCloudProviderConnections: () => Promise<CloudEnvironmentProviderConnection[]>;
+    addCloudProviderConnection: (input: {
+      provider: EnvironmentProviderId;
+      displayName?: string;
+      config: Record<string, unknown>;
+      secret?: string;
+    }) => Promise<CloudEnvironmentProviderConnection>;
+    removeCloudProviderConnection: (connectionId: string) => Promise<boolean>;
+    listLocalCloudEnvironments: () => Promise<LocalCloudEnvironment[]>;
+    listCloudEnvironments: (
+      includeTerminal?: boolean,
+    ) => Promise<{ environments: CloudEnvironmentRecord[] }>;
+    requestCloudEnvironment: (input: {
+      provider: EnvironmentProviderId;
+      ttlSeconds: number;
+      environmentId?: string;
+      imageRef?: string;
+      networkPolicy?: string[];
+      resources?: { vcpus?: number; memoryMb?: number };
+      displayName?: string;
+      connectionId?: string;
+    }) => Promise<{ environmentId: string; job: JobSummary }>;
+    reapCloudEnvironment: (environmentId: string) => Promise<CloudEnvironmentRecord>;
     preview: () => Promise<SyncAdoptionPreviewItem[]>;
     /** Production sign-in: system-browser OIDC + PKCE at the pinned backend. */
     signIn: () => Promise<SyncAuthPublicSnapshot>;
@@ -787,6 +835,8 @@ export interface AnvilAPI {
      * pending rows await a trusted-device decision.
      */
     listDashboardRequests: () => Promise<SyncDashboardRequest[]>;
+    /** Workspaces and repositories available for an explicit browser grant. */
+    listDashboardWorkspaces: () => Promise<SyncDashboardGrantWorkspace[]>;
     /**
      * Approve or deny a pending request. Approval mints a scoped DSK, seals
      * it to the browser's public key, and starts the snapshot stream.
@@ -794,7 +844,7 @@ export interface AnvilAPI {
     decideDashboardRequest: (
       requestId: string,
       decision: 'approved' | 'denied',
-      scopes?: string[],
+      approval?: SyncDashboardGrantApproval,
     ) => Promise<void>;
     /** Revoke a live grant — the sealed snapshot stream ends immediately. */
     revokeDashboardAccess: (requestId: string) => Promise<void>;

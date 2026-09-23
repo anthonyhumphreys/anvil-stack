@@ -24,6 +24,8 @@ export interface DesignReadiness {
 
 export interface ChatStartOptions {
   changeReviewId?: string;
+  /** Surface that owns persistence for streamed chat output. */
+  origin?: 'desktop' | 'browser';
   provider?: AgentProvider;
   threadId?: string;
   providerThreadId?: string;

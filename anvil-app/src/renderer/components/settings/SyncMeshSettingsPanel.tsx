@@ -11,26 +11,20 @@ import {
   Pencil,
   Server,
   Unplug,
+  Zap as ZapIcon,
 } from 'lucide-react';
-import {
-  syncBackendModeLabel,
-  type SyncBackendConnectionMode,
-  type SyncBackendDiscovery,
-  type SyncBackendStatus,
-} from '../../../shared/sync-backend';
+import { syncBackendModeLabel, type SyncBackendConnectionMode } from '../../../shared/sync-backend';
 import type {
-  SyncAdoptionPreviewItem,
   SyncConflictResolutionChoice,
-  SyncConflictView,
   SyncDataImportFilePreview,
-  SyncDevice,
   SyncHostedStatus,
   SyncIssuedEnrollmentCode,
-  SyncRuntimeStatus,
 } from '../../../shared/sync-runtime';
 import { copyTextToClipboard } from '../../utils/clipboard';
+import { useSyncMeshSetup } from '../../hooks/useSyncMeshSetup';
 import { DashboardAccessPanel } from './DashboardAccessPanel';
 import { DeviceSecurityPanel } from './DeviceSecurityPanel';
+import { CloudEnvironmentsPanel } from './CloudEnvironmentsPanel';
 import { MeshExecutionsPanel } from './MeshExecutionsPanel';
 import { deviceTrustSourceLabel, deviceTrustStateLabel } from './device-security-labels';
 
@@ -127,32 +121,84 @@ function formatHostedDate(iso: string | null): string | null {
   });
 }
 
+function OverviewItem({
+  icon: Icon,
+  label,
+  value,
+  detail,
+  tone,
+}: {
+  icon: typeof Cloud;
+  label: string;
+  value: string;
+  detail: string;
+  tone: string;
+}): ReactNode {
+  return (
+    <div className="min-w-0 rounded-md border border-border bg-bg-primary p-3">
+      <div className="flex items-center gap-2 text-xs text-text-tertiary">
+        <Icon size={14} className="shrink-0 text-accent" aria-hidden="true" />
+        <span>{label}</span>
+      </div>
+      <p className={`mt-1 truncate text-sm font-medium ${tone}`} title={value}>
+        {value}
+      </p>
+      <p className="mt-1 truncate text-xs text-text-tertiary" title={detail}>
+        {detail}
+      </p>
+    </div>
+  );
+}
+
 export function SyncMeshSettingsPanel(): ReactNode {
-  const [mode, setMode] = useState<SyncBackendConnectionMode>('local');
-  const [status, setStatus] = useState<SyncBackendStatus | null>(null);
-  const [statusLoading, setStatusLoading] = useState(true);
-  const [url, setUrl] = useState('');
-  const [discovery, setDiscovery] = useState<SyncBackendDiscovery | null>(null);
-  const [discovering, setDiscovering] = useState(false);
-  const [pinning, setPinning] = useState(false);
+  const setup = useSyncMeshSetup();
+  const {
+    mode,
+    setMode,
+    endpoint: url,
+    setEndpoint: setUrl,
+    discovery,
+    status,
+    statusLoading,
+    runtime,
+    adoptionPreview: preview,
+    conflicts,
+    devices,
+    busy,
+    refresh: refreshStatus,
+    refreshHostedEntitlement,
+  } = setup;
+  const discovering = busy === 'discovering';
+  const pinning = busy === 'pinning';
+  const [spikeEnrolling, setSpikeEnrolling] = useState(false);
+  const enrolling = busy === 'enrolling' || spikeEnrolling;
+  const enabling = busy === 'enabling';
+  const signingIn = busy === 'signing-in';
+  const meshToggling = busy === 'mesh';
   const [disconnecting, setDisconnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [prompt, setPrompt] = useState<string | null>(null);
   const [promptLoading, setPromptLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const [diagnosticsCopied, setDiagnosticsCopied] = useState(false);
-  const [runtime, setRuntime] = useState<SyncRuntimeStatus | null>(null);
-  const [preview, setPreview] = useState<SyncAdoptionPreviewItem[]>([]);
-  const [conflicts, setConflicts] = useState<SyncConflictView[]>([]);
   const [accountId, setAccountId] = useState('account-1');
-  const [enrollmentCode, setEnrollmentCode] = useState('');
+  const {
+    enrollmentCode,
+    setEnrollmentCode,
+    handleDiscover,
+    handlePin,
+    handleResolveIdentityReview,
+    handleSignIn,
+    handleEnrollWithCode,
+    handleEnableSync,
+    handleMeshChange,
+  } = setup;
+  const handleSetMeshWorker = async (enabled: boolean): Promise<void> => {
+    if (runtime?.syncEnabled !== true || runtime.meshWorker.enabled === enabled) return;
+    await handleMeshChange();
+  };
   const [issuedCode, setIssuedCode] = useState<SyncIssuedEnrollmentCode | null>(null);
   const [pairingCopied, setPairingCopied] = useState(false);
-  const [enrolling, setEnrolling] = useState(false);
-  const [enabling, setEnabling] = useState(false);
-  const [signingIn, setSigningIn] = useState(false);
-  const [meshToggling, setMeshToggling] = useState(false);
-  const [devices, setDevices] = useState<SyncDevice[]>([]);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
   const [confirmingRevokeId, setConfirmingRevokeId] = useState<string | null>(null);
@@ -176,108 +222,23 @@ export function SyncMeshSettingsPanel(): ReactNode {
     setError(error === null ? null : toErrorMessage(error));
   }, []);
 
-  const refreshStatus = async (): Promise<void> => {
-    setStatusLoading(true);
-    try {
-      const next = await window.anvil.syncBackend.status();
-      setStatus(next);
-      if (next.state === 'active' && next.connectionMode !== 'local') {
-        setMode(next.connectionMode);
-      }
-      const [runtimeNext, previewNext, conflictNext] = await Promise.all([
-        window.anvil.syncRuntime.status(),
-        window.anvil.syncRuntime.preview(),
-        window.anvil.syncRuntime.conflicts(),
-      ]);
-      // BILL-05: mount/refresh re-checks hosted access via session.describe.
-      // A failure keeps the last-known row already carried on the snapshot.
-      const hosted =
-        runtimeNext.auth.state === 'signed-in'
-          ? await window.anvil.syncRuntime
-              .refreshHostedEntitlement()
-              .catch(() => runtimeNext.hosted)
-          : runtimeNext.hosted;
-      setRuntime({ ...runtimeNext, hosted });
-      setPreview(previewNext);
-      setConflicts(conflictNext);
-      if (runtimeNext.auth.state === 'signed-in') {
-        try {
-          setDevices(await window.anvil.syncRuntime.listDevices());
-        } catch {
-          // Device management is supplementary — a blip leaves the last list.
-        }
-      } else {
-        setDevices([]);
-      }
-    } catch (err) {
-      setError(toErrorMessage(err));
-    } finally {
-      setStatusLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    void refreshStatus();
-  }, []);
-
   // BILL-05: refocus (e.g. returning from the hosted account page) re-reads
   // hosted access for this view. The authoritative backend check is
   // BrowserWindow 'focus' → onAppFocus in the main process; this keeps the
   // panel's rendered snapshot in step without rerunning the whole status load.
   useEffect(() => {
     const onWindowFocus = (): void => {
-      void window.anvil.syncRuntime
-        .refreshHostedEntitlement()
-        .then((hosted) => {
-          setRuntime((prev) => (prev === null ? prev : { ...prev, hosted }));
-        })
-        .catch(() => undefined);
+      void refreshHostedEntitlement();
     };
     window.addEventListener('focus', onWindowFocus);
     return () => window.removeEventListener('focus', onWindowFocus);
-  }, []);
-
-  const handleDiscover = async (): Promise<void> => {
-    setDiscovering(true);
-    setError(null);
-    setDiscovery(null);
-    try {
-      const result = await window.anvil.syncBackend.discover(url);
-      setDiscovery(result);
-    } catch (err) {
-      setError(toErrorMessage(err));
-    } finally {
-      setDiscovering(false);
-    }
-  };
-
-  const handlePin = async (): Promise<void> => {
-    if (!discovery) {
-      return;
-    }
-    setPinning(true);
-    setError(null);
-    try {
-      const next = await window.anvil.syncBackend.pin({
-        baseUrl: discovery.baseUrl,
-        descriptor: discovery.descriptor,
-        connectionMode: mode === 'local' ? 'compatible' : mode,
-      });
-      setStatus(next);
-      setDiscovery(null);
-    } catch (err) {
-      setError(toErrorMessage(err));
-    } finally {
-      setPinning(false);
-    }
-  };
+  }, [refreshHostedEntitlement]);
 
   const handleDisconnect = async (): Promise<void> => {
     setDisconnecting(true);
     setError(null);
     try {
-      const next = await window.anvil.syncBackend.disconnect();
-      setStatus(next);
+      await window.anvil.syncBackend.disconnect();
       await refreshStatus();
     } catch (err) {
       setError(toErrorMessage(err));
@@ -287,7 +248,7 @@ export function SyncMeshSettingsPanel(): ReactNode {
   };
 
   const handleSpikeEnroll = async (): Promise<void> => {
-    setEnrolling(true);
+    setSpikeEnrolling(true);
     setError(null);
     try {
       await window.anvil.syncRuntime.spikeEnroll({ accountId });
@@ -295,34 +256,7 @@ export function SyncMeshSettingsPanel(): ReactNode {
     } catch (err) {
       setError(toErrorMessage(err));
     } finally {
-      setEnrolling(false);
-    }
-  };
-
-  const handleSignIn = async (): Promise<void> => {
-    setSigningIn(true);
-    setError(null);
-    try {
-      await window.anvil.syncRuntime.signIn();
-      await refreshStatus();
-    } catch (err) {
-      setError(toErrorMessage(err));
-    } finally {
-      setSigningIn(false);
-    }
-  };
-
-  const handleEnrollWithCode = async (): Promise<void> => {
-    setEnrolling(true);
-    setError(null);
-    try {
-      await window.anvil.syncRuntime.enrollWithCode(enrollmentCode.trim());
-      setEnrollmentCode('');
-      await refreshStatus();
-    } catch (err) {
-      setError(toErrorMessage(err));
-    } finally {
-      setEnrolling(false);
+      setSpikeEnrolling(false);
     }
   };
 
@@ -334,19 +268,6 @@ export function SyncMeshSettingsPanel(): ReactNode {
       setPairingCopied(false);
     } catch (err) {
       setError(toErrorMessage(err));
-    }
-  };
-
-  const handleEnableSync = async (): Promise<void> => {
-    setEnabling(true);
-    setError(null);
-    try {
-      await window.anvil.syncRuntime.enable();
-      await refreshStatus();
-    } catch (err) {
-      setError(toErrorMessage(err));
-    } finally {
-      setEnabling(false);
     }
   };
 
@@ -382,19 +303,6 @@ export function SyncMeshSettingsPanel(): ReactNode {
     }
   };
 
-  const handleResolveReview = async (): Promise<void> => {
-    if (!status?.backendId) {
-      return;
-    }
-    setError(null);
-    try {
-      await window.anvil.syncBackend.resolveReview(status.backendId);
-      await refreshStatus();
-    } catch (err) {
-      setError(toErrorMessage(err));
-    }
-  };
-
   const handleCopyPrompt = async (): Promise<void> => {
     setPromptLoading(true);
     setError(null);
@@ -408,19 +316,6 @@ export function SyncMeshSettingsPanel(): ReactNode {
       setError(toErrorMessage(err));
     } finally {
       setPromptLoading(false);
-    }
-  };
-
-  const handleSetMeshWorker = async (enabled: boolean): Promise<void> => {
-    setMeshToggling(true);
-    setError(null);
-    try {
-      await window.anvil.syncRuntime.setMeshWorker(enabled);
-      await refreshStatus();
-    } catch (err) {
-      setError(toErrorMessage(err));
-    } finally {
-      setMeshToggling(false);
     }
   };
 
@@ -557,12 +452,174 @@ export function SyncMeshSettingsPanel(): ReactNode {
 
   const showEndpointFlow = mode === 'hosted' || mode === 'compatible' || mode === 'cloudflare';
   const hosted = runtime?.hosted ?? null;
+  const displayError = error ?? setup.error;
+  const backendReady =
+    status?.backendId !== null &&
+    status?.backendId !== undefined &&
+    status.state !== 'disconnected' &&
+    status.identityReviewRequired !== true;
+  const signedIn = runtime?.auth.state === 'signed-in';
+  const syncSummary = statusLoading
+    ? 'Checking…'
+    : runtime?.sessionExpired === true
+      ? 'Sign in again'
+      : runtime?.quotaExceeded === true
+        ? 'Paused by quota'
+        : runtime?.recovering === true
+          ? 'Recovering'
+          : runtime?.syncEnabled === true
+            ? runtime.connectionState === 'live'
+              ? 'Live'
+              : runtime.connectionState === 'connecting'
+                ? 'Connecting'
+                : runtime.lastError
+                  ? 'Offline · needs attention'
+                  : 'Offline · polling'
+            : signedIn
+              ? 'Ready to enable'
+              : backendReady
+                ? 'Sign in to continue'
+                : 'Local only';
+  const meshSummary = statusLoading
+    ? 'Checking…'
+    : runtime?.syncEnabled !== true
+      ? 'Available after Sync'
+      : runtime.meshWorker.enabled
+        ? runtime.meshWorker.connected
+          ? 'Ready'
+          : 'Connecting'
+        : 'Off';
+  const meshSummaryTone = runtime?.meshWorker.lastError
+    ? 'text-warning'
+    : runtime?.meshWorker.enabled && runtime.meshWorker.connected
+      ? 'text-accent'
+      : 'text-text-primary';
+  const syncSummaryTone =
+    runtime?.sessionExpired === true || runtime?.lastError || runtime?.quotaExceeded === true
+      ? 'text-error'
+      : runtime?.recovering === true
+        ? 'text-warning'
+        : runtime?.syncEnabled === true && runtime.connectionState === 'live'
+          ? 'text-success'
+          : runtime?.syncEnabled === true
+            ? 'text-warning'
+            : 'text-text-primary';
+  const canEnableSync = setup.canEnableSync;
 
   return (
     <div className="space-y-3">
       <Panel
-        title="Where to connect"
-        description="Choose a service for syncing your data. You can review its details before turning sync on."
+        title="Sync & Mesh at a glance"
+        description="See what this device is connected to, what is moving, and whether it can run Mesh jobs."
+      >
+        <div className="grid gap-2 sm:grid-cols-3" aria-live="polite">
+          <OverviewItem
+            icon={Cloud}
+            label="Sync"
+            value={syncSummary}
+            tone={syncSummaryTone}
+            detail={
+              runtime?.syncEnabled === true
+                ? `${runtime.pendingCount} pending · ${runtime.conflictCount} conflict${runtime.conflictCount === 1 ? '' : 's'}${runtime.rejectedCount > 0 ? ` · ${runtime.rejectedCount} rejected` : ''}`
+                : 'Changes stay on this device until Sync is enabled.'
+            }
+          />
+          <OverviewItem
+            icon={ZapIcon}
+            label="Mesh worker"
+            value={meshSummary}
+            tone={meshSummaryTone}
+            detail={
+              runtime?.meshWorker.enabled
+                ? `${runtime.meshWorker.activeAttempts} job${runtime.meshWorker.activeAttempts === 1 ? '' : 's'} running`
+                : 'A separate permission for this device.'
+            }
+          />
+          <OverviewItem
+            icon={HardDrive}
+            label="Backend"
+            value={status?.displayName ?? (statusLoading ? 'Checking…' : 'Not connected')}
+            tone={status?.identityReviewRequired ? 'text-warning' : 'text-text-primary'}
+            detail={
+              status?.identityReviewRequired
+                ? 'Identity review required before sync.'
+                : (status?.baseUrl ?? 'Choose a backend below.')
+            }
+          />
+        </div>
+        <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
+          {runtime?.sessionExpired === true ? (
+            <p className="flex items-center gap-2 text-xs text-error">
+              <AlertTriangle size={13} aria-hidden="true" />
+              This device session expired. Sign in again to resume sync.
+            </p>
+          ) : runtime?.quotaExceeded === true ? (
+            <p className="flex items-center gap-2 text-xs text-error">
+              <AlertTriangle size={13} aria-hidden="true" />
+              Sync is paused because this account has reached its history quota. Free space, then
+              retry.
+            </p>
+          ) : runtime?.recovering === true ? (
+            <p className="flex items-center gap-2 text-xs text-warning">
+              <AlertTriangle size={13} aria-hidden="true" />
+              Anvil is rebuilding this device&apos;s view of the account. Local changes remain here
+              until recovery finishes.
+            </p>
+          ) : runtime?.conflictCount && runtime.conflictCount > 0 ? (
+            <p className="flex items-center gap-2 text-xs text-warning">
+              <AlertTriangle size={13} aria-hidden="true" />
+              {runtime.conflictCount} conflict{runtime.conflictCount === 1 ? '' : 's'} need review
+              below.
+            </p>
+          ) : runtime?.syncEnabled === true && runtime.connectionState === 'live' ? (
+            <p className="flex items-center gap-2 text-xs text-success">
+              <Check size={13} aria-hidden="true" />
+              Sync is live. Changes are queued safely on this device as they move to the account.
+            </p>
+          ) : runtime?.syncEnabled === true ? (
+            <p className="flex items-center gap-2 text-xs text-warning">
+              <AlertTriangle size={13} aria-hidden="true" />
+              Sync is enabled, but the live connection is offline. Changes will queue locally while
+              Anvil retries.
+            </p>
+          ) : (
+            <p className="text-xs text-text-tertiary">
+              Sync is optional. Mesh stays off until Sync is enabled and you allow this device to
+              run jobs.
+            </p>
+          )}
+          {runtime?.syncEnabled !== true && canEnableSync && preview.length === 0 && (
+            <button
+              type="button"
+              onClick={() => void handleEnableSync()}
+              disabled={enabling}
+              className="rounded-md bg-accent px-2.5 py-1.5 text-xs font-medium text-accent-foreground transition-colors hover:bg-accent/90 disabled:opacity-50"
+            >
+              {enabling ? 'Enabling…' : 'Turn on Sync'}
+            </button>
+          )}
+          {runtime?.syncEnabled !== true && canEnableSync && preview.length > 0 && (
+            <p className="text-xs text-text-tertiary">
+              Review the {preview.length} item{preview.length === 1 ? '' : 's'} below before
+              enabling.
+            </p>
+          )}
+          {runtime?.syncEnabled === true && !runtime.meshWorker.enabled && (
+            <button
+              type="button"
+              onClick={() => void handleSetMeshWorker(true)}
+              disabled={meshToggling}
+              className="rounded-md border border-border px-2.5 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
+            >
+              {meshToggling ? 'Updating…' : 'Allow Mesh jobs'}
+            </button>
+          )}
+        </div>
+      </Panel>
+
+      <Panel
+        title="Choose a backend"
+        description="Sync is opt-in. Pick where encrypted data should go, review its identity, then sign in and enable Sync."
       >
         {statusLoading ? (
           <p className="flex items-center gap-2 text-sm text-text-tertiary">
@@ -583,7 +640,8 @@ export function SyncMeshSettingsPanel(): ReactNode {
                       setUrl(status?.hostedBackendUrl ?? '');
                     }
                   }}
-                  className={`rounded-md border p-3 text-left transition-colors ${
+                  disabled={discovering}
+                  className={`rounded-md border p-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
                     selected
                       ? 'border-accent/60 bg-accent/5'
                       : 'border-border bg-bg-primary hover:bg-bg-tertiary'
@@ -643,19 +701,20 @@ export function SyncMeshSettingsPanel(): ReactNode {
             <input
               value={url}
               onChange={(event) => setUrl(event.target.value)}
+              disabled={discovering}
               placeholder={
                 mode === 'hosted'
                   ? (status?.hostedBackendUrl ?? 'https://hosted.example.com/')
                   : 'https://anvil.example.com/'
               }
               spellCheck={false}
-              className="min-w-0 flex-1 rounded-md border border-border bg-bg-primary px-3 py-1.5 font-mono text-sm text-text-primary placeholder:text-text-tertiary"
+              className="min-w-0 flex-1 rounded-md border border-border bg-bg-primary px-3 py-1.5 font-mono text-sm text-text-primary placeholder:text-text-tertiary disabled:cursor-not-allowed disabled:opacity-60"
             />
             <button
               type="button"
               onClick={() => void handleDiscover()}
               disabled={discovering || url.trim().length === 0}
-              className="flex shrink-0 items-center justify-center gap-2 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
+              className="flex shrink-0 items-center justify-center gap-2 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-foreground transition-colors hover:bg-accent/90 disabled:opacity-50"
             >
               {discovering && (
                 <Loader2 size={14} className="animate-spin motion-reduce:animate-none" />
@@ -726,7 +785,10 @@ export function SyncMeshSettingsPanel(): ReactNode {
         </Panel>
       )}
 
-      <Panel title="Connection status" description="The service this device is using.">
+      <Panel
+        title="Connection status"
+        description="The service this device uses for encrypted sync traffic."
+      >
         {!status || status.backendId === null ? (
           <p className="text-sm text-text-tertiary">No backend associated yet.</p>
         ) : (
@@ -755,10 +817,13 @@ export function SyncMeshSettingsPanel(): ReactNode {
                     </p>
                     <button
                       type="button"
-                      onClick={() => void handleResolveReview()}
+                      onClick={() => void handleResolveIdentityReview()}
+                      disabled={busy === 'reviewing'}
                       className="mt-2 rounded-md border border-border px-2.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
                     >
-                      I reviewed {status.baseUrl} — trust it
+                      {busy === 'reviewing'
+                        ? 'Confirming…'
+                        : `I reviewed ${status.baseUrl} — trust it`}
                     </button>
                   </div>
                 )}
@@ -780,8 +845,8 @@ export function SyncMeshSettingsPanel(): ReactNode {
       </Panel>
 
       <Panel
-        title="Device enrollment"
-        description="Sign in through the backend's advertised methods. Codes are single-use and expire quickly."
+        title="Sign in and add this device"
+        description="Enroll this device with the backend. Pairing codes are single-use and expire quickly."
       >
         {runtime?.auth.state === 'signed-in' ? (
           <div className="space-y-2">
@@ -851,7 +916,7 @@ export function SyncMeshSettingsPanel(): ReactNode {
                 type="button"
                 onClick={() => void handleSignIn()}
                 disabled={signingIn}
-                className="flex items-center justify-center gap-2 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
+                className="flex items-center justify-center gap-2 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-foreground transition-colors hover:bg-accent/90 disabled:opacity-50"
               >
                 {signingIn && (
                   <Loader2 size={14} className="animate-spin motion-reduce:animate-none" />
@@ -872,7 +937,7 @@ export function SyncMeshSettingsPanel(): ReactNode {
                   type="button"
                   onClick={() => void handleEnrollWithCode()}
                   disabled={enrolling || enrollmentCode.trim().length === 0}
-                  className="flex shrink-0 items-center justify-center gap-2 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
+                  className="flex shrink-0 items-center justify-center gap-2 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-foreground transition-colors hover:bg-accent/90 disabled:opacity-50"
                 >
                   {enrolling && (
                     <Loader2 size={14} className="animate-spin motion-reduce:animate-none" />
@@ -918,366 +983,390 @@ export function SyncMeshSettingsPanel(): ReactNode {
         <DeviceSecurityPanel onRefresh={refreshStatus} onError={handleSecurityError} />
       )}
 
-      {hosted !== null && (
-        <Panel
-          title="Hosted access"
-          description="Hosted sync access reported by the backend. Billing is managed on the Anvil website — never charged in-app."
-        >
-          <div className="flex items-center gap-2">
-            <span
-              className={`rounded px-1.5 py-0.5 text-xs font-medium ${hostedStateChipClass(hosted)}`}
-            >
-              {hostedStateLabel(hosted)}
+      {runtime?.auth.state === 'signed-in' && (
+        <details className="rounded-lg border border-border bg-bg-secondary">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-medium text-text-primary [&::-webkit-details-marker]:hidden">
+            <span>Account, devices, and browser access</span>
+            <span className="text-xs font-normal text-text-tertiary">
+              {devices.length} device{devices.length === 1 ? '' : 's'} · export and Mesh activity
             </span>
-            {hosted.planKey !== null && (
-              <span className="text-xs text-text-tertiary">{hosted.planKey}</span>
-            )}
-          </div>
-          {hosted.state === 'preview' && (
-            <p className="text-xs text-text-tertiary">
-              {formatHostedDate(hosted.previewEndsAt) !== null
-                ? `Hosted preview ends ${formatHostedDate(hosted.previewEndsAt)}.`
-                : 'Hosted preview is active.'}
-            </p>
-          )}
-          {formatHostedDate(hosted.accessUntil) !== null && (
-            <p className="text-xs text-text-tertiary">
-              Paid access until {formatHostedDate(hosted.accessUntil)}.
-            </p>
-          )}
-          {formatHostedDate(hosted.graceUntil) !== null && (
-            <p className="text-xs text-text-tertiary">
-              Grace period ends {formatHostedDate(hosted.graceUntil)}.
-            </p>
-          )}
-          {hosted.restricted && (
-            <div className="rounded-md border border-error/30 bg-error/5 p-2">
-              <p className="flex items-start gap-2 text-xs text-text-secondary">
-                <AlertTriangle size={13} className="mt-0.5 shrink-0 text-error" />
-                Hosted sync is paused. Your local changes, cursors and conflicts are preserved —
-                sync resumes automatically once access is restored.
-              </p>
-              <button
-                type="button"
-                onClick={() => void handleOpenHostedAccount()}
-                className="mt-2 rounded-md border border-border px-2.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+          </summary>
+          <div className="space-y-3 border-t border-border p-3">
+            {hosted !== null && (
+              <Panel
+                title="Hosted plan access"
+                description="Access is reported by the backend. Manage billing on the Anvil website; Anvil never charges from this app."
               >
-                Manage account
-              </button>
-            </div>
-          )}
-        </Panel>
-      )}
-
-      {runtime?.auth.state === 'signed-in' && (
-        <Panel
-          title="Devices"
-          description="Enrollments on this account. Revoking a device ends its session immediately — use it for lost or retired hardware."
-        >
-          {devices.length === 0 ? (
-            <p className="text-sm text-text-tertiary">No devices enrolled yet.</p>
-          ) : (
-            <ul className="space-y-2">
-              {devices.map((device) => (
-                <li key={device.enrollmentId} className="rounded-md border border-border p-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="flex min-w-0 items-start gap-2">
-                      <Laptop size={15} className="mt-0.5 shrink-0 text-text-tertiary" />
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-medium text-text-primary">
-                          {device.displayName || `Device ${device.enrollmentId.slice(0, 8)}`}
-                          {device.self && (
-                            <span className="ml-2 rounded bg-accent/15 px-1.5 py-0.5 text-xs font-medium text-accent">
-                              This device
-                            </span>
-                          )}
-                          {device.revoked && (
-                            <span className="ml-2 rounded bg-error/15 px-1.5 py-0.5 text-xs font-medium text-error">
-                              Revoked
-                            </span>
-                          )}
-                        </p>
-                        <p className="mt-0.5 font-mono text-xs text-text-tertiary">
-                          {device.enrollmentId.slice(0, 12)}… · added{' '}
-                          {new Date(device.createdAt).toLocaleDateString()}
-                        </p>
-                        {device.trustState !== undefined && (
-                          <p className="mt-1 text-xs text-text-tertiary">
-                            {deviceTrustStateLabel(device.trustState)}
-                            {device.trustSource === undefined
-                              ? ''
-                              : ` · ${deviceTrustSourceLabel(device.trustSource)}`}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                    {!device.revoked && (
-                      <div className="flex shrink-0 items-center gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (renamingId === device.enrollmentId) {
-                              setRenamingId(null);
-                            } else {
-                              setRenamingId(device.enrollmentId);
-                              setRenameDraft(device.displayName ?? '');
-                              setConfirmingRevokeId(null);
-                            }
-                          }}
-                          disabled={deviceBusy === device.enrollmentId}
-                          aria-expanded={renamingId === device.enrollmentId}
-                          className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
-                        >
-                          <Pencil size={12} />
-                          Rename
-                        </button>
-                        {!device.self && (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => void handlePrepareDeviceApproval(device.enrollmentId)}
-                              aria-expanded={verification?.enrollmentId === device.enrollmentId}
-                              disabled={deviceBusy === device.enrollmentId}
-                              className="rounded-md border border-border px-2.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
-                            >
-                              {deviceBusy === device.enrollmentId
-                                ? 'Preparing…'
-                                : 'Compare & verify'}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setConfirmingRevokeId(
-                                  confirmingRevokeId === device.enrollmentId
-                                    ? null
-                                    : device.enrollmentId,
-                                )
-                              }
-                              aria-expanded={confirmingRevokeId === device.enrollmentId}
-                              disabled={deviceBusy === device.enrollmentId}
-                              className="rounded-md border border-border px-2.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-error disabled:opacity-50"
-                            >
-                              Revoke
-                            </button>
-                          </>
-                        )}
-                      </div>
-                    )}
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`rounded px-1.5 py-0.5 text-xs font-medium ${hostedStateChipClass(hosted)}`}
+                  >
+                    {hostedStateLabel(hosted)}
+                  </span>
+                  {hosted.planKey !== null && (
+                    <span className="text-xs text-text-tertiary">{hosted.planKey}</span>
+                  )}
+                </div>
+                {hosted.state === 'preview' && (
+                  <p className="text-xs text-text-tertiary">
+                    {formatHostedDate(hosted.previewEndsAt) !== null
+                      ? `Hosted preview ends ${formatHostedDate(hosted.previewEndsAt)}.`
+                      : 'Hosted preview is active.'}
+                  </p>
+                )}
+                {formatHostedDate(hosted.accessUntil) !== null && (
+                  <p className="text-xs text-text-tertiary">
+                    Paid access until {formatHostedDate(hosted.accessUntil)}.
+                  </p>
+                )}
+                {formatHostedDate(hosted.graceUntil) !== null && (
+                  <p className="text-xs text-text-tertiary">
+                    Grace period ends {formatHostedDate(hosted.graceUntil)}.
+                  </p>
+                )}
+                {hosted.restricted && (
+                  <div className="rounded-md border border-error/30 bg-error/5 p-2">
+                    <p className="flex items-start gap-2 text-xs text-text-secondary">
+                      <AlertTriangle size={13} className="mt-0.5 shrink-0 text-error" />
+                      Hosted sync is paused. Your local changes, cursors and conflicts are preserved
+                      — sync resumes automatically once access is restored.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => void handleOpenHostedAccount()}
+                      className="mt-2 rounded-md border border-border px-2.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+                    >
+                      Manage account
+                    </button>
                   </div>
-                  {renamingId === device.enrollmentId && (
-                    <div className="mt-2 flex flex-col gap-2 sm:flex-row">
-                      <input
-                        value={renameDraft}
-                        onChange={(event) => setRenameDraft(event.target.value)}
-                        placeholder="Device name (empty clears it)"
-                        aria-label="Device name"
-                        spellCheck={false}
-                        className="min-w-0 flex-1 rounded-md border border-border bg-bg-primary px-3 py-1.5 text-sm text-text-primary placeholder:text-text-tertiary"
-                      />
-                      <div className="flex shrink-0 gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => void handleRenameDevice(device.enrollmentId)}
-                          disabled={deviceBusy === device.enrollmentId}
-                          className="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
-                        >
-                          {deviceBusy === device.enrollmentId ? 'Saving…' : 'Save'}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setRenamingId(null)}
-                          className="rounded-md border border-border px-3 py-1.5 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                  {verification?.enrollmentId === device.enrollmentId && (
-                    <div className="mt-2 rounded-md border border-border bg-bg-primary p-2">
-                      <p className="font-mono text-lg tracking-[0.2em] text-text-primary">
-                        {verification.code}
-                      </p>
-                      <p className="mt-1 text-xs text-text-tertiary">
-                        Compare this code on both devices and confirm it matches on each device. You
-                        are verifying{' '}
-                        <span className="font-medium text-text-secondary">
-                          {device.displayName || `device ${device.enrollmentId.slice(0, 8)}`}
-                        </span>
-                        . Revoked devices cannot be verified here.
-                      </p>
-                      <div className="mt-2 flex flex-col gap-2 sm:flex-row">
-                        <input
-                          value={verification.confirmationCode}
-                          onChange={(event) =>
-                            setVerification((current) =>
-                              current === null
-                                ? current
-                                : { ...current, confirmationCode: event.target.value },
-                            )
-                          }
-                          inputMode="numeric"
-                          placeholder="Code shown on the other device"
-                          aria-label="Verification code shown on the other device"
-                          spellCheck={false}
-                          className="min-w-0 flex-1 rounded-md border border-border bg-bg-secondary px-3 py-1.5 font-mono text-sm text-text-primary placeholder:text-text-tertiary"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => void handleApproveDevice(device.enrollmentId)}
-                          disabled={
-                            deviceBusy === device.enrollmentId ||
-                            verification.confirmationCode.trim() === ''
-                          }
-                          className="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
-                        >
-                          {deviceBusy === device.enrollmentId
-                            ? 'Confirming…'
-                            : 'Confirm matching code'}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                  {confirmingRevokeId === device.enrollmentId && (
-                    <div className="mt-2 rounded-md border border-error/30 bg-error/5 p-2">
-                      <p className="text-xs text-text-secondary">
-                        Revoke{' '}
-                        <span className="font-medium text-text-primary">
-                          {device.displayName || `device ${device.enrollmentId.slice(0, 8)}`}
-                        </span>
-                        ? Its session stops working immediately and it must re-enroll.
-                      </p>
-                      <div className="mt-2 flex gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => void handleRevokeDevice(device.enrollmentId)}
-                          disabled={deviceBusy === device.enrollmentId}
-                          className="rounded-md border border-error/50 bg-error/10 px-3 py-1 text-xs font-medium text-error transition-colors hover:bg-error/20 disabled:opacity-50"
-                        >
-                          {deviceBusy === device.enrollmentId ? 'Revoking…' : 'Revoke device'}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setConfirmingRevokeId(null)}
-                          className="rounded-md border border-border px-3 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
-        </Panel>
-      )}
+                )}
+              </Panel>
+            )}
 
-      {runtime?.auth.state === 'signed-in' && status?.state === 'active' && (
-        <Panel
-          title="Browser dashboard access"
-          description="Browsers never join the mesh or hold an account key. A web session asks for specific capabilities, you approve a subset here, and it receives only encrypted projections."
-        >
-          <DashboardAccessPanel />
-        </Panel>
-      )}
-
-      {runtime?.auth.state === 'signed-in' && (
-        <Panel
-          title="Your data"
-          description="Back up or move synced entities between accounts. Import never silently overwrites — differing entities arrive as conflicts for review."
-        >
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={() => void handleExportData()}
-              disabled={exporting}
-              className="flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
-            >
-              {exporting && (
-                <Loader2 size={14} className="animate-spin motion-reduce:animate-none" />
-              )}
-              {exporting ? 'Exporting…' : 'Export account data'}
-            </button>
-            <button
-              type="button"
-              onClick={() => void handleImportPreview()}
-              disabled={importing}
-              className="flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
-            >
-              {importing && (
-                <Loader2 size={14} className="animate-spin motion-reduce:animate-none" />
-              )}
-              {importing ? 'Reading file…' : 'Import from file'}
-            </button>
-          </div>
-          {exportResult !== null && (
-            <p aria-live="polite" className="text-xs text-text-tertiary">
-              {exportResult}
-            </p>
-          )}
-          {importResult !== null && (
-            <p aria-live="polite" className="text-xs text-text-tertiary">
-              {importResult}
-            </p>
-          )}
-          {importPreview !== null && (
-            <div className="space-y-2 rounded-md border border-border bg-bg-primary p-3">
-              <p className="text-sm text-text-secondary">
-                <span className="font-medium text-text-primary">{importPreview.fileName}</span>:{' '}
-                {importPreview.summary.creates} new · {importPreview.summary.identical} unchanged ·{' '}
-                {importPreview.summary.conflicts} conflict
-                {importPreview.summary.conflicts === 1 ? '' : 's'} · {importPreview.summary.invalid}{' '}
-                invalid
-                {importPreview.truncated ? ' (details truncated)' : ''}
-              </p>
-              {importPreview.entries.filter((e) => e.outcome === 'conflict').length > 0 && (
-                <ul className="list-inside list-disc text-xs text-text-tertiary">
-                  {importPreview.entries
-                    .filter((e) => e.outcome === 'conflict')
-                    .slice(0, 5)
-                    .map((entry) => (
-                      <li key={`${entry.entityType}:${entry.entityId}`}>
-                        {entry.entityType} {entry.entityId.slice(0, 8)}…
-                        {entry.reason ? ` — ${entry.reason}` : ''}
+            {runtime?.auth.state === 'signed-in' && (
+              <Panel
+                title="Enrolled devices"
+                description="Review every device on this account. Revoke lost or retired hardware to end its session immediately."
+              >
+                {devices.length === 0 ? (
+                  <p className="text-sm text-text-tertiary">No devices enrolled yet.</p>
+                ) : (
+                  <ul className="space-y-2">
+                    {devices.map((device) => (
+                      <li key={device.enrollmentId} className="rounded-md border border-border p-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex min-w-0 items-start gap-2">
+                            <Laptop size={15} className="mt-0.5 shrink-0 text-text-tertiary" />
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-medium text-text-primary">
+                                {device.displayName || `Device ${device.enrollmentId.slice(0, 8)}`}
+                                {device.self && (
+                                  <span className="ml-2 rounded bg-accent/15 px-1.5 py-0.5 text-xs font-medium text-accent">
+                                    This device
+                                  </span>
+                                )}
+                                {device.revoked && (
+                                  <span className="ml-2 rounded bg-error/15 px-1.5 py-0.5 text-xs font-medium text-error">
+                                    Revoked
+                                  </span>
+                                )}
+                              </p>
+                              <p className="mt-0.5 font-mono text-xs text-text-tertiary">
+                                {device.enrollmentId.slice(0, 12)}… · added{' '}
+                                {new Date(device.createdAt).toLocaleDateString()}
+                              </p>
+                              {device.trustState !== undefined && (
+                                <p className="mt-1 text-xs text-text-tertiary">
+                                  {deviceTrustStateLabel(device.trustState)}
+                                  {device.trustSource === undefined
+                                    ? ''
+                                    : ` · ${deviceTrustSourceLabel(device.trustSource)}`}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                          {!device.revoked && (
+                            <div className="flex shrink-0 items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (renamingId === device.enrollmentId) {
+                                    setRenamingId(null);
+                                  } else {
+                                    setRenamingId(device.enrollmentId);
+                                    setRenameDraft(device.displayName ?? '');
+                                    setConfirmingRevokeId(null);
+                                  }
+                                }}
+                                disabled={deviceBusy === device.enrollmentId}
+                                aria-expanded={renamingId === device.enrollmentId}
+                                className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
+                              >
+                                <Pencil size={12} />
+                                Rename
+                              </button>
+                              {!device.self && (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      void handlePrepareDeviceApproval(device.enrollmentId)
+                                    }
+                                    aria-expanded={
+                                      verification?.enrollmentId === device.enrollmentId
+                                    }
+                                    disabled={deviceBusy === device.enrollmentId}
+                                    className="rounded-md border border-border px-2.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
+                                  >
+                                    {deviceBusy === device.enrollmentId
+                                      ? 'Preparing…'
+                                      : 'Compare & verify'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setConfirmingRevokeId(
+                                        confirmingRevokeId === device.enrollmentId
+                                          ? null
+                                          : device.enrollmentId,
+                                      )
+                                    }
+                                    aria-expanded={confirmingRevokeId === device.enrollmentId}
+                                    disabled={deviceBusy === device.enrollmentId}
+                                    className="rounded-md border border-border px-2.5 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-error disabled:opacity-50"
+                                  >
+                                    Revoke
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                        {renamingId === device.enrollmentId && (
+                          <div className="mt-2 flex flex-col gap-2 sm:flex-row">
+                            <input
+                              value={renameDraft}
+                              onChange={(event) => setRenameDraft(event.target.value)}
+                              placeholder="Device name (empty clears it)"
+                              aria-label="Device name"
+                              spellCheck={false}
+                              className="min-w-0 flex-1 rounded-md border border-border bg-bg-primary px-3 py-1.5 text-sm text-text-primary placeholder:text-text-tertiary"
+                            />
+                            <div className="flex shrink-0 gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => void handleRenameDevice(device.enrollmentId)}
+                                disabled={deviceBusy === device.enrollmentId}
+                                className="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-accent-foreground transition-colors hover:bg-accent/90 disabled:opacity-50"
+                              >
+                                {deviceBusy === device.enrollmentId ? 'Saving…' : 'Save'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setRenamingId(null)}
+                                className="rounded-md border border-border px-3 py-1.5 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                        {verification?.enrollmentId === device.enrollmentId && (
+                          <div className="mt-2 rounded-md border border-border bg-bg-primary p-2">
+                            <p className="font-mono text-lg tracking-[0.2em] text-text-primary">
+                              {verification.code}
+                            </p>
+                            <p className="mt-1 text-xs text-text-tertiary">
+                              Compare this code on both devices and confirm it matches on each
+                              device. You are verifying{' '}
+                              <span className="font-medium text-text-secondary">
+                                {device.displayName || `device ${device.enrollmentId.slice(0, 8)}`}
+                              </span>
+                              . Revoked devices cannot be verified here.
+                            </p>
+                            <div className="mt-2 flex flex-col gap-2 sm:flex-row">
+                              <input
+                                value={verification.confirmationCode}
+                                onChange={(event) =>
+                                  setVerification((current) =>
+                                    current === null
+                                      ? current
+                                      : { ...current, confirmationCode: event.target.value },
+                                  )
+                                }
+                                inputMode="numeric"
+                                placeholder="Code shown on the other device"
+                                aria-label="Verification code shown on the other device"
+                                spellCheck={false}
+                                className="min-w-0 flex-1 rounded-md border border-border bg-bg-secondary px-3 py-1.5 font-mono text-sm text-text-primary placeholder:text-text-tertiary"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => void handleApproveDevice(device.enrollmentId)}
+                                disabled={
+                                  deviceBusy === device.enrollmentId ||
+                                  verification.confirmationCode.trim() === ''
+                                }
+                                className="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-accent-foreground disabled:opacity-50"
+                              >
+                                {deviceBusy === device.enrollmentId
+                                  ? 'Confirming…'
+                                  : 'Confirm matching code'}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                        {confirmingRevokeId === device.enrollmentId && (
+                          <div className="mt-2 rounded-md border border-error/30 bg-error/5 p-2">
+                            <p className="text-xs text-text-secondary">
+                              Revoke{' '}
+                              <span className="font-medium text-text-primary">
+                                {device.displayName || `device ${device.enrollmentId.slice(0, 8)}`}
+                              </span>
+                              ? Its session stops working immediately and it must re-enroll.
+                            </p>
+                            <div className="mt-2 flex gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => void handleRevokeDevice(device.enrollmentId)}
+                                disabled={deviceBusy === device.enrollmentId}
+                                className="rounded-md border border-error/50 bg-error/10 px-3 py-1 text-xs font-medium text-error transition-colors hover:bg-error/20 disabled:opacity-50"
+                              >
+                                {deviceBusy === device.enrollmentId ? 'Revoking…' : 'Revoke device'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmingRevokeId(null)}
+                                className="rounded-md border border-border px-3 py-1 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        )}
                       </li>
                     ))}
-                </ul>
-              )}
-              <div className="flex gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => void handleCommitImport()}
-                  disabled={committing}
-                  className="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
-                >
-                  {committing ? 'Importing…' : 'Apply import'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setImportPreview(null)}
-                  className="rounded-md border border-border px-3 py-1.5 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
-        </Panel>
-      )}
+                  </ul>
+                )}
+              </Panel>
+            )}
 
-      {runtime?.auth.state === 'signed-in' && status?.state === 'active' && (
-        <Panel
-          title="Remote executions"
-          description="Jobs this account dispatched to enrolled devices. 'Lost contact' means the outcome is unknown — it is never shown as cancelled."
-        >
-          <MeshExecutionsPanel localWorkerIncarnation={runtime.meshWorker.workerIncarnation} />
-        </Panel>
+            {runtime?.auth.state === 'signed-in' && status?.state === 'active' && (
+              <Panel
+                title="Browser dashboard access"
+                description="Browsers never join the mesh or hold an account key. A web session asks for specific capabilities, you approve a subset here, and it receives only encrypted projections."
+              >
+                <DashboardAccessPanel />
+              </Panel>
+            )}
+
+            {runtime?.auth.state === 'signed-in' && (
+              <Panel
+                title="Export and import"
+                description="Move synced entities between accounts. Imports never overwrite silently; differences arrive as conflicts for review."
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void handleExportData()}
+                    disabled={exporting}
+                    className="flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
+                  >
+                    {exporting && (
+                      <Loader2 size={14} className="animate-spin motion-reduce:animate-none" />
+                    )}
+                    {exporting ? 'Exporting…' : 'Export account data'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleImportPreview()}
+                    disabled={importing}
+                    className="flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
+                  >
+                    {importing && (
+                      <Loader2 size={14} className="animate-spin motion-reduce:animate-none" />
+                    )}
+                    {importing ? 'Reading file…' : 'Import from file'}
+                  </button>
+                </div>
+                {exportResult !== null && (
+                  <p aria-live="polite" className="text-xs text-text-tertiary">
+                    {exportResult}
+                  </p>
+                )}
+                {importResult !== null && (
+                  <p aria-live="polite" className="text-xs text-text-tertiary">
+                    {importResult}
+                  </p>
+                )}
+                {importPreview !== null && (
+                  <div className="space-y-2 rounded-md border border-border bg-bg-primary p-3">
+                    <p className="text-sm text-text-secondary">
+                      <span className="font-medium text-text-primary">
+                        {importPreview.fileName}
+                      </span>
+                      : {importPreview.summary.creates} new · {importPreview.summary.identical}{' '}
+                      unchanged · {importPreview.summary.conflicts} conflict
+                      {importPreview.summary.conflicts === 1 ? '' : 's'} ·{' '}
+                      {importPreview.summary.invalid} invalid
+                      {importPreview.truncated ? ' (details truncated)' : ''}
+                    </p>
+                    {importPreview.entries.filter((e) => e.outcome === 'conflict').length > 0 && (
+                      <ul className="list-inside list-disc text-xs text-text-tertiary">
+                        {importPreview.entries
+                          .filter((e) => e.outcome === 'conflict')
+                          .slice(0, 5)
+                          .map((entry) => (
+                            <li key={`${entry.entityType}:${entry.entityId}`}>
+                              {entry.entityType} {entry.entityId.slice(0, 8)}…
+                              {entry.reason ? ` — ${entry.reason}` : ''}
+                            </li>
+                          ))}
+                      </ul>
+                    )}
+                    <div className="flex gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => void handleCommitImport()}
+                        disabled={committing}
+                        className="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-accent-foreground transition-colors hover:bg-accent/90 disabled:opacity-50"
+                      >
+                        {committing ? 'Importing…' : 'Apply import'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setImportPreview(null)}
+                        className="rounded-md border border-border px-3 py-1.5 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </Panel>
+            )}
+
+            {runtime?.auth.state === 'signed-in' && status?.state === 'active' && (
+              <Panel
+                title="Mesh jobs"
+                description="Jobs dispatched to enrolled devices. Lost contact means the outcome is unknown, so it is never shown as cancelled."
+              >
+                <MeshExecutionsPanel
+                  localWorkerIncarnation={runtime.meshWorker.workerIncarnation}
+                />
+              </Panel>
+            )}
+          </div>
+        </details>
       )}
 
       <Panel
-        title="Enable Sync"
-        description="Pinning does not upload. Enable Sync binds local workflow templates and starts the push/pull loop. Mesh stays off."
+        title={runtime?.syncEnabled === true ? 'Sync and device participation' : 'Turn on Sync'}
+        description={
+          runtime?.syncEnabled === true
+            ? 'Sync is enabled on this device. Review its connection below, then choose whether this device may run Mesh jobs.'
+            : 'Choosing a backend does not upload anything. Turn on Sync to bind local workflow templates and start the push/pull loop. Mesh is a separate device permission.'
+        }
       >
         {preview.length === 0 ? (
           <p className="text-sm text-text-tertiary">No workflow templates on this device yet.</p>
@@ -1325,7 +1414,7 @@ export function SyncMeshSettingsPanel(): ReactNode {
             type="button"
             onClick={() => void handleEnableSync()}
             disabled={enabling || runtime?.syncEnabled === true}
-            className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50"
+            className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-foreground transition-colors hover:bg-accent/90 disabled:opacity-50"
           >
             {enabling ? 'Enabling…' : runtime?.syncEnabled ? 'Sync enabled' : 'Enable Sync'}
           </button>
@@ -1341,7 +1430,9 @@ export function SyncMeshSettingsPanel(): ReactNode {
           <div className="mt-2 rounded-md border border-border p-3">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <p className="text-sm font-medium text-text-primary">Run jobs on this device</p>
+                <p className="text-sm font-medium text-text-primary">
+                  Allow Mesh jobs on this device
+                </p>
                 <p className="mt-0.5 text-xs leading-relaxed text-text-secondary">
                   Allow this device to run jobs from your account. You can turn this off at any
                   time.
@@ -1433,10 +1524,13 @@ export function SyncMeshSettingsPanel(): ReactNode {
           </ul>
         </Panel>
       )}
+      {runtime?.auth.state === 'signed-in' && status?.state === 'active' && (
+        <CloudEnvironmentsPanel onError={setError} />
+      )}
 
       <Panel
-        title="Integration prompt"
-        description="Hand this to an agent implementing a compatible backend, with this build's protocol pinned."
+        title="Build a compatible backend"
+        description="Give an agent the protocol details for implementing a backend that Anvil can discover and verify."
       >
         <button
           type="button"
@@ -1457,10 +1551,10 @@ export function SyncMeshSettingsPanel(): ReactNode {
         />
       </Panel>
 
-      {error && (
+      {displayError && (
         <p className="flex items-start gap-2 rounded-md border border-error/30 bg-error/5 p-3 text-sm text-error">
           <AlertTriangle size={15} className="mt-0.5 shrink-0" />
-          {error}
+          {displayError}
         </p>
       )}
     </div>

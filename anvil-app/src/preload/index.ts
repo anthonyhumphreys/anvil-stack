@@ -51,11 +51,15 @@ import type {
   WorkspaceCloneRequest,
   WorkspaceCreateOptions,
 } from '../shared/types.js';
+import type { RepoIndexJob } from '../shared/index-jobs.js';
 import type { RunCommand, RunStatus } from '../shared/run-types.js';
 import type { SyncBackendPinInput } from '../shared/sync-backend.js';
 import type {
   ApprovalDecision,
   ApprovalRecord,
+  CloudEnvironmentProviderConnection,
+  CloudEnvironmentRecord,
+  EnvironmentProviderId,
   ExecutionAttempt,
   HandoffRecord,
   JobSummary,
@@ -63,6 +67,8 @@ import type {
   SessionMeshState,
   SyncAttemptActivity,
   SyncConflictResolutionChoice,
+  SyncDashboardGrantApproval,
+  SyncDashboardGrantWorkspace,
   SyncDashboardRequest,
   SyncDataExportFileResult,
   SyncDataImportCommitResult,
@@ -76,6 +82,7 @@ import type {
   SyncInitiateHandoffResult,
   SyncIssuedEnrollmentCode,
   SyncSpikeEnrollInput,
+  LocalCloudEnvironment,
 } from '../shared/sync-runtime.js';
 import type {
   SyncDeviceRecoveryResult,
@@ -119,6 +126,12 @@ const api: AnvilAPI = {
     getSnapshot: () => ipcRenderer.invoke('diagnostics:get-snapshot'),
   },
 
+  metrics: {
+    // Local-only activation funnel events — recorded in SQLite, never sent.
+    track: (event: string, payload?: Record<string, unknown>) =>
+      ipcRenderer.invoke('metrics:track', event, payload),
+  },
+
   mobileCompanion: {
     getStatus: () => ipcRenderer.invoke('mobile-companion:get-status'),
     setEnabled: (enabled: boolean) => ipcRenderer.invoke('mobile-companion:set-enabled', enabled),
@@ -151,6 +164,10 @@ const api: AnvilAPI = {
     list: () => ipcRenderer.invoke('repo:list'),
     connect: (repoPath: string) => ipcRenderer.invoke('repo:connect', repoPath),
     index: (repoId: string) => ipcRenderer.invoke('repo:index', repoId),
+    listIndexJobs: (repoId?: string): Promise<RepoIndexJob[]> =>
+      ipcRenderer.invoke('repo:index-jobs', repoId),
+    cancelIndex: (repoId: string) => ipcRenderer.invoke('repo:cancel-index', repoId),
+    forget: (repoId: string) => ipcRenderer.invoke('repo:forget', repoId),
     getStatus: (repoId: string) => ipcRenderer.invoke('repo:status', repoId),
     resetStatus: (repoId: string) => ipcRenderer.invoke('repo:reset-status', repoId),
     getSummary: (repoId: string) => ipcRenderer.invoke('repo:summary', repoId),
@@ -254,8 +271,6 @@ const api: AnvilAPI = {
     getPersonas: () => ipcRenderer.invoke('chat:get-personas'),
     getSessionStatus: (sessionId: string) => ipcRenderer.invoke('chat:session-status', sessionId),
     listActiveSessions: () => ipcRenderer.invoke('chat:list-active-sessions'),
-    listTurnSummaries: (threadId: string) =>
-      ipcRenderer.invoke('chat:list-turn-summaries', threadId),
     listArtifacts: (threadId: string) => ipcRenderer.invoke('chat:list-artifacts', threadId),
     upsertArtifact: (input: ChatArtifactInput) => ipcRenderer.invoke('chat:upsert-artifact', input),
     discardArtifact: (id: string) => ipcRenderer.invoke('chat:discard-artifact', id),
@@ -759,6 +774,38 @@ const api: AnvilAPI = {
 
   syncRuntime: {
     status: () => ipcRenderer.invoke('sync-runtime:status'),
+    listCloudProviderConnections: (): Promise<CloudEnvironmentProviderConnection[]> =>
+      ipcRenderer.invoke('sync-runtime:cloud-provider-connections-list'),
+    addCloudProviderConnection: (input: {
+      provider: EnvironmentProviderId;
+      displayName?: string;
+      config: Record<string, unknown>;
+      secret?: string;
+    }): Promise<CloudEnvironmentProviderConnection> =>
+      ipcRenderer.invoke('sync-runtime:cloud-provider-connection-add', input),
+    removeCloudProviderConnection: (connectionId: string): Promise<boolean> =>
+      ipcRenderer.invoke('sync-runtime:cloud-provider-connection-remove', connectionId),
+    listLocalCloudEnvironments: (): Promise<LocalCloudEnvironment[]> =>
+      ipcRenderer.invoke('sync-runtime:cloud-environments-local-list'),
+    listCloudEnvironments: (
+      includeTerminal = false,
+    ): Promise<{ environments: CloudEnvironmentRecord[] }> =>
+      ipcRenderer.invoke('sync-runtime:cloud-environments-list', includeTerminal),
+    requestCloudEnvironment: (input: {
+      provider: EnvironmentProviderId;
+      ttlSeconds: number;
+      environmentId?: string;
+      imageRef?: string;
+      networkPolicy?: string[];
+      resources?: { vcpus?: number; memoryMb?: number };
+      displayName?: string;
+      connectionId?: string;
+    }): Promise<{ environmentId: string; job: JobSummary }> =>
+      ipcRenderer.invoke('sync-runtime:cloud-environment-request', input),
+    reapCloudEnvironment: (environmentId: string): Promise<CloudEnvironmentRecord> =>
+      ipcRenderer
+        .invoke('sync-runtime:cloud-environment-reap', environmentId)
+        .then((result: { environment: CloudEnvironmentRecord }) => result.environment),
     preview: () => ipcRenderer.invoke('sync-runtime:preview'),
     signIn: () => ipcRenderer.invoke('sync-runtime:sign-in'),
     enrollWithCode: (code: string) => ipcRenderer.invoke('sync-runtime:enroll-with-code', { code }),
@@ -802,15 +849,17 @@ const api: AnvilAPI = {
       ipcRenderer.invoke('sync-runtime:device-approve', { enrollmentId, verificationCode }),
     listDashboardRequests: (): Promise<SyncDashboardRequest[]> =>
       ipcRenderer.invoke('sync-runtime:dashboard-requests'),
+    listDashboardWorkspaces: (): Promise<SyncDashboardGrantWorkspace[]> =>
+      ipcRenderer.invoke('sync-runtime:dashboard-workspaces'),
     decideDashboardRequest: (
       requestId: string,
       decision: 'approved' | 'denied',
-      scopes?: string[],
+      approval?: SyncDashboardGrantApproval,
     ): Promise<void> =>
       ipcRenderer.invoke('sync-runtime:dashboard-decide', {
         requestId,
         decision,
-        ...(scopes === undefined ? {} : { scopes }),
+        ...(approval === undefined ? {} : { approval }),
       }),
     revokeDashboardAccess: (requestId: string): Promise<void> =>
       ipcRenderer.invoke('sync-runtime:dashboard-revoke', { requestId }),

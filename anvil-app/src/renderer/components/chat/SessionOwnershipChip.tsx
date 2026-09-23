@@ -9,11 +9,7 @@ import type {
   SyncHandoffBlocker,
 } from '../../../shared/sync-runtime';
 
-const HANDOFF_TERMINAL: ReadonlySet<HandoffState> = new Set([
-  'completed',
-  'cancelled',
-  'failed',
-]);
+const HANDOFF_TERMINAL: ReadonlySet<HandoffState> = new Set(['completed', 'cancelled', 'failed']);
 
 const POLL_MS = 10_000;
 
@@ -99,7 +95,8 @@ export function SessionOwnershipChip({ sessionId }: { sessionId: string }): Reac
     // Relinquished — the mirror row keeps this device's id; the newest
     // completed handoff names the real owner.
     const completed = meshState.handoffs.find((h) => h.state === 'completed');
-    ownerLabel = completed === undefined ? 'another device' : deviceName(completed.targetEnrollmentId);
+    ownerLabel =
+      completed === undefined ? 'another device' : deviceName(completed.targetEnrollmentId);
   }
 
   const targets = (devices ?? []).filter((d) => d.self !== true && d.revoked !== true);
@@ -130,7 +127,7 @@ export function SessionOwnershipChip({ sessionId }: { sessionId: string }): Reac
   return (
     <div className="shrink-0 border-t border-border-subtle px-3 py-2">
       <div className="flex items-center justify-between gap-2">
-        <p className="flex min-w-0 items-center gap-1.5 text-[11px] text-text-tertiary">
+        <p className="flex min-w-0 items-center gap-1.5 text-xs text-text-tertiary">
           <Laptop size={11} className="shrink-0" />
           <span className="truncate">
             Session on <span className="text-text-secondary">{ownerLabel}</span>
@@ -152,7 +149,7 @@ export function SessionOwnershipChip({ sessionId }: { sessionId: string }): Reac
             }}
             aria-expanded={moveOpen}
             disabled={moving}
-            className="flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-0.5 text-[11px] text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
+            className="flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-0.5 text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
           >
             <ArrowRightLeft size={10} />
             Move session
@@ -174,7 +171,7 @@ export function SessionOwnershipChip({ sessionId }: { sessionId: string }): Reac
                 type="button"
                 onClick={() => void handleMove(device.enrollmentId)}
                 disabled={moving}
-                className="w-full rounded-md border border-border px-2 py-1 text-left text-[11px] text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
+                className="w-full rounded-md border border-border px-2 py-1 text-left text-xs text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary disabled:opacity-50"
               >
                 {device.displayName} · {device.enrollmentId.slice(0, 8)}…
               </button>
@@ -186,7 +183,7 @@ export function SessionOwnershipChip({ sessionId }: { sessionId: string }): Reac
       {blockers !== null && blockers.length > 0 && (
         <ul className="mt-1.5 space-y-0.5">
           {blockers.map((blocker, index) => (
-            <li key={index} className="text-[11px] text-warning">
+            <li key={index} className="text-xs text-warning">
               {blocker.remediation}
               {blocker.repositoryId ? ` (${blocker.repositoryId.slice(0, 8)}…)` : ''}
             </li>
@@ -194,7 +191,7 @@ export function SessionOwnershipChip({ sessionId }: { sessionId: string }): Reac
         </ul>
       )}
       {error !== null && (
-        <p role="alert" className="mt-1 text-[11px] text-error">
+        <p role="alert" className="mt-1 text-xs text-error">
           {error}
         </p>
       )}
