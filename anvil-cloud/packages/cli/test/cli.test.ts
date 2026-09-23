@@ -38,6 +38,7 @@ describe("main", () => {
     expect(output).toContain("anvil-cloud manifest diff");
     expect(output).toContain("anvil-cloud auth test");
     expect(output).toContain("anvil-cloud executions conformance");
+    expect(output).toContain("anvil-cloud executions providers");
     expect(output).toContain(
       "anvil-cloud destroy --preview --app <name> [--name branch] --yes",
     );

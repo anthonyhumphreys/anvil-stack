@@ -8,6 +8,7 @@ import {
   type AgentExecutionHandle,
   type AgentExecutionInputSubmission,
   type AgentExecutionProvider,
+  type AgentExecutionProviderDescriptor,
   type AgentExecutionProviderEvent,
   type AgentExecutionProviderResult,
   type AgentExecutionRequest,
@@ -19,6 +20,8 @@ import {
 } from "@anvil-cloud/runtime";
 
 import type { AgentExecutionStore } from "./execution-store.js";
+
+export type { AgentExecutionProviderDescriptor } from "@anvil-cloud/runtime";
 
 export type AgentExecutionCleanupReceipt = {
   executionId: string;
@@ -76,6 +79,7 @@ export type AgentExecutionSourceBroker = {
 };
 
 export interface AgentExecutionControlPlaneApi {
+  listProviders(): Promise<AgentExecutionProviderDescriptor[]>;
   createExecution(request: AgentExecutionRequest): Promise<AgentExecutionLease>;
   getExecution(executionId: string): Promise<AgentExecutionLease>;
   listExecutions(): Promise<AgentExecutionLease[]>;
@@ -134,6 +138,21 @@ export class AgentExecutionControlPlane implements AgentExecutionControlPlaneApi
     this.sourceBroker = options.sourceBroker;
     this.idFactory = options.idFactory ?? randomUUID;
     this.now = options.now ?? (() => new Date());
+  }
+
+  async listProviders(): Promise<AgentExecutionProviderDescriptor[]> {
+    return [...this.providers.values()]
+      .map((provider) => ({
+        id: provider.id,
+        capabilities: cloneProviderCapabilities(provider.executionCapabilities),
+        availability: cloneProviderAvailability(
+          provider.describe?.() ?? {
+            configured: false,
+            reasons: ["Provider did not report configuration status."],
+          },
+        ),
+      }))
+      .sort((left, right) => left.id.localeCompare(right.id));
   }
 
   async createExecution(
@@ -1099,6 +1118,28 @@ function latestEstimatedCost(
       ? value
       : latest;
   }, undefined);
+}
+
+function cloneProviderCapabilities(
+  capabilities: AgentExecutionProvider["executionCapabilities"],
+): AgentExecutionProvider["executionCapabilities"] {
+  return {
+    ...capabilities,
+    modes: [...capabilities.modes],
+    modelAuth: [...capabilities.modelAuth],
+    ...(capabilities.subscriptionProviders === undefined
+      ? {}
+      : { subscriptionProviders: [...capabilities.subscriptionProviders] }),
+  };
+}
+
+function cloneProviderAvailability(
+  availability: AgentExecutionProviderDescriptor["availability"],
+): AgentExecutionProviderDescriptor["availability"] {
+  return {
+    configured: availability.configured,
+    reasons: [...availability.reasons],
+  };
 }
 
 function stableNetworkPolicy(

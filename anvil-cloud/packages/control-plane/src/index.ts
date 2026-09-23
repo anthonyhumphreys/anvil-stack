@@ -8,6 +8,7 @@ export {
   type AgentExecutionControlPlaneOptions,
   type AgentExecutionCursorBatch,
   type AgentExecutionLease,
+  type AgentExecutionProviderDescriptor,
   type AgentExecutionSourceBroker,
 } from "./execution.js";
 export {
@@ -50,6 +51,7 @@ export {
   type AgentExecutionHttpRequest,
   type AgentExecutionHttpResponse,
   type AgentExecutionHttpSecurity,
+  type AgentExecutionProviderHttpClient,
   type AgentExecutionSourceHttpClient,
 } from "./execution-http.js";
 export {

@@ -66,6 +66,10 @@ export class FakeAgentExecutionProvider implements AgentExecutionProvider {
     this.now = options.now ?? (() => new Date());
   }
 
+  describe() {
+    return { configured: true, reasons: [] };
+  }
+
   supports(request: AgentExecutionRequest) {
     const reasons: string[] = [];
 

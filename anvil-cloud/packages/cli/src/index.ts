@@ -336,6 +336,25 @@ async function commandExecutions(
     case "serve":
       await commandExecutionsServe(context);
       return;
+    case "providers": {
+      const providers = await executionClient(context).listProviders();
+      writeJsonOrHuman(
+        context,
+        { ok: true, providers },
+        providers.length === 0
+          ? "No execution providers are registered."
+          : providers
+              .map((provider) => {
+                const state = provider.availability.configured
+                  ? "configured"
+                  : "needs configuration";
+                const modes = provider.capabilities.modes.join(", ");
+                return `${provider.id}  ${state}  ${modes}`;
+              })
+              .join("\n"),
+      );
+      return;
+    }
     case "list": {
       const executions = await executionClient(context).listExecutions();
       writeJsonOrHuman(
@@ -629,7 +648,7 @@ function executionControlToken(context: CliContext): string {
 
 function invalidExecutionUsage(context: CliContext): void {
   const usage =
-    "Usage: anvil-cloud executions conformance|serve|list|show|events|start|snapshot|approve|reject|steer|suspend|resume|collect|terminate [options]";
+    "Usage: anvil-cloud executions conformance|providers|serve|list|show|events|start|snapshot|approve|reject|steer|suspend|resume|collect|terminate [options]";
   writeJsonOrHuman(
     context,
     { ok: false, errors: [{ code: "INVALID_USAGE", message: usage }] },
@@ -5835,6 +5854,7 @@ function writeHelp(): void {
       "  anvil-cloud agents guardian [--json]",
       "  anvil-cloud agents sandboxes [--sandbox-backend auto|docker|process] [--json]",
       "  anvil-cloud executions conformance [--json]",
+      "  anvil-cloud executions providers [--url http://127.0.0.1:4764] [--token-env ANVIL_EXECUTION_CONTROL_TOKEN] [--json]",
       "  anvil-cloud executions serve [--provider fake|aws] [--host 127.0.0.1] [--port 4764] [--state-dir .anvil/cloud/executions] [--public-url https://...] [--token-env ANVIL_EXECUTION_CONTROL_TOKEN] [--json]",
       "  anvil-cloud executions list [--url http://127.0.0.1:4764] [--token-env ANVIL_EXECUTION_CONTROL_TOKEN] [--json]",
       "  anvil-cloud executions show <id> [--url ...] [--json]",
