@@ -20,10 +20,13 @@ import type {
   ChatAttachment,
   ChatSendOptions,
   ChatStartOptions,
+  ChatSteerResult,
   CodexEvent,
   CodexInputResponse,
   CodexMode,
   CodexSession,
+  CodexSessionCapabilities,
+  CodexSessionContinuity,
   MobileApprovalRequest,
 } from '../../shared/types.js';
 import {
@@ -70,6 +73,7 @@ import {
   providerResponseFromAgentUIResolution,
 } from './codex-agent-ui.adapter.js';
 import { isAcpAgentProvider, type AcpAgentProvider } from '../../shared/agent-providers.js';
+import { supportsNativeResume } from './provider-capability.service.js';
 
 const ACP_PROVIDER_LABELS: Record<AcpAgentProvider, string> = {
   cursor: 'Cursor',
@@ -101,6 +105,17 @@ interface ManagedSession {
   acpSystemPromptDelivered?: boolean;
   /** True after one handshake auth retry so we never loop on auth failures. */
   acpAuthRetried?: boolean;
+  /** True when the ACP agent advertised `agentCapabilities.loadSession` at initialize. */
+  acpLoadSession?: boolean;
+  /** Deferred session start while the initialize result is in flight (resume needs the advertised capability first). */
+  acpPendingSessionStart?: { resumeSessionId?: string };
+  /** True once session/load was sent — a failure falls back to session/new once. */
+  acpResumeAttempted?: boolean;
+  acpResumeFailed?: boolean;
+  /** Honest lifecycle: how this provider thread came to be. */
+  continuity?: CodexSessionContinuity;
+  /** Provider-side mode id applied for the current turn (H9 honest labelling). */
+  appliedMode?: string;
   status: CodexSession['status'];
   startedAt: string;
   cwd: string;
@@ -113,6 +128,7 @@ interface ManagedSession {
   threadReady: Promise<void>;
   resolveThreadReady: (() => void) | null;
   rejectThreadReady: ((err: Error) => void) | null;
+  origin: 'desktop' | 'browser';
 }
 
 type CodexUserInput =
@@ -148,6 +164,27 @@ type PendingServerRequest =
 const pendingServerRequests = new Map<string, PendingServerRequest>();
 const pendingApprovalDetails = new Map<string, MobileApprovalRequest>();
 const pendingPlanFeedback = new Map<string, string[]>();
+/**
+ * H2: ACP providers have no mid-turn steer — composer sends made while the
+ * session is busy are held here and flushed one-per-turn via session/prompt
+ * when the active turn completes.
+ */
+const pendingAcpSteers = new Map<string, { message: string; attachments: ChatAttachment[] }[]>();
+
+export interface CodexEventSubscription {
+  sessionId: string;
+  appThreadId?: string;
+  event: CodexEvent;
+}
+
+type CodexEventListener = (payload: CodexEventSubscription) => void;
+const codexEventListeners = new Set<CodexEventListener>();
+
+/** Subscribe to provider events before they are forwarded to BrowserWindows. */
+export function subscribeToCodexEvents(listener: CodexEventListener): () => void {
+  codexEventListeners.add(listener);
+  return () => codexEventListeners.delete(listener);
+}
 
 export function resolveSessionModel(provider: AgentProvider, configuredModel: string): string {
   if (isAcpAgentProvider(provider)) return configuredModel.trim() || 'auto';
@@ -337,6 +374,7 @@ export async function startSession(
     threadReady,
     resolveThreadReady,
     rejectThreadReady,
+    origin: options?.origin ?? 'desktop',
   };
 
   sessions.set(id, session);
@@ -409,11 +447,19 @@ export async function startSession(
     if (provider === 'cursor') {
       sendCodexJsonRpc(proc, 'authenticate', { methodId: ACP_AUTH_METHODS.cursor });
     }
-    sendCodexJsonRpc(proc, 'session/new', {
-      cwd,
-      mcpServers: [],
-      _meta: { systemPrompt },
-    });
+    if (options?.providerThreadId) {
+      // Resume goes through ACP session/load, but only when the agent
+      // advertises agentCapabilities.loadSession — known once the initialize
+      // result arrives, so the session call is deferred to
+      // observeAcpInitializeResult (which falls back to session/new).
+      session.acpPendingSessionStart = { resumeSessionId: options.providerThreadId };
+      session.continuity = 'resumed';
+    } else {
+      sendAcpSessionNew(session);
+      // ACP cannot fork a provider thread: a "fork" is a new session the
+      // renderer seeds from the transcript — record that honestly.
+      session.continuity = options?.forkFromProviderThreadId ? 'transcript-seeded' : 'new';
+    }
   } else {
     // Step 1: Send initialize
     sendCodexJsonRpc(proc, 'initialize', {
@@ -433,18 +479,22 @@ export async function startSession(
       approvalPolicy: codexPolicy.approvalPolicy,
       sandbox: codexPolicy.sandbox,
     };
+    session.appliedMode = codexPolicy.sandbox;
     if (options?.forkFromProviderThreadId) {
       sendCodexJsonRpc(proc, 'thread/fork', {
         threadId: options.forkFromProviderThreadId,
         ...threadParams,
       });
+      session.continuity = 'forked';
     } else if (options?.providerThreadId) {
       sendCodexJsonRpc(proc, 'thread/resume', {
         threadId: options.providerThreadId,
         ...threadParams,
       });
+      session.continuity = 'resumed';
     } else {
       sendCodexJsonRpc(proc, 'thread/start', threadParams);
+      session.continuity = 'new';
     }
   }
 
@@ -506,12 +556,21 @@ export async function sendMessage(
     if (!session.threadId) {
       throw new Error(`${acpProviderLabel(session.provider)} ACP session is not ready.`);
     }
+    // H1: feed the persona-clamped session.mode (read-only for
+    // canWriteFiles:false personas and plan mode), not raw settings.codexMode,
+    // or a read-only persona would still run in agent/smart mode.
+    const acpModeId = resolveAcpSessionMode(
+      session.provider,
+      session.mode ?? mode,
+      options?.collaborationMode,
+    );
+    session.appliedMode = acpModeId;
     // Mode changes go through the standard `session/set_mode`; model selection
     // uses `session/set_config_option` against the agent's `model` config
     // option. Both agents reject the legacy `session/set_config` method.
     sendCodexJsonRpc(session.process, 'session/set_mode', {
       sessionId: session.threadId,
-      modeId: resolveAcpSessionMode(session.provider, mode, options?.collaborationMode),
+      modeId: acpModeId,
     });
     const acpModel = resolveAcpModelValue(session.provider, model);
     if (acpModel) {
@@ -532,6 +591,7 @@ export async function sendMessage(
   const effort = gatewayConfig
     ? gatewayConfig.effort
     : normaliseReasoningEffort(options?.reasoningEffort ?? settings.reasoningLevel);
+  session.appliedMode = codexPolicy.sandbox;
   sendCodexJsonRpc(session.process, 'turn/start', {
     threadId: session.threadId,
     input: buildUserInput(message, attachments),
@@ -560,16 +620,37 @@ export function buildCodexCollaborationMode(
   };
 }
 
+/**
+ * Mid-turn composer send. Codex app-server supports in-band `turn/steer`;
+ * ACP providers (Cursor/Devin) have no steer — a send while the session is
+ * busy is queued and flushed via `session/prompt` when the turn completes
+ * (H2). Never throws for a healthy ACP session: the renderer uses
+ * `disposition` to decide whether the message was delivered or queued.
+ */
 export async function steerTurn(
   sessionId: string,
   message: string,
   attachments: ChatAttachment[] = [],
-): Promise<void> {
+): Promise<ChatSteerResult> {
   const session = sessions.get(sessionId);
   if (!session) throw new Error(`Session not found: ${sessionId}`);
   if (!session.process.stdin?.writable) throw new Error('Session stdin not writable');
 
   await session.threadReady;
+
+  if (isAcpAgentProvider(session.provider)) {
+    if (session.status === 'busy') {
+      const queued = pendingAcpSteers.get(sessionId) ?? [];
+      queued.push({ message, attachments });
+      pendingAcpSteers.set(sessionId, queued);
+      broadcastEvent(sessionId, { type: 'queue_update', queuedSendCount: queued.length });
+      return { disposition: 'queued', queueDepth: queued.length };
+    }
+    // Idle session: a "steer" is just a normal new prompt.
+    await sendMessage(sessionId, message, attachments);
+    return { disposition: 'sent', queueDepth: pendingAcpSteers.get(sessionId)?.length ?? 0 };
+  }
+
   if (!session.threadId || !session.turnId) {
     throw new Error('No active Codex turn to steer.');
   }
@@ -579,6 +660,15 @@ export async function steerTurn(
     'turn/steer',
     buildTurnSteerParams(session.threadId, session.turnId, message, attachments),
   );
+  return { disposition: 'steered', queueDepth: 0 };
+}
+
+function sendAcpSessionNew(session: ManagedSession): void {
+  sendCodexJsonRpc(session.process, 'session/new', {
+    cwd: session.cwd,
+    mcpServers: [],
+    _meta: { systemPrompt: session.systemPrompt },
+  });
 }
 
 function buildAcpPrompt(
@@ -718,6 +808,10 @@ export function stopSession(sessionId: string): void {
   }
   sessions.delete(sessionId);
   pendingPlanFeedback.delete(sessionId);
+  if (pendingAcpSteers.delete(sessionId)) {
+    // Tell the renderer nothing is still queued behind this session.
+    broadcastEvent(sessionId, { type: 'queue_update', queuedSendCount: 0 });
+  }
   for (const [requestKey, request] of pendingServerRequests) {
     if (request.sessionId === sessionId) {
       pendingServerRequests.delete(requestKey);
@@ -754,6 +848,14 @@ export function listActiveCodexSessions(): CodexSession[] {
 export function getCodexSession(sessionId: string): CodexSession | null {
   const session = sessions.get(sessionId);
   return session ? sessionToPublic(session) : null;
+}
+
+/** Transfer persistence ownership when a browser attaches to an idle Desktop session. */
+export function claimSessionForBrowser(sessionId: string): CodexSession | null {
+  const session = sessions.get(sessionId);
+  if (!session) return null;
+  session.origin = 'browser';
+  return sessionToPublic(session);
 }
 
 export function listPendingApprovalRequests(): MobileApprovalRequest[] {
@@ -1050,7 +1152,51 @@ export function resolveSessionCwd(
   return process.cwd();
 }
 
+/**
+ * Watch the raw ACP stream for the initialize result so the session layer can
+ * learn `agentCapabilities.loadSession` and dispatch a deferred session start
+ * (session/load for resume, session/new otherwise). Protocol-level event
+ * normalisation stays in handleCodexServerLine — this only reads the result.
+ */
+function observeAcpInitializeResult(session: ManagedSession, line: string): void {
+  if (!isAcpAgentProvider(session.provider)) return;
+  let msg: Record<string, unknown>;
+  try {
+    msg = JSON.parse(line);
+  } catch {
+    return;
+  }
+  if (msg.method !== undefined || msg.id === undefined || msg.error !== undefined) return;
+  const result = msg.result as Record<string, unknown> | undefined;
+  const capabilities = result?.agentCapabilities as Record<string, unknown> | undefined;
+  if (capabilities) {
+    session.acpLoadSession = capabilities.loadSession === true;
+  }
+
+  const pending = session.acpPendingSessionStart;
+  if (!pending) return;
+  // Only the initialize result releases the deferred session start —
+  // protocolVersion is the field both ACP agents return there.
+  if (!capabilities && typeof result?.protocolVersion !== 'number') return;
+  session.acpPendingSessionStart = undefined;
+  if (pending.resumeSessionId && session.acpLoadSession) {
+    session.acpResumeAttempted = true;
+    session.continuity = 'resumed';
+    sendCodexJsonRpc(session.process, 'session/load', {
+      sessionId: pending.resumeSessionId,
+      cwd: session.cwd,
+      mcpServers: [],
+      _meta: { systemPrompt: session.systemPrompt },
+    });
+    return;
+  }
+  // Agent cannot load sessions (or none was requested): start fresh and say so.
+  session.continuity = pending.resumeSessionId ? 'transcript-seeded' : 'new';
+  sendAcpSessionNew(session);
+}
+
 function handleServerMessage(session: ManagedSession, line: string): void {
+  observeAcpInitializeResult(session, line);
   handleCodexServerLine(session, line, {
     onThreadReady: () => {
       session.resolveThreadReady?.();
@@ -1071,7 +1217,7 @@ function handleServerMessage(session: ManagedSession, line: string): void {
         session,
         status === 'failed' ? 'failed' : status === 'interrupted' ? 'idle' : 'complete',
       );
-      void flushPendingPlanFeedback(session);
+      void flushPendingAcpWork(session);
     },
     onTurnIdChanged: (turnId) => {
       session.turnId = turnId;
@@ -1095,13 +1241,16 @@ function handleServerMessage(session: ManagedSession, line: string): void {
                 kind,
               },
         );
-        if (kind === 'command' || kind === 'file_change') {
+        // H8: ACP session/request_permission arrives as kind 'permissions' —
+        // register those too so mobile-companion and the statusbar pending
+        // count see Cursor/Devin approvals, not just Codex command/file_change.
+        if (kind === 'command' || kind === 'file_change' || kind === 'permissions') {
           pendingApprovalDetails.set(requestKey, {
             sessionId: session.id,
             requestKey,
             requestId: event.approvalRequestId,
             kind,
-            reason: event.approvalReason,
+            reason: event.approvalReason ?? event.toolName,
             command: event.approvalCommand,
             cwd: event.approvalCwd,
             grantRoot: event.approvalGrantRoot,
@@ -1190,14 +1339,24 @@ function handleServerMessage(session: ManagedSession, line: string): void {
         isAcpAuthError(error.message)
       ) {
         session.acpAuthRetried = true;
+        if (session.acpResumeAttempted) session.continuity = 'transcript-seeded';
         sendCodexJsonRpc(session.process, 'authenticate', {
           methodId: ACP_AUTH_METHODS.devin,
         });
-        sendCodexJsonRpc(session.process, 'session/new', {
-          cwd: session.cwd,
-          mcpServers: [],
-          _meta: { systemPrompt: session.systemPrompt },
-        });
+        sendAcpSessionNew(session);
+        return true;
+      }
+      // A failed session/load (e.g. the provider forgot the session id) falls
+      // back to a fresh session once — continuity reports what really happened.
+      if (
+        isAcpAgentProvider(session.provider) &&
+        session.acpResumeAttempted &&
+        !session.acpResumeFailed &&
+        !session.threadId
+      ) {
+        session.acpResumeFailed = true;
+        session.continuity = 'transcript-seeded';
+        sendAcpSessionNew(session);
         return true;
       }
       return false;
@@ -1214,6 +1373,39 @@ function handleServerMessage(session: ManagedSession, line: string): void {
       emitCompanionEvent('approvals');
     },
   });
+}
+
+/**
+ * Drain queued work at a turn boundary: composer sends queued via steerTurn
+ * (H2) first, then queued plan feedback. Each sendMessage starts a new turn,
+ * so only one item is delivered per boundary — the next onTurnCompleted
+ * drains the next item.
+ */
+async function flushPendingAcpWork(session: ManagedSession): Promise<void> {
+  if (await flushPendingAcpSteer(session)) return;
+  await flushPendingPlanFeedback(session);
+}
+
+/** Returns true when a queued composer send consumed this turn boundary. */
+async function flushPendingAcpSteer(session: ManagedSession): Promise<boolean> {
+  if (session.status !== 'ready') return false;
+  const queued = pendingAcpSteers.get(session.id);
+  const next = queued?.shift();
+  if (!next) return false;
+  if (!queued?.length) pendingAcpSteers.delete(session.id);
+  broadcastEvent(session.id, { type: 'queue_update', queuedSendCount: queued?.length ?? 0 });
+  try {
+    await sendMessage(session.id, next.message, next.attachments);
+  } catch (error) {
+    const remaining = [next, ...(pendingAcpSteers.get(session.id) ?? [])];
+    pendingAcpSteers.set(session.id, remaining);
+    broadcastEvent(session.id, { type: 'queue_update', queuedSendCount: remaining.length });
+    console.warn(
+      `[Codex:${session.id.slice(0, 8)}] Failed to deliver queued message:`,
+      error,
+    );
+  }
+  return true;
 }
 
 async function flushPendingPlanFeedback(session: ManagedSession): Promise<void> {
@@ -1272,6 +1464,14 @@ function notifyForChatEvent(session: ManagedSession, event: CodexEvent): void {
 
 function broadcastEvent(sessionId: string, event: CodexEvent): void {
   const session = sessions.get(sessionId);
+  const deliveredEvent: CodexEvent = {
+    ...(session?.origin === 'browser' ? { ...event, persistedBy: 'main' as const } : event),
+    // Stamp the session model onto usage events so the renderer's per-turn
+    // footer doesn't have to look it up.
+    ...(event.type === 'usage' || event.type === 'usage_context'
+      ? { model: event.model ?? session?.model }
+      : {}),
+  };
   if (
     session?.appThreadId &&
     ['usage', 'usage_context', 'turn_outcome', 'context_compaction', 'status'].includes(event.type)
@@ -1300,12 +1500,25 @@ function broadcastEvent(sessionId: string, event: CodexEvent): void {
   ) {
     scheduleThreadMetadataRefresh(session.appThreadId);
   }
-  if (['usage', 'usage_context', 'turn_outcome', 'context_compaction'].includes(event.type)) return;
+  // Usage and context events reach subscribers/windows so the renderer can show
+  // per-turn token/context/cost; raw turn internals stay telemetry-only.
+  if (['turn_outcome', 'context_compaction'].includes(event.type)) return;
+  for (const listener of codexEventListeners) {
+    try {
+      listener({
+        sessionId,
+        appThreadId: session?.appThreadId,
+        event: deliveredEvent,
+      });
+    } catch (error) {
+      console.error('[Codex] Event subscriber failed:', error);
+    }
+  }
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send('chat:event', {
       sessionId,
       appThreadId: session?.appThreadId,
-      ...event,
+      ...deliveredEvent,
     });
   }
 }
@@ -1335,6 +1548,38 @@ function isAcpAuthError(message: string): boolean {
   return /auth|login|sign.?in|credential|unauthorized|401|forbidden|403/i.test(message);
 }
 
+/**
+ * Distinct provider-side access modes for ACP agents (H9): Cursor collapses
+ * Anvil's four CodexMode levels to ask/agent/plan, so the renderer should only
+ * offer these. Codex-family providers leave this unset — all four levels are
+ * distinct there.
+ */
+const ACP_ACCESS_MODES: Record<AcpAgentProvider, string[]> = {
+  cursor: ['ask', 'agent', 'plan'],
+  devin: ['ask', 'accept-edits', 'smart', 'bypass', 'plan'],
+};
+
+/** True when a later session could natively continue this provider thread. */
+function sessionSupportsResume(session: ManagedSession): boolean {
+  if (isAcpAgentProvider(session.provider)) {
+    // Truth comes from what the agent advertised at initialize, not a static
+    // claim — an older CLI without loadSession reports resumable: false.
+    return session.acpLoadSession === true;
+  }
+  return supportsNativeResume(session.agentProvider);
+}
+
+function sessionCapabilities(session: ManagedSession): CodexSessionCapabilities {
+  const acpProvider = isAcpAgentProvider(session.provider) ? session.provider : null;
+  return {
+    resumable: sessionSupportsResume(session),
+    midTurnSend: acpProvider ? 'queue' : 'steer',
+    // Goal lifecycle events are Codex-only (thread/goal/*); ACP agents emit none.
+    goals: !acpProvider,
+    ...(acpProvider ? { accessModes: ACP_ACCESS_MODES[acpProvider] } : {}),
+  };
+}
+
 function sessionToPublic(session: ManagedSession): CodexSession {
   return {
     id: session.id,
@@ -1347,9 +1592,14 @@ function sessionToPublic(session: ManagedSession): CodexSession {
     status: session.status,
     startedAt: session.startedAt,
     mode: session.mode,
+    appliedMode: session.appliedMode,
     providerThreadId: session.threadId ?? undefined,
     currentTurnId: session.turnId ?? undefined,
-    resumable: !!session.threadId,
+    resumable: !!session.threadId && sessionSupportsResume(session),
+    queuedSendCount: pendingAcpSteers.get(session.id)?.length ?? 0,
+    continuity: session.continuity,
+    capabilities: sessionCapabilities(session),
+    origin: session.origin,
   };
 }
 

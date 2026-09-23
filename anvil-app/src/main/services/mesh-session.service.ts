@@ -24,6 +24,10 @@ import { getSettings } from './settings.service.js';
 import type { CodexEvent, ReasoningEffort } from '../../shared/types.js';
 import { normaliseReasoningEffort } from '../../shared/codex-models.js';
 
+// ACP providers (cursor/devin) are excluded deliberately: there is no
+// verified remote ACP driver — the interactive ACP path lives in
+// codex-session.service.ts (session/new + session/load). Extend this union
+// only with a provider whose remote spawn/approval story is implemented.
 export type RemoteSessionProvider = 'codex' | 'azure' | 'openai';
 
 export interface RemoteSessionSpec {
@@ -73,11 +77,7 @@ const STOP_GRACE_MS = 3_000;
 /** Cancellation poll cadence while a turn is running. */
 const CANCEL_POLL_MS = 500;
 
-type SpawnImpl = (
-  command: string,
-  args: string[],
-  options: SpawnOptions,
-) => ChildProcess;
+type SpawnImpl = (command: string, args: string[], options: SpawnOptions) => ChildProcess;
 
 let spawnImpl: SpawnImpl = spawn;
 let cliProbeImpl: () => Promise<string | null> = probeCodexCli;
@@ -118,8 +118,7 @@ export async function probeSessionCli(): Promise<string | null> {
 
 /** Tuple compare: `observed` must be >= `min` (both `x.y.z`-ish). */
 export function satisfiesCliMin(observed: string, min: string): boolean {
-  const parse = (v: string): number[] =>
-    v.split('.').map((part) => Number.parseInt(part, 10) || 0);
+  const parse = (v: string): number[] => v.split('.').map((part) => Number.parseInt(part, 10) || 0);
   const a = parse(observed);
   const b = parse(min);
   for (let i = 0; i < Math.max(a.length, b.length); i++) {

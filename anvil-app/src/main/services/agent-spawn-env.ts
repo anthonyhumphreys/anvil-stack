@@ -55,6 +55,12 @@ const PROVIDER_CONFIG_ALLOWLIST = [
   'XDG_CONFIG_HOME',
   'XDG_DATA_HOME',
   'XDG_CACHE_HOME',
+  // Devin CLI reads these for model + permission defaults (see `devin acp
+  // --help`); they are provider config, not credentials.
+  'DEVIN_MODEL',
+  'DEVIN_REFUSAL_FALLBACK',
+  'DEVIN_PERMISSION_MODE',
+  'DEVIN_SANDBOX',
 ] as const;
 
 const GIT_TRANSPORT_ALLOWLIST = [
@@ -70,6 +76,10 @@ const PROVIDER_CREDENTIAL_ALLOWLIST = [
   'AZURE_OPENAI_API_KEY',
   'CODEX_API_KEY',
   'CURSOR_API_KEY',
+  // Devin CLI authenticates from `devin auth login` credentials or these
+  // env vars (documented in devin-bridge.service.ts).
+  'DEVIN_API_KEY',
+  'WINDSURF_API_KEY',
 ] as const;
 
 /**

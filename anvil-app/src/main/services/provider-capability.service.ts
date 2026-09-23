@@ -42,11 +42,13 @@ export interface ProviderCapability {
  * The audited matrix. Codex-protocol providers (codex/azure/openai) all
  * spawn `codex app-server` and share `thread/resume` + `thread/fork`;
  * resume re-reads CLI state under `~/.codex`, so it is same-home only
- * until a second-home fixture proves import. Cursor runs ACP
- * `session/new` only — no `session/load` exists in this codebase — so it
- * cannot continue a session at all today; `summary-continuation` is the
- * latent path (checkpoint messages/summary start a NEW thread) and stays
- * unverified until SESSION-03 implements it.
+ * until a second-home fixture proves import. The ACP providers (Cursor,
+ * Devin) advertise `agentCapabilities.loadSession` at initialize (probed
+ * live: cursor-agent acp, devin acp v3000.11.1) and `codex-session.service.ts`
+ * sends ACP `session/load` when resuming a stored providerThreadId — so
+ * same-home native resume is real for both. `session/load` cannot fork:
+ * forking an ACP thread still produces a NEW provider thread, reported as
+ * 'transcript-seeded' on the session's continuity field.
  */
 const PROVIDER_CAPABILITIES: Record<AgentProvider, ProviderCapability> = {
   codex: {
@@ -78,16 +80,25 @@ const PROVIDER_CAPABILITIES: Record<AgentProvider, ProviderCapability> = {
   },
   cursor: {
     provider: 'cursor',
-    modes: [{ mode: 'summary-continuation', scope: 'cross-device', verified: false }],
-    evidence: 'codex-session.service.ts: ACP session/new only — no session/load',
+    modes: [
+      { mode: 'native-resume', scope: 'same-home', verified: true },
+      { mode: 'summary-continuation', scope: 'cross-device', verified: false },
+    ],
+    evidence:
+      'codex-session.service.ts: ACP session/load gated on advertised agentCapabilities.loadSession (cursor-agent acp advertises loadSession: true)',
     caveat:
-      'Cursor cannot resume a thread; a handoff starts a new session from a summary and prior context is omitted.',
+      'native-resume re-opens the session on the same device only; ACP cannot fork — forks start a new thread seeded from the transcript.',
   },
   devin: {
     provider: 'devin',
-    modes: [{ mode: 'unsupported', scope: 'cross-device', verified: false }],
-    evidence: 'codex-session.service.ts: local ACP session/new; no verified mesh continuation',
-    caveat: 'Devin mesh continuation has not been verified.',
+    modes: [
+      { mode: 'native-resume', scope: 'same-home', verified: true },
+      { mode: 'summary-continuation', scope: 'cross-device', verified: false },
+    ],
+    evidence:
+      'codex-session.service.ts: ACP session/load gated on advertised agentCapabilities.loadSession (devin acp v3000.11.1 advertises loadSession: true)',
+    caveat:
+      'native-resume re-opens the session on the same device only; Devin mesh continuation has not been verified.',
   },
   llmgateway: {
     provider: 'llmgateway',
@@ -106,9 +117,7 @@ export function getProviderCapability(provider: AgentProvider): ProviderCapabili
  * must treat an undefined result as "cannot continue" — never fall back
  * to an unverified mode silently.
  */
-export function bestVerifiedMode(
-  provider: AgentProvider,
-): ProviderMode | undefined {
+export function bestVerifiedMode(provider: AgentProvider): ProviderMode | undefined {
   return PROVIDER_CAPABILITIES[provider].modes.find((m) => m.verified);
 }
 
@@ -116,5 +125,12 @@ export function bestVerifiedMode(
 export function supportsCrossDeviceResume(provider: AgentProvider): boolean {
   return PROVIDER_CAPABILITIES[provider].modes.some(
     (m) => m.scope === 'cross-device' && m.verified,
+  );
+}
+
+/** True when the provider can natively resume a stored provider thread on this device. */
+export function supportsNativeResume(provider: AgentProvider): boolean {
+  return PROVIDER_CAPABILITIES[provider].modes.some(
+    (m) => m.mode === 'native-resume' && m.verified,
   );
 }

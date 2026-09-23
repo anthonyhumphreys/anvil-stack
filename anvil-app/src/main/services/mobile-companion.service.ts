@@ -954,8 +954,7 @@ async function attestEnrollment(
     return null;
   }
   const claims = await attestDeviceAccessToken(token).catch(() => null);
-  const verified =
-    claims !== null && claims.accountId === snapshot.accountId ? claims : null;
+  const verified = claims !== null && claims.accountId === snapshot.accountId ? claims : null;
   attestCache.set(tokenHash, {
     enrollmentId: verified === null ? null : verified.enrollmentId,
     accountId: verified === null ? null : verified.accountId,
@@ -1032,7 +1031,9 @@ async function enrichPendingPolicyName(enrollmentId: string): Promise<void> {
     const match = devices.find((d) => d.enrollmentId === enrollmentId);
     if (match?.displayName !== undefined && match.displayName !== null) {
       getDb()
-        .prepare('UPDATE companion_enrollment_policies SET display_name = ? WHERE enrollment_id = ?')
+        .prepare(
+          'UPDATE companion_enrollment_policies SET display_name = ? WHERE enrollment_id = ?',
+        )
         .run(match.displayName, enrollmentId);
     }
   } catch {
@@ -1363,7 +1364,12 @@ export function listCarPlayApprovalRequests(): CarPlayApprovalRequest[] {
     return {
       ...approval,
       id,
-      title: approval.kind === 'command' ? 'Command approval' : 'File change approval',
+      title:
+        approval.kind === 'command'
+          ? 'Command approval'
+          : approval.kind === 'file_change'
+            ? 'File change approval'
+            : 'Permission request',
       workspaceId: workspace?.id,
       workspaceName: workspace?.name,
       repo: repo?.name ?? repo?.path ?? approval.repoName,

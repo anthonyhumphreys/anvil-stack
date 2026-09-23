@@ -34,8 +34,8 @@ import type {
   ChatPlanSnapshot,
   ChatSendOptions,
   ChatStartOptions,
+  ChatSteerResult,
   ChatThread,
-  ChatTurnSummary,
   CodexEvent,
   CodexInputResponse,
   CodexSession,
@@ -95,7 +95,7 @@ import {
   prepareChatAttachments,
   selectChatAttachmentFiles,
 } from '../services/chat-attachment.service.js';
-import { listChatTurnSummaries, saveChatEvent } from '../services/chat-evidence.service.js';
+import { saveChatEvent } from '../services/chat-evidence.service.js';
 import { searchChatFileMentions } from '../services/chat-file-mention.service.js';
 import {
   discardChatArtifact,
@@ -376,11 +376,7 @@ export function registerChatHandlers(): void {
       // Plain messages — and, on macOS 27+, image-only attachments — may be
       // answerable on-device.
       if (!parsed.command) {
-        const handledLocally = await tryLocalLlmChatReply(
-          sessionId,
-          enrichedMessage,
-          attachments,
-        );
+        const handledLocally = await tryLocalLlmChatReply(sessionId, enrichedMessage, attachments);
         if (handledLocally) return;
       }
 
@@ -398,7 +394,12 @@ export function registerChatHandlers(): void {
 
   ipcMain.handle(
     'chat:steer',
-    (_event, sessionId: string, message: string, attachments?: ChatAttachment[]): Promise<void> => {
+    (
+      _event,
+      sessionId: string,
+      message: string,
+      attachments?: ChatAttachment[],
+    ): Promise<ChatSteerResult> => {
       return steerTurn(sessionId, message, attachments);
     },
   );
@@ -608,10 +609,6 @@ export function registerChatHandlers(): void {
 
   ipcMain.handle('chat:list-active-sessions', (): CodexSession[] => {
     return listActiveCodexSessions();
-  });
-
-  ipcMain.handle('chat:list-turn-summaries', (_event, threadId: string): ChatTurnSummary[] => {
-    return listChatTurnSummaries(threadId);
   });
 
   ipcMain.handle('chat:list-artifacts', (_event, threadId: string): ChatArtifact[] => {

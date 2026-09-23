@@ -28,23 +28,23 @@ describe('provider capability matrix (SESSION-01 audit)', () => {
     }
   });
 
-  it('cursor has no resume path — unverified summary-continuation only', () => {
-    const cap = getProviderCapability('cursor');
-    expect(cap.modes).toHaveLength(1);
-    expect(cap.modes[0].mode).toBe('summary-continuation');
-    expect(cap.modes[0].verified).toBe(false);
-    expect(bestVerifiedMode('cursor')).toBeUndefined();
+  it('cursor resumes same-home via ACP session/load — no cross-device claim', () => {
+    const best = bestVerifiedMode('cursor');
+    expect(best?.mode).toBe('native-resume');
+    expect(best?.scope).toBe('same-home');
     expect(supportsCrossDeviceResume('cursor')).toBe(false);
   });
 
-  it('devin and llmgateway declare no verified continuation mode', () => {
-    for (const p of ['devin', 'llmgateway'] as const) {
-      const cap = getProviderCapability(p);
-      expect(cap).toBeDefined();
-      expect(cap.modes[0].mode).toBe('unsupported');
-      expect(bestVerifiedMode(p)).toBeUndefined();
-      expect(supportsCrossDeviceResume(p)).toBe(false);
-    }
+  it('devin resumes same-home via ACP session/load; llmgateway declares no verified mode', () => {
+    const best = bestVerifiedMode('devin');
+    expect(best?.mode).toBe('native-resume');
+    expect(best?.scope).toBe('same-home');
+    expect(supportsCrossDeviceResume('devin')).toBe(false);
+
+    const gateway = getProviderCapability('llmgateway');
+    expect(gateway.modes[0].mode).toBe('unsupported');
+    expect(bestVerifiedMode('llmgateway')).toBeUndefined();
+    expect(supportsCrossDeviceResume('llmgateway')).toBe(false);
   });
 
   it('no provider claims verified cross-device resume yet', () => {

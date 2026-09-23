@@ -14,6 +14,9 @@ const VARS = [
   'CODEX_HOME',
   'HTTPS_PROXY',
   'OTEL_SDK_DISABLED',
+  'WINDSURF_API_KEY',
+  'DEVIN_API_KEY',
+  'DEVIN_MODEL',
 ];
 
 function stash() {
@@ -60,6 +63,17 @@ describe('providerSpawnEnv', () => {
     expect(env['SSH_AUTH_SOCK']).toBe('/tmp/ssh-agent.sock');
     expect(env['CODEX_HOME']).toBe('/tmp/codex-home');
     expect(env['HTTPS_PROXY']).toBe('http://proxy:8080');
+  });
+
+  it('passes Devin credential and config vars the CLI documents (H15)', () => {
+    stash();
+    process.env['WINDSURF_API_KEY'] = 'windsurf-key';
+    process.env['DEVIN_API_KEY'] = 'devin-key';
+    process.env['DEVIN_MODEL'] = 'swe-2-max';
+    const env = providerSpawnEnv();
+    expect(env['WINDSURF_API_KEY']).toBe('windsurf-key');
+    expect(env['DEVIN_API_KEY']).toBe('devin-key');
+    expect(env['DEVIN_MODEL']).toBe('swe-2-max');
   });
 
   it('lets explicit bindings win and undefined remove a var', () => {

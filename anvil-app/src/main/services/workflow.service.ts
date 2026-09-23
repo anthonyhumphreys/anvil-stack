@@ -49,6 +49,8 @@ import { getLlmGatewayCodexConfigArgs } from '../../shared/llm-gateway.js';
 import { resolveLlmGatewayModelConfig } from './llm-gateway.service.js';
 import { triggerWatchtowerEvent } from './automation.service.js';
 import { isAcpAgentProvider, type AcpAgentProvider } from '../../shared/agent-providers.js';
+import { providerSpawnEnv } from './agent-spawn-env.js';
+import { acpProviderLabel, buildAcpPrintInvocation } from './acp-print-cli.js';
 import { buildDevicePolicy } from './mesh-worker.service.js';
 import { computeBootstrapDigest, getWorkspaceBootstrap } from './bootstrap-policy.service.js';
 import { workspaceDefinitionRevision } from './sync-entity-domain.js';
@@ -149,9 +151,13 @@ export function validateWorkflowGraph(nodes: WorkflowNode[], edges: WorkflowEdge
         throw new Error(`${node.name} needs an environment id.`);
       if (
         node.target.kind === 'provisioned-environment' &&
-        (!Number.isFinite(node.target.ttlSeconds) || node.target.ttlSeconds <= 0)
+        (!Number.isSafeInteger(node.target.ttlSeconds) ||
+          node.target.ttlSeconds < 60 ||
+          node.target.ttlSeconds > 7 * 24 * 60 * 60)
       )
-        throw new Error(`${node.name} needs a positive environment lifetime.`);
+        throw new Error(
+          `${node.name} needs an environment lifetime between 60 seconds and 7 days.`,
+        );
       if (
         node.target.kind !== 'local' &&
         !['codex', 'azure', 'openai'].includes(node.provider ?? 'codex')
@@ -564,6 +570,7 @@ async function requestedTargetFor(
     environmentId,
     provider: target.provider,
     ttlSeconds: target.ttlSeconds,
+    ...(target.connectionId === undefined ? {} : { connectionId: target.connectionId }),
     ...(target.resources === undefined ? {} : { resources: target.resources }),
   });
   return { kind: 'environment', environmentId };
@@ -798,9 +805,11 @@ export function buildCodexWorkflowArgs(
 }
 
 /**
- * One-shot CLI run for ACP chat providers. Cursor uses `cursor-agent -p`;
- * Devin uses `devin --print` in `smart` permission mode so workflow steps can
- * run safe commands and workspace edits without interactive prompts.
+ * One-shot CLI run for ACP chat providers (Cursor `cursor-agent -p`, Devin
+ * `devin --print`). H7: the child gets the allowlisted providerSpawnEnv —
+ * never the full process.env — and the access level comes from the same
+ * persona-clamped policy the Codex path uses, mapped to the provider's real
+ * permission modes in acp-print-cli.ts.
  */
 async function runAcpCliThread(input: {
   key: string;
@@ -816,6 +825,7 @@ async function runAcpCliThread(input: {
   signal?: AbortSignal;
 }): Promise<CodexThreadResult> {
   input.signal?.throwIfAborted();
+  const settings = getSettings();
   const cwd = resolveSessionCwd(
     input.repoRows.map((repo) => repo.path),
     { workspace: { workspaceId: input.workspaceId } },
@@ -840,29 +850,29 @@ async function runAcpCliThread(input: {
   });
 
   const combinedPrompt = [input.systemPrompt, input.prompt].join('\n\n');
-  const label = input.provider === 'devin' ? 'Devin' : 'Cursor';
-  const [executable, args] =
-    input.provider === 'devin'
-      ? [
-          'devin',
-          [
-            '--print',
-            '--permission-mode',
-            'smart',
-            '--respect-workspace-trust',
-            'false',
-            ...(input.model && input.model !== 'auto' ? ['--model', input.model] : []),
-            '--',
-            combinedPrompt,
-          ],
-        ]
-      : [
-          'cursor-agent',
-          ['-p', '--output-format', 'text', '--model', input.model || 'auto', combinedPrompt],
-        ];
+  const label = acpProviderLabel(input.provider);
+  const accessMode = settings.codexMode ?? 'on-request';
+  const policy = resolvePersonaCodexPolicy(accessMode, input.personaId);
+  const { executable, args } = buildAcpPrintInvocation({
+    provider: input.provider,
+    model: input.model,
+    mode: accessMode,
+    policy,
+    prompt: combinedPrompt,
+  });
+  // H6 honesty marker: print mode captures only the final text — no tool
+  // calls, diffs, or reasoning reach the timeline.
+  saveMessage(input.threadId, input.repoRows[0]?.id ?? null, sessionId, {
+    id: randomUUID(),
+    role: 'system',
+    content: `${label} ran this step in one-shot print mode; tool calls, file edits and reasoning were not captured.`,
+    timestamp: new Date().toISOString(),
+    personaId: input.personaId,
+    threadId: input.threadId,
+  });
   const proc = spawn(executable, args, {
     cwd,
-    env: { ...(process.env as Record<string, string>) },
+    env: providerSpawnEnv(),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   activeProcesses.set(input.key, proc);
@@ -1204,6 +1214,19 @@ function launchWorkflow(run: WorkflowRun): Promise<void> {
             repoIds: current.repoIds,
           });
           state.threadId = thread.id;
+          // Honesty marker: ACP steps run via one-shot print CLI — no
+          // tool-call/diff/reasoning events are captured for this step.
+          state.executionMode = isAcpAgentProvider(node.provider ?? 'codex')
+            ? 'acp-print'
+            : 'app-server';
+          if (state.executionMode === 'acp-print') {
+            recordWorkflowEvent(
+              current,
+              'run',
+              `${node.name} runs via ${acpProviderLabel(node.provider as AcpAgentProvider)} print mode — tool calls, diffs and reasoning are not captured.`,
+              node.id,
+            );
+          }
           if (attempt) attempt.threadId = thread.id;
           persistRun(current);
           const result = await runAgentThread({
