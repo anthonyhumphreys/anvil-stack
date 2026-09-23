@@ -26,6 +26,7 @@ import {
   recomputeWorkspaceDefinitionState,
 } from './sync-entity-domain.js';
 import { withSyncedEntityWrite } from './sync-persistence.service.js';
+import { cancelIndexJobs, enqueueIndexJobs } from './repo-index-queue.service.js';
 
 /** Emit sync intent for a bound workspace definition after a local write. */
 function emitWorkspaceSyncIntent(workspaceId: string): void {
@@ -83,6 +84,7 @@ interface RepoRow {
   remote_url: string | null;
   default_branch: string;
   status: string;
+  index_tier: string | null;
   last_indexed: string | null;
   file_count: number;
   branch_count: number;
@@ -174,6 +176,8 @@ function mapRepo(row: RepoRow): RepoInfo {
     remoteUrl: row.remote_url ?? undefined,
     defaultBranch: row.default_branch,
     status: row.status as RepoInfo['status'],
+    indexTier:
+      row.index_tier === 'mapped' || row.index_tier === 'enriched' ? row.index_tier : 'connected',
     lastIndexed: row.last_indexed ?? undefined,
     fileCount: row.file_count,
     branchCount: row.branch_count,
@@ -438,7 +442,9 @@ function deleteWorkspaceRows(id: string): void {
     throw new Error(`Workspace not found: ${id}`);
   }
 
-  db.prepare('UPDATE settings SET active_workspace_id = NULL WHERE active_workspace_id = ?').run(id);
+  db.prepare('UPDATE settings SET active_workspace_id = NULL WHERE active_workspace_id = ?').run(
+    id,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -528,10 +534,14 @@ export function mapWorkspaceRepoToCheckout(
     recomputeWorkspaceDefinitionState(workspaceId);
   });
   txn();
+
+  // A mapped checkout joins the workspace — index it like any other connect.
+  enqueueIndexJobs(repoId, { reason: 'connect' });
 }
 
 /**
- * Remove repos from a workspace.
+ * Remove repos from a workspace. Queued/running index jobs are cancelled; the
+ * repos rows and index data are kept (other workspaces may use the repo).
  */
 export function removeReposFromWorkspace(workspaceId: string, repoIds: string[]): void {
   const db = getDb();
@@ -539,6 +549,10 @@ export function removeReposFromWorkspace(workspaceId: string, repoIds: string[])
   const delDef = db.prepare(
     `DELETE FROM workspace_repo_definitions WHERE workspace_id = ? AND mapped_repo_id = ?`,
   );
+
+  for (const repoId of repoIds) {
+    cancelIndexJobs(repoId);
+  }
 
   const txn = db.transaction(() => {
     for (const repoId of repoIds) {
@@ -550,6 +564,53 @@ export function removeReposFromWorkspace(workspaceId: string, repoIds: string[])
     emitWorkspaceSyncIntent(workspaceId);
   });
   txn();
+}
+
+/**
+ * Forget a repository entirely: deletes the repos row plus its index data
+ * (repo_summaries, module_summaries, repository_map_graphs, repo_index_jobs).
+ * Refuses while any workspace still references the repo. Reviews, audits and
+ * other history keep their rows orphaned (decision: no cascade), and files on
+ * disk are never touched.
+ */
+export function forgetRepo(repoId: string): void {
+  const db = getDb();
+  const repo = db.prepare('SELECT id, name FROM repos WHERE id = ?').get(repoId) as
+    | { id: string; name: string }
+    | undefined;
+  if (!repo) throw new Error(`Repo not found: ${repoId}`);
+
+  const membership = db
+    .prepare(`SELECT COUNT(*) AS c FROM workspace_repos WHERE repo_id = ?`)
+    .get(repoId) as { c: number };
+  const mappedDefinitions = db
+    .prepare(`SELECT COUNT(*) AS c FROM workspace_repo_definitions WHERE mapped_repo_id = ?`)
+    .get(repoId) as { c: number };
+  if (membership.c + mappedDefinitions.c > 0) {
+    throw new Error(
+      `"${repo.name}" is still used by a workspace. Remove it from every workspace before forgetting it.`,
+    );
+  }
+
+  cancelIndexJobs(repoId);
+
+  // FK enforcement is suspended for this delete so history rows (reviews,
+  // audits, chat references) survive orphaned instead of cascading or
+  // blocking the delete.
+  const foreignKeys = db.pragma('foreign_keys', { simple: true }) as number;
+  db.pragma('foreign_keys = OFF');
+  try {
+    db.transaction(() => {
+      db.prepare('DELETE FROM module_summaries WHERE repo_id = ?').run(repoId);
+      db.prepare('DELETE FROM repo_summaries WHERE repo_id = ?').run(repoId);
+      db.prepare('DELETE FROM repository_map_graphs WHERE repo_id = ?').run(repoId);
+      db.prepare('DELETE FROM repo_index_jobs WHERE repo_id = ?').run(repoId);
+      db.prepare('DELETE FROM workspace_repos WHERE repo_id = ?').run(repoId);
+      db.prepare('DELETE FROM repos WHERE id = ?').run(repoId);
+    })();
+  } finally {
+    db.pragma(`foreign_keys = ${foreignKeys ? 'ON' : 'OFF'}`);
+  }
 }
 
 // ---------------------------------------------------------------------------

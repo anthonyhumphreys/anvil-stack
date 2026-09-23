@@ -168,7 +168,7 @@ describe('fresh database schema', () => {
         ).map((column) => column.name),
       );
 
-      expect(SCHEMA_VERSION).toBe(93);
+      expect(SCHEMA_VERSION).toBe(97);
       for (const column of [
         'local_llm_mode',
         'local_llm_provider',
@@ -237,6 +237,37 @@ describe('fresh database schema', () => {
       expect(indexes.has('uq_sync_outbox_dispatched_entity')).toBe(true);
       expect(indexes.has('idx_sync_conflicts_scope_entity')).toBe(true);
       expect(indexes.has('uq_sync_backends_one_active')).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('includes explicit browser workspace grant and receipt storage', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec(SCHEMA_SQL);
+      const grantColumns = new Set(
+        (
+          db.prepare('PRAGMA table_info(mesh_dashboard_grants)').all() as Array<{ name: string }>
+        ).map((column) => column.name),
+      );
+      expect(grantColumns.has('workspace_id')).toBe(true);
+      expect(grantColumns.has('repo_ids_json')).toBe(true);
+      expect(grantColumns.has('enrollment_id')).toBe(true);
+      const receiptColumns = new Set(
+        (
+          db.prepare('PRAGMA table_info(mesh_browser_command_receipts)').all() as Array<{
+            name: string;
+          }>
+        ).map((column) => column.name),
+      );
+      expect(receiptColumns.has('payload_hash')).toBe(true);
+      expect(receiptColumns.has('command_envelope_json')).toBe(true);
+      expect(receiptColumns.has('claim_fence')).toBe(true);
+      expect(receiptColumns.has('result_wrapped')).toBe(true);
+      expect(receiptColumns.has('result_envelope_json')).toBe(true);
+      expect(receiptColumns.has('result_published')).toBe(true);
+      expect(receiptColumns.has('state')).toBe(true);
     } finally {
       db.close();
     }

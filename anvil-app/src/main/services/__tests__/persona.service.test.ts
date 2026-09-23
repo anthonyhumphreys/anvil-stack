@@ -79,7 +79,10 @@ vi.mock('../../db/database.js', () => ({
         };
       }
 
-      if (query.includes('SELECT path, purpose FROM module_summaries WHERE repo_id = ?')) {
+      if (
+        query.includes('FROM module_summaries WHERE repo_id = ?') &&
+        query.includes('SELECT path, purpose')
+      ) {
         return {
           all: (repoId: string) => dbState.moduleSummaries.get(repoId) ?? [],
         };
@@ -88,9 +91,7 @@ vi.mock('../../db/database.js', () => ({
       if (query.includes('FROM editable_agents ORDER BY name')) {
         return {
           all: () =>
-            [...dbState.editableAgents.values()].sort((a, b) =>
-              a.name.localeCompare(b.name),
-            ),
+            [...dbState.editableAgents.values()].sort((a, b) => a.name.localeCompare(b.name)),
         };
       }
 

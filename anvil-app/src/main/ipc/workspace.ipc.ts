@@ -43,6 +43,18 @@ import type {
 import { scanForReposAsync, cancelScan } from '../services/repo-scan.service.js';
 import { ensureGateTemplates } from '../services/lifecycle.service.js';
 import { getWorkspaceActivityFeed } from '../services/workspace-activity.service.js';
+import { enqueueIndexJobs } from '../services/repo-index-queue.service.js';
+
+/** Kick off tiered indexing (mapped → enriched) for repos joining a workspace. */
+function enqueueIndexJobsForRepos(repoIds: string[] | undefined): void {
+  for (const repoId of repoIds ?? []) {
+    try {
+      enqueueIndexJobs(repoId, { reason: 'connect' });
+    } catch (err) {
+      console.error(`[Workspace IPC] Failed to enqueue index jobs for ${repoId}:`, err);
+    }
+  }
+}
 
 interface WorkspaceHandlersOptions {
   openWorkspaceWindow?: (workspaceId: string) => void;
@@ -80,6 +92,9 @@ export function registerWorkspaceHandlers(options: WorkspaceHandlersOptions = {}
     try {
       const workspace = createWorkspace(opts);
       ensureGateTemplates(workspace.id);
+      // Repos are usable once the fast structural tier lands; enrichment
+      // continues in the background (fixes J1 — no manual Index click needed).
+      enqueueIndexJobsForRepos(opts.repoIds);
       return workspace;
     } catch (err) {
       console.error('[Workspace IPC] Error creating workspace:', err);
@@ -148,7 +163,9 @@ export function registerWorkspaceHandlers(options: WorkspaceHandlersOptions = {}
 
   ipcMain.handle('workspace:add-repos', (_event, workspaceId: string, repoIds: string[]) => {
     try {
-      return addReposToWorkspace(workspaceId, repoIds);
+      const result = addReposToWorkspace(workspaceId, repoIds);
+      enqueueIndexJobsForRepos(repoIds);
+      return result;
     } catch (err) {
       console.error('[Workspace IPC] Error adding repos to workspace:', err);
       throw err;

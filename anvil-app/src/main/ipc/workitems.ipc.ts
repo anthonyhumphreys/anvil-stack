@@ -115,7 +115,7 @@ function getActiveRepoContext(): { name: string; overview: string; modules: stri
   const db = getDb();
   const repo = db
     .prepare(
-      "SELECT id, name FROM repos WHERE status = 'indexed' ORDER BY last_indexed DESC LIMIT 1",
+      "SELECT id, name FROM repos WHERE index_tier IN ('mapped','enriched') ORDER BY last_indexed DESC LIMIT 1",
     )
     .get() as { id: string; name: string } | undefined;
 

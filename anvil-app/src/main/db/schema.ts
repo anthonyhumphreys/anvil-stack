@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 93;
+export const SCHEMA_VERSION = 97;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS change_reviews (
@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS repos (
   remote_url TEXT,
   default_branch TEXT DEFAULT 'main',
   status TEXT DEFAULT 'connected',
+  index_tier TEXT NOT NULL DEFAULT 'connected',
   last_indexed TEXT,
   file_count INTEGER DEFAULT 0,
   branch_count INTEGER DEFAULT 0,
@@ -64,6 +65,7 @@ CREATE TABLE IF NOT EXISTS module_summaries (
   file_count INTEGER,
   key_files TEXT,
   dependencies TEXT,
+  content_hash TEXT,
   generated_at TEXT,
   UNIQUE(repo_id, path)
 );
@@ -75,6 +77,24 @@ CREATE TABLE IF NOT EXISTS repository_map_graphs (
   graph_json TEXT NOT NULL,
   generated_at TEXT NOT NULL
 );
+
+-- Tiered index queue: one row per repo per tier target. 'running' rows are
+-- crash fences — startup recovery re-queues them instead of resetting repos.
+CREATE TABLE IF NOT EXISTS repo_index_jobs (
+  id TEXT PRIMARY KEY,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  tier TEXT NOT NULL CHECK (tier IN ('mapped', 'enriched')),
+  state TEXT NOT NULL CHECK (state IN ('queued', 'running', 'completed', 'failed', 'cancelled')),
+  reason TEXT NOT NULL DEFAULT 'manual',
+  progress INTEGER NOT NULL DEFAULT 0,
+  message TEXT,
+  error TEXT,
+  queued_at TEXT NOT NULL,
+  started_at TEXT,
+  finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_repo_index_jobs_repo ON repo_index_jobs (repo_id, state);
+CREATE INDEX IF NOT EXISTS idx_repo_index_jobs_state ON repo_index_jobs (state, queued_at);
 
 CREATE TABLE IF NOT EXISTS chat_threads (
   id TEXT PRIMARY KEY,
@@ -1468,6 +1488,9 @@ CREATE TABLE IF NOT EXISTS mesh_dashboard_grants (
   browser_pub TEXT NOT NULL,
   dsk_wrapped BLOB,
   scopes_json TEXT NOT NULL DEFAULT '[]',
+  workspace_id TEXT,
+  repo_ids_json TEXT NOT NULL DEFAULT '[]',
+  enrollment_id TEXT,
   expires_at TEXT NOT NULL,
   seq INTEGER NOT NULL DEFAULT 0,
   state TEXT NOT NULL DEFAULT 'pending',
@@ -1477,6 +1500,33 @@ CREATE TABLE IF NOT EXISTS mesh_dashboard_grants (
   updated_at TEXT NOT NULL,
   PRIMARY KEY (backend_id, account_id, request_id)
 );
+-- Browser workspace command receipts. An executing row is a crash fence:
+-- recovery marks it uncertain and never re-runs the command automatically.
+-- Result bytes are safeStorage-wrapped and never exposed to the renderer.
+CREATE TABLE IF NOT EXISTS mesh_browser_command_receipts (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  grant_id TEXT NOT NULL,
+  command_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  repo_id TEXT,
+  expires_at TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  command_envelope_json TEXT,
+  claim_fence INTEGER,
+  state TEXT NOT NULL CHECK (state IN ('executing', 'completed', 'failed', 'uncertain')),
+  result_wrapped BLOB,
+  result_envelope_json TEXT,
+  result_published INTEGER NOT NULL DEFAULT 0,
+  error_message TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT,
+  PRIMARY KEY (backend_id, account_id, grant_id, command_id)
+);
+CREATE INDEX IF NOT EXISTS idx_mesh_browser_command_receipts_state
+  ON mesh_browser_command_receipts (backend_id, account_id, state, updated_at);
 -- Delivery ledger: which ADK versions this device has wrapped to which
 -- enrollment, so re-wraps on rotation are idempotent.
 CREATE TABLE IF NOT EXISTS sync_keyring_deliveries (
@@ -1531,6 +1581,16 @@ CREATE TABLE IF NOT EXISTS cloud_environments (
 );
 CREATE INDEX IF NOT EXISTS idx_cloud_environments_scope
   ON cloud_environments (backend_id, account_id, state);
+-- Local-first activation funnel events (§7 Measurement). Rows are never
+-- transmitted; they exist only for local funnel analysis.
+CREATE TABLE IF NOT EXISTS activation_events (
+  id INTEGER PRIMARY KEY,
+  event TEXT NOT NULL,
+  payload TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_activation_events_event_created
+  ON activation_events (event, created_at);
 `;
 
 /**
@@ -3247,6 +3307,9 @@ CREATE TABLE IF NOT EXISTS mesh_dashboard_grants (
   browser_pub TEXT NOT NULL,
   dsk_wrapped BLOB,
   scopes_json TEXT NOT NULL DEFAULT '[]',
+  workspace_id TEXT,
+  repo_ids_json TEXT NOT NULL DEFAULT '[]',
+  enrollment_id TEXT,
   expires_at TEXT NOT NULL,
   seq INTEGER NOT NULL DEFAULT 0,
   state TEXT NOT NULL DEFAULT 'pending',
@@ -3256,6 +3319,30 @@ CREATE TABLE IF NOT EXISTS mesh_dashboard_grants (
   updated_at TEXT NOT NULL,
   PRIMARY KEY (backend_id, account_id, request_id)
 );
+CREATE TABLE IF NOT EXISTS mesh_browser_command_receipts (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  grant_id TEXT NOT NULL,
+  command_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  repo_id TEXT,
+  expires_at TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  command_envelope_json TEXT,
+  claim_fence INTEGER,
+  state TEXT NOT NULL CHECK (state IN ('executing', 'completed', 'failed', 'uncertain')),
+  result_wrapped BLOB,
+  result_envelope_json TEXT,
+  result_published INTEGER NOT NULL DEFAULT 0,
+  error_message TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT,
+  PRIMARY KEY (backend_id, account_id, grant_id, command_id)
+);
+CREATE INDEX IF NOT EXISTS idx_mesh_browser_command_receipts_state
+  ON mesh_browser_command_receipts (backend_id, account_id, state, updated_at);
 `,
   86: `
 -- FLOW-02: retain the backend placement decision on the durable dispatch so
@@ -3350,6 +3437,78 @@ CREATE TABLE IF NOT EXISTS sync_keyring_pending_wraps (
   created_at TEXT NOT NULL,
   PRIMARY KEY (backend_id, account_id, recipient_enrollment_id, payload_hash)
 );
+`,
+  94: `
+-- DASH-02: bind every newly-approved browser grant to an explicit local
+-- workspace/repository selection and approving enrollment. Existing grants
+-- remain readable but cannot execute workspace commands without these fields.
+ALTER TABLE mesh_dashboard_grants ADD COLUMN workspace_id TEXT;
+ALTER TABLE mesh_dashboard_grants ADD COLUMN repo_ids_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE mesh_dashboard_grants ADD COLUMN enrollment_id TEXT;
+CREATE TABLE IF NOT EXISTS mesh_browser_command_receipts (
+  backend_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  grant_id TEXT NOT NULL,
+  command_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  workspace_id TEXT NOT NULL,
+  repo_id TEXT,
+  expires_at TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('executing', 'completed', 'failed', 'uncertain')),
+  result_wrapped BLOB,
+  error_message TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT,
+  PRIMARY KEY (backend_id, account_id, grant_id, command_id)
+);
+CREATE INDEX IF NOT EXISTS idx_mesh_browser_command_receipts_state
+  ON mesh_browser_command_receipts (backend_id, account_id, state, updated_at);
+`,
+  95: `
+-- DASH-03: durable relay result publication. The original command envelope,
+-- claim fence, and exact sealed result are retained so an acknowledged
+-- execution is never replayed after a lost completion response.
+ALTER TABLE mesh_browser_command_receipts ADD COLUMN command_envelope_json TEXT;
+ALTER TABLE mesh_browser_command_receipts ADD COLUMN claim_fence INTEGER;
+ALTER TABLE mesh_browser_command_receipts ADD COLUMN result_envelope_json TEXT;
+ALTER TABLE mesh_browser_command_receipts ADD COLUMN result_published INTEGER NOT NULL DEFAULT 0;
+`,
+  96: `
+-- Tiered repo indexing: readiness tier on repos, per-module content hashes for
+-- incremental enrichment, and the persistent repo_index_jobs queue table.
+-- Existing fully-indexed repos are treated as enriched.
+ALTER TABLE repos ADD COLUMN index_tier TEXT NOT NULL DEFAULT 'connected';
+ALTER TABLE module_summaries ADD COLUMN content_hash TEXT;
+CREATE TABLE IF NOT EXISTS repo_index_jobs (
+  id TEXT PRIMARY KEY,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  tier TEXT NOT NULL CHECK (tier IN ('mapped', 'enriched')),
+  state TEXT NOT NULL CHECK (state IN ('queued', 'running', 'completed', 'failed', 'cancelled')),
+  reason TEXT NOT NULL DEFAULT 'manual',
+  progress INTEGER NOT NULL DEFAULT 0,
+  message TEXT,
+  error TEXT,
+  queued_at TEXT NOT NULL,
+  started_at TEXT,
+  finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_repo_index_jobs_repo ON repo_index_jobs (repo_id, state);
+CREATE INDEX IF NOT EXISTS idx_repo_index_jobs_state ON repo_index_jobs (state, queued_at);
+UPDATE repos SET index_tier = 'enriched' WHERE status = 'indexed';
+`,
+  97: `
+-- Local-first activation funnel events (§7 Measurement). Rows are never
+-- transmitted; they exist only for local funnel analysis.
+CREATE TABLE IF NOT EXISTS activation_events (
+  id INTEGER PRIMARY KEY,
+  event TEXT NOT NULL,
+  payload TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_activation_events_event_created
+  ON activation_events (event, created_at);
 `,
 };
 

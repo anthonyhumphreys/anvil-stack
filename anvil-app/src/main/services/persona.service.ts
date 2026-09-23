@@ -12,7 +12,25 @@ import {
 } from './editable-agent.service.js';
 import { PERSONAS } from './persona-catalog.js';
 
+function safeParseStringList(json: string | null | undefined): string[] {
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : [];
+  } catch {
+    return [];
+  }
+}
 
+/** Structural stand-in for a module purpose before LLM enrichment lands. */
+function structuralModuleNote(module: {
+  file_count: number | null;
+  key_files: string | null;
+}): string {
+  const files = `${module.file_count ?? 0} files`;
+  const keyFiles = safeParseStringList(module.key_files).slice(0, 5);
+  return keyFiles.length > 0 ? `${files}; key files: ${keyFiles.join(', ')}` : files;
+}
 
 export function getPersonas(): Persona[] {
   return [...PERSONAS, ...listEditableAgents().map(editableAgentToPersona)];
@@ -77,17 +95,35 @@ export function buildSystemPrompt(
 
   for (const repoId of ids) {
     const repoRow = db.prepare('SELECT * FROM repos WHERE id = ?').get(repoId) as
-      | { name: string; path: string; default_branch: string }
+      | {
+          name: string;
+          path: string;
+          default_branch: string;
+          index_tier?: string | null;
+          file_count?: number | null;
+        }
       | undefined;
     if (!repoRow) continue;
 
     const summaryRow = db.prepare('SELECT * FROM repo_summaries WHERE repo_id = ?').get(repoId) as
-      | { overview: string | null; language_breakdown: string | null }
+      | {
+          overview: string | null;
+          language_breakdown: string | null;
+          frameworks: string | null;
+          entry_points: string | null;
+        }
       | undefined;
 
     const moduleRows = db
-      .prepare('SELECT path, purpose FROM module_summaries WHERE repo_id = ?')
-      .all(repoId) as { path: string; purpose: string | null }[];
+      .prepare(
+        'SELECT path, purpose, file_count, key_files FROM module_summaries WHERE repo_id = ?',
+      )
+      .all(repoId) as {
+      path: string;
+      purpose: string | null;
+      file_count: number | null;
+      key_files: string | null;
+    }[];
 
     let primaryLanguage = 'Unknown';
     if (summaryRow?.language_breakdown) {
@@ -115,8 +151,10 @@ export function buildSystemPrompt(
       }
     }
 
+    // Before the enriched tier lands, module purposes are empty — prefer the
+    // structural data (file counts, key files) so early chat stays grounded.
     const moduleSummaries = moduleRows
-      .map((m) => `- **${m.path}**: ${m.purpose ?? 'No description'}`)
+      .map((m) => `- **${m.path}**: ${m.purpose?.trim() || structuralModuleNote(m)}`)
       .join('\n');
 
     // Store first repo values for template variables (backwards compatibility)
@@ -130,9 +168,17 @@ export function buildSystemPrompt(
 
     // Build per-repo context block
     const overview = summaryRow?.overview ?? 'Not indexed yet.';
+    const structuralNote =
+      repoRow.index_tier === 'enriched'
+        ? ''
+        : `Structural context (LLM enrichment pending): ${repoRow.file_count ?? 0} files; ` +
+          `languages: ${primaryLanguage}; ` +
+          `frameworks: ${safeParseStringList(summaryRow?.frameworks).join(', ') || 'none detected'}; ` +
+          `entry points: ${safeParseStringList(summaryRow?.entry_points).join(', ') || 'none detected'}\n`;
     repoContexts.push(
       `### ${repoRow.name} (${primaryLanguage})\n` +
         `Path: ${repoPathOverrides?.[repoId] ?? repoRow.path}\n` +
+        structuralNote +
         `Overview: ${overview}\n` +
         (moduleSummaries ? `Modules:\n${moduleSummaries}` : ''),
     );
@@ -220,8 +266,13 @@ export function buildBaSystemPrompt(repoId: string, workItem: WorkItem): string 
 
   // Fetch module summaries
   const moduleRows = db
-    .prepare('SELECT path, purpose FROM module_summaries WHERE repo_id = ?')
-    .all(repoId) as { path: string; purpose: string | null }[];
+    .prepare('SELECT path, purpose, file_count, key_files FROM module_summaries WHERE repo_id = ?')
+    .all(repoId) as {
+    path: string;
+    purpose: string | null;
+    file_count: number | null;
+    key_files: string | null;
+  }[];
 
   // Detect primary language from breakdown
   let primaryLanguage = 'Unknown';
@@ -251,7 +302,7 @@ export function buildBaSystemPrompt(repoId: string, workItem: WorkItem): string 
   }
 
   const moduleSummariesText = moduleRows
-    .map((m) => `- **${m.path}**: ${m.purpose ?? 'No description'}`)
+    .map((m) => `- **${m.path}**: ${m.purpose?.trim() || structuralModuleNote(m)}`)
     .join('\n');
 
   const architectureDescription =
@@ -333,8 +384,15 @@ export function buildDesignSystemPrompt(
       | undefined;
 
     const moduleRows = db
-      .prepare('SELECT path, purpose FROM module_summaries WHERE repo_id = ?')
-      .all(repoId) as { path: string; purpose: string | null }[];
+      .prepare(
+        'SELECT path, purpose, file_count, key_files FROM module_summaries WHERE repo_id = ?',
+      )
+      .all(repoId) as {
+      path: string;
+      purpose: string | null;
+      file_count: number | null;
+      key_files: string | null;
+    }[];
 
     let primaryLanguage = 'Unknown';
     if (summaryRow?.language_breakdown) {
@@ -362,7 +420,7 @@ export function buildDesignSystemPrompt(
     }
 
     const moduleSummaries = moduleRows
-      .map((m) => `- **${m.path}**: ${m.purpose ?? 'No description'}`)
+      .map((m) => `- **${m.path}**: ${m.purpose?.trim() || structuralModuleNote(m)}`)
       .join('\n');
 
     if (!firstRepoName) {
